@@ -18,6 +18,7 @@ MAX_STEPS = 900
 MAX_SCAN = receipts.MAX_GENERALS
 MENU_RETRIES = 4
 STATUS_RETRIES = 12
+LOCATE_RETRIES = 2  # retry the named SELECT -> actual castle status, never infer a castle
 MARCH = frozenset({'いまこちらにむかっています', 'しんぐんちゅうです',
                    'いどうしています'})
 CAMP = frozenset({'キャンプしています', 'キャンプのなかにいます'})
@@ -199,6 +200,22 @@ def _task_complete(mem, state, *, result):
     _stage(state, 'process')
 
 
+def _retry_location(mem, state, screen, reason):
+    """Revisit the same general before discarding a location without proof."""
+    general = (state.get('job') or {}).get('name')
+    count = int(state.get('locate_retries') or 0)
+    _log(mem, 'post_month_castle_location_unverified', general=general,
+         resulting_event=reason, observed_metric={'attempt': count + 1},
+         reason='SELECTの後に城名が確認できなかったため同じ将軍を再確認する')
+    if count < LOCATE_RETRIES:
+        state['locate_retries'] = count + 1
+        _stage(state, 'locate_reset')
+    else:
+        _task_complete(mem, state, result=reason)
+    return [pad('b')] if screen.kind in {
+        'castle_menu', 'castle_info', 'main_menu', 'general_list', 'text'} else []
+
+
 def step(screen, mem, frame):
     """Return actions/[] while owned; None when unrelated foreground wins."""
     state = mem.get('post_month_status')
@@ -327,7 +344,7 @@ def step(screen, mem, frame):
         if job['kind'] == 'repair' and not state['statuses'][job['name']].get('castle'):
             _task_complete(mem, state, result='location_unverified')
             return []
-        _stage(state, 'task_menu', seeks=0)
+        _stage(state, 'task_menu', seeks=0, locate_retries=0)
         return [pad('x')]
     if stage == 'task_menu':
         if house.roster(screen):
@@ -357,18 +374,27 @@ def step(screen, mem, frame):
         direction = menu_to(screen, job['name'])
         return [pad('down')] if direction is None else [pad('a')] if direction == 'here' else [direction]
     if stage == 'task_jump':
-        if screen.kind != 'map':
-            if state['phase_reads'] >= STATUS_RETRIES:
-                _task_complete(mem, state, result='jump_unconfirmed')
-                return [pad('b')] if screen.kind != 'world_map' else [pad('y')]
-            return []
         job = state['job']
         name = job['name']
+        if screen.kind == 'world_map':
+            return [pad('y')]
+        if screen.kind != 'map':
+            if (job['kind'] == 'locate' and house.roster(screen)
+                    and screen.selected == name
+                    and state['phase_reads'] in (4, 8)):
+                # A SELECT can be lost during the roster's closing animation.
+                return [pad('select')]
+            if state['phase_reads'] >= STATUS_RETRIES:
+                if job['kind'] == 'locate':
+                    return _retry_location(mem, state, screen, 'select_jump_unconfirmed')
+                _task_complete(mem, state, result='jump_unconfirmed')
+                return [pad('b')]
+            return []
         if job['kind'] == 'locate':
-            if not _roof_under_cursor(screen, frame):
-                _task_complete(mem, state, result='castle_roof_unconfirmed')
-                return []
-            _stage(state, 'locate_info')
+            # SELECT is the observed anchor for *this named general*. The
+            # cursor itself can completely cover the castle roof, so the
+            # roof detector is not a prerequisite for opening its menu.
+            _stage(state, 'locate_open')
             return [pad('a')]
         if job['kind'] == 'recall':
             camps = own_camps(frame) if frame is not None else []
@@ -413,18 +439,40 @@ def step(screen, mem, frame):
             return [pad('a')]
         _task_complete(mem, state, result='unknown_task')
         return []
+    if stage == 'locate_open':
+        if screen.kind in ('castle_menu', 'castle_info'):
+            _stage(state, 'locate_info')
+            return []
+        if screen.kind == 'map' and state['phase_reads'] in (3, 6):
+            # The first A may have been swallowed while SELECT closed the
+            # roster; press again only on a confirmed map, boundedly.
+            return [pad('a')]
+        if state['phase_reads'] >= STATUS_RETRIES:
+            return _retry_location(mem, state, screen, 'castle_menu_not_opened')
+        return []
     if stage == 'locate_info':
         name = state['job']['name']
-        castle = map_registration._label(screen, mem.get('chapter'))
+        # A castle-menu header alone is not a castle-status reading. Never
+        # claim a location until the actual status panel identifies the name.
+        castle = (map_registration._label(screen, mem.get('chapter'))
+                  if screen.kind == 'castle_info' else None)
         if castle is not None and _assign(mem, name, castle, evidence='native_castle_name'):
             _task_complete(mem, state, result='castle_verified')
             return [pad('b')]
         if screen.kind == 'castle_menu' and screen.hand:
             toward = menu_to(screen, 'ステータス')
-            if toward:
-                return [pad('a')] if toward == 'here' else [toward]
+            if toward == 'here' and state['phase_reads'] in (1, 4, 8):
+                return [pad('a')]
+            if toward and toward != 'here':
+                return [toward]
         if state['phase_reads'] >= STATUS_RETRIES:
-            _task_complete(mem, state, result='castle_name_unreadable')
+            return _retry_location(mem, state, screen, 'castle_status_not_read')
+        return []
+    if stage == 'locate_reset':
+        if screen.kind == 'map':
+            _stage(state, 'task_menu', seeks=0)
+            return [pad('x')]
+        if screen.kind in ('castle_menu', 'castle_info', 'main_menu', 'general_list', 'text'):
             return [pad('b')]
         return []
     if stage == 'wait_recall':
