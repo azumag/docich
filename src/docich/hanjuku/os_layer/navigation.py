@@ -217,6 +217,7 @@ Y_JUMP_OFFSET = chart.Y_JUMP_OFFSET
 Y_JUMP_FAR = 48                # world px from the goal before a jump is worth it
 Y_JUMP_LIMIT = 6               # jumps per order and screen mode (reset when the order starts).
 Y_JUMP_TOTAL_LIMIT = 18        # jumps per order and mode for the whole run (never reset).
+CURSOR_STILL_LIMIT = 6         # identical estimates before the cap is re-armed (see flows/map.py).
                                # 2 ran out mid-order and left roof walking (g421 15:25: SELECT loops)
 Y_JUMP_MOVES = 8               # D-pad steps inside one jump before confirming anyway
 Y_JUMP_WAIT = 6                # frames without a readable cursor before closing Y
@@ -381,8 +382,15 @@ def _want_y_jump(mem, order, name, mode) -> bool:
     if ((mem.get('tally') or {}).get(f'yjump:{key}', 0) >= Y_JUMP_TOTAL_LIMIT
             or int(totals.get(key) or 0) >= Y_JUMP_TOTAL_LIMIT):
         # Two stores: the tally survives in this run, the plain dict survives
-        # a reload; either one reaching the cap stops the jumps.
-        return False
+        # a reload; either one reaching the cap stops the jumps. The cap is
+        # re-armed once the position has been stuck for a long time: the Y
+        # view re-places the cursor absolutely and is then the only way out
+        # (g1133 2026-11-05: the boss order could neither walk nor jump).
+        stuck = int((mem.get('cursor_still') or {}).get('n') or 0) >= CURSOR_STILL_LIMIT
+        if not stuck:
+            return False
+        mem.setdefault('tally', {})[f'yjump:{key}'] = 0
+        mem.setdefault('y_jumps_total', {})[key] = 0
     if (mem.get('y_jumps') or {}).get(key, 0) >= Y_JUMP_LIMIT:
         return False
     if (mode == 'target' and chart.is_boss_castle(name)
