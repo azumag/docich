@@ -131,7 +131,16 @@ def _learn_holding_limit(screen: Screen, mem, shop):
                              'card_bought_unseen': dict(mem.get(UNSEEN) or {}),
                              'card_bought_since_read': dict(mem.get(SINCE_READ) or {}),
                              'bought': ([list(r) if isinstance(r, (list, tuple)) else r for r in bought]
-                              if isinstance(bought, list) else bought)},
+                              if isinstance(bought, list) else bought),
+                             # Record the full post-refusal queue and shop context,
+                             # not just the first few dropped rows.
+                             'items': [list(r) for r in items],
+                             'shop_state': {'hold_limit': shop.get('hold_limit'),
+                                            'hold_limit_open': shop.get('hold_limit_open'),
+                                            'hold_limit_presses': shop.get('hold_limit_presses'),
+                                            'last_buy': shop.get('last_buy'),
+                                            'want': shop.get('want'),
+                                            'gold': gold}},
             reason='商人が所持上限(種類ごと99)で売らなかったため、所持の下限を記録し半分の枚数で再試行する'
                    '(再試行が0枚ならその札だけやめる)')
     shop['items'] = items
