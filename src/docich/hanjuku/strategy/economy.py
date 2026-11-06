@@ -499,6 +499,25 @@ def _previous_recruit_month(month):
     return f'{year}-{number - 1}'
 
 
+def _garrison_lower_bound(mem):
+    """Measured garrison names as a lower-bound headcount, or None.
+
+    The national status is read after the monthly purchases, and the first
+    monthly-menu frame still carries the previous month's roster scope. The
+    garrison is a per-castle observation, so its distinct names can prove a
+    shortage without claiming a complete roster (owner 2026-11-06: keep
+    recruiting while cash and wage headroom allow).
+    """
+    garrison = mem.get('garrison')
+    if not isinstance(garrison, dict):
+        return None
+    names = set()
+    for value in garrison.values():
+        if isinstance(value, (list, tuple)):
+            names.update(g for g in value if isinstance(g, str) and g)
+    return len(names) if names else None
+
+
 def _recruit_headcount(mem):
     """Prefer this month's exact total; use only last month's measured total
     to bootstrap a shortage while the current national status is not yet read.
@@ -699,6 +718,8 @@ def _stop_unneeded_recruit(mem, shop):
     if _batch_continuing(shop):
         return False  # preserve the initial shortage across a paid batch
     count, complete, _ = _recruit_headcount(mem)
+    if count is None:
+        count = _garrison_lower_bound(mem)
     target = _recruit_target(mem)
     if count is not None and target is not None and count < target:
         # Owner 2026-11-06: a partial list is a lower bound; with cash in hand
@@ -732,6 +753,10 @@ def _stop_unneeded_recruit(mem, shop):
 
 def _recruit_shortage(mem):
     count, complete, names = _recruit_headcount(mem)
+    if count is None:
+        # Owner 2026-11-06: the month's first menu runs before the national
+        # status read; the garrison still proves a shortage (lower bound).
+        count = _garrison_lower_bound(mem)
     target = _recruit_target(mem)
     if count is None or target is None or count >= target:
         return None
