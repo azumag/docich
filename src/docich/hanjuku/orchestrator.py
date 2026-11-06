@@ -737,6 +737,8 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
     elif kind in {'castle_info','sealed_castle','main_menu'}:
         decision_log._record(mem,'close_panel',screen=kind,reason='意図しない情報画面を閉じる')
         actions=[pad('b')]
+    elif kind == 'text' and mem.get('shop') and shop_flow.holding_limit_message(screen):
+        actions=shop_flow.shop_step(screen,mem)
     elif kind == 'text' and month_flow.chikujou_leftover(screen, mem):
         actions = [pad('b')]
     elif kind=='text' and readers.is_camp_menu(screen):
