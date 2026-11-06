@@ -96,6 +96,9 @@ def test_transfer_is_forwarded_only_after_the_actual_roster_receipt():
     routes.observed_roster(mem, 'コラダイン', mem['garrison']['コラダイン'])
     assert mem['sorties'][step]['status'] == 'arrived'
     assert mem['_records'][-1]['decision'] == 'sortie_move_arrival_observed'
+    # Isolate relay routing: if the boss is still open, boss waves correctly
+    # consume the spares before this optional move is ever planned.
+    mem['boss_victories'] = {'ボス': 1}
     candidates = list(replan.interim_candidates(mem).values())
     move = next((o for o in candidates if o['target'] == 'イーピヨル'), None)
     assert move is not None, candidates
@@ -179,6 +182,7 @@ def test_rear_spare_can_return_along_chart_legs_to_reinforce_the_front():
     # a chart branch. A directed-only graph would strand this reinforcement.
     route = routes.path(mem, 'リグア', 'ドンダム', set(mem['garrison']))
     assert route == ('リグア', 'グリン', 'アルマムーン', 'コラダイン', 'イーピヨル', 'ドンダム')
+    mem['boss_victories'] = {'ボス': 1}  # keep boss waves from consuming relay spares
     candidates = list(replan.interim_candidates(mem).values())
     move = next((o for o in candidates if o['target'] == 'グリン'), None)
     assert move is not None, candidates
@@ -445,7 +449,9 @@ def test_blocked_only_source_sorties_from_the_blocking_castle():
            # アルマムーン needs enough depth to still be staffed at クロチェット.
            'garrison': {'アルマムーン': ['どうし', 'ミュスカデ', 'チコリ', 'ジェラート', 'エピィ',
                                    'ポセイドン', 'クミン'],
-                        'オトラント': ['グレナデン', 'キャンディー'],  # a defender remains
+                        'オトラント': ['グレナデン', 'キャンディー', 'バジル',
+                                       'マンゴスチン', 'リースリング', 'ゼウス'],
+                        # Retake reservations may consume earlier spares.
                         'テラビル': ['ラビオリ']},
            'sorties': {}, 'launched_orders': {}, '_records': [],
            'house_eggs': {}, 'general_location_unknown': []}
