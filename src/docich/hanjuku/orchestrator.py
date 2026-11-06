@@ -779,6 +779,9 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
             mem['held_phase']=None
             mem.pop('unknown_hold_watch', None)
     actions=battle_menus_flow.summon_dialogue_pace(screen,mem,phase,kind,actions,frame.digest())
+    # The reanchor FSM only repairs coordinates; dispatch may now resume a
+    # previously active order or explain why no safe action is available.
+    map_flow.note_reanchor_followup(screen, mem, actions)
     # A concert picker that B cannot close must not consume the whole stall
     # window. Count unchanged observations that produced the same picker B;
     # after CONCERT_PICKER_REPEAT_MAX, choose A once and start over. A real
