@@ -483,20 +483,53 @@ def _defer_recruit_for_egg(mem, shop):
         goals.note_attempt(mem, 'recruit', 'deferred')
 
 
+def _previous_recruit_month(month):
+    """Only the immediately preceding in-game month, including year rollover."""
+    if not isinstance(month, str):
+        return None
+    parts = month.split('-')
+    if (len(parts) != 2 or any(not part.isdecimal() for part in parts)
+            or any(not part or len(part) > 4 for part in parts)):
+        return None
+    year, number = map(int, parts)
+    if year < 1 or not 1 <= number <= 12:
+        return None
+    if number == 1:
+        return f'{year - 1}-12' if year > 1 else None
+    return f'{year}-{number - 1}'
+
+
 def _recruit_headcount(mem):
-    """The national status gives an exact total, not identities or positions."""
+    """Prefer this month's exact total; use only last month's measured total
+    to bootstrap a shortage while the current national status is not yet read.
+
+    The national-status visit runs *after* monthly purchases. Without this
+    one-month carry, an otherwise affordable recruitment cannot start because
+    the prior count loses its scope on the first monthly-menu frame.
+    Carried counts are provisional (complete=False), never a full new roster.
+    """
     from ..os_layer.roster import MAX_GENERALS, fresh, run_identity
     country = mem.get('country_general_count') or {}
-    if (isinstance(country, dict)
-            and country.get('scope') == [mem.get('chapter'), mem.get('month')]
-            and country.get('identity') == run_identity(mem.get('_run_identity'))
-            and type(country.get('count')) is int
-            and 0 <= country['count'] <= MAX_GENERALS):
+    identity = run_identity(mem.get('_run_identity'))
+    chapter, month = mem.get('chapter'), mem.get('month')
+    valid_country = (isinstance(country, dict)
+                     and country.get('identity') == identity
+                     and type(country.get('count')) is int
+                     and 0 <= country['count'] <= MAX_GENERALS)
+    if valid_country and country.get('scope') == [chapter, month]:
         return country['count'], True, []
     seen = fresh(mem)
-    if seen is None:
-        return None, False, []
-    return len(seen['names']), seen.get('complete') is True, list(seen['names'])
+    if seen is not None:
+        return len(seen['names']), seen.get('complete') is True, list(seen['names'])
+    # A previous run/chapter or a count from two months ago is never an
+    # authority to spend. The current run must have a real identity and tick.
+    previous = _previous_recruit_month(month)
+    if (valid_country and identity is not None and type(chapter) is int
+            and previous is not None and country.get('scope') == [chapter, previous]
+            and type(country.get('tick')) is int and type(mem.get('tick')) is int
+            and 0 <= country['tick'] <= mem['tick']):
+        return country['count'], False, []
+    return None, False, []
 
 
 def _recruit_spare_after_necessities(mem, shop, gold):
@@ -652,9 +685,12 @@ def _recruit_target(mem):
 
 
 def _recruit_sufficient(mem):
-    count, _, _ = _recruit_headcount(mem)
+    count, complete, names = _recruit_headcount(mem)
     target = _recruit_target(mem)
-    return count is not None and target is not None and count >= target
+    # A carried national count can establish a possible shortage, not prove
+    # that the same number still serve after a month of battles.
+    return (count is not None and target is not None and count >= target
+            and (complete or bool(names)))
 
 
 def _stop_unneeded_recruit(mem, shop):
@@ -924,6 +960,16 @@ def _prioritise_recruit(mem, shop, gold):
         shop.pop('recruit_measured_budget', None)
         _record(mem, 'recruit_cash_rechecked', month=shop.get('key'),
                 reason='同じ月の募集保留を実際の残金・兵士・修理予約で再判定して再開する')
+    # Recovery may finish later in this *same* monthly visit. An older
+    # deferred_egg must no longer cancel recruitment after a verified
+    # recovery/no-recovery result; the normal cash/shortage gates still apply.
+    if (shop.get('recruit') == 'deferred_egg'
+            and shop.get('egg') in ('done', 'not_needed')
+            and _recruit_shortage(mem) is not None):
+        shop['recruit'] = 'pending'
+        shop.pop('recruit_measured_budget', None)
+        _record(mem, 'recruit_egg_rechecked', month=shop.get('key'),
+                reason='同月の卵回復完了を確認したため募集を再計画する')
     if (egg_deferred_for_soldiers(shop)
             or shop.get('recruit') in ('deferred_egg', 'deferred_cash', 'deferred_army')
             or _stop_unneeded_recruit(mem, shop)):
