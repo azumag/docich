@@ -181,10 +181,15 @@ def _pnl_overlay_title(prefix: str, pnl_text: str, *, trade_pnl: str | None = No
         .replace("累計損益 ", "累計 ")
         .replace(" / ", "｜")
     )
+    # Show transaction P/L first and portfolio P/L next. Currency pairs and
+    # reasoning stay in the body to keep the first title line readable.
+    marks = compact.split("｜")
+    if len(marks) == 2:
+        marks.reverse()  # cumulative, then unrealized
     parts = [prefix]
     if trade_pnl is not None:
         parts.append(trade_pnl)
-    parts.append(compact)
+    parts.extend(marks)
     title = "｜".join(parts)
     if len(title) > OVERLAY_TITLE_LIMIT:
         return f"{prefix}｜損益 桁数超過"
@@ -390,7 +395,7 @@ def _fill(
                 else:
                     speech += f"損益は{spoken_sign}{_money(abs(pnl_value))}円です。"
     title = _pnl_overlay_title(
-        f"暗号資産PAPER約定 {symbol[:20]} {side}", pnl_body, trade_pnl=trade_pnl_title,
+        "売" if is_sell else "買", pnl_body, trade_pnl=trade_pnl_title,
     )
     speech += pnl_speech
     overlay = validate_event(
@@ -412,7 +417,7 @@ def _settlement(
     start_asset = _safe_code(event.get("start_asset"))
     start_amount = _money(event.get("start_amount"))
     complete = bool(event.get("complete"))
-    title = _pnl_overlay_title("暗号資産PAPER 裁定観測", pnl_body)
+    title = _pnl_overlay_title("裁定", pnl_body)
     if complete:
         edge = _money(event.get("net_edge_bps"))
         body = f"{route} / {start_amount} {start_asset} / 模擬edge {edge} bps"

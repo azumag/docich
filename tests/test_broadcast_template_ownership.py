@@ -24,6 +24,13 @@ class BroadcastTemplateOwnershipTest(unittest.TestCase):
             with self.subTest(marker=marker):
                 self.assertIn(marker, html)
 
+    def test_paper_pnl_titles_wrap_without_ellipsis(self):
+        html = TEMPLATE.read_text(encoding="utf-8")
+        self.assertIn("card.classList.add('paper-pnl')", html)
+        self.assertIn(".toast.paper-pnl .toast-title", html)
+        self.assertIn("white-space: normal;", html)
+        self.assertIn("text-overflow: clip;", html)
+
     def test_news_area_stays_bounded_and_non_paginated(self):
         html = TEMPLATE.read_text(encoding="utf-8")
         self.assertIn("hanjuku-gap-news", html)
