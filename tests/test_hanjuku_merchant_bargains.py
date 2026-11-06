@@ -272,7 +272,9 @@ def test_a_half_price_cart_after_the_month_pass_gets_a_pass_of_its_own(ready):
     assert shop['cheap_vendor_planned'] is True
     planned = dict(HALF)
     rich = dict((n, q) for n, q in shop['items'] if n in b.RICH_MERCHANT_CARDS)
-    assert all(q > 2 for q in rich.values()) and len(rich) == 2
+    # This synthetic four-row canvas clips the fourth (ミックミー) row;
+    # only the three visible cards may be planned from the actual listing.
+    assert rich == {'ノリウツール': b.RICH_MERCHANT_MAX_COPIES}
     ordinary = [(n, q) for n, q in shop['items'] if n not in b.RICH_MERCHANT_CARDS]
     assert sum(planned[n] * q for n, q in ordinary) <= b.CHEAP_VENDOR_GOLD
     assert sum(q for _, q in ordinary) <= b.CHEAP_VENDOR_COPIES
