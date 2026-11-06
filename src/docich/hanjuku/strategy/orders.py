@@ -1396,7 +1396,7 @@ def _reserved_targets(mem):
             for step, s in (mem.get('sorties') or {}).items()
             if s.get('status') in ('en_route', 'launched_unconfirmed')
             and s.get('tick') is not None
-            and 0 <= now - int(s['tick']) < SORTIE_BUSY_TICKS} - {None}
+            and 0 <= now - int(s['tick']) < max(SORTIE_BUSY_TICKS, _arrival_limit(mem, s))} - {None}
 
 
 def _retake_order(order, mem):
@@ -1456,7 +1456,7 @@ def _retake_reserved(order, mem):
     return any(step != order['step'] and _sortie_reserved_target(mem, step, s) == order.get('target')
                and s.get('status') in ('en_route', 'launched_unconfirmed')
                and s.get('tick') is not None
-               and 0 <= now - int(s['tick']) < SORTIE_BUSY_TICKS
+               and 0 <= now - int(s['tick']) < max(SORTIE_BUSY_TICKS, _arrival_limit(mem, s))
                for step, s in (mem.get('sorties') or {}).items())
 
 
