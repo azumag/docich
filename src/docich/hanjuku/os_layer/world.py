@@ -277,6 +277,35 @@ def observe_owners(mem, roofs, cam):
 
 
 SORTIE_BUSY_TICKS = 400       # legacy observation window (~10 min), NOT proof of arrival
+BOSS_ARRIVAL_LIMIT = 2 * SORTIE_BUSY_TICKS
+# g1133 chapter 6: 603 chart cells took 23-32 min and 740 cells took 34 min.
+MARCH_TICKS_PER_CELL = {6: 2.4}
+LONG_MARCH_TICKS = 6 * SORTIE_BUSY_TICKS   # window for late arrival binding
+MARCH_ARRIVAL_CAP = LONG_MARCH_TICKS
+
+
+def march_arrival_limit(mem, sortie):
+    """Bound an unconfirmed march by the chapter's measured chart distance.
+
+    Keep this pure estimate in the observed-world layer so both strategy and
+    busy-general bookkeeping use the same bound without an upwards import.
+    An exceeded bound is not evidence that a general has arrived.
+    """
+    rate = MARCH_TICKS_PER_CELL.get(mem.get('chapter') or 0)
+    if not rate:
+        return BOSS_ARRIVAL_LIMIT
+    cells = chart.castles(mem.get('chapter'))
+    source = cells.get(sortie.get('source'))
+    target_name = sortie.get('target') or sortie.get('planned_target')
+    target = cells.get(target_name)
+    if not source or not target:
+        return BOSS_ARRIVAL_LIMIT
+    distance = ((source[0] - target[0]) ** 2 + (source[1] - target[1]) ** 2) ** 0.5
+    limit = max(BOSS_ARRIVAL_LIMIT, min(MARCH_ARRIVAL_CAP, round(distance * rate)))
+    # Boss paths can detour through forest; the Euclidean distance underestimates.
+    if chart.is_boss_castle(target_name):
+        limit = MARCH_ARRIVAL_CAP
+    return limit
 
 
 def _en_route(mem):
@@ -288,15 +317,13 @@ def _en_route(mem):
     whether to retry. An overdue/arrived receipt is never treated as moving.
     Missing or future ticks are not evidence of a fresh march.
     """
-    # Import lazily: strategy.orders imports this world module.
-    from ..strategy.orders import _arrival_limit
     now = int(mem.get('tick') or 0)
     sorties = [
         s for s in (mem.get('sorties') or {}).values()
         if isinstance(s, dict)
         and s.get('status') in ('en_route', 'launched_unconfirmed')
         and type(s.get('tick')) is int
-        and 0 <= now - s['tick'] < max(SORTIE_BUSY_TICKS, _arrival_limit(mem, s))
+        and 0 <= now - s['tick'] < max(SORTIE_BUSY_TICKS, march_arrival_limit(mem, s))
     ]
     return ({s.get('general') for s in sorties if s.get('general')},
             {s['target'] for s in sorties if s.get('target')})
