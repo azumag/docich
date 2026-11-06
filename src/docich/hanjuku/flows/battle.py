@@ -1459,6 +1459,11 @@ def battle_end(mem, next_kind, *, defense_continues=False, actor_continues=False
     from . import camp_recheck as hanjuku_camp_recheck
     hanjuku_camp_recheck.capture(mem, cur)
     _maybe_recall_weak_hero(mem, cur, outcome, ally_hp)
+    # A battle result may return straight to the map while the post-month
+    # status owner is still expecting its pre-battle roster or SELECT menu.
+    # Restore that owner before the next observation can select a sortie.
+    from . import post_month_status
+    post_month_status.resume_after_battle(mem, cur)
 
 
 def _maybe_recall_weak_hero(mem, cur, outcome, ally_hp):
