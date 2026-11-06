@@ -44,7 +44,7 @@ def test_interrupted_unknown_target_reserves_only_saved_intent_without_editing_s
 
 
 @pytest.mark.parametrize('status,tick', [('arrived',99),('failed',99),('en_route',None),
-                                         ('en_route',100-p.SORTIE_BUSY_TICKS),('en_route',101)])
+                                         ('en_route',100-2*p.SORTIE_BUSY_TICKS),('en_route',101)])
 def test_finished_old_missing_or_future_receipts_do_not_reserve(status,tick):
     m=memory();m['sorties']={'earlier':{'general':'ヴィーナス','target':'ジョンリギ',
                                      'status':status,'tick':tick}}
