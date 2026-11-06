@@ -310,3 +310,43 @@ def test_a_roster_probe_reads_and_backs_out_without_sending():
     assert mem['orders']['1-A3'] == 'pending'
     assert '1-A3' not in mem['sorties']
     assert any(r['decision'] == 'roster_probe_complete' for r in mem['_records'])
+
+
+def test_incomplete_long_roster_keeps_due_for_retry():
+    """An interrupted four-plus-name scan must not consume a blind launch read."""
+    from docich.hanjuku.state.regions import flow as _flow
+    mem = memory()
+    mem['roster_read_due'] = {'アルマムーン': 490}
+    mem['orders']['1-A3'] = 'launched'
+    mem['sorties'] = {'1-A3': {'general': 'ゼウス', 'source': 'アルマムーン',
+                               'target': 'ボス', 'status': 'en_route', 'tick': 400}}
+    _flow(mem)['launch_probe'] = {'1-A3': {
+        'general': 'ゼウス', 'source': 'アルマムーン', 'target': 'ボス',
+        'reads': 3, 'blind': True, 'kept': True, 'tick': 400}}
+    # The walk reached its safety limit, not the end of the roster.
+    mem['general_list_scan'] = {'step': '1-C1', 'castle': 'アルマムーン',
+                                'end': 'limit', 'names': ROSTER[:4],
+                                'presses': 16, 'tick': mem['tick']}
+    walk(mem, [general_list(ROSTER[:4], 0)])
+    assert mem['roster_read_due'] == {'アルマムーン': 490}
+    assert '1-A3' in _flow(mem)['launch_probe']
+    assert mem['orders']['1-A3'] == 'launched'
+
+
+def test_partial_short_ocr_during_scan_does_not_settle_probe():
+    """A truncated visible page is not proof of a short roster mid-scan."""
+    from docich.hanjuku.state.regions import flow as _flow
+    mem = memory()
+    mem['roster_read_due'] = {'アルマムーン': 490}
+    mem['orders']['1-A3'] = 'launched'
+    mem['sorties'] = {'1-A3': {'general': 'ゼウス', 'source': 'アルマムーン',
+                               'target': 'ボス', 'status': 'en_route', 'tick': 400}}
+    _flow(mem)['launch_probe'] = {'1-A3': {
+        'general': 'ゼウス', 'source': 'アルマムーン', 'target': 'ボス',
+        'reads': 3, 'blind': True, 'kept': True, 'tick': 400}}
+    mem['general_list_scan'] = {'step': '1-C1', 'castle': 'アルマムーン',
+                                'end': 'limit', 'names': ROSTER[:4],
+                                'presses': 16, 'tick': mem['tick']}
+    walk(mem, [general_list(ROSTER[:2], 0)])
+    assert 'アルマムーン' in mem['roster_read_due']
+    assert '1-A3' in _flow(mem)['launch_probe']
