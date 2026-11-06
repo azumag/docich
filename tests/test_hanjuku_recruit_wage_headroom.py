@@ -166,3 +166,102 @@ def test_previous_real_cash_shortage_still_keeps_hold():
     p._prioritise_recruit(mem, shop, 1000)
     assert shop['recruit'] == 'deferred_cash'
     assert not shop['recruit_priority']
+
+
+def _previous_country_memory(*, month='1-8', old_month='1-7', old_count=12):
+    identity = {'game': 'hanjuku-hero', 'runtime_id': 'month-carry',
+                'generation': 1, 'lease_id': 'recruit-month-carry'}
+    mem = memory(NAMES[:6], complete=False, castles=2)
+    mem.update(month=month, tick=110, gold=1500, _run_identity=identity)
+    mem['country_general_count'] = {
+        'scope': [1, old_month], 'identity': identity,
+        'count': old_count, 'tick': 100}
+    mem['country_income'] = {'scope': [1, old_month], 'income': 542}
+    mem['country_wages'] = {'scope': [1, old_month], 'wages': 78}
+    return mem
+
+
+def test_month_boundary_previous_country_count_arms_recruitment_before_new_status():
+    # The national status visit runs after purchases. The old same-month-only
+    # check meant every new month started with an unknown headcount.
+    mem = _previous_country_memory()
+    count, complete, names = p._recruit_headcount(mem)
+    assert (count, complete, names) == (12, False, [])
+    shortage = p._recruit_shortage(mem)
+    assert shortage is not None and shortage['count_lower_bound'] == 12
+    assert shortage['target'] == 32
+    shop = p._plan(mem, {'year': 1, 'month': 8, 'gold': 1500})
+    assert shop is not None
+    assert shop['recruit_priority'] is True
+    assert shop['recruit_batch']['left'] == 20
+    assert shop['recruit'] == 'check'
+
+
+def test_previous_month_count_passes_real_cash_gate_but_never_claims_complete_roster():
+    mem = _previous_country_memory()
+    shop = {'key': '1-8', 'recruit': 'check', 'recruit_priority': True,
+            'merchant_done': True, 'items': [], 'soldiers': 0,
+            'soldiers_done': True, 'reserve': 0, 'hero_repair_reserve': 0}
+    spare, evidence = p._recruit_spare_after_necessities(mem, shop, 1500)
+    assert spare is True
+    assert evidence['generals'] is None
+    assert evidence['roster_lower_bound'] == 12
+
+
+def test_country_count_carries_across_year_boundary_only_one_month():
+    mem = _previous_country_memory(month='49-1', old_month='48-12')
+    assert p._recruit_headcount(mem)[:2] == (12, False)
+    mem['month'] = '49-2'
+    assert p._recruit_headcount(mem)[0] is None
+
+
+def test_previous_country_count_never_crosses_run_chapter_or_future_receipt():
+    mem = _previous_country_memory()
+    country = mem['country_general_count']
+    country['identity'] = {**country['identity'], 'generation': 2}
+    assert p._recruit_headcount(mem)[0] is None
+    country['identity'] = mem['_run_identity']
+    country['scope'] = [2, '1-7']
+    assert p._recruit_headcount(mem)[0] is None
+    country['scope'] = [1, '1-7']
+    country['tick'] = 111
+    assert p._recruit_headcount(mem)[0] is None
+
+
+def test_current_country_receipt_supersedes_provisional_previous_month_count():
+    mem = _previous_country_memory()
+    mem['country_general_count'].update(scope=[1, '1-8'], count=19)
+    assert p._recruit_headcount(mem) == (19, True, [])
+    assert p._recruit_shortage(mem)['count_lower_bound'] == 19
+
+
+def test_stale_full_headcount_does_not_prove_current_month_is_sufficient():
+    mem = _previous_country_memory(old_count=32)
+    assert not p._recruit_sufficient(mem)
+    assert p._recruit_shortage(mem) is None  # Never blindly spend past cap.
+
+
+def test_deferred_egg_reopens_after_verified_recovery_same_month():
+    mem = memory(NAMES[:6], complete=True, castles=2)
+    mem['gold'] = 1200
+    shop = {'key': '1-7', 'recruit': 'deferred_egg', 'egg': 'done',
+            'recruit_priority': False, 'merchant_done': True, 'items': [],
+            'soldiers': 0, 'soldiers_done': True, 'reserve': 0,
+            'hero_repair_reserve': 0, 'recruit_measured_budget': True}
+    p._prioritise_recruit(mem, shop, 1200)
+    assert shop['recruit_priority'] is True
+    assert shop['recruit'] == 'check'
+    assert 'recruit_measured_budget' not in shop
+    assert shop['recruit_batch']['left'] == p._recruit_target(mem) - 6
+
+
+def test_deferred_egg_does_not_retry_while_recovery_is_unverified():
+    mem = memory(NAMES[:6], complete=True, castles=2)
+    mem['gold'] = 1200
+    shop = {'key': '1-7', 'recruit': 'deferred_egg', 'egg': 'unverified',
+            'recruit_priority': False, 'merchant_done': True, 'items': [],
+            'soldiers': 0, 'soldiers_done': True, 'reserve': 0,
+            'hero_repair_reserve': 0}
+    p._prioritise_recruit(mem, shop, 1200)
+    assert shop['recruit'] == 'deferred_egg'
+    assert not shop['recruit_priority']
