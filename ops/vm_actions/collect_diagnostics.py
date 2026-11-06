@@ -6927,6 +6927,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v475-event-text-advance",
             "hanjuku-chart-v476-house-entry-verified",
             "hanjuku-chart-v477-recall-interruption",
+            "hanjuku-chart-v478-recruit-wage-headroom",
             "hanjuku-chart-v129-battle-card-progress",
             "hanjuku-chart-v130-summer-cursor-evidence",
             "hanjuku-chart-v131-defense-month-economy",
