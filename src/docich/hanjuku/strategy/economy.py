@@ -512,9 +512,19 @@ def _recruit_spare_after_necessities(mem, shop, gold):
                 'owned_castles': len(owned) if owned and owned <= known else None,
                 'gold': gold, 'spare': None}
     continuing = _batch_continuing(shop)
-    if not continuing and (evidence['generals'] is None or evidence['owned_castles'] is None):
+    # A partial roster is only a lower bound, but an already approved
+    # comfortable-cash recruitment must still reach the real cash check.
+    # Keep unknown castle ownership and other incomplete rosters held.
+    partial_eligible = (not complete and _recruit_shortage(mem) is not None
+                        and type(gold) is int and gold >= RECRUIT_BATCH_GOLD
+                        and _recruit_wage_hires(mem) > 0)
+    if not continuing and (evidence['owned_castles'] is None
+                           or (evidence['generals'] is None and not partial_eligible)):
         return None, evidence
-    if not continuing and evidence['generals'] < evidence['owned_castles']:
+    if partial_eligible:
+        evidence['roster_lower_bound'] = count
+    if (not continuing and evidence['generals'] is not None
+            and evidence['generals'] < evidence['owned_castles']):
         return True, evidence  # the existing shortage cash rules still apply
     cards = [] if shop.get('merchant_done') else shop.get('items') or []
     # A stale provisional refill must not consume the recruitment cash when
