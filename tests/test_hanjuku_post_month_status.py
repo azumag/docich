@@ -642,3 +642,117 @@ def test_stray_menu_back_out_is_bounded():
     assert outs[0] == [pad('b')]
     assert outs.count([pad('b')]) == post.STRAY_MENU_BACKOUTS
     assert outs[-1] == []    # past the bound the generic no-input fallback owns it
+
+
+def _battle_result_interrupt(mem, ally='ゼウス', *, away=1):
+    from docich.hanjuku.flows import battle as battle_flow
+    mem['battle'] = {
+        'ally': ally, 'enemy': 'ミント', 'ally_hp': 40, 'enemy_hp': 0,
+        'away': away, 'cards_used': [], 'card_consumption_complete': True,
+        'step': None, 'castle': None, 'side': None,
+    }
+    battle_flow.battle_end(mem, 'map')
+
+
+def test_battle_result_reopens_interrupted_monthly_roster_instead_of_planning():
+    mem = memory()
+    post.arm(mem)
+    state = mem['post_month_status']
+    state.update(stage='status', selected='ゼウス', names=['どうし'],
+                 top_confirmed=True, list_moves=2, phase_reads=5,
+                 statuses={'ゼウス': _known_status('ゼウス')},
+                 markers={'ゼウス': {'castle_candidate': 'アルマムーン'}})
+    _battle_result_interrupt(mem)
+    assert 'battle' not in mem
+    assert state['stage'] == 'await_map'
+    assert state['names'] == [] and not state.get('top_confirmed')
+    assert 'ゼウス' in state['dirty']
+    assert state['statuses']['ゼウス']['castle'] == 'アルマムーン'
+    assert not state.get('markers')
+    assert post.step(Screen([], None, '', kind='map'), mem, None) == [pad('x')]
+    assert state['stage'] == 'open_menu'
+    assert 'post_month_status' in mem
+    assert not mem.get('chart_plan')
+    assert any(r['decision'] == 'post_month_battle_resume'
+               and r['observed_metric']['previous_stage'] == 'status'
+               for r in mem['_records'])
+
+
+def test_battle_result_reopens_same_monthly_named_task_without_losing_queue():
+    mem = memory()
+    post.arm(mem)
+    state = mem['post_month_status']
+    job = {'kind': 'locate', 'name': 'ゼウス'}
+    remaining = [{'kind': 'repair', 'name': 'どうし'}]
+    state.update(stage='task_jump', job=job, tasks=remaining, steps=19,
+                 phase_reads=8)
+    _battle_result_interrupt(mem, ally='アテナ')
+    assert state['stage'] == 'task_menu'
+    assert state['job'] == job
+    assert state['tasks'] == remaining
+    assert state['steps'] == 0
+    assert post.step(Screen([], None, '', kind='map'), mem, None) == [pad('x')]
+    assert 'post_month_status' in mem
+
+
+def test_battle_result_retries_a_blocked_monthly_status_read_instead_of_idle_hold():
+    mem = memory()
+    post.arm(mem)
+    state = mem['post_month_status']
+    state.update(stage='blocked', failure='status_unreadable', steps=post.MAX_STEPS + 1,
+                 names=['どうし'], top_confirmed=True)
+    _battle_result_interrupt(mem)
+    assert state['stage'] == 'await_map'
+    assert state['steps'] == 0
+    assert 'failure' not in state
+    assert post.step(Screen([], None, '', kind='map'), mem, None) == [pad('x')]
+
+
+def test_unfinished_battle_does_not_rewind_monthly_status():
+    mem = memory()
+    post.arm(mem)
+    state = mem['post_month_status']
+    state.update(stage='roster', names=['どうし'], top_confirmed=True)
+    _battle_result_interrupt(mem, away=0)
+    assert 'battle' in mem
+    assert state['stage'] == 'roster'
+    assert state['names'] == ['どうし']
+    assert not any(r['decision'] == 'post_month_battle_resume'
+                   for r in mem['_records'])
+
+
+def test_battle_result_preserves_live_monthly_repair_owner():
+    mem = memory()
+    post.arm(mem)
+    state = mem['post_month_status']
+    state.update(stage='wait_repair', job={'kind': 'repair', 'name': 'ゼウス'},
+                 tasks=[{'kind': 'locate', 'name': 'どうし'}])
+    _battle_result_interrupt(mem, ally='アテナ')
+    assert state['stage'] == 'wait_repair'
+    assert state['job']['name'] == 'ゼウス'
+    assert len(state['tasks']) == 1
+
+
+def test_battle_resume_is_scoped_to_active_month_and_chapter():
+    mem = memory()
+    post.arm(mem)
+    state = mem['post_month_status']
+    state['stage'] = 'status'
+    mem['month'] = '2-7'
+    post.resume_after_battle(mem, {'ally': 'ゼウス'})
+    assert state['stage'] == 'status'
+    assert not any(r['decision'] == 'post_month_battle_resume'
+                   for r in mem['_records'])
+
+
+def test_battle_result_closes_old_roster_before_reopening_monthly_scan():
+    mem = memory()
+    post.arm(mem)
+    state = mem['post_month_status']
+    state.update(stage='roster', names=['どうし'], top_confirmed=True)
+    _battle_result_interrupt(mem, ally='ゼウス')
+    assert state['stage'] == 'await_map'
+    old_roster = parse(roster(names=('どうし', 'ゼウス'), selected=0))
+    assert post.step(old_roster, mem, None) == [pad('b')]
+    assert post.step(Screen([], None, '', kind='map'), mem, None) == [pad('x')]
+    assert state['stage'] == 'open_menu'

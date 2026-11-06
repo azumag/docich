@@ -374,6 +374,69 @@ def reenter_after_reanchor(mem, resume):
     return True
 
 
+# A battle can replace the general list/status panel with a map while this
+# monthly owner still expects that now-closed panel. Re-enter the same owner
+# rather than letting an exhausted [] handler or the sortie planner take over.
+_BATTLE_SCAN_STAGES = frozenset({'roster', 'status', 'roster_next'})
+_BATTLE_TASK_STAGES = frozenset({
+    'task_menu', 'task_select', 'task_jump', 'locate_open', 'locate_info',
+    'locate_reset',
+})
+
+
+def resume_after_battle(mem, battle):
+    """Resume an interrupted monthly status operation on the next field map.
+
+    Keep previously observed statuses and queued recovery tasks. A roster
+    traversal must start at its verified top again: a partial list after
+    combat cannot prove that an absent general died. A SELECT-based task must
+    reopen the named general's menu, not act on the combat camera position.
+    """
+    state = mem.get('post_month_status')
+    if not isinstance(state, dict) or (
+            state.get('scope') != [mem.get('chapter'), mem.get('month')]):
+        return
+    stage = state.get('stage')
+    actor = battle.get('ally') if isinstance(battle, dict) else None
+    statuses = state.get('statuses') or {}
+    if actor in statuses:
+        # battle_end also dirties the persistent roster, but an already armed
+        # monthly scan has its own snapshot of the dirty list.
+        dirty = set(state.get('dirty') or ())
+        dirty.add(actor)
+        state['dirty'] = sorted(dirty)
+    if stage in _BATTLE_SCAN_STAGES or (stage == 'blocked' and not state.get('job')):
+        state['names'] = []
+        state['complete'] = False
+        for key in ('top_confirmed', 'top_seeks', 'list_moves', 'highlight',
+                    'marker_reads', 'selected', 'markers', 'stray_backouts',
+                    'failure'):
+            state.pop(key, None)
+        state['steps'] = 0
+        _stage(state, 'await_map')
+        resumed = 'await_map'
+    elif stage in _BATTLE_TASK_STAGES or (stage == 'blocked' and state.get('job')):
+        # Keep the exact job and remaining queue. The battle invalidated the
+        # old SELECT position, so opening the list again is mandatory.
+        state['steps'] = 0
+        state.pop('failure', None)
+        _stage(state, 'task_menu', seeks=0)
+        state['phase_reads'] = 2  # first map frame opens X immediately
+        resumed = 'task_menu'
+    elif stage == 'open_menu':
+        # First map frame after the battle may open X without three idle reads.
+        state['phase_reads'] = 2
+        resumed = 'open_menu'
+    else:
+        # await_map/process/wait_repair/wait_recall own their existing
+        # continuations; never steal a live repair/recall transaction.
+        resumed = stage
+    _log(mem, 'post_month_battle_resume',
+         general=actor,
+         observed_metric={'previous_stage': stage, 'resume_stage': resumed},
+         reason='戦闘で中断した月次ステータス処理を優先し、出撃計画ではなく元の確認手順へ戻る')
+
+
 def step(screen, mem, frame):
     """Return actions/[] while owned; None when unrelated foreground wins."""
     state = mem.get('post_month_status')
@@ -408,7 +471,7 @@ def step(screen, mem, frame):
         recovery = map_flow._start_reanchor_jump(mem, owner='post_month_status')
         if recovery is not None:
             return recovery
-    if state['stage'] in {'open_menu', 'task_menu', 'blocked'}:
+    if state['stage'] in {'await_map', 'open_menu', 'task_menu', 'blocked'}:
         if screen.kind in STRAY_MENU_KINDS and not house.roster(screen):
             backouts = state.get('stray_backouts')
             backouts = backouts if type(backouts) is int and backouts >= 0 else 0
@@ -437,6 +500,11 @@ def step(screen, mem, frame):
         if screen.kind == 'map':
             _stage(state, 'open_menu')
             return [pad('x')]
+        if screen.kind == 'main_menu' or house.roster(screen):
+            # A battle can leave the global X/roster overlay open while the
+            # monthly scan is being restarted. Close it as this owner's
+            # recovery, rather than allowing deploy_step to claim the list.
+            return [pad('b')]
         return None
     if stage == 'open_menu':
         if house.roster(screen):
