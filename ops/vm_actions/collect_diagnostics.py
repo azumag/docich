@@ -6935,6 +6935,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v483-no-empty-castle",
             "hanjuku-chart-v484-recruit-month-count-carry",
             "hanjuku-chart-v485-recruit-garrison-lower-bound",
+            "hanjuku-chart-v486-reanchor-resume",
             "hanjuku-chart-v129-battle-card-progress",
             "hanjuku-chart-v130-summer-cursor-evidence",
             "hanjuku-chart-v131-defense-month-economy",
