@@ -84,13 +84,18 @@ def _interim_source(mem, target, chart_order, owned, busy, allow_sole=False):
             # there anyway. An unread list is opened as a probe.
             blocker = _march_blocker(chapter, best, target, owned)
             if blocker:
-                spares = _spares([g for g in free.get(blocker) or ()
-                                  if g not in unavailable_for_attack],
-                                 unavailable_for_attack, sole)
-                if spares:
-                    return blocker, spares[0]
+                # A blocking own castle is a real departure source, not merely
+                # a waypoint. With one measured defender it cannot sortie,
+                # even when the distant castle has many available generals.
+                blocker_free = [g for g in free.get(blocker) or ()
+                                if g not in unavailable_for_attack]
+                if len(set(blocker_free)) >= need:
+                    spares = _spares(blocker_free, unavailable_for_attack, sole)
+                    if spares:
+                        return blocker, spares[0]
                 if garrison.get(blocker) is None:
                     return blocker, MOVE_ANY_GENERAL
+                return None  # reinforce the blocker before trying this target
         return best, _spares(free[best], unavailable_for_attack, sole)[0]
     probes = sorted(c for c in owned if routes.probe_due(mem, c))
     if probes:
