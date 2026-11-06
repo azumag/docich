@@ -1777,7 +1777,9 @@ def test_failed_menu_drops_cursor_estimate_and_stops_sea_a_spam():
     assert 'localize' in kinds and 'nav_reset' in kinds
     assert mem.get('cursor') and not mem.get('anchor') and mem.get('nav_search') is True
     assert mem['menu_miss'] == 1 and mem['uncertain'] is True
-    # Without a roof anchor, a later arrived must not re-send A.
+    # After a failed X/しろ recovery, the bounded fallback must still
+    # avoid a blind A on open water.
+    mem['castle_jump_skip'] = {'mode': 'reanchor', 'tick': int(mem.get('tick') or 0)}
     mem['_records'] = []
     mem['expect_menu'] = False
     # Simulate update_world wrongly still "at goal" without anchor.
@@ -2449,6 +2451,8 @@ def test_open_sea_search_spirals_around_the_centroid_and_records_each_leg(monkey
     mem = {'chapter': 1, 'variant': 'chart', 'active': '1-A1', 'orders': {'1-A1': 'pending'},
            'picked': [], 'uncertain': True, 'nav_search': True, 'menu_miss': 1, '_records': [],
            'select_used': True}
+    # Test the legacy inland spiral only while X/しろ recovery is cooling down.
+    mem['castle_jump_skip'] = {'mode': 'reanchor', 'tick': int(mem.get('tick') or 0)}
     centroid = policy._search_goal(mem)
     mem['cursor'] = list(centroid)
     screen = Screen(lines=[], hand=None, text='', kind='map', cursor=(120, 120))
