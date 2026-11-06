@@ -6,6 +6,8 @@ and recheck the actual listing and final quote before confirming anything.
 """
 from __future__ import annotations
 
+import random
+
 from ..decision_log import _record
 from .economy import (KNOWN_PRICES, _charted_purchase_ahead,
                       _egg_recovery_targets, _merchant_spendable, low_army_first)
@@ -32,10 +34,26 @@ CHEAP_VENDOR_RATIO = 0.6
 CHEAP_VENDOR_GOLD = 1000
 CHEAP_VENDOR_COPIES = 16
 CHEAP_VENDOR_TARGET_FACTOR = 2
-# Owner 2026-11-06: at 1000G+ stock these two cards up to observed capacity.
+# Owner 2026-11-06: at 1000G+ stock all explicitly requested cards, while
+# keeping cash for essential spending. Random other cards use only leftover cash.
 RICH_MERCHANT_GOLD = 1000
-RICH_MERCHANT_CARDS = ('ノリウツール', 'ミックミー')
+RICH_MERCHANT_CARDS = (
+    'ノリウツール', 'ミックミー', 'グリンボー', 'イッテツーン',
+    'ころぼぐんだん', 'フットバース', 'ピッグローラー',
+    'ファバード', 'エンジェリン',
+)
 RICH_MERCHANT_MAX_COPIES = 99
+RICH_RANDOM_CARDS = tuple(name for name in KNOWN_PRICES
+                          if name not in RICH_MERCHANT_CARDS and name not in BARGAIN_TARGETS)
+RICH_RANDOM_MAX_COPIES = 8
+RICH_RANDOM_MAX_KINDS = 3
+
+
+def _rich_card(shop, name):
+    random_cards = shop.get('rich_random_cards', [])
+    return (shop.get('rich_merchant') is True
+            and (name in RICH_MERCHANT_CARDS
+                 or (isinstance(random_cards, list) and name in random_cards)))
 
 
 # Owner 2026-11-06: each kind of card is held up to 99 copies. A merchant sells
@@ -124,9 +142,14 @@ def bargain_spendable(mem, shop, header, *, rich=False):
     if any(type(n) is not int or n < 0 for n in (soldiers, before_recruit)):
         return None
     extras = shop.get('bargain_cards', [])
+    random_cards = shop.get('rich_random_cards', [])
     if (not isinstance(extras, list)
-            or any(not isinstance(name, str) or name not in BARGAIN_TARGETS for name in extras)
-            or len(extras) != len(set(extras))):
+            or any(not isinstance(name, str) or name not in KNOWN_PRICES for name in extras)
+            or len(extras) != len(set(extras))
+            or not isinstance(random_cards, list)
+            or any(not isinstance(name, str) or name not in RICH_RANDOM_CARDS
+                   for name in random_cards)
+            or len(random_cards) != len(set(random_cards))):
         return None
     items, bought = shop.get('items', []), shop.get('bought', [])
     if not isinstance(items, list) or not isinstance(bought, list):
@@ -144,8 +167,7 @@ def bargain_spendable(mem, shop, header, *, rich=False):
                 or not isinstance(row[0], str)
                 or any(type(n) is not int or n <= 0 for n in row[1:])):
             return None
-        if row[0] in extras and not (shop.get('rich_merchant') is True
-                                     and row[0] in RICH_MERCHANT_CARDS):
+        if row[0] in extras and not _rich_card(shop, row[0]):
             spent += row[1] * row[2]
     funds = cash - max(soldiers, before_recruit) - committed - BARGAIN_CASH_BUFFER
     if rich:
@@ -157,25 +179,25 @@ def merchant_card_spendable(mem, shop, header, name, price):
     """Chart purchases keep their old gate; extras recheck the stricter one."""
     extras = shop.get('bargain_cards', [])
     if (not isinstance(extras, list)
-            or any(not isinstance(n, str) or n not in BARGAIN_TARGETS for n in extras)
+            or any(not isinstance(n, str) or n not in KNOWN_PRICES for n in extras)
             or len(extras) != len(set(extras))):
         return None
     if name not in extras:
         return _merchant_spendable(mem, shop, header)
-    if (type(price) is not int or price <= 0 or name not in BARGAIN_TARGETS
+    if (type(price) is not int or price <= 0 or name not in KNOWN_PRICES
             or price > KNOWN_PRICES[name] or _egg_necessity_pending(mem, shop)):
         return None
-    rich = shop.get('rich_merchant') is True and name in RICH_MERCHANT_CARDS
+    rich = _rich_card(shop, name)
     cash = bargain_spendable(mem, shop, header, rich=rich)
     if cash is None or _charted_purchase_ahead(mem, header):
         return None
     # Revalidate quantities at the real quote, independently of cached plans.
     bought = shop.get('bought', [])  # validated by bargain_spendable
-    used = sum(q for n, q, _ in bought if n in extras
-               and not (shop.get('rich_merchant') is True and n in RICH_MERCHANT_CARDS))
+    used = sum(q for n, q, _ in bought if n in extras and not _rich_card(shop, n))
     same = sum(q for n, q, _ in bought if n == name)
     _, copy_cap, factor = _caps(shop)
-    copies = (max(0, RICH_MERCHANT_MAX_COPIES - same) if rich else
+    copies = (max(0, (RICH_RANDOM_MAX_COPIES if name in shop.get('rich_random_cards', [])
+                      else RICH_MERCHANT_MAX_COPIES) - same) if rich else
               max(0, min(copy_cap - used, BARGAIN_TARGETS[name] * factor - same)))
     copies = min(copies, hold_room(mem, name))
     return min(cash, copies * price)
@@ -238,33 +260,57 @@ def plan_bargains(mem, shop, header, *, listed=None):
         bought[name] = bought.get(name, 0) + qty
     added, copies = [], 0
     _, copy_cap, factor = _caps(shop)
-    # On the observed listing, buy both requested cards before optional extras.
-    # Pair purchases prevent the cheaper card from monopolizing the budget.
+    # The observed listing is authoritative. Round-robin the requested kinds
+    # so a cheap first item cannot consume all cash before other requested
+    # kinds get a chance. Stop at 99 held copies of each, or the real budget.
     if rich and listed is not None:
         choices = []
         for name in RICH_MERCHANT_CARDS:
-            price, seen, prior = listed.get(name), stock.get(name, 0), bought.get(name, 0)
+            price, seen = listed.get(name), stock.get(name, 0)
             if (name not in queued and type(price) is int and 0 < price <= KNOWN_PRICES[name]
                     and type(seen) is int and 0 <= seen < RICH_MERCHANT_MAX_COPIES
                     and _rich_room(mem, name, stock, bought) > 0):
                 choices.append(name)
         amounts = {name: 0 for name in choices}
         remaining = rich_budget
-        if len(choices) == 2:
-            pair = min(remaining // sum(listed[name] for name in choices),
-                       *(_rich_room(mem, name, stock, bought) for name in choices))
+        while True:
+            changed = False
             for name in choices:
-                amounts[name] = pair
-                remaining -= pair * listed[name]
-        for name in choices:
-            room = _rich_room(mem, name, stock, bought) - amounts[name]
-            extra = min(room, remaining // listed[name])
-            amounts[name] += extra
-            remaining -= extra * listed[name]
+                if (amounts[name] < _rich_room(mem, name, stock, bought)
+                        and remaining >= listed[name]):
+                    amounts[name] += 1
+                    remaining -= listed[name]
+                    changed = True
+            if not changed:
+                break
         for name in choices:
             if amounts[name]:
                 added.append([name, amounts[name]])
                 queued.add(name)
+
+        # Optional random purchases are allowed only after every available
+        # requested card has exhausted its budget/holding room. A stable seed
+        # keeps retries and hotload from changing the chosen shopping list.
+        random_names = list(shop.get('rich_random_cards', []))
+        candidates = [
+            name for name in sorted(listed) if name in RICH_RANDOM_CARDS
+            and name not in queued and name not in bought
+            and type(listed[name]) is int and 0 < listed[name] <= KNOWN_PRICES[name]
+            and hold_room(mem, name) > 0
+        ]
+        rng = random.Random(f"{shop.get('key')}:{mem.get('chapter')}:{shop.get('gold_start')}")
+        rng.shuffle(candidates)
+        for name in candidates:
+            if len(random_names) >= RICH_RANDOM_MAX_KINDS:
+                break
+            qty = min(RICH_RANDOM_MAX_COPIES, hold_room(mem, name),
+                      remaining // listed[name])
+            if qty:
+                added.append([name, qty])
+                queued.add(name)
+                random_names.append(name)
+                remaining -= qty * listed[name]
+        shop['rich_random_cards'] = random_names
         budget = max(0, budget - (rich_budget - remaining))
     for name, target in BARGAIN_TARGETS.items():
         if rich and listed is not None and name in RICH_MERCHANT_CARDS:
