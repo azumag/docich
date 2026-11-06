@@ -43,7 +43,8 @@ RICH_MERCHANT_CARDS = (
     'ファバード', 'エンジェリン',
 )
 RICH_MERCHANT_MAX_COPIES = 99
-RICH_RANDOM_CARDS = tuple(name for name in KNOWN_PRICES if name not in RICH_MERCHANT_CARDS)
+RICH_RANDOM_CARDS = tuple(name for name in KNOWN_PRICES
+                          if name not in RICH_MERCHANT_CARDS and name not in BARGAIN_TARGETS)
 RICH_RANDOM_MAX_COPIES = 8
 RICH_RANDOM_MAX_KINDS = 3
 
