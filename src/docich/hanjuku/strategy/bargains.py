@@ -360,6 +360,6 @@ def plan_bargains(mem, shop, header, *, listed=None):
                                  'extra_gold_cap': BARGAIN_MONTHLY_GOLD,
                                  'extra_copy_cap': BARGAIN_MONTHLY_COPIES,
                                  'seen': dict(seen_basis),
-                                 'seen_total': sum(seen_basis.values())},
+                                 'planned_cards_seen_total': sum(seen_basis.values())},
                 reason='必要資金と予備費を残し、在庫不足の強力札を月次購入へ追加。実売価格は店内で再確認する')
     return shop
