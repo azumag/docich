@@ -872,8 +872,14 @@ def interim_candidates(mem, allow_sole=False) -> dict:
         # expected at the hero's castle justify rereading that singleton.
         present = (mem.get('garrison') or {}).get(order['source'])
         if isinstance(present, (list, tuple)) and len(set(present)) == 1:
+            # A new joiner is unconfirmed until the castle's live list is
+            # opened. Since #3578's confirmed-source policy names the generic
+            # probe actor (しょうぐん), test for that evidence-gathering probe,
+            # not a guessed recruit name. Never allow a named singleton sortie.
             fresh_joiner = (order['source'] == _arrival_castle(mem, owned)
-                            and order['general'] in _unplaced_castle_generals(mem))
+                            and bool(_unplaced_castle_generals(mem))
+                            and order.get('source_probe') is True
+                            and order['general'] == MOVE_ANY_GENERAL)
             arrival_probe = (order.get('source_probe') is True
                              and routes.probe_due(mem, order['source']))
             if not (fresh_joiner or arrival_probe):
