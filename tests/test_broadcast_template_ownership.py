@@ -19,7 +19,7 @@ class BroadcastTemplateOwnershipTest(unittest.TestCase):
             'data-soren-region',
             'hanjuku-gap-news',
             'gapBuildSkeleton',
-            'broadcastGameGap',
+            'game-gap',
         ):
             with self.subTest(marker=marker):
                 self.assertIn(marker, html)
