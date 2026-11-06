@@ -64,7 +64,9 @@ KEY_OWNERSHIP = {
     'card_override':    {'region': PLAN, 'lifetime': 'chapter', 'migrated': False},
     'attack':           {'region': PLAN, 'lifetime': 'chapter', 'migrated': False},
     # --- 出撃/帰還が観測する WorldState ---
-    'garrison':        {'region': WORLD, 'lifetime': 'chapter', 'migrated': False},
+    'garrison':        {'region': WORLD, 'lifetime': 'chapter', 'migrated': True},
+    'garrison_observed_at': {'region': WORLD, 'lifetime': 'chapter', 'migrated': True},
+    'general_location_unknown': {'region': WORLD, 'lifetime': 'chapter', 'migrated': True},
     'sorties':         {'region': WORLD, 'lifetime': 'chapter', 'migrated': False},
     'launched_orders': {'region': WORLD, 'lifetime': 'chapter', 'migrated': True},
     'retired_sorties': {'region': WORLD, 'lifetime': 'chapter', 'migrated': True},

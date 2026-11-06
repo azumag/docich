@@ -5,6 +5,7 @@ not a triangle, establishes whether the named actor is still in a castle.
 """
 from docich.hanjuku.flows import arrival_status as A
 from docich.hanjuku.flows import map as M
+from docich.hanjuku.state.regions import world as _world
 from docich.hanjuku.os_layer.font import TextLine
 from docich.hanjuku.os_layer.screen import Screen
 
@@ -81,8 +82,8 @@ def test_x_general_status_march_removes_stale_resident_then_reanchors():
     assert A.step(roster(), mem) == [A.pad('a')]
     assert A.step(status(), mem) == [A.pad('b')]
     assert mem['arrival_general_observations']['ココット']['location'] == 'march'
-    assert mem['garrison']['アルマムーン'] == ['どうし']
-    assert 'ココット' in mem['general_location_unknown']
+    assert _world(mem)['garrison']['アルマムーン'] == ['どうし']
+    assert 'ココット' in _world(mem)['general_location_unknown']
     assert decisions(mem, 'arrival_status_probe_verified')
     assert A.step(roster(), mem) == [A.pad('b')]
     assert A.step(main(), mem) == [A.pad('b')]
@@ -99,8 +100,8 @@ def test_castle_status_does_not_guess_which_castle():
     mem['arrival_status_probe']['phase'] = 'status'
     assert A.step(status(location='しろのなかにいます'), mem) == [A.pad('b')]
     assert mem['arrival_general_observations']['ココット']['location'] == 'castle'
-    assert mem['garrison']['アルマムーン'] == ['どうし', 'ココット']
-    assert not mem.get('general_location_unknown')
+    assert _world(mem)['garrison']['アルマムーン'] == ['どうし', 'ココット']
+    assert not _world(mem).get('general_location_unknown')
 
 
 def test_unreadable_or_wrong_person_does_not_change_garrison():
@@ -111,7 +112,7 @@ def test_unreadable_or_wrong_person_does_not_change_garrison():
     for _ in range(A.STATUS_READ_LIMIT):
         A.step(wrong, mem)
     assert mem['arrival_status_probe']['phase'] == 'close'
-    assert mem['garrison']['アルマムーン'] == ['どうし', 'ココット']
+    assert _world(mem)['garrison']['アルマムーン'] == ['どうし', 'ココット']
     assert not mem.get('arrival_general_observations')
     assert decisions(mem, 'arrival_status_probe_unverified')
 

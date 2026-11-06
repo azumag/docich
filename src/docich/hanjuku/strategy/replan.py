@@ -5,6 +5,7 @@ of them without waiting for a model, adopts a validated adjusted chart when
 one answers, and records every deviation.
 """
 from __future__ import annotations
+from ..state.regions import world as _world
 
 import hashlib
 
@@ -47,8 +48,8 @@ def _interim_source(mem, target, chart_order, owned, busy, allow_sole=False):
     """
     chapter = mem.get('chapter') or 0
     home = chart.home_castle(chapter)
-    garrison = mem.get('garrison') or {}
-    busy = busy | set(mem.get('general_location_unknown') or ())
+    garrison = _world(mem).get('garrison') or {}
+    busy = busy | set(_world(mem).get('general_location_unknown') or ())
     unavailable_for_attack = {NAME} if _hero_egg_broken(mem) else set()
     sole = len(owned) == 1          # owner: a single castle may leave the hero alone
     free = {c: [g for g in garrison.get(c) or () if g not in busy] for c in owned}
@@ -271,8 +272,8 @@ def _wave_pick(mem, target, owned, busy, allow_sole):
     """
     chapter = mem.get('chapter') or 0
     home = chart.home_castle(chapter)
-    garrison = mem.get('garrison') or {}
-    unavailable = set(mem.get('general_location_unknown') or ())
+    garrison = _world(mem).get('garrison') or {}
+    unavailable = set(_world(mem).get('general_location_unknown') or ())
     need = 2          # never empty a castle (owner 2026-11-06)
     for source in sorted(owned, key=lambda c: (c != home, c)):
         names = garrison.get(source)
@@ -338,10 +339,10 @@ def _defense_rebalance(mem, owned, busy, heading):
     qualify for reinforcement.
     """
     chapter = mem.get('chapter') or 0
-    garrison = mem.get('garrison') or {}
+    garrison = _world(mem).get('garrison') or {}
     home = chart.home_castle(chapter)
     priority = _defense_priority_castles(mem)
-    unlocated = set(mem.get('general_location_unknown') or ())
+    unlocated = set(_world(mem).get('general_location_unknown') or ())
     free = {c: [g for g in (garrison.get(c) or ())
                 if g not in busy and g not in unlocated] for c in owned}
     out = []
@@ -399,8 +400,8 @@ def _garrison_rotation(mem, owned, busy, heading, taken=()):
     plan = _garrison_plan(mem)
     if not plan:
         return []
-    garrison = mem.get('garrison') or {}
-    unavailable = set(busy) | set(mem.get('general_location_unknown') or ())
+    garrison = _world(mem).get('garrison') or {}
+    unavailable = set(busy) | set(_world(mem).get('general_location_unknown') or ())
     free = {c: [g for g in garrison.get(c) or () if g not in unavailable] for c in plan}
     sole = len(plan) == 1
     claimed = set(taken) | set(heading)
@@ -580,8 +581,8 @@ def interim_candidates(mem, allow_sole=False) -> dict:
         home = chart.home_castle(chapter)
         cells = chart.castles(chapter)
         boss_xy = next((xy for name, xy in cells.items() if chart.is_boss_castle(name)), None)
-        garrison = mem.get('garrison') or {}
-        unavailable = set(busy) | set(mem.get('general_location_unknown') or ()) | {NAME}
+        garrison = _world(mem).get('garrison') or {}
+        unavailable = set(busy) | set(_world(mem).get('general_location_unknown') or ()) | {NAME}
         if _hero_egg_broken(mem):
             unavailable |= {NAME}
         sole = len(owned) == 1
@@ -640,7 +641,7 @@ def interim_candidates(mem, allow_sole=False) -> dict:
         else:
             # Reserve only an actor measured in this source castle. Unread chart
             # actors are alternative future candidates, not simultaneous commitments.
-            present = (mem.get('garrison') or {}).get(source) or ()
+            present = (_world(mem).get('garrison') or {}).get(source) or ()
             if general in present:
                 planned_busy.add(general)
         purpose = 'retake' if target in lost else 'attack'
@@ -693,7 +694,7 @@ def interim_candidates(mem, allow_sole=False) -> dict:
     # #3266: a general already committed to a sortie above is busy for the
     # staging/refill moves below as well — one plan must not book him twice.
     busy = busy | planned_busy
-    garrison = mem.get('garrison') or {}
+    garrison = _world(mem).get('garrison') or {}
     moves = []
     if chapter == 3:
         # Stage spare generals along chart legs rather than aiming a distant
@@ -703,7 +704,7 @@ def interim_candidates(mem, allow_sole=False) -> dict:
             options = []
             for donor in sorted(owned):
                 free = [g for g in garrison.get(donor) or () if g not in busy
-                        and g not in (mem.get('general_location_unknown') or ())]
+                        and g not in (_world(mem).get('general_location_unknown') or ())]
                 probe = routes.probe_due(mem, donor)
                 if len(free) < 2 and not probe:
                     continue
@@ -768,7 +769,7 @@ def interim_candidates(mem, allow_sole=False) -> dict:
                      if o['target'] in chart.boss_sites(4)
                      and (mem.get('orders') or {}).get(o['step']) in (None, 'pending')]
     if pending_sites and all(_boss_companion_source(o, mem) is None for o in pending_sites):
-        unavailable = busy | set(mem.get('general_location_unknown') or ())
+        unavailable = busy | set(_world(mem).get('general_location_unknown') or ())
         present = {c: [g for g in garrison.get(c) or () if g not in unavailable]
                    for c in owned}
         paired = False
@@ -870,7 +871,7 @@ def interim_candidates(mem, allow_sole=False) -> dict:
         # A generic source-list probe at a measured one-general castle is
         # not a feasible sortie. Only actual inbound marches or new joiners
         # expected at the hero's castle justify rereading that singleton.
-        present = (mem.get('garrison') or {}).get(order['source'])
+        present = (_world(mem).get('garrison') or {}).get(order['source'])
         if isinstance(present, (list, tuple)) and len(set(present)) == 1:
             # A new joiner is unconfirmed until the castle's live list is
             # opened. Since #3578's confirmed-source policy names the generic
@@ -905,8 +906,8 @@ def _sole_starved(mem):
     if not owned or not [c for c in castles if c not in owned and not chart.is_boss_castle(c)]:
         return False
     busy, _ = _en_route(mem)
-    busy = busy | set(mem.get('general_location_unknown') or ())
-    garrison = mem.get('garrison') or {}
+    busy = busy | set(_world(mem).get('general_location_unknown') or ())
+    garrison = _world(mem).get('garrison') or {}
     free = {c: {g for g in garrison.get(c) or () if g not in busy} for c in owned}
     return all(len(free[c]) <= 1 for c in owned) and any(len(free[c]) == 1 for c in owned)
 
@@ -945,7 +946,7 @@ def _defense_gate(mem):
         return None
     month = mem.get('month')
     owned = sorted(_owned(mem))
-    garrison = mem.get('garrison') or {}
+    garrison = _world(mem).get('garrison') or {}
     observed = {'owned': owned, 'garrison': {c: list(garrison.get(c) or ()) for c in owned},
                 'month': month, 'prospects': _joiner_prospects(mem)}
     wait = mem.get('defense_wait')
@@ -1242,7 +1243,7 @@ def _adjust_situation(mem):
     # An unread castle may be stored as None; the situation digest still has
     # to serialise (owner 2026-11-05: probing unread lists must not crash it).
     return {'garrison': {castle: sorted(names or ())
-                         for castle, names in sorted((mem.get('garrison') or {}).items())},
+                         for castle, names in sorted((_world(mem).get('garrison') or {}).items())},
             'owned': sorted(_owned(mem)),
             'lost': sorted(mem.get('lost') or []), 'home_lost': bool(mem.get('home_lost')),
             'en_route': [{'general': g, 'target': t} for g, t in marching],

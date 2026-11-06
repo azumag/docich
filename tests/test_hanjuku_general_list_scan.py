@@ -14,6 +14,7 @@ where it started, stops moving, or a press limit.
 from docich import hanjuku_policy as policy
 from docich.hanjuku_screen import parse
 from test_hanjuku_chart_bot import Canvas
+from docich.hanjuku.state.regions import world as _world
 
 ROSTER = ['アルファルファ', 'ゼウス', 'ラズベリー', 'キャンディー', 'ココット', 'リースリング']
 
@@ -56,7 +57,7 @@ def test_a_full_window_is_walked_down_until_the_cursor_wraps():
         assert actions == [policy.pad('down')]
     # Wrapped to the first row: the whole list is known and recorded.
     walk(mem, [window(0, 0)])
-    assert mem['garrison']['アルマムーン'] == ROSTER
+    assert _world(mem)['garrison']['アルマムーン'] == ROSTER
     (record,) = [r for r in mem['_records'] if r['decision'] == 'general_list_scanned']
     assert record['observed_metric'] == {'generals': ROSTER, 'end': 'wrapped', 'presses': 6}
 
@@ -78,7 +79,7 @@ def test_a_short_list_is_read_as_before():
     mem = memory()
     (actions,) = walk(mem, [general_list(['アルファルファ', 'ココット', 'ゼウス'], 0)])
     assert actions == [policy.pad('down')]                    # toward ココット, no walk
-    assert mem['garrison']['アルマムーン'] == ['アルファルファ', 'ココット', 'ゼウス']
+    assert _world(mem)['garrison']['アルマムーン'] == ['アルファルファ', 'ココット', 'ゼウス']
     assert 'general_list_scan' not in mem
 
 
@@ -88,7 +89,7 @@ def test_four_names_in_a_longer_window_end_when_the_cursor_wraps():
     actions = walk(mem, [general_list(four, row) for row in range(4)])
     assert actions == [[policy.pad('down')]] * 4
     walk(mem, [general_list(four, 0)])
-    assert mem['garrison']['アルマムーン'] == four
+    assert _world(mem)['garrison']['アルマムーン'] == four
 
 
 def test_a_cursor_that_stops_moving_ends_the_walk():
@@ -97,7 +98,7 @@ def test_a_cursor_that_stops_moving_ends_the_walk():
     walk(mem, pages)
     # The last row never wraps: three unchanged frames after a press end it.
     walk(mem, [window(2, 3)] * 3)
-    assert mem['garrison']['アルマムーン'] == ROSTER
+    assert _world(mem)['garrison']['アルマムーン'] == ROSTER
     (record,) = [r for r in mem['_records'] if r['decision'] == 'general_list_scanned']
     assert record['observed_metric']['end'] == 'stalled'
 
@@ -117,7 +118,7 @@ def test_g1075_a_hidden_recruit_goes_to_the_season_king_site():
 
     walk(mem, [page(0, 0), page(0, 1), page(0, 2), page(0, 3), page(1, 3), page(2, 3)])
     (actions,) = walk(mem, [page(0, 0)])
-    assert mem['garrison']['アルマムーン'] == home
+    assert _world(mem)['garrison']['アルマムーン'] == home
     # アポロン (74/14, egg) is the strongest egg holder and leaves the hero four.
     assert actions == [policy.pad('down')]
     assert mem['general_override']['4-B2'] == 'アポロン'
@@ -132,7 +133,7 @@ def test_a_dropped_dakuten_in_the_walk_is_folded_back_to_the_roster():
     for actions in walk(mem, pages):
         assert actions == [policy.pad('down')]
     walk(mem, [window(0, 0)])
-    assert mem['garrison']['アルマムーン'] == ROSTER
+    assert _world(mem)['garrison']['アルマムーン'] == ROSTER
 
 
 def boss_site_memory():
@@ -159,7 +160,7 @@ def test_a_dropped_dakuten_in_the_walk_does_not_hold_a_boss_sortie():
     (actions,) = walk(mem, [general_list(HOME[0:4], 0)])
     # The walked list folds back to the roster; the アポロン pick keeps moving.
     assert actions == [policy.pad('down')]
-    assert mem['garrison']['アルマムーン'] == HOME
+    assert _world(mem)['garrison']['アルマムーン'] == HOME
     held = [r for r in mem['_records']
             if r.get('reason') == '出撃一覧の本人・カーソルを確認できないため保留']
     assert not held
@@ -182,7 +183,7 @@ def test_a_completed_roster_settles_a_blind_launch_probe():
     """g1133 2026-11-05: chapter 6's Y view drew units as portraits, so the
     launch probe could never see the committed unit; the source roster is the
     evidence that settles it."""
-    from docich.hanjuku.state.regions import flow as _flow
+    from docich.hanjuku.state.regions import world as _world, flow as _flow
     mem = memory()
     mem['orders']['1-A3'] = 'launched'
     mem['sorties'] = {'1-A3': {'general': 'ゼウス', 'source': 'アルマムーン',
@@ -211,7 +212,7 @@ def test_a_completed_roster_still_listing_him_rolls_the_launch_back():
     _flow(mem)['launch_probe'] = {'1-A3': {
         'general': 'ゼウス', 'source': 'アルマムーン', 'target': 'スペンソニア',
         'reads': 3, 'baseline': [], 'blind': True, 'tick': 400}}
-    mem['garrison'] = {'アルマムーン': ['ゼウス', 'ヴィーナス']}
+    _world(mem)['garrison'] = {'アルマムーン': ['ゼウス', 'ヴィーナス']}
     mem['general_list_scan'] = {'step': '1-C1', 'castle': 'アルマムーン',
                                 'end': 'wrapped', 'names': ROSTER, 'presses': 6,
                                 'tick': mem['tick']}

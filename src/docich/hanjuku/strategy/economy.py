@@ -5,6 +5,7 @@ priority and the chikujou reserve. These functions decide amounts and
 priorities; the month/shop flows carry them out through the menus.
 """
 from __future__ import annotations
+from ..state.regions import world as _world
 
 from ... import hanjuku_chart as chart
 from ...hanjuku_egg_reference import general_max_hp
@@ -508,7 +509,7 @@ def _garrison_lower_bound(mem):
     shortage without claiming a complete roster (owner 2026-11-06: keep
     recruiting while cash and wage headroom allow).
     """
-    garrison = mem.get('garrison')
+    garrison = _world(mem).get('garrison')
     if not isinstance(garrison, dict):
         return None
     names = set()
@@ -770,7 +771,7 @@ def _recruit_shortage(mem):
             return None
     return {'available_observed': names, 'count_lower_bound': count,
             'target': target, 'total_roster': count,
-            'garrison': mem.get('garrison') or {}, 'placement': 'observed_only'}
+            'garrison': _world(mem).get('garrison') or {}, 'placement': 'observed_only'}
 
 
 def _stop_uneconomic_recruit(mem, shop):
@@ -840,8 +841,8 @@ def _general_repair_targets(mem):
             targets.append(name)
             continue
         if len(owned) == 1 and not any(
-                name in (mem.get('garrison') or {}).get(c, [])
-                and len((mem.get('garrison') or {}).get(c, [])) > 1 for c in owned):
+                name in (_world(mem).get('garrison') or {}).get(c, [])
+                and len((_world(mem).get('garrison') or {}).get(c, [])) > 1 for c in owned):
             continue  # keep the last castle's sole defender; dispatch rechecks it too
         targets.append(name)
     return sorted(targets)
@@ -1336,7 +1337,7 @@ def _chikujou_candidates(mem):
     owned = _owned(mem)
     if mem.get('home_lost'):
         owned.discard(home)  # also protect a hotloaded stale captured-home record
-    garrison = mem.get('garrison') or {}
+    garrison = _world(mem).get('garrison') or {}
     names = [c for c in chart.CASTLE_NAMES.get(chapter, ())
              if c in owned and not (c in garrison and garrison[c] == [])]
     names.sort(key=lambda c: (c != home, not bool(garrison.get(c))))

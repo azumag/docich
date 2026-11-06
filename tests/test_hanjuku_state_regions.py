@@ -127,3 +127,8 @@ def test_migrated_departure_and_recall_keys_live_in_their_regions():
     # W2: retired_sorties も world 領域へ実移行。
     assert KEY_OWNERSHIP['retired_sorties']['region'] == WORLD
     assert KEY_OWNERSHIP['retired_sorties']['migrated'] is True
+    # W3: garrison と派生2キーも world 領域へ実移行（DSH ①②同梱可）。
+    for key in ('garrison', 'garrison_observed_at', 'general_location_unknown'):
+        assert KEY_OWNERSHIP[key]['region'] == WORLD
+        assert KEY_OWNERSHIP[key]['lifetime'] == 'chapter'
+        assert KEY_OWNERSHIP[key]['migrated'] is True

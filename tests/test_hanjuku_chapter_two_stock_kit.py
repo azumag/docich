@@ -9,6 +9,7 @@ from docich import hanjuku_chart as chart
 from docich import hanjuku_policy as p
 from docich.hanjuku_pixels import read_png
 from docich.hanjuku_screen import parse, Screen, Battle
+from docich.hanjuku.state.regions import world as _world
 
 F = Path(__file__).parent / 'fixtures' / 'hanjuku'
 KIT = ['イッテツーン', 'バルムンク', 'バルムンク']
@@ -204,7 +205,7 @@ def test_broken_hero_is_replaced_by_a_fit_companion_and_never_sent():
 
     The hero's own broken egg still never licenses sending the hero himself.
     """
-    mem = memory(); mem['garrison'] = {'スペランザ': ['どうし', 'シェーブル']}
+    mem = memory(); _world(mem)['garrison'] = {'スペランザ': ['どうし', 'シェーブル']}
     mem['house_eggs'] = {'どうし': {'broken': True}}
     mem['captured'] = [n for n in chart.castles(2) if n not in ('アルマムーン', 'ボス')]
     assert p._hero_source_alternative(order(), mem)

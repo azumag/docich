@@ -14,6 +14,7 @@ from docich import hanjuku_policy as p
 from docich.hanjuku import orchestrator
 from docich.hanjuku.strategy import edition
 from test_hanjuku_chart_bot import Canvas, name_screen
+from docich.hanjuku.state.regions import world as _world
 
 
 def test_setting_and_resolve_fall_back_to_speedrun():
@@ -61,7 +62,7 @@ def test_steady_base_advance_keeps_a_defender_at_its_source():
     order = _base_advance()
     mem = _sole_defender_memory(chart_edition='steady')
     assert p._source_spare_missing(order, mem) is True
-    mem['garrison']['キカンドン'] = ['ゼウス', 'ミント']
+    _world(mem)['garrison']['キカンドン'] = ['ゼウス', 'ミント']
     assert p._source_spare_missing(order, mem) is False
 
 

@@ -42,7 +42,7 @@ def sent(mem, a_inputs, trace=None):
 
 def assert_reserved(mem):
     assert mem['orders']['1-A3'] == 'pending'
-    assert mem['garrison']['カストーラ'] == ['ゼウス', 'ヴィーナス']
+    assert _world(mem)['garrison']['カストーラ'] == ['ゼウス', 'ヴィーナス']
     assert not mem.get('sorties') and not _world(mem).get('launched_orders')
 
 
@@ -61,7 +61,7 @@ def test_picker_closed_without_a_send_is_an_unconfirmed_departure():
     assert mem['orders']['1-A3'] == 'launched_unconfirmed'
     assert mem['sorties']['1-A3']['status'] == 'launched_unconfirmed'
     assert 'departure_request' not in _flow(mem)
-    assert mem['garrison']['カストーラ'] == ['ゼウス', 'ヴィーナス']
+    assert _world(mem)['garrison']['カストーラ'] == ['ゼウス', 'ヴィーナス']
 
 
 def test_journaled_send_and_closed_picker_commit_the_fixed_departure():
@@ -73,7 +73,7 @@ def test_journaled_send_and_closed_picker_commit_the_fixed_departure():
     assert mem['sorties']['1-A3']['status'] == 'en_route'
     assert mem['sorties']['1-A3']['target'] == 'スペンソニア'
     assert _world(mem)['launched_orders']['1-A3']['general'] == 'ゼウス'
-    assert mem['garrison']['カストーラ'] == ['ヴィーナス']
+    assert _world(mem)['garrison']['カストーラ'] == ['ヴィーナス']
     assert 'departure_request' not in _flow(mem)
 
 
@@ -131,7 +131,7 @@ def test_released_request_cycles_are_bounded_then_fail():
         sent(mem, 0)
         assert p.target_step(TARGET, mem, None) in ([], [p.pad('b')])
     assert mem['orders']['1-A3'] == 'failed'
-    assert mem['garrison']['カストーラ'] == ['ゼウス', 'ヴィーナス']
+    assert _world(mem)['garrison']['カストーラ'] == ['ゼウス', 'ヴィーナス']
 
 
 WORLD = Screen([], None, '', kind='world_map')
@@ -175,7 +175,7 @@ def test_new_marker_near_source_confirms_launch(monkeypatch):
     assert '1-A3' not in (_flow(mem).get('launch_probe') or {})
     assert mem['orders']['1-A3'] == 'launched'
     assert mem['sorties']['1-A3']['status'] == 'en_route'
-    assert mem['garrison']['カストーラ'] == ['ヴィーナス']
+    assert _world(mem)['garrison']['カストーラ'] == ['ヴィーナス']
     assert any(r['decision'] == 'sortie_launch_confirmed' for r in mem['_records'])
 
 
@@ -189,7 +189,7 @@ def test_unseen_unit_waits_for_the_source_roster(monkeypatch):
     assert isinstance(probe, dict) and probe.get('blind') is True
     assert mem['orders']['1-A3'] == 'launched'
     assert mem['sorties']['1-A3']['status'] == 'en_route'
-    assert mem['garrison']['カストーラ'] == ['ヴィーナス']
+    assert _world(mem)['garrison']['カストーラ'] == ['ヴィーナス']
     assert not _flow(mem).get('launch_miss')
     records = [r for r in mem['_records'] if r['decision'] == 'sortie_launch_unverified']
     assert records and records[-1]['resulting_event'] == 'roster_pending'
@@ -197,7 +197,7 @@ def test_unseen_unit_waits_for_the_source_roster(monkeypatch):
     p.settle_launch_probes_from_roster(mem, 'カストーラ', ['ヴィーナス'])
     assert '1-A3' not in (_flow(mem).get('launch_probe') or {})
     assert mem['orders']['1-A3'] == 'launched'
-    assert mem['garrison']['カストーラ'] == ['ヴィーナス']
+    assert _world(mem)['garrison']['カストーラ'] == ['ヴィーナス']
     assert not _flow(mem).get('launch_miss')
     assert any(r['decision'] == 'sortie_launch_confirmed' for r in mem['_records'])
 
@@ -211,7 +211,7 @@ def test_roster_still_listing_the_general_rolls_the_launch_back(monkeypatch):
     assert mem['orders']['1-A3'] == 'pending'
     assert '1-A3' not in (mem.get('sorties') or {})
     assert '1-A3' not in (_world(mem).get('launched_orders') or {})
-    assert mem['garrison']['カストーラ'] == ['ヴィーナス', 'ゼウス']
+    assert _world(mem)['garrison']['カストーラ'] == ['ヴィーナス', 'ゼウス']
     assert _flow(mem)['launch_miss']['1-A3'] == 1
     assert any(r['decision'] == 'sortie_launch_unverified' for r in mem['_records'])
 
@@ -243,7 +243,7 @@ def test_a_blind_probe_still_rolls_back_when_the_roster_wait_expires(monkeypatch
     survey(monkeypatch, mem, [])
     assert '1-A3' not in (_flow(mem).get('launch_probe') or {})
     assert mem['orders']['1-A3'] == 'pending'
-    assert mem['garrison']['カストーラ'] == ['ヴィーナス', 'ゼウス']
+    assert _world(mem)['garrison']['カストーラ'] == ['ヴィーナス', 'ゼウス']
     assert _flow(mem)['launch_miss']['1-A3'] == 1
 
 
@@ -315,7 +315,7 @@ def test_defense_interruption_releases_reservation_without_committing():
     assert mem['orders']['1-A3'] == 'launched_unconfirmed'
     assert mem['sorties']['1-A3']['status'] == 'launched_unconfirmed'
     assert 'departure_request' not in _flow(mem)
-    assert mem['garrison']['カストーラ'] == ['ゼウス', 'ヴィーナス']
+    assert _world(mem)['garrison']['カストーラ'] == ['ゼウス', 'ヴィーナス']
 
 
 def test_finished_order_releases_stale_reservation():

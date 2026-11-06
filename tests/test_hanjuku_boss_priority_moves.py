@@ -8,6 +8,7 @@ boss is a candidate.
 """
 from docich import hanjuku_chart as chart
 from docich.hanjuku.strategy import replan
+from docich.hanjuku.state.regions import world as _world
 
 
 def memory(chapter=6, garrison_home=('どうし', 'ヘルメス', 'トレビス', 'ココット', 'マスカット')):
@@ -19,7 +20,7 @@ def memory(chapter=6, garrison_home=('どうし', 'ヘルメス', 'トレビス'
         'sorties': {}, 'launched_orders': {}, '_records': [],
         'house_eggs': {}, 'general_location_unknown': [],
     }
-    mem['garrison']['アルマムーン'] = list(garrison_home)
+    _world(mem)['garrison']['アルマムーン'] = list(garrison_home)
     return mem
 
 

@@ -1252,7 +1252,7 @@ def battle_end(mem, next_kind, *, defense_continues=False, actor_continues=False
             captured.append(castle)
         mem['lost'] = [c for c in mem.get('lost') or [] if c != castle]
         # The winner occupies the castle it took.
-        mem.setdefault('garrison', {})[castle] = []
+        _world(mem).setdefault('garrison', {})[castle] = []
         _garrison_move(mem, cur.get('ally'), target=castle)
         # Our own general stands there now: the remembered defender is stale.
         _drop_defender_record(mem, [castle])
@@ -1261,13 +1261,13 @@ def battle_end(mem, next_kind, *, defense_continues=False, actor_continues=False
             # and the joiner's win made it [ビシソワーズ]; the hero's castle
             # then looked one-general and retakes waited 37 minutes. A
             # defender is one resident, not the list: unread stays unread.
-            and (mem.get('garrison') or {}).get(castle) is not None):
+            and (_world(mem).get('garrison') or {}).get(castle) is not None):
         _garrison_move(mem, cur.get('ally'), target=castle)
     if (outcome == 'loss' and castle and cur.get('side') == 'defense' and not seasonal_boss
             and not (defense_continues or defense_retained)):
         (mem.get('castle_income') or {}).pop(STATUS_NAMES.get(castle, castle), None)
         mem['captured'] = [c for c in mem.get('captured', []) if c != castle]
-        (mem.get('garrison') or {}).pop(castle, None)
+        (_world(mem).get('garrison') or {}).pop(castle, None)
         lost = mem.setdefault('lost', [])
         if castle not in lost:
             lost.append(castle)
@@ -1288,9 +1288,9 @@ def battle_end(mem, next_kind, *, defense_continues=False, actor_continues=False
                 'evidence': 'defense_loss_capture', 'step': cur.get('step')}
     if outcome == 'loss' and (cur.get('side') == 'attack' or defense_continues or defense_retained or actor_continues) and cur.get('ally'):
         general = cur['ally']
-        for source in list(mem.get('garrison') or {}):
+        for source in list(_world(mem).get('garrison') or {}):
             _garrison_move(mem, general, source=source)
-        unknown = mem.setdefault('general_location_unknown', [])
+        unknown = _world(mem).setdefault('general_location_unknown', [])
         if general not in unknown:
             unknown.append(general)
         _record(mem, 'general_location_unclassified', general=general, castle=castle,
@@ -1554,7 +1554,7 @@ def _friendly_general(mem, general):
             items = row if isinstance(row, list) else (row,)
             if any(isinstance(s, dict) and s.get('general') == general for s in items):
                 return True
-    for present in (mem.get('garrison') or {}).values():
+    for present in (_world(mem).get('garrison') or {}).values():
         if isinstance(present, (list, tuple)) and general in present:
             return True
     for info in (_world(mem).get('launched') or {}).values():

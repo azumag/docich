@@ -5,11 +5,12 @@ the next monthly named-status scan rechecks their actual whereabouts.
 """
 from docich.hanjuku.strategy import orders as O
 from docich.hanjuku.flows import post_month_status as post
+from docich.hanjuku.state.regions import world as _world
 
 
 def memory(age, status='overdue', garrison=None):
     return {'chapter': 6, 'tick': 50000, '_records': [], 'orders': {},
-            'garrison': {'アルマムーン': [], 'アブダレ': []} if garrison is None else garrison,
+            'world': {'garrison': {'アルマムーン': [], 'アブダレ': []} if garrison is None else garrison},
             'sorties': {'A:x:M1': {'general': 'ヘルメス', 'source': 'アルマムーン',
                                    'target': 'ボス', 'status': status,
                                    'tick': 50000 - age}},
@@ -20,8 +21,8 @@ def test_a_spent_record_requires_monthly_location_verification():
     mem = memory(age=O.SPENT_SORTIE_TICKS + 1)
     O._expire_spent_sorties(mem)
     assert 'A:x:M1' not in mem['sorties']
-    assert mem['garrison']['アルマムーン'] == []
-    assert 'ヘルメス' in mem['general_location_unknown']
+    assert _world(mem)['garrison']['アルマムーン'] == []
+    assert 'ヘルメス' in _world(mem)['general_location_unknown']
     assert [r for r in mem['_records'] if r['decision'] == 'sortie_record_expired']
 
 
@@ -29,24 +30,24 @@ def test_a_recent_overdue_record_is_kept():
     mem = memory(age=O.SPENT_SORTIE_TICKS - 1)
     O._expire_spent_sorties(mem)
     assert 'A:x:M1' in mem['sorties']
-    assert mem['garrison']['アルマムーン'] == []
+    assert _world(mem)['garrison']['アルマムーン'] == []
 
 
 def test_a_general_already_placed_elsewhere_is_not_duplicated():
     mem = memory(age=O.SPENT_SORTIE_TICKS + 1)
-    mem['garrison']['アブダレ'] = ['ヘルメス']
+    _world(mem)['garrison']['アブダレ'] = ['ヘルメス']
     O._expire_spent_sorties(mem)
     assert 'A:x:M1' not in mem['sorties']
-    assert mem['garrison']['アルマムーン'] == []
-    assert mem['garrison']['アブダレ'] == []
-    assert mem['general_location_unknown'] == ['ヘルメス']
+    assert _world(mem)['garrison']['アルマムーン'] == []
+    assert _world(mem)['garrison']['アブダレ'] == []
+    assert _world(mem)['general_location_unknown'] == ['ヘルメス']
 
 
 def test_an_unread_source_does_not_invent_a_return():
     mem = memory(age=O.SPENT_SORTIE_TICKS + 1, garrison={'アルマムーン': None, 'アブダレ': []})
     O._expire_spent_sorties(mem)
-    assert mem['garrison']['アルマムーン'] is None
-    assert mem['general_location_unknown'] == ['ヘルメス']
+    assert _world(mem)['garrison']['アルマムーン'] is None
+    assert _world(mem)['general_location_unknown'] == ['ヘルメス']
 
 
 def test_a_zombie_march_is_expired_with_the_overdue_ones():
@@ -54,8 +55,8 @@ def test_a_zombie_march_is_expired_with_the_overdue_ones():
     mem = memory(age=O.SPENT_SORTIE_TICKS + 1, status='en_route')
     O._expire_spent_sorties(mem)
     assert 'A:x:M1' not in mem['sorties']
-    assert mem['garrison']['アルマムーン'] == []
-    assert mem['general_location_unknown'] == ['ヘルメス']
+    assert _world(mem)['garrison']['アルマムーン'] == []
+    assert _world(mem)['general_location_unknown'] == ['ヘルメス']
 
 
 def test_a_recent_march_is_kept():
@@ -96,7 +97,7 @@ def test_a_camp_read_after_departure_ends_the_march_early():
     mem = observed(age=200, location='camp', delta=50)
     O._expire_spent_sorties(mem)
     assert 'A:x:M1' not in mem['sorties']
-    assert 'ヘルメス' in mem['garrison']['アルマムーン']
+    assert 'ヘルメス' in _world(mem)['garrison']['アルマムーン']
     assert any(r['decision'] == 'sortie_record_observed_ended' for r in mem['_records'])
 
 
@@ -104,14 +105,14 @@ def test_a_castle_read_after_departure_ends_the_march_early():
     mem = observed(age=200, location='castle', delta=50)
     O._expire_spent_sorties(mem)
     assert 'A:x:M1' not in mem['sorties']
-    assert 'ヘルメス' in mem['garrison']['アルマムーン']
+    assert 'ヘルメス' in _world(mem)['garrison']['アルマムーン']
 
 
 def test_a_status_read_before_departure_does_not_end_the_march():
     mem = observed(age=200, location='camp', delta=-50)
     O._expire_spent_sorties(mem)
     assert 'A:x:M1' in mem['sorties']
-    assert mem['garrison']['アルマムーン'] == []
+    assert _world(mem)['garrison']['アルマムーン'] == []
 
 
 def test_a_march_reading_does_not_end_the_march():
@@ -176,14 +177,14 @@ def test_overdue_transition_marks_only_the_actor_dirty_for_next_month():
         },
         'dirty': {},
     }
-    mem['garrison']['アルマムーン'] = ['ヘルメス', 'ゼウス']
+    _world(mem)['garrison']['アルマムーン'] = ['ヘルメス', 'ゼウス']
     sortie = mem['sorties']['A:x:M1']
     sortie['status'] = 'overdue'
     O._queue_overdue_location_recheck(mem, sortie)
     O._queue_overdue_location_recheck(mem, sortie)
     assert mem['general_statuses']['dirty'] == {'ヘルメス': ['location']}
-    assert mem['garrison']['アルマムーン'] == ['ゼウス']
-    assert mem['general_location_unknown'] == ['ヘルメス']
+    assert _world(mem)['garrison']['アルマムーン'] == ['ゼウス']
+    assert _world(mem)['general_location_unknown'] == ['ヘルメス']
     assert len([r for r in mem['_records']
                 if r['decision'] == 'sortie_location_recheck_queued']) == 1
     post.arm(mem)

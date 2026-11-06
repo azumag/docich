@@ -19,7 +19,7 @@ from ..os_layer.font import UNKNOWN
 from ..os_layer.readers import CASTLE_STATUS, STATUS_NAMES
 from ..os_layer.roster import run_identity
 from ..os_layer.screen import castle_roofs
-from ..state.regions import flow as _flow
+from ..state.regions import world as _world, flow as _flow
 
 SCHEMA = chart.MAP_SCHEMA
 verified_castles = chart.verified_castles
@@ -151,7 +151,7 @@ def _ownership(mem, name, kind):
         if (name == home or was_owned) and name not in lost:
             lost.append(name)
         if was_owned:
-            (mem.get('garrison') or {}).pop(name, None)
+            (_world(mem).get('garrison') or {}).pop(name, None)
             (mem.get('castle_defenders') or {}).pop(name, None)
 
 

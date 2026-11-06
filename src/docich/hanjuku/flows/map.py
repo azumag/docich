@@ -595,7 +595,7 @@ def _home_can_send(mem):
     (issue #3417).
     """
     home = chart.home_castle(mem.get('chapter') or 0)
-    return bool((mem.get('garrison') or {}).get(home))
+    return bool((_world(mem).get('garrison') or {}).get(home))
 
 
 def _apply_select_centered(mem):
@@ -1624,7 +1624,7 @@ def _rollback_unverified_launch(mem, step, probe, markers, reason=None):
         if entry.get('step') == step:
             _world(mem)['launched'].pop(target, None)
     general, source = probe.get('general'), probe.get('source')
-    garrison = mem.get('garrison') or {}
+    garrison = _world(mem).get('garrison') or {}
     if general and isinstance(garrison.get(source), list) and general not in garrison[source]:
         garrison[source].append(general)
     observed = {'general': general, 'source': source, 'target': probe.get('target'),

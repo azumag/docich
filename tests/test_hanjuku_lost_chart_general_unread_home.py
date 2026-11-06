@@ -9,6 +9,7 @@ read at 02:31:31 for 25-9 no longer listed ココット. At 02:43:41 the monthly
 fallback sent マラコビア's only defender instead.
 """
 from docich import hanjuku_policy as policy
+from docich.hanjuku.state.regions import world as _world
 
 HOME = 'アルマムーン'
 
@@ -50,5 +51,5 @@ def test_last_month_roster_does_not_retire_the_chart_general():
 
 def test_a_read_hero_castle_still_decides_as_measured():
     mem = memory()
-    mem['garrison'][HOME] = ['どうし', 'アンディーブ', 'タピオカ']
+    _world(mem)['garrison'][HOME] = ['どうし', 'アンディーブ', 'タピオカ']
     assert retakes(mem) == []          # the hero keeps two others (owner 2026-10-29)

@@ -70,7 +70,7 @@ def test_live_spare_can_leave_and_then_no_further_attack_drains_source():
     p._garrison_move(m,'ゼウス',source='アルマムーン')
     m['sorties']={'I:retake:1':{'general':'ゼウス','target':'ジョンリギ','status':'en_route','tick':100}}
     assert not any(o['source']=='アルマムーン' for o in p.interim_candidates(m).values())
-    assert m['garrison']['アルマムーン']==['アルテミス']
+    assert _world(m)['garrison']['アルマムーン']==['アルテミス']
 
 
 def test_busy_or_unclassified_general_is_not_a_remaining_defender():
@@ -85,27 +85,27 @@ def test_unread_list_does_not_confirm_a_sortie():
 
 
 def test_old_active_card_menu_is_rechecked_after_hotload():
-    m=memory();m['garrison']['アルマムーン']=['ゼウス']
+    m=memory();_world(m)['garrison']['アルマムーン']=['ゼウス']
     assert p.deploy_step(Screen(kind='card_select',lines=[],hand=None,text=''),m)==[p.pad('b'),p.pad('b')]
 
 
 def test_chart_recapture_stays_pending_and_does_not_block_staffing(monkeypatch):
     m=memory();o=_world(m)['launched_orders'].pop('I:retake:1');o['step']='1-A1'
     m['active']='1-A1';_world(m)['launched_orders']['1-A1']=o
-    m['chart_plan']={'orders':[o]};m['garrison']['アルマムーン']=['ゼウス']
+    m['chart_plan']={'orders':[o]};_world(m)['garrison']['アルマムーン']=['ゼウス']
     monkeypatch.setattr(p,'_orders',lambda _m:(o,))
     monkeypatch.setattr(p.chart,'orders',lambda _chapter:(o,))
     assert not p._plan_pending(m)
     assert p.next_order(m) is None
     assert p.deploy_step(generals(['ゼウス']),m)==[p.pad('b'),p.pad('b')]
     assert m['orders']['1-A1']=='pending'
-    m['garrison']['アルマムーン'].append('どうし')
+    _world(m)['garrison']['アルマムーン'].append('どうし')
     assert p.next_order(m) is o
 
 
 def test_boss_waves_and_original_non_recapture_chart_remain_exempt():
     m=memory();o=p._order(m);o['target']='けっかい';o['purpose']='retake'
-    m['lost'].append('けっかい');m['garrison']['アルマムーン']=['ゼウス']
+    m['lost'].append('けっかい');_world(m)['garrison']['アルマムーン']=['ゼウス']
     assert not p._reserve_source_guard(o,m) and not p._retake_reserved(o,m)
     o['target']='ゴーメン';o['purpose']='attack';o['step']='1-A2'
     assert not p._reserve_source_guard(o,m)

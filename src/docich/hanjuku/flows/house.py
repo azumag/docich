@@ -14,7 +14,7 @@ from ..os_layer import roster as receipts
 # World facts shared with the economy strategy live in the OS layer.
 from ..os_layer.world import HOUSE_VIEW, _castle_status_after_sortie, _repair_hp_ready
 from ..strategy import goals
-from ..state.regions import flow as _flow, journal as _journal
+from ..state.regions import world as _world, flow as _flow, journal as _journal
 
 # The heart's centre and the selectable cell differ by half a view pixel
 # (four field pixels). Chapter 2's successful isolated trip used (128, 94).
@@ -343,7 +343,7 @@ def _sortie_state_sig(mem, source, general):
     purpose) had no new evidence, which is what the ≈0 gate must separate.
     """
     info = (mem.get('house_eggs') or {}).get(general) or {}
-    garrison = (mem.get('garrison') or {}).get(source)
+    garrison = (_world(mem).get('garrison') or {}).get(source)
     return [info.get('hp'), info.get('location'), mem.get('gold'),
             len(garrison) if isinstance(garrison, list) else None]
 
@@ -600,7 +600,7 @@ def _record_castle_location(mem, name, castle, evidence=None):
     """Bind one observed general to a castle without inventing a roster."""
     if not isinstance(name, str) or not name or not isinstance(castle, str) or not castle:
         return
-    garrison = mem.setdefault('garrison', {})
+    garrison = _world(mem).setdefault('garrison', {})
     for other, names in list(garrison.items()):
         if other != castle and isinstance(names, list) and name in names:
             names.remove(name)
@@ -615,7 +615,7 @@ def _record_castle_location(mem, name, castle, evidence=None):
         info['location_observed'] = True
         info['castle'] = castle
         receipts.status_observed(mem, info)
-    unknown = mem.get('general_location_unknown')
+    unknown = _world(mem).get('general_location_unknown')
     if isinstance(unknown, list) and name in unknown:
         unknown.remove(name)
     _record(mem, 'general_castle_observed', general=name, castle=castle,
@@ -872,7 +872,7 @@ def _next_general(mem):
         return
     if info.get('location') == 'castle':
         owned = _owned(mem) & chart.castles(mem['chapter']).keys()
-        known = [c for c in sorted(owned) if name in (mem.get('garrison') or {}).get(c, [])]
+        known = [c for c in sorted(owned) if name in (_world(mem).get('garrison') or {}).get(c, [])]
         state['castles'] = known + [c for c in sorted(owned) if c not in known]
         _phase(state, 'find_castle')
     else:
@@ -1862,7 +1862,7 @@ def _castle_check_step(screen, mem, frame):
                     observed_metric={'count': count[1] if count else None, 'names': names},
                     reason='城ステータスの在城人数・氏名を完全に読めないため一覧を更新せず閉じる')
         else:
-            mem.setdefault('garrison', {})[castle] = names
+            _world(mem).setdefault('garrison', {})[castle] = names
             if name in names:
                 _record_castle_location(mem, name, castle,
                                         {'source': 'castle_status', 'members': names[:8]})
@@ -2020,7 +2020,7 @@ def _repair_step(screen, mem, frame):
             names = _names_at(screen, 144, 95, 159)
             if not count or len(names) != int(count[1]) or any(UNKNOWN in g for g in names):
                 return _exit(mem, '出撃元の在城人数を完全に読めないため派遣しない')
-            mem.setdefault('garrison', {})[source] = names
+            _world(mem).setdefault('garrison', {})[source] = names
             if name not in names:
                 _phase(state, 'find_castle')
             elif len(names) < 2 and not _sole_defender_repair_due(mem, name, source):

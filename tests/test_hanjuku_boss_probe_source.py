@@ -6,6 +6,7 @@ the roster), and the deploy step sends whoever it finds at the boss.
 """
 from docich import hanjuku_chart as chart
 from docich.hanjuku.strategy import replan
+from docich.hanjuku.state.regions import world as _world
 
 ANY = 'しょうぐん'
 
@@ -20,7 +21,7 @@ def memory(garrison=None):
         'house_eggs': {}, 'general_location_unknown': [],
     }
     if garrison:
-        mem['garrison'].update(garrison)
+        _world(mem)['garrison'].update(garrison)
     return mem
 
 
@@ -45,9 +46,9 @@ def test_a_known_general_is_sent_instead_of_probing():
 
 def test_an_unread_castle_is_not_probed_while_other_generals_are_known():
     mem = memory({'カバルッサ': ['ココット']})
-    for c in mem['garrison']:
+    for c in _world(mem)['garrison']:
         if c != 'カバルッサ':
-            mem['garrison'][c] = None
+            _world(mem)['garrison'][c] = None
     assert not [o for o in boss_waves(mem) if o.get('source_probe')]
 
 

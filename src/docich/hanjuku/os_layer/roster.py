@@ -6,6 +6,7 @@ import os
 import re
 
 from ..identity import run_identity
+from ..state.regions import world as _world
 
 MAX_GENERALS = 32
 # hanjuku_house._names_at reads the name column at y=39..151 in steps of 16,
@@ -287,7 +288,7 @@ def _purge_verified_departure(mem, name):
         for key in ('pending_joins', 'suspected_departures'):
             if isinstance(cache.get(key), list):
                 cache[key] = [g for g in cache[key] if g != name]
-    for residents in (mem.get('garrison') or {}).values():
+    for residents in (_world(mem).get('garrison') or {}).values():
         if isinstance(residents, list) and name in residents:
             residents.remove(name)
     for key in ('house_eggs', 'egg_types', 'egg_uses'):
@@ -351,7 +352,7 @@ def forget_defeated(mem, name):
     survey['defeated'].remove(name)
     record_departure(mem, name)  # subtract; a confirmed departure is not 不明
     _purge_verified_departure(mem, name)
-    unknown = mem.get('general_location_unknown')
+    unknown = _world(mem).get('general_location_unknown')
     if isinstance(unknown, list) and name in unknown:
         unknown.remove(name)
     _remember_complete(mem, survey['receipt'])  # the fresh list no longer holds them
@@ -667,7 +668,7 @@ def _update_persistent_observation(mem, info):
         row.update(location='unknown')
         row.pop('castle', None)
         stale.add('location')
-        for residents in (mem.get('garrison') or {}).values():
+        for residents in (_world(mem).get('garrison') or {}).values():
             if isinstance(residents, list) and name in residents:
                 residents.remove(name)
     if stale:

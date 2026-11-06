@@ -5,6 +5,7 @@ from docich.hanjuku.flows import house, month
 from docich.hanjuku.strategy import campaign, goals
 from docich.hanjuku.strategy.goals import GOAL_LIMIT, STARVE_ATTEMPTS
 from docich.hanjuku_screen import Screen
+from docich.hanjuku.state.regions import world as _world
 
 
 def mem(**extra):
@@ -59,7 +60,7 @@ def test_egg_recover_goal_survives_an_active_boss_sortie():
     goals.refresh(m)
     assert 'egg_recover' in kinds(m)
     # An en-route march already covers an empty castle: no duplicate move goal.
-    m['garrison']['ゴーメン'] = []
+    _world(m)['garrison']['ゴーメン'] = []
     goals.refresh(m)
     assert 'move' not in kinds(m)
     assert 'egg_recover' in kinds(m)
@@ -169,7 +170,7 @@ def test_repair_goal_sleeps_after_attempt_limit_until_location_changes():
     assert goal['sleep_signature'] == ['castle', '38-3', False, None]
     assert len(records(m, 'repair_goal_sleeping')) == 1
     assert goals.repair_due(m) is False
-    m['garrison']['アルマムーン'].append('ソーピニヨン')
+    _world(m)['garrison']['アルマムーン'].append('ソーピニヨン')
     assert goals.repair_due(m) is True
     assert goal['attempts'] == 0
     assert 'sleep_signature' not in goal

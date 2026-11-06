@@ -6,6 +6,7 @@ castles, marching generals, the hero's castle). These are observations, not
 plans: the strategy layer reads them to choose orders.
 """
 from __future__ import annotations
+from ..state.regions import world as _world
 
 from .screen import Screen, castle_roofs
 from .pixels import Frame
@@ -244,7 +245,7 @@ def observe_owners(mem, roofs, cam):
             lost = mem.setdefault('lost', [])
             if castle not in lost:
                 lost.append(castle)
-            (mem.get('garrison') or {}).pop(castle, None)
+            (_world(mem).get('garrison') or {}).pop(castle, None)
             # Ownership changed hands: the remembered defender is stale.
             (mem.get('castle_defenders') or {}).pop(castle, None)
             _record(mem, 'castle_lost_observed', castle=castle,
@@ -369,7 +370,7 @@ def _apply_world_flags(mem, flags):
         lost = mem.setdefault('lost', [])
         if home not in lost:
             lost.insert(0, home)
-        (mem.get('garrison') or {}).pop(home, None)
+        (_world(mem).get('garrison') or {}).pop(home, None)
     elif home_owner == 'own' and (mem.get('home_lost') or home in (mem.get('lost') or [])):
         # A defense loss lists home in lost without home_lost; the own flag
         # clears that too (g1075 14:24: アルマムーン own, still lost).
@@ -384,7 +385,7 @@ def _apply_world_flags(mem, flags):
             lost = mem.setdefault('lost', [])
             if castle not in lost:
                 lost.append(castle)
-            (mem.get('garrison') or {}).pop(castle, None)
+            (_world(mem).get('garrison') or {}).pop(castle, None)
             # Ownership changed hands: the remembered defender is stale.
             (mem.get('castle_defenders') or {}).pop(castle, None)
             changed.append(('lost', castle))
@@ -431,7 +432,7 @@ def _hero_castle(mem):
         return None
     owned = _owned(mem)
     castles = chart.castles(mem.get('chapter') or 0)
-    for castle, present in (mem.get('garrison') or {}).items():
+    for castle, present in (_world(mem).get('garrison') or {}).items():
         if castle in owned and castle in castles and NAME in (present or ()):
             return castle
     return None

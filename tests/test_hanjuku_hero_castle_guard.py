@@ -9,6 +9,7 @@ import pytest
 
 from docich import hanjuku_chart as chart, hanjuku_chart_adjust as chart_adjust
 from docich import hanjuku_policy as policy
+from docich.hanjuku.state.regions import world as _world
 
 HERO = chart.HERO
 
@@ -96,6 +97,6 @@ def test_interim_from_our_only_castle_keeps_the_spare():
            'garrison': {home: [HERO, 'ゼウス']}}
     assert not [o for o in policy.interim_candidates(mem).values() if o['source'] == home]
     mem['captured'] = ['キカンドン']
-    mem['garrison']['キカンドン'] = ['ココット']
+    _world(mem)['garrison']['キカンドン'] = ['ココット']
     assert all(o['source'] != home or o['general'] == policy.MOVE_ANY_GENERAL
                for o in policy.interim_candidates(mem).values())

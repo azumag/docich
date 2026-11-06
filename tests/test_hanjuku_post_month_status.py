@@ -7,6 +7,7 @@ from docich.hanjuku.os_layer.commands import pad
 from docich.hanjuku.os_layer.screen import Screen, parse
 
 from test_hanjuku_house import Canvas, roster, status
+from docich.hanjuku.state.regions import world as _world
 
 
 def memory(**fields):
@@ -97,8 +98,8 @@ def test_castle_location_is_confirmed_by_native_status_name():
                  statuses={'ゼウス': {'location': 'castle'}})
     with patch.object(post.map_registration, '_label', return_value='アルマムーン'):
         assert post.step(Screen([], None, '', kind='castle_info'), mem, None) == [pad('b')]
-    assert mem['garrison']['アルマムーン'] == ['ゼウス']
-    assert 'ゼウス' not in mem['garrison']['グリン']
+    assert _world(mem)['garrison']['アルマムーン'] == ['ゼウス']
+    assert 'ゼウス' not in _world(mem)['garrison']['グリン']
 
 
 def test_repair_uses_roster_select_then_verified_castle_entry():
@@ -151,7 +152,7 @@ def test_select_locate_opens_castle_even_when_roof_is_hidden_by_cursor():
     with patch.object(post, '_roof_under_cursor', return_value=False):
         assert post.step(Screen([], None, '', kind='map'), mem, None) == [pad('a')]
     assert state['stage'] == 'locate_open'
-    assert not mem.get('general_location_unknown')
+    assert not _world(mem).get('general_location_unknown')
     assert post.step(Screen([], None, '', kind='castle_menu'), mem, None) == []
     assert state['stage'] == 'locate_info'
     menu = Screen([], (40, 184), 'ステータス', kind='castle_menu')
@@ -160,7 +161,7 @@ def test_select_locate_opens_castle_even_when_roof_is_hidden_by_cursor():
     with patch.object(post.map_registration, '_label', return_value='アルマムーン'):
         assert post.step(Screen([], None, '', kind='castle_menu'), mem, None) == [pad('b')]
     assert state['stage'] == 'process'
-    assert mem['garrison']['アルマムーン'] == ['ゼウス']
+    assert _world(mem)['garrison']['アルマムーン'] == ['ゼウス']
     assert state['statuses']['ゼウス']['castle_evidence'] == 'native_castle_name'
 
 
@@ -196,9 +197,9 @@ def test_native_status_panel_classified_as_menu_still_confirms_location():
     assert panel.kind == 'castle_menu'
     assert post.step(panel, mem, None) == [pad('b')]
     assert state['stage'] == 'process'
-    assert mem['garrison']['アルマムーン'] == ['ゼウス']
+    assert _world(mem)['garrison']['アルマムーン'] == ['ゼウス']
     assert state['statuses']['ゼウス']['castle_evidence'] == 'native_castle_name'
-    assert not mem.get('general_location_unknown')
+    assert not _world(mem).get('general_location_unknown')
 
 
 def test_castle_menu_header_cannot_be_mistaken_for_verified_status():
@@ -210,7 +211,7 @@ def test_castle_menu_header_cannot_be_mistaken_for_verified_status():
     header = Screen([], None, 'しゅつげきステータス', kind='castle_menu')
     assert post.step(header, mem, None) == []
     assert state['stage'] == 'locate_info'
-    assert 'アルマムーン' not in mem.get('garrison', {})
+    assert 'アルマムーン' not in _world(mem).get('garrison', {})
 
 
 def test_missing_castle_status_retries_same_general_before_advancing():
@@ -224,7 +225,7 @@ def test_missing_castle_status_retries_same_general_before_advancing():
     assert state['stage'] == 'locate_reset'
     assert state['job']['name'] == 'ゼウス'
     assert state['locate_retries'] == 1
-    assert not mem.get('general_location_unknown')
+    assert not _world(mem).get('general_location_unknown')
     assert post.step(Screen([], None, '', kind='map'), mem, None) == [pad('x')]
     assert state['stage'] == 'task_menu'
     assert state['job']['name'] == 'ゼウス'
@@ -234,7 +235,7 @@ def test_missing_castle_status_retries_same_general_before_advancing():
                  locate_retries=post.LOCATE_RETRIES)
     assert post.step(Screen([], None, '', kind='castle_menu'), mem, None) == [pad('b')]
     assert state['stage'] == 'process'
-    assert mem['general_location_unknown'] == ['ゼウス']
+    assert _world(mem)['general_location_unknown'] == ['ゼウス']
     assert 'castle' not in state['statuses']['ゼウス']
 
 
@@ -302,7 +303,7 @@ def test_roster_waits_for_transient_marker_then_records_castle_without_select():
     assert post.step(parse(status('どうし')), mem, None) == [pad('b')]
     assert state['statuses']['どうし']['castle'] == 'キカンドン'
     assert state['statuses']['どうし']['castle_evidence'] == 'roster_triangle'
-    assert mem['garrison']['キカンドン'] == ['どうし']
+    assert _world(mem)['garrison']['キカンドン'] == ['どうし']
     assert state['tasks'] == []
 
 
@@ -518,10 +519,10 @@ def test_defeated_missing_general_pruned_only_after_full_roster_walk():
     state['stage'] = 'roster'
     only = parse(roster(names=('どうし',), selected=0))
     assert post.step(only, mem, None) == [pad('down')]
-    assert 'ゼウス' in mem['garrison']['アルマムーン']
+    assert 'ゼウス' in _world(mem)['garrison']['アルマムーン']
     assert post.step(only, mem, None) == [pad('b')]
     assert 'ゼウス' not in mem['general_statuses']['statuses']
-    assert 'ゼウス' not in mem['garrison']['アルマムーン']
+    assert 'ゼウス' not in _world(mem)['garrison']['アルマムーン']
 
 
 def test_old_run_identity_never_reuses_cached_status():
@@ -544,7 +545,7 @@ def test_scrolled_roster_cannot_discard_unseen_cached_general():
     tail = parse(roster(names=('ゼウス',), selected=0))
     assert post.step(tail, mem, None) == [pad('up')]
     assert 'どうし' in mem['general_statuses']['statuses']
-    assert 'どうし' in mem['garrison']['アルマムーン']
+    assert 'どうし' in _world(mem)['garrison']['アルマムーン']
     assert not state.get('top_confirmed')
 
 
@@ -559,7 +560,7 @@ def test_existing_defeat_verification_also_purges_persistent_status_and_garrison
     assert 'ゼウス' in mem['general_statuses']['statuses']
     assert receipts.forget_defeated(mem, 'ゼウス')
     assert 'ゼウス' not in mem['general_statuses']['statuses']
-    assert 'ゼウス' not in mem['garrison']['アルマムーン']
+    assert 'ゼウス' not in _world(mem)['garrison']['アルマムーン']
     assert 'ゼウス' not in mem['house_eggs']
 
 
@@ -577,7 +578,7 @@ def test_independent_repair_status_updates_only_persistent_egg_and_hp_fields():
     assert cache['dirty'] == {'ゼウス': ['location']}
     assert cache['statuses']['ゼウス']['location'] == 'unknown'
     assert 'castle' not in cache['statuses']['ゼウス']
-    assert 'ゼウス' not in mem['garrison']['アルマムーン']
+    assert 'ゼウス' not in _world(mem)['garrison']['アルマムーン']
 
 
 def test_boss_adjacent_camp_is_not_a_monthly_recall_task():

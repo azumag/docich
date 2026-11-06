@@ -5,7 +5,7 @@ source castle and general, selects the planned cards and confirms the sortie,
 holding or cancelling when the visible menu contradicts the plan.
 """
 from __future__ import annotations
-from ..state.regions import flow as _flow, journal as _journal
+from ..state.regions import world as _world, flow as _flow, journal as _journal
 
 import re
 import time
@@ -829,11 +829,11 @@ def _observe_garrison(screen, mem, order):
     castle = _source(order, mem)
     if present is None or not castle:
         return
-    garrison = mem.setdefault('garrison', {})
+    garrison = _world(mem).setdefault('garrison', {})
     # Display-only evidence: decisions never consult this wall-clock field.
-    mem.setdefault('garrison_observed_at', {})[castle] = time.time()
+    _world(mem).setdefault('garrison_observed_at', {})[castle] = time.time()
     visible = set(_present_generals(screen) or ())
-    mem['general_location_unknown'] = [g for g in mem.get('general_location_unknown') or ()
+    _world(mem)['general_location_unknown'] = [g for g in _world(mem).get('general_location_unknown') or ()
                                        if g not in present
                                        or (g in visible and not _general_visible(screen, g))]
     verification = mem.get('recruit_verification') or {}
@@ -1008,7 +1008,7 @@ def _keep_sortie_defender(screen, mem, order):
     present = _listed_generals(screen, mem, order)
     if present is None:
         return _hold_deploy(screen, mem, order, '守備を残せる将軍一覧を読めないため出撃を保留')
-    unavailable = _en_route(mem)[0] | set(mem.get('general_location_unknown') or ())
+    unavailable = _en_route(mem)[0] | set(_world(mem).get('general_location_unknown') or ())
     available = set(present) - unavailable
     if len(available) >= 2:
         (mem.get('source_location_rechecks') or {}).pop(_source(order, mem), None)
@@ -1048,7 +1048,7 @@ def _keep_hero_guard(screen, mem, order):
     present = _listed_generals(screen, mem, order)
     if present is None:
         return _hold_deploy(screen, mem, order, '主人公の城の守備人数を数える将軍一覧を読めないため出撃を保留')
-    unavailable = _en_route(mem)[0] | set(mem.get('general_location_unknown') or ())
+    unavailable = _en_route(mem)[0] | set(_world(mem).get('general_location_unknown') or ())
     available = set(present) - unavailable
     general = order['general']
     if general == NAME or order.get('source_probe') is True:
@@ -1342,10 +1342,10 @@ def deploy_step(screen: Screen, mem):
             {'target': order['target']})
     if kind != 'general_list' and _source_spare_missing(order, mem, allow_probe=kind == 'castle_menu'):
         _record_source_defender_cancel(mem, order,
-            present=(mem.get('garrison') or {}).get(_source(order, mem)))
+            present=(_world(mem).get('garrison') or {}).get(_source(order, mem)))
         return _hold_guarded_sortie(mem, order, 'sortie_held_source_defender',
             '出撃元の記録で待機将軍を1人残せないため出撃を取り消す',
-            {'present': (mem.get('garrison') or {}).get(_source(order, mem))})
+            {'present': (_world(mem).get('garrison') or {}).get(_source(order, mem))})
     if kind == 'castle_menu':
         checked = _check_source_castle(screen, mem, order)
         if checked is not None:
