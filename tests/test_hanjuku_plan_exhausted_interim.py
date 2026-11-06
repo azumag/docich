@@ -97,9 +97,10 @@ def test_an_exhausted_adopted_plan_regenerates_only_after_it_becomes_unstartable
     assert mem['chart_plan']['source'] == 'jev'
     assert interim(mem) is None
 
-    # The same adopted instruction ceases to be executable (the actor left).
-    mem['garrison'][HOME].remove('ゼウス')
-    mem['garrison'][HOME].append('アポロン')
+    # The source castle was vacated, while the army is available elsewhere.
+    # A stale actor name alone is not enough to invalidate _plan_pending.
+    mem['garrison'][HOME] = []
+    mem['garrison']['カストーラ'] = list(IDLE)
     assert replan._plan_pending(mem) is False
     replan._off_chart(mem)
     assert mem['chart_plan']['source'] == 'mechanical'
