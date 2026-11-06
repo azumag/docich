@@ -505,7 +505,7 @@ SELECT_EVERY = 40              # observations between hero-castle SELECTs
 
 ALIGN_RADIUS = 28              # screen px: a roof this close to the cursor after a Y jump
 ALIGN_TOL = 3                  # cursor-to-roof-target distance that selects the castle
-ALIGN_LIMIT = 4                # aligning steps before the jump is redone
+ALIGN_LIMIT = 2                # aligning steps before the jump is redone
 ALIGN_STALL = 2                # same-place corrections before the servo gives up
 
 
