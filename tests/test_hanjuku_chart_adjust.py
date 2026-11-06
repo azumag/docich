@@ -1165,7 +1165,12 @@ def test_worker_prompts_with_garrisons_and_drops_orders_whose_general_is_elsewhe
     mem.update(tick=1500, lost=['ジョンリギ'],
                garrison={'スペンソニア': [chart.HERO, 'アテナ'], 'カストーラ': ['ヴィーナス']},
                sorties={'I:1': {'general': 'ゼウス', 'target': 'スペンソニア', 'status': 'en_route', 'tick': 1450},
-                        'I:0': {'general': 'ココット', 'target': 'ゴーメン', 'status': 'en_route', 'tick': 1}})
+                        'I:0': {'general': 'ココット', 'target': 'ゴーメン', 'status': 'en_route', 'tick': 1}},
+               # An independently observed camp ends the old ココット sortie;
+               # the chart-worker test is about source/roster validation, not
+               # the separate monthly overdue-location hold.
+               general_statuses={'statuses': {'ココット': {
+                   'location': 'camp', 'location_observed': True, 'tick': 2}}})
     policy.map_step(map_screen(), mem, FRAME)
     [record] = decisions(mem, 'chart_adjust_request')
     assert record['garrison'] == {'カストーラ': ['ヴィーナス'], 'スペンソニア': [chart.HERO, 'アテナ']}
@@ -1405,7 +1410,12 @@ def test_g514_adopted_self_locked_plan_reopens_existing_retake_candidates(monkey
     assert order['source_probe'] is True
     assert order['after'] is None
     assert mem['captured'] == before['captured'] and mem['lost'] == before['lost']
-    assert mem['garrison'] == before['garrison']
+    # Stale pre-snapshot sortie actors are no longer presumed to reside in
+    # those castles just because a tracking window elapsed. They wait for
+    # the monthly named location verification instead.
+    for castle in ('カストーラ', 'キカンドン', 'ジョンリギ'):
+        assert mem['garrison'][castle] == []
+    assert {'ココット', 'ビーツ', 'チコリ'} <= set(mem['general_location_unknown'])
     assert mem.get('house') == before.get('house')  # an in-progress scan remains owned by house
     assert not decisions(mem, 'chart_adjust_applied')  # no duplicate adoption
 

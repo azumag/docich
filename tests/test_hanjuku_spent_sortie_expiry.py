@@ -1,11 +1,10 @@
-"""Owner 2026-11-05: forget marches that can no longer arrive.
+"""Overdue marches must not invent a source-castle return.
 
-g1133 kept 46 overdue records, so every general stayed "out" forever and the
-plan had no spare to send at the boss. A record past the bindable window is
-dropped and its general goes back onto the source roster; the next castle
-menu read replaces that guess with the measured list.
+Expiry drops an unbindable record but makes the general's location dirty;
+the next monthly named-status scan rechecks their actual whereabouts.
 """
 from docich.hanjuku.strategy import orders as O
+from docich.hanjuku.flows import post_month_status as post
 
 
 def memory(age, status='overdue', garrison=None):
@@ -17,11 +16,12 @@ def memory(age, status='overdue', garrison=None):
             'launched_orders': {}}
 
 
-def test_a_spent_record_is_dropped_and_its_general_returns():
+def test_a_spent_record_requires_monthly_location_verification():
     mem = memory(age=O.SPENT_SORTIE_TICKS + 1)
     O._expire_spent_sorties(mem)
     assert 'A:x:M1' not in mem['sorties']
-    assert 'ヘルメス' in mem['garrison']['アルマムーン']
+    assert mem['garrison']['アルマムーン'] == []
+    assert 'ヘルメス' in mem['general_location_unknown']
     assert [r for r in mem['_records'] if r['decision'] == 'sortie_record_expired']
 
 
@@ -38,24 +38,24 @@ def test_a_general_already_placed_elsewhere_is_not_duplicated():
     O._expire_spent_sorties(mem)
     assert 'A:x:M1' not in mem['sorties']
     assert mem['garrison']['アルマムーン'] == []
-    assert mem['garrison']['アブダレ'] == ['ヘルメス']
+    assert mem['garrison']['アブダレ'] == []
+    assert mem['general_location_unknown'] == ['ヘルメス']
 
 
-def test_an_unread_source_gets_the_general_back():
-    # A castle whose list was never read is stored as None; the returned
-    # general is a guess the next castle menu read replaces.
+def test_an_unread_source_does_not_invent_a_return():
     mem = memory(age=O.SPENT_SORTIE_TICKS + 1, garrison={'アルマムーン': None, 'アブダレ': []})
     O._expire_spent_sorties(mem)
-    assert mem['garrison']['アルマムーン'] == ['ヘルメス']
+    assert mem['garrison']['アルマムーン'] is None
+    assert mem['general_location_unknown'] == ['ヘルメス']
 
 
 def test_a_zombie_march_is_expired_with_the_overdue_ones():
-    # g1133 2026-11-05: グレナデン stayed launched_unconfirmed for 5115
-    # observations; a march cannot still be running past the window.
+    # Expiry releases the record, but not the unverified general.
     mem = memory(age=O.SPENT_SORTIE_TICKS + 1, status='en_route')
     O._expire_spent_sorties(mem)
     assert 'A:x:M1' not in mem['sorties']
-    assert 'ヘルメス' in mem['garrison']['アルマムーン']
+    assert mem['garrison']['アルマムーン'] == []
+    assert mem['general_location_unknown'] == ['ヘルメス']
 
 
 def test_a_recent_march_is_kept():
@@ -163,3 +163,44 @@ def test_the_march_refresh_is_recorded_once():
     O._refresh_live_marches(mem)
     records = [r for r in mem['_records'] if r['decision'] == 'sortie_march_refreshed']
     assert len(records) == 1
+
+
+def test_overdue_transition_marks_only_the_actor_dirty_for_next_month():
+    mem = memory(age=300, status='en_route')
+    mem['month'] = '3-6'
+    mem['general_statuses'] = {
+        'scope': [6, '3-5'], 'identity': None, 'complete': True,
+        'statuses': {
+            'ヘルメス': {'location': 'castle', 'castle': 'アルマムーン'},
+            'ゼウス': {'location': 'castle', 'castle': 'アルマムーン'},
+        },
+        'dirty': {},
+    }
+    mem['garrison']['アルマムーン'] = ['ヘルメス', 'ゼウス']
+    sortie = mem['sorties']['A:x:M1']
+    sortie['status'] = 'overdue'
+    O._queue_overdue_location_recheck(mem, sortie)
+    O._queue_overdue_location_recheck(mem, sortie)
+    assert mem['general_statuses']['dirty'] == {'ヘルメス': ['location']}
+    assert mem['garrison']['アルマムーン'] == ['ゼウス']
+    assert mem['general_location_unknown'] == ['ヘルメス']
+    assert len([r for r in mem['_records']
+                if r['decision'] == 'sortie_location_recheck_queued']) == 1
+    post.arm(mem)
+    assert mem['post_month_status']['dirty'] == ['ヘルメス']
+    assert 'ゼウス' not in mem['post_month_status']['dirty']
+
+
+def test_expiry_cannot_erase_the_next_month_recheck():
+    mem = memory(age=O.SPENT_SORTIE_TICKS + 1)
+    mem['month'] = '3-6'
+    mem['general_statuses'] = {
+        'scope': [6, '3-5'], 'identity': None, 'complete': True,
+        'statuses': {'ヘルメス': {'location': 'castle', 'castle': 'アルマムーン'}},
+        'dirty': {},
+    }
+    O._expire_spent_sorties(mem)
+    assert mem['sorties'] == {}
+    assert mem['general_statuses']['dirty'] == {'ヘルメス': ['location']}
+    post.arm(mem)
+    assert mem['post_month_status']['dirty'] == ['ヘルメス']

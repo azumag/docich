@@ -541,7 +541,11 @@ def test_sorties_without_a_recent_tick_no_longer_block_their_generals():
     mem['tick'] = 45 + policy.SORTIE_BUSY_TICKS
     assert policy.next_order(mem) is None
     mem['tick'] = 45 + 2 * policy.SORTIE_BUSY_TICKS
-    assert policy.next_order(mem)['step'] == 'A:p:K3'         # ...but not forever
+    # Time alone no longer returns the unverified general to its old castle.
+    # The next monthly individual-status pass must locate them first.
+    assert policy.next_order(mem) is None
+    assert 'ココット' in mem['general_location_unknown']
+    assert any(r['decision'] == 'sortie_location_recheck_queued' for r in mem['_records'])
 
 
 def test_a_plan_of_orders_that_can_never_run_does_not_block_off_chart_sorties():

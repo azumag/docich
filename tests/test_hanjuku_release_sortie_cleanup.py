@@ -18,7 +18,8 @@ def test_a_released_step_drops_its_marching_ghost():
     replan._release_stale_steps(mem, ['A:x:M1'])
     assert 'A:x:M1' not in mem['sorties']
     assert mem['orders']['A:x:M1'] == 'pending'
-    assert 'グレナデン' in mem['garrison']['アルマムーン']
+    assert mem['garrison']['アルマムーン'] == []
+    assert mem['general_location_unknown'] == ['グレナデン']
     assert [r for r in mem['_records'] if r['decision'] == 'sortie_record_expired']
 
 
