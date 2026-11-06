@@ -327,6 +327,53 @@ def _retry_location(mem, state, screen, reason):
         'castle_menu', 'castle_info', 'main_menu', 'general_list', 'text'} else []
 
 
+def reenter_after_reanchor(mem, resume):
+    """Reopen this month's workflow from the recovered map, without blind A.
+
+    SELECT reanchor always lands on アルマムーン, not the general whose status
+    or castle was being inspected.  Preserve verified statuses, tasks and the
+    pending job, but discard only the menu/cursor phase whose screen vanished.
+    """
+    state = mem.get('post_month_status')
+    if (not isinstance(state, dict)
+            or state.get('scope') != resume.get('scope')
+            or state.get('scope') != [mem.get('chapter'), mem.get('month')]
+            or state.get('identity') != receipts.run_identity(mem.get('_run_identity'))):
+        return False
+    if resume.get('owner_reentered'):
+        return True
+    previous = state.get('stage')
+    if previous in {'roster', 'status', 'roster_next'}:
+        # The prior roster highlight disappeared when SELECT moved the camera.
+        # A fresh top-to-bottom membership proof is required; cached clean
+        # individual statuses remain and dirty entries are reread.
+        state['names'] = []
+        state['list_moves'] = 0
+        state['top_confirmed'] = False
+        for key in ('highlight', 'selected', 'marker_reads', 'markers', 'top_seeks'):
+            state.pop(key, None)
+        _stage(state, 'open_menu')
+        state['phase_reads'] = 2  # next map observation opens X immediately
+    elif previous in {'task_menu', 'task_select', 'task_jump',
+                      'locate_open', 'locate_info', 'locate_reset'}:
+        # A task SELECT originally jumped to its general, but the recovery
+        # SELECT moved to home.  Re-select the *named* general before A.
+        _stage(state, 'task_menu' if state.get('job') else 'process', seeks=0)
+        if state['stage'] == 'task_menu':
+            state['phase_reads'] = 2
+    elif previous == 'open_menu':
+        state['phase_reads'] = 2
+    elif previous not in {'await_map', 'process', 'blocked', 'wait_repair', 'wait_recall'}:
+        return False
+    resume['owner_reentered'] = True
+    _log(mem, 'post_month_reanchor_reenter',
+         observed_metric={'from': previous, 'to': state.get('stage'),
+                          'cached': len(state.get('statuses') or {}),
+                          'pending': len(state.get('tasks') or [])},
+         reason='カーソル復旧後、月次処理を元の段階から安全に開き直す')
+    return True
+
+
 def step(screen, mem, frame):
     """Return actions/[] while owned; None when unrelated foreground wins."""
     state = mem.get('post_month_status')
@@ -352,6 +399,15 @@ def step(screen, mem, frame):
             and state['stage'] not in {'status', 'wait_repair', 'wait_recall'}
             and house.roster(screen) is None):
         return None
+    # The monthly workflow owns this map.  A lost cursor is a temporary
+    # navigation interrupt, not a reason to let the sortie planner take over.
+    if (screen.kind == 'map' and screen.cursor and not screen.marker
+            and mem.get('nav_search')
+            and state.get('stage') not in {'blocked', 'wait_repair', 'wait_recall'}):
+        from . import map as map_flow
+        recovery = map_flow._start_reanchor_jump(mem, owner='post_month_status')
+        if recovery is not None:
+            return recovery
     if state['stage'] in {'open_menu', 'task_menu', 'blocked'}:
         if screen.kind in STRAY_MENU_KINDS and not house.roster(screen):
             backouts = state.get('stray_backouts')

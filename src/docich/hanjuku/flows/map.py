@@ -701,7 +701,7 @@ def _castle_list_target(screen, source):
     return None
 
 
-def _start_reanchor_jump(mem):
+def _start_reanchor_jump(mem, *, owner=None):
     """Recover a lost cursor from a named castle, without a roof observation.
 
     The SELECT return from the own-castle list is a stronger reference than
@@ -718,13 +718,24 @@ def _start_reanchor_jump(mem):
     if (skip.get('mode') == 'reanchor'
             and tick - int(skip.get('tick') or 0) < CASTLE_JUMP_COOLDOWN):
         return None
+    # The navigator repairs coordinates without taking ownership of the work.
+    # Save the foreground flow and stage before SELECT moves the camera home.
+    if owner is None:
+        owner = 'sortie_plan' if mem.get('active') else 'map_navigation'
+    monthly = mem.get('post_month_status') if owner == 'post_month_status' else None
+    return_to = {'owner': owner, 'chapter': chapter, 'month': mem.get('month'),
+                 'active_step': mem.get('active'),
+                 'stage': monthly.get('stage') if isinstance(monthly, dict) else None,
+                 'scope': list(monthly.get('scope') or []) if isinstance(monthly, dict) else None}
     mem['castle_jump'] = {'mode': 'reanchor', 'step': None, 'source': home,
                           'phase': 'menu', 'age': 0, 'total': 0, 'tick': tick,
-                          'menu_presses': 1, 'selects': 0, 'scrolls': 0, 'waits': 0}
+                          'menu_presses': 1, 'selects': 0, 'scrolls': 0, 'waits': 0,
+                          'return_to': return_to}
     mem.pop('select_centered', None)
     _record(mem, 'cursor_reanchor_open', target=home,
-            observed_metric={'cursor_before': mem.get('cursor'), 'chapter': chapter},
-            reason='カーソルを見失ったためX→しろ→アルマムーン→SELECTで基準点を復旧する')
+            observed_metric={'cursor_before': mem.get('cursor'), 'chapter': chapter,
+                             'return_to': return_to},
+            reason='中断元を保存しX→しろ→アルマムーン→SELECTでカーソル基準点を復旧する')
     return [pad('x')]
 
 
@@ -884,8 +895,12 @@ def castle_jump_step(screen, mem, frame):
                 mem.pop('castle_jump_skip', None)
                 # Reanchoring is a prerequisite, not the finished action.
                 # Release this map frame to the normal dispatcher.
-                mem['reanchor_resume'] = {'source': jump['source'], 'tick': tick,
-                                          'active_before': mem.get('active')}
+                mem['reanchor_resume'] = {
+                    'source': jump['source'], 'tick': tick,
+                    'active_before': (jump.get('return_to') or {}).get('active_step',
+                                                                         mem.get('active')),
+                    **(jump.get('return_to') or {}),
+                }
                 _record(mem, 'cursor_reanchor_confirm', target=jump['source'],
                         observed_metric={'cell': list(cell), 'screen_cursor': list(cursor)},
                         reason='アルマムーンのSELECTで座標を復旧し中断した処理を再評価する')
@@ -926,6 +941,52 @@ def castle_jump_step(screen, mem, frame):
     return _end_castle_jump(screen, mem, 'unknown_phase:' + str(phase))
 
 
+def resume_reanchored_owner(screen, mem, frame):
+    """Resume the interrupted owner before the ordinary dispatch priority.
+
+    A SELECT recovery lands at home, so a monthly status or field-location
+    transaction must re-enter through a fresh menu rather than replaying A.
+    """
+    resume = mem.get('reanchor_resume')
+    if not isinstance(resume, dict) or not resume.get('owner'):
+        return None
+    if (resume.get('chapter') != mem.get('chapter')
+            or resume.get('month') != mem.get('month')):
+        mem.pop('reanchor_resume', None)
+        _record(mem, 'cursor_reanchor_owner_expired',
+                observed_metric={'owner': resume.get('owner'),
+                                 'stage': resume.get('stage')},
+                reason='復旧中に章・月が変わったため古い中断状態を再生しない')
+        return None
+    if screen.kind != 'map':
+        return None  # battle, dialogue and menu events keep their foreground
+    owner = resume['owner']
+    if owner == 'post_month_status':
+        from . import post_month_status
+        if not post_month_status.reenter_after_reanchor(mem, resume):
+            mem.pop('reanchor_resume', None)
+            return None
+        actions = post_month_status.step(screen, mem, frame)
+        if actions or 'post_month_status' not in mem:
+            resume['resumed_owner'] = owner
+        return actions
+    if owner in {'sortie_plan', 'map_navigation'}:
+        if owner == 'sortie_plan' and mem.get('active') != resume.get('active_before'):
+            mem.pop('reanchor_resume', None)
+            _record(mem, 'cursor_reanchor_owner_expired',
+                    observed_metric={'owner': owner,
+                                     'active_before': resume.get('active_before'),
+                                     'active_now': mem.get('active')},
+                    reason='復旧中に出撃指示が変わったため古い指示を再生しない')
+            return None
+        actions = map_step(screen, mem, frame)
+        if actions:
+            resume['resumed_owner'] = owner
+        return actions
+    mem.pop('reanchor_resume', None)
+    return None
+
+
 def note_reanchor_followup(screen, mem, actions):
     """Trace the action after SELECT reanchoring, or why a safe hold remains.
 
@@ -939,14 +1000,17 @@ def note_reanchor_followup(screen, mem, actions):
         mem.pop('reanchor_resume', None)
         return
     tick = int(mem.get('tick') or 0)
-    if actions:
+    if resume.get('resumed_owner') or (actions and not resume.get('owner')):
         mem.pop('reanchor_resume', None)
         _record(mem, 'cursor_reanchor_resumed', screen=screen.kind,
                 observed_metric={'source': resume.get('source'),
+                                 'owner': resume.get('resumed_owner') or resume.get('owner'),
+                                 'stage_before': resume.get('stage'),
+                                 'stage_after': (mem.get('post_month_status') or {}).get('stage'),
                                  'active_before': resume.get('active_before'),
                                  'active_after': mem.get('active'),
                                  'actions': actions[:3]},
-                reason='位置復旧後、通常の優先順位で中断していた操作または次の行動を選んだ')
+                reason='位置復旧後、中断元の処理に制御を戻した')
         return
     previous = resume.get('wait_report_tick')
     if previous is not None and tick - int(previous) < 20:
@@ -955,7 +1019,10 @@ def note_reanchor_followup(screen, mem, actions):
     status = mem.get('post_month_status') or {}
     if isinstance(status, dict) and status.get('stage') == 'blocked':
         blocked_by = 'post_month_status_blocked'
-        why = '月次ステータス確認が失敗状態のため通常操作を安全に再開できない'
+        why = '月次ステータス確認が失敗状態のため安全に再開できない'
+    elif resume.get('owner') == 'post_month_status' and isinstance(status, dict) and status:
+        blocked_by = 'post_month_status:' + str(status.get('stage'))
+        why = '月次ステータスの中断段階に戻り、画面の再確認を待っている'
     elif mem.get('_map_registration_hold'):
         blocked_by = 'map_registration'
         why = '地図登録・座標確認が操作を保留している'
@@ -967,12 +1034,14 @@ def note_reanchor_followup(screen, mem, actions):
         why = '中断中の指示を再評価したが出撃元の確認などで入力を保留している'
     elif isinstance(status, dict) and status:
         blocked_by = 'post_month_status:' + str(status.get('stage'))
-        why = '月次ステータス処理が継続中のため出撃計画へ戻っていない'
+        why = '月次ステータス処理の画面確認が進行中'
     else:
         blocked_by = 'other_flow_hold'
         why = '通常処理を再評価したがこの観測では安全な入力が決まらない'
     _record(mem, 'cursor_reanchor_wait', screen=screen.kind,
             observed_metric={'blocked_by': blocked_by, 'active': mem.get('active'),
+                             'return_owner': resume.get('owner'),
+                             'return_stage': resume.get('stage'),
                              'active_before': resume.get('active_before'),
                              'plan_steps': [o.get('step') for o in
                                             (mem.get('chart_plan') or {}).get('orders', [])[:8]],

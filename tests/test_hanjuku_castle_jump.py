@@ -175,6 +175,7 @@ def _confirm_reanchor_with_active_order():
     screen = _screen('map', [], cursor=(80, 90))
     assert M.castle_jump_step(screen, mem, None) is None
     assert mem['reanchor_resume']['active_before'] == 'J1'
+    assert mem['reanchor_resume']['owner'] == 'sortie_plan'
     return mem, screen
 
 
@@ -192,7 +193,7 @@ def test_reanchor_success_releases_same_frame_to_interrupted_order(monkeypatch):
 
     # The normal map policy, previously starved by castle_jump_step's [],
     # can immediately choose the old order's navigation input.
-    actions = M.map_step(screen, mem, None)
+    actions = M.resume_reanchored_owner(screen, mem, None)
     assert actions == [M.pad('right')]
     M.note_reanchor_followup(screen, mem, actions)
     assert 'reanchor_resume' not in mem
@@ -217,7 +218,7 @@ def test_reanchor_without_active_order_picks_next_ready_plan(monkeypatch):
     monkeypatch.setattr(M, '_world_map_wanted', lambda _mem: False)
     monkeypatch.setattr(M, 'next_order', lambda _mem: order)
     monkeypatch.setattr(M, 'nav_step', lambda *_args, **_kwargs: [M.pad('right')])
-    actions = M.map_step(screen, mem, None)
+    actions = M.resume_reanchored_owner(screen, mem, None)
     assert actions == [M.pad('right')]
     assert mem['active'] == 'J1'
     M.note_reanchor_followup(screen, mem, actions)
@@ -233,7 +234,7 @@ def test_reanchor_named_source_opens_even_when_cursor_hides_roof(monkeypatch):
         raise AssertionError('named SELECT should not require a visible roof')
 
     monkeypatch.setattr(M, '_roof_under_cursor', roof_hidden)
-    actions = M.map_step(screen, mem, None)
+    actions = M.resume_reanchored_owner(screen, mem, None)
     assert actions == [M.pad('a')]
     assert mem['expect_menu'] is True
     M.note_reanchor_followup(screen, mem, actions)
@@ -291,3 +292,99 @@ def test_failed_reanchor_keeps_search_as_fallback_but_is_cooldown_limited():
     assert M._start_reanchor_jump(mem) is None
     mem['tick'] += M.CASTLE_JUMP_COOLDOWN
     assert M._start_reanchor_jump(mem) == [M.pad('x')]
+
+
+def _monthly_reanchor(stage, **fields):
+    """Real month owner launches recovery, then receives its own map again."""
+    from docich.hanjuku.flows import post_month_status as post
+
+    mem = _memory()
+    mem.update(month='2-6', nav_search=True, uncertain=True)
+    post.arm(mem)
+    state = mem['post_month_status']
+    state.update(stage=stage, **fields)
+    screen = _screen('map', [], cursor=(80, 90))
+    assert post.step(screen, mem, None) == [M.pad('x')]
+    assert mem['castle_jump']['return_to']['owner'] == 'post_month_status'
+    assert mem['castle_jump']['return_to']['stage'] == stage
+    mem['castle_jump']['phase'] = 'confirm'
+    assert M.castle_jump_step(screen, mem, None) is None
+    assert mem['reanchor_resume']['owner'] == 'post_month_status'
+    assert mem['reanchor_resume']['stage'] == stage
+    return mem, screen, state
+
+
+def test_reanchor_resumes_month_status_without_replaying_old_selection():
+    mem, screen, state = _monthly_reanchor(
+        'status', selected='ゼウス', names=['どうし'], list_moves=1,
+        top_confirmed=True, dirty=['ゼウス'],
+        statuses={'どうし': {'location': 'castle', 'castle': 'アルマムーン'}})
+    # SELECT recovery lands at home, so the status panel cannot be
+    # interpreted as the old general.  Reopen X and rescan membership.
+    actions = M.resume_reanchored_owner(screen, mem, None)
+    assert actions == [M.pad('x')]
+    assert state['stage'] == 'open_menu'
+    assert state['names'] == []
+    assert state['top_confirmed'] is False
+    assert state['statuses']['どうし']['castle'] == 'アルマムーン'
+    assert state['dirty'] == ['ゼウス']
+    assert mem['_records'][-1]['decision'] == 'post_month_reanchor_reenter'
+    M.note_reanchor_followup(screen, mem, actions)
+    assert mem['_records'][-1]['decision'] == 'cursor_reanchor_resumed'
+    assert mem['_records'][-1]['observed_metric']['owner'] == 'post_month_status'
+    assert 'reanchor_resume' not in mem
+
+
+def test_reanchor_month_task_jump_reselects_named_general_before_castle_a():
+    job = {'kind': 'locate', 'name': 'ゼウス'}
+    mem, screen, state = _monthly_reanchor(
+        'task_jump', job=job, tasks=[],
+        statuses={'ゼウス': {'location': 'castle'}})
+    # The cursor is now at home, NOT the position of ゼウス.  Never use
+    # task_jump's old map -> A shortcut on the recovered frame.
+    assert M.resume_reanchored_owner(screen, mem, None) == [M.pad('x')]
+    assert state['stage'] == 'task_menu'
+    assert state['job'] == job
+    assert state['statuses']['ゼウス']['location'] == 'castle'
+
+
+def test_reanchor_owner_receipt_requires_owner_action_not_unrelated_input():
+    mem, screen, state = _monthly_reanchor('roster', names=['どうし'])
+    M.note_reanchor_followup(screen, mem, [M.pad('b')])
+    assert mem['_records'][-1]['decision'] == 'cursor_reanchor_wait'
+    assert mem['_records'][-1]['observed_metric']['blocked_by'] == 'post_month_status:roster'
+    assert mem['reanchor_resume']['owner'] == 'post_month_status'
+
+
+def test_reanchor_discards_old_owner_when_month_scope_changes():
+    mem, screen, state = _monthly_reanchor('status')
+    mem['month'] = '2-7'
+    assert M.resume_reanchored_owner(screen, mem, None) is None
+    assert 'reanchor_resume' not in mem
+    assert mem['_records'][-1]['decision'] == 'cursor_reanchor_owner_expired'
+    assert state['stage'] == 'status'
+
+
+def test_reanchor_sortie_is_not_stolen_by_background_monthly_owner(monkeypatch):
+    mem, screen = _confirm_reanchor_with_active_order()
+    mem['post_month_status'] = {'stage': 'blocked'}
+    _allow_interrupted_order(monkeypatch)
+    monkeypatch.setattr(M, 'nav_step', lambda *_args, **_kwargs: [M.pad('right')])
+    actions = M.resume_reanchored_owner(screen, mem, None)
+    assert actions == [M.pad('right')]
+    M.note_reanchor_followup(screen, mem, actions)
+    assert mem['_records'][-1]['observed_metric']['owner'] == 'sortie_plan'
+
+
+def test_reanchor_does_not_replay_sortie_replaced_during_jump():
+    mem = _memory()
+    mem['nav_search'] = True
+    assert M._start_reanchor_jump(mem) == [M.pad('x')]
+    mem['active'] = 'OTHER'
+    mem['castle_jump']['phase'] = 'confirm'
+    screen = _screen('map', [], cursor=(80, 90))
+    assert M.castle_jump_step(screen, mem, None) is None
+    assert mem['reanchor_resume']['active_before'] == 'J1'
+    assert M.resume_reanchored_owner(screen, mem, None) is None
+    assert 'reanchor_resume' not in mem
+    assert mem['_records'][-1]['decision'] == 'cursor_reanchor_owner_expired'
