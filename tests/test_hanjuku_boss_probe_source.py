@@ -38,7 +38,7 @@ def test_an_empty_bookkeeping_opens_one_castle_list_per_plan():
 
 
 def test_a_known_general_is_sent_instead_of_probing():
-    mem = memory({'カバルッサ': ['ココット']})
+    mem = memory({'カバルッサ': ['ココット', 'ゼウス']})
     waves = boss_waves(mem)
     assert [o['general'] for o in waves if not o.get('source_probe')] == ['ココット']
 

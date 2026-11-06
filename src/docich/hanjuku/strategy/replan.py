@@ -84,13 +84,18 @@ def _interim_source(mem, target, chart_order, owned, busy, allow_sole=False):
             # there anyway. An unread list is opened as a probe.
             blocker = _march_blocker(chapter, best, target, owned)
             if blocker:
-                spares = _spares([g for g in free.get(blocker) or ()
-                                  if g not in unavailable_for_attack],
-                                 unavailable_for_attack, sole)
-                if spares:
-                    return blocker, spares[0]
+                # A blocking own castle is a real departure source, not merely
+                # a waypoint. With one measured defender it cannot sortie,
+                # even when the distant castle has many available generals.
+                blocker_free = [g for g in free.get(blocker) or ()
+                                if g not in unavailable_for_attack]
+                if len(set(blocker_free)) >= need:
+                    spares = _spares(blocker_free, unavailable_for_attack, sole)
+                    if spares:
+                        return blocker, spares[0]
                 if garrison.get(blocker) is None:
                     return blocker, MOVE_ANY_GENERAL
+                return None  # reinforce the blocker before trying this target
         return best, _spares(free[best], unavailable_for_attack, sole)[0]
     probes = sorted(c for c in owned if routes.probe_due(mem, c))
     if probes:
@@ -418,15 +423,18 @@ def _garrison_rotation(mem, owned, busy, heading, taken=()):
             source_distance, _source_want, source_floor = plan[source]
             if source_distance <= distance or not routes.allowed(mem, source, target):
                 continue
-            if garrison.get(source) is None or len(free[source]) - 1 < source_floor:
+            # Even a rear-castle floor of zero cannot override the actual
+            # game's minimum two-general requirement for a departure.
+            if (garrison.get(source) is None or len(set(free[source])) < 2
+                    or len(free[source]) - 1 < source_floor):
                 continue
             spares = [g for g in _spares(free[source]) if g != NAME]
             if not spares:
                 continue
             general = sorted(spares, key=lambda g: _defense_score(mem, g),
                              reverse=True)[0]
-            # A castle already above its own target donates first; only then
-            # does a far castle give up its last general (floor zero).
+            # A castle already above its own target donates first; rear
+            # castles may thin down to one, but never dispatch their last.
             surplus = 1 if len(free[source]) > _source_want else 0
             donors.append((surplus, source_distance,
                            -_distance(chapter, source, target), source, general))
@@ -578,17 +586,14 @@ def interim_candidates(mem, allow_sole=False) -> dict:
             unavailable |= {NAME}
         sole = len(owned) == 1
         need = 2          # never empty a castle (owner 2026-11-06)
-        # Owner 2026-11-04: a rear castle may send its last general. Once every
-        # normal castle is held the boss is the only enemy left, so a wave may
-        # take the last general from a non-home castle: g1133 2026-11-05 had one
-        # general per castle after the first waves, so no wave could form again
-        # and the plan fell back to staging moves that enemy attacks kept
-        # interrupting. The home castle always keeps its defender.
-        post_conquest = _post_conquest_wait(mem)
+        # The one-general exception for post-conquest boss waves was left
+        # behind by #3567. The game refuses the sortie when the castle has
+        # only one general (e.g. ポセイドン at ボッサール), so it must not
+        # become a planned attack even if every normal castle is owned.
         choices = []
         for c in owned:
             free = [g for g in garrison.get(c) or () if g not in busy]
-            if len(set(free)) < need and not (post_conquest and c != home and free):
+            if len(set(free)) < need:
                 continue
             spare = _spares(free, {NAME} if _hero_egg_broken(mem) else (), sole)
             for g in spare:
@@ -862,6 +867,23 @@ def interim_candidates(mem, allow_sole=False) -> dict:
     for order in (*front, *waves, *boss_wave_orders,
                   *(lead if retakes_stalled else lead[1:]),
                   *attacks, *rotation, *wave_orders):
+        # A generic source-list probe at a measured one-general castle is
+        # not a feasible sortie. Only actual inbound marches or new joiners
+        # expected at the hero's castle justify rereading that singleton.
+        present = (mem.get('garrison') or {}).get(order['source'])
+        if isinstance(present, (list, tuple)) and len(set(present)) == 1:
+            # A new joiner is unconfirmed until the castle's live list is
+            # opened. Since #3578's confirmed-source policy names the generic
+            # probe actor (しょうぐん), test for that evidence-gathering probe,
+            # not a guessed recruit name. Never allow a named singleton sortie.
+            fresh_joiner = (order['source'] == _arrival_castle(mem, owned)
+                            and bool(_unplaced_castle_generals(mem))
+                            and order.get('source_probe') is True
+                            and order['general'] == MOVE_ANY_GENERAL)
+            arrival_probe = (order.get('source_probe') is True
+                             and routes.probe_due(mem, order['source']))
+            if not (fresh_joiner or arrival_probe):
+                continue
         if chart_adjust.startable(order, situation) is not None:
             continue
         out[f"{order['purpose']}_{len(out) + 1}"] = order

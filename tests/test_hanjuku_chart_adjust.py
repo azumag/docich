@@ -438,7 +438,7 @@ def test_worker_generates_validates_and_saves_adjusted_chart(tmp_path):
     # A named model order now requires source membership in the request.
     source_file = tmp_path / adjust.REQUEST_FILE
     source_payload = json.loads(source_file.read_text(encoding='utf-8'))
-    source_payload['garrison'] = {'ゴーメン': ['ココット'], 'スペンソニア': [chart.HERO]}
+    source_payload['garrison'] = {'ゴーメン': ['ココット', 'アテナ'], 'スペンソニア': [chart.HERO]}
     source_file.write_text(json.dumps(source_payload, ensure_ascii=False), encoding='utf-8')
     prompts = []
 
@@ -1163,12 +1163,12 @@ def test_worker_prompts_with_garrisons_and_drops_orders_whose_general_is_elsewhe
     from docich import hanjuku_chart_worker as worker
     mem = stuck_memory()
     mem.update(tick=1500, lost=['ジョンリギ'],
-               garrison={'スペンソニア': [chart.HERO], 'カストーラ': ['ヴィーナス']},
+               garrison={'スペンソニア': [chart.HERO, 'アテナ'], 'カストーラ': ['ヴィーナス']},
                sorties={'I:1': {'general': 'ゼウス', 'target': 'スペンソニア', 'status': 'en_route', 'tick': 1450},
                         'I:0': {'general': 'ココット', 'target': 'ゴーメン', 'status': 'en_route', 'tick': 1}})
     policy.map_step(map_screen(), mem, FRAME)
     [record] = decisions(mem, 'chart_adjust_request')
-    assert record['garrison'] == {'カストーラ': ['ヴィーナス'], 'スペンソニア': [chart.HERO]}
+    assert record['garrison'] == {'カストーラ': ['ヴィーナス'], 'スペンソニア': [chart.HERO, 'アテナ']}
     assert record['lost'] == ['ジョンリギ'] and record['home_lost'] is False
     assert record['en_route'] == [{'general': 'ゼウス', 'target': 'スペンソニア'}]   # stale ココット ages out
     adjust.write_request(tmp_path, record, {'game': 'hanjuku-hero', 'runtime_id': 'r', 'generation': 1,

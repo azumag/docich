@@ -33,7 +33,9 @@ def test_interrupt_records_unknown_destination_once_and_blocks_same_general(kind
     assert mem['active'] is None
     assert mem['sorties']['1-A2']['target'] is None
     assert p._en_route(mem) == ({'ゼウス'}, set())
-    assert p.next_order(mem)['step'] != '1-A2'
+    next_order = p.next_order(mem)
+    # No other departure is required to exist; the interrupted actor stays busy.
+    assert next_order is None or next_order['step'] != '1-A2'
     first = deepcopy(mem['sorties'])
     mem['active'] = '1-A2'  # later source verification must not count as a new interruption
     p.observe_sortie_transition(screen('general_list'), mem, 'castle_menu')
@@ -111,9 +113,13 @@ def test_a_general_listed_in_an_intervening_own_castle_continues_his_order():
     assert mem['orders']['A:1:J1'] == 'pending'
     assert mem['garrison']['ジョンリギ'] == ['ゼウス']
     assert any(r['decision'] == 'sortie_transit_continue' for r in mem['_records'])
-    # The same order runs again, now from the castle he actually stopped in.
-    # A new leg to the boss must also satisfy the current unlock prerequisite.
+    # The actual list still holds only the transit actor. Even after the
+    # boss path is unlocked, the castle must keep its last defender.
     mem['captured'] = list(set(p.chart.CASTLE_NAMES[1]) - {'アルマムーン', 'けっかい'})
+    assert p.next_order(mem) != order
+    # Once the other observed defender is in the garrison, continuing the
+    # original route is allowed from the newly observed source.
+    mem['garrison']['ジョンリギ'] = ['ゼウス', 'リーキ']
     assert p.next_order(mem) == order
 
 

@@ -72,7 +72,10 @@ def test_the_boss_keeps_taking_waves_with_many_already_in_flight():
                              'status': 'en_route', 'tick': 990}
             for i, name in enumerate(['ゼウス', 'ココット', 'ヴィーナス', 'ビーツ',
                                       'トレビス', 'アマンディーヌ'])}
-    attacks = boss_attacks(replan.interim_candidates(memory(sorties=full)))
+    mem = memory(sorties=full)
+    # Six are marching: two idle generals must remain, so one can still go.
+    mem['garrison'][STAFFED5].append('ポセイドン')
+    attacks = boss_attacks(replan.interim_candidates(mem))
     assert attacks and attacks[0]['general'] not in (
         'ゼウス', 'ココット', 'ヴィーナス', 'ビーツ', 'トレビス', 'アマンディーヌ')
 

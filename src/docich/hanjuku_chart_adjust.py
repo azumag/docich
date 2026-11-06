@@ -194,6 +194,9 @@ def startable(order, request) -> str | None:
         return None if general == 'しょうぐん' else 'invalid_source_probe'
     present = garrison.get(source) or ()
     if general in present:
+        # A measured singleton cannot dispatch its last defender.
+        if len(set(present) - marching) < 2:
+            return 'source_last_defender'
         if not chart.is_boss_castle(order['target']) and hero_guard_short(
                 present, general, marching, sole_castle=_sole_castle(request)):
             return 'hero_castle_guard'

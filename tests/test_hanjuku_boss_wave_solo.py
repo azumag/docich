@@ -28,17 +28,19 @@ def boss_attacks(mem):
             if c.get('target') == 'ボス' and c.get('purpose') == 'attack']
 
 
-def test_a_single_general_castle_can_still_send_a_boss_wave():
-    attacks = boss_attacks(memory())
-    assert len(attacks) == 1
-    assert attacks[0]['source'] != HOME          # the home castle keeps its defender
-    assert attacks[0]['general'] == 'ゼウス'
+def test_single_general_castles_cannot_send_boss_waves():
+    # After #3567 there is no post-conquest exception: every castle keeps a defender.
+    assert boss_attacks(memory()) == []
 
 
 def test_the_boss_wave_prefers_the_castle_nearest_the_boss():
     # g1133 2026-11-06: the name-order tie-break sent アルマムーン (428 cells)
     # before オケアナ (203); only オケアナ's marches ever entered the boss.
-    attacks = boss_attacks(memory())
+    garrison = {c: ['ゼウス'] for c in NORMAL}
+    nearest = min((c for c in NORMAL if c != HOME), key=lambda c:
+                  sum((CELLS[c][i] - CELLS['ボス'][i]) ** 2 for i in (0, 1)))
+    garrison[nearest] = ['ゼウス', 'ポセイドン']
+    attacks = boss_attacks(memory(garrison=garrison))
     assert attacks
     cells = CELLS
     boss = next(xy for name, xy in cells.items() if chart.is_boss_castle(name))
@@ -47,8 +49,8 @@ def test_the_boss_wave_prefers_the_castle_nearest_the_boss():
         xy = cells[castle]
         return ((xy[0] - boss[0]) ** 2 + (xy[1] - boss[1]) ** 2) ** 0.5
 
-    nearest = min((c for c in NORMAL if c != HOME), key=distance)
     assert attacks[0]['source'] == nearest
+    assert attacks[0]['general'] in ('ゼウス', 'ポセイドン')
 
 
 def test_a_live_egg_general_goes_before_a_broken_one_in_the_same_castle():
