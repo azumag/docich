@@ -1099,6 +1099,24 @@ html[data-soren-monitor="1"]:not([data-improve-active="1"])[data-monitor-view="o
 .hanjuku-gap-current-plan-head { color: #75daec; font-size: 12px; font-weight: 700; }
 .hanjuku-gap-current-plan-detail { margin-top: 3px; color: #e6f2f8; font-size: 12px;
   line-height: 1.3; white-space: pre-wrap; overflow-wrap: anywhere; }
+
+/* Chapter map replaces stacked sortie cards. The news strip keeps its fixed height. */
+.hanjuku-gap-minimap { width: 100%; flex: 1 1 auto; min-height: 0; display: block;
+  border: 1px solid #34546a; border-radius: 6px; background: #071927; }
+.hanjuku-gap-minimap .map-name { font-size: 11px; font-weight: 750;
+  fill: #e6f2f8; paint-order: stroke; stroke: #061321; stroke-width: 3px;
+  stroke-linecap: round; stroke-linejoin: round; }
+.hanjuku-gap-minimap .map-route { fill: none; stroke-width: 2.7;
+  stroke-linecap: round; opacity: .95; }
+.hanjuku-gap-flow-count { color: #67e8f9; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.hanjuku-gap-legend { display: flex; flex-wrap: wrap; gap: 8px; color: #9cb5c5;
+  font-size: 10px; line-height: 13px; }
+.hanjuku-gap-legend span::before { content: '➜'; padding-right: 3px; font-weight: 900; }
+.hanjuku-gap-legend .sortie::before { color: #67e8f9; }
+.hanjuku-gap-legend .recall::before { color: #4ade80; }
+.hanjuku-gap-legend .repair::before { color: #f9a8d4; }
+.hanjuku-gap-map-note { color: #91a9ba; font-size: 10px; line-height: 12px; }
+
 .hanjuku-gap-move { border: 1px solid #28404f; border-radius: 8px; background: #0b1c28;
   padding: 6px 9px; }
 .hanjuku-gap-move-head { display: flex; align-items: baseline; justify-content: space-between;
@@ -2275,6 +2293,103 @@ html[data-soren-region="bottom"] #hanjuku-gap { display: none !important; }
     gapDom.toasts.clear(); gapLive.decisionSeen.clear(); gapLive.decisionIds = [];
     gapDom.flowSig = null; gapDom.progressSig = null; gapDom.idle = null;
   }
+
+  // Snapshot of docich.hanjuku_chart.CASTLES (2026-11-06). Chapters 1-3 are
+  // measured, later ordinary/boss coordinates include source-map estimates.
+  // あたしの家 uses HOUSE_VIEW converted into the same chart-cell frame.
+  // Display-only: none of these pixels are used for navigation or decisions.
+  const HANJUKU_MINIMAP_COORDS = {"1":{"アルマムーン":[731,805],"ナキューメラ":[711,645],"キカンドン":[567,725],"ジョンリギ":[551,574],"カストーラ":[599,382],"スペンソニア":[391,382],"ゴーメン":[295,606],"けっかい":[265,270],"あたしの家":[432,657]},"2":{"アルマムーン":[522,847],"ハドリバーグ":[742,732],"フーリック":[358,712],"グロン":[762,479],"ドミノーラ":[486,495],"ウラノポリス":[274,488],"スペランザ":[646,355],"アウスパジア":[298,291],"ボス":[520,200],"あたしの家":[514,396]},"3":{"アルマムーン":[710,144],"グリン":[852,320],"コラダイン":[661,409],"イーピヨル":[773,649],"ドンダム":[568,832],"メガパタ":[456,656],"パタゴーヌ":[341,425],"アバロン":[229,729],"リグア":[133,281],"ボス":[306,141],"あたしの家":[418,504]},"4":{"アルマムーン":[520,528],"マラコビア":[520,192],"フヌイヌム":[728,336],"ネクスドリア":[712,752],"ビクトリア":[520,880],"ミヒラギアン":[312,752],"アルカ":[312,336],"四季王城(北西)":[146,125],"四季王城(北東)":[882,125],"四季王城(南西)":[130,893],"四季王城(南東)":[898,909],"あたしの家":[558,340]},"5":{"アルマムーン":[120,112],"オトラント":[408,128],"クロチェット":[824,128],"カルーン":[568,304],"ジュメルズ":[792,416],"テラビル":[456,560],"ヒュペルボレア":[200,448],"ボッサール":[120,912],"アイアイエー":[424,816],"バスカビル":[712,736],"プトレマイス":[888,912],"ボス":[744,288],"あたしの家":[482,284]},"6":{"アルマムーン":[392,144],"アルブラーカ":[88,112],"イカリア":[232,288],"カバルッサ":[536,288],"オケアナ":[904,368],"バビラリー":[88,608],"ダーラント":[376,592],"セレーネ":[616,704],"グルーポフ":[152,944],"ユージア":[472,880],"アブダレ":[808,896],"トウトウ":[872,592],"ボス":[818,184],"あたしの家":[370,748]},"7":{"アルマムーン":[872,112],"ベンゴディ":[776,400],"レオナール":[488,112],"ロキュータ":[216,176],"リデンブロック":[200,448],"マンシー":[344,688],"プルートー":[88,880],"ハシオクラム":[424,896],"フィロメラ":[728,800],"ボス":[488,320],"あたしの家":[642,428]},"8":{"あるまむーん":[136,912],"おかざき":[392,640],"しらかわ":[520,912],"えど":[856,912],"おだわら":[856,656],"ながはま":[168,448],"いちじょうだに":[456,384],"しまばら":[168,160],"まつやま":[504,128],"ひめじ":[792,128],"ボス":[632,544],"あたしの家":[658,476]},"9":{"アルマムーン":[216,928],"ハヤク":[152,720],"タオ":[280,528],"サヌト":[152,320],"オシロガ":[280,176],"ドンドン":[360,384],"オオキク":[408,624],"ナッテ":[280,800],"シマウ":[376,944],"カラ":[504,864],"イソ":[504,640],"イデ！":[536,416],"あたしの家":[434,252]},"10":{"アルマムーン":[568,880],"マカリア":[792,800],"ピランドリア":[200,768],"トルストリア":[392,656],"ファルゲ":[632,592],"コッカーニュ":[872,512],"カルカル":[184,432],"カロナック":[232,240],"ケントルム":[776,240],"ジュアム":[504,160],"ボス":[488,384],"あたしの家":[530,572]},"11":{"アルマムーン":[472,848],"チリベット":[200,848],"タプロベイン":[344,704],"ジャンセニア":[856,640],"ゴンダル":[904,848],"マランマ":[136,656],"タタール":[504,480],"クラボニア":[248,368],"トリフェ":[824,352],"アエンタール":[152,160],"ネペンテ":[808,176],"ボス":[472,192],"あたしの家":[642,348]},"12":{"アルマムーン":[520,832],"ワフェルダ":[392,688],"ブラックランド":[632,688],"ユーフォニア":[104,544],"アトランテ":[920,544],"アファニア":[392,464],"ヘリオポリス":[632,464],"ファンゴル":[344,304],"ディランダ":[680,304],"バラタリア":[264,560],"ラグナグ":[760,560],"ボス":[504,272],"あたしの家":[514,412]}};
+  const HANJUKU_ROUTE_COLORS = {sortie:'#67e8f9', recall:'#4ade80', repair:'#f9a8d4'};
+  function gapSvg(tag, attrs) {
+    const el = document.createElementNS('http://www.w3.org/2000/svg', tag);
+    for (const [key, val] of Object.entries(attrs || {})) el.setAttribute(key, String(val));
+    return el;
+  }
+  function gapRouteKind(move) {
+    if (move.target === 'あたしの家' || /^(house|repair|卵修理|卵修復)$/.test(move.purpose || ''))
+      return 'repair';
+    if (/^(recall|return|帰還)$/.test(move.purpose || '')) return 'recall';
+    return 'sortie';
+  }
+  function gapMinimap(value, moves, owned, lost) {
+    const table = HANJUKU_MINIMAP_COORDS[value.chapter];
+    if (!table) return null;
+    const all = Object.entries(table).filter(([name]) => name !== 'あたしの家');
+    const routes = moves.map(move => ({...move, kind:gapRouteKind(move)}));
+    const houseUsed = routes.some(move => move.source === 'あたしの家' || move.target === 'あたしの家');
+    if (houseUsed) all.push(['あたしの家', table['あたしの家']]);
+    const xs = all.map(([,pt]) => pt[0]), ys = all.map(([,pt]) => pt[1]);
+    const minX = Math.min(...xs), maxX = Math.max(...xs);
+    const minY = Math.min(...ys), maxY = Math.max(...ys);
+    const width = 300, height = 225, margin = 25;
+    const scale = Math.min((width-2*margin)/Math.max(1,maxX-minX),
+                           (height-2*margin)/Math.max(1,maxY-minY));
+    const left = (width-(maxX-minX)*scale)/2, top = (height-(maxY-minY)*scale)/2;
+    const point = name => {
+      const pt = table[name];
+      return pt ? [left+(pt[0]-minX)*scale, top+(pt[1]-minY)*scale] : null;
+    };
+    const svg = gapSvg('svg', {viewBox:'0 0 300 225', role:'img',
+      'aria-label':'第'+value.chapter+'話の城配置と進軍経路',
+      preserveAspectRatio:'xMidYMid meet', class:'hanjuku-gap-minimap'});
+    svg.appendChild(gapSvg('title')).textContent = '第'+value.chapter+'話 進軍ミニマップ';
+    const defs = gapSvg('defs');
+    for (const [kind, color] of Object.entries(HANJUKU_ROUTE_COLORS)) {
+      const marker = gapSvg('marker', {id:'gap-arrow-'+kind, markerWidth:7, markerHeight:7,
+        refX:5.5, refY:3, orient:'auto', markerUnits:'strokeWidth'});
+      marker.appendChild(gapSvg('path', {d:'M0 0 L6 3 L0 6 Z', fill:color}));
+      defs.appendChild(marker);
+    }
+    svg.appendChild(defs);
+    for (let i=1; i<=3; i++) {
+      svg.appendChild(gapSvg('line', {x1:0,y1:i*height/4,x2:width,y2:i*height/4,
+        stroke:'#234055','stroke-width':.7,'stroke-dasharray':'3 6'}));
+    }
+    const endpoints = new Set(), segmentCount = new Map();
+    let unknown = 0;
+    for (const move of routes) {
+      const from = point(move.source), to = point(move.target);
+      if (!from || !to || move.source === move.target) { unknown++; continue; }
+      endpoints.add(move.source); endpoints.add(move.target);
+      const dx=to[0]-from[0], dy=to[1]-from[1], d=Math.hypot(dx,dy);
+      if (d < 3) { unknown++; continue; }
+      const key = [move.source,move.target].join('|');
+      const parallel = segmentCount.get(key) || 0;
+      segmentCount.set(key, parallel+1);
+      const shift = parallel === 0 ? 0 : (parallel % 2 ? 1 : -1)*Math.ceil(parallel/2)*5;
+      const nx = -dy/d*shift, ny = dx/d*shift, ux=dx/d, uy=dy/d;
+      const line = gapSvg('line', {
+        x1:from[0]+ux*8+nx, y1:from[1]+uy*8+ny,
+        x2:to[0]-ux*11+nx, y2:to[1]-uy*11+ny,
+        stroke:HANJUKU_ROUTE_COLORS[move.kind], class:'map-route',
+        'marker-end':'url(#gap-arrow-'+move.kind+')',
+        ...((move.status === '成立未確認' || move.status.startsWith('到着未確認'))
+           ? {'stroke-dasharray':'5 5'} : {})
+      });
+      line.appendChild(gapSvg('title')).textContent =
+        (move.kind==='repair'?'卵修復':move.kind==='recall'?'帰還':'出撃')+
+        ': '+move.source+' → '+move.target+' ('+(move.status||'進行中')+')';
+      svg.appendChild(line);
+    }
+    for (const [name] of all) {
+      const p = point(name);
+      const own = owned.has(name), missing = lost.has(name);
+      const color = name === 'あたしの家' ? '#f9a8d4'
+        : own ? '#67e8f9' : missing ? '#fb7185' : '#64748b';
+      const active = endpoints.has(name), home = name === 'アルマムーン' || name === 'あるまむーん';
+      const circle = gapSvg('circle', {cx:p[0],cy:p[1],r:active?5.4:home?4.8:3.7,
+        fill:color,stroke:'#061421','stroke-width':1.6});
+      circle.appendChild(gapSvg('title')).textContent = name;
+      svg.appendChild(circle);
+      if (active || home) {
+        const label = gapSvg('text', {x:p[0]+5.5,y:p[1]-6,class:'map-name'});
+        label.textContent = name.length > 6 ? name.slice(0,6)+'…' : name;
+        svg.appendChild(label);
+      }
+    }
+    return {svg, unknown};
+  }
+
   function renderHanjukuGap(value) {
     const surface = document.getElementById('hanjuku-gap');
     const frame = SURFACE_REGION === 'game-gap' ? window.frameElement : null;
@@ -2386,58 +2501,52 @@ html[data-soren-region="bottom"] #hanjuku-gap { display: none !important; }
         gapDom.toastBox.appendChild(gapDom.idle);
       }
     } else if (gapDom.idle) { gapDom.idle.remove(); gapDom.idle = null; }
+
     const owned = gapNameSet(gap.captured), lost = gapNameSet(value.lost);
     const moves = gap.moves || [];
-    // Freshest live-battle summary, truncated to a single line by CSS.
     const battleLine = [['計画',gap.tactics],['判断',gap.decision],['切り札',gap.cards],['卵対策',gap.egg]]
-      .filter(([,text]) => text).map(([label,text]) => `${label}: ${text}`).join(' / ');
-    // The chart is static between observations; re-rendering it every poll
-    // also restarted its layout. Rebuild only when its inputs change.
-    const sig = JSON.stringify({moves, owned:[...owned].sort(), lost:[...lost].sort(),
-                                plan:value.plan, pending:value.pending, planInfo, battleLine, planToastVisible});
-    // News is a fixed-height, clipped strip; changes do not resize the chart.
+      .filter(([,text]) => text).map(([label,text]) => label+': '+text).join(' / ');
+    // The source currently caps 余白出撃 at eight. 8+ is truthful until the
+    // producer supplies an uncapped count; never claim to know the total.
+    const moveCount = moves.length >= 8 ? '8+' : String(moves.length);
+    const sig = JSON.stringify({chapter:value.chapter, moves, owned:[...owned].sort(),
+      lost:[...lost].sort(), battleLine, moveCount});
     if (sig === gapDom.flowSig) return;
     gapDom.flowSig = sig;
     const flow = gapDom.flow;
     flow.replaceChildren();
-    const flowHead = document.createElement('div'); flowHead.className = 'hanjuku-gap-flow-head';
-    const flowTitle = document.createElement('span'); flowTitle.textContent = '出撃チャート';
-    flowHead.append(flowTitle); flow.appendChild(flowHead);
-    if (battleLine) {
-      const war = document.createElement('div'); war.className = 'hanjuku-gap-battle-line';
-      war.textContent = `交戦中 ${battleLine}`;
-      flow.appendChild(war);
+    const head = document.createElement('div');
+    head.className = 'hanjuku-gap-flow-head';
+    const title = document.createElement('span');
+    title.textContent = '第'+(value.chapter || '—')+'話 進軍ミニマップ';
+    const count = document.createElement('span');
+    count.className = 'hanjuku-gap-flow-count';
+    count.textContent = '進軍数 '+moveCount;
+    head.append(title,count);
+    flow.appendChild(head);
+    const legend = document.createElement('div');
+    legend.className = 'hanjuku-gap-legend';
+    for (const [kind, label] of [['sortie','出撃'],['recall','帰還'],['repair','卵修復']]) {
+      const entry = document.createElement('span'); entry.className=kind; entry.textContent=label;
+      legend.appendChild(entry);
     }
-    if (!moves.length) {
-      const empty = document.createElement('div'); empty.className = 'hanjuku-gap-empty';
-      empty.textContent = '出撃中の将軍はいません'; flow.appendChild(empty);
-    } else {
-      for (const move of moves) {
-        const row = document.createElement('div'); row.className = 'hanjuku-gap-move';
-        const rowHead = document.createElement('div'); rowHead.className = 'hanjuku-gap-move-head';
-        const general = document.createElement('span'); general.className = 'hanjuku-gap-general';
-        general.textContent = move.general;
-        const state = document.createElement('span'); state.className = 'hanjuku-gap-state';
-        state.textContent = move.status || '行軍中';
-        rowHead.append(general, state);
-        const owner = name => !name ? 'unknown' : owned.has(name) ? 'own' : lost.has(name) ? 'lost' : 'enemy';
-        const route = document.createElement('div'); route.className = 'hanjuku-gap-route';
-        const source = document.createElement('span');
-        source.className = `hanjuku-gap-node ${owner(move.source)}`;
-        source.textContent = move.source || '未確認';
-        const arrow = document.createElement('span'); arrow.className = 'hanjuku-gap-arrow';
-        const target = document.createElement('span');
-        target.className = `hanjuku-gap-node ${owner(move.target)}`;
-        target.textContent = move.target || '未確認';
-        route.append(source, arrow, target);
-        row.append(rowHead, route);
-        if (move.reason) {
-          const why = document.createElement('div'); why.className = 'hanjuku-gap-move-why';
-          why.textContent = `理由 ${move.reason}`;
-          row.appendChild(why);
-        }
-        flow.appendChild(row);
+    flow.appendChild(legend);
+    const map = gapMinimap(value,moves,owned,lost);
+    if (map) {
+      flow.appendChild(map.svg);
+      if (map.unknown) {
+        const note = document.createElement('div'); note.className='hanjuku-gap-map-note';
+        note.textContent = '座標未確認の経路 '+map.unknown+'件は線を引いていません';
+        flow.appendChild(note);
       }
+    } else {
+      const note = document.createElement('div'); note.className='hanjuku-gap-empty';
+      note.textContent='話数・城座標の確認待ち';
+      flow.appendChild(note);
+    }
+    if (battleLine) {
+      const war = document.createElement('div'); war.className='hanjuku-gap-battle-line';
+      war.textContent='交戦中 '+battleLine; flow.appendChild(war);
     }
   }
   function setPanelState(element, label, tone) {
