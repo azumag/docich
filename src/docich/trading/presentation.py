@@ -10,7 +10,7 @@ from pathlib import Path
 import tempfile
 from typing import Mapping
 
-from ..overlay_queue import validate_event
+from ..overlay_queue import OVERLAY_TITLE_LIMIT, validate_event
 
 MODES = {"compact", "detailed"}
 _REASON_TEXT = {
@@ -168,6 +168,23 @@ def _portfolio_pnl(status: Mapping[str, object] | None) -> tuple[str, str]:
         f"含み損益 {unrealized} / 累計損益 {cumulative}",
         f"現在の含み損益は{unrealized_speech}、評価込み累計損益は{cumulative_speech}です。",
     )
+
+
+def _pnl_overlay_title(prefix: str, pnl_text: str, *, trade_pnl: str | None = None) -> str:
+    """Show P/L prominently, without repeating it in the notification body.
+
+    Titles have a hard limit in the shared overlay queue. If an unusually
+    large number would exceed it, do not clip digits into a false amount.
+    """
+    compact = pnl_text.replace("含み損益 ", "含み ").replace("累計損益 ", "累計 ")
+    parts = [prefix]
+    if trade_pnl is not None:
+        parts.append(trade_pnl)
+    parts.append(compact)
+    title = "｜".join(parts)
+    if len(title) > OVERLAY_TITLE_LIMIT:
+        return f"{prefix}｜損益 桁数超過"
+    return title
 
 
 def _safe_code(value: object, fallback: str = "unknown") -> str:
@@ -347,27 +364,30 @@ def _fill(
     strategy = _safe_code(event.get("strategy_id"))
     reason_code = _safe_code(event.get("reason_code"))
     reason = _reason_text(reason_code, event.get("reason_context"))
-    title = "暗号資産 PAPER 約定"
     brief = f"{reason}を検出：{symbol}を{side}"
-    body = f"{brief} / {pnl_body} / {strategy}"
+    body = f"{brief} / {strategy}"
     speech = f"{_decision_commentary(reason_code, is_sell=is_sell)}{brief}。"
+    trade_pnl_title = None
     if is_sell:
         if event.get("realized_pnl_reference") is None:
-            body += " / 実現損益 取得失敗"
+            trade_pnl_title = "今回 取得失敗"
             speech += "損益は確認できませんでした。"
         else:
             try:
                 pnl_text, spoken_sign = _signed_money(event.get("realized_pnl_reference"))
                 pnl_value = _decimal(event.get("realized_pnl_reference"), "pnl")
             except PresentationError:
-                body += " / 実現損益 取得失敗"
+                trade_pnl_title = "今回 取得失敗"
                 speech += "損益は確認できませんでした。"
             else:
-                body += f" / 今回の実現損益 {pnl_text}円"
+                trade_pnl_title = f"今回 {pnl_text}円"
                 if pnl_value == 0:
                     speech += "損益はプラスマイナスゼロです。"
                 else:
                     speech += f"損益は{spoken_sign}{_money(abs(pnl_value))}円です。"
+    title = _pnl_overlay_title(
+        f"暗号資産PAPER約定 {symbol[:20]} {side}", pnl_body, trade_pnl=trade_pnl_title,
+    )
     speech += pnl_speech
     overlay = validate_event(
         {
@@ -388,7 +408,7 @@ def _settlement(
     start_asset = _safe_code(event.get("start_asset"))
     start_amount = _money(event.get("start_amount"))
     complete = bool(event.get("complete"))
-    title = "暗号資産 PAPER 裁定観測"
+    title = _pnl_overlay_title("暗号資産PAPER 裁定観測", pnl_body)
     if complete:
         edge = _money(event.get("net_edge_bps"))
         body = f"{route} / {start_amount} {start_asset} / 模擬edge {edge} bps"
@@ -407,7 +427,6 @@ def _settlement(
             f"理由は{reason}です。無理に通さず見送れたので、次は条件が戻るかを見ます。"
         )
         level = "warn"
-    body = f"{pnl_body} / {body}"
     speech += pnl_speech
     overlay = validate_event(
         {
