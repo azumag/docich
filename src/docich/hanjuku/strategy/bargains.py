@@ -260,6 +260,12 @@ def plan_bargains(mem, shop, header, *, listed=None):
         bought[name] = bought.get(name, 0) + qty
     added, copies = [], 0
     _, copy_cap, factor = _caps(shop)
+    # Basis the plan actually used per card (panel stock plus, where the pass
+    # counts them, this visit's buys); logged so a refusal can be checked
+    # against what the planner believed was held.
+    seen_basis = {}
+    # On the observed listing, buy both requested cards before optional extras.
+    # Pair purchases prevent the cheaper card from monopolizing the budget.
     # The observed listing is authoritative. Round-robin the requested kinds
     # so a cheap first item cannot consume all cash before other requested
     # kinds get a chance. Stop at 99 held copies of each, or the real budget.
@@ -270,6 +276,7 @@ def plan_bargains(mem, shop, header, *, listed=None):
             if (name not in queued and type(price) is int and 0 < price <= KNOWN_PRICES[name]
                     and type(seen) is int and 0 <= seen < RICH_MERCHANT_MAX_COPIES
                     and _rich_room(mem, name, stock, bought) > 0):
+                seen_basis[name] = seen + bought.get(name, 0)
                 choices.append(name)
         amounts = {name: 0 for name in choices}
         remaining = rich_budget
@@ -318,6 +325,7 @@ def plan_bargains(mem, shop, header, *, listed=None):
         if name in queued or (name in bought and not cheap_pass):
             continue  # chart quantities and already-attempted purchases stay untouched
         seen = stock.get(name, 0) + (bought.get(name, 0) if cheap_pass else 0)
+        seen_basis[name] = seen
         target = target * factor
         price = KNOWN_PRICES[name] if listed is None else listed.get(name)
         if (type(seen) is not int or seen < 0 or type(price) is not int
@@ -350,6 +358,8 @@ def plan_bargains(mem, shop, header, *, listed=None):
                 observed_metric={'listing_seen': listed is not None,
                                  'cash_buffer': BARGAIN_CASH_BUFFER,
                                  'extra_gold_cap': BARGAIN_MONTHLY_GOLD,
-                                 'extra_copy_cap': BARGAIN_MONTHLY_COPIES},
+                                 'extra_copy_cap': BARGAIN_MONTHLY_COPIES,
+                                 'seen': dict(seen_basis),
+                                 'planned_cards_seen_total': sum(seen_basis.values())},
                 reason='必要資金と予備費を残し、在庫不足の強力札を月次購入へ追加。実売価格は店内で再確認する')
     return shop

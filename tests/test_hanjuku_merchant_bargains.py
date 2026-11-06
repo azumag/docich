@@ -321,3 +321,16 @@ def test_a_cheap_pass_still_respects_necessities_and_the_cash_reserve(ready):
     ready['shop'].update(egg='pending', egg_priority=True)       # recovery comes first
     b.plan_bargains(ready, ready['shop'], listing(9987).header, listed=dict(HALF))
     assert ready['shop']['items'] == [] and not ready['shop'].get('cheap_vendor_planned')
+
+
+def test_bargain_plan_records_only_considered_cards_not_total_holdings(ready):
+    """The planning subset must not be mistaken for whole-hand inventory."""
+    ready['card_stock'] = {'ノリウツール': 1, 'バルムンク': 17}
+    b.plan_bargains(ready, ready['shop'], listing(999).header)
+    records = [r for r in ready.get('_records', []) if r.get('decision') == 'bargain_plan']
+    assert records, 'expected a purchase plan with diagnostic evidence'
+    metric = records[-1]['observed_metric']
+    assert metric['planned_cards_seen_total'] == sum(metric['seen'].values())
+    assert 'seen_total' not in metric
+    assert 'バルムンク' not in metric['seen']
+    assert metric['planned_cards_seen_total'] != sum(ready['card_stock'].values())

@@ -196,3 +196,44 @@ def test_confirmed_purchase_enters_the_held_ledger_and_cap_declines_overflow(mon
     assert p.quantity_step(quote(999, count=3, cost=54), mem) == [p.pad('a')]
     assert mem['card_bought_since_read'] == {'ノリウツール': 3}
     assert mem['shop']['last_buy']['row'] == ['ノリウツール', 3, 18]
+
+
+
+def test_refusal_records_full_shop_context_after_retry(ready):
+    """Evidence includes the complete queue and state after a refused buy."""
+    ready['card_stock'] = {'ノリウツール': 3, 'ミックミー': 8}
+    shop = ready['shop']
+    rest = [['ミックミー', 2], ['クースカン', 3]]
+    actions, _ = _refused_after(ready, 'ノリウツール', 60, rest=rest)
+    assert actions == [p.pad('a')]
+    record = next(r for r in reversed(ready['_records'])
+                  if r.get('deviation_reason') == 'holding_limit')
+    metric = record['observed_metric']
+    assert metric['card_stock_total'] == 11
+    assert metric['items'] == [['ノリウツール', 30], *rest]
+    assert metric['shop_state']['hold_limit'] == 1
+    assert metric['shop_state']['hold_limit_open'] is True
+    assert metric['shop_state']['want'] is None
+    assert metric['shop_state']['last_buy'] == {'row': ['ノリウツール', 60, 18], 'gold': 300}
+    assert metric['shop_state']['gold'] == 300
+    # Snapshots must not change when the live queue changes.
+    shop['items'][0][1] = 1
+    assert metric['items'][0][1] == 30
+
+
+def test_refusal_shop_snapshot_detaches_nested_purchase_row(ready):
+    shop = ready['shop']
+    original_row = ['ノリウツール', 60, 18]
+    shop.update(items=[['ミックミー', 2]], want=['ノリウツール', 60, 18],
+                bought=[list(original_row)],
+                last_buy={'row': original_row, 'gold': 300})
+    screen = refused_list(gold=300)
+    screen.kind = 'shop_list'
+    assert p.shop_step(screen, ready) == [p.pad('a')]
+    metric = next(r['observed_metric'] for r in reversed(ready['_records'])
+                  if r.get('deviation_reason') == 'holding_limit')
+    assert metric['shop_state']['want'] == ['ノリウツール', 60, 18]
+    assert metric['shop_state']['last_buy'] == {'row': ['ノリウツール', 60, 18], 'gold': 300}
+    original_row[1] = 1
+    assert metric['shop_state']['last_buy']['row'][1] == 60
+    assert metric['shop_state']['want'][1] == 60
