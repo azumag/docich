@@ -197,9 +197,9 @@ def test_native_status_panel_classified_as_menu_still_confirms_location():
     assert panel.kind == 'castle_menu'
     assert post.step(panel, mem, None) == [pad('b')]
     assert state['stage'] == 'process'
-    assert mem['garrison']['アルマムーン'] == ['ゼウス']
+    assert _world(mem)['garrison']['アルマムーン'] == ['ゼウス']
     assert state['statuses']['ゼウス']['castle_evidence'] == 'native_castle_name'
-    assert not mem.get('general_location_unknown')
+    assert not _world(mem).get('general_location_unknown')
 
 
 def test_castle_menu_header_cannot_be_mistaken_for_verified_status():
@@ -303,7 +303,7 @@ def test_roster_waits_for_transient_marker_then_records_castle_without_select():
     assert post.step(parse(status('どうし')), mem, None) == [pad('b')]
     assert state['statuses']['どうし']['castle'] == 'キカンドン'
     assert state['statuses']['どうし']['castle_evidence'] == 'roster_triangle'
-    assert mem['garrison']['キカンドン'] == ['どうし']
+    assert _world(mem)['garrison']['キカンドン'] == ['どうし']
     assert state['tasks'] == []
 
 

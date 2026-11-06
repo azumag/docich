@@ -97,7 +97,7 @@ def test_a_camp_read_after_departure_ends_the_march_early():
     mem = observed(age=200, location='camp', delta=50)
     O._expire_spent_sorties(mem)
     assert 'A:x:M1' not in mem['sorties']
-    assert 'ヘルメス' in mem['garrison']['アルマムーン']
+    assert 'ヘルメス' in _world(mem)['garrison']['アルマムーン']
     assert any(r['decision'] == 'sortie_record_observed_ended' for r in mem['_records'])
 
 
@@ -105,14 +105,14 @@ def test_a_castle_read_after_departure_ends_the_march_early():
     mem = observed(age=200, location='castle', delta=50)
     O._expire_spent_sorties(mem)
     assert 'A:x:M1' not in mem['sorties']
-    assert 'ヘルメス' in mem['garrison']['アルマムーン']
+    assert 'ヘルメス' in _world(mem)['garrison']['アルマムーン']
 
 
 def test_a_status_read_before_departure_does_not_end_the_march():
     mem = observed(age=200, location='camp', delta=-50)
     O._expire_spent_sorties(mem)
     assert 'A:x:M1' in mem['sorties']
-    assert mem['garrison']['アルマムーン'] == []
+    assert _world(mem)['garrison']['アルマムーン'] == []
 
 
 def test_a_march_reading_does_not_end_the_march():
