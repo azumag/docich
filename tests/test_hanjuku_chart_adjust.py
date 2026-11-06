@@ -1187,7 +1187,8 @@ def test_worker_prompts_with_garrisons_and_drops_orders_whose_general_is_elsewhe
               (tmp_path / f'{adjust.HISTORY_LOG}.jsonl').read_text(encoding='utf-8').splitlines()]
     [dropped] = [e for e in events if e['event'] == 'adjusted_orders_dropped']
     assert {d['step']: d['why'] for d in dropped['dropped']} == {
-        'F2': 'general_elsewhere', 'F3': 'general_marching', 'F5': 'source_lost'}
+        'F1': 'source_last_defender', 'F2': 'general_elsewhere',
+        'F3': 'general_marching', 'F5': 'source_lost'}
 
 
 def test_adjust_prompt_grounds_cards_in_observed_stock_and_chapter_purchases(tmp_path):
