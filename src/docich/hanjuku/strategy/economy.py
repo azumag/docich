@@ -913,6 +913,17 @@ def _prioritise_recruit(mem, shop, gold):
     Includes existing cached shops on hotload. Original card purchases and
     the existing egg reserves are kept; unconfirmed deaths are not used.
     """
+    # Hot-loaded fixes must also revive a cash hold recorded by the old
+    # partial-roster gate earlier in the *same* month. Only revive when the
+    # current shortage and real held-budget checks now both approve it.
+    if (shop.get('recruit') == 'deferred_cash'
+            and type(gold) is int and gold >= RECRUIT_BATCH_GOLD
+            and _recruit_shortage(mem) is not None
+            and _recruit_spare_after_necessities(mem, shop, gold)[0] is True):
+        shop['recruit'] = 'pending'
+        shop.pop('recruit_measured_budget', None)
+        _record(mem, 'recruit_cash_rechecked', month=shop.get('key'),
+                reason='同じ月の募集保留を実際の残金・兵士・修理予約で再判定して再開する')
     if (egg_deferred_for_soldiers(shop)
             or shop.get('recruit') in ('deferred_egg', 'deferred_cash', 'deferred_army')
             or _stop_unneeded_recruit(mem, shop)):
