@@ -58,7 +58,7 @@ systemd: soren-runtime.service   ← worker "direct_stream" を登録しない�
 | B（完了） | `docich.stream_supervisor` の読み取り専用 `config`/`command`/`status`（旧 CLI と 50 パターン出力一致） | なし | CI + ローカル差分 |
 | C（完了、#3649〜#3653） | `run`/`stop`/`record`/`validate` の実装。固定ロック＋旧ロックを常に必須、`stop` は自分の runner のみ、TwiCa wrapper 差し替え。旧 `_run_ffmpeg` との差分テスト 5 シナリオ一致（ローカル） | なし（どの service からも未起動） | CI + 実プロセステスト + Linux コンテナ |
 | D（完了、docich #3654、soviet_now #816） | `docich-stream.service`（配置のみ、`.env` は shell 方式のラッパー経由）、`DOCICH_STREAM_OWNER`（既定 `soren`）、Pulse 前提確認。`start_all.sh` と `direct_stream.py run` が `owner=docich` で何も起動しない | なし（owner 既定 `soren`＝現状維持） | CI + 静的検証 + Linux コンテナ |
-| D2 | **運用ツールの所有者認識を直す**（§9）。`direct_stream.py` の存在や `lib/direct_stream.py stop` を前提とするものを、docich の entry も所有者として認識し、停止・再起動を `DOCICH_STREAM_OWNER` で振り分ける | なし | 各ツールの契約テスト |
+| D2 | **運用ツールの所有者認識を直す**（§8）。`direct_stream.py` の存在や `lib/direct_stream.py stop` を前提とするものを、docich の entry も所有者として認識し、停止・再起動を `DOCICH_STREAM_OWNER` で振り分ける | なし | 各ツールの契約テスト |
 | E | **本番切替**（本書 §5）。 | **あり（配信中断の可能性）** | D2 完了 + 利用者の明示承認 + 作業窓 |
 | F | 旧 Soren 実装の撤去 | なし | E 後の実配信確認 |
 | G | OBS 関連の撤去（`obs_*.sh`、backend `obs` 分岐、`obs.service` drop-in、`obs_capture_watchdog`） | なし（OBS が使われていないことを E で確認済みの場合） | 撤去前に参照箇所の網羅検索 |
@@ -115,7 +115,7 @@ A〜D は本番を触らずに進められる。E は §5 の承認なしに実�
 3. 起動前に Pulse 到達性と `soren_null` シンクの存在を確認する `ExecStartPre` を docich 側に持つ（Soren のスクリプトに依存しない）。シンクが無い場合の作成は既存スクリプトと同じ動作にそろえ、Pulse が落ちている場合は **起動せず失敗する**（無音配信を始めない）。
 4. 段階 E の事前条件に、`pactl info`、`soren_null` の存在、`pulseaudio.service` が user session 配下であることの読み取り確認を加える。
 
-## 9. 切替前に直す運用ツール（段階 D2、リポジトリの棚卸し結果）
+## 8. 切替前に直す運用ツール（段階 D2、リポジトリの棚卸し結果）
 
 稼働中の encoder を「`direct_stream.py` のプロセス」として識別する、または `lib/direct_stream.py stop` / `./direct_stream.sh run` で操作するコードがある。docich が所有者になると、これらは**誤判定（所有者なしに見える）・停止の拒否・何もしない再起動**を起こす。`status.json` は同じ形式・同じ場所なので、読み取り専用の利用者（`show_status.sh` の `direct_stream.sh status`、診断の status 読取）は変更不要。
 
@@ -131,7 +131,7 @@ A〜D は本番を触らずに進められる。E は §5 の承認なしに実�
 
 各対応は、旧 owner のままなら挙動が変わらないことを契約テストで固定する（既定 `soren` で完全に従来どおり）。
 
-## 8. 非目標
+## 9. 非目標
 
 - 本書のマージだけでの本番変更、配備、service の enable/start、固定ロック有効化フラグの変更。
 - encoder 以外（TTS・ラジオ・コメント・監視）の移管。別 ADR/Issue で扱う。
