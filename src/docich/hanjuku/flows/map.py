@@ -626,13 +626,12 @@ CURSOR_STILL_LIMIT = 6
 
 
 def _watch_cursor_still(mem):
-    """Start the inland re-anchor when the position estimate never moves.
+    """Mark a frozen position estimate for recovery via the own-castle list.
 
-    g1133 2026-11-05: `cursor` stayed [392,144] with `nav_last` null and
-    `uncertain` true for hours, so no order could be driven. The code already
-    has an inland search that moves to where roofs are visible; it was only
-    started from the arrive-but-no-roof path, so a frozen estimate never
-    reached it.
+    Unlike the former inland roof search, X -> しろ -> アルマムーン ->
+    SELECT provides a named, deterministic cursor cell even with no visible
+    roofs. The legacy nav_search path remains a bounded fallback if the menu
+    jump cannot be completed.
     """
     cursor = mem.get('cursor')
     watch = mem.get('cursor_still') or {}
@@ -644,13 +643,14 @@ def _watch_cursor_still(mem):
         return False
     watch['n'] = int(watch.get('n') or 0) + 1
     mem['cursor_still'] = watch
-    if watch['n'] < CURSOR_STILL_LIMIT or mem.get('nav_search'):
+    if (watch['n'] < CURSOR_STILL_LIMIT or mem.get('nav_search')
+            or mem.get('castle_jump') or (mem.get('anchor') and not mem.get('uncertain'))):
         return False
     mem['nav_search'] = True
     mem.pop('nav_search_leg', None)
     mem.pop('anchor', None)
     _record(mem, 'cursor_still_search', observed_metric={'cursor': list(cursor), 'still': watch['n']},
-            reason='現在地の推定が動かないままなので、城の多い内陸へ動いて屋根アンカーで再特定する')
+            reason='現在地の推定が動かないため、Xメニューの「しろ」からアルマムーンへ飛び座標を再設定する')
     return True
 
 
@@ -701,6 +701,33 @@ def _castle_list_target(screen, source):
     return None
 
 
+def _start_reanchor_jump(mem):
+    """Recover a lost cursor from a named castle, without a roof observation.
+
+    The SELECT return from the own-castle list is a stronger reference than
+    a guessed camera offset. Reuse the sortie castle-jump state machine, but
+    keep this recovery independent of any active order or available garrison.
+    """
+    home = 'アルマムーン'
+    chapter = mem.get('chapter') or 0
+    if (not mem.get('nav_search') or home not in chart.castles(chapter)
+            or mem.get('castle_jump') or mem.get('y_jump') or mem.get('expect_menu')):
+        return None
+    skip = mem.get('castle_jump_skip') or {}
+    tick = int(mem.get('tick') or 0)
+    if (skip.get('mode') == 'reanchor'
+            and tick - int(skip.get('tick') or 0) < CASTLE_JUMP_COOLDOWN):
+        return None
+    mem['castle_jump'] = {'mode': 'reanchor', 'step': None, 'source': home,
+                          'phase': 'menu', 'age': 0, 'total': 0, 'tick': tick,
+                          'menu_presses': 1, 'selects': 0, 'scrolls': 0, 'waits': 0}
+    mem.pop('select_centered', None)
+    _record(mem, 'cursor_reanchor_open', target=home,
+            observed_metric={'cursor_before': mem.get('cursor'), 'chapter': chapter},
+            reason='カーソルを見失ったためX→しろ→アルマムーン→SELECTで基準点を復旧する')
+    return [pad('x')]
+
+
 def _want_castle_jump(mem, order, source, goal):
     chapter = mem.get('chapter') or 0
     if chapter not in Y_JUMP_OFFSET:
@@ -736,11 +763,18 @@ def _end_castle_jump(screen, mem, why):
     jump = mem.pop('castle_jump', None)
     if not isinstance(jump, dict):
         return []
-    mem['castle_jump_skip'] = {'step': jump.get('step'), 'tick': int(mem.get('tick') or 0)}
-    _record(mem, 'castle_jump_failed', chart_step=jump.get('step'), target=jump.get('source'),
-            screen=screen.kind,
-            observed_metric={'why': why, 'age': jump.get('age'), 'phase': jump.get('phase')},
-            reason='Xメニューの「しろ」から出撃元へ飛べないため、通常の移動に戻る')
+    mode = jump.get('mode')
+    mem['castle_jump_skip'] = {'mode': mode, 'step': jump.get('step'),
+                               'tick': int(mem.get('tick') or 0)}
+    metric = {'why': why, 'age': jump.get('age'), 'phase': jump.get('phase')}
+    if mode == 'reanchor':
+        _record(mem, 'cursor_reanchor_failed', target=jump.get('source'),
+                screen=screen.kind, observed_metric=metric,
+                reason='アルマムーンへのSELECT復旧が成立しないため、再試行を制限して従来の探索へ戻る')
+    else:
+        _record(mem, 'castle_jump_failed', chart_step=jump.get('step'), target=jump.get('source'),
+                screen=screen.kind, observed_metric=metric,
+                reason='Xメニューの「しろ」から出撃元へ飛べないため、通常の移動に戻る')
     if screen.kind == 'main_menu' or _castle_list_rows(screen):
         return [pad('b')]
     return []
@@ -760,9 +794,11 @@ def castle_jump_step(screen, mem, frame):
     jump['age'] = int(jump.get('age') or 0) + 1
     if jump['total'] > CASTLE_JUMP_LIMIT:
         return _end_castle_jump(screen, mem, 'limit')
-    order = _order_for_step(mem, jump['step'])
-    if order is None or mem.get('active') != jump['step']:
-        return _end_castle_jump(screen, mem, 'order_changed')
+    reanchor = jump.get('mode') == 'reanchor'
+    if not reanchor:
+        order = _order_for_step(mem, jump['step'])
+        if order is None or mem.get('active') != jump['step']:
+            return _end_castle_jump(screen, mem, 'order_changed')
 
     phase = jump.get('phase')
     if phase == 'menu':
@@ -817,6 +853,39 @@ def castle_jump_step(screen, mem, frame):
 
     if phase == 'confirm':
         if screen.kind == 'map':
+            if reanchor:
+                # A confirmed SELECT from the named row is the new map origin.
+                # Do not inspect roof pixels or press A: this is localization,
+                # not a sortie or castle status request.
+                cell = chart.castles(mem.get('chapter') or 0).get(jump['source'])
+                if cell is None:
+                    return _end_castle_jump(screen, mem, 'home_coordinates_missing')
+                cursor = _cursor(screen)
+                if cursor is None:
+                    if jump['age'] < 4:
+                        return []
+                    return _end_castle_jump(screen, mem, 'map_cursor_missing')
+                mem['cursor'] = list(cell)
+                mem['uncertain'] = False
+                mem['anchor'] = jump['source']
+                for key in ('nav_search', 'nav_search_leg', 'nav_last',
+                            'nav_prev', 'nav_still', 'nav_pressed', 'select_used',
+                            'select_centered', 'cursor_still', 'unanchored',
+                            'unverified', 'near_goal', 'expect_menu',
+                            'menu_miss', 'menu_hold'):
+                    mem.pop(key, None)
+                tick = int(mem.get('tick') or 0)
+                mem['nav_last'] = {'screen': list(cursor), 'expected': [0, 0],
+                                   'tick': tick, 'kind': screen.kind, 'search': False}
+                mem['goal_anchor_lock'] = jump['source']
+                mem['select_focus_tick'] = tick
+                mem['select_tick'] = tick
+                mem.pop('castle_jump', None)
+                mem.pop('castle_jump_skip', None)
+                _record(mem, 'cursor_reanchor_confirm', target=jump['source'],
+                        observed_metric={'cell': list(cell), 'screen_cursor': list(cursor)},
+                        reason='しろ一覧のアルマムーンでSELECTが完了したため屋根検出なしでその座標を基準点にする')
+                return []
             # The named own-castle row was selected before SELECT. Its field
             # return is the navigation evidence; the cursor sprite can cover
             # every roof pixel, so an absent detected roof is not a refusal.
@@ -866,6 +935,10 @@ def map_step(screen: Screen, mem, frame):
         # with `nav_last` null). Counted, not recorded, so it stays cheap.
         _tally(mem, 'map_no_cursor')
     _watch_cursor_still(mem)
+    if screen.cursor and not screen.marker:
+        reanchor = _start_reanchor_jump(mem)
+        if reanchor is not None:
+            return reanchor
     _release_stale_active(mem)
     if _drop_stale_y_jump(screen, mem):
         return []
