@@ -109,7 +109,11 @@ def test_an_exhausted_adopted_plan_regenerates_only_after_it_becomes_unstartable
 
 
 def test_a_chart_with_no_safe_candidates_records_hold_instead_of_fake_orders():
-    mem = memory(garrison={HOME: []})
+    # Every owned castle has a measured empty roster. Leaving the other
+    # castles absent from garrison means "unread", not "empty", and correctly
+    # creates source-probe candidates instead of a hold.
+    mem = memory(garrison={c: [] for c in
+                          (HOME, 'キカンドン', 'ナキューメラ', 'カストーラ')})
     adopt(mem, after=['captured', 'ゴーメン'])
     assert not replan.interim_candidates(mem)
 
