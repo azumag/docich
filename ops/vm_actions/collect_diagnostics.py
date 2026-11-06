@@ -6931,11 +6931,8 @@ def _project_corner_state(data):
             "hanjuku-chart-v479-summon-monster-hp-9999",
             "hanjuku-chart-v480-recruit-partial-roster",
             "hanjuku-chart-v481-recruit-partial-gate",
-<<<<<<< HEAD
             "hanjuku-chart-v482-recruit-partial-cash",
-=======
-            "hanjuku-chart-v482-no-empty-castle",
->>>>>>> 2398de70 (fix(hanjuku): 城を空にする出撃例外を廃止し常に1人以上残す (#3566))
+            "hanjuku-chart-v483-no-empty-castle",
             "hanjuku-chart-v129-battle-card-progress",
             "hanjuku-chart-v130-summer-cursor-evidence",
             "hanjuku-chart-v131-defense-month-economy",
