@@ -590,6 +590,10 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
     battle_flow.note_duel_event(screen, mem)
     actions = map_flow.castle_jump_step(screen, mem, frame)
     if actions is None:
+        # A successful reanchor is a nested interrupt: restore the exact
+        # foreground owner before unrelated normal-priority flows run.
+        actions = map_flow.resume_reanchored_owner(screen, mem, frame)
+    if actions is None:
         actions = egg_recovery_flow.resume_egg_ritual_step(screen, mem)
     if actions is None:
         actions = deploy_flow.resume_sortie_step(screen, mem)
