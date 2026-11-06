@@ -202,6 +202,91 @@ def test_native_status_panel_classified_as_menu_still_confirms_location():
     assert not _world(mem).get('general_location_unknown')
 
 
+def test_named_castle_whose_ownership_is_stale_is_remembered_once():
+    # g1139 2026-11-07 00:03-00:08: ポワソン took ジュメルズ, the monthly roster
+    # read him as しろのなかにいます with the triangle on that castle, but the
+    # Y map still listed ジュメルズ as enemy. _assign rejected the measured
+    # name, the locate task read the same name from the castle status panel,
+    # and still waited out STATUS_RETRIES three times, logging
+    # castle_status_not_read (the name had in fact been read each time).
+    mem = memory()
+    post.arm(mem)
+    state = mem['post_month_status']
+    state.update(stage='locate_info', job={'kind': 'locate', 'name': 'ゼウス'},
+                 statuses={'ゼウス': {'location': 'castle'}})
+    panel = native_castle_panel('スペンソニア')
+    assert panel.kind == 'castle_menu'
+    assert post.step(panel, mem, None) == [pad('b')]
+    assert state['stage'] == 'process'
+    assert _world(mem)['castle_location_pending']['ゼウス']['castle'] == 'スペンソニア'
+    assert state['statuses']['ゼウス']['castle'] == 'スペンソニア'
+    assert state['statuses']['ゼウス']['castle_pending'] is True
+    # The planner still must not use a castle we do not own yet.
+    assert 'スペンソニア' not in _world(mem).get('garrison', {})
+    assert _world(mem)['general_location_unknown'] == ['ゼウス']
+    assert any(r['decision'] == 'post_month_castle_pending_ownership'
+               for r in mem['_records'])
+    assert any(r.get('resulting_event') == 'castle_named_unowned'
+               for r in mem['_records'])
+
+
+def test_pending_castle_does_not_queue_another_select_locate():
+    pending = {'ゼウス': {'location': 'castle', 'castle': 'スペンソニア',
+                          'castle_pending': True}}
+    assert post._tasks(pending, ['ゼウス']) == []
+    assert post._tasks({'ゼウス': {'location': 'castle'}}, ['ゼウス']) == [
+        {'kind': 'locate', 'name': 'ゼウス'}]
+
+
+def test_pending_castle_is_promoted_once_the_world_map_shows_it_ours():
+    mem = memory(captured=['スペンソニア'])
+    _world(mem)['castle_location_pending'] = {
+        'ゼウス': {'castle': 'スペンソニア', 'chapter': 1, 'tick': 90,
+                   'evidence': 'native_castle_name'}}
+    _world(mem)['general_location_unknown'] = ['ゼウス']
+    post.arm(mem)
+    assert _world(mem)['garrison']['スペンソニア'] == ['ゼウス']
+    assert _world(mem)['general_location_unknown'] == []
+    assert 'ゼウス' not in _world(mem).get('castle_location_pending', {})
+
+
+def test_roster_triangle_for_a_just_captured_castle_waits_for_ownership():
+    mem = memory()
+    post.arm(mem)
+    _world(mem)['garrison'] = {'アルマムーン': ['どうし']}
+    state = mem['post_month_status']
+    state.update(stage='roster', top_confirmed=True)
+    first = parse(roster(names=('どうし',), selected=0))
+    mapped = {'source': 'selection_marker', 'castle_candidate': 'スペンソニア',
+              'box': [98, 110, 104, 116]}
+    with patch.object(post, '_marker', return_value=mapped):
+        assert post.step(first, mem, first) == []      # settle the highlight
+        assert post.step(first, mem, first) == [pad('a')]
+    assert post.step(parse(status('どうし')), mem, None) == [pad('b')]
+    row = state['statuses']['どうし']
+    assert row['castle'] == 'スペンソニア' and row['castle_pending'] is True
+    assert 'スペンソニア' not in _world(mem).get('garrison', {})
+    # An older garrison entry is not his observed station any more.
+    assert 'どうし' not in _world(mem)['garrison']['アルマムーン']
+    assert any(r['decision'] == 'post_month_castle_pending_ownership'
+               for r in mem['_records'])
+
+
+def test_unread_castle_panel_records_the_screen_for_the_next_diagnosis():
+    mem = memory()
+    post.arm(mem)
+    state = mem['post_month_status']
+    state.update(stage='locate_info', job={'kind': 'locate', 'name': 'ゼウス'},
+                 statuses={'ゼウス': {'location': 'castle'}},
+                 phase_reads=post.STATUS_RETRIES - 1)
+    assert post.step(Screen([], None, 'よめないがめん', kind='castle_menu'),
+                     mem, None) == [pad('b')]
+    record = next(r for r in mem['_records']
+                  if r['decision'] == 'post_month_castle_location_unverified')
+    assert record['observed_metric']['text'] == 'よめないがめん'
+    assert record['observed_metric']['screen'] == 'castle_menu'
+
+
 def test_castle_menu_header_cannot_be_mistaken_for_verified_status():
     mem = memory()
     post.arm(mem)

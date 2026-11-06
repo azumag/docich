@@ -57,7 +57,11 @@ def _tasks(statuses, names):
                 continue
             queue.append({'kind': 'recall', 'name': name})
         elif info.get('location') == 'castle':
-            if not info.get('castle'):
+            # A castle name measured from the roster triangle or the native
+            # status panel is already known; only its ownership is pending.
+            # Re-running the expensive SELECT->ステータス locate for it would
+            # repeat the same failure every month (2026-11-07 g1139 ポワソン).
+            if not info.get('castle') and not info.get('castle_pending'):
                 queue.append({'kind': 'locate', 'name': name})
             if info.get('broken'):
                 queue.append({'kind': 'repair', 'name': name})
@@ -95,6 +99,9 @@ def arm(mem):
                       and type(count.get('count')) is int
                       and count['count'] != len(statuses))
     scan = cache is None or bool(stale or pending or count_mismatch)
+    # A castle recorded while its ownership was stale is now usable the moment
+    # the Y map shows our flag; do not wait for another roster SELECT.
+    promoted = _promote_pending(mem, statuses)
     if not scan and not _tasks(statuses, list(statuses)):
         # Common case: zero input and zero roster navigation this month.
         mem['post_month_status_last'] = {
@@ -114,6 +121,7 @@ def arm(mem):
     _log(mem, 'post_month_status_armed',
          observed_metric={'scope': scope, 'cached': len(statuses),
                           'reopen': sorted(stale), 'joins': pending,
+                          'promoted': promoted,
                           'count_mismatch': count_mismatch},
          reason=('変更があり得る将軍だけ個別ステータスを再取得する'
                  if scan else '既知の帰還・修理タスクのみ実行する'))
@@ -222,6 +230,83 @@ def _forget_field_residents(mem, name):
             occupants.remove(name)
 
 
+def _forget_pending(mem, name):
+    pending = _world(mem).get('castle_location_pending')
+    if isinstance(pending, dict):
+        pending.pop(name, None)
+
+
+def _note_pending_castle(mem, name, castle, *, evidence):
+    """Keep a measured castle name until the ownership cache catches up.
+
+    A general's own status can say しろのなかにいます while the roster triangle
+    (or the castle status panel opened at his SELECT) names a castle the Y map
+    still shows as enemy: the castle was taken moments ago and ``captured`` has
+    not been refreshed yet (g1139 2026-11-07: ポワソン took ジュメルズ at 00:03,
+    the roster bound him to it at 00:04, and the locate task spent three
+    12-read waits because ``_assign`` kept rejecting the name; the Y map only
+    recorded the capture at 00:09). The castle name is observed; only
+    ownership is missing, so keep it here and never add him to a garrison of a
+    castle we do not own yet. ``_promote_pending`` binds it once the Y map
+    confirms the flag, without another SELECT round trip.
+    """
+    if not isinstance(name, str) or not isinstance(castle, str):
+        return
+    world = _world(mem)
+    pending = world.get('castle_location_pending')
+    if not isinstance(pending, dict):
+        pending = world['castle_location_pending'] = {}
+    previous = pending.get(name)
+    pending[name] = {'castle': castle, 'chapter': mem.get('chapter'),
+                     'tick': int(mem.get('tick') or 0), 'evidence': evidence}
+    # He is verifiably in *a* castle, just not one we may place him in yet. An
+    # older garrison entry at another castle is no longer his observed station.
+    _forget_field_residents(mem, name)
+    row = ((mem.get('post_month_status') or {}).get('statuses') or {}).get(name)
+    if isinstance(row, dict):
+        row.update(castle=castle, castle_evidence=evidence, castle_pending=True)
+    cached = ((receipts._persistent_status(mem) or {}).get('statuses') or {}).get(name)
+    if isinstance(cached, dict):
+        # The full-scan snapshot was written before this locate task ran.
+        cached.update(castle=castle, castle_evidence=evidence, castle_pending=True)
+    if not isinstance(previous, dict) or previous.get('castle') != castle:
+        _log(mem, 'post_month_castle_pending_ownership', general=name, castle=castle,
+             observed_metric={'evidence': evidence, 'tick': int(mem.get('tick') or 0)},
+             reason='城名は実画面で確認できたが所有一覧が未更新のため、所有確認まで在城一覧へ入れない')
+
+
+def _promote_pending(mem, statuses):
+    """Bind a remembered castle once the Y map proves it is ours."""
+    pending = _world(mem).get('castle_location_pending')
+    if not isinstance(pending, dict) or not pending:
+        return 0
+    from ..os_layer.world import _owned
+    owned = _owned(mem)
+    cache = receipts._persistent_status(mem)
+    promoted = 0
+    for name in list(pending):
+        record = pending.get(name)
+        if not isinstance(record, dict) or record.get('chapter') != mem.get('chapter'):
+            pending.pop(name, None)
+            continue
+        castle = record.get('castle')
+        if not isinstance(castle, str) or castle not in owned:
+            continue
+        if not _assign(mem, name, castle, evidence='pending_ownership_confirmed'):
+            continue
+        pending.pop(name, None)
+        promoted += 1
+        row = statuses.get(name) if isinstance(statuses, dict) else None
+        if isinstance(row, dict):
+            row.update(castle=castle, castle_evidence='pending_ownership_confirmed')
+            row.pop('castle_pending', None)
+        cached = ((cache or {}).get('statuses') or {}).get(name)
+        if isinstance(cached, dict):
+            cached.update(castle=castle, castle_evidence='pending_ownership_confirmed')
+            cached.pop('castle_pending', None)
+    return promoted
+
+
 def _complete_scan(mem, state):
     if (not state['names'] or len(set(state['names'])) != len(state['names'])
             or not state.get('top_confirmed')
@@ -247,6 +332,7 @@ def _complete_scan(mem, state):
     for name in missing:
         receipts.record_departure(mem, name)
         _forget_field_residents(mem, name)
+        _forget_pending(mem, name)
         for key in ('house_eggs', 'egg_types', 'egg_uses'):
             if isinstance(mem.get(key), dict):
                 mem[key].pop(name, None)
@@ -316,7 +402,9 @@ def _retry_location(mem, state, screen, reason):
     general = (state.get('job') or {}).get('name')
     count = int(state.get('locate_retries') or 0)
     _log(mem, 'post_month_castle_location_unverified', general=general,
-         resulting_event=reason, observed_metric={'attempt': count + 1},
+         resulting_event=reason,
+         observed_metric={'attempt': count + 1, 'screen': screen.kind,
+                          'text': (screen.text or '')[:120]},
          reason='SELECTの後に城名が確認できなかったため同じ将軍を再確認する')
     if count < LOCATE_RETRIES:
         state['locate_retries'] = count + 1
@@ -613,6 +701,7 @@ def step(screen, mem, frame):
             state['dirty'].remove(name)
         if loc in ('camp', 'march'):
             _forget_field_residents(mem, name)
+            _forget_pending(mem, name)
         elif loc == 'castle':
             # Existing named castle rosters are still valid when the observed
             # status says resident. Do not repeat a costly SELECT for them.
@@ -620,13 +709,18 @@ def step(screen, mem, frame):
                    if isinstance(residents, list) and name in residents]
             candidate = marker.get('castle_candidate') if isinstance(marker, dict) else None
             if candidate:
-                if not _assign(mem, name, candidate, evidence='roster_triangle'):
-                    _log(mem, 'post_month_roster_castle_rejected', general=name, castle=candidate,
-                         reason='三角マークの候補城が現在の所有城ではないため在城として確定しない')
+                if _assign(mem, name, candidate, evidence='roster_triangle'):
+                    _forget_pending(mem, name)
+                else:
+                    # The triangle and the status agree on the castle; only the
+                    # Y map still lists it as enemy. Keep the name, skip the
+                    # repeated SELECT, and promote it when ownership lands.
+                    _note_pending_castle(mem, name, candidate, evidence='roster_triangle')
             elif len(old) == 1:
                 from ..os_layer.world import _owned
                 if old[0] in _owned(mem):
                     row.update(castle=old[0], castle_evidence='previous_named_roster')
+                    _forget_pending(mem, name)
         _stage(state, 'roster_next')
         return [pad('b')]
     if stage == 'roster_next':
@@ -762,8 +856,16 @@ def step(screen, mem, frame):
         # from the menu header alone: _label answers only when the panel text
         # carries the CASTLE_STATUS rows (name + しゅうにゅう/レベル/しょうぐん).
         castle = map_registration._label(screen, mem.get('chapter'))
-        if castle is not None and _assign(mem, name, castle, evidence='native_castle_name'):
-            _task_complete(mem, state, result='castle_verified')
+        if castle is not None:
+            if _assign(mem, name, castle, evidence='native_castle_name'):
+                _task_complete(mem, state, result='castle_verified')
+                return [pad('b')]
+            # The panel named the castle. Waiting out STATUS_RETRIES here only
+            # repeated the same three attempts every month (g1139 ポワソン
+            # 2026-11-07): the missing fact was ownership, not the name, and the
+            # Y map records it minutes later. Remember the name and finish.
+            _note_pending_castle(mem, name, castle, evidence='native_castle_name')
+            _task_complete(mem, state, result='castle_named_unowned')
             return [pad('b')]
         if screen.kind == 'castle_menu' and screen.hand:
             toward = menu_to(screen, 'ステータス')
