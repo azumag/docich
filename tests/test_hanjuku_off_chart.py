@@ -536,7 +536,11 @@ def test_sorties_without_a_recent_tick_no_longer_block_their_generals():
     mem['tick'] = 50
     mem['sorties']['I:b:1']['tick'] = 45
     assert policy.next_order(mem) is None                     # ココット marching right now
+    # Chapter 1's measured arrival wait is 800 observations, not the obsolete
+    # 400-observation display limit. Never free a still-travelling general early.
     mem['tick'] = 45 + policy.SORTIE_BUSY_TICKS
+    assert policy.next_order(mem) is None
+    mem['tick'] = 45 + 2 * policy.SORTIE_BUSY_TICKS
     assert policy.next_order(mem)['step'] == 'A:p:K3'         # ...but not forever
 
 
