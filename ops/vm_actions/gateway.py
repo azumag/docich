@@ -908,22 +908,13 @@ def deploy_git(cfg,repo,sha):
     intent_written=False
     rebaselined_from=None
     try:
-        # #3344 Phase 3: verify the bundle as a pre-deploy gate, then import
-        # only the delta objects via a disposable staging repo. A direct bundle
-        # fetch would re-store the whole ~26MB non-thin pack on every deploy.
-        subprocess.run(['git','-C',str(root),'-c','core.hooksPath=/dev/null','bundle','verify',str(bundle)],
-                       stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,check=True,timeout=120)
-        # The staging fetch must succeed and must not recurse. git's default
-        # on-demand recursion resolves every gitlink reachable in the incoming
-        # history against the submodule remote; one gitlink whose commit was
-        # garbage collected upstream (a merged-and-deleted PR branch) makes the
-        # remote answer "upload-pack: not our ref" and fails the whole fetch,
-        # aborting every deploy before the baseline can move (2026-09-10 outage).
-        # The second historical fetch (--recurse-submodules=on-demand) was a
-        # measured no-op (WP2 dry-run: a bundle never carries submodule
-        # objects) and is removed; submodule objects still arrive through
-        # sync_owned_submodules() below.
-        _stage_bundle_objects(cfg,root,bundle)
+        # #3344 Phase 4: the bundle verify gate moved into
+        # _stage_bundle_objects (staging-side verify doubles as the gate and
+        # the (alpha) fallback trigger); the upload-time verify in
+        # upload_bundle still stands. A direct bundle fetch would re-store
+        # the whole ~26MB non-thin pack on every deploy, so only the delta
+        # objects are imported via a disposable staging repo.
+        bundle_mode=_stage_bundle_objects(cfg,root,bundle,sha,head)
         if git(root,'cat-file','-t',sha)!='commit': raise ValueError('requested object is not commit')
         if projection_base!=sha:
             # Policy: production deploys move the recorded projection baseline
@@ -1028,6 +1019,10 @@ def deploy_git(cfg,repo,sha):
         _close_projection_plans(projection_plans)
     result={'status':'deployed','sha':sha}
     if rebaselined_from is not None: result['rebaselined_from']=rebaselined_from
+    # #3344 Phase 4: which payload shape was imported (thin/full, or the
+    # (alpha) full_fallback when the bundle failed verification).
+    result['bundle_mode']=bundle_mode['bundle_mode']
+    if 'fallback_reason' in bundle_mode: result['bundle_fallback_reason']=bundle_mode['fallback_reason']
     # #3344: bound pack growth after the successful transaction. post_deploy
     # is the only --prune=now call site; every object still needed is now
     # reachable from the verified HEAD. Best-effort, never raises.
@@ -1056,10 +1051,9 @@ def rebaseline_git(cfg,repo,sha):
     _verify_ops_brief(cfg,repo,head)
     bundle=bundle_file(cfg,repo,sha)
     if not bundle.is_file(): raise ValueError('bundle missing')
-    # #3344 Phase 3: same delta-only import as deploy_git.
-    subprocess.run(['git','-C',str(root),'-c','core.hooksPath=/dev/null','bundle','verify',str(bundle)],
-                   stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,check=True,timeout=120)
-    _stage_bundle_objects(cfg,root,bundle)
+    # #3344 Phase 4: same delta-only import as deploy_git (verify gate moved
+    # into _stage_bundle_objects; upload-time verify in upload_bundle stands).
+    bundle_mode=_stage_bundle_objects(cfg,root,bundle,sha,head)
     if git(root,'cat-file','-t',sha)!='commit': raise ValueError('requested object is not commit')
     ancestor=subprocess.run(['git','-C',str(root),'-c','core.hooksPath=/dev/null','merge-base','--is-ancestor',head,sha],
                             stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
@@ -1076,6 +1070,9 @@ def rebaseline_git(cfg,repo,sha):
                            'projection_base':projection_base,
                            'rebaseline_history':history})
     result={'status':'rebased','sha':head,'from':old}
+    # #3344 Phase 4: same bundle_mode recording as deploy_git.
+    result['bundle_mode']=bundle_mode['bundle_mode']
+    if 'fallback_reason' in bundle_mode: result['bundle_fallback_reason']=bundle_mode['fallback_reason']
     # #3344: grace prune only; --prune=now stays exclusive to post-deploy.
     result['git_gc']=_post_op_git_gc(cfg,repo,root,sha,'grace')
     return result
@@ -1242,8 +1239,27 @@ def _post_op_git_gc(cfg, repo, root: Path, sha: str, prune_mode: str, log=None):
         return {'status': 'error', 'reason': 'bad_verdict'}
     return verdict
 
-def _stage_bundle_objects(cfg, root: Path, bundle: Path):
-    """Import bundle objects through a disposable staging repo (#3344 Phase 3).
+def _bundle_verify(root: Path, bundle: Path) -> tuple[bool, list[str]]:
+    """Verify a bundle against the production repo (#3344 Phase 4).
+
+    Returns (ok, prerequisites): ``ok`` is the verify exit status and
+    ``prerequisites`` are the 40-hex SHAs from "The bundle requires this
+    ref:" lines. A thin bundle's prerequisites must already be present in
+    the production repo; ``git bundle verify`` fails otherwise, which is
+    the (alpha) fallback trigger. A full bundle reports no prerequisites.
+    """
+    proc = subprocess.run(
+        ['git', '-C', str(root), '-c', 'core.hooksPath=/dev/null',
+         'bundle', 'verify', str(bundle)],
+        stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL, text=True, timeout=120)
+    prerequisites = re.findall(
+        r'The bundle requires this ref:\s*([0-9a-f]{40})', proc.stdout or '')
+    return proc.returncode == 0, prerequisites
+
+
+def _stage_bundle_objects(cfg, root: Path, bundle: Path, sha: str, base_sha=None) -> dict:
+    """Import bundle objects through a disposable staging repo (#3344 Phase 4).
 
     Fetching a bundle writes its entire non-thin pack into the receiving repo
     regardless of refspec (WP2 dry-run), so the full-history payload is first
@@ -1253,6 +1269,17 @@ def _stage_bundle_objects(cfg, root: Path, bundle: Path):
     keeps .git pack growth bounded per deploy.  The staging repo is deleted
     in ``finally`` -- periodic recreation is its bounding mechanism, so no
     retention state can accumulate.
+
+    The bundle is verified inside staging, not by the caller: a failed
+    verify falls back to a negotiated fetch of the reviewed sha from the
+    canonical remote ((alpha), same URL as RECONCILE_FETCH_URL) and the
+    deploy continues as ``full_fallback``.  A failed fallback fetch still
+    raises, so the deploy fails closed exactly as before.  ``base_sha`` is
+    the production HEAD at deploy start; when the bundle has prerequisites
+    it is seeded into staging by ref (``+HEAD:refs/vmops/base`` -- a raw
+    sha want is refused over the file transport), so the thin unbundle has
+    its prerequisite locally.  Returns the ``bundle_mode`` verdict
+    (``thin``/``full``/``full_fallback``) for the operation result.
     """
     # Recover scratch repos left by hard kills (finally cannot run on SIGKILL).
     # Never touch recent directories: another operation may still be using one.
@@ -1271,15 +1298,43 @@ def _stage_bundle_objects(cfg, root: Path, bundle: Path):
     try:
         subprocess.run(['git','init','--bare','--quiet',str(staging)],
                        stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,check=True,timeout=60)
-        # The staging fetch must not recurse: a bare repo has no worktree to
-        # recurse into, but keep the flag explicit so the unbundle is strict
-        # and identical to the pre-#3344 authoritative fetch.
-        subprocess.run(['git','-C',str(staging),'-c','core.hooksPath=/dev/null','fetch','--no-recurse-submodules','--no-tags','--force',str(bundle),'+HEAD:refs/vmops/incoming'],
-                       stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,check=True,timeout=300)
+        verify_ok, prerequisites = _bundle_verify(root, bundle)
+        if not verify_ok:
+            # (alpha) fallback: negotiated fetch of the reviewed sha from the
+            # canonical remote (same URL as RECONCILE_FETCH_URL).
+            subprocess.run(['git','-C',str(staging),'-c','core.hooksPath=/dev/null','fetch','--no-recurse-submodules','--no-tags','--force',RECONCILE_FETCH_URL,sha],
+                           stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,check=True,timeout=RECONCILE_TIMEOUT)
+            subprocess.run(['git','-C',str(staging),'update-ref','refs/vmops/incoming','FETCH_HEAD'],
+                           stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,check=True,timeout=60)
+            mode = {'bundle_mode': 'full_fallback',
+                    'fallback_reason': 'bundle_verify_failed'}
+        else:
+            if prerequisites and base_sha:
+                # Seed production HEAD into staging (ref, not raw sha) so the
+                # thin bundle's prerequisites exist locally.
+                subprocess.run(['git','-C',str(staging),'-c','core.hooksPath=/dev/null','fetch','--no-recurse-submodules','--no-tags','--force',str(root),'+HEAD:refs/vmops/base'],
+                               stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,check=True,timeout=120)
+            # The staging fetch must not recurse: a bare repo has no worktree
+            # to recurse into, but keep the flag explicit so the unbundle is
+            # strict and identical to the pre-#3344 authoritative fetch.
+            # git's default on-demand recursion resolves every gitlink
+            # reachable in the incoming history against the submodule remote;
+            # one gitlink whose commit was garbage collected upstream (a
+            # merged-and-deleted PR branch) makes the remote answer
+            # "upload-pack: not our ref" and fails the whole fetch, aborting
+            # every deploy before the baseline can move (2026-09-10 outage).
+            # The second historical fetch (--recurse-submodules=on-demand)
+            # was a measured no-op (WP2 dry-run: a bundle never carries
+            # submodule objects) and is removed; submodule objects still
+            # arrive through sync_owned_submodules() in the caller.
+            subprocess.run(['git','-C',str(staging),'-c','core.hooksPath=/dev/null','fetch','--no-recurse-submodules','--no-tags','--force',str(bundle),'+HEAD:refs/vmops/incoming'],
+                           stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,check=True,timeout=300)
+            mode = {'bundle_mode': 'thin' if prerequisites else 'full'}
         # Negotiated local fetch: only objects the production repo lacks are
         # sent. FETCH_HEAD destination matches the previous fetch semantics.
         subprocess.run(['git','-C',str(root),'-c','core.hooksPath=/dev/null','fetch','--no-recurse-submodules','--no-tags','--force',str(staging),'refs/vmops/incoming'],
                        stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,check=True,timeout=120)
+        return mode
     finally:
         shutil.rmtree(staging,ignore_errors=True)
 
