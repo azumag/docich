@@ -1963,5 +1963,72 @@ class TestNethackPostRestoreIntegration(CoordinatorTestBase):
         )
 
 
+class TestStaleActiveReclaim(CoordinatorTestBase):
+    """Issue #3521: a canonical ``active`` whose runtime already exited must be
+    reclaimed instead of re-failing the boundary/quiesce path on a stale entry."""
+
+    def _kill_active(self, game="nethack", generation=1):
+        adapter = self.factory.adapter(game, generation)
+        adapter.runtime.alive = False
+        return adapter
+
+    def test_switch_skips_round_boundary_when_active_already_dead(self):
+        from unittest.mock import Mock
+
+        self.coordinator.start("nethack")
+        adapter = self._kill_active()
+        # The dead runtime must never see a boundary request; without the
+        # reclaim this raise would surface as quiesce_failed and leave the
+        # stale active behind.
+        adapter.request_round_boundary = Mock(
+            side_effect=AdapterError("Hanjuku exited before terminal evidence")
+        )
+        result = self.coordinator.switch("robots")
+        self.assertEqual(result.status, "succeeded")
+        self.assertEqual(result.to_game, "robots")
+        adapter.request_round_boundary.assert_not_called()
+        state = self.canonical()
+        self.assertEqual(state["phase"], "ready")
+        self.assertEqual(state["active"]["game"], "robots")
+
+    def test_stop_skips_boundary_when_active_already_dead(self):
+        from unittest.mock import Mock
+
+        self.coordinator.start("nethack")
+        adapter = self._kill_active()
+        adapter.requires_stop_boundary = True
+        adapter.request_round_boundary = Mock(
+            side_effect=AdapterError("Hanjuku exited before terminal evidence")
+        )
+        result = self.coordinator.stop()
+        self.assertEqual(result.status, "succeeded")
+        adapter.request_round_boundary.assert_not_called()
+        self.assertIsNone(self.canonical()["active"])
+
+    def test_alive_probe_error_keeps_normal_quiesce_path(self):
+        from unittest.mock import Mock
+
+        # An inconclusive probe (adapter error) is not proof of death: the
+        # boundary path must still run so no live runtime is silently retired.
+        self.coordinator.start("nethack")
+        adapter = self.factory.adapter("nethack", 1)
+        adapter.behavior["alive_error"] = AdapterError("probe inconclusive")
+        adapter.request_round_boundary = Mock(
+            side_effect=AdapterError("Hanjuku exited before terminal evidence")
+        )
+        # The exact failure code depends on whether the boundary cancel also
+        # fails (quiesce_failed) or succeeds (recovery_required); what the
+        # invariant requires is that the boundary path ran and the stale
+        # active was not silently reclaimed.
+        result = self.coordinator.switch("robots")
+        self.assertEqual(result.status, "failed")
+        self.assertIn(
+            result.error_code,
+            (game_switch.ERROR_QUIESCE_FAILED, game_switch.ERROR_RECOVERY_REQUIRED),
+        )
+        adapter.request_round_boundary.assert_called_once()
+        self.assertEqual(self.canonical()["active"]["game"], "nethack")
+
+
 if __name__ == "__main__":
     unittest.main()
