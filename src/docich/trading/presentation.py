@@ -397,7 +397,7 @@ def _fill(
             speech += "損益は確認できませんでした。"
         else:
             try:
-                pnl_text, spoken_sign = _signed_money(event.get("realized_pnl_reference"))
+                _, spoken_sign = _signed_money(event.get("realized_pnl_reference"))
                 pnl_value = _decimal(event.get("realized_pnl_reference"), "pnl")
             except PresentationError:
                 trade_pnl_title = "今回 取得失敗"
