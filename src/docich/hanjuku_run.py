@@ -38,9 +38,13 @@ INPUT_STALL_SECONDS=600
 INPUT_STALL_OBSERVATIONS=120
 MAX_SAMPLE_GAP=15
 MAX_LOG_BYTES=4*1024*1024
-# Consecutive observations the battle panel must hold (or stay away) before a
-# start or an end is counted. Matches the policy's own two-reading debounce.
+# Consecutive observations the battle panel must hold (or a confirmed
+# post-battle scene must persist) before a start or end is counted.
 BATTLE_PHASE_DEBOUNCE=2
+# Transitional/dialogue/event frames also occur *inside* a fight (commands,
+# eggs, fades, result text). They are not evidence that the fight has ended.
+# The actual map classifier says 'field'; 'map' covers legacy observations.
+BATTLE_EXIT_PHASES=frozenset({'field', 'map', 'field_menu', 'month_menu', 'shop'})
 
 
 def enabled(game):
@@ -293,21 +297,21 @@ def observe(runtime_dir: Path, identity: dict, frame: Frame, *,
                     'reason': 'ゲームオーバーの振り返り実況', 'terminal_recap': True, **identity})
         except Exception:
             pass
-    # The battle panel blinks during the melee, so a single frame in `battle`
-    # is not a battle. 2026-10-02 measurement on g534: 45 frame-level entries
-    # against 24 real battles, and the counters were reported as 34 started /
-    # 33 finished. Require the same two-consecutive-observation debounce the
-    # policy uses (battle_end's `away >= 2`) so the corner counters and the
-    # judged battle records describe the same battles. Counting an end on any
-    # non-battle phase also covers the most common measured ending, which the
-    # old exit-phase whitelist missed entirely (`next_screen: map`).
+    # A single battle panel can blink away during a fight. Count an opening
+    # only after two battle observations, and count an exit only after two
+    # observations of a *confirmed post-battle scene*. Dialogue, egg/command
+    # overlays, fades, and other ambiguous images are not battle-end evidence:
+    # treating all non-battle phases as exits caused repeated start/end notices
+    # in the Soren bulletin while the same fight was still in progress.
+    # Include both actual 'field' and legacy 'map' so returns to the map
+    # still count as completed battles.
     battle_active=old.get('battle_active',False)
     def _streak(key):
         value=old.get(key,0)
         return value+1 if type(value) is int and 0 <= value < 1000000 else 1
     battle_streak=_streak('battle_streak') if phase=='battle' else 0
     away_streak=(_streak('battle_away_streak')
-                 if (battle_active and phase!='battle') else 0)
+                 if (battle_active and phase in BATTLE_EXIT_PHASES) else 0)
     battle_started=battle_streak==BATTLE_PHASE_DEBOUNCE and not battle_active
     battle_ended=battle_active and away_streak>=BATTLE_PHASE_DEBOUNCE
     if battle_started: battle_active=True
