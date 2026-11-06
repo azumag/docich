@@ -1017,20 +1017,14 @@ def _mechanical_chart(mem, state, rid, digest):
         return
     allow_sole = False   # no castle is ever emptied (owner 2026-11-06)
     stored = mem.get('chart_plan') or {}
-    if stored.get('request_id') == rid:
-        if stored.get('source') == 'mechanical':
-            # Owner 2026-11-04: 月の計画が尽きたら月の終わりを待たず、同じ
-            # 月のうちに余剰で新しい計画を作り続ける（守備1人は維持）。
-            # 候補は現在の状況から作り直すので、行軍中の目標は除外される。
-            mem['chart_plan'] = None
-        else:
-            # The stored plan belongs to this situation and the caller has just
-            # shown that none of its orders can start (_plan_pending is False).
-            # Rebuilding it would offer the same blocked orders again, so send
-            # the single deterministic interim sortie instead — the fallback
-            # the speedrun path already takes for an exhausted adopted plan.
-            _mechanical_interim(mem, state, rid, digest, allow_sole=allow_sole)
-            return
+    if stored.get('request_id') == rid and stored.get('source') == 'mechanical':
+        # Even within the same month, rebuild an exhausted mechanical chart
+        # against the current garrison and in-flight sorties (keep defenders).
+        mem['chart_plan'] = None
+    # A previously adopted LLM chart with no startable orders must also be
+    # replaced by a new full mechanical plan, not just one interim sortie.
+    # Keep it until a valid replacement exists; the fallback can still act
+    # when candidate generation fails.
     # The same situation rebuilds the same candidate list on every call, and
     # re-adopting it recorded the same plan over and over (g1133 2026-11-05:
     # 487 identical chart_adjust_applied records). Keep the stored plan when
@@ -1056,7 +1050,8 @@ def _mechanical_chart(mem, state, rid, digest):
             **({'source_probe': True} if order.get('source_probe') is True else {}),
         })
     _suppress_recent_failures(mem, orders)
-    if previous_steps and [o['step'] for o in orders] == previous_steps:
+    if (stored.get('source') == 'mechanical' and previous_steps
+            and [o['step'] for o in orders] == previous_steps):
         mem['chart_plan'] = stored
         mem.setdefault('chart_plan_tick', int(mem.get('tick') or 0))
         return
