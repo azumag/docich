@@ -105,9 +105,9 @@ def _interim_source(mem, target, chart_order, owned, busy, allow_sole=False):
     if (unplaced and arrival in owned and _source_location_recheck(mem, arrival) is None
             and not chart_adjust.hero_guard_short([*(garrison.get(arrival) or ()), *unplaced],
                                                   unplaced[0], busy, sole_castle=sole)):
-        # Joiners stand in the hero's castle; the sortie list is the reading
-        # and still cancels if fewer than two are really there.
-        return arrival, unplaced[0]
+        # A joiner has no verified source-list membership yet. Open the
+        # list as a probe, rather than naming a possibly absent actor.
+        return arrival, MOVE_ANY_GENERAL
     general = chart_order['general'] if chart_order else NAME
     if general in unavailable_for_attack:
         return None
@@ -124,7 +124,9 @@ def _interim_source(mem, target, chart_order, owned, busy, allow_sole=False):
         general = MOVE_ANY_GENERAL
     for source in ((chart_order or {}).get('source'), home):
         if source in owned and garrison.get(source) is None:
-            return source, general
+            # The chart name is not evidence that its actor occupies this
+            # unread castle. Identify the actor only from the opened list.
+            return source, MOVE_ANY_GENERAL
     # Refuting home does not refute every other owned castle. g684 4-2:
     # four known lists each held one defender, while ジョンリギ's list was
     # never opened and several current castle-status generals were unplaced.
@@ -1051,6 +1053,7 @@ def _mechanical_chart(mem, state, rid, digest):
             'after': order.get('after'),
             'purpose': order.get('purpose'),
             'note': order.get('note') or '',
+            **({'source_probe': True} if order.get('source_probe') is True else {}),
         })
     _suppress_recent_failures(mem, orders)
     if previous_steps and [o['step'] for o in orders] == previous_steps:
