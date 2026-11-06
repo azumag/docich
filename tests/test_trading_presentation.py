@@ -112,7 +112,7 @@ class TestNotificationRendering(unittest.TestCase):
 
     def test_compact_buy_uses_reason_pair_side_format(self):
         rendered = render_notification(fill_event(), mode="compact", status=safe_status())
-        self.assertIn("PAPER", rendered.overlay_event["title"])
+        self.assertTrue(rendered.overlay_event["title"].startswith("買｜"))
         self.assertEqual(
             rendered.speech_text,
             "短期の勢いに乗るエントリーです。上がったから無条件に追うのではなく、勢いが続くか、平均へ戻るかを次に確認します。"
@@ -183,7 +183,9 @@ class TestNotificationRendering(unittest.TestCase):
         rendered = render_notification(fill_event(), mode="compact", status=status)
         self.assertIn("含み +1,250.5円", rendered.overlay_event["title"])
         self.assertIn("累計 -70.25円", rendered.overlay_event["title"])
-        self.assertIn("BTC/JPY 買い", rendered.overlay_event["title"])
+        self.assertTrue(rendered.overlay_event["title"].startswith("買｜累計 -70.25円｜含み +1,250.5円"))
+        self.assertIn("BTC/JPYを買い", rendered.overlay_event["body"])
+        self.assertNotIn("PAPER", rendered.overlay_event["title"])
         self.assertNotIn("今回", rendered.overlay_event["title"])
         self.assertNotIn("損益", rendered.overlay_event["body"])
         self.assertIn("含み損益はプラス1,250.5円", rendered.speech_text)
@@ -200,7 +202,9 @@ class TestNotificationRendering(unittest.TestCase):
         self.assertIn("今回 -18.25円", rendered.overlay_event["title"])
         self.assertIn("含み -5円", rendered.overlay_event["title"])
         self.assertIn("累計 +200円", rendered.overlay_event["title"])
-        self.assertIn("BTC/JPY 売り", rendered.overlay_event["title"])
+        self.assertTrue(rendered.overlay_event["title"].startswith("売｜今回 -18.25円｜累計 +200円｜含み -5円"))
+        self.assertIn("BTC/JPYを売り", rendered.overlay_event["body"])
+        self.assertNotIn("PAPER", rendered.overlay_event["title"])
         self.assertNotIn("実現損益", rendered.overlay_event["body"])
         self.assertNotIn("含み損益", rendered.overlay_event["body"])
         self.assertNotIn("累計損益", rendered.overlay_event["body"])
@@ -213,7 +217,7 @@ class TestNotificationRendering(unittest.TestCase):
             "complete": True, "unrealized_pnl_jpy": "0", "cumulative_pnl_jpy": "0",
         }}
         rendered = render_notification(fill_event(), mode="compact", status=status)
-        self.assertIn("含み 0円｜累計 0円", rendered.overlay_event["title"])
+        self.assertIn("累計 0円｜含み 0円", rendered.overlay_event["title"])
         self.assertNotIn("含み損益", rendered.overlay_event["body"])
         self.assertIn("含み損益は0円、評価込み累計損益は0円", rendered.speech_text)
         for perf in (
@@ -224,7 +228,7 @@ class TestNotificationRendering(unittest.TestCase):
             with self.subTest(perf=perf):
                 status["performance_summary"] = perf
                 result = render_notification(fill_event(), mode="compact", status=status)
-                self.assertIn("含み 評価待ち｜累計 評価待ち", result.overlay_event["title"])
+                self.assertIn("累計 評価待ち｜含み 評価待ち", result.overlay_event["title"])
                 self.assertNotIn("評価待ち", result.overlay_event["body"])
                 self.assertNotIn("500円", result.speech_text)
                 self.assertNotIn("900円", result.speech_text)
@@ -234,7 +238,8 @@ class TestNotificationRendering(unittest.TestCase):
             "complete": True, "unrealized_pnl_jpy": "20", "cumulative_pnl_jpy": "40",
         }}
         rendered = render_notification(settlement_event(), mode="compact", status=status)
-        self.assertIn("含み +20円｜累計 +40円", rendered.overlay_event["title"])
+        self.assertTrue(rendered.overlay_event["title"].startswith("裁定｜累計 +40円｜含み +20円"))
+        self.assertNotIn("PAPER", rendered.overlay_event["title"])
         self.assertNotIn("含み損益", rendered.overlay_event["body"])
         self.assertNotIn("累計損益", rendered.overlay_event["body"])
         self.assertIn("評価込み累計損益はプラス40円", rendered.speech_text)
@@ -253,7 +258,7 @@ class TestNotificationRendering(unittest.TestCase):
 
     def test_settlement_success_never_calls_edge_guaranteed_profit(self):
         rendered = render_notification(settlement_event(), mode="detailed", status=safe_status())
-        self.assertIn("PAPER", rendered.overlay_event["title"])
+        self.assertTrue(rendered.overlay_event["title"].startswith("裁定｜"))
         self.assertIn("50", rendered.overlay_event["body"])
         self.assertIn("模擬", rendered.speech_text)
         self.assertNotIn("確実", rendered.speech_text)
