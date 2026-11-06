@@ -35,8 +35,12 @@ def roster(selected='ココット', hand_y=55):
 
 
 def status(general='ココット', location='しんぐんちゅうです'):
-    return screen('text', [(39, 24, general), (39, 88, 'しょうぐん'),
-                           (151, 24, location)])
+    # Native OCR produces a single TextLine per y, even when the cells have
+    # two separate text spans. Do not model the two y=39 spans as two lines.
+    chars = tuple((24 + 8 * i, ch) for i, ch in enumerate(general))
+    chars += tuple((88 + 8 * i, ch) for i, ch in enumerate('しょうぐん'))
+    return Screen(lines=[TextLine(39, chars), line(151, 24, location)],
+                  hand=None, text=f'{general} しょうぐん {location}', kind='text')
 
 
 def memory():
