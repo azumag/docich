@@ -291,7 +291,11 @@ def test_the_larger_caps_are_only_for_that_pass_and_still_bound_the_spend(ready)
     assert rich == {n: b.RICH_MERCHANT_MAX_COPIES for n in b.RICH_MERCHANT_CARDS
                     if n in prices}
     ordinary = [(n, q) for n, q in ready['shop']['items'] if n not in b.RICH_MERCHANT_CARDS]
-    assert sum(q for _, q in ordinary) == b.CHEAP_VENDOR_COPIES
+    # Four of the bargain names are now rich-priority cards, so only the
+    # remaining kinds count against the ordinary capped bargain quantities.
+    available_target_copies = sum(b.BARGAIN_TARGETS[n] * b.CHEAP_VENDOR_TARGET_FACTOR
+                                  for n in prices if n not in b.RICH_MERCHANT_CARDS)
+    assert sum(q for _, q in ordinary) == min(b.CHEAP_VENDOR_COPIES, available_target_copies)
     assert sum(prices[n] * q for n, q in ordinary) <= b.CHEAP_VENDOR_GOLD
 
 
