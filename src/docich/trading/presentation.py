@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 import json
 import math
 import os
@@ -141,6 +141,20 @@ def _signed_money(value) -> tuple[str, str]:
     return _money(amount), "プラスマイナスゼロ"
 
 
+def _title_yen(value: object) -> str:
+    """Round a PAPER P/L amount to the nearest yen for the visual headline.
+
+    Keep the original decimal P/L in accounting and speech. Use half-up to
+    round positive and negative halves symmetrically; never print signed zero.
+    """
+    rounded = _decimal(value, "pnl").to_integral_value(rounding=ROUND_HALF_UP)
+    if rounded > 0:
+        return f"+{int(rounded):,}円"
+    if rounded < 0:
+        return f"{int(rounded):,}円"
+    return "0円"
+
+
 def _portfolio_pnl(status: Mapping[str, object] | None) -> tuple[str, str]:
     """Brief, truthful mark-to-market P/L from the published PAPER snapshot.
 
@@ -154,9 +168,9 @@ def _portfolio_pnl(status: Mapping[str, object] | None) -> tuple[str, str]:
 
     def shown(value: object) -> tuple[str, str]:
         numeric = _decimal(value, "performance pnl")
-        signed, spoken_sign = _signed_money(numeric)
+        _, spoken_sign = _signed_money(numeric)
         speech = "0円" if numeric == 0 else f"{spoken_sign}{_money(abs(numeric))}円"
-        return f"{signed}円", speech
+        return _title_yen(numeric), speech
 
     try:
         unrealized, unrealized_speech = shown(perf.get("unrealized_pnl_jpy"))
@@ -383,13 +397,13 @@ def _fill(
             speech += "損益は確認できませんでした。"
         else:
             try:
-                pnl_text, spoken_sign = _signed_money(event.get("realized_pnl_reference"))
+                _, spoken_sign = _signed_money(event.get("realized_pnl_reference"))
                 pnl_value = _decimal(event.get("realized_pnl_reference"), "pnl")
             except PresentationError:
                 trade_pnl_title = "今回 取得失敗"
                 speech += "損益は確認できませんでした。"
             else:
-                trade_pnl_title = f"今回 {pnl_text}円"
+                trade_pnl_title = f"今回 {_title_yen(pnl_value)}"
                 if pnl_value == 0:
                     speech += "損益はプラスマイナスゼロです。"
                 else:
