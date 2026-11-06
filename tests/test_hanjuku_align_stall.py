@@ -43,3 +43,7 @@ def test_a_shrinking_offset_keeps_correcting(monkeypatch):
     assert navigation._align_on_roof(marker(94), mem, FRAME, ('enemy',), 'k')
     # 3 px or less selects the castle.
     assert navigation._align_on_roof(marker(98), mem, FRAME, ('enemy',), 'k') == 'on'
+
+def test_the_owner_limit_is_two_corrections():
+    from docich.hanjuku.os_layer.navigation import ALIGN_LIMIT
+    assert ALIGN_LIMIT == 2

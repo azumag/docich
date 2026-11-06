@@ -6945,6 +6945,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v493-concert-trade-guard",
             "hanjuku-chart-v494-move-honors-plan-general",
             "hanjuku-chart-v495-sortie-stops-at-named-general",
+            "hanjuku-chart-v496-align-limit-2",
             "hanjuku-chart-v129-battle-card-progress",
             "hanjuku-chart-v130-summer-cursor-evidence",
             "hanjuku-chart-v131-defense-month-economy",
