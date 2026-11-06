@@ -471,6 +471,18 @@ html, body { color: #deedf7; font-family: "Noto Sans JP", "Segoe UI", sans-serif
 .toast-title { color: #e3eef7; font-size: 13px; font-weight: 600; }
 .toast-time { color: #93afc4; font-size: 8px; font-weight: 400; }
 .toast-body { margin-top: 0; padding: 4px 8px; color: #b9cedf; font-size: 9px; line-height: 1.45; font-weight: 400; }
+/* PAPER fill/settlement: preserve the financial headline instead of ellipsizing it. */
+.toast.paper-pnl .toast-head { height: auto; min-height: 24px; align-items: flex-start; }
+.toast.paper-pnl .toast-title {
+  white-space: normal;
+  overflow: visible;
+  text-overflow: clip;
+  overflow-wrap: anywhere;
+  font-size: 12px;
+  line-height: 1.15;
+}
+.toast.paper-pnl .toast-time { flex: 0 0 auto; padding-top: 2px; }
+.toast.paper-pnl .toast-body { -webkit-line-clamp: 2; }
 /* Live cards also carry troop/garrison/order observations absent from the mock.
    Let the card claim its measured height rather than crop it at 390px. */
 html[data-hanjuku-active="1"] .feed-panel.panel-g { flex: 0 0 auto; }
@@ -2714,6 +2726,10 @@ html[data-soren-region="bottom"] #hanjuku-gap { display: none !important; }
       const category = String(item.category || 'system').toLowerCase().replace(/[^a-z0-9_-]/g, '');
       const card = document.createElement('article');
       card.className = `toast ${category}${!item.liveStatus && now - Number(item.ts || 0) <= 3 ? ' fresh' : ''}`;
+      // PAPER P/L titles wrap; other workers and live cards retain their layout.
+      if (category === 'worker' && /^(?:売|買|裁定)｜/.test(String(item.title || ''))) {
+        card.classList.add('paper-pnl');
+      }
       if (item.liveStatus) card.dataset.liveStatus = '1';
       const bar = document.createElement('div');
       bar.className = 'toast-bar';
