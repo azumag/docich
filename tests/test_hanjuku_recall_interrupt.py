@@ -1,0 +1,43 @@
+"""A battle/event between the recall plan and its A must not consume the trip."""
+from types import SimpleNamespace
+
+from docich.hanjuku.flows import recall
+
+
+def mem_with(state):
+    return {'tick': 100, 'chapter': 5, 'flow': {'recall': state}}
+
+
+def test_pending_recall_is_interrupted_by_a_battle_scene():
+    mem = mem_with({'stage': 'await_dispatch', 'request_trace': {'x': 1}, 'a_inputs': 1})
+    recall._mark_recall_interrupted(mem)
+    state = mem['flow']['recall']
+    assert state.get('interrupted') is True
+    assert 'request_trace' not in state and 'a_inputs' not in state
+
+
+def test_an_already_sent_recall_is_not_rewritten():
+    for state in ({'stage': 'await_dispatch', 'input_sent': True, 'goal': 'カルーン'},
+                  {'stage': 'dest', 'request_trace': {'x': 1}},
+                  {'goal': 'カルーン'}):
+        mem = mem_with(dict(state))
+        before = dict(mem['flow']['recall'])
+        recall._mark_recall_interrupted(mem)
+        assert mem['flow']['recall'] == before
+
+
+def test_no_recall_state_is_a_noop():
+    mem = {'tick': 100, 'chapter': 5, 'flow': {}}
+    recall._mark_recall_interrupted(mem)
+    assert 'recall' not in mem['flow']
+
+
+def test_interrupted_unconfirmed_recall_retries_after_the_short_hold():
+    # g1139 2026-11-06 15:18:18 JST: the カルーン defense message took the
+    # confirm A. The next attempt must not wait the full 400-observation hold.
+    state = {'stage': 'await_dispatch', 'steps': 6, 'goal': 'カルーン',
+             'interrupted': True, 'target': [139, 113]}
+    mem = mem_with(state)
+    recall._recall_dispatch_step(SimpleNamespace(kind='map'), mem, state)
+    assert mem['flow'].get('recall_skip_ticks') == recall.FORT_RETRY_TICKS
+    assert 'recall' not in mem['flow']
