@@ -115,21 +115,17 @@ def test_negative_list_from_another_castle_does_not_erase_home_refutation():
     assert 'unplaced_refuted_castles' not in mem and 'unplaced_refuted' not in mem
 
 
-def test_defender_derived_single_name_is_not_a_complete_castle_list():
-    from docich.hanjuku_screen import Screen
-    mem = stalled(); p._garrison_move(mem, 'クミン', target='ジョンリギ')
-    # Home was read again after that defender became placed.
+def test_defender_derived_single_name_needs_a_second_measured_actor():
+    mem = stalled()
+    p._garrison_move(mem, 'クミン', target='ジョンリギ')
+    # A defender derived from an event does not prove that the castle is
+    # full, but it is not permission to plan a sortie that would leave zero.
     mem['unplaced_refuted']['names'] = p._unplaced_castle_generals(mem)
-    order = next(o for o in p.interim_candidates(mem).values() if o['target'] == 'カストーラ')
-    assert order['source'] == 'ジョンリギ' and order['source_probe'] is True
-    mem.update(active='I:probe:1', orders={}, launched_orders={})
-    order = dict(order, step=mem['active']); _world(mem)['launched_orders'][order['step']] = order
-    mem['chart_plan'] = {'orders': [order]}
-    assert p.next_order(mem) is order
-    assert p._source_spare_missing(order, mem, allow_probe=True) is False
-    assert p._source_spare_missing(order, mem) is True
-    # A hotloaded old card panel cannot use the list-opening exception.
-    assert p.deploy_step(Screen([], None, '', kind='card_select'), mem) == [p.pad('b'), p.pad('b')]
+    assert not [o for o in p.interim_candidates(mem).values()
+                if o['source'] == 'ジョンリギ' and o['target'] == 'カストーラ']
+    p._garrison_move(mem, 'タルタル', target='ジョンリギ')
+    assert any(o['source'] == 'ジョンリギ' and o['target'] == 'カストーラ'
+               for o in p.interim_candidates(mem).values())
 
 
 def test_all_negative_castle_lists_stop_probing_instead_of_alternating_home():
