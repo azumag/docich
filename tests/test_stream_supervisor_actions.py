@@ -90,7 +90,7 @@ class RunThroughMainTest(unittest.TestCase):
         base = {"PATH": os.environ.get("PATH", ""), "SOREN_DIRECT_STREAM_STATE_DIR": str(self.box.state),
                 "SOREN_DIRECT_STREAM_LOG_FILE": str(self.box.logs / "s.log"), "SOREN_DIRECT_STREAM_FFMPEG_BIN": str(self.box.ffmpeg),
                 "SOREN_DIRECT_STREAM_AUDIO_WATCHDOG_ENABLED": "0", "SOREN_DIRECT_STREAM_RECONNECT_ENABLED": "0",
-                "SOREN_DIRECT_STREAM_BACKOFF": "1", **env}
+                "DOCICH_STREAM_OWNER": "docich", **env}
         base.update(self.box.env())
         return {"src": str(ROOT / "src"), "canonical": str(self.box.canonical), "argv": ["--root", str(self.box.root), *argv], "env": base}
 
@@ -171,3 +171,53 @@ class RunThroughMainTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class OwnerFlagTest(unittest.TestCase):
+    def run_main(self, env, *argv):
+        with tempfile.TemporaryDirectory(prefix="stream-owner-") as tmp:
+            spec = {"src": str(ROOT / "src"), "canonical": "/nonexistent/x", "argv": ["--root", tmp, *argv],
+                    "env": {"DISPLAY": ":99", **env}}
+            proc = subprocess.run([sys.executable, "-B", "-c", MAIN_DRIVER, json.dumps(spec)], capture_output=True,
+                                  text=True, timeout=20, check=False, cwd="/")
+            self.assertEqual(list(Path(tmp).iterdir()), [], "a refused or skipped start must create nothing")
+            return proc
+
+    def test_the_default_owner_is_the_legacy_runner_so_run_does_nothing(self):
+        for env in ({}, {"DOCICH_STREAM_OWNER": "soren"}, {"DOCICH_STREAM_OWNER": ""},
+                    {"SOREN_DIRECT_STREAM_FPS": "999"}):  # even an invalid config is not even loaded
+            with self.subTest(env=env):
+                proc = self.run_main(env, "run")
+                self.assertEqual(proc.returncode, 0, proc.stderr)
+                self.assertIn("legacy runner owns the encoder", proc.stderr)
+                self.assertEqual(proc.stdout, "")
+
+    def test_an_invalid_owner_value_is_a_failure_not_a_silent_skip(self):
+        for bad in ("Docich", "both", "1", "docich,soren", " docich", "soren ", "  "):
+            with self.subTest(bad=bad):
+                proc = self.run_main({"DOCICH_STREAM_OWNER": bad}, "run")
+                self.assertEqual(proc.returncode, 2)
+                self.assertIn("must be soren or docich", proc.stderr)
+
+    def test_the_owner_flag_does_not_gate_the_read_only_actions(self):
+        proc = self.run_main({}, "config")
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn('"backend": "ffmpeg"', proc.stdout)
+
+
+class PulseBeforeValidationTest(unittest.TestCase):
+    def test_a_pulse_failure_stops_the_start_before_host_validation_and_locks(self):
+        order = []
+        def pulse(env, config, watchdog):
+            order.append("pulse")
+            from docich.stream_prereqs import PrerequisiteError
+            raise PrerequisiteError("PulseAudio did not become ready before the runtime deadline")
+        def validate(config, mode):
+            order.append("validate")
+            return False
+        with tempfile.TemporaryDirectory(prefix="stream-pulse-") as tmp:
+            code = sup.main(["--root", tmp, "run"], environ={"DISPLAY": ":99", "DOCICH_STREAM_OWNER": "docich"},
+                            validate=validate, prepare_pulse=pulse, twica_enabled=lambda: False,
+                            canonical_opener=lambda: self.fail("the lock must not be taken"))
+            self.assertEqual(list(Path(tmp).iterdir()), [])
+        self.assertEqual((code, order), (2, ["pulse"]))

@@ -225,5 +225,6 @@ import docich.stream_instance_lock as L
 L.CANONICAL_STREAM_ENCODER_LOCK_PATH = spec["canonical"]
 from docich import stream_supervisor as S
 raise SystemExit(S.main(spec["argv"], environ=spec["env"], validate=lambda config, mode: False,
-                        twica_enabled=lambda: spec.get("twica", False)))
+                        twica_enabled=lambda: spec.get("twica", False),
+                        prepare_pulse=lambda env, config, watchdog: None))
 '''

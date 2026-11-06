@@ -86,7 +86,8 @@ class HostWithoutPrerequisitesTest(unittest.TestCase):
     def test_run_record_and_validate_refuse_before_creating_anything(self):
         with tempfile.TemporaryDirectory(prefix="stream-supervisor-") as tmp:
             root = Path(tmp)
-            env = {"SOREN_DIRECT_STREAM_LOCAL_URL": "rtmp://127.0.0.1:1/none/live"}  # nothing listens on port 1
+            env = {"SOREN_DIRECT_STREAM_LOCAL_URL": "rtmp://127.0.0.1:1/none/live",  # nothing listens on port 1
+                   "DOCICH_STREAM_OWNER": "docich", "SOREN_RUNTIME_PREREQ_WAIT_SEC": "5"}
             for args in (("run",), ("validate",), ("record", "--output", str(root / "out" / "o.mkv"), "--duration", "5")):
                 with self.subTest(args=args):
                     proc = supervise(*args, env=env, root=root)
@@ -119,8 +120,8 @@ class ReadOnlyPurityTest(unittest.TestCase):
                 attrs.add(node.attr)
         self.assertEqual(imported, {
             "__future__", "argparse", "json", "os", "pathlib", "sys", "typing",
-            ".stream_config", ".stream_encoder_command", ".stream_host_checks", ".stream_runner",
-            ".stream_state_files", ".stream_supervision_policy", ".twica_operator",
+            ".stream_config", ".stream_encoder_command", ".stream_host_checks", ".stream_prereqs",
+            ".stream_runner", ".stream_state_files", ".stream_supervision_policy", ".twica_operator",
         })
         self.assertFalse(attrs & {"Popen", "system", "kill", "send_signal", "flock", "mkdir",
                                   "open_canonical_stream_encoder_lock", "atomic_write_json"})
