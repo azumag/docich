@@ -517,9 +517,24 @@ def _recruit_spare_after_necessities(mem, shop, gold):
     if not continuing and evidence['generals'] < evidence['owned_castles']:
         return True, evidence  # the existing shortage cash rules still apply
     cards = [] if shop.get('merchant_done') else shop.get('items') or []
+    # A stale provisional refill must not consume the recruitment cash when
+    # this run's measured army already meets the current refill target.
+    # Keep the original budget if the observation is missing or from another
+    # run/month; a planned quantity is never proof of a paid refill.
+    key = shop.get('key')
+    parts = key.split('-') if isinstance(key, str) else []
+    measured_enough = False
+    if (len(parts) == 2 and all(part.isdigit() for part in parts)
+            and int(parts[0]) >= 1 and 1 <= int(parts[1]) <= 12
+            and type(gold) is int):
+        header = {'year': int(parts[0]), 'month': int(parts[1]), 'gold': gold}
+        measured_enough = (_soldier_count_current(mem, header)
+                           and _soldiers_enough(mem, shop, header))
     completed = (shop.get('soldiers_before_recruit_done', shop.get('soldiers_done')) is True
-                 or (shop.get('soldier_receipt') or {}).get('status') == 'paid')
+                 or (shop.get('soldier_receipt') or {}).get('status') == 'paid'
+                 or measured_enough)
     soldiers = (0 if completed else shop.get('soldiers_before_recruit', shop.get('soldiers')))
+    evidence['measured_army_enough'] = measured_enough
     repair = _house_repair_reserve(shop)
     if (type(gold) is not int or any(name not in KNOWN_PRICES for name, _ in cards)
             or type(soldiers) is not int or soldiers < 0
