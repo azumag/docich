@@ -176,7 +176,11 @@ def _pnl_overlay_title(prefix: str, pnl_text: str, *, trade_pnl: str | None = No
     Titles have a hard limit in the shared overlay queue. If an unusually
     large number would exceed it, do not clip digits into a false amount.
     """
-    compact = pnl_text.replace("含み損益 ", "含み ").replace("累計損益 ", "累計 ")
+    compact = (
+        pnl_text.replace("含み損益 ", "含み ")
+        .replace("累計損益 ", "累計 ")
+        .replace(" / ", "｜")
+    )
     parts = [prefix]
     if trade_pnl is not None:
         parts.append(trade_pnl)
