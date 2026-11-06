@@ -1300,6 +1300,9 @@ def reconcile_presynced(cfg, repo, target, sha):
     logs = state_root(cfg)/'logs'; logs.mkdir(parents=True, exist_ok=True)
     opid = uuid.uuid4().hex; log = logs/f'{opid}.log'
     fd = os.open(log, os.O_WRONLY|os.O_CREAT|os.O_EXCL, 0o600)
+    # Initialize so the function-level return can never reference an unbound
+    # name; the real verdict overwrites it on the success path (DSH #3344).
+    gc_verdict = {'status': 'unavailable'}
     with os.fdopen(fd, 'wb') as out:
         # Candidate objects already uploaded with the deploy bundle are
         # authoritative once hash-verified; the protected-main refresh is
