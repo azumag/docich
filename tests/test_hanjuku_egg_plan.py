@@ -169,6 +169,37 @@ def test_a_charted_dropper_takes_opening_priority_and_is_not_spent_twice():
     assert not policy._egg_plan(state, cur)['droppers']
 
 
+def test_egg_drop_opener_precedes_an_override_that_would_spend_the_first_turn():
+    state = mem('1-C2', ally='ココット', cards=['ダイチスイム', 'ブラッキー'])
+    view = opening(state, 'キッシュ', 26, 'ココット', 24)
+    assert state['battle']['egg_plan']['dropper'] == 'ブラッキー'
+    assert policy.battle_step(view, state) == [policy.pad('b')]
+    assert state['battle']['card_flow']['card'] == 'ブラッキー'
+    assert state['battle']['card_flow']['tactic_id'].startswith('eggdrop:')
+
+
+def test_egg_drop_opener_precedes_a_one_hit_melee_finish():
+    # A one-hit general still has a usable egg: the egg-drop card wins.
+    state = mem('1-C2', ally='ココット')
+    view = opening(state, 'キッシュ', 1, 'ココット', 24)
+    assert state['battle']['egg_plan']['dropper'] == 'ブラッキー'
+    assert policy.battle_step(view, state) == [policy.pad('b')]
+    assert state['battle']['card_flow']['tactic_id'].startswith('eggdrop:')
+    assert not state['battle'].get('one_hit_finish')
+
+
+def test_egg_drop_opener_is_independent_of_enemy_ai_egg_threat():
+    # ミモザ has an egg but does not autonomously summon on attack.
+    # 66+82=148 -> remainder 4; carried フットバース has egg-drop 5.
+    state = mem('1-V2', ally='ヴィーナス')
+    view = opening(state, 'ミモザ', 66, 'ヴィーナス', 82)
+    plan = state['battle']['egg_plan']
+    assert plan['has_egg'] is True and plan['threat'] is False
+    assert plan['max_hp_sum'] == 148 and plan['dropper'] == 'フットバース'
+    assert policy.battle_step(view, state) == [policy.pad('b')]
+    assert state['battle']['card_flow']['tactic_id'].startswith('eggdrop:')
+
+
 def test_the_display_plan_and_the_tactic_use_the_same_max_hp_arithmetic():
     # キッシュ26 + ココット24 = 50 → 余り2。卵落3のブラッキーだけが成立する。
     state = mem('1-C2', ally='ココット')
