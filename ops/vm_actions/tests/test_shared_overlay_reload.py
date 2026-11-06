@@ -63,5 +63,8 @@ class SharedOverlayReloadTests(unittest.TestCase):
         workflow=(Path(__file__).resolve().parents[3]/'.github/workflows/vm-operations.yml').read_text()
         block=workflow.split('- name: Reload shared display for reviewed game-gap runtime epoch',1)[1].split('- name:',1)[0]
         assert 'shared_overlay_reload_epoch' in block
+        # Updating the canonical HTML must trigger the same guarded reload,
+        # even if nobody manually edits the epoch marker.
+        assert 'overlays/direct_broadcast_overlay.html' in block
         assert 'reload_shared_overlay.sh' in block
         assert 'restart_direct_stream_overlay.sh' not in block
