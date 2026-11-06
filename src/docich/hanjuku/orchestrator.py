@@ -61,6 +61,40 @@ BATTLE_OWNED_KINDS = frozenset({'battle', 'battle_menu', 'battle_menu_pending',
 # observations with the same concert input, press A instead so the policy
 # itself leaves the screen rather than waiting for the stall watchdog.
 CONCERT_PICKER_REPEAT_MAX = 8
+# A red-curtain event dialogue (phase 'concert', kind 'text') can sit on the
+# same narration line while every owner returns []: the house flow yields to
+# the concert fallback, a plain message needs A rather than the fallback's B,
+# and the run reaches the 300 s screen_stalled terminal. g1139 stalled twice
+# (2026-11-06 12:06 and 12:48 JST, ~30 min each) on the same concert message.
+# Count unchanged narration observations in policy memory (persisted every
+# decision) and press A, the dialogue advance key, after this bounded wait.
+CONCERT_TEXT_ADVANCE_MAX = 12
+
+
+def concert_text_advance(mem, phase, kind, key, actions, guarded=False):
+    """True when an unchanged concert narration line should be advanced.
+
+    The counter lives in the policy memory, which the brain persists on every
+    decision, so it survives the fresh per-observation subprocess. Any action,
+    a phase/kind change, or a changed line resets it.
+    """
+    watch = mem.get('concert_text_watch') or {}
+    raw = watch.get('count') if isinstance(watch, dict) else None
+    if guarded:
+        count = 0
+    elif phase == 'concert' and kind == 'text' and not actions:
+        count = (raw + 1 if watch.get('key') == key
+                 and type(raw) is int and raw >= 0 else 1)
+    else:
+        count = 0
+    advance = count >= CONCERT_TEXT_ADVANCE_MAX
+    if advance:
+        count = 0
+    if count:
+        mem['concert_text_watch'] = {'key': key, 'count': count}
+    else:
+        mem.pop('concert_text_watch', None)
+    return advance
 
 
 def pad(button, ms=100):
@@ -765,6 +799,17 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
         mem['concert_picker_watch']={'digest':digest,'repeat':repeat}
     else:
         mem.pop('concert_picker_watch',None)
+    concert_key = (f'text:{screen.text}' if kind == 'text' and screen.text
+                   else digest)
+    concert_guarded = (trade_guard_hold or bijin_guard_hold
+                       or mem.get('bijin_gift_hold') is True
+                       or (mem.get('trade_guard') or {}).get('held') is True)
+    if concert_text_advance(mem, phase, kind, concert_key, actions, concert_guarded):
+        decision_log._record(mem,'concert_text_advance',screen=kind,phase=phase,
+                       observed_metric={'unchanged_observations':CONCERT_TEXT_ADVANCE_MAX,
+                                        'frame_sha256':digest},
+                       reason='紅幕のイベント会話が同一文面のまま入力を返さないため、Aで会話を進める')
+        actions=[pad('a')]
     # 保留の廃止: a screen that froze while we planned no input must not stay
     # that way. The streak counts only observations whose frame digest is one of
     # the two most recent distinct images -- the same evidence
