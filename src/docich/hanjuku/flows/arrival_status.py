@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from ..decision_log import _record
 from ..os_layer.commands import menu_to, pad
-from ..state.regions import flow as _flow
+from ..state.regions import flow as _flow, world as _world
 from . import house
 
 PROBE_READ_LIMIT = 70
@@ -76,10 +76,10 @@ def _record_observation(mem, probe, screen, location):
     # A marching/camping general cannot simultaneously be a verified
     # resident. Do not infer its destination from this status sentence.
     if location in ('march', 'camp'):
-        for residents in (mem.get('garrison') or {}).values():
+        for residents in (_world(mem).get('garrison') or {}).values():
             if isinstance(residents, list) and name in residents:
                 residents.remove(name)
-        unknown = mem.setdefault('general_location_unknown', [])
+        unknown = _world(mem).setdefault('general_location_unknown', [])
         if isinstance(unknown, list) and name not in unknown:
             unknown.append(name)
     _record(mem, 'arrival_status_probe_verified', chart_step=probe['step'],

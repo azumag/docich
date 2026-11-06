@@ -458,8 +458,8 @@ def test_blocked_only_source_sorties_from_the_blocking_castle():
     cands = list(replan.interim_candidates(mem).values())
     kuro = next(c for c in cands if c.get('target') == 'クロチェット')
     assert kuro['source'] == 'オトラント'
-    assert kuro['general'] in mem['garrison']['オトラント']
-    assert len(mem['garrison']['オトラント']) >= 2
+    assert kuro['general'] in _world(mem)['garrison']['オトラント']
+    assert len(_world(mem)['garrison']['オトラント']) >= 2
 
 
 def test_pending_order_behind_an_own_castle_is_redirected_to_the_blocker():

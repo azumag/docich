@@ -119,7 +119,7 @@ def test_a_general_listed_in_an_intervening_own_castle_continues_his_order():
     assert p.next_order(mem) != order
     # Once the other observed defender is in the garrison, continuing the
     # original route is allowed from the newly observed source.
-    mem['garrison']['ジョンリギ'] = ['ゼウス', 'リーキ']
+    _world(mem)['garrison']['ジョンリギ'] = ['ゼウス', 'リーキ']
     assert p.next_order(mem) == order
 
 
