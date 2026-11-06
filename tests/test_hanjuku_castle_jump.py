@@ -153,7 +153,7 @@ def test_lost_cursor_uses_x_castle_list_without_an_active_order_or_roof(monkeypa
         raise AssertionError('the re-anchor must not inspect roof pixels')
 
     monkeypatch.setattr(M, '_roof_under_cursor', must_not_check_roof)
-    assert M.castle_jump_step(_screen('map', [], cursor=(80, 90)), mem, object()) == []
+    assert M.castle_jump_step(_screen('map', [], cursor=(80, 90)), mem, object()) is None
     assert mem['cursor'] == list(M.chart.castles(1)['アルマムーン'])
     assert mem['anchor'] == 'アルマムーン'
     assert mem['uncertain'] is False
@@ -164,6 +164,82 @@ def test_lost_cursor_uses_x_castle_list_without_an_active_order_or_roof(monkeypa
     assert 'castle_jump' not in mem
     assert 'expect_menu' not in mem
     assert mem['_records'][-1]['decision'] == 'cursor_reanchor_confirm'
+
+
+def _confirm_reanchor_with_active_order():
+    mem = _memory()
+    mem['nav_search'] = True
+    mem['uncertain'] = True
+    assert M._start_reanchor_jump(mem) == [M.pad('x')]
+    mem['castle_jump']['phase'] = 'confirm'
+    screen = _screen('map', [], cursor=(80, 90))
+    assert M.castle_jump_step(screen, mem, None) is None
+    assert mem['reanchor_resume']['active_before'] == 'J1'
+    return mem, screen
+
+
+def _allow_interrupted_order(monkeypatch):
+    monkeypatch.setattr(M, '_ready', lambda *_args: True)
+    monkeypatch.setattr(M, '_owned', lambda _mem: {'アルマムーン'})
+    monkeypatch.setattr(M, '_near_goal', lambda *_args: False)
+    monkeypatch.setattr(M, '_want_castle_jump', lambda *_args: False)
+
+
+def test_reanchor_success_releases_same_frame_to_interrupted_order(monkeypatch):
+    mem, screen = _confirm_reanchor_with_active_order()
+    _allow_interrupted_order(monkeypatch)
+    monkeypatch.setattr(M, 'nav_step', lambda *_args, **_kwargs: [M.pad('right')])
+
+    # The normal map policy, previously starved by castle_jump_step's [],
+    # can immediately choose the old order's navigation input.
+    actions = M.map_step(screen, mem, None)
+    assert actions == [M.pad('right')]
+    M.note_reanchor_followup(screen, mem, actions)
+    assert 'reanchor_resume' not in mem
+    assert mem['_records'][-1]['decision'] == 'cursor_reanchor_resumed'
+    assert mem['_records'][-1]['observed_metric']['active_after'] == 'J1'
+
+
+def test_reanchor_named_source_opens_even_when_cursor_hides_roof(monkeypatch):
+    mem, screen = _confirm_reanchor_with_active_order()
+    _allow_interrupted_order(monkeypatch)
+    monkeypatch.setattr(M, 'nav_step', lambda *_args, **_kwargs: 'arrived')
+
+    def roof_hidden(*_args):
+        raise AssertionError('named SELECT should not require a visible roof')
+
+    monkeypatch.setattr(M, '_roof_under_cursor', roof_hidden)
+    actions = M.map_step(screen, mem, None)
+    assert actions == [M.pad('a')]
+    assert mem['expect_menu'] is True
+    M.note_reanchor_followup(screen, mem, actions)
+    assert mem['_records'][-1]['decision'] == 'cursor_reanchor_resumed'
+
+
+def test_reanchor_without_ready_order_reports_hold_and_rechecks(monkeypatch):
+    mem = _memory()
+    mem['active'] = None
+    mem['reanchor_resume'] = {'source': 'アルマムーン', 'tick': 10, 'active_before': None}
+    mem['map_idle_tick'] = 10
+    screen = _screen('map', [], cursor=(80, 90))
+    M.note_reanchor_followup(screen, mem, [])
+    assert mem['_records'][-1]['decision'] == 'cursor_reanchor_wait'
+    assert mem['_records'][-1]['observed_metric']['blocked_by'] == 'no_ready_order'
+    assert mem['reanchor_resume']['wait_report_tick'] == 10
+
+    # Holds are reported periodically, without flooding the decision log.
+    length = len(mem['_records'])
+    mem['tick'] = 11
+    M.note_reanchor_followup(screen, mem, [])
+    assert len(mem['_records']) == length
+    mem['tick'] = 30
+    mem['post_month_status'] = {'stage': 'blocked'}
+    M.note_reanchor_followup(screen, mem, [])
+    assert mem['_records'][-1]['observed_metric']['blocked_by'] == 'post_month_status_blocked'
+    assert len(mem['_records']) == length + 1
+    M.note_reanchor_followup(screen, mem, [M.pad('x')])
+    assert 'reanchor_resume' not in mem
+    assert mem['_records'][-1]['decision'] == 'cursor_reanchor_resumed'
 
 
 def test_map_starts_reanchor_instead_of_inland_search():
