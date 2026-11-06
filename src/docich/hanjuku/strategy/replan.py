@@ -416,15 +416,18 @@ def _garrison_rotation(mem, owned, busy, heading, taken=()):
             source_distance, _source_want, source_floor = plan[source]
             if source_distance <= distance or not routes.allowed(mem, source, target):
                 continue
-            if garrison.get(source) is None or len(free[source]) - 1 < source_floor:
+            # Even a rear-castle floor of zero cannot override the actual
+            # game's minimum two-general requirement for a departure.
+            if (garrison.get(source) is None or len(set(free[source])) < 2
+                    or len(free[source]) - 1 < source_floor):
                 continue
             spares = [g for g in _spares(free[source]) if g != NAME]
             if not spares:
                 continue
             general = sorted(spares, key=lambda g: _defense_score(mem, g),
                              reverse=True)[0]
-            # A castle already above its own target donates first; only then
-            # does a far castle give up its last general (floor zero).
+            # A castle already above its own target donates first; rear
+            # castles may thin down to one, but never dispatch their last.
             surplus = 1 if len(free[source]) > _source_want else 0
             donors.append((surplus, source_distance,
                            -_distance(chapter, source, target), source, general))
@@ -576,17 +579,14 @@ def interim_candidates(mem, allow_sole=False) -> dict:
             unavailable |= {NAME}
         sole = len(owned) == 1
         need = 2          # never empty a castle (owner 2026-11-06)
-        # Owner 2026-11-04: a rear castle may send its last general. Once every
-        # normal castle is held the boss is the only enemy left, so a wave may
-        # take the last general from a non-home castle: g1133 2026-11-05 had one
-        # general per castle after the first waves, so no wave could form again
-        # and the plan fell back to staging moves that enemy attacks kept
-        # interrupting. The home castle always keeps its defender.
-        post_conquest = _post_conquest_wait(mem)
+        # The one-general exception for post-conquest boss waves was left
+        # behind by #3567. The game refuses the sortie when the castle has
+        # only one general (e.g. ポセイドン at ボッサール), so it must not
+        # become a planned attack even if every normal castle is owned.
         choices = []
         for c in owned:
             free = [g for g in garrison.get(c) or () if g not in busy]
-            if len(set(free)) < need and not (post_conquest and c != home and free):
+            if len(set(free)) < need:
                 continue
             spare = _spares(free, {NAME} if _hero_egg_broken(mem) else (), sole)
             for g in spare:
