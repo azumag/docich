@@ -41,6 +41,25 @@ HOUSE_OWN_CELL_DELTA = (0, 0)
 # basis house_roof_delta, he camped on the tile beside the house and
 # house_entry_miss[5] recorded the miss.
 HOUSE_ENTRY_FIRST_OWN_CELL = frozenset({5})
+# Unconfirmed trips must not dispatch to the same entry indefinitely. A
+# candidate is retried once to tolerate transient missing arrival frames.
+HOUSE_ENTRY_FAILURE_CAP = 2
+
+
+def _entry_failure_key(mem, entry):
+    chapter = mem.get('chapter')
+    if (type(chapter) is not int or chapter not in HOUSE_TARGET
+            or not isinstance(entry, (list, tuple)) or len(entry) != 2
+            or any(type(value) is not int for value in entry)
+            or tuple(entry) not in (HOUSE_ROOF_DELTA, HOUSE_OWN_CELL_DELTA)):
+        return None
+    return f'{chapter}:{entry[0]},{entry[1]}'
+
+
+def _entry_failures(mem, entry):
+    key = _entry_failure_key(mem, entry)
+    value = (mem.get('house_entry_failures') or {}).get(key) if key else None
+    return value if type(value) is int and 0 <= value <= HOUSE_ENTRY_FAILURE_CAP else 0
 
 
 def _entry_delta(mem):
@@ -466,6 +485,7 @@ def _exit(mem, reason, *, limit=None, diagnostic_code="other"):
 
 
 def _finish(mem):
+    state = mem.get('house') or {}
     # A trip that ends without a seen arrival leaves its bookkeeping sortie
     # looking like a marching army. target=None then matches every castle in
     # _bind_sortie, which claimed キカンドン as this sortie's arrival at
@@ -483,9 +503,16 @@ def _finish(mem):
         # charted cell and the house's own cell (see _entry_delta).
         misses = mem.setdefault('house_entry_miss', {})
         chapter = mem.get('chapter')
-        misses[chapter] = int(misses.get(chapter) or 0) + 1
+        old = misses.get(chapter, misses.get(str(chapter), 0))
+        misses[chapter] = (old if type(old) is int and old >= 0 else 0) + 1
+        attempted = (state.get('target_observation') or {}).get('entry')
+        key = _entry_failure_key(mem, attempted)
+        if key:
+            failed = mem.setdefault('house_entry_failures', {})
+            failed[key] = min(HOUSE_ENTRY_FAILURE_CAP, _entry_failures(mem, attempted) + 1)
         _record(mem, 'sortie_closed', observed_metric={'sorties': stale,
-                'entry_miss': misses[chapter]},
+                'entry_miss': misses[chapter], 'entry': attempted,
+                'entry_failures': _entry_failures(mem, attempted)},
                 reason='到着を確認できないまま卵修理を終了したため仮の出撃を閉じて入城表示との誤結合を防ぐ')
     state = mem.pop('house', None) or {}
     # A session that ends before its repairs leaves every still-broken target
@@ -2121,11 +2148,27 @@ def _repair_step(screen, mem, frame):
             # than the registered cell, which can sit a tile off on
             # source-derived chapters.
             entry = _entry_delta(mem)
+            if _entry_failures(mem, entry) >= HOUSE_ENTRY_FAILURE_CAP:
+                _record(mem, 'entry_retry_blocked', observed_metric={
+                    'entry': entry, 'unconfirmed_trips': _entry_failures(mem, entry)},
+                    reason='同じ家の着地点への派遣で到着を連続して確認できず、再派遣を中止')
+                return _exit(mem, '家の着地点への未確認派遣が続いたため、再計測するまで同じ座標に派遣しない',
+                             diagnostic_code='position_unread')
             roof_delta = _house_roof_delta(screen, mem, frame, entry)
             if roof_delta is not None:
                 err = [entry[a] - roof_delta[a] for a in (0, 1)]
                 position = [roof_delta[a] + target[a] - entry[a] for a in (0, 1)]
                 delta, accept, basis = err, 4, 'house_roof_delta'
+            elif entry != HOUSE_ROOF_DELTA:
+                # A confirmed wrong charted entry must never leak through the
+                # two-castle fallback when the house roof is not identified.
+                # Otherwise the "own cell" fix silently dispatches to the
+                # very same old location and creates another camp.
+                _record(mem, 'entry_roof_unverified', observed_metric={
+                    'entry': entry, 'position': position},
+                    reason='補正した家セルの屋根を特定できず、旧登録座標での代替確定を禁止')
+                return _exit(mem, '家の屋根を識別できないため、補正前の座標には派遣しない',
+                             diagnostic_code='position_unread')
             elif position is None:
                 reads = state.get('alignment_unread', 0)
                 if type(reads) is not int or not 0 <= reads < 2:
@@ -2146,7 +2189,9 @@ def _repair_step(screen, mem, frame):
                 button = ('right' if delta[axis] > 0 else 'left') if axis == 0 else (
                           'down' if delta[axis] > 0 else 'up')
                 return [pad(button, min(MAX_HOLD_FRAMES, abs(delta[axis])))]
-            state['target_observation'] = {'position': position, 'target': target, 'tick': mem.get('tick')}
+            state['target_observation'] = {'position': position, 'target': target,
+                                           'entry': list(entry), 'basis': basis,
+                                           'tick': mem.get('tick')}
             _phase(state, 'travel', departure_pending=True)
             _record(mem, 'dispatch_requested', source=state.get('source'),
                     observed_metric={'view': HOUSE_TARGET[mem['chapter']], 'field_position': position,
@@ -2184,6 +2229,15 @@ def _repair_step(screen, mem, frame):
             return []
         prices = gift_prices(screen)
         if prices:
+            # The gift list proves actual arrival, even if a later purchase or
+            # return step aborts. Never miscount such a visit as a bad entry.
+            for sortie in (mem.get('sorties') or {}).values():
+                if (sortie.get('general') == name and sortie.get('purpose') == 'house'
+                        and sortie.get('status') in ('en_route', 'launched_unconfirmed')):
+                    sortie['status'] = 'arrived_house'
+            entry_key = _entry_failure_key(mem, (state.get('target_observation') or {}).get('entry'))
+            if entry_key:
+                (mem.get('house_entry_failures') or {}).pop(entry_key, None)
             # Observed arrival: the prices panel only exists inside the
             # house, so this is where the dispatch actually landed. The
             # garrison fact moves here from the old departure-time write.
