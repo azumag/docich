@@ -176,23 +176,22 @@ def camp_recall_step(screen: Screen, mem, frame):
 
 
 def _mark_recall_interrupted(mem):
-    """Forget a confirm A that a battle/event scene has taken over.
+    """Remember that a battle/event scene took the foreground from a recall.
 
     The recall is planned one observation and sent on the next. When a
     defense/attack message starts in between (g1139 2026-11-06 15:18:18 JST:
     カルーン じょうが てきに せめこまれました right after the recall plan), the
-    A advances that scene instead of confirming the destination. The recall
-    must not credit that input, and it must retry soon after the battle
-    rather than serving the long failed-camp skip.
+    A advances that scene instead of confirming the destination. The pending
+    recall state stays untouched (a combat foreground must not rewrite it),
+    but the dispatch step uses this marker to retry soon after the battle
+    instead of serving the long failed-camp skip.
     """
     state = _flow(mem).get('recall')
     if not isinstance(state, dict):
         return
     if state.get('stage') != 'await_dispatch' or state.get('input_sent'):
         return
-    state.pop('request_trace', None)
-    state.pop('a_inputs', None)
-    state['interrupted'] = True
+    _flow(mem)['recall_interrupted'] = int(mem.get('tick') or 0)
 
 
 def _camp_recall_step(screen: Screen, mem, frame, *, observed_camps=None):
@@ -618,14 +617,15 @@ def _recall_dispatch_step(screen, mem, state):
         state['picker_closed'] = True
     if state.get('picker_closed') or state['steps'] >= 6:
         status = 'arrival_unconfirmed' if state.get('input_sent') else 'dispatch_unconfirmed'
+        interrupted = _flow(mem).pop('recall_interrupted', None) is not None
         _flow(mem)['recall_verification'] = {**state, 'status': status}
         _flow(mem).pop('recall', None)
         _arm_recall_skip(mem, state,
-                         FORT_RETRY_TICKS if (state.get('fort') or state.get('interrupted')) else None)
+                         FORT_RETRY_TICKS if (state.get('fort') or interrupted) else None)
         mem['uncertain'] = True
         _record(mem, 'camp_recall_unconfirmed', chart_step=None, observed_metric={'castle': state.get('goal'),
                 'input_sent': bool(state.get('input_sent')), 'picker_closed': bool(state.get('picker_closed')),
-                'interrupted': bool(state.get('interrupted')),
+                'interrupted': interrupted,
                 'general': state.get('general') if state.get('fort') else None}, resulting_event=status,
                 reason='帰還の本人・移動・到着を確認できず未確認として保持し、有限な操作を終了')
         return [pad('b')] if screen.kind in ('world_map', 'map_target') else []
