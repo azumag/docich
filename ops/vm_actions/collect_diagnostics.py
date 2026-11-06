@@ -6947,6 +6947,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v495-sortie-stops-at-named-general",
             "hanjuku-chart-v496-align-limit-2",
             "hanjuku-chart-v497-castle-jump-hand-blink",
+            "hanjuku-chart-v498-month-locate-ownership",
             "hanjuku-chart-v129-battle-card-progress",
             "hanjuku-chart-v130-summer-cursor-evidence",
             "hanjuku-chart-v131-defense-month-economy",
