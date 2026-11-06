@@ -4183,7 +4183,24 @@ class GameSwitchCoordinator:
                 )
             boundary_method = getattr(old_adapter, "request_round_boundary", None)
             boundary_required = self._round_boundary_required(old_adapter)
-            if callable(boundary_method) or boundary_required:
+            if self._runtime_confirmed_dead(old_adapter, deadline):
+                # Issue #3521: canonical active still tracks a runtime whose
+                # game already exited (e.g. quiesce_failed left it behind and
+                # presentation later went stopped).  A dead runtime has no
+                # round boundary to wait for; reclaim it through the ordinary
+                # quiesce path so stop_agent/cleanup collect the residue and
+                # the switch proceeds instead of re-failing on a stale active.
+                self._log(
+                    "active_stale_reclaim",
+                    phase="preparing",
+                    detail="tracked active runtime is already dead; skipping round boundary",
+                )
+                tx.transition(
+                    {"preparing"}, "quiescing",
+                    updates={"active": None, "previous": old_active},
+                    crash_hook=self.crash_hook,
+                )
+            elif callable(boundary_method) or boundary_required:
                 tx.transition(
                     {"preparing"}, "draining",
                     crash_hook=self.crash_hook,
@@ -4454,6 +4471,25 @@ class GameSwitchCoordinator:
             time.sleep(self.poll_interval_s)
         return self._probe_alive(adapter, deadline) is False
 
+    def _runtime_confirmed_dead(self, adapter: CoordinatorAdapter, deadline: float) -> bool:
+        """True only when the adapter's liveness probe cleanly reports death.
+
+        ``alive() -> False`` is conclusive: window, pane and process are all
+        gone (Issue #3521: presentation stopped while canonical ``active``
+        still tracks the runtime).  A raised error is inconclusive -- a
+        failed probe is not proof of death, so callers must keep the normal
+        quiesce path in that case.
+        """
+        try:
+            return not self._call_adapter(
+                lambda cancel: adapter.alive(deadline, cancel),
+                deadline,
+                self.step_timeouts.stop_agent_s,
+                "alive",
+            )
+        except Exception:
+            return False
+
     def _teardown_runtime(self, adapter: CoordinatorAdapter, deadline: float) -> bool:
         """Stop agent and game, then confirm the runtime is actually gone.
 
@@ -4524,7 +4560,16 @@ class GameSwitchCoordinator:
                     detail=f"old runtime adapter: {_safe_detail(exc)}",
                     keep_active=True,
                 )
-            if getattr(adapter, "requires_stop_boundary", False):
+            if self._runtime_confirmed_dead(adapter, deadline):
+                # Issue #3521: tracked active is already dead; there is no
+                # boundary to drain and nothing to lose by reclaiming it here.
+                self._log(
+                    "active_stale_reclaim",
+                    phase="validating",
+                    detail="tracked active runtime is already dead; skipping round boundary",
+                )
+                tx.transition({"validating"}, "quiescing", crash_hook=self.crash_hook)
+            elif getattr(adapter, "requires_stop_boundary", False):
                 tx.transition({"validating"}, "draining",
                               updates={"deadline_at": deadline_at}, crash_hook=self.crash_hook)
                 try:
