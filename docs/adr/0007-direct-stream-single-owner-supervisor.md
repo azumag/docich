@@ -1,6 +1,6 @@
 # ADR 0007: 直接配信エンコーダーの単一所有者を docich にする
 
-- 状態: **提案（実装・本番切替は未承認）**。Issue #3553「Stream & service」の設計。この文書のマージは実装や本番切替の承認ではない。
+- 状態: **方針確定（2026-11-07、利用者回答で §6 を決定）**。段階 B〜D（本番を触らない実装）は着手可。**段階 E（本番切替）は、実行の直前に利用者へ時刻を示して明示承認を得てから行う**。この文書のマージは本番切替の承認ではない。
 - 関連: ADR 0006（リポジトリ境界）、docich #3621 / #3625 / #3633 / #3635 / #3638 / #3640 / #3642
 - 方針: 二重 encoder を絶対に起こさない。稼働中の配信を止める手順は、利用者の明示承認と作業窓なしに実行しない。
 
@@ -60,6 +60,7 @@ systemd: soren-runtime.service   ← worker "direct_stream" を登録しない�
 | D | `docich-stream.service` の unit と `DOCICH_STREAM_OWNER` 判定を追加。unit は配置のみ・`enable`/`start` しない。`start_all.sh` は `owner=docich` のとき worker を登録しない | なし（owner 既定 `soren`） | CI + unit の静的検証 |
 | E | **本番切替**（本書 §5）。 | **あり（配信中断の可能性）** | 利用者の明示承認 + 作業窓 |
 | F | 旧 Soren 実装の撤去 | なし | E 後の実配信確認 |
+| G | OBS 関連の撤去（`obs_*.sh`、backend `obs` 分岐、`obs.service` drop-in、`obs_capture_watchdog`） | なし（OBS が使われていないことを E で確認済みの場合） | 撤去前に参照箇所の網羅検索 |
 
 A〜D は本番を触らずに進められる。E は §5 の承認なしに実行しない。
 
@@ -70,6 +71,8 @@ A〜D は本番を触らずに進められる。E は §5 の承認なしに実�
 2. docich を VM に配備済みで、`stream_supervisor config|command|validate` が現行 `direct_stream.py` の出力と一致。
 3. 固定ロックの親ディレクトリが `ubuntu` 所有・0700 で存在（作成は承認後の手順に含める）。
 4. 稼働中 encoder の PID、実行 SHA、`status.json` の状態を記録（ロールバック比較用）。
+5. 本番 `.env` が ffmpeg backend であること（OBS が現役でないこと）、および §7-4 の Pulse 読み取り確認が済んでいること。
+6. 実行直前に時刻を利用者へ提示し、明示承認を得ていること。
 
 **手順**
 1. `DOCICH_STREAM_OWNER=docich` を設定（`.env`）。まだ反映しない。
@@ -81,14 +84,32 @@ A〜D は本番を触らずに進められる。E は §5 の承認なしに実�
 - `DOCICH_STREAM_OWNER=soren` に戻し、`docich-stream.service` を stop、`soren-runtime.service` の worker を再開。旧 state_dir ロックは docich 側も取っていたため二重起動は起こらない。
 - ロールバックでも 1 回の再起動（短い中断）が発生する。
 
-## 6. 残る未決事項（承認時に決める）
+## 6. 決定事項と残る確認事項
 
-- unit 名と配置（`/etc/systemd/system/docich-stream.service` の想定）。
-- 作業窓の時間帯と、中断を許容する長さ。
-- OBS backend が現役かどうか（現役なら本設計は ffmpeg backend のみが対象）。
-- `xvfb.service` と PulseAudio を docich 側の unit 依存へどう明記するか。
+**利用者回答（2026-11-07）で決定**
+- 切替時の配信の寸断は許容する。ただし §3 の制約があるため、寸断の長さは「数秒〜数十秒」を目標にし、段階 E は実行直前に時刻を示して承認を得る。
+- unit 名は `docich-stream.service` とする（名称にこだわらない）。
+- **OBS は廃止**する。対象は ffmpeg backend のみ。OBS 関連（`SOREN_STREAM_BACKEND=obs`、`obs_*.sh`、`obs.service` の drop-in、`obs_capture_watchdog`）は新設計に引き継がず、段階 G（§4）で撤去する。ただし本番の `.env` が `obs` になっていないことは段階 E の事前条件で確認する（**VM 未確認**）。
+- PulseAudio の現状は利用者も把握していないため、§7 の事実（リポジトリ由来）を前提に、VM 上の状態は段階 E の事前条件として**読み取り専用で確認**する。
 
-## 7. 非目標
+**残る確認事項**
+- 作業窓の時間帯（段階 E の直前に提示して決める）。
+- `xvfb.service` の実体（リポジトリに unit が無い。VM 未確認）。段階 E の事前条件で読み取り確認する。
+
+## 7. PulseAudio の前提（リポジトリのコードで確認した事実）
+
+- 正規の持ち主は `ubuntu` ユーザーマネージャの `pulseaudio.socket` / `pulseaudio.service`（`install_pulseaudio_user_service.sh`）。固定ソケットは `/run/user/1001/pulse/native`。
+- `~/.config/pulse/client.conf` は `autospawn = no` と上記 `default-server` を固定（`deploy/pulse/client.conf`）。クライアントが私的な Pulse サーバーを起動しないための事故対策（docich#2008: 別 service の cgroup 内で自動起動した Pulse が、デプロイによる再起動で巻き添えになり、映像だけが続く無音配信になった）。
+- 仮想シンクは `soren_null`、既定ソースは `soren_null.monitor`。現在は `soren-runtime.service` の `ExecStartPre=wait_soren_runtime_prereqs.sh` が、Pulse の到達性確認とシンク作成・既定設定を行う。
+- `soren-runtime.service` は `PULSE_SERVER=unix:/run/user/1001/pulse/native`、`XDG_RUNTIME_DIR=/run/user/1001`、`Wants/After=user@1001.service` を持つ。
+
+**`docich-stream.service` への要求**
+1. 同じ環境変数と `After=user@1001.service` を持つ。
+2. **Pulse を自分の cgroup で起動・所有しない**（`KillMode=control-group` で巻き添え死するため）。Pulse の起動・再起動を unit の動作に含めない。
+3. 起動前に Pulse 到達性と `soren_null` シンクの存在を確認する `ExecStartPre` を docich 側に持つ（Soren のスクリプトに依存しない）。シンクが無い場合の作成は既存スクリプトと同じ動作にそろえ、Pulse が落ちている場合は **起動せず失敗する**（無音配信を始めない）。
+4. 段階 E の事前条件に、`pactl info`、`soren_null` の存在、`pulseaudio.service` が user session 配下であることの読み取り確認を加える。
+
+## 8. 非目標
 
 - 本書のマージだけでの本番変更、配備、service の enable/start、固定ロック有効化フラグの変更。
 - encoder 以外（TTS・ラジオ・コメント・監視）の移管。別 ADR/Issue で扱う。
