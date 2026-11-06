@@ -263,9 +263,10 @@ class TestPaperWorkerCycle(unittest.TestCase):
                 fill, mode="compact", status=safe_status,
                 display_at=NOW + 3, trading_dir=trading_dir,
             )
-            self.assertIn("含み損益", rendered.overlay_event["body"])
-            self.assertIn("累計損益", rendered.overlay_event["body"])
-            self.assertNotIn("評価待ち", rendered.overlay_event["body"])
+            self.assertIn("含み ", rendered.overlay_event["title"])
+            self.assertIn("累計 ", rendered.overlay_event["title"])
+            self.assertNotIn("評価待ち", rendered.overlay_event["title"])
+            self.assertNotIn("含み損益", rendered.overlay_event["body"])
 
     def test_replaying_same_frames_does_not_duplicate_fill_event(self):
         with tempfile.TemporaryDirectory() as tmp:

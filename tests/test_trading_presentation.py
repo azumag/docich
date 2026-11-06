@@ -131,7 +131,8 @@ class TestNotificationRendering(unittest.TestCase):
             "利益を確保する狙いでポジションを軽くする利確です。売った後にさらに伸びても、取り逃しより、決めたルールを守れたかを重視します。"
             "利確条件を検出：BTC/JPYを売り。損益は確認できませんでした。現在の含み損益と評価込み累計損益は評価待ちです。",
         )
-        self.assertIn("実現損益 取得失敗", rendered.overlay_event["body"])
+        self.assertIn("今回 取得失敗", rendered.overlay_event["title"])
+        self.assertNotIn("取得失敗", rendered.overlay_event["body"])
 
     def test_compact_and_detailed_buy_use_identical_short_format(self):
         compact = render_notification(fill_event(), mode="compact", status=safe_status())
@@ -180,9 +181,11 @@ class TestNotificationRendering(unittest.TestCase):
             "cumulative_pnl_jpy": "-70.25",
         }}
         rendered = render_notification(fill_event(), mode="compact", status=status)
-        self.assertIn("含み損益 +1,250.5円", rendered.overlay_event["body"])
-        self.assertIn("累計損益 -70.25円", rendered.overlay_event["body"])
-        self.assertNotIn("実現損益", rendered.overlay_event["body"])
+        self.assertIn("含み +1,250.5円", rendered.overlay_event["title"])
+        self.assertIn("累計 -70.25円", rendered.overlay_event["title"])
+        self.assertIn("BTC/JPY 買い", rendered.overlay_event["title"])
+        self.assertNotIn("今回", rendered.overlay_event["title"])
+        self.assertNotIn("損益", rendered.overlay_event["body"])
         self.assertIn("含み損益はプラス1,250.5円", rendered.speech_text)
         self.assertIn("累計損益はマイナス70.25円", rendered.speech_text)
 
@@ -194,9 +197,13 @@ class TestNotificationRendering(unittest.TestCase):
             "cumulative_pnl_jpy": "200",
         }}
         rendered = render_notification(event, mode="compact", status=status)
-        self.assertIn("今回の実現損益 -18.25円", rendered.overlay_event["body"])
-        self.assertIn("含み損益 -5円", rendered.overlay_event["body"])
-        self.assertIn("累計損益 +200円", rendered.overlay_event["body"])
+        self.assertIn("今回 -18.25円", rendered.overlay_event["title"])
+        self.assertIn("含み -5円", rendered.overlay_event["title"])
+        self.assertIn("累計 +200円", rendered.overlay_event["title"])
+        self.assertIn("BTC/JPY 売り", rendered.overlay_event["title"])
+        self.assertNotIn("実現損益", rendered.overlay_event["body"])
+        self.assertNotIn("含み損益", rendered.overlay_event["body"])
+        self.assertNotIn("累計損益", rendered.overlay_event["body"])
         self.assertIn("損益はマイナス18.25円", rendered.speech_text)
         self.assertIn("含み損益はマイナス5円", rendered.speech_text)
         self.assertIn("累計損益はプラス200円", rendered.speech_text)
@@ -206,7 +213,8 @@ class TestNotificationRendering(unittest.TestCase):
             "complete": True, "unrealized_pnl_jpy": "0", "cumulative_pnl_jpy": "0",
         }}
         rendered = render_notification(fill_event(), mode="compact", status=status)
-        self.assertIn("含み損益 0円 / 累計損益 0円", rendered.overlay_event["body"])
+        self.assertIn("含み 0円｜累計 0円", rendered.overlay_event["title"])
+        self.assertNotIn("含み損益", rendered.overlay_event["body"])
         self.assertIn("含み損益は0円、評価込み累計損益は0円", rendered.speech_text)
         for perf in (
             {"complete": False, "unrealized_pnl_jpy": "500", "cumulative_pnl_jpy": "900"},
@@ -216,7 +224,8 @@ class TestNotificationRendering(unittest.TestCase):
             with self.subTest(perf=perf):
                 status["performance_summary"] = perf
                 result = render_notification(fill_event(), mode="compact", status=status)
-                self.assertIn("含み損益 評価待ち / 累計損益 評価待ち", result.overlay_event["body"])
+                self.assertIn("含み 評価待ち｜累計 評価待ち", result.overlay_event["title"])
+                self.assertNotIn("評価待ち", result.overlay_event["body"])
                 self.assertNotIn("500円", result.speech_text)
                 self.assertNotIn("900円", result.speech_text)
 
@@ -225,9 +234,22 @@ class TestNotificationRendering(unittest.TestCase):
             "complete": True, "unrealized_pnl_jpy": "20", "cumulative_pnl_jpy": "40",
         }}
         rendered = render_notification(settlement_event(), mode="compact", status=status)
-        self.assertIn("含み損益 +20円 / 累計損益 +40円", rendered.overlay_event["body"])
+        self.assertIn("含み +20円｜累計 +40円", rendered.overlay_event["title"])
+        self.assertNotIn("含み損益", rendered.overlay_event["body"])
+        self.assertNotIn("累計損益", rendered.overlay_event["body"])
         self.assertIn("評価込み累計損益はプラス40円", rendered.speech_text)
         self.assertNotIn("今回の実現損益", rendered.overlay_event["body"])
+
+    def test_large_pnl_does_not_break_overlay_title_limit_or_truncate_amount(self):
+        status = {**safe_status(), "performance_summary": {
+            "complete": True, "unrealized_pnl_jpy": "9" * 120,
+            "cumulative_pnl_jpy": "8" * 120,
+        }}
+        rendered = render_notification(fill_event(), mode="compact", status=status)
+        self.assertLessEqual(len(rendered.overlay_event["title"]), 120)
+        self.assertIn("損益 桁数超過", rendered.overlay_event["title"])
+        self.assertNotIn("999999999", rendered.overlay_event["title"])
+        self.assertNotIn("含み損益", rendered.overlay_event["body"])
 
     def test_settlement_success_never_calls_edge_guaranteed_profit(self):
         rendered = render_notification(settlement_event(), mode="detailed", status=safe_status())
