@@ -9,6 +9,9 @@ explicit cutover (stage E).
 
 Safety properties (each covered by process-level tests):
 
+* ``run`` does nothing (exit 0) unless ``DOCICH_STREAM_OWNER=docich``; the
+  default keeps the legacy runner as the owner. It then waits for the canonical
+  PulseAudio (never starting it) before validating the host.
 * ``run``/``record`` take the fixed host-wide lease and then
   ``state_dir/direct_stream.lock`` before any child starts; a legacy runner
   holding either one makes this refuse. A host without the provisioned lock
@@ -33,6 +36,7 @@ from typing import Callable, Mapping, Sequence
 from .stream_config import load_stream_config, public_stream_config
 from .stream_encoder_command import build_direct_stream_ffmpeg_command
 from .stream_host_checks import RuntimeCheckError, prepare_caption_runtime, validate_runtime
+from .stream_prereqs import PrerequisiteError, ensure_pulse_ready, wait_seconds
 from .stream_runner import AlreadyRunningError, run_supervised, stop_runner
 from .stream_state_files import read_stream_status
 from .stream_supervision_policy import load_audio_watchdog_policy, load_reconnect_policy
@@ -41,6 +45,7 @@ DEFAULT_ROOT = "/home/ubuntu/soren"
 PACKAGE_ROOT = Path(__file__).resolve().parents[2]
 TWICA_WRAPPER_RELATIVE = "bin/docich-twica-ffmpeg"
 TWICA_KEYS = ("DOCICH_TWICA_REAL_FFMPEG", "SOREN_DIRECT_STREAM_FFMPEG_BIN")
+OWNERS = ("soren", "docich")
 
 
 def _positive_duration(raw: str) -> int:
@@ -72,6 +77,29 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("status", help="print redacted status JSON")
     sub.add_parser("stop", help="stop a runner started by this entry point")
     return parser
+
+
+def stream_owner(env: Mapping[str, str]) -> str:
+    """Who owns the single encoder: ``soren`` (default, legacy) or ``docich``.
+
+    Both start paths read the same flag. The host-wide lock remains the final
+    safety net if the flag is ever wrong.
+    """
+    # Empty means unset (shell ``${VAR:-soren}`` convention used by the legacy flags).
+    raw = (str(env.get("DOCICH_STREAM_OWNER") or "").strip()) or "soren"
+    if raw not in OWNERS:
+        raise ValueError("DOCICH_STREAM_OWNER must be soren or docich")
+    return raw
+
+
+def _default_prepare_pulse(env: Mapping[str, str], config: Mapping[str, object],
+                           watchdog: Mapping[str, object]) -> None:
+    ensure_pulse_ready(
+        pulse_server=str(watchdog["pulse_server"]),
+        pulse_source=str(config["pulse_source"]),
+        wait_sec=wait_seconds(env),
+        base_env=env,
+    )
 
 
 def twica_pipeline_enabled() -> bool:
@@ -134,6 +162,7 @@ def main(
     validate: Callable[[Mapping[str, object], str], bool] | None = None,
     twica_enabled: Callable[[], bool] = twica_pipeline_enabled,
     canonical_opener: Callable[[], object] | None = None,
+    prepare_pulse: Callable[[Mapping[str, str], Mapping[str, object], Mapping[str, object]], None] | None = None,
 ) -> int:
     args = build_parser().parse_args(argv)
     process_env = environ is None
@@ -147,6 +176,17 @@ def main(
             if key in env and env.get(key) != base_env.get(key):
                 os.environ[key] = env[key]
     root = args.root or Path(env.get("SOREN_RUNTIME_REPO") or DEFAULT_ROOT)
+    if args.action == "run":
+        try:
+            owner = stream_owner(env)
+        except ValueError as exc:
+            print(f"stream_supervisor: {exc}", file=sys.stderr)
+            return 2
+        if owner != "docich":
+            print("stream_supervisor: DOCICH_STREAM_OWNER is not 'docich'; not starting "
+                  "(the legacy runner owns the encoder)", file=sys.stderr)
+            return 0
+    pulse = prepare_pulse or _default_prepare_pulse
     check = validate or (lambda cfg, mode: validate_runtime(cfg, mode=mode))
     extra = {} if canonical_opener is None else {"canonical_opener": canonical_opener}
     try:
@@ -178,6 +218,7 @@ def main(
         if args.action == "run":
             reconnect = load_reconnect_policy(env)
             watchdog = load_audio_watchdog_policy(env, uid=os.getuid())
+            pulse(env, config, watchdog)
             active = check(config, "live") and prepare_caption_runtime(config)
             command = _command_for(config, mode="live", captions_active=active, output=None, duration=None)
             return run_supervised(config, public, command, mode="live", captions_active=active,
@@ -190,7 +231,7 @@ def main(
             return run_supervised(config, public, command, mode="record", captions_active=active,
                                   reconnect=None, audio_watchdog=None, output_dir=output.parent, cwd=root, **extra)
         raise AssertionError(f"unhandled action: {args.action}")
-    except (ValueError, RuntimeCheckError, AlreadyRunningError) as exc:
+    except (ValueError, RuntimeCheckError, AlreadyRunningError, PrerequisiteError) as exc:
         print(f"stream_supervisor: {exc}", file=sys.stderr)
         return 2
 
