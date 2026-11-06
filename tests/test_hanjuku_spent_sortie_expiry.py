@@ -220,7 +220,7 @@ def test_a_kept_boss_camp_reopens_the_order_same_month():
     O._expire_spent_sorties(mem)
     assert 'A:x:M1' not in mem['sorties']
     assert mem['orders']['A:x:M1'] == 'pending'
-    assert 'ヘルメス' in mem['garrison']['アルマムーン']
+    assert 'ヘルメス' in _world(mem)['garrison']['アルマムーン']
     assert any(r['decision'] == 'sortie_launch_unverified' for r in mem['_records'])
 
 
