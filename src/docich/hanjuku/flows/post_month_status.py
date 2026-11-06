@@ -28,6 +28,12 @@ LOCATE_RETRIES = 2  # retry the named SELECT -> actual castle status, never infe
 # map changes the frame digest on every observation.
 STRAY_MENU_KINDS = frozenset({'castle_menu', 'castle_info', 'general_list'})
 STRAY_MENU_BACKOUTS = 12
+# docich#3659: the #3505 boss-adjacent camp exemption was indefinite, so a
+# general camped on the boss castle could neither be recalled nor re-ordered
+# toward it (no camp->boss route exists). Bound the exemption: after this many
+# consecutive months the monthly pass queues the recall again, returning him
+# to the planner's garrison pool so a later boss wave can send him.
+BOSS_CAMP_EXEMPT_MONTHS = 3
 MARCH = frozenset({'いまこちらにむかっています', 'しんぐんちゅうです',
                    'いどうしています'})
 CAMP = frozenset({'キャンプしています', 'キャンプのなかにいます'})
@@ -38,8 +44,9 @@ def _log(mem, event, **details):
     decision_log._record(mem, event, **details)
 
 
-def _tasks(statuses, names):
+def _tasks(statuses, names, boss_camp_months=None):
     from ... import hanjuku_chart as chart
+    months = boss_camp_months or {}
     queue = []
     for name in names:
         info = statuses[name]
@@ -50,10 +57,13 @@ def _tasks(statuses, names):
             # reuses that measured tolerance instead of a new arbitrary threshold
             # (g1133: a general camped at field [824,176] against the boss at
             # (818,184) and the monthly recall dragged him back, cancelling the
-            # boss fight).
+            # boss fight). The exemption expires after BOSS_CAMP_EXEMPT_MONTHS
+            # consecutive observed months (docich#3659): a siege that never
+            # resolves must not pin him to the camp forever.
             marker = info.get('marker')
             candidate = marker.get('castle_candidate') if isinstance(marker, dict) else None
-            if isinstance(candidate, str) and chart.is_boss_castle(candidate):
+            if (isinstance(candidate, str) and chart.is_boss_castle(candidate)
+                    and int(months.get(name) or 0) <= BOSS_CAMP_EXEMPT_MONTHS):
                 continue
             queue.append({'kind': 'recall', 'name': name})
         elif info.get('location') == 'castle':
@@ -102,7 +112,25 @@ def arm(mem):
     # A castle recorded while its ownership was stale is now usable the moment
     # the Y map shows our flag; do not wait for another roster SELECT.
     promoted = _promote_pending(mem, statuses)
-    if not scan and not _tasks(statuses, list(statuses)):
+    # Count each general observed camping on the boss castle once per month.
+    # ``arm`` can also be re-entered inside the same month after ``_finish``
+    # dropped the owner state, so gate the increment on the counted scope —
+    # never on the presence of a live owner.
+    from ... import hanjuku_chart as chart
+    if mem.get('boss_camp_exempt_scope') != scope:
+        mem['boss_camp_exempt_scope'] = list(scope)
+        camping = {
+            name for name, row in statuses.items()
+            if row.get('location') == 'camp'
+            and chart.is_boss_castle(
+                (row.get('marker') or {}).get('castle_candidate') or '')}
+        previous = mem.get('boss_camp_exempt') or {}
+        counted = {name: int(previous.get(name) or 0) + 1 for name in camping}
+        if counted:
+            mem['boss_camp_exempt'] = counted
+        else:
+            mem.pop('boss_camp_exempt', None)
+    if not scan and not _tasks(statuses, list(statuses), mem.get('boss_camp_exempt')):
         # Common case: zero input and zero roster navigation this month.
         mem['post_month_status_last'] = {
             'scope': scope, 'statuses': statuses, 'complete': True,
@@ -115,7 +143,8 @@ def arm(mem):
         'scope': scope, 'identity': identity,
         'stage': 'await_map' if scan else 'process', 'statuses': statuses,
         'dirty': sorted(stale), 'names': [] if scan else list(statuses),
-        'tasks': [] if scan else _tasks(statuses, list(statuses)),
+        'tasks': [] if scan else _tasks(statuses, list(statuses),
+                                        mem.get('boss_camp_exempt')),
         'steps': 0, 'phase_reads': 0, 'complete': not scan,
         'started_tick': int(mem.get('tick') or 0)}
     _log(mem, 'post_month_status_armed',
@@ -342,7 +371,8 @@ def _complete_scan(mem, state):
         _log(mem, 'post_month_general_departed', general=name,
              reason='将軍名簿を末尾まで実測したが本人がいないため旧状態を除籍')
     state['statuses'] = {name: state['statuses'][name] for name in state['names']}
-    state['tasks'] = _tasks(state['statuses'], state['names'])
+    state['tasks'] = _tasks(state['statuses'], state['names'],
+                            mem.get('boss_camp_exempt'))
     mem['general_statuses'] = {
         'scope': list(state['scope']), 'identity': state['identity'],
         'statuses': state['statuses'], 'dirty': {}, 'pending_joins': [],

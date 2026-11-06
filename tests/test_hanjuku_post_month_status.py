@@ -686,6 +686,62 @@ def test_boss_adjacent_camp_is_not_a_monthly_recall_task():
         {'kind': 'recall', 'name': 'カバルッサ'}]
 
 
+def test_boss_adjacent_camp_exemption_expires_into_a_recall():
+    # docich#3659: ボス城至近の野営除外に期限を設ける。除外が
+    # BOSS_CAMP_EXEMPT_MONTHS か月連続した野営は、翌月の月次処理で
+    # 帰還タスクへ戻され、将軍が野営に固定されないことを保証する。
+    statuses = {'ゼウス': {'location': 'camp',
+                        'marker': {'castle_candidate': 'けっかい'}}}
+    mem = memory()
+    mem['general_statuses'] = {
+        'scope': [1, '1-6'], 'complete': True, 'dirty': {},
+        'identity': receipts.run_identity(mem.get('_run_identity')),
+        'statuses': {name: dict(row) for name, row in statuses.items()}}
+    # 除外上限までの各月では帰還タスクを積まず、除外月数だけを進める。
+    for month in range(2, post.BOSS_CAMP_EXEMPT_MONTHS + 2):
+        mem['month'] = f'{month}-1'
+        mem.pop('post_month_status', None)
+        post.arm(mem)
+        # タスク無しの月は cached の早期復帰で owner が残らない。
+        assert 'post_month_status' not in mem, mem['post_month_status']
+        assert mem['boss_camp_exempt'] == {'ゼウス': month - 1}
+    # 上限を超えた月では帰還タスクへ戻る（複数月を跨ぐ到達性）。
+    mem['month'] = f'{post.BOSS_CAMP_EXEMPT_MONTHS + 2}-1'
+    mem.pop('post_month_status', None)
+    post.arm(mem)
+    assert mem['post_month_status']['tasks'] == [
+        {'kind': 'recall', 'name': 'ゼウス'}]
+    assert mem['boss_camp_exempt'] == {
+        'ゼウス': post.BOSS_CAMP_EXEMPT_MONTHS + 1}
+
+
+def test_boss_adjacent_camp_exemption_resets_when_the_camp_resolves():
+    # 野営が解消（在城・行軍・帰還済み）した将軍の除外月数は次の月替わりで
+    # 破棄され、再びボス城至近で野営しても月数は 1 から数え直す。
+    mem = memory()
+    mem['general_statuses'] = {
+        'scope': [1, '1-6'], 'complete': True, 'dirty': {},
+        'identity': receipts.run_identity(mem.get('_run_identity')),
+        'statuses': {'ゼウス': {'location': 'camp',
+                             'marker': {'castle_candidate': 'けっかい'}}}}
+    mem['month'] = '2-1'
+    post.arm(mem)
+    assert mem['boss_camp_exempt'] == {'ゼウス': 1}
+    mem.pop('post_month_status', None)
+    mem['general_statuses']['statuses'] = {
+        'ゼウス': {'location': 'castle', 'castle': 'アルマムーン'}}
+    mem['month'] = '3-1'
+    post.arm(mem)
+    assert 'boss_camp_exempt' not in mem
+    mem.pop('post_month_status', None)
+    mem['general_statuses']['statuses'] = {
+        'ゼウス': {'location': 'camp',
+                  'marker': {'castle_candidate': 'けっかい'}}}
+    mem['month'] = '4-1'
+    post.arm(mem)
+    assert mem['boss_camp_exempt'] == {'ゼウス': 1}
+
+
 def _castle_menu_with_hand():
     # Live 2026-11-06 g1139 48-10: the しゅつげき/ステータス box stayed open on
     # the map with the hand on しゅつげき while the overlay read
