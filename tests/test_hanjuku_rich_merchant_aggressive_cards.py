@@ -38,7 +38,9 @@ def test_real_quotes_remain_affordable_after_first_large_purchase(ready):
     second_name, second_qty = shop['items'][0]
     second_cost = second_qty * dict(rows)[second_name]
     assert p.quantity_step(quote(after_first, count=second_qty, cost=second_cost), ready) == [p.pad('a')]
-    assert {row[0] for row in shop['bought']} == set(b.RICH_MERCHANT_CARDS)
+    # This particular merchant lists only the two names in rows, not the full
+    # nine-card owner priority set.
+    assert {row[0] for row in shop['bought']} == {name for name, _ in rows}
     assert after_first - second_cost >= 8 + 50 + b.BARGAIN_CASH_BUFFER
 
 
