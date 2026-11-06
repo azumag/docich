@@ -52,14 +52,13 @@ def test_a_surplus_rear_general_moves_to_the_front():
     assert len(mem['garrison']['ナキューメラ']) - 1 == 1
 
 
-def test_a_far_rear_castle_may_stand_empty():
+def test_a_far_rear_castle_never_sends_its_last_defender():
     mem = memory({'キカンドン': [], 'カストーラ': [], 'ナキューメラ': [],
                   'ゴーメン': ['アポロン'],
                   'アルマムーン': ['どうし', 'ゼウス', 'アルテミス']})
     moves = rotation(mem)
-    assert [(o['source'], o['target']) for o in moves] == [('ゴーメン', 'キカンドン')]
-    # 遠い城の最後の1人を前線へ送り、0人にしてよい（owner 2026-11-04）。
-    assert len(mem['garrison']['ゴーメン']) - 1 == 0
+    assert moves == []
+    # 最前線の人数を増やすためでも、遠い城の最後の守備将軍は出さない。
 
 
 def test_the_home_castle_never_loses_its_guard():
@@ -105,7 +104,7 @@ def test_interim_candidates_rotate_after_the_attacks():
     mem = memory({'キカンドン': ['アテナ'],
                   'カストーラ': ['レモン', 'ピオーネ'],
                   'ナキューメラ': ['ソーピニヨン', 'デュオニソス'],
-                  'ゴーメン': ['アポロン'],
+                  'ゴーメン': ['アポロン', 'ポセイドン'],
                   'アルマムーン': ['どうし', 'ゼウス', 'アルテミス']})
     candidates = list(policy.interim_candidates(mem).values())
     rotated = [i for i, o in enumerate(candidates) if o.get('garrison_rotate')]
