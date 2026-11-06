@@ -32,7 +32,7 @@ def memory(tick, *, status='en_route', target='ボス', lost=()):
         'captured': [c for c in NORMAL if c not in lost],
         'lost': list(lost),
         'garrison': {'アルマムーン': ['どうし', 'キャンディー', 'ラズベリー'],
-                     **({} if 'パタゴーヌ' in lost else {'パタゴーヌ': ['セルリアク']})},
+                     **({} if 'パタゴーヌ' in lost else {'パタゴーヌ': ['セルリアク', 'リースリング']})},
     }
 
 
