@@ -1996,9 +1996,21 @@ html[data-soren-region="bottom"] #hanjuku-gap { display: none !important; }
               step:stepPart.replace(/^段階\s*/, '').trim(),
               purpose:purposePart.slice(3).trim(), reason};
     }).filter(m => m.general && (m.source || m.target)).slice(0, 8);
+    const countMatch = pick(/^余白進軍数: (\\d{1,3})$/);
+    const marchCount = number(countMatch?.[1]);
+    const gapRecall = lines.filter(line => line.startsWith('余白帰還: ')).map(line => {
+      try {
+        const route = JSON.parse(line.slice('余白帰還: '.length));
+        const p = route?.origin;
+        if (!Array.isArray(p) || p.length !== 2 || !p.every(n => Number.isInteger(n) && Math.abs(n) <= 4096)
+            || typeof route.target !== 'string' || !route.target || route.target.length > 24
+            || typeof route.stage !== 'string' || route.stage.length > 24) return null;
+        return {origin:p, target:route.target, stage:route.stage};
+      } catch { return null; }
+    }).find(Boolean) || null;
     const gap = fresh && gapGeometryOk && now <= gapUntil && gapUntil-now <= 30
       ? {left:gapLeft, width:gapWidth, side:gapSide,
-         moves:gapMoves, flows:gapFlows, decisions:gapDecisions,
+         moves:gapMoves, marchCount, recallRoute:gapRecall, flows:gapFlows, decisions:gapDecisions,
          captured:pick(/^余白占領記録: (.{1,1200})$/)?.[1] || null,
          garrison:timedRows('余白駐留: '),
          marching:lines.filter(s=>s.startsWith('余白行軍: ')).map(s=>s.slice(6)),
@@ -2313,11 +2325,20 @@ html[data-soren-region="bottom"] #hanjuku-gap { display: none !important; }
     if (/^(recall|return|帰還)$/.test(move.purpose || '')) return 'recall';
     return 'sortie';
   }
-  function gapMinimap(value, moves, owned, lost) {
+  function gapMinimap(value, moves, owned, lost, recallRoute) {
     const table = HANJUKU_MINIMAP_COORDS[value.chapter];
     if (!table) return null;
     const all = Object.entries(table).filter(([name]) => name !== 'あたしの家');
     const routes = moves.map(move => ({...move, kind:gapRouteKind(move)}));
+    const observedReturn = recallRoute && table[recallRoute.target] ? recallRoute : null;
+    // The origin was measured against multiple castle roofs by the policy.
+    // Do not infer an origin from its camp menu, stage or general name.
+    const extraPoints = observedReturn ? {'帰還元':observedReturn.origin} : {};
+    if (observedReturn) {
+      all.push(['帰還元', observedReturn.origin]);
+      routes.push({source:'帰還元', target:observedReturn.target,
+        kind:'recall', status:'成立未確認'});
+    }
     const houseUsed = routes.some(move => move.source === 'あたしの家' || move.target === 'あたしの家');
     if (houseUsed) all.push(['あたしの家', table['あたしの家']]);
     const xs = all.map(([,pt]) => pt[0]), ys = all.map(([,pt]) => pt[1]);
@@ -2328,7 +2349,7 @@ html[data-soren-region="bottom"] #hanjuku-gap { display: none !important; }
                            (height-2*margin)/Math.max(1,maxY-minY));
     const left = (width-(maxX-minX)*scale)/2, top = (height-(maxY-minY)*scale)/2;
     const point = name => {
-      const pt = table[name];
+      const pt = table[name] || extraPoints[name];
       return pt ? [left+(pt[0]-minX)*scale, top+(pt[1]-minY)*scale] : null;
     };
     const svg = gapSvg('svg', {viewBox:'0 0 300 225', role:'img',
@@ -2378,7 +2399,7 @@ html[data-soren-region="bottom"] #hanjuku-gap { display: none !important; }
       const missing = lost.has(name);
       const home = name === 'アルマムーン' || name === 'あるまむーん';
       const own = owned.has(name) || (home && !missing);
-      const color = name === 'あたしの家' ? '#f9a8d4'
+      const color = name === '帰還元' ? '#4ade80' : name === 'あたしの家' ? '#f9a8d4'
         : missing ? '#fb7185' : own ? '#67e8f9' : '#64748b';
       const active = endpoints.has(name);
       const circle = gapSvg('circle', {cx:p[0],cy:p[1],r:active?5.4:home?4.8:3.7,
@@ -2512,9 +2533,10 @@ html[data-soren-region="bottom"] #hanjuku-gap { display: none !important; }
       .filter(([,text]) => text).map(([label,text]) => label+': '+text).join(' / ');
     // The source currently caps 余白出撃 at eight. 8+ is truthful until the
     // producer supplies an uncapped count; never claim to know the total.
-    const moveCount = moves.length >= 8 ? '8+' : String(moves.length);
+    const moveCount = Number.isInteger(gap.marchCount) && gap.marchCount >= 0
+      ? String(gap.marchCount) : moves.length >= 8 ? '8+' : String(moves.length);
     const sig = JSON.stringify({chapter:value.chapter, moves, owned:[...owned].sort(),
-      lost:[...lost].sort(), battleLine, moveCount});
+      lost:[...lost].sort(), battleLine, moveCount, recallRoute:gap.recallRoute});
     if (sig === gapDom.flowSig) return;
     gapDom.flowSig = sig;
     const flow = gapDom.flow;
@@ -2535,7 +2557,7 @@ html[data-soren-region="bottom"] #hanjuku-gap { display: none !important; }
       legend.appendChild(entry);
     }
     flow.appendChild(legend);
-    const map = gapMinimap(value,moves,owned,lost);
+    const map = gapMinimap(value,moves,owned,lost,gap.recallRoute);
     if (map) {
       flow.appendChild(map.svg);
       if (map.unknown) {
