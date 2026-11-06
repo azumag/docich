@@ -37,6 +37,11 @@ def _strict_bool(env: Mapping[str, str], key: str, default: bool) -> bool:
     raise ValueError(f"{key} must be a boolean")
 
 
+# Public aliases so sibling stream modules reuse one strict parser.
+strict_int = _strict_int
+strict_bool = _strict_bool
+
+
 def load_reconnect_policy(env: Mapping[str, str]) -> dict[str, object]:
     """Viewer-side reconnect policy (probe the public channel, restart on a
     confirmed offline streak). The channel is restricted to ``[A-Za-z0-9_]``
