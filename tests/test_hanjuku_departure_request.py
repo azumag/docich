@@ -254,17 +254,61 @@ def test_a_boss_launch_is_kept_when_the_marker_survey_and_roster_wait_expire(mon
     # (ライム entered the boss castle at 15:39 after his launch had been
     # rolled back at 15:21). The march is kept; the roster still rolls it
     # back when it lists the general.
+    # docich#3515: kept no longer pops the probe. The probe stays behind so
+    # the next roster of the source castle (actively requested on blind)
+    # settles the phantom; popping it left a phantom en_route forever.
     mem = memory(); confirm(mem); commit(mem)
     _flow(mem)['launch_probe']['1-A3']['target'] = 'ボス'
     for _ in range(p.LAUNCH_PROBE_READS):
         survey(monkeypatch, mem, [])
     mem['tick'] += p.LAUNCH_PROBE_ROSTER_TICKS
     survey(monkeypatch, mem, [])
-    assert '1-A3' not in (_flow(mem).get('launch_probe') or {})
+    probe = (_flow(mem).get('launch_probe') or {}).get('1-A3')
+    assert isinstance(probe, dict) and probe.get('kept') is True
+    assert mem['sorties']['1-A3'].get('launch_kept') is True
+    assert 'カストーラ' in (mem.get('roster_read_due') or {})
     assert mem['orders']['1-A3'] == 'launched'
     assert mem['sorties']['1-A3']['status'] == 'en_route'
     assert not _flow(mem).get('launch_miss')
-    assert any(r['decision'] == 'sortie_launch_unconfirmed_kept' for r in mem['_records'])
+    kept = [r for r in mem['_records'] if r['decision'] == 'sortie_launch_unconfirmed_kept']
+    assert len(kept) == 1
+    # A later survey waits for the roster; it does not re-record kept.
+    survey(monkeypatch, mem, [])
+    assert len([r for r in mem['_records'] if r['decision'] == 'sortie_launch_unconfirmed_kept']) == 1
+
+
+def test_a_kept_boss_launch_settles_on_still_listed_roster(monkeypatch):
+    # docich#3515 (g1133 2026-11-06): リーキ/アルテミス stayed en_route after
+    # kept while camped at home. The roster that still lists the general
+    # must roll the kept launch back within the same month.
+    mem = memory(); confirm(mem); commit(mem)
+    _flow(mem)['launch_probe']['1-A3']['target'] = 'ボス'
+    for _ in range(p.LAUNCH_PROBE_READS):
+        survey(monkeypatch, mem, [])
+    mem['tick'] += p.LAUNCH_PROBE_ROSTER_TICKS
+    survey(monkeypatch, mem, [])
+    assert '1-A3' in (_flow(mem).get('launch_probe') or {})
+    p.settle_launch_probes_from_roster(mem, 'カストーラ', ['ゼウス', 'ヴィーナス'])
+    assert '1-A3' not in (_flow(mem).get('launch_probe') or {})
+    assert mem['orders']['1-A3'] == 'pending'
+    assert '1-A3' not in (mem.get('sorties') or {})
+    assert _flow(mem)['launch_miss']['1-A3'] == 1
+
+
+def test_a_kept_boss_launch_confirms_on_gone_roster(monkeypatch):
+    # A kept probe whose general left confirms: the march stays en_route
+    # and the launch is marked confirmed for the observed-end path.
+    mem = memory(); confirm(mem); commit(mem)
+    _flow(mem)['launch_probe']['1-A3']['target'] = 'ボス'
+    for _ in range(p.LAUNCH_PROBE_READS):
+        survey(monkeypatch, mem, [])
+    mem['tick'] += p.LAUNCH_PROBE_ROSTER_TICKS
+    survey(monkeypatch, mem, [])
+    p.settle_launch_probes_from_roster(mem, 'カストーラ', ['ヴィーナス'])
+    assert '1-A3' not in (_flow(mem).get('launch_probe') or {})
+    assert mem['orders']['1-A3'] == 'launched'
+    assert mem['sorties']['1-A3'].get('launch_confirmed') is True
+    assert not _flow(mem).get('launch_miss')
 
 
 def test_sortie_settled_elsewhere_drops_the_probe_without_rollback(monkeypatch):

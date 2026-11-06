@@ -205,3 +205,32 @@ def test_expiry_cannot_erase_the_next_month_recheck():
     assert mem['general_statuses']['dirty'] == {'ヘルメス': ['location']}
     post.arm(mem)
     assert mem['post_month_status']['dirty'] == ['ヘルメス']
+
+
+def test_a_kept_boss_camp_reopens_the_order_same_month():
+    # docich#3515 (g1133 2026-11-06): アルテミス stayed en_route after kept
+    # while camped at home. The observed camp must not strand the order
+    # launched with no sortie; it reopens it at once.
+    mem = observed(age=200, location='camp', delta=50)
+    mem['orders'] = {'A:x:M1': 'launched'}
+    mem['sorties']['A:x:M1']['launch_kept'] = True
+    from docich.hanjuku.state.regions import flow as _flow
+    _flow(mem)['launch_probe'] = {'A:x:M1': {'general': 'ヘルメス', 'source': 'アルマムーン',
+                   'target': 'ボス', 'reads': 3, 'blind': True, 'kept': True, 'tick': 49900}}
+    O._expire_spent_sorties(mem)
+    assert 'A:x:M1' not in mem['sorties']
+    assert mem['orders']['A:x:M1'] == 'pending'
+    assert 'ヘルメス' in mem['garrison']['アルマムーン']
+    assert any(r['decision'] == 'sortie_launch_unverified' for r in mem['_records'])
+
+
+def test_a_confirmed_boss_camp_does_not_reopen():
+    # #3500 retreat: a confirmed launch that camped after an encounter
+    # discards only; reopening it would double-send the wave.
+    mem = observed(age=200, location='camp', delta=50)
+    mem['orders'] = {'A:x:M1': 'launched'}
+    mem['sorties']['A:x:M1']['launch_confirmed'] = True
+    O._expire_spent_sorties(mem)
+    assert 'A:x:M1' not in mem['sorties']
+    assert mem['orders']['A:x:M1'] == 'launched'
+    assert not any(r['decision'] == 'sortie_launch_unverified' for r in mem['_records'])

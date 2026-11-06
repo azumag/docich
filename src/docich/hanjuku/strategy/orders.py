@@ -639,6 +639,7 @@ def _ready(order, mem) -> bool:
     if not _boss_target_unlocked(order, mem):
         return False
     if ('step' in order and _is_boss_order(order, mem) and order.get('purpose') != 'move'
+            and order.get('roster_probe') is not True
             and _boss_companion_source(order, mem) is None
             and (_world(mem).get('garrison') or {}).get(_source(order, mem)) is not None):
         return False
@@ -740,6 +741,8 @@ def _source_list_open(order, mem) -> bool:
     source = _source(order, mem)
     if (_world(mem).get('garrison') or {}).get(source) != []:
         return True
+    if order.get('roster_probe') is True and source in (mem.get('roster_read_due') or {}):
+        return True   # docich#3515: a blind launch asks for one roster read
     return order.get('source_probe') is True and routes.probe_due(mem, source)
 
 
@@ -1154,6 +1157,12 @@ def _expire_spent_sorties(mem):
     monthly individual-status pass. Keep them unavailable until a real status
     or source roster observation establishes their whereabouts. A measured
     post-departure camp/castle status can still finish the record immediately.
+
+    docich#3515: when that end is observed for a launch that was never
+    confirmed (blind/kept boss probe), the order is reopened at once instead
+    of stranding it launched with no sortie. A confirmed launch (marker or
+    roster-gone) that retreated keeps the #3500 behaviour: discard and return,
+    no reopen.
     """
     now = int(mem.get('tick') or 0)
     sorties = mem.get('sorties') or {}
@@ -1194,8 +1203,49 @@ def _expire_spent_sorties(mem):
             _queue_overdue_location_recheck(mem, sortie)
         sorties.pop(step, None)
         general, source = sortie.get('general'), sortie.get('source')
-        if (measured and general and general != NAME and general not in placed
-                and source in chart.castles(mem.get('chapter') or 0)):
+        if measured:
+            # docich#3515: a camp/castle reading for a kept/blind launch
+            # proves the general never left (or never confirmed). Reopen the
+            # order at once so the wave re-sends this month instead of
+            # waiting for _arrival_limit. No probe means the launch was
+            # already confirmed: a retreat discards only.
+            probe = (_flow(mem).get('launch_probe') or {}).get(step) or {}
+            unconfirmed = bool(sortie.get('launch_kept') or probe.get('kept') or probe.get('blind'))
+            if unconfirmed and (mem.get('orders') or {}).get(step) == 'launched':
+                # Mirrors flows.map.LAUNCH_MISS_LIMIT; strategy must not import
+                # flows (layers test), so the budget lives here.
+                _MISS_LIMIT = 2
+                misses = _flow(mem).setdefault('launch_miss', {})
+                misses[step] = int(misses.get(step) or 0) + 1
+                for key in ('general_override', 'source_override', 'card_override', 'rare_card_kit',
+                            'strong_card_kit', 'dropper_card_kit', 'order_context', 'sortie_general',
+                            'sortie_actor_miss'):
+                    (mem.get(key) or {}).pop(step, None)
+                (_world(mem).get('launched_orders') or {}).pop(step, None)
+                for target, entry in list((_world(mem).get('launched') or {}).items()):
+                    if isinstance(entry, dict) and entry.get('step') == step:
+                        _world(mem)['launched'].pop(target, None)
+                (_flow(mem).get('launch_probe') or {}).pop(step, None)
+                rows = (mem.get('general_statuses') or {}).get('statuses') or {}
+                row = rows.get(general) if isinstance(rows, dict) else None
+                observed = {'general': general, 'source': source, 'target': sortie.get('target'),
+                            'location': row.get('location') if isinstance(row, dict) else None,
+                            'status_tick': row.get('tick') if isinstance(row, dict) else None,
+                            'misses': misses[step]}
+                if misses[step] >= _MISS_LIMIT:
+                    mem.setdefault('orders', {})[step] = 'failed'
+                    _record(mem, 'sortie_launch_failed', chart_step=step, general=general,
+                            deviation_reason='出撃確定後に部隊が現れない',
+                            observed_metric=observed,
+                            reason='野営・在城を実測したが出撃が未発射のため再試行の上限に達し指示を失敗にする')
+                else:
+                    mem.setdefault('orders', {})[step] = 'pending'
+                    _record(mem, 'sortie_launch_unverified', chart_step=step, general=general,
+                            observed_metric=observed, resulting_event='order_reopened',
+                            reason='出撃後の野営・在城を実測し出撃が成立していないため出撃を未発射に戻す')
+        if (general and general != NAME and general not in placed
+                and source in chart.castles(mem.get('chapter') or 0)
+                and measured):
             # Retain the previously established observed-end behavior; a
             # timeout alone must never manufacture a source resident.
             if not isinstance(garrison.get(source), list):

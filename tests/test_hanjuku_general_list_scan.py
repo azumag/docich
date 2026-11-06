@@ -260,3 +260,53 @@ def test_a_roster_read_settles_a_probe_before_the_marker_surveys_finish():
     assert '1-A3' not in (_flow(mem).get('launch_probe') or {})
     assert mem['orders']['1-A3'] == 'launched'
     assert not (_flow(mem).get('launch_miss') or {}).get('1-A3')
+
+
+def test_a_short_list_still_listing_him_rolls_a_kept_probe_back():
+    """docich#3515: one-general castles never start a walk, so the kept probe
+    must settle from the short list itself."""
+    from docich.hanjuku.state.regions import flow as _flow
+    mem = memory()
+    mem['orders']['1-A3'] = 'launched'
+    mem['sorties'] = {'1-A3': {'general': 'ゼウス', 'source': 'アルマムーン',
+                               'target': 'ボス', 'status': 'en_route', 'tick': 400,
+                               'launch_kept': True}}
+    _flow(mem)['launch_probe'] = {'1-A3': {
+        'general': 'ゼウス', 'source': 'アルマムーン', 'target': 'ボス',
+        'reads': 3, 'baseline': [], 'blind': True, 'kept': True, 'tick': 400}}
+    mem['garrison'] = {'アルマムーン': []}
+    walk(mem, [general_list(['ゼウス', 'ココット'], 0)])
+    assert '1-A3' not in (_flow(mem).get('launch_probe') or {})
+    assert mem['orders']['1-A3'] == 'pending'
+    assert _flow(mem)['launch_miss']['1-A3'] == 1
+
+
+def test_a_roster_probe_reads_and_backs_out_without_sending():
+    """docich#3515: the read-only probe settles the phantom, then leaves
+    without selecting a general."""
+    from docich import hanjuku_chart as chart
+    from docich.hanjuku.state.regions import flow as _flow
+    mem = memory()
+    mem['chapter'] = 6
+    owned = [c for c in chart.castles(6) if not chart.is_boss_castle(c)]
+    mem['captured'] = list(owned)
+    mem['orders']['1-A3'] = 'launched'
+    mem['sorties'] = {'1-A3': {'general': 'ゼウス', 'source': 'アルマムーン',
+                               'target': 'ボス', 'status': 'en_route', 'tick': 400,
+                               'launch_kept': True}}
+    _flow(mem)['launch_probe'] = {'1-A3': {
+        'general': 'ゼウス', 'source': 'アルマムーン', 'target': 'ボス',
+        'reads': 3, 'baseline': [], 'blind': True, 'kept': True, 'tick': 400}}
+    probe_order = {'step': 'Mprobe', 'general': 'しょうぐん', 'source': 'アルマムーン',
+                   'target': 'ボス', 'cards': [], 'after': None, 'purpose': 'attack',
+                   'note': 'probe', 'source_probe': True, 'roster_probe': True}
+    mem['chart_plan'] = {'orders': [probe_order]}
+    mem['active'] = 'Mprobe'
+    mem['orders']['Mprobe'] = 'pending'
+    mem['garrison'] = {'アルマムーン': []}
+    (actions,) = walk(mem, [general_list(['ゼウス', 'ココット'], 0)])
+    assert actions == [policy.pad('b'), policy.pad('b')]
+    assert mem['orders']['Mprobe'] == 'done'
+    assert mem['orders']['1-A3'] == 'pending'
+    assert '1-A3' not in mem['sorties']
+    assert any(r['decision'] == 'roster_probe_complete' for r in mem['_records'])

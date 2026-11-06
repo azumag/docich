@@ -1485,7 +1485,7 @@ def _commit_departure(mem, order, context, snapshot):
             'general': general, 'source': snapshot['source'],
             'target': order['target'], 'reads': 0,
             'baseline': deepcopy(mem.get('_world_units_prev') or []),
-            'tick': int(mem.get('tick') or 0)}
+            'tick': int(mem.get('tick') or 0), 'roster_read': False}
         mem['world_map_due'] = True
 
 
@@ -1501,6 +1501,23 @@ LAUNCH_PROBE_RADIUS = 10        # world-map px from source/target flag counting 
 LAUNCH_PROBE_NEW_MARKER_PX = 4  # centre distance that still counts as the same marker
 LAUNCH_PROBE_ROSTER_TICKS = 200  # blind probe ticks to wait for the source roster before rollback
 LAUNCH_MISS_LIMIT = 2           # unverified launches an order may retry before failing
+
+
+def _read_source_roster(mem, castle):
+    """Mark a source castle's general list as due for launch verification.
+
+    docich#3515: a blind boss probe waits for the source roster, but no
+    order opens that castle until the march outlives its arrival window
+    (up to 2400 ticks). Marking the castle lets the planner mint one
+    roster-probe order that opens the list and lets
+    settle_launch_probes_from_roster decide. The mark itself reads nothing;
+    the deploy step performs the read.
+    """
+    if not castle:
+        return
+    due = mem.setdefault('roster_read_due', {})
+    if castle not in due:
+        due[castle] = int(mem.get('tick') or 0)
 
 
 def _marker_near_castle(mem, marker, castle):
@@ -1542,10 +1559,16 @@ def _probe_launch_markers(mem, markers):
             probes.pop(step, None)
             continue
         if probe.get('blind'):
+            if probe.get('kept'):
+                # A kept boss march waits for the source roster (or for
+                # arrival/overdue to settle it elsewhere). The probe stays
+                # so a later roster still rolls it back when it lists the
+                # general (docich#3515: popping it on kept made the roster
+                # evidence useless and left a phantom en_route).
+                continue
             since = probe.get('tick')
             if type(since) is int and now - since < LAUNCH_PROBE_ROSTER_TICKS:
                 continue
-            probes.pop(step, None)
             if chart.is_boss_castle(probe.get('target')):
                 # g1133 2026-11-05: chapter 6 draws marching units as
                 # portraits, so the triangle survey can never confirm a boss
@@ -1556,6 +1579,15 @@ def _probe_launch_markers(mem, markers):
                 # general rolls it back (settle_launch_probes_from_roster),
                 # and _relaunch_overdue_boss still bounds a march that never
                 # entered.
+                # docich#3515: keep the probe after kept. Popping it here
+                # left a phantom en_route that no roster could ever settle;
+                # the next roster of the source castle (actively requested
+                # via _read_source_roster) decides instead. The launch is
+                # marked kept so an observed camp/castle end reopens the
+                # order instead of stranding it launched.
+                probe['kept'] = True
+                sortie['launch_kept'] = True
+                _read_source_roster(mem, probe.get('source'))
                 _record(mem, 'sortie_launch_unconfirmed_kept', chart_step=step,
                         general=probe.get('general'),
                         observed_metric={'general': probe.get('general'),
@@ -1566,6 +1598,7 @@ def _probe_launch_markers(mem, markers):
                         resulting_event='boss_march_kept',
                         reason='ボス行軍は部隊表示が肖像で▲を検出できないため、出撃成立の巻き戻しをせず到着・期限の実測に委ねる')
                 continue
+            probes.pop(step, None)
             _rollback_unverified_launch(mem, step, probe, markers)
             continue
         baseline = probe.get('baseline') or []
@@ -1577,6 +1610,7 @@ def _probe_launch_markers(mem, markers):
                 if _marker_near_castle(mem, b, probe.get('source'))
                 or _marker_near_castle(mem, b, probe.get('target'))]
         if near or (baseline and fresh):
+            sortie['launch_confirmed'] = True
             probes.pop(step, None)
             _record(mem, 'sortie_launch_confirmed', chart_step=step,
                     general=probe.get('general'),
@@ -1588,6 +1622,7 @@ def _probe_launch_markers(mem, markers):
         if probe['reads'] >= LAUNCH_PROBE_READS:
             probe['blind'] = True
             probe['tick'] = now
+            _read_source_roster(mem, probe.get('source'))
             _record(mem, 'sortie_launch_unverified', chart_step=step,
                     general=probe.get('general'),
                     observed_metric={'general': probe.get('general'),
@@ -1624,6 +1659,10 @@ def settle_launch_probes_from_roster(mem, castle, generals):
                                         reason='出撃元の将軍一覧にまだ出撃した将軍がいるため、出撃を未発射に戻す')
             continue
         probes.pop(step, None)
+        sortie = (mem.get('sorties') or {}).get(step)
+        if isinstance(sortie, dict):
+            sortie['launch_confirmed'] = True
+            sortie.pop('launch_kept', None)
         # The launch is confirmed: the equivalent-order miss budget it may
         # have accrued belongs to a failed attempt, not to this one.
         for key, row in list((mem.get('equivalent_launch_miss') or {}).items()):

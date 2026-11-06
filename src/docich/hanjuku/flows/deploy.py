@@ -907,9 +907,18 @@ def _observe_garrison(screen, mem, order, *, complete=True):
                 observed_metric=present[:8], reason='出撃元の将軍一覧から駐留将軍を記録')
     from ..strategy import routes
     routes.observed_roster(mem, castle, present)
+    # A roster read satisfies any launch-verification read request for this
+    # castle (docich#3515: blind boss probes mark their source due).
+    (mem.get('roster_read_due') or {}).pop(castle, None)
     scan = mem.get('general_list_scan') or {}
-    if (scan.get('castle') == castle and scan.get('step') == order['step']
-            and scan.get('end') in ('wrapped', 'stalled')):
+    completed = (scan.get('castle') == castle and scan.get('step') == order['step']
+                 and scan.get('end') in ('wrapped', 'stalled'))
+    # A short list (< GENERAL_LIST_FULL) needs no walk: the window already
+    # shows the whole list. g1133 left one general per castle after the
+    # first waves, so a still-listed phantom must settle here too; without
+    # it the probe waited for a walk that a short list never starts.
+    short_complete = len(present) < GENERAL_LIST_FULL
+    if completed or short_complete:
         # A completed walk of the source list is the evidence a blind
         # world-map probe waits for (g1133: chapter 6 draws units as
         # portraits, so the Y view never showed the committed unit).
@@ -1423,6 +1432,18 @@ def deploy_step(screen: Screen, mem):
         named_stop = (scan.get('end') == 'named' and scan.get('step') == order['step']
                       and scan.get('castle') == _source(order, mem))
         _observe_garrison(screen, mem, order, complete=not named_stop)
+        if order.get('roster_probe') is True:
+            # docich#3515: a read-only launch verification. The roster read
+            # above settled any blind probe for this castle (still-listed
+            # rolls the phantom launch back to pending). Back out without
+            # selecting or sending; the reopened order re-sends next.
+            present = _listed_generals(screen, mem, order) or []
+            _record(mem, 'roster_probe_complete', **_deploy_context(order, mem),
+                    castle=_source(order, mem),
+                    observed_metric={'generals': list(present)[:12], 'roster_read': True},
+                    reason='ボス出撃の未確認を出撃元一覧で確定するため読取のみを行い出撃しない')
+            _finish_order(mem, 'done', reason='ボス出撃の成立確認が終わったため読取のみの指示を終える')
+            return [pad('b'), pad('b')]
         if (mem.get('orders') or {}).get(order['step']) == 'launched_unconfirmed':
             return _verify_sortie_source(screen, mem, order)
         guard = _keep_sortie_defender(screen, mem, order)
