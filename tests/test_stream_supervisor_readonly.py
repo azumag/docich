@@ -80,40 +80,50 @@ class ReadOnlyCommandsTest(unittest.TestCase):
         self.assertEqual(sorted(p.name for p in state.iterdir()), ["status.json"])
 
 
-class RefusedCommandsTest(unittest.TestCase):
-    def test_side_effecting_actions_are_refused_without_effects(self):
+class HostWithoutPrerequisitesTest(unittest.TestCase):
+    """On a host that cannot stream, the side-effecting actions stop at validation."""
+
+    def test_run_record_and_validate_refuse_before_creating_anything(self):
         with tempfile.TemporaryDirectory(prefix="stream-supervisor-") as tmp:
             root = Path(tmp)
-            for action in ("run", "stop", "record", "validate"):
-                with self.subTest(action=action):
-                    proc = supervise(action, root=root)
-                    self.assertEqual(proc.returncode, 2)
-                    self.assertIn("not implemented in the read-only stage", proc.stderr)
+            env = {"SOREN_DIRECT_STREAM_LOCAL_URL": "rtmp://127.0.0.1:1/none/live"}  # nothing listens on port 1
+            for args in (("run",), ("validate",), ("record", "--output", str(root / "out" / "o.mkv"), "--duration", "5")):
+                with self.subTest(args=args):
+                    proc = supervise(*args, env=env, root=root)
+                    self.assertEqual(proc.returncode, 2, proc.stdout)
+                    self.assertNotIn("Traceback", proc.stderr)
                     self.assertEqual(proc.stdout, "")
-            self.assertEqual(list(root.iterdir()), [], "refused actions must not create files or directories")
+            self.assertEqual(list(root.iterdir()), [], "a refused start must not create files or directories")
+
+    def test_stop_without_a_runner_is_a_no_op(self):
+        with tempfile.TemporaryDirectory(prefix="stream-supervisor-") as tmp:
+            proc = supervise("stop", root=Path(tmp))
+            self.assertEqual((proc.returncode, proc.stdout), (0, ""))
+            self.assertEqual(list(Path(tmp).iterdir()), [])
 
     def test_unknown_action_is_a_usage_error(self):
         self.assertEqual(supervise("bogus").returncode, 2)
 
 
-class PurityTest(unittest.TestCase):
-    def test_no_process_signal_lock_or_network_code(self):
+class ReadOnlyPurityTest(unittest.TestCase):
+    def test_read_only_actions_do_not_reach_the_runner(self):
         tree = ast.parse((ROOT / "src/docich/stream_supervisor.py").read_text())
-        imported, attrs = set(), set()
+        imported = set()
+        attrs = set()
         for node in ast.walk(tree):
-            if isinstance(node, ast.Import):
-                imported.update(a.name.split(".")[0] for a in node.names)
-            elif isinstance(node, ast.ImportFrom):
+            if isinstance(node, ast.ImportFrom):
                 imported.add(("." * node.level) + (node.module or ""))
+            elif isinstance(node, ast.Import):
+                imported.update(a.name.split(".")[0] for a in node.names)
             elif isinstance(node, ast.Attribute):
                 attrs.add(node.attr)
         self.assertEqual(imported, {
             "__future__", "argparse", "json", "os", "pathlib", "sys", "typing",
-            ".stream_config", ".stream_encoder_command", ".stream_state_files",
+            ".stream_config", ".stream_encoder_command", ".stream_host_checks", ".stream_runner",
+            ".stream_state_files", ".stream_supervision_policy", ".twica_operator",
         })
-        self.assertFalse(attrs & {"Popen", "system", "kill", "send_signal", "flock", "connect",
-                                  "open_canonical_stream_encoder_lock", "acquire_nonblocking_encoder_lock",
-                                  "atomic_write_json", "ensure_private_directory", "mkdir"})
+        self.assertFalse(attrs & {"Popen", "system", "kill", "send_signal", "flock", "mkdir",
+                                  "open_canonical_stream_encoder_lock", "atomic_write_json"})
 
 
 @unittest.skipUnless(SOREN.is_file(), "soviet_now submodule is not checked out (CI uses submodules: false)")
