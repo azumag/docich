@@ -14,6 +14,9 @@ import time
 from pathlib import Path
 
 
+DASHBOARD_CARDS_CONTRACT_VERSION = 1
+
+
 _ANSI_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 _LEAD_RE = re.compile(r"^[\s│┃┌└─━●○✓!◌▸◆◇♪♫📻⟳💬]+")
 _ALERT_RE = re.compile(
