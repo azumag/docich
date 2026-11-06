@@ -475,7 +475,12 @@ def _card_damage_gate(mem, cur, card, *, listed_cards=None):
               'egg_risk_flags': asdict(triggers), 'egg_drop': drop,
               'egg_reach': reach, 'listed_followups': []}
     finished = any(type(cur.get(key)) is int and cur[key] <= 0 for key in ('enemy_hp', 'ally_hp'))
-    if (not finished and cur.get('card_context_unclassified') and not summoned
+    # Owner 2026-11-06: バルムンクはボス専用。チャート札にも使用直前の制限を適用。
+    measured_boss = bool(boss or cur.get('enemy') in chart.BOSSES.values()
+                         or cur.get('entry_evidence') == 'measured_boss_entry')
+    if card == 'バルムンク' and not measured_boss:
+        result['role'] = 'boss_only_balmung'
+    elif (not finished and cur.get('card_context_unclassified') and not summoned
             and not cur.get('card_combatants_changed') and drop and drop.get('drops')):
         # 卵落 depends on the generals' max HP, not on this panel. g1097 07:11:
         # ミックミー would have dropped the egg and was refused as unclassified.
@@ -501,6 +506,12 @@ def _card_damage_gate(mem, cur, card, *, listed_cards=None):
         # triggers. g1097 07:05: ミックミー was refused four times with ヴィーナス
         # at 41 (7 left at most), and ココット fell with the card in hand.
         result.update(allowed=True, role='damage_not_a_kill')
+    elif (estimate['effect_kind'] in CLASH_SAFE_EFFECTS
+          and not estimate['self_harm']
+          and type(estimate['raw_damage_min']) is int and estimate['raw_damage_min'] > 0):
+        # Use a measured positive-damage card before the enemy can win the
+        # melee, even when it cannot prove a one-hit kill or an egg drop.
+        result.update(allowed=True, role='aggressive_chip_damage')
     elif listed_cards is None:
         result.update(needs_live_list=True, role='inspect_live_inventory_before_selection')
     elif card in CARD_CONTROL_SETUP:
@@ -601,26 +612,12 @@ def _card_gate_choice(mem, cur, candidates, names):
     else:
         choice = None
         for role in ('single_card_lethal', 'egg_drop_candidate_not_a_kill', 'damage_not_a_kill',
-                     'observed_control_chain_not_a_kill', 'control_then_melee_not_a_kill',
-                     'halving_not_a_kill'):
+                     'aggressive_chip_damage', 'observed_control_chain_not_a_kill',
+                     'control_then_melee_not_a_kill', 'halving_not_a_kill'):
             choices = [card for card in candidates if gates[card]['role'] == role]
             if choices:
                 choice = _rescue_card(choices, cur)
-                # Conserve firepower only between already-proven finishers.
-                # Critical/unknown HP keeps the existing emergency order;
-                # healing above, explicit chart choices, and final A gates
-                # remain unchanged. Do not rank guessed or self-harming hits.
-                if (role == 'single_card_lethal'
-                        and type(cur.get('ally_hp')) is int
-                        and cur['ally_hp'] > GENERAL_CRITICAL_RETREAT_HP):
-                    safe = [card for card in choices
-                            if gates[card]['estimate']['self_harm'] is False
-                            and type(gates[card]['estimate']['raw_damage_min']) is int
-                            and gates[card]['estimate']['raw_damage_min'] > 0]
-                    if safe:
-                        minimum = min(gates[card]['estimate']['raw_damage_min'] for card in safe)
-                        choice = _rescue_card([card for card in safe
-                            if gates[card]['estimate']['raw_damage_min'] == minimum], cur)
+                # Stronger finishers need not be conserved for a later fight.
                 break
         if choice is None:
             choice = _rescue_card(candidates, cur)
