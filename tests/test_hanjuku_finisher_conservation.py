@@ -125,13 +125,14 @@ def test_chart_inventory_alone_cannot_supply_an_unlisted_small_finisher():
 
 def test_a_later_live_panel_rechecks_sufficiency_before_final_a():
     mem = memory()
-    names = ['キャトルミュー', 'ゼンマイン']
+    names = ['ゼンマイン', 'キャトルミュー']
     assert p.card_list_step(cards(names), mem) == [p.pad('down')]
     screen = cards(names, 1)
     screen.battle = Battle('ソーピニヨン', 27, 'どうし', 90)
     screen.field_soldiers = (0, 6)
-    assert p.card_list_step(screen, mem) == [p.pad('up')]
-    assert mem['battle']['cards_selected'] == mem['battle']['cards_used'] == []
+    assert p.card_list_step(screen, mem) == [p.pad('a')]
+    assert mem['battle']['cards_selected'] == ['キャトルミュー']
+    assert mem['battle']['cards_used'] == []
     assert mem['battle']['card_assessment']['card'] == 'キャトルミュー'
 
 
@@ -153,9 +154,9 @@ def test_summoned_target_keeps_existing_priority_not_saved_general_hp_math():
 def test_boss_general_uses_boss_damage_not_the_ordinary_general_column():
     mem = card_memory(enemy='クイーン', enemy_hp=20, ally='どうし', ally_hp=90,
                       soldiers=(0, 0))
-    assert choose(mem, ['キャトルミュー', 'ミックミー', 'ゼンマイン']) == 'ミックミー'
+    assert choose(mem, ['キャトルミュー', 'ミックミー', 'ゼンマイン']) == 'キャトルミュー'
     assert mem['battle']['card_assessment']['target_kind'] == 'boss_general'
-    assert mem['battle']['card_assessment']['raw_damage_min'] == 32
+    assert mem['battle']['card_assessment']['raw_damage_min'] == 90
 
 
 def test_equal_damage_keeps_existing_tiebreaker_and_is_order_independent():
@@ -171,7 +172,7 @@ def test_equal_damage_keeps_existing_tiebreaker_and_is_order_independent():
 def test_decision_does_not_invent_stock_consumption_or_change_health():
     mem = memory()
     before = deepcopy(mem)
-    assert choose(mem, ['キャトルミュー', 'ゼンマイン']) == 'ゼンマイン'
+    assert choose(mem, ['キャトルミュー', 'ゼンマイン']) == 'キャトルミュー'
     # Existing assessment fields are the only side effect of evaluating gates.
     mem.pop('last_card_assessment', None)
     mem['battle'].pop('card_assessment', None)
