@@ -14,7 +14,7 @@ from ..os_layer.readers import month_menu_ready
 from ..os_layer.roster import fixed_wage, run_identity
 from ..strategy.bargains import (HELD_FLOOR, HOLD_CAP, SINCE_READ, held_estimate, hold_room,
                                  merchant_card_spendable, note_card_bought, plan_bargains)
-from ..strategy.boss_cards import note_card_purchase
+from ..strategy.boss_cards import UNSEEN, note_card_purchase
 from ..strategy.economy import (month_chart_step, MONTH_SUB_MENU_WAIT, SOLDIER_ENOUGH, _army_count_increment, _egg_before_soldiers, _limit_soldier_refill,
                                 _merchant_spendable, _month_key, _refresh_egg_priority, _reserve_general_repair,
                                 _soldier_count_current, _soldier_count_scope, _soldiers_enough, refill_outcome)
@@ -118,10 +118,20 @@ def _learn_holding_limit(screen: Screen, mem, shop):
         items = [r for r in items if r[0] != name]
         if retry > 0:
             items.insert(0, [name, retry])   # smaller ask; each refusal at least halves it
+    # Full holdings snapshot so a later refusal can be split between a
+    # per-card cap and a whole-hand cap: per-name stock and its total, the
+    # purchase ledgers, and this visit's buys (untruncated).
+    stock = mem.get('card_stock')
+    stock = {k: v for k, v in stock.items() if type(v) is int} if isinstance(stock, dict) else {}
     _record(mem, 'buy_skip', card=name, qty=qty, deviation_reason='holding_limit',
-            observed_metric={'message': screen.text, 'dropped': dropped[:4], 'retry': retry,
+            observed_metric={'message': screen.text, 'dropped': dropped, 'retry': retry,
                              'held_floor': (mem.get(HELD_FLOOR) or {}).get(name),
-                             'held_estimate': held_estimate(mem, name) if name else None},
+                             'held_estimate': held_estimate(mem, name) if name else None,
+                             'card_stock': dict(stock), 'card_stock_total': sum(stock.values()),
+                             'card_bought_unseen': dict(mem.get(UNSEEN) or {}),
+                             'card_bought_since_read': dict(mem.get(SINCE_READ) or {}),
+                             'bought': ([list(r) if isinstance(r, (list, tuple)) else r for r in bought]
+                              if isinstance(bought, list) else bought)},
             reason='商人が所持上限(種類ごと99)で売らなかったため、所持の下限を記録し半分の枚数で再試行する'
                    '(再試行が0枚ならその札だけやめる)')
     shop['items'] = items
