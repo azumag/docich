@@ -438,7 +438,7 @@ def test_worker_generates_validates_and_saves_adjusted_chart(tmp_path):
     # A named model order now requires source membership in the request.
     source_file = tmp_path / adjust.REQUEST_FILE
     source_payload = json.loads(source_file.read_text(encoding='utf-8'))
-    source_payload['garrison'] = {'ゴーメン': ['ココット'], 'スペンソニア': [chart.HERO]}
+    source_payload['garrison'] = {'ゴーメン': ['ココット', 'アテナ'], 'スペンソニア': [chart.HERO]}
     source_file.write_text(json.dumps(source_payload, ensure_ascii=False), encoding='utf-8')
     prompts = []
 
