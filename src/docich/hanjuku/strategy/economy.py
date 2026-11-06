@@ -654,8 +654,14 @@ def _stop_unneeded_recruit(mem, shop):
         return False  # preserve the initial shortage across a paid batch
     count, complete, _ = _recruit_headcount(mem)
     target = _recruit_target(mem)
-    if count is not None and target is not None and count < target and complete:
-        return False
+    if count is not None and target is not None and count < target:
+        # Owner 2026-11-06: a partial list is a lower bound; with cash in hand
+        # and wage headroom the roster still grows (g1139 48-1 kept
+        # recruit_hold=deferred_roster even after the shortage rule changed).
+        gold = mem.get('gold')
+        if (complete or (type(gold) is int and gold >= RECRUIT_BATCH_GOLD
+                         and _recruit_wage_hires(mem) > 0)):
+            return False
     sufficient = _recruit_sufficient(mem)
     status = 'not_needed' if sufficient else 'deferred_roster'
     if shop.get('recruit') != status:
