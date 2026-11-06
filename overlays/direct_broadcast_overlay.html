@@ -2375,10 +2375,12 @@ html[data-soren-region="bottom"] #hanjuku-gap { display: none !important; }
     }
     for (const [name] of all) {
       const p = point(name);
-      const own = owned.has(name), missing = lost.has(name);
+      const missing = lost.has(name);
+      const home = name === 'アルマムーン' || name === 'あるまむーん';
+      const own = owned.has(name) || (home && !missing);
       const color = name === 'あたしの家' ? '#f9a8d4'
-        : own ? '#67e8f9' : missing ? '#fb7185' : '#64748b';
-      const active = endpoints.has(name), home = name === 'アルマムーン' || name === 'あるまむーん';
+        : missing ? '#fb7185' : own ? '#67e8f9' : '#64748b';
+      const active = endpoints.has(name);
       const circle = gapSvg('circle', {cx:p[0],cy:p[1],r:active?5.4:home?4.8:3.7,
         fill:color,stroke:'#061421','stroke-width':1.6});
       circle.appendChild(gapSvg('title')).textContent = name;
