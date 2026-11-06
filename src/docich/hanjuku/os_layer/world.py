@@ -276,22 +276,30 @@ def observe_owners(mem, roofs, cam):
                     reason='城の屋根が自軍の色のため占領として扱う')
 
 
-SORTIE_BUSY_TICKS = 400       # observations (~10 min at 1.5 s) a marching general stays busy
+SORTIE_BUSY_TICKS = 400       # legacy observation window (~10 min), NOT proof of arrival
 
 
 def _en_route(mem):
-    """(generals, targets) of sorties launched but not yet seen arriving.
+    """(generals, targets) of launches without an observed end.
 
-    Only recent ones: an arrival that was never read kept どうし and ココット
-    "marching" for over an hour in g407 (01:38-02:39), which blocked every
-    order of the adopted plan and, through it, every off-chart sortie. A
-    sortie without a tick predates this bound and no longer counts.
+    The 400-observation display window is shorter than measured 20-40 minute
+    marches. Keep generals and their targets busy until the strategy's
+    distance-aware arrival limit; then overdue reconciliation determines
+    whether to retry. An overdue/arrived receipt is never treated as moving.
+    Missing or future ticks are not evidence of a fresh march.
     """
+    # Import lazily: strategy.orders imports this world module.
+    from ..strategy.orders import _arrival_limit
     now = int(mem.get('tick') or 0)
-    sorties = [s for s in (mem.get('sorties') or {}).values()
-               if s.get('status') in ('en_route', 'launched_unconfirmed')
-               and s.get('tick') is not None and now - int(s['tick']) < SORTIE_BUSY_TICKS]
-    return {s.get('general') for s in sorties}, {s['target'] for s in sorties if s.get('target')}
+    sorties = [
+        s for s in (mem.get('sorties') or {}).values()
+        if isinstance(s, dict)
+        and s.get('status') in ('en_route', 'launched_unconfirmed')
+        and type(s.get('tick')) is int
+        and 0 <= now - s['tick'] < max(SORTIE_BUSY_TICKS, _arrival_limit(mem, s))
+    ]
+    return ({s.get('general') for s in sorties if s.get('general')},
+            {s['target'] for s in sorties if s.get('target')})
 
 
 WORLD_FLAG_TRUST = 200   # observations a world-map (Y) flag outranks a roof reading
