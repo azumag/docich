@@ -211,3 +211,19 @@ class Sandbox:
             except OSError:
                 pass
         self.tmp.cleanup()
+
+
+# Drives docich.stream_supervisor.main() in a child process with the host
+# validation and the fixed-lock path injected (the real CLI has no bypass).
+# The trailing "docich.stream_supervisor run" argv tokens give the process the
+# command-line shape stop_runner() recognises; the driver itself ignores them.
+MAIN_DRIVER = r'''
+import json, sys
+spec = json.loads(sys.argv[1])
+sys.path.insert(0, spec["src"])
+import docich.stream_instance_lock as L
+L.CANONICAL_STREAM_ENCODER_LOCK_PATH = spec["canonical"]
+from docich import stream_supervisor as S
+raise SystemExit(S.main(spec["argv"], environ=spec["env"], validate=lambda config, mode: False,
+                        twica_enabled=lambda: spec.get("twica", False)))
+'''
