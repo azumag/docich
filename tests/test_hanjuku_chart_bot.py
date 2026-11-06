@@ -4043,6 +4043,11 @@ def test_broken_hero_allows_other_general_and_friendly_staffing_move():
 
 def test_interim_attack_uses_another_general_instead_of_broken_hero():
     mem = _broken_hero_memory()
+    # Owner 2026-11-06: the hero's castle keeps two others beside him, so a
+    # spare only leaves from a properly staffed castle.
+    mem['garrison']['アルマムーン'] = ['どうし', 'ゼウス', 'アルテミス', 'クミン']
+    mem['recruit_roster']['names'] = ['どうし', 'ゼウス', 'アルテミス', 'クミン']
+    mem['recruit_roster']['wages'] = {n: 4 for n in mem['recruit_roster']['names']}
     assert policy._interim_source(mem, 'ゴーメン', None, {'アルマムーン'}, set()) == ('アルマムーン', 'ゼウス')
     mem['garrison']['アルマムーン'] = ['どうし']
     mem['recruit_roster']['names'] = ['どうし']      # ゼウス gone from the roster too (#3077)
