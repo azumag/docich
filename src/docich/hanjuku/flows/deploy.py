@@ -769,13 +769,36 @@ GENERAL_LIST_SCAN_STALLS = 3
 GENERAL_LIST_SCAN_TICKS = 60
 
 
+def _planned_general_on_page(screen, mem, order, present):
+    """The plan's own general when this page already shows him.
+
+    Owner 2026-11-07: when the plan says which general sorties (or moves), the
+    list is a lookup, not a survey. Once that general is on screen the sortie
+    can proceed from this page; pressing down to the end only delays it.
+    Boss, hero, probe and unconfirmed-departure steps still need the whole
+    list: they pick companions from it, prove a source roster, or settle a
+    launch.
+    """
+    if ((mem.get('orders') or {}).get(order['step']) == 'launched_unconfirmed'
+            or _is_boss_order(order, mem) or order.get('source_probe') is True):
+        return None
+    general = _sortie_general(order, mem) or order.get('general')
+    if not general or general == NAME or general in _en_route(mem)[0]:
+        return None
+    if general not in present or not _general_visible(screen, general):
+        return None
+    return general
+
+
 def _general_list_scan(screen, mem, order):
     """Down presses that walk this general list once, or None once it is read.
 
     The walk ends when the cursor returns to the row it started on (a wrapped
     list), stops moving for GENERAL_LIST_SCAN_STALLS frames after a press, or
-    after GENERAL_LIST_SCAN_PRESSES presses. An unreadable frame leaves the
-    walk where it was and lets the callers hold as before.
+    after GENERAL_LIST_SCAN_PRESSES presses. A step that names its general
+    ends the walk on the page where he appears: the rest of the list cannot
+    change who sorties. An unreadable frame leaves the walk where it was and
+    lets the callers hold as before.
     """
     if (mem.get('orders') or {}).get(order['step']) == 'launched_unconfirmed':
         return None
@@ -810,6 +833,16 @@ def _general_list_scan(screen, mem, order):
             scan['end'] = 'stalled'
     if not scan['end'] and scan['presses'] >= GENERAL_LIST_SCAN_PRESSES:
         scan['end'] = 'limit'
+    if not scan['end']:
+        found = _planned_general_on_page(screen, mem, order, present)
+        if found:
+            scan['end'], scan['general'] = 'named', found
+    if scan['end'] == 'named':
+        _record(mem, 'general_list_scanned', **_deploy_context(order, mem), castle=castle,
+                observed_metric={'generals': list(scan['names']), 'end': 'named',
+                                 'general': scan.get('general'), 'presses': scan['presses']},
+                reason=f"計画が名指しした{scan.get('general')}が一覧に見えたため、最後まで送らず出撃の選択へ進む")
+        return None
     if scan['end']:
         _record(mem, 'general_list_scanned', **_deploy_context(order, mem), castle=castle,
                 observed_metric={'generals': list(scan['names']), 'end': scan['end'],
@@ -840,19 +873,26 @@ def _list_menu_to(screen, mem, order, general):
     return pad('down' if names.index(general) > names.index(cur[2]) else 'up')
 
 
-def _observe_garrison(screen, mem, order):
-    """Remember who a castle's general list showed (``interim_candidates``)."""
+def _observe_garrison(screen, mem, order, *, complete=True):
+    """Remember who a castle's general list showed (``interim_candidates``).
+
+    ``complete`` is false when the walk stopped at the plan's general: that
+    page proves the names on it, not the rest of the castle, so it refreshes
+    the location evidence but is never recorded as the garrison roster.
+    """
     present = _listed_generals(screen, mem, order)
     castle = _source(order, mem)
     if present is None or not castle:
         return
     garrison = _world(mem).setdefault('garrison', {})
-    # Display-only evidence: decisions never consult this wall-clock field.
-    _world(mem).setdefault('garrison_observed_at', {})[castle] = time.time()
     visible = set(_present_generals(screen) or ())
     _world(mem)['general_location_unknown'] = [g for g in _world(mem).get('general_location_unknown') or ()
                                        if g not in present
                                        or (g in visible and not _general_visible(screen, g))]
+    if not complete:
+        return
+    # Display-only evidence: decisions never consult this wall-clock field.
+    _world(mem).setdefault('garrison_observed_at', {})[castle] = time.time()
     verification = mem.get('recruit_verification') or {}
     joined = (set(present) & set(verification.get('candidates') or ())) - set(
         verification.get('generals_before') or ())
@@ -1379,7 +1419,10 @@ def deploy_step(screen: Screen, mem):
         walk = _general_list_scan(screen, mem, order)
         if walk is not None:
             return _deploy_input(screen, mem, order, walk, '出撃元の将軍一覧を下へ送って画面外の将軍を読む')
-        _observe_garrison(screen, mem, order)
+        scan = mem.get('general_list_scan') or {}
+        named_stop = (scan.get('end') == 'named' and scan.get('step') == order['step']
+                      and scan.get('castle') == _source(order, mem))
+        _observe_garrison(screen, mem, order, complete=not named_stop)
         if (mem.get('orders') or {}).get(order['step']) == 'launched_unconfirmed':
             return _verify_sortie_source(screen, mem, order)
         guard = _keep_sortie_defender(screen, mem, order)
