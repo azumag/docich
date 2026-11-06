@@ -32,6 +32,10 @@ CHEAP_VENDOR_RATIO = 0.6
 CHEAP_VENDOR_GOLD = 1000
 CHEAP_VENDOR_COPIES = 16
 CHEAP_VENDOR_TARGET_FACTOR = 2
+# Owner 2026-11-06: at 1000G+ stock these two cards up to observed capacity.
+RICH_MERCHANT_GOLD = 1000
+RICH_MERCHANT_CARDS = ('ノリウツール', 'ミックミー')
+RICH_MERCHANT_MAX_COPIES = 99
 
 
 def _caps(shop):
@@ -66,7 +70,7 @@ def _necessities_pending(mem, shop):
     return bool(_egg_necessity_pending(mem, shop) or recruit)
 
 
-def bargain_spendable(mem, shop, header):
+def bargain_spendable(mem, shop, header, *, rich=False):
     """Recheck actual cash, pending essentials and this month's extra cap."""
     cash = _merchant_spendable(mem, shop, header)
     if cash is None or mem.get('recruit_payroll_pending'):
@@ -99,10 +103,13 @@ def bargain_spendable(mem, shop, header):
                 or not isinstance(row[0], str)
                 or any(type(n) is not int or n <= 0 for n in row[1:])):
             return None
-        if row[0] in extras:
+        if row[0] in extras and not (shop.get('rich_merchant') is True
+                                     and row[0] in RICH_MERCHANT_CARDS):
             spent += row[1] * row[2]
-    return max(0, min(_caps(shop)[0] - spent,
-                      cash - max(soldiers, before_recruit) - committed - BARGAIN_CASH_BUFFER))
+    funds = cash - max(soldiers, before_recruit) - committed - BARGAIN_CASH_BUFFER
+    if rich:
+        return max(0, funds) if shop.get('rich_merchant') is True else None
+    return max(0, min(_caps(shop)[0] - spent, funds))
 
 
 def merchant_card_spendable(mem, shop, header, name, price):
@@ -117,15 +124,18 @@ def merchant_card_spendable(mem, shop, header, name, price):
     if (type(price) is not int or price <= 0 or name not in BARGAIN_TARGETS
             or price > KNOWN_PRICES[name] or _egg_necessity_pending(mem, shop)):
         return None
-    cash = bargain_spendable(mem, shop, header)
+    rich = shop.get('rich_merchant') is True and name in RICH_MERCHANT_CARDS
+    cash = bargain_spendable(mem, shop, header, rich=rich)
     if cash is None or _charted_purchase_ahead(mem, header):
         return None
-    # A saved quantity target is not authority to bypass the planning caps.
+    # Revalidate quantities at the real quote, independently of cached plans.
     bought = shop.get('bought', [])  # validated by bargain_spendable
-    used = sum(q for n, q, _ in bought if n in extras)
+    used = sum(q for n, q, _ in bought if n in extras
+               and not (shop.get('rich_merchant') is True and n in RICH_MERCHANT_CARDS))
     same = sum(q for n, q, _ in bought if n == name)
     _, copy_cap, factor = _caps(shop)
-    copies = max(0, min(copy_cap - used, BARGAIN_TARGETS[name] * factor - same))
+    copies = (max(0, RICH_MERCHANT_MAX_COPIES - same) if rich else
+              max(0, min(copy_cap - used, BARGAIN_TARGETS[name] * factor - same)))
     return min(cash, copies * price)
 
 
@@ -138,6 +148,9 @@ def plan_bargains(mem, shop, header, *, listed=None):
     earlier provisional candidate was unavailable. Neither pass is rearmed
     after a rejected quote, a purchase, or JSON save/hotload.
     """
+    if (isinstance(shop, dict) and isinstance(header, dict)
+            and type(header.get('gold')) is int and header['gold'] >= RICH_MERCHANT_GOLD):
+        shop['rich_merchant'] = True  # latched: the later quote may show less than 1000G
     cheap_pass = (isinstance(shop, dict) and listed is not None
                   and shop.get('bargain_listing_planned') is True
                   and shop.get('cheap_vendor_planned') is not True
@@ -159,9 +172,11 @@ def plan_bargains(mem, shop, header, *, listed=None):
         # ころぼぐんだん still fits above the buffer (g825 2-8: 127G, 14 soldiers).
         return shop
     budget = bargain_spendable(mem, shop, header)
-    if budget is None or _charted_purchase_ahead(mem, header):
+    rich = shop.get('rich_merchant') is True
+    rich_budget = bargain_spendable(mem, shop, header, rich=True) if rich else 0
+    if budget is None or (rich and rich_budget is None) or _charted_purchase_ahead(mem, header):
         return shop
-    if listed is None and budget < min(KNOWN_PRICES[n] for n in BARGAIN_TARGETS):
+    if listed is None and budget < min(KNOWN_PRICES[n] for n in BARGAIN_TARGETS) and not rich_budget:
         return shop
     if listed is not None and (not isinstance(listed, dict) or not listed
             or any(not isinstance(n, str) or type(p) is not int or p <= 0
@@ -181,7 +196,38 @@ def plan_bargains(mem, shop, header, *, listed=None):
         bought[name] = bought.get(name, 0) + qty
     added, copies = [], 0
     _, copy_cap, factor = _caps(shop)
+    # On the observed listing, buy both requested cards before optional extras.
+    # Pair purchases prevent the cheaper card from monopolizing the budget.
+    if rich and listed is not None:
+        choices = []
+        for name in RICH_MERCHANT_CARDS:
+            price, seen, prior = listed.get(name), stock.get(name, 0), bought.get(name, 0)
+            if (name not in queued and type(price) is int and 0 < price <= KNOWN_PRICES[name]
+                    and type(seen) is int and 0 <= seen < RICH_MERCHANT_MAX_COPIES
+                    and RICH_MERCHANT_MAX_COPIES - seen - prior > 0):
+                choices.append(name)
+        amounts = {name: 0 for name in choices}
+        remaining = rich_budget
+        if len(choices) == 2:
+            pair = min(remaining // sum(listed[name] for name in choices),
+                       *(RICH_MERCHANT_MAX_COPIES - stock.get(name, 0) - bought.get(name, 0)
+                         for name in choices))
+            for name in choices:
+                amounts[name] = pair
+                remaining -= pair * listed[name]
+        for name in choices:
+            room = RICH_MERCHANT_MAX_COPIES - stock.get(name, 0) - bought.get(name, 0) - amounts[name]
+            extra = min(room, remaining // listed[name])
+            amounts[name] += extra
+            remaining -= extra * listed[name]
+        for name in choices:
+            if amounts[name]:
+                added.append([name, amounts[name]])
+                queued.add(name)
+        budget = max(0, budget - (rich_budget - remaining))
     for name, target in BARGAIN_TARGETS.items():
+        if rich and listed is not None and name in RICH_MERCHANT_CARDS:
+            continue
         if name in queued or (name in bought and not cheap_pass):
             continue  # chart quantities and already-attempted purchases stay untouched
         seen = stock.get(name, 0) + (bought.get(name, 0) if cheap_pass else 0)
