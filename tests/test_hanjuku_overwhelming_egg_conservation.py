@@ -162,8 +162,9 @@ def test_diagnostics_allows_current_policy_without_arbitrary_text():
     # The current policy must be identifiable; arbitrary text stays rejected.
     projected = module._project_corner_state({'bot_version': BOT_VERSION})['bot_version']
     assert projected == BOT_VERSION
-    accepted = 'hanjuku-chart-v241-sortie-confirm-cancel'
-    assert module._project_corner_state({'bot_version': accepted})['bot_version'] == accepted
+    for accepted in ('hanjuku-chart-v241-sortie-confirm-cancel',
+                     'hanjuku-chart-v479-summon-monster-hp-9999'):
+        assert module._project_corner_state({'bot_version': accepted})['bot_version'] == accepted
     for value in ('not-allowlisted-token', BOT_VERSION + '-extra', None):
         assert module._project_corner_state({'bot_version': value})['bot_version'] is None
 
