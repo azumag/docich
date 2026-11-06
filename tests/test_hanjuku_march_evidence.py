@@ -4,7 +4,7 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from docich.hanjuku.os_layer.world import _en_route, SORTIE_BUSY_TICKS
+from docich.hanjuku.os_layer.world import _en_route, SORTIE_BUSY_TICKS, march_arrival_limit
 from docich.hanjuku.strategy.orders import _arrival_limit, _reserved_targets, _retake_reserved
 
 
@@ -16,6 +16,14 @@ def memory(chapter=6, age=500, status="en_route"):
             "target": "セレーネ", "status": status, "tick": 5000 - age,
         }},
     }
+
+
+
+def test_strategy_and_world_share_the_same_arrival_deadline():
+    mem = memory()
+    sortie = mem["sorties"]["6-X1"]
+    assert _arrival_limit(mem, sortie) == march_arrival_limit(mem, sortie)
+
 
 
 def test_long_march_remains_busy_after_old_display_deadline():
