@@ -2205,7 +2205,9 @@ html[data-soren-region="bottom"] #hanjuku-gap { display: none !important; }
       if (!seen.has(key)) out.push([`▲ 出撃 ${move.general} → ${move.target || '未確認'}`, 'move']);
       seen.delete(key);
     }
-    for (const move of seen.values()) out.push([`■ ${move.general} の行軍が終了`, 'end']);
+    // Absence from the chart is not measured arrival, return, death or victory.
+    // Observed battle/castle changes are emitted separately.
+    for (const move of seen.values()) out.push([`■ ${move.general} の追跡記録が消失（行軍終了は未確認）`, 'end']);
     const owned = gapNameSet(gap.captured), oldOwned = gapNameSet(oldGap.captured);
     for (const name of owned) if (!oldOwned.has(name)) out.push([`＋ 城を奪取 ${name}`, 'gain']);
     const lost = gapNameSet(value.lost), oldLost = gapNameSet(previous?.lost);
