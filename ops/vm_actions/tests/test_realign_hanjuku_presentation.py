@@ -66,6 +66,34 @@ class HanjukuPresentationRealignTests(unittest.TestCase):
         self.assertEqual(result["status"], "already-right")
         move.assert_not_called()
 
+    def test_stopped_presentation_skips_even_if_switch_still_active(self):
+        # A failed handover may leave the canonical switch on Hanjuku after
+        # the presenter has stopped. No projection window exists to realign.
+        self.write_json(self.presentation, {"status": "stopped"})
+        before = self.presentation.read_bytes()
+        with patch.object(mod, "_window_ids") as windows, \
+             patch.object(mod, "_move") as move:
+            with self.assertRaises(mod.RealignError) as raised:
+                mod.realign(self.root)
+        self.assertEqual(raised.exception.code, mod.EXIT_NOT_ACTIVE)
+        self.assertEqual(self.presentation.read_bytes(), before)
+        windows.assert_not_called()
+        move.assert_not_called()
+
+    def test_other_nonready_or_malformed_projection_stays_invalid(self):
+        for state in ({"status": "starting"},
+                      {"status": "presentation_failed"},
+                      {"status": "ready"}):
+            with self.subTest(state=state):
+                self.write_json(self.presentation, state)
+                with patch.object(mod, "_window_ids") as windows, \
+                     patch.object(mod, "_move") as move:
+                    with self.assertRaises(mod.RealignError) as raised:
+                        mod.realign(self.root)
+                self.assertEqual(raised.exception.code, mod.EXIT_INVALID_STATE)
+                windows.assert_not_called()
+                move.assert_not_called()
+
     def test_center_or_ambiguous_window_refuses_without_move(self):
         state = json.loads(self.presentation.read_text())
         state["projection"]["align"] = "center"
