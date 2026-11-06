@@ -92,7 +92,7 @@ def test_transfer_is_forwarded_only_after_the_actual_roster_receipt():
     assert routes.probe_due(mem, 'コラダイン')
     # The existing general-list reader publishes the list, then this hook
     # releases only a transfer whose named actor is physically listed there.
-    mem['garrison']['コラダイン'] = ['エシャロット', 'ミュスカデ', 'ピオーネ']
+    mem['garrison']['コラダイン'] = ['エシャロット', 'ミュスカデ', 'ピオーネ', 'ポワソン', 'キャンディー']
     routes.observed_roster(mem, 'コラダイン', mem['garrison']['コラダイン'])
     assert mem['sorties'][step]['status'] == 'arrived'
     assert mem['_records'][-1]['decision'] == 'sortie_move_arrival_observed'
@@ -173,7 +173,7 @@ def test_world_map_route_check_preserves_unregistered_map_no_input_hold(monkeypa
 def test_rear_spare_can_return_along_chart_legs_to_reinforce_the_front():
     mem = state()
     mem['garrison']['グリン'] = []
-    mem['garrison']['リグア'] = ['ヘラ', 'キャンディー', 'ポワソン']
+    mem['garrison']['リグア'] = ['ヘラ', 'キャンディー', 'ポワソン', 'アポロン', 'ゼウス']
     # The live layout has no spare at home or the front, only at the end of
     # a chart branch. A directed-only graph would strand this reinforcement.
     route = routes.path(mem, 'リグア', 'ドンダム', set(mem['garrison']))
@@ -251,17 +251,12 @@ def test_a_read_list_closes_the_probe_and_the_stuck_retake_is_replaced():
     assert {mem['sorties'][s]['status'] for s in ('I:380571:2', 'I:b59ab6:1')} == {'en_route'}
     assert not orders._source_list_open(retake, mem)
     assert orders.next_order(mem) is None or orders.next_order(mem)['step'] != 'I:b59ab6:2'
-    # The stuck retake stays unstarted; the plan now rotates a rear general
-    # forward (owner 2026-11-04) instead of recording an empty hold.
+    # With every other measured garrison reduced to one defender there is
+    # no runnable replacement; do not manufacture a doomed sortie.
     state_ = {'interim_order': retake}
     replan._mechanical_interim(mem, state_, 'c0ffee000000', 'synthetic-digest')
-    started = state_['interim_order']
-    # Owner 2026-11-05: the spares now go at the boss first, so the plan is
-    # not idle; either a rotation or a boss wave replaces the stuck retake.
-    assert started['step'] != 'I:b59ab6:2'
-    assert (started.get('garrison_rotate') is True
-            or started.get('target') == chart.boss_castle(mem['chapter']))
-    assert mem['_records'][-1]['decision'] == 'chart_interim_order'
+    assert state_['interim_order']['step'] == 'I:b59ab6:2'
+    assert mem['_records'][-1]['decision'] == 'chart_interim_hold'
     state_.pop('interim_order')
     # ... and it no longer holds a startable replacement: a spare at home
     # stages the next general toward グリン instead of waiting on the old probe.
@@ -439,9 +434,8 @@ def test_march_blocked_geometry():
 
 
 def test_blocked_only_source_sorties_from_the_blocking_castle():
-    """When every staffed source sits behind an own castle, the blocking
-    castle itself is the real launch point — its sole listed general goes
-    (the march would only deliver him there anyway)."""
+    """A blocked route can depart from the blocking castle only while a
+    second general remains to defend it."""
     mem = {'chapter': 5, 'month': '39-9', 'tick': 1000,
            'captured': ['アルマムーン', 'オトラント', 'テラビル'],
            'lost': [], 'orders': {o['step']: 'launched' for o in chart.orders(5)},
@@ -449,7 +443,7 @@ def test_blocked_only_source_sorties_from_the_blocking_castle():
            # アルマムーン needs enough depth to still be staffed at クロチェット.
            'garrison': {'アルマムーン': ['どうし', 'ミュスカデ', 'チコリ', 'ジェラート', 'エピィ',
                                    'ポセイドン', 'クミン'],
-                        'オトラント': ['グレナデン'],      # only the stopped general
+                        'オトラント': ['グレナデン', 'キャンディー'],  # a defender remains
                         'テラビル': ['ラビオリ']},
            'sorties': {}, 'launched_orders': {}, '_records': [],
            'house_eggs': {}, 'general_location_unknown': []}
