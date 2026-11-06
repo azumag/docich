@@ -219,3 +219,21 @@ def test_refusal_records_full_shop_context_after_retry(ready):
     # Snapshots must not change when the live queue changes.
     shop['items'][0][1] = 1
     assert metric['items'][0][1] == 30
+
+
+def test_refusal_shop_snapshot_detaches_nested_purchase_row(ready):
+    shop = ready['shop']
+    original_row = ['ノリウツール', 60, 18]
+    shop.update(items=[['ミックミー', 2]], want=['ノリウツール', 60, 18],
+                bought=[list(original_row)],
+                last_buy={'row': original_row, 'gold': 300})
+    screen = refused_list(gold=300)
+    screen.kind = 'shop_list'
+    assert p.shop_step(screen, ready) == [p.pad('a')]
+    metric = next(r['observed_metric'] for r in reversed(ready['_records'])
+                  if r.get('deviation_reason') == 'holding_limit')
+    assert metric['shop_state']['want'] == ['ノリウツール', 60, 18]
+    assert metric['shop_state']['last_buy'] == {'row': ['ノリウツール', 60, 18], 'gold': 300}
+    original_row[1] = 1
+    assert metric['shop_state']['last_buy']['row'][1] == 60
+    assert metric['shop_state']['want'][1] == 60
