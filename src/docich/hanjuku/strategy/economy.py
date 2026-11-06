@@ -587,6 +587,22 @@ def _defer_recruit_cash(mem, shop, gold, evidence):
     goals.note_attempt(mem, 'recruit', 'deferred')
 
 
+def _recruit_wage_headroom(mem):
+    """True when measured income still covers the payroll plus one hire.
+
+    Owner 2026-11-06: with cash in hand (RECRUIT_BATCH_GOLD), keep hiring up
+    to MAX_GENERALS while income does not fall below the wages. Both values
+    are the measured month-page figures; an unobserved one is not headroom.
+    """
+    from ..os_layer.roster import MAX_RECRUIT_WAGE
+    income = mem.get('country_income')
+    wages = mem.get('country_wages')
+    inc = income.get('income') if isinstance(income, dict) else None
+    wag = wages.get('wages') if isinstance(wages, dict) else None
+    return (type(inc) is int and type(wag) is int
+            and inc - wag >= MAX_RECRUIT_WAGE)
+
+
 def _recruit_target(mem):
     from ..os_layer.roster import roles
     chapter = mem.get('chapter')
@@ -609,9 +625,14 @@ def _recruit_target(mem):
     # 募集してよい。所持金が未観測・1000G未満なら従来どおり所有城で数える。
     # 1000Gは既存のまとめ募集（RECRUIT_BATCH_GOLD）と同じ閾値。
     gold = mem.get('gold')
-    castles = expected if type(gold) is int and gold >= RECRUIT_BATCH_GOLD else owned
-    target = spec['per_castle'] * len(castles) + spec['attack']
+    comfortable = type(gold) is int and gold >= RECRUIT_BATCH_GOLD
     from ..os_layer.roster import MAX_GENERALS
+    if comfortable and _recruit_wage_headroom(mem):
+        # Owner 2026-11-06: cash is comfortable and the payroll still leaves
+        # room under the income, so fill the roster to the cap.
+        return MAX_GENERALS
+    castles = expected if comfortable else owned
+    target = spec['per_castle'] * len(castles) + spec['attack']
     return min(target, MAX_GENERALS) if target > 0 else None
 
 
