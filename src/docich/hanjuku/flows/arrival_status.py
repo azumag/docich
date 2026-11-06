@@ -201,5 +201,12 @@ def step(screen, mem):
             return None
         if kind == 'main_menu' or kind in PICKER_KINDS or house.roster(screen):
             return [pad('b')]
+        if kind == 'text':
+            row = next((r for r in screen.lines if r.y == 39), None)
+            if (row and row.span(24, 88).strip() == probe['general']
+                    and row.span(88, 136).replace(' ', '') == 'しょうぐん'):
+                # A lost B may leave the same named status on screen. Retry B
+                # rather than waiting on a panel we already read successfully.
+                return [pad('b')]
         return []
     return None
