@@ -276,7 +276,7 @@ def plan_bargains(mem, shop, header, *, listed=None):
             if (name not in queued and type(price) is int and 0 < price <= KNOWN_PRICES[name]
                     and type(seen) is int and 0 <= seen < RICH_MERCHANT_MAX_COPIES
                     and _rich_room(mem, name, stock, bought) > 0):
-                seen_basis[name] = seen + prior
+                seen_basis[name] = seen + bought.get(name, 0)
                 choices.append(name)
         amounts = {name: 0 for name in choices}
         remaining = rich_budget
