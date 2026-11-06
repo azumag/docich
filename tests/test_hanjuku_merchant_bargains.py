@@ -220,7 +220,8 @@ def test_spent_optional_gold_is_not_reissued_on_another_card(ready):
 @pytest.mark.parametrize('gold', [100, 200, 300, 400, 500, 1000, 2000])
 def test_round_cash_header_never_poisoned_as_zero_price_stock(ready, gold):
     actions = p.shop_step(listing(gold), ready)
-    quantity = min(3, max(0, gold - 8 - 50 - 30) // 18)
+    quantity = min(99 if gold >= b.RICH_MERCHANT_GOLD else 3,
+                   max(0, gold - 8 - 50 - 30) // 18)
     assert actions == [p.pad('a' if quantity else 'b')]
     assert ready['shop']['bargain_listing_planned'] is True
     assert (ready['shop'].get('want') or [None, 0])[1] == quantity
@@ -270,8 +271,13 @@ def test_a_half_price_cart_after_the_month_pass_gets_a_pass_of_its_own(ready):
     assert shop['want'][0] in dict(HALF) and shop['cheap_vendor'] is True
     assert shop['cheap_vendor_planned'] is True
     planned = dict(HALF)
-    assert sum(planned[n] * q for n, q in shop['items']) <= b.CHEAP_VENDOR_GOLD
-    assert 0 < sum(q for _, q in shop['items']) <= b.CHEAP_VENDOR_COPIES
+    rich = dict((n, q) for n, q in shop['items'] if n in b.RICH_MERCHANT_CARDS)
+    # This synthetic four-row canvas clips the fourth (ミックミー) row;
+    # only the three visible cards may be planned from the actual listing.
+    assert rich == {'ノリウツール': b.RICH_MERCHANT_MAX_COPIES}
+    ordinary = [(n, q) for n, q in shop['items'] if n not in b.RICH_MERCHANT_CARDS]
+    assert sum(planned[n] * q for n, q in ordinary) <= b.CHEAP_VENDOR_GOLD
+    assert sum(q for _, q in ordinary) <= b.CHEAP_VENDOR_COPIES
     assert not shop.get('bought')                       # selecting is not payment
 
 
@@ -279,8 +285,11 @@ def test_the_larger_caps_are_only_for_that_pass_and_still_bound_the_spend(ready)
     month_pass_spent(ready)
     prices = {name: 1 for name in b.BARGAIN_TARGETS}            # absurdly cheap: only the caps bind
     b.plan_bargains(ready, ready['shop'], listing(9999).header, listed=prices)
-    assert sum(q for _, q in ready['shop']['items']) == b.CHEAP_VENDOR_COPIES
-    assert sum(prices[n] * q for n, q in ready['shop']['items']) <= b.CHEAP_VENDOR_GOLD
+    rich = {n: q for n, q in ready['shop']['items'] if n in b.RICH_MERCHANT_CARDS}
+    assert rich == {n: b.RICH_MERCHANT_MAX_COPIES for n in b.RICH_MERCHANT_CARDS}
+    ordinary = [(n, q) for n, q in ready['shop']['items'] if n not in b.RICH_MERCHANT_CARDS]
+    assert sum(q for _, q in ordinary) == b.CHEAP_VENDOR_COPIES
+    assert sum(prices[n] * q for n, q in ordinary) <= b.CHEAP_VENDOR_GOLD
 
 
 def test_a_normally_priced_cart_after_the_month_pass_is_still_skipped(ready):

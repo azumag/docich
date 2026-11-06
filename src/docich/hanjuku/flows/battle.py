@@ -40,6 +40,7 @@ from ..os_layer.readers import STATUS_NAMES
 from ..os_layer.world import NAME
 from ..strategy.campaign import _castle_label, observe_chapter_castle, observe_chapter_general
 from ..strategy.kit import _is_boss_order
+from ..strategy.execution import bound_fields
 from ..strategy.orders import (LONG_MARCH_TICKS, SITE_LATE_ENTRY_TICKS, _bind_sortie,
                                 _garrison_move, _match_sortie, _order_for_step, _tactics)
 
@@ -528,6 +529,42 @@ def _drop_defender_record(mem, castles):
         defenders.pop(castle, None)
 
 
+def _carried_opening_tactics(mem, cur, existing):
+    """Spend otherwise-unused, *confirmed carried* cards at the fight opening.
+
+    The battle chart still owns the timings of its named cards. An observed
+    sortie kit may contain additional cards that otherwise sit unused until
+    retreat. Never invent cards from the shop stock or an unconfirmed plan.
+    """
+    step = cur.get('step')
+    order = _order_for_step(mem, step)
+    bound = bound_fields(order, mem)
+    if not bound or bound['general'] != cur.get('ally'):
+        return []
+    boss_entry = _boss_tactics_allowed(mem, cur)
+    if _is_boss_order(order, mem) and not boss_entry:
+        return []  # reserve the boss kit on the road to the boss
+    covered = {}
+    for tactic in existing:
+        card = tactic['card']
+        covered[card] = covered.get(card, 0) + 1
+    carried = list(bound['cards'])
+    for card in (mem.get('kit_spent') or {}).get(step) or ():
+        if card in carried:
+            carried.remove(card)
+    added = []
+    for slot, card in enumerate(carried):
+        if card == 'バルムンク' and not boss_entry:
+            continue
+        if covered.get(card, 0) > 0:
+            covered[card] -= 1
+            continue
+        added.append({'enemy': cur.get('enemy'), 'card': card, 'open': True,
+                      'step': step, 'tactic_id': f'carried:{step}:{card}:{slot}',
+                      'note': '実携行を確認した未指定の切り札を温存せず開幕に使用'})
+    return added
+
+
 def battle_step(screen: Screen, mem):
     b = screen.battle
     if (b is None or not b.enemy or not b.ally or UNKNOWN in b.enemy or UNKNOWN in b.ally
@@ -786,6 +823,10 @@ def battle_step(screen: Screen, mem):
     tactics = [*extra, *_tactics(mem, cur.get('step')),
                *_egg_drop_tactics(mem, cur, b.enemy, egg_plan),
                *_strong_card_tactics(mem, cur, b.enemy)]
+    tactics.extend(_carried_opening_tactics(mem, cur, tactics))
+    # Even old chart/override tactics cannot spend バルムンク on an ordinary foe.
+    if not _boss_tactics_allowed(mem, cur):
+        tactics = [t for t in tactics if t['card'] != 'バルムンク']
     done = cur.setdefault('tactics_done', [])
 
     # Preserve original indexes (chart tactic IDs) while prioritizing egg drop.

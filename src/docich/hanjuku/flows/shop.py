@@ -43,9 +43,59 @@ def _record_shop_exit(mem, shop, screen, reason, *, listed=None):
             reason='商人の品揃えを見ずに一覧から戻ったため、購入せず終了した理由を記録する')
 
 
+HOLD_LIMIT_PRESS_LIMIT = 4     # A presses on one refusal message before leaving the shop
+
+
+def holding_limit_message(screen: Screen) -> bool:
+    """The merchant refused a card: う〜んそれいじょうもてないようですな!
+
+    Match a short fragment: the wavy dash and the exclamation mark may not be
+    in the font table, and only part of the line may be read.
+    """
+    return 'もてない' in ''.join(screen.text.split())
+
+
+def _holding_limit_step(screen: Screen, mem, shop):
+    """Close the merchant's refusal and stop buying cards for this visit.
+
+    The message sits over the still-visible price list, so it classifies as
+    shop_list while the hand cursor is hidden: planning then waits for a cursor
+    that never comes (live 2026-11-06, no input for 78 observations).
+    Whether the cap is per card or the whole hand is not measured, so every
+    remaining card is dropped; soldiers use a different editor and stay.
+    """
+    if not isinstance(shop, dict):
+        return [pad('b')]
+    if shop.get('hold_limit') is not True:
+        shop['hold_limit'] = True
+        last = shop.get('last_buy')
+        row = last.get('row') if isinstance(last, dict) else None
+        bought = shop.get('bought')
+        gold = (screen.header or {}).get('gold')
+        # Undo the bookkeeping only when the gold proves nothing was paid; an
+        # earlier real purchase in this visit must keep counting.
+        if (isinstance(row, list) and isinstance(bought, list) and bought and bought[-1] == row
+                and type(gold) is int and type(last.get('gold')) is int and gold >= last['gold']):
+            bought.pop()
+        shop.pop('last_buy', None)
+        _record(mem, 'buy_skip', card=(shop.get('want') or row or [None])[0],
+                deviation_reason='holding_limit',
+                observed_metric={'message': screen.text, 'dropped': [list(r) for r in (shop.get('items') or [])[:4]]},
+                reason='商人が所持上限で売らなかったため、この訪問ではこれ以上カードを買わない')
+        shop['items'] = []
+        shop['want'] = None
+    presses = shop.get('hold_limit_presses')
+    presses = presses + 1 if type(presses) is int and presses >= 0 else 1
+    shop['hold_limit_presses'] = presses
+    # A message that A cannot clear must not become the next endless hold.
+    return [pad('a')] if presses <= HOLD_LIMIT_PRESS_LIMIT else [pad('b')]
+
+
 def shop_step(screen: Screen, mem):
     shop = mem.get('shop')
     kind = screen.kind
+    if kind in ('shop_list', 'text') and holding_limit_message(screen):
+        return _holding_limit_step(screen, mem, shop)
     if kind == 'shop_exit_confirm':
         move = menu_to(screen, 'うむッ!')
         if shop:
@@ -306,6 +356,8 @@ def quantity_step(screen: Screen, mem, soldiers=False):
                 if move == 'here':
                     bought = shop.setdefault('bought', [])
                     bought.append([want[0], value, want[2]])
+                    shop['last_buy'] = {'row': [want[0], value, want[2]],  # undone if refused
+                                        'gold': (screen.header or {}).get('gold')}
                     extra = want[0] in (shop.get('bargain_cards') or [])
                     _record(mem, 'buy', card=want[0], qty=value, price=want[2],
                             chart_step=month_chart_step(mem),
