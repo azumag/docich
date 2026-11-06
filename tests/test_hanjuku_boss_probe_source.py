@@ -52,6 +52,26 @@ def test_an_unread_castle_is_not_probed_while_other_generals_are_known():
     assert not [o for o in boss_waves(mem) if o.get('source_probe')]
 
 
+def test_a_blind_boss_launch_mints_one_read_only_roster_probe():
+    # docich#3515: a blind/kept boss probe actively asks for one roster read
+    # of its source castle, even when other generals are known. The probe
+    # order opens the list and settles the phantom without sending.
+    mem = memory({'カバルッサ': ['ココット'], 'アルマムーン': ['ヘルメス']})
+    from docich.hanjuku.state.regions import flow as _flow
+    _flow(mem)['launch_probe'] = {'old-step': {'general': 'リーキ', 'source': 'カバルッサ',
+                        'target': 'ボス', 'reads': 3, 'blind': True, 'kept': True, 'tick': 82900}}
+    mem['roster_read_due'] = {'カバルッサ': 82900}
+    mem['sorties'] = {'old-step': {'general': 'リーキ', 'source': 'カバルッサ', 'target': 'ボス',
+                   'status': 'en_route', 'tick': 82900, 'launch_kept': True}}
+    waves = boss_waves(mem)
+    probes = [o for o in waves if o.get('roster_probe')]
+    assert len(probes) == 1
+    assert probes[0]['source'] == 'カバルッサ'
+    assert probes[0]['general'] == ANY
+    assert probes[0].get('source_probe') is True
+    assert not [o for o in waves if o.get('roster_probe') and o.get('source') != 'カバルッサ']
+
+
 def test_unread_garrison_does_not_crash_situation_digest():
     """A None roster is unread, not an iterable of general names."""
     mem = memory({'カバルッサ': ['ココット']})

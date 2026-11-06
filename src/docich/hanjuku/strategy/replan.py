@@ -591,6 +591,30 @@ def interim_candidates(mem, allow_sole=False) -> dict:
         # behind by #3567. The game refuses the sortie when the castle has
         # only one general (e.g. ポセイドン at ボッサール), so it must not
         # become a planned attack even if every normal castle is owned.
+        # docich#3515: a blind/kept boss launch actively asks for one roster
+        # read of its source castle. Mint that probe first so the read
+        # settles the phantom (still-listed rolls the launch back) instead
+        # of waiting for the arrival window. Only on the probe-allowed
+        # call: one roster probe per plan, throttled per castle.
+        if allow_probe:
+            try:
+                from ..state.regions import flow as _flow
+                probes = _flow(mem).get('launch_probe') or {}
+                due = mem.get('roster_read_due') or {}
+                now = int(mem.get('tick') or 0)
+                for c in sorted(due):
+                    if c not in owned or c in prefer_not:
+                        continue
+                    waiting = any((p.get('source') == c and (p.get('blind') or p.get('kept')))
+                                  for p in probes.values())
+                    if not waiting:
+                        continue
+                    asked = (mem.get('arrival_probe_tick') or {}).get(c)
+                    if type(asked) is int and 0 <= now - asked < routes.PROBE_INTERVAL:
+                        continue
+                    return c, MOVE_ANY_GENERAL
+            except Exception:
+                pass
         choices = []
         for c in owned:
             free = [g for g in garrison.get(c) or () if g not in busy]
@@ -633,11 +657,23 @@ def interim_candidates(mem, allow_sole=False) -> dict:
         if picked is None:
             continue
         source, general = picked
+        roster_probe = False
         if general == MOVE_ANY_GENERAL:
             # An unread source is evidence gathering; one probe per source is enough.
             if source in planned_probe_sources:
                 continue
             planned_probe_sources.add(source)
+            # docich#3515: a blind/kept boss launch's source is a read-only
+            # roster probe: it opens the list and settles the phantom, then
+            # backs out without sending. An unread-castle probe still sends.
+            try:
+                from ..state.regions import flow as _flow
+                _probes = _flow(mem).get('launch_probe') or {}
+                roster_probe = (source in (mem.get('roster_read_due') or {})
+                                and any(p.get('source') == source and (p.get('blind') or p.get('kept'))
+                                        for p in _probes.values()))
+            except Exception:
+                roster_probe = False
         else:
             # Reserve only an actor measured in this source castle. Unread chart
             # actors are alternative future candidates, not simultaneous commitments.
@@ -645,8 +681,9 @@ def interim_candidates(mem, allow_sole=False) -> dict:
             if general in present:
                 planned_busy.add(general)
         purpose = 'retake' if target in lost else 'attack'
-        note = (f"暫定: {general}で奪われた{target}を奪還" if purpose == 'retake'
-                else f"暫定: {general}で{target}を攻撃")
+        note = ((f"暫定: {source}の将軍一覧を読んでボス出撃の成立を確認する" if roster_probe
+                 else f"暫定: {general}で奪われた{target}を奪還" if purpose == 'retake'
+                 else f"暫定: {general}で{target}を攻撃"))
         # Owner (2026-09-28): 切り札は持たせたほうが良い. The chart's cards for
         # this castle, else the retry opener (two イッテツーン). Cards out of
         # stock are dropped at the card list (card_drop), never waited for.
@@ -657,7 +694,8 @@ def interim_candidates(mem, allow_sole=False) -> dict:
         sorties[purpose].append({
             'general': general, 'target': target, 'cards': cards, 'source': source,
             'after': None, 'purpose': purpose, 'note': note,
-            **({'source_probe': True} if general == MOVE_ANY_GENERAL else {})})
+            **({'source_probe': True} if general == MOVE_ANY_GENERAL else {}),
+            **({'roster_probe': True} if roster_probe else {})})
     # Owner 2026-11-05: keep throwing the known spares at the boss inside one
     # plan, from as many castles as possible. Strength does not matter (a
     # half-ripe egg removes about the same HP whoever carries it), so this
@@ -680,12 +718,24 @@ def interim_candidates(mem, allow_sole=False) -> dict:
                 break
             source2, general2 = more
             probe = general2 == MOVE_ANY_GENERAL
+            roster_probe = False
+            if probe:
+                try:
+                    from ..state.regions import flow as _flow
+                    _probes = _flow(mem).get('launch_probe') or {}
+                    roster_probe = (source2 in (mem.get('roster_read_due') or {})
+                                    and any(p.get('source') == source2 and (p.get('blind') or p.get('kept'))
+                                            for p in _probes.values()))
+                except Exception:
+                    roster_probe = False
             boss_wave_orders.append({
                 'general': general2, 'target': boss, 'cards': [], 'source': source2,
                 'after': None, 'purpose': 'attack',
-                'note': (f'暫定: {source2}の将軍一覧を読んでボスへ送る' if probe
-                         else f'暫定: {general2}でボスへ波状攻撃'),
-                **({'source_probe': True} if probe else {})})
+                'note': ((f'暫定: {source2}の将軍一覧を読んでボス出撃の成立を確認する' if roster_probe
+                          else f'暫定: {source2}の将軍一覧を読んでボスへ送る' if probe
+                          else f'暫定: {general2}でボスへ波状攻撃')),
+                **({'source_probe': True} if probe else {}),
+                **({'roster_probe': True} if roster_probe else {})})
             used_sources.add(source2)
             if not probe:
                 wave_busy = wave_busy | {general2}
@@ -871,8 +921,12 @@ def interim_candidates(mem, allow_sole=False) -> dict:
         # A generic source-list probe at a measured one-general castle is
         # not a feasible sortie. Only actual inbound marches or new joiners
         # expected at the hero's castle justify rereading that singleton.
+        # docich#3515: a roster probe for a blind launch must open even a
+        # one-general castle: that singleton is exactly the phantom's source.
+        # It reads and settles without sending.
         present = (_world(mem).get('garrison') or {}).get(order['source'])
-        if isinstance(present, (list, tuple)) and len(set(present)) == 1:
+        if (isinstance(present, (list, tuple)) and len(set(present)) == 1
+                and order.get('roster_probe') is not True):
             # A new joiner is unconfirmed until the castle's live list is
             # opened. Since #3578's confirmed-source policy names the generic
             # probe actor (しょうぐん), test for that evidence-gathering probe,
