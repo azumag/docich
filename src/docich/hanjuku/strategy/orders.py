@@ -851,6 +851,35 @@ def _drop_spent_sortie_attempt(mem, step):
         _flow(mem).pop('sortie_attempt', None)
 
 
+def _queue_overdue_location_recheck(mem, sortie):
+    """An overdue sortie is not evidence that its general returned home.
+
+    Mark only this general's cached location dirty for the next monthly
+    roster-first status pass. Until their own status and castle are observed,
+    neither a stale source garrison nor an expired march may make them
+    eligible for another sortie.
+    """
+    general = sortie.get('general')
+    if not isinstance(general, str) or not general:
+        return
+    # A post-departure camp/castle status is already direct evidence; the
+    # normal observed-end path handles it instead of reopening a known row.
+    if _observed_march_end(mem, sortie, sortie.get('tick')):
+        return
+    from ..os_layer import roster as receipts
+    receipts.dirty_status(mem, [general], fields=('location',))
+    unknown = mem.setdefault('general_location_unknown', [])
+    new = general not in unknown
+    if new:
+        unknown.append(general)
+    for residents in (mem.get('garrison') or {}).values():
+        if isinstance(residents, list) and general in residents:
+            residents.remove(general)
+    if new:
+        _record(mem, 'sortie_location_recheck_queued', general=general,
+                reason='行軍追跡の期限超過は帰城の証拠でないため、月次の本人ステータスで所在を再確認する')
+
+
 def _relaunch_overdue_boss(mem):
     """Send a boss order again when its march never entered the boss castle,
     or when its entry ended without a measured result.
@@ -895,6 +924,7 @@ def _relaunch_overdue_boss(mem):
             continue
         entered = sortie.get('status') == 'arrived'
         sortie['status'] = 'overdue'
+        _queue_overdue_location_recheck(mem, sortie)
         _drop_spent_sortie_attempt(mem, step)
         # The cell and the measured source list go with the record: a boss march
         # that never enters is either a wrong cell or a launch that never left
@@ -1010,6 +1040,7 @@ def _relaunch_overdue_march(mem):
             continue
         en_route = sortie.get('status') == 'en_route'
         sortie['status'] = 'overdue'
+        _queue_overdue_location_recheck(mem, sortie)
         _drop_spent_sortie_attempt(mem, step)
         observed = {'general': sortie.get('general'), 'source': sortie.get('source'),
                     'target': target, 'marching': now - sortie['tick'],
@@ -1117,17 +1148,12 @@ def _refresh_live_marches(mem):
 
 
 def _expire_spent_sorties(mem):
-    """Forget marches that can no longer arrive and put their generals back.
+    """Expire stale march records without fabricating a return to the source.
 
-    Owner 2026-11-05: 46 overdue records kept every general "out" forever, so
-    the plan saw no spare at all and no boss wave could be built. A record
-    past the bindable window is dropped and its general goes back onto the
-    source roster: the castle menu read on the next sortie replaces that guess
-    with the measured list, so a false return is corrected at the source.
-
-    A status panel read after departure that shows the general camping or in a
-    castle ends the march immediately (see _observed_march_end), so a retreat
-    does not keep a boss-wave general out for the whole tick window.
+    An unobserved end makes the general's *location* dirty for the next
+    monthly individual-status pass. Keep them unavailable until a real status
+    or source roster observation establishes their whereabouts. A measured
+    post-departure camp/castle status can still finish the record immediately.
     """
     now = int(mem.get('tick') or 0)
     sorties = mem.get('sorties') or {}
@@ -1164,12 +1190,14 @@ def _expire_spent_sorties(mem):
             # listed the step, and the release path only touches 'launched' orders.
             if step in planned and now - tick < 2 * SPENT_SORTIE_TICKS:
                 continue
+        if not measured:
+            _queue_overdue_location_recheck(mem, sortie)
         sorties.pop(step, None)
         general, source = sortie.get('general'), sortie.get('source')
-        if (general and general != NAME and general not in placed
+        if (measured and general and general != NAME and general not in placed
                 and source in chart.castles(mem.get('chapter') or 0)):
-            # An unread source (None) gets the one general back; the next
-            # castle menu read replaces the whole list with the measured one.
+            # Retain the previously established observed-end behavior; a
+            # timeout alone must never manufacture a source resident.
             if not isinstance(garrison.get(source), list):
                 garrison[source] = []
             if general not in garrison[source]:
@@ -1182,7 +1210,7 @@ def _expire_spent_sorties(mem):
     if expired:
         _record(mem, 'sortie_record_expired',
                 observed_metric={'expired': expired, 'remaining': len(sorties)},
-                reason='期限を超えた行軍記録を破棄し、将軍を出撃元の名簿へ戻す')
+                reason='期限超過の行軍記録を破棄し、所在未確認の将軍は月次確認の対象に残す')
     if ended:
         _record(mem, 'sortie_record_observed_ended',
                 observed_metric={'ended': ended, 'remaining': len(sorties)},
