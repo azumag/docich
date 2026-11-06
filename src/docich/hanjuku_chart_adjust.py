@@ -192,7 +192,7 @@ def startable(order, request) -> str | None:
     # A recorded one-general castle cannot send anyone, including to the
     # boss or on a move. Keep unknown/unread sources eligible for an observed
     # roster probe; only a measured singleton is definitive here.
-    if (isinstance(present, (list, tuple)) and present
+    if (isinstance(present, (list, tuple)) and general in present
             and len(set(present) - marching) < 2):
         return 'source_last_defender'
     if general in (present or ()):
