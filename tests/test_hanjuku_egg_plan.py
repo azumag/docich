@@ -170,7 +170,7 @@ def test_a_charted_dropper_takes_opening_priority_and_is_not_spent_twice():
 
 
 def test_egg_drop_opener_precedes_an_override_that_would_spend_the_first_turn():
-    state = mem('1-C2', ally='ココット', cards=['ダイチスイム'])
+    state = mem('1-C2', ally='ココット', cards=['ダイチスイム', 'ブラッキー'])
     view = opening(state, 'キッシュ', 26, 'ココット', 24)
     assert state['battle']['egg_plan']['dropper'] == 'ブラッキー'
     assert policy.battle_step(view, state) == [policy.pad('b')]
