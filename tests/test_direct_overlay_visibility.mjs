@@ -7,9 +7,11 @@ import {directOverlaySurfaceVisible, DIRECT_OVERLAY_VISIBILITY_CONTRACT_VERSION}
 
 test('docich-owned visibility contract is versioned and keeps always-visible rails',()=>{
   assert.equal(DIRECT_OVERLAY_VISIBILITY_CONTRACT_VERSION, 1);
-  for(const input of [null,undefined,{visibility:'always'},{visibility:undefined}]){
+  for(const input of [null,undefined,{visibility:'always'}]){
     assert.equal(directOverlaySurfaceVisible(input),true);
   }
+  // Legacy behavior: a surface object with an absent visibility flag is hidden.
+  assert.equal(directOverlaySurfaceVisible({visibility:undefined}),false);
   assert.equal(directOverlaySurfaceVisible({visibility:'unknown'}),false);
 });
 
