@@ -802,9 +802,13 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
         mem.pop('concert_picker_watch',None)
     concert_key = (f'text:{screen.text}' if kind == 'text' and screen.text
                    else digest)
+    # A battle's summon/monster dialogue has its own reviewed pacing
+    # (battle_menus_flow.summon_dialogue_pace): never shortcut it here, or an
+    # A lands on the skill box before the page settles.
     event_guarded = (trade_guard_hold or bijin_guard_hold
                      or mem.get('bijin_gift_hold') is True
-                     or (mem.get('trade_guard') or {}).get('held') is True)
+                     or (mem.get('trade_guard') or {}).get('held') is True
+                     or bool(mem.get('battle')))
     if event_text_advance(mem, phase, kind, concert_key, actions, event_guarded):
         decision_log._record(mem,'event_text_advance',screen=kind,phase=phase,
                        observed_metric={'unchanged_observations':EVENT_TEXT_ADVANCE_MAX,
