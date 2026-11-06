@@ -1153,9 +1153,9 @@ def test_worker_prompts_with_garrisons_and_drops_orders_whose_general_is_elsewhe
     # where, and orders that cannot start are dropped at save.
     from docich import hanjuku_chart_worker as worker
     mem = stuck_memory()
-    mem.update(tick=500, lost=['ジョンリギ'],
+    mem.update(tick=1500, lost=['ジョンリギ'],
                garrison={'スペンソニア': [chart.HERO], 'カストーラ': ['ヴィーナス']},
-               sorties={'I:1': {'general': 'ゼウス', 'target': 'スペンソニア', 'status': 'en_route', 'tick': 450},
+               sorties={'I:1': {'general': 'ゼウス', 'target': 'スペンソニア', 'status': 'en_route', 'tick': 1450},
                         'I:0': {'general': 'ココット', 'target': 'ゴーメン', 'status': 'en_route', 'tick': 1}})
     policy.map_step(map_screen(), mem, FRAME)
     [record] = decisions(mem, 'chart_adjust_request')
