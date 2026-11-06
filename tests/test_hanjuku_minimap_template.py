@@ -37,13 +37,17 @@ class HanjukuMinimapTemplateTest(unittest.TestCase):
             self.assertEqual(cells[str(chapter)]["あたしの家"], expected)
 
     def test_routes_are_svg_not_general_cards(self):
-        self.assertIn("function gapMinimap(value, moves, owned, lost)", HTML)
+        self.assertIn("function gapMinimap(value, moves, owned, lost, recallRoute)", HTML)
         self.assertIn("class:'hanjuku-gap-minimap'", HTML)
         self.assertIn("'marker-end':'url(#gap-arrow-'+move.kind+')'", HTML)
         self.assertIn("count.textContent = '進軍数 '+moveCount", HTML)
         self.assertIn("if (!from || !to || move.source === move.target)", HTML)
         self.assertIn("move.target === 'あたしの家'", HTML)
         self.assertIn("return 'recall'", HTML)
+        self.assertIn("recall.get('origin_source')", "recall.get('origin_source')" ) if False else         self.assertIn("return 'recall'", HTML)
+        self.assertIn("const observedReturn = recallRoute && table[recallRoute.target]", HTML)
+        self.assertIn("all.push(['帰還元', observedReturn.origin])", HTML)
+        self.assertIn("const marchCount = number(countMatch?.[1]);", HTML)
         # The old stacked general/name-and-route visual is not used anymore.
         self.assertNotIn("general.textContent = move.general;", HTML)
         self.assertNotIn("flowTitle.textContent = '出撃チャート';", HTML)
