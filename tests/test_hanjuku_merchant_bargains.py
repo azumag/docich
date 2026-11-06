@@ -286,7 +286,10 @@ def test_the_larger_caps_are_only_for_that_pass_and_still_bound_the_spend(ready)
     prices = {name: 1 for name in b.BARGAIN_TARGETS}            # absurdly cheap: only the caps bind
     b.plan_bargains(ready, ready['shop'], listing(9999).header, listed=prices)
     rich = {n: q for n, q in ready['shop']['items'] if n in b.RICH_MERCHANT_CARDS}
-    assert rich == {n: b.RICH_MERCHANT_MAX_COPIES for n in b.RICH_MERCHANT_CARDS}
+    # This synthetic listing contains only BARGAIN_TARGETS; a rich merchant
+    # cannot buy requested cards that do not appear in the observed shop.
+    assert rich == {n: b.RICH_MERCHANT_MAX_COPIES for n in b.RICH_MERCHANT_CARDS
+                    if n in prices}
     ordinary = [(n, q) for n, q in ready['shop']['items'] if n not in b.RICH_MERCHANT_CARDS]
     assert sum(q for _, q in ordinary) == b.CHEAP_VENDOR_COPIES
     assert sum(prices[n] * q for n, q in ordinary) <= b.CHEAP_VENDOR_GOLD
