@@ -135,3 +135,59 @@ def test_missing_castle_scrolls_then_gives_up():
     assert actions == [M.pad('b')]
     assert 'castle_jump' not in mem
     assert mem['castle_jump_skip']['step'] == 'J1'
+
+
+def test_lost_cursor_uses_x_castle_list_without_an_active_order_or_roof(monkeypatch):
+    mem = _memory()
+    mem['active'] = None
+    mem['nav_search'] = True
+    mem['uncertain'] = True
+    mem['anchor'] = None
+    assert M._start_reanchor_jump(mem) == [M.pad('x')]
+    assert mem['castle_jump']['mode'] == 'reanchor'
+    assert M.castle_jump_step(_main_menu(hand_y=39), mem, None) == [M.pad('down')]
+    assert M.castle_jump_step(_main_menu(hand_y=71), mem, None) == [M.pad('a')]
+    assert M.castle_jump_step(_castle_list(['アルマームン', 'ナキューメラ']), mem, None) == [M.pad('select')]
+
+    def must_not_check_roof(*_args):
+        raise AssertionError('the re-anchor must not inspect roof pixels')
+
+    monkeypatch.setattr(M, '_roof_under_cursor', must_not_check_roof)
+    assert M.castle_jump_step(_screen('map', [], cursor=(80, 90)), mem, object()) == []
+    assert mem['cursor'] == list(M.chart.castles(1)['アルマムーン'])
+    assert mem['anchor'] == 'アルマムーン'
+    assert mem['uncertain'] is False
+    assert mem['nav_last']['screen'] == [80, 90]
+    assert mem['goal_anchor_lock'] == 'アルマムーン'
+    assert 'nav_search' not in mem
+    assert 'cursor_still' not in mem
+    assert 'castle_jump' not in mem
+    assert 'expect_menu' not in mem
+    assert mem['_records'][-1]['decision'] == 'cursor_reanchor_confirm'
+
+
+def test_map_starts_reanchor_instead_of_inland_search():
+    mem = _memory()
+    mem['active'] = None
+    mem['nav_search'] = True
+    mem['uncertain'] = True
+    screen = _screen('map', [], cursor=(80, 90))
+    assert M.map_step(screen, mem, None) == [M.pad('x')]
+    assert mem['castle_jump']['source'] == 'アルマムーン'
+    assert mem['_records'][-1]['decision'] == 'cursor_reanchor_open'
+
+
+def test_failed_reanchor_keeps_search_as_fallback_but_is_cooldown_limited():
+    mem = _memory()
+    mem['nav_search'] = True
+    mem['uncertain'] = True
+    assert M._start_reanchor_jump(mem) == [M.pad('x')]
+    jump = mem['castle_jump']
+    jump['phase'] = 'list'
+    jump['scrolls'] = M.CASTLE_JUMP_SCROLL_LIMIT
+    assert M.castle_jump_step(_castle_list(['ナキューメラ']), mem, None) == [M.pad('b')]
+    assert mem['nav_search'] is True
+    assert mem['castle_jump_skip']['mode'] == 'reanchor'
+    assert M._start_reanchor_jump(mem) is None
+    mem['tick'] += M.CASTLE_JUMP_COOLDOWN
+    assert M._start_reanchor_jump(mem) == [M.pad('x')]
