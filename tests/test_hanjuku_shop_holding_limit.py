@@ -196,3 +196,26 @@ def test_confirmed_purchase_enters_the_held_ledger_and_cap_declines_overflow(mon
     assert p.quantity_step(quote(999, count=3, cost=54), mem) == [p.pad('a')]
     assert mem['card_bought_since_read'] == {'ノリウツール': 3}
     assert mem['shop']['last_buy']['row'] == ['ノリウツール', 3, 18]
+
+
+
+def test_refusal_records_full_shop_context_after_retry(ready):
+    """Evidence includes the complete queue and state after a refused buy."""
+    ready['card_stock'] = {'ノリウツール': 3, 'ミックミー': 8}
+    shop = ready['shop']
+    rest = [['ミックミー', 2], ['クースカン', 3]]
+    actions, _ = _refused_after(ready, 'ノリウツール', 60, rest=rest)
+    assert actions == [p.pad('a')]
+    record = next(r for r in reversed(ready['_records'])
+                  if r.get('deviation_reason') == 'holding_limit')
+    metric = record['observed_metric']
+    assert metric['card_stock_total'] == 11
+    assert metric['items'] == [['ノリウツール', 30], *rest]
+    assert metric['shop_state']['hold_limit'] == 1
+    assert metric['shop_state']['hold_limit_open'] is True
+    assert metric['shop_state']['want'] is None
+    assert metric['shop_state']['last_buy'] is None
+    assert metric['shop_state']['gold'] == 300
+    # Snapshots must not change when the live queue changes.
+    shop['items'][0][1] = 1
+    assert metric['items'][0][1] == 30
