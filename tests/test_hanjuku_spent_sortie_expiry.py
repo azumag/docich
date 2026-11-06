@@ -177,14 +177,14 @@ def test_overdue_transition_marks_only_the_actor_dirty_for_next_month():
         },
         'dirty': {},
     }
-    mem['garrison']['アルマムーン'] = ['ヘルメス', 'ゼウス']
+    _world(mem)['garrison']['アルマムーン'] = ['ヘルメス', 'ゼウス']
     sortie = mem['sorties']['A:x:M1']
     sortie['status'] = 'overdue'
     O._queue_overdue_location_recheck(mem, sortie)
     O._queue_overdue_location_recheck(mem, sortie)
     assert mem['general_statuses']['dirty'] == {'ヘルメス': ['location']}
-    assert mem['garrison']['アルマムーン'] == ['ゼウス']
-    assert mem['general_location_unknown'] == ['ヘルメス']
+    assert _world(mem)['garrison']['アルマムーン'] == ['ゼウス']
+    assert _world(mem)['general_location_unknown'] == ['ヘルメス']
     assert len([r for r in mem['_records']
                 if r['decision'] == 'sortie_location_recheck_queued']) == 1
     post.arm(mem)

@@ -868,11 +868,11 @@ def _queue_overdue_location_recheck(mem, sortie):
         return
     from ..os_layer import roster as receipts
     receipts.dirty_status(mem, [general], fields=('location',))
-    unknown = mem.setdefault('general_location_unknown', [])
+    unknown = _world(mem).setdefault('general_location_unknown', [])
     new = general not in unknown
     if new:
         unknown.append(general)
-    for residents in (mem.get('garrison') or {}).values():
+    for residents in (_world(mem).get('garrison') or {}).values():
         if isinstance(residents, list) and general in residents:
             residents.remove(general)
     if new:
