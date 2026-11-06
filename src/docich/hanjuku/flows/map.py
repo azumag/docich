@@ -1750,6 +1750,11 @@ def _unverified_target(screen, mem, order):
             cells[step] = cell
     cancels[step] = cancels.get(step, 0) + 1
     _flow(mem).pop('sortie_attempt', None)
+    # The target marker was not verified; this does not prove the general
+    # arrived or even departed. After cancelling the picker, read the named
+    # general's X-menu status instead of repeating roof-only diagnostics.
+    from . import arrival_status
+    arrival_status.queue(mem, order, _sortie_general(order, mem))
     limit = BOSS_TARGET_CANCEL_LIMIT if boss else TARGET_CANCEL_LIMIT
     state = 'failed' if cancels[step] >= limit else 'pending'
     _finish_order(mem, state, target=order['target'],

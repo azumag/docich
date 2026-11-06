@@ -644,6 +644,9 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
         from .flows import post_month_status
         actions = post_month_status.step(screen, mem, frame)
     if actions is None:
+        from .flows import arrival_status
+        actions = arrival_status.step(screen, mem)
+    if actions is None:
         from .flows import map_registration
         actions = map_registration.step(screen, mem, frame)
     if actions is None and not concert_house_event:
