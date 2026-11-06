@@ -43,6 +43,7 @@ def retakes(mem):
 
 def test_one_plan_assigns_different_measured_spares_to_three_retakes():
     mem = crowded_home()
+    mem['garrison']['アルマムーン'].append('アポロン')  # one extra spare while the home retains its guards
     mem['route_probe_read_tick']['アイアイエー'] = mem['tick']
     orders = retakes(mem)
     assert {order['target'] for order in orders} == set(mem['lost'])
