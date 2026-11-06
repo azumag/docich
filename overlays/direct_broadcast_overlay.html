@@ -2319,11 +2319,13 @@ html[data-soren-region="bottom"] #hanjuku-gap { display: none !important; }
         left:'←', right:'→', select:'SELECT', start:'START', l:'L', r:'R'};
       const actions = row.actions.map(a => String(a).split('+')
         .map(button => labels[button] || button).join('+')).join(' → ');
-      const reasons = row.reasons.length ? row.reasons.join('\n')
-        : '個別の判断理由は記録されていません';
+      // Owner 2026-11-06: no placeholder when a reason was not recorded and
+      // no raw JSON evidence; the operation alone is the entry.
+      const reasons = row.reasons.length ? row.reasons.join('\n') : '';
       const item = document.createElement('div');
       item.className = 'hanjuku-gap-decision';
-      const fullText = `[${row.screen}] ${actions ? '操作予定 '+actions : '操作保留'}\n${reasons}`;
+      const head = `[${row.screen}] ${actions ? '操作予定 '+actions : '操作保留'}`;
+      const fullText = reasons ? `${head}\n${reasons}` : head;
       item.textContent = fullText;
       item.title = fullText;
       item.dataset.decisionId = row.id;
