@@ -46,6 +46,17 @@ def test_a_recall_before_dispatch_yields_the_scene(stage):
     assert state['policy']['uncertain'] is True
 
 
+def test_the_dropped_recall_leaves_no_interruption_marker():
+    # #3544: a stale recall_interrupted marker would shorten the retry hold of
+    # an unrelated later recall's unconfirmed terminal.
+    state = recall_state(stage='dest')
+    state['policy']['flow'] = {'recall_interrupted': 70400}
+    _, state = decide(read_png(SCENE), state)
+    assert 'camp_recall_interrupted' in decisions(state)
+    assert 'recall' not in state['policy']
+    assert 'recall_interrupted' not in (state['policy'].get('flow') or {})
+
+
 def test_the_scene_advances_on_every_later_frame():
     frame = read_png(SCENE)
     actions, state = decide(frame, recall_state(stage='dest'))
