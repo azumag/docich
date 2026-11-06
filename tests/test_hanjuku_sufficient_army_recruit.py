@@ -32,6 +32,8 @@ def test_measured_sufficient_army_releases_stale_soldier_hold_for_recruit(same_s
     identity = {'game': 'hanjuku-hero', 'runtime_id': 'recruit-army',
                 'generation': 123, 'lease_id': 'recruit-army-lease'}
     mem['_run_identity'] = identity
+    mem['country_general_count'] = {'scope': [1, '1-7'], 'identity': identity,
+                                    'count': 6, 'tick': 100}
     mem['soldiers_seen_scope'] = [identity, 1, '1-7' if same_scope else '1-6']
     mem['shop'].update(recruit='check', recruit_priority=True,
                        soldiers_done=True, soldiers_before_recruit=56,
