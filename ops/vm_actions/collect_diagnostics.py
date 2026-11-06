@@ -6924,6 +6924,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v472-boss-hp-note",
             "hanjuku-chart-v473-house-entry-own-cell",
             "hanjuku-chart-v474-concert-text-advance",
+            "hanjuku-chart-v475-event-text-advance",
             "hanjuku-chart-v129-battle-card-progress",
             "hanjuku-chart-v130-summer-cursor-evidence",
             "hanjuku-chart-v131-defense-month-economy",
