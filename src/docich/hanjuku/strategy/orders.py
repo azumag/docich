@@ -1543,9 +1543,10 @@ def _source_spare_missing(order, mem, *, allow_probe=False):
     if (present is not None and _unplaced_castle_generals(mem)
             and source == _arrival_castle(mem, _owned(mem))):
         return False   # fresh joiners are checked by _keep_sortie_defender
-    if (isinstance(present, (list, tuple)) and present
+    if (mem.get('active') != order.get('step')
+            and isinstance(present, (list, tuple)) and present
             and len(set(present) - unavailable) < 2):
-        return True  # the castle menu refuses the last idle defender
+        return True  # pre-flight only: never reopen a plan for the last defender
     return (_reserve_source_guard(order, mem) and present is not None
             and len(set(present) - unavailable) < 2)
 
