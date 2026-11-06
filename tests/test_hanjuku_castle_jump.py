@@ -211,7 +211,9 @@ def test_reanchor_without_active_order_picks_next_ready_plan(monkeypatch):
     assert M.castle_jump_step(screen, mem, None) is None
 
     _allow_interrupted_order(monkeypatch)
-    order = mem['chart_plan']['orders'][0]
+    # A real executable order contains the planned general; the lightweight
+    # _order() fixture omits it because castle-jump-only tests do not deploy.
+    order = {**mem['chart_plan']['orders'][0], 'general': 'どうし'}
     monkeypatch.setattr(M, '_world_map_wanted', lambda _mem: False)
     monkeypatch.setattr(M, 'next_order', lambda _mem: order)
     monkeypatch.setattr(M, 'nav_step', lambda *_args, **_kwargs: [M.pad('right')])
