@@ -16,7 +16,8 @@ def memory():
     return {'chapter': 6, 'tick': 1000, 'month': '51-5', 'gold': 500, '_records': [],
             'orders': {}, 'sorties': {}, 'lost': [], 'chart_adjust': {},
             'captured': list(NORMAL),
-            'garrison': {c: ['ゼウス'] for c in NORMAL}}
+            'garrison': {**{c: ['ゼウス'] for c in NORMAL},
+                         'オケアナ': ['ゼウス', 'ポセイドン']}}
 
 
 def adopt(mem, tick):
