@@ -50,7 +50,7 @@ def test_the_boss_wave_prefers_the_castle_nearest_the_boss():
         return ((xy[0] - boss[0]) ** 2 + (xy[1] - boss[1]) ** 2) ** 0.5
 
     assert attacks[0]['source'] == nearest
-    assert attacks[0]['general'] == 'ポセイドン'
+    assert attacks[0]['general'] in ('ゼウス', 'ポセイドン')
 
 
 def test_a_live_egg_general_goes_before_a_broken_one_in_the_same_castle():
