@@ -388,3 +388,90 @@ def test_reanchor_does_not_replay_sortie_replaced_during_jump():
     assert M.resume_reanchored_owner(screen, mem, None) is None
     assert 'reanchor_resume' not in mem
     assert mem['_records'][-1]['decision'] == 'cursor_reanchor_owner_expired'
+
+
+# --- blinking menu hand (g1139 2026-11-07) --------------------------------
+def _blind_main_menu():
+    rows = [(39, 168, 'ステータス'), (55, 168, 'しょうぐん'), (71, 168, 'しろ'),
+            (87, 168, 'きりふだ'), (103, 168, 'システム')]
+    return _screen('main_menu', rows, hand=None,
+                   text='ステータス しょうぐん しろ きりふだ システム')
+
+
+def _blind_castle_list(names):
+    rows = [(y, 168, name) for y, name in zip(range(39, 39 + 16 * len(names), 16), names)]
+    rows += [(183, 24, 'Aボタンでステータスひょうじ'),
+             (199, 24, 'コマンドにもどりますじゃ!')]
+    return _screen('text', rows, hand=None,
+                   text='Aボタンでステータスひょうじ Bボタンで コマンドにもどりますじゃ!')
+
+
+def _jump(phase, **fields):
+    jump = {'step': 'J1', 'source': 'アルマムーン', 'phase': phase,
+            'age': 0, 'total': 0, 'tick': 0, 'menu_presses': 1}
+    jump.update(fields)
+    return jump
+
+
+def test_blinking_hand_holds_the_main_menu_instead_of_cancelling():
+    mem = _memory()
+    mem['castle_jump'] = _jump('menu')
+    # A live frame can catch the hand in its hidden phase while every row is
+    # drawn; the jump must wait for a readable frame, not abort.
+    assert M.castle_jump_step(_blind_main_menu(), mem, None) == []
+    assert mem['castle_jump']['phase'] == 'menu'
+    assert mem['castle_jump']['blind'] == 1
+    assert not [r for r in mem['_records'] if r['decision'] == 'castle_jump_failed']
+    # The next observation shows the hand: the same trip continues.
+    assert M.castle_jump_step(_main_menu(hand_y=39), mem, None) == [M.pad('down')]
+    assert mem['castle_jump']['blind'] == 0
+
+
+def test_hidden_hand_gives_up_only_after_the_bounded_wait():
+    mem = _memory()
+    mem['castle_jump'] = _jump('menu')
+    screen = _blind_main_menu()
+    for _ in range(M.CASTLE_JUMP_CURSOR_BLIND):
+        assert M.castle_jump_step(screen, mem, None) == []
+    actions = M.castle_jump_step(screen, mem, None)
+    assert actions == [M.pad('b')]
+    assert 'castle_jump' not in mem
+    assert mem['castle_jump_skip']['step'] == 'J1'
+    failed = [r for r in mem['_records'] if r['decision'] == 'castle_jump_failed']
+    assert failed and failed[-1]['observed_metric']['why'] == 'hand_hidden'
+
+
+def test_blinking_hand_on_the_castle_list_holds_then_selects():
+    mem = _memory()
+    mem['castle_jump'] = _jump('list', menu_presses=2)
+    assert M.castle_jump_step(_blind_castle_list(['アルマームン']), mem, None) == []
+    assert mem['castle_jump']['phase'] == 'list'
+    assert mem['castle_jump']['blind'] == 1
+    # The hand returns on the row naming the source: SELECT flies there.
+    assert M.castle_jump_step(_castle_list(['アルマームン']), mem, None) == [M.pad('select')]
+    assert mem['castle_jump']['phase'] == 'confirm'
+    assert mem['castle_jump']['blind'] == 0
+
+
+def test_fade_frame_before_the_menu_holds_and_continues():
+    mem = _memory()
+    mem['castle_jump'] = _jump('menu')
+    # X fades the map into the menu; the frame in between reads as nothing.
+    assert M.castle_jump_step(_screen('unknown', []), mem, None) == []
+    assert mem['castle_jump']['phase'] == 'menu'
+    assert mem['castle_jump']['fade'] == 1
+    assert M.castle_jump_step(_main_menu(hand_y=39), mem, None) == [M.pad('down')]
+    assert mem['castle_jump']['fade'] == 0
+
+
+def test_fade_frames_end_the_trip_when_the_menu_never_appears():
+    mem = _memory()
+    mem['castle_jump'] = _jump('menu')
+    screen = _screen('unknown', [])
+    for _ in range(M.CASTLE_JUMP_FADE_BLIND):
+        assert M.castle_jump_step(screen, mem, None) == []
+    assert M.castle_jump_step(screen, mem, None) == []
+    assert 'castle_jump' not in mem
+    assert mem['castle_jump_skip']['step'] == 'J1'
+    failed = [r for r in mem['_records'] if r['decision'] == 'castle_jump_failed']
+    assert failed and failed[-1]['observed_metric']['why'] == 'unexpected_menu'
