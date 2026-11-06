@@ -18,6 +18,11 @@ spec.loader.exec_module(gw)
 class DeployStateTransactionTests(unittest.TestCase):
     def setUp(self):
         self.addCleanup(os.umask,os.umask(0o022))
+        # #3344: the deploy fetch is now delta-only; submodule objects arrive
+        # through sync_owned_submodules' own update, which uses the file
+        # protocol for these test remotes and therefore needs the testing knob.
+        self._env=mock.patch.dict('os.environ',{'VMOPS_TESTING':'1'})
+        self._env.start(); self.addCleanup(self._env.stop)
         self.base = Path(tempfile.mkdtemp(prefix='vmops-state-txn-'))
         self.state = self.base / 'state'
         self.state.mkdir()
@@ -255,6 +260,7 @@ class DeployStateTransactionTests(unittest.TestCase):
         with mock.patch.object(gw, 'OWNED_SUBMODULES', {'games/soviet_now': str(subremote)}), \
              mock.patch.object(gw, 'write_json', side_effect=capture_intent):
             result = gw.deploy_git(self.cfg, 'docich', new_parent)
+        self.assertEqual(result.pop('git_gc'), {'status': 'unavailable'})
         self.assertEqual(result, {'status': 'deployed', 'sha': new_parent, 'rebaselined_from': old_parent})
         self.assertEqual(intents[-1], {'from': old_parent, 'to': new_parent,
                                      'predeploy_head': new_parent})
@@ -340,6 +346,7 @@ class DeployStateTransactionTests(unittest.TestCase):
         self._advance_production_to(new_parent)
         with mock.patch.object(gw, 'OWNED_SUBMODULES', {'games/soviet_now': str(subremote)}):
             result = gw.rebaseline_git(self.cfg, 'docich', new_parent)
+            self.assertEqual(result.pop('git_gc'), {'status': 'unavailable'})
             self.assertEqual(result, {'status': 'rebased', 'sha': new_parent, 'from': old_parent})
             state = gw.read_json(gw.current_file(self.cfg, 'docich'))
             self.assertEqual(state['projection_base'], old_parent)
