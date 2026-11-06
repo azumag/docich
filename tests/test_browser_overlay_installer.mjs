@@ -36,7 +36,7 @@ const settle=async()=>{for(let i=0;i<8;i++)await Promise.resolve();};
 
 test('versioned installer is a self-contained browser callback',()=>{
   assert.equal(BROWSER_OVERLAY_INSTALLER_CONTRACT_VERSION,1);
-  assert.match(overlayInstaller.toString(),/^function overlayInstaller\\(surfaces\\)/);
+  assert.match(overlayInstaller.toString(),/^function overlayInstaller\(surfaces\)/);
   assert.equal(overlayInstaller.toString().includes('import '),false);
 });
 
