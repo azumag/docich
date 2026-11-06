@@ -505,7 +505,8 @@ SELECT_EVERY = 40              # observations between hero-castle SELECTs
 
 ALIGN_RADIUS = 28              # screen px: a roof this close to the cursor after a Y jump
 ALIGN_TOL = 3                  # cursor-to-roof-target distance that selects the castle
-ALIGN_LIMIT = 10               # aligning steps before the jump is redone
+ALIGN_LIMIT = 4                # aligning steps before the jump is redone
+ALIGN_STALL = 2                # same-place corrections before the servo gives up
 
 
 def _align_on_roof(screen, mem, frame, kinds, key):
@@ -517,6 +518,12 @@ def _align_on_roof(screen, mem, frame, kinds, key):
     wandering). The roof in view is the ground truth: steer by its offset.
     Returns 'on', a list of pad actions, or None (no such roof / too long).
     """
+    def _clear_align():
+        for name in ('align_steps', 'align_offset', 'align_stall'):
+            tracker = mem.get(name)
+            if isinstance(tracker, dict):
+                tracker.pop(key, None)
+
     s = _cursor(screen)
     if not s or frame is None:
         return None
@@ -525,23 +532,44 @@ def _align_on_roof(screen, mem, frame, kinds, key):
         # Winter repaints the map (g421 18:13: the G stood on フーリック's
         # castle, no roof was read, and the jump was reopened six times).
         # A confirmed jump lands on the castle; nothing on screen contradicts it.
+        _clear_align()
         return 'on'
     near = [(abs(r['target'][0] - s[0]) + abs(r['target'][1] - s[1]), r) for r in roofs
             if r['kind'] in kinds and abs(r['target'][0] - s[0]) <= ALIGN_RADIUS
             and abs(r['target'][1] - s[1]) <= ALIGN_RADIUS]
     if not near:
+        _clear_align()
         return None
     roof = min(near, key=lambda item: item[0])[1]
     dx, dy = roof['target'][0] - s[0], roof['target'][1] - s[1]
     if abs(dx) <= ALIGN_TOL and abs(dy) <= ALIGN_TOL:
+        _clear_align()
         return 'on'
+    # Owner 2026-11-06: a servo that only paces around the same spot must not
+    # keep sending half-offset corrections. A strictly shrinking distance is
+    # progress; two corrections without progress mean the reading is noise.
+    offsets = mem.setdefault('align_offset', {})
+    previous = offsets.get(key)
+    stalls = int((mem.get('align_stall') or {}).get(key) or 0)
+    if (isinstance(previous, list) and len(previous) == 2
+            and all(type(value) is int for value in previous)):
+        stalls = (stalls + 1
+                  if abs(dx) + abs(dy) >= abs(previous[0]) + abs(previous[1]) else 0)
+    mem.setdefault('align_stall', {})[key] = stalls
+    offsets[key] = [dx, dy]
+    if stalls >= ALIGN_STALL:
+        within = abs(dx) <= UNDER_CURSOR_PX and abs(dy) <= UNDER_CURSOR_PX
+        _clear_align()
+        return 'on' if within else None
     steps = mem.setdefault('align_steps', {})
     steps[key] = steps.get(key, 0) + 1
     if steps[key] > ALIGN_LIMIT:
         # The confirm check accepts a roof within UNDER_CURSOR_PX of the
         # marker; never reopen the jump for a marker already that close.
         if abs(dx) <= UNDER_CURSOR_PX and abs(dy) <= UNDER_CURSOR_PX:
+            _clear_align()
             return 'on'
+        _clear_align()
         return None
     # Half the offset per step. The sortie target marker moved about 2 px
     # per held frame (g1075 2026-10-29 12:25: a 7-frame hold turned the
