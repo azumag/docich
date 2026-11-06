@@ -36,6 +36,20 @@ class HanjukuMinimapTemplateTest(unittest.TestCase):
             expected = [round(8 * (vx-ox)), round(8 * (vy-oy))]
             self.assertEqual(cells[str(chapter)]["あたしの家"], expected)
 
+    def test_news_and_map_use_stable_fixed_slots(self):
+        # The procedure row remains reserved even when it has no active
+        # children, so the news and map never jump as events arrive/expire.
+        self.assertRegex(HTML, r"grid-template-rows:\\s*210px 64px minmax\\(0, 1fr\\)")
+        self.assertRegex(HTML, r"\\.hanjuku-gap-news\\s*\\{[^}]*height:\\s*210px;")
+        self.assertRegex(HTML, r"\\.hanjuku-gap-progress:empty\\s*\\{\\s*visibility:\\s*hidden;")
+        self.assertNotIn(".hanjuku-gap-progress:empty { display: none; }", HTML)
+        self.assertRegex(HTML, r"\\.hanjuku-gap-minimap\\s*\\{[^}]*width:\\s*min\\(100%, 174px\\);[^}]*aspect-ratio:\\s*1 / 1;")
+        self.assertRegex(HTML, r"\\.hanjuku-gap-minimap\\s*\\{[^}]*flex:\\s*0 0 auto;")
+        self.assertIn("const width = 300, height = 300, margin = 25;", HTML)
+        self.assertIn("viewBox:'0 0 300 300'", HTML)
+        self.assertNotIn("viewBox:'0 0 300 225'", HTML)
+        self.assertRegex(HTML, r"\\.hanjuku-gap-empty\\s*\\{[^}]*aspect-ratio:\\s*1 / 1;")
+
     def test_routes_are_svg_not_general_cards(self):
         self.assertIn("function gapMinimap(value, moves, owned, lost, recallRoute)", HTML)
         self.assertIn("class:'hanjuku-gap-minimap'", HTML)
