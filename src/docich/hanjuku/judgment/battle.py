@@ -1005,11 +1005,14 @@ def _egg_plan(mem, cur):
     plan['charted'] = sorted({t['card'] for t in _tactics(mem, cur.get('step'))
                               if t.get('step') in (None, cur.get('step'))
                               and t.get('enemy') in (None, enemy)})
-    if not (plan['threat'] is True and plan['droppers']
+    # Owner 2026-11-06: 卵持ちで落下条件が成立する携行札は、敵AIの
+    # 自発的な卵使用リスクにかかわらず開幕に使う。
+    if not (plan['has_egg'] is True and plan['droppers']
             and egg_state == 'available'):
         cur['egg_plan'] = plan
         return plan
-    # Owner 2026-10-21: 成立する開幕卵落を後続チャートの札予約より優先する。
+    # Owner 2026-11-06: 成立する開幕卵落を、チャート・再攻撃・
+    # 通常の温存/救済判断より優先する。
     free = list(plan['droppers'])
     # 卵落の強い札を先に、同値は将軍へのダメージが小さい札を (主力を温存)。
     plan['dropper'] = None if not free else min(free, key=lambda card: (

@@ -742,16 +742,21 @@ def battle_step(screen: Screen, mem):
     _card_damage_recheck_resources(mem, cur)
     egg_bait.observe_melee(screen, mem, cur)
     melee_followup = _card_melee_ready(mem, cur)
-    if _one_hit_lethal(cur):
+    # An eligible carried egg-drop card opens before an easy melee finish:
+    # the owner's rule is unconditional once the enemy egg and max-HP
+    # remainder are known. A prior selection is not a new opening.
+    if _one_hit_lethal(cur) and not _egg_plan(mem, cur).get('dropper'):
         return _one_hit_finish_step(mem, cur)
     opening_wait = _command_open_wait(mem, cur)
     if opening_wait is not None:
         return opening_wait
     if _egg_rescue_pending(cur):
         return [{'type': 'wait', 'ms': 50}]
-    if not melee_followup and _general_egg_rescue_recheck(mem, cur):
+    dropper_due = (bool((cur.get('egg_plan') or {}).get('dropper'))
+                   and not cur.get('card_flow'))
+    if not dropper_due and not melee_followup and _general_egg_rescue_recheck(mem, cur):
         return _human_menu_open(cur, 'survival', mem)
-    if not melee_followup and _egg_before_retreat(mem, cur):
+    if not dropper_due and not melee_followup and _egg_before_retreat(mem, cur):
         if (cur.get('card_flow') or {}).get('stage') == 'announce':
             _card_use_unclassified(mem, cur, '危険HPで本人の卵を確認するため、未確認の切り札使用は未分類として保持')
         else:
@@ -765,7 +770,7 @@ def battle_step(screen: Screen, mem):
                                  'egg_uses': (mem.get('egg_uses') or {}).get(cur.get('ally'))},
                 reason='本人の卵残数が正数で未試行のため、退却より先に実メニューの召喚可否を確認')
         return _human_menu_open(cur, 'survival', mem)
-    retreat = None if melee_followup else _hero_retreat_open(mem, cur)
+    retreat = None if melee_followup or dropper_due else _hero_retreat_open(mem, cur)
     if retreat is not None:
         return retreat
     if (_critical_survival_needed(cur) and cur.get('side') == 'defense'
@@ -817,8 +822,8 @@ def battle_step(screen: Screen, mem):
               'note': '再攻撃の開幕切り札(チャート逸脱)'}
              for card in ([] if (mem.get('rare_card_kit') or {}).get(cur.get('step')) is not None
                           else mem.get('card_override', {}).get(cur.get('step')) or [])]
-    # 元の並びはtactic ID用に保ち、実行順だけ救済extra→成立する開幕卵落→
-    # チャート/強敵札とする（2026-10-21オーナー指定）。
+    # 元の並びはtactic ID用に保ち、実行順は成立する開幕卵落→
+    # 再攻撃extra→チャート/強敵札（2026-11-06オーナー指定）。
     egg_plan = _egg_plan(mem, cur)
     tactics = [*extra, *_tactics(mem, cur.get('step')),
                *_egg_drop_tactics(mem, cur, b.enemy, egg_plan),
@@ -836,10 +841,10 @@ def battle_step(screen: Screen, mem):
     # general (g1133 2026-11-04 16:00:50, キール vs マンゴスチン).
     def _tactic_rank(item):
         index, tactic = item
-        if index < len(extra):
-            return 0                   # retry/override openers own the opening
         if tactic.get('egg_drop_only'):
-            return 1                   # a measured egg drop is worth the opening
+            return 0                   # any measured carried egg drop opens first
+        if index < len(extra):
+            return 1                   # retry/override opener only after egg drop
         if str(tactic.get('tactic_id') or '').startswith('d:'):
             return 3                   # unverified default: only when nothing else is due
         return 2                       # verified chart tactic / strong card
