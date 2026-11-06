@@ -5728,6 +5728,7 @@ ROTATION_FAILED_CORNER_REASONS = frozenset({
     "execution-or-state-unverified",
     "base-game-unrestored",
     "restore-recovery-exhausted",
+    "terminal-owner-absent",
 })
 ROTATION_AUTO_RESTORE_STATUSES = frozenset({
     "succeeded", "queued", "failed", "noop", "interrupted", "completed", "unknown", "none",
@@ -6948,6 +6949,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v496-align-limit-2",
             "hanjuku-chart-v497-castle-jump-hand-blink",
             "hanjuku-chart-v498-month-locate-ownership",
+            "hanjuku-chart-v499-semantic-hold-key",
             "hanjuku-chart-v129-battle-card-progress",
             "hanjuku-chart-v130-summer-cursor-evidence",
             "hanjuku-chart-v131-defense-month-economy",

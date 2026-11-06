@@ -812,3 +812,68 @@ def test_next_tick_clears_registry_from_an_already_released_failure(tmp_path):
     assert second["status"] == "ready"
     assert not registry.exists()
     assert settled == [request_id]
+
+
+def test_unowned_terminal_active_row_records_anomaly_once(tmp_path):
+    """#3599: a latched terminal with a dead corner process is diagnosable.
+
+    The corner manager rewrites its state file every observation tick; when
+    the process dies after a Hanjuku terminal latched, the file goes stale
+    while the durable row stays 'active'. The tick must surface that as one
+    bounded anomaly instead of waiting forever.
+    """
+    manager, clock, _executor, adapters = build(
+        tmp_path,
+        storages={"a": Store(default_receipt=TERMINAL_RECEIPT),
+                  "b": Store(default_receipt=TERMINAL_RECEIPT)},
+    )
+    state_file = tmp_path / "retro_corner.json"
+    state_file.write_text("{}")
+    stale = clock[0] - 3600
+    import os
+    os.utime(state_file, (stale, stale))
+    adapters["a"].state_path = state_file
+    manager.tick()      # first tick only creates the rotation ledger
+    adapters["a"].states = [{
+        "status": "active", "game": "hanjuku-hero",
+        "rotation_request_id": "req-terminal",
+        "end_reason": "input_stalled",
+        "bot_runtime_id": "g3599-deadbeef",
+    }]
+
+    outcome = manager.tick()
+
+    assert outcome["status"] == "waiting"
+    failed = last_failure(ledger(manager))
+    assert failed["resolution"] == "recovery-required"
+    assert failed["reason_code"] == "terminal-owner-absent"
+    assert failed["corner"] == "a"
+
+    # The same owner is not recorded twice on later ticks.
+    manager.tick()
+    rows = [r for r in ledger(manager)["failed_corners"]
+            if r["reason_code"] == "terminal-owner-absent"]
+    assert len(rows) == 1
+
+
+def test_fresh_state_file_never_flags_a_live_owner(tmp_path):
+    manager, clock, _executor, adapters = build(
+        tmp_path,
+        storages={"a": Store(default_receipt=TERMINAL_RECEIPT),
+                  "b": Store(default_receipt=TERMINAL_RECEIPT)},
+    )
+    state_file = tmp_path / "retro_corner.json"
+    state_file.write_text("{}")
+    adapters["a"].state_path = state_file     # just rewritten: owner alive
+    manager.tick()      # first tick only creates the rotation ledger
+    adapters["a"].states = [{
+        "status": "active", "game": "hanjuku-hero",
+        "rotation_request_id": "req-live",
+        "end_reason": "input_stalled",
+        "bot_runtime_id": "g3599-deadbeef",
+    }]
+
+    manager.tick()
+
+    assert not [r for r in (ledger(manager).get("failed_corners") or [])
+                if r.get("reason_code") == "terminal-owner-absent"]

@@ -93,7 +93,18 @@ FAILED_CORNER_REASONS = frozenset({
     # as not restored so it stays fixable (#2187).
     "base-game-unrestored",
     "restore-recovery-exhausted",
+    # A Hanjuku run latched its terminal reason but the corner process that
+    # must tear it down stopped updating its state file: nobody owns the
+    # teardown (#3599). Detection only -- the fences, leases and the hotload
+    # generation gate belong to the absent owner, so the timer must not adopt
+    # the teardown itself.
+    "terminal-owner-absent",
 })
+# A corner state file is rewritten every ~2 s while its manager is alive and
+# the hotload grace plus teardown paths are bounded near a minute, so a file
+# this old while a terminal run is still 'active' means the owner is gone,
+# not merely slow (the observed gap in #3599 was ~30 min).
+TERMINAL_OWNER_STALE_SECONDS = 300.0
 
 # A failed corner *end* can leave the corner's own game on screen, so the
 # shared slot is not free and releasing the reservation would abandon the
@@ -683,6 +694,60 @@ class CornerRotationManager:
                 known.setdefault(retired_key, previous)
             known[corner.id] = current
 
+    def _notice_unowned_terminal(self, state, corner_id, adapter, raw, now):
+        """Flag a Hanjuku terminal whose corner process is gone (#3599).
+
+        The manager that observes a run also tears it down; when that process
+        dies, ``hanjuku_run.json`` keeps its terminal latch while the corner
+        state file stays 'active' forever and every later tick just waits.
+        The timer cannot safely adopt the teardown (fences, leases and the
+        hotload generation gate belong to the absent owner), so it records a
+        bounded anomaly the operator can act on instead.
+        """
+        if (raw.get("status") != "active" or raw.get("game") != "hanjuku-hero"):
+            return
+        reason = raw.get("end_reason")
+        if reason not in {"game_over", "screen_stalled", "input_stalled"}:
+            # The manager may have died before it ever saw the terminal; check
+            # the durable run record itself when a runtime is known.
+            runtime_id = raw.get("bot_runtime_id")
+            if not isinstance(runtime_id, str) or not runtime_id:
+                return
+            try:
+                from .naming import runtime_directory
+                from .retroarch_boundary import read_record
+                record = read_record(
+                    runtime_directory(Path(self.g.state_dir), runtime_id)
+                    / "hanjuku_run.json")
+            except Exception:
+                return
+            reason = record.get("terminal_reason")
+            if reason not in {"game_over", "screen_stalled", "input_stalled"}:
+                return
+        path = getattr(adapter, "state_path", None)
+        if path is None:
+            return
+        path = Path(path)
+        # Both the scheduled and the manual manager write their own file every
+        # observation tick; whichever is newest is the corner's heartbeat.
+        siblings = [path, path.with_name(path.stem + "_manual.json")]
+        try:
+            newest = max(p.stat().st_mtime for p in siblings if p.exists())
+        except ValueError:
+            return
+        except OSError:
+            return
+        if now - newest < TERMINAL_OWNER_STALE_SECONDS:
+            return
+        self._record_failed_corner_once(
+            state,
+            {"corner": corner_id,
+             "request_id": (raw.get("rotation_request_id")
+                            or raw.get("bot_runtime_id") or "unknown")},
+            resolution="recovery-required",
+            error_kind="execution-unverified", now=now,
+            reason_code="terminal-owner-absent")
+
     def _observers(self, state):
         observers = dict(self.adapters)
         known = state.get("known_corners") or {}
@@ -718,6 +783,10 @@ class CornerRotationManager:
                 status = raw.get("status", "idle")
                 if status not in BUSY | TERMINAL:
                     raise RotationError("unknown adapter state", kind="adapter-state")
+                try:
+                    self._notice_unowned_terminal(state, corner_id, adapter, raw, now)
+                except Exception:
+                    pass
                 own = pending and raw.get("rotation_request_id") == pending["request_id"]
                 if status in BUSY and not own:
                     # A released failure must not keep stopping the rotation,
