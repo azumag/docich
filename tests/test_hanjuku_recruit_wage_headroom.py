@@ -135,3 +135,34 @@ def test_partial_roster_cash_gate_still_subtracts_pending_army_and_repairs():
     assert result is False
     assert evidence['held'] == 960
     assert evidence['spare'] == 40
+
+def test_previous_partial_roster_cash_hold_is_rechecked_same_month():
+    # v481 had already stored deferred_cash. A hotloaded v482 must re-open
+    # the monthly recruitment without waiting for the next month.
+    mem = memory(NAMES[:6], complete=False, castles=2)
+    mem['gold'] = 9899
+    mem['country_income'] = {'income': 542}
+    mem['country_wages'] = {'wages': 78}
+    shop = {'key': '1-7', 'recruit': 'deferred_cash',
+            'recruit_priority': False, 'recruit_measured_budget': True,
+            'merchant_done': True, 'items': [], 'soldiers': 0,
+            'soldiers_done': True, 'reserve': 0, 'hero_repair_reserve': 0}
+    p._prioritise_recruit(mem, shop, 9899)
+    assert shop['recruit'] == 'check'
+    assert shop['recruit_priority'] is True
+    assert shop['recruit_batch']['left'] == p._recruit_target(mem) - 6
+    assert 'recruit_measured_budget' not in shop
+
+
+def test_previous_real_cash_shortage_still_keeps_hold():
+    mem = memory(NAMES[:6], complete=False, castles=2)
+    mem['gold'] = 1000
+    mem['country_income'] = {'income': 542}
+    mem['country_wages'] = {'wages': 78}
+    shop = {'key': '1-7', 'recruit': 'deferred_cash',
+            'recruit_priority': False, 'merchant_done': True,
+            'items': [], 'soldiers': 990, 'soldiers_done': False,
+            'reserve': 0, 'hero_repair_reserve': 0}
+    p._prioritise_recruit(mem, shop, 1000)
+    assert shop['recruit'] == 'deferred_cash'
+    assert not shop['recruit_priority']
