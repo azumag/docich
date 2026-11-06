@@ -71,6 +71,24 @@ CONCERT_PICKER_REPEAT_MAX = 8
 EVENT_TEXT_ADVANCE_PHASES = frozenset({'concert', 'event', 'dialogue'})
 EVENT_TEXT_ADVANCE_MAX = 3
 
+# Menu and banner panels drawn over the map: their identity for the no-input
+# hold is the text and cursor the panel itself reads, not the pixels behind
+# it. Water and other map animations give these kinds a fresh frame digest on
+# every observation, so a digest-keyed streak never passed 2 and the corner
+# ended input_stalled while the same menu sat open (#3599: a castle_menu held
+# ~100 s with zero input). Kinds outside this set keep the digest key: on a
+# bare map, a battle or an unreadable frame the animation *is* the content
+# and must not be counted as a frozen screen. Every listed kind carries
+# readable menu/banner text; an empty read falls back to the digest anyway.
+MENU_HOLD_KINDS = frozenset({
+    'month_menu', 'main_menu', 'castle_menu', 'castle_info', 'general_list',
+    'card_select', 'sortie_confirm', 'discharge_menu', 'shop_exit_confirm',
+    'shop_quantity_prompt', 'shop_quantity', 'shop_list', 'gift_request',
+    'summer_bonus', 'yes_no', 'name_entry',
+    'sealed_castle', 'boss_attack_started', 'field_encounter_started',
+    'attack_started', 'defense_started', 'barrier_removed',
+})
+
 
 def event_text_advance(mem, phase, kind, key, actions, guarded=False):
     """True when an unchanged scripted event narration line should advance.
@@ -844,11 +862,24 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
     # the digest on every observation, the streak never passed 1, and the run
     # ended input_stalled. A message box is the same screen while it reads the
     # same text.
-    hold_key=f'text:{screen.text}' if kind=='text' and screen.text else digest
+    # 'text' keeps its historical key shape; menu/banner kinds get a semantic
+    # key (see MENU_HOLD_KINDS) so background animation cannot restart the
+    # count. Cursor position and hand location are part of the key, so moving
+    # the selection still counts as a real change and restarts the streak.
+    if kind=='text' and screen.text:
+        hold_key=f'text:{screen.text}'
+    elif kind in MENU_HOLD_KINDS and screen.text:
+        hold_key=(f'menu:{kind}:{screen.text}:{screen.menu_cursor}'
+                  f':{screen.selected}:{screen.hand}')
+    else:
+        hold_key=digest
     frozen=[d for d in (updated.get('no_input_frames') or []) if isinstance(d,str)][:2]
+    # A raw digest in the recent list is still evidence of the same screen:
+    # it keeps a blinking menu counted and stays compatible with state written
+    # before semantic keys existed (the seeded digest key simply ages out).
     if actions:
         streak=0
-    elif hold_key in frozen:
+    elif hold_key in frozen or digest in frozen:
         streak=int(updated.get('no_input_streak') or 0)+1
     else:
         streak=1

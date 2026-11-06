@@ -1818,6 +1818,7 @@ _ROTATION_FAILED_REASONS = frozenset({
     "execution-or-state-unverified",
     "base-game-unrestored",
     "restore-recovery-exhausted",
+    "terminal-owner-absent",
 })
 _ROTATION_AUTO_RESTORE_STATUSES = frozenset({
     "succeeded", "queued", "failed", "noop", "interrupted", "completed", "unknown", "none",
