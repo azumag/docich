@@ -860,6 +860,17 @@ def interim_candidates(mem, allow_sole=False) -> dict:
     for order in (*front, *waves, *boss_wave_orders,
                   *(lead if retakes_stalled else lead[1:]),
                   *attacks, *rotation, *wave_orders):
+        # A generic source-list probe at a measured one-general castle is
+        # not a feasible sortie. Only actual inbound marches or new joiners
+        # expected at the hero's castle justify rereading that singleton.
+        present = (mem.get('garrison') or {}).get(order['source'])
+        if isinstance(present, (list, tuple)) and len(set(present)) == 1:
+            fresh_joiner = (order['source'] == _arrival_castle(mem, owned)
+                            and order['general'] in _unplaced_castle_generals(mem))
+            arrival_probe = (order.get('source_probe') is True
+                             and routes.probe_due(mem, order['source']))
+            if not (fresh_joiner or arrival_probe):
+                continue
         if chart_adjust.startable(order, situation) is not None:
             continue
         out[f"{order['purpose']}_{len(out) + 1}"] = order
