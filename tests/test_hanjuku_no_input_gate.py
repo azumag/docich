@@ -229,4 +229,3 @@ def test_an_animated_field_message_is_acknowledged_by_its_text():
     assert actions == [{'type': 'pad', 'buttons': ['a'], 'hold_ms': 100}]
     assert i <= FIELD_TEXT_HOLD_MAX + 1
     assert any(r['decision'] == 'no_input_fallback' for r in state['_records'])
-
