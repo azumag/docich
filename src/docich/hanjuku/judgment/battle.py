@@ -506,12 +506,6 @@ def _card_damage_gate(mem, cur, card, *, listed_cards=None):
         # triggers. g1097 07:05: ミックミー was refused four times with ヴィーナス
         # at 41 (7 left at most), and ココット fell with the card in hand.
         result.update(allowed=True, role='damage_not_a_kill')
-    elif (estimate['effect_kind'] in CLASH_SAFE_EFFECTS
-          and not estimate['self_harm']
-          and type(estimate['raw_damage_min']) is int and estimate['raw_damage_min'] > 0):
-        # Use a measured positive-damage card before the enemy can win the
-        # melee, even when it cannot prove a one-hit kill or an egg drop.
-        result.update(allowed=True, role='aggressive_chip_damage')
     elif listed_cards is None:
         result.update(needs_live_list=True, role='inspect_live_inventory_before_selection')
     elif card in CARD_CONTROL_SETUP:
@@ -612,8 +606,8 @@ def _card_gate_choice(mem, cur, candidates, names):
     else:
         choice = None
         for role in ('single_card_lethal', 'egg_drop_candidate_not_a_kill', 'damage_not_a_kill',
-                     'aggressive_chip_damage', 'observed_control_chain_not_a_kill',
-                     'control_then_melee_not_a_kill', 'halving_not_a_kill'):
+                     'observed_control_chain_not_a_kill', 'control_then_melee_not_a_kill',
+                     'halving_not_a_kill'):
             choices = [card for card in candidates if gates[card]['role'] == role]
             if choices:
                 choice = _rescue_card(choices, cur)
