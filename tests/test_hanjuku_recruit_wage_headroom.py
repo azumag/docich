@@ -86,3 +86,83 @@ def test_the_recruit_gate_does_not_defer_a_partial_roster_with_headroom():
     assert p._stop_unneeded_recruit(mem, shop) is False
     mem['country_wages'] = {'wages': 540}
     assert p._stop_unneeded_recruit(mem, shop) is True
+
+def test_partial_roster_with_measured_headroom_reaches_cash_gate():
+    # g1139: first two recruit gates allowed partial lists, but the final
+    # spendable-cash gate still required a complete roster and held the hire.
+    mem = memory(NAMES[:6], complete=False, castles=2)
+    mem['gold'] = 9899
+    mem['country_income'] = {'income': 542}
+    mem['country_wages'] = {'wages': 78}
+    shop = {'key': '1-7', 'recruit': 'check', 'recruit_priority': True,
+            'merchant_done': True, 'items': [], 'soldiers': 0,
+            'soldiers_done': True, 'reserve': 0, 'hero_repair_reserve': 0}
+    assert p._stop_unneeded_recruit(mem, shop) is False
+    assert p._recruit_shortage(mem) is not None
+    result, evidence = p._recruit_spare_after_necessities(mem, shop, 9899)
+    assert result is True
+    assert evidence['generals'] is None
+    assert evidence['roster_lower_bound'] == 6
+    assert evidence['spare'] == 9899
+
+
+def test_partial_roster_cash_gate_keeps_wage_and_unknown_roster_safety():
+    mem = memory(NAMES[:6], complete=False, castles=2)
+    mem['gold'] = 1000
+    mem['country_income'] = {'income': 542}
+    mem['country_wages'] = {'wages': 540}
+    shop = {'key': '1-7', 'recruit': 'check', 'recruit_priority': True,
+            'merchant_done': True, 'items': [], 'soldiers': 0,
+            'soldiers_done': True, 'reserve': 0, 'hero_repair_reserve': 0}
+    assert p._recruit_spare_after_necessities(mem, shop, 1000)[0] is None
+    mem['country_wages'] = {'wages': 78}
+    mem['gold'] = 999
+    assert p._recruit_spare_after_necessities(mem, shop, 999)[0] is None
+    mem['gold'] = 1000
+    mem['captured'] = ['unknown castle']
+    assert p._recruit_spare_after_necessities(mem, shop, 1000)[0] is None
+
+
+def test_partial_roster_cash_gate_still_subtracts_pending_army_and_repairs():
+    mem = memory(NAMES[:6], complete=False, castles=2)
+    mem['gold'] = 1000
+    mem['country_income'] = {'income': 542}
+    mem['country_wages'] = {'wages': 78}
+    shop = {'key': '1-7', 'recruit': 'check', 'recruit_priority': True,
+            'merchant_done': True, 'items': [], 'soldiers': 900,
+            'soldiers_done': False, 'reserve': 0, 'hero_repair_reserve': 60}
+    result, evidence = p._recruit_spare_after_necessities(mem, shop, 1000)
+    assert result is False
+    assert evidence['held'] == 960
+    assert evidence['spare'] == 40
+
+def test_previous_partial_roster_cash_hold_is_rechecked_same_month():
+    # v481 had already stored deferred_cash. A hotloaded v482 must re-open
+    # the monthly recruitment without waiting for the next month.
+    mem = memory(NAMES[:6], complete=False, castles=2)
+    mem['gold'] = 9899
+    mem['country_income'] = {'income': 542}
+    mem['country_wages'] = {'wages': 78}
+    shop = {'key': '1-7', 'recruit': 'deferred_cash',
+            'recruit_priority': False, 'recruit_measured_budget': True,
+            'merchant_done': True, 'items': [], 'soldiers': 0,
+            'soldiers_done': True, 'reserve': 0, 'hero_repair_reserve': 0}
+    p._prioritise_recruit(mem, shop, 9899)
+    assert shop['recruit'] == 'check'
+    assert shop['recruit_priority'] is True
+    assert shop['recruit_batch']['left'] == p._recruit_target(mem) - 6
+    assert 'recruit_measured_budget' not in shop
+
+
+def test_previous_real_cash_shortage_still_keeps_hold():
+    mem = memory(NAMES[:6], complete=False, castles=2)
+    mem['gold'] = 1000
+    mem['country_income'] = {'income': 542}
+    mem['country_wages'] = {'wages': 78}
+    shop = {'key': '1-7', 'recruit': 'deferred_cash',
+            'recruit_priority': False, 'merchant_done': True,
+            'items': [], 'soldiers': 990, 'soldiers_done': False,
+            'reserve': 0, 'hero_repair_reserve': 0}
+    p._prioritise_recruit(mem, shop, 1000)
+    assert shop['recruit'] == 'deferred_cash'
+    assert not shop['recruit_priority']
