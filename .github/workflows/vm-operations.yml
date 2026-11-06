@@ -676,7 +676,7 @@ jobs:
           [[ "$SHA" =~ ^[0-9a-f]{40}$ ]]
           [[ "$BEFORE_SHA" =~ ^[0-9a-f]{40}$ ]]
           git -C candidate cat-file -e "$BEFORE_SHA^{commit}"
-          if git -C candidate diff --quiet "$BEFORE_SHA" "$SHA" -- ops/vm_actions/shared_overlay_reload_epoch; then
+          if git -C candidate diff --quiet "$BEFORE_SHA" "$SHA" -- ops/vm_actions/shared_overlay_reload_epoch overlays/direct_broadcast_overlay.html; then
             exit 0
           fi
 
