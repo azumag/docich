@@ -181,11 +181,13 @@ def test_off_chart_uses_measured_idle_generals_not_the_marching_chart_general():
     assert not {'ゴーメン', 'スペンソニア'} & targets
 
 
-def test_interim_without_garrison_reading_keeps_the_chart_general_and_source():
+def test_interim_without_garrison_reading_keeps_the_source_but_probes_the_actor():
     mem = {'chapter': 1, 'captured': ['キカンドン'], 'orders': {}, '_records': []}
     candidates = policy.interim_candidates(mem)
     gomen = next(c for c in candidates.values() if c['target'] == 'ゴーメン')
-    assert (gomen['general'], gomen['source'], gomen['purpose']) == ('どうし', 'キカンドン', 'attack')
+    assert (gomen['general'], gomen['source'], gomen['purpose']) == (
+        policy.MOVE_ANY_GENERAL, 'キカンドン', 'attack')
+    assert gomen['source_probe'] is True
 
 
 def test_a_hold_with_no_candidates_is_recorded_once_per_revision():
@@ -235,13 +237,11 @@ def test_a_lone_general_is_never_pulled_out_of_the_home_castle():
                         'ゴーメン': ['ココット']}}
     moves = [c for c in policy.interim_candidates(mem).values() if c['purpose'] == 'move']
     assert all(c['source'] != 'アルマムーン' for c in moves)
-    # A lone general is never pulled out of its castle; only an unread list
-    # (opened and checked by the move itself) may be the donor then.
+    # A lone general is never pulled out of its castle. An unread list may
+    # only be used after a specific probe is due; no named donor is assumed.
     mem['garrison']['アルマムーン'] = ['ゼウス']
     moves = [c for c in policy.interim_candidates(mem).values() if c['purpose'] == 'move']
-    assert moves and all(c['source'] != 'アルマムーン' for c in moves)
-    assert all(mem['garrison'].get(c['source']) is None for c in moves)
-    assert all(c['general'] == policy.MOVE_ANY_GENERAL for c in moves)
+    assert not moves  # No castle has a verified extra general to donate.
 
 
 def test_launch_and_battles_update_the_measured_garrison():
