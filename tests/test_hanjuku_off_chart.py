@@ -319,8 +319,9 @@ def test_a_cell_that_pressing_never_moves_falls_back_to_the_inland_search(monkey
     [stuck] = decisions(mem, 'nav_stuck')
     assert stuck['observed_metric']['cursor'] == wrong
     assert mem['uncertain'] is True and mem['nav_search'] is True
-    # Searching first shows the hero with SELECT, then steers inland; the
-    # same lone roof no longer anchors.
+    # If the preferred X/しろ jump failed, the legacy SELECT/inland
+    # fallback still works without trusting the lone roof.
+    mem['castle_jump_skip'] = {'mode': 'reanchor', 'tick': int(mem.get('tick') or 0)}
     assert policy.map_step(pinned, mem, FRAME) == [policy.pad('select')]
     assert {a['buttons'][0] for a in policy.map_step(pinned, mem, FRAME)} == {'left', 'up'}
     assert mem['uncertain'] is True and home != tuple(mem['cursor'])
@@ -455,7 +456,8 @@ def test_no_roof_under_the_cursor_refuses_a_bounded_number_of_source_presses(mon
     monkeypatch.setattr(policy, 'nav_step', arrived)
     far = [{'kind': 'own', 'target': (51, 109), 'clipped': False}]
     monkeypatch.setattr(policy, 'castle_roofs', lambda *_a, **_k: far)
-    mem = {'chapter': 1, 'orders': {}, 'picked': [], '_records': [], 'active': '1-C1'}
+    mem = {'chapter': 1, 'orders': {}, 'picked': [], '_records': [], 'active': '1-C1',
+           'castle_jump_skip': {'mode': 'reanchor', 'tick': 0}}
     sea = map_screen(215, 189)
     for _ in range(policy.OFF_CASTLE_LIMIT):
         assert policy.map_step(sea, mem, FRAME) == []
@@ -849,7 +851,8 @@ def test_the_failed_menu_hold_is_bounded_and_cleared_by_a_y_jump(monkeypatch):
     monkeypatch.setattr(policy, 'castle_roofs',
                         lambda *_a, **_k: [{'kind': 'own', 'target': (140, 120), 'clipped': False}])
     mem = {'chapter': 1, 'orders': {}, 'picked': [], '_records': [], 'active': '1-C1',
-           'menu_miss': 1, 'cursor': list(CASTLES['アルマムーン'])}
+           'menu_miss': 1, 'cursor': list(CASTLES['アルマムーン']),
+           'castle_jump_skip': {'mode': 'reanchor', 'tick': 0}}
     held = [policy.map_step(map_screen(140, 120), mem, FRAME) for _ in range(policy.MENU_HOLD_LIMIT)]
     assert all(h == [] for h in held)
     assert policy.map_step(map_screen(140, 120), mem, FRAME) == [policy.pad('a')]
