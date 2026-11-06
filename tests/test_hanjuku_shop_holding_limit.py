@@ -214,7 +214,7 @@ def test_refusal_records_full_shop_context_after_retry(ready):
     assert metric['shop_state']['hold_limit'] == 1
     assert metric['shop_state']['hold_limit_open'] is True
     assert metric['shop_state']['want'] is None
-    assert metric['shop_state']['last_buy'] is None
+    assert metric['shop_state']['last_buy'] == {'row': ['ノリウツール', 60, 18], 'gold': 300}
     assert metric['shop_state']['gold'] == 300
     # Snapshots must not change when the live queue changes.
     shop['items'][0][1] = 1

@@ -89,6 +89,9 @@ def _learn_holding_limit(screen: Screen, mem, shop):
     paid_nothing = (type(gold) is int and isinstance(last, dict)
                     and type(last.get('gold')) is int and gold >= last['gold'])
     want = shop.get('want')
+    # Snapshot the pre-refusal shop state before mutating shop.pop/shop['want'] below.
+    last_buy_snapshot = dict(last) if isinstance(last, dict) else last
+    want_snapshot = list(want) if isinstance(want, list) else want
     if paid_nothing and isinstance(row, list) and isinstance(bought, list) and bought and bought[-1] == row:
         bought.pop()                      # refused, not bought: do not count it
         ledger = mem.get(SINCE_READ)
@@ -138,8 +141,8 @@ def _learn_holding_limit(screen: Screen, mem, shop):
                              'shop_state': {'hold_limit': shop.get('hold_limit'),
                                             'hold_limit_open': shop.get('hold_limit_open'),
                                             'hold_limit_presses': shop.get('hold_limit_presses'),
-                                            'last_buy': shop.get('last_buy'),
-                                            'want': shop.get('want'),
+                                            'last_buy': last_buy_snapshot,
+                                            'want': want_snapshot,
                                             'gold': gold}},
             reason='商人が所持上限(種類ごと99)で売らなかったため、所持の下限を記録し半分の枚数で再試行する'
                    '(再試行が0枚ならその札だけやめる)')
