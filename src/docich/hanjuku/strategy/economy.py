@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from ... import hanjuku_chart as chart
 from ...hanjuku_egg_reference import general_max_hp
+from ...hanjuku_reference import CARDS as REFERENCE_CARDS
 from ..decision_log import _record
 from ..os_layer.readers import STATUS_NAMES
 from ..os_layer.world import NAME, _owned
@@ -25,6 +26,15 @@ def _month_key(header):
 KNOWN_PRICES = {'イッテツーン': 1, 'ノリウツール': 18, 'クースカン': 24, 'ゼンマイン': 32,
                 'グリンボー': 6, 'ミックミー': 40, 'ブラッキー': 3,
                 'マグネガキン': 34, 'エンジェリン': 32, 'ころぼぐんだん': 5}
+# Other cards can be picked from an observed merchant listing when rich.
+# Reference prices are upper bounds, never proof that a merchant stocks a card.
+KNOWN_PRICES.update({name: data['price'] for name, data in REFERENCE_CARDS.items()
+                     if name not in KNOWN_PRICES and type(data.get('price')) is int
+                     and data['price'] > 0})
+# These two requested cards have *no* reference gold price (event/treasure
+# only). The large value is an acceptance ceiling, NOT an asserted shop price:
+# they may be bought only after a readable real listing and verified quote.
+KNOWN_PRICES.update({'フットバース': 999, 'ピッグローラー': 999})
 
 # 兵士は1G=1人で2桁入力が上限。チャート計画の無い月の残金はここまでの補充に使う。
 SOLDIER_CAP = 99
