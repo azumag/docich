@@ -610,7 +610,11 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
     trade_guard_hold = False
     if actions is None:
         actions = prompts_flow.trade_guard_step(screen, mem, phase=phase)
-        trade_guard_hold = (phase == 'dialogue' and actions == []
+        # The monthly event that carries the trade is phase 'concert' (red
+        # curtain) or the classify() fallback 'event', so a held refusal must
+        # suppress the no-input fallback there too; otherwise its legacy A
+        # confirms the default upper row.
+        trade_guard_hold = (phase in ('dialogue', 'concert', 'event') and actions == []
                             and (mem.get('trade_guard') or {}).get('held') is True)
     bijin_guard_hold = False
     if actions is None:

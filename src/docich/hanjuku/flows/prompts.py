@@ -128,16 +128,25 @@ def trade_guard_step(screen: Screen, mem, *, phase=None):
     guard = mem.get('trade_guard')
     if isinstance(guard, dict):
         guard.pop('held', None)  # ownership is recomputed for this observation
-    if mem.get('month_sub') or phase not in (None, 'dialogue'):
-        mem.pop('trade_guard', None)
-        return None   # a monthly owner keeps its dialogue (measured yes/no still declines)
     tick = int(mem.get('tick') or 0)
     flat = ''.join(screen.text.split())
-    if (any(tok in flat for tok in TRADE_GUARD_TOKENS)
-            and screen.kind in ('text', 'unknown')):
+    trade_seen = any(tok in flat for tok in TRADE_GUARD_TOKENS)
+    # The measured monthly event is drawn on the red-curtain scene: classify()
+    # returns 'concert' for the frame (g1067/g1107/g1139), never 'dialogue', so
+    # the old phase boundary skipped this guard there and the generic A pressed
+    # the default upper row. g1139 2026-11-06 23:13: カシス (73/15) was traded
+    # for チキータ while every frame got the concert fallback A. Take ownership
+    # in the monthly scene whenever the trade wording is on screen; combat and
+    # menu phases keep the old boundary. This mirrors the 美女 fix (#2632).
+    monthly_scene = phase in ('concert', 'event')
+    if mem.get('month_sub') or (phase not in (None, 'dialogue')
+                                and not (monthly_scene and trade_seen)):
+        mem.pop('trade_guard', None)
+        return None   # a monthly owner keeps its dialogue (measured yes/no still declines)
+    if trade_seen and screen.kind in ('text', 'unknown'):
         if not isinstance(guard, dict):
             guard = mem['trade_guard'] = {'tick': tick, 'chosen': False}
-            _record(mem, 'trade_offer_seen', screen=screen.kind,
+            _record(mem, 'trade_offer_seen', screen=screen.kind, phase=phase,
                     observed_metric={'text': screen.text[-80:], 'hand': screen.hand is not None},
                     reason='将軍トレード（花いちもんめ）の申し出を検出。選択肢は断る側を選ぶ')
         guard['tick'] = tick
