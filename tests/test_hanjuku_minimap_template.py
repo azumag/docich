@@ -44,7 +44,6 @@ class HanjukuMinimapTemplateTest(unittest.TestCase):
         self.assertIn("if (!from || !to || move.source === move.target)", HTML)
         self.assertIn("move.target === 'あたしの家'", HTML)
         self.assertIn("return 'recall'", HTML)
-        self.assertIn("recall.get('origin_source')", "recall.get('origin_source')" ) if False else         self.assertIn("return 'recall'", HTML)
         self.assertIn("const observedReturn = recallRoute && table[recallRoute.target]", HTML)
         self.assertIn("all.push(['帰還元', observedReturn.origin])", HTML)
         self.assertIn("const marchCount = number(countMatch?.[1]);", HTML)
