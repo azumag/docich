@@ -200,6 +200,28 @@ def test_reanchor_success_releases_same_frame_to_interrupted_order(monkeypatch):
     assert mem['_records'][-1]['observed_metric']['active_after'] == 'J1'
 
 
+def test_reanchor_without_active_order_picks_next_ready_plan(monkeypatch):
+    mem = _memory()
+    mem['active'] = None
+    mem['nav_search'] = True
+    mem['uncertain'] = True
+    assert M._start_reanchor_jump(mem) == [M.pad('x')]
+    mem['castle_jump']['phase'] = 'confirm'
+    screen = _screen('map', [], cursor=(80, 90))
+    assert M.castle_jump_step(screen, mem, None) is None
+
+    _allow_interrupted_order(monkeypatch)
+    order = mem['chart_plan']['orders'][0]
+    monkeypatch.setattr(M, '_world_map_wanted', lambda _mem: False)
+    monkeypatch.setattr(M, 'next_order', lambda _mem: order)
+    monkeypatch.setattr(M, 'nav_step', lambda *_args, **_kwargs: [M.pad('right')])
+    actions = M.map_step(screen, mem, None)
+    assert actions == [M.pad('right')]
+    assert mem['active'] == 'J1'
+    M.note_reanchor_followup(screen, mem, actions)
+    assert mem['_records'][-1]['decision'] == 'cursor_reanchor_resumed'
+
+
 def test_reanchor_named_source_opens_even_when_cursor_hides_roof(monkeypatch):
     mem, screen = _confirm_reanchor_with_active_order()
     _allow_interrupted_order(monkeypatch)
