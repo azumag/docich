@@ -188,7 +188,14 @@ def startable(order, request) -> str | None:
     if general in marching:
         return 'general_marching'
     garrison = request.get('garrison') if isinstance(request.get('garrison'), dict) else {}
-    if general in (garrison.get(source) or ()):
+    present = garrison.get(source)
+    # A recorded one-general castle cannot send anyone, including to the
+    # boss or on a move. Keep unknown/unread sources eligible for an observed
+    # roster probe; only a measured singleton is definitive here.
+    if (isinstance(present, (list, tuple)) and present
+            and len(set(present) - marching) < 2):
+        return 'source_last_defender'
+    if general in (present or ()):
         # An unrecorded general (a joiner, a spare picked on the list) is
         # counted on the real list when the sortie opens it.
         if not chart.is_boss_castle(order['target']) and hero_guard_short(
