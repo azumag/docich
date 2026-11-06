@@ -374,3 +374,17 @@ def test_reanchor_sortie_is_not_stolen_by_background_monthly_owner(monkeypatch):
     assert actions == [M.pad('right')]
     M.note_reanchor_followup(screen, mem, actions)
     assert mem['_records'][-1]['observed_metric']['owner'] == 'sortie_plan'
+
+
+def test_reanchor_does_not_replay_sortie_replaced_during_jump():
+    mem = _memory()
+    mem['nav_search'] = True
+    assert M._start_reanchor_jump(mem) == [M.pad('x')]
+    mem['active'] = 'OTHER'
+    mem['castle_jump']['phase'] = 'confirm'
+    screen = _screen('map', [], cursor=(80, 90))
+    assert M.castle_jump_step(screen, mem, None) is None
+    assert mem['reanchor_resume']['active_before'] == 'J1'
+    assert M.resume_reanchored_owner(screen, mem, None) is None
+    assert 'reanchor_resume' not in mem
+    assert mem['_records'][-1]['decision'] == 'cursor_reanchor_owner_expired'
