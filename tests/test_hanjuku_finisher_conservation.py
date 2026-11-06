@@ -1,4 +1,4 @@
-"""Conserve firepower only among observed, proven-lethal automatic choices.
+"""Use confirmed finishers promptly rather than saving high-impact cards.
 
 Synthetic panels exercise the existing damage gate and real menu policy.
 Selection is not a consumption, delivered input, kill, or live-run receipt.
@@ -39,28 +39,28 @@ def choose(mem, names):
 
 
 @pytest.mark.parametrize('survival', [False, True])
-def test_both_automatic_routes_save_cattle_myu_when_zenmain_finishes(survival):
+def test_both_automatic_routes_use_available_cattle_myu_finisher(survival):
     mem = memory(survival=survival)
     names = ['ブラッキー', 'キャトルミュー', 'ゼンマイン']
     assert p.card_list_step(cards(names), mem) == [p.pad('down')]
     cur = mem['battle']
     # Chart replanning stores the alternative immediately; survival stores it
     # only at the selected row, so use the assessment before confirmation.
-    assert cur['card_assessment']['card'] == 'ゼンマイン'
+    assert cur['card_assessment']['card'] == 'キャトルミュー'
     assert cur['cards_selected'] == cur['cards_used'] == []
-    assert p.card_list_step(cards(names, 2), mem) == [p.pad('a')]
-    assert cur['cards_selected'] == ['ゼンマイン']
+    assert p.card_list_step(cards(names, 1), mem) == [p.pad('a')]
+    assert cur['cards_selected'] == ['キャトルミュー']
     assert cur['cards_used'] == [] and not mem.get('kit_spent')
     assert cur['card_assessment']['lethal'] is True
-    assert 'キャトルミュー' not in cur['cards_selected']
+    assert 'ゼンマイン' not in cur['cards_selected']
 
 
 @pytest.mark.parametrize('hp,enemy_soldiers,choice', [
-    (22, 1, 'ゼンマイン'), (23, 1, 'ミックミー'),
-    (32, 0, 'ゼンマイン'), (33, 0, 'ミックミー'),
+    (22, 1, 'キャトルミュー'), (23, 1, 'キャトルミュー'),
+    (32, 0, 'キャトルミュー'), (33, 0, 'キャトルミュー'),
     (27, 4, 'キャトルミュー'), (27, 6, 'キャトルミュー'),
 ])
-def test_smallest_finisher_is_computed_after_enemy_soldier_absorption(hp, enemy_soldiers, choice):
+def test_any_confirmed_finisher_can_be_used_even_if_a_weaker_one_suffices(hp, enemy_soldiers, choice):
     mem = memory(hp=hp, soldiers=(0, enemy_soldiers))
     assert choose(mem, ['キャトルミュー', 'ミックミー', 'ゼンマイン']) == choice
     assessment = mem['battle']['card_assessment']
@@ -82,10 +82,10 @@ def test_old_zero_soldiers_cannot_make_a_cheap_card_lethal():
     assert choose(mem, ['キャトルミュー', 'ゼンマイン']) == 'キャトルミュー'
 
 
-def test_own_soldier_bonus_can_make_a_smaller_card_sufficient():
+def test_own_soldier_bonus_does_not_force_a_smaller_card():
     mem = memory(hp=27, soldiers=(6, 0))
-    assert choose(mem, ['キャトルミュー', 'ミックミー', 'グリンボー']) == 'グリンボー'
-    assert mem['battle']['card_assessment']['raw_damage_min'] == 38
+    assert choose(mem, ['キャトルミュー', 'ミックミー', 'グリンボー']) == 'キャトルミュー'
+    assert mem['battle']['card_assessment']['raw_damage_min'] > 38
 
 
 @pytest.mark.parametrize('hp', [1, 12])
@@ -94,9 +94,9 @@ def test_critical_hp_keeps_existing_rescue_priority_without_conservation(hp):
     assert choose(mem, ['キャトルミュー', 'ゼンマイン']) == 'キャトルミュー'
 
 
-def test_above_existing_critical_threshold_allows_conservation():
+def test_above_existing_critical_threshold_does_not_conserve_finishers():
     mem = memory(ally_hp=13)
-    assert choose(mem, ['キャトルミュー', 'ゼンマイン']) == 'ゼンマイン'
+    assert choose(mem, ['キャトルミュー', 'ゼンマイン']) == 'キャトルミュー'
 
 
 @pytest.mark.parametrize('hp', [1, 12, 89])
@@ -107,7 +107,7 @@ def test_needed_healing_still_precedes_all_finishers(hp):
 
 def test_full_health_does_not_waste_healing_before_a_sufficient_finisher():
     mem = memory()
-    assert choose(mem, ['キャトルミュー', 'エンジェリン', 'ゼンマイン']) == 'ゼンマイン'
+    assert choose(mem, ['キャトルミュー', 'エンジェリン', 'ゼンマイン']) == 'キャトルミュー'
 
 
 def test_explicit_charted_card_is_not_replaced_by_automatic_conservation():
