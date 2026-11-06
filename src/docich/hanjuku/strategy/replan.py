@@ -60,9 +60,8 @@ def _interim_source(mem, target, chart_order, owned, busy, allow_sole=False):
     # クロチェット enters オトラント; every measured アルマムーン-launch
     # stalled while the only arrival was オトラント-launched 5-Z2), so a
     # source whose path crosses another own castle ranks behind a clear one.
-    need = 1 if allow_sole else 2
-    excluded = (set(mem.get('defense_break_blocked') or ()) | set(mem.get('lost') or ())
-                if allow_sole else set())
+    need = 2          # never empty a castle (owner 2026-11-06)
+    excluded = set()
     # Owner 2026-11-03 (g1097): generals moved into a castle recorded empty
     # stood there unseen while アルマムーン kept sending the sorties. The
     # castle's own list, opened once by a probe, is the arrival receipt; the
@@ -267,7 +266,7 @@ def _wave_pick(mem, target, owned, busy, allow_sole):
     home = chart.home_castle(chapter)
     garrison = mem.get('garrison') or {}
     unavailable = set(mem.get('general_location_unknown') or ())
-    need = 1 if allow_sole else 2
+    need = 2          # never empty a castle (owner 2026-11-06)
     for source in sorted(owned, key=lambda c: (c != home, c)):
         names = garrison.get(source)
         if not names:
@@ -275,24 +274,22 @@ def _wave_pick(mem, target, owned, busy, allow_sole):
         free = [g for g in names if g not in busy and g not in unavailable]
         if len(free) < need:
             continue
-        spares = [g for g in _spares(free, sole=allow_sole) if g != NAME]
+        spares = [g for g in _spares(free) if g != NAME]
         if spares:
             return source, spares[0]
     return None
 
 
 def _spares(free, unavailable=(), sole=False):
-    """Generals a castle may send, the hero last and only when alone.
+    """Generals a castle may send; no castle is ever left empty.
 
     The hero's castle keeps ``HERO_CASTLE_GUARD`` other generals (owner
-    2026-10-29) unless it is our only castle (``sole``); when they would leave
-    it thin, the hero is not sent instead.
+    2026-10-29). Owner 2026-11-06 dropped the sole-castle exception: an
+    emptied castle falls to the next enemy and ends the game, so even our
+    only castle keeps one general (the hero included).
     """
-    others = [g for g in free if g != NAME and g not in unavailable
-              and not chart_adjust.hero_guard_short(free, g, sole_castle=sole)]
-    if others:
-        return others
-    return [NAME] if set(free) == {NAME} and NAME not in unavailable else []
+    return [g for g in free if g != NAME and g not in unavailable
+            and not chart_adjust.hero_guard_short(free, g)]
 
 
 def _boss_egg_rank(mem, general):
@@ -421,7 +418,7 @@ def _garrison_rotation(mem, owned, busy, heading, taken=()):
                 continue
             if garrison.get(source) is None or len(free[source]) - 1 < source_floor:
                 continue
-            spares = [g for g in _spares(free[source], sole=sole) if g != NAME]
+            spares = [g for g in _spares(free[source]) if g != NAME]
             if not spares:
                 continue
             general = sorted(spares, key=lambda g: _defense_score(mem, g),
@@ -578,7 +575,7 @@ def interim_candidates(mem, allow_sole=False) -> dict:
         if _hero_egg_broken(mem):
             unavailable |= {NAME}
         sole = len(owned) == 1
-        need = 1 if allow_sole else 2
+        need = 2          # never empty a castle (owner 2026-11-06)
         # Owner 2026-11-04: a rear castle may send its last general. Once every
         # normal castle is held the boss is the only enemy left, so a wave may
         # take the last general from a non-home castle: g1133 2026-11-05 had one
@@ -981,15 +978,6 @@ def _mechanical_interim(mem, state, rid, digest, allow_sole=False):
                 goals.note_attempt(mem, goal['kind'], 'unavailable', target=goal.get('target'))
         return
     label, order = next(iter(candidates.items()))
-    if allow_sole and len(set(((mem.get('garrison') or {}).get(order['source']) or ()))) < 2:
-        # Only the monthly defence-break fallback sends a sole general out.
-        mem.setdefault('defense_break_sources', {})[order['source']] = order['target']
-        _record(mem, 'sortie_defense_break', chart_step=None, strategy_variant='chart_defense_break',
-                general=order['general'], source=order['source'], target=order['target'],
-                observed_metric={'source_garrison': list(
-                    (mem.get('garrison') or {}).get(order['source']) or ()),
-                    'month': mem.get('month')},
-                reason='守備制約下の月次フォールバック: 1将軍出撃（出撃元の喪失を監視）')
     state['interim_count'] = state.get('interim_count', 0) + 1
     step = f"{chart_adjust.INTERIM_PREFIX}{rid[:6]}:{state['interim_count']}"
     state['interim_order'] = {**order, 'step': step}
@@ -1025,7 +1013,7 @@ def _mechanical_chart(mem, state, rid, digest):
     """Construct and adopt a full chart mechanically (no LLM answer)."""
     if _plan_pending(mem):
         return
-    allow_sole = _defense_gate(mem) == 'break'
+    allow_sole = False   # no castle is ever emptied (owner 2026-11-06)
     stored = mem.get('chart_plan') or {}
     if stored.get('request_id') == rid:
         if stored.get('source') == 'mechanical':
@@ -1353,7 +1341,7 @@ def _off_chart_mechanical(mem, state, rid, gate):
     if _plan_pending(mem):
         return
     if gate == 'break':
-        _mechanical_interim(mem, state, rid, digest, allow_sole=True)
+        _mechanical_interim(mem, state, rid, digest, allow_sole=False)
     else:
         _mechanical_chart(mem, state, rid, digest)
 
@@ -1452,6 +1440,6 @@ def _off_chart(mem):
         _mechanical_interim(mem, state, rid, digest, allow_sole=(gate == 'break'))
         return
     if gate == 'break':
-        _mechanical_interim(mem, state, rid, digest, allow_sole=True)
+        _mechanical_interim(mem, state, rid, digest, allow_sole=False)
     else:
         _mechanical_chart(mem, state, rid, digest)

@@ -45,11 +45,12 @@ def hero_guard_short(names, general, unavailable=(), *, sole_castle=False) -> bo
 
     ``names`` is one castle's general list; ``unavailable`` (marching, location
     unknown) never guards. A general not in the list (a spare picked on the
-    real list) still takes one of the others. ``sole_castle`` (our only
-    castle) lifts the guard.
+    real list) still takes one of the others. Owner 2026-11-06: the guard is
+    never lifted, not even for our only castle — an emptied castle falls to
+    the next enemy and ends the game.
     """
     present = set(names or ()) - set(unavailable or ())
-    if sole_castle or chart.HERO not in present or general == chart.HERO:
+    if chart.HERO not in present or general == chart.HERO:
         return False
     others = present - {chart.HERO}
     left = len(others - {general}) if general in others else len(others) - 1
@@ -156,7 +157,8 @@ def request_digest(record) -> str:
 
 
 def _sole_castle(request) -> bool:
-    """Whether the request shows a single castle of ours (unknown: False)."""
+    """Never lifts the hero-castle guard (owner 2026-11-06)."""
+    return False
     owned = request.get('owned')
     if isinstance(owned, (list, tuple)):
         return len(set(owned)) == 1
