@@ -1996,7 +1996,7 @@ html[data-soren-region="bottom"] #hanjuku-gap { display: none !important; }
               step:stepPart.replace(/^段階\s*/, '').trim(),
               purpose:purposePart.slice(3).trim(), reason};
     }).filter(m => m.general && (m.source || m.target)).slice(0, 8);
-    const countMatch = pick(/^余白進軍数: (\\d{1,3})$/);
+    const countMatch = pick(/^余白進軍数: (\d{1,3})$/);
     const marchCount = number(countMatch?.[1]);
     const gapRecall = lines.filter(line => line.startsWith('余白帰還: ')).map(line => {
       try {
