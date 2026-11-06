@@ -50,7 +50,8 @@ def walk(mem, screens):
 
 
 def test_a_full_window_is_walked_down_until_the_cursor_wraps():
-    mem = memory()
+    # A boss step still needs the whole list: it picks its companion from it.
+    mem = boss_site_memory()
     pages = [window(0, 0), window(0, 1), window(0, 2), window(0, 3),
              window(1, 3), window(2, 3)]
     for actions in walk(mem, pages):
@@ -62,15 +63,18 @@ def test_a_full_window_is_walked_down_until_the_cursor_wraps():
     assert record['observed_metric'] == {'generals': ROSTER, 'end': 'wrapped', 'presses': 6}
 
 
-def test_the_chart_general_below_the_window_is_reached_not_replaced():
+def test_the_planned_general_below_the_window_ends_the_walk_at_his_page():
+    """Owner 2026-11-07: the list is a lookup for the general the plan named."""
     mem = memory()
-    walk(mem, [window(0, 0), window(0, 1), window(0, 2), window(0, 3), window(1, 3), window(2, 3)])
-    # 1-C1 sends ココット, fifth in the list: the cursor goes down to him.
-    (actions,) = walk(mem, [window(0, 0)])
-    assert actions == [policy.pad('down')]
-    assert not [r for r in mem['_records'] if r['decision'] == 'order_substitute']
+    for screen in [window(0, 0), window(0, 1), window(0, 2), window(0, 3)]:
+        (actions,) = walk(mem, [screen])
+        assert actions == [policy.pad('down')]
+    # 1-C1 sends ココット, fifth in the list: the walk stops on his page.
     (actions,) = walk(mem, [window(1, 3)])
     assert actions == [policy.pad('a')]                       # A on ココット's row
+    assert mem['general_list_scan']['end'] == 'named'
+    assert mem['general_list_scan']['general'] == 'ココット'
+    assert not [r for r in mem['_records'] if r['decision'] == 'order_substitute']
     assert mem['orders']['1-C1'] != 'failed'
     assert not (mem.get('general_override') or {}).get('1-C1')
 
@@ -83,9 +87,25 @@ def test_a_short_list_is_read_as_before():
     assert 'general_list_scan' not in mem
 
 
+def test_the_planned_general_on_the_page_starts_the_sortie_at_once():
+    """Owner 2026-11-07: the plan says who sorties; once he is on screen the
+    list does not need to be read to its end before selecting him."""
+    mem = memory()                                   # 1-C1 sends ココット
+    names = ['アルファルファ', 'ココット', 'ゼウス', 'ラズベリー']
+    (actions,) = walk(mem, [general_list(names, 1)])
+    assert actions == [policy.pad('a')]
+    scan = mem['general_list_scan']
+    assert (scan['end'], scan['general'], scan['presses']) == ('named', 'ココット', 0)
+    (record,) = [r for r in mem['_records'] if r['decision'] == 'general_list_scanned']
+    assert record['observed_metric'] == {'generals': names, 'end': 'named',
+                                         'general': 'ココット', 'presses': 0}
+    # That page proves those names are here, not who else is: no garrison.
+    assert not _world(mem).get('garrison')
+
+
 def test_four_names_in_a_longer_window_end_when_the_cursor_wraps():
-    mem = memory()
-    four = ['アルファルファ', 'ココット', 'ゼウス', 'ラズベリー']
+    mem = boss_site_memory()
+    four = HOME[:4]
     actions = walk(mem, [general_list(four, row) for row in range(4)])
     assert actions == [[policy.pad('down')]] * 4
     walk(mem, [general_list(four, 0)])
@@ -93,7 +113,7 @@ def test_four_names_in_a_longer_window_end_when_the_cursor_wraps():
 
 
 def test_a_cursor_that_stops_moving_ends_the_walk():
-    mem = memory()
+    mem = boss_site_memory()
     pages = [window(0, 0), window(0, 1), window(0, 2), window(0, 3), window(1, 3), window(2, 3)]
     walk(mem, pages)
     # The last row never wraps: three unchanged frames after a press end it.
@@ -126,7 +146,7 @@ def test_g1075_a_hidden_recruit_goes_to_the_season_king_site():
 
 def test_a_dropped_dakuten_in_the_walk_is_folded_back_to_the_roster():
     """g1075 2026-10-31: キャンティー/ポセイトン readings held 4-B1 ~10 min."""
-    mem = memory()
+    mem = boss_site_memory()
     misread = ['アルファルファ', 'ゼウス', 'ラズベリー', 'キャンティー']
     pages = [window(0, 0), window(0, 1), window(0, 2), general_list(misread, 3),
              window(1, 3), window(2, 3)]

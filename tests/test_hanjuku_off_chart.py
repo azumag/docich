@@ -641,6 +641,19 @@ def test_a_move_sends_the_general_the_plan_named():
     assert actions and actions[0]['buttons'] in (['down'], ['a'])
 
 
+def test_a_move_stops_the_scan_when_the_planned_general_is_on_the_page():
+    """Owner 2026-11-07: ゼウス was already on the first page while the list
+    was pressed down to its 16-press limit before the move was sent."""
+    mem = _move_memory_naming('ゼウス')
+    actions = policy.deploy_step(_move_list(['ゼウス', chart.HERO, 'キャラウェイ', 'ココット']), mem)
+    assert actions == [policy.pad('a')]
+    assert mem['general_override']['I:m:1'] == 'ゼウス'
+    scan = mem['general_list_scan']
+    assert (scan['end'], scan['general'], scan['presses']) == ('named', 'ゼウス', 0)
+    # The page says who is here, not who else is: it is not a garrison.
+    assert not _world(mem).get('garrison')
+
+
 def test_a_named_move_general_who_is_not_here_falls_back_to_the_head():
     mem = _move_memory_naming('ゼウス')
     _scanned_move(mem, [chart.HERO, 'キャラウェイ', 'ココット', 'クミン'])
