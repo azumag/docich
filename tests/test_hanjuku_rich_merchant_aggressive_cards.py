@@ -32,7 +32,9 @@ def test_real_quotes_remain_affordable_after_first_large_purchase(ready):
     assert p.quantity_step(quote(1000, count=first_qty, cost=first_cost), ready) == [p.pad('a')]
     assert shop['bought'] == [[first_name, first_qty, dict(rows)[first_name]]]
     after_first = 1000 - first_cost
-    assert p.shop_step(listing(after_first, rows), ready) == [p.pad('a')]
+    # The cursor remains on the first row after payment: moving to the next
+    # merchant item is a legitimate down press, not an immediate selection.
+    assert p.shop_step(listing(after_first, rows), ready) == [p.pad('down')]
     second_name, second_qty = shop['items'][0]
     second_cost = second_qty * dict(rows)[second_name]
     assert p.quantity_step(quote(after_first, count=second_qty, cost=second_cost), ready) == [p.pad('a')]
