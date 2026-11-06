@@ -181,9 +181,9 @@ class TestNotificationRendering(unittest.TestCase):
             "cumulative_pnl_jpy": "-70.25",
         }}
         rendered = render_notification(fill_event(), mode="compact", status=status)
-        self.assertIn("含み +1,250.5円", rendered.overlay_event["title"])
-        self.assertIn("累計 -70.25円", rendered.overlay_event["title"])
-        self.assertTrue(rendered.overlay_event["title"].startswith("買｜累計 -70.25円｜含み +1,250.5円"))
+        self.assertIn("含み +1,251円", rendered.overlay_event["title"])
+        self.assertIn("累計 -70円", rendered.overlay_event["title"])
+        self.assertEqual(rendered.overlay_event["title"], "買｜累計 -70円｜含み +1,251円")
         self.assertIn("BTC/JPYを買い", rendered.overlay_event["body"])
         self.assertNotIn("PAPER", rendered.overlay_event["title"])
         self.assertNotIn("今回", rendered.overlay_event["title"])
@@ -199,10 +199,10 @@ class TestNotificationRendering(unittest.TestCase):
             "cumulative_pnl_jpy": "200",
         }}
         rendered = render_notification(event, mode="compact", status=status)
-        self.assertIn("今回 -18.25円", rendered.overlay_event["title"])
+        self.assertIn("今回 -18円", rendered.overlay_event["title"])
         self.assertIn("含み -5円", rendered.overlay_event["title"])
         self.assertIn("累計 +200円", rendered.overlay_event["title"])
-        self.assertTrue(rendered.overlay_event["title"].startswith("売｜今回 -18.25円｜累計 +200円｜含み -5円"))
+        self.assertEqual(rendered.overlay_event["title"], "売｜今回 -18円｜累計 +200円｜含み -5円")
         self.assertIn("BTC/JPYを売り", rendered.overlay_event["body"])
         self.assertNotIn("PAPER", rendered.overlay_event["title"])
         self.assertNotIn("実現損益", rendered.overlay_event["body"])
@@ -211,6 +211,23 @@ class TestNotificationRendering(unittest.TestCase):
         self.assertIn("損益はマイナス18.25円", rendered.speech_text)
         self.assertIn("含み損益はマイナス5円", rendered.speech_text)
         self.assertIn("累計損益はプラス200円", rendered.speech_text)
+
+    def test_title_rounds_fractional_yen_without_changing_spoken_amounts(self):
+        event = fill_event()
+        event.update(side="sell", reason_code="take_profit",
+                     realized_pnl_reference="-0.50")
+        status = {**safe_status(), "performance_summary": {
+            "complete": True,
+            "unrealized_pnl_jpy": "-0.49",
+            "cumulative_pnl_jpy": "0.50",
+        }}
+        rendered = render_notification(event, mode="compact", status=status)
+        self.assertEqual(rendered.overlay_event["title"],
+                         "売｜今回 -1円｜累計 +1円｜含み 0円")
+        self.assertNotIn(".", rendered.overlay_event["title"])
+        self.assertIn("マイナス0.5円", rendered.speech_text)
+        self.assertIn("マイナス0.49円", rendered.speech_text)
+        self.assertIn("プラス0.5円", rendered.speech_text)
 
     def test_zero_and_incomplete_portfolio_marks(self):
         status = {**safe_status(), "performance_summary": {
