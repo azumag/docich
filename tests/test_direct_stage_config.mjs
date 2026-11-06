@@ -47,7 +47,7 @@ test('reject misconfigured or overlapping game layouts', () => {
     [{SOREN_DIRECT_STREAM_SIZE: 'invalid'}, /WIDTHxHEIGHT/],
     [{SOREN_DIRECT_GAME_DISPLAY_SIZE: '960x541'}, /supported even dimensions/],
     [{SOREN_DIRECT_GAME_DISPLAY_SIZE: '1000x540'}, /16:9 aspect ratio/],
-    [{SOREN_DIRECT_GAME_DISPLAY_SIZE: '1024x576'}, /at least 256px/],
+    [{SOREN_DIRECT_GAME_DISPLAY_SIZE: '1056x594'}, /at least 256px/],
     [{SOREN_DIRECT_GAME_DISPLAY_SIZE: '1280x720'}, /leave room/],
   ];
   for (const [env, error] of invalid) {
