@@ -265,3 +265,29 @@ def test_deferred_egg_does_not_retry_while_recovery_is_unverified():
     p._prioritise_recruit(mem, shop, 1200)
     assert shop['recruit'] == 'deferred_egg'
     assert not shop['recruit_priority']
+
+def test_a_stale_roster_recruits_from_the_measured_garrison_lower_bound():
+    # The month's first menu runs before the national status read: the roster
+    # still has the previous month's scope, but the garrison proves 12 names.
+    mem = memory(NAMES[:6], complete=True, castles=2)
+    mem['recruit_roster'] = None
+    mem['country_general_count'] = None
+    mem['gold'] = 1000
+    mem['country_income'] = {'income': 542}
+    mem['country_wages'] = {'wages': 78}
+    mem['garrison'] = {f'c{i}': [f'g{2*i}', f'g{2*i+1}'] for i in range(6)}
+    shortage = p._recruit_shortage(mem)
+    assert shortage is not None and shortage['count_lower_bound'] == 12
+    assert p._stop_unneeded_recruit(mem, {'key': '48-7', 'recruit': 'check'}) is False
+
+
+def test_a_stale_roster_without_a_garrison_or_headroom_still_waits():
+    mem = memory(NAMES[:6], complete=True, castles=2)
+    mem['recruit_roster'] = None
+    mem['country_general_count'] = None
+    mem['gold'] = 1000
+    mem['country_income'] = {'income': 542}
+    mem['country_wages'] = {'wages': 78}
+    mem['garrison'] = {}
+    assert p._recruit_shortage(mem) is None
+    assert p._stop_unneeded_recruit(mem, {'key': '48-7', 'recruit': 'check'}) is True
