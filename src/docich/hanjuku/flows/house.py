@@ -34,11 +34,29 @@ HOUSE_ROOF_MATCH = 28
 # house's own cell (delta (0,0) to the roof anchor) instead of the charted
 # offset, which can land on a neighbouring tree tile (g1097 ch5).
 HOUSE_OWN_CELL_DELTA = (0, 0)
+# Chapters where the charted roof offset is known to land BESIDE the house:
+# use the house's own cell first instead of burning one dispatch on the
+# charted cell. g1097 chapter 5 (2026-11-01) saw the charted offset land on a
+# neighbouring tree; g1139 (2026-11-06 11:45) dispatched ヴィーナス with
+# basis house_roof_delta, he camped on the tile beside the house and
+# house_entry_miss[5] recorded the miss.
+HOUSE_ENTRY_FIRST_OWN_CELL = frozenset({5})
 
 
 def _entry_delta(mem):
-    misses = (mem.get('house_entry_miss') or {}).get(mem.get('chapter'), 0)
-    return HOUSE_OWN_CELL_DELTA if type(misses) is int and misses % 2 == 1 else HOUSE_ROOF_DELTA
+    chapter = mem.get('chapter')
+    if chapter in HOUSE_ENTRY_FIRST_OWN_CELL:
+        # The charted cell is the wrong one on this chapter; the own cell is
+        # the entry. Do not alternate back to the charted offset here: that
+        # would repeat the observed camp-beside-house failure.
+        return HOUSE_OWN_CELL_DELTA
+    misses = mem.get('house_entry_miss') or {}
+    # The ledger is persisted as JSON, whose object keys are strings, while an
+    # in-memory chapter is an int. Accept both so a reload does not silently
+    # reset the parity and repeat the charted cell forever (g1139 2026-11-06
+    # saved {"5": 1} and an int lookup kept returning the charted offset).
+    count = misses.get(chapter, misses.get(str(chapter), 0))
+    return HOUSE_OWN_CELL_DELTA if type(count) is int and count % 2 == 1 else HOUSE_ROOF_DELTA
 GIFTS = (('スカーフ', 200), ('みずぎ', 100), ('ピアス', 50))
 ROSTER_LIMIT = receipts.MAX_GENERALS
 STEP_LIMIT = 24
