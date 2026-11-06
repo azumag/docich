@@ -44,3 +44,18 @@ def test_interrupted_unconfirmed_recall_retries_after_the_short_hold():
     recall._recall_dispatch_step(SimpleNamespace(kind='map'), mem, state)
     assert mem['flow'].get('recall_skip_ticks') == recall.FORT_RETRY_TICKS
     assert 'recall' not in mem['flow']
+
+
+def test_a_stale_interruption_marker_does_not_shorten_the_next_recalls_hold():
+    # #3544: the marker could outlive its recall (e.g. the month-scene drop)
+    # and then shorten the retry hold of an unrelated later recall.
+    state = {'stage': 'menu', 'target': [139, 113]}
+    mem = mem_with(state)
+    mem['flow']['recall_interrupted'] = 100
+    recall._request_recall(mem, state, 'カルーン', [recall.pad('a')])
+    assert 'recall_interrupted' not in mem['flow']
+    screen = SimpleNamespace(kind='map')
+    for _ in range(6):
+        recall._recall_dispatch_step(screen, mem, state)
+    assert mem['flow'].get('recall_skip_ticks') != recall.FORT_RETRY_TICKS
+    assert 'recall' not in mem['flow']

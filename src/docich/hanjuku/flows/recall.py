@@ -585,6 +585,12 @@ def _finish_hero_recall(mem, state, goal):
 
 def _request_recall(mem, state, goal, actions, **fields):
     """A proposal remains pending; neither an input nor an arrival receipt."""
+    # #3544: a `recall_interrupted` marker can outlive the recall it belonged
+    # to (e.g. the month-scene drop pops `recall` without the marker). It is
+    # only read by the dispatch wait's unconfirmed terminal, so clearing it at
+    # the head of every new request keeps a stale marker from shortening an
+    # unrelated recall's retry hold.
+    _flow(mem).pop('recall_interrupted', None)
     state.update(stage='await_dispatch', steps=0, goal=goal,
                  a_inputs=sum(a.get('buttons') == ['a'] for a in actions),
                  requested_tick=int(mem.get('tick') or 0), **fields)
