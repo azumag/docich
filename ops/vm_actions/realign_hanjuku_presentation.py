@@ -162,6 +162,10 @@ def realign(root: Path = ROOT) -> dict[str, object]:
         raise RealignError(EXIT_INVALID_STATE)
     state_path = runtime / "presentation.json"
     state, presentation_raw = _read_json(state_path)
+    # A stopped presenter has no live projection to realign. Keep malformed
+    # and other non-ready states fail-closed (#3520).
+    if state.get("status") == "stopped":
+        raise RealignError(EXIT_NOT_ACTIVE)
     projection = state.get("projection")
     if state.get("status") != "ready" or not isinstance(projection, dict):
         raise RealignError(EXIT_INVALID_STATE)
