@@ -1531,20 +1531,21 @@ def _source_spare_missing(order, mem, *, allow_probe=False):
         return False  # reconcile an issued sortie; do not cancel its carried-kit receipt
     source = _source(order, mem)
     present = (mem.get('garrison') or {}).get(source)
-    # Planning and execution must agree: the actual castle menu will cancel
-    # a sortie when only one measured idle general remains, regardless of
-    # whether this is a move, a boss wave, or a nominal source probe.
-    available = set(present or ()) - _en_route(mem)[0] - set(mem.get('general_location_unknown') or ())
-    if isinstance(present, (list, tuple)) and present and len(available) < 2:
-        return True
+    # A genuine arrival or newly joined general may have changed the list
+    # since it was measured. Preserve those evidence-gathering reads; a
+    # recorded singleton elsewhere must not launch a doomed sortie.
     if _reserve_source_guard(order, mem) and _source_location_recheck(mem, source) is not None:
         return not (allow_probe and _source_location_recheck_due(mem, source))
-    if allow_probe and order.get('source_probe') is True:
-        return False  # open its verified list; never bypass the live-list/card guards
+    if (allow_probe and order.get('source_probe') is True
+            and (present is None or routes.probe_due(mem, source))):
+        return False  # an unread/arriving roster needs its own receipt
     unavailable = _en_route(mem)[0] | set(mem.get('general_location_unknown') or ())
     if (present is not None and _unplaced_castle_generals(mem)
             and source == _arrival_castle(mem, _owned(mem))):
-        return False   # the list is read at the sortie screen (_keep_sortie_defender)
+        return False   # fresh joiners are checked by _keep_sortie_defender
+    if (isinstance(present, (list, tuple)) and present
+            and len(set(present) - unavailable) < 2):
+        return True  # the castle menu refuses the last idle defender
     return (_reserve_source_guard(order, mem) and present is not None
             and len(set(present) - unavailable) < 2)
 
