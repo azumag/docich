@@ -664,6 +664,18 @@ CASTLE_JUMP_LIMIT = 32          # observations across the whole menu trip
 CASTLE_JUMP_SCROLL_LIMIT = 8    # list scrolls while looking for the source
 CASTLE_JUMP_COOLDOWN = 40       # observations before retrying a failed source
 CASTLE_JUMP_FAR = 48            # same distance gate as the Y jump (map px)
+# The orange hand of the main menu and of the しろ list blinks, so whole frames
+# are captured with no cursor sprite drawn. g1139 2026-11-07 lost five jumps
+# because the first main-menu observation fell in the hidden phase and
+# `shiro_missing` aborted the trip before any input. Wait for a frame that
+# shows the hand instead: both panels are static, so holding without input
+# cannot change what they display.
+CASTLE_JUMP_CURSOR_BLIND = 4    # consecutive cursor-less frames before giving up
+# The X press fades the map into the menu, and the frame in between reads as
+# nothing at all (g1139 2026-11-07 00:24:33 and 23:58:03: one `unknown`
+# observation, then a readable main menu). Re-observe briefly; a real
+# mis-pressed panel still ends the trip on the same bound.
+CASTLE_JUMP_FADE_BLIND = 2      # consecutive unreadable frames after the X
 
 
 def _castle_key(name):
@@ -822,7 +834,24 @@ def castle_jump_step(screen, mem, frame):
             if jump['age'] < 4:
                 return []
             return _end_castle_jump(screen, mem, 'menu_not_open')
+        if screen.kind == 'unknown':
+            # The map-to-menu fade has no readable text; hold for it instead
+            # of treating the in-between frame as a wrong panel.
+            jump['fade'] = int(jump.get('fade') or 0) + 1
+            if jump['fade'] <= CASTLE_JUMP_FADE_BLIND:
+                return []
+            return _end_castle_jump(screen, mem, 'unexpected_menu')
         if screen.kind == 'main_menu':
+            jump['fade'] = 0
+            if screen.hand is None:
+                # A blind frame says nothing about which row is selected: the
+                # hand blinks, so it can be missing while the menu is fully
+                # drawn. Hold and re-observe instead of cancelling the jump.
+                jump['blind'] = int(jump.get('blind') or 0) + 1
+                if jump['blind'] <= CASTLE_JUMP_CURSOR_BLIND:
+                    return []
+                return _end_castle_jump(screen, mem, 'hand_hidden')
+            jump['blind'] = 0
             move = menu_to(screen, 'しろ')
             if move == 'here':
                 jump['phase'] = 'list'
@@ -843,9 +872,11 @@ def castle_jump_step(screen, mem, frame):
             return _end_castle_jump(screen, mem, 'list_not_open')
         rows = _castle_list_rows(screen)
         if rows is None:
-            if jump['age'] < 3:
+            jump['blind'] = int(jump.get('blind') or 0) + 1
+            if jump['blind'] <= CASTLE_JUMP_CURSOR_BLIND:
                 return []
             return _end_castle_jump(screen, mem, 'list_unreadable')
+        jump['blind'] = 0
         target = _castle_list_target(screen, jump['source'])
         if target is None:
             if int(jump.get('scrolls') or 0) < CASTLE_JUMP_SCROLL_LIMIT:
