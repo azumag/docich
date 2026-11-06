@@ -76,3 +76,13 @@ def test_wage_hires_are_bounded_by_the_measured_payroll():
     assert p._recruit_wage_hires(mem) == 0
     mem.pop('country_income')
     assert p._recruit_wage_hires(mem) == 0
+
+def test_the_recruit_gate_does_not_defer_a_partial_roster_with_headroom():
+    mem = memory(NAMES[:6], complete=False, castles=2)
+    mem['gold'] = 1000
+    mem['country_income'] = {'income': 542}
+    mem['country_wages'] = {'wages': 78}
+    shop = {'key': '48-1', 'recruit': 'check'}
+    assert p._stop_unneeded_recruit(mem, shop) is False
+    mem['country_wages'] = {'wages': 540}
+    assert p._stop_unneeded_recruit(mem, shop) is True
