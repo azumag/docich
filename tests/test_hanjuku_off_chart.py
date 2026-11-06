@@ -616,6 +616,44 @@ def test_a_move_from_a_castle_with_one_general_is_cancelled_and_remembered():
                 if c['purpose'] == 'move' and c['source'] == 'ジョンリギ']
 
 
+def _move_memory_naming(general):
+    mem = _move_memory()
+    mem['chart_adjust']['interim_order']['general'] = general
+    return mem
+
+
+def _scanned_move(mem, names):
+    # A four-name list is walked to its end first (#3077); this one already was.
+    mem['general_list_scan'] = {'step': 'I:m:1', 'castle': 'ジョンリギ', 'end': 'wrapped',
+                                'names': names, 'tick': mem.get('tick') or 0}
+    return policy.deploy_step(_move_list(names), mem)
+
+
+def test_a_move_sends_the_general_the_plan_named():
+    """g1139 2026-11-06 21:16: the plan named ゼウス (HP 85) for a thickening
+    move into ジュメルズ and the list head セルリアク (HP 32) went instead."""
+    mem = _move_memory_naming('ゼウス')
+    actions = _scanned_move(mem, [chart.HERO, 'セルリアク', 'ゼウス', 'エピィ'])
+    assert mem['general_override']['I:m:1'] == 'ゼウス'
+    picked = decisions(mem, 'move_general_picked')
+    assert picked and picked[-1]['general'] == 'ゼウス'
+    assert '計画' in picked[-1]['reason']
+    assert actions and actions[0]['buttons'] in (['down'], ['a'])
+
+
+def test_a_named_move_general_who_is_not_here_falls_back_to_the_head():
+    mem = _move_memory_naming('ゼウス')
+    _scanned_move(mem, [chart.HERO, 'キャラウェイ', 'ココット', 'クミン'])
+    assert mem['general_override']['I:m:1'] == 'キャラウェイ'
+    assert decisions(mem, 'move_general_picked')[-1]['general'] == 'キャラウェイ'
+
+
+def test_a_move_never_sends_the_hero_even_when_the_plan_names_him():
+    mem = _move_memory_naming(chart.HERO)
+    _scanned_move(mem, [chart.HERO, 'キャラウェイ', 'ココット', 'クミン'])
+    assert mem['general_override']['I:m:1'] == 'キャラウェイ'
+
+
 def _world_map_frame(owners):
     """Synthetic Y view: gold frame pixel, open sea, one flag per castle (chapter 1)."""
     from docich import hanjuku_screen
