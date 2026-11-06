@@ -509,7 +509,7 @@ def _garrison_lower_bound(mem):
     shortage without claiming a complete roster (owner 2026-11-06: keep
     recruiting while cash and wage headroom allow).
     """
-    garrison = mem.get('garrison')
+    garrison = _world(mem).get('garrison')
     if not isinstance(garrison, dict):
         return None
     names = set()
