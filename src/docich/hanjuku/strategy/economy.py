@@ -587,8 +587,8 @@ def _defer_recruit_cash(mem, shop, gold, evidence):
     goals.note_attempt(mem, 'recruit', 'deferred')
 
 
-def _recruit_wage_headroom(mem):
-    """True when measured income still covers the payroll plus one hire.
+def _recruit_wage_hires(mem):
+    """How many more hires the measured income can carry; 0 when unknown.
 
     Owner 2026-11-06: with cash in hand (RECRUIT_BATCH_GOLD), keep hiring up
     to MAX_GENERALS while income does not fall below the wages. Both values
@@ -599,8 +599,13 @@ def _recruit_wage_headroom(mem):
     wages = mem.get('country_wages')
     inc = income.get('income') if isinstance(income, dict) else None
     wag = wages.get('wages') if isinstance(wages, dict) else None
-    return (type(inc) is int and type(wag) is int
-            and inc - wag >= MAX_RECRUIT_WAGE)
+    if type(inc) is not int or type(wag) is not int:
+        return 0
+    return max(0, (inc - wag) // MAX_RECRUIT_WAGE)
+
+
+def _recruit_wage_headroom(mem):
+    return _recruit_wage_hires(mem) > 0
 
 
 def _recruit_target(mem):
@@ -676,8 +681,16 @@ def _stop_unneeded_recruit(mem, shop):
 def _recruit_shortage(mem):
     count, complete, names = _recruit_headcount(mem)
     target = _recruit_target(mem)
-    if count is None or target is None or not complete or count >= target:
+    if count is None or target is None or count >= target:
         return None
+    if not complete:
+        # Owner 2026-11-06: a partial list is a lower bound. With cash in hand
+        # and wage headroom the roster still grows (g1139 47-12: 12 generals,
+        # 9899G, yet recruit_hold=roster_or_demand_unknown for the whole month).
+        gold = mem.get('gold')
+        if not (type(gold) is int and gold >= RECRUIT_BATCH_GOLD
+                and _recruit_wage_hires(mem) > 0):
+            return None
     return {'available_observed': names, 'count_lower_bound': count,
             'target': target, 'total_roster': count,
             'garrison': mem.get('garrison') or {}, 'placement': 'observed_only'}
@@ -901,6 +914,15 @@ def _prioritise_recruit(mem, shop, gold):
     shop['recruit_budget_version'] = 2
     shop['recruit_priority'] = True
     need = shortage['target'] - shortage['count_lower_bound']
+    from ..os_layer.roster import MAX_GENERALS
+    if shortage['target'] >= MAX_GENERALS:
+        # Owner 2026-11-06: fill the roster only while the measured payroll
+        # still leaves room under the income; a partial roster's lower bound
+        # must not over-hire past that budget.
+        hires = _recruit_wage_hires(mem)
+        if hires <= 0:
+            return
+        need = min(need, hires)
     if ('recruit_batch' not in shop and need > 1 and type(gold) is int
             and gold >= RECRUIT_BATCH_GOLD and shop.get('recruit') not in ('opened', 'done', 'unverified')):
         shop['recruit_batch'] = {'left': need, 'initial': need, 'done': 0, 'gold_start': gold}

@@ -41,3 +41,38 @@ def test_cash_below_the_comfort_threshold_keeps_the_owned_castle_target():
     mem = comfortable_mem()
     mem['gold'] = 999
     assert p._recruit_target(mem) == 2 * 2 + 3
+
+def test_a_partial_roster_still_recruits_with_cash_and_wage_room():
+    # g1139 2026-11-06 47-12: 12 generals and 9899G, but the incomplete list
+    # held recruit_hold=roster_or_demand_unknown for the whole month.
+    mem = memory(NAMES[:6], complete=False, castles=2)
+    mem['gold'] = 1000
+    mem['country_income'] = {'income': 542}
+    mem['country_wages'] = {'wages': 78}
+    shortage = p._recruit_shortage(mem)
+    assert shortage is not None
+    assert shortage['count_lower_bound'] == 6
+    assert shortage['target'] == MAX_GENERALS
+
+
+def test_a_partial_roster_without_headroom_or_cash_is_not_recruited():
+    mem = memory(NAMES[:6], complete=False, castles=2)
+    mem['gold'] = 1000
+    mem['country_income'] = {'income': 90}
+    mem['country_wages'] = {'wages': 88}
+    assert p._recruit_shortage(mem) is None
+    mem['country_income'] = {'income': 542}
+    mem['country_wages'] = {'wages': 78}
+    mem['gold'] = 999
+    assert p._recruit_shortage(mem) is None
+
+
+def test_wage_hires_are_bounded_by_the_measured_payroll():
+    mem = memory(NAMES[:6], complete=False, castles=2)
+    mem['country_income'] = {'income': 542}
+    mem['country_wages'] = {'wages': 78}
+    assert p._recruit_wage_hires(mem) == (542 - 78) // 15
+    mem['country_wages'] = {'wages': 540}
+    assert p._recruit_wage_hires(mem) == 0
+    mem.pop('country_income')
+    assert p._recruit_wage_hires(mem) == 0
