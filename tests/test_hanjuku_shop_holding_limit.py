@@ -52,7 +52,7 @@ def test_refusal_closes_the_message_instead_of_holding(ready):
     # No further card is attempted this visit, and the refusal is on record.
     assert shop['items'] == []
     assert shop['want'] is None
-    assert shop['hold_limit'] is True
+    assert shop['hold_limit'] == 1
     assert any(r.get('deviation_reason') == 'holding_limit'
                for r in ready.get('_records', []))
 
@@ -98,3 +98,72 @@ def test_message_press_is_bounded(ready):
     assert outs[0] == [p.pad('a')]
     assert outs.count([p.pad('a')]) <= 8
     assert outs[-1] == [p.pad('b')]   # give up on the message and leave the shop
+
+
+def _refused_after(ready, name, qty, stock=None, gold_before=300, rest=()):
+    shop = ready['shop']
+    if stock is not None:
+        ready['card_stock'] = {name: stock}
+    shop.update(items=[list(r) for r in rest], want=None, bought=[[name, qty, 18]],
+                bargain_listing_planned=True, bargain_planned=True,
+                last_buy={'row': [name, qty, 18], 'gold': gold_before})
+    screen = refused_list(gold=gold_before)   # gold unchanged: nothing was paid
+    screen.kind = 'shop_list'
+    return p.shop_step(screen, ready), screen
+
+
+def test_refusal_learns_the_ceiling_and_retries_half(ready):
+    actions, _ = _refused_after(ready, 'ノリウツール', 99, stock=4, rest=[['ミックミー', 50]])
+    assert actions == [p.pad('a')]
+    shop = ready['shop']
+    assert shop['bought'] == []
+    assert ready['hold_ceiling'] == {'ノリウツール': 103}      # 4 held + 99 asked
+    assert shop['items'] == [['ノリウツール', 49], ['ミックミー', 50]]
+
+
+def test_a_second_refusal_in_the_same_visit_is_handled_again(ready):
+    _refused_after(ready, 'ノリウツール', 99, stock=0)
+    shop = ready['shop']
+    ok = refused_list(); ok.text = ''                       # message closed
+    clean = parse(Canvas().frame()); clean.kind = 'shop_list'
+    p.shop_step(clean, ready)
+    assert shop['hold_limit_open'] is False
+    shop.update(bought=[['ノリウツール', 49, 18]], last_buy={'row': ['ノリウツール', 49, 18], 'gold': 300})
+    screen = refused_list(); screen.kind = 'shop_list'
+    assert p.shop_step(screen, ready) == [p.pad('a')]
+    assert ready['hold_ceiling']['ノリウツール'] == 49          # tightened, never loosened
+    assert shop['items'] == [['ノリウツール', 24]]
+
+
+def test_single_copy_refusal_means_full_hand(ready):
+    actions, _ = _refused_after(ready, 'ノリウツール', 1, stock=9,
+                                rest=[['ミックミー', 3], ['クースカン', 2]])
+    assert actions == [p.pad('a')]
+    assert ready['shop']['items'] == []
+
+
+def test_learned_ceiling_limits_later_rich_plan(ready):
+    ready['hold_ceiling'] = {'ノリウツール': 11, 'ミックミー': 6}
+    ready['card_stock'] = {'ノリウツール': 4, 'ミックミー': 1}
+    shop = ready['shop']
+    shop.update(items=[], want=None, rich_merchant=True)
+    hdr = {'year': 1, 'month': 5, 'gold': 5000}
+    b.plan_bargains(ready, shop, hdr, listed={'ノリウツール': 18, 'ミックミー': 40})
+    planned = dict(shop['items'])
+    assert planned['ノリウツール'] <= 6 and planned['ミックミー'] <= 4   # ceiling-1-stock
+
+
+def test_ceiling_is_ignored_once_stock_is_used_up(ready):
+    ready['hold_ceiling'] = {'ノリウツール': 11}
+    assert b.hold_room(ready, 'ノリウツール', 0) == 10
+    assert b.hold_room(ready, 'ノリウツール', 10) == 0
+    assert b.hold_room(ready, 'ミックミー', 0) is None
+
+
+def test_revalidation_at_the_quote_respects_the_ceiling(ready):
+    ready['hold_ceiling'] = {'ノリウツール': 6}
+    ready['card_stock'] = {'ノリウツール': 0}
+    shop = ready['shop']
+    shop.update(items=[['ノリウツール', 20]], bargain_cards=['ノリウツール'], rich_merchant=True)
+    hdr = {'year': 1, 'month': 5, 'gold': 5000}
+    assert b.merchant_card_spendable(ready, shop, hdr, 'ノリウツール', 18) <= 5 * 18

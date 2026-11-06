@@ -38,6 +38,47 @@ RICH_MERCHANT_CARDS = ('ノリウツール', 'ミックミー')
 RICH_MERCHANT_MAX_COPIES = 99
 
 
+# Owner 2026-11-06: each kind of card is held up to 99 copies. A merchant sells
+# no more than that ("それいじょうもてないようですな"), so a plan that ignores
+# what is already held is refused and, before #3589, froze the bot.
+HOLD_CAP = 99
+SINCE_READ = 'card_bought_since_read'   # copies bought after the last panel read
+HELD_FLOOR = 'card_held_floor'          # holding proved by a merchant refusal
+
+
+def _count(table, name):
+    value = table.get(name) if isinstance(table, dict) else None
+    return value if type(value) is int and value > 0 else 0
+
+
+def held_estimate(mem, name):
+    """Copies of ``name`` held now: last panel read + purchases since, never below a refusal's proof.
+
+    The panel is only read on a sortie, so merchant purchases do not show in
+    ``card_stock`` for a while; counting them here keeps a second visit from
+    asking for a full 99 on top of them.
+    """
+    stock = _count(mem.get('card_stock'), name)
+    return max(stock + _count(mem.get(SINCE_READ), name), _count(mem.get(HELD_FLOOR), name))
+
+
+def note_card_bought(mem, name, qty):
+    if type(qty) is int and qty > 0 and isinstance(name, str):
+        ledger = mem.setdefault(SINCE_READ, {})
+        ledger[name] = min(_count(ledger, name) + qty, 10 ** 4)
+
+
+def hold_room(mem, name):
+    """Copies of ``name`` the hand can still take (merchant purchases included)."""
+    return max(0, HOLD_CAP - held_estimate(mem, name))
+
+
+def _rich_room(mem, name, stock, bought):
+    """Copies a rich merchant may still sell: the 99 assumption, then any learned ceiling."""
+    room = RICH_MERCHANT_MAX_COPIES - stock.get(name, 0) - bought.get(name, 0)
+    return min(room, hold_room(mem, name))
+
+
 def _caps(shop):
     """(monthly gold, monthly copies, per-card target factor) for this visit."""
     if isinstance(shop, dict) and shop.get('cheap_vendor') is True:
@@ -136,6 +177,7 @@ def merchant_card_spendable(mem, shop, header, name, price):
     _, copy_cap, factor = _caps(shop)
     copies = (max(0, RICH_MERCHANT_MAX_COPIES - same) if rich else
               max(0, min(copy_cap - used, BARGAIN_TARGETS[name] * factor - same)))
+    copies = min(copies, hold_room(mem, name))
     return min(cash, copies * price)
 
 
@@ -204,19 +246,18 @@ def plan_bargains(mem, shop, header, *, listed=None):
             price, seen, prior = listed.get(name), stock.get(name, 0), bought.get(name, 0)
             if (name not in queued and type(price) is int and 0 < price <= KNOWN_PRICES[name]
                     and type(seen) is int and 0 <= seen < RICH_MERCHANT_MAX_COPIES
-                    and RICH_MERCHANT_MAX_COPIES - seen - prior > 0):
+                    and _rich_room(mem, name, stock, bought) > 0):
                 choices.append(name)
         amounts = {name: 0 for name in choices}
         remaining = rich_budget
         if len(choices) == 2:
             pair = min(remaining // sum(listed[name] for name in choices),
-                       *(RICH_MERCHANT_MAX_COPIES - stock.get(name, 0) - bought.get(name, 0)
-                         for name in choices))
+                       *(_rich_room(mem, name, stock, bought) for name in choices))
             for name in choices:
                 amounts[name] = pair
                 remaining -= pair * listed[name]
         for name in choices:
-            room = RICH_MERCHANT_MAX_COPIES - stock.get(name, 0) - bought.get(name, 0) - amounts[name]
+            room = _rich_room(mem, name, stock, bought) - amounts[name]
             extra = min(room, remaining // listed[name])
             amounts[name] += extra
             remaining -= extra * listed[name]
@@ -242,6 +283,7 @@ def plan_bargains(mem, shop, header, *, listed=None):
             # 余剰資金で買い足す。月次の金額・枚数上限と実売価格の確認は同じ。
             need = copy_cap
         qty = min(need, copy_cap - copies, budget // price)
+        qty = min(qty, hold_room(mem, name))
         if qty:
             added.append([name, qty])
             budget -= qty * price
