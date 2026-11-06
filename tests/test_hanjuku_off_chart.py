@@ -1322,7 +1322,10 @@ def test_a_held_order_is_skipped_for_one_from_a_staffed_castle(monkeypatch):
     mem = {'chapter': 2, 'tick': 10, 'orders': {}, 'captured': ['フーリック'], '_records': [],
            'garrison': {'フーリック': ['ゼウス']}, 'last_castle_hold': {'castle': 'フーリック', 'tick': 5}}
     assert policy.next_order(mem) is other
-    mem['garrison']['アルマムーン'] = ['ヴィーナス', 'どうし']        # someone stays home: the hold lifts
+    mem['garrison']['アルマムーン'] = ['ヴィーナス', 'どうし']
+    # Another castle having a defender does not let フーリック send its last.
+    assert policy.next_order(mem) is other
+    mem['garrison']['フーリック'].append('リーキ')
     assert policy.next_order(mem) is held
 
 
@@ -1509,7 +1512,7 @@ def test_unusable_plan_falls_back_to_boss_companion_before_following_hero(compan
     # empty ジョンリギ; every castle but the boss's was ours and the bot idled.
     mem = {'chapter': 1, 'tick': 1800, '_records': [], 'orders': {'A:x:J1': 'pending'},
            'captured': ['カストーラ', 'キカンドン', 'ゴーメン', 'ジョンリギ', 'スペンソニア', 'ナキューメラ'],
-           'garrison': {'アルマムーン': [], 'ジョンリギ': [], 'ゴーメン': [policy.NAME], 'スペンソニア': ['ヴィーナス'] if companion else []},
+           'garrison': {'アルマムーン': [], 'ジョンリギ': [], 'ゴーメン': [policy.NAME], 'スペンソニア': ['ヴィーナス', 'ゼウス'] if companion else []},
            'chart_plan': {'request_id': 'x', 'orders': [
                {'step': 'A:x:J1', 'general': 'ココット', 'source': 'ジョンリギ', 'target': 'スペンソニア',
                 'cards': [], 'after': None, 'note': 't', 'local_step': 'J1'}]}}
