@@ -6939,6 +6939,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v487-shop-holding-limit",
             "hanjuku-chart-v488-card-hold-cap",
             "hanjuku-chart-v489-post-month-stray-menu",
+            "hanjuku-chart-v490-reanchor-owner-resume",
             "hanjuku-chart-v129-battle-card-progress",
             "hanjuku-chart-v130-summer-cursor-evidence",
             "hanjuku-chart-v131-defense-month-economy",
