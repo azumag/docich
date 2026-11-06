@@ -598,3 +598,47 @@ def test_boss_adjacent_camp_is_not_a_monthly_recall_task():
         {'kind': 'recall', 'name': 'ナストリーニ'},
         {'kind': 'recall', 'name': 'デーメーテール'},
         {'kind': 'recall', 'name': 'カバルッサ'}]
+
+
+def _castle_menu_with_hand():
+    # Live 2026-11-06 g1139 48-10: the しゅつげき/ステータス box stayed open on
+    # the map with the hand on しゅつげき while the overlay read
+    # 「月越し後の確認: task_menu」 and no input was sent.
+    return Screen([], (120, 112), 'しゅつげき ステータス', kind='castle_menu')
+
+
+def test_task_menu_backs_out_of_a_stray_castle_menu():
+    mem = memory()
+    post.arm(mem)
+    state = mem['post_month_status']
+    state.update(stage='task_menu', job={'kind': 'locate', 'name': 'ゼウス'}, steps=0)
+    assert post.step(_castle_menu_with_hand(), mem, None) == [pad('b')]
+    # The owner keeps the stage: the map after the B resumes the X menu.
+    assert state['stage'] == 'task_menu'
+
+
+def test_open_menu_backs_out_of_a_stray_castle_menu():
+    mem = memory()
+    post.arm(mem)
+    state = mem['post_month_status']
+    state.update(stage='open_menu', steps=0)
+    assert post.step(_castle_menu_with_hand(), mem, None) == [pad('b')]
+
+
+def test_blocked_status_still_backs_out_of_a_stray_castle_menu():
+    mem = memory()
+    post.arm(mem)
+    mem['post_month_status'].update(stage='blocked')
+    assert post.step(_castle_menu_with_hand(), mem, None) == [pad('b')]
+    assert post.step(Screen([], None, '', kind='map'), mem, None) == []   # the map hold is unchanged
+
+
+def test_stray_menu_back_out_is_bounded():
+    mem = memory()
+    post.arm(mem)
+    state = mem['post_month_status']
+    state.update(stage='task_menu', job={'kind': 'locate', 'name': 'ゼウス'}, steps=0)
+    outs = [post.step(_castle_menu_with_hand(), mem, None) for _ in range(post.STRAY_MENU_BACKOUTS + 4)]
+    assert outs[0] == [pad('b')]
+    assert outs.count([pad('b')]) == post.STRAY_MENU_BACKOUTS
+    assert outs[-1] == []    # past the bound the generic no-input fallback owns it

@@ -21,6 +21,13 @@ MENU_RETRIES = 4
 STATUS_RETRIES = 12
 MARKER_RETRIES = 4  # bounded roster frames before status A; avoids transient sprite misses
 LOCATE_RETRIES = 2  # retry the named SELECT -> actual castle status, never infer a castle
+# Menus this owner never opens while it waits for the X menu or the map. A
+# castle menu left over from a swallowed A used to answer [] forever (live
+# 2026-11-06 g1139 48-10: しゅつげき/ステータス open, overlay 「task_menu」, no
+# input), and the generic no-input fallback never fired because the animated
+# map changes the frame digest on every observation.
+STRAY_MENU_KINDS = frozenset({'castle_menu', 'castle_info', 'general_list'})
+STRAY_MENU_BACKOUTS = 12
 MARCH = frozenset({'いまこちらにむかっています', 'しんぐんちゅうです',
                    'いどうしています'})
 CAMP = frozenset({'キャンプしています', 'キャンプのなかにいます'})
@@ -345,6 +352,19 @@ def step(screen, mem, frame):
             and state['stage'] not in {'status', 'wait_repair', 'wait_recall'}
             and house.roster(screen) is None):
         return None
+    if state['stage'] in {'open_menu', 'task_menu', 'blocked'}:
+        if screen.kind in STRAY_MENU_KINDS and not house.roster(screen):
+            backouts = state.get('stray_backouts')
+            backouts = backouts if type(backouts) is int and backouts >= 0 else 0
+            if backouts < STRAY_MENU_BACKOUTS:
+                state['stray_backouts'] = backouts + 1
+                if backouts == 0:
+                    _log(mem, 'post_month_stray_menu_backout', screen=screen.kind,
+                         observed_metric={'stage': state['stage']},
+                         reason='月越し後の確認が待つX・マップ画面ではなく城メニュー等が残っているため、Bで戻る')
+                return [pad('b')]
+        else:
+            state.pop('stray_backouts', None)
     state['steps'] += 1
     stage = state['stage']
     if state['steps'] > MAX_STEPS and stage not in {'wait_repair', 'wait_recall'}:
