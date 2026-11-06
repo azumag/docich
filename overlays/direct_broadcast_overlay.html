@@ -1989,10 +1989,12 @@ html[data-soren-region="bottom"] #hanjuku-gap { display: none !important; }
       // contain ' / ', so rejoin everything from its marker onward.
       const reasonAt = parts.findIndex((p, i) => i >= 3 && p.startsWith('理由 '));
       const reason = reasonAt >= 0 ? parts.slice(reasonAt).join(' / ').slice(3).trim() : '';
-      const stepPart = reasonAt === 3 ? '' : String(parts[3] || '');
+      const stepPart = parts.find((p, i) => i >= 3 && p.startsWith('段階 ')) || '';
+      const purposePart = parts.find((p, i) => i >= 3 && p.startsWith('種別 ')) || '';
       return {general:(parts[0] || '').trim(), source:(route[0] || '').trim(),
               target:(route[1] || '').trim(), status:(parts[2] || '').trim(),
-              step:stepPart.replace(/^段階\s*/, '').trim(), reason};
+              step:stepPart.replace(/^段階\s*/, '').trim(),
+              purpose:purposePart.slice(3).trim(), reason};
     }).filter(m => m.general && (m.source || m.target)).slice(0, 8);
     const gap = fresh && gapGeometryOk && now <= gapUntil && gapUntil-now <= 30
       ? {left:gapLeft, width:gapWidth, side:gapSide,
