@@ -96,6 +96,9 @@ def test_chapter5_own_cell_does_not_fall_back_to_known_wrong_charted_cell(route,
     """A readable castle constellation is not proof of the house roof."""
     mem, _ = setup(route, monkeypatch)
     mem['chapter'] = 5
+    # Chapter 5 has no HOUSE_VIEW coordinate in this test's chart data.
+    # Supply synthetic geometry to exercise the fail-closed own-cell guard.
+    monkeypatch.setitem(house.HOUSE_TARGET, 5, (140, 140))
     monkeypatch.setattr(house, '_defer_unsafe_house_route', lambda _: False)
     monkeypatch.setattr(house, '_house_roof_delta', lambda *args, **kwargs: None)
     from docich.hanjuku.os_layer import navigation
