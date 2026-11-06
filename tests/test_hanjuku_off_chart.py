@@ -544,7 +544,7 @@ def test_sorties_without_a_recent_tick_no_longer_block_their_generals():
     # Time alone no longer returns the unverified general to its old castle.
     # The next monthly individual-status pass must locate them first.
     assert policy.next_order(mem) is None
-    assert 'ココット' in mem['general_location_unknown']
+    assert 'ココット' in _world(mem)['general_location_unknown']
     assert any(r['decision'] == 'sortie_location_recheck_queued' for r in mem['_records'])
 
 
