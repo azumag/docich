@@ -172,11 +172,11 @@ def _sole_castle(request) -> bool:
 def startable(order, request) -> str | None:
     """Why ``order`` cannot start in the requested situation, or None.
 
-    Allowed: the general is recorded in the source castle, or nothing is
-    recorded about that general (unknown). Refused: a lost source, a
-    general recorded in another castle or marching (g421 e7df88f1: F2/F3/F5
-    named generals absent from their sources and all failed), or a general
-    whose departure would leave the hero's castle thin (``hero_guard_short``).
+    A named actor is eligible only when the source garrison records that
+    actor. An unread castle may instead be inspected by an explicit
+    source_probe with the non-person placeholder しょうぐん; its actual
+    actor is chosen only from the live general list. Refuse absent, marching,
+    elsewhere, and unconfirmed named actors before adopting a plan.
     """
     if not isinstance(request, dict):
         return None
@@ -188,16 +188,19 @@ def startable(order, request) -> str | None:
     if general in marching:
         return 'general_marching'
     garrison = request.get('garrison') if isinstance(request.get('garrison'), dict) else {}
-    if general in (garrison.get(source) or ()):
-        # An unrecorded general (a joiner, a spare picked on the list) is
-        # counted on the real list when the sortie opens it.
+    # A source probe is an information-gathering step, not a claimed actor.
+    # The real list/guard checks in deploy decide whether anyone can leave.
+    if order.get('source_probe') is True:
+        return None if general == 'しょうぐん' else 'invalid_source_probe'
+    present = garrison.get(source) or ()
+    if general in present:
         if not chart.is_boss_castle(order['target']) and hero_guard_short(
-                garrison.get(source), general, marching, sole_castle=_sole_castle(request)):
+                present, general, marching, sole_castle=_sole_castle(request)):
             return 'hero_castle_guard'
         return None
     if any(general in (names or ()) for castle, names in garrison.items() if castle != source):
         return 'general_elsewhere'
-    return None
+    return 'general_unconfirmed_at_source'
 
 
 def _text(value, field, *, limit=MAX_NOTE, required=True):
@@ -260,6 +263,11 @@ def _order(raw, castles, base_steps):
         # by the attack rule and never started for an hour). An untyped order
         # keeps its old shape, so nothing else changes.
         order['purpose'] = purpose
+    probe = raw.get('source_probe')
+    if probe is not None:
+        if probe is not True or order['general'] != 'しょうぐん':
+            raise ValueError('invalid source_probe')
+        order['source_probe'] = True
     return order
 
 
