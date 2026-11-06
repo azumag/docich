@@ -90,7 +90,8 @@ def _learn_holding_limit(screen: Screen, mem, shop):
                     and type(last.get('gold')) is int and gold >= last['gold'])
     want = shop.get('want')
     # Snapshot the pre-refusal shop state before mutating shop.pop/shop['want'] below.
-    last_buy_snapshot = ({**last, 'row': list(last['row']) if isinstance(last.get('row'), list) else last.get('row')}\n                         if isinstance(last, dict) else last)
+    last_buy_snapshot = ({**last, 'row': list(last['row']) if isinstance(last.get('row'), list) else last.get('row')}\
+                     if isinstance(last, dict) else last)
     want_snapshot = list(want) if isinstance(want, list) else want
     if paid_nothing and isinstance(row, list) and isinstance(bought, list) and bought and bought[-1] == row:
         bought.pop()                      # refused, not bought: do not count it
