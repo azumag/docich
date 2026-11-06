@@ -100,10 +100,11 @@ def test_message_press_is_bounded(ready):
     assert outs[-1] == [p.pad('b')]   # give up on the message and leave the shop
 
 
-def _refused_after(ready, name, qty, stock=None, gold_before=300, rest=()):
+def _refused_after(ready, name, qty, stock=None, gold_before=300, rest=(), since=None):
     shop = ready['shop']
     if stock is not None:
         ready['card_stock'] = {name: stock}
+    ready['card_bought_since_read'] = {name: qty if since is None else since}  # confirm added it
     shop.update(items=[list(r) for r in rest], want=None, bought=[[name, qty, 18]],
                 bargain_listing_planned=True, bargain_planned=True,
                 last_buy={'row': [name, qty, 18], 'gold': gold_before})
@@ -112,58 +113,86 @@ def _refused_after(ready, name, qty, stock=None, gold_before=300, rest=()):
     return p.shop_step(screen, ready), screen
 
 
-def test_refusal_learns_the_ceiling_and_retries_half(ready):
-    actions, _ = _refused_after(ready, 'ノリウツール', 99, stock=4, rest=[['ミックミー', 50]])
+def test_refusal_records_a_holding_floor_and_retries_half(ready):
+    actions, _ = _refused_after(ready, 'ノリウツール', 60, stock=0, rest=[['ミックミー', 50]])
     assert actions == [p.pad('a')]
     shop = ready['shop']
     assert shop['bought'] == []
-    assert ready['hold_ceiling'] == {'ノリウツール': 103}      # 4 held + 99 asked
-    assert shop['items'] == [['ノリウツール', 49], ['ミックミー', 50]]
+    assert ready['card_bought_since_read'] == {'ノリウツール': 0}      # refused copies are not held
+    assert ready['card_held_floor'] == {'ノリウツール': 40}            # 60 on top of >=40 broke 99
+    assert shop['items'] == [['ノリウツール', 30], ['ミックミー', 50]]  # 30 <= room 59
+
+
+def test_retry_never_exceeds_the_room_the_floor_leaves(ready):
+    _refused_after(ready, 'ノリウツール', 99, stock=0)         # floor 1, room 98, half 49
+    assert ready['shop']['items'] == [['ノリウツール', 49]]
+
+
+def test_full_kind_drops_only_that_card(ready):
+    _refused_after(ready, 'ノリウツール', 1, stock=0, rest=[['ミックミー', 3]])
+    assert ready['card_held_floor']['ノリウツール'] == 99
+    assert ready['shop']['items'] == [['ミックミー', 3]]       # another kind is unaffected
 
 
 def test_a_second_refusal_in_the_same_visit_is_handled_again(ready):
     _refused_after(ready, 'ノリウツール', 99, stock=0)
     shop = ready['shop']
-    ok = refused_list(); ok.text = ''                       # message closed
     clean = parse(Canvas().frame()); clean.kind = 'shop_list'
     p.shop_step(clean, ready)
     assert shop['hold_limit_open'] is False
+    ready['card_bought_since_read'] = {'ノリウツール': 49}
     shop.update(bought=[['ノリウツール', 49, 18]], last_buy={'row': ['ノリウツール', 49, 18], 'gold': 300})
     screen = refused_list(); screen.kind = 'shop_list'
     assert p.shop_step(screen, ready) == [p.pad('a')]
-    assert ready['hold_ceiling']['ノリウツール'] == 49          # tightened, never loosened
+    assert ready['card_held_floor']['ノリウツール'] == 51      # >=51 held, 49 more broke 99
     assert shop['items'] == [['ノリウツール', 24]]
 
 
-def test_single_copy_refusal_means_full_hand(ready):
-    actions, _ = _refused_after(ready, 'ノリウツール', 1, stock=9,
-                                rest=[['ミックミー', 3], ['クースカン', 2]])
-    assert actions == [p.pad('a')]
-    assert ready['shop']['items'] == []
+def test_purchase_confirmation_counts_toward_the_estimate(ready):
+    b.note_card_bought(ready, 'ノリウツール', 60)
+    ready['card_stock'] = {'ノリウツール': 30}
+    assert b.held_estimate(ready, 'ノリウツール') == 90
+    assert b.hold_room(ready, 'ノリウツール') == 9
 
 
-def test_learned_ceiling_limits_later_rich_plan(ready):
-    ready['hold_ceiling'] = {'ノリウツール': 11, 'ミックミー': 6}
-    ready['card_stock'] = {'ノリウツール': 4, 'ミックミー': 1}
+def test_panel_read_replaces_the_purchase_ledger(ready):
+    from docich.hanjuku.strategy.kit import _observe_card_stock
+    ready['card_bought_since_read'] = {'ノリウツール': 60, 'ミックミー': 5}
+    ready['card_held_floor'] = {'ノリウツール': 70}
+    _observe_card_stock(ready, {'rows': [{'card': 'ノリウツール', 'stock': 62}]})
+    assert 'ノリウツール' not in ready['card_bought_since_read']
+    assert 'ノリウツール' not in ready['card_held_floor']
+    assert ready['card_bought_since_read'] == {'ミックミー': 5}   # unread kinds keep theirs
+    assert b.held_estimate(ready, 'ノリウツール') == 62
+
+
+def test_second_rich_visit_cannot_ask_for_more_than_99(ready):
+    ready['card_stock'] = {'ノリウツール': 0, 'ミックミー': 0}
+    ready['card_bought_since_read'] = {'ノリウツール': 90, 'ミックミー': 40}   # first visit, panel unread
     shop = ready['shop']
     shop.update(items=[], want=None, rich_merchant=True)
-    hdr = {'year': 1, 'month': 5, 'gold': 5000}
-    b.plan_bargains(ready, shop, hdr, listed={'ノリウツール': 18, 'ミックミー': 40})
+    b.plan_bargains(ready, shop, {'year': 1, 'month': 6, 'gold': 9000},
+                    listed={'ノリウツール': 18, 'ミックミー': 40})
     planned = dict(shop['items'])
-    assert planned['ノリウツール'] <= 6 and planned['ミックミー'] <= 4   # ceiling-1-stock
+    assert planned.get('ノリウツール', 0) <= 9 and planned.get('ミックミー', 0) <= 59
 
 
-def test_ceiling_is_ignored_once_stock_is_used_up(ready):
-    ready['hold_ceiling'] = {'ノリウツール': 11}
-    assert b.hold_room(ready, 'ノリウツール', 0) == 10
-    assert b.hold_room(ready, 'ノリウツール', 10) == 0
-    assert b.hold_room(ready, 'ミックミー', 0) is None
-
-
-def test_revalidation_at_the_quote_respects_the_ceiling(ready):
-    ready['hold_ceiling'] = {'ノリウツール': 6}
+def test_revalidation_at_the_quote_respects_the_cap(ready):
     ready['card_stock'] = {'ノリウツール': 0}
+    ready['card_bought_since_read'] = {'ノリウツール': 95}
     shop = ready['shop']
     shop.update(items=[['ノリウツール', 20]], bargain_cards=['ノリウツール'], rich_merchant=True)
     hdr = {'year': 1, 'month': 5, 'gold': 5000}
-    assert b.merchant_card_spendable(ready, shop, hdr, 'ノリウツール', 18) <= 5 * 18
+    assert b.merchant_card_spendable(ready, shop, hdr, 'ノリウツール', 18) <= 4 * 18
+
+
+def test_confirmed_purchase_enters_the_held_ledger_and_cap_declines_overflow(monkeypatch):
+    from test_hanjuku_merchant_reserve import quote
+    monkeypatch.setattr(b, '_charted_purchase_ahead', lambda mem, header: False)
+    mem = memory(complete=True)
+    mem['card_stock'] = {'ノリウツール': 0}
+    mem['shop'].update(egg='done', bargain_cards=['ノリウツール'],
+                       items=[['ノリウツール', 3]], want=['ノリウツール', 3, 18])
+    assert p.quantity_step(quote(999, count=3, cost=54), mem) == [p.pad('a')]
+    assert mem['card_bought_since_read'] == {'ノリウツール': 3}
+    assert mem['shop']['last_buy']['row'] == ['ノリウツール', 3, 18]
