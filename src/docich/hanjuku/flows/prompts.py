@@ -27,6 +27,27 @@ from ..strategy.economy import GONINJA_MIN_GOLD, _goninja_budget, _month_key
 TRADE_GUARD_OBSERVATIONS = 40   # ~60 s: lead-in, the offer and its choice
 # Arming needs trade-only wording; 'しょうぐんどうし' can be the hero's name.
 TRADE_GUARD_TOKENS = ('トレード', 'いちもんめ', 'イキのいいの', 'いきのいいの')
+# The 花いちもんめ event draws its song line as "は〜ない〜ちも〜んめ"; the
+# OCR keeps those 〜 marks, so 'いちもんめ' never matches the raw text and the
+# guard never arms (g1139 2026-11-07 00:47: ゼウス traded for カシス while every
+# frame got the generic A). Strip only the marks for matching.
+TRADE_MATCH_TILDES = ('〜', '~')
+# The result line ends with "これにてトレードしゅうりょう!": prose, not a
+# pending choice. Holding it froze the bot on one screen until screen_stalled
+# (g1139 00:48-00:53, 300 s unchanged).
+TRADE_COMPLETED_TOKENS = ('しゅうりょう',)
+# The 花いちもんめ song is followed by its own うむッ!/いかんッ! choice. The
+# measured choice frame does not repeat the trade wording, so the scene has to
+# stay recognized for a short window after the song (g1139 2026-11-07 00:47:
+# the bot pressed the default upper row on that frame and ゼウス was traded).
+TRADE_SCENE_OBSERVATIONS = 12
+
+
+def _trade_flat(text: str) -> str:
+    flat = ''.join((text or '').split())
+    for mark in TRADE_MATCH_TILDES:
+        flat = flat.replace(mark, '')
+    return flat
 
 
 TRADE_CHOICE_PAIRS = (('OK', 'NO'), ('そうする', 'やめる'))
@@ -129,7 +150,7 @@ def trade_guard_step(screen: Screen, mem, *, phase=None):
     if isinstance(guard, dict):
         guard.pop('held', None)  # ownership is recomputed for this observation
     tick = int(mem.get('tick') or 0)
-    flat = ''.join(screen.text.split())
+    flat = _trade_flat(screen.text)
     trade_seen = any(tok in flat for tok in TRADE_GUARD_TOKENS)
     # The measured monthly event is drawn on the red-curtain scene: classify()
     # returns 'concert' for the frame (g1067/g1107/g1139), never 'dialogue', so
@@ -139,10 +160,39 @@ def trade_guard_step(screen: Screen, mem, *, phase=None):
     # in the monthly scene whenever the trade wording is on screen; combat and
     # menu phases keep the old boundary. This mirrors the 美女 fix (#2632).
     monthly_scene = phase in ('concert', 'event')
+    # The song is the scene marker. Its choice frame does not repeat the
+    # wording, so remember the scene for a short lease and decline the
+    # following うむッ!/いかんッ! pair even without trade tokens on it.
+    scene_tick = mem.get('trade_scene')
+    scene_live = (type(scene_tick) is int
+                  and 0 <= tick - scene_tick <= TRADE_SCENE_OBSERVATIONS)
+    if trade_seen and screen.kind in ('text', 'unknown'):
+        mem['trade_scene'] = tick
+        scene_live = True
     if mem.get('month_sub') or (phase not in (None, 'dialogue')
-                                and not (monthly_scene and trade_seen)):
+                                and not (monthly_scene and (trade_seen or scene_live))):
         mem.pop('trade_guard', None)
+        mem.pop('trade_scene', None)
         return None   # a monthly owner keeps its dialogue (measured yes/no still declines)
+    if (scene_live and screen.kind in ('text', 'unknown')
+            and screen.has('うむッ') and screen.has('いかんッ')):
+        move = menu_to(screen, 'いかんッ!')
+        if move == 'here':
+            mem.pop('trade_guard', None)
+            mem.pop('trade_scene', None)
+            _record(mem, 'prompt', choice='いかんッ!', prompt=screen.text[-60:],
+                    strategy_variant='decline_general_trade',
+                    observed_metric={'scene': 'hanaichimonme',
+                                     'rows': sorted(row[1] for row in _options(screen)
+                                                    if 176 <= row[1] <= 208)},
+                    reason='花いちもんめの場面の承諾行を選ばず、断る行を選ぶ')
+            return [pad('a')]
+        if move is None:
+            _record(mem, 'situation_held', screen=screen.kind,
+                    observed_metric={'trade_scene': True, 'text': screen.text[-80:]},
+                    reason='花いちもんめの場面の選択行を確定できないため決定せず再観測')
+            return []
+        return [move]
     if trade_seen and screen.kind in ('text', 'unknown'):
         if not isinstance(guard, dict):
             guard = mem['trade_guard'] = {'tick': tick, 'chosen': False}
@@ -157,8 +207,13 @@ def trade_guard_step(screen: Screen, mem, *, phase=None):
             guard['accept'], guard['strength'] = trade_accept_weak(mem, named)
     if not isinstance(guard, dict):
         return None
+    if any(tok in flat for tok in TRADE_COMPLETED_TOKENS):
+        mem.pop('trade_guard', None)
+        mem.pop('trade_scene', None)
+        return None   # the result prose ("トレードしゅうりょう"): advance with A, never hold
     if guard.get('chosen') or screen.kind in ('map', 'map_target', 'month_menu', 'battle', 'world_map'):
         mem.pop('trade_guard', None)
+        mem.pop('trade_scene', None)
         return None
     # The lead-in lease expires as before. Once a choice is seen, time alone
     # is not evidence that it ended: a blinking hand or partial OCR must not
@@ -436,6 +491,25 @@ def bijin_guard_step(screen: Screen, mem, *, phase=None):
 def yes_no_step(screen: Screen, mem):
     text = screen.text
     metric = None
+    scene_tick = mem.get('trade_scene')
+    if (type(scene_tick) is int and 0 <= int(mem.get('tick') or 0) - scene_tick
+            <= TRADE_SCENE_OBSERVATIONS):
+        # The 花いちもんめ choice frame does not repeat the trade wording; the
+        # scene marker left by its song owns this measured yes/no instead of
+        # the generic accept (g1139 2026-11-07 00:47, ゼウス traded).
+        move = menu_to(screen, 'いかんッ!')
+        if move == 'here':
+            mem.pop('trade_scene', None)
+            _record(mem, 'prompt', choice='いかんッ!', prompt=text[-60:],
+                    strategy_variant='decline_general_trade',
+                    reason='花いちもんめの場面の承諾行を選ばず、断る行を選ぶ')
+            return [pad('a')]
+        if move is None:
+            _record(mem, 'situation_held', screen=screen.kind,
+                    observed_metric={'trade_scene': True, 'text': text[-80:]},
+                    reason='花いちもんめの場面の選択行を確定できないため決定せず再観測')
+            return []
+        return [move]
     if re.search(r'\d+Gでいい', text):
         choice, reason, variant = 'いかんッ!', '追加のおねだりは所持金を月一購入に残すため断る', 'decline_extra_gift'
     elif _is_goninja_prompt(text):

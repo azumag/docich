@@ -526,3 +526,58 @@ def test_trade_guard_is_released_before_a_real_pending_command_owner(phase):
         assert actions == control_actions == expected
         assert 'trade_guard' not in state['policy']
     assert 'command_open_pending' not in state['policy']['battle']
+
+
+# g1139 2026-11-07 00:47: the 花いちもんめ song line is drawn with 〜 marks
+# ("ふるさと もとめて は〜ない〜ちも〜んめ♪"). The raw token 'いちもんめ'
+# never matched, the guard never armed, and the generic A accepted the trade
+# (ゼウス 85/13 for カシス 73/15).
+def test_the_song_line_with_ocr_tildes_arms_the_guard():
+    mem = {'tick': 10}
+    assert policy.trade_guard_step(text('「ふるさともとめ〜ては〜ない〜ちも〜んめッ♪'), mem) is None
+    assert any(r['decision'] == 'trade_offer_seen' for r in mem['_records'])
+    # The armed guard still holds an unreadable choice instead of accepting it.
+    unread = Screen(lines=[], hand=(18, 170, 38, 182), text='?', kind='text')
+    assert policy.trade_guard_step(unread, mem) == []
+
+
+def test_the_trade_result_prose_is_advanced_not_held():
+    mem = {'tick': 10}
+    policy.trade_guard_step(text('「ふるさともとめ〜ては〜ない〜ちも〜んめッ♪'), mem)
+    mem['tick'] = 12
+    done = text('49ねん3のつき7625G「……ということでゼウスはわがぐんのカシスとこうかんだ!'
+                'これにてトレードしゅうりょう!')
+    assert policy.trade_guard_step(done, mem) is None
+    assert 'trade_guard' not in mem
+
+
+def test_readers_trade_prompt_matches_the_song_with_tildes():
+    from docich.hanjuku.os_layer.readers import _is_general_trade_prompt
+    assert _is_general_trade_prompt('「ふるさともとめ〜ては〜ない〜ちも〜んめッ♪')
+
+
+# The 花いちもんめ choice frame repeats neither the lyrics nor the trade words;
+# the scene marker left by the song must own it (g1139 2026-11-07 00:47, the
+# default upper row was confirmed and ゼウス was traded for カシス).
+def test_the_song_scene_declines_the_following_native_choice():
+    mem = {'tick': 10}
+    assert policy.trade_guard_step(text('「ふるさともとめ〜ては〜ない〜ちも〜んめッ♪'), mem) is None
+    assert mem.get('trade_scene') == 10
+    mem['tick'] = 12
+    assert policy.trade_guard_step(choice(['うむッ!', 'いかんッ!'], 0), mem) == [policy.pad('down')]
+    assert policy.trade_guard_step(choice(['うむッ!', 'いかんッ!'], 1), mem) == [policy.pad('a')]
+    assert mem['_records'][-1]['strategy_variant'] == 'decline_general_trade'
+    assert 'trade_scene' not in mem and 'trade_guard' not in mem
+
+
+def _yes_no_choice(rows, selected):
+    lines = [TextLine(184 + 16 * i, tuple((40 + 8 * j, ch) for j, ch in enumerate(w)))
+             for i, w in enumerate(rows)]
+    y = 184 + 16 * selected
+    return Screen(lines=lines, hand=(18, y - 6, 38, y + 6), text=''.join(rows), kind='yes_no')
+
+
+def test_yes_no_in_a_live_trade_scene_declines():
+    mem = {'tick': 12, 'trade_scene': 11}
+    assert policy.yes_no_step(_yes_no_choice(['うむッ!', 'いかんッ!'], 0), mem) == [policy.pad('down')]
+    assert policy.yes_no_step(_yes_no_choice(['うむッ!', 'いかんッ!'], 1), mem) == [policy.pad('a')]
