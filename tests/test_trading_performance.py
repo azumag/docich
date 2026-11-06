@@ -243,7 +243,8 @@ def test_sell_notification_reads_realized_pnl_from_paper_ledger(tmp_path):
     rendered = _render_event_with_local_facts(
         event, mode="compact", status=None, display_at=1100.0, trading_dir=tmp_path
     )
-    assert "今回の実現損益 +20円" in rendered.overlay_event["body"]
+    assert "今回 +20円" in rendered.overlay_event["title"]
+    assert "今回" not in rendered.overlay_event["body"]
     assert rendered.speech_text == (
         "利益を確保する狙いでポジションを軽くする利確です。売った後にさらに伸びても、取り逃しより、"
         "決めたルールを守れたかを重視します。利確条件を検出：BTC/JPYを売り。損益はプラス20円です。現在の含み損益と評価込み累計損益は評価待ちです。"
@@ -288,8 +289,9 @@ def test_notification_does_not_report_pre_fill_performance_as_current(tmp_path):
     rendered = _render_event_with_local_facts(
         event, mode="compact", status=status, display_at=1100.0, trading_dir=tmp_path,
     )
-    assert "含み損益 評価待ち" in rendered.overlay_event["body"]
-    assert "累計損益 評価待ち" in rendered.overlay_event["body"]
+    assert "含み 評価待ち" in rendered.overlay_event["title"]
+    assert "累計 評価待ち" in rendered.overlay_event["title"]
+    assert "評価待ち" not in rendered.overlay_event["body"]
 
 
 def test_round_trips_pair_buys_sells_and_keep_entry_context(tmp_path):
