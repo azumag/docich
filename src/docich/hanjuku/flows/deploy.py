@@ -717,7 +717,18 @@ def _hold_boss_card_selection(screen, mem, order, reason, *, card=None):
 
 
 def _move_general_pick(screen, mem, order):
-    """Pick the general a move sends: never the donor's last one."""
+    """Pick the general a move sends: the planned one, never the donor's last.
+
+    A garrison rotation names the general that should thicken the castle near
+    the enemy (replan picks the strongest spare) and writes that name into the
+    order, so the sortie honours it when the general is selectable from this
+    castle. The head of the list stays the fallback for an order that carries
+    no usable name: the MOVE_ANY_GENERAL sentinel, the hero, a general already
+    on the road, or one that is not here any more.
+    g1139 2026-11-06 21:16: a thickening move to ジュメルズ named ゼウス
+    (HP 85) and the list head セルリアク (HP 32) went instead; ジュメルズ fell
+    seven minutes later.
+    """
     present = _listed_generals(screen, mem, order)
     if present is None:
         return _hold_deploy(screen, mem, order, '移動元の将軍一覧を読めないため保留')
@@ -730,12 +741,18 @@ def _move_general_pick(screen, mem, order):
         return [pad('b'), pad('b')]
     general = mem.get('general_override', {}).get(order['step'])
     if general not in spare:
-        general = (_defense_move_pick(mem, _source(order, mem), order['target'], spare)
-                   or spare[0])
+        planned = order.get('general')
+        if planned in spare and planned != NAME:
+            general = planned
+            reason = '計画が名指しした将軍をそのまま移動させる'
+        else:
+            general = (_defense_move_pick(mem, _source(order, mem), order['target'], spare)
+                       or spare[0])
+            reason = '移動元に1人以上残して主人公以外の将軍を空の城へ送る'
         mem.setdefault('general_override', {})[order['step']] = general
         _record(mem, 'move_general_picked', chart_step=order['step'], general=general,
                 source=_source(order, mem), target=order['target'], observed_metric=present[:8],
-                reason='移動元に1人以上残して主人公以外の将軍を空の城へ送る')
+                reason=reason)
     move = _list_menu_to(screen, mem, order, general)
     if move is None:
         return _hold_deploy(screen, mem, order, '移動させる将軍へカーソルを合わせられないため保留')
