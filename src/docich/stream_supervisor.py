@@ -85,8 +85,10 @@ def stream_owner(env: Mapping[str, str]) -> str:
     Both start paths read the same flag. The host-wide lock remains the final
     safety net if the flag is ever wrong.
     """
-    # Empty means unset (shell ``${VAR:-soren}`` convention used by the legacy flags).
-    raw = (str(env.get("DOCICH_STREAM_OWNER") or "").strip()) or "soren"
+    # Empty means unset (shell ``${VAR:-soren}`` convention used by the legacy
+    # flags). No trimming: the shell side compares the exact string, so both
+    # sides must reject padded values rather than disagree about them.
+    raw = str(env.get("DOCICH_STREAM_OWNER") or "soren")
     if raw not in OWNERS:
         raise ValueError("DOCICH_STREAM_OWNER must be soren or docich")
     return raw

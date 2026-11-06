@@ -184,8 +184,7 @@ class OwnerFlagTest(unittest.TestCase):
             return proc
 
     def test_the_default_owner_is_the_legacy_runner_so_run_does_nothing(self):
-        for env in ({}, {"DOCICH_STREAM_OWNER": "soren"}, {"DOCICH_STREAM_OWNER": " soren "},
-                    {"DOCICH_STREAM_OWNER": ""}, {"DOCICH_STREAM_OWNER": "  "},
+        for env in ({}, {"DOCICH_STREAM_OWNER": "soren"}, {"DOCICH_STREAM_OWNER": ""},
                     {"SOREN_DIRECT_STREAM_FPS": "999"}):  # even an invalid config is not even loaded
             with self.subTest(env=env):
                 proc = self.run_main(env, "run")
@@ -194,7 +193,7 @@ class OwnerFlagTest(unittest.TestCase):
                 self.assertEqual(proc.stdout, "")
 
     def test_an_invalid_owner_value_is_a_failure_not_a_silent_skip(self):
-        for bad in ("Docich", "both", "1", "docich,soren"):
+        for bad in ("Docich", "both", "1", "docich,soren", " docich", "soren ", "  "):
             with self.subTest(bad=bad):
                 proc = self.run_main({"DOCICH_STREAM_OWNER": bad}, "run")
                 self.assertEqual(proc.returncode, 2)
