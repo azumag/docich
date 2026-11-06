@@ -4597,19 +4597,14 @@ class GameSwitchCoordinator:
 
         ``alive() -> False`` is conclusive: window, pane and process are all
         gone (Issue #3521: presentation stopped while canonical ``active``
-        still tracks the runtime).  A raised error is inconclusive -- a
-        failed probe is not proof of death, so callers must keep the normal
-        quiesce path in that case.
+        still tracks the runtime).  ``_probe_alive`` already bounds the call
+        by ``step_timeouts.probe_s`` -- the same budget the boundary-failure
+        probe uses -- and returns a tri-state, so ``is False`` is the only
+        conclusive verdict: a raised error or a timeout is inconclusive, not
+        proof of death, and callers must keep the normal quiesce path in
+        that case (docich#3529).
         """
-        try:
-            return not self._call_adapter(
-                lambda cancel: adapter.alive(deadline, cancel),
-                deadline,
-                self.step_timeouts.stop_agent_s,
-                "alive",
-            )
-        except Exception:
-            return False
+        return self._probe_alive(adapter, deadline) is False
 
     def _teardown_runtime(self, adapter: CoordinatorAdapter, deadline: float) -> bool:
         """Stop agent and game, then confirm the runtime is actually gone.

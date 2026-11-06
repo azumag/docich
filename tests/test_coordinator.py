@@ -128,6 +128,7 @@ class FakeAdapter:
         self.runtime.events.append("readiness")
 
     def alive(self, deadline, cancel):
+        self._maybe_hang("hang_alive", cancel)
         self._maybe_fail("alive_error")
         return self.runtime.materialized and self.runtime.alive and not self.runtime.cleaned
 
@@ -2020,6 +2021,28 @@ class TestStaleActiveReclaim(CoordinatorTestBase):
         # fails (quiesce_failed) or succeeds (recovery_required); what the
         # invariant requires is that the boundary path ran and the stale
         # active was not silently reclaimed.
+        result = self.coordinator.switch("robots")
+        self.assertEqual(result.status, "failed")
+        self.assertIn(
+            result.error_code,
+            (game_switch.ERROR_QUIESCE_FAILED, game_switch.ERROR_RECOVERY_REQUIRED),
+        )
+        adapter.request_round_boundary.assert_called_once()
+        self.assertEqual(self.canonical()["active"]["game"], "nethack")
+
+    def test_alive_probe_stall_keeps_conservative_boundary_path(self):
+        from unittest.mock import Mock
+
+        # docich#3529: pin the conservative path for a probe that never
+        # answers inside its budget.  A stalled alive() must not be read as
+        # "confirmed dead" -- the boundary path still runs and the stale
+        # active is not silently reclaimed.
+        self.coordinator.start("nethack")
+        adapter = self.factory.adapter("nethack", 1)
+        adapter.behavior["hang_alive"] = threading.Event()
+        adapter.request_round_boundary = Mock(
+            side_effect=AdapterError("Hanjuku exited before terminal evidence")
+        )
         result = self.coordinator.switch("robots")
         self.assertEqual(result.status, "failed")
         self.assertIn(
