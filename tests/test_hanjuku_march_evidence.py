@@ -5,7 +5,7 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from docich.hanjuku.os_layer.world import _en_route, SORTIE_BUSY_TICKS
-from docich.hanjuku.strategy.orders import _arrival_limit, _reserved_targets
+from docich.hanjuku.strategy.orders import _arrival_limit, _reserved_targets, _retake_reserved
 
 
 def memory(chapter=6, age=500, status="en_route"):
@@ -33,6 +33,19 @@ def test_reconciliation_window_is_bounded():
     assert "ナストリーニ" in _en_route(mem)[0]
     mem["tick"] += 1
     assert "ナストリーニ" not in _en_route(mem)[0]
+
+
+
+def test_duplicate_retake_remains_reserved_after_400_observations():
+    mem = {
+        "chapter": 1, "tick": 1000,
+        "sorties": {"earlier": {
+            "general": "ヴィーナス", "source": "カストーラ",
+            "target": "ジョンリギ", "status": "en_route", "tick": 500,
+        }},
+    }
+    order = {"step": "I:new", "target": "ジョンリギ", "purpose": "retake"}
+    assert _retake_reserved(order, mem)
 
 
 def test_explicitly_overdue_or_arrived_is_not_claimed_to_be_marching():
