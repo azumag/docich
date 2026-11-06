@@ -1181,7 +1181,8 @@ def test_worker_prompts_with_garrisons_and_drops_orders_whose_general_is_elsewhe
     assert worker.consider(None, Game(), tmp_path, generate=generate, background=False)
     assert '"garrison"' in prompts[0] and 'カストーラ' in prompts[0] and '"en_route"' in prompts[0]
     saved = adjust.load(tmp_path)
-    assert [o['step'] for o in saved['orders']] == ['F1', 'F4']
+    # A sole hero at スペンソニア must remain to defend the castle.
+    assert [o['step'] for o in saved['orders']] == ['F4']
     events = [json.loads(line) for line in
               (tmp_path / f'{adjust.HISTORY_LOG}.jsonl').read_text(encoding='utf-8').splitlines()]
     [dropped] = [e for e in events if e['event'] == 'adjusted_orders_dropped']
