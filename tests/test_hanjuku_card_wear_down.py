@@ -65,11 +65,11 @@ def test_a_hit_the_soldiers_fully_absorb_still_removes_them():
     assert (result['allowed'], result['role']) == (True, 'damage_not_a_kill')
 
 
-def test_a_hit_below_one_soldier_can_still_be_used_aggressively():
+def test_a_hit_below_one_soldier_with_no_egg_drop_stays_in_hand():
     mem = memory('ダイチスイム')
     result = gate(mem, 'ダイチスイム')
     assert not result['egg_drop']['drops']
-    assert (result['allowed'], result['role']) == (True, 'aggressive_chip_damage')
+    assert result['allowed'] is False
 
 
 def test_any_real_hit_counts_once_the_soldiers_are_gone():
