@@ -43,10 +43,10 @@ def memory():
             'garrison': {'グルーポフ': ['ライム'], 'オケアナ': [], 'カバルッサ': []}}
 
 
-def test_a_move_from_a_single_general_castle_is_not_held_by_the_reserve():
+def test_a_move_from_a_single_general_castle_is_blocked_by_the_new_minimum():
     order = {'step': 'A:x:M1', 'general': 'ライム', 'source': 'グルーポフ',
              'target': 'オケアナ', 'purpose': 'move'}
-    assert O._source_spare_missing(order, memory(), allow_probe=True) is False
+    assert O._source_spare_missing(order, memory(), allow_probe=True) is True
 
 
 def test_the_same_order_without_a_purpose_is_held():
