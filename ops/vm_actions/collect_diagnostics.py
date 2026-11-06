@@ -6942,6 +6942,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v490-reanchor-owner-resume",
             "hanjuku-chart-v491-post-month-battle-resume",
             "hanjuku-chart-v492-align-stall",
+            "hanjuku-chart-v493-concert-trade-guard",
             "hanjuku-chart-v129-battle-card-progress",
             "hanjuku-chart-v130-summer-cursor-evidence",
             "hanjuku-chart-v131-defense-month-economy",
