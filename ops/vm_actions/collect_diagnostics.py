@@ -10115,13 +10115,21 @@ def _severity(workers, queues, ai, improvement, corners=None, hanjuku_resume=Non
         return "warn"
     if worker_down_sev == "warn":
         return "warn"
+    # radio_prepass is an optional pre-pass: its all_failed / budget_exhausted
+    # iterations are structural (8-candidate chain vs 60s/30s cap, docich#3657)
+    # and only cost a skipped corner generation, so they must not raise WARN.
+    # budget_exhausted never feeds this gate anyway; only the all_failed count
+    # needs the prepass contribution subtracted. queue_giveups and every other
+    # component's all_failed still signal real provider outages (docich#3661).
+    all_failed_components = ai.get("all_failed_components") or {}
+    actionable_all_failed = ai["all_failed"] - all_failed_components.get("radio_prepass", 0)
     if (
         _paused_workers_actionable(workers)
         or _unregistered_workers_actionable(workers)
         or workers["duplicates"]
         or workers["zombies"]
         or queues["stale_locks"] > 0
-        or ai["all_failed"] > 0
+        or actionable_all_failed > 0
         or ai["queue_giveups"] > 0
         or improvement["stale"]
         or improvement["retry_pending"]
