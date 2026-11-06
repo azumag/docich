@@ -921,8 +921,12 @@ def interim_candidates(mem, allow_sole=False) -> dict:
         # A generic source-list probe at a measured one-general castle is
         # not a feasible sortie. Only actual inbound marches or new joiners
         # expected at the hero's castle justify rereading that singleton.
+        # docich#3515: a roster probe for a blind launch must open even a
+        # one-general castle: that singleton is exactly the phantom's source.
+        # It reads and settles without sending.
         present = (_world(mem).get('garrison') or {}).get(order['source'])
-        if isinstance(present, (list, tuple)) and len(set(present)) == 1:
+        if (isinstance(present, (list, tuple)) and len(set(present)) == 1
+                and order.get('roster_probe') is not True):
             # A new joiner is unconfirmed until the castle's live list is
             # opened. Since #3578's confirmed-source policy names the generic
             # probe actor (しょうぐん), test for that evidence-gathering probe,
