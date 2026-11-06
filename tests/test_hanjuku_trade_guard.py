@@ -526,3 +526,31 @@ def test_trade_guard_is_released_before_a_real_pending_command_owner(phase):
         assert actions == control_actions == expected
         assert 'trade_guard' not in state['policy']
     assert 'command_open_pending' not in state['policy']['battle']
+
+
+# g1139 2026-11-07 00:47: the 花いちもんめ song line is drawn with 〜 marks
+# ("ふるさと もとめて は〜ない〜ちも〜んめ♪"). The raw token 'いちもんめ'
+# never matched, the guard never armed, and the generic A accepted the trade
+# (ゼウス 85/13 for カシス 73/15).
+def test_the_song_line_with_ocr_tildes_arms_the_guard():
+    mem = {'tick': 10}
+    assert policy.trade_guard_step(text('「ふるさともとめ〜ては〜ない〜ちも〜んめッ♪'), mem) is None
+    assert any(r['decision'] == 'trade_offer_seen' for r in mem['_records'])
+    # The armed guard still holds an unreadable choice instead of accepting it.
+    unread = Screen(lines=[], hand=(18, 170, 38, 182), text='?', kind='text')
+    assert policy.trade_guard_step(unread, mem) == []
+
+
+def test_the_trade_result_prose_is_advanced_not_held():
+    mem = {'tick': 10}
+    policy.trade_guard_step(text('「ふるさともとめ〜ては〜ない〜ちも〜んめッ♪'), mem)
+    mem['tick'] = 12
+    done = text('49ねん3のつき7625G「……ということでゼウスはわがぐんのカシスとこうかんだ!'
+                'これにてトレードしゅうりょう!')
+    assert policy.trade_guard_step(done, mem) is None
+    assert 'trade_guard' not in mem
+
+
+def test_readers_trade_prompt_matches_the_song_with_tildes():
+    from docich.hanjuku.os_layer.readers import _is_general_trade_prompt
+    assert _is_general_trade_prompt('「ふるさともとめ〜ては〜ない〜ちも〜んめッ♪')

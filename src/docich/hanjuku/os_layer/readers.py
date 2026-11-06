@@ -784,7 +784,9 @@ TRADE_DECLINE_TOKENS = (
 
 
 def _is_general_trade_prompt(text: str) -> bool:
-    flat = ''.join(text.split())
+    # The 花いちもんめ song line keeps its 〜 marks in the OCR ("は〜ない〜
+    # ちも〜んめ"), which hides every token; strip them for matching only.
+    flat = ''.join(text.split()).replace('〜', '').replace('~', '')
     return any(tok in flat for tok in TRADE_DECLINE_TOKENS)
 TRADE_NAMED = re.compile(r'そちらの([^\ufffd\s]+?)しょうぐん')
 

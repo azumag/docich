@@ -27,6 +27,22 @@ from ..strategy.economy import GONINJA_MIN_GOLD, _goninja_budget, _month_key
 TRADE_GUARD_OBSERVATIONS = 40   # ~60 s: lead-in, the offer and its choice
 # Arming needs trade-only wording; 'しょうぐんどうし' can be the hero's name.
 TRADE_GUARD_TOKENS = ('トレード', 'いちもんめ', 'イキのいいの', 'いきのいいの')
+# The 花いちもんめ event draws its song line as "は〜ない〜ちも〜んめ"; the
+# OCR keeps those 〜 marks, so 'いちもんめ' never matches the raw text and the
+# guard never arms (g1139 2026-11-07 00:47: ゼウス traded for カシス while every
+# frame got the generic A). Strip only the marks for matching.
+TRADE_MATCH_TILDES = ('〜', '~')
+# The result line ends with "これにてトレードしゅうりょう!": prose, not a
+# pending choice. Holding it froze the bot on one screen until screen_stalled
+# (g1139 00:48-00:53, 300 s unchanged).
+TRADE_COMPLETED_TOKENS = ('しゅうりょう',)
+
+
+def _trade_flat(text: str) -> str:
+    flat = ''.join((text or '').split())
+    for mark in TRADE_MATCH_TILDES:
+        flat = flat.replace(mark, '')
+    return flat
 
 
 TRADE_CHOICE_PAIRS = (('OK', 'NO'), ('そうする', 'やめる'))
@@ -129,7 +145,7 @@ def trade_guard_step(screen: Screen, mem, *, phase=None):
     if isinstance(guard, dict):
         guard.pop('held', None)  # ownership is recomputed for this observation
     tick = int(mem.get('tick') or 0)
-    flat = ''.join(screen.text.split())
+    flat = _trade_flat(screen.text)
     trade_seen = any(tok in flat for tok in TRADE_GUARD_TOKENS)
     # The measured monthly event is drawn on the red-curtain scene: classify()
     # returns 'concert' for the frame (g1067/g1107/g1139), never 'dialogue', so
@@ -157,6 +173,9 @@ def trade_guard_step(screen: Screen, mem, *, phase=None):
             guard['accept'], guard['strength'] = trade_accept_weak(mem, named)
     if not isinstance(guard, dict):
         return None
+    if any(tok in flat for tok in TRADE_COMPLETED_TOKENS):
+        mem.pop('trade_guard', None)
+        return None   # the result prose ("トレードしゅうりょう"): advance with A, never hold
     if guard.get('chosen') or screen.kind in ('map', 'map_target', 'month_menu', 'battle', 'world_map'):
         mem.pop('trade_guard', None)
         return None
