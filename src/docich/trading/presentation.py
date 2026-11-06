@@ -363,7 +363,7 @@ def _fill(
                 body += " / 実現損益 取得失敗"
                 speech += "損益は確認できませんでした。"
             else:
-                body += f" / 今回の確定損益 {pnl_text}円"
+                body += f" / 今回の実現損益 {pnl_text}円"
                 if pnl_value == 0:
                     speech += "損益はプラスマイナスゼロです。"
                 else:
