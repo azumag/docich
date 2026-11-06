@@ -882,10 +882,14 @@ def castle_jump_step(screen, mem, frame):
                 mem['select_tick'] = tick
                 mem.pop('castle_jump', None)
                 mem.pop('castle_jump_skip', None)
+                # Reanchoring is a prerequisite, not the finished action.
+                # Release this map frame to the normal dispatcher.
+                mem['reanchor_resume'] = {'source': jump['source'], 'tick': tick,
+                                          'active_before': mem.get('active')}
                 _record(mem, 'cursor_reanchor_confirm', target=jump['source'],
                         observed_metric={'cell': list(cell), 'screen_cursor': list(cursor)},
-                        reason='しろ一覧のアルマムーンでSELECTが完了したため屋根検出なしでその座標を基準点にする')
-                return []
+                        reason='アルマムーンのSELECTで座標を復旧し中断した処理を再評価する')
+                return None
             # The named own-castle row was selected before SELECT. Its field
             # return is the navigation evidence; the cursor sprite can cover
             # every roof pixel, so an absent detected roof is not a refusal.
@@ -920,6 +924,61 @@ def castle_jump_step(screen, mem, frame):
             return _end_castle_jump(screen, mem, 'select_opens_status')
         return []
     return _end_castle_jump(screen, mem, 'unknown_phase:' + str(phase))
+
+
+def note_reanchor_followup(screen, mem, actions):
+    """Trace the action after SELECT reanchoring, or why a safe hold remains.
+
+    A foreground flow may legitimately own the map before the sortie planner.
+    Keep this receipt until a real policy action is selected.
+    """
+    resume = mem.get('reanchor_resume')
+    if not isinstance(resume, dict):
+        return
+    if resume.get('source') not in chart.castles(mem.get('chapter') or 0):
+        mem.pop('reanchor_resume', None)
+        return
+    tick = int(mem.get('tick') or 0)
+    if actions:
+        mem.pop('reanchor_resume', None)
+        _record(mem, 'cursor_reanchor_resumed', screen=screen.kind,
+                observed_metric={'source': resume.get('source'),
+                                 'active_before': resume.get('active_before'),
+                                 'active_after': mem.get('active'),
+                                 'actions': actions[:3]},
+                reason='位置復旧後、通常の優先順位で中断していた操作または次の行動を選んだ')
+        return
+    previous = resume.get('wait_report_tick')
+    if previous is not None and tick - int(previous) < 20:
+        return
+    resume['wait_report_tick'] = tick
+    status = mem.get('post_month_status') or {}
+    if isinstance(status, dict) and status.get('stage') == 'blocked':
+        blocked_by = 'post_month_status_blocked'
+        why = '月次ステータス確認が失敗状態のため通常操作を安全に再開できない'
+    elif mem.get('_map_registration_hold'):
+        blocked_by = 'map_registration'
+        why = '地図登録・座標確認が操作を保留している'
+    elif mem.get('map_idle_tick') == tick and mem.get('active') is None:
+        blocked_by = 'no_ready_order'
+        why = '中断前の指示と次の計画を再評価したが実行可能な出撃・移動がない'
+    elif mem.get('active'):
+        blocked_by = 'active_order_wait'
+        why = '中断中の指示を再評価したが出撃元の確認などで入力を保留している'
+    elif isinstance(status, dict) and status:
+        blocked_by = 'post_month_status:' + str(status.get('stage'))
+        why = '月次ステータス処理が継続中のため出撃計画へ戻っていない'
+    else:
+        blocked_by = 'other_flow_hold'
+        why = '通常処理を再評価したがこの観測では安全な入力が決まらない'
+    _record(mem, 'cursor_reanchor_wait', screen=screen.kind,
+            observed_metric={'blocked_by': blocked_by, 'active': mem.get('active'),
+                             'active_before': resume.get('active_before'),
+                             'plan_steps': [o.get('step') for o in
+                                            (mem.get('chart_plan') or {}).get('orders', [])[:8]],
+                             'orders': {k: v for k, v in list((mem.get('orders') or {}).items())[:8]},
+                             'wait_ticks': tick - int(resume.get('tick') or tick)},
+            reason=why)
 
 
 def map_step(screen: Screen, mem, frame):
@@ -1146,7 +1205,13 @@ def map_step(screen: Screen, mem, frame):
                         reason='マップ位置を屋根アンカーで再特定できないため入力を保留')
             return []
     if result == 'arrived':
-        if not _roof_under_cursor(screen, frame) and _hold_off_castle(screen, mem, order):
+        # A named SELECT return is stronger than roof pixels obscured by the
+        # cursor. The deploy flow still checks the actual source castle name.
+        resume = mem.get('reanchor_resume') or {}
+        selected_source = (resume.get('source') == source
+                           and mem.get('anchor') == source
+                           and not mem.get('uncertain'))
+        if not selected_source and not _roof_under_cursor(screen, frame) and _hold_off_castle(screen, mem, order):
             return []
         mem.pop('off_castle', None)
         # If no castle menu follows, the cell was wrong: re-localize.
