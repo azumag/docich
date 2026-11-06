@@ -724,6 +724,7 @@ def _start_reanchor_jump(mem, *, owner=None):
         owner = 'sortie_plan' if mem.get('active') else 'map_navigation'
     monthly = mem.get('post_month_status') if owner == 'post_month_status' else None
     return_to = {'owner': owner, 'chapter': chapter, 'month': mem.get('month'),
+                 'active_step': mem.get('active'),
                  'stage': monthly.get('stage') if isinstance(monthly, dict) else None,
                  'scope': list(monthly.get('scope') or []) if isinstance(monthly, dict) else None}
     mem['castle_jump'] = {'mode': 'reanchor', 'step': None, 'source': home,
@@ -896,7 +897,8 @@ def castle_jump_step(screen, mem, frame):
                 # Release this map frame to the normal dispatcher.
                 mem['reanchor_resume'] = {
                     'source': jump['source'], 'tick': tick,
-                    'active_before': mem.get('active'),
+                    'active_before': (jump.get('return_to') or {}).get('active_step',
+                                                                         mem.get('active')),
                     **(jump.get('return_to') or {}),
                 }
                 _record(mem, 'cursor_reanchor_confirm', target=jump['source'],
