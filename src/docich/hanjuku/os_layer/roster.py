@@ -390,6 +390,11 @@ def observed_member(mem, names):
     if (not names or len(names) > MAX_GENERALS or len(set(names)) != len(names)
             or any(not isinstance(n, str) or not 1 <= len(n) <= 32 for n in names)):
         return
+    # Count newly observed members independently of payroll/status reuse.
+    # After a month change the retained complete list can still drive the
+    # status card even when no current survey or retained bill exists.
+    for name in names:
+        record_join(mem, name)
     survey = completed_survey(mem)
     held = _payroll_hold_wages(mem)
     if survey is None and held is None:
@@ -402,8 +407,6 @@ def observed_member(mem, names):
         # month incomplete (g1097 18:35: roster_complete false), so the month
         # could never be carried and the full status walk ran again.
         return
-    for name in names:
-        record_join(mem, name)  # a new observed member stays visible as a count
     source = deepcopy(survey) if survey is not None and month_carry_enabled() else None
     wages = dict(held or {})
     if survey is not None:
