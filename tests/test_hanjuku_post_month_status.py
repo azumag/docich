@@ -1007,3 +1007,120 @@ def test_end_stall_never_completes_a_partial_walk():
                   if r['decision'] == 'post_month_status_unverified']
     assert len(unverified) == 1
     assert unverified[0]['observed_metric']['selected'] == 'マカデミア'
+
+
+def test_lost_march_general_is_rechecked_by_the_next_status_pass():
+    # 2026-11-07: a march record expired while a monthly pass was running. The
+    # pass committed its snapshot and dropped the queued location dirty flag,
+    # so the general stayed in ``general_location_unknown`` and every later
+    # month reused the cache: his status was never opened again. The unknown
+    # entry itself must request the next individual status confirmation.
+    mem = _persistent_memory('どうし', 'ゼウス')
+    _world(mem)['garrison']['アルマムーン'] = ['どうし']
+    _world(mem)['general_location_unknown'] = ['ゼウス']
+    assert mem['general_statuses']['dirty'] == {}
+    post.arm(mem)
+    state = mem['post_month_status']
+    assert state['stage'] == 'await_map'
+    assert state['dirty'] == ['ゼウス']
+    assert mem['post_month_status'] is state
+    state['stage'] = 'roster'
+    first = parse(roster(names=('どうし', 'ゼウス'), selected=0))
+    second = parse(roster(names=('どうし', 'ゼウス'), selected=1))
+    assert post.step(first, mem, None) == [pad('down')]
+    assert post.step(second, mem, None) == []
+    assert post.step(second, mem, None) == [pad('a')]
+    assert post.step(parse(status('ゼウス', egg='エラベルエッグ4')), mem, None) == [pad('b')]
+    assert post.step(second, mem, None) == [pad('down')]
+    assert post.step(second, mem, None) == [pad('b')]
+    # The status only says しろのなかにいます; the castle name comes from the
+    # SELECT locate task, never from the stale pre-march row.
+    assert state['tasks'] == [{'kind': 'locate', 'name': 'ゼウス'}]
+    assert _world(mem)['general_location_unknown'] == ['ゼウス']
+
+
+def test_unknown_location_outside_the_verified_roster_is_pruned():
+    # g1139 2026-11-07 23:40: a departed general's leftover sortie expired and
+    # queued a location recheck. He is not on the verified roster, so no status
+    # pass could ever read him; the entry stayed and kept him unavailable.
+    mem = _persistent_memory('どうし')
+    _world(mem)['general_location_unknown'] = ['セルリアク']
+    post.arm(mem)
+    assert _world(mem)['general_location_unknown'] == []
+    assert 'post_month_status' not in mem
+    pruned = [r for r in mem['_records']
+              if r['decision'] == 'post_month_unknown_location_pruned']
+    assert len(pruned) == 1
+    assert pruned[0]['observed_metric']['generals'] == ['セルリアク']
+
+
+def test_unknown_joined_general_is_kept_until_the_roster_reads_him():
+    mem = _persistent_memory('どうし')
+    mem['general_statuses']['pending_joins'] = ['ゼウス']
+    _world(mem)['general_location_unknown'] = ['ゼウス']
+    post.arm(mem)
+    assert _world(mem)['general_location_unknown'] == ['ゼウス']
+    state = mem['post_month_status']
+    assert state['stage'] == 'await_map'  # the pending join forces the walk
+    assert 'ゼウス' not in state['dirty']  # read as a new name, not as cached
+
+
+def test_completed_walk_prunes_unknown_names_the_roster_does_not_hold():
+    mem = memory()
+    post.arm(mem)
+    state = _full_walk_state(mem, EIGHT_GENERALS)
+    _world(mem)['general_location_unknown'] = ['セルリアク', EIGHT_GENERALS[0]]
+    last = parse(roster(names=EIGHT_GENERALS, selected=7))
+    assert post.step(last, mem, None) == [pad('down')]
+    assert post.step(last, mem, None) == [pad('down')]
+    assert post.step(last, mem, None) == [pad('b')]
+    assert mem['general_statuses']['complete'] is True
+    assert _world(mem)['general_location_unknown'] == [EIGHT_GENERALS[0]]
+
+
+def test_departed_general_leaves_the_unknown_location_queue():
+    # The purge read the flat key after the world region had migrated it, so a
+    # general proven absent from the roster stayed queued for a recheck.
+    mem = memory()
+    post.arm(mem)
+    state = mem['post_month_status']
+    state.update(stage='roster', names=[EIGHT_GENERALS[0]], dirty=[],
+                 markers={}, top_confirmed=True, list_moves=1,
+                 statuses={EIGHT_GENERALS[0]: _known_status(EIGHT_GENERALS[0]),
+                           'セルリアク': _known_status('セルリアク')})
+    _world(mem)['general_location_unknown'] = ['セルリアク']
+    short = parse(roster(names=(EIGHT_GENERALS[0],), selected=0))
+    assert post.step(short, mem, None) == [pad('b')]
+    assert _world(mem)['general_location_unknown'] == []
+    departed = [r for r in mem['_records']
+                if r['decision'] == 'post_month_general_departed']
+    assert [r['general'] for r in departed] == ['セルリアク']
+
+
+def test_a_recheck_queued_during_the_pass_still_reaches_the_next_month():
+    # A march can expire while the monthly walk is running. The pass commits
+    # its snapshot with an empty dirty set, so the flag queued by the expiry
+    # disappears; the unknown entry must still schedule the next read.
+    from docich.hanjuku.strategy import orders
+    mem = _persistent_memory('どうし', 'ゼウス')
+    # Force the walk without a dirty flag: only the headcount looks wrong.
+    mem['country_general_count'] = {'scope': [1, '1-7'], 'identity': None,
+                                    'count': 3}
+    post.arm(mem)
+    state = mem['post_month_status']
+    assert state['dirty'] == []
+    mem.pop('country_general_count')  # only needed to open the walk
+    state.update(stage='roster', names=['どうし', 'ゼウス'], top_confirmed=True,
+                 list_moves=2, markers={})
+    orders._queue_overdue_location_recheck(
+        mem, {'general': 'ゼウス', 'source': 'アルマムーン',
+              'target': 'ジョンリギ', 'tick': 1})
+    assert mem['general_statuses']['dirty'] == {'ゼウス': ['location']}
+    assert _world(mem)['general_location_unknown'] == ['ゼウス']
+    short = parse(roster(names=('どうし', 'ゼウス'), selected=1))
+    assert post.step(short, mem, None) == [pad('b')]
+    assert mem['general_statuses']['dirty'] == {}  # the pass overwrote it
+    assert _world(mem)['general_location_unknown'] == ['ゼウス']
+    mem['month'] = '1-8'
+    post.arm(mem)
+    assert mem['post_month_status']['dirty'] == ['ゼウス']

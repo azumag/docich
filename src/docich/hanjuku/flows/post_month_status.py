@@ -115,6 +115,32 @@ def arm(mem):
                       and count.get('scope') == scope and count.get('identity') == identity
                       and type(count.get('count')) is int
                       and count['count'] != len(statuses))
+    # ``general_location_unknown`` is itself the request for the next
+    # individual status confirmation (an expired march, or a general who lost
+    # a battle). Schedule it from that list instead of trusting only the
+    # cached field flags: a request recorded while a monthly pass was running
+    # is dropped when that pass commits its snapshot, and a cached row that
+    # still names an owned castle never turns dirty on its own — the general
+    # was then never re-read (2026-11-07: a lost march stayed unavailable
+    # while every month reused the cache).
+    world = _world(mem)
+    unknown = [name for name in (world.get('general_location_unknown') or ())
+               if isinstance(name, str) and name]
+    members = set(statuses) | set(pending)
+    if cache is not None and unknown:
+        # A verified roster is the membership proof: a name it does not hold
+        # cannot be an employed general whose whereabouts are unknown.
+        dropped = [name for name in unknown if name not in members]
+        if dropped:
+            world['general_location_unknown'] = [
+                name for name in unknown if name in members]
+            unknown = [name for name in unknown if name in members]
+            _log(mem, 'post_month_unknown_location_pruned',
+                 observed_metric={'generals': dropped, 'members': len(members)},
+                 reason='確定済みの名簿にいない将軍は雇用中の所在不明ではないため再確認対象から外す')
+    for name in unknown:
+        if name in statuses:
+            stale.add(name)
     scan = cache is None or bool(stale or pending or count_mismatch)
     # A castle recorded while its ownership was stale is now usable the moment
     # the Y map shows our flag; do not wait for another roster SELECT.
@@ -157,6 +183,7 @@ def arm(mem):
     _log(mem, 'post_month_status_armed',
          observed_metric={'scope': scope, 'cached': len(statuses),
                           'reopen': sorted(stale), 'joins': pending,
+                          'unknown_location': list(unknown),
                           'promoted': promoted,
                           'count_mismatch': count_mismatch},
          reason=('変更があり得る将軍だけ個別ステータスを再取得する'
@@ -372,11 +399,27 @@ def _complete_scan(mem, state):
         for key in ('house_eggs', 'egg_types', 'egg_uses'):
             if isinstance(mem.get(key), dict):
                 mem[key].pop(name, None)
-        for key in ('general_location_unknown', 'egg_recheck', 'roster_pending_joins'):
+        for key in ('egg_recheck', 'roster_pending_joins'):
             if isinstance(mem.get(key), list):
                 mem[key] = [actor for actor in mem[key] if actor != name]
+        # ``general_location_unknown`` lives in the world region; the flat
+        # read here never matched it, so a departed general stayed queued for
+        # a status confirmation he could never receive.
+        unknown = _world(mem).get('general_location_unknown')
+        if isinstance(unknown, list) and name in unknown:
+            unknown.remove(name)
         _log(mem, 'post_month_general_departed', general=name,
              reason='将軍名簿を末尾まで実測したが本人がいないため旧状態を除籍')
+    # A name that was never in the cached statuses cannot be purged by the
+    # ``missing`` loop above, yet the completed walk is the same membership
+    # proof: only names on this list are employed generals.
+    world = _world(mem)
+    unknown = world.get('general_location_unknown')
+    if isinstance(unknown, list):
+        known = set(state['names'])
+        kept = [name for name in unknown if name in known]
+        if len(kept) != len(unknown):
+            world['general_location_unknown'] = kept
     state['statuses'] = {name: state['statuses'][name] for name in state['names']}
     state['tasks'] = _tasks(state['statuses'], state['names'],
                             mem.get('boss_camp_exempt'))
