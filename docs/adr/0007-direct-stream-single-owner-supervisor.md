@@ -1,6 +1,6 @@
 # ADR 0007: 直接配信エンコーダーの単一所有者を docich にする
 
-- 状態: **方針確定（2026-11-07）。段階 A〜D と D2（運用ツールの所有者認識）は実装・マージ済み（本番未適用）。段階 E（本番切替）は、§5 の未解決の前提（unit の install 手段）を決めたうえで、実行の直前に時刻を示して明示承認を得てから行う**。この文書のマージは本番切替の承認ではない。
+- 状態: **方針確定（2026-11-07）。段階 A〜D、D2、unit の配置ツールは実装・マージ済み（本番未適用）。段階 E（本番切替）は、実行の直前に時刻を示して明示承認を得てから行う**。この文書のマージは本番切替の承認ではない。
 - 関連: ADR 0006（リポジトリ境界）、docich #3621 / #3625 / #3633 / #3635 / #3638 / #3640 / #3642
 - 方針: 二重 encoder を絶対に起こさない。稼働中の配信を止める手順は、利用者の明示承認と作業窓なしに実行しない。
 
@@ -88,9 +88,13 @@ A〜D は本番を触らずに進められる。E は §5 の承認なしに実�
 
 **マーカーの対応（D2 で確定）**: 旧 supervisor のマーカーは `tmp/state/direct_stream.paused`、docich は `tmp/state/docich_stream.paused`（別ファイル）。手順 1 の `direct_stream.paused` は旧 worker の再起動を止めるためのもので、切替後も supervisor が一度再起動されるまで残してよい。切替後の WebUI の停止/開始と正午監査は docich のマーカーだけを操作する。`docich-stream.service` は `Restart=always`（非所有者の終了コード 75 のみ再起動しない）なので、マーカーを作って runner を停止し、後でマーカーを外すだけで、sudo なしに停止/開始できる。
 
-**未解決の前提（段階 E の前に決める）**
-- **unit の install 手段**: `/etc/systemd/system/docich-stream.service` への配置と `systemctl daemon-reload`/`start` には root 権限が要る。リポジトリには、この unit を install する承認済みの手段（`install_soren_runtime_service.sh` の対応物）がまだ無い。承認が必要な作業として、`--status` / `--print-config` / `--install --confirm-...` の形の導入スクリプトを別 PR で用意するか、運用者が手動で行うかを決める。
-- 本番 `.env` が ffmpeg backend であること、`DOCICH_STREAM_OWNER` の設定、固定ロックのディレクトリ整備、Pulse の読取確認（§7-4）は、段階 E の事前条件のまま（VM 未確認）。
+**unit の配置と事前条件の確認（実装済み、`bin/docich-stream-install`）**
+- `--status`（読取専用）が段階 E の事前条件を一括で読む: unit の配置状態とハッシュ一致、`is-enabled`/`is-active`、wrapper の実行可否、固定ロックのディレクトリ、`.env` の backend／所有者フラグ／固定ロックのフラグ（**列挙値のみ。他の値は出さない**）、Pulse の応答と `soren_null` の有無、両マーカー。
+- `--install --confirm-unit-placement` は unit を `root:root 0644` で置いて `daemon-reload` するだけ。`enable`/`start`/`restart`/`stop`/`disable` は一切しない（テストで固定）。既に別内容の unit があれば上書きしない。
+- `--provision-lock-dir --confirm-lock-dir` は固定ロックの 0700 ディレクトリだけを作る（空のディレクトリは固定ロックを有効化しない）。
+- どれも段階 E の「切替」ではない。配置と切替は別の承認として扱う。
+
+**段階 E の事前条件（`--status` で読み取り確認する。VM 未確認）**: `env.backend=ffmpeg`、`pulse.server_answers=true` かつ `soren_null_sink=true`、`lock_dir=ready`、`unit.matches_source=true`（配置済み）、`unit.enabled/active` が意図どおり（配置直後は `disabled`/`inactive`）、旧 runner の状態と PID の記録。
 
 **ロールバック**
 - `systemctl stop docich-stream.service`（graceful。ここでも短い中断）→ `.env` を `DOCICH_STREAM_OWNER=soren` に戻す → `rm tmp/state/direct_stream.paused`。supervisor が backoff 後に旧 worker を再起動する。旧 state_dir ロックは docich 側も取っていたため二重起動は起こらない。
