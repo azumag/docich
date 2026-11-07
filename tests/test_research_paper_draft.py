@@ -8,7 +8,7 @@ from docich.web_material import VerifiedWebBundle, VerifiedWebMaterial
 
 URL = "https://example.org/papers/synthetic-observation-study"
 SUPPLEMENT = "https://example.org/papers/synthetic-observation-study/supplement"
-AGENT = "cloudflare-api:cf/qwen/qwen3-30b-a3b-fp8"
+AGENT = "cloudflare-api:cf/meta/llama-3.1-8b-instruct-fp8-fast"
 
 
 def metadata():
