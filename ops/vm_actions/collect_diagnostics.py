@@ -221,7 +221,7 @@ _HARD_DROP_ORDER = ("corners", "ai", "workers", "nethack_history",
 # the production envelope stays above the ceiling the 予想王 ledger can only be
 # observed from a run that happened to fit. ``prediction`` duplicates the same
 # already-bounded dicts under a key the whole-section drops never take away.
-_HARD_KEEP = ("meta", "prediction", "lawsim")
+_HARD_KEEP = ("meta", "prediction", "lawsim", "severity_triggers")
 # Production thresholds of the 予想王 boards, kept in sync with
 # ``docich.prediction_leaderboard.DEFAULT_MIN_ROUNDS`` /
 # ``DEFAULT_MIN_PARTICIPATIONS``: the yoso adapter passes no ``--min-rounds`` or
@@ -10096,73 +10096,138 @@ def _worker_down_severity(workers, lifecycle_pause=None):
     return "warn"
 
 
-def _severity(workers, queues, ai, improvement, corners=None, hanjuku_resume=None, lifecycle_pause=None):
+# Fixed names for every condition that can raise ``status`` above ``ok``
+# (#3658). The map is emitted under ``severity_triggers`` so the public runtime
+# summary can name the branch that fired instead of showing ``warn`` next to
+# all-zero actionable counters. It is computed at severity time -- before
+# ``_diagnostics_budget`` may stub the evidence sections -- and the key is in
+# ``_HARD_KEEP`` so the trigger names survive even when the section that
+# caused them does not.
+SEVERITY_TRIGGERS = (
+    "hanjuku_resume_detached_claim",
+    "retro_corner_recovery_required",
+    "corner_rotation_recovery_required",
+    "required_worker_stale",
+    "required_worker_down",
+    "paused_workers_actionable",
+    "unregistered_workers_actionable",
+    "worker_duplicates",
+    "worker_zombies",
+    "stale_locks",
+    "ai_all_failed",
+    "ai_queue_giveups",
+    "improvement_stale",
+    "improvement_retry_pending",
+    "improvement_persist_fail",
+    "improvement_persist_stale",
+    "improvement_persist_unreadable",
+    "improvement_persist_failure",
+    "improvement_persist_clone_disappeared",
+)
+
+
+def _positive_count(value):
+    return isinstance(value, int) and not isinstance(value, bool) and value > 0
+
+
+def _nonnegative_int(value):
+    return isinstance(value, int) and not isinstance(value, bool) and value >= 0
+
+
+def _severity_report(workers, queues, ai, improvement, corners=None, hanjuku_resume=None, lifecycle_pause=None):
+    """Evaluate every severity condition and name the branches that fired.
+
+    Returns ``{"status": ..., "triggers": {name: bool}}``. Unlike the former
+    early-return ladder, every warn condition is evaluated so the payload can
+    carry all contributing triggers; ``status`` keeps the exact same value as
+    before.
+    """
+    triggers = {name: False for name in SEVERITY_TRIGGERS}
     worker_down_sev = _worker_down_severity(workers, lifecycle_pause)
-    if worker_down_sev == "critical":
-        return "critical"
+    workers = workers if isinstance(workers, dict) else {}
+    queues = queues if isinstance(queues, dict) else {}
+    ai = ai if isinstance(ai, dict) else {}
+    improvement = improvement if isinstance(improvement, dict) else {}
+    triggers["required_worker_stale"] = bool(workers.get("required_stale"))
+    triggers["required_worker_down"] = bool(workers.get("required_down"))
     # A detached resume claim is an actionable operational condition: raise it
     # through the runtime health alert so the owner is notified within hours
     # (#2870). Normal claimed/queued/verified transitions must not trigger.
-    if isinstance(hanjuku_resume, dict) and hanjuku_resume.get("status") == "detached_claim":
-        return "warn"
+    triggers["hanjuku_resume_detached_claim"] = (
+        isinstance(hanjuku_resume, dict)
+        and hanjuku_resume.get("status") == "detached_claim"
+    )
     retro = corners.get("retro_corner") if isinstance(corners, dict) else None
-    if isinstance(retro, dict) and retro.get("recovery_required") is True:
-        return "warn"
+    triggers["retro_corner_recovery_required"] = (
+        isinstance(retro, dict) and retro.get("recovery_required") is True
+    )
     # A latched common rotation stops every automatic corner while the shared
     # plane stays healthy, so it must reach the runtime health alert (#986).
     rotation = corners.get("corner_rotation") if isinstance(corners, dict) else None
-    if isinstance(rotation, dict) and rotation.get("status") == "recovery_required":
-        return "warn"
-    if worker_down_sev == "warn":
-        return "warn"
+    triggers["corner_rotation_recovery_required"] = (
+        isinstance(rotation, dict) and rotation.get("status") == "recovery_required"
+    )
+    triggers["paused_workers_actionable"] = _paused_workers_actionable(workers)
+    triggers["unregistered_workers_actionable"] = _unregistered_workers_actionable(workers)
+    triggers["worker_duplicates"] = bool(workers.get("duplicates"))
+    triggers["worker_zombies"] = bool(workers.get("zombies"))
+    triggers["stale_locks"] = _positive_count(queues.get("stale_locks"))
     # radio_prepass is an optional pre-pass: its all_failed / budget_exhausted
     # iterations are structural (8-candidate chain vs 60s/30s cap, docich#3657)
     # and only cost a skipped corner generation, so they must not raise WARN.
     # budget_exhausted never feeds this gate anyway; only the all_failed count
     # needs the prepass contribution subtracted. queue_giveups and every other
     # component's all_failed still signal real provider outages (docich#3661).
-    all_failed_components = ai.get("all_failed_components") or {}
-    actionable_all_failed = ai["all_failed"] - all_failed_components.get("radio_prepass", 0)
-    if (
-        _paused_workers_actionable(workers)
-        or _unregistered_workers_actionable(workers)
-        or workers["duplicates"]
-        or workers["zombies"]
-        or queues["stale_locks"] > 0
-        or actionable_all_failed > 0
-        or ai["queue_giveups"] > 0
-        or improvement["stale"]
-        or improvement["retry_pending"]
-    ):
-        return "warn"
+    all_failed_components = ai.get("all_failed_components")
+    all_failed_components = all_failed_components if isinstance(all_failed_components, dict) else {}
+    raw_all_failed = ai.get("all_failed")
+    prepass_all_failed = all_failed_components.get("radio_prepass", 0)
+    actionable_all_failed = (
+        raw_all_failed - prepass_all_failed
+        if _nonnegative_int(raw_all_failed) and _nonnegative_int(prepass_all_failed)
+        else 0
+    )
+    triggers["ai_all_failed"] = actionable_all_failed > 0
+    triggers["ai_queue_giveups"] = _positive_count(ai.get("queue_giveups"))
+    triggers["improvement_stale"] = bool(improvement.get("stale"))
+    triggers["improvement_retry_pending"] = bool(improvement.get("retry_pending"))
     # An adopted strategy that never reached the reviewed lineage (docich#657,
     # #2489) is an actionable regression even while the loop itself keeps
     # running. A later successful/no-change persist overwrites the status and
     # clears the durable failure record.
     persist = improvement.get("persist")
-    clone_disappeared = (
-        isinstance(persist, dict)
-        and persist.get("clone_present") is False
+    persist = persist if isinstance(persist, dict) else {}
+    triggers["improvement_persist_fail"] = persist.get("result") == "fail"
+    triggers["improvement_persist_stale"] = bool(persist.get("stale"))
+    triggers["improvement_persist_unreadable"] = (
+        bool(persist.get("present")) and not persist.get("readable")
+    )
+    # clone_missing is only actionable while the improve loop is running; a
+    # projection deployment without soren-persist is normal when it is idle.
+    failure = persist.get("last_failure")
+    triggers["improvement_persist_failure"] = (
+        isinstance(failure, dict)
+        and (failure.get("reason") != "clone_missing" or bool(improvement.get("running")))
+    )
+    triggers["improvement_persist_clone_disappeared"] = (
+        persist.get("clone_present") is False
         and (
             bool(improvement.get("running"))
             or persist.get("last_success_at") is not None
         )
     )
-    # clone_missing is only actionable while the improve loop is running; a
-    # projection deployment without soren-persist is normal when it is idle.
-    failure = persist.get("last_failure") if isinstance(persist, dict) else None
-    failure_actionable = isinstance(failure, dict) and (
-        failure.get("reason") != "clone_missing" or bool(improvement.get("running"))
+    status = (
+        "critical" if worker_down_sev == "critical"
+        else "warn" if any(triggers.values())
+        else "ok"
     )
-    if isinstance(persist, dict) and (
-        persist.get("result") == "fail"
-        or persist.get("stale")
-        or (persist.get("present") and not persist.get("readable"))
-        or failure_actionable
-        or clone_disappeared
-    ):
-        return "warn"
-    return "ok"
+    return {"status": status, "triggers": triggers}
+
+
+def _severity(workers, queues, ai, improvement, corners=None, hanjuku_resume=None, lifecycle_pause=None):
+    return _severity_report(
+        workers, queues, ai, improvement, corners, hanjuku_resume, lifecycle_pause
+    )["status"]
 
 
 # Fixed v1 Soren91 sent-to-sent metrics, never game acceptance or raw records.
@@ -15207,11 +15272,15 @@ def main(argv):
     corners = _collect_programs(_program_state_dir(), soren, now)
     hanjuku_resume = _collect_hanjuku_resume(_program_state_dir())
     lifecycle_pause = _collect_lifecycle_pause(soren, now, workers)
+    severity_report = _severity_report(
+        workers, queues, ai, improvement, corners, hanjuku_resume, lifecycle_pause
+    )
     title_sync = _collect_stream_title_sync(
         soren, now, meta.get("soren_gitlink_sha"), meta.get("soren_code")
     )
     payload = {
-        "status": _severity(workers, queues, ai, improvement, corners, hanjuku_resume, lifecycle_pause),
+        "status": severity_report["status"],
+        "severity_triggers": severity_report["triggers"],
         "meta": meta,
         "stream_title_sync": title_sync,
         "twitch_oauth": _collect_twitch_oauth(now),
