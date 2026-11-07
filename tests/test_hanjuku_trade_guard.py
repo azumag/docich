@@ -544,5 +544,5 @@ def test_completed_trade_dialogue_releases_held_guard(phase):
 
 def test_exchange_word_alone_does_not_release_pending_choice():
     mem = {'tick': 30, 'trade_guard': {'tick': 10, 'choice_seen': True}}
-    assert policy.trade_guard_step(text('ゼウスとこうかんする?'), mem, phase='concert') == []
+    assert policy.trade_guard_step(text('ゼウスとこうかんする?'), mem, phase='dialogue') == []
     assert mem['trade_guard']['held'] is True
