@@ -1492,10 +1492,17 @@ def _step_once(screen, mem, frame):
         return []
     if phase == 'level_status':
         # Each count must come from a visible row; missing text is unknown.
-        if 'わがくにのじょうたい' in screen.text.replace(' ', ''):
+        if ('じょうたい' in screen.text.replace(' ', '')
+                or 'しょうぐんにんすう' in screen.text.replace(' ', '')
+                or 'へいし' in screen.text.replace(' ', '')):
             from ..os_layer.roster import run_identity
             scope = [mem.get('chapter'), mem.get('month')]
-            generals = _status_row_value(screen, 'しょうぐんにんすう')
+            generals = None
+            for label in ('しょうぐんにんすう', 'しょうぐんすう', 'しょうぐんのかず',
+                          'しょうぐんのすう', 'そうしょうぐんすう'):
+                generals = _status_row_value(screen, label)
+                if generals is not None:
+                    break
             if type(generals) is int and 0 <= generals <= 32:
                 mem['country_general_count'] = {
                     'scope': scope, 'identity': run_identity(mem.get('_run_identity')),

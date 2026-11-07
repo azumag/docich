@@ -6960,6 +6960,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v506-roster-end-stall",
             "hanjuku-chart-v507-trade-result-release",
             "hanjuku-chart-v508-unknown-location-recheck",
+            "hanjuku-chart-v509-month-status-counts-and-recruit-priority",
             "hanjuku-chart-v501-idle-reanchor",
             "hanjuku-chart-v502-idle-and-roster-joins",
             "hanjuku-chart-v503-month-start-counts",
