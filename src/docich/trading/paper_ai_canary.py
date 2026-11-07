@@ -23,7 +23,7 @@ from typing import Callable, Mapping
 from .ai_text import generate_text
 from .corner_research import prepare_research_context
 
-CANARY_AGENT = "cloudflare-api:cf/qwen/qwen3-30b-a3b-fp8"
+CANARY_AGENT = "cloudflare-api:cf/meta/llama-3.1-8b-instruct-fp8-fast"
 CANARY_LABEL = "RADIO:paper-canary"
 CANARY_PROMPT_MAX_BYTES = 16384
 _ACCOUNT_RE = re.compile(r"^[A-Fa-f0-9]{32}$")

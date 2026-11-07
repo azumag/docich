@@ -69,7 +69,7 @@ a stored BYOK alias or alternate search provider is ignored for this acceptance
 probe.
 
 The fixed direct model is
-`cloudflare-api:cf/qwen/qwen3-30b-a3b-fp8`. The CLI does not accept an
+`cloudflare-api:cf/meta/llama-3.1-8b-instruct-fp8-fast`. The CLI does not accept an
 arbitrary model, endpoint, URL, command, output path or provider fallback.
 
 ```console
@@ -82,7 +82,7 @@ A successful result is shaped like:
 ```json
 {
   "asset_background": true,
-  "direct_agent": "cloudflare-api:cf/qwen/qwen3-30b-a3b-fp8",
+  "direct_agent": "cloudflare-api:cf/meta/llama-3.1-8b-instruct-fp8-fast",
   "output_chars": 120,
   "output_sha256": "<sha256>",
   "production_state_written": false,
