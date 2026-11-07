@@ -1172,6 +1172,35 @@ html[data-soren-region="sidebar"] #hanjuku-gap,
 html[data-soren-region="top"] #hanjuku-gap,
 html[data-soren-region="bottom"] #hanjuku-gap { display: none !important; }
 
+/* Next-corner advance notice: docich's rotation decides the next corner before
+   it is due and the state adapter publishes it as `nextCorner`. The card sits
+   above the GAME feed while sorengame is on air; during a corner the rotation
+   withdraws the record, so the card and its height are not reserved. */
+#next-corner {
+  display: none;
+  margin-top: 8px;
+  padding: 4px 6px;
+  height: 46px;
+  border: 1px solid #b7791f;
+  border-radius: 7px;
+  background: rgba(245, 158, 11, .12);
+  color: #ffe8b0;
+  overflow: hidden;
+}
+html[data-next-corner="1"] #next-corner { display: block; }
+html[data-next-corner="1"] #feed { height: 634px; }
+html[data-prediction-active="1"][data-next-corner="1"] #feed { height: 570px; }
+.next-corner-head { color: #fbbf24; font-size: 8px; line-height: 10px; font-weight: 900; letter-spacing: .12em; }
+.next-corner-label {
+  margin-top: 1px;
+  font-size: 11px;
+  line-height: 14px;
+  font-weight: 800;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.next-corner-when { color: #fde68a; font-size: 13px; line-height: 15px; font-weight: 900; font-variant-numeric: tabular-nums; }
 </style>
 </head>
 <body>
@@ -1193,6 +1222,7 @@ html[data-soren-region="bottom"] #hanjuku-gap { display: none !important; }
   <section id="bottom-rail" class="rail" aria-live="polite"><div id="toast-grid"></div></section>
   <aside id="broadcast-sidebar">
     <div class="feed-head"><span id="feed-label">GAME + OPS</span><span id="feed-age">--</span></div>
+    <section id="next-corner" aria-label="次のコーナー" aria-live="polite"></section>
     <section id="prediction-round" aria-label="チャネルポイント予想" aria-live="polite"></section>
     <div id="feed">
       <section class="feed-panel panel-g">
@@ -2911,6 +2941,21 @@ html[data-soren-region="bottom"] #hanjuku-gap { display: none !important; }
       layout: { game: [0, 90, 960, 540], sidebar: [960, 0, 320, 720], rails: [90, 90] },
     };
   }
+  let lastNextCornerKey = '';
+  function renderNextCorner() {
+    const notice = state?.nextCorner;
+    const active = Boolean(notice && notice.label && notice.when);
+    document.documentElement.dataset.nextCorner = active ? '1' : '0';
+    const key = active ? `${notice.corner}|${notice.label}|${notice.when}` : '';
+    if (lastNextCornerKey === key) return;
+    lastNextCornerKey = key;
+    const panel = document.getElementById('next-corner');
+    if (!active) { panel.replaceChildren(); return; }
+    const body = dashNode('next-corner-body');
+    body.appendChild(dashNode('next-corner-label', `次のコーナー: ${notice.label}`));
+    body.appendChild(dashNode('next-corner-when', `${notice.when} 予定`));
+    panel.replaceChildren(dashNode('next-corner-head', 'NEXT CORNER'), body);
+  }
   function renderPrediction() {
     const lines = String(state?.feeds?.showStatus?.text || '').split('\n').map(line => line.trim());
     const progress = lines.find(line => line.startsWith('予想対象：'));
@@ -2922,6 +2967,7 @@ html[data-soren-region="bottom"] #hanjuku-gap { display: none !important; }
   }
   function render() {
     renderPrediction();
+    renderNextCorner();
     if (!state) return;
     renderFeed();
     renderTopRail();
