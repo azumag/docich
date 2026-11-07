@@ -80,10 +80,24 @@
 - `tests/test_hanjuku_diagnostics.py` は本変更前から `tmp_path` が
   module として渡る環境要因で43件エラー（今回の退行ではない）。
 
+## 本番反映（2026-11-07）
+
+- PR #3708 → main `5c98aafe`（CI: `ci-required` / hanjuku-suite / 各regression 成功）。
+- 稼働中の g1153 は hot-load で
+  `hanjuku-chart-v508-unknown-location-recheck` を判断ログに出し、
+  `post_month_status_armed.observed_metric.unknown_location` を記録している。
+  観測イベントの `bot_version` は agent プロセス起動時の値のままなので、
+  次回の通常再起動までは v507 と表示される（判断は v508）。
+- 初回の自動 deploy は、実行中に production checkout の HEAD を切り替えたため
+  `rollback_incomplete` で停止した。`deployment_intent` を除去し、
+  `games/soviet_now` を gitlink（`4b497120`）へ fast-forward して再 deploy し、
+  gateway `status` が `configured`（sha `5c98aafe`、ops brief matched）に戻った。
+  deploy 中の checkout 操作は自動 rebaseline が途中の HEAD を baseline に
+  採用し得るため行わない（follow-up Issue #3709）。
+
 ## 残件
 
 - 行軍中と読めた将軍は所在不明のまま翌月も再読する（到着まで計画外）。
   到着後の確定は従来どおり月次の locate に依存する。
 - 月次走査中の hp / egg dirty の取りこぼし（原因2の一般形）は未対応。
   必要になったら同様にキャッシュの dirty を引き継ぐ変更を別途行う。
-- 本番反映は PR・CI・main 統合の後。
