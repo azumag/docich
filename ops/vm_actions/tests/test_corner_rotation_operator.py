@@ -318,6 +318,31 @@ class CornerRotationAuthorizeTests(unittest.TestCase):
                 )
 
 
+class StaleOwnerResultProjectionTests(unittest.TestCase):
+    def test_mystery_result_is_not_misattributed_to_hanjuku(self):
+        import sys
+        module_path = ROOT / "src/docich/hanjuku_admin_result.py"
+        for mode, status in (("check", "admin-eligible"), ("release", "admin-released")):
+            raw = json.dumps({"status": "executed", "sha": "a" * 40,
+                              "exit_code": 0, "output": "withheld"})
+            result = subprocess.run(
+                [sys.executable, str(module_path), raw, mode, "a" * 40, "0", "mystery"],
+                capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(json.loads(result.stdout)["corner"], "mystery")
+            self.assertEqual(json.loads(result.stdout)["status"], status)
+
+    def test_legacy_result_keeps_hanjuku_corner(self):
+        import sys
+        raw = json.dumps({"status": "executed", "sha": "a" * 40,
+                          "exit_code": 0, "output": "withheld"})
+        result = subprocess.run(
+            [sys.executable, str(ROOT / "src/docich/hanjuku_admin_result.py"),
+             raw, "check", "a" * 40, "0"], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout)["corner"], "hanjuku-hero")
+
+
 class CornerRotationOperatorPolicyTests(unittest.TestCase):
     def test_restart_script_resolves_the_reviewed_unit_and_never_restarts_shared(self):
         text = SCRIPT.read_text(encoding="utf-8")
