@@ -61,6 +61,32 @@ class SharedRuntimePidTests(unittest.TestCase):
         return self.mod._collect_shared_runtime_pids(soren=self.soren, proc_root=self.proc,
                                                      docich_root=Path(self.tmp.name).resolve()/'docich')
 
+    def test_a_docich_owned_runner_is_collected_as_the_shared_stream(self):
+        uid = os.getuid()
+        self._make_proc(101, uid, 'ffmpeg', ['ffmpeg', '-f', 'x11grab', '-progress', 'pipe:1'], 1000, parent=103)
+        self._make_proc(102, uid, 'bash', ['/bin/bash', './workers/audio_worker.sh'], 2000)
+        self._make_proc(103, uid, 'python3', ['python3', '-m', 'docich.stream_supervisor', '--root', str(self.soren), 'run'], 3000)
+        sec = self.collect()
+        self.assertTrue(sec['scan_complete'])
+        self.assertEqual(sec['roles']['shared_stream']['pids'], [103])
+        self.assertTrue(self.mod.compare_shared_runtime_pids(sec, sec)['match'])
+        self.assertNotIn('stream_supervisor', json.dumps(sec), 'the command line is never published')
+
+    def test_lookalike_docich_runners_are_still_rejected(self):
+        uid = os.getuid()
+        self._make_proc(101, uid, 'ffmpeg', ['ffmpeg', '-f', 'x11grab', '-progress', 'pipe:1'], 1000, parent=103)
+        self._make_proc(102, uid, 'bash', ['/bin/bash', './workers/audio_worker.sh'], 2000)
+        for argv in (['python3', '-m', 'docich.stream_supervisor', 'status'],
+                     ['python3', '-m', 'docich.stream_supervisor', '--root', '/other', 'run'],
+                     ['python3', '-m', 'docich.stream_supervisor_evil', 'run'],
+                     ['python3.12x', '-m', 'docich.stream_supervisor', 'run']):
+            with self.subTest(argv=argv):
+                import shutil
+                shutil.rmtree(self.proc / '103', ignore_errors=True)
+                self._make_proc(103, uid, 'python3', argv, 3000)
+                sec = self.collect()
+                self.assertFalse(sec['roles']['shared_stream'].get('pids'), argv)
+
     def test_collect_exact_producers_and_redact(self):
         self.producers()
         sec = self.collect()

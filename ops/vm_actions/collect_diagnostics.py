@@ -154,6 +154,7 @@ PROD_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(PROD_ROOT / "src"))
 
 from docich.runtime_backend import _pid_is_active, _process_is_zombie  # noqa: E402
+from docich.stream_identity import is_docich_runner_args as _is_docich_stream_runner  # noqa: E402
 from docich.semantic_decision.diagnostics import describe as _describe_semantic_decision  # noqa: E402
 
 import importlib.util as _importlib_util  # noqa: E402
@@ -15040,6 +15041,14 @@ def _shared_runtime_process(soren, proc_root, role, pid):
                 process_kind = 'native'
             else:
                 raise ValueError('unexpected encoder')
+        elif role == 'shared_stream' and _is_docich_stream_runner([os.fsdecode(arg) for arg in argv], soren):
+            # ADR 0007: docich-stream.service owns the encoder. Exact argv shape only
+            # (`python3 -m docich.stream_supervisor [--root <soren>] run`), same user,
+            # same working directory as the legacy runner.
+            if not python:
+                raise ValueError('unexpected interpreter')
+            if cwd != str(soren):
+                raise ValueError('unexpected working directory')
         else:
             expected = 'lib/direct_stream.py' if role == 'shared_stream' else 'workers/audio_worker.sh'
             if (role == 'shared_stream' and not re.fullmatch(r'python3(?:\.[0-9]+)?', executable)
