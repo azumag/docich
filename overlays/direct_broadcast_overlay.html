@@ -1110,7 +1110,8 @@ html[data-soren-monitor="1"]:not([data-improve-active="1"])[data-monitor-view="o
   stroke-linecap: round; stroke-linejoin: round; }
 .hanjuku-gap-minimap .map-route { fill: none; stroke-width: 2.7;
   stroke-linecap: round; opacity: .95; }
-.hanjuku-gap-flow-count { color: #67e8f9; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.hanjuku-gap-flow-count { color: #67e8f9; font-variant-numeric: tabular-nums; white-space: nowrap;
+  margin-left: auto; }
 .hanjuku-gap-legend { display: flex; flex-wrap: wrap; gap: 8px; color: #9cb5c5;
   font-size: 10px; line-height: 13px; }
 .hanjuku-gap-legend span::before { content: '➜'; padding-right: 3px; font-weight: 900; }
@@ -2359,7 +2360,6 @@ html[data-soren-region="bottom"] #hanjuku-gap { display: none !important; }
     const svg = gapSvg('svg', {viewBox:'0 0 300 300', role:'img',
       'aria-label':'第'+value.chapter+'話の城配置と進軍経路',
       preserveAspectRatio:'xMidYMid meet', class:'hanjuku-gap-minimap'});
-    svg.appendChild(gapSvg('title')).textContent = '第'+value.chapter+'話 進軍ミニマップ';
     const defs = gapSvg('defs');
     for (const [kind, color] of Object.entries(HANJUKU_ROUTE_COLORS)) {
       const marker = gapSvg('marker', {id:'gap-arrow-'+kind, markerWidth:7, markerHeight:7,
@@ -2547,12 +2547,10 @@ html[data-soren-region="bottom"] #hanjuku-gap { display: none !important; }
     flow.replaceChildren();
     const head = document.createElement('div');
     head.className = 'hanjuku-gap-flow-head';
-    const title = document.createElement('span');
-    title.textContent = '第'+(value.chapter || '—')+'話 進軍ミニマップ';
     const count = document.createElement('span');
     count.className = 'hanjuku-gap-flow-count';
     count.textContent = '進軍数 '+moveCount;
-    head.append(title,count);
+    head.appendChild(count);
     flow.appendChild(head);
     const legend = document.createElement('div');
     legend.className = 'hanjuku-gap-legend';
