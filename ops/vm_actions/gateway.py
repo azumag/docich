@@ -18,7 +18,7 @@ OPS={'upload','deploy','bootstrap','status','exec','configure_jev','disable_jev'
      'diagnostics','github_auth_diagnostics','rebaseline','reconcile'}
 TARGETS={'preview','production'}
 DIAGNOSTICS_FILES=('ops/vm_actions/collect_diagnostics.py','ops/vm_actions/recover_soren_game.py','ops/vm_actions/runtime_registry.py','src/docich/runtime_backend.py',
-                   'src/docich/pulse_volume.py','src/docich/corner_rotation.py',
+                   'src/docich/pulse_volume.py','src/docich/corner_rotation.py','src/docich/stream_identity.py',
                    'src/docich/game_switch.py','src/docich/hanjuku_manual_cancel.py',
                    'src/docich/hanjuku_manual_evidence.py',
                    'src/docich/naming.py','src/docich/tmux.py','src/docich/procs.py',
