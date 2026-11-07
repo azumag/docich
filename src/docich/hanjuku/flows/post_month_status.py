@@ -51,8 +51,26 @@ def _log(mem, event, **details):
     decision_log._record(mem, event, **details)
 
 
-def _tasks(statuses, names, boss_camp_months=None):
+def _boss_camp_holds_siege(info):
+    """Whether a boss-adjacent camp still justifies keeping the general there.
+
+    #3505/#3512: a general camped just outside the boss castle is part of an
+    in-progress boss attack; a monthly recall would cancel it. A broken egg is
+    the signal for the repair task below, but that task only starts from a
+    verified castle, so a boss-adjacent camp can never satisfy it. Leaving him
+    camped pins him indefinitely (live g1153 2026-11-07: ヴィーナス HP3/82,
+    broken, camped at けっかい and never recalled). Recall him so the next
+    monthly pass can repair him. An unread broken flag keeps the old exemption
+    (never recall on unknown evidence).
+    """
     from ... import hanjuku_chart as chart
+    marker = info.get('marker')
+    candidate = marker.get('castle_candidate') if isinstance(marker, dict) else None
+    return (isinstance(candidate, str) and chart.is_boss_castle(candidate)
+            and info.get('broken') is not True)
+
+
+def _tasks(statuses, names, boss_camp_months=None):
     months = boss_camp_months or {}
     queue = []
     for name in names:
@@ -66,10 +84,9 @@ def _tasks(statuses, names, boss_camp_months=None):
             # (818,184) and the monthly recall dragged him back, cancelling the
             # boss fight). The exemption expires after BOSS_CAMP_EXEMPT_MONTHS
             # consecutive observed months (docich#3659): a siege that never
-            # resolves must not pin him to the camp forever.
-            marker = info.get('marker')
-            candidate = marker.get('castle_candidate') if isinstance(marker, dict) else None
-            if (isinstance(candidate, str) and chart.is_boss_castle(candidate)
+            # resolves must not pin him to the camp forever. A broken general
+            # never holds the siege (docich#3659 follow-up: ヴィーナス).
+            if (_boss_camp_holds_siege(info)
                     and int(months.get(name) or 0) <= BOSS_CAMP_EXEMPT_MONTHS):
                 continue
             queue.append({'kind': 'recall', 'name': name})
@@ -149,14 +166,11 @@ def arm(mem):
     # ``arm`` can also be re-entered inside the same month after ``_finish``
     # dropped the owner state, so gate the increment on the counted scope —
     # never on the presence of a live owner.
-    from ... import hanjuku_chart as chart
     if mem.get('boss_camp_exempt_scope') != scope:
         mem['boss_camp_exempt_scope'] = list(scope)
         camping = {
             name for name, row in statuses.items()
-            if row.get('location') == 'camp'
-            and chart.is_boss_castle(
-                (row.get('marker') or {}).get('castle_candidate') or '')}
+            if row.get('location') == 'camp' and _boss_camp_holds_siege(row)}
         previous = mem.get('boss_camp_exempt') or {}
         counted = {name: int(previous.get(name) or 0) + 1 for name in camping}
         if counted:

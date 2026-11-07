@@ -709,6 +709,58 @@ def test_boss_adjacent_camp_is_not_a_monthly_recall_task():
         {'kind': 'recall', 'name': 'カバルッサ'}]
 
 
+def test_broken_boss_adjacent_camp_is_recalled_for_repair():
+    # 実測 g1153 2026-11-07: ヴィーナス HP3/82・卵こわれ・けっかい野営。
+    # 卵こわれは修理タスクの合図だが、修理は在城確認後のタスクでしか始まらない。
+    # ボス至近というだけで月次帰還から除外すると野営に固定される。
+    statuses = {
+        'ヴィーナス': {
+            'location': 'camp', 'broken': True, 'hp': 3, 'max_hp': 82,
+            'marker': {'castle_candidate': 'けっかい'}},
+        'デーメーテール': {
+            'location': 'camp', 'broken': False, 'hp': 49, 'max_hp': 49,
+            'marker': {'castle_candidate': 'ボス'}},
+    }
+    assert post._tasks(statuses, list(statuses)) == [
+        {'kind': 'recall', 'name': 'ヴィーナス'}]
+
+
+def test_arm_recalls_a_broken_boss_camp_without_exempting_it():
+    # 月次 arm はキャッシュ済みでも、こわれたボス至近野営を帰還タスクへ戻し、
+    # その将軍を除外月数へ数えない（翌月以降も帰還対象のまま）。
+    mem = memory(month='2-12')
+    mem['general_statuses'] = {
+        'scope': [1, '2-12'], 'complete': True, 'dirty': {},
+        'identity': receipts.run_identity(mem.get('_run_identity')),
+        'statuses': {'ヴィーナス': {
+            'location': 'camp', 'broken': True, 'hp': 3, 'max_hp': 82,
+            'marker': {'castle_candidate': 'けっかい'}}}}
+    post.arm(mem)
+    assert mem['post_month_status']['tasks'] == [
+        {'kind': 'recall', 'name': 'ヴィーナス'}]
+    assert 'boss_camp_exempt' not in mem
+
+
+def test_recall_task_starts_the_named_return_on_the_selected_camp(monkeypatch):
+    # 月次の queue から実際の帰還シーケンス（recall state と wait_recall）へ入る。
+    from docich.hanjuku.state.regions import flow as _flow
+    mem = memory(month='2-12')
+    post.arm(mem)
+    state = mem['post_month_status']
+    state.update(stage='task_jump',
+                 job={'kind': 'recall', 'name': 'ヴィーナス'},
+                 statuses={'ヴィーナス': {'location': 'camp', 'broken': True}})
+    screen = Screen(lines=[], hand=None, text='', kind='map', cursor=(150, 100))
+    monkeypatch.setattr(post, 'own_camps',
+                        lambda _frame: [{'target': [150, 100], 'kind': 'tent'}])
+    monkeypatch.setattr(post.recall_flow, 'camp_recall_step',
+                        lambda _screen, _mem, _frame: [pad('a')])
+    assert post.step(screen, mem, object()) == [pad('a')]
+    assert _flow(mem)['recall']['general'] == 'ヴィーナス'
+    assert _flow(mem)['recall']['stage'] == 'to_camp'
+    assert state['stage'] == 'wait_recall'
+
+
 def test_boss_adjacent_camp_exemption_expires_into_a_recall():
     # docich#3659: ボス城至近の野営除外に期限を設ける。除外が
     # BOSS_CAMP_EXEMPT_MONTHS か月連続した野営は、翌月の月次処理で
