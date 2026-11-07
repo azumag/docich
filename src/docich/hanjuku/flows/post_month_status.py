@@ -400,15 +400,18 @@ def _complete_scan(mem, state):
 
 
 def _finish(mem, state):
+    failure = state.get('failure')
     mem['post_month_status_last'] = {
         'scope': list(state['scope']), 'complete': bool(state['complete']),
-        'statuses': state['statuses'], 'failed': state.get('failure'),
+        'statuses': state['statuses'], 'failed': failure,
         'tick': int(mem.get('tick') or 0)}
     mem.pop('post_month_status', None)
     _log(mem, 'post_month_sequence_finished',
-         observed_metric={'complete': bool(state['complete']),
+         observed_metric={'complete': bool(state['complete']), 'failed': failure,
                           'remaining': list(state.get('tasks') or [])},
-         reason='月次の個別確認と状態別の処理を終えて通常攻略の計画へ制御を返す')
+         reason=('確認できなかった月次情報を城の所在地として扱わず、通常の出撃計画へ制御を返す'
+                 if failure else
+                 '月次の個別確認と状態別の処理を終えて通常攻略の計画へ制御を返す'))
 
 
 def _task_complete(mem, state, *, result):
@@ -570,6 +573,19 @@ def step(screen, mem, frame):
                                'attack_started', 'defense_started',
                                'boss_attack_started', 'field_encounter_started'}):
         return None
+    if state.get('stage') == 'blocked':
+        # A failed verification must not hold the field forever. The old
+        # state answered [] until a battle or a reanchor happened, so a scan
+        # that gave up (observation_budget / status_unreadable / roster end)
+        # left the map idle with no input for the rest of the month. Nothing
+        # unverified was written to general_statuses, so releasing the screen
+        # is safe: record the failure and return control to the field.
+        _finish(mem, state)
+        if screen.kind in STRAY_MENU_KINDS and not house.roster(screen):
+            # Close the leftover menu once before the ordinary handlers run;
+            # a map/text frame is released immediately instead.
+            return [pad('b')]
+        return None
     # A scripted dialogue/event is not this owner's screen. The menu stages
     # below would answer [] and starve the ordinary A handler: g1133 stalled on
     # the new-partner ceremony at 2026-11-06 02:56 right after the status scan,
@@ -589,7 +605,7 @@ def step(screen, mem, frame):
         recovery = map_flow._start_reanchor_jump(mem, owner='post_month_status')
         if recovery is not None:
             return recovery
-    if state['stage'] in {'await_map', 'open_menu', 'task_menu', 'blocked'}:
+    if state['stage'] in {'await_map', 'open_menu', 'task_menu'}:
         if screen.kind in STRAY_MENU_KINDS and not house.roster(screen):
             backouts = state.get('stray_backouts')
             backouts = backouts if type(backouts) is int and backouts >= 0 else 0
@@ -612,8 +628,6 @@ def step(screen, mem, frame):
         _stage(state, 'blocked')
         return []
     state['phase_reads'] += 1
-    if stage == 'blocked':
-        return []
     if stage == 'await_map':
         if screen.kind == 'map':
             _stage(state, 'open_menu')
