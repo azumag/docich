@@ -877,3 +877,109 @@ def test_fresh_state_file_never_flags_a_live_owner(tmp_path):
 
     assert not [r for r in (ledger(manager).get("failed_corners") or [])
                 if r.get("reason_code") == "terminal-owner-absent"]
+
+
+def test_an_unretirable_released_owner_keeps_its_state_file_out_of_selection(tmp_path):
+    """#3682: a released owner no hook can retire must not be re-dispatched.
+
+    Before this change a ``False`` settle (no hook, or a hook that can never
+    retire) still allowed the same state file back into selection, so every
+    later dispatch failed again and evicted the release evidence (#3682).
+    """
+    manager, _clock, executor, _adapters = build(
+        tmp_path,
+        storages={"a": Store(default_receipt=TERMINAL_RECEIPT),
+                  "b": Store(default_receipt=TERMINAL_RECEIPT)},
+        executor=Executor(result="failed"),
+    )
+    manager.tick()
+    state = ledger(manager)
+    old = last_failure(state)
+    corner, old_request = old["corner"], old["request_id"]
+    other = "b" if corner == "a" else "a"
+    adapter = manager.adapters[corner]
+    adapter.states = [{"status": "failed", "rotation_request_id": old_request}]
+    adapter.state_path = tmp_path / "shared_corner.json"
+    manager.adapters[other].state_path = tmp_path / "other_corner.json"
+    # No settle hook at all: the owner can never be retired by the adapter.
+    executor.result = "completed"
+    dispatched = list(executor.calls)
+
+    result = manager.tick()
+
+    # The unrelated corner still runs; the unretirable file stays excluded
+    # so no new failure can evict the release evidence.
+    assert result["corner"] == other
+    assert result["status"] == "ready"
+    state = ledger(manager)
+    assert state["excluded"][corner] == "released-owner-unretired"
+    assert executor.calls != dispatched
+    assert len(state["failed_corners"]) == 1
+
+
+def test_the_stale_owner_release_recreates_evidence_and_unblocks(tmp_path):
+    """#3682: the fixed op re-writes the release record and retires the owner."""
+    from docich.stale_failed_owner_release import fingerprint, release
+
+    manager, _clock, executor, _adapters = build(
+        tmp_path,
+        storages={"a": Store(default_receipt=TERMINAL_RECEIPT),
+                  "b": Store(default_receipt=TERMINAL_RECEIPT)},
+        executor=Executor(result="failed"),
+    )
+    manager.tick()
+    state = ledger(manager)
+    old = last_failure(state)
+    corner, old_request = old["corner"], old["request_id"]
+    adapter = manager.adapters[corner]
+    adapter.states = [{"status": "failed", "rotation_request_id": old_request}]
+    # Evict every durable release record exactly like production #3682.
+    state["released_requests"][corner]["request_id"] = str(uuid.uuid4())
+    state["failed_corners"] = [
+        row for row in state["failed_corners"] if row.get("request_id") != old_request
+    ]
+    manager.save(state)
+    settled = []
+    adapter.settle_released_failure = lambda owner: settled.append(owner) or True
+    expected = fingerprint(corner, old_request)
+
+    check = release(manager.g, expected=expected, apply=False, manager=manager)
+    assert check["status"] == "admin-eligible"
+
+    outcome = release(manager.g, expected=expected, apply=True, manager=manager)
+    assert outcome["status"] == "admin-released"
+    state = ledger(manager)
+    assert state["released_requests"][corner]["request_id"] == old_request
+    assert last_failure(state)["reason_code"] == "stale-owner-admin-released"
+    assert settled == [old_request]
+
+    # The stale owner was retired, so the next tick rotates again.
+    executor.result = "completed"
+    adapter.states = []
+    result = manager.tick()
+    assert result["status"] == "ready"
+
+
+def test_the_stale_owner_release_refuses_unproven_or_released_owners(tmp_path):
+    from docich.stale_failed_owner_release import fingerprint, release
+    from docich.hanjuku_manual_cancel import CancelRefused
+
+    manager, _clock, _executor, _adapters = build(
+        tmp_path,
+        storages={"a": Store(default_receipt=TERMINAL_RECEIPT),
+                  "b": Store(default_receipt=TERMINAL_RECEIPT)},
+        executor=Executor(result="failed"),
+    )
+    manager.tick()
+    state = ledger(manager)
+    corner = last_failure(state)["corner"]
+    old_request = last_failure(state)["request_id"]
+    manager.adapters[corner].states = [
+        {"status": "failed", "rotation_request_id": old_request}]
+
+    # The owner still HAS evidence (the normal path owns it): refuse.
+    with pytest.raises(CancelRefused):
+        release(manager.g, expected=fingerprint(corner, old_request), manager=manager)
+    # A wrong fingerprint is never permission.
+    with pytest.raises(CancelRefused):
+        release(manager.g, expected="0" * 64, manager=manager)

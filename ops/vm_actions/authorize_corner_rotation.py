@@ -32,13 +32,16 @@ ALLOWED_OPERATIONS = {
     "check-recover-hanjuku-resume", "recover-hanjuku-resume", "recover-hanjuku-retry",
     "check-cancel-prediction", "cancel-prediction",
     "check-sync-prediction", "sync-prediction",
+    "check-release-stale-failed-owner", "release-stale-failed-owner",
 }
 CANONICAL_ONLY_OPERATIONS = {"start-hanjuku", "resume-hanjuku-latest", "clear-hanjuku-clock-quarantine",
                              "recover-runtime", "check-cancel-hanjuku", "cancel-hanjuku",
                              "check-admin-release-hanjuku", "admin-release-hanjuku",
                              "check-recover-hanjuku-resume", "recover-hanjuku-resume", "recover-hanjuku-retry",
                              "check-cancel-prediction", "cancel-prediction",
-                             "check-sync-prediction", "sync-prediction"}
+                             "check-sync-prediction", "sync-prediction",
+                             "check-release-stale-failed-owner",
+                             "release-stale-failed-owner"}
 SHA_RE = re.compile(r"[0-9a-f]{40}\Z")
 
 
@@ -84,7 +87,9 @@ def main() -> None:
     except ValueError:
         fail("reservation input unavailable")
     if operation in {"cancel-hanjuku", "check-admin-release-hanjuku", "admin-release-hanjuku",
-                     "check-recover-hanjuku-resume", "recover-hanjuku-resume"} and not re.fullmatch(r"[0-9a-f]{64}", expected):
+                     "check-recover-hanjuku-resume", "recover-hanjuku-resume",
+                     "check-release-stale-failed-owner",
+                     "release-stale-failed-owner"} and not re.fullmatch(r"[0-9a-f]{64}", expected):
         fail("reviewed reservation fingerprint required")
     if operation == "check-cancel-hanjuku" and expected:
         fail("check accepts no reservation input")

@@ -99,6 +99,10 @@ FAILED_CORNER_REASONS = frozenset({
     # generation gate belong to the absent owner, so the timer must not adopt
     # the teardown itself.
     "terminal-owner-absent",
+    # Written by the fixed owner-only stale-owner release operation (#3682):
+    # the release evidence had left every durable record and the operator
+    # re-created it after re-proving the shared slot.
+    "stale-owner-admin-released",
 })
 # A corner state file is rewritten every ~2 s while its manager is alive and
 # the hotload grace plus teardown paths are bounded near a minute, so a file
@@ -820,22 +824,26 @@ class CornerRotationManager:
                         busy = True
                     else:
                         outcome = self._settle_released_failure(adapter, request_id)
-                        if outcome is None:
-                            # The adapter proved the release but cannot retire
-                            # the owner yet (for example its durable stop
-                            # request could not be removed). Keep that shared
-                            # state file out of selection and keep the registry
-                            # row so the same settle is retried until it works.
+                        if outcome is not True and corner_id in self.adapters:
+                            # The owner still holds this shared state file:
+                            # either retirement is proved but deferred (None)
+                            # or no hook can retire it (False, e.g. an adapter
+                            # whose manager never learned the settle). A new
+                            # dispatch on the same file only fails again and
+                            # evicts this request's release evidence from the
+                            # bounded audit (#2354 review, #3682).
                             path = getattr(adapter, "state_path", None)
                             if path is not None:
                                 unretired.add(Path(path))
-                        else:
+                        if outcome is not None:
                             # The same proof also retires the registry row this
                             # corner left behind, so the skip is real at the
                             # shared program slot and not only in this ledger.
                             # Re-running it every tick is what clears a row
                             # written before the release learned to do it,
-                            # without an SSH recovery (#2282).
+                            # without an SSH recovery (#2282). A deferred
+                            # retirement (None) keeps the row until the owner
+                            # is gone.
                             self._release_program_owner(adapter)
                 # Use actual start AND completion; a delayed queued start can
                 # never become eligible 24h after its much earlier selection.
@@ -1229,9 +1237,10 @@ class CornerRotationManager:
         ``True`` means the owner is retired. ``None`` means the adapter proved
         the release but cannot retire the owner yet, so the shared state file
         must stay out of selection and the same settle is retried. ``False``
-        (also for an adapter without the hook, or a raising one) keeps the
-        previous behaviour: the released failure is skipped and other corners
-        keep rotating.
+        (also for an adapter without the hook, or a raising one) means the
+        owner stays on the file: the released failure is skipped for other
+        corners, but this shared state file stays out of selection so a
+        failing re-dispatch cannot evict the release evidence (#3682).
         """
 
         settle = getattr(adapter, "settle_released_failure", None)
