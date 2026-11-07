@@ -5,7 +5,9 @@ prerequisite refs. git words that as "The bundle requires these N refs:",
 which ``gateway._bundle_verify`` (it only matches "requires this ref:") reads
 as no prerequisites. The gateway then skipped seeding staging with production
 HEAD and ``git fetch <bundle>`` failed, so every production deploy stopped.
-The workflow now falls back to a full bundle on the plural wording.
+The workflow briefly fell back to a full bundle (#3699) until the gateway parsed
+both wordings (#3701, installed on the VM 2026-11-07); these tests now pin the
+git wording and the gateway parser so a regression shows up here.
 """
 
 import re
@@ -15,8 +17,6 @@ import tempfile
 import unittest
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[3]
-WORKFLOW = ROOT / ".github/workflows/vm-operations.yml"
 GUARD = re.compile(r"The bundle requires these [0-9]+ refs")
 
 
@@ -62,20 +62,6 @@ class ThinBundlePrerequisiteWording(unittest.TestCase):
         text = self.verify_text(self.main)
         self.assertNotRegex(text, GUARD)
         self.assertIn("requires this ref", text)
-
-    def test_workflow_falls_back_to_a_full_bundle_on_the_plural_wording(self):
-        text = WORKFLOW.read_text()
-        step = text[text.index("name: Create deployment bundle"):text.index("name: Upload candidate to VM staging")]
-        self.assertIn("The bundle requires these [0-9]+ refs", step)
-        thin = step.index('bundle create "$RUNNER_TEMP/vm-payload" HEAD "^$base"')
-        guard = step.index("The bundle requires these [0-9]+ refs")
-        full = step.index('bundle create "$RUNNER_TEMP/vm-payload" HEAD\n', guard)
-        self.assertLess(thin, guard)
-        self.assertLess(guard, full)
-
-
-if __name__ == "__main__":
-    unittest.main()
 
 
 class GatewayParsesEveryPrerequisite(ThinBundlePrerequisiteWording):
