@@ -868,3 +868,11 @@ dispatch を使い、失敗時は定型文へ fallback する。reveal は常に
 セッション中に slot が別 owner へ動いた場合は `operator-moved-during-mystery` で
 interrupted になり、予想があれば精算したうえで復帰する。設計・制限の正本は
 `docs/features/mystery-corner.md`。
+
+### 証拠を失った failed owner の固定解放（#3682）
+
+`waiting` 状態で、古い `failed` owner の解放証拠が `released_requests` pointer・`failed_corners` の有界audit・`released_settle_pending` pin のいずれにも存在しない場合、通常の `recover-failed` は対象外です。owner-only の `corner-rotation-operator` で `check-release-stale-failed-owner` を先に実行し、`admin-eligible` を確認してから、同じ fingerprint を指定して `release-stale-failed-owner` を実行します。手動で ledger・state file を編集してはいけません。
+
+fingerprint は対象 observation の `corner` と `rotation_request_id` から `sha256(json.dumps({"corner": corner, "request_id": request_id}, sort_keys=True, separators=(",", ":")))`（UTF-8）で導出する64桁の小文字16進数です。対象の一意性、共有slotの解放、canonical の安定性は各操作時に再検証され、条件が変われば拒否します。成功時は `failed_corners` に `resolution=released-unverified` / `reason_code=stale-owner-admin-released`、`released_requests` pointer、および最大16件の `stale_owner_admin_releases` 監査記録を書き戻し、adapter の settle を試みます。settle が成功しない場合も再dispatchは許可しません。
+
+`_observe` は解放済み owner の settle が `True` 以外（`None` または `False`）なら、その共有 state file を選択対象から外します。これは同じ state file への再dispatchによる失敗・audit証拠の押し出しを防ぎます。pointer は同じ corner の新しい解放記録で上書きされ得るため、別の未retire ownerがpointerのみに依存する場合は再びfail-closedとなり、対象を再確認して別途checkが必要です。実際のコーナー起動失敗の根本原因は別途調査してください。
