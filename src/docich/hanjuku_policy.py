@@ -125,7 +125,7 @@ def _reprobe_stalled_season_boss_roster(mem) -> bool:
     if mem.get('chapter') != 4:
         return False
     states = mem.get('orders') or {}
-    sorties = mem.get('sorties') or {}
+    sorties = _world(mem).get('sorties') or {}
     sites = set(chart.boss_sites(4))
     stalled = [order for order in chart.orders(4)
                if order.get('target') in sites

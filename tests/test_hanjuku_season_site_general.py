@@ -96,7 +96,7 @@ def test_an_unconfirmed_site_launch_binds_its_entry_after_a_long_march():
     screen = Screen(lines=[], hand=None, text='カペリーニしょうぐんがボスじょうにせめこんだ!!')
     screen.kind = classify_text(screen)
     mem = {'chapter': 4, 'tick': 132152, 'orders': {'4-B2': 'launched'},
-           'sorties': {'4-B2': {'general': 'カペリーニ', 'source': 'ネクスドリア', 'status': 'en_route',
+           'world': {'sorties': {'4-B2': {'general': 'カペリーニ', 'source': 'ネクスドリア', 'status': 'en_route',
                                 'target': None, 'planned_target': '四季王城(南東)', 'tick': 131676}}}
     assert policy.message_step(screen, mem) == [policy.pad('a')]
     assert mem['attack'] == {'general': 'カペリーニ', 'castle': '四季王城(南東)', 'side': 'attack',
@@ -113,7 +113,7 @@ def test_the_same_site_entry_on_the_next_frame_keeps_its_site_and_step():
         screen.kind = classify_text(screen)
         return screen
     mem = {'chapter': 4, 'tick': 132700, 'orders': {'4-B4': 'launched'},
-           'sorties': {'4-B4': {'general': 'ヴィーナス', 'source': 'アルカ', 'status': 'en_route',
+           'world': {'sorties': {'4-B4': {'general': 'ヴィーナス', 'source': 'アルカ', 'status': 'en_route',
                                 'target': '四季王城(北西)', 'tick': 131798}}}
     bound = {'general': 'ヴィーナス', 'castle': '四季王城(北西)', 'side': 'attack',
              'step': '4-B4', 'entry_evidence': 'measured_boss_entry'}
@@ -150,7 +150,7 @@ def test_an_overdue_site_march_still_binds_its_late_entry():
     screen = Screen(lines=[], hand=None, text='ソーピニヨンしょうぐんがボスじょうにせめこんだ!!')
     screen.kind = classify_text(screen)
     mem = {'chapter': 4, 'tick': 155900, 'orders': {'4-B3': 'launched'},
-           'sorties': {'4-B3': {'general': 'ソーピニヨン', 'source': 'アルマムーン',
+           'world': {'sorties': {'4-B3': {'general': 'ソーピニヨン', 'source': 'アルマムーン',
                                 'target': '四季王城(北東)', 'status': 'overdue', 'tick': 155587}}}
     assert policy.message_step(screen, mem) == [policy.pad('a')]
     assert mem['attack'] == {'general': 'ソーピニヨン', 'castle': '四季王城(北東)', 'side': 'attack',

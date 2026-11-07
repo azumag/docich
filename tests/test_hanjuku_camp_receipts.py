@@ -76,7 +76,7 @@ def test_actual_recall_picker_keeps_proposal_without_changing_sortie_or_owner():
     frame = picker(); screen = parse(frame, phase=classify(frame))
     assert screen.kind == 'world_map'
     mem = {'chapter': 2, 'tick': 50, '_records': [],
-           'sorties': {'old': {'general': p.NAME, 'status': 'en_route', 'target': 'ドミノーラ'}},
+           'world': {'world': {'world': {'sorties': {'old': {'general': p.NAME, 'status': 'en_route', 'target': 'ドミノーラ'}}}
            'recall': {'stage': 'dest', 'steps': 0, 'hero': True, 'sorties': ['old']}}
     assert p.world_map_step(screen, mem, frame) == [p.pad('a'), {'type': 'wait', 'ms': 700}, p.pad('a')]
     assert _flow(mem)['recall']['stage'] == 'await_dispatch'

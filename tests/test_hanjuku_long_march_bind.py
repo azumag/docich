@@ -17,7 +17,7 @@ ENTRY = 'ポセイドンしょうぐんがリグアじょうにのりこんだ!!
 
 def live(now=69151):
     return {'chapter': 3, 'tick': now,
-            'sorties': {
+            'world': {'sorties': {
                 'I:b59ab6:3': {'general': 'ポセイドン', 'source': 'グリン', 'target': 'リグア',
                                'status': 'en_route', 'tick': 68474},
                 'I:ae10cd:1': {'general': 'ポセイドン', 'source': 'アルマムーン', 'target': 'グリン',
@@ -33,7 +33,7 @@ def live(now=69151):
                                   'tick': 69310},
                 'I:402f8c:2': {'general': 'シャルドネ', 'source': 'アルマムーン', 'target': 'ドンダム',
                                'status': 'en_route', 'tick': 28341},
-            },
+            }}
             'launched': {'リグア': {'general': 'ポセイドン', 'step': 'I:b59ab6:3'}}}
 
 
@@ -99,11 +99,11 @@ def test_within_the_busy_window_the_old_rules_still_apply():
 
 def g1133(now=30451):
     return {'chapter': 6, 'tick': now,
-            'sorties': {
+            'world': {'sorties': {
                 'A:510711f6:Mc01022': {'general': 'ピスタチオ', 'source': 'アルマムーン',
                                         'target': 'ユージア', 'status': 'en_route',
                                         'tick': 28800},
-            },
+            }}
             'launched': {'ユージア': {'general': 'ヘラ', 'step': 'A:42d50d12:Mc01022'}}}
 
 PISTACHIO_ENTRY = 'ピスタチオしょうぐんがユージアじょうにのりこんだ!!'

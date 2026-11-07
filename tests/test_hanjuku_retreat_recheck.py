@@ -18,7 +18,7 @@ FRAME = _camp_frame()
 
 def memory(name='ゼウス'):
     mem = {'chapter': 1, 'tick': 100, '_run_identity': dict(ID), '_records': [],
-           'sorties': {'old': {'general': name, 'status': 'arrived', 'target': 'キカンドン', 'tick': 80}},
+           'world': {'world': {'world': {'sorties': {'old': {'general': name, 'status': 'arrived', 'target': 'キカンドン', 'tick': 80}}}
            'battle': {'ally': name, 'enemy': 'タピオカ', 'ally_hp': 6, 'enemy_hp': 35,
                       'start_ally_hp': 24, 'side': 'attack', 'castle': 'キカンドン',
                       'away': 1, 'cards_used': [], 'hero_retreat': {'selected': 1}}}

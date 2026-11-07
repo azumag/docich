@@ -20,7 +20,7 @@ def crowded_home():
             'プトレマイス': ['キャンディー'], 'ボッサール': ['ポセイドン'],
         },
         'route_probe_read_tick': {'アイアイエー': 74177},
-        'sorties': {}, 'launched_orders': {}, '_records': [],
+        'world': {'world': {'world': {'sorties': {}}
         'house_eggs': {}, 'general_location_unknown': [],
     }
     for step, general, tick in (

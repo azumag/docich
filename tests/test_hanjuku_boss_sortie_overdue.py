@@ -24,8 +24,8 @@ def memory(tick, *, status='en_route', target='ボス', lost=()):
     return {
         'chapter': CHAPTER, 'tick': tick,
         'orders': {step: 'launched' for step in steps},
-        'sorties': {'3-B1': {'general': 'アポロン', 'source': 'パタゴーヌ', 'target': target,
-                             'status': status, 'tick': LAUNCH, 'confirmation_tick': LAUNCH - 6}},
+        'world': {'sorties': {'3-B1': {'general': 'アポロン', 'source': 'パタゴーヌ', 'target': target,
+                             'status': status, 'tick': LAUNCH, 'confirmation_tick': LAUNCH - 6}}}
         'launched_orders': {'3-B1': {'step': '3-B1', 'general': 'アポロン', 'source': 'パタゴーヌ',
                                      'target': 'ボス', 'cards': ['ゼンマイン', 'ミックミー']}},
         'general_override': {'3-B1': 'アポロン'},
@@ -248,9 +248,9 @@ def site_memory(planned_target):
     en route for 3066 ticks while 4-B3, launched confirmed, went overdue."""
     return {'chapter': 4, 'tick': 134742,
             'orders': {o['step']: 'launched' for o in chart.orders(4)},
-            'sorties': {'4-B2': {'general': 'カペリーニ', 'source': 'ネクスドリア', 'target': None,
+            'world': {'sorties': {'4-B2': {'general': 'カペリーニ', 'source': 'ネクスドリア', 'target': None,
                                  'planned_target': planned_target, 'status': 'en_route',
-                                 'tick': 131676, 'confirmation_tick': 131418}},
+                                 'tick': 131676, 'confirmation_tick': 131418}}}
             'lost': ['ミヒラギアン', 'アルカ']}
 
 
@@ -309,8 +309,8 @@ def chapter6_memory(tick, *, source='アルマムーン', target='セレーネ',
     return {
         'chapter': 6, 'tick': tick,
         'orders': {'6-X1': 'launched'},
-        'sorties': {'6-X1': {'general': 'チコリ', 'source': source, 'target': target,
-                              'status': status, 'tick': LAUNCH}},
+        'world': {'sorties': {'6-X1': {'general': 'チコリ', 'source': source, 'target': target,
+                              'status': status, 'tick': LAUNCH}}}
         'launched_orders': {'6-X1': {'step': '6-X1', 'general': 'チコリ',
                                          'source': source, 'target': target}},
         'captured': [c for c in chart.CASTLE_NAMES[6] if c != chart.boss_castle(6)],

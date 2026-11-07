@@ -235,7 +235,7 @@ def install() -> None:
         for step, (key, fingerprint) in before.items():
             if step in remaining:
                 continue
-            sortie = (mem.get('sorties') or {}).get(step)
+            sortie = (_world(mem).get('sorties') or {}).get(step)
             status = (mem.get('orders') or {}).get(step)
             if (isinstance(sortie, dict)
                     and sortie.get('status') in ('en_route', 'launched_unconfirmed', 'arrived')

@@ -108,7 +108,7 @@ def _wanted(mem):
     # it stops counting as a want the way ``interim_candidates`` sees it.
     from .orders import _sortie_reserved_target
     heading = {_sortie_reserved_target(mem, step, s)
-               for step, s in (mem.get('sorties') or {}).items()
+               for step, s in (_world(mem).get('sorties') or {}).items()
                if s.get('status') in ('en_route', 'launched_unconfirmed')
                and s.get('tick') is not None
                and 0 <= now - int(s['tick']) < SORTIE_BUSY_TICKS} - {None}

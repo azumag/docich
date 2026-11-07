@@ -102,7 +102,7 @@ def execution_order(mem, step):
             and attempt.get('confirmation_tick') == confirmed['departure_binding']['confirm_tick']):
         return {**deepcopy(confirmed), '_execution_bound': True}
     snapshot = (_world(mem).get('launched_orders') or {}).get(step)
-    sortie = (mem.get('sorties') or {}).get(step) or {}
+    sortie = (_world(mem).get('sorties') or {}).get(step) or {}
     if ((mem.get('orders') or {}).get(step) in ('launched', 'launched_unconfirmed')
             and _valid_departure(snapshot, mem)
             and type(sortie.get('confirmation_tick')) is int

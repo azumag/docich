@@ -17,7 +17,7 @@ def memory(garrison=None):
         'chapter': 6, 'month': '55-6', 'tick': 83000,
         'captured': list(owned), 'lost': [], 'orders': {},
         'garrison': {c: None for c in owned},
-        'sorties': {}, 'launched_orders': {}, '_records': [],
+        'world': {'world': {'world': {'sorties': {}}
         'house_eggs': {}, 'general_location_unknown': [],
     }
     if garrison:

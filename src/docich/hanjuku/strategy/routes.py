@@ -67,7 +67,7 @@ def _moves_into(mem, castle):
     check survives the snapshot's removal.
     """
     now = int(mem.get('tick') or 0)
-    for step, sortie in (mem.get('sorties') or {}).items():
+    for step, sortie in (_world(mem).get('sorties') or {}).items():
         if not isinstance(sortie, dict):
             continue
         order = (_world(mem).get('launched_orders') or {}).get(step) or {}

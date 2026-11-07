@@ -235,7 +235,7 @@ def _boss_wave_in_flight(mem, boss):
     cannot be passed by the gap between the launch and its receipt.
     """
     now = int(mem.get('tick') or 0)
-    sorties = mem.get('sorties') or {}
+    sorties = _world(mem).get('sorties') or {}
     steps = set()
     for step, sortie in sorties.items():
         if (not isinstance(sortie, dict)
@@ -543,7 +543,7 @@ def interim_candidates(mem, allow_sole=False) -> dict:
     # to arrive must not hold its target forever (launched/launched_orders are
     # never pruned).
     now = int(mem.get('tick') or 0)
-    inflight = {sortie['target'] for step, sortie in (mem.get('sorties') or {}).items()
+    inflight = {sortie['target'] for step, sortie in (_world(mem).get('sorties') or {}).items()
                 if isinstance(step, str) and step.startswith(chart_adjust.INTERIM_PREFIX)
                 and isinstance(sortie, dict)
                 and sortie.get('status') in ('en_route', 'launched_unconfirmed', 'launched', 'pending')
@@ -1199,7 +1199,7 @@ def _release_stale_steps(mem, steps):
     for step in steps:
         if status.get(step) != 'launched':
             continue
-        sortie = (mem.get('sorties') or {}).get(step) or {}
+        sortie = (_world(mem).get('sorties') or {}).get(step) or {}
         if (sortie.get('status') in ('en_route', 'launched_unconfirmed')
                 and type(sortie.get('tick')) is int
                 and 0 <= now - sortie['tick'] < _arrival_limit(mem, sortie)):
@@ -1218,7 +1218,7 @@ def _release_stale_steps(mem, steps):
             # the next monthly named-status pass instead of adding a phantom
             # garrison member (the newly pending step can choose a real spare).
             _queue_overdue_location_recheck(mem, sortie)
-            (mem.get('sorties') or {}).pop(step, None)
+            (_world(mem).get('sorties') or {}).pop(step, None)
             general, source = sortie.get('general'), sortie.get('source')
             _record(mem, 'sortie_record_expired', chart_step=step, general=general,
                     observed_metric={'general': general, 'source': source,
@@ -1290,7 +1290,7 @@ def _adjust_situation(mem):
     """
     now = int(mem.get('tick') or 0)
     # Same bound as _en_route: an unread arrival stops counting as marching.
-    marching = sorted({(s['general'], s.get('target')) for s in (mem.get('sorties') or {}).values()
+    marching = sorted({(s['general'], s.get('target')) for s in (_world(mem).get('sorties') or {}).values()
                        if s.get('status') in ('en_route', 'launched_unconfirmed') and s.get('general')
                        and s.get('tick') is not None and now - int(s['tick']) < SORTIE_BUSY_TICKS},
                       key=str)

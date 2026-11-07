@@ -69,7 +69,7 @@ def _verify_sortie_source(screen, mem, order):
     name on it is not evidence of departure.
     """
     step = order['step']
-    sortie = mem['sorties'][step]
+    sortie = _world(mem)['sorties'][step]
     present = _present_generals(screen)
     if present and sortie['general'] in present and not _general_visible(screen, sortie['general']):
         present = None
