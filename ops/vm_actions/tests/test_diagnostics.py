@@ -42,6 +42,7 @@ class DiagnosticsGatewayTests(unittest.TestCase):
             "ops/vm_actions/recover_soren_game.py",
             "ops/vm_actions/runtime_registry.py",
             "src/docich/runtime_backend.py",
+            "src/docich/stream_identity.py",
             "src/docich/pulse_volume.py",
             "src/docich/corner_rotation.py",
             "src/docich/game_switch.py",
