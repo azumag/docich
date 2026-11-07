@@ -35,6 +35,13 @@ TRADE_COMPLETED_TOKENS = ('しゅうりょう',)
 
 TRADE_CHOICE_PAIRS = (('OK', 'NO'), ('そうする', 'やめる'))
 
+# 章末のセーブ確認（g1059 2026-10-28 05:21:42 / g1153 2026-11-07 22:48:34）:
+# 「セーブをしゅうりょうして よろしいですかな?」の直後に先発隊の選択が始まり、
+# 次章の画面が続く。章の結果メニューやHUDの「2わ」より先に来るため、この確認を
+# 読んだことだけを flows/starter.py の章確定の前提として記録する（この時点では
+# 章を進めない）。トレード完了の「しゅうりょう」と区別するため両方の語を要求する。
+CHAPTER_END_SAVE_TOKENS = ('セーブ', 'しゅうりょうして')
+
 
 BIJIN_MIN_GOLD = 1000   # 以上なら家を選ぶ（オーナー指示 2026-10-21）
 # オーナー指示（issue #3011）: 半熟レベル14以上では半熟値を稼ぐ行為を控える。
@@ -448,6 +455,22 @@ def bijin_guard_step(screen: Screen, mem, *, phase=None):
     return [pad('a')]
 
 
+def _arm_chapter_end_save(mem):
+    """Record the measured chapter-end save once; never advance a chapter here.
+
+    The advance needs the advance-party screen and the finished boss that
+    ``flows/starter.py`` checks, so an unknown/absent chapter only skips the
+    record. The marker carries the tick so a stale one can expire.
+    """
+    chapter = mem.get('chapter')
+    if type(chapter) is not int or not 1 <= chapter <= 12:
+        return
+    armed = mem.get('chapter_end_save')
+    if isinstance(armed, dict) and armed.get('chapter') == chapter:
+        return
+    mem['chapter_end_save'] = {'chapter': chapter, 'tick': mem.get('tick')}
+
+
 def yes_no_step(screen: Screen, mem):
     text = screen.text
     metric = None
@@ -506,10 +529,18 @@ def yes_no_step(screen: Screen, mem):
         else:
             choice, reason = 'いかんッ!', '将軍トレード（花いちもんめ）で強い・判定不能の将軍が指定されたため断る'
             variant = 'decline_general_trade'
+    elif all(token in text for token in CHAPTER_END_SAVE_TOKENS):
+        # 章末のセーブ確認。実画面の文言だけで判断し、章の番号や月からは推測しない。
+        # 次章の確定材料は直後の先発隊画面（flows/starter.py）に限定する。
+        choice, reason, variant = ('うむッ!',
+                                   '章末のセーブ確認を実画面で読んだため進行し、直後の先発隊で次章を確定する',
+                                   'chapter_end_save')
     else:
         choice, reason, variant = 'うむッ!', '未分類の確認は既定で進行', 'unclassified_prompt'
     move = menu_to(screen, choice)
     if move == 'here':
+        if variant == 'chapter_end_save':
+            _arm_chapter_end_save(mem)
         _record(mem, 'prompt', choice=choice, prompt=text[-40:], reason=reason,
                 strategy_variant=variant, observed_metric=metric)
         return [pad('a')]
