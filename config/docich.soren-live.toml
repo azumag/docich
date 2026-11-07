@@ -82,7 +82,7 @@ corners = [
   # 2026-10-15 オーナー判断で manual_only を解除し、24時間 rolling rotation の
   # 自動抽選に組み入れる（WebUI からの手動予約も従来どおり可能）。
   # コーナー紹介と上位3名のrankingを、共有 audio worker の既定音声で2発話する。
-  { id = "yosou-oh", adapter = "yoso", game = "yosou-view", enabled = true, audio_enabled = true },
+  { id = "yosou-oh", adapter = "yoso", game = "yosou-view", enabled = true, audio_enabled = true, duration_minutes = 4 },
   # 同志カード大賞: TwiCaの opt-in 済みランキングから集計済みの4部門を表示する。
   # 公開は配信者単位の opt-in（既定OFF・設定UI無し）で、未 opt-in は 404 になり
   # 当該コーナーは開始しない。privacy 方針（周知・非表示申請は行わない。不適切名は
