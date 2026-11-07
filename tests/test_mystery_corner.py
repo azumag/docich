@@ -1125,3 +1125,36 @@ def test_reveal_resumes_only_the_missing_parts(tmp_path, quiet_narration):
     manager._phase_reveal(state, case, resumed)
     assert len(quiet_narration) - before == len(REVEAL_PARTS) - 2
     assert resumed["reveal_done"] is True
+
+
+def test_mystery_settle_released_failure_retires_the_failed_owner(tmp_path):
+    """#3682: the hook terminalizes a released failed owner on a proven slot."""
+    g, now, _factory, _store, switch = _setup(tmp_path)
+    manager = _adapter(g, _corner(), switch, now, lambda _s: None).manager
+    request_id = str(uuid.uuid4())
+    manager._save({
+        "schema_version": 1, "game": VIEW_NAME, "status": "failed",
+        "rotation_request_id": request_id, "start_request_id": request_id,
+        "switch_request_id": request_id, "completed_at": now[0] - 10,
+    })
+
+    assert manager.settle_released_failure(request_id) is True
+
+    state = json.loads(manager.state_path.read_text())
+    assert state["status"] == "interrupted"
+    assert state["end_reason"] == "released-failure-before-retry"
+
+
+def test_mystery_settle_released_failure_refuses_live_or_foreign_owners(tmp_path):
+    g, now, _factory, _store, switch = _setup(tmp_path)
+    manager = _adapter(g, _corner(), switch, now, lambda _s: None).manager
+    request_id = str(uuid.uuid4())
+    manager._save({"schema_version": 1, "game": VIEW_NAME, "status": "failed",
+                   "rotation_request_id": request_id})
+
+    # A different request id is never permission to retire this owner.
+    assert manager.settle_released_failure(str(uuid.uuid4())) is False
+    # A still-busy owner is untouched.
+    manager._save({"schema_version": 1, "game": VIEW_NAME, "status": "active",
+                   "rotation_request_id": request_id})
+    assert manager.settle_released_failure(request_id) is False

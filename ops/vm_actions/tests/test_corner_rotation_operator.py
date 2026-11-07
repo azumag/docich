@@ -318,6 +318,31 @@ class CornerRotationAuthorizeTests(unittest.TestCase):
                 )
 
 
+class StaleOwnerResultProjectionTests(unittest.TestCase):
+    def test_mystery_result_is_not_misattributed_to_hanjuku(self):
+        import sys
+        module_path = ROOT / "src/docich/hanjuku_admin_result.py"
+        for mode, status in (("check", "admin-eligible"), ("release", "admin-released")):
+            raw = json.dumps({"status": "executed", "sha": "a" * 40,
+                              "exit_code": 0, "output": "withheld"})
+            result = subprocess.run(
+                [sys.executable, str(module_path), raw, mode, "a" * 40, "0", "mystery"],
+                capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(json.loads(result.stdout)["corner"], "mystery")
+            self.assertEqual(json.loads(result.stdout)["status"], status)
+
+    def test_legacy_result_keeps_hanjuku_corner(self):
+        import sys
+        raw = json.dumps({"status": "executed", "sha": "a" * 40,
+                          "exit_code": 0, "output": "withheld"})
+        result = subprocess.run(
+            [sys.executable, str(ROOT / "src/docich/hanjuku_admin_result.py"),
+             raw, "check", "a" * 40, "0"], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout)["corner"], "hanjuku-hero")
+
+
 class CornerRotationOperatorPolicyTests(unittest.TestCase):
     def test_restart_script_resolves_the_reviewed_unit_and_never_restarts_shared(self):
         text = SCRIPT.read_text(encoding="utf-8")
@@ -462,7 +487,7 @@ class CornerRotationOperatorPolicyTests(unittest.TestCase):
     def test_workflow_is_fixed_and_never_exposes_arbitrary_command_input(self):
         text = WF.read_text(encoding="utf-8")
         for required in (
-            "options: [restart-service, recover-failed, rollback-timer, start-hanjuku, resume-hanjuku-latest, clear-hanjuku-clock-quarantine, recover-runtime, check-cancel-hanjuku, cancel-hanjuku, check-admin-release-hanjuku, admin-release-hanjuku, check-recover-hanjuku-resume, recover-hanjuku-resume, recover-hanjuku-retry, check-cancel-prediction, cancel-prediction, check-sync-prediction, sync-prediction]",
+            "options: [restart-service, recover-failed, rollback-timer, start-hanjuku, resume-hanjuku-latest, clear-hanjuku-clock-quarantine, recover-runtime, check-cancel-hanjuku, cancel-hanjuku, check-admin-release-hanjuku, admin-release-hanjuku, check-recover-hanjuku-resume, recover-hanjuku-resume, recover-hanjuku-retry, check-cancel-prediction, cancel-prediction, check-sync-prediction, sync-prediction, check-release-stale-failed-owner, release-stale-failed-owner]",
             "github.actor_id == 9018513",
             "github.triggering_actor == 'azumag'",
             "github.ref_protected == true",
@@ -478,15 +503,18 @@ class CornerRotationOperatorPolicyTests(unittest.TestCase):
             "control/ops/vm_actions/recover_hanjuku_runtime.sh",
             "control/ops/vm_actions/admin_release_hanjuku_manual.sh",
             "control/ops/vm_actions/control_hanjuku_prediction.sh",
+            "control/ops/vm_actions/release_stale_failed_owner.sh",
             "Recover only the failed corner rotation slot",
             "Restart only the corner rotation service",
             "Roll back only the corner rotation timer",
             "Recover a dead Hanjuku runtime through the reviewed CLI",
+            "Check or administratively release only the reviewed stale failed owner",
             "if: steps.auth.outputs.operation == 'recover-failed'",
             "if: steps.auth.outputs.operation == 'restart-service'",
             "if: steps.auth.outputs.operation == 'rollback-timer'",
             "if: steps.auth.outputs.operation == 'recover-runtime'",
             "if: steps.auth.outputs.operation == 'clear-hanjuku-clock-quarantine'",
+            "if: steps.auth.outputs.operation == 'check-release-stale-failed-owner' || steps.auth.outputs.operation == 'release-stale-failed-owner'",
             "Clear a clock-gap quarantine for the queued Hanjuku request",
             "StrictHostKeyChecking=yes",
             "ForwardAgent=no",
@@ -573,7 +601,8 @@ class CornerRotationOperatorPolicyTests(unittest.TestCase):
         self.assertNotIn("${{ inputs.expected_reservation }}", text)
         self.assertNotIn("INPUT_EXPECTED_RESERVATION:", text)
         self.assertNotIn("EXPECTED:", text)
-        self.assertEqual(text.count('EXPECTED="$(python3 -I control/ops/vm_actions/corner_rotation_input.py)"'), 3)
+        # The 4th EXPECTED derivation is the stale failed owner step (#3682).
+        self.assertEqual(text.count('EXPECTED="$(python3 -I control/ops/vm_actions/corner_rotation_input.py)"'), 4)
 
     def test_new_and_legacy_workflows_serialize_on_the_same_concurrency_group(self):
         group = "group: retro-corner-operator-${{ github.repository }}"

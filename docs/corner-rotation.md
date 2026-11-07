@@ -168,8 +168,14 @@ last_seen、pending、request UUID、結果をatomic writeする。
    tickは`corner-rotation.lock`を保持し続けるため他のtickは`already-running`を返し、rowの解放は
    そのtickが待ち窓（`CornerExecutionCoordinator`の`wait_seconds`、既定600秒）を使い切った後の
    最初のtickで行われる。この形は`status=recovery_required`のlatchを作らないので
-   `recover_corner_rotation.sh`の対象外であり、復旧は**「最大で待ち窓＋1tick」に有界だが即時ではない**
-   （#2282 の残件。正規の復旧操作の追加は別途）。
+   `recover_corner_rotation.sh`の対象外である。
+   released ownerがadapter側でまだretireされていない間（`settle_released_failure`が`None`=延期、
+   または`False`=hook未実装/retire不可）、その共有state fileはselectionから外れる
+   （`excluded[<id>]=released-owner-unretired`）。同じfileへの再dispatchは別requestの失敗を量産し、
+   有界auditから元requestの解放証拠を押し出すだけなので行わない（#3682）。
+   解放証拠を全て失った古い`failed` ownerの復旧は、固定operation
+   `check-release-stale-failed-owner` / `release-stale-failed-owner`による
+   （本書末尾「証拠を失った failed owner の固定解放（#3682）」参照）。
 3. 共有slotの安全が証明できない場合だけ、`status=recovery_required` /
    `reason=execution-or-state-unverified` / `error_kind=<固定enum>`でlatchし、`tick()`は
    自動開始と手動startを拒否する。この場合も`failed_corners`へ`resolution=recovery-required`の
@@ -868,3 +874,11 @@ dispatch を使い、失敗時は定型文へ fallback する。reveal は常に
 セッション中に slot が別 owner へ動いた場合は `operator-moved-during-mystery` で
 interrupted になり、予想があれば精算したうえで復帰する。設計・制限の正本は
 `docs/features/mystery-corner.md`。
+
+### 証拠を失った failed owner の固定解放（#3682）
+
+`waiting` 状態で、古い `failed` owner の解放証拠が `released_requests` pointer・`failed_corners` の有界audit・`released_settle_pending` pin のいずれにも存在しない場合、通常の `recover-failed` は対象外です。owner-only の `corner-rotation-operator` で `check-release-stale-failed-owner` を先に実行し、`admin-eligible` を確認してから、同じ fingerprint を指定して `release-stale-failed-owner` を実行します。手動で ledger・state file を編集してはいけません。
+
+fingerprint は対象 observation の `corner` と `rotation_request_id` から `sha256(json.dumps({"corner": corner, "request_id": request_id}, sort_keys=True, separators=(",", ":")))`（UTF-8）で導出する64桁の小文字16進数です。対象の一意性、共有slotの解放、canonical の安定性は各操作時に再検証され、条件が変われば拒否します。成功時は `failed_corners` に `resolution=released-unverified` / `reason_code=stale-owner-admin-released`、`released_requests` pointer、および最大16件の `stale_owner_admin_releases` 監査記録を書き戻し、adapter の settle を試みます。settle が成功しない場合も再dispatchは許可しません。
+
+`_observe` は解放済み owner の settle が `True` 以外（`None` または `False`）なら、その共有 state file を選択対象から外します。これは同じ state file への再dispatchによる失敗・audit証拠の押し出しを防ぎます。pointer は同じ corner の新しい解放記録で上書きされ得るため、別の未retire ownerがpointerのみに依存する場合は再びfail-closedとなり、対象を再確認して別途checkが必要です。実際のコーナー起動失敗の根本原因は別途調査してください。

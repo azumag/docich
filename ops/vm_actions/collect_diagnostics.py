@@ -5730,6 +5730,10 @@ ROTATION_FAILED_CORNER_REASONS = frozenset({
     "base-game-unrestored",
     "restore-recovery-exhausted",
     "terminal-owner-absent",
+    # Written by the fixed owner-only stale-owner release operation (#3682):
+    # the release evidence had left every durable record and the operator
+    # re-created it after re-proving the shared slot.
+    "stale-owner-admin-released",
 })
 ROTATION_AUTO_RESTORE_STATUSES = frozenset({
     "succeeded", "queued", "failed", "noop", "interrupted", "completed", "unknown", "none",
