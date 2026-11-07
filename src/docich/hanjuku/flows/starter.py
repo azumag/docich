@@ -18,11 +18,62 @@ MAX_PICKS = 3
 MAX_RETRIES = 3
 NAV_WAIT = 6
 NAV_PRESS_LIMIT = 9
+# The chapter-end save and the advance party were 2-3 observations apart in
+# both measured transitions; 600 observations (~15 min at 1.5 s) bounds a
+# marker that never gets its party screen.
+CHAPTER_END_SAVE_WINDOW = 600
 
 
 def _record(mem, decision, **kwargs):
     from ..decision_log import _record as record
     record(mem, decision, chart_step='starter', **kwargs)
+
+
+def _chapter_boss_finished(mem, chapter):
+    """True when this chapter's boss is the battle in memory or already beaten."""
+    from ... import hanjuku_chart as chart
+    boss = chart.BOSSES.get(chapter)
+    battle = mem.get('battle')
+    if isinstance(battle, dict) and boss and battle.get('enemy') == boss:
+        return True
+    if mem.get('boss_defeated') == chapter:
+        return True
+    return chart.boss_castle(chapter) in (mem.get('captured') or ())
+
+
+def _enter_next_chapter_after_save(mem):
+    """Advance on the measured chapter-end save + advance-party pair.
+
+    g1153 (2026-11-07) beat クイーン, answered the save prompt
+    「セーブをしゅうりょうして…」 at 22:48:34 and got the advance party at
+    22:48:37, but kept chapter 1 until the next month's HUD「2わ」at 22:56:20.
+    The party selection therefore ran with chapter-1 coordinates and the owner
+    saw the game sitting in 第2話 while the bot still thought 第1話 (report
+    22:58). The same pair precedes chapter 3 in g1059 (2026-10-28 05:21:42 →
+    05:21:45), where the にせヒーロー fight was still the battle memory.
+
+    Fail-closed: only the measured prompt arms the marker (prompts.py), only
+    this party screen consumes it, and only while the chapter's boss is the
+    battle in memory / already finished. A refused save or a game-over
+    restart party therefore cannot advance anything.
+    """
+    armed = mem.get('chapter_end_save')
+    chapter = mem.get('chapter')
+    if not isinstance(armed, dict):
+        return
+    if type(chapter) is not int:
+        mem.pop('chapter_end_save', None)
+        return
+    tick, now = armed.get('tick'), mem.get('tick')
+    if (armed.get('chapter') != chapter or not _chapter_boss_finished(mem, chapter)
+            or type(tick) is not int or type(now) is not int
+            or not 0 <= now - tick <= CHAPTER_END_SAVE_WINDOW):
+        mem.pop('chapter_end_save', None)
+        return
+    mem.pop('chapter_end_save', None)
+    from ..strategy.campaign import _enter_chapter
+    _enter_chapter(mem, chapter + 1, evidence='chapter_end_save_party',
+                   reason='章末セーブの確認直後に先発隊の選択が始まったため次章を確定し、前章の座標・出撃・購入状態を初期化')
 
 
 def _navigation(mem, episode, move, label, hand, selected):
@@ -53,6 +104,8 @@ def step(screen, mem, frame):
     from ..os_layer.commands import menu_to, pad
     from ..os_layer.screen import find_hand
     seen = kind(screen)
+    if seen is not None:
+        _enter_next_chapter_after_save(mem)
     episode = mem.get('starter_party')
     if episode and (episode.get('run_identity') != mem.get('_run_identity')
                     or episode.get('chapter') != mem.get('chapter')):
