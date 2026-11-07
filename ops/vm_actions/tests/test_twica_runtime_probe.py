@@ -2,6 +2,7 @@ import importlib.util
 import os
 from pathlib import Path
 import struct
+import sys
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -87,6 +88,48 @@ class TwicaRuntimeProbeTests(unittest.TestCase):
             self.assertEqual(probe.native_gate(dict(pipeline, encoder_pid=15), runner), 39)
         with patch.object(probe, 'descendant', return_value=False):
             self.assertEqual(probe.native_gate(pipeline, runner), 37)
+
+    def test_native_accepts_the_docich_owned_runner_and_nothing_else_new(self):
+        pipeline = {'pid': 12, 'encoder_pid': 14}
+        runner = {'pid': 10}
+        graph = '[0:v:0][2:v:0]overlay=x=round(main_w/3):y=0:format=auto[twica_out]'
+        def run_with(runner_args, cwd=None):
+            def processes(pid):
+                return {10: {'cwd': cwd or probe.SOREN, 'args': runner_args},
+                        14: {'args': ['ffmpeg', '-filter_complex', graph, '-map', '[twica_out]']}}.get(pid, {})
+            with patch.object(probe, 'descendant', return_value=True), patch.object(probe, 'process', side_effect=processes):
+                return probe.native_gate(pipeline, runner)
+        root = str(probe.SOREN)
+        self.assertIsNone(run_with(['python3', '-m', 'docich.stream_supervisor', '--root', root, 'run']))
+        self.assertIsNone(run_with(['python3', '-m', 'docich.stream_supervisor', 'run']))
+        self.assertIsNone(run_with(['python3', 'lib/direct_stream.py']), 'the legacy runner is still accepted')
+        for args in (['python3', '-m', 'docich.stream_supervisor', 'status'],
+                     ['python3', '-m', 'docich.stream_supervisor', '--root', '/other', 'run'],
+                     ['python3.12x', '-m', 'docich.stream_supervisor', 'run'],
+                     ['python3', '-m', 'docich.stream_supervisor_evil', 'run']):
+            with self.subTest(args=args):
+                self.assertEqual(run_with(args), 38)
+        self.assertEqual(run_with(['python3', '-m', 'docich.stream_supervisor', 'run'], cwd=Path('/elsewhere')), 38)
+
+    def test_the_self_contained_matcher_equals_docich_stream_identity(self):
+        sys.path.insert(0, str(ROOT / 'src'))
+        from docich.stream_identity import is_docich_runner_args
+        soren = '/home/ubuntu/soren'
+        for args in (['python3', '-m', 'docich.stream_supervisor', 'run'],
+                     ['python3', '-m', 'docich.stream_supervisor', '--root', soren, 'run'],
+                     ['python3.12', '-m', 'docich.stream_supervisor', '--root', soren + '/', 'run'],
+                     ['python3', '-m', 'docich.stream_supervisor', 'status'],
+                     ['python3', '-m', 'docich.stream_supervisor', 'stop'],
+                     ['python3', '-m', 'docich.stream_supervisor', '--root', '/other', 'run'],
+                     ['python3', '-m', 'docich.stream_supervisor', '--root', 'run'],
+                     ['bash', '-m', 'docich.stream_supervisor', 'run'],
+                     ['python3.12x', '-m', 'docich.stream_supervisor', 'run'],
+                     ['python', '-m', 'docich.stream_supervisor', 'run'],
+                     ['python3', '-m', 'docich.stream_supervisor_evil', 'run'],
+                     ['python3', '-m', 'docich.stream_supervisor', 'run', 'x'],
+                     ['python3', '-c', 'docich.stream_supervisor', 'run'], []):
+            with self.subTest(args=args):
+                self.assertEqual(probe.is_docich_stream_runner(args), is_docich_runner_args(args, soren))
 
     def test_no_parent_traversal_on_malformed_pids(self):
         for pid in (None, True, [], 1, '10'):
