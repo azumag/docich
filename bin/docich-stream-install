@@ -1,0 +1,7 @@
+#!/bin/sh
+# Place (never start) docich-stream.service and report the cutover preconditions.
+# See docs/adr/0007-direct-stream-single-owner-supervisor.md and `--help`.
+set -eu
+ROOT=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
+export PYTHONPATH="$ROOT/src${PYTHONPATH:+:$PYTHONPATH}"
+exec python3 -m docich.stream_install "$@"
