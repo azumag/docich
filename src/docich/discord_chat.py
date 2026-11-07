@@ -34,8 +34,7 @@ MAX_PENDING = 32
 DIRECT_CHAT_MODELS = {
     "openrouter": frozenset({"openai/gpt-4.1-nano", "openai/gpt-6-luna"}),
     "vercel": frozenset({"openai/gpt-4.1-nano", "openai/gpt-6-luna"}),
-    "cloudflare": frozenset({"@cf/qwen/qwen3-30b-a3b-fp8",
-                             "@cf/meta/llama-3.1-8b-instruct-fp8-fast"}),
+    "cloudflare": frozenset({"@cf/meta/llama-3.1-8b-instruct-fp8-fast"}),
     "sarashina": frozenset({"sarashina3-nano", "sarashina3-mini"}),
 }
 PERSONA_PATH = Path(__file__).with_name("comment") / "prompts" / "comment_persona_main.md"
