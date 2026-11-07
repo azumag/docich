@@ -123,6 +123,13 @@ JEVは自動有効化されていない手動のplayer-policy試験であり、�
   `hold` 付きのときは出さない。
 - 投影・読み上げはbest-effortで、書けない・届かないことは rotation の選択・実行・
   復帰を止めない。
+- 反映の注意: 共有サイドバーの state (`/__soren_overlay/broadcast/state`) を組み立てる
+  のは共有オーバーレイサービス (`/home/ubuntu/soren/lib/shared_overlay.mjs`) で、
+  docich の state builder を import 時に読む。`overlays/direct_broadcast_overlay.html` を
+  変える deploy は workflow が `reload_shared_overlay.sh` を自動実行するが、
+  **gitlink 同期だけの deploy（soviet 側の配線変更）は自動では再起動されない**ので、
+  正規の `ops/vm_actions/reload_shared_overlay.sh` で再起動して
+  `/__soren_overlay/broadcast/state` に `nextCorner` が出ることを確認する。
 
 ## 永続化、キュー、所有権
 
