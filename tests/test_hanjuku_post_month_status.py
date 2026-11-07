@@ -116,14 +116,18 @@ def test_repair_uses_roster_select_then_verified_castle_entry():
     assert mem['house']['general'] == 'ゼウス'
 
 
-def test_unknown_status_never_allows_planning():
+def test_unknown_status_never_allows_planning_and_releases_the_field():
     mem = memory()
     post.arm(mem)
     state = mem['post_month_status']
     state.update(stage='status', selected='ゼウス', phase_reads=post.STATUS_RETRIES)
     assert post.step(Screen([], None, '', kind='unknown'), mem, None) == [pad('b')]
     assert state['stage'] == 'blocked'
-    assert post.step(Screen([], None, '', kind='map'), mem, None) == []
+    # The failed read must not hold the map: record it and hand control back.
+    assert post.step(Screen([], None, '', kind='map'), mem, None) is None
+    assert 'post_month_status' not in mem
+    assert mem['post_month_status_last']['failed'] == 'status_unreadable'
+    assert mem['post_month_status_last']['complete'] is False
     assert 'general_statuses' not in mem
 
 
@@ -571,13 +575,32 @@ def test_task_menu_still_owns_the_roster_text_panel():
     assert state['stage'] == 'task_select'
 
 
-def test_blocked_status_releases_scene_but_keeps_holding_the_map():
+def test_blocked_status_releases_the_field_instead_of_holding_it():
+    scene = parse(event_dialogue_frame())
+    field = Screen([], None, '', kind='map')
+    for frame in (scene, field):
+        mem = memory()
+        post.arm(mem)
+        mem['post_month_status'].update(stage='blocked', failure='observation_budget')
+        assert post.step(frame, mem, None) is None
+        assert 'post_month_status' not in mem
+        last = mem['post_month_status_last']
+        assert last['failed'] == 'observation_budget'
+        assert last['complete'] is False
+
+
+def test_observation_budget_failure_releases_the_map_on_the_next_observation():
     mem = memory()
     post.arm(mem)
     state = mem['post_month_status']
-    state.update(stage='blocked')
-    assert post.step(parse(event_dialogue_frame()), mem, None) is None
-    assert post.step(Screen([], None, '', kind='map'), mem, None) == []
+    state.update(stage='process', steps=post.MAX_STEPS + 1, tasks=[])
+    field = Screen([], None, '', kind='map')
+    assert post.step(field, mem, None) == []
+    assert state['stage'] == 'blocked'
+    assert state['failure'] == 'observation_budget'
+    assert post.step(field, mem, None) is None
+    assert 'post_month_status' not in mem
+    assert mem['post_month_status_last']['failed'] == 'observation_budget'
 
 
 def test_month_event_dialogue_is_advanced_while_post_month_tasks_wait():
@@ -767,12 +790,15 @@ def test_open_menu_backs_out_of_a_stray_castle_menu():
     assert post.step(_castle_menu_with_hand(), mem, None) == [pad('b')]
 
 
-def test_blocked_status_still_backs_out_of_a_stray_castle_menu():
+def test_blocked_status_closes_a_stray_castle_menu_before_releasing():
     mem = memory()
     post.arm(mem)
-    mem['post_month_status'].update(stage='blocked')
+    mem['post_month_status'].update(stage='blocked', failure='roster_end_unconfirmed')
     assert post.step(_castle_menu_with_hand(), mem, None) == [pad('b')]
-    assert post.step(Screen([], None, '', kind='map'), mem, None) == []   # the map hold is unchanged
+    assert 'post_month_status' not in mem
+    assert mem['post_month_status_last']['failed'] == 'roster_end_unconfirmed'
+    # The next field observation belongs to the ordinary planner.
+    assert post.step(Screen([], None, '', kind='map'), mem, None) is None
 
 
 def test_stray_menu_back_out_is_bounded():
