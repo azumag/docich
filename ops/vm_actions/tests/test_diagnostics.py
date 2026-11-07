@@ -172,6 +172,18 @@ class DiagnosticsGatewayTests(unittest.TestCase):
         proc = self.call(f"diagnostics docich production {'b' * 40} extra")
         self.assertNotEqual(proc.returncode, 0)
 
+    def _pop_tree_keys(self, node, names):
+        # Recursively remove every dict key listed in `names` from a decoded
+        # JSON tree, without touching sibling fields of the same sections.
+        if isinstance(node, dict):
+            for name in names:
+                node.pop(name, None)
+            for value in node.values():
+                self._pop_tree_keys(value, names)
+        elif isinstance(node, list):
+            for item in node:
+                self._pop_tree_keys(item, names)
+
     def test_stdin_payload_cannot_change_diagnostics(self):
         clean = self.call(f"diagnostics docich production {'b' * 40}")
         evil = self.call(
@@ -183,6 +195,17 @@ class DiagnosticsGatewayTests(unittest.TestCase):
         evil_data = json.loads(evil.stdout.decode())
         for data in (clean_data, evil_data):
             data["diagnostics"]["meta"].pop("generated_at", None)
+            # `allocated_bytes` is derived from `st_blocks * 512`
+            # (collect_diagnostics._storage_allocated_bytes): the filesystem
+            # can legitimately allocate or release one 512B block between two
+            # independent read-only calls, which flaked CI by exactly 4096
+            # bytes (#3715). Scrub by key name only -- count, bytes and
+            # hardlink_duplicates stay compared, so a stdin payload that
+            # really alters storage output is still caught. If the collector
+            # gains more st_blocks-derived keys (e.g. "blocks"), add the key
+            # name here instead of scrubbing whole sections like
+            # bundle_storage.
+            self._pop_tree_keys(data["diagnostics"], {"allocated_bytes"})
             # The two independent read-only calls can cross a wall-clock second.
             history = data["diagnostics"]["nethack_history"]
             self.assertIs(type(history["collected_at"]), int)
