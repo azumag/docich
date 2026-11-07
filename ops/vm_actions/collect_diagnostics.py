@@ -6956,6 +6956,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v498-month-locate-ownership",
             "hanjuku-chart-v499-semantic-hold-key",
             "hanjuku-chart-v500-boss-roster-probe",
+            "hanjuku-chart-v501-idle-reanchor",
             "hanjuku-chart-v129-battle-card-progress",
             "hanjuku-chart-v130-summer-cursor-evidence",
             "hanjuku-chart-v131-defense-month-economy",

@@ -267,15 +267,42 @@ def test_reanchor_without_ready_order_reports_hold_and_rechecks(monkeypatch):
     assert mem['_records'][-1]['decision'] == 'cursor_reanchor_resumed'
 
 
-def test_map_starts_reanchor_instead_of_inland_search():
+def test_map_starts_reanchor_instead_of_inland_search(monkeypatch):
     mem = _memory()
-    mem['active'] = None
+    _allow_interrupted_order(monkeypatch)
     mem['nav_search'] = True
     mem['uncertain'] = True
     screen = _screen('map', [], cursor=(80, 90))
     assert M.map_step(screen, mem, None) == [M.pad('x')]
     assert mem['castle_jump']['source'] == 'アルマムーン'
     assert mem['_records'][-1]['decision'] == 'cursor_reanchor_open'
+
+
+def test_idle_map_with_stale_search_does_not_repeat_reanchor(monkeypatch):
+    mem = _memory()
+    mem.update(active=None, nav_search=True, uncertain=True, anchor=None)
+    screen = _screen('map', [], cursor=(80, 90))
+    monkeypatch.setattr(M, '_world_map_wanted', lambda _mem: False)
+    monkeypatch.setattr(M, 'next_order', lambda _mem: None)
+    monkeypatch.setattr(M, '_off_chart', lambda _mem: None)
+    monkeypatch.setattr(M, 'update_world', lambda *_args: mem['cursor'])
+    for tick in range(10, 10 + M.CASTLE_JUMP_COOLDOWN * 2):
+        mem['tick'] = tick
+        assert M.map_step(screen, mem, None) == []
+    assert 'castle_jump' not in mem
+    assert mem['nav_search'] is True
+    assert all(r['decision'] != 'cursor_reanchor_open' for r in mem['_records'])
+
+    # Recovery is deferred until there is real work, rather than discarded.
+    _allow_interrupted_order(monkeypatch)
+    order = {**mem['chart_plan']['orders'][0], 'general': 'どうし'}
+    monkeypatch.setattr(M, 'next_order', lambda _mem: order)
+    monkeypatch.setattr(M, 'nav_step', lambda *_args, **_kwargs: None)
+    assert M.map_step(screen, mem, None) == []
+    mem['tick'] += 1
+    assert M.map_step(screen, mem, None) == [M.pad('x')]
+    assert mem['active'] == 'J1'
+    assert mem['castle_jump']['return_to']['active_step'] == 'J1'
 
 
 def test_failed_reanchor_keeps_search_as_fallback_but_is_cooldown_limited():
