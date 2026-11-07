@@ -174,7 +174,7 @@ test("Workers AI backend sends the canonical conversation shape without tools", 
         return { choices: [{ message: { content: "<think>hidden</think>こんにちは" } }] };
       },
     },
-    WORKERS_AI_MODEL: "@cf/deepseek-ai/deepseek-v4-flash-0731",
+    WORKERS_AI_MODEL: "@cf/deepseek-ai/deepseek-v4.1-flash-1017",
     DOCICH_PERSONA: "canonical persona",
   };
   const result = await generateReply(env, [], {
@@ -187,7 +187,7 @@ test("Workers AI backend sends the canonical conversation shape without tools", 
     referenceId: null,
   });
   assert.equal(result, "こんにちは");
-  assert.equal(call.model, "@cf/deepseek-ai/deepseek-v4-flash-0731");
+  assert.equal(call.model, "@cf/deepseek-ai/deepseek-v4.1-flash-1017");
   assert.equal(call.input.tool_choice, "none");
   assert.equal(call.input.max_tokens, 500);
   assert.equal(call.input.reasoning_effort, undefined);
@@ -209,7 +209,7 @@ test("Workers AI retries once with a larger budget after an empty length-limited
         return { choices: [{ message: { content: "こんにちは、同志。ご挨拶ありがとうございます。" }, finish_reason: "stop" }] };
       },
     },
-    WORKERS_AI_MODEL: "@cf/deepseek-ai/deepseek-v4-flash-0731",
+    WORKERS_AI_MODEL: "@cf/deepseek-ai/deepseek-v4.1-flash-1017",
     DOCICH_PERSONA: "canonical persona",
   };
   const result = await generateReply(env, [], {
