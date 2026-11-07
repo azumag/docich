@@ -924,3 +924,86 @@ def test_battle_result_closes_old_roster_before_reopening_monthly_scan():
     assert post.step(old_roster, mem, None) == [pad('b')]
     assert post.step(Screen([], None, '', kind='map'), mem, None) == [pad('x')]
     assert state['stage'] == 'open_menu'
+
+
+EIGHT_GENERALS = ('どうし', 'ゼウス', 'ヴィーナス', 'ココット', 'アマンディーヌ',
+                  'リースリング', 'ビシソワーズ', 'マカデミア')
+
+
+def _full_walk_state(mem, visited):
+    state = mem['post_month_status']
+    state.update(stage='roster', names=list(visited),
+                 statuses={name: _known_status(name) for name in EIGHT_GENERALS},
+                 dirty=[], markers={}, top_confirmed=True,
+                 list_moves=len(visited))
+    return state
+
+
+def test_full_page_roster_without_wrap_completes_via_end_stall():
+    # g1147 2026-11-07 1-8: an 8-name roster fills the visible page, so the
+    # short-page end proof never applies. Live 299x224 frames never satisfy
+    # the 256x224 scroll-end pixels, and down on the last row does not wrap.
+    # The walk had read all 8 yet failed roster_end_unconfirmed after 13
+    # identical downs. A short stall on the visible last row of a full walk
+    # is now an end proof when the membership proof passes.
+    mem = memory()
+    post.arm(mem)
+    state = _full_walk_state(mem, EIGHT_GENERALS[:7])
+    last = parse(roster(names=EIGHT_GENERALS, selected=7))
+    assert last.kind == 'text'
+    assert post.step(last, mem, None) == [pad('down')]  # cached 8th joins
+    assert state['names'] == list(EIGHT_GENERALS)
+    assert post.step(last, mem, None) == [pad('down')]
+    assert state['end_stall'] == 1
+    assert post.step(last, mem, None) == [pad('down')]
+    assert state['end_stall'] == 2
+    assert post.step(last, mem, None) == [pad('b')]
+    assert 'end_stall' not in state
+    assert mem['general_statuses']['complete'] is True
+    assert list(mem['general_statuses']['statuses']) == list(EIGHT_GENERALS)
+    assert state['stage'] == 'process'
+    assert not any(r['decision'] == 'post_month_status_unverified'
+                   for r in mem['_records'])
+
+
+def test_end_stall_resets_when_selection_moves():
+    mem = memory()
+    post.arm(mem)
+    state = _full_walk_state(mem, EIGHT_GENERALS)
+    last = parse(roster(names=EIGHT_GENERALS, selected=7))
+    mid = parse(roster(names=EIGHT_GENERALS, selected=5))
+    assert post.step(last, mem, None) == [pad('down')]
+    assert state['end_stall'] == 1
+    assert post.step(last, mem, None) == [pad('down')]
+    assert state['end_stall'] == 2
+    # Moving off the last row drops the stall count instead of completing.
+    assert post.step(mid, mem, None) == [pad('down')]
+    assert 'end_stall' not in state
+    assert post.step(last, mem, None) == [pad('down')]
+    assert state['end_stall'] == 1
+    assert post.step(last, mem, None) == [pad('down')]
+    assert state['end_stall'] == 2
+    assert post.step(last, mem, None) == [pad('b')]
+    assert mem['general_statuses']['complete'] is True
+
+
+def test_end_stall_never_completes_a_partial_walk():
+    mem = memory()
+    post.arm(mem)
+    state = _full_walk_state(mem, EIGHT_GENERALS[:3])
+    last = parse(roster(names=EIGHT_GENERALS, selected=7))
+    outs = [post.step(last, mem, None) for _ in range(post.STATUS_RETRIES + 2)]
+    assert state['failure'] == 'roster_end_unconfirmed'
+    assert [pad('b')] in outs
+    # The blocked owner then releases the field (v505): the failure is kept
+    # in post_month_status_last without writing anything verified.
+    assert post.step(last, mem, None) is None
+    assert 'post_month_status' not in mem
+    assert mem['post_month_status_last']['failed'] == 'roster_end_unconfirmed'
+    assert 'general_statuses' not in mem
+    assert not any(r['decision'] == 'post_month_general_departed'
+                   for r in mem['_records'])
+    unverified = [r for r in mem['_records']
+                  if r['decision'] == 'post_month_status_unverified']
+    assert len(unverified) == 1
+    assert unverified[0]['observed_metric']['selected'] == 'マカデミア'

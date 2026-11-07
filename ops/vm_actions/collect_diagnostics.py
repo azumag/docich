@@ -6957,6 +6957,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v499-semantic-hold-key",
             "hanjuku-chart-v500-boss-roster-probe",
             "hanjuku-chart-v505-post-month-blocked-release",
+            "hanjuku-chart-v506-roster-end-stall",
             "hanjuku-chart-v501-idle-reanchor",
             "hanjuku-chart-v502-idle-and-roster-joins",
             "hanjuku-chart-v503-month-start-counts",
