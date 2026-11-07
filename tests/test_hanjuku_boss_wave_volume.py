@@ -10,7 +10,7 @@ def memory():
         'chapter': 6, 'month': '55-6', 'tick': 80000,
         'captured': list(owned), 'lost': [], 'orders': {},
         'garrison': {c: [] for c in owned},
-        'world': {'world': {'world': {'sorties': {}}
+        'world': {'sorties': {}},
         'house_eggs': {}, 'general_location_unknown': [],
     }
     _world(mem)['garrison']['アブダレ'] = ['ドリアン', 'マスカット']
