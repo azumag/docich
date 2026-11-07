@@ -320,7 +320,7 @@ def _en_route(mem):
     """
     now = int(mem.get('tick') or 0)
     sorties = [
-        s for s in (mem.get('sorties') or {}).values()
+        s for s in (_world(mem).get('sorties') or {}).values()
         if isinstance(s, dict)
         and s.get('status') in ('en_route', 'launched_unconfirmed')
         and type(s.get('tick')) is int

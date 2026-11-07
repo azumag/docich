@@ -67,7 +67,7 @@ KEY_OWNERSHIP = {
     'garrison':        {'region': WORLD, 'lifetime': 'chapter', 'migrated': True},
     'garrison_observed_at': {'region': WORLD, 'lifetime': 'chapter', 'migrated': True},
     'general_location_unknown': {'region': WORLD, 'lifetime': 'chapter', 'migrated': True},
-    'sorties':         {'region': WORLD, 'lifetime': 'chapter', 'migrated': False},
+    'sorties':         {'region': WORLD, 'lifetime': 'chapter', 'migrated': True},
     'launched_orders': {'region': WORLD, 'lifetime': 'chapter', 'migrated': True},
     'retired_sorties': {'region': WORLD, 'lifetime': 'chapter', 'migrated': True},
     'launched':        {'region': WORLD, 'lifetime': 'chapter', 'migrated': True},

@@ -152,7 +152,7 @@ def entry(text):
 
 def test_the_boss_entry_binds_the_site_the_general_marches_on():
     mem = {'chapter': 4, 'tick': 200, 'orders': {'4-B2': 'launched'},
-           'sorties': {'4-B2': {'general': 'ゼウス', 'target': '四季王城(南東)', 'source': 'ネクスドリア',
+           'world': {'sorties': {'4-B2': {'general': 'ゼウス', 'target': '四季王城(南東)', 'source': 'ネクスドリア',
                                 'status': 'en_route', 'tick': 150}}}
     assert policy.message_step(entry('ゼウスしょうぐんがボスじょうにせめこんだ!!'), mem) == [policy.pad('a')]
     assert mem['attack'] == {'general': 'ゼウス', 'castle': '四季王城(南東)', 'side': 'attack',
@@ -161,7 +161,7 @@ def test_the_boss_entry_binds_the_site_the_general_marches_on():
 
 def test_two_site_marches_of_one_general_name_no_site():
     mem = {'chapter': 4, 'tick': 200,
-           'sorties': {s: {'general': 'ゼウス', 'target': t, 'status': 'en_route', 'tick': 150}
+           'world': {'sorties': {s: {'general': 'ゼウス', 'target': t, 'status': 'en_route', 'tick': 150}
                        for s, t in (('4-B1', '四季王城(南西)'), ('4-B2', '四季王城(南東)'))}}
     policy.message_step(entry('ゼウスしょうぐんがボスじょうにせめこんだ!!'), mem)
     assert (mem.get('attack') or {}).get('castle') in (None, chart.boss_castle(4))

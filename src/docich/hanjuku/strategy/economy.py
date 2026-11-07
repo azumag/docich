@@ -841,7 +841,7 @@ def _general_repair_targets(mem):
             continue
         if any(s.get('general') == name and s.get('status') in ('en_route', 'launched_unconfirmed')
                and not _castle_status_after_sortie(info, s, mem)
-               for s in (mem.get('sorties') or {}).values()):
+               for s in (_world(mem).get('sorties') or {}).values()):
             continue
         from ..os_layer.world import VENUS_NAME
         # Issue #2834: broken Venus must go to repair even when sole defender/last castle

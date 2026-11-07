@@ -11,9 +11,9 @@ from docich.hanjuku.state.regions import world as _world
 def memory(age, status='overdue', garrison=None):
     return {'chapter': 6, 'tick': 50000, '_records': [], 'orders': {},
             'world': {'garrison': {'アルマムーン': [], 'アブダレ': []} if garrison is None else garrison},
-            'sorties': {'A:x:M1': {'general': 'ヘルメス', 'source': 'アルマムーン',
+            'world': {'sorties': {'A:x:M1': {'general': 'ヘルメス', 'source': 'アルマムーン',
                                    'target': 'ボス', 'status': status,
-                                   'tick': 50000 - age}},
+                                   'tick': 50000 - age}}}
             'launched_orders': {}}
 
 

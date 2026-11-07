@@ -14,7 +14,7 @@ NORMAL = [c for c in CELLS if c != 'ボス']
 
 def memory():
     return {'chapter': 6, 'tick': 1000, 'month': '51-5', 'gold': 500, '_records': [],
-            'orders': {}, 'sorties': {}, 'lost': [], 'chart_adjust': {},
+            'orders': {}, 'world': {'world': {'world': {'sorties': {}}
             'captured': list(NORMAL),
             'garrison': {**{c: ['ゼウス'] for c in NORMAL},
                          'オケアナ': ['ゼウス', 'ポセイドン']}}

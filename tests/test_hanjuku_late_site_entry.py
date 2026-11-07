@@ -28,7 +28,7 @@ def entry(general):
 
 def memory(tick, *, current=None, retired=None):
     return {'chapter': 4, 'tick': tick, 'orders': {'4-B1': 'launched'},
-            'sorties': {'4-B1': dict(current or NEW)},
+            'world': {'world': {'world': {'sorties': {'4-B1': dict(current or NEW)}}
             'retired_sorties': {'4-B1': [dict(item) for item in (retired or [OLD])]},
             'boss_relaunch': {'4-B1': 1}}
 

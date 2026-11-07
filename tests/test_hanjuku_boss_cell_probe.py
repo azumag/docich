@@ -72,9 +72,9 @@ def test_the_assignment_stays_bounded():
 def overdue_boss(index=0, tick=100000):
     return {'chapter': 6, 'tick': tick, '_records': [],
             'orders': {'A:x:M1': 'launched'},
-            'sorties': {'A:x:M1': {'general': 'ヘルメス', 'source': 'アルマムーン',
+            'world': {'sorties': {'A:x:M1': {'general': 'ヘルメス', 'source': 'アルマムーン',
                                    'target': 'ボス', 'status': 'en_route',
-                                   'tick': tick - O.MARCH_ARRIVAL_CAP - 1}},
+                                   'tick': tick - O.MARCH_ARRIVAL_CAP - 1}}}
             'launched_orders': {},
             'boss_step_probe': {'A:x:M1': index}}
 

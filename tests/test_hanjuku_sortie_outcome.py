@@ -16,8 +16,8 @@ def memory(ally_hp, enemy_hp, castle='ボス', target='ボス', side='attack', r
     return {
         'chapter': 6, 'tick': 1000, '_records': [], 'orders': {'A:x:M1': 'launched'},
         'garrison': {'アルマムーン': ['ペコリーノ']},
-        'sorties': {'A:x:M1': {'general': 'ペコリーノ', 'source': 'アルマムーン',
-                               'target': target, 'status': 'en_route', 'tick': 900}},
+        'world': {'sorties': {'A:x:M1': {'general': 'ペコリーノ', 'source': 'アルマムーン',
+                               'target': target, 'status': 'en_route', 'tick': 900}}}
         'battle': cur,
     }
 

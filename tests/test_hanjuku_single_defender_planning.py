@@ -15,7 +15,7 @@ def memory(*, generals=('ポセイドン',), chapter=5):
     garrison['ボッサール'] = list(generals)
     return {'chapter': chapter, 'tick': 1000, 'month': '50-5',
             'captured': normal, 'garrison': garrison, 'lost': [],
-            'sorties': {}, 'orders': {}, '_records': []}
+            'world': {'world': {'world': {'sorties': {}}
 
 
 def bossar_orders(mem):
