@@ -503,15 +503,18 @@ class CornerRotationOperatorPolicyTests(unittest.TestCase):
             "control/ops/vm_actions/recover_hanjuku_runtime.sh",
             "control/ops/vm_actions/admin_release_hanjuku_manual.sh",
             "control/ops/vm_actions/control_hanjuku_prediction.sh",
+            "control/ops/vm_actions/release_stale_failed_owner.sh",
             "Recover only the failed corner rotation slot",
             "Restart only the corner rotation service",
             "Roll back only the corner rotation timer",
             "Recover a dead Hanjuku runtime through the reviewed CLI",
+            "Check or administratively release only the reviewed stale failed owner",
             "if: steps.auth.outputs.operation == 'recover-failed'",
             "if: steps.auth.outputs.operation == 'restart-service'",
             "if: steps.auth.outputs.operation == 'rollback-timer'",
             "if: steps.auth.outputs.operation == 'recover-runtime'",
             "if: steps.auth.outputs.operation == 'clear-hanjuku-clock-quarantine'",
+            "if: steps.auth.outputs.operation == 'check-release-stale-failed-owner' || steps.auth.outputs.operation == 'release-stale-failed-owner'",
             "Clear a clock-gap quarantine for the queued Hanjuku request",
             "StrictHostKeyChecking=yes",
             "ForwardAgent=no",
@@ -598,6 +601,7 @@ class CornerRotationOperatorPolicyTests(unittest.TestCase):
         self.assertNotIn("${{ inputs.expected_reservation }}", text)
         self.assertNotIn("INPUT_EXPECTED_RESERVATION:", text)
         self.assertNotIn("EXPECTED:", text)
+        # The 4th EXPECTED derivation is the stale failed owner step (#3682).
         self.assertEqual(text.count('EXPECTED="$(python3 -I control/ops/vm_actions/corner_rotation_input.py)"'), 4)
 
     def test_new_and_legacy_workflows_serialize_on_the_same_concurrency_group(self):

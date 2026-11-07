@@ -168,8 +168,14 @@ last_seen、pending、request UUID、結果をatomic writeする。
    tickは`corner-rotation.lock`を保持し続けるため他のtickは`already-running`を返し、rowの解放は
    そのtickが待ち窓（`CornerExecutionCoordinator`の`wait_seconds`、既定600秒）を使い切った後の
    最初のtickで行われる。この形は`status=recovery_required`のlatchを作らないので
-   `recover_corner_rotation.sh`の対象外であり、復旧は**「最大で待ち窓＋1tick」に有界だが即時ではない**
-   （#2282 の残件。正規の復旧操作の追加は別途）。
+   `recover_corner_rotation.sh`の対象外である。
+   released ownerがadapter側でまだretireされていない間（`settle_released_failure`が`None`=延期、
+   または`False`=hook未実装/retire不可）、その共有state fileはselectionから外れる
+   （`excluded[<id>]=released-owner-unretired`）。同じfileへの再dispatchは別requestの失敗を量産し、
+   有界auditから元requestの解放証拠を押し出すだけなので行わない（#3682）。
+   解放証拠を全て失った古い`failed` ownerの復旧は、固定operation
+   `check-release-stale-failed-owner` / `release-stale-failed-owner`による
+   （本書末尾「証拠を失った failed owner の固定解放（#3682）」参照）。
 3. 共有slotの安全が証明できない場合だけ、`status=recovery_required` /
    `reason=execution-or-state-unverified` / `error_kind=<固定enum>`でlatchし、`tick()`は
    自動開始と手動startを拒否する。この場合も`failed_corners`へ`resolution=recovery-required`の
