@@ -190,7 +190,7 @@ jobs:
           else
             gateway_rc=$?
           fi
-          python3 -I control/src/docich/hanjuku_admin_result.py "$gateway_result" "$mode" "$SHA" "$gateway_rc"
+          python3 -I control/src/docich/hanjuku_admin_result.py "$gateway_result" "$mode" "$SHA" "$gateway_rc" mystery
 
       - name: Recover only the failed corner rotation slot
         if: steps.auth.outputs.operation == 'recover-failed'
