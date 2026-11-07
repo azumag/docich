@@ -923,6 +923,35 @@ def test_observed_member_records_a_join_and_invalidate_keeps_the_count():
     assert mem[r.LAST_COMPLETE_KEY]['names'] == NAMES[:3]
 
 
+@pytest.mark.parametrize('held_payroll', [False, True])
+def test_new_roster_names_update_kept_count_without_current_status_survey(held_payroll):
+    # g1147: the previous complete roster had four names, while the current
+    # page visibly contained six. A month change left no reusable survey.
+    mem = memory(NAMES[:4])
+    mem['_run_identity'] = dict(IDENTITY)
+    r._remember_complete(mem, dict(mem['recruit_roster'], identity=dict(IDENTITY)))
+    mem.update(month='1-8', tick=110)
+    mem.pop('recruit_roster')
+    if held_payroll:
+        # Even an existing bill containing the new names must not suppress
+        # the independent count update on a later roster observation.
+        mem['payroll_membership_hold'] = {
+            'schema': 1, 'identity': dict(IDENTITY), 'scope': [1, '1-8'],
+            'wages': {name: r.fixed_wage(name) for name in NAMES[:6]},
+            'saturated': False}
+    r.page(mem, NAMES[:6])
+    r.page(mem, NAMES[:6])
+    assert mem[r.PENDING_JOINS_KEY] == NAMES[4:6]
+    assert mem[r.LAST_COMPLETE_KEY]['names'] == NAMES[:4]
+    assert len(mem[r.LAST_COMPLETE_KEY]['names']) + len(mem[r.PENDING_JOINS_KEY]) == 6
+    # Seeing a page updates membership additions, not full-list/status proof.
+    assert r.fresh(mem)['names'] == NAMES[:6]
+    assert r.fresh(mem)['complete'] is False
+    assert r.completed_survey(mem) is None
+    assert 'country_general_count' not in mem
+    assert ('payroll_membership_hold' in mem) is held_payroll
+
+
 def test_confirmed_departure_keeps_a_number_and_refreshes_the_kept_list():
     mem = memory(NAMES[:3])
     mem['_run_identity'] = dict(IDENTITY)

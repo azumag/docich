@@ -633,6 +633,12 @@ def _watch_cursor_still(mem):
     roofs. The legacy nav_search path remains a bounded fallback if the menu
     jump cannot be completed.
     """
+    # With no order the map deliberately waits for armies/events. A missing
+    # roof anchor during that wait is not evidence of failed navigation.
+    # Clear old counts as well, including those left by a hotloaded policy.
+    if not mem.get('active'):
+        mem.pop('cursor_still', None)
+        return False
     cursor = mem.get('cursor')
     watch = mem.get('cursor_still') or {}
     if not cursor:
@@ -1094,7 +1100,10 @@ def map_step(screen: Screen, mem, frame):
         # with `nav_last` null). Counted, not recorded, so it stays cheap.
         _tally(mem, 'map_no_cursor')
     _watch_cursor_still(mem)
-    if screen.cursor and not screen.marker:
+    # Idle maps deliberately wait for armies/events. Keep any interrupted
+    # search for the next order instead of repeatedly jumping home before
+    # plan selection and ownership surveys can run.
+    if mem.get('active') and screen.cursor and not screen.marker:
         reanchor = _start_reanchor_jump(mem)
         if reanchor is not None:
             return reanchor

@@ -9,7 +9,8 @@ from docich.hanjuku.flows import map as M
 
 
 def memory(cursor=(392, 144)):
-    return {'chapter': 6, 'tick': 100, '_records': [], 'cursor': list(cursor)}
+    return {'chapter': 6, 'tick': 100, '_records': [], 'cursor': list(cursor),
+            'active': 'navigation-order'}
 
 
 def test_a_moving_estimate_never_starts_the_search():
@@ -37,3 +38,14 @@ def test_a_confirmed_anchor_is_not_mistaken_for_a_lost_cursor():
     for _ in range(M.CURSOR_STILL_LIMIT + 2):
         assert M._watch_cursor_still(mem) is False
     assert 'nav_search' not in mem
+
+
+def test_idle_map_does_not_treat_waiting_as_frozen_navigation():
+    mem = memory()
+    mem.update(active=None, uncertain=True, anchor=None,
+               cursor_still={'cell': list(mem['cursor']), 'n': M.CURSOR_STILL_LIMIT})
+    for _ in range(M.CURSOR_STILL_LIMIT * 3):
+        assert M._watch_cursor_still(mem) is False
+    assert 'cursor_still' not in mem
+    assert 'nav_search' not in mem
+    assert mem['_records'] == []
