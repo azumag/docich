@@ -89,6 +89,41 @@ JEVは自動有効化されていない手動のplayer-policy試験であり、�
 - 時刻逆行は以前の観測時刻へ戻るまで待つ。観測間隔が24時間を超えた場合は、長期停止と
   大幅時計変更を区別できないため24時間隔離する。clock/seedはテストへ注入できる。
 
+## 次コーナーの予告（`next_corner.json`、2026-11-07 オーナー依頼）
+
+コーナーとコーナーの間（sorengameが表に出ている間）、右サイドバーに
+「次のコーナー: 〜 / 18:00 予定」を出す。予告は推測ではなく、共通timerが
+**dueより前に確定させた次の1枠**である。
+
+- `CornerRotationManager._next_corner_notice` が、dispatchと同じ規則
+  （interval anchor → 24h cooldownの再アンカー → 予約済みmanualが先ならそれ）で
+  次のcornerと開始可能時刻を決める。順位はdispatchと同じ
+  `seed`・`slot`・corner IDのSHA-256。
+- 決定は `state_dir/next_corner.json` へboundedに投影する。seed・slot・request UUIDは
+  含めない。`corner` / `label`（視聴者向け表示名）/ `when`（表示用時刻）/
+  `due_at` / `source`（auto|manual）/ `hold` / `decided_at` / `updated_at` だけ。
+- dispatchは、予告したcornerがまだ候補ならそれを優先する。一度出した予告を
+  別のcornerへ差し替えないためで、候補から外れた（pause・cooldown・manual予約との
+  競合）ときだけ引き直して投影も更新する。
+- 枠の開始（pending確定）時に投影を消す。sorengameへ戻った次のtickで次の予告を出す。
+  `game_switch.json` の `active.game` が `sorengame` でない間（他コーナー・special view・
+  復帰失敗）は出さない。queue modeは間隔が無いので、予約済みmanualがあるときだけ出す。
+- **予想ガード（48試合のprediction）中は出さない。** in-flightのpredictionは
+  コーナー入りの境界を待たせるため開始時刻を約束できない。`hold="prediction"` を
+  記録し、配信側は描画しない（`corner_boundary.prediction_in_flight`）。
+- 枠の終了後、`last_result` がterminal（completed / interrupted / expired）かつ
+  30分以内なら、共有audio queueへ1回だけ「次のコーナーは〜、18時からの予定です。」を
+  入れる。`notice_spoken_for`（request UUID）で冪等にし、`dedup_scope` も同じ
+  requestに結ぶ。復元未確認（`unverified`）では読み上げない。
+- 配信側は `overlays/direct_broadcast_overlay_state.mjs` が
+  `<docich>/run-soren-live/next_corner.json` を読み、`nextCorner` として
+  `/__soren_overlay/broadcast/state` に載せる。
+  `overlays/direct_broadcast_overlay.html` は右サイドバー上部のカード
+  （`#next-corner`）として描画する。記録が10分更新されない・予定時刻を15分過ぎた・
+  `hold` 付きのときは出さない。
+- 投影・読み上げはbest-effortで、書けない・届かないことは rotation の選択・実行・
+  復帰を止めない。
+
 ## 永続化、キュー、所有権
 
 `state_dir/corner_rotation.json` schema v1にseed、slot、適格性、履歴、next_due、
