@@ -5045,10 +5045,10 @@ class _Handler(BaseHTTPRequestHandler):
             self._send_error_json(428, "confirmation_required", "corner操作には confirm:true が必要です")
             return 428
         action = str(data.get("action", "")).strip().lower()
-        if action not in ("start", "resume-latest", "stop", "recover", "schedule", "cancel-schedule"):
+        if action not in ("start", "new-game", "resume-latest", "stop", "recover", "schedule", "cancel-schedule"):
             self._send_error_json(
                 400, "invalid_action",
-                "action must be start, resume-latest, stop, recover, schedule or cancel-schedule",
+                "action must be start, new-game, resume-latest, stop, recover, schedule or cancel-schedule",
             )
             return 400
         if action == "recover":
@@ -5102,6 +5102,12 @@ class _Handler(BaseHTTPRequestHandler):
             return 400
         if action in ("schedule", "cancel-schedule"):
             return self._handle_scheduled_corner_action(row, action, data)
+        if action == "new-game":
+            if row.game not in _CORNER_QUEUED_MANUAL_GAMES:
+                self._send_error_json(400, "new_game_unsupported",
+                                      "第1話からの新規開始は半熟英雄だけに対応しています")
+                return 400
+            return self._handle_hanjuku_corner_start(row, new_game=True)
         if action == "resume-latest":
             if row.game not in _CORNER_QUEUED_MANUAL_GAMES:
                 self._send_error_json(400, "resume_latest_unsupported",
@@ -5163,7 +5169,7 @@ class _Handler(BaseHTTPRequestHandler):
         })
         return 200
 
-    def _handle_hanjuku_corner_start(self, row, *, resume_latest: bool = False) -> int:
+    def _handle_hanjuku_corner_start(self, row, *, resume_latest: bool = False, new_game: bool = False) -> int:
         """Queue the fixed Hanjuku start through the common coordinator (#2024).
 
         docich.hanjuku_corner / start-hanjuku と同じ起動要求
@@ -5179,8 +5185,12 @@ class _Handler(BaseHTTPRequestHandler):
 
         try:
             manager = CornerRotationManager(self.g)
-            outcome = ((queue_failed_start(self.g) or manager.queue_manual(row.game, resume_latest=True))
-                       if resume_latest else manager.queue_manual(row.game))
+            if new_game:
+                outcome = manager.queue_manual(row.game, new_game=True)
+            elif resume_latest:
+                outcome = queue_failed_start(self.g) or manager.queue_manual(row.game, resume_latest=True)
+            else:
+                outcome = manager.queue_manual(row.game)
             status = outcome.get("status") if isinstance(outcome, dict) else None
         except RotationError as exc:
             reasons = {
@@ -5231,7 +5241,7 @@ class _Handler(BaseHTTPRequestHandler):
             return 500
         self._send_json(200, {
             "ok": True,
-            "action": "resume-latest" if resume_latest else "start",
+            "action": "new-game" if new_game else "resume-latest" if resume_latest else "start",
             "status": status,
             "corner": {"id": row.id, "adapter": row.adapter,
                        "game": row.game, "target": "rotation"},

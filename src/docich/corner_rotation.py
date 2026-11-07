@@ -497,7 +497,7 @@ class CornerRotationManager:
             self._manual_queue_path.unlink()
             return None
 
-    def queue_manual(self, game, *, trigger_at=None, resume_latest=False):
+    def queue_manual(self, game, *, trigger_at=None, resume_latest=False, new_game=False):
         """Queue one owner request, optionally with a not-before trigger.
 
         Immediate requests preserve the existing behavior. A future trigger is
@@ -507,6 +507,9 @@ class CornerRotationManager:
         """
         if type(resume_latest) is not bool or (resume_latest and (game != 'hanjuku-hero' or trigger_at is not None)):
             raise RotationError('invalid resume request', reason_code='invalid_value')
+        if type(new_game) is not bool or (new_game and (
+                game != 'hanjuku-hero' or resume_latest or trigger_at is not None)):
+            raise RotationError('invalid new game request', reason_code='invalid_value')
         if not rotation_enabled(self.g):
             raise RotationError(
                 "common corner rotation is disabled", reason_code="rotation_disabled"
@@ -578,13 +581,18 @@ class CornerRotationManager:
                 if existing_trigger is not None:
                     existing_trigger = timestamp(existing_trigger)
                 if (queued["corner"] != chosen or existing_trigger != requested_trigger
-                        or bool(queued.get("resume_latest")) != resume_latest):
+                        or bool(queued.get("resume_latest")) != resume_latest
+                        or bool(queued.get("new_game")) != new_game):
                     raise RotationError(
                         "another manual corner or schedule is already queued",
                         reason_code="manual_queue_conflict",
                     )
             else:
                 queued = dict(corner=chosen, selected_at=now, request_id=str(uuid.uuid4()))
+                if new_game:
+                    # Preserve the intent until dispatch, after the current
+                    # program slot ends. Never alter its checkpoint request.
+                    queued['new_game'] = True
                 if requested_trigger is not None:
                     queued["trigger_at"] = requested_trigger
                 if resume_latest:

@@ -2691,6 +2691,43 @@ class TestHttpHandlers(unittest.TestCase):
         # private request id は投影に出さない
         self.assertNotIn(inbox["request_id"], json.dumps(view))
 
+    def test_post_corners_new_game_requires_confirmation_and_preserves_other_modes(self):
+        self._write_hanjuku_catalog_config()
+        self._write_rotation_state(status="ready", pending=None)
+        ledger = Path(self.g.state_dir) / "corner_rotation.json"
+        before = ledger.read_bytes()
+        payload = {"action": "new-game", "corner": "hanjuku-hero"}
+        with mock.patch("docich.retro_corner.RetroCornerManager._playable_games",
+                        return_value=["hanjuku-hero"]), \
+                mock.patch("docich.webui.subprocess.Popen") as popen:
+            status, data = self._request("POST", "/api/corners", payload)
+            self.assertEqual(status, 428, data)
+            inbox = Path(self.g.state_dir) / "corner_manual_queue.json"
+            self.assertFalse(inbox.exists())
+            payload["confirm"] = True
+            for _ in range(2):
+                status, data = self._request("POST", "/api/corners", payload)
+                self.assertEqual(status, 200, data)
+                self.assertEqual(data["action"], "new-game")
+            queued = inbox.read_bytes()
+            self.assertTrue(json.loads(queued)["new_game"])
+            for action in ("start", "resume-latest"):
+                status, data = self._request("POST", "/api/corners", {
+                    "action": action, "corner": "hanjuku-hero", "confirm": True})
+                self.assertEqual(status, 409, data)
+                self.assertEqual(inbox.read_bytes(), queued)
+            popen.assert_not_called()
+        self.assertEqual(ledger.read_bytes(), before)
+
+    def test_post_corners_new_game_refuses_other_games(self):
+        self._write_catalog_config()
+        with mock.patch("docich.webui.subprocess.Popen") as popen:
+            status, data = self._request("POST", "/api/corners", {
+                "action": "new-game", "corner": "nsnake", "confirm": True})
+        self.assertEqual(status, 400, data)
+        self.assertEqual(data["error"], "new_game_unsupported")
+        popen.assert_not_called()
+
     def test_hanjuku_start_is_idempotent_while_the_same_reservation_waits(self):
         self._write_hanjuku_catalog_config()
         self._write_rotation_state(status="ready", pending=None)
@@ -3818,12 +3855,27 @@ const fmtTime=x=>x?String(x):'-';
             "document.getElementById('corners-select').value=" + json.dumps(select_after)
             + ";updateCornerButtons();\n" if select_after is not None else ""
         ) + '''
-const out={};for(const id of ['corners-summary','corners-catalog','corners-advice','corners-hint','corners-start','corners-stop','corners-recover','corners-duration'])out[id]=elements[id];
+const out={};for(const id of ['corners-summary','corners-catalog','corners-advice','corners-hint','corners-start','corners-new-game','corners-resume-latest','corners-stop','corners-recover','corners-duration'])out[id]=elements[id];
 process.stdout.write(JSON.stringify(out));
 '''
         result = subprocess.run(["node", "-e", script], capture_output=True, text=True, timeout=_NODE_TEST_TIMEOUT)
         self.assertEqual(result.returncode, 0, result.stderr)
         return json.loads(result.stdout)
+
+    def test_new_game_button_is_hanjuku_only_and_respects_start_gates(self):
+        row = {"id": "hanjuku-hero", "game": "hanjuku-hero", "adapter": "game",
+               "manual": True, "manual_start": True, "manual_mode": "queue",
+               "enabled": True, "paused": False, "state_file": "retro_corner"}
+        for rotation, disabled in (({"status": "ready"}, False),
+                                   ({"status": "recovery_required", "latch": True}, True),
+                                   ({"queued_manual": {"corner": "hanjuku-hero"}}, True)):
+            with self.subTest(rotation=rotation):
+                out = self._render(rotation, catalog=[row], selected=row["id"], corners={})
+                self.assertEqual(out["corners-new-game"]["style"]["display"], "")
+                self.assertEqual(out["corners-new-game"]["disabled"], disabled)
+        out = self._render({"status": "ready"})
+        self.assertEqual(out["corners-new-game"]["style"]["display"], "none")
+        self.assertTrue(out["corners-new-game"]["disabled"])
 
     def test_hanjuku_queues_start_without_duration_and_keeps_stop(self):
         # #2024: 半熟英雄は分数を使わない queue 方式。開始は予約ボタンとして
