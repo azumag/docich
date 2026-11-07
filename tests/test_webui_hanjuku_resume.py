@@ -64,7 +64,7 @@ def test_hanjuku_resume_control_is_explicit_in_webui_resources():
     assert 'id="corners-resume-latest"' in html
     assert 'action:"resume-latest"' in html
     assert 'c.game==="hanjuku-hero"' in html
-    assert "通常の開始予約は新規開始のままです" in html
+    assert "直前が画面停滞なら自動再開します" in html
 
 
 @pytest.mark.skipif(shutil.which('node') is None,reason='Node is required for WebUI JavaScript')

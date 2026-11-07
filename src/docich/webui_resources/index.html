@@ -211,6 +211,7 @@ input:checked+.slider:before{transform:translateX(20px)}
 <div><label>時刻指定（ローカル時刻）</label><input id="corners-schedule-at" type="datetime-local" step="60"/></div></div>
 <div class="actions">
 <button class="btn primary" id="corners-start">手動開始</button>
+<button class="btn" id="corners-new-game" style="display:none">第1話から新規開始</button>
 <button class="btn" id="corners-resume-latest" style="display:none">最新セーブから再開</button>
 <button class="btn" id="corners-schedule">時刻指定</button>
 <button class="btn" id="corners-cancel-schedule">予約取消</button>
@@ -2411,7 +2412,7 @@ function updateCornerButtons(){
   }
   else if(r.pending) hints.push(`${r.pending.corner} は${r.pending.phase==="dispatched"?"起動要求済み":"選択済み"}です。手動開始すると、現在のコーナーが終わってから始まります。`);
   if(queuedMode){
-    if(c.game==="hanjuku-hero") hints.push("半熟英雄は分数を使わず、ゲームオーバーまで（ゲーム画面が300秒変わらない場合はその時点まで）動きます。開始は現在のコーナー終了後、次の tick で行われます。");
+    if(c.game==="hanjuku-hero") hints.push("半熟英雄の「開始予約」は直前が画面停滞なら自動再開します。「最新セーブから再開」はセーブを引き継ぎ、「第1話から新規開始」は引き継ぎません。既存セーブは過去の実行に保存されますが、新規開始後の再開対象は新しい実行になります。分数は使わず、ゲームオーバーまたは画面が300秒変わらない時点まで動きます。開始は現在のコーナー終了後です。");
     else if(c.adapter==="weather") hints.push(`天気は設定済みの最大${c.duration_minutes}分で表示します。予報の有効期限で早く終了する場合があります。`);
     else if(c.adapter==="tsuitate") hints.push("衝立将棋は1局だけ対戦し、終局後に元の画面へ戻ります。結果未確定時はreconcileまで次のコーナーを待たせます。");
     if(!c.enabled||c.paused||r.enabled===false) hints.push("コーナーまたはローテーションが無効・休止中のため予約できません。");
@@ -2421,6 +2422,7 @@ function updateCornerButtons(){
     ? "ゲーム設定を確認できないため、この画面から開始できません。停止可能な実行は手動停止できます。"
     : "このゲームは one-off runner で開始できません。停止可能な実行は手動停止できます。");
   const startBtn=document.getElementById("corners-start");
+  const newGameBtn=document.getElementById("corners-new-game");
   const resumeBtn=document.getElementById("corners-resume-latest");
   const scheduleBtn=document.getElementById("corners-schedule");
   const cancelScheduleBtn=document.getElementById("corners-cancel-schedule");
@@ -2430,6 +2432,7 @@ function updateCornerButtons(){
   const scheduledHere=!!(c&&r.queued_manual&&r.queued_manual.scheduled&&r.queued_manual.corner===c.id);
   const canSchedule=!!c && c.enabled && !c.paused && r.enabled!==false && !r.latch && !r.queued_manual;
   if(startBtn){ startBtn.disabled=!canStart; startBtn.textContent=queuedMode?"開始予約":"手動開始"; }
+  if(newGameBtn){ const isHanjuku=!!c&&c.game==="hanjuku-hero"; newGameBtn.style.display=isHanjuku?"":"none"; newGameBtn.disabled=!isHanjuku||!canStart; }
   if(resumeBtn){ const isHanjuku=!!c&&c.game==="hanjuku-hero"; resumeBtn.style.display=isHanjuku?"":"none"; resumeBtn.disabled=!isHanjuku||!canStart; }
   if(scheduleBtn) scheduleBtn.disabled=!canSchedule;
   if(cancelScheduleBtn) cancelScheduleBtn.disabled=!scheduledHere;
@@ -2454,6 +2457,8 @@ async function cornerAction(payload, confirmText){
       if(r.action==="recover") t=r.ok?"復旧しました。次の tick（1分以内）でローテーションが再開します。":`復旧できませんでした（exit ${r.exit_code==null?"-":r.exit_code}）。先に要復旧のコーナーを停止/復旧してください。${r.detail?" 詳細: "+r.detail:""}`;
       else if(r.action==="schedule") t=`${r.corner&&r.corner.id||"-"} を ${fmtTime(r.trigger_at)} 以降に1回だけ開始するよう予約しました。`;
       else if(r.action==="cancel-schedule") t=`${r.corner&&r.corner.id||"-"} の時刻指定予約を取り消しました。`;
+      else if(r.action==="new-game" && r.corner&&r.corner.game==="hanjuku-hero" && r.corner.target==="rotation")
+        t="半熟英雄の第1話からの新規開始を予約しました。既存セーブは引き継がず、過去の実行に保存されます。現在のコーナー終了後に開始します。";
       else if(r.action==="resume-latest" && r.corner&&r.corner.game==="hanjuku-hero" && r.corner.target==="rotation")
         t="半熟英雄のセーブからの再開を予約しました。現在のコーナー終了後、次の tick で開始します。状態欄で進行をご確認ください。";
       else if(r.corner&&r.corner.target==="rotation") {
@@ -3164,7 +3169,7 @@ document.addEventListener("DOMContentLoaded",()=>{
     const row=CORNERS_DATA&&(CORNERS_DATA.catalog||[]).find(c=>c.id===corner);
     if(row&&row.manual_mode==="queue"){
       const text=row.game==="hanjuku-hero"
-        ? "半熟英雄を開始予約しますか？（現在のコーナー終了後に開始し、分数は使わずゲームオーバーまで動きます。既存コーナーの停止・再起動はしません）"
+        ? "半熟英雄を通常の開始予約にしますか？（直前が画面停滞ならセーブから自動再開します。現在のコーナー終了後に開始し、分数は使いません）"
         : (row.adapter==="tsuitate"
             ? "衝立将棋を1局開始予約しますか？（現在のコーナー終了後に開始し、終局後は元画面へ復帰します）"
             : `天気を開始予約しますか？（現在のコーナー終了後・最大${row.duration_minutes}分・音声と予報取得は設定に従います）`);
@@ -3175,6 +3180,15 @@ document.addEventListener("DOMContentLoaded",()=>{
     cornerAction({action:"start",corner,duration_minutes:minutes},
       `コーナー ${corner} を手動開始しますか？（one-off runner・${minutes}分・確認ダイアログはこの画面だけ）`);
   };
+  const cNewGame=document.getElementById("corners-new-game");
+  if(cNewGame) cNewGame.onclick=()=>{
+    const sel=document.getElementById("corners-select");
+    const corner=sel?sel.value:"";
+    const row=((CORNERS_DATA&&CORNERS_DATA.catalog)||[]).find(x=>x.id===corner);
+    if(!row||row.game!=="hanjuku-hero"){ toast("第1話からの新規開始は半熟英雄だけに対応しています"); return; }
+    cornerAction({action:"new-game",corner},
+      "半熟英雄をセーブを引き継がず第1話から新規開始しますか？既存セーブは削除・上書きせず過去の実行に保存します。新規開始後の「最新セーブから再開」は新しい実行が対象です。現在のコーナー終了後に開始します。");
+  };
   const cResume=document.getElementById("corners-resume-latest");
   if(cResume) cResume.onclick=()=>{
     const sel=document.getElementById("corners-select");
@@ -3182,7 +3196,7 @@ document.addEventListener("DOMContentLoaded",()=>{
     const row=((CORNERS_DATA&&CORNERS_DATA.catalog)||[]).find(x=>x.id===corner);
     if(!row||row.game!=="hanjuku-hero"){ toast("最新セーブからの再開は半熟英雄だけに対応しています"); return; }
     cornerAction({action:"resume-latest",corner},
-      "半熟英雄を最新のクイックセーブから再開しますか？（通常の開始予約は新規開始のままです）");
+      "半熟英雄を最新のクイックセーブから再開しますか？（通常の開始予約も、直前が画面停滞なら自動再開します。第1話から始めるには「第1話から新規開始」を選んでください）");
   };
   const cSchedule=document.getElementById("corners-schedule");
   if(cSchedule) cSchedule.onclick=()=>{
