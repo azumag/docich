@@ -581,3 +581,29 @@ def test_yes_no_in_a_live_trade_scene_declines():
     mem = {'tick': 12, 'trade_scene': 11}
     assert policy.yes_no_step(_yes_no_choice(['うむッ!', 'いかんッ!'], 0), mem) == [policy.pad('down')]
     assert policy.yes_no_step(_yes_no_choice(['うむッ!', 'いかんッ!'], 1), mem) == [policy.pad('a')]
+
+
+def _scene_yes_no(rows, selected=0):
+    sc = choice(rows, selected)
+    return Screen(lines=sc.lines, hand=sc.hand, text=sc.text, kind='yes_no')
+
+
+def test_scene_yes_no_declines_only_with_both_trade_labels():
+    mem = {'tick': 12, 'trade_scene': 10}
+    assert policy.yes_no_step(_scene_yes_no(['うむッ!', 'いかんッ!']), mem) == [policy.pad('down')]
+    assert policy.yes_no_step(_scene_yes_no(['うむッ!', 'いかんッ!'], 1), mem) == [policy.pad('a')]
+    assert 'trade_scene' not in mem
+
+
+def test_scene_yes_no_other_labels_fall_through_to_normal_handler():
+    mem = {'tick': 12, 'trade_scene': 10}
+    assert policy.yes_no_step(_scene_yes_no(['はい', 'いいえ']), mem) == []
+    assert mem['_records'][-1]['observed_metric']['choice'] == 'うむッ!'
+    assert mem['trade_scene'] == 10
+
+
+def test_scene_yes_no_one_trade_label_holds_without_accepting():
+    mem = {'tick': 12, 'trade_scene': 10}
+    assert policy.yes_no_step(_scene_yes_no(['うむッ!', '???']), mem) == []
+    assert mem['_records'][-1]['decision'] == 'situation_held'
+    assert mem['_records'][-1]['observed_metric']['trade_scene'] is True
