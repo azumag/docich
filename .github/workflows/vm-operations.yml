@@ -216,19 +216,6 @@ jobs:
           if [[ "$base" =~ ^[0-9a-f]{40}$ && "$base" != "$SHA" ]]; then
             # thin bundle: base 以降のみ。verify ゲートは VM 側 (gateway)。
             git -C candidate bundle create "$RUNNER_TEMP/vm-payload" HEAD "^$base"
-            # The gateway's _bundle_verify only parses the single-prerequisite
-            # wording ("The bundle requires this ref:"). A range whose base has
-            # several boundary commits (any merge commit; #3695's merge made
-            # two) is reported as "requires these N refs:", so the gateway
-            # sees no prerequisites, never seeds staging with production HEAD
-            # and `git fetch <bundle>` dies with CalledProcessError. Every
-            # production deploy failed from 2026-11-07 20:03 JST. Send a full
-            # bundle (the designed fallback) until the gateway parses both.
-            verify_out="$(git -C candidate bundle verify "$RUNNER_TEMP/vm-payload" 2>&1 || true)"
-            if grep -qE 'The bundle requires these [0-9]+ refs' <<<"$verify_out"; then
-              echo "thin bundle has several prerequisites; sending a full bundle" >&2
-              git -C candidate bundle create "$RUNNER_TEMP/vm-payload" HEAD
-            fi
           else
             # base 不明・不正・base==HEAD（空増分）は full を upload。
             git -C candidate bundle create "$RUNNER_TEMP/vm-payload" HEAD
