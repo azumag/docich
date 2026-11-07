@@ -76,3 +76,32 @@ class ThinBundlePrerequisiteWording(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class GatewayParsesEveryPrerequisite(ThinBundlePrerequisiteWording):
+    """Issue #3700: the gateway itself must report every prerequisite."""
+
+    def prerequisites(self, base):
+        from ops.vm_actions import gateway
+        bundle = self.tmp / "b.bundle"
+        git(self.repo, "bundle", "create", str(bundle), "HEAD", f"^{base}")
+        return gateway._bundle_verify(self.repo, bundle)
+
+    def test_a_merge_range_reports_both_boundary_commits(self):
+        git(self.repo, "merge", "-q", "--no-ff", "-m", "merge", "side")
+        ok, prereqs = self.prerequisites(self.side)
+        self.assertTrue(ok)
+        self.assertEqual(len(prereqs), 2)
+        self.assertEqual(set(prereqs), {self.side, self.base})  # `main` is inside the range
+
+    def test_a_linear_range_still_reports_its_single_prerequisite(self):
+        commit(self.repo, "next")
+        ok, prereqs = self.prerequisites(self.main)
+        self.assertTrue(ok)
+        self.assertEqual(prereqs, [self.main])
+
+    def test_a_full_bundle_reports_none(self):
+        bundle = self.tmp / "full.bundle"
+        git(self.repo, "bundle", "create", str(bundle), "HEAD")
+        from ops.vm_actions import gateway
+        self.assertEqual(gateway._bundle_verify(self.repo, bundle), (True, []))
