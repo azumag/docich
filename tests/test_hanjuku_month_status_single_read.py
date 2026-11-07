@@ -170,3 +170,30 @@ def test_deferred_egg_holds_merchant_and_castle_until_recruit():
     assert mem['shop']['merchant_done'] is False
     assert any(r.get('decision') == 'month_cards_held_for_recruit'
                for r in mem.get('_records') or [])
+
+
+def _castle_status_page():
+    """城ステータス: しゅうにゅう と しょうぐん Nめい はあるが そうちんぎん は無い."""
+    c = Canvas()
+    c.text(56, 7, '2わ3ねん1のつき57G')
+    c.text(24, 39, 'アルマムーン じょう')
+    c.text(24, 71, 'しゅうにゅう 30G')
+    c.text(24, 87, 'レベル 1')
+    c.text(24, 103, 'しょうぐん 0めい')
+    return c.frame()
+
+
+def test_castle_status_page_is_not_a_country_page1_source():
+    screen = parse(_castle_status_page())
+    assert house._country_status_counts(screen) == (None, None)
+    mem = _month_memory()
+    mem.update(_run_identity=dict(IDENTITY))
+    menu = month_canvas(250, on='メインメニュー', month=7)
+    assert house.step(parse(menu), mem, menu) == [p.pad('a')]
+    main = _main_on('ステータス')
+    assert house.step(parse(main), mem, main) == [p.pad('a')]
+    page = _castle_status_page()
+    house.step(parse(page), mem, page)
+    assert not mem.get('country_general_count')
+    assert not mem.get('country_soldier_count')
+    assert not mem.get('country_income')
