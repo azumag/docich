@@ -171,6 +171,23 @@ def fixed_wage(name):
     return GENERAL_WAGES.get('しゅじんこう' if name == 'どうし' else name)
 
 
+def country_count(mem, kind):
+    """A national-status count from this run/chapter/month, else unknown."""
+    key, maximum = {'generals': ('country_general_count', MAX_GENERALS),
+                    'soldiers': ('country_soldier_count', 99999)}[kind]
+    row = mem.get(key)
+    now = mem.get('tick')
+    if (not isinstance(row, dict)
+            or row.get('identity') != run_identity(mem.get('_run_identity'))
+            or not isinstance(row.get('scope'), list) or len(row['scope']) != 2
+            or not _same_scope(*row['scope'], mem)
+            or type(row.get('tick')) is not int or type(now) is not int
+            or not 0 <= row['tick'] <= now
+            or type(row.get('count')) is not int or not 0 <= row['count'] <= maximum):
+        return None
+    return row['count']
+
+
 def roles(raw):
     if not isinstance(raw, dict) or set(raw) != {'per_castle', 'attack'}:
         raise ValueError('invalid recruitment roles')
