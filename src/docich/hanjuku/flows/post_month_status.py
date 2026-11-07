@@ -21,6 +21,13 @@ MENU_RETRIES = 4
 STATUS_RETRIES = 12
 MARKER_RETRIES = 4  # bounded roster frames before status A; avoids transient sprite misses
 LOCATE_RETRIES = 2  # retry the named SELECT -> actual castle status, never infer a castle
+# g1147 2026-11-07 1-8: an 8-name roster fills the visible page, so the
+# short-page end proof never applies. The pixel end proof needs a 256x224
+# frame, but live frames are 299x224, and this list does not wrap: down on
+# the last row is a no-op (13 identical frames then roster_end_unconfirmed).
+# After this many consecutive already-visited observations stalled on the
+# visible last row of a full walk, a passing _complete_scan is the end proof.
+END_STALL_READS = 3
 # Menus this owner never opens while it waits for the X menu or the map. A
 # castle menu left over from a swallowed A used to answer [] forever (live
 # 2026-11-06 g1139 48-10: しゅつげき/ステータス open, overlay 「task_menu」, no
@@ -471,7 +478,8 @@ def reenter_after_reanchor(mem, resume):
         state['names'] = []
         state['list_moves'] = 0
         state['top_confirmed'] = False
-        for key in ('highlight', 'selected', 'marker_reads', 'markers', 'top_seeks'):
+        for key in ('highlight', 'selected', 'marker_reads', 'markers', 'top_seeks',
+                    'end_stall', 'end_stall_selected'):
             state.pop(key, None)
         _stage(state, 'open_menu')
         state['phase_reads'] = 2  # next map observation opens X immediately
@@ -531,6 +539,7 @@ def resume_after_battle(mem, battle):
         state['complete'] = False
         for key in ('top_confirmed', 'top_seeks', 'list_moves', 'highlight',
                     'marker_reads', 'selected', 'markers', 'stray_backouts',
+                    'end_stall', 'end_stall_selected',
                     'failure'):
             state.pop(key, None)
         state['steps'] = 0
@@ -676,10 +685,36 @@ def step(screen, mem, frame):
                           and selected == names[-1]))
             wrapped = selected == first and state.get('list_moves', 0) > 0
             if (at_end or wrapped) and _complete_scan(mem, state):
+                state.pop('end_stall', None)
+                state.pop('end_stall_selected', None)
                 return [pad('b')]
+            if (len(state['names']) >= receipts.VISIBLE_NAME_ROWS
+                    and selected == names[-1]):
+                # Full-page non-wrapping list (live 299x224): down on the last
+                # row never moves and never shows scroll-end pixels. Count the
+                # stall and let a passing membership proof finish the walk.
+                if state.get('end_stall_selected') == selected:
+                    stall = int(state.get('end_stall') or 0) + 1
+                else:
+                    stall = 1
+                    state['end_stall_selected'] = selected
+                state['end_stall'] = stall
+                if stall >= END_STALL_READS and _complete_scan(mem, state):
+                    state.pop('end_stall', None)
+                    state.pop('end_stall_selected', None)
+                    return [pad('b')]
+            else:
+                state.pop('end_stall', None)
+                state.pop('end_stall_selected', None)
             if state['phase_reads'] > STATUS_RETRIES:
                 state['failure'] = 'roster_end_unconfirmed'
                 _log(mem, 'post_month_status_unverified',
+                     observed_metric={'names': len(state['names']),
+                                      'selected': selected,
+                                      'top_confirmed': bool(state.get('top_confirmed')),
+                                      'dirty': list(state.get('dirty') or ()),
+                                      'phase_reads': state['phase_reads'],
+                                      'end_stall': int(state.get('end_stall') or 0)},
                      reason='将軍一覧の末尾が確認できず、通常の出撃計画を保留')
                 _stage(state, 'blocked')
                 return [pad('b')]
@@ -690,6 +725,8 @@ def step(screen, mem, frame):
             # require pressing A on a cached, unchanged general.
             state['names'].append(selected)
             state['list_moves'] = state.get('list_moves', 0) + 1
+            state.pop('end_stall', None)
+            state.pop('end_stall_selected', None)
             return [pad('down')]
         # Wait for a stable highlight so that the triangle belongs to this
         # general, not to the preceding row's last rendered frame.
@@ -741,6 +778,8 @@ def step(screen, mem, frame):
                'marker': marker, 'tick': int(mem.get('tick') or 0)}
         state['names'].append(name)
         state['statuses'][name] = row
+        state.pop('end_stall', None)
+        state.pop('end_stall_selected', None)
         if name in state.get('dirty', []):
             state['dirty'].remove(name)
         if loc in ('camp', 'march'):
