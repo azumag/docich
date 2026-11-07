@@ -982,6 +982,13 @@ def parse(frame: Frame, *, phase: str | None = None) -> Screen:
         from .font import without_attached_marks
         screen.priest_ritual_scene = True
         screen.lines = without_attached_marks(frame, screen.lines, rect=(16, 135, 240, 215))
+        if _priest_continue_marker(frame):
+            # The measured g1147 dialogue-advance ornament occupies exactly
+            # these two bottom tiles. Never discard other unread message ink.
+            screen.lines = [TextLine(line.y, tuple(
+                (x, ch) for x, ch in line.cells
+                if not (line.y == 207 and x in (120, 128) and ch == UNKNOWN)))
+                for line in screen.lines]
         # The same sprite remains through the chant and the result dialogue.
         # It is not a menu cursor. Ambiguous/other hands and incomplete text
         # cannot become permission to acknowledge an unread option.
@@ -1244,11 +1251,20 @@ def egg_ritual_recitation_panel(screen: Screen) -> bool:
 
 
 def _priest_sprite(frame: Frame) -> bool:
-    """Measured g731/g739 ritual priest art, independent of the dialogue text."""
+    """Measured g731/g739 and g1147 priest art, independent of dialogue text."""
     if (frame.width, frame.height) != (256, 224):
         return False
     raw = bytes(c for y in range(80, 104) for x in range(108, 148) for c in frame.pixel(x, y))
-    return hashlib.sha256(raw).hexdigest() == '021ae70f38cddd6a354d1aee2a508db7f57ca05dfd743f795745ad68da76f980'
+    return hashlib.sha256(raw).hexdigest() in {
+        '021ae70f38cddd6a354d1aee2a508db7f57ca05dfd743f795745ad68da76f980',
+        '7a27f65fc4d31567cb70e60e8e98f4b2d998f4d97d6946ef16c487e1652f3ff9',
+    }
+
+
+def _priest_continue_marker(frame: Frame) -> bool:
+    """Only the exact native g1147 bottom-centre continue ornament."""
+    raw = bytes(c for y in range(207, 215) for x in range(120, 136) for c in frame.pixel(x, y))
+    return hashlib.sha256(raw).hexdigest() == '6ddd33c177ba8769804df3da325f13ecff77ba3bff3fb4a8c65109bdcd623f1d'
 
 
 def _priest_dialogue_body(screen: Screen) -> bool:
