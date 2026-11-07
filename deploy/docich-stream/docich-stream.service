@@ -20,12 +20,18 @@ Environment=SOREN_RUNTIME_REPO=/home/ubuntu/soren
 Environment=DOCICH_ROOT=/home/ubuntu/docich
 # The wrapper sources the runtime .env like direct_stream.sh and execs
 # `python3 -m docich.stream_supervisor run`. The supervisor does nothing and
-# exits 0 unless DOCICH_STREAM_OWNER=docich, so a failed-open flag never starts
+# exits 75 unless DOCICH_STREAM_OWNER=docich, so a failed-open flag never starts
 # a second encoder; the host-wide lock is the second fence.
 ExecStart=/home/ubuntu/docich/bin/docich-stream-run
-# Exit 0 (not the owner) must stay stopped; only failures are retried.
-Restart=on-failure
-RestartSec=5
+# `Restart=always` makes the operator stop/start cycle work without sudo: the
+# WebUI sets tmp/state/docich_stream.paused and stops the runner (clean exit);
+# the respawned supervisor idles while the marker exists and starts the encoder
+# once it is removed. Exit 75 means "the legacy runner owns the encoder" and is
+# neither restarted nor a failure.
+Restart=always
+RestartSec=3
+SuccessExitStatus=75
+RestartPreventExitStatus=75
 # Graceful stop budget is q (15 s) + SIGINT (15 s); leave margin before SIGKILL.
 KillSignal=SIGTERM
 TimeoutStopSec=45

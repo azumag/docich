@@ -13,7 +13,7 @@ from .game_switch import atomic_write_json
 from .soren_round_recovery import RecoveryRefused, read_object
 
 ROOTS = {"soren_loop.sh", "soviet_watchdog.sh", "soviet_local.mjs", "strategy_runner.py"}
-COMMON = {"start_all.sh", "direct_stream.py", "direct_stream.sh", "audio_worker.sh", "chat_worker.sh",
+COMMON = {"start_all.sh", "direct_stream.py", "direct_stream.sh", "docich.stream_supervisor", "audio_worker.sh", "chat_worker.sh",
           "radio_worker.sh", "improve_daemon.sh", "prediction_worker.sh", "Xvfb", "ffmpeg", "webui.py",
           "watch_soren_overlay.sh", "watch_system_status.sh", "status_dashboard.py",
           "youtube_worker.sh", "kick_worker.sh", "deadline_monitor.sh", "poll_worker.sh", "goal_worker.sh",
