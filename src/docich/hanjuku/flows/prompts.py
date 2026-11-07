@@ -27,6 +27,10 @@ from ..strategy.economy import GONINJA_MIN_GOLD, _goninja_budget, _month_key
 TRADE_GUARD_OBSERVATIONS = 40   # ~60 s: lead-in, the offer and its choice
 # Arming needs trade-only wording; 'しょうぐんどうし' can be the hero's name.
 TRADE_GUARD_TOKENS = ('トレード', 'いちもんめ', 'イキのいいの', 'いきのいいの')
+# The measured closing sentence "これにてトレードしゅうりょう!". Matching only the
+# tail keeps the release working when OCR garbles the トレード half. Not an offer
+# word, so it never arms the guard; it releases it (same token as PR #3637).
+TRADE_COMPLETED_TOKENS = ('しゅうりょう',)
 
 
 TRADE_CHOICE_PAIRS = (('OK', 'NO'), ('そうする', 'やめる'))
@@ -130,6 +134,17 @@ def trade_guard_step(screen: Screen, mem, *, phase=None):
         guard.pop('held', None)  # ownership is recomputed for this observation
     tick = int(mem.get('tick') or 0)
     flat = ''.join(screen.text.split())
+    # The result line "これにて トレードしゅうりょう!" is the end of the event, not a
+    # pending choice. It sits on the bottom row of the message box (y=183, inside
+    # the 176-208 choice band) and its first word has no trade token, so the
+    # guard read it as an unlabelled choice row, set choice_seen and held every
+    # frame with no input (g1139 2026-11-07 00:48 and again 19:50, until
+    # screen_stalled). Release before arming so the trade token on this very line
+    # cannot re-arm the guard; the generic A then advances the dialogue.
+    if (screen.kind in ('text', 'unknown')
+            and any(tok in flat for tok in TRADE_COMPLETED_TOKENS)):
+        mem.pop('trade_guard', None)
+        return None
     trade_seen = any(tok in flat for tok in TRADE_GUARD_TOKENS)
     # The measured monthly event is drawn on the red-curtain scene: classify()
     # returns 'concert' for the frame (g1067/g1107/g1139), never 'dialogue', so
