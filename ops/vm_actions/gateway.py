@@ -294,11 +294,16 @@ def _clear_deploy_reject(cfg):
     try: last_reject_file(cfg).unlink(missing_ok=True)
     except OSError: pass
 
-def _last_deploy_reject(cfg):
+def _last_deploy_reject(cfg, sha):
     # Only the allowlisted fixed-code shape is surfaced; a corrupt or
     # unexpected record reads as absent rather than leaking raw content.
+    # The record is bound to the rejected sha: a status query for a different
+    # sha must not inherit an older rejection's reason (PR #3667 review) --
+    # otherwise a stale code would be misread as the current push's cause.
     try:
         rec=read_json(last_reject_file(cfg)) or {}
+        if rec.get('sha') != sha:
+            return None
         reason=rec.get('reason')
         return reason if isinstance(reason,str) and re.fullmatch(r'[a-z0-9_]+',reason) else None
     except Exception:
@@ -1986,11 +1991,12 @@ def status_result(cfg,repo,target,sha):
         except Exception: health_status='drift'
     soren_root=cfg['repos'][repo].get('projections',{}).get('games/soviet_now')
     return {'status':health_status,'sha':head,'storage':_filesystem_status(root),'capabilities':_brief_capabilities(),
-            # docich#3666: the fixed reason code of the most recent deploy
-            # rejection (or null), so the workflow's reconcile step can tell
-            # a terminal-state reject apart from the gitlink-drift mode it
-            # exists to heal.
-            'last_deploy_reject':_last_deploy_reject(cfg),
+            # docich#3666: the fixed reason code of the deploy rejection
+            # recorded for THIS requested sha (or null), so the workflow's
+            # reconcile step can tell a terminal-state reject apart from the
+            # gitlink-drift mode it exists to heal without misattributing an
+            # older push's reason.
+            'last_deploy_reject':_last_deploy_reject(cfg,sha),
             'ops_brief_projection':{'status':_ops_brief_health(cfg,repo,expected)},
             'projection_guard_last_event':_projection_guard_event(soren_root),
             'pending_repairs':[{k:r.get(k) for k in ('id','status','candidate_sha','pr_url')} for r in cur.get('pending_repairs',[])]}
