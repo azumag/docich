@@ -17,7 +17,7 @@ def memory(chapter=6, garrison_home=('どうし', 'ヘルメス', 'トレビス'
         'chapter': chapter, 'month': '55-6', 'tick': 74600,
         'captured': list(castles), 'lost': [], 'orders': {},
         'garrison': {c: [] for c in castles},
-        'world': {'world': {'world': {'sorties': {}}
+        'world': {'sorties': {}},
         'house_eggs': {}, 'general_location_unknown': [],
     }
     _world(mem)['garrison']['アルマムーン'] = list(garrison_home)
