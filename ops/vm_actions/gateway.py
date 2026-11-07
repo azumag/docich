@@ -1253,8 +1253,16 @@ def _bundle_verify(root: Path, bundle: Path) -> tuple[bool, list[str]]:
          'bundle', 'verify', str(bundle)],
         stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
         stderr=subprocess.DEVNULL, text=True, timeout=120)
-    prerequisites = re.findall(
-        r'The bundle requires this ref:\s*([0-9a-f]{40})', proc.stdout or '')
+    # git words one boundary commit as "requires this ref:" and several as
+    # "requires these N refs:" (any range over a merge commit), each sha on its
+    # own following line. Matching only the singular form read a multi-commit
+    # thin bundle as having no prerequisites, so staging was never seeded and
+    # the fetch failed (2026-11-07 deploy outage, issue #3700).
+    prerequisites = []
+    for block in re.findall(
+            r'The bundle requires (?:this ref|these [0-9]+ refs):\s*((?:[0-9a-f]{40}[^\n]*\n?)+)',
+            proc.stdout or ''):
+        prerequisites.extend(re.findall(r'[0-9a-f]{40}', block))
     return proc.returncode == 0, prerequisites
 
 
