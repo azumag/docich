@@ -330,6 +330,13 @@ def month_step(screen: Screen, mem):
     count_check = _month_army_count_check(screen, mem, shop)
     if count_check is not None:
         return count_check
+    # Owner: 将軍募集を切り札購入 (しょうにん/ちくじょう) より優先する。
+    # 将軍が十分でなければ出撃できないため、募集が残っている間は札を買わない。
+    if (shop and shop.get('recruit') in ('pending', 'check')
+            and not mem.get('month_sub')):
+        extra = _month_extra(screen, mem, shop, recruit_only=True)
+        if extra is not None:
+            return extra
     # Owner (2026-10-17): a low army's refill is bought before the cards.
     if shop and not shop['merchant_done'] and shop['items'] and not low_army_first(shop):
         move = _month_menu_move(screen, mem, 'しょうにん')
