@@ -1074,16 +1074,53 @@ def _level_due(mem):
             and not _level_given_up(mem))
 
 
-def _status_row_value(screen, label):
-    """Digits printed after ``label`` on the same status-page row."""
+def _status_row_value(screen, label, *, unit=False):
+    """Digits printed after ``label`` on the same status-page row.
+
+    ``unit`` keeps a generic label ("しょうぐん"/"へいし") from matching a
+    price or menu row: the digit must be followed by a counter (めい/にん/人).
+    """
     for line in screen.lines:
         joined = line.known.replace(' ', '')
         idx = joined.find(label)
-        if idx >= 0:
-            m = re.search(r'(\d+)', joined[idx + len(label):])
-            if m:
-                return int(m.group(1))
+        if idx < 0:
+            continue
+        rest = joined[idx + len(label):]
+        m = re.search(r'(\d+)', rest)
+        if not m:
+            continue
+        if unit and rest[m.end():m.end() + 1] not in ('め', 'に', '人'):
+            continue
+        return int(m.group(1))
     return None
+
+
+# The country-status headcount rows were measured on the 1st page as
+# 「しょうぐん Nにん」/「へいし Nにん」 (v511, live frame 22:57:08). The long
+# forms below are kept for older/newer wordings, and the generic fallbacks
+# require a counter so a 商人 price or a menu row is never a headcount.
+GENERAL_COUNT_LABELS = ('しょうぐんにんすう', 'しょうぐんにんずう', 'しょうぐんすう',
+                        'しょうぐんのかず', 'しょうぐんのすう', 'そうしょうぐんすう')
+SOLDIER_COUNT_LABELS = ('へいしにんすう', 'へいしにんずう', 'へいしすう', 'へいしのかず',
+                        'へいしのにんずう', 'そうへいしすう')
+
+
+def _country_status_counts(screen):
+    """This page's general/soldier totals, or (None, None) when unread.
+
+    Only a page that shows the page-1 economy rows is a count source; the
+    second page (半熟レベル) and the menu help line are never used.
+    """
+    text = screen.text.replace(' ', '')
+    if not re.search(r'しゅうにゅう|そうちんぎん', text):
+        return None, None
+    def first(labels, generic):
+        for label in labels:
+            value = _status_row_value(screen, label)
+            if value is not None:
+                return value
+        return _status_row_value(screen, generic, unit=True)
+    return first(GENERAL_COUNT_LABELS, 'しょうぐん'), first(SOLDIER_COUNT_LABELS, 'へいし')
 
 
 def _country_status_level(screen):
@@ -1213,6 +1250,9 @@ def _step_once(screen, mem, frame):
                 # check and an unsettled refill finish first (both bounded).
                 return None
             # 国のステータスで当月の人数を読めるため、月一の将軍一覧は巡回しない。
+            # One visit reads page 1 (income/wages/counts) and page 2 (level);
+            # the bounded retry stays only for a visit that could not read
+            # the page, never for a successful page-1 read (v511).
             counts_current = all(receipts.country_count(mem, kind) is not None
                                  for kind in ('generals', 'soldiers'))
             if counts_current and not _level_due(mem):
@@ -1491,18 +1531,15 @@ def _step_once(screen, mem, frame):
             return actions
         return []
     if phase == 'level_status':
-        # Each count must come from a visible row; missing text is unknown.
-        if ('じょうたい' in screen.text.replace(' ', '')
-                or 'しょうぐんにんすう' in screen.text.replace(' ', '')
-                or 'へいし' in screen.text.replace(' ', '')):
+        # The first country-status page carries しゅうにゅう/そうちんぎん and
+        # the national headcounts. Only that visible page is a count source;
+        # the menu help line ("わがくにのじょうたいを…") and the level page are
+        # not. Missing rows stay unknown and never fall back to old totals.
+        page1 = bool(re.search(r'しゅうにゅう|そうちんぎん', screen.text.replace(' ', '')))
+        if page1:
             from ..os_layer.roster import run_identity
             scope = [mem.get('chapter'), mem.get('month')]
-            generals = None
-            for label in ('しょうぐんにんすう', 'しょうぐんすう', 'しょうぐんのかず',
-                          'しょうぐんのすう', 'そうしょうぐんすう'):
-                generals = _status_row_value(screen, label)
-                if generals is not None:
-                    break
+            generals, soldiers = _country_status_counts(screen)
             if type(generals) is int and 0 <= generals <= 32:
                 mem['country_general_count'] = {
                     'scope': scope, 'identity': run_identity(mem.get('_run_identity')),
@@ -1512,12 +1549,6 @@ def _step_once(screen, mem, frame):
                         reason='国ステータスで観測した実人数を募集判断に使用')
                 from ..strategy.economy import _reset_unstarted_recruit_plan
                 _reset_unstarted_recruit_plan(mem)
-            soldiers = None
-            for label in ('へいしにんすう', 'へいしすう', 'へいしのかず',
-                          'へいしのにんずう', 'そうへいしすう'):
-                soldiers = _status_row_value(screen, label)
-                if soldiers is not None:
-                    break
             if type(soldiers) is int and 0 <= soldiers <= 99999:
                 mem['country_soldier_count'] = {
                     'scope': scope, 'identity': run_identity(mem.get('_run_identity')),
@@ -1531,6 +1562,14 @@ def _step_once(screen, mem, frame):
                 _record(mem, 'country_soldier_count_observed',
                         observed_metric={'soldiers': soldiers},
                         reason='国ステータスで兵士数を確認し当月の補充判断に使用')
+            if (generals is None or soldiers is None) and not state.get('counts_unread_logged'):
+                # Evidence for the next policy step: the exact page-1 rows,
+                # bounded and text-only, recorded once per visit.
+                state['counts_unread_logged'] = True
+                _record(mem, 'country_status_counts_unread',
+                        observed_metric={'rows': [line.text[:40] for line in screen.lines][:12],
+                                         'generals': generals, 'soldiers': soldiers},
+                        reason='国ステータス1頁目は読めたが人数行を特定できないため、次回の行文言確認用に記録する')
         # Page 1 of the country status carries しゅうにゅう / そうちんぎん;
         # page 2 carries the hanjuku level/value. Keep the total income and
         # total wages as last observations for the status card; only a

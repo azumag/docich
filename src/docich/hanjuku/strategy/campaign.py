@@ -12,8 +12,19 @@ from ..decision_log import _record
 from ..os_layer.readers import STATUS_NAMES
 
 
+# Phases of the free monthly country-status visit (house.step level_only).
+# A chapter change can land while this visit is opening the main menu; the
+# visit belongs to the *new* chapter's month, so it is kept instead of being
+# dropped and restarted (v511: the monthly status menu opened twice).
+MONTH_SCAN_RESUME_PHASES = frozenset({
+    'month_open', 'open_roster', 'level_status', 'leave_status', 'leave_roster'})
+
+
 def _enter_chapter(mem, chapter, *, reason, evidence=None):
     previous = mem.get('chapter')
+    house = mem.get('house')
+    month_scan = (dict(house) if isinstance(house, dict) and house.get('level_only')
+                  and house.get('phase') in MONTH_SCAN_RESUME_PHASES else None)
     from ..os_layer.roster import fresh
     previous_roster = fresh(mem)
     if previous_roster and previous_roster.get('complete') is True:
@@ -53,6 +64,9 @@ def _enter_chapter(mem, chapter, *, reason, evidence=None):
                 'monster_menu_choice', 'monster_menu_choice_key', 'monster_menu_choice_scope', 'monster_menu_cursor_recheck', 'monster_panel', 'lampkin_cycle'):
         mem.pop(key, None)
     mem['chapter'] = chapter
+    if month_scan is not None:
+        month_scan['chapter'] = chapter
+        mem['house'] = month_scan
     mem['chapter_evidence'] = evidence or 'header'
     mem['variant'] = 'chart' if chart.orders(chapter) else 'chart_unavailable'
     _record(mem, 'chapter_seen', previous_stage=previous,
