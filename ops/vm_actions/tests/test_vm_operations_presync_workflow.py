@@ -12,6 +12,15 @@ class VmOperationsPresyncWorkflowTests(unittest.TestCase):
         self.assertIn("reconcile inapplicable: submodule_unchanged", workflow)
         self.assertIn('if [[ "$old_sub" == "$new_sub" ]]', workflow)
 
+    def test_gitlink_unchanged_terminal_state_reports_last_deploy_reject(self):
+        # docich#3666: `reconcile inapplicable: submodule_unchanged` alone made
+        # the terminal state a dead end -- the upstream deploy reject reason
+        # was invisible. The step must surface the fixed reason code that the
+        # gateway records and the status op reports.
+        workflow = Path(".github/workflows/vm-operations.yml").read_text(encoding="utf-8")
+        self.assertIn('data.get("last_deploy_reject") or "unknown"', workflow)
+        self.assertIn("last_deploy_reject=${last_reject}", workflow)
+
     def test_failed_push_deploy_has_bounded_reconcile_then_retry(self):
         workflow = Path(".github/workflows/vm-operations.yml").read_text(encoding="utf-8")
         self.assertIn("id: deploy_initial", workflow)

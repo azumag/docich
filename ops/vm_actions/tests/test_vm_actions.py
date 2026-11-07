@@ -602,6 +602,24 @@ class GatewayTests(unittest.TestCase):
         self.assertIn('VM operation rejected: tracked_vm_drift',err)
         self.assertNotIn('tracked VM drift detected',err)
 
+    def test_deploy_reject_is_recorded_and_reported_by_status(self):
+        # docich#3666: the workflow reconcile step only sees a failed deploy
+        # via the status op. A rejected deploy must leave its fixed reason
+        # code in the state root so status can report it, and a later
+        # successful deploy must clear it.
+        sha,bundle=self.make_docich_bundle()
+        self.assertEqual(self.call(f'upload docich production {sha}',bundle).returncode,0)
+        self.assertEqual(self.call(f'bootstrap docich production {sha}').returncode,0)
+        (self.doc/'app.py').write_text('manual-hotfix\n')
+        self.assertNotEqual(self.call(f'deploy docich production {sha}').returncode,0)
+        p=self.call(f'status docich production {sha}')
+        self.assertEqual(p.returncode,0,p.stderr.decode())
+        self.assertEqual(json.loads(p.stdout.decode()).get('last_deploy_reject'),'tracked_vm_drift')
+        (self.doc/'app.py').write_text('v1\n')
+        self.assertEqual(self.call(f'deploy docich production {sha}').returncode,0)
+        p=self.call(f'status docich production {sha}')
+        self.assertIsNone(json.loads(p.stdout.decode()).get('last_deploy_reject'))
+
     # Issue #410: unexpected deploy exceptions must not bypass fixed reason
     # codes with raw tracebacks (argv/paths) on Actions output.
     def _load_gateway(self):

@@ -49,5 +49,4 @@ jobs:
           GITHUB_REPOSITORY: ${{ github.repository }}
           GITHUB_SERVER_URL: ${{ github.server_url }}
           GITHUB_RUN_ID: ${{ github.run_id }}
-          RECONCILE_ALERT_LOOKBACK_MINUTES: '90'
         run: python3 ops/vm_actions/reconcile_refused_alert.py
