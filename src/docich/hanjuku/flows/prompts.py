@@ -488,28 +488,40 @@ def bijin_guard_step(screen: Screen, mem, *, phase=None):
     return [pad('a')]
 
 
+def _trade_scene_yes_no_choice(screen: Screen, mem, text: str):
+    """Decline only when both measured 花いちもんめ choice labels are visible."""
+    move = menu_to(screen, 'いかんッ!')
+    if move == 'here':
+        mem.pop('trade_scene', None)
+        _record(mem, 'prompt', choice='いかんッ!', prompt=text[-60:],
+                strategy_variant='decline_general_trade',
+                reason='花いちもんめの場面の承諾行を選ばず、断る行を選ぶ')
+        return [pad('a')]
+    if move is None:
+        _record(mem, 'situation_held', screen=screen.kind,
+                observed_metric={'trade_scene': True, 'text': text[-80:]},
+                reason='花いちもんめの場面の選択行を確定できないため決定せず再観測')
+        return []
+    return [move]
+
+
 def yes_no_step(screen: Screen, mem):
     text = screen.text
     metric = None
     scene_tick = mem.get('trade_scene')
     if (type(scene_tick) is int and 0 <= int(mem.get('tick') or 0) - scene_tick
             <= TRADE_SCENE_OBSERVATIONS):
-        # The 花いちもんめ choice frame does not repeat the trade wording; the
-        # scene marker left by its song owns this measured yes/no instead of
-        # the generic accept (g1139 2026-11-07 00:47, ゼウス traded).
-        move = menu_to(screen, 'いかんッ!')
-        if move == 'here':
-            mem.pop('trade_scene', None)
-            _record(mem, 'prompt', choice='いかんッ!', prompt=text[-60:],
-                    strategy_variant='decline_general_trade',
-                    reason='花いちもんめの場面の承諾行を選ばず、断る行を選ぶ')
-            return [pad('a')]
-        if move is None:
+        # The scene marker is not proof that this is the trade's choice.
+        has_accept = screen.has('うむッ')
+        has_decline = screen.has('いかんッ')
+        if has_accept and has_decline:
+            return _trade_scene_yes_no_choice(screen, mem, text)
+        if has_accept or has_decline:
             _record(mem, 'situation_held', screen=screen.kind,
                     observed_metric={'trade_scene': True, 'text': text[-80:]},
-                    reason='花いちもんめの場面の選択行を確定できないため決定せず再観測')
+                    reason='花いちもんめの選択肢が片側しか読めないため決定せず再観測')
             return []
-        return [move]
+        # A different, fully readable yes/no belongs to its normal handler.
     if re.search(r'\d+Gでいい', text):
         choice, reason, variant = 'いかんッ!', '追加のおねだりは所持金を月一購入に残すため断る', 'decline_extra_gift'
     elif _is_goninja_prompt(text):
