@@ -1112,7 +1112,10 @@ def _country_status_counts(screen):
     second page (半熟レベル) and the menu help line are never used.
     """
     text = screen.text.replace(' ', '')
-    if not re.search(r'しゅうにゅう|そうちんぎん', text):
+    # そうちんぎん is the country page-1 marker. The castle status page also
+    # prints しゅうにゅう and 「しょうぐん Nめい」, so income alone must never
+    # authorize a headcount read (a misrouted castle page would write 0).
+    if 'そうちんぎん' not in text:
         return None, None
     def first(labels, generic):
         for label in labels:
@@ -1535,7 +1538,7 @@ def _step_once(screen, mem, frame):
         # the national headcounts. Only that visible page is a count source;
         # the menu help line ("わがくにのじょうたいを…") and the level page are
         # not. Missing rows stay unknown and never fall back to old totals.
-        page1 = bool(re.search(r'しゅうにゅう|そうちんぎん', screen.text.replace(' ', '')))
+        page1 = 'そうちんぎん' in screen.text.replace(' ', '')
         if page1:
             from ..os_layer.roster import run_identity
             scope = [mem.get('chapter'), mem.get('month')]
@@ -1573,12 +1576,13 @@ def _step_once(screen, mem, frame):
         # Page 1 of the country status carries しゅうにゅう / そうちんぎん;
         # page 2 carries the hanjuku level/value. Keep the total income and
         # total wages as last observations for the status card; only a
-        # readable page rewrites them (owner 2026-11-04).
-        income = _status_row_value(screen, 'しゅうにゅう')
+        # readable country page rewrites them (owner 2026-11-04). A castle
+        # status page has しゅうにゅう but no そうちんぎん and is not this page.
+        income = _status_row_value(screen, 'しゅうにゅう') if page1 else None
         if type(income) is int and 0 <= income <= 99999:
             mem['country_income'] = {'scope': [mem.get('chapter'), mem.get('month')],
                                      'tick': int(mem.get('tick') or 0), 'income': income}
-        wages = _status_row_value(screen, 'そうちんぎん')
+        wages = _status_row_value(screen, 'そうちんぎん') if page1 else None
         if type(wages) is int and 0 <= wages <= 99999:
             mem['country_wages'] = {'scope': [mem.get('chapter'), mem.get('month')],
                                     'tick': int(mem.get('tick') or 0), 'wages': wages}
