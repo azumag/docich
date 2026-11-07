@@ -8,9 +8,13 @@ reviewed shared sinks:
   category. The intro and the ranking are two events with distinct ``source_id``
   suffixes (``yosou:intro:<request>`` / ``yosou:ranking:<request>``) because the
   shared queue keeps only the newest event per ``source_id``.
-- speech: ``soren_output.enqueue_audio_text`` (opt-in), two bounded utterances in
-  the shared audio worker's voice: the corner introduction, then the ranking.
-  No local backlog, retry or direct playback.
+- speech: ``soren_output.enqueue_audio_text`` (opt-in), bounded utterances in
+  the shared audio worker's voice: the corner introduction, then one item per
+  department (``yosou:board:<metric>``) in the same order the screen lists them.
+  The screen follows the department whose item is being played (the audio
+  worker's ``.playing`` marker, see ``yoso_view.voice_state``), so what is read
+  and what is shown are the same board. No local backlog, retry or direct
+  playback.
 
 Both sinks are best-effort: a failure is reported as a fixed count and never
 fails the corner or the game switch. The shared audio enqueue bounds itself
@@ -29,22 +33,31 @@ import time
 
 from .comment_queue import comment_queue_dir
 from .overlay_queue import OVERLAY_BODY_LIMIT, OVERLAY_TITLE_LIMIT, append_event
+from .prediction_leaderboard import METRICS
 from .trading.soren_output import enqueue_audio_text, resolve_soren_root
-from .yoso_view import board as read_board
+from .yoso_view import board as read_board, board_voice_context
 
 TITLE = "予想王"
 INTRO_TITLE = "予想王 コーナー紹介"
 INTRO_CONTEXT = "yosou:intro"
-CONTEXT = "yosou:ranking"
 MAX_SPEECH = 300
 SPEECH_ROWS = 3
 OVERLAY_ROWS = 5
-EMPTY_TEXT = "予想王の発表です。確定した予想がまだランキングの条件に届いていません。"
-FOOTER_TEXT = "上位予想者だけを集計しています。"
+# Department names as the screen shows them (`yoso_view.BOARDS`).
+BOARD_LABELS = {
+    "hit_rate": "予想的中率",
+    "staked": "賭けたポイント数",
+    "won": "得たポイント数",
+    "lost": "失ったポイント数",
+    "plays": "賭けた回数",
+}
 # Views of the corner shown per run. The sink keeps only the newest event per
 # `source_id`, so each one needs its own suffix.
 OVERLAY_KINDS = ("intro", "ranking")
-SPEECH_ITEMS = (("intro", INTRO_CONTEXT), ("ranking", CONTEXT))
+# One speech item per department, in screen order. The item order is also the
+# audio queue order (file names carry a nanosecond timestamp).
+SPEECH_ITEMS = (("intro", INTRO_CONTEXT),) + tuple(
+    (metric, board_voice_context(metric)) for metric in METRICS)
 # Queue markers of one speech item: the shared audio worker renames the queued
 # `<name>_<context>.txt` to `.playing` before playback and removes it only after
 # the playback attempt finished, so the marker's absence is the completion
@@ -52,8 +65,9 @@ SPEECH_ITEMS = (("intro", INTRO_CONTEXT), ("ranking", CONTEXT))
 VOICE_CONTEXTS = tuple(context for _kind, context in SPEECH_ITEMS)
 VOICE_MARKER_SUFFIXES = (".txt", ".playing")
 INTRO_TEXT = (
-    "ここからは予想王のコーナーです。チャンネルポイントで予想した結果の的中率ランキング、"
-    "上位3名を発表します。しばらくお付き合いください。"
+    "ここからは予想王のコーナーです。チャンネルポイント予想の結果を、的中率、賭けたポイント、"
+    "得たポイント、失ったポイント、賭けた回数の五つの部門で、上位3名ずつ発表します。"
+    "上位予想者だけを集計したランキングです。"
 )
 INTRO_OVERLAY_BODY = (
     "チャンネルポイント予想の的中率ランキングのコーナーです。\n"
@@ -62,8 +76,15 @@ INTRO_OVERLAY_BODY = (
 )
 
 
-def _rows(board, limit):
-    rows = board.get("ranking") if isinstance(board, dict) else None
+def _rows(board, limit, metric="hit_rate"):
+    """Top rows of one department, the same rows the screen lists for it."""
+    rows = None
+    if isinstance(board, dict):
+        boards = board.get("boards")
+        if isinstance(boards, dict):
+            rows = boards.get(metric)
+        if rows is None and metric == "hit_rate":
+            rows = board.get("ranking")
     rows = rows if isinstance(rows, list) else []
     return [row for row in rows[:limit] if isinstance(row, dict)]
 
@@ -73,18 +94,33 @@ def _rate(row) -> str:
     return f"{round(value * 100)}パーセント" if isinstance(value, (int, float)) else "0パーセント"
 
 
-def narration_text(board, *, limit=SPEECH_ROWS) -> str:
-    """One bounded utterance for the top rows (or the empty-ranking notice)."""
-    rows = _rows(board, limit)
+def _record(metric, row) -> str:
+    """What the department ranks, in the words the screen's record column uses."""
+    if metric == "staked":
+        return f"{row.get('used')}ポイント賭けました"
+    if metric == "won":
+        return f"{row.get('won')}ポイント獲得"
+    if metric == "lost":
+        return f"{row.get('lost')}ポイント失いました"
+    if metric == "plays":
+        return f"{row.get('participations')}回"
+    return f"的中率{_rate(row)}、{row.get('rounds')}回中{row.get('hits')}回的中"
+
+
+def empty_text(metric="hit_rate") -> str:
+    # The department name keeps every empty notice distinct, so the shared
+    # sink's same-text suppression never drops one of them.
+    return f"{BOARD_LABELS.get(metric, metric)}の部門です。条件を満たす同志はまだいません。"
+
+
+def narration_text(board, *, limit=SPEECH_ROWS, metric="hit_rate") -> str:
+    """One bounded utterance for a department's top rows (or its empty notice)."""
+    rows = _rows(board, limit, metric)
     if not rows:
-        return EMPTY_TEXT
-    parts = ["予想王の発表です。"]
+        return empty_text(metric)
+    parts = [f"{BOARD_LABELS.get(metric, metric)}の部門です。"]
     for row in rows:
-        parts.append(
-            f"第{row.get('rank')}位、同志{row.get('user_name')}、的中率{_rate(row)}、"
-            f"{row.get('rounds')}回中{row.get('hits')}回的中、純増{row.get('net')}ポイント。"
-        )
-    parts.append(FOOTER_TEXT)
+        parts.append(f"第{row.get('rank')}位、同志{row.get('user_name')}、{_record(metric, row)}。")
     return "".join(parts)[:MAX_SPEECH]
 
 
@@ -128,7 +164,7 @@ def announce(g, board, *, request_id, audio_enabled=False, overlay=None,
 
     Returns bounded per-sink counters (``overlay`` / ``speech``), each over
     ``sent`` / ``failed`` / ``skipped``, so the caller can record how many of the
-    two overlay events and two speech items actually reached the shared queues.
+    overlay events and speech items actually reached the shared queues.
     """
     overlay = append_event if overlay is None else overlay
     speech = enqueue_audio_text if speech is None else speech
@@ -137,7 +173,7 @@ def announce(g, board, *, request_id, audio_enabled=False, overlay=None,
          INTRO_OVERLAY_BODY if kind == "intro" else overlay_body(board))
         for kind in OVERLAY_KINDS
     ]
-    text = {kind: INTRO_TEXT if kind == "intro" else narration_text(board)
+    text = {kind: INTRO_TEXT if kind == "intro" else narration_text(board, metric=kind)
             for kind, _context in SPEECH_ITEMS}
     result = {"overlay": _counts(len(events)),
               "speech": _counts(len(SPEECH_ITEMS),

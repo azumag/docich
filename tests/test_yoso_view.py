@@ -32,6 +32,7 @@ from docich.yoso_view import (  # noqa: E402
     board,
     display_name,
     handler_for,
+    voice_state,
 )
 from test_prediction_leaderboard import predictor, with_top  # noqa: E402
 
@@ -447,3 +448,181 @@ def test_yoso_readiness_accepts_only_the_exact_runtime_response(tmp_path, monkey
     adapter.readiness(time.monotonic() + 5, None)
 
     assert requests == [(f"http://127.0.0.1:{DEFAULT_PORT}/api/yosou", 2.0)]
+
+
+# --- 読み上げ中の部門へ画面を連動させる（2026-11-07 オーナー指示） -------------------
+
+def _marker(queue, source, suffix, *, name="1_2_3"):
+    path = queue / f"comment_announce_{name}_{source}{suffix}"
+    path.write_text("x", encoding="utf-8")
+    return path
+
+
+def test_voice_state_reports_the_department_being_read(tmp_path):
+    queue = tmp_path / "queue"
+    queue.mkdir()
+
+    # No queue configured / missing queue: not active, so the screen rotates itself.
+    assert voice_state(None) == {"active": False, "speaking": None}
+    assert voice_state(queue / "missing") == {"active": False, "speaking": None}
+    assert voice_state(queue) == {"active": False, "speaking": None}
+
+    # Queued but not yet claimed: the corner is reading, no department is on air.
+    intro = _marker(queue, "yosou:intro", ".txt")
+    queued = _marker(queue, "yosou:board:won", ".txt", name="4_5_6")
+    assert voice_state(queue) == {"active": True, "speaking": None}
+
+    # The worker claims an item by renaming it to .playing; that department is shown.
+    intro.unlink()
+    queued.rename(queue / queued.name.replace(".txt", ".playing"))
+    assert voice_state(queue) == {"active": True, "speaking": "won"}
+
+    # Other sources never count, and the intro is not a department.
+    _marker(queue, "chat", ".playing", name="7_8_9")
+    _marker(queue, "weather_corner", ".txt", name="7_8_9")
+    (queue / queued.name.replace(".txt", ".playing")).unlink()
+    _marker(queue, "yosou:intro", ".playing")
+    assert voice_state(queue) == {"active": True, "speaking": None}
+
+
+def test_voice_state_ignores_leftover_markers_from_a_dead_worker(tmp_path):
+    queue = tmp_path / "queue"
+    queue.mkdir()
+    _marker(queue, "yosou:board:lost", ".playing")
+    _marker(queue, "yosou:board:plays", ".txt", name="4_5_6")
+
+    now = time.time()
+    assert voice_state(queue, clock=lambda: now)["speaking"] == "lost"
+    # A leftover older than the bound must not pin the screen or suppress rotation.
+    assert voice_state(queue, clock=lambda: now + 3600) == {"active": False, "speaking": None}
+
+
+def test_the_api_projects_the_voice_state_read_only(tmp_path):
+    state = tmp_path / "run"
+    state.mkdir()
+    queue = tmp_path / "queue"
+    queue.mkdir()
+    server = ThreadingHTTPServer(
+        ("127.0.0.1", 0), handler_for(state, "g4-view", queue_dir=queue))
+    worker = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.05})
+    worker.start()
+    try:
+        port = server.server_port
+        assert json.loads(_get(port, "/api/yosou")[1])["voice"] == {
+            "active": False, "speaking": None}
+        marker = _marker(queue, "yosou:board:staked", ".playing")
+        assert json.loads(_get(port, "/api/yosou")[1])["voice"] == {
+            "active": True, "speaking": "staked"}
+        # The view only lists the queue; it never consumes or removes a marker.
+        assert marker.exists()
+    finally:
+        server.shutdown()
+        server.server_close()
+        worker.join(5.0)
+
+
+def test_the_api_without_a_queue_reports_an_inactive_voice(served):
+    _state, port, _lease = served
+
+    assert json.loads(_get(port, "/api/yosou")[1])["voice"] == {
+        "active": False, "speaking": None}
+
+
+VOICE_HARNESS = r"""
+const out = {};
+let voice = {active: false, speaking: null};
+const ROW = {rank: 1, user_name: 'Alice', hit_rate: 1, rounds: 3, hits: 3,
+             used: 100, won: 300, lost: 0, refunded: 0, participations: 3, net: 200};
+const BOARDS_DATA = {hit_rate: [ROW], staked: [ROW], won: [ROW], lost: [ROW], plays: [ROW]};
+globalThis.fetch = async () => ({ok: true, json: async () => ({
+  ok: true, rounds: 3, viewers: 1, min_rounds: 3, min_participations: 1,
+  ranking: [ROW], boards: BOARDS_DATA, voice})});
+globalThis.AbortSignal = {timeout: () => null};
+globalThis.addEventListener = () => {};
+globalThis.innerWidth = 960;
+globalThis.innerHeight = 540;
+const timers = [];
+globalThis.setInterval = (fn, ms) => { timers.push({fn, ms}); return timers.length; };
+function el() {
+  return {textContent: '', hidden: false, style: {}, className: '',
+          replaceChildren() {}, append() {}, appendChild() {}};
+}
+const elements = new Map();
+globalThis.document = {
+  getElementById(id) {
+    if (!elements.has(id)) elements.set(id, el());
+    return elements.get(id);
+  },
+  createElement() { return el(); },
+};
+const tag = () => document.getElementById('board-tag').textContent;
+const settle = () => new Promise((resolve) => setTimeout(resolve, 10));
+const setVoice = async (next) => { voice = next; timers.find((t) => t.ms === 2000).fn(); await settle(); };
+const tick = () => timers.find((t) => t.ms === 18000).fn();
+(async () => {
+__SCRIPT__
+  await settle();
+  const steps = [];
+  const log = (name) => steps.push([name, tag()]);
+
+  // 読み上げが無い間は従来どおり18秒ごとに回る。
+  log('initial'); tick(); log('timer-rotates-without-voice');
+
+  // 読み上げが始まった瞬間は先頭の部門に戻す（紹介の間は先頭を出す）。
+  await setVoice({active: true, speaking: null}); log('intro');
+  tick(); tick(); log('timer-frozen-during-voice');
+
+  // 部門ごとの読み上げへ追従する。
+  await setVoice({active: true, speaking: 'lost'}); log('lost');
+  await setVoice({active: true, speaking: null}); log('gap-holds-previous');
+  tick(); log('gap-timer-frozen');
+  await setVoice({active: true, speaking: 'plays'}); log('plays');
+  await setVoice({active: true, speaking: 'staked'}); log('staked');
+
+  // 読み上げが終わっても、コーナーが終わるまで勝手に回さない。
+  await setVoice({active: false, speaking: null}); log('finished');
+  tick(); tick(); log('finished-timer-frozen');
+
+  out.steps = steps;
+  process.stdout.write(JSON.stringify(out));
+})();
+"""
+
+
+@pytest.mark.skipif(NODE is None, reason="node is required to execute the shipped view script")
+def test_the_screen_follows_the_department_being_read():
+    """読み上げ中の部門 = 画面の部門。合間は直前の部門のまま、終わっても勝手に回さない。"""
+    completed = subprocess.run(
+        [NODE, "-"], input=VOICE_HARNESS.replace("__SCRIPT__", VIEW_SCRIPT),
+        capture_output=True, text=True, timeout=60,
+    )
+    assert completed.returncode == 0, completed.stderr
+    steps = dict(json.loads(completed.stdout)["steps"])
+
+    assert steps["initial"] == "部門 1/5 予想的中率"
+    assert steps["timer-rotates-without-voice"] == "部門 2/5 賭けたポイント数"
+    assert steps["intro"] == "部門 1/5 予想的中率"
+    assert steps["timer-frozen-during-voice"] == "部門 1/5 予想的中率"
+    assert steps["lost"] == "部門 4/5 失ったポイント数 ♪ 読み上げ中"
+    # 合間（次の項目の合成待ち）は直前の部門を出したまま、読み上げ中の印だけ消す。
+    assert steps["gap-holds-previous"] == "部門 4/5 失ったポイント数"
+    assert steps["gap-timer-frozen"] == "部門 4/5 失ったポイント数"
+    assert steps["plays"] == "部門 5/5 賭けた回数 ♪ 読み上げ中"
+    assert steps["staked"] == "部門 2/5 賭けたポイント数 ♪ 読み上げ中"
+    assert steps["finished"] == "部門 2/5 賭けたポイント数"
+    assert steps["finished-timer-frozen"] == "部門 2/5 賭けたポイント数"
+
+
+def test_the_program_adapter_hands_the_shared_audio_queue_to_the_view(tmp_path, monkeypatch):
+    g = _global(tmp_path)
+    queue = tmp_path / "soren-queue"
+    g.webui = SimpleNamespace(soren_root=str(tmp_path / "soren"))
+    monkeypatch.setenv("COMMENT_QUEUE_DIR", str(queue))
+    monkeypatch.setattr(program, "_browser_bin", lambda: "/usr/bin/chromium")
+
+    command = make_coordinator_adapter(g, _spec(tmp_path))._game_command()
+
+    assert command[-2:] == ["--queue-dir", str(queue)]
+    # Without a resolvable Soren root the view still starts and rotates by itself.
+    assert "--queue-dir" not in make_coordinator_adapter(
+        _global(tmp_path), _spec(tmp_path))._game_command()
