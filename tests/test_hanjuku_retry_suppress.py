@@ -9,7 +9,8 @@ from docich.hanjuku.strategy import orders as O, replan
 
 
 def memory(tick=1000):
-    return {'chapter': 6, 'tick': tick, '_records': [], 'orders': {}, 'world': {'world': {'world': {'sorties': {}}
+    return {'chapter': 6, 'tick': tick, '_records': [], 'orders': {},
+            'world': {'sorties': {}},
             'failed_local_step': {'M1': tick - 10}}
 
 
