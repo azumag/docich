@@ -577,3 +577,47 @@ class BundleModeTests(unittest.TestCase):
         bundle.parent.mkdir(parents=True,exist_ok=True)
         subprocess.run(['git','-C',cand,'bundle','create',bundle,'HEAD'],check=True)
         result = gw.deploy_git(self.cfg,'docich',sha)
+
+    def test_deploy_refuses_older_main_head_during_auto_rebaseline(self):
+        # #3709: a branch switch or reset racing the deploy can leave the
+        # production checkout on an older main commit that is still an
+        # ancestor of the requested sha. Auto-rebaseline is forward-only and
+        # must fail closed instead of adopting that intermediate HEAD as the
+        # recorded baseline.
+        subprocess.run(['git', 'init', '-q', self.docich], check=True)
+        subprocess.run(['git', '-C', self.docich, 'config', 'user.email', 't@example.com'], check=True)
+        subprocess.run(['git', '-C', self.docich, 'config', 'user.name', 'T'], check=True)
+        (self.docich / 'app.py').write_text('v0\n')
+        subprocess.run(['git', '-C', self.docich, 'add', 'app.py'], check=True)
+        subprocess.run(['git', '-C', self.docich, 'commit', '-qm', 'v0'], check=True)
+        older = subprocess.check_output(['git', '-C', self.docich, 'rev-parse', 'HEAD'], text=True).strip()
+        (self.docich / 'app.py').write_text('v1\n')
+        subprocess.run(['git', '-C', self.docich, 'commit', '-qam', 'v1'], check=True)
+        old_sha = subprocess.check_output(['git', '-C', self.docich, 'rev-parse', 'HEAD'], text=True).strip()
+
+        state_path = gw.current_file(self.cfg, 'docich')
+        gw.write_json(state_path, {'mode': 'git', 'sha': old_sha, 'previous_head': None})
+
+        candidate = self.base / 'candidate'
+        subprocess.run(['git', 'clone', '-q', self.docich, candidate], check=True)
+        subprocess.run(['git', '-C', candidate, 'config', 'user.email', 't@example.com'], check=True)
+        subprocess.run(['git', '-C', candidate, 'config', 'user.name', 'T'], check=True)
+        (candidate / 'app.py').write_text('v2\n')
+        subprocess.run(['git', '-C', candidate, 'commit', '-qam', 'v2'], check=True)
+        new_sha = subprocess.check_output(['git', '-C', candidate, 'rev-parse', 'HEAD'], text=True).strip()
+        bundle = gw.bundle_file(self.cfg, 'docich', new_sha)
+        bundle.parent.mkdir(parents=True, exist_ok=True)
+        subprocess.run(['git', '-C', candidate, 'bundle', 'create', bundle, 'HEAD'], check=True)
+
+        # Simulate the mid-deploy branch switch: the tracked-clean checkout
+        # transiently sits on an older main commit that is still an ancestor
+        # of the requested sha.
+        subprocess.run(['git', '-C', self.docich, 'reset', '--hard', '-q', older], check=True)
+
+        with self.assertRaisesRegex(ValueError, 'tracked VM drift detected'):
+            gw.deploy_git(self.cfg, 'docich', new_sha)
+        state = gw.read_json(state_path)
+        self.assertEqual(state['sha'], old_sha)
+        self.assertNotIn('deployment_intent', state)
+        self.assertFalse(state.get('rebaseline_history'))
+        self.assertEqual(gw.git(self.docich, 'rev-parse', 'HEAD'), older)

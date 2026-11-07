@@ -930,6 +930,17 @@ def deploy_git(cfg,repo,sha):
             # conditions of the reviewed manual rebaseline_git recovery. An
             # out-of-band commit that never reached main (the 2026-10-23
             # docich#2681 incident) is not an ancestor and still fails closed.
+            # #3709: auto-rebaseline is forward-only. A branch switch or reset
+            # racing this deploy can transiently leave the production checkout
+            # on an *older* main commit that is still an ancestor of the
+            # requested sha; adopting it would rewind the recorded baseline
+            # (2026-11-07 docich#3709 incident: a mid-deploy checkout to an
+            # older main was recorded as state['sha'] and the deploy ended
+            # rollback_incomplete). Require head to descend from the recorded
+            # baseline, i.e. old < head <= sha, before adopting anything.
+            forward=subprocess.run(['git','-C',str(root),'-c','core.hooksPath=/dev/null','merge-base','--is-ancestor',old,head],
+                                   stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+            if forward.returncode!=0: raise ValueError('tracked VM drift detected')
             _verify_ops_brief(cfg,repo,head)
             ancestor=subprocess.run(['git','-C',str(root),'-c','core.hooksPath=/dev/null','merge-base','--is-ancestor',head,sha],
                                     stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
