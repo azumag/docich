@@ -6958,6 +6958,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v500-boss-roster-probe",
             "hanjuku-chart-v501-idle-reanchor",
             "hanjuku-chart-v502-idle-and-roster-joins",
+            "hanjuku-chart-v503-month-start-counts",
             "hanjuku-chart-v129-battle-card-progress",
             "hanjuku-chart-v130-summer-cursor-evidence",
             "hanjuku-chart-v131-defense-month-economy",

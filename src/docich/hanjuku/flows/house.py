@@ -1213,26 +1213,24 @@ def _step_once(screen, mem, frame):
                 # check and an unsettled refill finish first (both bounded).
                 return None
             # 国のステータスで当月の人数を読めるため、月一の将軍一覧は巡回しない。
-            from ..os_layer.roster import run_identity
-            seen = mem.get('country_general_count') or {}
-            count_current = (isinstance(seen, dict)
-                and seen.get('scope') == scope
-                and seen.get('identity') == run_identity(mem.get('_run_identity'))
-                and type(seen.get('count')) is int and 0 <= seen['count'] <= 32)
-            if count_current and not _level_due(mem):
+            counts_current = all(receipts.country_count(mem, kind) is not None
+                                 for kind in ('generals', 'soldiers'))
+            if counts_current and not _level_due(mem):
                 return None
             shop = mem.get('shop') or {}
             if shop.get('key') == mem.get('month') and shop.get('recruit') in ('opened', 'done', 'unverified'):
-                # Never steal a paid transaction. For completed recruitment,
-                # only the existing deferred level/status trigger permits a
-                # return visit; do not intercept the last monthly input.
-                if shop.get('recruit') == 'opened' or not shop.get('level_scan_wait'):
+                # Never steal a paid transaction. Missing monthly counts take
+                # priority over the next purchase; once both are known only
+                # the deferred level trigger needs another visit.
+                if (shop.get('recruit') == 'opened'
+                        or counts_current and not shop.get('level_scan_wait')):
                     return None
             from ..strategy.economy import _batch_active
-            if (_batch_active(shop) and shop.get('recruit') in ('pending', 'check')):
+            if (counts_current and _batch_active(shop)
+                    and shop.get('recruit') in ('pending', 'check')):
                 return None  # never interrupt a multi-recruit batch
             known_roster = receipts.fresh(mem)
-            if (shop.get('key') == mem.get('month')
+            if (counts_current and shop.get('key') == mem.get('month')
                     and shop.get('recruit') in ('pending', 'check')
                     and known_roster is not None and known_roster.get('complete') is True
                     and not shop.get('level_scan_wait')):
@@ -1241,15 +1239,15 @@ def _step_once(screen, mem, frame):
                 # The existing bounded post-shopping level/status gate runs
                 # after the recruitment transaction ends.
                 return None
-            if (_egg_recovery_targets(mem)
+            if (counts_current and _egg_recovery_targets(mem)
                     and shop.get('egg') not in ('done', 'skipped', 'not_needed', 'unverified')):
                 return None  # preserve recovery priority over free status
             attempts = mem.get('recruit_month_scan_attempts') or {}
             if attempts.get('scope') == scope and attempts.get('count', 0) >= 2:
                 return None  # bounded even when the status page cannot be read
             move = menu_to(screen, 'メインメニュー')
-            if not move:
-                return None
+            # Even an unread row starts a bounded free inspection. Releasing
+            # it to month_step here could let a paid command precede the count.
             mem['recruit_month_scan_attempts'] = {
                 'scope': scope,
                 'count': (attempts.get('count', 0) if attempts.get('scope') == scope else 0) + 1}
@@ -1315,7 +1313,7 @@ def _step_once(screen, mem, frame):
             receipts.begin(mem, state)
         _record(mem, 'scan_started', reason=('月一の国ステータスで将軍数・兵士数・半熟レベルを確認'
                                           if monthly else '実一覧で将軍の卵状態を確認'))
-        return ([pad('a')] if move == 'here' else [move]) if monthly else [pad('x')]
+        return ([pad('a')] if move == 'here' else [move] if move else []) if monthly else [pad('x')]
     if state.get('chapter') != mem.get('chapter'):
         _finish(mem)
         return None
@@ -1505,6 +1503,8 @@ def _step_once(screen, mem, frame):
                 _record(mem, 'country_general_count_observed',
                         observed_metric={'generals': generals},
                         reason='国ステータスで観測した実人数を募集判断に使用')
+                from ..strategy.economy import _reset_unstarted_recruit_plan
+                _reset_unstarted_recruit_plan(mem)
             soldiers = None
             for label in ('へいしにんすう', 'へいしすう', 'へいしのかず',
                           'へいしのにんずう', 'そうへいしすう'):

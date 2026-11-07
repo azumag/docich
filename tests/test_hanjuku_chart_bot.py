@@ -2239,7 +2239,11 @@ def test_an_empty_egg_reserves_its_recovery_ahead_of_soldiers():
 
 def test_month_menu_recovers_egg_then_defers_recruit_until_actual_roster_is_known():
     home = {'year': 1, 'month': 7, 'gold': 300}
-    mem = {'chapter': 1, 'egg_uses': {'ココット': 0}, 'orders': {}, 'picked': []}
+    # The bounded monthly count visit has already failed; egg recovery can
+    # proceed, but an unverified general total still cannot fund recruitment.
+    mem = {'chapter': 1, 'month': '1-7', 'egg_uses': {'ココット': 0},
+           'orders': {}, 'picked': [],
+           'recruit_month_scan_attempts': {'scope': [1, '1-7'], 'count': 2}}
     shop = policy._plan(mem, home)
     shop['soldiers_done'] = True                                   # refill already bought 99
     assert shop['soldiers'] == 99

@@ -529,7 +529,7 @@ def _month_roster(state, visited=None):
     status_frame = _main_on('ステータス')
     assert house.step(parse(status_frame), mem, status_frame) == [p.pad('a')]
     if visited is None:
-        page1 = _country_page1()
+        page1 = _country_page1(soldiers=70)
     else:
         from test_hanjuku_house import Canvas
         c = Canvas()
@@ -699,8 +699,8 @@ def test_hotload_freezes_legacy_field_exhaustion_before_two_new_month_scans():
     assert state['policy']['recruit_field_scan_attempts']['count']==2
 
 
-@pytest.mark.parametrize('egg,opens', [('unverified', True), ('pending', False), ('check', False)])
-def test_an_unverified_egg_recovery_does_not_block_the_month_roster_scan(egg, opens):
+@pytest.mark.parametrize('egg', ['unverified', 'pending', 'check'])
+def test_monthly_counts_precede_unopened_egg_recovery(egg):
     # g684 1-12 / 2-1: recovery paid (309->259) but 'unverified'; the month
     # roster scan never ran and recruitment stayed deferred_roster.
     from test_hanjuku_chart_bot import month_canvas
@@ -710,7 +710,8 @@ def test_an_unverified_egg_recovery_does_not_block_the_month_roster_scan(egg, op
     mem['egg_uses']={'ゼウス':3}
     mem['shop']={'key':'1-7','egg':egg,'recruit':'deferred_roster'}
     actions=house.step(parse(month_canvas(250,on='メインメニュー',month=7)),mem,None)
-    assert (actions==[p.pad('a')])==opens
+    assert actions == [p.pad('a')]
+    assert mem['house']['level_only'] is True
 
 
 @pytest.mark.parametrize('income', [40, 5])
