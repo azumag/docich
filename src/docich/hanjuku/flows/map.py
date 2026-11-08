@@ -1517,6 +1517,10 @@ DEPARTURE_UNKNOWN_HOLD_LIMIT = 3  # unverifiable receipt readings; never a blind
 LAUNCH_PROBE_READS = 3            # world-map surveys without the new unit before the roster check
 LAUNCH_PROBE_RADIUS = 10        # world-map px from source/target flag counting as that unit
 LAUNCH_PROBE_NEW_MARKER_PX = 4  # centre distance that still counts as the same marker
+# A marching unit's triangle is ~7x6; a 3x3 red decoration must not confirm a
+# launch (g1163 2026-11-09 05:28: [[149,63,152,66]] confirmed three launches
+# while only the hero's own marker was on the view).
+LAUNCH_PROBE_MIN_BOX = 20      # bounding-box pixels for a plausible unit marker
 LAUNCH_PROBE_ROSTER_TICKS = 200  # blind probe ticks to wait for the source roster before rollback
 LAUNCH_MISS_LIMIT = 2           # unverified launches an order may retry before failing
 
@@ -1621,9 +1625,10 @@ def _probe_launch_markers(mem, markers):
             continue
         baseline = probe.get('baseline') or []
         fresh = [b for b in markers
-                 if not any(abs((b[0] + b[2]) / 2 - (o[0] + o[2]) / 2) <= LAUNCH_PROBE_NEW_MARKER_PX
-                            and abs((b[1] + b[3]) / 2 - (o[1] + o[3]) / 2) <= LAUNCH_PROBE_NEW_MARKER_PX
-                            for o in baseline)]
+                 if (b[2] - b[0] + 1) * (b[3] - b[1] + 1) >= LAUNCH_PROBE_MIN_BOX
+                 and not any(abs((b[0] + b[2]) / 2 - (o[0] + o[2]) / 2) <= LAUNCH_PROBE_NEW_MARKER_PX
+                             and abs((b[1] + b[3]) / 2 - (o[1] + o[3]) / 2) <= LAUNCH_PROBE_NEW_MARKER_PX
+                             for o in baseline)]
         near = [b for b in fresh
                 if _marker_near_castle(mem, b, probe.get('source'))
                 or _marker_near_castle(mem, b, probe.get('target'))]
