@@ -1445,7 +1445,10 @@ def _tactics(mem, step):
             # into an already-done tactic (two carried イッテツーン).
             derived.append({'enemy': None, 'card': card, 'open': True, 'step': step,
                             'tactic_id': f'd:{step}:{card}:{ordinal}',
-                            'boss_only': _is_boss_order(order, mem),
+                            # ボス専用札はボス注文でなくても開かない。通常戦の
+                            # 携行分を「未使用の計画札」として予定に数えない。
+                            'boss_only': (_is_boss_order(order, mem)
+                                          or card in reference.BOSS_ONLY_CARDS),
                             'note': '調整チャート既定: 検証済み戦術のない携行切り札を開幕使用'})
     return (*rare, *base, *derived)
 
