@@ -1,4 +1,5 @@
 """Post-month roster-first policy: sequence ordering and conservative evidence."""
+import json
 from unittest.mock import patch
 
 from docich.hanjuku.flows import post_month_status as post
@@ -1379,6 +1380,23 @@ def test_manifest_satisfied_resident_with_hp_dirty_skips_the_triangle():
     assert post.step(parse(status('ゼウス', egg='エラベルエッグ4')), mem, None) == [pad('b')]
     assert state['statuses']['ゼウス']['location'] == 'castle'
     assert 'ゼウス' not in state['dirty']
+
+
+def test_manifest_state_survives_the_bot_json_write():
+    # g1153 11-08 19:26: the manifest stored `manifest_satisfied` as a set in
+    # the policy memory. `brains/hanjuku/bot.py` writes that memory as JSON,
+    # so every observation raised TypeError, the decided input was dropped and
+    # the corner ended as input_stalled. The memory must stay JSON-encodable.
+    mem = _persistent_memory('どうし', 'ゼウス')
+    mem['general_statuses']['statuses']['ゼウス'].update(location='carry', castle=None)
+    mem['garrison'] = {'アルマムーン': ['どうし']}
+    post.arm(mem)
+    state = mem['post_month_status']
+    post._apply_manifest(mem, state, ['どうし', 'ゼウス'],
+                         complete=True, evidence='wrapped')
+    assert isinstance(state['manifest_satisfied'], list)
+    assert set(state['manifest_satisfied']) == {'どうし', 'ゼウス'}
+    json.dumps(mem, ensure_ascii=False, sort_keys=True)
 
 
 def test_waiting_carry_row_can_cross_the_month_boundary():

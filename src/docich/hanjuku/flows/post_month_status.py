@@ -411,7 +411,12 @@ def _apply_manifest(mem, state, names, *, complete, evidence):
                     complete=bool(complete), arrived=list(arrived),
                     waiting=list(waiting), evidence=evidence)
     state['manifest_done'] = True
-    state['manifest_satisfied'] = set(listed)
+    # A list, not a set: this flow state is part of the bot's policy memory and
+    # `brains/hanjuku/bot.py` persists that memory as JSON. A `set` here raised
+    # TypeError on every write, which the bot reported as an invalid
+    # observation (exit 2) and the agent therefore dropped the decided input
+    # (g1153 2026-11-08 19:26: the carry manifest stalled to input_stalled).
+    state['manifest_satisfied'] = list(listed)
     mem['carry_manifest_scope'] = list(scope)
     mem.pop('carry_manifest_failed_scope', None)
     tracking = mem.get('carry_tracking')
