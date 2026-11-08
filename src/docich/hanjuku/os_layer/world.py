@@ -416,6 +416,70 @@ def _apply_world_flags(mem, flags):
             _tally(mem, 'castle_losses')
 
 
+SEASON_SITE_CONFIRM = 2        # consecutive Y-view readings before a site state changes
+
+
+def _apply_season_sites(mem, sites):
+    """Keep chapter 4's cleared 四季王 sites closed from the Y view's markers.
+
+    g1163 2026-11-09: 北西/北東/南西 had been cleared (owner report; the live
+    Y view drew their pennants) but the bot kept sortieing to them, because a
+    king fight that ends on the closing dialogue leaves no measured 0 HP and
+    so never reached ``boss_victories``. The marker is direct evidence, so it
+    also stops the next sortie there. Two consecutive readings are required,
+    an unreadable marker keeps the previous state, and the impossible
+    "all four closed while the chapter is not over" reading is refused so a
+    misread can never park the whole chapter.
+    """
+    chapter = mem.get('chapter') or 0
+    if chapter != 4 or not sites:
+        return
+    sites_all = set(chart.boss_sites(4))
+    if (set(sites) >= sites_all and all(kind == 'closed' for kind in sites.values())
+            and (mem.get('boss_defeated') or 0) != 4):
+        # The chapter cannot still be running with every site cleared: this is
+        # a misread (gold frame/cursor pixels), never a reason to park the
+        # whole chapter. One record per reading signature.
+        digest = [list(item) for item in sorted(sites.items())]
+        if mem.get('season_sites_refused') != digest:
+            mem['season_sites_refused'] = digest
+            _record(mem, 'season_sites_all_closed_refused',
+                    observed_metric={'sites': sorted(sites), 'marker': 'closed'},
+                    reason='全4地点が撃破済みの印でも章が終わっていないため、読み違いとして記録しない')
+        return
+    seen = mem.setdefault('season_sites', {})
+    streak = mem.setdefault('season_site_streak', {})
+    for name, kind in sorted(sites.items()):
+        previous = streak.get(name) or {}
+        count = previous.get('count', 0) + 1 if previous.get('kind') == kind else 1
+        streak[name] = {'kind': kind, 'count': count, 'chapter': chapter}
+        if count < SEASON_SITE_CONFIRM:
+            continue
+        row = seen.get(name) or {}
+        if row.get('state') == kind and row.get('chapter') == chapter:
+            continue
+        if kind == 'closed' and (mem.get('boss_defeated') or 0) != 4:
+            closed = {other for other, value in seen.items()
+                      if isinstance(value, dict) and value.get('state') == 'closed'
+                      and value.get('chapter') == chapter}
+            closed.add(name)
+            if len(closed) >= len(chart.boss_sites(4)):
+                _record(mem, 'season_sites_all_closed_refused', castle=name,
+                        observed_metric={'closed': sorted(closed),
+                                         'readings': count, 'marker': kind},
+                        reason='全4地点が撃破済みの印でも章が終わっていないため、読み違いとして記録しない')
+                continue
+        seen[name] = {'state': kind, 'chapter': chapter, 'tick': int(mem.get('tick') or 0),
+                      'readings': count}
+        _record(mem, 'season_site_closed' if kind == 'closed' else 'season_site_open',
+                castle=name,
+                observed_metric={'site': name, 'marker': kind, 'readings': count},
+                resulting_event=f'{kind}:{name}',
+                reason=('全体マップの四季王の印が旗に変わったため、この地点は撃破済みとして出撃しない'
+                        if kind == 'closed' else
+                        '全体マップの四季王の印がドクロのため、撃破済みの記録を取り消して出撃対象へ戻す'))
+
+
 def _owned(mem):
     """Captured castles plus the home castle, unless the Y map showed it taken (g407 03:53)."""
     home = set() if mem.get('home_lost') else {chart.home_castle(mem.get('chapter') or 0)}

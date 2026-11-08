@@ -143,6 +143,57 @@ def world_flags(frame, chapter, cursor=None):
     return out
 
 
+# Chapter 4's four 四季王 sites are drawn on the Y view as a skull while the
+# king still holds the site and as an orange pennant once it is cleared. The
+# skull is chapter 3's boss skull sprite, top-left (101, 63) in the chapter 3
+# view; a site's sprite sits at that anchor plus the site cell's view offset
+# (tests/test_hanjuku_season_king_sites.py pins the same anchor).
+# g1163 2026-11-09 01:47 JST live Y view: 北西/北東/南西 pennants, 南東 skull,
+# and the owner reported exactly those three cleared — yet the bot kept
+# sortieing to them because a king fight that ends on the closing dialogue
+# never leaves a measured 0 HP (see battle_end's 四季王 rule).
+SEASON_SITE_ANCHOR = (101, 63)          # chapter 3 skull top-left on the Y view
+SEASON_SKULL_LIGHT = ((164, 165, 164), (255, 254, 255))
+SEASON_SITE_PENNANT = (255, 181, 0)
+
+
+def season_sites(frame, chapter, cursor=None):
+    """{site: 'closed'|'open'} from the Y view's four corner markers.
+
+    Only a colour reading, never an inference: a pennant with no skull light
+    is a cleared site, skull light is a live king. A site under the Y cursor
+    is skipped (the gold cursor shares the pennant's colour), and anything
+    unreadable is left out so the caller keeps its previous state.
+    """
+    if chapter != 4 or frame is None or not hasattr(frame, 'pixel'):
+        return {}
+    anchor = chart.CASTLES[3].get(chart.boss_castle(3))
+    if anchor is None:
+        return {}
+    out = {}
+    for name in chart.boss_sites(4):
+        cell = chart.castles(4).get(name)
+        if cell is None:
+            continue
+        x = SEASON_SITE_ANCHOR[0] + (cell[0] - anchor[0]) // 8
+        y = SEASON_SITE_ANCHOR[1] + (cell[1] - anchor[1]) // 8
+        if cursor and abs(x + 5 - cursor[0]) <= 10 and abs(y + 5 - cursor[1]) <= 10:
+            continue
+        pixels = [frame.pixel(px, py) for px in range(x - 2, x + 12)
+                  for py in range(y - 2, y + 13)
+                  if 0 <= px < frame.width and 0 <= py < frame.height]
+        if len(pixels) < 100:
+            continue
+        light = sum(1 for px in pixels
+                    if any(_near_colour(px, colour) for colour in SEASON_SKULL_LIGHT))
+        pennant = sum(1 for px in pixels if _near_colour(px, SEASON_SITE_PENNANT))
+        if pennant >= 6 and light == 0:
+            out[name] = 'closed'
+        elif light >= 6:
+            out[name] = 'open'
+    return out
+
+
 def world_markers(frame) -> list:
     """▲ army markers on the whole-island view, as (x0, y0, x1, y1) boxes.
 

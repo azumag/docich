@@ -795,9 +795,19 @@ def _retire_unentered_sortie(mem, step, sortie):
 
 
 def _site_king_down(mem, target):
-    """A 四季王 site whose king's defeat is already measured."""
+    """A 四季王 site whose king's defeat is already measured.
+
+    A measured victory is the strongest proof, but a fight that ends on the
+    closing dialogue never leaves a readable 0 HP (g1163 2026-11-09: three
+    sites were cleared and still attacked). The Y view's marker is the other
+    measurement: the cleared site draws a pennant instead of the skull.
+    """
     if (mem.get('chapter') == 4 and mem.get('boss_defeated') == 4
             and target in chart.boss_sites(4)):
+        return True
+    marker = (mem.get('season_sites') or {}).get(target)
+    if (mem.get('chapter') == 4 and isinstance(marker, dict)
+            and marker.get('state') == 'closed' and marker.get('chapter') == 4):
         return True
     return any(isinstance(victory, dict) and victory.get('site') == target
                for victory in (mem.get('boss_victories') or {}).values())

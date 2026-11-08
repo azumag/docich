@@ -35,6 +35,7 @@ def _enter_chapter(mem, chapter, *, reason, evidence=None):
     # keep them until the next country-status read rewrites them, instead of
     # blanking 現在収入 / 総賃金.
     for key in ('map_registration', 'map_discovery', 'boss_victories', 'approx_fallback', 'approx_localize_miss',
+                'season_sites', 'season_site_streak',
                 'active', 'anchor', 'goal_anchor_lock', 'attack', 'battle', 'battle_seen',
                 'captured', 'card_override', 'rare_card_kit', 'strong_card_kit', 'dropper_card_kit', 'castle_defenders', 'boss_stock_restart', 'boss_stock_cancelled', 'rare_scan', 'rare_scan_month', 'cursor', 'egg_battle',
                 'expect_menu', 'general_override', 'launched', 'menu_miss', 'month_exit', 'month_sub',

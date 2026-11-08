@@ -19,9 +19,9 @@ from .recall import (MENU_HOLD_LIMIT, RECALL_LIMIT, _hold_after_picker, _recall_
 from ..os_layer.commands import menu_to, pad
 from ..os_layer.navigation import (Y_JUMP_LIMIT, Y_JUMP_OFFSET, _align_on_roof, _drop_stale_y_jump, _start_y_jump,
                                    _forget_failed_jump, _want_y_jump, _y_jump_step, nav_step)
-from ..os_layer.readers import (UNDER_CURSOR_PX, WORLD_MAP_OFFSET, _cursor, _roof_under_cursor, world_cursor,
-                                world_flags, world_markers)
-from ..os_layer.world import NAME, _apply_world_flags, _hero_castle, _owned, update_world
+from ..os_layer.readers import (UNDER_CURSOR_PX, WORLD_MAP_OFFSET, _cursor, _roof_under_cursor, season_sites,
+                                world_cursor, world_flags, world_markers)
+from ..os_layer.world import (NAME, _apply_season_sites, _apply_world_flags, _hero_castle, _owned, update_world)
 from ..strategy import goals
 from ..strategy.kit import _deploy_cards, _is_boss_order
 from ..strategy.execution import departure_snapshot
@@ -382,6 +382,10 @@ def world_map_step(screen, mem, frame):
         return [] if waited < WORLD_MAP_WAIT else _close_world_map(mem)
     mem.pop('world_map_wait', None)
     _apply_world_flags(mem, flags)
+    # The same view draws chapter 4's 四季王 sites: a cleared one keeps a
+    # pennant, a live king keeps the skull.
+    if (mem.get('chapter') or 0) == 4 and hasattr(frame, 'pixel'):
+        _apply_season_sites(mem, season_sites(frame, 4, world_cursor(frame)))
     markers = world_markers(frame)
     _probe_launch_markers(mem, markers)
     mem['_world_units_prev'] = [list(b) for b in markers]
