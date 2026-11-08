@@ -338,11 +338,28 @@ def validate(doc) -> dict:
                                or not re.fullmatch(r'[0-9a-f]{64}', digest)):
         raise ValueError('invalid request_digest')
     from .hanjuku_roster import roles
-    recruitment = roles(doc['recruitment']) if doc.get('recruitment') is not None else None
+    # The orders are the plan; purchases and recruitment are optional side
+    # parts. A malformed side part used to discard a whole otherwise-valid
+    # answer (history: adjust_worker generate_failed invalid_output
+    # 'invalid purchases' five times), costing another LLM cycle. Keep the
+    # orders and drop only the part that failed to normalise.
+    dropped_parts = []
+    recruitment = None
+    if doc.get('recruitment') is not None:
+        try:
+            recruitment = roles(doc['recruitment'])
+        except (TypeError, ValueError):
+            dropped_parts.append('recruitment')
+    try:
+        purchases = _purchases(doc.get('purchases'))
+    except ValueError:
+        purchases = None
+        dropped_parts.append('purchases')
     return {'schema': SCHEMA, 'chapter': chapter, 'request_id': rid, 'orders': orders,
             'recruitment': recruitment,
             'request_digest': digest,
-            'purchases': _purchases(doc.get('purchases')),
+            'dropped_parts': dropped_parts,
+            'purchases': purchases,
             'generated_at': (doc['generated_at'] if type(doc.get('generated_at')) in (int, float)
                              and math.isfinite(doc['generated_at']) else None),
             'source': _text(doc.get('source'), 'source', limit=40, required=False),
@@ -375,6 +392,10 @@ def save(runtime_dir: Path, doc, request=None) -> dict:
     from .game_switch import atomic_write_json
     from .hanjuku_run import append_log
     normalized = validate(doc)
+    if normalized.get('dropped_parts'):
+        append_log(Path(runtime_dir), HISTORY_LOG, {'event': 'adjusted_parts_dropped',
+                                                    'request_id': normalized['request_id'],
+                                                    'parts': list(normalized['dropped_parts'])})
     if isinstance(request, dict) and isinstance(request.get('request_digest'), str):
         # Bind the answer to the payload revision it answered; the policy
         # refuses an answer whose digest is not the current request's.
