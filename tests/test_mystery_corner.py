@@ -1145,6 +1145,56 @@ def test_mystery_settle_released_failure_retires_the_failed_owner(tmp_path):
     assert state["end_reason"] == "released-failure-before-retry"
 
 
+def test_a_round_boundary_timeout_does_not_wedge_later_mystery_rotations(tmp_path, quiet_narration):
+    """#3682 end to end: the failure chain that stalled the rotation for ~15 hours.
+
+    Production (2026-10-31 -> 11-07): the switch ``sorengame -> mystery-view`` timed
+    out waiting for the current game's round boundary and rolled back, leaving the
+    mystery state file ``failed``. Every later start then died with "another mystery
+    execution owns the state" before a switch was even requested, so each attempt
+    consumed a rotation slot until the release evidence was evicted from the bounded
+    audit. The unit tests cover the settle hook alone; this one covers the chain.
+    """
+    g, now, factory, _store, switch = _setup(tmp_path)
+
+    def sleep(seconds):
+        now[0] += seconds
+
+    manager = _adapter(g, _corner(), switch, now, sleep).manager
+
+    # The game that is on air never reaches its round boundary in time.
+    source = next(a for a in factory.adapters.values() if a.spec.game == "robots")
+    source.requires_round_boundary = True
+    del source.request_round_boundary          # expose the blocking class method
+    source.round_boundary_timeout_s = 0.2
+
+    first = str(uuid.uuid4())
+    with pytest.raises(MysteryCornerError, match="did not succeed"):
+        manager.run_rotation(first)
+    state = json.loads(manager.state_path.read_text())
+    assert state["status"] == "failed"
+    assert state["rotation_request_id"] == first
+    assert "boundary_wait" in source.events and "boundary_ack" not in source.events
+
+    # Before the fix this refusal was permanent: no later request could start.
+    second = str(uuid.uuid4())
+    with pytest.raises(MysteryCornerError, match="another mystery execution owns the state"):
+        manager.run_rotation(second)
+
+    # The rotation settles the released owner (it proved the shared slot is free).
+    assert manager.settle_released_failure(first) is True
+    retired = json.loads(manager.state_path.read_text())
+    assert retired["status"] == "interrupted"
+    assert retired["end_reason"] == "released-failure-before-retry"
+
+    # The round boundary is reachable again: the next rotation really starts and finishes.
+    source.boundary_release.set()
+    assert manager.run_rotation(second) == "completed"
+    final = json.loads(manager.state_path.read_text())
+    assert final["status"] == "completed" and final["rotation_request_id"] == second
+    assert final["mystery_runtime_identity"]["game"] == VIEW_NAME
+
+
 def test_mystery_settle_released_failure_refuses_live_or_foreign_owners(tmp_path):
     g, now, _factory, _store, switch = _setup(tmp_path)
     manager = _adapter(g, _corner(), switch, now, lambda _s: None).manager
