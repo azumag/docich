@@ -6965,6 +6965,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v511-month-status-single-read-and-counts",
             "hanjuku-chart-v512-month-status-page1-marker",
             "hanjuku-chart-v513-chapter-end-save-party",
+            "hanjuku-chart-v514-plan-failed-step-rearm",
             "hanjuku-chart-v501-idle-reanchor",
             "hanjuku-chart-v502-idle-and-roster-joins",
             "hanjuku-chart-v503-month-start-counts",
