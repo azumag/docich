@@ -5068,3 +5068,30 @@ def test_hanjuku_chart_worker_projection_is_bounded(tmp_path):
     assert odd['attempts'] is None
     empty=module._project_hanjuku_chart_worker(tmp_path/'no-such',now)
     assert empty=={'present':False,'readable':False}
+
+
+def test_compact_policy_projects_the_measured_boss_cell_without_free_text():
+    module = load_collector()
+    policy = module._compact_hanjuku_policy({
+        'chapter': 7, 'tick': 5000, 'active': None,
+        'boss_cell': {'chapter': 7, 'cell': [488, 300], 'tick': 4700,
+                      'readings': 2, 'note': 'DO-NOT-PUBLISH'},
+        'captured': ['PRIVATE'],
+    })
+    assert policy['boss_cell'] == {'chapter': 7, 'cell': [488, 300],
+                                   'readings': 2, 'age_ticks': 300}
+    assert 'DO-NOT-PUBLISH' not in json.dumps(policy)
+    assert 'PRIVATE' not in json.dumps(policy)
+
+
+def test_compact_policy_marks_a_malformed_boss_cell_as_unknown():
+    module = load_collector()
+    policy = module._compact_hanjuku_policy({
+        'chapter': 7, 'tick': 5000, 'active': None,
+        'boss_cell': {'chapter': 'PRIVATE', 'cell': ['a', 'b'], 'tick': 'x',
+                      'readings': -1},
+    })
+    assert policy['boss_cell'] == {'chapter': None, 'cell': None,
+                                   'readings': None, 'age_ticks': None}
+    assert 'PRIVATE' not in json.dumps(policy)
+    assert module._compact_hanjuku_policy({'chapter': 7})['boss_cell'] is None
