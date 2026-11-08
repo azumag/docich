@@ -1748,3 +1748,27 @@ def test_an_unverified_target_without_a_nearby_roof_still_cancels(monkeypatch):
     off = Screen(lines=[], hand=None, text='', kind='map_target', marker=(232, 200))
     assert flow_map.target_step(off, mem, FRAME) == []
     assert decisions(mem, 'target_not_under_marker') and not decisions(mem, 'target_roof_align')
+
+
+def test_a_single_empty_read_does_not_make_a_staffed_castle_empty(monkeypatch):
+    """g1163 2026-11-09 08:31:26: {} was recorded for アルマムーン (どうし+3 there)."""
+    mem = {'chapter': 1, 'active': '1-C1', 'orders': {'1-C1': 'pending'}, '_records': []}
+    order = policy._order(mem)
+    frame = Screen(lines=[], hand=None, text='しゅつげきステータス', kind='general_list')
+    monkeypatch.setattr(policy, '_present_generals', lambda _screen: [])
+    policy._observe_garrison(frame, mem, order)
+    assert not (_world(mem).get('garrison') or {}).get('アルマムーン')
+    policy._observe_garrison(frame, mem, order)               # repeats: an empty castle
+    assert _world(mem)['garrison']['アルマムーン'] == []
+    # The game's own "no generals" line is evidence on its own.
+    mem2 = {'chapter': 1, 'active': '1-C1', 'orders': {'1-C1': 'pending'}, '_records': []}
+    policy._observe_garrison(Screen(lines=[], hand=None,
+                                    text='しゅつげきしょうぐんはステータスおりません……',
+                                    kind='general_list'), mem2, policy._order(mem2))
+    assert _world(mem2)['garrison']['アルマムーン'] == []
+    # A readable name replaces it at once and clears the empty streak.
+    monkeypatch.setattr(policy, '_present_generals', lambda _screen: ['どうし'])
+    policy._observe_garrison(Screen(lines=[], hand=None, text='しゅつげきどうしステータス',
+                                    kind='general_list'), mem, order)
+    assert _world(mem)['garrison']['アルマムーン'] == ['どうし']
+    assert not mem.get('garrison_empty_streak', {}).get('アルマムーン')
