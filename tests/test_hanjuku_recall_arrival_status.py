@@ -22,7 +22,7 @@ def memory():
             '_records':[],'recall_verification':proof,
             'retreat_rechecks':{ACTOR:{'identity':deepcopy(proof['identity']), 'chapter':2,
                 'tick':29529,'attempts':3,'retry_after':29600,'status':'needs_observation'}},
-            'world': {'world': {'world': {'sorties': {'old':{'general':ACTOR,'status':'arrived','target':'ドミノーラ'}}}
+            'sorties':{'old':{'general':ACTOR,'status':'arrived','target':'ドミノーラ'}}}
 
 
 def start(mem):

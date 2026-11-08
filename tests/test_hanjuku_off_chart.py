@@ -43,9 +43,9 @@ def g401_memory():
             'captured': ['キカンドン', 'ナキューメラ', 'ジョンリギ', 'カストーラ'],
             'orders': {'1-A1': 'launched', '1-A2': 'launched', '1-C1': 'launched',
                        '1-C2': 'launched', '1-V1': 'launched', '1-V2': 'launched'},
-            'world': {'sorties': {'1-A2': {'general': 'どうし', 'target': 'ゴーメン', 'status': 'en_route'},
+            'sorties': {'1-A2': {'general': 'どうし', 'target': 'ゴーメン', 'status': 'en_route'},
                         '1-C2': {'general': 'ココット', 'target': 'スペンソニア',
-                                 'status': 'en_route'}}}
+                                 'status': 'en_route'}},
             'garrison': {'アルマムーン': ['ゼウス'], 'キカンドン': [], 'ジョンリギ': [],
                          'カストーラ': ['ヴィーナス']}}
 
@@ -199,7 +199,7 @@ def test_a_hold_with_no_candidates_is_recorded_once_per_revision():
            'orders': {o['step']: 'launched' for o in chart.orders(1) if o['step'] != '1-B1'},
            'garrison': {'アルマムーン': ['どうし'], 'キカンドン': [], 'ナキューメラ': [],
                         'ゴーメン': [], 'カストーラ': []},
-           'world': {'sorties': {'I:s:1': {'general': 'どうし', 'target': 'スペンソニア',
+           'sorties': {'I:s:1': {'general': 'どうし', 'target': 'スペンソニア',
                                  'status': 'en_route', 'tick': 5}}}
     assert policy.map_step(Screen(lines=[], hand=None, text='', kind='map'), mem, FRAME) == []
     assert decisions(mem, 'chart_adjust_request')
@@ -507,7 +507,7 @@ def test_moves_come_before_attacks_and_staff_an_empty_home_castle():
 def test_a_move_already_marching_is_not_offered_again():
     mem = {'chapter': 1, 'orders': {}, '_records': [], 'captured': ['キカンドン'], 'tick': 10,
            'garrison': {'アルマムーン': [], 'キカンドン': ['どうし', 'ゼウス', 'ココット']},
-           'world': {'sorties': {'I:x:1': {'general': 'ゼウス', 'target': 'アルマムーン', 'status': 'en_route',
+           'sorties': {'I:x:1': {'general': 'ゼウス', 'target': 'アルマムーン', 'status': 'en_route',
                                  'tick': 5}}}
     assert not [c for c in policy.interim_candidates(mem).values() if c['purpose'] == 'move']
 
@@ -524,7 +524,7 @@ def _stuck_plan_memory():
             '_records': [], 'captured': ['ジョンリギ'], 'lost': ['キカンドン'],
             'chart_plan': {'request_id': 'p', 'orders': plan},
             'garrison': {'アルマムーン': [], 'ジョンリギ': ['ココット', 'ゼウス']},
-            'world': {'sorties': {'1-A2': {'general': 'どうし', 'target': None, 'status': 'launched_unconfirmed'},
+            'sorties': {'1-A2': {'general': 'どうし', 'target': None, 'status': 'launched_unconfirmed'},
                         'I:b:1': {'general': 'ココット', 'target': 'スペンソニア', 'status': 'en_route'}}}
 
 
@@ -1097,7 +1097,7 @@ def test_select_re_places_a_lost_cursor_on_the_heros_castle(monkeypatch):
     # Hero marching: his castle is unknown, so no re-placement.
     mem = {'chapter': 1, '_records': [], 'cursor': [500, 500], 'uncertain': True, 'tick': 5,
            'captured': ['スペンソニア'], 'garrison': {'スペンソニア': ['どうし']},
-           'world': {'world': {'world': {'sorties': {'X': {'general': 'どうし', 'target': 'ゴーメン', 'status': 'en_route', 'tick': 4}}}
+           'sorties': {'X': {'general': 'どうし', 'target': 'ゴーメン', 'status': 'en_route', 'tick': 4}}}
     assert policy._hero_castle(mem) is None
 
 
@@ -1194,7 +1194,7 @@ def test_the_island_picker_confirms_the_observed_owned_castle_with_a_twice(monke
     assert decisions(mem, 'camp_recall_requested')[0]['observed_metric']['castle'] == 'アルマムーン'
     # The weak hero's recall ends the same way and cancels his attack march.
     mem = {'chapter': 1, 'tick': 50, '_records': [],
-           'world': {'world': {'world': {'sorties': {'1-A2': {'general': policy.NAME, 'target': 'ゴーメン', 'status': 'en_route', 'tick': 40}}}
+           'sorties': {'1-A2': {'general': policy.NAME, 'target': 'ゴーメン', 'status': 'en_route', 'tick': 40}},
            'recall': {'stage': 'dest', 'hero': True, 'steps': 1, 'sorties': ['1-A2']}}
     assert policy.world_map_step(view, mem, FRAME) == [policy.pad('a'), {'type': 'wait', 'ms': 700},
                                                         policy.pad('a')]
@@ -1420,7 +1420,7 @@ def test_a_hero_weakened_by_a_road_battle_is_recalled_before_his_next_fight(monk
     # g436 23:15-23:18: won a road battle 90 -> 14 HP while marching on ゴーメン,
     # marched on and died there (game over).
     mem = {'chapter': 1, 'tick': 100, '_records': [], 'hero_max_hp': 90, 'captured': ['キカンドン'],
-           'world': {'sorties': {'1-A2': {'general': policy.NAME, 'target': 'ゴーメン', 'source': 'キカンドン',
+           'sorties': {'1-A2': {'general': policy.NAME, 'target': 'ゴーメン', 'source': 'キカンドン',
                                 'status': 'en_route', 'tick': 90}}}
     policy._maybe_recall_weak_hero(mem, {'ally': policy.NAME}, 'win', 14)
     assert _flow(mem)['recall']['stage'] == 'hero_focus' and decisions(mem, 'hero_recall_start')

@@ -198,9 +198,9 @@ def unconfirmed_boss_memory():
                 'expected_metric': {'general': 'どうし', 'cards': kit}}
     order = dict(next(o for o in policy.chart.orders(1) if o['step'] == '1-B1'))
     return {'chapter': 1, 'captured': ['ゴーメン', 'スペンソニア'],
-            'world': {'sorties': {'1-A2': {'general': 'どうし', 'status': 'arrived', 'target': 'ゴーメン'},
+            'sorties': {'1-A2': {'general': 'どうし', 'status': 'arrived', 'target': 'ゴーメン'},
                         '1-B1': {'general': 'どうし', 'status': 'launched_unconfirmed',
-                                 'target': None, 'planned_target': 'けっかい', 'evidence': evidence}}}
+                                 'target': None, 'planned_target': 'けっかい', 'evidence': evidence}},
             'order_context': {'1-B1': evidence}, 'launched_orders': {'1-B1': order}}
 
 

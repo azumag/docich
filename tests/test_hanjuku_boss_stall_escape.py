@@ -17,9 +17,9 @@ SITE = '四季王城(南西)'
 def memory(tick=10000, *, age=10000, status='overdue', relaunch=2):
     return {'chapter': 4, 'tick': tick, 'active': None,
             'orders': {'4-B1': 'launched'},
-            'world': {'sorties': {'4-B1': {'general': 'アルテミス', 'source': 'ミヒラギアン',
+            'sorties': {'4-B1': {'general': 'アルテミス', 'source': 'ミヒラギアン',
                                  'status': status, 'target': SITE,
-                                 'tick': tick - age}}}
+                                 'tick': tick - age}},
             'boss_relaunch': {'4-B1': relaunch},
             'captured': ['アルカ'], 'lost': []}
 

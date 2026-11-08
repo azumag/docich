@@ -34,7 +34,7 @@ def test_sortie_cancelled_observed_is_not_reissued_while_general_stays():
     mem = {'chapter': 1, 'month': '1-7', 'tick': 100,
            'garrison': {'アルマムーン': ['ゼウス', 'どうし']},
            'orders': {'new': 'pending'}, 'picked': [], 'active': 'new',
-           'world': {'sorties': {'new': {'general': 'ゼウス', 'source': 'アルマムーン',
+           'sorties': {'new': {'general': 'ゼウス', 'source': 'アルマムーン',
                               'status': 'launched_unconfirmed', 'tick': 50}}}
     _verify_sortie_source(_screen(['ゼウス', 'どうし']), mem, {'step': 'new'})
     order = {'step': 'new', 'general': 'ゼウス', 'source': 'アルマムーン',

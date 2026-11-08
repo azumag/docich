@@ -20,7 +20,7 @@ def boss_sortie(tick=39917, target='ボス'):
 def memory(tick, target='ボス'):
     return {'chapter': 6, 'tick': tick, '_records': [],
             'orders': {'6-B1': 'launched'},
-            'world': {'world': {'world': {'sorties': {'6-B1': boss_sortie(target=target)}}
+            'sorties': {'6-B1': boss_sortie(target=target)},
             'launched_orders': {}}
 
 

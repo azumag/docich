@@ -8,9 +8,9 @@ def memory(age=5000):
     return {'chapter': 6, 'tick': 10000, '_records': [],
             'orders': {'A:x:M1': 'launched'},
             'world': {'garrison': {'アルマムーン': []}},
-            'world': {'sorties': {'A:x:M1': {'general': 'グレナデン', 'source': 'アルマムーン',
+            'sorties': {'A:x:M1': {'general': 'グレナデン', 'source': 'アルマムーン',
                                    'target': 'ボス', 'status': 'launched_unconfirmed',
-                                   'tick': 10000 - age}}}
+                                   'tick': 10000 - age}},
             'launched_orders': {}}
 
 

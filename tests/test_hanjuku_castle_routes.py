@@ -18,7 +18,7 @@ def state():
                          'コラダイン': ['エシャロット'], 'イーピヨル': ['ピオーネ'],
                          'メガパタ': ['ペコリーノ'], 'アバロン': ['アテナ'],
                          'パタゴーヌ': ['ガスパチョ'], 'リグア': ['ユイートル']},
-            'world': {'world': {'world': {'sorties': {}}
+            'sorties': {}, 'launched_orders': {}, '_records': [],
             'house_eggs': {}, 'general_location_unknown': []}
 
 
@@ -79,17 +79,27 @@ def add_transfer(mem, source, target, general='ミュスカデ'):
 def test_transfer_is_forwarded_only_after_the_actual_roster_receipt():
     mem = state()
     step = add_transfer(mem, 'アルマムーン', 'コラダイン')
+    # Owner 2026-11-08: while the transfer is still marching the list cannot
+    # show the second general, so no departure is planned from the one-general
+    # castle. The list is opened only once the busy window has passed.
+    assert not [o for o in replan.interim_candidates(mem).values()
+                if o['source'] == 'コラダイン']
+    mem['tick'] += routes.SORTIE_BUSY_TICKS
     candidates = list(replan.interim_candidates(mem).values())
     assert candidates[0]['source'] == 'コラダイン'
     assert candidates[0]['target'] == 'イーピヨル'
     assert candidates[0]['source_probe'] is True
+    assert candidates[0].get('roster_probe') is True   # read-only arrival check
     before = copy.deepcopy(_world(mem)['garrison'])
     routes.observed_roster(mem, 'コラダイン', ['エシャロット'])
     assert mem['sorties'][step]['status'] == 'en_route'
     assert not routes.probe_due(mem, 'コラダイン')
     assert _world(mem)['garrison'] == before
-    mem['tick'] += routes.PROBE_INTERVAL
-    assert routes.probe_due(mem, 'コラダイン')
+    # The march limit passes; the settled transfer is confirmed only when its
+    # named actor is physically listed in the castle.
+    mem['tick'] += 2000
+    orders._relaunch_overdue_march(mem)
+    assert mem['sorties'][step]['status'] == 'overdue'
     # The existing general-list reader publishes the list, then this hook
     # releases only a transfer whose named actor is physically listed there.
     _world(mem)['garrison']['コラダイン'] = ['エシャロット', 'ミュスカデ', 'ピオーネ', 'ポワソン', 'キャンディー']
@@ -307,7 +317,7 @@ def victoria_drain():
                         'アルマムーン': ['どうし', 'バーミセリ', 'トレビス', 'ココット', 'ゼウス',
                                    'ミルフィーユ', 'ジェラート'],
                         'ミヒラギアン': ['アテナ']},
-           'world': {'world': {'world': {'sorties': {}}
+           'sorties': {}, 'launched_orders': {}, '_records': [],
            'house_eggs': {}, 'general_location_unknown': []}
     for step, general, tick in (('I:0fa434:2', 'アポロン', 95400), ('I:49a839:1', 'アルファルファ', 96181)):
         mem['sorties'][step] = {'source': 'アルマムーン', 'target': 'ビクトリア', 'general': general,
@@ -379,7 +389,7 @@ def test_lost_castle_gating_the_boss_path_is_retaken_first():
            'garrison': {'アルマムーン': ['どうし', 'ミュスカデ', 'チコリ', 'ジェラート', 'エピィ'],
                         'テラビル': ['ラビオリ'], 'ヒュペルボレア': ['ピスタチオ'],
                         'カルーン': ['セルリアク']},
-           'world': {'world': {'world': {'sorties': {}}
+           'sorties': {}, 'launched_orders': {}, '_records': [],
            'house_eggs': {}, 'general_location_unknown': []}
     cands = list(replan.interim_candidates(mem).values())
     retakes = [c['target'] for c in cands if c.get('purpose') == 'retake']
@@ -402,7 +412,7 @@ def test_boss_gate_ordering_is_scoped_to_lost_castles():
                         'テラビル': ['ラビオリ'], 'ヒュペルボレア': ['ピスタチオ'],
                         'カルーン': ['セルリアク'], 'バスカビル': ['ココット'],
                         'アイアイエー': ['エシャロット']},
-           'world': {'world': {'world': {'sorties': {}}
+           'sorties': {}, 'launched_orders': {}, '_records': [],
            'house_eggs': {}, 'general_location_unknown': []}
     cands = list(replan.interim_candidates(mem).values())
     retakes = [c['target'] for c in cands if c.get('purpose') == 'retake']
@@ -421,7 +431,7 @@ def test_source_past_an_own_castle_on_the_march_is_avoided():
                         'オトラント': ['グレナデン', 'バジル', 'マンゴスチン', 'キャンディー',
                                    'リースリング', 'クミン'],
                         'テラビル': ['ラビオリ']},
-           'world': {'world': {'world': {'sorties': {}}
+           'sorties': {}, 'launched_orders': {}, '_records': [],
            'house_eggs': {}, 'general_location_unknown': []}
     cands = list(replan.interim_candidates(mem).values())
     kuro = next(c for c in cands if c.get('target') == 'クロチェット')
@@ -453,7 +463,7 @@ def test_blocked_only_source_sorties_from_the_blocking_castle():
                                        'マンゴスチン', 'リースリング', 'ゼウス'],
                         # Retake reservations may consume earlier spares.
                         'テラビル': ['ラビオリ']},
-           'world': {'world': {'world': {'sorties': {}}
+           'sorties': {}, 'launched_orders': {}, '_records': [],
            'house_eggs': {}, 'general_location_unknown': []}
     cands = list(replan.interim_candidates(mem).values())
     kuro = next(c for c in cands if c.get('target') == 'クロチェット')
@@ -473,7 +483,7 @@ def test_pending_order_behind_an_own_castle_is_redirected_to_the_blocker():
                                           'cards': [], 'after': None}},
            'garrison': {'アルマムーン': ['どうし', 'ミュスカデ'], 'オトラント': ['グレナデン'],
                         'テラビル': ['ラビオリ']},
-           'world': {'world': {'world': {'sorties': {}}
+           'sorties': {}, '_records': [], 'house_eggs': {}, 'general_location_unknown': []}
     orders.next_order(mem)
     assert mem['source_override']['A:x:J1'] == 'オトラント'
     rec = next(r for r in mem['_records'] if r['decision'] == 'sortie_source_march_block')
@@ -489,7 +499,7 @@ def test_a_clear_pending_order_keeps_its_baked_source():
                                           'target': 'クロチェット', 'general': 'グレナデン',
                                           'cards': [], 'after': None}},
            'garrison': {'アルマムーン': ['どうし'], 'オトラント': ['グレナデン']},
-           'world': {'world': {'world': {'sorties': {}}
+           'sorties': {}, '_records': [], 'house_eggs': {}, 'general_location_unknown': []}
     orders.next_order(mem)
     assert 'source_override' not in mem or 'A:x:J1' not in mem['source_override']
 
@@ -503,7 +513,7 @@ def test_boss_order_unlocks_when_its_chain_is_held_despite_a_side_loss():
                         'ボッサール', 'ジュメルズ', 'オトラント', 'アイアイエー',
                         'バスカビル', 'プトレマイス'],
            'lost': ['クロチェット'],
-           'orders': {}, 'launched_orders': {}, 'world': {'world': {'world': {'sorties': {}}
+           'orders': {}, 'launched_orders': {}, 'sorties': {}, 'garrison': {},
            '_records': [], 'house_eggs': {}, 'general_location_unknown': []}
     assert orders._boss_path_captured(mem)
     assert orders._ready(b1, mem)
@@ -516,7 +526,7 @@ def test_boss_order_still_waits_when_its_chain_is_broken():
                         'ボッサール', 'ジュメルズ', 'オトラント', 'アイアイエー',
                         'プトレマイス', 'クロチェット'],
            'lost': ['バスカビル'],
-           'orders': {}, 'launched_orders': {}, 'world': {'world': {'world': {'sorties': {}}
+           'orders': {}, 'launched_orders': {}, 'sorties': {}, 'garrison': {},
            '_records': [], 'house_eggs': {}, 'general_location_unknown': []}
     assert not orders._boss_path_captured(mem)
     assert not orders._ready(b1, mem)
@@ -538,7 +548,7 @@ def aiaie_stall():
                         'バスカビル': ['マカデミア'], 'ヒュペルボレア': ['ピスタチオ'],
                         'プトレマイス': ['キャンディー'], 'ボッサール': ['ポセイドン']},
            'route_probe_read_tick': {'アイアイエー': 74177},
-           'world': {'world': {'world': {'sorties': {}}
+           'sorties': {}, 'launched_orders': {}, '_records': [],
            'house_eggs': {}, 'general_location_unknown': []}
     for step, general, tick, status in (('A:0ca8ce6a:M1', 'ジェラート', 88300, 'overdue'),
                                         ('A:d0871b56:M2', 'ピスタチオ', 93200, 'overdue'),

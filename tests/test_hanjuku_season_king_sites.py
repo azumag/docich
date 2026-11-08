@@ -14,7 +14,6 @@ from docich import hanjuku_chart as chart, hanjuku_policy as policy
 from docich.hanjuku.os_layer.pixels import read_png
 from docich.hanjuku.os_layer.readers import world_flags
 from docich.hanjuku.strategy import orders
-from docich.hanjuku.state.regions import world as _world
 from docich.hanjuku_screen import Screen, classify_text
 
 FIXTURES = Path(__file__).resolve().parent / 'fixtures' / 'hanjuku'
@@ -138,7 +137,7 @@ def test_a_site_sortie_keeps_two_generals_beside_the_hero():
     assert relaxed == three[:2]
     # A marching general does not guard (owner rule's own count): two present
     # beside the hero still let one go, leaving him plus one defender.
-    _world(mem)['sorties'] = {'x': {'general': 'ココット', 'status': 'en_route', 'tick': 90, 'target': 'アルカ'}}
+    mem['sorties'] = {'x': {'general': 'ココット', 'status': 'en_route', 'tick': 90, 'target': 'アルカ'}}
     assert orders._order_hero_alternatives(order, mem, [hero, *three]) == relaxed
     # Other chapters' boss orders keep their own sequence.
     ch3 = next(o for o in chart.orders(3) if o['target'] == 'ボス')
@@ -153,8 +152,8 @@ def entry(text):
 
 def test_the_boss_entry_binds_the_site_the_general_marches_on():
     mem = {'chapter': 4, 'tick': 200, 'orders': {'4-B2': 'launched'},
-           'world': {'sorties': {'4-B2': {'general': 'ゼウス', 'target': '四季王城(南東)', 'source': 'ネクスドリア',
-                                'status': 'en_route', 'tick': 150}}}}
+           'sorties': {'4-B2': {'general': 'ゼウス', 'target': '四季王城(南東)', 'source': 'ネクスドリア',
+                                'status': 'en_route', 'tick': 150}}}
     assert policy.message_step(entry('ゼウスしょうぐんがボスじょうにせめこんだ!!'), mem) == [policy.pad('a')]
     assert mem['attack'] == {'general': 'ゼウス', 'castle': '四季王城(南東)', 'side': 'attack',
                              'step': '4-B2', 'entry_evidence': 'measured_boss_entry'}
@@ -162,7 +161,7 @@ def test_the_boss_entry_binds_the_site_the_general_marches_on():
 
 def test_two_site_marches_of_one_general_name_no_site():
     mem = {'chapter': 4, 'tick': 200,
-           'world': {'sorties': {s: {'general': 'ゼウス', 'target': t, 'status': 'en_route', 'tick': 150}
+           'sorties': {s: {'general': 'ゼウス', 'target': t, 'status': 'en_route', 'tick': 150}
                        for s, t in (('4-B1', '四季王城(南西)'), ('4-B2', '四季王城(南東)'))}}
     policy.message_step(entry('ゼウスしょうぐんがボスじょうにせめこんだ!!'), mem)
     assert (mem.get('attack') or {}).get('castle') in (None, chart.boss_castle(4))
