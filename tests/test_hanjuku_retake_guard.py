@@ -25,7 +25,7 @@ def generals(names):
 
 @pytest.mark.parametrize('status', ['en_route', 'launched_unconfirmed'])
 def test_recent_retake_reserves_target_in_candidates_and_current_order(status):
-    m=memory();m['sorties']={'earlier': {'general':'ヴィーナス','target':'ジョンリギ',
+    m=memory();_world(m)['sorties']={'earlier': {'general':'ヴィーナス','target':'ジョンリギ',
                                        'status':status,'tick':99}}
     assert not any(o['target']=='ジョンリギ' for o in p.interim_candidates(m).values())
     o=p._order(m);assert p._retake_reserved(o,m)
@@ -35,25 +35,25 @@ def test_recent_retake_reserves_target_in_candidates_and_current_order(status):
 
 
 def test_interrupted_unknown_target_reserves_only_saved_intent_without_editing_sortie():
-    m=memory();m['sorties']={'earlier':{'general':'ヴィーナス','target':None,
+    m=memory();_world(m)['sorties']={'earlier':{'general':'ヴィーナス','target':None,
                                      'status':'launched_unconfirmed','tick':99}}
     _world(m)['launched_orders']['earlier']={'target':'ジョンリギ'}
-    before=deepcopy(m['sorties']);assert p._retake_reserved(p._order(m),m)
+    before=deepcopy(_world(m)['sorties']);assert p._retake_reserved(p._order(m),m)
     assert not any(o['target']=='ジョンリギ' for o in p.interim_candidates(m).values())
-    assert m['sorties']==before
+    assert _world(m)['sorties']==before
 
 
 @pytest.mark.parametrize('status,tick', [('arrived',99),('failed',99),('en_route',None),
                                          ('en_route',100-2*p.SORTIE_BUSY_TICKS),('en_route',101)])
 def test_finished_old_missing_or_future_receipts_do_not_reserve(status,tick):
-    m=memory();m['sorties']={'earlier':{'general':'ヴィーナス','target':'ジョンリギ',
+    m=memory();_world(m)['sorties']={'earlier':{'general':'ヴィーナス','target':'ジョンリギ',
                                      'status':status,'tick':tick}}
     assert not p._retake_reserved(p._order(m),m)
     assert any(o['target']=='ジョンリギ' for o in p.interim_candidates(m).values())
 
 
 def test_own_sortie_receipt_is_not_a_duplicate():
-    m=memory();o=p._order(m);m['sorties']={o['step']:{'general':'ゼウス','target':'ジョンリギ',
+    m=memory();o=p._order(m);_world(m)['sorties']={o['step']:{'general':'ゼウス','target':'ジョンリギ',
                                                  'status':'launched_unconfirmed','tick':99}}
     assert not p._retake_reserved(o,m)
 
@@ -68,13 +68,13 @@ def test_live_retake_list_cannot_send_the_last_defender(names):
 def test_live_spare_can_leave_and_then_no_further_attack_drains_source():
     m=memory();assert p.deploy_step(generals(['ゼウス','アルテミス']),m)==[p.pad('a')]
     p._garrison_move(m,'ゼウス',source='アルマムーン')
-    m['sorties']={'I:retake:1':{'general':'ゼウス','target':'ジョンリギ','status':'en_route','tick':100}}
+    _world(m)['sorties']={'I:retake:1':{'general':'ゼウス','target':'ジョンリギ','status':'en_route','tick':100}}
     assert not any(o['source']=='アルマムーン' for o in p.interim_candidates(m).values())
     assert _world(m)['garrison']['アルマムーン']==['アルテミス']
 
 
 def test_busy_or_unclassified_general_is_not_a_remaining_defender():
-    m=memory();m['sorties']={'busy':{'general':'どうし','target':'ゴーメン','status':'en_route','tick':99}}
+    m=memory();_world(m)['sorties']={'busy':{'general':'どうし','target':'ゴーメン','status':'en_route','tick':99}}
     assert p.deploy_step(generals(['ゼウス','どうし']),m)==[p.pad('b'),p.pad('b')]
 
 
