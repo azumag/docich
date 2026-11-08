@@ -6968,6 +6968,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v514-plan-failed-step-rearm",
             "hanjuku-chart-v515-plan-identity-compare",
             "hanjuku-chart-v516-singleton-roster-probe",
+            "hanjuku-chart-v517-summon-attack-data",
             "hanjuku-chart-v501-idle-reanchor",
             "hanjuku-chart-v502-idle-and-roster-joins",
             "hanjuku-chart-v503-month-start-counts",
