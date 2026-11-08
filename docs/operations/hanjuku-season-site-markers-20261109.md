@@ -50,10 +50,23 @@ Y ビューの地点マーカーを直接読む（`os_layer/readers.season_sites
   `test_hanjuku_layers.py` / `test_hanjuku_chart_bot.py` ほか → passed
   （関連 570 件）。
 
-## 本番反映後に実測すること
+## 本番反映後の実測（2026-11-09 01:58・02:2x JST、docich main `426c06bd`）
 
-- `hanjuku_decisions.jsonl` に `season_site_closed`（北西・北東・南西）が出ること。
-- そのあと `order_start` が3地点に出ず、南東（ドクロ）へ向かうこと。
+- 01:58:31 の live 判断ログ: `season_site_closed 四季王城(北東)` /
+  `season_site_closed 四季王城(北西)` / `season_site_open 四季王城(南東)`
+  （いずれも `readings: 2`）。読みは実際の Y ビューで、北西・北東が旗、
+  南東がドクロというオーナー指摘と一致した。
+- 02:2x の `hanjuku_bot.json` は `season_sites` に 北東/北西=closed、
+  南東=open を保持。同じメモリで `_site_king_down(北西)=True` /
+  `_site_king_down(北東)=True`、`_season_site_held` は 4-B3（北東）と
+  4-B4（北西）で True。閉じた2地点への `order_start` は 01:58 以降出ていない。
+- 南西はまだ `season_sites` に載っていない。Y ビューの読み取り時に南西の地点が
+  行軍中の部隊表示で覆われて読めないため（同じ地点へ向かう 4-B1 が行軍中）。
+  部隊が離れた最初の読みで旗を確認して閉じる。これは未確認として残す。
+
+## 継続して実測すること
+
+- 南西が `season_site_closed` になること。出ない場合はマーカーの遮蔽を確認する。
 - 誤読時は `season_site_open` で戻ること。`season_sites_all_closed_refused` が
   出続ける場合はマーカー位置の校正をやり直す。
 - テストの成功を実機の成立とは扱わない。
