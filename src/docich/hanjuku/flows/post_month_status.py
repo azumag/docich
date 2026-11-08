@@ -56,6 +56,14 @@ CASTLE = frozenset({'しろのなかにいます'})
 # measured carry rate); the manifest normally replaces this entirely.
 CARRY_RECHECK_BUDGET = 3
 CARRY_OVERDUE_MONTHS = 2
+# A battle/event can take the foreground while the recall's destination
+# picker is open.  ``camp_recheck._defer`` then drops the recall without
+# sending the return A, and the task used to be marked finished, so the
+# general waited for the next month's scan (live g1153 2026-11-08: ポワソン
+# and リースリング were interrupted at 17:00/17:05 and stayed camped).  Retry
+# the same task a bounded number of times within this month; a dispatched
+# recall is never repeated.
+RECALL_TASK_RETRIES = 2
 
 
 def _log(mem, event, **details):
@@ -868,6 +876,24 @@ def _task_complete(mem, state, *, result):
     _stage(state, 'process')
 
 
+def _recall_was_dispatched(mem, name, *, since):
+    """Whether this month's recall A was actually sent for ``name``.
+
+    ``camp_recheck._defer`` pops a recall that lost the foreground before the
+    destination A.  ``recall_verification`` only exists once the dispatch
+    step observed the same-run input receipt, so a missing or unsent receipt
+    means nothing was sent.  ``since`` rejects a verification left over from
+    an earlier month's recall of the same general.
+    """
+    verification = _flow(mem).get('recall_verification') or {}
+    if (not isinstance(verification, dict)
+            or verification.get('input_sent') is not True
+            or verification.get('general') != name):
+        return False
+    requested = verification.get('requested_tick')
+    return type(requested) is int and requested >= since
+
+
 def _retry_location(mem, state, screen, reason):
     """Revisit the same general before discarding a location without proof."""
     general = (state.get('job') or {}).get('name')
@@ -1461,6 +1487,26 @@ def step(screen, mem, frame):
         if _flow(mem).get('recall'):
             recall = recall_flow.camp_recall_step(screen, mem, frame)
             return recall if recall is not None else []
+        job = state.get('job') or {}
+        name = job.get('name') if isinstance(job, dict) else None
+        if job.get('kind') == 'recall' and isinstance(name, str) and name:
+            retries = state.get('recall_task_retries')
+            retries = retries if isinstance(retries, dict) else {}
+            used = retries.get(name)
+            used = used if type(used) is int and used >= 0 else 0
+            if (used < RECALL_TASK_RETRIES
+                    and not _recall_was_dispatched(
+                        mem, name, since=state.get('started_tick') or 0)):
+                retries[name] = used + 1
+                state['recall_task_retries'] = retries
+                state.setdefault('tasks', []).append(dict(job))
+                _log(mem, 'post_month_recall_requeued', general=name,
+                     observed_metric={'attempt': used + 1,
+                                      'limit': RECALL_TASK_RETRIES},
+                     reason='帰還Aの送信前に戦闘・イベントが割り込み、本人の帰還が'
+                            '未送信のため同月内に再試行する')
+                _task_complete(mem, state, result='recall_interrupted_requeued')
+                return []
         _task_complete(mem, state, result='recall_finished_or_deferred')
         return []
     if stage == 'wait_repair':
