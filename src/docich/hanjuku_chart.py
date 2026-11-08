@@ -201,9 +201,15 @@ del _chapter, _cells
 # approximate first position: the roof checks and the inland search guard the
 # entry, and a live measurement replaces it once the base is seen.
 # A boss cell that never accepts an army is probed one tile at a time (v403).
-# 1 tile = 8 px = 64 chart units. Only chapters with a measured cell carry a
-# probe list; the first candidate is the chart cell itself.
-BOSS_CELL_PROBES = {6: ((0, 0), (0, 64), (64, 0), (-64, 0), (0, -64))}
+# 1 tile = 8 px = 64 chart units. The first candidate is the chart cell itself.
+# Chapter 6's cell is a Y-view estimate; chapters 7, 8, 10, 11 and 12 use the
+# source map's boss flag (the same approximation class as their ordinary
+# castles), so a miss there would otherwise re-send the same cell until the
+# chapter can never end. Chapter 5's cell is WRAM-measured and chapter 9's boss
+# moves, so neither carries probes.
+BOSS_PROBE_CHAPTERS = (6, 7, 8, 10, 11, 12)
+BOSS_CELL_PROBES = {chapter: ((0, 0), (0, 64), (64, 0), (-64, 0), (0, -64))
+                    for chapter in BOSS_PROBE_CHAPTERS}
 
 
 def boss_probe_cell(chapter, name, index=0):

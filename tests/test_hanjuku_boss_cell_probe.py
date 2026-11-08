@@ -106,3 +106,37 @@ def test_an_arrived_boss_relaunch_keeps_the_same_candidate():
     O._relaunch_overdue_boss(mem)
     assert mem['boss_step_probe']['A:x:M1'] == 1
     assert not [r for r in mem['_records'] if r['decision'] == 'boss_cell_probe_shift']
+
+
+# Chapter 5's cell is WRAM-measured and chapter 9's boss moves, so neither may
+# probe. Chapters 6, 7, 8, 10, 11 and 12 carry a source-map or Y-view estimate
+# and a miss there would re-send the same tile until the chapter can never end.
+import pytest
+
+
+@pytest.mark.parametrize('chapter', [6, 7, 8, 10, 11, 12])
+def test_every_estimated_boss_cell_can_be_probed(chapter):
+    cell = chart.castles(chapter)['ボス']
+    assert N.boss_probe_cell({'chapter': chapter, 'boss_step_probe': {}}, 'ボス', 'A:x:M1') == cell
+    assert N.boss_probe_cell({'chapter': chapter, 'boss_step_probe': {'A:x:M1': 1}},
+                             'ボス', 'A:x:M1') == (cell[0], cell[1] + 64)
+
+
+@pytest.mark.parametrize('chapter', [5, 9])
+def test_a_measured_or_moving_boss_never_probes(chapter):
+    assert chapter not in chart.BOSS_CELL_PROBES
+
+
+@pytest.mark.parametrize('chapter', [7, 10, 12])
+def test_an_unentered_endgame_boss_relaunch_advances_its_candidate(chapter):
+    cell = chart.castles(chapter)['ボス']
+    mem = {'chapter': chapter, 'tick': 100000, '_records': [],
+           'orders': {'A:x:M1': 'launched'},
+           'sorties': {'A:x:M1': {'general': 'ヘルメス', 'source': 'アルマムーン',
+                                  'target': 'ボス', 'status': 'en_route',
+                                  'tick': 100000 - O.MARCH_ARRIVAL_CAP - 1}},
+           'launched_orders': {}, 'boss_step_probe': {'A:x:M1': 0}}
+    O._relaunch_overdue_boss(mem)
+    assert mem['boss_step_probe']['A:x:M1'] == 1
+    assert N.boss_probe_cell(mem, 'ボス', 'A:x:M1') == (cell[0], cell[1] + 64)
+    assert [r for r in mem['_records'] if r['decision'] == 'boss_cell_probe_shift']
