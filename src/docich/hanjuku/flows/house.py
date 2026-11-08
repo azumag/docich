@@ -91,6 +91,9 @@ CAMP_LOCATIONS = frozenset({'キャンプしています', 'キャンプのな�
 # しんぐんちゅうです is what the game prints for a marching general (probe of
 # g1097, 2026-11-01); いどうしています was never seen on a real status panel.
 MARCH_LOCATIONS = frozenset({'いどうしています', 'しんぐんちゅうです', 'いまこちらにむかっています'})
+# 章またぎの引き継ぎ待ち。フィールド行軍ではないが、所在は「城ではない」
+# 既知の待ち状態として扱う（実画面 g1153 2026-11-08）。
+CARRY_LOCATIONS = frozenset({'いまこちらにむかっております'})
 LEVEL_STATUS_WAIT = 12   # observations allowed for the two country-status pages
 LEVEL_REPRESS_EVERY = 3  # observations between A presses on the unopened ステータス row
 LEVEL_UNREAD_LIMIT = 2   # unread months in a chapter before the page is left alone
@@ -150,13 +153,17 @@ def general_status(screen):
         if hp is not None and not 0 <= hp <= max_hp:
             hp, max_hp = None, None
         wage_value = receipts.fixed_wage(name)  # stable salary; no extra individual screen
-        camp = location_row(screen) in CAMP_LOCATIONS if (x, y) == (24, 39) else False
+        location_text = location_row(screen)
+        camp = location_text in CAMP_LOCATIONS if (x, y) == (24, 39) else False
+        carry = any(phrase in screen.text for phrase in CARRY_LOCATIONS)
         return {'general': name, 'broken': broken, 'hp': hp, 'max_hp': max_hp, 'wage': wage_value,
                 'egg': uses[1] if uses else None, 'uses': int(uses[2]) if uses else None,
                 **({'camp_observed': True} if camp else {}),
+                'carry_waiting': carry,
                 'location': 'castle' if 'しろのなかにいます' in screen.text else 'field',
-                'location_observed': camp or any(phrase in screen.text for phrase in
-                                         ('しろのなかにいます', *MARCH_LOCATIONS))}
+                'location_observed': camp or carry
+                                    or any(phrase in screen.text for phrase in
+                                           ('しろのなかにいます', *MARCH_LOCATIONS))}
     return None
 
 
@@ -1074,16 +1081,56 @@ def _level_due(mem):
             and not _level_given_up(mem))
 
 
-def _status_row_value(screen, label):
-    """Digits printed after ``label`` on the same status-page row."""
+def _status_row_value(screen, label, *, unit=False):
+    """Digits printed after ``label`` on the same status-page row.
+
+    ``unit`` keeps a generic label ("しょうぐん"/"へいし") from matching a
+    price or menu row: the digit must be followed by a counter (めい/にん/人).
+    """
     for line in screen.lines:
         joined = line.known.replace(' ', '')
         idx = joined.find(label)
-        if idx >= 0:
-            m = re.search(r'(\d+)', joined[idx + len(label):])
-            if m:
-                return int(m.group(1))
+        if idx < 0:
+            continue
+        rest = joined[idx + len(label):]
+        m = re.search(r'(\d+)', rest)
+        if not m:
+            continue
+        if unit and rest[m.end():m.end() + 1] not in ('め', 'に', '人'):
+            continue
+        return int(m.group(1))
     return None
+
+
+# The country-status headcount rows were measured on the 1st page as
+# 「しょうぐん Nにん」/「へいし Nにん」 (v511, live frame 22:57:08). The long
+# forms below are kept for older/newer wordings, and the generic fallbacks
+# require a counter so a 商人 price or a menu row is never a headcount.
+GENERAL_COUNT_LABELS = ('しょうぐんにんすう', 'しょうぐんにんずう', 'しょうぐんすう',
+                        'しょうぐんのかず', 'しょうぐんのすう', 'そうしょうぐんすう')
+SOLDIER_COUNT_LABELS = ('へいしにんすう', 'へいしにんずう', 'へいしすう', 'へいしのかず',
+                        'へいしのにんずう', 'そうへいしすう')
+
+
+def _country_status_counts(screen):
+    """This page's general/soldier totals, or (None, None) when unread.
+
+    Only a page that shows the page-1 economy rows is a count source; the
+    second page (半熟レベル) and the menu help line are never used.
+    """
+    text = screen.text.replace(' ', '')
+    # そうちんぎん is the country page-1 marker. The castle status page also
+    # prints しゅうにゅう and 「しょうぐん Nめい」, so income alone must never
+    # authorize a headcount read (a misrouted castle page would write 0).
+    if 'そうちんぎん' not in text:
+        return None, None
+    def first(labels, generic):
+        for label in labels:
+            value = _status_row_value(screen, label)
+            if value is not None:
+                return value
+        return _status_row_value(screen, generic, unit=True)
+    return first(GENERAL_COUNT_LABELS, 'しょうぐん'), first(SOLDIER_COUNT_LABELS, 'へいし')
 
 
 def _country_status_level(screen):
@@ -1213,26 +1260,27 @@ def _step_once(screen, mem, frame):
                 # check and an unsettled refill finish first (both bounded).
                 return None
             # 国のステータスで当月の人数を読めるため、月一の将軍一覧は巡回しない。
-            from ..os_layer.roster import run_identity
-            seen = mem.get('country_general_count') or {}
-            count_current = (isinstance(seen, dict)
-                and seen.get('scope') == scope
-                and seen.get('identity') == run_identity(mem.get('_run_identity'))
-                and type(seen.get('count')) is int and 0 <= seen['count'] <= 32)
-            if count_current and not _level_due(mem):
+            # One visit reads page 1 (income/wages/counts) and page 2 (level);
+            # the bounded retry stays only for a visit that could not read
+            # the page, never for a successful page-1 read (v511).
+            counts_current = all(receipts.country_count(mem, kind) is not None
+                                 for kind in ('generals', 'soldiers'))
+            if counts_current and not _level_due(mem):
                 return None
             shop = mem.get('shop') or {}
             if shop.get('key') == mem.get('month') and shop.get('recruit') in ('opened', 'done', 'unverified'):
-                # Never steal a paid transaction. For completed recruitment,
-                # only the existing deferred level/status trigger permits a
-                # return visit; do not intercept the last monthly input.
-                if shop.get('recruit') == 'opened' or not shop.get('level_scan_wait'):
+                # Never steal a paid transaction. Missing monthly counts take
+                # priority over the next purchase; once both are known only
+                # the deferred level trigger needs another visit.
+                if (shop.get('recruit') == 'opened'
+                        or counts_current and not shop.get('level_scan_wait')):
                     return None
             from ..strategy.economy import _batch_active
-            if (_batch_active(shop) and shop.get('recruit') in ('pending', 'check')):
+            if (counts_current and _batch_active(shop)
+                    and shop.get('recruit') in ('pending', 'check')):
                 return None  # never interrupt a multi-recruit batch
             known_roster = receipts.fresh(mem)
-            if (shop.get('key') == mem.get('month')
+            if (counts_current and shop.get('key') == mem.get('month')
                     and shop.get('recruit') in ('pending', 'check')
                     and known_roster is not None and known_roster.get('complete') is True
                     and not shop.get('level_scan_wait')):
@@ -1241,15 +1289,15 @@ def _step_once(screen, mem, frame):
                 # The existing bounded post-shopping level/status gate runs
                 # after the recruitment transaction ends.
                 return None
-            if (_egg_recovery_targets(mem)
+            if (counts_current and _egg_recovery_targets(mem)
                     and shop.get('egg') not in ('done', 'skipped', 'not_needed', 'unverified')):
                 return None  # preserve recovery priority over free status
             attempts = mem.get('recruit_month_scan_attempts') or {}
             if attempts.get('scope') == scope and attempts.get('count', 0) >= 2:
                 return None  # bounded even when the status page cannot be read
             move = menu_to(screen, 'メインメニュー')
-            if not move:
-                return None
+            # Even an unread row starts a bounded free inspection. Releasing
+            # it to month_step here could let a paid command precede the count.
             mem['recruit_month_scan_attempts'] = {
                 'scope': scope,
                 'count': (attempts.get('count', 0) if attempts.get('scope') == scope else 0) + 1}
@@ -1273,7 +1321,7 @@ def _step_once(screen, mem, frame):
                     # records it, so mirroring would count one need twice.
                     _tally(mem, 'reopened_rows')
                 _record(mem, 'survey_carried', observed_metric=carry,
-                        reason='前月に健康で城に居た将軍の行を引き継ぎ、残りの本人だけ開き直す(月境界の持ち越し)')
+                        reason='前月に健康で城に居た将軍と章またぎ待ちの行を引き継ぎ、残りの本人だけ開き直す(月境界の持ち越し)')
             reused, actions = _resume_completed_survey(screen, mem, frame, scope, field_count, field_tick)
             if reused:
                 return actions
@@ -1315,7 +1363,7 @@ def _step_once(screen, mem, frame):
             receipts.begin(mem, state)
         _record(mem, 'scan_started', reason=('月一の国ステータスで将軍数・兵士数・半熟レベルを確認'
                                           if monthly else '実一覧で将軍の卵状態を確認'))
-        return ([pad('a')] if move == 'here' else [move]) if monthly else [pad('x')]
+        return ([pad('a')] if move == 'here' else [move] if move else []) if monthly else [pad('x')]
     if state.get('chapter') != mem.get('chapter'):
         _finish(mem)
         return None
@@ -1493,11 +1541,15 @@ def _step_once(screen, mem, frame):
             return actions
         return []
     if phase == 'level_status':
-        # Each count must come from a visible row; missing text is unknown.
-        if 'わがくにのじょうたい' in screen.text.replace(' ', ''):
+        # The first country-status page carries しゅうにゅう/そうちんぎん and
+        # the national headcounts. Only that visible page is a count source;
+        # the menu help line ("わがくにのじょうたいを…") and the level page are
+        # not. Missing rows stay unknown and never fall back to old totals.
+        page1 = 'そうちんぎん' in screen.text.replace(' ', '')
+        if page1:
             from ..os_layer.roster import run_identity
             scope = [mem.get('chapter'), mem.get('month')]
-            generals = _status_row_value(screen, 'しょうぐんにんすう')
+            generals, soldiers = _country_status_counts(screen)
             if type(generals) is int and 0 <= generals <= 32:
                 mem['country_general_count'] = {
                     'scope': scope, 'identity': run_identity(mem.get('_run_identity')),
@@ -1505,12 +1557,8 @@ def _step_once(screen, mem, frame):
                 _record(mem, 'country_general_count_observed',
                         observed_metric={'generals': generals},
                         reason='国ステータスで観測した実人数を募集判断に使用')
-            soldiers = None
-            for label in ('へいしにんすう', 'へいしすう', 'へいしのかず',
-                          'へいしのにんずう', 'そうへいしすう'):
-                soldiers = _status_row_value(screen, label)
-                if soldiers is not None:
-                    break
+                from ..strategy.economy import _reset_unstarted_recruit_plan
+                _reset_unstarted_recruit_plan(mem)
             if type(soldiers) is int and 0 <= soldiers <= 99999:
                 mem['country_soldier_count'] = {
                     'scope': scope, 'identity': run_identity(mem.get('_run_identity')),
@@ -1524,15 +1572,24 @@ def _step_once(screen, mem, frame):
                 _record(mem, 'country_soldier_count_observed',
                         observed_metric={'soldiers': soldiers},
                         reason='国ステータスで兵士数を確認し当月の補充判断に使用')
+            if (generals is None or soldiers is None) and not state.get('counts_unread_logged'):
+                # Evidence for the next policy step: the exact page-1 rows,
+                # bounded and text-only, recorded once per visit.
+                state['counts_unread_logged'] = True
+                _record(mem, 'country_status_counts_unread',
+                        observed_metric={'rows': [line.text[:40] for line in screen.lines][:12],
+                                         'generals': generals, 'soldiers': soldiers},
+                        reason='国ステータス1頁目は読めたが人数行を特定できないため、次回の行文言確認用に記録する')
         # Page 1 of the country status carries しゅうにゅう / そうちんぎん;
         # page 2 carries the hanjuku level/value. Keep the total income and
         # total wages as last observations for the status card; only a
-        # readable page rewrites them (owner 2026-11-04).
-        income = _status_row_value(screen, 'しゅうにゅう')
+        # readable country page rewrites them (owner 2026-11-04). A castle
+        # status page has しゅうにゅう but no そうちんぎん and is not this page.
+        income = _status_row_value(screen, 'しゅうにゅう') if page1 else None
         if type(income) is int and 0 <= income <= 99999:
             mem['country_income'] = {'scope': [mem.get('chapter'), mem.get('month')],
                                      'tick': int(mem.get('tick') or 0), 'income': income}
-        wages = _status_row_value(screen, 'そうちんぎん')
+        wages = _status_row_value(screen, 'そうちんぎん') if page1 else None
         if type(wages) is int and 0 <= wages <= 99999:
             mem['country_wages'] = {'scope': [mem.get('chapter'), mem.get('month')],
                                     'tick': int(mem.get('tick') or 0), 'wages': wages}

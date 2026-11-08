@@ -5,6 +5,13 @@ export const DIRECT_BROADCAST_STATE_ROUTE = '/__soren_overlay/broadcast/state';
 export const DIRECT_BROADCAST_VERSION = 1;
 const DEFAULT_PAPER_IMPROVE_STATE_FILE = '/home/ubuntu/docich/run-soren-live/trading/paper_improve_status.json';
 const PAPER_IMPROVE_TERMINAL_VISIBLE_SEC = 120;
+const DEFAULT_DOCICH_ROOT = String(process.env.DOCICH_ROOT || '/home/ubuntu/docich');
+// docich's corner rotation decides the next corner before it is due and
+// publishes one bounded record next to its ledger (seed/slot/UUIDs stay out).
+const DEFAULT_NEXT_CORNER_FILE = `${DEFAULT_DOCICH_ROOT}/run-soren-live/next_corner.json`;
+const NEXT_CORNER_SCHEMA = 1;
+const NEXT_CORNER_MAX_AGE_SEC = 600;
+const NEXT_CORNER_DUE_GRACE_SEC = 900;
 const DEFAULT_AB_STATE_FILE = 'tmp/state/ab_state.json';
 const DEFAULT_AB_GAMES_FILE = 'tmp/state/ab_games.jsonl';
 const DEFAULT_ROLLING_SCORES_FILE = 'tmp/state/rolling_scores.json';
@@ -22,6 +29,36 @@ function readUtf8(file) {
   } catch {
     return '';
   }
+}
+
+
+function noticeText(value, limit) {
+  return String(value ?? '')
+    .replace(/[\u0000-\u001f\u007f-\u009f]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, limit);
+}
+
+
+// Advance notice for the next rolling-rotation corner. Nothing is promised
+// while Soren runs a 48-game prediction (the corner boundary waits for it, so
+// the start time is not fixed), after the record went stale, or once the
+// announced time has clearly passed.
+function nextCornerNotice(file, nowSec) {
+  const state = readJson(file);
+  if (!state || state.schema !== NEXT_CORNER_SCHEMA) return null;
+  if (state.hold !== null && state.hold !== undefined && state.hold !== '') return null;
+  const corner = noticeText(state.corner, 64);
+  const label = noticeText(state.label, 40);
+  const when = noticeText(state.when, 14);
+  if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(corner) || !label || !when) return null;
+  const dueAt = Number(state.due_at);
+  const updatedAt = Number(state.updated_at);
+  if (!Number.isFinite(dueAt) || !Number.isFinite(updatedAt)) return null;
+  if (nowSec - updatedAt < 0 || nowSec - updatedAt > NEXT_CORNER_MAX_AGE_SEC) return null;
+  if (nowSec > dueAt + NEXT_CORNER_DUE_GRACE_SEC) return null;
+  return { corner, label, when, dueAt, updatedAt };
 }
 
 
@@ -572,10 +609,16 @@ export function buildDirectBroadcastOverlayState(config, nowMs = Date.now()) {
   const explicitTopOverride = topOverrideState(sources.topOverrideFile);
   const derivedTopOverride = explicitTopOverride === null ? deriveAbTopOverride(showStatusG.text) : null;
   const topOverride = explicitTopOverride || derivedTopOverride;
+  const nextCornerFile = String(
+    sources.nextCornerFile
+      || process.env.DOCICH_NEXT_CORNER_FILE
+      || DEFAULT_NEXT_CORNER_FILE,
+  );
   return {
     gameGapEnabled: config?.gameGapEnabled === true,
     version: DIRECT_BROADCAST_VERSION,
     updatedAt: nowSec,
+    nextCorner: nextCornerNotice(nextCornerFile, nowSec),
     feeds: {
       showStatusG,
       showStatus: feed('SHOW-STATUS', sources.opsHtmlFile),

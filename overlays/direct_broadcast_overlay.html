@@ -483,6 +483,12 @@ html, body { color: #deedf7; font-family: "Noto Sans JP", "Segoe UI", sans-serif
 }
 .toast.paper-pnl .toast-time { flex: 0 0 auto; padding-top: 2px; }
 .toast.paper-pnl .toast-body { -webkit-line-clamp: 2; }
+/* Card background tells the venue: PAPER (sandbox) is cool teal, LIVE (real money) is warm amber. */
+.toast.paper-trade { background: #062329; border-color: #2d7f8c; }
+.toast.paper-trade .toast-head { border-bottom-color: #1f5a64; color: #7be0ec; }
+.toast.live-trade { background: #2b1706; border-color: #d28a2c; }
+.toast.live-trade .toast-head { border-bottom-color: #7a4a14; color: #fbbf24; }
+.toast.live-trade .toast-body { color: #f1d9b5; }
 /* Live cards also carry troop/garrison/order observations absent from the mock.
    Let the card claim its measured height rather than crop it at 390px. */
 html[data-hanjuku-active="1"] .feed-panel.panel-g { flex: 0 0 auto; }
@@ -1054,17 +1060,20 @@ html[data-soren-monitor="1"]:not([data-improve-active="1"])[data-monitor-view="o
   grid-template-rows: 210px 64px minmax(0, 1fr); gap: 6px; overflow: hidden; }
 .hanjuku-gap-news { height: 210px; min-height: 0; overflow: hidden;
   display: flex; flex-direction: column; gap: 4px; }
+/* Owner 2026-11-08: the notification strip carries no colored edge band.
+   Entries are told apart by background and text alone; tone-specific
+   border-colors below stay inert until a band is reintroduced. */
 .hanjuku-gap-decisions { display: flex; flex: 1 1 auto; min-height: 0; overflow: hidden;
   flex-direction: column; gap: 4px; margin: 0;
-  padding: 4px; border-left: 3px solid #f0b84d; background: #101f2d; border-radius: 4px; }
+  padding: 4px; background: #101f2d; border-radius: 4px; }
 .hanjuku-gap-decisions:empty { display: none; }
 .hanjuku-gap-decision { flex: 0 0 auto; padding: 5px 6px; background: #091925;
   font-size: 11px; line-height: 1.4; white-space: pre-wrap; overflow-wrap: anywhere;
-  border-left: 2px solid #f0b84d; color: #e6f2f8; }
+  color: #e6f2f8; }
 .hanjuku-gap-toasts { display: flex; flex: 0 0 auto; flex-direction: column; gap: 5px;
   max-height: 72px; overflow: hidden; margin: 0; }
 .hanjuku-gap-toast { display: flex; flex: 0 0 auto; align-items: baseline; gap: 8px; padding: 6px 9px;
-  border-left: 3px solid #4b6b80; border-radius: 4px; background: #081b26;
+  border-radius: 4px; background: #081b26;
   color: #e6f2f8; font-size: 15px; line-height: 1.3; overflow-wrap: anywhere;
   animation: gapToastIn .22s ease-out; }
 .hanjuku-gap-toast-text { min-width: 0; white-space: pre-wrap; }
@@ -1110,7 +1119,8 @@ html[data-soren-monitor="1"]:not([data-improve-active="1"])[data-monitor-view="o
   stroke-linecap: round; stroke-linejoin: round; }
 .hanjuku-gap-minimap .map-route { fill: none; stroke-width: 2.7;
   stroke-linecap: round; opacity: .95; }
-.hanjuku-gap-flow-count { color: #67e8f9; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.hanjuku-gap-flow-count { color: #67e8f9; font-variant-numeric: tabular-nums; white-space: nowrap;
+  margin-left: auto; }
 .hanjuku-gap-legend { display: flex; flex-wrap: wrap; gap: 8px; color: #9cb5c5;
   font-size: 10px; line-height: 13px; }
 .hanjuku-gap-legend span::before { content: '➜'; padding-right: 3px; font-weight: 900; }
@@ -1171,6 +1181,35 @@ html[data-soren-region="sidebar"] #hanjuku-gap,
 html[data-soren-region="top"] #hanjuku-gap,
 html[data-soren-region="bottom"] #hanjuku-gap { display: none !important; }
 
+/* Next-corner advance notice: docich's rotation decides the next corner before
+   it is due and the state adapter publishes it as `nextCorner`. The card sits
+   above the GAME feed while sorengame is on air; during a corner the rotation
+   withdraws the record, so the card and its height are not reserved. */
+#next-corner {
+  display: none;
+  margin-top: 8px;
+  padding: 4px 6px;
+  height: 46px;
+  border: 1px solid #b7791f;
+  border-radius: 7px;
+  background: rgba(245, 158, 11, .12);
+  color: #ffe8b0;
+  overflow: hidden;
+}
+html[data-next-corner="1"] #next-corner { display: block; }
+html[data-next-corner="1"] #feed { height: 634px; }
+html[data-prediction-active="1"][data-next-corner="1"] #feed { height: 570px; }
+.next-corner-head { color: #fbbf24; font-size: 8px; line-height: 10px; font-weight: 900; letter-spacing: .12em; }
+.next-corner-label {
+  margin-top: 1px;
+  font-size: 11px;
+  line-height: 14px;
+  font-weight: 800;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.next-corner-when { color: #fde68a; font-size: 13px; line-height: 15px; font-weight: 900; font-variant-numeric: tabular-nums; }
 </style>
 </head>
 <body>
@@ -1192,6 +1231,7 @@ html[data-soren-region="bottom"] #hanjuku-gap { display: none !important; }
   <section id="bottom-rail" class="rail" aria-live="polite"><div id="toast-grid"></div></section>
   <aside id="broadcast-sidebar">
     <div class="feed-head"><span id="feed-label">GAME + OPS</span><span id="feed-age">--</span></div>
+    <section id="next-corner" aria-label="次のコーナー" aria-live="polite"></section>
     <section id="prediction-round" aria-label="チャネルポイント予想" aria-live="polite"></section>
     <div id="feed">
       <section class="feed-panel panel-g">
@@ -2359,7 +2399,6 @@ html[data-soren-region="bottom"] #hanjuku-gap { display: none !important; }
     const svg = gapSvg('svg', {viewBox:'0 0 300 300', role:'img',
       'aria-label':'第'+value.chapter+'話の城配置と進軍経路',
       preserveAspectRatio:'xMidYMid meet', class:'hanjuku-gap-minimap'});
-    svg.appendChild(gapSvg('title')).textContent = '第'+value.chapter+'話 進軍ミニマップ';
     const defs = gapSvg('defs');
     for (const [kind, color] of Object.entries(HANJUKU_ROUTE_COLORS)) {
       const marker = gapSvg('marker', {id:'gap-arrow-'+kind, markerWidth:7, markerHeight:7,
@@ -2547,12 +2586,10 @@ html[data-soren-region="bottom"] #hanjuku-gap { display: none !important; }
     flow.replaceChildren();
     const head = document.createElement('div');
     head.className = 'hanjuku-gap-flow-head';
-    const title = document.createElement('span');
-    title.textContent = '第'+(value.chapter || '—')+'話 進軍ミニマップ';
     const count = document.createElement('span');
     count.className = 'hanjuku-gap-flow-count';
     count.textContent = '進軍数 '+moveCount;
-    head.append(title,count);
+    head.appendChild(count);
     flow.appendChild(head);
     const legend = document.createElement('div');
     legend.className = 'hanjuku-gap-legend';
@@ -2866,8 +2903,13 @@ html[data-soren-region="bottom"] #hanjuku-gap { display: none !important; }
       const card = document.createElement('article');
       card.className = `toast ${category}${!item.liveStatus && now - Number(item.ts || 0) <= 3 ? ' fresh' : ''}`;
       // PAPER P/L titles wrap; other workers and live cards retain their layout.
-      if (category === 'worker' && /^(?:売|買|裁定)｜/.test(String(item.title || ''))) {
+      // Real-money (LIVE) fills must be told apart from PAPER at a glance, so they
+      // get their own card colour: title prefix `実売｜` / `実買｜` (Issue #3623 §2.2).
+      const toastTitle = String(item.title || '');
+      const liveTrade = category === 'worker' && /^実(?:売|買)｜/.test(toastTitle);
+      if (liveTrade || (category === 'worker' && /^(?:売|買|裁定)｜/.test(toastTitle))) {
         card.classList.add('paper-pnl');
+        card.classList.add(liveTrade ? 'live-trade' : 'paper-trade');
       }
       if (item.liveStatus) card.dataset.liveStatus = '1';
       const bar = document.createElement('div');
@@ -2913,6 +2955,21 @@ html[data-soren-region="bottom"] #hanjuku-gap { display: none !important; }
       layout: { game: [0, 90, 960, 540], sidebar: [960, 0, 320, 720], rails: [90, 90] },
     };
   }
+  let lastNextCornerKey = '';
+  function renderNextCorner() {
+    const notice = state?.nextCorner;
+    const active = Boolean(notice && notice.label && notice.when);
+    document.documentElement.dataset.nextCorner = active ? '1' : '0';
+    const key = active ? `${notice.corner}|${notice.label}|${notice.when}` : '';
+    if (lastNextCornerKey === key) return;
+    lastNextCornerKey = key;
+    const panel = document.getElementById('next-corner');
+    if (!active) { panel.replaceChildren(); return; }
+    const body = dashNode('next-corner-body');
+    body.appendChild(dashNode('next-corner-label', `次のコーナー: ${notice.label}`));
+    body.appendChild(dashNode('next-corner-when', `${notice.when} 予定`));
+    panel.replaceChildren(dashNode('next-corner-head', 'NEXT CORNER'), body);
+  }
   function renderPrediction() {
     const lines = String(state?.feeds?.showStatus?.text || '').split('\n').map(line => line.trim());
     const progress = lines.find(line => line.startsWith('予想対象：'));
@@ -2924,6 +2981,7 @@ html[data-soren-region="bottom"] #hanjuku-gap { display: none !important; }
   }
   function render() {
     renderPrediction();
+    renderNextCorner();
     if (!state) return;
     renderFeed();
     renderTopRail();

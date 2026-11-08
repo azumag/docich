@@ -58,6 +58,33 @@ STALE_LOCK_LANES = (
     "other",
 )
 
+# Keep in sync with ``collect_diagnostics.SEVERITY_TRIGGERS`` (#3658). Each
+# fixed name is projected as ``severity_trigger_<name>=0/1`` so a WARN runtime
+# health alert names the branch that fired even when the public actionable
+# counters all read zero. Unknown keys in the payload are ignored; missing
+# keys emit 0.
+SEVERITY_TRIGGERS = (
+    "hanjuku_resume_detached_claim",
+    "retro_corner_recovery_required",
+    "corner_rotation_recovery_required",
+    "required_worker_stale",
+    "required_worker_down",
+    "paused_workers_actionable",
+    "unregistered_workers_actionable",
+    "worker_duplicates",
+    "worker_zombies",
+    "stale_locks",
+    "ai_all_failed",
+    "ai_queue_giveups",
+    "improvement_stale",
+    "improvement_retry_pending",
+    "improvement_persist_fail",
+    "improvement_persist_stale",
+    "improvement_persist_unreadable",
+    "improvement_persist_failure",
+    "improvement_persist_clone_disappeared",
+)
+
 ACTIVE_CORNER_STATUSES = frozenset({"starting", "active", "restoring"})
 ACTIVE_PAPER_IMPROVE_STATUSES = frozenset({"queued", "running"})
 
@@ -427,6 +454,13 @@ def summarize(data):
             f"bundle_unreferenced_count={_integer(bundle_storage, 'unreferenced_count') if bundle_unref_known else 0}",
             f"bundle_unreferenced_bytes={_integer(bundle_storage, 'unreferenced_bytes') if bundle_unref_known else 0}",
         ]
+    )
+    raw_triggers = data.get("severity_triggers")
+    triggers = raw_triggers if isinstance(raw_triggers, dict) else {}
+    parts.append(f"severity_triggers_reported={int(isinstance(raw_triggers, dict))}")
+    parts.extend(
+        f"severity_trigger_{name}={int(triggers.get(name) is True)}"
+        for name in SEVERITY_TRIGGERS
     )
     return severity, ",".join(parts)
 

@@ -554,7 +554,7 @@ def _carried_opening_tactics(mem, cur, existing):
             carried.remove(card)
     added = []
     for slot, card in enumerate(carried):
-        if card == 'バルムンク' and not boss_entry:
+        if card in reference.BOSS_ONLY_CARDS and not boss_entry:
             continue
         if covered.get(card, 0) > 0:
             covered[card] -= 1
@@ -563,6 +563,30 @@ def _carried_opening_tactics(mem, cur, existing):
                       'step': step, 'tactic_id': f'carried:{step}:{card}:{slot}',
                       'note': '実携行を確認した未指定の切り札を温存せず開幕に使用'})
     return added
+
+
+def _planned_battle_cards(mem, cur, enemy):
+    """The cards this fight can actually spend: the only rescue resources.
+
+    A card the sortie left behind (the measured departure kit) or one the
+    battle rules forbid before a measured boss entry (``BOSS_ONLY_CARDS``)
+    cannot be spent. Counting it as a pending plan kept ``_resources_exhausted``
+    false while the general fell with it in hand (g1153 2026-11-08 13:21
+    ココット: 在庫0のイッテツーン2枚と使用禁止のバルムンクが planned_cards に
+    残り、白兵9.8倍差でも退却しなかった).
+    """
+    planned = [t['card'] for t in _tactics(mem, cur.get('step'))
+               if _tactic_enemy_ok(t, enemy, cur) and t.get('step') in (None, cur.get('step'))
+               and not (t.get('boss_only')
+                        and not _boss_tactics_allowed(mem, cur))]
+    planned += list((mem.get('card_override') or {}).get(cur.get('step')) or ())
+    bound = bound_fields(_order_for_step(mem, cur.get('step')), mem)
+    if (isinstance(bound, dict) and isinstance(bound.get('cards'), list)
+            and bound.get('general') in (None, cur.get('ally'))):
+        planned = [card for card in planned if card in bound['cards']]
+    if not _boss_tactics_allowed(mem, cur):
+        planned = [card for card in planned if card not in reference.BOSS_ONLY_CARDS]
+    return planned
 
 
 def battle_step(screen: Screen, mem):
@@ -649,11 +673,7 @@ def battle_step(screen: Screen, mem):
                     reason='出撃注文を特定できない突入のため、同じ将軍の進軍中出撃の携行札だけを結び付け')
         _bind_substitute_defender(mem, cur, b)
         _bind_event_duel(mem, cur)
-        planned = [t['card'] for t in _tactics(mem, cur['step'])
-                   if _tactic_enemy_ok(t, b.enemy, cur) and t.get('step') in (None, cur['step'])
-                   and not (t.get('boss_only')
-                            and not _boss_tactics_allowed(mem, cur))]
-        planned += list(mem.get('card_override', {}).get(cur['step']) or [])
+        planned = _planned_battle_cards(mem, cur, b.enemy)
         cur['planned_cards'] = list(planned)
         _record(mem, 'battle_start', **_battle_labels(cur), enemy=b.enemy, ally=b.ally,
                 expected_metric=cur['strategy_expected'],
@@ -829,9 +849,9 @@ def battle_step(screen: Screen, mem):
                *_egg_drop_tactics(mem, cur, b.enemy, egg_plan),
                *_strong_card_tactics(mem, cur, b.enemy)]
     tactics.extend(_carried_opening_tactics(mem, cur, tactics))
-    # Even old chart/override tactics cannot spend バルムンク on an ordinary foe.
+    # Even old chart/override tactics cannot spend a boss-only card on an ordinary foe.
     if not _boss_tactics_allowed(mem, cur):
-        tactics = [t for t in tactics if t['card'] != 'バルムンク']
+        tactics = [t for t in tactics if t['card'] not in reference.BOSS_ONLY_CARDS]
     done = cur.setdefault('tactics_done', [])
 
     # Preserve original indexes (chart tactic IDs) while prioritizing egg drop.
@@ -1362,16 +1382,29 @@ def battle_end(mem, next_kind, *, defense_continues=False, actor_continues=False
         retries[step] = retries.get(step, 0) + 1
         if retries[step] <= 2:
             mem.setdefault('orders', {})[step] = 'pending'
-            # Better than repeating a lost melee: open with two イッテツーン
-            # (10 general damage each per the chart's card table).
-            extra = ['イッテツーン', 'イッテツーン']
-            mem.setdefault('card_override', {})[step] = extra
+            # Better than repeating a lost melee: open with up to two イッテツーン
+            # (10 general damage each per the chart's card table). Only copies
+            # the measured stock holds: a card at 0 cannot be carried, and
+            # planning it anyway kept the retreat gate open as if a resource
+            # remained (g1153 2026-11-08 13:21 ココット: 在庫0のイッテツーン2枚を
+            # 計画し、使用も携行もできず白兵で敗北した).
+            stock = mem.get('card_stock') or {}
+            copies = min(2, max(0, int(stock.get('イッテツーン', 0) or 0)))
+            opening = ['イッテツーン'] * copies
+            if opening:
+                mem.setdefault('card_override', {})[step] = opening
+                reason = f'チャートの白兵で敗北したため、開幕イッテツーン{len(opening)}枚で再攻撃'
+                expected = {'enemy_hp_after_open': max(0, (enemy_hp or 0) - 10 * len(opening))}
+            else:
+                # A stale override would keep planning cards the stock cannot
+                # carry; the next sortie starts from the chart kit again.
+                mem.get('card_override', {}).pop(step, None)
+                reason = 'チャートの白兵で敗北したため、実在庫の切り札なしでチャート装備のまま再攻撃'
+                expected = {'enemy_hp_after_open': None}
             mem.setdefault('retry_context', {})[step] = {
-                'deviation_reason': 'チャートの白兵で敗北したため、開幕イッテツーン2枚で再攻撃',
-                'expected_metric': {'enemy_hp_after_open': max(0, (enemy_hp or 0) - 20)}}
+                'deviation_reason': reason, 'expected_metric': expected}
             _record(mem, 'order_retry', chart_step=step, strategy_variant='retry_with_opening_cards',
-                    deviation_reason='チャートの白兵で敗北したため、開幕イッテツーン2枚で再攻撃',
-                    expected_metric={'enemy_hp_after_open': max(0, (enemy_hp or 0) - 20)},
+                    deviation_reason=reason, expected_metric=expected,
                     observed_metric={'outcome': outcome, 'enemy_hp': enemy_hp, 'ally_hp': ally_hp},
                     resulting_event=f'retry:{retries[step]}', reason='城を取らないと後続手順とボスへ進めない')
         else:
@@ -1387,10 +1420,15 @@ def battle_end(mem, next_kind, *, defense_continues=False, actor_continues=False
     resulting = None
     if season_win:
         victories = mem.setdefault('boss_victories', {})
-        victories[cur['enemy']] = {
-            'enemy': cur['enemy'], 'chapter': 4,
-            'site': castle if castle in chart.boss_sites(4) else None,
-            'evidence': 'measured_boss_entry_hp_win', 'tick': mem.get('tick')}
+        previous = victories.get(cur['enemy'])
+        # A repeated/generic ボス entry proves the king's defeat again,
+        # but cannot erase the corner already measured for that king.
+        site = castle if castle in chart.boss_sites(4) else None
+        if not (site is None and isinstance(previous, dict)
+                and previous.get('site') in chart.boss_sites(4)):
+            victories[cur['enemy']] = {
+                'enemy': cur['enemy'], 'chapter': 4, 'site': site,
+                'evidence': 'measured_boss_entry_hp_win', 'tick': mem.get('tick')}
         resulting = f"season_king_defeated:{cur['enemy']}"
         if SEASON_KINGS <= set(victories):
             mem['boss_defeated'] = 4

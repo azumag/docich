@@ -91,6 +91,17 @@ def test_mixed_visible_skills_remain_ambiguous_and_reference_stays_canonical():
     assert 'フリージーボーイ' in _MONSTER_SKILLS
 
 
+@pytest.mark.parametrize('name,skills', [
+    # g1153 panel spellings that did not match the reference name, leaving the
+    # ally menu owner unread and the attack table unreachable.
+    ('タマゴキャリー', ('うっちゃり', 'たまご')),
+    ('てつじん8ごう', ('コダイミサイル', 'サイシュウヘイキ')),
+])
+def test_observed_panel_spelling_establishes_owner(name, skills):
+    assert owner(name, 'リーキ', skills) == 'ally'
+    assert owner('リーキ', name, skills) == 'enemy'
+
+
 @pytest.mark.parametrize('old_key', [None, [], ['ちがう技'], 'エアコン', 12])
 def test_changed_or_invalid_saved_menu_starts_a_new_finite_hold(old_key):
     m = {'monster_menu_key': old_key, 'monster_menu_hold': MONSTER_MENU_HOLD_LIMIT}

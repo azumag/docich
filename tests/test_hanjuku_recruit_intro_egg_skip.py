@@ -22,6 +22,11 @@ def intro(gold):
 def open_recruit(gold):
     mem = memory(gold, uses=2)
     mem['captured'] = ['キカンドン', 'ジョンリギ']
+    # This suite starts after the free monthly count inspection. The actual
+    # recruitment/fee decisions below must keep their own resource checks.
+    for key, count in (('country_general_count', 2), ('country_soldier_count', 99)):
+        mem[key] = {'scope': [1, '1-7'], 'identity': None,
+                    'tick': mem['tick'], 'count': count}
     shop = p._plan(mem, {'year': 1, 'month': 7, 'gold': gold})
     # This month's recovery has already been checked and skipped. Without
     # this flag adoption correctly asks for a recovery check first.

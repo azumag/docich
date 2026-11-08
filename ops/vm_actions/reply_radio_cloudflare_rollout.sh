@@ -18,7 +18,7 @@ readonly docich_root="/home/ubuntu/docich"
 readonly soren_root="/home/ubuntu/soren"
 readonly env_file="$soren_root/.env"
 readonly expected_sha="${EXPECTED_SHA:-}"
-readonly canary_agent="cloudflare-api:cf/qwen/qwen3-30b-a3b-fp8"
+readonly canary_agent="cloudflare-api:cf/meta/llama-3.1-8b-instruct-fp8-fast"
 readonly begin_marker="# BEGIN DOCICH VERIFIED WEB ROLLOUT v1"
 readonly end_marker="# END DOCICH VERIFIED WEB ROLLOUT v1"
 
@@ -175,7 +175,7 @@ block = "\n".join([
     "DOCICH_RADIO_NATIVE_CONSUMER_ENABLED=1",
     "DOCICH_RADIO_NATIVE_CORNERS=ai_knowledge",
     "DOCICH_RADIO_NATIVE_ROOT=/home/ubuntu/docich",
-    "DOCICH_RADIO_NATIVE_AGENTS=cloudflare-api:cf/qwen/qwen3-30b-a3b-fp8",
+    "DOCICH_RADIO_NATIVE_AGENTS=cloudflare-api:cf/meta/llama-3.1-8b-instruct-fp8-fast",
     "DOCICH_RADIO_SCRIPT_DIRECT_ENABLED=1",
     "DOCICH_RADIO_RESEARCH_ROUTING_ENABLED=1",
     end,

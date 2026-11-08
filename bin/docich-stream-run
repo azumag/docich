@@ -1,0 +1,28 @@
+#!/bin/bash
+# docich-stream.service entry point (ADR 0007 stage D). Mirrors what
+# direct_stream.sh does for the legacy runner: load the runtime .env with the
+# *shell's* semantics (quotes, `export`, expansion), then exec the supervisor so
+# the service's main PID is the supervisor itself.
+#
+# systemd's EnvironmentFile parses these lines differently from `set -a; . file`,
+# so it is deliberately not used. Nothing here reads stream destinations; the
+# loopback relay owns them. With no argument it runs the encoder; the supervisor
+# does nothing unless DOCICH_STREAM_OWNER=docich.
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+RUNTIME_REPO="${SOREN_RUNTIME_REPO:-/home/ubuntu/soren}"
+ENV_FILE="${SOREN_ENV_FILE:-$RUNTIME_REPO/.env}"
+if [ -f "$ENV_FILE" ]; then
+	set -a
+	# shellcheck disable=SC1090
+	. "$ENV_FILE"
+	set +a
+fi
+
+export DOCICH_ROOT="${DOCICH_ROOT:-$ROOT}"
+export PYTHONPATH="$ROOT/src${PYTHONPATH:+:$PYTHONPATH}"
+if [ "$#" -eq 0 ]; then
+	set -- run
+fi
+exec python3 -m docich.stream_supervisor --root "${SOREN_RUNTIME_REPO:-$RUNTIME_REPO}" "$@"

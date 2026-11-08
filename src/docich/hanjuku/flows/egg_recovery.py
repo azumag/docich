@@ -9,6 +9,7 @@ from ..decision_log import _record
 from ..judgment.battle import _own_egg_empty
 from ..os_layer.commands import menu_to, pad
 from ..os_layer.readers import _current, _options, month_menu_ready
+from ..os_layer.screen import egg_ritual_recitation_panel
 from ..os_layer.world import NAME
 from ..strategy.economy import (EGG_RECOVER_COST, EGG_RITUAL_LIMIT, WAGE_SPEND_HOLD,
                                 _depleted_eggs, _egg_measured_cost, _egg_recovery_targets,
@@ -123,7 +124,7 @@ def resume_egg_ritual_step(screen, mem):
     if screen.has('うむッ') or screen.has('いかんッ'):
         return []  # no purchase ownership/fee authority survives restoration
     current = _current(screen)
-    if screen.hand:
+    if screen.hand and not egg_ritual_recitation_panel(screen):
         return [pad('b')] if current and current[0] == 32 and 47 <= current[1] <= 199 else []
     if screen.has('どのしょうぐんのたまごを') and screen.has('おはらいしますか?'):
         return []
@@ -340,7 +341,10 @@ def _egg_recovery_step(screen, mem, sub):
                     reason='残数が0でない卵も含めて全回復を選択し、次画面で費用を確認')
             return [pad('a')]
         return [move] if move else []
-    if screen.hand:
+    # The measured Namaste line has a false hand in the priest artwork.
+    # Its strict text/header match survives animation that changes the sprite
+    # hash; other hands and unread/paid options must still hold.
+    if screen.hand and not egg_ritual_recitation_panel(screen):
         return []  # unknown option, including paid fades: never default A
     if (sub.get('stage') == 'recovering' and full_rows
             and screen.has('どのしょうぐんのたまごを') and screen.has('おはらいしますか?')):

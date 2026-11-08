@@ -171,6 +171,23 @@ def fixed_wage(name):
     return GENERAL_WAGES.get('しゅじんこう' if name == 'どうし' else name)
 
 
+def country_count(mem, kind):
+    """A national-status count from this run/chapter/month, else unknown."""
+    key, maximum = {'generals': ('country_general_count', MAX_GENERALS),
+                    'soldiers': ('country_soldier_count', 99999)}[kind]
+    row = mem.get(key)
+    now = mem.get('tick')
+    if (not isinstance(row, dict)
+            or row.get('identity') != run_identity(mem.get('_run_identity'))
+            or not isinstance(row.get('scope'), list) or len(row['scope']) != 2
+            or not _same_scope(*row['scope'], mem)
+            or type(row.get('tick')) is not int or type(now) is not int
+            or not 0 <= row['tick'] <= now
+            or type(row.get('count')) is not int or not 0 <= row['count'] <= maximum):
+        return None
+    return row['count']
+
+
 def roles(raw):
     if not isinstance(raw, dict) or set(raw) != {'per_castle', 'attack'}:
         raise ValueError('invalid recruitment roles')
@@ -390,6 +407,11 @@ def observed_member(mem, names):
     if (not names or len(names) > MAX_GENERALS or len(set(names)) != len(names)
             or any(not isinstance(n, str) or not 1 <= len(n) <= 32 for n in names)):
         return
+    # Count newly observed members independently of payroll/status reuse.
+    # After a month change the retained complete list can still drive the
+    # status card even when no current survey or retained bill exists.
+    for name in names:
+        record_join(mem, name)
     survey = completed_survey(mem)
     held = _payroll_hold_wages(mem)
     if survey is None and held is None:
@@ -402,8 +424,6 @@ def observed_member(mem, names):
         # month incomplete (g1097 18:35: roster_complete false), so the month
         # could never be carried and the full status walk ran again.
         return
-    for name in names:
-        record_join(mem, name)  # a new observed member stays visible as a count
     source = deepcopy(survey) if survey is not None and month_carry_enabled() else None
     wages = dict(held or {})
     if survey is not None:
@@ -536,11 +556,21 @@ def _previous_month(month):
 
 
 def _carry_eligible(row, dirty_fields):
-    """Any verified, unchanged castle resident is reusable, even wounded or broken."""
+    """Any verified, unchanged resident or carry waiter is reusable."""
     if not isinstance(row, dict) or dirty_fields:
         return False
     hp, maximum = row.get('hp'), row.get('max_hp')
-    return (row.get('location') == 'castle' and row.get('location_observed') is True
+    if row.get('location') == 'castle':
+        return (row.get('location_observed') is True
+                and type(row.get('broken')) is bool
+                and type(hp) is int and type(maximum) is int
+                and maximum > 0 and 0 < hp <= maximum)
+    # A chapter carry-over waiter is a known queue state, not an unread field
+    # location.  The hero-castle manifest refreshes this row each month, so a
+    # clean waiting row can cross the month boundary without another status A.
+    return (row.get('location') in ('field', 'carry')
+            and row.get('carry_waiting') is True
+            and row.get('location_observed') is True
             and type(row.get('broken')) is bool
             and type(hp) is int and type(maximum) is int
             and maximum > 0 and 0 < hp <= maximum)
@@ -551,8 +581,9 @@ def carry_forward(mem):
 
     The roster names come from this month's complete names-only count, so
     membership is always re-read. A previous-month row is reused only if the
-    general was a verified castle resident (even wounded or with a broken egg),
-    and no battle/sortie/recall/egg event marked it dirty since.
+    general was a verified castle resident (even wounded or with a broken egg)
+    or a known chapter carry-over waiter, and no battle/sortie/recall/egg event
+    marked it dirty since.
     Every other general gets a placeholder row that is dirty in all fields, so
     the ordinary partial walk opens exactly those. Returns ``None`` when
     nothing was done, else ``{'carried': [...], 'reopen': [...]}``.

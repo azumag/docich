@@ -24,13 +24,13 @@ def _main_on(label, month=7):
     return c.frame()
 
 
-def _country_page1(month=7, soldiers=None):
+def _country_page1(month=7, soldiers=None, generals=10):
     c = Canvas()
     c.text(56, 7, f'1わ1ねん{month}のつき250G')
     c.text(24, 39, 'わがくにの じょうたい')
     c.text(24, 71, 'しゅうにゅう 300G')
     c.text(24, 87, 'そうちんぎん 150G')
-    c.text(24, 103, 'しょうぐんにんすう 10にん')
+    c.text(24, 103, f'しょうぐんにんすう {generals}にん')
     if soldiers is not None:
         c.text(24, 119, f'へいしすう {soldiers}にん')
     return c.frame()
@@ -163,7 +163,7 @@ def test_month_command_reads_headcount_without_opening_general_list():
     assert house.step(parse(main), mem, main) == [p.pad('down')]
     main = _main_on('ステータス')
     assert house.step(parse(main), mem, main) == [p.pad('a')]
-    page1 = _country_page1()
+    page1 = _country_page1(soldiers=70)
     assert house.step(parse(page1), mem, page1) == [p.pad('a')]
     assert mem['country_general_count']['count'] == 10
     assert mem['country_general_count']['scope'] == [1, '1-7']

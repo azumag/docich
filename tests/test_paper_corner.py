@@ -622,7 +622,7 @@ def test_production_profile_initializes_paper_and_full_rotation_offline(tmp_path
     monkeypatch.setattr(subprocess, 'Popen', reject_runtime)
     config = ROOT / 'config/docich.soren-live.toml'
     g = replace(load_global(ROOT, config), state_dir=tmp_path / 'state')
-    expected = ('cloudflare-api:cf/qwen/qwen3-30b-a3b-fp8' if flag == '1'
+    expected = ('cloudflare-api:cf/meta/llama-3.1-8b-instruct-fp8-fast' if flag == '1'
                 else tomllib.loads(config.read_text())['paper_corner']['improve_agents'])
     paper = manager(g)
     rotation = CornerRotationManager(g)

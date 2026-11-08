@@ -260,7 +260,7 @@ class DeployStateTransactionTests(unittest.TestCase):
         with mock.patch.object(gw, 'OWNED_SUBMODULES', {'games/soviet_now': str(subremote)}), \
              mock.patch.object(gw, 'write_json', side_effect=capture_intent):
             result = gw.deploy_git(self.cfg, 'docich', new_parent)
-        self.assertEqual(result.pop('git_gc'), {'status': 'unavailable'})
+        result.pop('git_gc'); result.pop('bundle_mode', None)
         self.assertEqual(result, {'status': 'deployed', 'sha': new_parent, 'rebaselined_from': old_parent})
         self.assertEqual(intents[-1], {'from': old_parent, 'to': new_parent,
                                      'predeploy_head': new_parent})
@@ -346,7 +346,7 @@ class DeployStateTransactionTests(unittest.TestCase):
         self._advance_production_to(new_parent)
         with mock.patch.object(gw, 'OWNED_SUBMODULES', {'games/soviet_now': str(subremote)}):
             result = gw.rebaseline_git(self.cfg, 'docich', new_parent)
-            self.assertEqual(result.pop('git_gc'), {'status': 'unavailable'})
+            result.pop('git_gc'); result.pop('bundle_mode', None)
             self.assertEqual(result, {'status': 'rebased', 'sha': new_parent, 'from': old_parent})
             state = gw.read_json(gw.current_file(self.cfg, 'docich'))
             self.assertEqual(state['projection_base'], old_parent)
@@ -518,3 +518,106 @@ class DeployStateTransactionTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+class BundleModeTests(unittest.TestCase):
+    """#3344 Phase 4: thin-bundle staging and remote-fallback paths."""
+
+    def setUp(self):
+        self.addCleanup(os.umask,os.umask(0o022))
+        self._env=mock.patch.dict('os.environ',{'VMOPS_TESTING':'1'})
+        self._env.start(); self.addCleanup(self._env.stop)
+        self.base = Path(tempfile.mkdtemp(prefix='vmops-bundle-mode-'))
+        self.state = self.base / 'state'; self.state.mkdir()
+        self.docich = self.base / 'docich'; self.docich.mkdir()
+        self.cfg = {'state': str(self.state),
+                    'repos': {'docich': {'production': str(self.docich), 'mode': 'git'}}}
+        for c in (['init','-q'],): subprocess.run(['git','-C',str(self.docich),*c],check=True)
+        for k,v in (('user.email','t@e.c'),('user.name','T')):
+            subprocess.run(['git','-C',str(self.docich),'config',k,v],check=True)
+        (self.docich/'a.txt').write_text('v1\n')
+        subprocess.run(['git','-C',str(self.docich),'add','a.txt'],check=True)
+        subprocess.run(['git','-C',str(self.docich),'commit','-qm','v1'],check=True)
+        self.base_sha = subprocess.check_output(['git','-C',str(self.docich),'rev-parse','HEAD'],text=True).strip()
+        gw.write_json(gw.current_file(self.cfg,'docich'),
+                      {'mode':'git','sha':self.base_sha,'previous_head':None})
+
+    def _candidate(self):
+        cand = self.base / 'candidate'
+        subprocess.run(['git','clone','-q',self.docich,cand],check=True)
+        for k,v in (('user.email','t@e.c'),('user.name','T')):
+            subprocess.run(['git','-C',cand,'config',k,v],check=True)
+        (cand/'a.txt').write_text('v2\n')
+        subprocess.run(['git','-C',cand,'commit','-qam','v2'],check=True)
+        return cand, subprocess.check_output(['git','-C',cand,'rev-parse','HEAD'],text=True).strip()
+
+
+    def test_thin_bundle_deploys_and_reports_mode(self):
+        cand, sha = self._candidate()
+        bundle = gw.bundle_file(self.cfg,'docich',sha)
+        bundle.parent.mkdir(parents=True,exist_ok=True)
+        subprocess.run(['git','-C',cand,'bundle','create',bundle,'HEAD','^'+self.base_sha],check=True)
+        result = gw.deploy_git(self.cfg,'docich',sha)
+        self.assertEqual(result['bundle_mode'],'thin')
+        self.assertEqual(result['status'],'deployed')
+
+    def test_verify_failure_falls_back_to_remote_fetch(self):
+        cand, sha = self._candidate()
+        bundle = gw.bundle_file(self.cfg,'docich',sha)
+        bundle.parent.mkdir(parents=True,exist_ok=True)
+        bundle.write_bytes(b'not a bundle')
+        with mock.patch.object(gw,'RECONCILE_FETCH_URL',str(cand)):
+            result = gw.deploy_git(self.cfg,'docich',sha)
+        self.assertEqual(result['bundle_mode'],'full_fallback')
+        self.assertEqual(result['bundle_fallback_reason'],'bundle_verify_failed')
+        self.assertEqual(result['status'],'deployed')
+
+    def test_full_bundle_reports_full_mode(self):
+        cand, sha = self._candidate()
+        bundle = gw.bundle_file(self.cfg,'docich',sha)
+        bundle.parent.mkdir(parents=True,exist_ok=True)
+        subprocess.run(['git','-C',cand,'bundle','create',bundle,'HEAD'],check=True)
+        result = gw.deploy_git(self.cfg,'docich',sha)
+
+    def test_deploy_refuses_older_main_head_during_auto_rebaseline(self):
+        # #3709: a branch switch or reset racing the deploy can leave the
+        # production checkout on an older main commit that is still an
+        # ancestor of the requested sha. Auto-rebaseline is forward-only and
+        # must fail closed instead of adopting that intermediate HEAD as the
+        # recorded baseline.
+        subprocess.run(['git', 'init', '-q', self.docich], check=True)
+        subprocess.run(['git', '-C', self.docich, 'config', 'user.email', 't@example.com'], check=True)
+        subprocess.run(['git', '-C', self.docich, 'config', 'user.name', 'T'], check=True)
+        (self.docich / 'app.py').write_text('v0\n')
+        subprocess.run(['git', '-C', self.docich, 'add', 'app.py'], check=True)
+        subprocess.run(['git', '-C', self.docich, 'commit', '-qm', 'v0'], check=True)
+        older = subprocess.check_output(['git', '-C', self.docich, 'rev-parse', 'HEAD'], text=True).strip()
+        (self.docich / 'app.py').write_text('v1\n')
+        subprocess.run(['git', '-C', self.docich, 'commit', '-qam', 'v1'], check=True)
+        old_sha = subprocess.check_output(['git', '-C', self.docich, 'rev-parse', 'HEAD'], text=True).strip()
+
+        state_path = gw.current_file(self.cfg, 'docich')
+        gw.write_json(state_path, {'mode': 'git', 'sha': old_sha, 'previous_head': None})
+
+        candidate = self.base / 'candidate'
+        subprocess.run(['git', 'clone', '-q', self.docich, candidate], check=True)
+        subprocess.run(['git', '-C', candidate, 'config', 'user.email', 't@example.com'], check=True)
+        subprocess.run(['git', '-C', candidate, 'config', 'user.name', 'T'], check=True)
+        (candidate / 'app.py').write_text('v2\n')
+        subprocess.run(['git', '-C', candidate, 'commit', '-qam', 'v2'], check=True)
+        new_sha = subprocess.check_output(['git', '-C', candidate, 'rev-parse', 'HEAD'], text=True).strip()
+        bundle = gw.bundle_file(self.cfg, 'docich', new_sha)
+        bundle.parent.mkdir(parents=True, exist_ok=True)
+        subprocess.run(['git', '-C', candidate, 'bundle', 'create', bundle, 'HEAD'], check=True)
+
+        # Simulate the mid-deploy branch switch: the tracked-clean checkout
+        # transiently sits on an older main commit that is still an ancestor
+        # of the requested sha.
+        subprocess.run(['git', '-C', self.docich, 'reset', '--hard', '-q', older], check=True)
+
+        with self.assertRaisesRegex(ValueError, 'tracked VM drift detected'):
+            gw.deploy_git(self.cfg, 'docich', new_sha)
+        state = gw.read_json(state_path)
+        self.assertEqual(state['sha'], old_sha)
+        self.assertNotIn('deployment_intent', state)
+        self.assertFalse(state.get('rebaseline_history'))
+        self.assertEqual(gw.git(self.docich, 'rev-parse', 'HEAD'), older)

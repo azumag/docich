@@ -330,13 +330,25 @@ def month_step(screen: Screen, mem):
     count_check = _month_army_count_check(screen, mem, shop)
     if count_check is not None:
         return count_check
+    # Owner: 将軍募集を切り札購入 (しょうにん/ちくじょう) より優先する。
+    # 将軍が十分でなければ出撃できないため、募集が未決 (pending/check) や
+    # 卵回復待ち (deferred_egg) の間は、募集の要否が決まる前に商人の札・築城へ
+    # 進まない。卵回復と兵士補充は別扱い。人数未確認 (deferred_roster) の月は
+    # 従来の購入順位を保ち、翌月の国ステータスで人数を読む。
+    if shop and not mem.get('month_sub') and _recruit_precedes_cards(shop):
+        extra = _month_extra(screen, mem, shop, recruit_only=True)
+        if extra is not None:
+            return extra
+        _hold_month_cards(mem, shop)
     # Owner (2026-10-17): a low army's refill is bought before the cards.
-    if shop and not shop['merchant_done'] and shop['items'] and not low_army_first(shop):
+    if (shop and not shop.get('cards_held') and not shop['merchant_done']
+            and shop['items'] and not low_army_first(shop)):
         move = _month_menu_move(screen, mem, 'しょうにん')
         if isinstance(move, list):
             return move
         return [pad('a')] if move == 'here' else [move] if move else []
-    if shop and shop.get('items') and not shop.get('merchant_skip_logged'):
+    if (shop and shop.get('items') and not shop.get('merchant_skip_logged')
+            and not shop.get('cards_held')):
         # Diagnostic only: planned merchant items were skipped by the gate above
         # (g1059 8-5: bargain_plan, then month_done with bought []; no merchant
         # decision). Records which gate closed it, once per month.
@@ -489,6 +501,27 @@ def _refill_month_outcome(mem, shop, header):
     return summary
 
 
+RECRUIT_BEFORE_CARDS = frozenset({'pending', 'check', 'deferred_egg'})
+
+
+def _recruit_precedes_cards(shop):
+    """Owner: an unresolved general recruitment outranks 商人 cards / 築城."""
+    return shop.get('recruit') in RECRUIT_BEFORE_CARDS
+
+
+def _hold_month_cards(mem, shop):
+    """Skip this month's card/castle purchases until the recruit question is settled."""
+    if shop.get('cards_held'):
+        return
+    shop['cards_held'] = 'recruit_pending'
+    if shop.get('chikujou') == 'check':
+        shop['chikujou'] = 'skipped'
+    held = [list(row) for row in (shop.get('items') or [])[:4]]
+    _record(mem, 'month_cards_held_for_recruit', month=shop.get('key'),
+            observed_metric={'recruit': shop.get('recruit'), 'planned': held},
+            reason='将軍募集が未決のため、切り札・築城の購入より募集を先に確定させる')
+
+
 def _month_extra(screen, mem, shop, *, recruit_only=False, egg_only=False):
     """Recruit before soldiers when short; otherwise keep the old extras order."""
     if not shop:
@@ -625,7 +658,9 @@ def _month_extra(screen, mem, shop, *, recruit_only=False, egg_only=False):
         elif sub == 'egg':
             shop.pop('egg_menu_wait', None)
         return [move]
-    return None if recruit_only or egg_only else _month_chikujou(screen, mem, shop)
+    if recruit_only or egg_only or shop.get('cards_held'):
+        return None
+    return _month_chikujou(screen, mem, shop)
 CHIKUJOU_SUB_LIMIT = 64        # bounded castle navigation, quote, result and return
 CHIKUJOU_WAIT_LIMIT = 6        # no repeated A while a selection/result frame persists
 

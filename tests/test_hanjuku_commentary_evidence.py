@@ -83,3 +83,26 @@ def test_writer_keeps_plan_identity_without_emitting_fixed_speech(tmp_path, monk
     assert item['decision'] == 'battle_card'
     assert item['decision_id'] == state['decision_trace']['decision_id']
     assert not (tmp_path/'hanjuku_commentary.jsonl').exists()
+
+
+def test_a_read_only_roster_probe_is_not_spoken_as_a_sortie_plan():
+    # Owner 2026-11-08: a castle recorded with one general must not produce a
+    # spoken "出撃準備の予定" when the order only reads its list.
+    record = {'decision': 'order_start', 'chart_step': 'A:x:M1',
+              'general': 'しょうぐん', 'source': 'メガパタ',
+              'target': 'アルマムーン', 'cards': [], 'roster_probe': True}
+    text = commentary.compose(record)[1]
+    assert '出撃' not in text
+    assert '一覧' in text and 'メガパタ' in text
+
+
+def test_plan_summary_names_a_probe_as_a_list_check():
+    record = {'decision': 'chart_adjust_applied',
+              'order_digest': [
+                  {'general': 'しょうぐん', 'source': 'メガパタ',
+                   'target': 'アルマムーン', 'roster_probe': True},
+                  {'general': 'ピオーネ', 'source': 'イーピヨル',
+                   'target': 'ドンダム', 'roster_probe': False}]}
+    text = commentary.compose(record)[1]
+    assert 'しょうぐん→' not in text
+    assert 'メガパタの一覧確認' in text and 'ピオーネ→ドンダム' in text

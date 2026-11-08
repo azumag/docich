@@ -1,0 +1,45 @@
+[Unit]
+Description=docich single direct-stream encoder supervisor (ADR 0007)
+Documentation=https://github.com/azumag/docich/blob/main/docs/adr/0007-direct-stream-single-owner-supervisor.md
+Requires=xvfb.service
+Wants=network-online.target user@1001.service soren-rtmp-relay.service
+After=network-online.target user@1001.service xvfb.service soren-rtmp-relay.service
+StartLimitIntervalSec=120
+StartLimitBurst=10
+
+[Service]
+Type=simple
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/home/ubuntu/soren
+Environment=HOME=/home/ubuntu
+Environment=DISPLAY=:99
+Environment=XDG_RUNTIME_DIR=/run/user/1001
+Environment=PULSE_SERVER=unix:/run/user/1001/pulse/native
+Environment=SOREN_RUNTIME_REPO=/home/ubuntu/soren
+Environment=DOCICH_ROOT=/home/ubuntu/docich
+# The wrapper sources the runtime .env like direct_stream.sh and execs
+# `python3 -m docich.stream_supervisor run`. The supervisor does nothing and
+# exits 75 unless DOCICH_STREAM_OWNER=docich, so a failed-open flag never starts
+# a second encoder; the host-wide lock is the second fence.
+ExecStart=/home/ubuntu/docich/bin/docich-stream-run
+# `Restart=always` makes the operator stop/start cycle work without sudo: the
+# WebUI sets tmp/state/docich_stream.paused and stops the runner (clean exit);
+# the respawned supervisor idles while the marker exists and starts the encoder
+# once it is removed. Exit 75 means "the legacy runner owns the encoder" and is
+# neither restarted nor a failure.
+Restart=always
+RestartSec=3
+SuccessExitStatus=75
+RestartPreventExitStatus=75
+# Graceful stop budget is q (15 s) + SIGINT (15 s); leave margin before SIGKILL.
+KillSignal=SIGTERM
+TimeoutStopSec=45
+# FFmpeg runs in its own session (start_new_session). `mixed` sends SIGTERM to
+# the supervisor only, then SIGKILLs every remaining process of the cgroup, so a
+# crashed supervisor can never leave an orphan encoder behind.
+KillMode=mixed
+UMask=0027
+
+[Install]
+WantedBy=multi-user.target

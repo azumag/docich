@@ -1435,12 +1435,17 @@ def deploy_step(screen: Screen, mem):
             # above settled any blind probe for this castle (still-listed
             # rolls the phantom launch back to pending). Back out without
             # selecting or sending; the reopened order re-sends next.
-            present = _listed_generals(screen, mem, order) or []
+            present = _listed_generals(screen, mem, order)
             source = _source(order, mem)
             verified = source not in (mem.get('roster_read_due') or {})
+            if present is not None:
+                # The read is the evidence: joiners this castle was expected
+                # to hold are refuted when the list does not show them, so a
+                # one-general castle is not probed again for the same set.
+                _refute_unplaced(mem, order)
             _record(mem, 'roster_probe_complete' if verified else 'roster_probe_incomplete',
                     **_deploy_context(order, mem), castle=source,
-                    observed_metric={'generals': list(present)[:12], 'roster_read': verified},
+                    observed_metric={'generals': list(present or [])[:12], 'roster_read': verified},
                     reason='出撃元一覧の読取結果を記録し、未確定なら次回の再読取要求を保持する')
             _finish_order(mem, 'done',
                           reason='読取のみの指示を終了し、未確定なら次回再試行する')

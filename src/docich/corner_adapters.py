@@ -911,6 +911,9 @@ class MysteryCornerAdapter:
             return False
         return self.manager.reconcile_failed_start(request_id)
 
+    def settle_released_failure(self, request_id):
+        return self.manager.settle_released_failure(request_id)
+
     def resources_released(self):
         return self.manager.resources_released()
 

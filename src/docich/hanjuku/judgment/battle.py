@@ -478,7 +478,7 @@ def _card_damage_gate(mem, cur, card, *, listed_cards=None):
     # Owner 2026-11-06: バルムンクはボス専用。チャート札にも使用直前の制限を適用。
     measured_boss = bool(boss or cur.get('enemy') in chart.BOSSES.values()
                          or cur.get('entry_evidence') == 'measured_boss_entry')
-    if card == 'バルムンク' and not measured_boss:
+    if card in reference.BOSS_ONLY_CARDS and not measured_boss:
         result['role'] = 'boss_only_balmung'
     elif (not finished and cur.get('card_context_unclassified') and not summoned
             and not cur.get('card_combatants_changed') and drop and drop.get('drops')):
