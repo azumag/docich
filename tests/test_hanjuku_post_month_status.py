@@ -1387,3 +1387,64 @@ def test_waiting_carry_row_can_cross_the_month_boundary():
            'hp': 50, 'max_hp': 50}
     assert receipts._carry_eligible(row, ()) is True
     assert receipts._carry_eligible(row, ('location',)) is False
+
+
+def _wait_recall_state(mem, name='ヴィーナス'):
+    post.arm(mem)
+    state = mem['post_month_status']
+    state.update(stage='wait_recall', started_tick=100,
+                 job={'kind': 'recall', 'name': name}, tasks=[])
+    return state
+
+
+def test_interrupted_recall_task_is_requeued_in_the_same_month():
+    # 実測 g1153 2026-11-08 17:00/17:05: 目的地ピッカー中に防衛・攻撃イベントが
+    # 割り込み、帰還Aを送らないまま recall state が消えた。タスクを完了扱いに
+    # すると翌月まで再試行されず、野営の将軍が残る。
+    from docich.hanjuku.state.regions import flow as _flow
+    mem = memory(month='2-12')
+    state = _wait_recall_state(mem)
+    _flow(mem).pop('recall', None)
+    assert post.step(Screen([], None, '', kind='map'), mem, None) == []
+    assert state['tasks'] == [{'kind': 'recall', 'name': 'ヴィーナス'}]
+    assert state['recall_task_retries'] == {'ヴィーナス': 1}
+    assert state['stage'] == 'process'
+    assert any(r['decision'] == 'post_month_recall_requeued'
+               for r in mem['_records'])
+
+
+def test_dispatched_recall_task_is_not_requeued():
+    # 帰還Aの送信記録がある場合は再送しない（同じ帰還の二重指示を避ける）。
+    from docich.hanjuku.state.regions import flow as _flow
+    mem = memory(month='2-12')
+    state = _wait_recall_state(mem)
+    _flow(mem)['recall_verification'] = {
+        'general': 'ヴィーナス', 'input_sent': True,
+        'status': 'arrival_unconfirmed', 'requested_tick': 120}
+    assert post.step(Screen([], None, '', kind='map'), mem, None) == []
+    assert state['tasks'] == []
+    assert not any(r['decision'] == 'post_month_recall_requeued'
+                   for r in mem['_records'])
+
+
+def test_stale_dispatch_receipt_does_not_suppress_the_retry():
+    # 前月の同名将軍の送信記録を今月の帰還と取り違えない。
+    from docich.hanjuku.state.regions import flow as _flow
+    mem = memory(month='2-12')
+    state = _wait_recall_state(mem)
+    _flow(mem)['recall_verification'] = {
+        'general': 'ヴィーナス', 'input_sent': True,
+        'status': 'arrival_unconfirmed', 'requested_tick': 50}
+    assert post.step(Screen([], None, '', kind='map'), mem, None) == []
+    assert state['tasks'] == [{'kind': 'recall', 'name': 'ヴィーナス'}]
+
+
+def test_recall_task_retry_is_bounded():
+    from docich.hanjuku.state.regions import flow as _flow
+    mem = memory(month='2-12')
+    state = _wait_recall_state(mem)
+    state['recall_task_retries'] = {'ヴィーナス': post.RECALL_TASK_RETRIES}
+    _flow(mem).pop('recall', None)
+    assert post.step(Screen([], None, '', kind='map'), mem, None) == []
+    assert state['tasks'] == []
+    assert state['stage'] == 'process'
