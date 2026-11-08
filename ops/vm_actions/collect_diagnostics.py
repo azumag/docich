@@ -6988,6 +6988,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v535-adjust-part-salvage",
             "hanjuku-chart-v536-moving-boss-y-view",
             "hanjuku-chart-v537-launch-marker-size",
+            "hanjuku-chart-v538-y-view-boss-cell",
             "hanjuku-chart-v501-idle-reanchor",
             "hanjuku-chart-v502-idle-and-roster-joins",
             "hanjuku-chart-v503-month-start-counts",

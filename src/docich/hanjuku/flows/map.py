@@ -21,7 +21,7 @@ from ..os_layer.navigation import (Y_JUMP_LIMIT, Y_JUMP_OFFSET, _align_on_roof, 
                                    _forget_failed_jump, _want_y_jump, _y_jump_step, nav_step)
 from ..os_layer.readers import (UNDER_CURSOR_PX, WORLD_MAP_OFFSET, _cursor, _roof_under_cursor, season_sites,
                                 world_cursor, world_flags, world_markers)
-from ..os_layer.world import (NAME, _apply_moving_boss, _apply_season_sites, _apply_world_flags,
+from ..os_layer.world import (NAME, _apply_season_sites, _apply_skull_boss, _apply_world_flags,
                               _hero_castle, _owned, update_world)
 from ..strategy import goals
 from ..strategy.kit import _deploy_cards, _is_boss_order
@@ -387,9 +387,10 @@ def world_map_step(screen, mem, frame):
     # pennant, a live king keeps the skull.
     if (mem.get('chapter') or 0) == 4 and hasattr(frame, 'pixel'):
         _apply_season_sites(mem, season_sites(frame, 4, world_cursor(frame)))
-    if (mem.get('chapter') or 0) == chart.MOVING_BOSS_CHAPTER and hasattr(frame, 'pixel'):
-        # Chapter 9's boss moves; the Y view's skull is its measured cell.
-        _apply_moving_boss(mem, frame)
+    if (mem.get('chapter') or 0) != 4 and hasattr(frame, 'pixel'):
+        # A single boss skull on the Y view is the boss's measured cell (the
+        # moving boss included; chapter 4's four sites use the scan above).
+        _apply_skull_boss(mem, frame)
     markers = world_markers(frame)
     _probe_launch_markers(mem, markers)
     mem['_world_units_prev'] = [list(b) for b in markers]

@@ -38,25 +38,32 @@ def test_a_frame_without_a_skull_reads_nothing():
 
 @pytest.fixture(autouse=True)
 def clear_registry():
-    chart.set_moving_boss_cell(9, None)
+    for chapter in range(1, 13):
+        chart.set_boss_cell(chapter, None)
     yield
-    chart.set_moving_boss_cell(9, None)
+    for chapter in range(1, 13):
+        chart.set_boss_cell(chapter, None)
 
 
-def test_the_dynamic_cell_is_only_for_the_moving_boss_chapter():
+def test_a_measured_cell_overrides_a_chart_boss_cell():
     assert chart.castles(9).get('ボス') is None
-    assert chart.set_moving_boss_cell(9, (500, 600)) == (500, 600)
+    assert chart.set_boss_cell(9, (500, 600)) == (500, 600)
     assert chart.castles(9)['ボス'] == (500, 600)
     assert chart.moving_boss_cell(9) == (500, 600)
+    # An approximate chart cell is replaced by the measured one.
+    assert chart.castles(7)['ボス'] == (488, 320)
+    chart.set_boss_cell(7, (306, 141))
+    assert chart.castles(7)['ボス'] == (306, 141)
     assert chart.castles(5)['ボス'] == (744, 288)          # untouched
-    assert chart.set_moving_boss_cell(5, (1, 2)) is None   # only chapter 9
-    chart.set_moving_boss_cell(9, None)
+    chart.set_boss_cell(9, None)
+    chart.set_boss_cell(7, None)
     assert chart.castles(9).get('ボス') is None
+    assert chart.castles(7)['ボス'] == (488, 320)
 
 
 @pytest.mark.parametrize('cell', [(None, 5), (500, None), (-1, 5), (99999, 5), 'x'])
 def test_an_invalid_cell_is_never_registered(cell):
-    assert chart.set_moving_boss_cell(9, cell) is None
+    assert chart.set_boss_cell(9, cell) is None
     assert chart.castles(9).get('ボス') is None
 
 
@@ -67,52 +74,88 @@ def boss_order():
 def test_the_boss_order_is_locked_without_a_measured_cell():
     mem = {'chapter': 9, 'tick': 10}
     assert orders._boss_target_unlocked(boss_order(), mem) is False
-    chart.set_moving_boss_cell(9, (500, 600))
+    chart.set_boss_cell(9, (500, 600))
     assert orders._boss_target_unlocked(boss_order(), mem) is True
-    chart.set_moving_boss_cell(9, None)
+    chart.set_boss_cell(9, None)
     assert orders._boss_target_unlocked(boss_order(), mem) is False
 
 
 def test_two_equal_y_view_readings_record_the_cell():
     mem = {'chapter': 9, 'tick': 100, '_records': []}
-    W._apply_moving_boss(mem, CH3)
-    assert not mem.get('moving_boss')            # one reading is not enough
-    W._apply_moving_boss(mem, CH3)
-    assert mem['moving_boss']['cell'] == [306, 141]
-    assert mem['moving_boss']['tick'] == 100
-    assert [r['decision'] for r in mem['_records']] == ['moving_boss_seen']
+    W._apply_skull_boss(mem, CH3)
+    assert not mem.get('boss_cell')              # one reading is not enough
+    W._apply_skull_boss(mem, CH3)
+    assert mem['boss_cell']['cell'] == [306, 141]
+    assert mem['boss_cell']['chapter'] == 9
+    assert mem['boss_cell']['tick'] == 100
+    assert [r['decision'] for r in mem['_records']] == ['boss_cell_measured']
 
 
 def test_a_different_position_restarts_the_confirmation():
     mem = {'chapter': 9, 'tick': 100, '_records': []}
-    W._apply_moving_boss(mem, CH3)
-    mem['moving_boss_streak'] = {'cell': [1, 2], 'count': 1}
-    W._apply_moving_boss(mem, CH3)
-    assert not mem.get('moving_boss')
-    assert mem['moving_boss_streak']['cell'] == [306, 141]
+    W._apply_skull_boss(mem, CH3)
+    mem['boss_cell_streak'] = {'cell': [1, 2], 'count': 1}
+    W._apply_skull_boss(mem, CH3)
+    assert not mem.get('boss_cell')
+    assert mem['boss_cell_streak']['cell'] == [306, 141]
 
 
 def test_a_frame_without_a_skull_drops_the_partial_confirmation():
     mem = {'chapter': 9, 'tick': 100, '_records': [],
-           'moving_boss_streak': {'cell': [306, 141], 'count': 1}}
-    W._apply_moving_boss(mem, Frame(256, 224, bytes(256 * 224 * 3)))
-    assert not mem.get('moving_boss_streak')
+           'boss_cell_streak': {'cell': [306, 141], 'count': 1}}
+    W._apply_skull_boss(mem, Frame(256, 224, bytes(256 * 224 * 3)))
+    assert not mem.get('boss_cell_streak')
 
 
-def test_other_chapters_never_scan_for_the_moving_boss():
-    mem = {'chapter': 5, 'tick': 100, '_records': []}
-    W._apply_moving_boss(mem, CH3)
-    assert not mem.get('moving_boss')
+def test_a_static_chapter_also_measures_its_boss_cell():
+    mem = {'chapter': 7, 'tick': 100, '_records': []}
+    W._apply_skull_boss(mem, CH3)
+    W._apply_skull_boss(mem, CH3)
+    assert mem['boss_cell']['chapter'] == 7
+    assert mem['boss_cell']['cell'] == [306, 141]
 
 
-def test_decide_registers_a_fresh_cell_and_drops_a_stale_one():
+def test_chapter_four_sites_never_use_the_single_skull_rule():
+    mem = {'chapter': 4, 'tick': 100, '_records': []}
+    W._apply_skull_boss(mem, CH4)
+    W._apply_skull_boss(mem, CH4)
+    assert not mem.get('boss_cell')
+
+
+def test_decide_registers_a_fresh_cell_and_drops_a_stale_moving_one():
     from docich.hanjuku_bot import decide
     blank = Frame(256, 224, bytes(256 * 224 * 3))
     fresh = {'policy': {'chapter': 9, 'tick': 200,
-                        'moving_boss': {'cell': [500, 600], 'tick': 100}}}
+                        'boss_cell': {'chapter': 9, 'cell': [500, 600], 'tick': 100}}}
     decide(blank, fresh)
     assert chart.moving_boss_cell(9) == (500, 600)
     stale = {'policy': {'chapter': 9, 'tick': 100 + chart.MOVING_BOSS_TICKS + 1,
-                        'moving_boss': {'cell': [500, 600], 'tick': 100}}}
+                        'boss_cell': {'chapter': 9, 'cell': [500, 600], 'tick': 100}}}
     decide(blank, stale)
     assert chart.moving_boss_cell(9) is None
+
+
+def test_a_static_chapter_keeps_an_old_measurement():
+    from docich.hanjuku_bot import decide
+    blank = Frame(256, 224, bytes(256 * 224 * 3))
+    state = {'policy': {'chapter': 7, 'tick': 100 + chart.MOVING_BOSS_TICKS * 3,
+                        'boss_cell': {'chapter': 7, 'cell': [488, 300], 'tick': 100}}}
+    decide(blank, state)
+    assert chart.moving_boss_cell(7) == (488, 300)
+
+
+def test_a_measurement_from_another_chapter_is_ignored():
+    from docich.hanjuku_bot import decide
+    blank = Frame(256, 224, bytes(256 * 224 * 3))
+    state = {'policy': {'chapter': 6, 'tick': 200,
+                        'boss_cell': {'chapter': 5, 'cell': [500, 600], 'tick': 100}}}
+    decide(blank, state)
+    assert chart.moving_boss_cell(6) is None
+
+
+def test_a_chapter_with_a_measured_cell_never_takes_a_skull_estimate():
+    """Chapters 1-5 already have measured cells; a skull estimate may be 2 tiles off."""
+    for chapter in (1, 2, 3, 5):
+        before = chart.castles(chapter).get(chart.boss_castle(chapter))
+        assert chart.set_boss_cell(chapter, (10, 10)) is None
+        assert chart.castles(chapter).get(chart.boss_castle(chapter)) == before
