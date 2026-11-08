@@ -143,27 +143,32 @@ def world_flags(frame, chapter, cursor=None):
     return out
 
 
-# Chapter 4's four 四季王 sites are drawn on the Y view as a skull while the
-# king still holds the site and as an orange pennant once it is cleared. The
-# skull is chapter 3's boss skull sprite, top-left (101, 63) in the chapter 3
-# view; a site's sprite sits at that anchor plus the site cell's view offset
+# Chapter 4's four 四季王 sites draw chapter 3's boss skull while the king
+# holds the site and plain terrain once it is cleared. The skull is chapter 3's
+# boss skull sprite, top-left (101, 63) in the chapter 3 view; a site's sprite
+# sits at that anchor plus the site cell's view offset
 # (tests/test_hanjuku_season_king_sites.py pins the same anchor).
-# g1163 2026-11-09 01:47 JST live Y view: 北西/北東/南西 pennants, 南東 skull,
-# and the owner reported exactly those three cleared — yet the bot kept
-# sortieing to them because a king fight that ends on the closing dialogue
-# never leaves a measured 0 HP (see battle_end's 四季王 rule).
+# g1163 2026-11-09: a cleared site has no marker left at all — 北西/南西 read
+# as plain terrain while the owner reported them cleared, and 南東 kept the
+# skull as the remaining king. An orange pennant seen earlier at three sites
+# was a marching army standing on them, not a cleared marker, so the cleared
+# test is "no skull and nothing but terrain": any unit portrait, army marker
+# or cloud leaves the site unreadable instead of guessing.
 SEASON_SITE_ANCHOR = (101, 63)          # chapter 3 skull top-left on the Y view
 SEASON_SKULL_LIGHT = ((164, 165, 164), (255, 254, 255))
-SEASON_SITE_PENNANT = (255, 181, 0)
+# The island's own palette inside a site box (grass, water, sand, forest).
+SEASON_TERRAIN = ((24, 141, 24), (90, 214, 8), (84, 208, 9), (0, 72, 24),
+                  (106, 165, 205), (57, 88, 123), (172, 157, 65), (197, 133, 49))
+SEASON_TERRAIN_RATIO = 0.95
 
 
 def season_sites(frame, chapter, cursor=None):
     """{site: 'closed'|'open'} from the Y view's four corner markers.
 
-    Only a colour reading, never an inference: a pennant with no skull light
-    is a cleared site, skull light is a live king. A site under the Y cursor
-    is skipped (the gold cursor shares the pennant's colour), and anything
-    unreadable is left out so the caller keeps its previous state.
+    Skull light is a live king. A box that is nothing but island terrain has
+    no marker: the site is cleared. Anything else (a general's portrait, an
+    army marker, a cloud, the cursor's gold) is unreadable and left out so the
+    caller keeps its previous state.
     """
     if chapter != 4 or frame is None or not hasattr(frame, 'pixel'):
         return {}
@@ -186,11 +191,12 @@ def season_sites(frame, chapter, cursor=None):
             continue
         light = sum(1 for px in pixels
                     if any(_near_colour(px, colour) for colour in SEASON_SKULL_LIGHT))
-        pennant = sum(1 for px in pixels if _near_colour(px, SEASON_SITE_PENNANT))
-        if pennant >= 6 and light == 0:
-            out[name] = 'closed'
-        elif light >= 6:
+        terrain = sum(1 for px in pixels
+                      if any(_near_colour(px, colour) for colour in SEASON_TERRAIN))
+        if light >= 6:
             out[name] = 'open'
+        elif terrain >= len(pixels) * SEASON_TERRAIN_RATIO:
+            out[name] = 'closed'
     return out
 
 

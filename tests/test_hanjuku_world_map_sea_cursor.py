@@ -36,6 +36,7 @@ WORLD_VIEWS = {
     'g1075-ch3-y-view-face-over-boss-skull.png',
     'g1075-ch4-y-view-season-skulls.png',
     'g1133-ch6-y-view-grey-sea.png',
+    'g1163-ch4-y-view-cleared-sites.png',
 }
 
 
