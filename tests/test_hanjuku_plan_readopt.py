@@ -59,3 +59,77 @@ def test_a_different_candidate_list_still_replaces_the_plan():
     adopt(mem, 1001)
     assert [o['step'] for o in mem['chart_plan']['orders']] != first
     assert len(records(mem)) >= 2
+
+
+# --- #3729: the identity comparison used the execution step -----------------
+
+MOVED = {'general': 'ライム', 'source': 'グルーポフ', 'target': 'オケアナ',
+         'cards': [], 'after': None, 'purpose': 'move', 'note': ''}
+
+
+def candidates(target='オケアナ'):
+    return {'move_1': {**MOVED, 'target': target}}
+
+
+def stuck_memory(monkeypatch):
+    """A plan whose only order cannot start (one general at its source).
+
+    `_plan_pending` is False, which is the only state in which the planner
+    rebuilds — and therefore the only state in which the identity comparison
+    runs. The stored plan's steps are execution ids; the rebuild names local
+    ids, so comparing the two never matched and the plan was re-adopted on
+    every observation (refreshing ``chart_plan_tick``).
+    """
+    mem = memory()
+    mem['garrison'] = {'グルーポフ': ['ライム'], 'オケアナ': ['ゼウス', 'ポセイドン']}
+    monkeypatch.setattr(replan, 'interim_candidates', lambda *a, **k: candidates())
+    return mem
+
+
+def rebuild(mem, tick):
+    mem['tick'] = tick
+    replan._mechanical_chart(mem, mem['chart_adjust'], 'abcd1234abcd1234', 'normal')
+
+
+def test_the_identical_rebuild_keeps_the_stored_plan(monkeypatch):
+    mem = stuck_memory(monkeypatch)
+    rebuild(mem, 1000)
+    plan = mem['chart_plan']
+    tick = mem['chart_plan_tick']
+    rebuild(mem, 1001)
+    assert mem['chart_plan'] is plan
+    assert mem['chart_plan_tick'] == tick
+
+
+def test_a_changed_candidate_list_replaces_the_kept_plan(monkeypatch):
+    mem = stuck_memory(monkeypatch)
+    rebuild(mem, 1000)
+    first = mem['chart_plan']
+    monkeypatch.setattr(replan, 'interim_candidates',
+                        lambda *a, **k: candidates('トウトウ'))
+    rebuild(mem, 1001)
+    assert mem['chart_plan'] is not first
+    assert mem['chart_plan_tick'] == 1001
+
+
+def test_a_stale_launched_step_is_released_when_the_plan_is_kept(monkeypatch):
+    """A kept plan must not make its 'launched' marker permanent."""
+    mem = stuck_memory(monkeypatch)
+    rebuild(mem, 1000)
+    step = mem['chart_plan']['orders'][0]['step']
+    mem['orders'][step] = 'launched'      # no sortie record: not marching
+    rebuild(mem, 1001)
+    assert mem['orders'][step] == 'pending'
+
+
+def test_a_stored_plan_without_local_step_is_rebuilt(monkeypatch):
+    """A plan from before the field existed cannot prove identity: rebuild."""
+    mem = stuck_memory(monkeypatch)
+    rebuild(mem, 1000)
+    first = mem['chart_plan']
+    for order in mem['chart_plan']['orders']:
+        order.pop('local_step', None)
+    rebuild(mem, 1001)
+    assert mem['chart_plan'] is not first
+    assert mem['chart_plan_tick'] == 1001
+
