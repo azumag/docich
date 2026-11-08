@@ -41,11 +41,18 @@ BALLOON_FINCH_MAX_HP = 9999
 
 _MONSTER_SKILLS = {name: frozenset(_fold_skill(s) for s in skills)
                    for name, skills in reference.MONSTER_SKILLS.items()}
-# Exact observed display spelling (g747 native frames 8867/8868). Keep the
-# reference name and unrelated monster policies unchanged; no fuzzy matching.
-_MONSTER_DISPLAY_ALIASES = {'フリージボーイ': 'フリージーボーイ'}
+# Exact observed display spellings (g747 native frames 8867/8868, g1153
+# monster panels). Keep the reference name and unrelated monster policies
+# unchanged; no fuzzy matching.
+_MONSTER_DISPLAY_ALIASES = {
+    'フリージボーイ': 'フリージーボーイ',
+    'タマゴキャリー': 'たまごキャリー',
+    'てつじん8ごう': 'てつじん８ごう',
+}
 _MONSTER_EFFECTS = frozenset(_fold_skill(s) for s in reference.MONSTER_EFFECT_SKILLS)
 _MONSTER_HEALS = frozenset(_fold_skill(s) for s in reference.MONSTER_HEAL_SKILLS)
+_MONSTER_INSTANT_DEATH = frozenset(_fold_skill(s)
+                                   for s in reference.MONSTER_INSTANT_DEATH_SKILLS)
 
 
 def _monster_owner(skill_lines, ally, enemy) -> str | None:
@@ -212,6 +219,15 @@ def _is_self_damage_skill(skill):
 
 
 def _score_monster_attack(entry, opponent_kind, multiple):
+    """Expected-damage rank of one menu row (wiki 対モ/対将威力 x 攻撃回数).
+
+    Owner policy for issue #2835: a general battle prefers the skill with more
+    attacks (and an ALL attack while enemy soldiers remain); a monster battle
+    ranks the 対モ damage column.  The earlier general branch returned the
+    per-hit power alone, so multi-hit skills never won against a general:
+    ラビットサタン kept デスのカマ (11 x1) over ラビットキック (6 x4), and the
+    whole 召喚獣 menu looked unchanged even after a damage table existed.
+    """
     if not isinstance(entry, (tuple, list)) or len(entry) < 4:
         return 0
     _name, vs_monster, vs_general, hits = entry[0], entry[1], entry[2], entry[3]
@@ -219,9 +235,13 @@ def _score_monster_attack(entry, opponent_kind, multiple):
     self_damage = entry[5] if len(entry) > 5 else False
     if self_damage:
         return -1
+    # 即死 is guaranteed against a lone general, so it outranks any damage
+    # total; against monsters/bosses it stays an unquantified low chance and
+    # must not displace a damaging skill (existing Excalibur/Unicorn policy).
+    if (opponent_kind == 'general' and not multiple
+            and _fold_skill(_name) in _MONSTER_INSTANT_DEATH):
+        return 10 ** 6
     base = vs_monster if opponent_kind == 'monster' else vs_general
-    if opponent_kind == 'general' and not multiple:
-        return base
     score = base * (hits if isinstance(hits, int) and hits > 0 else 1)
     if opponent_kind == 'general' and multiple and is_all:
         score += 100000
@@ -229,8 +249,14 @@ def _score_monster_attack(entry, opponent_kind, multiple):
 
 
 def _monster_attack_policy_default(owner, ally, enemy, skill_lines, first, second,
-                                    ally_hp, enemy_hp, mem):
-    """Choose from verified attack data; unread/unknown menus keep old default."""
+                                    ally_hp, enemy_hp, mem, evidence=None):
+    """Choose from verified attack data; unread/unknown menus keep old default.
+
+    ``evidence`` is an optional mutable dict filled with the scored rows so the
+    decision log can tell a data-driven pick from the generic first-skill
+    fallback.  Production ran the #2835 policy for weeks without any such
+    proof, which hid that only two monsters had attack rows.
+    """
     if (owner != 'ally' or ally is None or enemy is None or not second
             or not (type(ally_hp) is int and ally_hp > 0
                     and type(enemy_hp) is int and enemy_hp > 0)):
@@ -251,9 +277,6 @@ def _monster_attack_policy_default(owner, ally, enemy, skill_lines, first, secon
             or _fold_skill(second) != _fold_skill(expected_second)):
         return None
 
-    if 0 < enemy_hp <= 10:
-        return 'skill2' if _is_self_damage_skill(first) else 'skill1'
-
     opponent_kind = 'monster' if _is_monster_opponent(enemy) else 'general'
     multiple = False
     battle = mem.get('battle') if isinstance(mem, dict) else None
@@ -263,10 +286,30 @@ def _monster_attack_policy_default(owner, ally, enemy, skill_lines, first, secon
 
     s1 = _score_monster_attack(data['skill1'], opponent_kind, multiple)
     s2 = _score_monster_attack(data['skill2'], opponent_kind, multiple)
+
+    def _decide(choice, rule):
+        if isinstance(evidence, dict):
+            evidence.update({
+                'monster': ally.name,
+                'opponent': enemy.name,
+                'opponent_kind': opponent_kind,
+                'enemy_soldiers': multiple,
+                'skill1': expected_first,
+                'skill2': expected_second,
+                'score1': s1,
+                'score2': s2,
+                'choice': choice,
+                'rule': rule,
+            })
+        return choice
+
+    if 0 < enemy_hp <= 10:
+        return _decide('skill2' if _is_self_damage_skill(first) else 'skill1',
+                       'low_hp_finisher')
     if s1 < 0 and s2 >= 0:
-        return 'skill2'
+        return _decide('skill2', 'self_damage')
     if s2 < 0 and s1 >= 0:
-        return 'skill1'
+        return _decide('skill1', 'self_damage')
     if s1 != s2:
-        return 'skill1' if s1 > s2 else 'skill2'
-    return None
+        return _decide('skill1' if s1 > s2 else 'skill2', 'damage_rank')
+    return _decide(None, 'tie')

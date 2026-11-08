@@ -2238,13 +2238,18 @@ def monster_menu_step(screen: Screen, mem):
         #     attack pick, matching policy 1-3 which assume a non-behind
         #     position for the summoned monster's own attack.
         #   - `not heal_first` keeps heal-first monsters on their recovery path.
+        policy_evidence = None
         if (not special_cycle and not damage_first and not damage_second and not chikyu
                 and not lampkin and not powerless and len(skill_lines) >= 2
                 and default == 'skill1' and not heal_first and not behind):
+            policy_evidence = {}
             policy_default = _monster_attack_policy_default(
-                owner, ally, enemy, skill_lines, first, second, ally_hp, enemy_hp, mem)
+                owner, ally, enemy, skill_lines, first, second, ally_hp, enemy_hp, mem,
+                evidence=policy_evidence)
             if policy_default is not None:
                 default = policy_default
+            if not policy_evidence:
+                policy_evidence = None
         # Owner 2026-11-03: ランプキンは自分のHPが一桁になったら、倒される
         # 前に「たまごにもどる」で帰還する。攻撃継続より卵へ戻す判断を優先し、
         # ボス/HP1の強制スキル選択より先に適用する。
@@ -2352,6 +2357,13 @@ def monster_menu_step(screen: Screen, mem):
             why = ('自爆は将軍と兵士を確定で全滅させるため、敵将軍だけの今ハルマゲドンで決着させる'
                    if action == 'skill2' else
                    '自爆は召喚獣に自分の残りHP分・ボスに最大HPの1/8しか効かないため、だいじしんで敵を半減し続ける')
+        elif (policy_evidence and policy_evidence.get('choice') == action
+              and action in ('skill1', 'skill2')):
+            label = second if action == 'skill2' else first
+            kind = ('召喚獣' if policy_evidence.get('opponent_kind') == 'monster' else '将軍')
+            why = (f"攻撃データ上、{kind}「{policy_evidence.get('opponent')}」への実効ダメージが"
+                   f"{policy_evidence.get('score1')}対{policy_evidence.get('score2')}のため"
+                   f"「{label}」を選ぶ")
         elif action == 'skill2' and len(skill_lines) >= 2:
             label = second
             why = ('敵召喚獣には即死の反復より通常2回攻撃を優先する'
@@ -2387,6 +2399,7 @@ def monster_menu_step(screen: Screen, mem):
                                      and return_risk['rule'] == 'wounded_general'),
                                  'general_return_blocked': protected_return,
                                  'general_return_risk': return_risk,
+                                 'monster_attack_policy': policy_evidence,
                                  'experience_key': key},
                 reason=f'召喚獣の技メニューで「{label}」を選択: {why}')
     action = mem.get('monster_menu_choice')

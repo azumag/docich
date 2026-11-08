@@ -128,15 +128,20 @@ def test_the_reached_box_counts_skill_one_for_our_summon():
     assert record['observed_metric']['sent_frame_sha256'] == digest(SLIDING)
 
 
-def test_the_measured_battle_switches_after_two_uses_of_deai():
-    # 18:58:39 であい chosen on the settled box, 18:58:48 であい by the stray A
-    # (box never decided on), so the next own turn must go down to そして わかれ.
+def test_the_measured_battle_picks_the_stronger_skill_and_still_counts_the_stray_use():
+    # 18:58:39 であい was chosen on the settled box in the measured g1075
+    # battle.  The wiki attack data (v517) ranks そして わかれ (4 hits) above
+    # であい, so the first own turn already goes down instead of waiting for
+    # two no-HP-change uses; the stray A's であい is still counted as skill1.
+    # The stall-switch path itself stays covered by
+    # tests/test_hanjuku_monster_skill_stall.py.
     st, decisions, buttons = run(state(), SETTLED, *dialogue(), (ENEMY_MENU, REACHED),
                                  *dialogue(), SETTLED)
     assert decisions.count('monster_turn_unchosen') == 1
-    assert 'monster_skill_stall' in decisions
+    assert 'monster_skill_stall' not in decisions
+    assert buttons[0] == ['down']
     assert buttons[-1] == ['down']
-    assert st['policy']['monster_stall']['turns'] == {'skill1': 2, 'skill2': 1}
+    assert st['policy']['monster_stall']['turns'] == {'skill2': 2, 'skill1': 1}
 
 
 def test_a_reached_box_the_agent_also_saw_leaving_counts_once():

@@ -5,7 +5,6 @@ from pathlib import Path
 
 import pytest
 
-from docich import hanjuku_reference as reference
 from docich.hanjuku.flows.battle_menus import monster_menu_step
 from docich.hanjuku.os_layer.commands import pad
 from docich.hanjuku_pixels import read_png
@@ -76,16 +75,9 @@ def test_native_menu_low_hp_finisher_keeps_first_skill():
     assert mem['monster_menu_choice'] == 'skill1'
 
 
-def test_native_menu_general_count_switches_single_vs_all_target(monkeypatch):
+def test_native_menu_general_count_switches_single_vs_all_target():
     # Wiki attack-data row: ハードアタック 9/5 x1; ハードバズーカ 2/2 ALL.
-    # Inject the source-accurate row here until the representative production
-    # transcription is expanded beyond the issue's two baseline monsters.
-    data = dict(reference.MONSTER_ATTACK_DATA)
-    data['ハードマン'] = {
-        'skill1': ('ハードアタック', 9, 5, 1, False, False),
-        'skill2': ('ハードバズーカ', 2, 2, 1, True, False),
-    }
-    monkeypatch.setattr(reference, 'MONSTER_ATTACK_DATA', data)
+    # The production table now carries this row itself.
     skills = ('ハードアタック', 'ハードバズーカ')
 
     single_screen, single_mem = policy_case('ハードマン', 'あたし', skills, enemy_soldiers=0)
@@ -95,3 +87,20 @@ def test_native_menu_general_count_switches_single_vs_all_target(monkeypatch):
     assert single_mem['monster_menu_choice'] == 'skill1'
     assert monster_menu_step(group_screen, group_mem) == [pad('down')]
     assert group_mem['monster_menu_choice'] == 'skill2'
+
+
+def test_native_menu_general_prefers_multi_hit_skill_and_logs_the_scores():
+    # ラビットサタン: デスのカマ 11x1 vs ラビットキック 6x4. g1153 repeated
+    # デスのカマ against a general because the general branch ignored 回数.
+    screen, mem = policy_case(
+        'ラビットサタン', 'キャンディー', ('デスのカマ', 'ラビットキック'), enemy_hp=26)
+
+    assert monster_menu_step(screen, mem) == [pad('down')]
+    assert mem['monster_menu_choice'] == 'skill2'
+    record = mem['_records'][-1]
+    assert record['decision'] == 'monster_menu_choice'
+    evidence = record['observed_metric']['monster_attack_policy']
+    assert evidence['opponent_kind'] == 'general'
+    assert (evidence['score1'], evidence['score2']) == (11, 24)
+    assert evidence['choice'] == 'skill2'
+    assert evidence['rule'] == 'damage_rank'
