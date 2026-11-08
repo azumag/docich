@@ -29,7 +29,7 @@ from ..judgment.battle import (BEHIND_EGG_RATIO_TENTHS, CARD_ANNOUNCE_LIMIT, CAR
 from ..judgment.events import (BALLOON_FINCH_MAX_HP, _MONSTER_SKILLS, _monster_effectful, _monster_heal,
                                _monster_owner, _monster_damage_second, _monster_damage_first,
                                _monster_chikyu_choice, _monster_lampkin_choice, _lampkin_menu, _lampkin_forced_kind,
-                               _monster_attack_policy_default)
+                               _monster_attack_policy_default, _monster_menu_attackless)
 from ..judgment.balloon import balloon_assessment, balloon_command_selected
 from ..judgment.akematsu import akematsu_assessment, akematsu_command_selected
 from ..judgment.omedetori import omedetori_assessment, omedetori_command_selected
@@ -1920,18 +1920,27 @@ MONSTER_MENU_HOLD_LIMIT = 30
 # With 4 turns (v289) the switch came at 14:13, ~10 minutes and 190 HP later,
 # and one あたためる took ラズベリー from 45 to 0.
 MONSTER_STALL_TURNS = 2
+# A summon whose two verified skills cannot damage this opponent gets one own
+# turn per skill instead of the comparison budget. The attack table already
+# rules out a damage difference, so a second turn of either skill only spends
+# HP: g1153 2026-11-08 17:45-17:47 とうめいにんげん (all zero rows) kept ゼウス
+# at 85 HP across seven own turns while falling 44 -> 1.
+MONSTER_ATTACKLESS_TURNS = 1
 # A menu redraw re-decides the same turn on the next observation (14:13:28
 # and :29 both chose あたためる); decisions this close count as one turn.
 MONSTER_STALL_SAME_TURN_TICKS = 3
 
 
-def _monster_stall_switch(mem, owner, ally, enemy, action, skill_count):
+def _monster_stall_switch(mem, owner, ally, enemy, action, skill_count, *, attackless=False):
     """Try the other skill once the chosen one has not moved the enemy's HP.
 
     Counts our own decided turns per skill while the enemy panel HP stays the
     same for this ally/enemy pair; any HP change starts over. When both skills
     have spent their turns the choice is kept (returning the summon exposes
-    its general) and the stall is recorded once.
+    its general) and the stall is recorded once. ``attackless`` marks a menu
+    whose verified table rows are both zero for this opponent: there the
+    comparison budget shrinks to one turn per skill and the menu then returns
+    the summon instead of repeating commands that cannot damage the enemy.
     """
     if owner != 'ally' or ally is None or enemy is None or skill_count < 2:
         return action
@@ -1946,15 +1955,25 @@ def _monster_stall_switch(mem, owner, ally, enemy, action, skill_count):
     if (type(tick) is int and type(stall.get('tick')) is int and stall.get('last') in ('skill1', 'skill2')
             and 0 <= tick - stall['tick'] <= MONSTER_STALL_SAME_TURN_TICKS):
         return stall['last']                  # the same turn, redrawn: keep its choice
+    needed = MONSTER_ATTACKLESS_TURNS if attackless else MONSTER_STALL_TURNS
     other = 'skill2' if action == 'skill1' else 'skill1'
-    if turns.get(action, 0) >= MONSTER_STALL_TURNS:
-        if turns.get(other, 0) < MONSTER_STALL_TURNS:
+    if turns.get(action, 0) >= needed:
+        if turns.get(other, 0) < needed:
             if not turns.get(other):
                 _record(mem, 'monster_skill_stall', strategy_variant=f'monster_stall_{other}',
                         observed_metric={'ally': ally.name, 'enemy': enemy.name, 'enemy_hp': enemy.hp,
-                                         'turns': dict(turns), 'from': action, 'to': other},
-                        reason=f'{MONSTER_STALL_TURNS}ターン使っても敵のHPが変わらないため、もう一方の技を試す')
+                                         'turns': dict(turns), 'from': action, 'to': other,
+                                         'attackless': attackless},
+                        reason=f'{needed}ターン使っても敵のHPが変わらないため、もう一方の技を試す')
             action = other
+        elif attackless:
+            if not stall.get('returned'):
+                stall['returned'] = True
+                _record(mem, 'monster_skill_stall', strategy_variant='monster_stall_return',
+                        observed_metric={'ally': ally.name, 'enemy': enemy.name, 'enemy_hp': enemy.hp,
+                                         'turns': dict(turns), 'attackless': True},
+                        reason='両技とも攻撃性能がなく敵のHPが動かないため、無効な攻撃を繰り返さず召喚獣を戻す')
+            return 'retreat'
         elif not stall.get('recorded'):
             stall['recorded'] = True
             _record(mem, 'monster_skill_stall', strategy_variant='monster_stall_both',
@@ -2190,6 +2209,11 @@ def monster_menu_step(screen: Screen, mem):
                      and len(skill_lines) == 2
                      and {_fold_skill(first), _fold_skill(second)}
                      == _MONSTER_SKILLS['ウゴカザル'])
+        # Data-backed twin of ``powerless``: the transcribed attack rows for
+        # this owned menu are both zero against the current opponent. The menu
+        # still tries each skill once, then returns instead of repeating a
+        # command that cannot move the enemy panel (g1153 とうめいにんげん).
+        attackless = _monster_menu_attackless(owner, ally, enemy, lampkin_skills)
         heal_first = bool(second) and _monster_heal(first) and not _monster_heal(second)
         default = 'skill1'
         if damage_first:
@@ -2274,7 +2298,8 @@ def monster_menu_step(screen: Screen, mem):
         if action == 'retreat' and not (powerless or lampkin_return):
             action = default
         if not special_cycle and not damage_first and not damage_second and not chikyu and not lampkin:
-            action = _monster_stall_switch(mem, owner, ally, enemy, action, len(skill_lines))
+            action = _monster_stall_switch(mem, owner, ally, enemy, action, len(skill_lines),
+                                           attackless=attackless)
         # Keep the existing telemetry shape. The general's exposure risk is
         # still reported, but useful summons no longer request a return that
         # needs to be blocked by that separate guard.
@@ -2292,7 +2317,9 @@ def monster_menu_step(screen: Screen, mem):
                    '帰還する（オーナー 2026-11-03）')
         elif action == 'retreat':
             label = 'たまごに もどれ'
-            why = '両技に攻撃性能がない召喚獣のため、無効な攻撃を繰り返さず戻す'
+            why = ('両技とも攻撃性能がなく敵のHPも動かないため、無効な攻撃を繰り返さず戻す'
+                   if (mem.get('monster_stall') or {}).get('returned') else
+                   '両技に攻撃性能がない召喚獣のため、無効な攻撃を繰り返さず戻す')
         elif balloon_cycle:
             label = second if action == 'skill2' else first
             if balloon['rule'] == 'survival_buffer':
