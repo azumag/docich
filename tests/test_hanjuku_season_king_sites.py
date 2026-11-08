@@ -14,6 +14,7 @@ from docich import hanjuku_chart as chart, hanjuku_policy as policy
 from docich.hanjuku.os_layer.pixels import read_png
 from docich.hanjuku.os_layer.readers import world_flags
 from docich.hanjuku.strategy import orders
+from docich.hanjuku.state.regions import world as _world
 from docich.hanjuku_screen import Screen, classify_text
 
 FIXTURES = Path(__file__).resolve().parent / 'fixtures' / 'hanjuku'
@@ -137,7 +138,7 @@ def test_a_site_sortie_keeps_two_generals_beside_the_hero():
     assert relaxed == three[:2]
     # A marching general does not guard (owner rule's own count): two present
     # beside the hero still let one go, leaving him plus one defender.
-    mem['sorties'] = {'x': {'general': 'ココット', 'status': 'en_route', 'tick': 90, 'target': 'アルカ'}}
+    _world(mem)['sorties'] = {'x': {'general': 'ココット', 'status': 'en_route', 'tick': 90, 'target': 'アルカ'}}
     assert orders._order_hero_alternatives(order, mem, [hero, *three]) == relaxed
     # Other chapters' boss orders keep their own sequence.
     ch3 = next(o for o in chart.orders(3) if o['target'] == 'ボス')
