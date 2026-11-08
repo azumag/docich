@@ -1683,6 +1683,19 @@ def _source_spare_missing(order, mem, *, allow_probe=False):
             and isinstance(present, (list, tuple)) and present
             and len(set(present) - unavailable) < 2):
         return True  # pre-flight only: never reopen a plan for the last defender
+    # The hero's castle must keep HERO_CASTLE_GUARD generals beside the hero.
+    # g1163 2026-11-09 04:39: a plan order sent a general from アルマムーン
+    # (hero + 2), the real list cancelled it (sortie_held_hero_guard) and the
+    # bot idled for the next chart. Decide it before opening the castle menu.
+    if (mem.get('active') != order.get('step')
+            and len(_owned(mem)) > 1
+            and str(order.get('step') or '').startswith(
+                (chart_adjust.INTERIM_PREFIX, chart_adjust.PLAN_PREFIX))
+            and source == chart.home_castle(mem.get('chapter') or 0)
+            and isinstance(present, (list, tuple)) and present
+            and chart_adjust.hero_guard_short(set(present) - unavailable,
+                                              order.get('general'))):
+        return True
     return (_reserve_source_guard(order, mem) and present is not None
             and len(set(present) - unavailable) < 2)
 
