@@ -1548,10 +1548,14 @@ class TestHttpHandlers(unittest.TestCase):
 
     def test_workers_snapshot_tolerates_now_second_boundary(self):
         """回帰 (#1225): 秒境界をまたいでも snapshot 比較が成立すること。"""
-        status_a, data_a = self._request("GET", "/api/workers")
+        # #3737: 1回目を実時刻で取ると、CI 負荷で処理が 1 秒を超えて秒境界を
+        # またいだ場合に now_a が base の 1 秒前になり、差が 3 になって flake
+        # する。両方を mock し、差がちょうど 2 の決定論的な回帰テストにする。
+        base = int(time.time())
+        with mock.patch.object(webui.time, "time", return_value=base):
+            status_a, data_a = self._request("GET", "/api/workers")
         self.assertEqual(status_a, 200)
-        base = time.time()
-        with mock.patch.object(webui.time, "time", return_value=int(base) + 2):
+        with mock.patch.object(webui.time, "time", return_value=base + 2):
             status_b, data_b = self._request("GET", "/api/workers")
         self.assertEqual(status_b, 200)
         now_a = data_a.pop("now", None)
