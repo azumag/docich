@@ -71,6 +71,36 @@ def _monster_owner(skill_lines, ally, enemy) -> str | None:
     return None
 
 
+def _monster_menu_attackless(owner, ally, enemy, skills) -> bool:
+    """Both visible skills are measured at zero damage against this opponent.
+
+    A summon with two effect-only skills can spend every turn picking a
+    command that cannot move the enemy panel: g1153 2026-11-08 17:45-17:47
+    とうめいにんげん (イタズラがき / イナイイナイバア) faced a transformed
+    ゼウス, kept it at 85 HP for seven own turns while its own HP fell
+    44 -> 31 -> 21 -> 11 -> 1, and the summon was lost without damage.
+
+    Only the transcribed 対モ/対将 table is accepted, and only for the exact
+    two-skill display spelling of an owned menu. Unread labels, an unknown
+    monster or a missing row keep the existing policy (fail closed).
+    """
+    if owner != 'ally' or ally is None or enemy is None or len(skills) != 2:
+        return False
+    attack_data = getattr(reference, 'MONSTER_ATTACK_DATA', None)
+    if not isinstance(attack_data, dict):
+        return False
+    data = attack_data.get(ally.name) or attack_data.get(_monster_display_name(ally.name))
+    if not (isinstance(data, dict) and 'skill1' in data and 'skill2' in data):
+        return False
+    rows = (data['skill1'], data['skill2'])
+    if not all(isinstance(row, (tuple, list)) and len(row) >= 4 for row in rows):
+        return False
+    if [_fold_skill(s) for s in skills] != [_fold_skill(row[0]) for row in rows]:
+        return False
+    column = 1 if _is_monster_opponent(enemy) else 2
+    return all(row[column] == 0 for row in rows)
+
+
 def _monster_effectful(skill: str) -> bool:
     return _fold_skill(skill) in _MONSTER_EFFECTS
 
