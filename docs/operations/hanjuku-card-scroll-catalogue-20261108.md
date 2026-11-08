@@ -54,10 +54,22 @@
   `test_hanjuku_cattlemyu.py` / `test_hanjuku_no_input_gate.py` /
   `test_hanjuku_hotload.py` / `test_hanjuku_overwhelming_egg_conservation.py` → passed
 
-## 本番反映後に実測すること
+## 本番反映後の実測（2026-11-09 01:10 JST、docich main `797eefba`）
 
-- `hanjuku_decisions.jsonl` の `card_scroll` が、目的の札が見つかるまで
-  8回を超えて続き、その直後に `card_pick` になること。
+- `ops/vm_actions` の deploy が main push で成功し、production checkout は
+  `797eefba`、live の判断ログは `hanjuku-chart-v525-card-scroll-catalogue` になった
+  （agent pid 2740821 は再起動なし。ホットロードで次観測から v525）。
+- 01:10:42〜01:10:55 の 4-B2 出撃できりふだセレクトを14行下までスクロールし、
+  旧上限8では見えなかった キャトルミュー(28) に到達、01:10:56 `rare_card_kit` →
+  01:10:57 `card_pick`（キャトルミュー）。保留も drop も出ていない。
+  ログの窓は
+  `['ノリウツール','クースカン','ゼンマイン','バルムンク']` →
+  `['バルムンク','ミックミー','ころぼぐんだん','バグストーム']` と進んだ。
+- 同一 run の v523 区間（14.9分）では `card_scroll` 56件・`card_pick` 8件だった。
+  v525 区間はまだ出撃回数が少なく、drop/保留の減少率は継続観測する。
+
+## 継続して実測すること
+
 - エンジェリン/マグネガキン/ファバードの `card_dropped` が減ること。
 - `card_select` の `situation_held` が同じ時間帯で減ること。
 - まだ札を選べない実画面がある場合（OCRの行欠け等）は、`card_scroll` の
