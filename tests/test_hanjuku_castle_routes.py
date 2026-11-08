@@ -18,7 +18,7 @@ def state():
                          'コラダイン': ['エシャロット'], 'イーピヨル': ['ピオーネ'],
                          'メガパタ': ['ペコリーノ'], 'アバロン': ['アテナ'],
                          'パタゴーヌ': ['ガスパチョ'], 'リグア': ['ユイートル']},
-            'sorties': {}, 'launched_orders': {}, '_records': [],
+            'world': {'sorties': {}}, 'launched_orders': {}, '_records': [],
             'house_eggs': {}, 'general_location_unknown': []}
 
 
@@ -69,7 +69,7 @@ def test_a_relay_castle_lost_after_planning_is_not_attacked_as_an_empty_move():
 
 def add_transfer(mem, source, target, general='ミュスカデ'):
     step = source + '-hop'
-    mem['sorties'][step] = {'source': source, 'target': target, 'general': general,
+    _world(mem)['sorties'][step] = {'source': source, 'target': target, 'general': general,
                             'status': 'en_route', 'tick': mem['tick'] - 10}
     _world(mem)['launched_orders'][step] = {'purpose': 'move', 'source': source,
                                     'target': target, 'general': general}
@@ -92,19 +92,19 @@ def test_transfer_is_forwarded_only_after_the_actual_roster_receipt():
     assert candidates[0].get('roster_probe') is True   # read-only arrival check
     before = copy.deepcopy(_world(mem)['garrison'])
     routes.observed_roster(mem, 'コラダイン', ['エシャロット'])
-    assert mem['sorties'][step]['status'] == 'en_route'
+    assert _world(mem)['sorties'][step]['status'] == 'en_route'
     assert not routes.probe_due(mem, 'コラダイン')
     assert _world(mem)['garrison'] == before
     # The march limit passes; the settled transfer is confirmed only when its
     # named actor is physically listed in the castle.
     mem['tick'] += 2000
     orders._relaunch_overdue_march(mem)
-    assert mem['sorties'][step]['status'] == 'overdue'
+    assert _world(mem)['sorties'][step]['status'] == 'overdue'
     # The existing general-list reader publishes the list, then this hook
     # releases only a transfer whose named actor is physically listed there.
     _world(mem)['garrison']['コラダイン'] = ['エシャロット', 'ミュスカデ', 'ピオーネ', 'ポワソン', 'キャンディー']
     routes.observed_roster(mem, 'コラダイン', _world(mem)['garrison']['コラダイン'])
-    assert mem['sorties'][step]['status'] == 'arrived'
+    assert _world(mem)['sorties'][step]['status'] == 'arrived'
     assert mem['_records'][-1]['decision'] == 'sortie_move_arrival_observed'
     # Isolate relay routing: if the boss is still open, boss waves correctly
     # consume the spares before this optional move is ever planned.
@@ -122,7 +122,7 @@ def test_frontline_arrival_unlocks_the_final_attack_and_other_chapters_stay_unch
     step = add_transfer(mem, 'コラダイン', 'イーピヨル')
     _world(mem)['garrison']['イーピヨル'] = ['ピオーネ', 'ミュスカデ']
     routes.observed_roster(mem, 'イーピヨル', _world(mem)['garrison']['イーピヨル'])
-    assert mem['sorties'][step]['status'] == 'arrived'
+    assert _world(mem)['sorties'][step]['status'] == 'arrived'
     first = next(iter(replan.interim_candidates(mem).values()))
     assert (first['source'], first['target'], first['purpose']) == (
         'イーピヨル', 'ドンダム', 'retake')
@@ -134,19 +134,19 @@ def test_wrong_castle_old_transfer_or_nontransfer_never_confirms_arrival():
     mem = state()
     step = add_transfer(mem, 'アルマムーン', 'コラダイン')
     routes.observed_roster(mem, 'イーピヨル', ['ミュスカデ'])
-    assert mem['sorties'][step]['status'] == 'en_route'
+    assert _world(mem)['sorties'][step]['status'] == 'en_route'
 
-    mem['sorties'][step]['tick'] = mem['tick'] - routes.SORTIE_BUSY_TICKS
+    _world(mem)['sorties'][step]['tick'] = mem['tick'] - routes.SORTIE_BUSY_TICKS
     routes.observed_roster(mem, 'コラダイン', ['ミュスカデ'])
-    assert mem['sorties'][step]['status'] == 'en_route'
-    mem['sorties'][step]['tick'] = mem['tick']
+    assert _world(mem)['sorties'][step]['status'] == 'en_route'
+    _world(mem)['sorties'][step]['tick'] = mem['tick']
     _world(mem)['launched_orders'][step]['purpose'] = 'attack'
     routes.observed_roster(mem, 'コラダイン', ['ミュスカデ'])
-    assert mem['sorties'][step]['status'] == 'en_route'
+    assert _world(mem)['sorties'][step]['status'] == 'en_route'
     _world(mem)['launched_orders'][step]['purpose'] = 'move'
     _world(mem)['launched_orders'][step]['target'] = 'グリン'
     routes.observed_roster(mem, 'コラダイン', ['ミュスカデ'])
-    assert mem['sorties'][step]['status'] == 'en_route'
+    assert _world(mem)['sorties'][step]['status'] == 'en_route'
 
 
 @pytest.mark.parametrize('kind', ['general_list', 'sortie_confirm', 'map_target', 'world_map'])
@@ -229,7 +229,7 @@ def rigua_stall():
                        'グリン': [], 'コラダイン': ['ミュスカデ'], 'ドンダム': ['ピオーネ'],
                        'パタゴーヌ': ['アポロン'], 'メガパタ': ['デュオニソス']}
     for step, general, tick in (('I:380571:2', 'アテナ', 65575), ('I:b59ab6:1', 'ポワソン', 66126)):
-        mem['sorties'][step] = {'source': 'アルマムーン', 'target': 'グリン', 'general': general,
+        _world(mem)['sorties'][step] = {'source': 'アルマムーン', 'target': 'グリン', 'general': general,
                                 'status': 'en_route', 'tick': tick}
         _world(mem)['launched_orders'][step] = {'purpose': 'move', 'source': 'アルマムーン',
                                         'target': 'グリン', 'general': general, 'step': step}
@@ -264,7 +264,7 @@ def test_a_read_list_closes_the_probe_and_the_stuck_retake_is_replaced():
     mem['tick'] += routes.PROBE_INTERVAL
     assert routes.unread_dispatches(mem, 'グリン') == []
     assert not routes.probe_due(mem, 'グリン')
-    assert {mem['sorties'][s]['status'] for s in ('I:380571:2', 'I:b59ab6:1')} == {'en_route'}
+    assert {_world(mem)['sorties'][s]['status'] for s in ('I:380571:2', 'I:b59ab6:1')} == {'en_route'}
     assert not orders._source_list_open(retake, mem)
     assert orders.next_order(mem) is None or orders.next_order(mem)['step'] != 'I:b59ab6:2'
     # With every other measured garrison reduced to one defender there is
@@ -320,7 +320,7 @@ def victoria_drain():
            'sorties': {}, 'launched_orders': {}, '_records': [],
            'house_eggs': {}, 'general_location_unknown': []}
     for step, general, tick in (('I:0fa434:2', 'アポロン', 95400), ('I:49a839:1', 'アルファルファ', 96181)):
-        mem['sorties'][step] = {'source': 'アルマムーン', 'target': 'ビクトリア', 'general': general,
+        _world(mem)['sorties'][step] = {'source': 'アルマムーン', 'target': 'ビクトリア', 'general': general,
                                 'status': 'en_route', 'tick': tick}
         _world(mem)['launched_orders'][step] = {'purpose': 'move', 'source': 'アルマムーン',
                                         'target': 'ビクトリア', 'general': general, 'step': step}
@@ -359,24 +359,24 @@ def test_an_overdue_move_still_suppresses_refills_and_binds_on_later_read():
     list is read, and that read binds the arrival."""
     mem = victoria_drain()
     step = 'I:0fa434:2'
-    mem['sorties'][step].update(status='overdue', purpose='move')
+    _world(mem)['sorties'][step].update(status='overdue', purpose='move')
     _world(mem)['launched_orders'].pop(step)                  # relaunch pops the snapshot
     assert {s for s, _ in routes.unread_dispatches(mem, 'ビクトリア')} == {
         'I:0fa434:2', 'I:49a839:1'}
     assert not moves_into(mem, 'ビクトリア')
     routes.observed_roster(mem, 'ビクトリア', ['アポロン'])
-    assert mem['sorties'][step]['status'] == 'arrived'
+    assert _world(mem)['sorties'][step]['status'] == 'arrived'
     assert mem['_records'][-1]['decision'] == 'sortie_move_arrival_observed'
 
 
 def test_an_overdue_non_move_march_is_not_an_unread_dispatch():
     mem = victoria_drain()
     step = 'I:0fa434:2'
-    mem['sorties'][step].update(status='overdue')
+    _world(mem)['sorties'][step].update(status='overdue')
     _world(mem)['launched_orders'][step]['purpose'] = 'attack'
     assert {s for s, _ in routes.unread_dispatches(mem, 'ビクトリア')} == {'I:49a839:1'}
     routes.observed_roster(mem, 'ビクトリア', ['アポロン'])
-    assert mem['sorties'][step]['status'] == 'overdue'
+    assert _world(mem)['sorties'][step]['status'] == 'overdue'
 
 
 def test_lost_castle_gating_the_boss_path_is_retaken_first():
@@ -553,7 +553,7 @@ def aiaie_stall():
     for step, general, tick, status in (('A:0ca8ce6a:M1', 'ジェラート', 88300, 'overdue'),
                                         ('A:d0871b56:M2', 'ピスタチオ', 93200, 'overdue'),
                                         ('A:86477f11:M3', 'ラビオリ', 99900, 'overdue')):
-        mem['sorties'][step] = {'source': 'アルマムーン', 'target': 'アイアイエー',
+        _world(mem)['sorties'][step] = {'source': 'アルマムーン', 'target': 'アイアイエー',
                                 'general': general, 'status': status, 'tick': tick,
                                 'purpose': 'move'}
         mem['orders'][step] = 'failed'
@@ -605,7 +605,7 @@ def test_a_read_list_ends_the_probe_and_the_found_generals_sortie_from_there():
 
 def test_a_transfer_still_marching_is_waited_for_before_the_list_is_opened():
     mem = aiaie_stall()
-    mem['sorties']['A:86477f11:M3'].update(status='en_route', tick=mem['tick'] - 50)
+    _world(mem)['sorties']['A:86477f11:M3'].update(status='en_route', tick=mem['tick'] - 50)
     _world(mem)['launched_orders']['A:86477f11:M3'] = {
         'purpose': 'move', 'source': 'アルマムーン', 'target': 'アイアイエー',
         'general': 'ラビオリ', 'step': 'A:86477f11:M3'}
@@ -644,7 +644,7 @@ def test_an_old_launched_flag_does_not_block_an_order_the_plan_offers_again():
     steps = rebuild(mem)
     karun = steps['カルーン']
     mem['orders'][karun] = 'launched'
-    mem['sorties'][karun] = {'source': 'アルマムーン', 'target': 'カルーン', 'general': 'キッシュ',
+    _world(mem)['sorties'][karun] = {'source': 'アルマムーン', 'target': 'カルーン', 'general': 'キッシュ',
                              'status': 'arrived', 'tick': mem['tick'] - 17000}
     mem['general_override'] = {karun: 'キッシュ'}
     mem['order_context'] = {karun: {'actual_general': 'キッシュ'}}
@@ -660,7 +660,7 @@ def test_an_order_really_marching_keeps_its_launched_flag():
     steps = rebuild(mem)
     step = steps['ジュメルズ']
     mem['orders'][step] = 'launched'
-    mem['sorties'][step] = {'source': 'アルマムーン', 'target': 'ジュメルズ', 'general': 'セルリアク',
+    _world(mem)['sorties'][step] = {'source': 'アルマムーン', 'target': 'ジュメルズ', 'general': 'セルリアク',
                             'status': 'en_route', 'tick': mem['tick'] - 100}
     rebuild(mem)
     assert mem['orders'][step] == 'launched'
