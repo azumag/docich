@@ -20,21 +20,7 @@ MONTH_SCAN_RESUME_PHASES = frozenset({
     'month_open', 'open_roster', 'level_status', 'leave_status', 'leave_roster'})
 
 
-def _enter_chapter(mem, chapter, *, reason, evidence=None):
-    previous = mem.get('chapter')
-    house = mem.get('house')
-    month_scan = (dict(house) if isinstance(house, dict) and house.get('level_only')
-                  and house.get('phase') in MONTH_SCAN_RESUME_PHASES else None)
-    from ..os_layer.roster import fresh
-    previous_roster = fresh(mem)
-    if previous_roster and previous_roster.get('complete') is True:
-        mem['recruit_payroll_pending'] = list(previous_roster['names'])
-    # Route state belongs to the measured map of one chapter. Keep
-    # run-wide counters/name evidence, never carry coordinates/orders.
-    # country_income / country_wages are last observations (owner 2026-11-04):
-    # keep them until the next country-status read rewrites them, instead of
-    # blanking 現在収入 / 総賃金.
-    for key in ('map_registration', 'map_discovery', 'boss_victories', 'approx_fallback', 'approx_localize_miss',
+CHAPTER_SCOPE_KEYS = ('map_registration', 'map_discovery', 'boss_victories', 'approx_fallback', 'approx_localize_miss',
                 'season_sites', 'season_site_streak',
                 'active', 'anchor', 'goal_anchor_lock', 'attack', 'battle', 'battle_seen',
                 'captured', 'card_override', 'rare_card_kit', 'strong_card_kit', 'dropper_card_kit', 'castle_defenders', 'boss_stock_restart', 'boss_stock_cancelled', 'rare_scan', 'rare_scan_month', 'cursor', 'egg_battle',
@@ -63,8 +49,30 @@ def _enter_chapter(mem, chapter, *, reason, evidence=None):
                 'egg_action', 'egg_key', 'egg_menu_stage', 'indep_menu',
                 'indep_menu_key', 'indep_menu_action',
                 'monster_menu_key', 'monster_menu_cursor', 'monster_menu_hold',
-                'monster_menu_choice', 'monster_menu_choice_key', 'monster_menu_choice_scope', 'monster_menu_cursor_recheck', 'monster_panel', 'lampkin_cycle'):
+                'monster_menu_choice', 'monster_menu_choice_key', 'monster_menu_choice_scope', 'monster_menu_cursor_recheck', 'monster_panel', 'lampkin_cycle')
+
+
+def _reset_chapter_scope(mem):
+    """Drop the route/plan state that belongs to one measured chapter."""
+    for key in CHAPTER_SCOPE_KEYS:
         mem.pop(key, None)
+
+
+def _enter_chapter(mem, chapter, *, reason, evidence=None):
+    previous = mem.get('chapter')
+    house = mem.get('house')
+    month_scan = (dict(house) if isinstance(house, dict) and house.get('level_only')
+                  and house.get('phase') in MONTH_SCAN_RESUME_PHASES else None)
+    from ..os_layer.roster import fresh
+    previous_roster = fresh(mem)
+    if previous_roster and previous_roster.get('complete') is True:
+        mem['recruit_payroll_pending'] = list(previous_roster['names'])
+    # Route state belongs to the measured map of one chapter. Keep
+    # run-wide counters/name evidence, never carry coordinates/orders.
+    # country_income / country_wages are last observations (owner 2026-11-04):
+    # keep them until the next country-status read rewrites them, instead of
+    # blanking 現在収入 / 総賃金.
+    _reset_chapter_scope(mem)
     mem['chapter'] = chapter
     if month_scan is not None:
         month_scan['chapter'] = chapter
@@ -75,6 +83,20 @@ def _enter_chapter(mem, chapter, *, reason, evidence=None):
             observed_metric={'chapter': chapter, **({'evidence': evidence} if evidence else {})},
             resulting_stage=chapter,
             reason=reason)
+
+
+def finish_chapter(mem, *, reason='starter party departed for the next chapter'):
+    """Clear the finished chapter's execution state before the next is measured.
+
+    The starter party appears only between chapters. Keeping the old orders let
+    a chapter-4 site sortie start after the chapter-end save (g1163 2026-11-09
+    04:04, two minutes before the chapter was observed). The new chapter number
+    is still measured later; this only drops what cannot run any more.
+    """
+    _reset_chapter_scope(mem)
+    mem['chapter_transition_pending'] = True
+    _record(mem, 'chapter_scope_cleared',
+            observed_metric={'chapter': mem.get('chapter')}, reason=reason)
 
 
 def observe_chapter_castle(mem, castle):
