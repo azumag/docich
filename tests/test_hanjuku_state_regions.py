@@ -133,3 +133,22 @@ def test_migrated_departure_and_recall_keys_live_in_their_regions():
         assert KEY_OWNERSHIP[key]['region'] == WORLD
         assert KEY_OWNERSHIP[key]['lifetime'] == 'chapter'
         assert KEY_OWNERSHIP[key]['migrated'] is True
+
+
+def test_sorties_flat_migration_prefers_latest_observation_and_is_idempotent():
+    # W4: old runtime snapshots may still contain flat sorties. The latest
+    # flat observation must replace an older world copy, not coexist with it.
+    mem = {'world': {'sorties': {'old': {'status': 'en_route'}}},
+           'sorties': {'new': {'status': 'arrived'}}}
+    migrate_legacy_state(mem)
+    assert 'sorties' not in mem
+    assert world(mem)['sorties'] == {'new': {'status': 'arrived'}}
+    migrate_legacy_state(mem)
+    assert world(mem)['sorties'] == {'new': {'status': 'arrived'}}
+
+
+def test_sorties_world_read_does_not_create_empty_region():
+    # A read-only probe must not mutate an empty state snapshot.
+    mem = {}
+    assert world(mem).get('sorties') is None
+    assert 'world' not in mem
