@@ -764,7 +764,13 @@ def interim_candidates(mem, allow_sole=False) -> dict:
             for donor in sorted(owned):
                 free = [g for g in garrison.get(donor) or () if g not in busy
                         and g not in (_world(mem).get('general_location_unknown') or ())]
-                probe = routes.probe_due(mem, donor)
+                # A staging move out of a castle with fewer than two generals
+                # is only ever an arrival check. Wait until the transfer into
+                # it has left the busy window: while it is still marching the
+                # list cannot show the second general, and the move would be
+                # planned against a one-general castle (g1153 2026-11-08
+                # 13:30 moved from メガパタ while ヴィーナス was still walking).
+                probe = routes.arrival_probe_due(mem, donor, cooldown=True)
                 if len(free) < 2 and not probe:
                     continue
                 if len(free) >= 2 and not [g for g in _spares(free) if g != NAME]:
@@ -928,8 +934,12 @@ def interim_candidates(mem, allow_sole=False) -> dict:
                   *(lead if retakes_stalled else lead[1:]),
                   *attacks, *rotation, *wave_orders):
         # A generic source-list probe at a measured one-general castle is
-        # not a feasible sortie. Only actual inbound marches or new joiners
-        # expected at the hero's castle justify rereading that singleton.
+        # not a feasible sortie. Only an arrival or a new joiner expected at
+        # the hero's castle justifies opening that singleton, and even then
+        # the order is read-only: the game refuses to dispatch the last
+        # defender, so a departure from that castle would contradict the
+        # leave-one rule (owner 2026-11-08: 将軍が一人しかいない城からの
+        # 出撃計画がたつ).
         # docich#3515: a roster probe for a blind launch must open even a
         # one-general castle: that singleton is exactly the phantom's source.
         # It reads and settles without sending.
@@ -945,9 +955,15 @@ def interim_candidates(mem, allow_sole=False) -> dict:
                             and order.get('source_probe') is True
                             and order['general'] == MOVE_ANY_GENERAL)
             arrival_probe = (order.get('source_probe') is True
-                             and routes.probe_due(mem, order['source']))
+                             and routes.arrival_probe_due(mem, order['source'],
+                                                          cooldown=True))
             if not (fresh_joiner or arrival_probe):
                 continue
+            # The list may now hold the arrival, but the recorded garrison is
+            # still one general: open it read-only and replan from the receipt.
+            order['roster_probe'] = True
+            order['note'] = (f"暫定: {order['source']}の将軍一覧を読んで"
+                             "増援の到着を確認する")
         if chart_adjust.startable(order, situation) is not None:
             continue
         out[f"{order['purpose']}_{len(out) + 1}"] = order
@@ -1197,6 +1213,7 @@ def _mechanical_chart(mem, state, rid, digest):
             'purpose': order.get('purpose'),
             'note': order.get('note') or '',
             **({'source_probe': True} if order.get('source_probe') is True else {}),
+            **({'roster_probe': True} if order.get('roster_probe') is True else {}),
         })
     _suppress_recent_failures(mem, orders)
     # Failed steps the plan still offers are retried after their bounded
@@ -1240,6 +1257,17 @@ def _mechanical_step(order, used, mem=None):
     was unused went out at a time. The id must identify the order's content.
     """
     key = '%s>%s:%s' % (order.get('source'), order.get('target'), order.get('purpose') or '')
+    if order.get('roster_probe') is True:
+        # A read-only roster probe verifies an arrival and then finishes
+        # 'done'; the sortie it verifies must not share that execution id or
+        # it would inherit the finished status and never start. The dispatch
+        # tick separates one arrival check from the next, so a later transfer
+        # into the same castle is probed again.
+        key += ':probe'
+        if mem is not None:
+            ticks = [s.get('tick') for _, s in routes.unread_dispatches(mem, order.get('source'))
+                     if isinstance(s, dict)]
+            key += ':' + str(max((t for t in ticks if type(t) is int), default=0))
     if (mem is not None and chart.is_boss_castle(order.get('target'))
             and _boss_wave_in_flight(mem, order.get('target')) >= 1):
         # 章末のボスは行軍中でも次の隊を出す（owner 2026-11-04）。同じ出撃元と
@@ -1391,6 +1419,15 @@ def _adopt_plan(mem, doc, rid):
     orders = [{**o, 'step': chart_adjust.execution_step(rid, o['step']), 'local_step': o['step'],
                'cards': list(o['cards']), 'after': list(o['after']) if o['after'] else None}
               for o in doc['orders']]
+    garrison = _world(mem).get('garrison') or {}
+    for order in orders:
+        present = garrison.get(order['source'])
+        if (order.get('source_probe') is True and order.get('roster_probe') is not True
+                and isinstance(present, (list, tuple)) and len(set(present)) == 1):
+            # An adopted plan may only inspect a measured one-general castle:
+            # the game refuses to dispatch its last defender, so the order is
+            # a read-only roster probe even if the plan called it a sortie.
+            order['roster_probe'] = True
     purchases = doc.get('purchases')
     mem['chart_plan'] = {
         'request_id': rid, 'source': doc.get('source'), 'orders': orders,
@@ -1424,7 +1461,8 @@ def _adopt_plan(mem, doc, rid):
     mem['variant'] = 'chart_adjusted'
     # Digest for commentary: grounded order content, not the full plan blob.
     order_digest = [{'general': o['general'], 'source': o['source'],
-                     'target': o['target'], 'cards': list(o['cards'])} for o in orders]
+                     'target': o['target'], 'cards': list(o['cards']),
+                     'roster_probe': bool(o.get('roster_probe'))} for o in orders]
     # A mechanical plan is rebuilt whenever its orders stop being runnable;
     # the same rebuild was recorded every observation (g1133 2026-11-05: 17
     # identical records in 30 minutes). Record only a different plan.

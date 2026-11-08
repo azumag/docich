@@ -271,6 +271,13 @@ def _order(raw, castles, base_steps):
         if probe is not True or order['general'] != 'しょうぐん':
             raise ValueError('invalid source_probe')
         order['source_probe'] = True
+    roster_probe = raw.get('roster_probe')
+    if roster_probe is not None:
+        # Read-only: open the source list and back out. Only a source probe
+        # may carry it (a named sortie cannot be silently turned into a read).
+        if roster_probe is not True or order.get('source_probe') is not True:
+            raise ValueError('invalid roster_probe')
+        order['roster_probe'] = True
     return order
 
 

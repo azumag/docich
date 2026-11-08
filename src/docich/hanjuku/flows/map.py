@@ -1238,6 +1238,7 @@ def map_step(screen: Screen, mem, frame):
         _record(mem, 'order_start', chart_step=order['step'], **_deploy_context(order, mem),
                 source=order['source'], target=order['target'], purpose=order.get('purpose'),
                 cards=list(order['cards']),
+                **({'roster_probe': True} if order.get('roster_probe') is True else {}),
                 reason=order['note'])
     source = _source(order, mem)
     goal = _measured_goal(mem, order, source)

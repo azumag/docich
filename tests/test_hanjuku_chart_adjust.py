@@ -1451,3 +1451,17 @@ def test_g514_live_plan_and_recent_target_reservation_still_suppress_retake():
     mem['sorties']['recent'] = {'general': 'ヴィーナス', 'target': 'ナキューメラ',
                                'status': 'en_route', 'tick': mem['tick'] - 1}
     assert not any(o['target'] == 'ナキューメラ' for o in policy.interim_candidates(mem).values())
+
+
+def test_roster_probe_is_read_only_and_requires_a_source_probe():
+    # Owner 2026-11-08: a one-general castle may only be inspected, never
+    # dispatched. The read-only marker is valid only on a source probe.
+    doc = adjusted_doc('0123456789abcdef')
+    doc['orders'] = [{'step': 'J1', 'general': 'しょうぐん', 'source': 'ゴーメン',
+                      'target': 'スペンソニア', 'cards': [], 'after': None,
+                      'source_probe': True, 'roster_probe': True}]
+    validated = adjust.validate(doc)
+    assert validated['orders'][0]['roster_probe'] is True
+    doc['orders'][0].pop('source_probe')
+    with pytest.raises(ValueError):
+        adjust.validate(doc)

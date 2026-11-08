@@ -1608,6 +1608,8 @@ def _source_location_recheck_due(mem, source):
 def _source_spare_missing(order, mem, *, allow_probe=False):
     if (mem.get('orders') or {}).get(order['step']) == 'launched_unconfirmed':
         return False  # reconcile an issued sortie; do not cancel its carried-kit receipt
+    if order.get('roster_probe') is True:
+        return False  # read-only: opening the list dispatches nobody
     source = _source(order, mem)
     present = (_world(mem).get('garrison') or {}).get(source)
     # A genuine arrival or newly joined general may have changed the list
