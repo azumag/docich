@@ -12,18 +12,18 @@ the workflow run's red X.
 This detector therefore reads the recent ``vm-operations.yml`` push runs on
 ``main``, classifies the failure through the owner-only gateway's fixed reason
 enum (``reconcile_refused`` and friends), and keeps exactly one deduplicated
-Issue open while production is blocked. It closes that Issue as soon as a later
-main push deploy succeeds. A query failure fails closed: the existing alert
-state is left untouched instead of being closed on unknown data.
+Issue open while production is blocked -- i.e. while the newest concluded main
+push run is a failure, regardless of its age (docich#3666). It closes that
+Issue as soon as a later main push deploy succeeds. A query failure fails
+closed: the existing alert state is left untouched instead of being closed on
+unknown data.
 
 Only fixed fields are published: the reason code from the gateway's enum, the
-run id / URL / head SHA / created_at, the detector run URL and the lookback
-window. Raw log lines, VM paths, credentials and request bodies never reach the
-Issue.
+run id / URL / head SHA / created_at and the detector run URL. Raw log lines,
+VM paths, credentials and request bodies never reach the Issue.
 """
 from __future__ import annotations
 
-import datetime as dt
 import json
 import os
 import subprocess
@@ -32,7 +32,6 @@ from typing import Callable, Sequence
 
 ALERT_TITLE = "[VM deploy] production deploy blocked"
 DEFAULT_WORKFLOW = "vm-operations.yml"
-DEFAULT_LOOKBACK_MINUTES = 90
 
 # Fixed reason enum: the gateway's REASON_CODES for the deploy / reconcile
 # operations. The detector may only publish one of these strings (or the
@@ -94,14 +93,6 @@ def gh_runner(args: Sequence[str]) -> str:
     return completed.stdout
 
 
-def parse_created_at(value: str) -> dt.datetime:
-    text = value.strip().replace("Z", "+00:00")
-    parsed = dt.datetime.fromisoformat(text)
-    if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=dt.timezone.utc)
-    return parsed.astimezone(dt.timezone.utc)
-
-
 def recent_runs(runner: Runner, repo: str, workflow: str, limit: int = 20) -> list[dict]:
     """Recent main push runs of the deploy workflow, newest first."""
 
@@ -132,27 +123,23 @@ def recent_runs(runner: Runner, repo: str, workflow: str, limit: int = 20) -> li
     return runs
 
 
-def select_blocking_failure(
-    runs: Sequence[dict], now: dt.datetime, lookback_minutes: int
-) -> dict | None:
-    """The newest failed run inside the window, or ``None``.
+def select_blocking_failure(runs: Sequence[dict]) -> dict | None:
+    """The newest failed main push run, or ``None`` (age-unbounded).
 
-    A newer successful run supersedes the failure: production recovered, so the
-    failure is history rather than a current blocker.
+    docich#3666: the previous 90-minute lookback assumed the detector runs at
+    least hourly, but this repo's schedule effectively fires only a few times
+    a day -- a failure older than the window fell out of view while the deploy
+    was still blocked. "Blocked" is a state, not an event: as long as the
+    newest concluded main push run is a failure, production has not received
+    that commit. A newer successful run supersedes the failure (production
+    recovered), so there is no need to bound the failure's age.
     """
 
-    cutoff = now - dt.timedelta(minutes=lookback_minutes)
     for run in runs:
-        created_raw = str(run.get("created_at") or "")
-        try:
-            created = parse_created_at(created_raw)
-        except ValueError:
-            continue
-        if created < cutoff:
+        conclusion = str(run.get("conclusion") or "")
+        if conclusion == "success":
             return None
-        if str(run.get("conclusion") or "") == "success":
-            return None
-        if str(run.get("conclusion") or "") in {"failure", "timed_out", "startup_failure"}:
+        if conclusion in {"failure", "timed_out", "startup_failure"}:
             return run
     return None
 
@@ -222,7 +209,6 @@ def render_body(
     server: str,
     run: dict,
     reason: str,
-    lookback_minutes: int,
     run_id: str,
     workflow: str = DEFAULT_WORKFLOW,
 ) -> str:
@@ -235,7 +221,7 @@ def render_body(
             f"- head SHA: {run.get('head_sha') or '(unknown)'}",
             f"- created_at (UTC): {run.get('created_at') or '(unknown)'}",
             f"- workflow: {server}/{repo}/actions/workflows/{workflow}",
-            f"- lookback window (minutes): {lookback_minutes}",
+            "- detection: blocked while the newest main push run is a failure (age-unbounded)",
             f"- detector run: {server}/{repo}/actions/runs/{run_id}",
             "",
             "deploy が失敗している間、それ以降の main は本番へ届きません。",
@@ -255,13 +241,10 @@ def run(
     server: str,
     run_id: str,
     workflow: str = DEFAULT_WORKFLOW,
-    lookback_minutes: int = DEFAULT_LOOKBACK_MINUTES,
-    now: dt.datetime | None = None,
     log: Callable[[str], None] = print,
 ) -> int:
     """Keep the deduplicated deploy blocker alert consistent."""
 
-    now = now or dt.datetime.now(dt.timezone.utc)
     try:
         runs = recent_runs(runner, repo, workflow)
         alert = open_alert_number(runner, repo)
@@ -269,7 +252,7 @@ def run(
         log("deploy blocker check unavailable; alert state left unchanged")
         return EXIT_QUERY_FAILED
 
-    failure = select_blocking_failure(runs, now, lookback_minutes)
+    failure = select_blocking_failure(runs)
     if failure is None:
         if alert is None:
             log("no blocked deploy; no alert open")
@@ -298,7 +281,6 @@ def run(
         server=server,
         run=failure,
         reason=reason,
-        lookback_minutes=lookback_minutes,
         run_id=run_id,
     )
     try:
@@ -316,15 +298,6 @@ def run(
         return EXIT_PUBLISH_FAILED
 
 
-def _int_env(name: str, default: int) -> int:
-    raw = os.environ.get(name, "")
-    try:
-        value = int(float(raw))
-    except (TypeError, ValueError):
-        return default
-    return value if value > 0 else default
-
-
 def main() -> int:
     repo = os.environ.get("GITHUB_REPOSITORY", "")
     server = (os.environ.get("GITHUB_SERVER_URL") or "https://github.com").rstrip("/")
@@ -339,9 +312,6 @@ def main() -> int:
         server=server,
         run_id=run_id or "unknown",
         workflow=workflow,
-        lookback_minutes=_int_env(
-            "RECONCILE_ALERT_LOOKBACK_MINUTES", DEFAULT_LOOKBACK_MINUTES
-        ),
     )
 
 
