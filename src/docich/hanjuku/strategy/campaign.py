@@ -23,6 +23,18 @@ MONTH_SCAN_RESUME_PHASES = frozenset({
 CHAPTER_SCOPE_KEYS = ('map_registration', 'map_discovery', 'boss_victories', 'approx_fallback', 'approx_localize_miss',
                 'season_sites', 'season_site_streak',
                 'moving_boss', 'moving_boss_streak', 'boss_cell', 'boss_cell_streak',
+                # Per-step and per-boss records belong to the chapter that made
+                # them. Left behind they outlive their step ids (g1163: the
+                # chapter-4 boss HP was still shown in chapter 5) and grow the
+                # policy for eleven more chapters.
+                'boss_hp_seen', 'order_start_tick', 'site_step_rearm',
+                'season_sites_refused', 'cards_capped', 'equivalent_launch_miss',
+                'kit_spent', 'sortie_relaunch', 'source_mismatch_castle',
+                'y_jumps_total', 'sortie_held_source_defender_counts',
+                'sortie_held_source_defender_gates', 'source_defender_cancel_counts',
+                'sortie_held_source_defender_cancel_counts',
+                'sortie_source_defender_cancel_counts', 'sortie_source_defender_cancel_gates',
+                'source_defender_cancel_gates',
                 'active', 'anchor', 'goal_anchor_lock', 'attack', 'battle', 'battle_seen',
                 'captured', 'card_override', 'rare_card_kit', 'strong_card_kit', 'dropper_card_kit', 'castle_defenders', 'boss_stock_restart', 'boss_stock_cancelled', 'rare_scan', 'rare_scan_month', 'cursor', 'egg_battle',
                 'expect_menu', 'general_override', 'launched', 'menu_miss', 'month_exit', 'month_sub',
