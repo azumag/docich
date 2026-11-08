@@ -25,9 +25,9 @@ def memory(tick, *, status='en_route', target='ボス', lost=()):
         'chapter': CHAPTER, 'tick': tick,
         'orders': {step: 'launched' for step in steps},
         'world': {'sorties': {'3-B1': {'general': 'アポロン', 'source': 'パタゴーヌ', 'target': target,
-                             'status': status, 'tick': LAUNCH, 'confirmation_tick': LAUNCH - 6}}}
-        'launched_orders': {'3-B1': {'step': '3-B1', 'general': 'アポロン', 'source': 'パタゴーヌ',
-                                     'target': 'ボス', 'cards': ['ゼンマイン', 'ミックミー']}},
+                             'status': status, 'tick': LAUNCH, 'confirmation_tick': LAUNCH - 6}},
+                  'launched_orders': {'3-B1': {'step': '3-B1', 'general': 'アポロン', 'source': 'パタゴーヌ',
+                                     'target': 'ボス', 'cards': ['ゼンマイン', 'ミックミー']}}},
         'general_override': {'3-B1': 'アポロン'},
         'captured': [c for c in NORMAL if c not in lost],
         'lost': list(lost),
@@ -44,7 +44,7 @@ def test_the_live_march_is_overdue_and_waits_for_the_boss_unlock():
     mem = memory(79599, lost=['パタゴーヌ'])
     assert O.next_order(mem) is None                    # パタゴーヌ lost: boss still locked
     assert mem['orders']['3-B1'] == 'pending'
-    assert mem['sorties']['3-B1']['status'] == 'overdue'
+    assert _world(mem)['sorties']['3-B1']['status'] == 'overdue'
     assert mem['boss_relaunch'] == {'3-B1': 1}
     (record,) = decisions(mem, 'boss_sortie_overdue')
     assert record['chart_step'] == '3-B1' and record['general'] == 'アポロン'
@@ -75,7 +75,7 @@ def test_a_march_inside_the_limit_is_left_alone():
     mem = memory(LAUNCH + O.BOSS_ARRIVAL_LIMIT - 1)
     O.next_order(mem)
     assert mem['orders']['3-B1'] == 'launched'
-    assert mem['sorties']['3-B1']['status'] == 'en_route'
+    assert _world(mem)['sorties']['3-B1']['status'] == 'en_route'
     assert not decisions(mem, 'boss_sortie_overdue')
 
 
@@ -96,7 +96,7 @@ def test_an_entry_whose_fight_left_no_result_is_sent_again():
     mem = memory(79599, status='arrived')
     O.next_order(mem)
     assert mem['orders']['3-B1'] == 'pending'
-    assert mem['sorties']['3-B1']['status'] == 'overdue'
+    assert _world(mem)['sorties']['3-B1']['status'] == 'overdue'
     assert mem['boss_relaunch'] == {'3-B1': 1}
     (record,) = decisions(mem, 'boss_sortie_overdue')
     assert record['resulting_event'] == 'relaunch:1'
@@ -109,11 +109,11 @@ def test_an_entry_with_a_live_fight_is_not_sent_again():
     mem['battle'] = {'step': '3-B1', 'ally': 'アポロン', 'enemy': 'プリンス'}
     O.next_order(mem)
     assert mem['orders']['3-B1'] == 'launched'
-    assert mem['sorties']['3-B1']['status'] == 'arrived'
+    assert _world(mem)['sorties']['3-B1']['status'] == 'arrived'
     mem['battle'] = {'step': 'other', 'ally': 'アポロン', 'enemy': 'プリンス'}
     O.next_order(mem)
     assert mem['orders']['3-B1'] == 'pending'           # another step's fight is not ours
-    assert mem['sorties']['3-B1']['status'] == 'overdue'
+    assert _world(mem)['sorties']['3-B1']['status'] == 'overdue'
 
 
 def test_an_entry_to_a_site_already_won_is_not_sent_again():
@@ -138,7 +138,7 @@ def test_an_old_march_to_a_normal_castle_is_settled_and_relaunched():
     mem = memory(79599, target='パタゴーヌ')
     O.next_order(mem)
     assert mem['orders']['3-B1'] == 'pending'
-    assert mem['sorties']['3-B1']['status'] == 'overdue'
+    assert _world(mem)['sorties']['3-B1']['status'] == 'overdue'
     assert mem['sortie_relaunch']['3-B1'] == 1
 
 
@@ -148,13 +148,13 @@ def test_a_march_relaunch_is_bounded():
         O.next_order(mem)
         assert mem['sortie_relaunch']['3-B1'] == n
         mem['orders']['3-B1'] = 'launched'
-        mem['sorties']['3-B1'] = {'general': 'セルリアク', 'source': 'アルマムーン',
+        _world(mem)['sorties']['3-B1'] = {'general': 'セルリアク', 'source': 'アルマムーン',
                                   'target': 'パタゴーヌ', 'status': 'en_route',
                                   'tick': mem['tick']}
         mem['tick'] += O.BOSS_ARRIVAL_LIMIT
     O.next_order(mem)
     assert mem['orders']['3-B1'] == 'launched'
-    assert mem['sorties']['3-B1']['status'] == 'overdue'
+    assert _world(mem)['sorties']['3-B1']['status'] == 'overdue'
     assert len(decisions(mem, 'sortie_march_relaunch_exhausted')) == 1
 
 
@@ -163,7 +163,7 @@ def test_a_march_without_a_launched_order_is_just_closed():
     mem['orders']['3-B1'] = 'failed'
     O.next_order(mem)
     assert mem['orders']['3-B1'] == 'failed'
-    assert mem['sorties']['3-B1']['status'] == 'overdue'
+    assert _world(mem)['sorties']['3-B1']['status'] == 'overdue'
     assert not decisions(mem, 'sortie_march_overdue')
     assert decisions(mem, 'sortie_march_overdue_settled')
 
@@ -177,10 +177,10 @@ def test_a_confirmed_move_to_an_own_castle_is_settled_not_relaunched():
     move past the limit closes the order; routes.unread_dispatches keeps
     the castle off the move list until its list is read."""
     mem = memory(79599, target='パタゴーヌ')
-    mem['sorties']['3-B1']['purpose'] = 'move'
+    _world(mem)['sorties']['3-B1']['purpose'] = 'move'
     O.next_order(mem)
     assert mem['orders']['3-B1'] == 'failed'
-    assert mem['sorties']['3-B1']['status'] == 'overdue'
+    assert _world(mem)['sorties']['3-B1']['status'] == 'overdue'
     assert 'sortie_relaunch' not in mem or '3-B1' not in mem['sortie_relaunch']
     assert not decisions(mem, 'sortie_march_overdue')
     (record,) = decisions(mem, 'sortie_move_overdue_settled')
@@ -190,7 +190,7 @@ def test_a_confirmed_move_to_an_own_castle_is_settled_not_relaunched():
 
 def test_a_move_into_lost_or_enemy_ground_still_relaunches():
     mem = memory(79599, target='パタゴーヌ', lost=['パタゴーヌ'])
-    mem['sorties']['3-B1']['purpose'] = 'move'
+    _world(mem)['sorties']['3-B1']['purpose'] = 'move'
     O.next_order(mem)
     assert mem['orders']['3-B1'] == 'pending'
     assert mem['sortie_relaunch']['3-B1'] == 1
@@ -198,8 +198,8 @@ def test_a_move_into_lost_or_enemy_ground_still_relaunches():
 
 def test_an_unconfirmed_move_launch_still_relaunches():
     mem = memory(79599, target='パタゴーヌ')
-    mem['sorties']['3-B1']['status'] = 'launched_unconfirmed'
-    mem['sorties']['3-B1']['purpose'] = 'move'
+    _world(mem)['sorties']['3-B1']['status'] = 'launched_unconfirmed'
+    _world(mem)['sorties']['3-B1']['purpose'] = 'move'
     O.next_order(mem)
     assert mem['orders']['3-B1'] == 'pending'
     assert mem['sortie_relaunch']['3-B1'] == 1
@@ -222,12 +222,12 @@ def test_relaunches_are_bounded_per_step():
         assert mem['boss_relaunch']['3-B1'] == n
         # the relaunched march is again launched and never enters
         mem['orders']['3-B1'] = 'launched'
-        mem['sorties']['3-B1'] = {'general': 'セルリアク', 'source': 'パタゴーヌ', 'target': 'ボス',
+        _world(mem)['sorties']['3-B1'] = {'general': 'セルリアク', 'source': 'パタゴーヌ', 'target': 'ボス',
                                   'status': 'en_route', 'tick': mem['tick']}
         mem['tick'] += O.BOSS_ARRIVAL_LIMIT
     O.next_order(mem)
     assert mem['orders']['3-B1'] == 'launched'
-    assert mem['sorties']['3-B1']['status'] == 'overdue'
+    assert _world(mem)['sorties']['3-B1']['status'] == 'overdue'
     assert len(decisions(mem, 'boss_sortie_overdue')) == O.BOSS_RELAUNCH_LIMIT
     assert len(decisions(mem, 'boss_relaunch_exhausted')) == 1
     O.next_order(mem)                                   # recorded once, not every observation
@@ -250,21 +250,21 @@ def site_memory(planned_target):
             'orders': {o['step']: 'launched' for o in chart.orders(4)},
             'world': {'sorties': {'4-B2': {'general': 'カペリーニ', 'source': 'ネクスドリア', 'target': None,
                                  'planned_target': planned_target, 'status': 'en_route',
-                                 'tick': 131676, 'confirmation_tick': 131418}}}
+                                 'tick': 131676, 'confirmation_tick': 131418}}},
             'lost': ['ミヒラギアン', 'アルカ']}
 
 
 def test_an_unconfirmed_site_launch_goes_overdue_by_its_planned_target():
     mem = site_memory('四季王城(南東)')
     O._relaunch_overdue_boss(mem)
-    assert mem['sorties']['4-B2']['status'] == 'overdue'
+    assert _world(mem)['sorties']['4-B2']['status'] == 'overdue'
     assert mem['orders']['4-B2'] == 'pending'
     (record,) = decisions(mem, 'boss_sortie_overdue')
     assert record['chart_step'] == '4-B2' and record['general'] == 'カペリーニ'
     # An unconfirmed march to a normal castle is still left alone.
     mem = site_memory('マラコビア')
     O._relaunch_overdue_boss(mem)
-    assert mem['sorties']['4-B2']['status'] == 'en_route'
+    assert _world(mem)['sorties']['4-B2']['status'] == 'en_route'
 
 
 def test_an_overdue_relaunch_drops_the_spent_sortie_attempt():
@@ -275,7 +275,7 @@ def test_an_overdue_relaunch_drops_the_spent_sortie_attempt():
     _flow(mem)['sortie_attempt'] = {'step': '3-B1', 'confirmation_tick': LAUNCH - 6,
                              'interrupted': True, 'target_seen': True}
     O.next_order(mem)
-    assert mem['sorties']['3-B1']['status'] == 'overdue'
+    assert _world(mem)['sorties']['3-B1']['status'] == 'overdue'
     assert mem['orders']['3-B1'] == 'pending'
     assert 'sortie_attempt' not in _flow(mem)
     assert O._order_for_step(mem, '3-B1') is not None
@@ -285,7 +285,7 @@ def test_an_already_overdue_sortie_drops_the_spent_attempt():
     """The live deadlock state: sortie already overdue, order pending, and a
     stale claimed attempt still blocking the menu flow."""
     mem = memory(79599)
-    mem['sorties']['3-B1']['status'] = 'overdue'
+    _world(mem)['sorties']['3-B1']['status'] = 'overdue'
     mem['orders']['3-B1'] = 'pending'
     _flow(mem)['sortie_attempt'] = {'step': '3-B1', 'confirmation_tick': LAUNCH - 6,
                              'interrupted': True, 'target_seen': True}
@@ -295,7 +295,7 @@ def test_an_already_overdue_sortie_drops_the_spent_attempt():
 
 def test_an_attempt_for_another_step_or_unconfirmed_is_kept():
     mem = memory(79599)
-    mem['sorties']['3-B1']['status'] = 'overdue'
+    _world(mem)['sorties']['3-B1']['status'] = 'overdue'
     _flow(mem)['sortie_attempt'] = {'step': '3-B2', 'confirmation_tick': 1}
     O._relaunch_overdue_boss(mem)
     assert _flow(mem)['sortie_attempt']['step'] == '3-B2'
@@ -322,28 +322,28 @@ def test_a_slow_chapter_6_march_waits_past_the_fixed_limit():
     """g1133 2026-11-05: ナストリーニ took 23-32 min to セレーネ (603 cells)
     and ピスタチオ 34 min to ユージア (740), but the fixed 20 min reset both."""
     mem = chapter6_memory(LAUNCH + O.BOSS_ARRIVAL_LIMIT + 10)
-    limit = O._arrival_limit(mem, mem['sorties']['6-X1'])
+    limit = O._arrival_limit(mem, _world(mem)['sorties']['6-X1'])
     assert limit > O.BOSS_ARRIVAL_LIMIT
     O.next_order(mem)
-    assert mem['sorties']['6-X1']['status'] == 'en_route'
+    assert _world(mem)['sorties']['6-X1']['status'] == 'en_route'
     assert not decisions(mem, 'sortie_march_overdue')
     mem['tick'] = LAUNCH + limit
     O.next_order(mem)
-    assert mem['sorties']['6-X1']['status'] == 'overdue'
+    assert _world(mem)['sorties']['6-X1']['status'] == 'overdue'
     assert decisions(mem, 'sortie_march_overdue')
 
 
 def test_a_short_chapter_6_march_keeps_the_measured_limit():
     mem = chapter6_memory(LAUNCH + O.BOSS_ARRIVAL_LIMIT + 10, target='イカリア')
-    assert O._arrival_limit(mem, mem['sorties']['6-X1']) == O.BOSS_ARRIVAL_LIMIT
+    assert O._arrival_limit(mem, _world(mem)['sorties']['6-X1']) == O.BOSS_ARRIVAL_LIMIT
     O.next_order(mem)
-    assert mem['sorties']['6-X1']['status'] == 'overdue'
+    assert _world(mem)['sorties']['6-X1']['status'] == 'overdue'
 
 
 def test_an_unmeasured_chapter_keeps_the_fixed_limit():
     mem = chapter6_memory(LAUNCH + O.BOSS_ARRIVAL_LIMIT + 10)
     mem['chapter'] = 3
-    assert O._arrival_limit(mem, mem['sorties']['6-X1']) == O.BOSS_ARRIVAL_LIMIT
+    assert O._arrival_limit(mem, _world(mem)['sorties']['6-X1']) == O.BOSS_ARRIVAL_LIMIT
 
 
 def test_the_scaled_wait_never_outlives_the_long_march_window():
@@ -351,4 +351,4 @@ def test_the_scaled_wait_never_outlives_the_long_march_window():
     # アルブラーカ→アブダレ is 1064 chart cells: 1064*2.4 = 2554 exceeds the
     # 2400-tick window, so the distance-scaled wait must clamp to the cap.
     mem = chapter6_memory(LAUNCH, source='アルブラーカ', target='アブダレ')
-    assert O._arrival_limit(mem, mem['sorties']['6-X1']) == O.LONG_MARCH_TICKS
+    assert O._arrival_limit(mem, _world(mem)['sorties']['6-X1']) == O.LONG_MARCH_TICKS
