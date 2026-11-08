@@ -91,13 +91,14 @@ def _interim_source(mem, target, chart_order, owned, busy, allow_sole=False):
                 blocker_free = [g for g in free.get(blocker) or ()
                                 if g not in unavailable_for_attack]
                 if len(set(blocker_free)) >= need:
-                    spares = _spares(blocker_free, unavailable_for_attack, sole)
+                    spares = _strongest_first(mem, _spares(blocker_free, unavailable_for_attack, sole))
                     if spares:
                         return blocker, spares[0]
                 if garrison.get(blocker) is None:
                     return blocker, MOVE_ANY_GENERAL
                 return None  # reinforce the blocker before trying this target
-        return best, _spares(free[best], unavailable_for_attack, sole)[0]
+        spares = _strongest_first(mem, _spares(free[best], unavailable_for_attack, sole))
+        return best, spares[0]
     probes = sorted(c for c in owned if routes.probe_due(mem, c))
     if probes:
         return probes[0], MOVE_ANY_GENERAL
@@ -308,6 +309,27 @@ def _wave_pick(mem, target, owned, busy, allow_sole):
         if spares:
             return source, spares[0]
     return None
+
+
+def _strongest_first(mem, generals):
+    """Order a castle's spare generals by known max HP, strongest first.
+
+    g1163 chapter 5 (2026-11-09): プトレマイス was attacked five times with
+    expiring weak generals (ビシソワーズ 27, セミヨン 36) while カルーン held
+    ポセイドン 85. The garrison list is the game's roster order, not strength,
+    so the first spare was not the best one. A general whose max HP is unread
+    keeps its list position after the measured ones.
+    """
+    statuses = ((mem.get('general_statuses') or {}).get('statuses') or {})
+    rows = statuses if isinstance(statuses, dict) else {}
+
+    def rank(item):
+        index, name = item
+        row = rows.get(name)
+        hp = row.get('max_hp') if isinstance(row, dict) else None
+        return (0 if type(hp) is int else 1, -(hp if type(hp) is int else 0), index)
+
+    return [name for _, name in sorted(enumerate(generals), key=rank)]
 
 
 def _spares(free, unavailable=(), sole=False):
