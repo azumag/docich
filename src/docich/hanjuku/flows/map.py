@@ -1369,6 +1369,28 @@ def map_step(screen: Screen, mem, frame):
             return []           # nothing charted: let real time advance
         if not _order_start_due(mem, order['step']):
             return []
+        # Issue #3326 (34 stage 4): a same-signature retry inside
+        # SORTIE_RETRY_DEFER_GAP of a cancel at the same (target, purpose)
+        # is the measured blind round trip. Deferring the start keeps the
+        # order pending — the pick re-runs each observation and passes
+        # once the gap outgrows the band or the state signature changes —
+        # instead of walking the same menus again with no new evidence.
+        from .house import _sortie_retry_hold, _sortie_state_sig
+        held = _sortie_retry_hold(mem, order['target'], order.get('purpose'),
+                _sortie_state_sig(mem, _source(order, mem), _sortie_general(order, mem)))
+        if held is not None:
+            pending, first = held
+            if first:
+                # One record per pending cancel: the hold re-fires every
+                # observation in the band, so recording here unconditionally
+                # would flood the decision log (~100 rows per cancel).
+                _record(mem, 'sortie_retry_deferred', chart_step=order['step'],
+                        source=_source(order, mem), target=order['target'],
+                        purpose=order.get('purpose'),
+                        observed_metric={'cancel_tick': pending.get('tick'),
+                                         'gap': int(mem.get('tick') or 0) - int(pending.get('tick') or 0)},
+                        reason='同一砦・同一目的の出撃取消し直後で状態署名が変わっていないため再要求を延期する')
+            return []
         _plan_region(mem)['active'] = order['step']
         mem['picked'] = []
         # The bounded inventory search belongs to this attempt, not the
