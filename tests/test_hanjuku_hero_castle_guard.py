@@ -100,3 +100,34 @@ def test_interim_from_our_only_castle_keeps_the_spare():
     _world(mem)['garrison']['キカンドン'] = ['ココット']
     assert all(o['source'] != home or o['general'] == policy.MOVE_ANY_GENERAL
                for o in policy.interim_candidates(mem).values())
+
+
+def _plan_memory(present, general='ゼウス', owned=('アルマムーン', 'ジョンリギ')):
+    chapter = 1
+    home = chart.home_castle(chapter)
+    return {'chapter': chapter, 'tick': 100, 'orders': {}, '_records': [],
+            'captured': [c for c in owned],
+            'lost': [],
+            'world': {'garrison': {home: list(present)}},
+            'chart_plan': {'orders': [{'step': 'A:x:1', 'general': general,
+                                       'source': home, 'target': 'ジョンリギ'}]}}
+
+
+@pytest.mark.parametrize('present,general,short', [
+    ([HERO, 'ゼウス', 'ピオーネ'], 'ゼウス', True),            # hero + 2: leaving one leaves 1
+    ([HERO, 'ゼウス', 'ピオーネ', 'ミント'], 'ゼウス', False),   # hero + 3 keeps the guard
+    ([HERO, 'ゼウス', 'ピオーネ'], HERO, False),               # the hero leaving is another rule
+])
+def test_the_planner_does_not_start_a_sortie_the_hero_guard_would_cancel(
+        present, general, short):
+    from docich.hanjuku.strategy.orders import _source_spare_missing
+    mem = _plan_memory(present, general)
+    assert _source_spare_missing(mem['chart_plan']['orders'][0], mem, allow_probe=True) is short
+
+
+def test_another_castle_keeps_its_own_spare_rule():
+    from docich.hanjuku.strategy.orders import _source_spare_missing
+    mem = _plan_memory([HERO, 'ゼウス', 'ピオーネ'])
+    mem['world']['garrison']['ジョンリギ'] = ['タピオカ', 'クミン']
+    order = {'step': 'A:x:2', 'general': 'タピオカ', 'source': 'ジョンリギ', 'target': 'カストーラ'}
+    assert _source_spare_missing(order, mem, allow_probe=True) is False
