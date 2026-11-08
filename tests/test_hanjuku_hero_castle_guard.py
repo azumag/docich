@@ -131,3 +131,26 @@ def test_another_castle_keeps_its_own_spare_rule():
     mem['world']['garrison']['ジョンリギ'] = ['タピオカ', 'クミン']
     order = {'step': 'A:x:2', 'general': 'タピオカ', 'source': 'ジョンリギ', 'target': 'カストーラ'}
     assert _source_spare_missing(order, mem, allow_probe=True) is False
+
+
+@pytest.mark.parametrize('present,blocked', [
+    ([HERO, 'ゼウス', 'ピオーネ'], True),          # hero + 2: the live list cancels a probe too
+    ([HERO, 'ゼウス', 'ピオーネ', 'ミント'], False),
+    ([HERO], False),                              # only the hero: nothing to dispatch
+])
+def test_a_hero_castle_probe_is_refused_only_when_the_guard_blocks_it(present, blocked):
+    home = chart.home_castle(1)
+    request = {'chapter': 1, 'garrison': {home: list(present)}, 'en_route': [], 'lost': []}
+    order = {'step': 'A:x:1', 'general': 'しょうぐん', 'source': home,
+             'target': 'ジョンリギ', 'source_probe': True}
+    assert (chart_adjust.startable(order, request) == 'hero_castle_guard') is blocked
+
+
+def test_a_probe_from_another_castle_keeps_its_read_only_contract():
+    request = {'chapter': 1,
+               'garrison': {chart.home_castle(1): [HERO, 'ゼウス', 'ピオーネ'],
+                            'ジョンリギ': ['タピオカ']},
+               'en_route': [], 'lost': []}
+    order = {'step': 'A:x:2', 'general': 'しょうぐん', 'source': 'ジョンリギ',
+             'target': 'カストーラ', 'source_probe': True}
+    assert chart_adjust.startable(order, request) is None

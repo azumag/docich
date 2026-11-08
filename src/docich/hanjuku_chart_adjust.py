@@ -197,7 +197,21 @@ def startable(order, request) -> str | None:
     # A source probe is an information-gathering step, not a claimed actor.
     # The real list/guard checks in deploy decide whether anyone can leave.
     if order.get('source_probe') is True:
-        return None if general == 'しょうぐん' else 'invalid_source_probe'
+        if general != 'しょうぐん':
+            return 'invalid_source_probe'
+        # The hero's castle is the one probe whose guard is already decidable:
+        # deploy picks the spare on the live list and cancels it there
+        # (g1163 2026-11-09 04:39: a probe order from アルマムーン with the
+        # hero + 2 was cancelled as sortie_held_hero_guard). Refuse it here so
+        # a plan never carries an order the live list will cancel.
+        home = chart.home_castle(request.get('chapter'))
+        known = garrison.get(home)
+        if (source == home and isinstance(known, (list, tuple))
+                and set(known) - {chart.HERO}
+                and hero_guard_short(known, None, marching,
+                                     sole_castle=_sole_castle(request))):
+            return 'hero_castle_guard'
+        return None
     present = garrison.get(source) or ()
     if general in present:
         # A measured singleton cannot dispatch its last defender.
