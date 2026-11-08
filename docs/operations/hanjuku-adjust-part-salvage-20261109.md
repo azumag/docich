@@ -18,14 +18,15 @@
 
 ## 原因
 
-`hanjuku_chart_adjust.validate()` が、任意部分（`purchases` / `recruitment`）の
-正規化失敗を `ValueError` として投げ、`save()` が回答全体を拒否していました。
+`hanjuku_chart_adjust.validate()` が任意部分の正規化失敗を `ValueError` として投げ、
+`save()` が回答全体を拒否していました。今回の観測は `purchases`（月の購入計画）だけで、
+`recruitment` は採用人数を左右するため従来どおり厳格に検証します。
 
 ## 修正（v535 `hanjuku-chart-v535-adjust-part-salvage`）
 
-- `validate()`: `purchases` / `recruitment` の正規化を個別に try し、失敗した部分だけ
-  `None` にして `dropped_parts` に記録する。**注文（orders）は従来どおり厳格に検証**し、
-  不正なら従来どおり回答全体を拒否する。
+- `validate()`: `purchases` の正規化だけを try し、失敗したら `None` にして
+  `dropped_parts` に記録する。**注文（orders）と `recruitment` は従来どおり厳格に検証**し、
+  不正なら回答全体を拒否する。
 - `save()`: `dropped_parts` があるとき `adjusted_parts_dropped` を履歴へ残す。
 - 計画は注文だけで成立するため、購入・募集の欠落は次回の調整で再計画できる。
 

@@ -338,18 +338,14 @@ def validate(doc) -> dict:
                                or not re.fullmatch(r'[0-9a-f]{64}', digest)):
         raise ValueError('invalid request_digest')
     from .hanjuku_roster import roles
-    # The orders are the plan; purchases and recruitment are optional side
-    # parts. A malformed side part used to discard a whole otherwise-valid
+    # The orders are the plan; the month's purchases are an optional side
+    # part. A malformed purchase plan used to discard a whole otherwise-valid
     # answer (history: adjust_worker generate_failed invalid_output
     # 'invalid purchases' five times), costing another LLM cycle. Keep the
-    # orders and drop only the part that failed to normalise.
+    # orders and drop only the purchases. Recruitment stays strict: its roles
+    # drive who is hired, so a malformed spec is not silently ignored.
     dropped_parts = []
-    recruitment = None
-    if doc.get('recruitment') is not None:
-        try:
-            recruitment = roles(doc['recruitment'])
-        except (TypeError, ValueError):
-            dropped_parts.append('recruitment')
+    recruitment = roles(doc['recruitment']) if doc.get('recruitment') is not None else None
     try:
         purchases = _purchases(doc.get('purchases'))
     except ValueError:
