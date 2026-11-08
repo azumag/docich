@@ -44,7 +44,7 @@ def test_verified_zero_replaces_cached_two_before_a_critical_enemy_contact(mode,
     assert p.camp_recall_step(screen, mem, FRAME) == [p.pad('b')]
     assert mem['egg_uses'][actor] == 0
     assert mem['egg_types'][actor] == 'エラベルエッグ'
-    assert mem['sorties'] == before
+    assert _sorties(mem) == before
     assert not _world(mem).get('garrison') and not mem.get('house_eggs')
     critical_contact(mem, actor)
 
