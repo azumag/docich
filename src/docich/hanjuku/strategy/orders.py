@@ -765,6 +765,12 @@ def _boss_retry_due(order, mem) -> bool:
 
 BOSS_RELAUNCH_LIMIT = 2                     # boss sorties sent again per step after a march that never entered
 BOSS_STALE_COOLDOWN = 3 * BOSS_ARRIVAL_LIMIT   # an exhausted step re-arms after a long wait
+# A 四季王 step whose march record expired stays 'launched' with no record, no
+# overdue path and nothing that can bind an entry, so the step never runs
+# again. g1163 2026-11-09 02:5x: 4-B1/4-B2 sat launched with an empty sorties
+# map while 南東 was the only live site and next_order returned None.
+SITE_PHANTOM_TICKS = 900                    # observations a site step may look launched without a record
+SITE_STEP_REARM_COOLDOWN = 300              # between two re-arms of the same step
 # A site march starts from a corner castle and can outlive two relaunch
 # cycles. Keep an unentered attempt bindable after its step is sent again, so
 # a late 「ボスじょうにせめこんだ!!」 is not orphaned by the overwritten record.
@@ -1279,10 +1285,47 @@ def _expire_spent_sorties(mem):
                 reason='野営・在城を実測したため行軍の終了とみなし、将軍を出撃元の名簿へ戻す')
 
 
+def _rearm_phantom_site_steps(mem):
+    """Re-open a chapter 4 site step whose march record vanished.
+
+    Clearing only the bookkeeping is safe: a site the Y view measured closed is
+    still blocked by ``_site_king_down``, and a live record, live fight or fresh
+    step is left alone. The bounded cooldown keeps a step from being re-armed
+    on every observation.
+    """
+    if (mem.get('chapter') or 0) != 4:
+        return
+    status = mem.get('orders') or {}
+    sorties = mem.get('sorties') or {}
+    now = int(mem.get('tick') or 0)
+    started = mem.get('order_start_tick') or {}
+    rearmed = mem.setdefault('site_step_rearm', {})
+    for order in chart.orders(4):
+        step, target = order.get('step'), order.get('target')
+        if (status.get(step) != 'launched' or target not in chart.boss_sites(4)
+                or step in sorties or _boss_fight_live(mem, step)
+                or _site_king_down(mem, target)):
+            continue
+        tick = started.get(step)
+        if type(tick) is not int or now - tick < SITE_PHANTOM_TICKS:
+            continue
+        last = rearmed.get(step)
+        if type(last) is int and now - last < SITE_STEP_REARM_COOLDOWN:
+            continue
+        rearmed[step] = now
+        status[step] = 'pending'
+        _record(mem, 'site_step_rearmed', chart_step=step, general=order.get('general'),
+                observed_metric={'site': target, 'launched_for': now - tick,
+                                 'sorties': sorted(sorties)},
+                resulting_event=f'rearm:{step}',
+                reason='撃破実測のない四季王stepの行軍記録が消えていたため、次の出撃のために開き直す')
+
+
 def next_order(mem):
     # A measured しんぐんちゅうです reading restarts the age of a live march
     # before the fixed windows can relaunch it while it is still walking.
     _refresh_live_marches(mem)
+    _rearm_phantom_site_steps(mem)
     _relaunch_overdue_boss(mem)
     _relaunch_overdue_march(mem)
     _expire_spent_sorties(mem)

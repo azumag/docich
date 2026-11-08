@@ -6980,6 +6980,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v526-completed-season-sites",
             "hanjuku-chart-v527-season-site-markers",
             "hanjuku-chart-v528-season-site-terrain",
+            "hanjuku-chart-v529-site-step-rearm",
             "hanjuku-chart-v501-idle-reanchor",
             "hanjuku-chart-v502-idle-and-roster-joins",
             "hanjuku-chart-v503-month-start-counts",
