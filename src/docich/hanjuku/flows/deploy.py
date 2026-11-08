@@ -873,6 +873,9 @@ def _list_menu_to(screen, mem, order, general):
     return pad('down' if names.index(general) > names.index(cur[2]) else 'up')
 
 
+GARRISON_EMPTY_READINGS = 2      # equal empty list frames before "no generals"
+
+
 def _observe_garrison(screen, mem, order, *, complete=True):
     """Remember who a castle's general list showed (``interim_candidates``).
 
@@ -884,6 +887,20 @@ def _observe_garrison(screen, mem, order, *, complete=True):
     castle = _source(order, mem)
     if present is None or not castle:
         return
+    if not present:
+        # A frame that shows the game's own "no generals" line is evidence on
+        # its own. Anything else is a transition/OCR miss until it repeats: the
+        # menu frame of a staffed castle can read as no rows (g1163 2026-11-09
+        # 08:31:26 recorded {} for アルマムーン with どうし+3 standing there),
+        # and a known-empty castle would stop its sorties and defender checks.
+        if 'おりません' not in (screen.text or ''):
+            streak = mem.setdefault('garrison_empty_streak', {})
+            count = int(streak.get(castle) or 0) + 1
+            streak[castle] = count
+            if count < GARRISON_EMPTY_READINGS or not complete:
+                return
+    else:
+        (mem.get('garrison_empty_streak') or {}).pop(castle, None)
     garrison = _world(mem).setdefault('garrison', {})
     visible = set(_present_generals(screen) or ())
     _world(mem)['general_location_unknown'] = [g for g in _world(mem).get('general_location_unknown') or ()
