@@ -384,7 +384,8 @@ def world_map_step(screen, mem, frame):
     _apply_world_flags(mem, flags)
     # The same view draws chapter 4's 四季王 sites: a cleared one keeps a
     # pennant, a live king keeps the skull.
-    _apply_season_sites(mem, season_sites(frame, mem.get('chapter') or 0, world_cursor(frame)))
+    if (mem.get('chapter') or 0) == 4 and hasattr(frame, 'pixel'):
+        _apply_season_sites(mem, season_sites(frame, 4, world_cursor(frame)))
     markers = world_markers(frame)
     _probe_launch_markers(mem, markers)
     mem['_world_units_prev'] = [list(b) for b in markers]

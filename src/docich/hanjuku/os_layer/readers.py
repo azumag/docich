@@ -165,7 +165,7 @@ def season_sites(frame, chapter, cursor=None):
     is skipped (the gold cursor shares the pennant's colour), and anything
     unreadable is left out so the caller keeps its previous state.
     """
-    if chapter != 4 or frame is None:
+    if chapter != 4 or frame is None or not hasattr(frame, 'pixel'):
         return {}
     anchor = chart.CASTLES[3].get(chart.boss_castle(3))
     if anchor is None:
