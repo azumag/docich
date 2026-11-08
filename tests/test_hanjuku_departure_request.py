@@ -415,3 +415,29 @@ def test_recall_transition_neither_commits_nor_steals_the_reservation():
     mem.pop('active', None)
     assert p.target_step(TARGET, mem, None) == [p.pad('b')]
     assert 'departure_request' not in _flow(mem)
+
+
+def tiny_at(castle, dx=0, dy=0):
+    """A 3x3 red decoration, not a marching unit."""
+    cx, cy = marker_at(castle, dx, dy)[0] + 3, marker_at(castle, dx, dy)[1] + 3
+    return (cx - 1, cy - 1, cx + 1, cy + 1)
+
+
+def test_a_tiny_red_decoration_never_confirms_a_launch(monkeypatch):
+    """g1163 2026-11-09 05:28: a 3x3 blob confirmed three launches at once."""
+    mem = memory(); confirm(mem); commit(mem)
+    probe = _flow(mem)['launch_probe']['1-A3']
+    probe['baseline'] = [marker_at('アルマムーン', dx=0)]
+    for _ in range(p.LAUNCH_PROBE_READS):
+        survey(monkeypatch, mem, [marker_at('アルマムーン'), tiny_at('スペンソニア')])
+    assert not any(r['decision'] == 'sortie_launch_confirmed' for r in mem['_records'])
+    assert _flow(mem).get('launch_probe', {}).get('1-A3', {}).get('blind') is True
+
+
+def test_a_full_size_unit_marker_far_from_both_flags_still_confirms(monkeypatch):
+    mem = memory(); confirm(mem); commit(mem)
+    probe = _flow(mem)['launch_probe']['1-A3']
+    probe['baseline'] = [marker_at('アルマムーン')]
+    far = marker_at('カストーラ', dx=60, dy=60)
+    survey(monkeypatch, mem, [marker_at('アルマムーン'), far])
+    assert any(r['decision'] == 'sortie_launch_confirmed' for r in mem['_records'])
