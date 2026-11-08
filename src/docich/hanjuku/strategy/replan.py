@@ -1174,8 +1174,11 @@ def _mechanical_chart(mem, state, rid, digest):
     # The same situation rebuilds the same candidate list on every call, and
     # re-adopting it recorded the same plan over and over (g1133 2026-11-05:
     # 487 identical chart_adjust_applied records). Keep the stored plan when
-    # the rebuilt steps are identical: nothing about it changed.
-    previous_steps = [o.get('step') for o in stored.get('orders') or ()]
+    # the rebuilt content is identical: nothing about it changed. The stored
+    # orders carry their execution id, so the comparison uses each order's
+    # ``local_step`` — the execution id is derived from the request and never
+    # equals the local id the rebuild produces (#3729).
+    previous_local = [o.get('local_step') for o in stored.get('orders') or ()]
     candidates = interim_candidates(mem, allow_sole=allow_sole)
     if not candidates:
         _mechanical_interim(mem, state, rid, digest, allow_sole=allow_sole)
@@ -1203,10 +1206,15 @@ def _mechanical_chart(mem, state, rid, digest):
     # long as the situation lasts.
     _release_stale_failures(mem, orders, rid)
     _rearm_failed_boss_steps(mem, orders, rid)
-    if (stored.get('source') == 'mechanical' and previous_steps
-            and [o['step'] for o in orders] == previous_steps):
+    # A kept plan still needs its stale 'launched' steps released: the early
+    # return below must not make an in-flight marker permanent (#3729).
+    _release_stale_steps(mem, [chart_adjust.execution_step(rid, o['step']) for o in orders])
+    if (stored.get('source') == 'mechanical' and previous_local
+            and None not in previous_local
+            and [o['step'] for o in orders] == previous_local):
         mem['chart_plan'] = stored
         mem.setdefault('chart_plan_tick', int(mem.get('tick') or 0))
+        state.pop('interim_order', None)
         return
     doc = {'schema': chart_adjust.SCHEMA, 'chapter': chapter, 'request_id': rid,
            'source': 'mechanical', 'orders': orders, 'purchases': None,
@@ -1217,7 +1225,6 @@ def _mechanical_chart(mem, state, rid, digest):
         _mechanical_interim(mem, state, rid, digest, allow_sole=allow_sole)
         return
     validated = dict(validated, request_digest=digest)
-    _release_stale_steps(mem, [chart_adjust.execution_step(rid, o['step']) for o in orders])
     _adopt_plan(mem, validated, rid)
 
 
