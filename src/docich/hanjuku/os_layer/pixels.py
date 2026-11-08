@@ -22,6 +22,8 @@ class Frame:
     def resized(self, width=256, height=224):
         if self.width == width and self.height == height:
             return self
+        if len(self.rgb) < self.width * self.height * 3:
+            raise IndexError('frame has fewer bytes than its dimensions')
         # 面積重み付きの2クラスタ平均（コントラスト保持型ボックスフィルタ）で
         # リサンプリングする。
         # 旧実装の最近傍サンプリングは 299x224 -> 256x224 のような非整数倍の縮小で
@@ -67,7 +69,7 @@ class Frame:
                                 data[o+channel] = (self.rgb[i+channel] * w0
                                                    + self.rgb[j+channel] * w1 + half) // total
                         else:
-                            chosen = i if (w0 > w1 or w0 == w1 and l0 > l1) else j
+                            chosen = i if (w0 > w1 or (w0 == w1 and l0 > l1)) else j
                             data[o:o+3] = self.rgb[chosen:chosen+3]
                     o += 3
                     continue

@@ -63,3 +63,9 @@ def test_same_geometry_does_not_reuse_pixels_from_a_previous_observation():
     white = Frame(299, 224, bytes([255]) * (299 * 224 * 3))
     assert black.resized().rgb == bytes(256 * 224 * 3)
     assert white.resized().rgb == bytes([255]) * (256 * 224 * 3)
+
+
+@pytest.mark.parametrize('size', [(8, 4), (8, 8), (2, 2)])
+def test_truncated_rgb_still_fails_in_fast_and_generic_paths(size):
+    with pytest.raises(IndexError):
+        Frame(4, 4, bytes(12)).resized(*size)
