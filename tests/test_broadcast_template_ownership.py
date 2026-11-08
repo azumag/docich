@@ -4,10 +4,18 @@ This test intentionally runs without the soviet_now submodule: the broadcast
 presentation is an owned docich artifact rather than a generated game asset.
 """
 from pathlib import Path
+import re
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
 TEMPLATE = ROOT / "overlays" / "direct_broadcast_overlay.html"
+
+
+def _declarations(html: str, selector: str) -> str:
+    """Return the body of the exact ``selector { ... }`` rule."""
+    match = re.search(re.escape(selector) + r"\s*\{([^}]*)\}", html)
+    assert match, f"missing rule {selector}"
+    return match.group(1)
 
 
 class BroadcastTemplateOwnershipTest(unittest.TestCase):
@@ -36,6 +44,21 @@ class BroadcastTemplateOwnershipTest(unittest.TestCase):
         self.assertIn("hanjuku-gap-news", html)
         self.assertNotIn("pagingStartedAt", html)
         self.assertNotIn("fitHanjukuGap(", html)
+
+    def test_notification_strip_draws_no_colored_left_band(self):
+        # Owner 2026-11-08: the left overlay's notification strip (decisions,
+        # decision entries, state-change toasts) must not draw the colored
+        # edge band. Tone classes may keep their border-color, but no base
+        # rule may reintroduce a left border.
+        html = TEMPLATE.read_text(encoding="utf-8")
+        for selector in (
+            ".hanjuku-gap-decisions",
+            ".hanjuku-gap-decision",
+            ".hanjuku-gap-toast",
+        ):
+            with self.subTest(selector=selector):
+                self.assertNotRegex(_declarations(html, selector),
+                                    r"border-left\s*:")
 
 
 if __name__ == "__main__":

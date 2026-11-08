@@ -1054,17 +1054,20 @@ html[data-soren-monitor="1"]:not([data-improve-active="1"])[data-monitor-view="o
   grid-template-rows: 210px 64px minmax(0, 1fr); gap: 6px; overflow: hidden; }
 .hanjuku-gap-news { height: 210px; min-height: 0; overflow: hidden;
   display: flex; flex-direction: column; gap: 4px; }
+/* Owner 2026-11-08: the notification strip carries no colored edge band.
+   Entries are told apart by background and text alone; tone-specific
+   border-colors below stay inert until a band is reintroduced. */
 .hanjuku-gap-decisions { display: flex; flex: 1 1 auto; min-height: 0; overflow: hidden;
   flex-direction: column; gap: 4px; margin: 0;
-  padding: 4px; border-left: 3px solid #f0b84d; background: #101f2d; border-radius: 4px; }
+  padding: 4px; background: #101f2d; border-radius: 4px; }
 .hanjuku-gap-decisions:empty { display: none; }
 .hanjuku-gap-decision { flex: 0 0 auto; padding: 5px 6px; background: #091925;
   font-size: 11px; line-height: 1.4; white-space: pre-wrap; overflow-wrap: anywhere;
-  border-left: 2px solid #f0b84d; color: #e6f2f8; }
+  color: #e6f2f8; }
 .hanjuku-gap-toasts { display: flex; flex: 0 0 auto; flex-direction: column; gap: 5px;
   max-height: 72px; overflow: hidden; margin: 0; }
 .hanjuku-gap-toast { display: flex; flex: 0 0 auto; align-items: baseline; gap: 8px; padding: 6px 9px;
-  border-left: 3px solid #4b6b80; border-radius: 4px; background: #081b26;
+  border-radius: 4px; background: #081b26;
   color: #e6f2f8; font-size: 15px; line-height: 1.3; overflow-wrap: anywhere;
   animation: gapToastIn .22s ease-out; }
 .hanjuku-gap-toast-text { min-width: 0; white-space: pre-wrap; }
