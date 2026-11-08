@@ -1170,15 +1170,16 @@ def verified_castles(mem, chapter):
 # here. The value expires when the reading ages out (the orchestrator clears
 # it) or the chapter changes, so a stale cell can never authorize an attack.
 MOVING_BOSS_CHAPTER = 9
-# A measurement stays usable for about half a month of observations; the map
-# flow refreshes it on every Y view, so a moved boss ages out quickly.
+# A moving boss's measurement stays usable for about half a month of
+# observations; the map flow refreshes it on every Y view, so a moved boss
+# ages out quickly. Static bosses keep their measured cell for the chapter.
 MOVING_BOSS_TICKS = 1200
 DYNAMIC_BOSS_CELLS: dict[int, tuple[int, int]] = {}
 
 
-def set_moving_boss_cell(chapter, cell):
-    """Record (or clear with None) the measured cell of a moving boss."""
-    if chapter != MOVING_BOSS_CHAPTER:
+def set_boss_cell(chapter, cell):
+    """Record (or clear with None) a Y-view measured boss cell for ``chapter``."""
+    if type(chapter) is not int or chapter not in CASTLE_NAMES:
         return None
     if cell is None:
         DYNAMIC_BOSS_CELLS.pop(chapter, None)
@@ -1196,8 +1197,12 @@ def set_moving_boss_cell(chapter, cell):
 
 
 def moving_boss_cell(chapter):
-    """The measured moving-boss cell for ``chapter``, or None."""
-    return DYNAMIC_BOSS_CELLS.get(chapter) if chapter == MOVING_BOSS_CHAPTER else None
+    """The Y-view measured boss cell for ``chapter``, or None."""
+    return DYNAMIC_BOSS_CELLS.get(chapter) if type(chapter) is int else None
+
+
+# Backwards-compatible name used by the chapter-9 moving-boss flow.
+set_moving_boss_cell = set_boss_cell
 
 
 def castles(chapter: int) -> dict:
@@ -1210,7 +1215,9 @@ def castles(chapter: int) -> dict:
         # Chapter 9's moving boss has no reusable static coordinate; only the
         # measured dynamic cell below may stand in for it.
         static = {n: p for n, p in static.items() if n != boss_castle(chapter)}
-    if chapter == MOVING_BOSS_CHAPTER and chapter in DYNAMIC_BOSS_CELLS:
+    if chapter in DYNAMIC_BOSS_CELLS:
+        # A Y-view measured boss cell (the skull sprite) is exact evidence for
+        # any chapter and replaces an approximate chart cell.
         static = {**static, boss_castle(chapter): DYNAMIC_BOSS_CELLS[chapter]}
     memory = _MAP_MEMORY.get()
     if memory is None:

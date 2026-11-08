@@ -346,14 +346,16 @@ def decide(frame: Frame, state: dict, *, adjusted: dict | None = None,
     memory['approx_map'] = bool(approx_map)
     # Chapter 9's boss moves: only a fresh Y-view measurement may stand in
     # for its missing static cell (see chart.MOVING_BOSS_CHAPTER).
-    moving = memory.get('moving_boss')
+    reading = memory.get('boss_cell')
     tick = memory.get('tick')
-    fresh = (memory.get('chapter') == hanjuku_chart.MOVING_BOSS_CHAPTER
-             and isinstance(moving, dict) and isinstance(moving.get('cell'), (list, tuple))
-             and type(moving.get('tick')) is int and type(tick) is int
-             and 0 <= tick - moving['tick'] <= hanjuku_chart.MOVING_BOSS_TICKS)
-    hanjuku_chart.set_moving_boss_cell(hanjuku_chart.MOVING_BOSS_CHAPTER,
-                                       moving.get('cell') if fresh else None)
+    chapter = memory.get('chapter')
+    fresh = (isinstance(reading, dict) and reading.get('chapter') == chapter
+             and isinstance(reading.get('cell'), (list, tuple))
+             and type(reading.get('tick')) is int and type(tick) is int)
+    if fresh and chapter == hanjuku_chart.MOVING_BOSS_CHAPTER:
+        # A moving boss's position ages out; a static boss keeps its cell.
+        fresh = 0 <= tick - reading['tick'] <= hanjuku_chart.MOVING_BOSS_TICKS
+    hanjuku_chart.set_boss_cell(chapter, reading.get('cell') if fresh else None)
     with hanjuku_chart.map_context(memory, approx=approx_map):
         return _decide_impl(frame, state, adjusted=adjusted, interim=interim,
                             experience=experience, recall_inputs=recall_inputs,
