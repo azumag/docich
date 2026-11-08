@@ -1041,7 +1041,7 @@ def test_hero_priority_full_boss_departure_keeps_real_actor_through_battle(monke
     monkeypatch.setattr(policy, 'nav_step', lambda *args: 'arrived')
     assert policy.target_step(menu('map_target', []), mem, None) == [policy.pad('a')]
     commit_departure(mem)
-    assert mem['sorties']['1-B1']['general'] == _world(mem)['launched']['けっかい']['general'] == 'ゼウス'
+    assert _world(mem)['sorties']['1-B1']['general'] == _world(mem)['launched']['けっかい']['general'] == 'ゼウス'
     launch = mem['_records'][-1]
     assert launch['general'] == 'ゼウス' and launch['planned_general'] == 'どうし'
     message = Screen([], None, 'ゼウスしょうぐんがボスじょうにせめこんだ!!', kind='boss_attack_started')
