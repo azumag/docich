@@ -91,6 +91,9 @@ CAMP_LOCATIONS = frozenset({'キャンプしています', 'キャンプのな�
 # しんぐんちゅうです is what the game prints for a marching general (probe of
 # g1097, 2026-11-01); いどうしています was never seen on a real status panel.
 MARCH_LOCATIONS = frozenset({'いどうしています', 'しんぐんちゅうです', 'いまこちらにむかっています'})
+# 章またぎの引き継ぎ待ち。フィールド行軍ではないが、所在は「城ではない」
+# 既知の待ち状態として扱う（実画面 g1153 2026-11-08）。
+CARRY_LOCATIONS = frozenset({'いまこちらにむかっております'})
 LEVEL_STATUS_WAIT = 12   # observations allowed for the two country-status pages
 LEVEL_REPRESS_EVERY = 3  # observations between A presses on the unopened ステータス row
 LEVEL_UNREAD_LIMIT = 2   # unread months in a chapter before the page is left alone
@@ -150,13 +153,17 @@ def general_status(screen):
         if hp is not None and not 0 <= hp <= max_hp:
             hp, max_hp = None, None
         wage_value = receipts.fixed_wage(name)  # stable salary; no extra individual screen
-        camp = location_row(screen) in CAMP_LOCATIONS if (x, y) == (24, 39) else False
+        location_text = location_row(screen)
+        camp = location_text in CAMP_LOCATIONS if (x, y) == (24, 39) else False
+        carry = any(phrase in screen.text for phrase in CARRY_LOCATIONS)
         return {'general': name, 'broken': broken, 'hp': hp, 'max_hp': max_hp, 'wage': wage_value,
                 'egg': uses[1] if uses else None, 'uses': int(uses[2]) if uses else None,
                 **({'camp_observed': True} if camp else {}),
+                'carry_waiting': carry,
                 'location': 'castle' if 'しろのなかにいます' in screen.text else 'field',
-                'location_observed': camp or any(phrase in screen.text for phrase in
-                                         ('しろのなかにいます', *MARCH_LOCATIONS))}
+                'location_observed': camp or carry
+                                    or any(phrase in screen.text for phrase in
+                                           ('しろのなかにいます', *MARCH_LOCATIONS))}
     return None
 
 
@@ -1314,7 +1321,7 @@ def _step_once(screen, mem, frame):
                     # records it, so mirroring would count one need twice.
                     _tally(mem, 'reopened_rows')
                 _record(mem, 'survey_carried', observed_metric=carry,
-                        reason='前月に健康で城に居た将軍の行を引き継ぎ、残りの本人だけ開き直す(月境界の持ち越し)')
+                        reason='前月に健康で城に居た将軍と章またぎ待ちの行を引き継ぎ、残りの本人だけ開き直す(月境界の持ち越し)')
             reused, actions = _resume_completed_survey(screen, mem, frame, scope, field_count, field_tick)
             if reused:
                 return actions
