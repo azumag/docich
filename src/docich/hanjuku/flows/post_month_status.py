@@ -736,6 +736,54 @@ def _promote_pending(mem, statuses):
     return promoted
 
 
+def _partial_scan(mem, state, expected):
+    """End a fully walked roster whose national headcount does not match.
+
+    docich#3751: ``country_general_count`` is sampled once when the monthly
+    pass arms, so a battle death or a join during the walk makes it stale.
+    A complete-looking walk that disagrees with it can no longer prove
+    membership, so the old path returned ``roster_end_unconfirmed`` after 13
+    stalled reads and produced zero tasks, losing a month of camp recalls
+    (g1153 8-10: the walked 31 were individually confirmed but the count of
+    32 blocked everything).
+
+    The observed rows are still true evidence. Run recall/repair/locate only
+    for generals the roster actually walked, keep every unvisited name (a
+    count gap is not a death certificate, so nothing is evicted), and commit
+    the fresh readings with ``complete`` False: ``_persistent_status`` then
+    ignores them for next month's reuse, the recruit headcount never treats
+    the list as authoritative, and ``suspected_departures`` records which
+    cached names the roster did not show.
+    """
+    names = list(state['names'])
+    unwalked = sorted(set(state['statuses']) - set(names))
+    # Carry the unverified bookkeeping from whatever record exists, even a
+    # previous partial commit (``_persistent_status`` would ignore it), so a
+    # battle-resumed re-walk never drops a still-pending join or suspect.
+    previous = mem.get('general_statuses')
+    cache = previous if isinstance(previous, dict) else {}
+    dirty = {name: list(fields) for name, fields
+             in (cache.get('dirty') or {}).items() if name not in names}
+    pending = [name for name in (cache.get('pending_joins') or [])
+               if name not in names]
+    suspected = sorted({name for name in (cache.get('suspected_departures') or [])
+                        if isinstance(name, str)} | set(unwalked))
+    state['tasks'] = _tasks(state['statuses'], names,
+                            mem.get('boss_camp_exempt'))
+    state['steps'] = 0
+    mem['general_statuses'] = {
+        'scope': list(state['scope']), 'identity': state['identity'],
+        'statuses': state['statuses'], 'dirty': dirty,
+        'pending_joins': pending, 'suspected_departures': suspected,
+        'complete': False, 'tick': int(mem.get('tick') or 0)}
+    _stage(state, 'process')
+    _log(mem, 'post_month_status_partial',
+         observed_metric={'generals': names, 'country_count': expected,
+                          'unwalked': unwalked, 'tasks': list(state['tasks'])},
+         reason='国の人数と名簿が一致しないため所属の証明は保留し、個別に確認できた将軍の帰還・修理・所在確定のみ実行')
+    return True
+
+
 def _complete_scan(mem, state):
     if (not state['names'] or len(set(state['names'])) != len(state['names'])
             or not state.get('top_confirmed')
@@ -749,9 +797,15 @@ def _complete_scan(mem, state):
             and country.get('identity') == state['identity']
             and type(country.get('count')) is int
             and country['count'] != len(state['names'])):
-        # A mismatched national headcount means the roster was not complete
-        # (or changed mid-visit). Do not delete a general by extrapolation.
-        return False
+        # The headcount was read once at monthly-arm time, so a mid-scan
+        # death or join leaves it disagreeing with a fully walked roster
+        # (docich#3751, g1153 8-10: 32 counted, the general died at 16:28,
+        # 31 walked). Rejecting the end proof here stalled thirteen reads
+        # into roster_end_unconfirmed and dropped every recall/repair task
+        # for the month. Finish the walk partially instead: run the
+        # individually confirmed tasks, keep every unvisited name, and
+        # leave the membership proof uncommitted.
+        return _partial_scan(mem, state, int(country['count']))
     state['complete'] = True
     state['steps'] = 0
     # A *complete* roster walk proves that missing names have left. A battle

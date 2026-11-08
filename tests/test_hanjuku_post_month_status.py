@@ -1448,3 +1448,91 @@ def test_recall_task_retry_is_bounded():
     assert post.step(Screen([], None, '', kind='map'), mem, None) == []
     assert state['tasks'] == []
     assert state['stage'] == 'process'
+
+
+def test_headcount_mismatch_still_runs_read_generals_tasks():
+    # docich#3751 (g1153 8-10): the national headcount is sampled when the
+    # monthly pass arms, then a general died in battle mid-scan. The roster
+    # walked its real end with 31 names against the stale count of 32, and
+    # the old gate kept returning roster_end_unconfirmed -> zero tasks. The
+    # walked generals' recall/repair must still run while membership stays
+    # unproven and no unvisited name is evicted.
+    mem = _persistent_memory('どうし', 'ゼウス', 'ポセイドン')
+    mem['general_statuses']['statuses']['ゼウス'].update(location='camp',
+                                                       castle=None)
+    mem['general_statuses']['pending_joins'] = ['セルリアク']
+    _world(mem)['garrison'] = {'アルマムーン': ['どうし', 'ポセイドン']}
+    _world(mem)['general_location_unknown'] = ['ポセイドン']
+    mem['country_general_count'] = {'scope': [1, '1-7'], 'identity': None,
+                                    'count': 3}
+    receipts.dirty_status(mem, ['ポセイドン'], fields=('location',))
+    post.arm(mem)
+    state = mem['post_month_status']
+    statuses = {name: _known_status(name)
+                for name in ('どうし', 'ポセイドン')}
+    statuses['ゼウス'] = {**_known_status('ゼウス'), 'location': 'camp',
+                         'castle': None}
+    state.update(stage='roster', names=['どうし', 'ゼウス'], statuses=statuses,
+                 dirty=[], markers={}, top_confirmed=True, list_moves=2)
+    last = parse(roster(names=('どうし', 'ゼウス'), selected=1))
+    assert post.step(last, mem, None) == [pad('b')]
+    assert state['stage'] == 'process'
+    assert state['complete'] is False
+    # Only individually confirmed generals queue tasks.
+    assert state['tasks'] == [{'kind': 'recall', 'name': 'ゼウス'}]
+    record = mem['general_statuses']
+    assert record['complete'] is False
+    # The unvisited cached general is not evicted; he is listed as a suspect.
+    assert 'ポセイドン' in record['statuses']
+    assert record['suspected_departures'] == ['ポセイドン']
+    assert record['pending_joins'] == ['セルリアク']
+    assert _world(mem)['general_location_unknown'] == ['ポセイドン']
+    assert not any(r['decision'] == 'post_month_general_departed'
+                   for r in mem['_records'])
+    partial = [r for r in mem['_records']
+               if r['decision'] == 'post_month_status_partial']
+    assert len(partial) == 1
+    assert partial[0]['observed_metric']['country_count'] == 3
+    # Membership-level artifacts stay uncommitted.
+    assert 'roster_last_complete' not in mem
+    assert (mem.get('recruit_roster') or {}).get('complete') is not True
+
+
+def test_headcount_mismatch_scan_is_rearmed_the_next_month():
+    # A partial commit is not a reusable verified cache: the next month must
+    # open the walk again (the new headcount then either matches the roster
+    # or the walk re-proves membership before any eviction).
+    mem = _persistent_memory('どうし', 'ゼウス')
+    mem['country_general_count'] = {'scope': [1, '1-7'], 'identity': None,
+                                    'count': 3}
+    post.arm(mem)
+    state = mem['post_month_status']
+    state.update(stage='roster', names=['どうし', 'ゼウス'],
+                 statuses={name: _known_status(name)
+                           for name in ('どうし', 'ゼウス')},
+                 dirty=[], markers={}, top_confirmed=True, list_moves=2)
+    last = parse(roster(names=('どうし', 'ゼウス'), selected=1))
+    assert post.step(last, mem, None) == [pad('b')]
+    assert mem['general_statuses']['complete'] is False
+    mem['month'] = '1-8'
+    mem.pop('post_month_status', None)
+    post.arm(mem)
+    assert mem['post_month_status']['stage'] == 'await_map'
+
+
+def test_matching_headcount_still_commits_a_complete_walk():
+    mem = _persistent_memory('どうし', 'ゼウス')
+    mem['country_general_count'] = {'scope': [1, '1-7'], 'identity': None,
+                                    'count': 2}
+    receipts.dirty_status(mem, ['ゼウス'], fields=('location',))
+    post.arm(mem)
+    state = mem['post_month_status']
+    state.update(stage='roster', names=['どうし', 'ゼウス'],
+                 statuses={name: _known_status(name)
+                           for name in ('どうし', 'ゼウス')},
+                 dirty=[], markers={}, top_confirmed=True, list_moves=2)
+    last = parse(roster(names=('どうし', 'ゼウス'), selected=1))
+    assert post.step(last, mem, None) == [pad('b')]
+    assert mem['general_statuses']['complete'] is True
+    assert not any(r['decision'] == 'post_month_status_partial'
+                   for r in mem['_records'])
