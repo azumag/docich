@@ -60,6 +60,7 @@ KEY_OWNERSHIP = {
     'sortie_general':   {'region': PLAN, 'lifetime': 'chapter', 'migrated': False},
     'chart_plan':       {'region': PLAN, 'lifetime': 'chapter', 'migrated': False},
     'general_override': {'region': PLAN, 'lifetime': 'chapter', 'migrated': False},
+    'plan_step_rearm':  {'region': PLAN, 'lifetime': 'chapter', 'migrated': False},
     'source_override':  {'region': PLAN, 'lifetime': 'chapter', 'migrated': False},
     'card_override':    {'region': PLAN, 'lifetime': 'chapter', 'migrated': False},
     'attack':           {'region': PLAN, 'lifetime': 'chapter', 'migrated': False},

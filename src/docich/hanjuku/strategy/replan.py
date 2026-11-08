@@ -269,6 +269,13 @@ def _wave_pick(mem, target, owned, busy, allow_sole):
     Unlike ``_interim_source`` this never picks an unread castle: an unread
     list is a probe for the first sortie, not a known spare for a wave.
     Sources still keep one defender; the home castle is preferred.
+
+    A source must also be able to reach the target: chapter 3 keeps only the
+    measured castle-to-castle legs (``routes.allowed``), so a wave named from
+    any other castle is unstartable. g1153 2026-11-08 (ドンダム the only enemy
+    castle) filled the plan with パタゴーヌ→ドンダム and メガパタ→ドンダム
+    waves while only イーピヨル→ドンダム is a measured leg; ``orders._ready``
+    rejected them every tick and the month advanced with no sortie.
     """
     chapter = mem.get('chapter') or 0
     home = chart.home_castle(chapter)
@@ -276,6 +283,8 @@ def _wave_pick(mem, target, owned, busy, allow_sole):
     unavailable = set(_world(mem).get('general_location_unknown') or ())
     need = 2          # never empty a castle (owner 2026-11-06)
     for source in sorted(owned, key=lambda c: (c != home, c)):
+        if not routes.allowed(mem, source, target):
+            continue
         names = garrison.get(source)
         if not names:
             continue
@@ -1088,6 +1097,66 @@ def _suppress_recent_failures(mem, orders):
         _tally(mem, 'retry_suppressed')
 
 
+NONBOSS_STEP_REARM_LIMIT = 3     # failed non-boss attempts re-armed per step per month
+
+
+def _release_stale_failures(mem, orders, rid):
+    """A failed non-boss step the rebuilt plan offers again is retried once the
+    suppression window has passed.
+
+    ``next_order`` skips a 'failed' step forever, and a rebuilt mechanical plan
+    keeps the same execution id while the request id stays the same. Nothing
+    ever cleared that status, so a single failed attempt removed the order —
+    often the only route to the last enemy castle — for the rest of the
+    situation. g1153 2026-11-08 (chapter 3, ドンダム the only enemy castle):
+    the relay move that staffs イーピヨル failed once; イーピヨル then kept a
+    single general, the only measured leg to ドンダム (イーピヨル→ドンダム)
+    could never launch, and months advanced with no sortie at all.
+
+    The retry waits out ``PLAN_STALE_TICKS`` (the window
+    ``_suppress_recent_failures`` already uses) and is capped per month and
+    step, so a genuinely impossible order cannot drain the army.
+    """
+    now = int(mem.get('tick') or 0)
+    recent = mem.get('failed_local_step') or {}
+    month = mem.get('month')
+    status = mem.setdefault('orders', {})
+    book = mem.setdefault('plan_step_rearm', {})
+    for order in orders:
+        if chart.is_boss_castle(order.get('target')):
+            continue          # the boss keeps its own bounded re-arm below
+        step = chart_adjust.execution_step(rid, order['step'])
+        if status.get(step) != 'failed':
+            continue
+        at = recent.get(order['step'])
+        if type(at) is int and 0 <= now - at < PLAN_STALE_TICKS:
+            continue          # just failed: the suppression window spaces it
+        entry = book.get(step)
+        if not isinstance(entry, dict) or entry.get('month') != month:
+            entry = {'month': month, 'count': 0}
+        if entry['count'] >= NONBOSS_STEP_REARM_LIMIT:
+            continue
+        entry['count'] += 1
+        book[step] = entry
+        status[step] = 'pending'
+        # The failed attempt's actor/kit/source choices are not receipts for
+        # this one: a stale ``general_override`` (e.g. the ココット that was
+        # recorded elsewhere) must not steer the retry. Sortie records stay —
+        # an overdue move is still the only arrival evidence for its target.
+        for key in RELEASE_KEYS:
+            (mem.get(key) or {}).pop(step, None)
+        # ``launched_orders`` lives in the world region, not at the top level.
+        (_world(mem).get('launched_orders') or {}).pop(step, None)
+        _record(mem, 'plan_step_rearmed', chart_step=step, general=order.get('general'),
+                target=order.get('target'),
+                observed_metric={'count': entry['count'], 'month': month},
+                reason='計画に残った失敗指示が再発射されず、出撃できないまま月が進むため、月内の上限付きで未発射に戻す')
+    if len(book) > 32:
+        for key in list(book)[:-32]:
+            book.pop(key, None)
+    return book
+
+
 def _mechanical_chart(mem, state, rid, digest):
     """Construct and adopt a full chart mechanically (no LLM answer)."""
     if _plan_pending(mem):
@@ -1127,12 +1196,18 @@ def _mechanical_chart(mem, state, rid, digest):
             **({'source_probe': True} if order.get('source_probe') is True else {}),
         })
     _suppress_recent_failures(mem, orders)
+    # Failed steps the plan still offers are retried after their bounded
+    # windows. This runs even when the rebuilt plan is identical: that is the
+    # stuck case, and the early return below would otherwise skip both re-arms
+    # and leave the one failing order (often the only route left) dead for as
+    # long as the situation lasts.
+    _release_stale_failures(mem, orders, rid)
+    _rearm_failed_boss_steps(mem, orders, rid)
     if (stored.get('source') == 'mechanical' and previous_steps
             and [o['step'] for o in orders] == previous_steps):
         mem['chart_plan'] = stored
         mem.setdefault('chart_plan_tick', int(mem.get('tick') or 0))
         return
-    _rearm_failed_boss_steps(mem, orders, rid)
     doc = {'schema': chart_adjust.SCHEMA, 'chapter': chapter, 'request_id': rid,
            'source': 'mechanical', 'orders': orders, 'purchases': None,
            'recruitment': None}
