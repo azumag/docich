@@ -131,3 +131,19 @@ def test_another_castle_keeps_its_own_spare_rule():
     mem['world']['garrison']['ジョンリギ'] = ['タピオカ', 'クミン']
     order = {'step': 'A:x:2', 'general': 'タピオカ', 'source': 'ジョンリギ', 'target': 'カストーラ'}
     assert _source_spare_missing(order, mem, allow_probe=True) is False
+
+
+def test_a_source_probe_still_reads_a_thin_hero_castle():
+    """The probe must read the list: deploy records the roster before the guard.
+
+    g1075 11:04-11:48 (test_hanjuku_roster_unplaced): the only way to find the
+    unplaced joiners was to open アルマムーン's list. Blocking the probe before
+    the read recreated that hold.
+    """
+    from docich.hanjuku.strategy.orders import _source_spare_missing
+    mem = _plan_memory([HERO, 'ゼウス', 'ピオーネ'])
+    order = {'step': 'I:x:1', 'general': 'しょうぐん', 'source': chart.home_castle(1),
+             'target': 'ジョンリギ', 'source_probe': True}
+    assert _source_spare_missing(order, mem, allow_probe=True) is False
+    order['source_probe'] = False
+    assert _source_spare_missing(order, mem, allow_probe=True) is True
