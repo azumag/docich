@@ -39,7 +39,7 @@ def test_interrupt_records_unknown_destination_once_and_blocks_same_general(kind
     first = deepcopy(_sorties(mem))
     mem['active'] = '1-A2'  # later source verification must not count as a new interruption
     p.observe_sortie_transition(screen('general_list'), mem, 'castle_menu')
-    assert mem['sorties'] == first
+    assert _sorties(mem) == first
     assert len([r for r in mem['_records'] if r['decision']=='order_launched_unconfirmed']) == 1
 
 

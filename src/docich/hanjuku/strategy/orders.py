@@ -1146,7 +1146,7 @@ def _refresh_live_marches(mem):
     if refreshed:
         _record(mem, 'sortie_march_refreshed',
                 observed_metric={'refreshed': refreshed,
-                                 'remaining': len_sorties(mem)},
+                                 'remaining': len(_sorties(mem))},
                 reason='出撃後に行軍中を実測したため行軍記録の期限を更新する')
 
 
