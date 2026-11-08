@@ -16,7 +16,7 @@ from docich import hanjuku_commentary, hanjuku_interim
 from docich import hanjuku_policy as policy
 from docich.hanjuku_pixels import Frame
 from docich.hanjuku_screen import Screen
-from docich.hanjuku.state.regions import flow as _flow, journal as _journal
+from docich.hanjuku.state.regions import world as _world, flow as _flow, journal as _journal
 
 FRAME = Frame(256, 224, bytes(256 * 224 * 3))
 CASTLES = chart.castles(1)
@@ -98,8 +98,10 @@ def test_a_source_that_never_opens_its_menu_falls_back_home_then_fails(monkeypat
         presses += policy.map_step(map_screen(190, 200), mem, FRAME) == [policy.pad('a')]
     assert presses == policy.SOURCE_MISS_LIMIT
     policy.map_step(map_screen(190, 200), mem, FRAME)      # third miss: give the source up
-    [changed] = decisions(mem, 'order_source_changed')
-    assert changed['observed_metric'] == {'source': 'キカンドン', 'menu_miss': 3}
+    # The fallback is counted, not recorded: the caller keeps the override out
+    # of the persisted state, so a record repeated on every observation.
+    assert decisions(mem, 'order_source_changed') == []
+    assert mem['tally']['source_fallback'] == 1
     assert mem['source_override'][order['step']] == 'アルマムーン'
     assert mem['active'] == order['step']
     for _ in range(policy.SOURCE_MISS_LIMIT + 1):
@@ -125,14 +127,14 @@ def test_castle_menu_clears_the_source_miss_count():
 def test_roof_colours_revoke_an_undefended_castle_and_put_its_retake_first(monkeypatch):
     monkeypatch.setattr(policy, 'castle_roofs', lambda *_a, **_k: g401_roofs())
     mem = {**g401_memory(), 'cursor': [566, 729], 'uncertain': False}
-    mem['garrison']['カストーラ'].append('アルテミス')  # keep a defender
+    _world(mem)['garrison']['カストーラ'].append('アルテミス')  # keep a defender
     policy.update_world(map_screen(190, 200), mem, FRAME)
     assert 'ジョンリギ' in mem['captured']               # one reading is not enough
     policy.update_world(map_screen(190, 200), mem, FRAME)
     assert 'ジョンリギ' not in mem['captured'] and mem['lost'] == ['ジョンリギ']
     [lost] = decisions(mem, 'castle_lost_observed')
     assert lost['castle'] == 'ジョンリギ' and lost['observed_metric'] == {'roof': 'enemy', 'readings': 2}
-    assert 'ジョンリギ' not in mem['garrison']
+    assert 'ジョンリギ' not in _world(mem)['garrison']
     first_label, first = next(iter(policy.interim_candidates(mem).items()))
     assert first_label == 'retake_1' and first['target'] == 'ジョンリギ'
     assert first['purpose'] == 'retake'
@@ -166,7 +168,7 @@ def test_off_chart_uses_measured_idle_generals_not_the_marching_chart_general():
     # inspected; the live list guard must verify a spare before selection.
     assert not any(c['purpose'] in {'retake', 'attack'}
                    and c['source'] in {'アルマムーン', 'カストーラ'} for c in candidates.values())
-    mem['garrison']['カストーラ'].append('アルテミス')
+    _world(mem)['garrison']['カストーラ'].append('アルテミス')
     candidates = policy.interim_candidates(mem)
     first = candidates['retake_1']
     assert first['source'] == 'カストーラ' and first['general'] != 'どうし'
@@ -179,11 +181,13 @@ def test_off_chart_uses_measured_idle_generals_not_the_marching_chart_general():
     assert not {'ゴーメン', 'スペンソニア'} & targets
 
 
-def test_interim_without_garrison_reading_keeps_the_chart_general_and_source():
+def test_interim_without_garrison_reading_keeps_the_source_but_probes_the_actor():
     mem = {'chapter': 1, 'captured': ['キカンドン'], 'orders': {}, '_records': []}
     candidates = policy.interim_candidates(mem)
     gomen = next(c for c in candidates.values() if c['target'] == 'ゴーメン')
-    assert (gomen['general'], gomen['source'], gomen['purpose']) == ('どうし', 'キカンドン', 'attack')
+    assert (gomen['general'], gomen['source'], gomen['purpose']) == (
+        policy.MOVE_ANY_GENERAL, 'キカンドン', 'attack')
+    assert gomen['source_probe'] is True
 
 
 def test_a_hold_with_no_candidates_is_recorded_once_per_revision():
@@ -208,44 +212,46 @@ def test_a_hold_with_no_candidates_is_recorded_once_per_revision():
     assert len(decisions(mem, 'chart_interim_hold')) == 1
 
 
-def test_a_spare_general_moves_into_an_owned_castle_last_seen_empty():
+def test_the_surplus_joins_the_boss_waves_instead_of_a_staging_move():
     targets = set(CASTLES) - {'アルマムーン', 'けっかい'}
     mem = {'chapter': 1, 'captured': sorted(targets), 'orders': {}, '_records': [],
            'garrison': {'アルマムーン': ['どうし', 'ゼウス', 'アルテミス', 'クミン', 'ポセイドン'], 'キカンドン': [],
                         'ゴーメン': ['ココット']}}
     candidates = policy.interim_candidates(mem)
-    # The boss chain is held and unbeaten, so a wave sortie at けっかい joins
-    # the staging move (#3203, owner 2026-11-02 余剰兵力の連続投入).
-    assert list(candidates) == ['move_1', 'attack_2']
-    wave = candidates['attack_2']
-    assert wave['target'] == 'けっかい' and wave['purpose'] == 'attack'
-    assert wave['cards'] == []            # wave sorties never wait on a kit
-    move = candidates['move_1']
-    # #2985: captured=all normals puts this mem in the post-conquest boss wait,
-    # so a priority source parts with its weakest spare, not the list head.
-    assert (move['general'], move['source'], move['target'], move['purpose']) == (
-        'クミン', 'アルマムーン', 'キカンドン', 'move')
+    # Owner 2026-11-05: the empty-castle staging move (#3203) reads on stream
+    # as a pointless sortie while the boss is the only target, so it is gone.
+    assert not [c for c in candidates.values() if '空の' in (c.get('note') or '')]
+    assert any(c['target'] == 'けっかい' for c in candidates.values())
     # v305: the hero keeps two others; with only two there nobody leaves him.
-    mem['garrison']['アルマムーン'] = ['どうし', 'ゼウス', 'アルテミス']
+    _world(mem)['garrison']['アルマムーン'] = ['どうし', 'ゼウス', 'アルテミス']
     moves = [c for c in policy.interim_candidates(mem).values() if c['purpose'] == 'move']
     assert all(c['source'] != 'アルマムーン' for c in moves)
-    # A lone general is never pulled out of its castle; only an unread list
-    # (opened and checked by the move itself) may be the donor then.
-    mem['garrison']['アルマムーン'] = ['ゼウス']
+
+
+def test_a_lone_general_is_never_pulled_out_of_the_home_castle():
+    # A normal castle still missing keeps the boss closed, so the garrison
+    # fill still runs and keeps its donor rule (v305).
+    targets = set(CASTLES) - {'アルマムーン', 'けっかい', 'スペンソニア'}
+    mem = {'chapter': 1, 'captured': sorted(targets), 'orders': {}, '_records': [],
+           'garrison': {'アルマムーン': ['どうし', 'ゼウス'], 'キカンドン': [],
+                        'ゴーメン': ['ココット']}}
     moves = [c for c in policy.interim_candidates(mem).values() if c['purpose'] == 'move']
-    assert moves and all(c['source'] != 'アルマムーン' for c in moves)
-    assert all(mem['garrison'].get(c['source']) is None for c in moves)
-    assert all(c['general'] == policy.MOVE_ANY_GENERAL for c in moves)
+    assert all(c['source'] != 'アルマムーン' for c in moves)
+    # A lone general is never pulled out of its castle. An unread list may
+    # only be used after a specific probe is due; no named donor is assumed.
+    _world(mem)['garrison']['アルマムーン'] = ['ゼウス']
+    moves = [c for c in policy.interim_candidates(mem).values() if c['purpose'] == 'move']
+    assert not moves  # No castle has a verified extra general to donate.
 
 
 def test_launch_and_battles_update_the_measured_garrison():
     mem = {'chapter': 1, 'garrison': {'アルマムーン': ['ゼウス', 'アルテミス']}}
     policy._garrison_move(mem, 'ゼウス', source='アルマムーン')
-    assert mem['garrison']['アルマムーン'] == ['アルテミス']
+    assert _world(mem)['garrison']['アルマムーン'] == ['アルテミス']
     policy._garrison_move(mem, 'ゼウス', target='ジョンリギ')
-    assert mem['garrison']['ジョンリギ'] == ['ゼウス']
+    assert _world(mem)['garrison']['ジョンリギ'] == ['ゼウス']
     policy._garrison_move(mem, 'ココット', source='キカンドン')      # unknown list stays unknown
-    assert 'キカンドン' not in mem['garrison']
+    assert 'キカンドン' not in _world(mem)['garrison']
 
 
 def test_an_order_from_a_lost_castle_is_neither_picked_nor_blocking():
@@ -267,10 +273,10 @@ def test_general_list_reading_is_recorded_only_when_complete():
     empty = Screen(lines=[], hand=None, text='しゅつげきしょうぐんはステータスおりません……',
                    kind='general_list')
     policy._observe_garrison(empty, mem, policy._order(mem))
-    assert mem['garrison'] == {'アルマムーン': []}
+    assert _world(mem)['garrison'] == {'アルマムーン': []}
     unreadable = Screen(lines=[], hand=None, text='しゅつげきステータス', kind='general_list')
     policy._observe_garrison(unreadable, mem, policy._order(mem))
-    assert mem['garrison'] == {'アルマムーン': []}
+    assert _world(mem)['garrison'] == {'アルマムーン': []}
     assert [r['decision'] for r in mem['_records']] == ['garrison_seen']
 
 
@@ -313,8 +319,9 @@ def test_a_cell_that_pressing_never_moves_falls_back_to_the_inland_search(monkey
     [stuck] = decisions(mem, 'nav_stuck')
     assert stuck['observed_metric']['cursor'] == wrong
     assert mem['uncertain'] is True and mem['nav_search'] is True
-    # Searching first shows the hero with SELECT, then steers inland; the
-    # same lone roof no longer anchors.
+    # If the preferred X/しろ jump failed, the legacy SELECT/inland
+    # fallback still works without trusting the lone roof.
+    mem['castle_jump_skip'] = {'mode': 'reanchor', 'tick': int(mem.get('tick') or 0)}
     assert policy.map_step(pinned, mem, FRAME) == [policy.pad('select')]
     assert {a['buttons'][0] for a in policy.map_step(pinned, mem, FRAME)} == {'left', 'up'}
     assert mem['uncertain'] is True and home != tuple(mem['cursor'])
@@ -370,6 +377,8 @@ def test_map_step_abandons_a_step_that_keeps_needing_select(monkeypatch):
     """#2935 g1075: 05:52-07:28 spent 1,967 s in nav_stuck bursts without a sortie.
     Past the bound the step is failed so the picker can choose another one."""
     monkeypatch.setattr(policy, 'castle_roofs', lambda *_a, **_k: [])
+    # This test is about the nav-stuck bound, not the source-jump method.
+    monkeypatch.setattr(policy, '_want_castle_jump', lambda *_a, **_k: False)
     step = 'I:9bacc4:10'
     order = {'step': step, 'general': 'ココット', 'source': 'アルマムーン', 'target': 'ゴーメン',
              'cards': [], 'after': None, 'note': 'test', 'purpose': 'move'}
@@ -447,7 +456,8 @@ def test_no_roof_under_the_cursor_refuses_a_bounded_number_of_source_presses(mon
     monkeypatch.setattr(policy, 'nav_step', arrived)
     far = [{'kind': 'own', 'target': (51, 109), 'clipped': False}]
     monkeypatch.setattr(policy, 'castle_roofs', lambda *_a, **_k: far)
-    mem = {'chapter': 1, 'orders': {}, 'picked': [], '_records': [], 'active': '1-C1'}
+    mem = {'chapter': 1, 'orders': {}, 'picked': [], '_records': [], 'active': '1-C1',
+           'castle_jump_skip': {'mode': 'reanchor', 'tick': 0}}
     sea = map_screen(215, 189)
     for _ in range(policy.OFF_CASTLE_LIMIT):
         assert policy.map_step(sea, mem, FRAME) == []
@@ -526,8 +536,16 @@ def test_sorties_without_a_recent_tick_no_longer_block_their_generals():
     mem['tick'] = 50
     mem['sorties']['I:b:1']['tick'] = 45
     assert policy.next_order(mem) is None                     # ココット marching right now
+    # Chapter 1's measured arrival wait is 800 observations, not the obsolete
+    # 400-observation display limit. Never free a still-travelling general early.
     mem['tick'] = 45 + policy.SORTIE_BUSY_TICKS
-    assert policy.next_order(mem)['step'] == 'A:p:K3'         # ...but not forever
+    assert policy.next_order(mem) is None
+    mem['tick'] = 45 + 2 * policy.SORTIE_BUSY_TICKS
+    # Time alone no longer returns the unverified general to its old castle.
+    # The next monthly individual-status pass must locate them first.
+    assert policy.next_order(mem) is None
+    assert 'ココット' in _world(mem)['general_location_unknown']
+    assert any(r['decision'] == 'sortie_location_recheck_queued' for r in mem['_records'])
 
 
 def test_a_plan_of_orders_that_can_never_run_does_not_block_off_chart_sorties():
@@ -546,7 +564,7 @@ def test_a_recruit_makes_the_home_garrison_unknown_again():
     screen = Screen(lines=[], hand=None, text='', kind='month_menu')
     screen.header = {'gold': 100 - policy.RECRUIT_COST}
     policy._finish_month_sub(screen, mem, {'recruit': 'opened'})
-    assert 'アルマムーン' not in mem['garrison'] and mem['garrison']['ジョンリギ'] == ['ココット']
+    assert 'アルマムーン' not in _world(mem)['garrison'] and _world(mem)['garrison']['ジョンリギ'] == ['ココット']
 
 
 def _move_list(names):
@@ -574,7 +592,7 @@ def test_a_move_from_an_unread_castle_sends_a_non_hero_and_keeps_one_behind():
                                 'names': names, 'tick': mem.get('tick') or 0}
     actions = policy.deploy_step(_move_list(names), mem)
     assert mem['general_override']['I:m:1'] == 'キャラウェイ'
-    assert mem['garrison']['ジョンリギ'] == names
+    assert _world(mem)['garrison']['ジョンリギ'] == names
     assert decisions(mem, 'move_general_picked')
     assert actions and actions[0]['buttons'] in (['down'], ['a'])
 
@@ -593,9 +611,60 @@ def test_a_move_from_a_castle_with_one_general_is_cancelled_and_remembered():
     """g407: ジョンリギ held only ココット; the move must not empty it."""
     mem = _move_memory()
     assert policy.deploy_step(_move_list(['ココット']), mem) == [policy.pad('b'), policy.pad('b')]
-    assert mem['orders']['I:m:1'] == 'failed' and mem['garrison']['ジョンリギ'] == ['ココット']
+    assert mem['orders']['I:m:1'] == 'failed' and _world(mem)['garrison']['ジョンリギ'] == ['ココット']
     assert not [c for c in policy.interim_candidates(mem).values()
                 if c['purpose'] == 'move' and c['source'] == 'ジョンリギ']
+
+
+def _move_memory_naming(general):
+    mem = _move_memory()
+    mem['chart_adjust']['interim_order']['general'] = general
+    return mem
+
+
+def _scanned_move(mem, names):
+    # A four-name list is walked to its end first (#3077); this one already was.
+    mem['general_list_scan'] = {'step': 'I:m:1', 'castle': 'ジョンリギ', 'end': 'wrapped',
+                                'names': names, 'tick': mem.get('tick') or 0}
+    return policy.deploy_step(_move_list(names), mem)
+
+
+def test_a_move_sends_the_general_the_plan_named():
+    """g1139 2026-11-06 21:16: the plan named ゼウス (HP 85) for a thickening
+    move into ジュメルズ and the list head セルリアク (HP 32) went instead."""
+    mem = _move_memory_naming('ゼウス')
+    actions = _scanned_move(mem, [chart.HERO, 'セルリアク', 'ゼウス', 'エピィ'])
+    assert mem['general_override']['I:m:1'] == 'ゼウス'
+    picked = decisions(mem, 'move_general_picked')
+    assert picked and picked[-1]['general'] == 'ゼウス'
+    assert '計画' in picked[-1]['reason']
+    assert actions and actions[0]['buttons'] in (['down'], ['a'])
+
+
+def test_a_move_stops_the_scan_when_the_planned_general_is_on_the_page():
+    """Owner 2026-11-07: ゼウス was already on the first page while the list
+    was pressed down to its 16-press limit before the move was sent."""
+    mem = _move_memory_naming('ゼウス')
+    actions = policy.deploy_step(_move_list(['ゼウス', chart.HERO, 'キャラウェイ', 'ココット']), mem)
+    assert actions == [policy.pad('a')]
+    assert mem['general_override']['I:m:1'] == 'ゼウス'
+    scan = mem['general_list_scan']
+    assert (scan['end'], scan['general'], scan['presses']) == ('named', 'ゼウス', 0)
+    # The page says who is here, not who else is: it is not a garrison.
+    assert not _world(mem).get('garrison')
+
+
+def test_a_named_move_general_who_is_not_here_falls_back_to_the_head():
+    mem = _move_memory_naming('ゼウス')
+    _scanned_move(mem, [chart.HERO, 'キャラウェイ', 'ココット', 'クミン'])
+    assert mem['general_override']['I:m:1'] == 'キャラウェイ'
+    assert decisions(mem, 'move_general_picked')[-1]['general'] == 'キャラウェイ'
+
+
+def test_a_move_never_sends_the_hero_even_when_the_plan_names_him():
+    mem = _move_memory_naming(chart.HERO)
+    _scanned_move(mem, [chart.HERO, 'キャラウェイ', 'ココット', 'クミン'])
+    assert mem['general_override']['I:m:1'] == 'キャラウェイ'
 
 
 def _world_map_frame(owners):
@@ -699,27 +768,15 @@ def _y_view(cursor_centre, *, gold=False, shift=0):
     return Frame(256, 224, bytes(px))
 
 
-def test_a_far_source_is_reached_through_the_y_map_cursor():
-    from docich.hanjuku_screen import parse
+def test_a_far_source_is_reached_through_the_x_castle_list():
     order = {'step': 'X', 'general': 'ゼウス', 'source': 'ジョンリギ', 'target': 'スペンソニア',
              'cards': [], 'after': None, 'note': 't'}
     mem = {'chapter': 1, 'captured': ['ジョンリギ'], 'orders': {}, 'picked': [], '_records': [],
            'active': 'X', 'launched_orders': {'X': order}, 'cursor': list(CASTLES['アルマムーン'])}
-    assert policy.map_step(map_screen(140, 120), mem, FRAME) == [policy.pad('y')]
-    assert mem['y_jump']['goal'] == 'ジョンリギ'
-    gx, gy = CASTLES['ジョンリギ']
-    ox, oy = policy.Y_JUMP_OFFSET[1]
-    start = (CASTLES['アルマムーン'][0] / 8 + ox, CASTLES['アルマムーン'][1] / 8 + oy)
-    frame = _y_view(start)
-    assert parse(frame).kind == 'world_map'
-    actions = policy.world_map_step(parse(frame), mem, frame)
-    assert {a['buttons'][0] for a in actions} == {'left', 'up'}
-    frame = _y_view((gx / 8 + ox, gy / 8 + oy))
-    assert policy.world_map_step(parse(frame), mem, frame) == [policy.pad('a')]
-    assert mem['cursor'] == [gx, gy] and 'y_jump' not in mem
-    assert decisions(mem, 'y_jump_confirm')
-    # Close enough now: no second jump.
-    assert not policy._want_y_jump(mem, order, 'ジョンリギ', 'map')
+    assert policy.map_step(map_screen(140, 120), mem, FRAME) == [policy.pad('x')]
+    assert mem['castle_jump']['source'] == 'ジョンリギ'
+    assert mem['castle_jump']['phase'] == 'menu'
+    assert 'y_jump' not in mem
 
 
 def test_the_sortie_target_jump_reads_the_gold_g_cursor_and_is_bounded():
@@ -826,8 +883,8 @@ def test_a_jump_whose_view_closed_early_does_not_block_later_jumps():
            'launched_orders': {'X': order}, 'cursor': [300, 300],
            'y_jump': {'goal': 'アルマムーン', 'mode': 'map', 'step': 'X', 'moves': 8, 'wait': 0,
                       'seen': True}}
-    assert policy.map_step(map_screen(140, 120), mem, FRAME) == [policy.pad('y')]
-    assert decisions(mem, 'y_jump_failed') and mem['y_jump']['moves'] == 0
+    assert policy.map_step(map_screen(140, 120), mem, FRAME) == [policy.pad('x')]
+    assert decisions(mem, 'y_jump_failed') and mem['castle_jump']['source'] == 'アルマムーン'
 
 
 def test_a_jump_confirms_within_one_view_pixel():
@@ -853,7 +910,8 @@ def test_the_failed_menu_hold_is_bounded_and_cleared_by_a_y_jump(monkeypatch):
     monkeypatch.setattr(policy, 'castle_roofs',
                         lambda *_a, **_k: [{'kind': 'own', 'target': (140, 120), 'clipped': False}])
     mem = {'chapter': 1, 'orders': {}, 'picked': [], '_records': [], 'active': '1-C1',
-           'menu_miss': 1, 'cursor': list(CASTLES['アルマムーン'])}
+           'menu_miss': 1, 'cursor': list(CASTLES['アルマムーン']),
+           'castle_jump_skip': {'mode': 'reanchor', 'tick': 0}}
     held = [policy.map_step(map_screen(140, 120), mem, FRAME) for _ in range(policy.MENU_HOLD_LIMIT)]
     assert all(h == [] for h in held)
     assert policy.map_step(map_screen(140, 120), mem, FRAME) == [policy.pad('a')]
@@ -1021,7 +1079,8 @@ def test_after_a_y_jump_the_cursor_is_walked_onto_the_nearest_roof_then_selects(
     mem.update(near_goal={'step': 'J3', 'goal': 'スペンソニア', 'mode': 'map'}, expect_menu=False)
     monkeypatch.setattr(policy, 'castle_roofs',
                         lambda *_a, **_k: [{'kind': 'own', 'target': (20, 20), 'clipped': False}])
-    assert policy.map_step(map_screen(140, 120), mem, FRAME) == [policy.pad('y')]
+    assert policy.map_step(map_screen(140, 120), mem, FRAME) == [policy.pad('x')]
+    assert mem['castle_jump']['source'] == 'スペンソニア'
     assert decisions(mem, 'align_failed') and not mem.get('nav_search')
 
 
@@ -1305,7 +1364,7 @@ def test_the_last_general_never_leaves_our_last_castle(monkeypatch):
     # A second castle only helps when somebody is known to stand in it.
     mem['captured'] = ['フーリック']
     assert policy._keep_last_castle(alone, mem, order) is not None           # フーリック never read
-    mem['garrison'] = {'フーリック': ['ゼウス']}
+    _world(mem)['garrison'] = {'フーリック': ['ゼウス']}
     assert policy._keep_last_castle(alone, mem, order) is None
     # ... and is not marching away (isolated probe: both castles emptied at once).
     mem['sorties'] = {'2-Z2': {'general': 'ゼウス', 'target': 'ウラノポリス', 'status': 'en_route',
@@ -1322,7 +1381,10 @@ def test_a_held_order_is_skipped_for_one_from_a_staffed_castle(monkeypatch):
     mem = {'chapter': 2, 'tick': 10, 'orders': {}, 'captured': ['フーリック'], '_records': [],
            'garrison': {'フーリック': ['ゼウス']}, 'last_castle_hold': {'castle': 'フーリック', 'tick': 5}}
     assert policy.next_order(mem) is other
-    mem['garrison']['アルマムーン'] = ['ヴィーナス', 'どうし']        # someone stays home: the hold lifts
+    _world(mem)['garrison']['アルマムーン'] = ['ヴィーナス', 'どうし']
+    # Another castle having a defender does not let フーリック send its last.
+    assert policy.next_order(mem) is other
+    _world(mem)['garrison']['フーリック'].append('リーキ')
     assert policy.next_order(mem) is held
 
 
@@ -1509,7 +1571,7 @@ def test_unusable_plan_falls_back_to_boss_companion_before_following_hero(compan
     # empty ジョンリギ; every castle but the boss's was ours and the bot idled.
     mem = {'chapter': 1, 'tick': 1800, '_records': [], 'orders': {'A:x:J1': 'pending'},
            'captured': ['カストーラ', 'キカンドン', 'ゴーメン', 'ジョンリギ', 'スペンソニア', 'ナキューメラ'],
-           'garrison': {'アルマムーン': [], 'ジョンリギ': [], 'ゴーメン': [policy.NAME], 'スペンソニア': ['ヴィーナス'] if companion else []},
+           'garrison': {'アルマムーン': [], 'ジョンリギ': [], 'ゴーメン': [policy.NAME], 'スペンソニア': ['ヴィーナス', 'ゼウス'] if companion else []},
            'chart_plan': {'request_id': 'x', 'orders': [
                {'step': 'A:x:J1', 'general': 'ココット', 'source': 'ジョンリギ', 'target': 'スペンソニア',
                 'cards': [], 'after': None, 'note': 't', 'local_step': 'J1'}]}}

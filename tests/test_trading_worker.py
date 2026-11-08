@@ -15,6 +15,7 @@ from docich import config  # noqa: E402
 from docich.trading.depth import DepthBook, DepthLevel  # noqa: E402
 from docich.trading.ledger import PaperLedger  # noqa: E402
 from docich.trading.market_data import MarketFrame  # noqa: E402
+from docich.trading.notifications import _render_event_with_local_facts, _safe_status  # noqa: E402
 from docich.trading.models import MarketInfo  # noqa: E402
 from docich.trading.settlement import CircuitBreakStatus  # noqa: E402
 from docich.trading.strategies import StrategyPolicy  # noqa: E402
@@ -239,6 +240,33 @@ class TestPaperWorkerCycle(unittest.TestCase):
             self.assertNotIn("theoretical_benchmark", performance)
             self.assertNotIn("positions", performance)
             self.assertNotIn("public history unavailable", json.dumps(status))
+
+    def test_new_fill_pnl_mark_is_not_older_than_fill_for_notification(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            g = _global(Path(tmp))
+            trading_dir = g.state_dir / "trading"
+            result = run_worker_cycle(
+                g, gateway=FakeStrategyGateway(), cycle_index=1, now=NOW,
+                observation_now_fn=lambda: NOW + 2,
+            )
+            self.assertGreaterEqual(result.new_fill_count, 1)
+            events = [
+                json.loads(line)
+                for line in (trading_dir / "events.jsonl").read_text(encoding="utf-8").splitlines()
+            ]
+            fill = next(row for row in events if row["event_type"] == "paper_fill")
+            status = json.loads((trading_dir / "status.json").read_text(encoding="utf-8"))
+            self.assertTrue(status["performance_summary"]["complete"])
+            self.assertGreaterEqual(status["performance_summary"]["as_of"], fill["occurred_at"])
+            safe_status = _safe_status(g, now=NOW + 3)
+            rendered = _render_event_with_local_facts(
+                fill, mode="compact", status=safe_status,
+                display_at=NOW + 3, trading_dir=trading_dir,
+            )
+            self.assertIn("含み ", rendered.overlay_event["title"])
+            self.assertIn("累計 ", rendered.overlay_event["title"])
+            self.assertNotIn("評価待ち", rendered.overlay_event["title"])
+            self.assertNotIn("含み損益", rendered.overlay_event["body"])
 
     def test_replaying_same_frames_does_not_duplicate_fill_event(self):
         with tempfile.TemporaryDirectory() as tmp:

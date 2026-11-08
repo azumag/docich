@@ -55,7 +55,7 @@ class ReplyRadioCloudflareRolloutTests(unittest.TestCase):
             "DOCICH_REPLY_WEB_SEARCH_BACKEND=cloudflare",
             "DOCICH_RADIO_NATIVE_CONSUMER_ENABLED=1",
             "DOCICH_RADIO_NATIVE_CORNERS=ai_knowledge",
-            "DOCICH_RADIO_NATIVE_AGENTS=cloudflare-api:cf/qwen/qwen3-30b-a3b-fp8",
+            "DOCICH_RADIO_NATIVE_AGENTS=cloudflare-api:cf/meta/llama-3.1-8b-instruct-fp8-fast",
         ):
             self.assertIn(value, block)
         self.assertNotIn("DOCICH_JEV_ROUTE=", block)

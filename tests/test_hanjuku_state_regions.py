@@ -78,6 +78,16 @@ def test_country_income_survives_the_chapter_until_the_next_read():
     assert mem['country_income'] == {'scope': [1, '1-7'], 'tick': 20, 'income': 300}
 
 
+def test_country_wages_survive_the_chapter_until_the_next_read():
+    # 総賃金 is the same kind of last observation as 現在収入.
+    from docich.hanjuku.strategy import campaign
+    mem = memory(); confirm(mem)
+    mem['country_wages'] = {'scope': [1, '1-7'], 'tick': 20, 'wages': 150}
+    campaign._enter_chapter(mem, 2, reason='test')
+    assert mem['chapter'] == 2
+    assert mem['country_wages'] == {'scope': [1, '1-7'], 'tick': 20, 'wages': 150}
+
+
 def test_world_region_dies_with_the_chapter_but_journal_survives():
     # W1 follow-up: _enter_chapter must clear the world region (chapter
     # lifetime) while the journal region (run lifetime) is untouched.
@@ -99,7 +109,7 @@ def test_migrated_departure_and_recall_keys_live_in_their_regions():
                         ('launch_miss', FLOW), ('recall', FLOW),
                         ('recall_verification', FLOW), ('recall_retry', FLOW),
                         ('recall_skip', FLOW), ('recall_skip_target', FLOW),
-                        ('recall_skip_ticks', FLOW), ('retreat_rechecks', FLOW),
+                        ('recall_skip_ticks', FLOW), ('recall_skip_history', FLOW), ('retreat_rechecks', FLOW),
                         ('retreat_camp_episode', FLOW),
                         ('retreat_anonymous_budget', FLOW),
                         ('_recall_inputs', JOURNAL)):
@@ -114,3 +124,11 @@ def test_migrated_departure_and_recall_keys_live_in_their_regions():
     assert KEY_OWNERSHIP['launched_orders']['region'] == WORLD
     assert KEY_OWNERSHIP['launched']['migrated'] is True
     assert KEY_OWNERSHIP['launched_orders']['migrated'] is True
+    # W2: retired_sorties も world 領域へ実移行。
+    assert KEY_OWNERSHIP['retired_sorties']['region'] == WORLD
+    assert KEY_OWNERSHIP['retired_sorties']['migrated'] is True
+    # W3: garrison と派生2キーも world 領域へ実移行（DSH ①②同梱可）。
+    for key in ('garrison', 'garrison_observed_at', 'general_location_unknown'):
+        assert KEY_OWNERSHIP[key]['region'] == WORLD
+        assert KEY_OWNERSHIP[key]['lifetime'] == 'chapter'
+        assert KEY_OWNERSHIP[key]['migrated'] is True

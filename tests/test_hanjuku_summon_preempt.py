@@ -444,3 +444,50 @@ def test_enemy_summon_at_one_hit_hp_does_not_open_okunote():
         mem = memory()
         mem['battle'].update(okunote_only_observed=True, summon_enemy_hp=hp)
         assert p._defender_summon_preempt(mem, mem['battle'])['due'], hp
+
+
+# ---- g1139 17:38: 敵召喚獣ちきゅうちゃんのHP9999が照合の上限(999)を超え停止 ----
+# 実フレーム(キッシュ26 vs 召喚獣ちきゅうちゃん9999、おくのてのみ有効)。
+# 旧コードは summon_reading が None を返し続け、3回の down の後は毎 tick B
+# (この箱では無効)で止まり、unconfirmed が300回を超えた。
+def _chikyu_frame_and_memory(*, burned=False):
+    from copy import deepcopy
+    from pathlib import Path
+    from docich.hanjuku_pixels import read_png
+    ident = {'game': 'hanjuku-hero', 'runtime_id': 'chikyu-test', 'generation': 1, 'lease_id': 'test'}
+    frame = read_png(Path(__file__).parent / 'fixtures/hanjuku/g1139-kisshu-chikyu-chan-9999-okunote-only.png')
+    cur = {'ally': 'キッシュ', 'enemy': 'レモン', 'castle': 'ジュメルズ', 'side': 'defense',
+           'start_ally_hp': 26, 'ally_hp': 26, 'start_enemy_hp': 27, 'enemy_hp': 19,
+           'cards_used': [], 'planned_cards': [], 'card_evidence_version': 1, 'egg_battle': True,
+           'card_summon_observed': True, 'summon_egg_unavailable': True,  # 召喚時に自軍の卵が使えない
+           'summon_general_reading': {'identity': deepcopy(ident), 'ally': 'キッシュ',
+                                      'enemy': 'レモン', 'hp': 26, 'max_hp': 26}}
+    if burned:  # live: scrolling 済み・unconfirmed と ticks が焼き切れた状態
+        cur.update(okunote_flow={'ticks': 328}, okunote_summon_unconfirmed=328,
+                   okunote_summon_preempt={'downs': 4, 'opens': 0, 'stage': 'scrolling'})
+    mem = {'chapter': 5, 'tick': 100, 'egg_battle': True, 'battle': cur,
+           '_run_identity': deepcopy(ident), 'survey_run_identity': deepcopy(ident)}
+    return frame, mem, ident
+
+
+def test_real_frame_reads_the_9999hp_summoned_monster():
+    from docich.hanjuku_screen import parse
+    frame, _, _ = _chikyu_frame_and_memory()
+    s = parse(frame)
+    assert s.kind == 'battle_menu'
+    assert [(r.side, r.name, r.hp) for r in s.egg_rows] == [
+        ('ally', 'キッシュ', 26), ('enemy', 'ちきゅうちゃん', 9999)]
+
+
+@pytest.mark.parametrize('burned', [False, True])
+def test_9999hp_summoned_monster_binds_and_selects_okunote_instead_of_b_loop(burned):
+    from docich.hanjuku_screen import parse
+    from docich.hanjuku_bot import decide
+    from docich.hanjuku.flows import okunote
+    frame, mem, ident = _chikyu_frame_and_memory(burned=burned)
+    s = parse(frame)
+    assert okunote.summon_reading(s, mem, mem['battle']) == {
+        'ally_hp': 26, 'enemy_monster': 'ちきゅうちゃん', 'enemy_monster_hp': 9999}
+    actions, state = decide(frame, {'policy': mem}, run_identity=ident)
+    assert actions == [p.pad('a')]  # 旧コードは [b] を無限に返した
+    assert not state['policy']['battle'].get('okunote_summon_unconfirmed')

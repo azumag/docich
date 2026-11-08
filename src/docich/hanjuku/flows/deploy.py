@@ -5,7 +5,7 @@ source castle and general, selects the planned cards and confirms the sortie,
 holding or cancelling when the visible menu contradicts the plan.
 """
 from __future__ import annotations
-from ..state.regions import flow as _flow, journal as _journal
+from ..state.regions import world as _world, flow as _flow, journal as _journal
 
 import re
 import time
@@ -717,7 +717,18 @@ def _hold_boss_card_selection(screen, mem, order, reason, *, card=None):
 
 
 def _move_general_pick(screen, mem, order):
-    """Pick the general a move sends: never the donor's last one."""
+    """Pick the general a move sends: the planned one, never the donor's last.
+
+    A garrison rotation names the general that should thicken the castle near
+    the enemy (replan picks the strongest spare) and writes that name into the
+    order, so the sortie honours it when the general is selectable from this
+    castle. The head of the list stays the fallback for an order that carries
+    no usable name: the MOVE_ANY_GENERAL sentinel, the hero, a general already
+    on the road, or one that is not here any more.
+    g1139 2026-11-06 21:16: a thickening move to ジュメルズ named ゼウス
+    (HP 85) and the list head セルリアク (HP 32) went instead; ジュメルズ fell
+    seven minutes later.
+    """
     present = _listed_generals(screen, mem, order)
     if present is None:
         return _hold_deploy(screen, mem, order, '移動元の将軍一覧を読めないため保留')
@@ -730,12 +741,18 @@ def _move_general_pick(screen, mem, order):
         return [pad('b'), pad('b')]
     general = mem.get('general_override', {}).get(order['step'])
     if general not in spare:
-        general = (_defense_move_pick(mem, _source(order, mem), order['target'], spare)
-                   or spare[0])
+        planned = order.get('general')
+        if planned in spare and planned != NAME:
+            general = planned
+            reason = '計画が名指しした将軍をそのまま移動させる'
+        else:
+            general = (_defense_move_pick(mem, _source(order, mem), order['target'], spare)
+                       or spare[0])
+            reason = '移動元に1人以上残して主人公以外の将軍を空の城へ送る'
         mem.setdefault('general_override', {})[order['step']] = general
         _record(mem, 'move_general_picked', chart_step=order['step'], general=general,
                 source=_source(order, mem), target=order['target'], observed_metric=present[:8],
-                reason='移動元に1人以上残して主人公以外の将軍を空の城へ送る')
+                reason=reason)
     move = _list_menu_to(screen, mem, order, general)
     if move is None:
         return _hold_deploy(screen, mem, order, '移動させる将軍へカーソルを合わせられないため保留')
@@ -752,13 +769,36 @@ GENERAL_LIST_SCAN_STALLS = 3
 GENERAL_LIST_SCAN_TICKS = 60
 
 
+def _planned_general_on_page(screen, mem, order, present):
+    """The plan's own general when this page already shows him.
+
+    Owner 2026-11-07: when the plan says which general sorties (or moves), the
+    list is a lookup, not a survey. Once that general is on screen the sortie
+    can proceed from this page; pressing down to the end only delays it.
+    Boss, hero, probe and unconfirmed-departure steps still need the whole
+    list: they pick companions from it, prove a source roster, or settle a
+    launch.
+    """
+    if ((mem.get('orders') or {}).get(order['step']) == 'launched_unconfirmed'
+            or _is_boss_order(order, mem) or order.get('source_probe') is True):
+        return None
+    general = _sortie_general(order, mem) or order.get('general')
+    if not general or general == NAME or general in _en_route(mem)[0]:
+        return None
+    if general not in present or not _general_visible(screen, general):
+        return None
+    return general
+
+
 def _general_list_scan(screen, mem, order):
     """Down presses that walk this general list once, or None once it is read.
 
     The walk ends when the cursor returns to the row it started on (a wrapped
     list), stops moving for GENERAL_LIST_SCAN_STALLS frames after a press, or
-    after GENERAL_LIST_SCAN_PRESSES presses. An unreadable frame leaves the
-    walk where it was and lets the callers hold as before.
+    after GENERAL_LIST_SCAN_PRESSES presses. A step that names its general
+    ends the walk on the page where he appears: the rest of the list cannot
+    change who sorties. An unreadable frame leaves the walk where it was and
+    lets the callers hold as before.
     """
     if (mem.get('orders') or {}).get(order['step']) == 'launched_unconfirmed':
         return None
@@ -793,6 +833,16 @@ def _general_list_scan(screen, mem, order):
             scan['end'] = 'stalled'
     if not scan['end'] and scan['presses'] >= GENERAL_LIST_SCAN_PRESSES:
         scan['end'] = 'limit'
+    if not scan['end']:
+        found = _planned_general_on_page(screen, mem, order, present)
+        if found:
+            scan['end'], scan['general'] = 'named', found
+    if scan['end'] == 'named':
+        _record(mem, 'general_list_scanned', **_deploy_context(order, mem), castle=castle,
+                observed_metric={'generals': list(scan['names']), 'end': 'named',
+                                 'general': scan.get('general'), 'presses': scan['presses']},
+                reason=f"計画が名指しした{scan.get('general')}が一覧に見えたため、最後まで送らず出撃の選択へ進む")
+        return None
     if scan['end']:
         _record(mem, 'general_list_scanned', **_deploy_context(order, mem), castle=castle,
                 observed_metric={'generals': list(scan['names']), 'end': scan['end'],
@@ -823,19 +873,26 @@ def _list_menu_to(screen, mem, order, general):
     return pad('down' if names.index(general) > names.index(cur[2]) else 'up')
 
 
-def _observe_garrison(screen, mem, order):
-    """Remember who a castle's general list showed (``interim_candidates``)."""
+def _observe_garrison(screen, mem, order, *, complete=True):
+    """Remember who a castle's general list showed (``interim_candidates``).
+
+    ``complete`` is false when the walk stopped at the plan's general: that
+    page proves the names on it, not the rest of the castle, so it refreshes
+    the location evidence but is never recorded as the garrison roster.
+    """
     present = _listed_generals(screen, mem, order)
     castle = _source(order, mem)
     if present is None or not castle:
         return
-    garrison = mem.setdefault('garrison', {})
-    # Display-only evidence: decisions never consult this wall-clock field.
-    mem.setdefault('garrison_observed_at', {})[castle] = time.time()
+    garrison = _world(mem).setdefault('garrison', {})
     visible = set(_present_generals(screen) or ())
-    mem['general_location_unknown'] = [g for g in mem.get('general_location_unknown') or ()
+    _world(mem)['general_location_unknown'] = [g for g in _world(mem).get('general_location_unknown') or ()
                                        if g not in present
                                        or (g in visible and not _general_visible(screen, g))]
+    if not complete:
+        return
+    # Display-only evidence: decisions never consult this wall-clock field.
+    _world(mem).setdefault('garrison_observed_at', {})[castle] = time.time()
     verification = mem.get('recruit_verification') or {}
     joined = (set(present) & set(verification.get('candidates') or ())) - set(
         verification.get('generals_before') or ())
@@ -850,6 +907,21 @@ def _observe_garrison(screen, mem, order):
                 observed_metric=present[:8], reason='出撃元の将軍一覧から駐留将軍を記録')
     from ..strategy import routes
     routes.observed_roster(mem, castle, present)
+    scan = mem.get('general_list_scan') or {}
+    active_scan = scan.get('castle') == castle and scan.get('step') == order['step']
+    completed = (active_scan and scan.get('end') in ('wrapped', 'stalled'))
+    # A short list needs no walk only when there is no unfinished scan.
+    # A partial OCR frame during a long walk must not confirm a launch.
+    short_complete = len(present) < GENERAL_LIST_FULL and not active_scan
+    if completed or short_complete:
+        # Only a conclusive read consumes the verification request. Otherwise
+        # the planner must be able to retry the roster probe.
+        (mem.get('roster_read_due') or {}).pop(castle, None)
+        # A completed walk of the source list is the evidence a blind
+        # world-map probe waits for (g1133: chapter 6 draws units as
+        # portraits, so the Y view never showed the committed unit).
+        from .map import settle_launch_probes_from_roster
+        settle_launch_probes_from_roster(mem, castle, present)
     if castle in _owned(mem):
         # A marching general the game stopped inside this castle is only
         # visible here: our own castles print no entry message. Continue his
@@ -889,12 +961,28 @@ def _check_source_castle(screen, mem, order):
     label = next((k for k, v in STATUS_NAMES.items() if v == name and k in cells), name)
     if label in cells:
         mem['cursor'], mem['uncertain'] = list(cells[label]), False    # we know where we are now
-    misses = mem.setdefault('source_miss', {})
-    misses[step] = misses.get(step, 0) + 1
+    misses = _count_source_mismatch(mem, step, label)
     _record(mem, 'source_castle_mismatch', chart_step=step, source=source,
-            observed_metric={'castle': name, 'misses': misses[step]},
+            observed_metric={'castle': name, 'misses': misses},
             reason=f'出撃元{source}のつもりで開いた城が{name}だったため出撃せず現在地を直して向かい直す')
     return [pad('b'), {'type': 'wait', 'ms': 500}, pad('b')]
+
+
+def _count_source_mismatch(mem, step, label):
+    """Count consecutive mismatches at the same wrong castle.
+
+    Only the same wrong castle counts as the same failure: opening a different
+    castle each time means the position estimate is being corrected and the
+    march is making progress (g1133 2026-11-05 opened the home castle three
+    times while aiming at オケアナ, which is the case this bounds).
+    """
+    misses = mem.setdefault('source_miss', {})
+    seen = mem.setdefault('source_mismatch_castle', {})
+    if seen.get(step) != label:
+        misses[step] = 0
+        seen[step] = label
+    misses[step] = misses.get(step, 0) + 1
+    return misses[step]
 
 
 def _keep_last_castle(screen, mem, order):
@@ -984,7 +1072,7 @@ def _keep_sortie_defender(screen, mem, order):
     present = _listed_generals(screen, mem, order)
     if present is None:
         return _hold_deploy(screen, mem, order, '守備を残せる将軍一覧を読めないため出撃を保留')
-    unavailable = _en_route(mem)[0] | set(mem.get('general_location_unknown') or ())
+    unavailable = _en_route(mem)[0] | set(_world(mem).get('general_location_unknown') or ())
     available = set(present) - unavailable
     if len(available) >= 2:
         (mem.get('source_location_rechecks') or {}).pop(_source(order, mem), None)
@@ -1024,7 +1112,7 @@ def _keep_hero_guard(screen, mem, order):
     present = _listed_generals(screen, mem, order)
     if present is None:
         return _hold_deploy(screen, mem, order, '主人公の城の守備人数を数える将軍一覧を読めないため出撃を保留')
-    unavailable = _en_route(mem)[0] | set(mem.get('general_location_unknown') or ())
+    unavailable = _en_route(mem)[0] | set(_world(mem).get('general_location_unknown') or ())
     available = set(present) - unavailable
     general = order['general']
     if general == NAME or order.get('source_probe') is True:
@@ -1121,8 +1209,12 @@ def _cancelled_sortie_step(screen, mem, owner):
         # bounded backout request; it does not establish arrival or completion.
         owner.pop('decline_ready_tick', None)
         return [pad('b')] if owner.get('decline_sent') is True else []
+    # g1133 decision-003: the decline cursor's left edge jitters x0 138/139
+    # like the card_select hand; both are the same measured sprite.
     refusal_hands = ((138, 105, 156, 118), (138, 105, 158, 118),
-                     (138, 121, 156, 134), (138, 121, 158, 134))
+                     (138, 121, 156, 134), (138, 121, 158, 134),
+                     (139, 105, 156, 118), (139, 105, 158, 118),
+                     (139, 121, 156, 134), (139, 121, 158, 134))
     if not _sortie_decline_panel(screen) or screen.hand not in refusal_hands:
         owner.pop('decline_ready_tick', None)
         _record(mem, 'situation_held', screen=screen.kind,
@@ -1314,10 +1406,10 @@ def deploy_step(screen: Screen, mem):
             {'target': order['target']})
     if kind != 'general_list' and _source_spare_missing(order, mem, allow_probe=kind == 'castle_menu'):
         _record_source_defender_cancel(mem, order,
-            present=(mem.get('garrison') or {}).get(_source(order, mem)))
+            present=(_world(mem).get('garrison') or {}).get(_source(order, mem)))
         return _hold_guarded_sortie(mem, order, 'sortie_held_source_defender',
             '出撃元の記録で待機将軍を1人残せないため出撃を取り消す',
-            {'present': (mem.get('garrison') or {}).get(_source(order, mem))})
+            {'present': (_world(mem).get('garrison') or {}).get(_source(order, mem))})
     if kind == 'castle_menu':
         checked = _check_source_castle(screen, mem, order)
         if checked is not None:
@@ -1334,7 +1426,30 @@ def deploy_step(screen: Screen, mem):
         walk = _general_list_scan(screen, mem, order)
         if walk is not None:
             return _deploy_input(screen, mem, order, walk, '出撃元の将軍一覧を下へ送って画面外の将軍を読む')
-        _observe_garrison(screen, mem, order)
+        scan = mem.get('general_list_scan') or {}
+        named_stop = (scan.get('end') == 'named' and scan.get('step') == order['step']
+                      and scan.get('castle') == _source(order, mem))
+        _observe_garrison(screen, mem, order, complete=not named_stop)
+        if order.get('roster_probe') is True:
+            # docich#3515: a read-only launch verification. The roster read
+            # above settled any blind probe for this castle (still-listed
+            # rolls the phantom launch back to pending). Back out without
+            # selecting or sending; the reopened order re-sends next.
+            present = _listed_generals(screen, mem, order)
+            source = _source(order, mem)
+            verified = source not in (mem.get('roster_read_due') or {})
+            if present is not None:
+                # The read is the evidence: joiners this castle was expected
+                # to hold are refuted when the list does not show them, so a
+                # one-general castle is not probed again for the same set.
+                _refute_unplaced(mem, order)
+            _record(mem, 'roster_probe_complete' if verified else 'roster_probe_incomplete',
+                    **_deploy_context(order, mem), castle=source,
+                    observed_metric={'generals': list(present or [])[:12], 'roster_read': verified},
+                    reason='出撃元一覧の読取結果を記録し、未確定なら次回の再読取要求を保持する')
+            _finish_order(mem, 'done',
+                          reason='読取のみの指示を終了し、未確定なら次回再試行する')
+            return [pad('b'), pad('b')]
         if (mem.get('orders') or {}).get(order['step']) == 'launched_unconfirmed':
             return _verify_sortie_source(screen, mem, order)
         guard = _keep_sortie_defender(screen, mem, order)

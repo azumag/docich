@@ -301,6 +301,10 @@ class BriefGenerationTests(unittest.TestCase):
 
 class BriefDeploymentTests(unittest.TestCase):
     def setUp(self):
+        # Local file:// submodule fixtures need the test-only Git protocol override.
+        env_patch = mock.patch.dict(os.environ, {"VMOPS_TESTING": "1"})
+        env_patch.start()
+        self.addCleanup(env_patch.stop)
         self.addCleanup(os.umask, os.umask(0o022))
         temp = tempfile.TemporaryDirectory(prefix="vmops-brief-")
         self.addCleanup(temp.cleanup)

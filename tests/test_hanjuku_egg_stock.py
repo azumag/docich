@@ -12,6 +12,7 @@ from test_hanjuku_chart_bot import sortie_canvas
 from test_hanjuku_defense_read_model import project, receipts, CONTEXT
 from test_hanjuku_retreat_egg_status import open_status
 from test_hanjuku_retreat_recheck import memory as camp_memory, FRAME
+from docich.hanjuku.state.regions import world as _world
 
 
 @pytest.mark.parametrize('uses', range(6))
@@ -92,7 +93,7 @@ def test_named_camp_five_replaces_zero_without_claiming_return(mode, actor):
     assert actor not in mem['egg_recheck']
     assert not p._own_egg_empty(mem, {'ally': actor})
     assert mem['sorties'] == before_sorties
-    assert not mem.get('garrison') and not mem.get('house_eggs')
+    assert not _world(mem).get('garrison') and not mem.get('house_eggs')
     assert not any(r.get('decision') == 'egg_recover' for r in mem.get('_records', []))
 
 

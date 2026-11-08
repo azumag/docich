@@ -7,7 +7,7 @@ from docich import hanjuku_policy as p
 from docich.hanjuku_screen import Screen
 from docich.hanjuku_pixels import Frame
 from test_hanjuku_camp_receipts import picker
-from docich.hanjuku.state.regions import flow as _flow, journal as _journal
+from docich.hanjuku.state.regions import world as _world, flow as _flow, journal as _journal
 
 VIEW = Screen([], None, '', kind='world_map')
 
@@ -41,7 +41,7 @@ def test_home_cursor_does_not_confirm_when_unit_is_near_kikandon(monkeypatch):
 
 
 def test_unknown_origin_can_join_observed_hero_castle(monkeypatch):
-    mem = memory(); mem['garrison'] = {'ゴーメン': [p.NAME]}
+    mem = memory(); _world(mem)['garrison'] = {'ゴーメン': [p.NAME]}
     at(monkeypatch, 'アルマムーン')
     assert p.world_map_step(VIEW, mem, picker()) == [p.pad('left')]
     assert _flow(mem)['recall']['goal'] == 'ゴーメン'
@@ -51,7 +51,7 @@ def test_unknown_origin_prefers_sortie_source_over_hero_castle():
     # issue #2907: origin が束縛できなくても、帰還する本人の出撃元を代理の
     # 現在地として距離判定へ使い、主人公の在城城へ一律固定しない。
     mem = memory()
-    mem['garrison'] = {'アルマムーン': [p.NAME]}
+    _world(mem)['garrison'] = {'アルマムーン': [p.NAME]}
     _flow(mem)['recall']['sorties'] = ['s1']
     mem['sorties'] = {'s1': {'source': 'ジョンリギ'}}
     assert p._recall_goal(mem) == 'ジョンリギ'
@@ -61,14 +61,14 @@ def test_captured_sortie_source_uses_nearest_owned_castle():
     # 出撃元が奪取されて自軍城でなくても、その座標を代理 origin として
     # 最も近い自軍城へ帰還する（けっかい(265,270) → ゴーメン(295,606)）。
     mem = memory()
-    mem['garrison'] = {'アルマムーン': [p.NAME]}
+    _world(mem)['garrison'] = {'アルマムーン': [p.NAME]}
     _flow(mem)['recall']['sorties'] = ['s1']
     mem['sorties'] = {'s1': {'source': 'けっかい'}}
     assert p._recall_goal(mem) == 'ゴーメン'
 
 
 def test_distance_tie_prefers_hero_and_nearby_castle_beats_far_hero():
-    mem = memory([649, 765]); mem['garrison'] = {'キカンドン': [p.NAME]}
+    mem = memory([649, 765]); _world(mem)['garrison'] = {'キカンドン': [p.NAME]}
     assert p._recall_goal(mem) == 'キカンドン'
     _flow(mem)['recall']['origin'] = list(p.chart.castles(1)['ジョンリギ'])
     assert p._recall_goal(mem) == 'ジョンリギ'
@@ -79,7 +79,7 @@ def test_diagonal_distance_selects_the_closest_castle_and_confirms_that_picker(m
     # SFC units move straight to their destination. Manhattan distance chose
     # ゴーメン (309) over キカンドン (312), although the direct squared
     # distances are respectively60381 and52034. This origin is synthetic.
-    mem = memory([370, 840]); mem['garrison'] = {'ゴーメン': [p.NAME]}
+    mem = memory([370, 840]); _world(mem)['garrison'] = {'ゴーメン': [p.NAME]}
     at(monkeypatch, 'アルマムーン')
     assert p.world_map_step(VIEW, mem, picker()) == [p.pad('left')]
     assert _flow(mem)['recall']['goal'] == 'キカンドン'
@@ -93,12 +93,12 @@ def test_diagonal_distance_selects_the_closest_castle_and_confirms_that_picker(m
 
 @pytest.mark.parametrize('change', ['marching', 'unknown', 'duplicate', 'enemy'])
 def test_unconfirmed_hero_is_not_used_as_a_merge_target(change):
-    mem = memory(); mem['garrison'] = {'ゴーメン': [p.NAME]}
+    mem = memory(); _world(mem)['garrison'] = {'ゴーメン': [p.NAME]}
     flags = {c: 'own' for c in p._owned(mem)}
     if change == 'marching':
         mem['sorties'] = {'x': {'general': p.NAME, 'status': 'en_route', 'tick': 99}}
-    elif change == 'unknown': mem['general_location_unknown'] = [p.NAME]
-    elif change == 'duplicate': mem['garrison']['キカンドン'] = [p.NAME]
+    elif change == 'unknown': _world(mem)['general_location_unknown'] = [p.NAME]
+    elif change == 'duplicate': _world(mem)['garrison']['キカンドン'] = [p.NAME]
     else: flags['ゴーメン'] = 'enemy'
     assert p._recall_goal(mem, flags) is None
 
@@ -133,8 +133,10 @@ def test_picker_stall_has_a_finite_budget(monkeypatch):
     monkeypatch.setattr(p, 'world_cursor', lambda _: None)
     for _ in range(p.RECALL_LIMIT - 1):
         assert not any(a.get('buttons') == ['a'] for a in p.world_map_step(VIEW, mem, picker()))
-    assert p.world_map_step(VIEW, mem, picker()) == [p.pad('b')]
-    assert not _flow(mem).get('recall')
+    # Owner 2026-11-05: the budget no longer cancels, it confirms where the ring is.
+    assert p.world_map_step(VIEW, mem, picker()) == [p.pad('a'), {'type': 'wait', 'ms': 700}, p.pad('a')]
+    assert _flow(mem)['recall']['stage'] == 'await_dispatch'
+    assert _flow(mem)['recall']['picker_forced'] is True
 
 
 def chapter3_at(monkeypatch, castle):
@@ -152,7 +154,7 @@ def chapter3_memory():
                        'origin': list(p.chart.castles(3)['パタゴーヌ'])}}
 
 
-def test_stationary_picker_cursor_tries_the_other_axis_then_gives_up(monkeypatch):
+def test_stationary_picker_cursor_tries_the_other_axis_then_confirms_where_it_stands(monkeypatch):
     # g1075 15:10:55-15:14:46: aiming at パタゴーヌ, the ring stayed on
     # アルマムーン through 54 left presses; one down press reached グリン.
     mem = chapter3_memory()
@@ -161,12 +163,15 @@ def test_stationary_picker_cursor_tries_the_other_axis_then_gives_up(monkeypatch
     assert _flow(mem)['recall']['goal'] == 'パタゴーヌ'
     assert presses == ([[p.pad('left')]] * p.PICKER_AXIS_SWITCH
                        + [[p.pad('down')]] * (p.PICKER_STILL_LIMIT - p.PICKER_AXIS_SWITCH))
-    assert p.world_map_step(VIEW, mem, picker()) == [p.pad('b')]
-    assert not _flow(mem).get('recall') and mem['uncertain'] and _flow(mem)['recall_skip'] == {'tick': 100}
+    # Owner 2026-11-05: a ring that will not move is confirmed on the castle it
+    # stands on (アルマムーン, ours) instead of cancelling the recall.
+    assert p.world_map_step(VIEW, mem, picker()) == [p.pad('a'), {'type': 'wait', 'ms': 700}, p.pad('a')]
+    recall = _flow(mem)['recall']
+    assert recall['stage'] == 'await_dispatch' and recall['goal'] == 'アルマムーン'
     steps = [r for r in mem['_records'] if r['decision'] == 'camp_recall_picker_step']
     assert [r['observed_metric']['still'] for r in steps] == list(range(p.PICKER_STILL_LIMIT + 1))
-    assert mem['_records'][-1]['decision'] == 'camp_recall_aborted'
-    assert mem['_records'][-1]['resulting_event'] == 'picker_cursor_stationary'
+    assert mem['_records'][-1]['decision'] == 'camp_recall_requested'
+    assert mem['_records'][-2]['decision'] == 'camp_recall_picker_fallback'
 
 
 def test_moved_picker_cursor_returns_to_the_main_axis(monkeypatch):
@@ -207,7 +212,7 @@ def unit_box(castle):
 
 
 def test_unique_picker_marker_binds_origin_and_selects_nearest_castle(monkeypatch):
-    mem = memory(); mem['garrison'] = {'キカンドン': [p.NAME]}
+    mem = memory(); _world(mem)['garrison'] = {'キカンドン': [p.NAME]}
     at(monkeypatch, 'アルマムーン')
     monkeypatch.setattr(p, 'world_markers', lambda _: [unit_box('ジョンリギ')])
     actions = p.world_map_step(VIEW, mem, picker())
@@ -267,3 +272,76 @@ def test_native_home_ring_with_a_second_own_flag_moves_towards_nearby_castle():
     assert p.world_flags(frame, 2)['フーリック'] == 'own'
     assert p.world_map_step(VIEW, mem, frame) == [p.pad('left')]
     assert _flow(mem)['recall']['goal'] == 'フーリック'
+
+
+def test_a_blocked_axis_alternates_when_the_other_offset_is_small(monkeypatch):
+    """g1133 01:06-01:33: バビラリー→ダーラント (dx 38, dy -1.5) pressed right
+    8 times without moving; the old magnitude guard never tried up, so every
+    recall fell back to バビラリー."""
+    mem = {'chapter': 6, 'tick': 100, '_records': [],
+           'captured': ['アルマムーン', 'バビラリー', 'ダーラント'],
+           'recall': {'stage': 'dest', 'steps': 0}}
+    x, y = p.chart.castles(6)['バビラリー']; ox, oy = p.WORLD_MAP_OFFSET[6]
+    monkeypatch.setattr(p, 'world_cursor', lambda _: (x / 8 + ox, y / 8 + oy))
+    monkeypatch.setattr(p, 'world_flags', lambda *_: {c: 'own' for c in p.chart.castles(6)})
+    monkeypatch.setattr(p, 'world_markers', lambda _: [])
+    monkeypatch.setattr(p, '_recall_goal', lambda *_: 'ダーラント')
+    presses = [p.world_map_step(VIEW, mem, picker()) for _ in range(p.PICKER_STILL_LIMIT)]
+    assert presses == ([[p.pad('right')]] * p.PICKER_AXIS_SWITCH
+                       + [[p.pad('up')]] * p.PICKER_AXIS_SWITCH
+                       + [[p.pad('right')]] * p.PICKER_AXIS_SWITCH
+                       + [[p.pad('up')]] * p.PICKER_AXIS_SWITCH)
+
+
+def test_a_picker_ring_cycling_between_two_castles_gives_up(monkeypatch):
+    """g1133 02:13-02:22: right and left moved the ring between バビラリー
+    (73, 120.5) and オケアナ (175, 90.5) forever, so the unchanged-cursor
+    budget never fired and the recall never completed."""
+    mem = {'chapter': 6, 'tick': 100, '_records': [],
+           'captured': ['アルマムーン', 'バビラリー', 'ダーラント'],
+           'recall': {'stage': 'dest', 'steps': 0}}
+    positions = [(73.0, 120.5), (175.0, 90.5)]
+    seen = {'i': 0}
+
+    def cursor(_):
+        spot = positions[seen['i'] % 2]
+        seen['i'] += 1
+        return spot
+
+    monkeypatch.setattr(p, 'world_cursor', cursor)
+    monkeypatch.setattr(p, 'world_flags', lambda *_: {c: 'own' for c in p.chart.castles(6)})
+    monkeypatch.setattr(p, 'world_markers', lambda _: [])
+    monkeypatch.setattr(p, '_recall_goal', lambda *_: 'ダーラント')
+    actions = [p.world_map_step(VIEW, mem, picker())
+               for _ in range(p.PICKER_STILL_LIMIT + 2)]
+    assert any(a == [p.pad('a'), {'type': 'wait', 'ms': 700}, p.pad('a')] for a in actions)
+    assert _flow(mem)['recall']['stage'] == 'await_dispatch'
+    steps = [r for r in mem['_records'] if r['decision'] == 'camp_recall_picker_step']
+    assert steps[-1]['observed_metric']['loops'] >= p.PICKER_LOOP_LIMIT
+
+
+def test_a_picker_ring_that_stops_at_each_castle_still_gives_up(monkeypatch):
+    """g1133 02:43: the ring alternated バビラリー and オケアナ with two
+    unchanged readings at each stop, so a sliding window of changed positions
+    never accumulated and the loop budget never fired."""
+    mem = {'chapter': 6, 'tick': 100, '_records': [],
+           'captured': ['アルマムーン', 'バビラリー', 'ダーラント'],
+           'recall': {'stage': 'dest', 'steps': 0}}
+    stops = [(73.0, 120.5)] * 3 + [(175.0, 90.5)] * 3
+    seen = {'i': 0}
+
+    def cursor(_):
+        spot = stops[seen['i'] % len(stops)]
+        seen['i'] += 1
+        return spot
+
+    monkeypatch.setattr(p, 'world_cursor', cursor)
+    monkeypatch.setattr(p, 'world_flags', lambda *_: {c: 'own' for c in p.chart.castles(6)})
+    monkeypatch.setattr(p, 'world_markers', lambda _: [])
+    monkeypatch.setattr(p, '_recall_goal', lambda *_: 'ダーラント')
+    actions = [p.world_map_step(VIEW, mem, picker())
+               for _ in range(p.PICKER_STILL_LIMIT + 6)]
+    assert any(a == [p.pad('a'), {'type': 'wait', 'ms': 700}, p.pad('a')] for a in actions)
+    assert _flow(mem)['recall']['stage'] == 'await_dispatch'
+    steps = [r for r in mem['_records'] if r['decision'] == 'camp_recall_picker_step']
+    assert steps[-1]['observed_metric']['loops'] >= p.PICKER_LOOP_LIMIT

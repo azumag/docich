@@ -1,0 +1,3012 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=1280,height=720,initial-scale=1">
+<title>Soren direct broadcast overlay</title>
+<script>
+document.documentElement.dataset.sorenRegion = window.frameElement?.dataset.sorenOverlayRegion || 'full';
+document.documentElement.dataset.sorenNeutral = window.frameElement?.dataset.sorenNeutralTheme || '';
+</script>
+<style>
+:root {
+  color-scheme: dark;
+  --cyan: #67e8f9;
+  --blue: #38bdf8;
+  --muted: #91a4ba;
+  --line: rgba(103, 232, 249, .23);
+  --panel: rgba(3, 10, 22, .94);
+}
+* { box-sizing: border-box; }
+html, body {
+  margin: 0;
+  width: 1280px;
+  height: 720px;
+  overflow: hidden;
+  color: #eaf7ff;
+  background: transparent;
+  font-family: Inter, "Noto Sans JP", "Segoe UI", sans-serif;
+}
+#broadcast-overlay {
+  position: fixed;
+  inset: 0;
+  width: 1280px;
+  height: 720px;
+  overflow: hidden;
+  pointer-events: none;
+}
+html[data-soren-region="sidebar"],
+html[data-soren-region="sidebar"] body,
+html[data-soren-region="sidebar"] #broadcast-overlay {
+  width: 320px;
+  height: 720px;
+}
+html[data-soren-region="sidebar"] #broadcast-sidebar { left: 0; }
+html[data-soren-region="sidebar"] .rail { display: none; }
+html[data-soren-region="top"],
+html[data-soren-region="top"] body,
+html[data-soren-region="top"] #broadcast-overlay,
+html[data-soren-region="bottom"],
+html[data-soren-region="bottom"] body,
+html[data-soren-region="bottom"] #broadcast-overlay {
+  width: 960px;
+  height: 90px;
+}
+html[data-soren-region="top"] #broadcast-sidebar,
+html[data-soren-region="top"] #bottom-rail,
+html[data-soren-region="bottom"] #broadcast-sidebar,
+html[data-soren-region="bottom"] #top-rail { display: none; }
+html[data-soren-region="bottom"] #bottom-rail { top: 0; }
+#broadcast-sidebar {
+  position: absolute;
+  left: 960px;
+  top: 0;
+  width: 320px;
+  height: 720px;
+  padding: 8px 7px 7px;
+  background: linear-gradient(180deg, rgba(4, 13, 28, .97), rgba(2, 8, 18, .97));
+  border-left: 1px solid var(--line);
+  overflow: hidden;
+}
+.feed-head {
+  height: 30px;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 0 5px 6px;
+  border-bottom: 1px solid var(--line);
+  color: var(--cyan);
+  font-size: 10px;
+  font-weight: 900;
+  letter-spacing: .12em;
+}
+.live-dot {
+  width: 7px;
+  height: 7px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  background: #22c55e;
+  box-shadow: 0 0 10px rgba(34, 197, 94, .8);
+}
+#feed-label {
+  margin-left: auto;
+  color: #c8d7e6;
+  letter-spacing: .04em;
+  font-size: 9px;
+}
+#feed-age {
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0;
+  font-size: 9px;
+}
+#prediction-round { display: none; margin-top: 6px; padding: 5px; height: 58px; border: 1px solid #fb7185; color: #ffe4e6; font-size: 10px; line-height: 15px; }
+html[data-prediction-active="1"] #prediction-round { display: block; }
+html[data-prediction-active="1"] #feed { height: 578px; }
+#feed {
+  margin: 6px 0 0;
+  width: 306px;
+  height: 642px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  overflow: hidden;
+}
+.feed-panel {
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+.feed-panel + .feed-panel {
+  padding-top: 3px;
+  border-top: 1px solid rgba(103, 232, 249, .18);
+}
+.feed-panel.panel-i { display: none; }
+html[data-improve-active="1"] .feed-panel.panel-g { display: none; }
+html[data-improve-active="1"] .feed-panel.panel-s { flex: 1 1 38%; }
+html[data-improve-active="1"] .feed-panel.panel-i {
+  display: block;
+  flex: 1 1 62%;
+}
+.panel-head {
+  height: 13px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 2px 2px;
+  font-size: 7.5px;
+  font-weight: 950;
+  letter-spacing: .1em;
+}
+.badge {
+  padding: 1px 5px;
+  border-radius: 3px;
+  font-size: 7px;
+  font-weight: 950;
+  letter-spacing: .12em;
+}
+.badge-g {
+  color: #67e8f9;
+  background: rgba(34, 211, 238, .14);
+  border: 1px solid rgba(103, 232, 249, .5);
+}
+.badge-s {
+  color: #c4b5fd;
+  background: rgba(168, 85, 247, .15);
+  border: 1px solid rgba(168, 85, 247, .55);
+}
+.badge-i {
+  color: #fdba74;
+  background: rgba(249, 115, 22, .15);
+  border: 1px solid rgba(249, 115, 22, .55);
+}
+.panel-name { color: #9fb3c8; letter-spacing: .06em; font-size: 7px; }
+.panel-status { min-width: 0; color: #fbbf24; font-size: 7px; font-weight: 900; letter-spacing: .04em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.panel-meta { margin-left: auto; color: #5f748b; font-variant-numeric: tabular-nums; font-size: 7px; }
+.feed-lines {
+  width: 306px;
+  overflow: hidden;
+  font: 700 6.7px/7.75px "SF Mono", Menlo, Consolas, "Noto Sans Mono", monospace;
+  letter-spacing: 0;
+}
+.feed-line {
+  width: 306px;
+  min-height: 7.75px;
+  padding-left: 3px;
+  border-left: 2px solid transparent;
+  white-space: pre;
+  overflow: hidden;
+  color: #c6d9ec;
+  text-shadow: 0 1px 0 rgba(0, 0, 0, .75);
+}
+.feed-line.dim { color: #52657a; }
+.feed-line.run { color: #6ee7a0; border-color: #22c55e; }
+.feed-line.down { color: #fca5a5; border-color: #ef4444; }
+.feed-line.ok { color: #86efac; border-color: #22c55e; }
+.feed-line.amber { color: #fcd34d; border-color: #f59e0b; }
+.feed-line.yellow { color: #fde047; border-color: #eab308; }
+.feed-line.orange { color: #fdba74; border-color: #f97316; }
+.feed-line.blue { color: #7dd3fc; border-color: #38bdf8; }
+.feed-line.purple { color: #c4b5fd; border-color: #8b5cf6; }
+.feed-line.pink { color: #f9a8d4; border-color: #ec4899; }
+.feed-line.teal { color: #5eead4; border-color: #14b8a6; }
+.feed-line.violet { color: #d8b4fe; border-color: #a855f7; }
+.feed-line.indigo { color: #a5b4fc; border-color: #6366f1; }
+.feed-line.idle { color: #94a3b8; border-color: #64748b; }
+.feed-line.s-core { color: #7dd3fc; border-color: #38bdf8; font-weight: 950; }
+.feed-line.s-audio { color: #f9a8d4; border-color: #ec4899; font-weight: 950; }
+.feed-line.s-twitch { color: #c4b5fd; border-color: #8b5cf6; font-weight: 950; }
+.feed-line.s-youtube { color: #fca5a5; border-color: #ef4444; font-weight: 950; }
+.feed-line.s-rollback { color: #fcd34d; border-color: #f59e0b; font-weight: 950; }
+.feed-line.g-head { color: #e2f7ff; border-color: #22d3ee; font-weight: 950; }
+.feed-line.g-section { color: #67e8f9; border-color: #22d3ee; font-weight: 950; }
+.feed-line.g-top { color: #fde047; border-color: #eab308; font-weight: 950; }
+.feed-line.g-recent { color: #fcd34d; border-color: #f59e0b; }
+.feed-line.g-strategy { color: #c4b5fd; border-color: #8b5cf6; }
+.feed-line.g-ab { color: #f0abfc; border-color: #d946ef; font-weight: 950; }
+.feed-line.g-live { color: #86efac; border-color: #22c55e; }
+.feed-line.g-drop { color: #fdba74; border-color: #f97316; }
+.feed-line.g-core { color: #7dd3fc; border-color: #38bdf8; }
+.feed-line.g-chart { color: #67e8f9; border-color: #22d3ee; }
+.feed-line.g-dist { color: #4ade80; border-color: #22c55e; }
+.feed-foot {
+  position: absolute;
+  left: 12px;
+  right: 12px;
+  bottom: 7px;
+  height: 16px;
+  display: flex;
+  align-items: center;
+  color: #60758b;
+  font-size: 8px;
+  font-weight: 800;
+  letter-spacing: .08em;
+}
+#feed-progress { margin-left: auto; font-variant-numeric: tabular-nums; }
+.rail {
+  position: absolute;
+  left: 0;
+  width: 960px;
+  overflow: hidden;
+}
+#top-rail {
+  top: 0;
+  height: 90px;
+  padding: 8px 9px;
+  border-bottom: 1px solid var(--line);
+  background: linear-gradient(180deg, rgba(4, 13, 28, .95), rgba(3, 10, 21, .92));
+}
+#bottom-rail {
+  top: 630px;
+  height: 90px;
+  padding: 8px 9px;
+  border-top: 1px solid var(--line);
+  background: linear-gradient(180deg, rgba(3, 10, 21, .92), rgba(4, 13, 28, .95));
+}
+html[data-soren-neutral="1"] {
+  --cyan: #e5e7eb;
+  --blue: #d1d5db;
+  --muted: #9ca3af;
+  --line: rgba(255, 255, 255, .16);
+}
+html[data-soren-neutral="1"] #broadcast-sidebar,
+html[data-soren-neutral="1"] #top-rail,
+html[data-soren-neutral="1"] #bottom-rail {
+  background: rgb(5, 5, 5);
+}
+html[data-soren-neutral="1"] #broadcast-overlay {
+  filter: grayscale(1);
+}
+html[data-soren-neutral="1"] .summary-line,
+html[data-soren-neutral="1"] .work-card,
+html[data-soren-neutral="1"] .toast {
+  background: rgba(12, 12, 12, .96);
+}
+#summary {
+  height: 73px;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px 8px;
+}
+.summary-line {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  padding: 0 11px;
+  border-left: 0;
+  border-radius: 5px;
+  color: #dceefe;
+  background: rgba(12, 28, 48, .72);
+  border: 1px solid rgba(103, 232, 249, .14);
+  font: 800 12.5px/1.1 "SF Mono", Menlo, Consolas, monospace;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.summary-line.sum-head { color: #67e8f9; background: rgba(8, 51, 68, .72); }
+.summary-line.sum-recent { color: #fcd34d; background: rgba(64, 43, 4, .72); }
+.summary-line.sum-strategy { color: #c4b5fd; background: rgba(46, 23, 80, .72); }
+.summary-line.sum-ab { color: #f0abfc; background: rgba(58, 20, 80, .72); }
+.summary-line.sum-live { color: #86efac; background: rgba(10, 55, 34, .72); }
+.summary-line.sum-backend { color: #7dd3fc; background: rgba(9, 47, 73, .72); }
+.summary-line.sum-ai { color: #fca5a5; background: rgba(76, 17, 17, .78); font-size: 11.5px; letter-spacing: -.1px; }
+.summary-line.sum-queue { color: #fde047; background: rgba(56, 47, 4, .72); }
+.summary-line.sum-drop { color: #fdba74; background: rgba(61, 27, 5, .72); }
+.summary-line.sum-av { color: #f9a8d4; background: rgba(63, 12, 44, .72); }
+.summary-line.sum-muted { color: #aab8c8; }
+#work {
+  height: 73px;
+  display: none;
+  grid-template-columns: 7px minmax(0, 1fr) auto;
+  column-gap: 13px;
+  align-items: center;
+  padding-right: 14px;
+  color: #fff7ed;
+  background: rgba(31, 17, 5, .93);
+  border: 1px solid rgba(251, 146, 60, .7);
+  border-radius: 6px;
+}
+#work.active { display: grid; }
+#gen-top {
+  height: 73px;
+  display: none;
+  grid-template-columns: 7px minmax(0, 1fr) auto;
+  column-gap: 13px;
+  align-items: center;
+  padding-right: 14px;
+  color: #ede9fe;
+  background: rgba(32, 18, 78, 0.96);
+  border: 1px solid rgba(167, 139, 250, 0.75);
+  border-radius: 6px;
+}
+#gen-top.active { display: grid; }
+#gen-top .gen-top-bar {
+  align-self: stretch;
+  background: linear-gradient(180deg, #7c3aed, #a78bfa);
+  border-radius: 5px 0 0 5px;
+}
+#gen-top .gen-top-spinner {
+  width: 11px;
+  height: 11px;
+  flex: 0 0 auto;
+  border: 2px solid rgba(255,255,255,.28);
+  border-top-color: #ffffff;
+  border-radius: 50%;
+  animation: genSpin 0.8s linear infinite;
+}
+#gen-top .gen-top-copy { min-width: 0; }
+#gen-top .gen-top-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 17px;
+  font-weight: 950;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+#gen-top .gen-top-body {
+  margin-top: 4px;
+  color: #ddd6fe;
+  font-size: 12px;
+  font-weight: 750;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+#gen-top .gen-top-elapsed {
+  color: #c4b5fd;
+  font: 900 14px/1 "SF Mono", Menlo, monospace;
+  font-variant-numeric: tabular-nums;
+}
+@keyframes genSpin { to { transform: rotate(360deg); } }
+.work-bar { align-self: stretch; background: linear-gradient(180deg, #f97316, #facc15); border-radius: 5px 0 0 5px; }
+.work-copy { min-width: 0; }
+.work-title { font-size: 20px; font-weight: 950; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.work-body { margin-top: 4px; color: #fed7aa; font-size: 12px; font-weight: 750; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.work-elapsed { color: #fdba74; font: 900 14px/1 "SF Mono", Menlo, monospace; font-variant-numeric: tabular-nums; }
+#toast-grid {
+  height: 73px;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+.toast {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: 5px minmax(0, 1fr);
+  overflow: hidden;
+  color: #eef7ff;
+  background: rgba(8, 18, 32, .94);
+  border: 1px solid rgba(184, 205, 235, .2);
+  border-radius: 6px;
+  box-shadow: 0 6px 16px rgba(0, 0, 0, .28);
+}
+.toast-bar { background: #8ab4ff; }
+.toast.game .toast-bar { background: #facc15; }
+.toast.worker .toast-bar { background: #38bdf8; }
+.toast.chat .toast-bar { background: #a78bfa; }
+.toast.radio .toast-bar { background: #22c55e; }
+.toast.say .toast-bar { background: #f97316; }
+.toast.prediction .toast-bar { background: #fb7185; }
+.toast.rollback .toast-bar { background: #f97316; }
+.toast.system .toast-bar { background: linear-gradient(180deg, #22d3ee, #8b5cf6); }
+.toast.ai-thinking .toast-bar { background: linear-gradient(90deg, #f59e0b, #f97316); }
+.toast.ai-thinking { border-color: rgba(245, 158, 11, .55); animation: thinking-pulse 1.8s ease-in-out infinite; }
+.toast.ai-thinking .toast-title { color: #fbbf24; }
+.toast-copy { min-width: 0; padding: 7px 8px 6px; }
+.toast-head { display: flex; gap: 7px; align-items: baseline; min-width: 0; }
+.toast-title { min-width: 0; flex: 1; font-size: 11.5px; font-weight: 900; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.toast-time { color: #72869b; font: 750 8.5px/1 "SF Mono", Menlo, monospace; font-variant-numeric: tabular-nums; }
+.toast-body { margin-top: 5px; color: #c9daea; font-size: 10px; font-weight: 650; line-height: 1.2; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; }
+.toast.fresh { animation: enter .18s ease-out; }
+@keyframes enter { from { opacity: 0; transform: translateY(5px); } to { opacity: 1; transform: none; } }
+@keyframes thinking-pulse { 0%, 100% { box-shadow: 0 6px 16px rgba(0, 0, 0, .28); } 50% { box-shadow: 0 0 16px rgba(245, 158, 11, .4); } }
+
+/* Hanjuku: readable at the actual 320px broadcast sidebar width. */
+html[data-hanjuku-active="1"] .feed-panel.panel-g { flex: 0 0 390px; }
+html[data-hanjuku-active="1"] .feed-panel.panel-s { flex: 1 1 auto; }
+.hanjuku-card { box-sizing: border-box; width: 306px; padding: 10px; border: 1px solid #e9b84d; border-radius: 9px; background: linear-gradient(145deg,#202017,#101c2c); color: #f8fafc; font-family: sans-serif; white-space: normal; }
+.hanjuku-card.stale { border-color: #f59e0b; background: #282014; }
+.hanjuku-head { display: flex; justify-content: space-between; align-items: center; font-size: 15px; font-weight: 900; }
+.hanjuku-badge { border-radius: 4px; padding: 3px 6px; background: #123c36; color: #86efac; font-size: 11px; }
+.stale .hanjuku-badge { background: #713f12; color: #fef08a; }
+.hanjuku-chapter { color: #fde68a; font-size: 38px; line-height: 46px; font-weight: 950; }
+.hanjuku-month { font-size: 14px; color: #cbd5e1; margin-bottom: 7px; }
+.hanjuku-details { margin-top: 8px; border-top: 1px solid #475569; padding-top: 6px; font-size: 12px; line-height: 20px; }
+.hanjuku-dots { display: flex; gap: 4px; margin: 0 0 9px; }
+.hanjuku-dot { width: 20px; height: 6px; border: 1px solid #536170; border-radius: 2px; }
+.hanjuku-dot.current { background: #facc15; border-color: #fef08a; }
+.hanjuku-kpis { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; }
+.hanjuku-kpi { background: #07121e; border: 1px solid #334155; border-radius: 6px; padding: 6px 8px; }
+.hanjuku-label { color: #b3c3d5; font-size: 10px; }
+.hanjuku-value { color: #f1f5f9; font-size: 22px; line-height: 27px; font-weight: 900; }
+.hanjuku-kpi { min-width: 0; }
+.hanjuku-kpi:nth-child(2) .hanjuku-value { font-size: 16px; overflow-wrap: anywhere; }
+.hanjuku-status { margin-top: 8px; padding: 6px 8px; border-radius: 5px; background: #12324c; color: #bae6fd; font-size: 16px; font-weight: 900; }
+.hanjuku-duel { margin-top: 7px; padding: 5px 8px; border-radius: 5px; background: #3d1520; color: #fecdd3; font-size: 13px; font-weight: 800; }
+.hanjuku-note { margin-top: 6px; color: #a9bacb; font-size: 10px; line-height: 14px; }
+
+
+/* Approved preview v2 (941edb59): reuse its flat panels, palette and rail spacing.
+   The live feed/parser/health contract and three surface rectangles stay intact.
+   Do not add mock services or logs: the production feeds remain authoritative. */
+:root { --cyan: #8ce5f0; --blue: #75daec; --muted: #829aae; --line: #36566b; }
+html, body { color: #deedf7; font-family: "Noto Sans JP", "Segoe UI", sans-serif; font-synthesis: none; }
+#broadcast-sidebar { padding: 8px; background: #040e17; }
+.feed-head { height: 28px; padding: 0 5px; border-bottom-color: #33566c; color: #a5e6f3; font-size: 12px; font-weight: 600; letter-spacing: .07em; }
+.live-dot { width: 6px; height: 6px; background: #34e6ad; box-shadow: none; }
+#feed-label { font-size: 8px; color: #91abc0; }
+#feed-age { color: #91b3cc; }
+#feed { width: 303px; height: 642px; gap: 7px; }
+.feed-panel { border: 1px solid #36566b; background: #040e17; }
+.feed-panel + .feed-panel { padding-top: 0; border-top: 1px solid #36566b; }
+.panel-head { height: 25px; gap: 6px; padding: 0 8px; border-bottom: 1px solid #36566b; color: #8ce5f0; }
+.badge { padding: 0; border: 0; border-radius: 0; background: transparent; font-size: 10px; color: #8ce5f0; }
+.panel-name { color: #91abc0; font-size: 8px; }
+.panel-meta { color: #829aae; font-size: 8px; }
+.feed-lines, .feed-line { width: 301px; }
+/* Keep dense all-line feeds until their structured status/log contract exists. */
+.feed-line { min-height: 0; padding-left: 5px; border-left: 0; text-shadow: none; }
+.feed-foot { color: #7896aa; font-size: 7px; font-weight: 500; }
+#top-rail, #bottom-rail { padding: 8px; background: #020b13; border-color: #2d596c; }
+#bottom-rail { padding: 7px 8px; }
+#summary { height: 73px; gap: 6px 7px; }
+.summary-line { border: 1px solid #325e77; border-radius: 4px; background: #051422; font-weight: 500; }
+.summary-line[class] { background: #051422; }
+#work, #gen-top { grid-template-columns: minmax(0, 1fr) auto; gap: 12px; padding: 8px 12px; border-radius: 4px; border-color: #a77727; background: #171206; color: #f6c564; }
+.work-bar, #gen-top .gen-top-bar, .toast-bar { display: none; }
+.work-title { color: #f6f0dc; font-size: 21px; font-weight: 700; line-height: 1.4; }
+.work-body, #gen-top .gen-top-body { margin-top: 2px; color: #e0d5bd; font-size: 12px; font-weight: 400; line-height: 1.5; white-space: normal; overflow-wrap: anywhere; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+/* Keep a 21px title and two readable body lines inside the fixed 73px card. */
+#work { padding-top: 4px; padding-bottom: 4px; }
+.work-title { line-height: 1.2; }
+.work-body { line-height: 1.4; }
+.work-elapsed, #gen-top .gen-top-elapsed { align-self: stretch; display: flex; align-items: center; border-left: 1px solid #715926; padding-left: 12px; color: #f6c564; font-size: 24px; font-weight: 500; }
+#gen-top .gen-top-title { color: #f6f0dc; font-weight: 700; }
+#toast-grid { height: 75px; gap: 7px; }
+.toast { grid-template-columns: minmax(0, 1fr); background: #051422; border: 1px solid #325e77; border-radius: 4px; box-shadow: none; }
+.toast-copy { padding: 0; }
+.toast-head { height: 24px; align-items: center; padding: 0 8px; border-bottom: 1px solid #24485f; color: #75daec; }
+.toast-title { color: #e3eef7; font-size: 13px; font-weight: 600; }
+.toast-time { color: #93afc4; font-size: 8px; font-weight: 400; }
+.toast-body { margin-top: 0; padding: 4px 8px; color: #b9cedf; font-size: 9px; line-height: 1.45; font-weight: 400; }
+/* PAPER fill/settlement: preserve the financial headline instead of ellipsizing it. */
+.toast.paper-pnl .toast-head { height: auto; min-height: 24px; align-items: flex-start; }
+.toast.paper-pnl .toast-title {
+  white-space: normal;
+  overflow: visible;
+  text-overflow: clip;
+  overflow-wrap: anywhere;
+  font-size: 12px;
+  line-height: 1.15;
+}
+.toast.paper-pnl .toast-time { flex: 0 0 auto; padding-top: 2px; }
+.toast.paper-pnl .toast-body { -webkit-line-clamp: 2; }
+/* Card background tells the venue: PAPER (sandbox) is cool teal, LIVE (real money) is warm amber. */
+.toast.paper-trade { background: #062329; border-color: #2d7f8c; }
+.toast.paper-trade .toast-head { border-bottom-color: #1f5a64; color: #7be0ec; }
+.toast.live-trade { background: #2b1706; border-color: #d28a2c; }
+.toast.live-trade .toast-head { border-bottom-color: #7a4a14; color: #fbbf24; }
+.toast.live-trade .toast-body { color: #f1d9b5; }
+/* Live cards also carry troop/garrison/order observations absent from the mock.
+   Let the card claim its measured height rather than crop it at 390px. */
+html[data-hanjuku-active="1"] .feed-panel.panel-g { flex: 0 0 auto; }
+.hanjuku-card { width: 301px; padding: 8px 10px 6px; border: 0; border-radius: 0; background: #040e17; color: #deedf7; font-family: inherit; }
+.hanjuku-card.stale { background: #040e17; }
+.hanjuku-head { font-size: 15px; font-weight: 600; }
+.hanjuku-badge { padding: 2px 5px; border: 1px solid #277963; border-radius: 2px; background: transparent; color: #43e2ad; font-size: 10px; }
+.stale .hanjuku-badge { border-color: #99703b; background: transparent; color: #f7c161; }
+.hanjuku-chapter { color: #ffe6a2; font-size: 33px; line-height: 1.5; font-weight: 700; letter-spacing: .08em; }
+.hanjuku-month { margin-bottom: 6px; color: #b8c7d2; font-size: 13px; }
+.hanjuku-dots { display: none; }
+.hanjuku-kpi { border-color: #3a596d; border-radius: 3px; background: #03111d; }
+.hanjuku-label { color: #adc3d3; font-size: 9px; }
+.hanjuku-value { color: #deedf7; font-size: 19px; line-height: 1.35; font-weight: 600; }
+.hanjuku-status { margin-top: 8px; padding: 5px 7px; border: 1px solid #294b61; border-radius: 0; background: #082334; color: #80d8e9; font-size: 15px; line-height: 1.3; font-weight: 600; }
+.stale .hanjuku-status { background: #251a0b; border-color: #936a37; color: #f4c077; font-size: 12px; }
+.hanjuku-duel { border: 1px solid #583640; border-radius: 0; background: #2b1420; color: #ffc5c1; font-size: 11px; font-weight: 500; overflow-wrap: anywhere; }
+.hanjuku-details { margin-top: 6px; padding-top: 0; border-top: 0; color: #b3c6d5; font-size: 11px; line-height: 1.55; overflow-wrap: anywhere; }
+.hanjuku-note { margin-top: 3px; color: #a1b8c9; font-size: 8px; line-height: 1.5; }
+html[data-soren-neutral="1"] #broadcast-sidebar,
+html[data-soren-neutral="1"] #top-rail,
+html[data-soren-neutral="1"] #bottom-rail { background: rgb(5, 5, 5); }
+
+
+/* Broadcast status hierarchy v4: make GAME/OPS readable as cards, not a log dump. */
+#broadcast-sidebar {
+  padding: 8px;
+  background: #030a12;
+  border-left: 2px solid #24485c;
+}
+.feed-head {
+  height: 34px;
+  padding: 0 8px;
+  border: 1px solid #284c61;
+  border-radius: 7px;
+  background: #071823;
+  box-shadow: none;
+  color: #e1f7fb;
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: .08em;
+}
+.live-dot { width: 7px; height: 7px; background: #34d399; box-shadow: 0 0 0 3px rgba(52, 211, 153, .10); }
+#feed-label { margin-left: auto; color: #8fb2c7; font-size: 8px; font-weight: 700; }
+#feed-age { min-width: 24px; text-align: right; color: #a8c7d8; font-size: 8px; }
+#feed { margin-top: 8px; width: 303px; height: 632px; gap: 8px; }
+html[data-prediction-active="1"] #feed { height: 568px; }
+.feed-panel {
+  flex: 1 1 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  overflow: hidden;
+}
+.feed-panel + .feed-panel { padding-top: 0; border-top: 0; }
+.feed-panel:has(.game-dashboard) .panel-head,
+.feed-panel:has(.hanjuku-card) .panel-head,
+.feed-panel:has(.ops-dashboard) .panel-head { display: none; }
+.feed-panel:has(.game-dashboard) .feed-lines,
+.feed-panel:has(.ops-dashboard) .feed-lines { padding: 0; }
+.feed-panel:has(.game-dashboard) .game-dashboard,
+.feed-panel:has(.ops-dashboard) .ops-dashboard { padding: 5px 2px 0; }
+html[data-hanjuku-active="1"] .feed-panel.panel-g { flex: 0 0 auto; }
+html[data-hanjuku-active="1"] .feed-panel.panel-s { flex: 1 1 0; }
+.panel-head {
+  height: 30px;
+  padding: 0 8px;
+  gap: 6px;
+  border-bottom: 1px solid #29495d;
+  background: #0a1b27;
+}
+.panel-g .panel-head,
+.panel-s .panel-head,
+.panel-i .panel-head { box-shadow: none; }
+.badge {
+  padding: 2px 6px;
+  border: 1px solid #39677d;
+  border-radius: 999px;
+  background: #07141e;
+  font-size: 9px;
+  font-weight: 900;
+  line-height: 12px;
+}
+.badge-g { color: #8debf5; border-color: #257786; }
+.badge-s { color: #9df0c9; border-color: #2d735a; }
+.badge-i { color: #fdba74; border-color: #8a5a2d; }
+.panel-name { color: #d2e3ed; font-size: 9px; font-weight: 800; letter-spacing: .06em; }
+.panel-state {
+  margin-left: auto;
+  padding: 1px 5px;
+  border: 1px solid #385468;
+  border-radius: 3px;
+  color: #9fb6c7;
+  background: #07131c;
+  font-size: 7px;
+  font-weight: 900;
+  letter-spacing: .04em;
+}
+.panel-state.ok { color: #86efac; border-color: #276448; background: rgba(34, 197, 94, .08); }
+.panel-state.warn { color: #fde68a; border-color: #7c6120; background: rgba(245, 158, 11, .09); }
+.panel-state.down { color: #fecaca; border-color: #7f3434; background: rgba(239, 68, 68, .10); }
+.panel-state.info { color: #a5f3fc; border-color: #276775; background: rgba(34, 211, 238, .08); }
+.panel-meta { margin-left: 0; color: #7894a7; font-size: 7px; }
+.feed-lines { width: 100%; padding: 0 5px; }
+.feed-line { width: 100%; padding: 0 5px; border-left: 0; border-radius: 3px; text-shadow: none; }
+.feed-line.s-health,
+.feed-line.s-activity,
+.feed-line.s-core,
+.feed-line.s-audio,
+.feed-line.s-twitch,
+.feed-line.s-youtube,
+.feed-line.s-rollback {
+  margin-top: 2px;
+  background: #0b2330;
+  color: #a9e8f3;
+  font-weight: 900;
+  letter-spacing: .08em;
+}
+.feed-line.ops-primary { background: rgba(52, 211, 153, .09); color: #b7f7da; font-weight: 900; }
+.feed-line.ops-alert { background: rgba(239, 68, 68, .15); color: #fecaca; font-weight: 900; }
+.feed-line.ops-warn { background: rgba(245, 158, 11, .14); color: #fde68a; font-weight: 900; }
+.feed-line.game-primary { background: rgba(34, 211, 238, .10); color: #cffafe; font-weight: 900; }
+.feed-line.game-trend { background: rgba(129, 140, 248, .10); color: #c7d2fe; font-weight: 800; }
+.feed-line.g-section { background: #0a202d; color: #8ce5f0; font-weight: 900; }
+
+/* Structured broadcast dashboard. Raw status feeds remain the source of truth,
+   but Soren91/JEV and OPS are projected into a scannable 320px surface. */
+.game-dashboard,
+.ops-dashboard {
+  height: 100%;
+  padding: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  overflow: hidden;
+}
+.dash-eyebrow {
+  color: #7896aa;
+  font-size: 8px;
+  font-weight: 800;
+  letter-spacing: .10em;
+}
+.game-title-row,
+.ops-title-row {
+  min-height: 28px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.game-title {
+  min-width: 0;
+  color: #f0fbff;
+  font-size: 15px;
+  line-height: 18px;
+  font-weight: 900;
+  letter-spacing: .02em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ops-title-row .game-title {
+  font-size: 13px;
+  line-height: 16px;
+  letter-spacing: .05em;
+}
+.dash-pill {
+  margin-left: auto;
+  flex: 0 0 auto;
+  padding: 3px 7px;
+  border: 1px solid #315d70;
+  border-radius: 999px;
+  background: #091923;
+  color: #a9cad8;
+  font-size: 8px;
+  font-weight: 900;
+  letter-spacing: .04em;
+}
+.dash-pill.ok { color: #a7f3d0; border-color: #267158; background: rgba(16, 185, 129, .10); }
+.dash-pill.warn { color: #fde68a; border-color: #83631e; background: rgba(245, 158, 11, .11); }
+.dash-pill.down { color: #fecaca; border-color: #7f3434; background: rgba(239, 68, 68, .12); }
+.game-kpis,
+.ops-kpis {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 7px;
+}
+.dash-kpi {
+  min-width: 0;
+  padding: 8px 9px;
+  border: 0;
+  border-radius: 5px;
+  background: #081a25;
+}
+.dash-kpi-label {
+  color: #7895a8;
+  font-size: 7px;
+  font-weight: 900;
+  letter-spacing: .11em;
+}
+.dash-kpi-value {
+  margin-top: 2px;
+  color: #f1fbff;
+  font-size: 23px;
+  line-height: 1.05;
+  font-weight: 950;
+  font-variant-numeric: tabular-nums;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.dash-kpi-sub {
+  margin-top: 3px;
+  color: #7392a4;
+  font-size: 6px;
+  line-height: 8px;
+  font-weight: 900;
+  letter-spacing: .09em;
+}
+.dash-kpi-value.warn { color: #fde68a; }
+.dash-kpi-value.down { color: #fca5a5; }
+.dash-kpi-value.unknown { color: #aec0c9; }
+.ops-kpis .dash-kpi-value { font-size: 19px; }
+.ops-system-metrics {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 5px;
+  padding: 3px 6px;
+  border-radius: 4px;
+  background: #071720;
+}
+.ops-metric-row {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: 26px minmax(40px, auto) minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 3px;
+  min-height: 16px;
+}
+.ops-metric-label,
+.ops-metric-state {
+  color: #8ba5b4;
+  font-size: 7px;
+  font-weight: 900;
+  letter-spacing: .07em;
+}
+.ops-metric-value {
+  color: #e5f4fa;
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  font-weight: 900;
+  white-space: nowrap;
+}
+.ops-metric-value.warn { color: #f4d486; }
+.ops-metric-value.unknown { color: #aec0c9; }
+.ops-metric-spark {
+  min-width: 0;
+  overflow: hidden;
+  color: #79bdc7;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 10px;
+  letter-spacing: .04em;
+  line-height: 12px;
+  white-space: nowrap;
+}
+.ops-metric-state { text-align: right; white-space: nowrap; }
+.ops-metric-state:empty { display: none; }
+.game-live,
+.game-trend-line {
+  padding: 6px 8px;
+  border-radius: 5px;
+  background: #071720;
+  color: #aac3d2;
+  font-size: 9px;
+  line-height: 1.35;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.game-records { display: grid; gap: 4px; }
+.game-record { color: #aac3d2; font-size: 10px; line-height: 1.3; overflow-wrap: anywhere; }
+.ops-activity-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 5px;
+}
+.ops-activity-item {
+  min-width: 0;
+  padding: 5px 6px;
+  border: 0;
+  border-radius: 4px;
+  background: #071720;
+}
+.ops-activity-label {
+  color: #6f8b9e;
+  font-size: 6px;
+  font-weight: 900;
+  letter-spacing: .08em;
+}
+.ops-activity-value {
+  margin-top: 2px;
+  color: #b8d0dc;
+  font-size: 8px;
+  line-height: 10px;
+  font-weight: 900;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.game-trend-line.better { color: #a7f3d0; background: rgba(16, 185, 129, .08); }
+.game-trend-line.worse { color: #fecaca; background: rgba(239, 68, 68, .09); }
+.game-trend-line.flat { color: #cbd5e1; }
+.game-history-head,
+.ops-services-head,
+.ops-alerts-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  color: #7895a8;
+  font-size: 7px;
+  font-weight: 900;
+  letter-spacing: .10em;
+}
+.game-bars {
+  height: 52px;
+  display: flex;
+  align-items: flex-end;
+  gap: 5px;
+  padding: 4px 6px 0;
+  border-radius: 5px;
+  background: #06141d;
+}
+.game-bar-wrap {
+  flex: 1 1 0;
+  min-width: 0;
+  height: 46px;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  align-items: stretch;
+}
+.game-bar {
+  min-height: 5px;
+  border-radius: 3px 3px 1px 1px;
+  background: linear-gradient(180deg, #67e8f9, #0e7490);
+  opacity: .88;
+}
+.game-bar-wrap:last-child .game-bar {
+  background: linear-gradient(180deg, #fde68a, #d97706);
+  opacity: 1;
+}
+.game-bar-label {
+  margin-top: 2px;
+  color: #718b9d;
+  font-size: 6px;
+  line-height: 8px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+.ops-worker-value.ok { color: #a7f3d0; }
+.ops-worker-value.warn { color: #fde68a; }
+.ops-worker-value.down { color: #fecaca; }
+.ops-services {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 5px;
+}
+.ops-service {
+  min-width: 0;
+  padding: 5px 7px;
+  border: 0;
+  border-radius: 4px;
+  background: #071720;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 5px;
+}
+.ops-service-name {
+  color: #819bab;
+  font-size: 7px;
+  font-weight: 900;
+  letter-spacing: .07em;
+}
+.ops-service-value {
+  min-width: 0;
+  color: #b8ccd8;
+  font-size: 8px;
+  font-weight: 900;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ops-service.ok .ops-service-value { color: #a7f3d0; }
+.ops-service.warn .ops-service-value { color: #fde68a; }
+.ops-service.down .ops-service-value { color: #fecaca; }
+.ops-alerts {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-height: 0;
+}
+.ops-alert {
+  padding: 5px 7px;
+  border-radius: 4px;
+  background: rgba(245, 158, 11, .10);
+  color: #fde68a;
+  font-size: 8px;
+  font-weight: 800;
+  line-height: 1.25;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ops-alert.down { background: rgba(239, 68, 68, .12); color: #fecaca; }
+.ops-clear {
+  padding: 7px 8px;
+  border: 1px solid #255844;
+  border-radius: 5px;
+  background: rgba(16, 185, 129, .06);
+  color: #9fe4c5;
+  font-size: 8px;
+  font-weight: 850;
+  text-align: center;
+  letter-spacing: .04em;
+}
+.ops-dashboard.compact {
+  padding: 7px 8px;
+  gap: 5px;
+}
+.ops-dashboard.compact .ops-title-row { min-height: 20px; }
+.ops-dashboard.compact .ops-title-row .game-title { font-size: 11px; line-height: 14px; }
+.ops-dashboard.compact .dash-pill { padding: 2px 5px; font-size: 7px; }
+.ops-dashboard.compact .dash-kpi { padding: 5px 7px; }
+.ops-dashboard.compact .dash-kpi-value { font-size: 16px; }
+.ops-dashboard.compact .dash-kpi-sub,
+.ops-dashboard.compact .ops-services-head,
+.ops-dashboard.compact .ops-activity-grid { display: none; }
+.ops-dashboard.compact .ops-services { gap: 4px; }
+.ops-dashboard.compact .ops-service { padding: 4px 6px; }
+.ops-dashboard.micro {
+  padding: 5px 6px;
+  gap: 4px;
+}
+.ops-dashboard.micro .ops-title-row,
+.ops-dashboard.micro .ops-services-head,
+.ops-dashboard.micro .ops-services,
+.ops-dashboard.micro .ops-activity-grid { display: none; }
+.ops-dashboard.micro .ops-kpis { gap: 4px; }
+.ops-dashboard.micro .dash-kpi { padding: 4px 5px; border-radius: 4px; }
+.ops-dashboard.micro .dash-kpi-label { font-size: 5.5px; }
+.ops-dashboard.micro .dash-kpi-value { margin-top: 1px; font-size: 13px; line-height: 14px; }
+.ops-dashboard.micro .dash-kpi-sub { display: none; }
+.ops-dashboard.micro .ops-alerts-head { font-size: 6px; }
+.ops-dashboard.micro .ops-alerts { gap: 2px; }
+.ops-dashboard.micro .ops-alert { padding: 3px 5px; font-size: 7px; line-height: 9px; }
+.ops-dashboard.micro.has-alerts .ops-kpis { display: none; }
+/* Use one content inset for every game and health view. */
+.feed-head { display: none; }
+#feed { margin-top: 0; height: 680px; }
+html[data-prediction-active="1"] #feed { margin-top: 8px; height: 616px; }
+.feed-lines:has(.hanjuku-card) { padding: 0; }
+.hanjuku-card { width: 100%; padding: 5px 2px 0; background: transparent; }
+.hanjuku-card.stale { background: transparent; }
+/* Prioritize the game state over automation telemetry. */
+.hanjuku-card { font-family: system-ui, sans-serif; }
+.hanjuku-period { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; margin-top: 5px; }
+.hanjuku-chapter { font-size: 26px; line-height: 1.2; letter-spacing: 0; }
+.hanjuku-month { margin: 0; font-size: 12px; }
+/* 兵力/将軍数, 所持金/勝敗, 収入/総賃金, 半熟Lv/半熟値 share two columns.
+   The rows are written in display order so no grid reordering is needed, and
+   the gap/margins stay tight so the OPS rail below keeps its measured room. */
+.hanjuku-kpis { grid-template-columns: repeat(2,minmax(0,1fr)); gap: 4px 12px; margin-top: 4px; margin-bottom: 2px; }
+.hanjuku-label { white-space: nowrap; }
+.hanjuku-detail-row + .hanjuku-detail-row { margin-top: 5px; }
+.hanjuku-details { display: flex; flex-direction: column; gap: 10px; margin-top: 10px; color: #edf5fb; font-size: 18px; line-height: 1.35; }
+.hanjuku-group { min-width: 0; }
+/* #2364: dense live-battle reference text. It wraps instead of truncating so
+   long 趣味/思考/得意 strings and seasonal 卵補正 stay readable. */
+.hanjuku-general, .hanjuku-eggpredict, .hanjuku-cardline {
+  font-size: 11px; line-height: 1.42; font-weight: 500; overflow-wrap: anywhere;
+}
+.hanjuku-eggpredict { color: #ffe6a2; }
+.hanjuku-cardline { color: #bae6fd; }
+/* Dense battle reference rows: keep the card inside the 632px sidebar even
+   with two generals and the whole carried kit. */
+.hanjuku-duel-row { padding: 2px 7px; }
+.hanjuku-duel-row + .hanjuku-duel-row { margin-top: 2px; }
+.hanjuku-group-title { margin-bottom: 2px; color: #bdcdd9; font-size: 14px; font-weight: 600; }
+.hanjuku-detail-row { display: block; margin-top: 0; }
+.hanjuku-detail-label { margin-bottom: 3px; color: #bdcdd9; font-size: 14px; }
+.hanjuku-detail-row > :last-child { min-width: 0; overflow-wrap: anywhere; }
+.hanjuku-troops { color: #f7fafc; font-size: 24px; font-weight: 700; line-height: 1.15; }
+.hanjuku-castles, .hanjuku-orders { color: #deedf7; font-size: 16px; }
+.hanjuku-records { display: flex; flex-wrap: wrap; gap: 4px 14px; }
+.hanjuku-note { font-size: 11px; line-height: 1.4; color: #bdcdd9; }
+.hanjuku-kpi { padding: 0; border: 0; background: transparent; }
+.hanjuku-label { color: #bdcdd9; font-size: 12px; }
+.hanjuku-value, .hanjuku-kpi:nth-child(2) .hanjuku-value { font-size: 24px; line-height: 1.12; }
+.hanjuku-status { margin-top: 4px; padding: 0; border: 0; background: transparent; font-size: 17px; }
+.hanjuku-duel { padding: 0; border: 0; background: transparent; font-size: 18px; line-height: 1.35; }
+/* Game details are distinct cards, without decorative edge accents. */
+.hanjuku-details { gap: 4px; margin-top: 4px; }
+.hanjuku-group, .hanjuku-detail-row, .hanjuku-duel {
+  box-sizing: border-box; padding: 5px 10px; border: 1px solid #28404f;
+  border-radius: 7px; background: #0b1c28;
+}
+.hanjuku-detail-row + .hanjuku-detail-row { margin-top: 0; }
+.hanjuku-duel { background: #211b26; border-color: #493341; }
+.hanjuku-garrison, .hanjuku-marching {
+  display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2;
+  overflow: hidden;
+}
+.hanjuku-records { display: flex; flex-direction: column; gap: 4px; padding: 5px 10px; border: 1px solid #28404f; border-radius: 7px; background: #0b1c28; }
+.hanjuku-records > div { padding: 0; }
+html[data-soren-monitor="1"]:not([data-improve-active="1"]) .feed-panel.panel-g { flex: 1 1 0; }
+html[data-soren-monitor="1"]:not([data-improve-active="1"]) #feed-g { height: 100%; }
+html[data-soren-monitor="1"]:not([data-improve-active="1"]) .soren-monitor { height: 100%; min-height: 0; }
+html[data-soren-monitor="1"]:not([data-improve-active="1"]) .feed-panel.panel-s { position: relative; flex: 0 0 190px; padding-top: 0; border-top: 0; background: #040e17; }
+html[data-soren-monitor="1"]:not([data-improve-active="1"]) #feed-s,
+html[data-soren-monitor="1"]:not([data-improve-active="1"]) #monitor-observer { position: absolute; inset: 0; height: 100%; transition: opacity 600ms ease-in-out; }
+#monitor-observer { display: none; opacity: 0; padding: 5px 2px 0; }
+html[data-soren-monitor="1"]:not([data-improve-active="1"]) #monitor-observer { display: block; }
+html[data-soren-monitor="1"]:not([data-improve-active="1"]) #monitor-observer .monitor-section { height: 100%; display: flex; flex-direction: column; }
+html[data-soren-monitor="1"]:not([data-improve-active="1"]) #monitor-observer .monitor-section-body { flex: 1; min-height: 0; overflow: hidden; }
+html[data-soren-monitor="1"]:not([data-improve-active="1"])[data-monitor-view="observer"] #feed-s { opacity: 0; }
+html[data-soren-monitor="1"]:not([data-improve-active="1"])[data-monitor-view="observer"] #monitor-observer { opacity: 1; }
+.monitor-header { flex-shrink: 0; }
+.monitor-viewport { flex: 1; min-height: 0; overflow: hidden; }
+.monitor-stack { display: flex; flex-direction: column; gap: 6px; }
+.monitor-stack .monitor-section { flex-shrink: 0; }
+@media (prefers-reduced-motion: reduce) {
+  html[data-soren-monitor="1"]:not([data-improve-active="1"]) #feed-s,
+  html[data-soren-monitor="1"]:not([data-improve-active="1"]) #monitor-observer { transition: none; }
+}
+.feed-panel:has(.soren-monitor) .panel-head { display: none; }
+.feed-panel:has(.soren-monitor) .feed-lines { padding: 0; }
+.soren-monitor { display: flex; flex-direction: column; gap: 6px; padding: 5px 2px 0; color: #b9d9da; font-family: "SFMono-Regular", Consolas, monospace; }
+.monitor-header { display: flex; justify-content: space-between; align-items: center; padding: 2px 1px 5px; color: #e8fbf5; font-size: 14px; font-weight: 800; letter-spacing: .12em; }
+.monitor-header span { color: #71b7b3; font-size: 9px; letter-spacing: .08em; }
+.monitor-section { min-width: 0; border: 1px solid #264650; border-radius: 4px; background: #08171d; overflow: hidden; }
+.monitor-section-head { display: flex; align-items: baseline; justify-content: space-between; gap: 6px; padding: 5px 7px; border-bottom: 1px solid #203c46; background: #0d222a; color: #83e2d0; font-size: 10px; line-height: 12px; font-weight: 700; letter-spacing: .04em; }
+.monitor-section-head small { color: #83a8ae; font-size: 8px; font-weight: 500; letter-spacing: 0; text-align: right; }
+.monitor-section-body { font-weight: 500; padding: 5px 6px; color: #a8d6cc; font-size: 8px; line-height: 10px; white-space: pre; }
+.monitor-section-body > div { min-height: 10px; }
+.monitor-section[data-kind="timeline"] .monitor-section-body { color: #e7bf75; }
+.monitor-section[data-kind="distribution"] .monitor-section-body { color: #93ddd0; }
+.monitor-section[data-kind="strategy"] .monitor-section-head { color: #e3c97d; }
+.monitor-section[data-kind="observer"] .monitor-section-body,
+.monitor-section[data-kind="events"] .monitor-section-body { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 9px; line-height: 12px; }
+.monitor-section[data-kind="events"] .monitor-section-head { color: #edca7f; }
+.monitor-chart { width: max-content; transform-origin: left top; }
+.monitor-section[data-kind="observer"] .monitor-section-body > div + div { margin-top: 4px; }
+.monitor-section[data-kind="observer"] .monitor-section-body { white-space: normal; }
+.monitor-section[data-kind="events"] .monitor-section-body > div + div { margin-top: 3px; }
+.feed-foot { padding: 0 3px; color: #7896aa; font-size: 7px; font-weight: 600; }
+
+/* Dedicated surface behind the native game window. It draws only measured padding. */
+#hanjuku-gap { display: none; position: absolute; top: 90px; height: 540px;
+  padding: 12px; background: #040e17; overflow: hidden; font-family: system-ui,sans-serif;
+  color: #e6f2f8; }
+.hanjuku-gap-title { font-size: 15px; color: #bdcdd9; margin-bottom: 8px; }
+#hanjuku-gap .hanjuku-group { font-size: 18px; line-height: 1.4; margin-bottom: 8px;
+  overflow-wrap: anywhere; white-space: normal; }
+#hanjuku-gap .hanjuku-gap-pages { position: absolute; bottom: 8px; font-size: 14px; color: #bdcdd9; }
+/* Reserve all three rows even when procedure details are absent. Changes to
+   decisions, notifications or active flows must never resize/shift the map. */
+.hanjuku-gap-content { width: 100%; height: 100%; display: grid;
+  grid-template-rows: 210px 64px minmax(0, 1fr); gap: 6px; overflow: hidden; }
+.hanjuku-gap-news { height: 210px; min-height: 0; overflow: hidden;
+  display: flex; flex-direction: column; gap: 4px; }
+/* Owner 2026-11-08: the notification strip carries no colored edge band.
+   Entries are told apart by background and text alone; tone-specific
+   border-colors below stay inert until a band is reintroduced. */
+.hanjuku-gap-decisions { display: flex; flex: 1 1 auto; min-height: 0; overflow: hidden;
+  flex-direction: column; gap: 4px; margin: 0;
+  padding: 4px; background: #101f2d; border-radius: 4px; }
+.hanjuku-gap-decisions:empty { display: none; }
+.hanjuku-gap-decision { flex: 0 0 auto; padding: 5px 6px; background: #091925;
+  font-size: 11px; line-height: 1.4; white-space: pre-wrap; overflow-wrap: anywhere;
+  color: #e6f2f8; }
+.hanjuku-gap-toasts { display: flex; flex: 0 0 auto; flex-direction: column; gap: 5px;
+  max-height: 72px; overflow: hidden; margin: 0; }
+.hanjuku-gap-toast { display: flex; flex: 0 0 auto; align-items: baseline; gap: 8px; padding: 6px 9px;
+  border-radius: 4px; background: #081b26;
+  color: #e6f2f8; font-size: 15px; line-height: 1.3; overflow-wrap: anywhere;
+  animation: gapToastIn .22s ease-out; }
+.hanjuku-gap-toast-text { min-width: 0; white-space: pre-wrap; }
+.hanjuku-gap-toast-age { margin-left: auto; flex: 0 0 auto; color: #8fa8bb; font-size: 11px;
+  font-variant-numeric: tabular-nums; }
+.hanjuku-gap-toast.tone-idle { border-color: #36566b; color: #9fb4c4; }
+.hanjuku-gap-toast.tone-move { border-color: #4fc3e8; }
+.hanjuku-gap-toast.tone-end { border-color: #6b7f8f; color: #c4d3dd; }
+.hanjuku-gap-toast.tone-gain { border-color: #3ddc97; }
+.hanjuku-gap-toast.tone-loss { border-color: #f0708a; }
+.hanjuku-gap-toast.tone-win { border-color: #3ddc97; }
+.hanjuku-gap-toast.tone-battle { border-color: #f0b84d; }
+.hanjuku-gap-toast.tone-month { border-color: #8fa8bb; }
+.hanjuku-gap-toast.tone-general { border-color: #7ee0c4; }
+.hanjuku-gap-toast.tone-plan { border-color: #75daec; font-size: 12px; line-height: 1.2; padding: 4px 6px; }
+.hanjuku-gap-toast.tone-plan .hanjuku-gap-toast-age { display: none; }
+.hanjuku-gap-toasts.has-plan, .hanjuku-gap-toasts.with-progress { min-height: 0; }
+.hanjuku-gap-toast.tone-flow { border-color: #a8bdf9; font-size: 12px; padding: 4px 6px; }
+.hanjuku-gap-progress { height: 64px; min-height: 0; overflow: hidden;
+  border-left: 3px solid #a8bdf9; background: #0b2232;
+  padding: 4px 6px; border-radius: 4px; overflow-wrap: anywhere; }
+.hanjuku-gap-progress:empty { visibility: hidden; }
+.hanjuku-gap-progress-head { color: #a8bdf9; font-size: 11px; font-weight: 700; }
+.hanjuku-gap-progress-item { color: #d8e5f5; font-size: 12px; line-height: 16px;
+  white-space: normal; overflow-wrap: anywhere; }
+@keyframes gapToastIn { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: none; } }
+.hanjuku-gap-flow { display: flex; flex: 1 1 auto; min-height: 0; overflow: hidden;
+  flex-direction: column; gap: 6px; }
+.hanjuku-gap-flow-head { display: flex; align-items: baseline; justify-content: space-between;
+  gap: 8px; color: #bdcdd9; font-size: 15px; font-weight: 700; }
+.hanjuku-gap-current-plan { padding: 6px 8px; border-left: 3px solid #75daec; border-radius: 4px; background: #0b2835; }
+.hanjuku-gap-current-plan-head { color: #75daec; font-size: 12px; font-weight: 700; }
+.hanjuku-gap-current-plan-detail { margin-top: 3px; color: #e6f2f8; font-size: 12px;
+  line-height: 1.3; white-space: pre-wrap; overflow-wrap: anywhere; }
+
+/* An intrinsic square SVG in a fixed-size slot; variable text only clips below.
+   The 174px ceiling also fits the 540px game-gap height with progress shown. */
+.hanjuku-gap-minimap { display: block; width: min(100%, 174px); height: auto;
+  aspect-ratio: 1 / 1; flex: 0 0 auto; align-self: center;
+  border: 1px solid #34546a; border-radius: 6px; background: #071927; }
+.hanjuku-gap-minimap .map-name { font-size: 11px; font-weight: 750;
+  fill: #e6f2f8; paint-order: stroke; stroke: #061321; stroke-width: 3px;
+  stroke-linecap: round; stroke-linejoin: round; }
+.hanjuku-gap-minimap .map-route { fill: none; stroke-width: 2.7;
+  stroke-linecap: round; opacity: .95; }
+.hanjuku-gap-flow-count { color: #67e8f9; font-variant-numeric: tabular-nums; white-space: nowrap;
+  margin-left: auto; }
+.hanjuku-gap-legend { display: flex; flex-wrap: wrap; gap: 8px; color: #9cb5c5;
+  font-size: 10px; line-height: 13px; }
+.hanjuku-gap-legend span::before { content: '➜'; padding-right: 3px; font-weight: 900; }
+.hanjuku-gap-legend .sortie::before { color: #67e8f9; }
+.hanjuku-gap-legend .recall::before { color: #4ade80; }
+.hanjuku-gap-legend .repair::before { color: #f9a8d4; }
+.hanjuku-gap-map-note { color: #91a9ba; font-size: 10px; line-height: 12px; }
+
+.hanjuku-gap-move { border: 1px solid #28404f; border-radius: 8px; background: #0b1c28;
+  padding: 6px 9px; }
+.hanjuku-gap-move-head { display: flex; align-items: baseline; justify-content: space-between;
+  gap: 8px; color: #ffe6a2; font-size: 16px; font-weight: 700; }
+.hanjuku-gap-state { flex: 0 0 auto; color: #9fb4c4; font-size: 11px; font-weight: 400; }
+.hanjuku-gap-route { display: flex; flex-direction: column; align-items: flex-start;
+  gap: 2px; margin-top: 5px; }
+.hanjuku-gap-node { flex: 0 0 auto; max-width: 100%; padding: 2px 8px; border-radius: 999px;
+  border: 1px solid #4b6b80; background: #0a2433; font-size: 15px; white-space: normal;
+  overflow-wrap: anywhere; }
+.hanjuku-gap-node.own { border-color: #3fa9c9; background: #0d3a4f; }
+.hanjuku-gap-node.lost { border-color: #c2566a; background: #3a1420; }
+.hanjuku-gap-node.enemy { border-color: #5b6c7c; background: #141f2a; color: #c4d3dd; }
+.hanjuku-gap-node.unknown { border-style: dashed; color: #9fb4c4; }
+.hanjuku-gap-arrow { position: relative; width: 12px; height: 14px; margin-left: 10px; }
+.hanjuku-gap-arrow::before { content: ''; position: absolute; left: 5px; top: 0; width: 2px;
+  height: 8px; background: linear-gradient(180deg,#3f7f97,#e9b84d); }
+.hanjuku-gap-arrow::after { content: ''; position: absolute; left: 2px; bottom: 0;
+  border-top: 7px solid #e9b84d; border-left: 4px solid transparent; border-right: 4px solid transparent; }
+.hanjuku-gap-move-why { margin-top: 4px; color: #9fb4c4; font-size: 12px; line-height: 1.35;
+  overflow-wrap: anywhere; }
+.hanjuku-gap-battle-line { color: #e8c56a; font-size: 12px; line-height: 1.3;
+  white-space: normal; overflow-wrap: anywhere; }
+/* Reduce whitespace in dense mode, without clipping individual blocks. */
+#hanjuku-gap.dense { padding: 8px; }
+#hanjuku-gap.dense .hanjuku-gap-toasts { gap: 3px; margin-bottom: 4px; }
+#hanjuku-gap.dense .hanjuku-gap-progress { margin-bottom: 3px; }
+#hanjuku-gap.dense .hanjuku-gap-progress-item { font-size: 11px; line-height: 14px; }
+#hanjuku-gap.dense .hanjuku-gap-flow { gap: 3px; }
+#hanjuku-gap.dense .hanjuku-gap-flow-head { font-size: 13px; }
+#hanjuku-gap.dense .hanjuku-gap-move { padding: 3px 6px; }
+#hanjuku-gap.dense .hanjuku-gap-move-head { font-size: 13px; }
+#hanjuku-gap.dense .hanjuku-gap-state { font-size: 10px; }
+#hanjuku-gap.dense .hanjuku-gap-route { gap: 0; margin-top: 2px; }
+#hanjuku-gap.dense .hanjuku-gap-node { font-size: 12px; padding: 1px 5px; }
+#hanjuku-gap.dense .hanjuku-gap-arrow { height: 10px; margin-left: 8px; }
+#hanjuku-gap.dense .hanjuku-gap-arrow::before { height: 4px; }
+#hanjuku-gap.dense .hanjuku-gap-move-why { margin-top: 2px; font-size: 10px; }
+#hanjuku-gap.dense .hanjuku-gap-battle-line { font-size: 11px; }
+.hanjuku-gap-empty { width: min(100%, 174px); aspect-ratio: 1 / 1;
+  flex: 0 0 auto; align-self: center; display: grid; place-items: center;
+  border: 1px dashed #3a596d; border-radius: 8px; padding: 9px 10px;
+  color: #9fb4c4; font-size: 15px; }
+html[data-soren-region="game-gap"], html[data-soren-region="game-gap"] body,
+html[data-soren-region="game-gap"] #broadcast-overlay { width: 960px; height: 540px; }
+html[data-soren-region="game-gap"] #hanjuku-gap { top: 0; }
+html[data-soren-region="game-gap"] .rail,
+html[data-soren-region="game-gap"] #broadcast-sidebar { display: none; }
+html[data-soren-region="sidebar"] #hanjuku-gap,
+html[data-soren-region="top"] #hanjuku-gap,
+html[data-soren-region="bottom"] #hanjuku-gap { display: none !important; }
+
+/* Next-corner advance notice: docich's rotation decides the next corner before
+   it is due and the state adapter publishes it as `nextCorner`. The card sits
+   above the GAME feed while sorengame is on air; during a corner the rotation
+   withdraws the record, so the card and its height are not reserved. */
+#next-corner {
+  display: none;
+  margin-top: 8px;
+  padding: 4px 6px;
+  height: 46px;
+  border: 1px solid #b7791f;
+  border-radius: 7px;
+  background: rgba(245, 158, 11, .12);
+  color: #ffe8b0;
+  overflow: hidden;
+}
+html[data-next-corner="1"] #next-corner { display: block; }
+html[data-next-corner="1"] #feed { height: 634px; }
+html[data-prediction-active="1"][data-next-corner="1"] #feed { height: 570px; }
+.next-corner-head { color: #fbbf24; font-size: 8px; line-height: 10px; font-weight: 900; letter-spacing: .12em; }
+.next-corner-label {
+  margin-top: 1px;
+  font-size: 11px;
+  line-height: 14px;
+  font-weight: 800;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.next-corner-when { color: #fde68a; font-size: 13px; line-height: 15px; font-weight: 900; font-variant-numeric: tabular-nums; }
+</style>
+</head>
+<body>
+<main id="broadcast-overlay" data-broadcast-overlay-version="4">
+  <section id="hanjuku-gap" aria-label="半熟英雄の観測詳細"></section>
+  <section id="top-rail" class="rail" aria-live="polite">
+    <div id="summary"></div>
+    <div id="work">
+      <div class="work-bar"></div>
+      <div class="work-copy"><div class="work-title"></div><div class="work-body"></div></div>
+      <div class="work-elapsed"></div>
+    </div>
+    <div id="gen-top" aria-live="polite">
+      <div class="gen-top-bar"></div>
+      <div class="gen-top-copy"><div class="gen-top-title"><span class="gen-top-spinner"></span><span class="gen-top-label">💬 コメント生成中</span></div><div class="gen-top-body">AIがコメントを生成しています…</div></div>
+      <div class="gen-top-elapsed"></div>
+    </div>
+  </section>
+  <section id="bottom-rail" class="rail" aria-live="polite"><div id="toast-grid"></div></section>
+  <aside id="broadcast-sidebar">
+    <div class="feed-head"><span id="feed-label">GAME + OPS</span><span id="feed-age">--</span></div>
+    <section id="next-corner" aria-label="次のコーナー" aria-live="polite"></section>
+    <section id="prediction-round" aria-label="チャネルポイント予想" aria-live="polite"></section>
+    <div id="feed">
+      <section class="feed-panel panel-g">
+        <div class="panel-head"><span class="badge badge-g">GAME</span><span class="panel-name">GAME STATS</span><span class="panel-state info" id="feed-g-state">LIVE</span><span class="panel-meta" id="feed-g-lines">0L</span></div>
+        <div class="feed-lines" id="feed-g"></div>
+      </section>
+      <section class="feed-panel panel-s">
+        <div class="panel-head"><span class="badge badge-s">OPS</span><span class="panel-name">OPS HEALTH</span><span class="panel-state" id="feed-s-state">CHECK</span><span class="panel-meta" id="feed-s-lines">0L</span></div>
+        <div class="feed-lines" id="feed-s"></div>
+        <div id="monitor-observer" aria-hidden="true"></div>
+      </section>
+      <section class="feed-panel panel-i">
+        <div class="panel-head"><span class="badge badge-i">AI</span><span class="panel-name">IMPROVE</span><span class="panel-status" id="feed-i-status"></span><span class="panel-meta" id="feed-i-lines">0L</span></div>
+        <div class="feed-lines" id="feed-i"></div>
+      </section>
+    </div>
+    <div class="feed-foot"><span>STATUS MERGE · READ ONLY</span><span id="feed-progress">0L</span></div>
+  </aside>
+</main>
+<script>
+(() => {
+  'use strict';
+  const STATE_ROUTE = '/__soren_overlay/broadcast/state';
+  const TOAST_PAGE_MS = 3000;
+  const TOASTS_PER_PAGE = 3;
+  const SURFACE_REGION = document.documentElement.dataset.sorenRegion || 'full';
+  const feedG = document.getElementById('feed-g');
+  const feedS = document.getElementById('feed-s');
+  const feedI = document.getElementById('feed-i');
+  const feedGLines = document.getElementById('feed-g-lines');
+  const feedSLines = document.getElementById('feed-s-lines');
+  const feedGState = document.getElementById('feed-g-state');
+  const feedSState = document.getElementById('feed-s-state');
+  const feedILines = document.getElementById('feed-i-lines');
+  const feedIStatus = document.getElementById('feed-i-status');
+  const feedLabel = document.getElementById('feed-label');
+  const feedAge = document.getElementById('feed-age');
+  const feedProgress = document.getElementById('feed-progress');
+  const summary = document.getElementById('summary');
+  const work = document.getElementById('work');
+  const toastGrid = document.getElementById('toast-grid');
+  let state = null;
+  let lastFeedGKey = '';
+  const MONITOR_VIEW_MS = 45000;
+  // #970: the monitor pan moves 4px/s and the health/observer view flips every
+  // MONITOR_VIEW_MS, yet the motion loop used to read and write layout on every
+  // native animation frame (about 100 Hz under Xvfb). Doing that work at a
+  // bounded rate is visually identical and removes most of the steady
+  // forced-layout cost. requestAnimationFrame is still the scheduler so a
+  // hidden page stops the loop by itself.
+  const MONITOR_ANIM_MIN_MS = 66;
+  const monitorMotion = { startedAt: null, lastTick: null, lastWork: null, frame: null,
+    upper: { position: 0, direction: 1, waitUntil: 0 },
+    observer: { position: 0, direction: 1, waitUntil: 0 } };
+  let lastFeedSKey = '';
+  let lastFeedIKey = '';
+  let lastSummaryKey = '';
+  let lastToastKey = '';
+
+  function pad(value) { return String(value).padStart(2, '0'); }
+  function timeLabel(epoch) {
+    const date = new Date(Number(epoch || Date.now() / 1000) * 1000);
+    return `${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
+  }
+  function elapsedLabel(epoch) {
+    const seconds = Math.max(0, Math.floor(Date.now() / 1000) - Number(epoch || 0));
+    return `${Math.floor(seconds / 60)}:${pad(seconds % 60)}`;
+  }
+  function ageLabel(epoch) {
+    const seconds = Math.max(0, Math.floor(Date.now() / 1000) - Number(epoch || 0));
+    return seconds < 60 ? `${seconds}s` : `${Math.floor(seconds / 60)}m`;
+  }
+  function feedLineClass(line, opts = {}) {
+    const raw = String(line || '');
+    const text = raw.replace(/^[│┃\s]+/, '');
+    if (/^━+$/.test(raw) || /^[┌└]─+[┐┘]$/.test(raw)) return 'dim';
+    if (/^  (?:CORE|HEALTH)$/.test(raw)) return 's-health';
+    if (/^  ACTIVITY$/.test(raw)) return 's-activity';
+    if (/^  AUDIO$/.test(raw)) return 's-audio';
+    if (/^  TWITCH$/.test(raw)) return 's-twitch';
+    if (/^  YOUTUBE$/.test(raw)) return 's-youtube';
+    if (/^  ROLLBACKS$/.test(raw)) return 's-rollback';
+    if (/^│? *SOREN[/]|^│? *Best:|^│? *Avg:/.test(raw)) return 'g-head';
+    if (/^Score (Timeline|Distribution)/.test(text) || /^Strategy Comparison/.test(text)) return 'g-section';
+    if (/^rk hash/.test(text)) return 'g-head';
+    if (/^Stats:/.test(text)) return 'game-primary';
+    if (/^Trend:/.test(text) || /^wins=/.test(text)) return 'game-trend';
+    if (/Workers\s+.*\bONLINE\b/.test(text) || /^Backend\s+.*(?:LIVE|OBS|OK)/.test(text)) return 'ops-primary';
+    if (/\b(?:STOPPED|DOWN|FAILED|INVALID)\b/.test(text) || /Duplicates\s+DETECTED/.test(text)) return 'down ops-alert';
+    if (/\b(?:DEGRADED|CHECK|UNKNOWN|PAUSED)\b/.test(text) || /^(?:Stopped|Unexpected|Paused|AI 429)\b/.test(text)) return 'ops-warn';
+    if (/^► 1 /.test(text)) return 'g-top';
+    if (/^[0-9][0-9.,k]*[┃│]/.test(text)) return 'g-dist';
+    if (/[⠀-⣿]/.test(text)) return 'g-chart';
+    if (/^● /.test(text)) return 'run';
+    if (/^○ /.test(text)) return 'down';
+    if (/^✓ /.test(text)) return 'ok';
+    if (/^◉ /.test(text)) return 'amber';
+    if (/^◆ /.test(text)) return 'yellow';
+    if (/^▾ /.test(text)) return 'orange';
+    if (/^▸ /.test(text)) return 'blue';
+    if (/^◇ /.test(text)) return 'purple';
+    if (/^♪ |^♫ /.test(text)) return 'pink';
+    if (/^📻 /.test(text)) return 'teal';
+    if (/^⟳ /.test(text)) return 'violet';
+    if (/^💬 /.test(text)) return 'indigo';
+    if (opts.improve) {
+      if (/^\[\d{2}:\d{2}:\d{2}\] \[IMPROVE\]/.test(raw)) return 'teal';
+      if (/^\[\d{2}:\d{2}:\d{2}\] \[(PIN|BRANCH)\]/.test(raw)) return 'purple';
+      if (/^\[\d{2}:\d{2}:\d{2}\] \[(WARN|ERROR)\]/.test(raw)) return 'down';
+      if (/FAILED|failed|失敗/.test(text)) return 'down';
+    }
+    if (/Recent30/.test(text)) return 'g-recent';
+    if (/Strategy:/.test(text)) return 'g-strategy';
+    if (/A\/B:/.test(text)) return 'g-ab';
+    if (/^Live:/.test(text)) return 'g-live';
+    if (/LastDrop/.test(text)) return 'g-drop';
+    if (/Curr |Reg NO/.test(text)) return 'g-core';
+    if (/RUNNING|CONNECTED/.test(text)) return 'run';
+    if (/STOPPED/.test(text)) return 'down';
+    if (/SILENT|IDLE|empty/.test(text)) return 'idle';
+    if (/PASSED|none/.test(text)) return 'ok';
+    return 'dim';
+  }
+  function appendFeedLineContent(row, line, segments) {
+    if (!Array.isArray(segments) || !segments.length) {
+      row.textContent = line === '' ? ' ' : line;
+      return;
+    }
+    for (const segment of segments) {
+      const span = document.createElement('span');
+      span.textContent = String(segment?.t ?? '');
+      if (segment?.c) span.style.color = String(segment.c);
+      if (segment?.b) span.style.fontWeight = '700';
+      if (segment?.o) span.style.opacity = String(segment.o);
+      row.appendChild(span);
+    }
+  }
+  // サイドバーの SHOW-STATUS-G から「ヘッダーの枠」だけを外す。
+  //
+  // status_overlay.html の <pre> テキストは 2 役を兼ねている:
+  //   * 上部 4 枠 (selectedSummaryLines) が SOREN/OBS / A/B: / Recent30: /
+  //     Strategy: を拾う供給元
+  //   * このサイドバーがそのまま行として描画する中身
+  // 供給元としては要るが、サイドバーには出したくない (2026-09-10 の指示)。
+  // 生成側で消すと上部 4 枠から A/B が消えるので、描画側で落とす。
+  // 対象は "SOREN/" を含む行が属する枠 (┌ … └)。AI 429 の枠は残す。
+  //
+  // segments は行番号で text と対応しているので、同じ範囲を両方から削る。
+  // 片方だけ削ると色付けが 1 行ずつずれ、segments を捨てると色が全部消える。
+  function headerBoxRange(lines) {
+    const head = lines.findIndex((line) => line.includes('SOREN/'));
+    if (head < 0) return null;
+    let start = head;
+    while (start > 0 && !lines[start].includes('\u250c')) {
+      start -= 1;
+      // A closed preceding box is unrelated to this unboxed corner header.
+      if (lines[start].includes('\u2514')) return null;
+    }
+    if (!lines[start].includes('\u250c')) return null;
+    let end = head;
+    while (end < lines.length - 1 && !lines[end].includes('\u2514')) end += 1;
+    if (!lines[end].includes('\u2514')) return null;
+    return [start, end];
+  }
+  function stripHeaderBox(text, segments) {
+    const lines = String(text ?? '').split('\n');
+    const range = headerBoxRange(lines);
+    const segs = Array.isArray(segments) ? segments : [];
+    if (!range) return { text: String(text ?? ''), segments: segs };
+    const [start, end] = range;
+    const drop = (arr) => arr.slice(0, start).concat(arr.slice(end + 1));
+    let keptLines = drop(lines);
+    let keptSegs = segs.length ? drop(segs) : segs;
+    // 枠を抜いた先頭に残る空行は詰める (segments も同じだけ)。
+    while (keptLines.length && keptLines[0].trim() === '') {
+      keptLines = keptLines.slice(1);
+      if (keptSegs.length) keptSegs = keptSegs.slice(1);
+    }
+    return { text: keptLines.join('\n'), segments: keptSegs };
+  }
+  function renderFeedLines(container, text, opts = {}) {
+    const segmentLines = Array.isArray(opts.segmentLines) ? opts.segmentLines : [];
+    const lines = String(text || 'データを待っています…').split('\n');
+    container.replaceChildren(...lines.map((line, index) => {
+      const row = document.createElement('div');
+      row.className = `feed-line ${feedLineClass(line, opts)}`;
+      appendFeedLineContent(row, line, segmentLines[index]);
+      return row;
+    }));
+  }
+
+  function dashNode(className, text) {
+    const el = document.createElement('div');
+    el.className = className;
+    if (text !== undefined && text !== null) el.textContent = String(text);
+    return el;
+  }
+  function compactValue(value, fallback = '—') {
+    const text = String(value ?? '').trim();
+    return text || fallback;
+  }
+  function parseLast8(text) {
+    const match = String(text || '').match(/^Last8:\s+(.+)$/m);
+    if (!match) return [];
+    return match[1].trim().split(/\s+/).map(value => Number(value.replace(/,/g, '')))
+      .filter(Number.isFinite).slice(-8);
+  }
+  function renderGameDashboard(container, feed) {
+    const text = String(feed?.text || '');
+    const corner = text.match(/^SOREN\/CORNER:\s*([^/\n]+)\/\s*([^/\n]+)\/\s*(.+)$/m);
+    const stats = text.match(/Stats:\s*(\d+)\s+(results|reports)\s*\/\s*best=([^/\n]+)(?:\s*\/\s*Recent30=([^\n]+))?/);
+    const consoleRecord = /^Session:/m.test(text) && corner?.[1].trim() === 'RETRO';
+    if (!corner || (!stats && !consoleRecord)) return false;
+
+    const root = dashNode('game-dashboard');
+    const eyebrow = dashNode('dash-eyebrow', compactValue(corner[1]).toUpperCase());
+    root.appendChild(eyebrow);
+
+    const titleRow = dashNode('game-title-row');
+    titleRow.appendChild(dashNode('game-title', compactValue(corner[2])));
+    const statusText = compactValue(corner[3], 'DATA');
+    const statusTone = /進行中|ACTIVE|LIVE/i.test(statusText) ? 'ok'
+      : /CONFLICT|INVALID|ERROR|FAIL/i.test(statusText) ? 'down' : 'warn';
+    titleRow.appendChild(dashNode(`dash-pill ${statusTone}`, statusText));
+    root.appendChild(titleRow);
+
+    const kpis = dashNode('game-kpis');
+    for (const [label, value] of [
+      [consoleRecord ? 'HISTORY BEST' : 'BEST', compactValue(stats?.[3])],
+      [consoleRecord ? 'HISTORY RECENT 30' : 'RECENT 30', compactValue(stats?.[4] || text.match(/Recent30:[^\n]*mean=([^\s]+)/)?.[1])],
+    ]) {
+      const cell = dashNode('dash-kpi');
+      cell.appendChild(dashNode('dash-kpi-label', label));
+      cell.appendChild(dashNode('dash-kpi-value', value));
+      kpis.appendChild(cell);
+    }
+    root.appendChild(kpis);
+
+    const live = text.match(consoleRecord ? /^Record:\s*(.+)$/m : /^Live:\s*(.+)$/m)?.[1];
+    if (live) root.appendChild(dashNode('game-live', live));
+    if (consoleRecord) {
+      const details = dashNode('game-records');
+      for (const line of text.split('\n').filter(line => /^(Session|Result|Plan|Evidence|Reason):/.test(line)).slice(0, 4)) {
+        details.appendChild(dashNode('game-record', line));
+      }
+      root.appendChild(details);
+    }
+
+    const trend = text.match(/^\s*Trend:\s*(.+)$/m);
+    const wins = text.match(/^\s*wins=(\d+)\s*\/\s*lower rank is better$/m);
+    if (trend) {
+      const tone = /\/\s*better\s*$/i.test(trend[1]) ? 'better'
+        : /\/\s*worse\s*$/i.test(trend[1]) ? 'worse' : 'flat';
+      root.appendChild(dashNode(`game-trend-line ${tone}`, `TREND  ${trend[1]}`));
+    } else if (wins) {
+      root.appendChild(dashNode('game-trend-line better', `WIN  #1 × ${wins[1]}`));
+    }
+
+    const values = parseLast8(text);
+    if (values.length) {
+      const historyHead = dashNode('game-history-head');
+      historyHead.appendChild(dashNode('', 'LAST 8'));
+      historyHead.appendChild(dashNode('', wins ? 'LOWER IS BETTER' : 'RECENT'));
+      root.appendChild(historyHead);
+      const bars = dashNode('game-bars');
+      const lowerBetter = Boolean(wins) || /Rank Timeline/.test(text);
+      const lo = Math.min(...values), hi = Math.max(...values);
+      const span = Math.max(1, hi - lo);
+      values.forEach(value => {
+        const quality = lowerBetter ? (hi - value) / span : (value - lo) / span;
+        const wrap = dashNode('game-bar-wrap');
+        const bar = dashNode('game-bar');
+        bar.style.height = `${Math.round(8 + quality * 30)}px`;
+        wrap.appendChild(bar);
+        wrap.appendChild(dashNode('game-bar-label', value));
+        bars.appendChild(wrap);
+      });
+      root.appendChild(bars);
+    }
+
+    container.replaceChildren(root);
+    return true;
+  }
+  function renderSorenMonitor(container, feed, view) {
+    const raw = String(feed?.text || '');
+    if (!/SOREN\/(?:OBS|FFMPEG)\b/.test(raw)
+        || !/Strategy Comparison/.test(raw) || !/Score Timeline/.test(raw)) return false;
+    const root = dashNode('soren-monitor');
+    const header = dashNode('monitor-header', 'SOREN');
+    const tag = document.createElement('span'); tag.textContent = 'TELEMETRY';
+    header.appendChild(tag); root.appendChild(header);
+    let section = null;
+    let kind = '';
+    const lines = String(view.text || '').split('\n');
+    const addSection = (kind, title, meta = '') => {
+      const card = dashNode('monitor-section'); card.dataset.kind = kind;
+      const head = dashNode('monitor-section-head', title);
+      if (meta) { const caption = document.createElement('small'); caption.textContent = meta; head.appendChild(caption); }
+      const body = dashNode('monitor-section-body');
+      card.appendChild(head); card.appendChild(body); root.appendChild(card);
+      return body;
+    };
+    lines.forEach((line, index) => {
+      const title = line.trim().match(/^(Score Timeline|Score Distribution|Strategy Comparison|Observer Status)(.*)$/);
+      if (title) {
+        const names = {'Score Timeline':['timeline','SCORE TRACE'], 'Score Distribution':['distribution','DISTRIBUTION'],
+          'Strategy Comparison':['strategy','STRATEGY MATRIX'], 'Observer Status':['observer','OBSERVER']};
+        const [nextKind, label] = names[title[1]];
+        kind = nextKind;
+        section = addSection(kind, label, title[2].trim());
+        if (kind === 'timeline') {
+          const chart = dashNode('monitor-chart');
+          section.appendChild(chart); section = chart;
+        }
+      } else if (line.trim()) {
+        if (!section) { kind = 'events'; section = addSection(kind, 'EVENT LOG'); }
+        // The producer's terminal box is chrome, not event data. Keep chart axes.
+        if (kind === 'events' && /^[\s┌┐└┘─━│┏┓┗┛┃]+$/.test(line)) return;
+        const row = dashNode('');
+        const chartText = text => String(text).replace(/[█▓▒░]/g, '=');
+        const start = kind === 'events' ? (line.match(/^\s*[│┃]?\s*/)?.[0].length || 0)
+          : kind === 'observer' ? (line.match(/^\s*/)?.[0].length || 0) : 0;
+        const end = kind === 'events' ? line.length - (line.match(/\s*[│┃]\s*$/)?.[0].length || 0) : line.length;
+        let offset = 0;
+        const segments = view.segments?.[index]?.map(segment => {
+          const from = offset; offset += String(segment.t).length;
+          return {...segment, t: monitorText(chartText(String(segment.t).slice(Math.max(0, start-from), Math.max(0, Math.min(offset,end)-from))))};
+        }).filter(segment => segment.t);
+        appendFeedLineContent(row, monitorText(chartText(line.slice(start,end))), segments);
+        section.appendChild(row);
+      }
+    });
+    container.replaceChildren(root);
+    root._sourceText = raw;
+    return true;
+  }
+  function advanceMonitorScroll(viewport, motion, now, elapsed, reduced) {
+    if (!viewport) return;
+    const limit = Math.max(0, viewport.scrollHeight - viewport.clientHeight);
+    if (motion.reduced !== reduced) {
+      motion.reduced = reduced; motion.waitUntil = now + (reduced ? MONITOR_VIEW_MS : 8000);
+    }
+    if (!limit) {
+      motion.position = 0; motion.direction = 1; motion.waitUntil = now + (reduced ? MONITOR_VIEW_MS : 8000);
+    } else if (now >= motion.waitUntil) {
+      // Dense data stays in one viewport. A slow pan replaces whole-page flips;
+      // reduced motion uses infrequent non-animated advances instead.
+      motion.position += motion.direction * (reduced ? Math.max(12, viewport.clientHeight - 12) : elapsed * 4);
+      if (motion.position >= limit || motion.position <= 0) {
+        motion.position = Math.max(0, Math.min(limit, motion.position));
+        motion.direction *= -1; motion.waitUntil = now + (reduced ? MONITOR_VIEW_MS : 8000);
+      } else if (reduced) motion.waitUntil = now + MONITOR_VIEW_MS;
+    }
+    motion.position = Math.min(limit, motion.position);
+    viewport.scrollTop = motion.position;
+  }
+  // overlay-monitor-animation:start
+  function animateSorenMonitor(now = performance.now()) {
+    // #970: skip layout work between bounded animation slices; the pan keeps
+    // its 4px/s speed because advanceMonitorScroll uses elapsed wall time.
+    if (now - (monitorMotion.lastWork ?? 0) < MONITOR_ANIM_MIN_MS) {
+      monitorMotion.frame = requestAnimationFrame(animateSorenMonitor);
+      return;
+    }
+    monitorMotion.lastWork = now;
+    const root = feedG.querySelector('.soren-monitor');
+    const slot = document.getElementById('monitor-observer');
+    const elapsed = Math.max(0, Math.min(1, (now - (monitorMotion.lastTick ?? now))/1000));
+    monitorMotion.lastTick = now;
+    if (root && root.getBoundingClientRect().width > 0) {
+      const reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+      const observer = slot.querySelector('.monitor-section');
+      const view = observer && Math.floor((now-monitorMotion.startedAt)/MONITOR_VIEW_MS)%2 ? 'observer' : 'health';
+      if (document.documentElement.dataset.monitorView !== view) document.documentElement.dataset.monitorView = view;
+      feedS.ariaHidden = String(view === 'observer');
+      slot.ariaHidden = String(view !== 'observer');
+      advanceMonitorScroll(root.querySelector('.monitor-viewport'), monitorMotion.upper, now, elapsed, reduced);
+      if (view === 'observer') advanceMonitorScroll(slot.querySelector('.monitor-section-body'), monitorMotion.observer, now, elapsed, reduced);
+    }
+    monitorMotion.frame = requestAnimationFrame(animateSorenMonitor);
+  }
+  // overlay-monitor-animation:end
+  function adaptSorenMonitor(container) {
+    const root = container.querySelector('.soren-monitor');
+    const slot = document.getElementById('monitor-observer');
+    if (!root) {
+      if (slot?.children.length) slot.replaceChildren();
+      feedS.ariaHidden = 'false';
+      if (monitorMotion.frame !== null) cancelAnimationFrame(monitorMotion.frame);
+      monitorMotion.frame = null;
+      document.documentElement.dataset.monitorView = 'health';
+      return;
+    }
+    if (!Number.isFinite(container.parentElement?.parentElement?.clientHeight)) return;
+    if (root.getBoundingClientRect().width <= 0) {
+      feedS.ariaHidden = 'false';
+      slot.ariaHidden = 'true';
+      return;
+    }
+    if (!root.querySelector('.monitor-viewport')) {
+      const observer = root.querySelector('[data-kind="observer"]');
+      slot.replaceChildren(...(observer ? [observer] : []));
+      const viewport = dashNode('monitor-viewport');
+      const stack = dashNode('monitor-stack');
+      stack.append(...root.querySelectorAll('.monitor-section'));
+      viewport.appendChild(stack); root.appendChild(viewport);
+    }
+    for (const chart of root.querySelectorAll('.monitor-chart')) {
+      const style = getComputedStyle(chart.parentElement);
+      const width = chart.parentElement.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight);
+      chart.style.transform = `scaleX(${width/chart.scrollWidth})`;
+    }
+    // Stable outer slots own opacity transitions. Replacing their inner data
+    // must neither restart the view clock nor recreate the transition targets.
+    root.querySelector('.monitor-viewport').scrollTop = monitorMotion.upper.position;
+    if (slot.querySelector('.monitor-section-body')) slot.querySelector('.monitor-section-body').scrollTop = monitorMotion.observer.position;
+    if (monitorMotion.startedAt === null) {
+      monitorMotion.startedAt = performance.now();
+      monitorMotion.upper.waitUntil = monitorMotion.startedAt + 8000;
+    }
+    if (monitorMotion.frame === null) monitorMotion.frame = requestAnimationFrame(animateSorenMonitor);
+  }
+  function opsTone(value) {
+    const text = String(value || '').toUpperCase();
+    if (/STOPPED|DOWN|FAILED|INVALID|DISCONNECTED|ALERT/.test(text)) return 'down';
+    if (/DEGRADED|CHECK|UNKNOWN|PAUSED|RETRY|WAITING/.test(text)) return 'warn';
+    return 'ok';
+  }
+  function sectionLines(text) {
+    const result = {};
+    let section = '';
+    for (const raw of String(text || '').split('\n')) {
+      const trimmed = raw.trim();
+      const heading = trimmed.match(/^(HEALTH|ACTIVITY|AUDIO|TWITCH|YOUTUBE|ROLLBACKS|AI IMPROVE)$/);
+      if (heading) { section = heading[1]; continue; }
+      if (trimmed) (result[section] ||= []).push(trimmed);
+    }
+    return result;
+  }
+  function firstStatus(lines, pattern) {
+    for (const line of lines || []) {
+      const match = line.replace(/^[●○✓!◌▸◆◇♪♫📻⟳💬]\s*/u, '').match(pattern);
+      if (match) return match[1].trim();
+    }
+    return '';
+  }
+  // The AUDIO section leads with the speech (Say) channel, which is legitimately
+  // idle between lines while radio or the game/BGM path is playing. Never project
+  // that idle line as "AUDIO SILENT" (docich#2687); fall through to radio and use
+  // a neutral IDLE label when no spoken/radio channel is active.
+  function audioStatus(lines) {
+    const say = firstStatus(lines, /^Say\s+(.+)$/);
+    if (say && !/^SILENT\b/i.test(say)) return say;
+    const radio = firstStatus(lines, /^Radio\s+(.+)$/);
+    if (radio && !/^IDLE\b/i.test(radio)) return radio;
+    return 'IDLE';
+  }
+  function metricHistory(history, key, slotCount = 12) {
+    const now = Date.now() / 1000;
+    const cutoff = now - 180;
+    const raw = (Array.isArray(history) ? history : []).slice(-36).map((point, index) => {
+      const timestamp = Number(point?.ts);
+      const value = point?.[key];
+      const hasTimestamp = Number.isFinite(timestamp) && timestamp > 0;
+      return {
+        index,
+        timestamp: hasTimestamp ? timestamp : null,
+        value: hasTimestamp && Number.isFinite(value) && value >= 0 && value <= 100 ? value : null,
+      };
+    });
+    const timed = raw.filter(point => point.timestamp !== null
+      && point.timestamp >= cutoff && point.timestamp <= now + 1);
+    if (timed.length < 2) return { spark: '—', range: '' };
+    const first = Math.min(...timed.map(point => point.timestamp));
+    const last = Math.max(...timed.map(point => point.timestamp));
+    const span = last - first;
+    if (span <= 0) return { spark: '—', range: '' };
+
+    const slots = Array(slotCount).fill(null);
+    const slotHasGap = Array(slotCount).fill(false);
+    raw.forEach(point => {
+      if (point.timestamp !== null
+          && (point.timestamp < cutoff || point.timestamp > now + 1)) return;
+      const position = point.timestamp === null
+        ? point.index / Math.max(1, raw.length - 1)
+        : (point.timestamp - first) / span;
+      const slot = Math.max(0, Math.min(slots.length - 1, Math.round(position * (slots.length - 1))));
+      // Any missing or untimed sample keeps its time bucket as a gap. Dropping
+      // one would shift the graph or imply continuity across an unknown value.
+      if (!Number.isFinite(point.value)) {
+        slotHasGap[slot] = true;
+        slots[slot] = null;
+      } else if (!slotHasGap[slot]) {
+        slots[slot] = point.value;
+      }
+    });
+    const values = slots.filter(Number.isFinite);
+    const low = values.length ? Math.min(...values) : 0;
+    const high = values.length ? Math.max(...values) : 0;
+    const chars = '▁▂▃▄▅▆▇█';
+    const spark = slots.map(value => !Number.isFinite(value) ? '·'
+      : chars[Math.round((high === low ? 0.5 : (value - low) / (high - low)) * (chars.length - 1))]).join('');
+    const range = span >= 60 ? `${Math.round(span / 60)}M` : `${Math.round(span)}S`;
+    return { spark, range };
+  }
+  function updateOpsSystemMetrics(container, metrics) {
+    const panel = container?.querySelector?.('.ops-system-metrics');
+    if (!panel) return;
+    const sampledAt = Number(metrics?.sampledAt);
+    const hasSample = Number.isFinite(sampledAt) && sampledAt > 0;
+    const age = hasSample ? Date.now() / 1000 - sampledAt : null;
+    const stale = hasSample && (age < 0 || age > 15);
+    const update = (kind, label, value, detail, valueKey, threshold) => {
+      const row = panel.querySelector(`[data-metric="${kind}"]`);
+      if (!row) return;
+      const valueNode = row.querySelector('.ops-metric-value');
+      const spark = row.querySelector('.ops-metric-spark');
+      const status = row.querySelector('.ops-metric-state');
+      if (!valueNode || !spark || !status) return;
+      const valid = hasSample && !stale && Number.isFinite(value) && value >= 0 && value <= 100;
+      const visibleSlots = Math.max(2, Math.min(12, Math.floor((spark.clientWidth || 84) / 7)));
+      const trend = metricHistory(metrics?.history, valueKey, visibleSlots);
+      valueNode.textContent = valid ? `${Math.round(value)}%${detail || ''}` : '—';
+      valueNode.className = `ops-metric-value${valid && value >= threshold ? ' warn' : ''}${valid ? '' : ' unknown'}`;
+      spark.textContent = trend.spark;
+      spark.setAttribute('aria-label', `${label} history`);
+      spark.title = `${label} history ${trend.range || 'unknown duration'}`;
+      status.textContent = valid ? (trend.range || '—') : (stale ? 'STALE' : 'UNKNOWN');
+    };
+    const used = metrics?.memoryUsedBytes;
+    const total = metrics?.memoryTotalBytes;
+    const memoryDetail = Number.isSafeInteger(used) && Number.isSafeInteger(total) && total > 0
+      ? ` ${Math.round(used / 1073741824 * 10) / 10}/${Math.round(total / 1073741824 * 10) / 10}G`
+      : '';
+    update('cpu', 'CPU', metrics?.cpuPercent, '', 'cpuPercent', 80);
+    update('memory', 'RAM', metrics?.memoryPercent, memoryDetail, 'memoryPercent', 85);
+  }
+  function updateOpsDisk(container, metrics) {
+    const value = container?.querySelector?.('.ops-disk-value');
+    const sub = container?.querySelector?.('.ops-disk-sub');
+    if (!value || !sub) return;
+    const sampledAt = Number(metrics?.sampledAt);
+    const hasSample = Number.isFinite(sampledAt) && sampledAt > 0;
+    const age = hasSample ? Date.now() / 1000 - sampledAt : null;
+    const stale = hasSample && (age < 0 || age > 15);
+    const percent = Number(metrics?.diskPercent);
+    const free = metrics?.diskFreeBytes;
+    const used = metrics?.diskUsedBytes;
+    const total = metrics?.diskTotalBytes;
+    const valid = hasSample && !stale
+      && Number.isFinite(percent) && percent >= 0 && percent <= 100
+      && Number.isSafeInteger(free) && free >= 0;
+    const gib = (bytes) => Math.round(bytes / 1073741824 * 10) / 10;
+    if (!valid) {
+      value.textContent = '—';
+      value.className = 'dash-kpi-value ops-disk-value unknown';
+      value.title = '';
+      sub.textContent = stale ? 'STALE' : 'UNKNOWN';
+      return;
+    }
+    value.textContent = `${gib(free)}G`;
+    value.className = `dash-kpi-value ops-disk-value ${percent >= 95 ? 'down' : percent >= 85 ? 'warn' : 'ok'}`;
+    sub.textContent = `${Math.round(percent)}% USED`;
+    value.title = Number.isSafeInteger(used) && Number.isSafeInteger(total) && total > 0
+      ? `ROOT ${gib(used)}/${gib(total)} GiB used · FREE ${gib(free)} GiB`
+      : `FREE ${gib(free)} GiB`;
+  }
+  function adaptOpsDashboard(container) {
+    const dash = container?.querySelector?.('.ops-dashboard');
+    const panel = container?.parentElement;
+    const header = panel?.querySelector?.('.panel-head');
+    if (!dash || !panel || !header || !Number.isFinite(panel.clientHeight) || panel.clientHeight <= 0) return;
+    const available = Math.max(0, panel.clientHeight - header.offsetHeight);
+    container.style.height = `${available}px`;
+    container.style.overflow = 'hidden';
+    dash.className = dash.className.replace(/\s+(?:compact|micro)\b/g, '');
+    if (available < 105) {
+      dash.className += ' micro';
+      return;
+    }
+    if (available < 225 || dash.scrollHeight > available + 1) {
+      dash.className += ' compact';
+      if (dash.scrollHeight > available + 1 && available < 155) {
+        dash.className = dash.className.replace(/\s+compact\b/g, '') + ' micro';
+      }
+    }
+    if (dash.scrollHeight > available + 1 && dash.className.includes('has-alerts')) {
+      dash.className = dash.className.replace(/\s+(?:compact|micro)\b/g, '') + ' micro';
+    }
+  }
+
+  function renderOpsDashboard(container, feed, metrics) {
+    const text = String(feed?.text || '');
+    const workers = text.match(/Workers\s+(\d+)\/(\d+)\s+(ONLINE|DEGRADED|CHECK)/);
+    const backendLine = text.split('\n').map(line => line.trim()).find(line => /Backend\s+/.test(line));
+    if (!workers && !backendLine) return false;
+
+    const root = dashNode('ops-dashboard');
+    const sections = sectionLines(text);
+    const titleRow = dashNode('ops-title-row');
+    titleRow.appendChild(dashNode('game-title', 'SYSTEM HEALTH'));
+    const overall = workers?.[3] || (/DOWN|FAILED|INVALID/.test(text) ? 'ALERT' : 'LIVE');
+    titleRow.appendChild(dashNode(`dash-pill ${opsTone(overall)}`, overall));
+    root.appendChild(titleRow);
+
+    const kpis = dashNode('ops-kpis');
+    const workerCell = dashNode('dash-kpi');
+    workerCell.appendChild(dashNode('dash-kpi-label', 'WORKERS'));
+    const workerValue = dashNode(`dash-kpi-value ops-worker-value ${opsTone(workers?.[3])}`,
+      workers ? `${workers[1]} / ${workers[2]}` : '—');
+    workerCell.appendChild(workerValue);
+    kpis.appendChild(workerCell);
+
+    // Free space is the headline so it stays visible when the compact layout
+    // hides the sub line; the percentage drives the warning tone.
+    const diskCell = dashNode('dash-kpi');
+    diskCell.appendChild(dashNode('dash-kpi-label', 'DISK FREE'));
+    const diskValue = dashNode('dash-kpi-value ops-disk-value unknown', '—');
+    diskCell.appendChild(diskValue);
+    diskCell.appendChild(dashNode('dash-kpi-sub ops-disk-sub', 'UNKNOWN'));
+    kpis.appendChild(diskCell);
+
+    const backend = backendLine
+      ? backendLine.replace(/^[●○✓!▸]\s*/, '').replace(/^Backend\s+/, '').trim()
+      : '—';
+    const backendState = /\bLIVE\b|\bOK\b/.test(backend) ? 'LIVE'
+      : /\bDOWN\b|\bFAILED\b/.test(backend) ? 'DOWN' : '';
+    root.appendChild(kpis);
+
+    const systemMetrics = dashNode('ops-system-metrics');
+    for (const [kind, label] of [['cpu', 'CPU'], ['memory', 'RAM']]) {
+      const row = dashNode('ops-metric-row');
+      row.dataset.metric = kind;
+      row.appendChild(dashNode('ops-metric-label', label));
+      row.appendChild(dashNode('ops-metric-value unknown', '—'));
+      row.appendChild(dashNode('ops-metric-spark', '—'));
+      row.appendChild(dashNode('ops-metric-state', 'UNKNOWN'));
+      systemMetrics.appendChild(row);
+    }
+    root.appendChild(systemMetrics);
+    updateOpsSystemMetrics(root, metrics);
+    updateOpsDisk(root, metrics);
+
+    const servicesHead = dashNode('ops-services-head');
+    servicesHead.appendChild(dashNode('', 'SERVICES'));
+    servicesHead.appendChild(dashNode('', 'LIVE STATE'));
+    root.appendChild(servicesHead);
+
+    const health = sections.HEALTH || [];
+    const audio = sections.AUDIO || [];
+    const twitch = sections.TWITCH || [];
+    const youtube = sections.YOUTUBE || [];
+    const services = [
+      ['STREAM', backendState || '—'],
+      ['LOOP', firstStatus(health, /^Loop\s+(.+)$/)],
+      ['AUDIO', audioStatus(audio)],
+      ['TWITCH', firstStatus(twitch, /^Chat\s+(.+)$/)],
+      ['YOUTUBE', firstStatus(youtube, /^Chat\s+(.+)$/)],
+    ];
+    const serviceGrid = dashNode('ops-services');
+    for (const [name, raw] of services) {
+      const value = compactValue(raw, '—').replace(/\s{2,}.*/, '');
+      const card = dashNode(`ops-service ${opsTone(value)}`);
+      card.appendChild(dashNode('ops-service-name', name));
+      card.appendChild(dashNode('ops-service-value', value));
+      serviceGrid.appendChild(card);
+    }
+    root.appendChild(serviceGrid);
+
+    const activity = sections.ACTIVITY || [];
+    const game = activity.find(line => /\bGame\s+/.test(line));
+    const queue = activity.find(line => /QueueMeter/.test(line));
+    const lastDrop = activity.find(line => /LastDrop/.test(line));
+
+    const alerts = text.split('\n').map(line => line.trim()).filter(line =>
+      !/HISTORICAL/i.test(line)
+      && (/\b(?:STOPPED|DOWN|FAILED|INVALID|DEGRADED|CHECK|UNKNOWN|PAUSED)\b/.test(line)
+        || /Duplicates\s+DETECTED|^Unexpected\b|^Stopped\b|AI 429/.test(line))
+    ).slice(0, 2);
+
+    if (alerts.length) {
+      root.className += ' has-alerts';
+      const alertHead = dashNode('ops-alerts-head');
+      alertHead.appendChild(dashNode('', 'ATTENTION'));
+      alertHead.appendChild(dashNode('', `${alerts.length} ITEM${alerts.length === 1 ? '' : 'S'}`));
+      root.appendChild(alertHead);
+      const alertBox = dashNode('ops-alerts');
+      for (const line of alerts) {
+        alertBox.appendChild(dashNode(`ops-alert ${opsTone(line) === 'down' ? 'down' : ''}`,
+          line.replace(/^[●○✓!◌▸◆◇♪♫📻⟳💬]\s*/u, '').replace(/\s{2,}/g, ' ')));
+      }
+      root.appendChild(alertBox);
+    } else {
+      const activityGrid = dashNode('ops-activity-grid');
+      const gameValue = game?.match(/Game\s+(\d+)試合目/)?.[1]
+        || game?.replace(/^[◆]\s*/, '').replace(/^Game\s+/, '').trim() || '—';
+      const queueMatch = queue?.match(/A=(\d+)\s+C=(\d+)\s+T=(\d+)/);
+      const queueValue = queueMatch
+        ? String(Number(queueMatch[1]) + Number(queueMatch[2]) + Number(queueMatch[3]))
+        : '—';
+      const dropValue = lastDrop
+        ? lastDrop.replace(/^[▾]\s*/, '').replace(/^LastDrop\s+/, '').trim().split(/\s+/)[0]
+        : '—';
+      for (const [label, value] of [['GAME', gameValue], ['QUEUE', queueValue], ['DROP', dropValue]]) {
+        const item = dashNode('ops-activity-item');
+        item.appendChild(dashNode('ops-activity-label', label));
+        item.appendChild(dashNode('ops-activity-value', value));
+        activityGrid.appendChild(item);
+      }
+      root.appendChild(activityGrid);
+    }
+
+    container.replaceChildren(root);
+    return true;
+  }
+  function hanjukuView(feed, now) {
+    const text = String(feed?.text || '');
+    if (!/^SOREN\/CORNER:.*\/ hanjuku-hero \//m.test(text)) return null;
+    const lines = text.split('\n').map(line => line.trim());
+    const pick = pattern => lines.map(line => line.match(pattern)).find(Boolean);
+    const values = pick(/^第(\d+|不明)話 \/ 所持金 (\d+|不明)G$/);
+    const calendar = pick(/^ゲーム内: (\d+|不明)年(\d+|不明)月（最終観測）$/);
+    const castles = pick(/^占領記録 (\d+|不明)城/);
+    const plan = pick(/^計画段階: (.{1,24})（完了未確認）$/);
+    const pending = pick(/^保留計画: ([a-z_]+|不明)$/);
+    // The card lines carry extra observed fields after these prefixes; anchor on
+    // the leading group only so an added field cannot drop a parsed value.
+    const inputs = pick(/^実入力: (\d+|不明)回 \/ 観測 (\d+|不明)秒前(?:（(\d+|不明)回）)?$/);
+    const battle = pick(/^戦闘結果: (\d+|不明)勝 \/ (\d+|不明)敗/);
+    const battleFlow = pick(/^戦闘: 開始 (\d+|不明) \/ 終了 (\d+|不明) \/ 切り札確定 (\d+|不明)$/);
+    const duel = pick(/^交戦HP: 敵 (\d+)（([^）]*)） \/ 我 (\d+)（([^）]*)）$/);
+    const troops = pick(/^兵力: (\d+|不明)名 \/ 停滞 (\d+|不明)秒$/);
+    // The count of generals on the game's own complete roster, bounded by the
+    // roster's 32-general cap: a longer number is not a count.
+    const roster = pick(/^将軍数: (\d+|不明)人(（([^）]*)）)?/);
+    // The basis after the count is our own renderer's text: 完全名簿, 前月…,
+    // or 名簿N人＋加入M名. It is shown as-is (textContent) and bounded.
+    const rosterSuffix = (roster?.[3] || '').slice(0, 40);
+    const rosterPrevious = rosterSuffix.includes('前月');
+    const power = pick(/^半熟レベル: (\d+|不明) \/ 半熟値: (\d+|不明)$/);
+    const income = pick(/^現在収入: (\d+|不明)(?:G)?$/);
+    const wages = pick(/^総賃金: (\d+|不明)(?:G)?$/);
+    const lost = pick(/^失った城: (.{1,120})$/);
+    const castleLosses = pick(/^城失陥: (\d+)件/);
+    const garrison = pick(/^駐留: (.{1,120})$/);
+    const marching = pick(/^行軍中: (.{1,120})$/);
+    const intent = pick(/^出撃意図: (.{1,220})$/);
+    const eggs = pick(/^卵: (.{1,160})$/);
+    const enemyGeneral = pick(/^敵将軍: (.{1,700})$/);
+    const allyGeneral = pick(/^味方将軍: (.{1,700})$/);
+    const eggPredict = pick(/^卵落: (.{1,700})$/);
+    const cardStock = pick(/^切り札在庫: (.{1,200})$/);
+    const cards = lines.filter(line => line.startsWith('切り札: '))
+      .map(line => line.slice('切り札: '.length)).slice(0, 16);
+    const generalName = line => line ? line.split(' / ')[0].trim() : null;
+    const orders = pick(/^出撃: 成立 (\d+) \/ 失敗 (\d+)$/);
+    const screen = pick(/^画面: ([A-Za-z_]+|不明) \/ ([A-Za-z_]+|不明)/);
+    const number = value => /^\d{1,7}$/.test(value || '') && Number(value) <= 1000000 ? Number(value) : null;
+    const chapter = number(values?.[1]);
+    const rosterCount = number(roster?.[1]);
+    const age = now - Number(feed?.updatedAt || 0);
+    const fresh = Number.isFinite(age) && age >= 0 && age <= 30
+      && lines.includes('半熟英雄 / 最終観測・記録') && Boolean(values);
+    const labels = {battle:'白兵戦', battle_menu:'作戦選択', battle_menu_pending:'メニュー確認中',
+      card_list:'切り札を選択', card_select:'携行札を選択', egg_battle_menu:'召喚獣の戦闘',
+      monster_menu:'召喚獣の戦闘', world_map:'戦況を確認中', map:'行軍・探索', map_target:'行先を選択',
+      castle_menu:'城の管理', general_list:'将軍を選択', month_menu:'月初の処理',
+      sortie_confirm:'出撃を確認中', unknown:'画面を確認中'};
+    const geometry = pick(/^投影余白: (?:side=(left|right) )?x=(\d+) w=(\d+) until=(\d+(?:\.\d+)?)$/);
+    const gapLeft = number(geometry?.[2]), gapWidth = number(geometry?.[3]);
+    const gapSide = geometry?.[1] || (gapLeft > 0 ? 'right' : 'left');
+    const gapUntil = Number(geometry?.[4]);
+    const gapGeometryOk = gapSide === 'left'
+      ? gapLeft === 0 && gapWidth >= 180 && gapWidth < 960
+      : gapLeft > 0 && gapWidth >= 180 && gapLeft + gapWidth === 960;
+    const timedRows = prefix => lines.filter(s=>s.startsWith(prefix)).map(s=>s.slice(prefix.length).match(/^until=(\d+(?:\.\d+)?) (.{1,500})$/))
+      .filter(m=>m && now <= Number(m[1]) && Number(m[1])-now <= 30).map(m=>m[2]);
+    const flowKinds = new Set(['month_sub', 'post_month', 'house', 'recall', 'sortie',
+      'castle_jump', 'y_jump', 'army_count', 'battle', 'month']);
+    const gapFlows = lines.filter(line => line.startsWith('余白進行: ')).map(line => {
+      const [key, title, stage, ...detail] = line.slice('余白進行: '.length).split(' / ');
+      if (!flowKinds.has(key) || !title || !stage) return null;
+      return {key, title:title.slice(0, 24), stage:stage.slice(0, 512),
+        detail:detail.join(' / ').slice(0, 512)};
+    }).filter(Boolean).slice(0, 6);
+    const gapDecisions = lines.filter(line => line.startsWith('余白判断: ')).map(line => {
+      try {
+        const row = JSON.parse(line.slice('余白判断: '.length));
+        if (!row || typeof row.id !== 'string' || row.id.length > 128
+            || !Array.isArray(row.actions) || !Array.isArray(row.reasons)
+            || !Number.isFinite(row.at)) return null;
+        return row;
+      } catch { return null; }
+    }).filter(Boolean).slice(-48);
+    const gapMoves = lines.filter(line => line.startsWith('余白出撃: ')).map(line => {
+      const parts = line.slice('余白出撃: '.length).split(' / ');
+      const route = String(parts[1] || '').split('→');
+      // The order's reason rides as a trailing '理由 …' part; it may itself
+      // contain ' / ', so rejoin everything from its marker onward.
+      const reasonAt = parts.findIndex((p, i) => i >= 3 && p.startsWith('理由 '));
+      const reason = reasonAt >= 0 ? parts.slice(reasonAt).join(' / ').slice(3).trim() : '';
+      const stepPart = parts.find((p, i) => i >= 3 && p.startsWith('段階 ')) || '';
+      const purposePart = parts.find((p, i) => i >= 3 && p.startsWith('種別 ')) || '';
+      return {general:(parts[0] || '').trim(), source:(route[0] || '').trim(),
+              target:(route[1] || '').trim(), status:(parts[2] || '').trim(),
+              step:stepPart.replace(/^段階\s*/, '').trim(),
+              purpose:purposePart.slice(3).trim(), reason};
+    }).filter(m => m.general && (m.source || m.target)).slice(0, 8);
+    const countMatch = pick(/^余白進軍数: (\d{1,3})$/);
+    const marchCount = number(countMatch?.[1]);
+    const gapRecall = lines.filter(line => line.startsWith('余白帰還: ')).map(line => {
+      try {
+        const route = JSON.parse(line.slice('余白帰還: '.length));
+        const p = route?.origin;
+        if (!Array.isArray(p) || p.length !== 2 || !p.every(n => Number.isInteger(n) && Math.abs(n) <= 4096)
+            || typeof route.target !== 'string' || !route.target || route.target.length > 24
+            || typeof route.stage !== 'string' || route.stage.length > 24) return null;
+        return {origin:p, target:route.target, stage:route.stage};
+      } catch { return null; }
+    }).find(Boolean) || null;
+    const gap = fresh && gapGeometryOk && now <= gapUntil && gapUntil-now <= 30
+      ? {left:gapLeft, width:gapWidth, side:gapSide,
+         moves:gapMoves, marchCount, recallRoute:gapRecall, flows:gapFlows, decisions:gapDecisions,
+         captured:pick(/^余白占領記録: (.{1,1200})$/)?.[1] || null,
+         garrison:timedRows('余白駐留: '),
+         marching:lines.filter(s=>s.startsWith('余白行軍: ')).map(s=>s.slice(6)),
+         intent:pick(/^余白出撃意図: (.{1,220})$/)?.[1] || null,
+         hp:timedRows('余白交戦HP: ')[0] || null,
+         soldiers:timedRows('余白交戦兵数: ')[0] || null,
+         tactics:timedRows('余白戦闘計画: ')[0] || null,
+         cards:timedRows('余白切り札: ')[0] || null,
+         decision:timedRows('余白戦闘判断: ')[0] || null,
+         egg:timedRows('余白卵対策: ')[0] || null} : null;
+    const enemyName = fresh ? (duel?.[2] || null) : null;
+    const allyName = fresh ? (duel?.[4] || null) : null;
+    // The detailed block belongs to the pair on the same 交戦HP line. A switch
+    // or a ended battle drops it even if an older line survived somewhere.
+    const duelView = (fresh && enemyName && allyName && enemyGeneral && allyGeneral && eggPredict
+      && generalName(enemyGeneral[1]) === enemyName
+      && generalName(allyGeneral[1]) === allyName)
+      ? {enemy: enemyGeneral[1], ally: allyGeneral[1], egg: eggPredict[1],
+         cards, note: cardStock?.[1] || null} : null;
+    return {gap, fresh, duel:duelView, chapter:fresh && chapter >= 1 && chapter <= 12 ? chapter : null,
+      gold:fresh ? number(values?.[2]) : null,
+      year:fresh && number(calendar?.[1]) >= 1 && number(calendar?.[1]) <= 9999 ? number(calendar[1]) : null,
+      month:fresh && number(calendar?.[2]) >= 1 && number(calendar?.[2]) <= 12 ? number(calendar[2]) : null,
+      captured:fresh ? number(castles?.[1]) : null,
+      actions:fresh ? number(inputs?.[1]) : null,
+      observationAge:fresh ? number(inputs?.[2]) : null,
+      observations:fresh ? number(inputs?.[3]) : null,
+      soldiers:fresh ? number(troops?.[1]) : null,
+      generals:fresh && rosterCount !== null && rosterCount <= 32 ? rosterCount : null,
+      generalsPrevious:fresh && rosterPrevious,
+      generalsSuffix:fresh ? rosterSuffix : '',
+      stalled:fresh ? number(troops?.[2]) : null,
+      level:fresh ? number(power?.[1]) : null,
+      hValue:fresh ? number(power?.[2]) : null,
+      income:fresh ? number(income?.[1]) : null,
+      wages:fresh ? number(wages?.[1]) : null,
+      lost:fresh ? (lost?.[1] || null) : null,
+      castleLosses:fresh ? number(castleLosses?.[1]) : null,
+      garrison:fresh ? (garrison?.[1] || null) : null,
+      marching:fresh ? (marching?.[1] || null) : null,
+      intent:fresh ? (intent?.[1] || null) : null,
+      eggs:fresh ? (eggs?.[1] || null) : null,
+      battlesStarted:fresh ? number(battleFlow?.[1]) : null,
+      battlesFinished:fresh ? number(battleFlow?.[2]) : null,
+      cardsConfirmed:fresh ? number(battleFlow?.[3]) : null,
+      launched:fresh ? number(orders?.[1]) : null, failed:fresh ? number(orders?.[2]) : null,
+      enemyHp:fresh ? number(duel?.[1]) : null, enemy:enemyName,
+      allyHp:fresh ? number(duel?.[3]) : null, ally:allyName,
+      plan:fresh && plan?.[1] !== '不明' ? plan?.[1] : null,
+      pending:fresh ? ({monthly:'月次処理', recall:'帰還', repair:'卵修理', sortie:'出撃'}[pending?.[1]] || null) : null,
+      wins:fresh ? number(battle?.[1]) : null, losses:fresh ? number(battle?.[2]) : null,
+      screen:fresh ? (screen?.[1] || null) : null,
+      phase:fresh ? (screen?.[2] || null) : null,
+      status:fresh ? (labels[screen?.[1]] || '進行状況を確認中') : '最新情報を確認中'};
+  }
+  function renderHanjuku(container, value) {
+    const node = (cls, text) => {
+      const el = document.createElement('div'); el.className = cls;
+      if (text !== undefined) el.textContent = text;
+      return el;
+    };
+    const shown = v => v === null ? '—' : String(v);
+    const card = node(`hanjuku-card${value.fresh ? '' : ' stale'}`);
+    const head = node('hanjuku-head', '半熟英雄');
+    head.appendChild(node('hanjuku-badge', value.fresh ? '進行中' : '要確認'));
+    card.appendChild(head);
+    const period = node('hanjuku-period');
+    period.appendChild(node('hanjuku-chapter', value.chapter === null ? '話数 未確認' : `第 ${value.chapter} 話`));
+    period.appendChild(node('hanjuku-month', value.year === null || value.month === null
+      ? '年月 未確認' : `${value.year}年 ${value.month}月（最終観測）`));
+    card.appendChild(period);
+    card.appendChild(node('hanjuku-status', value.status));
+    const dots = node('hanjuku-dots');
+    for (let i = 1; i <= 12; i++) dots.appendChild(node(`hanjuku-dot${i === value.chapter ? ' current' : ''}`));
+    card.appendChild(dots);
+    // owner 2026-11-04: 国力（半熟Lv・半熟値・収入・総賃金）も、兵力・
+    // 将軍数・所持金と同じ「ラベル＋値＋単位」のセルで並べる。兵力と
+    // 将軍数、所持金と勝敗、収入と総賃金、半熟Lvと半熟値を同じ行にする。
+    const kpis = node('hanjuku-kpis');
+    for (const [label, text, cls] of [
+      ['兵力', `${shown(value.soldiers)}名`, 'hanjuku-troops'],
+      [value.generalsPrevious ? '将軍数（前月）' : '将軍数', `${shown(value.generals)}人`],
+      ['所持金', `${shown(value.gold)} G`],
+      ['勝 / 敗（累計）', `${shown(value.wins)} / ${shown(value.losses)}`],
+      ['収入', `${shown(value.income)} G`],
+      ['総賃金', `${shown(value.wages)} G`],
+      ['半熟Lv', shown(value.level)],
+      ['半熟値', shown(value.hValue)]]) {
+      const cell = node('hanjuku-kpi'); cell.appendChild(node('hanjuku-label', label));
+      cell.appendChild(node(cls ? `hanjuku-value ${cls}` : 'hanjuku-value', text)); kpis.appendChild(cell);
+    }
+    card.appendChild(kpis);
+    if (!value.gap && value.enemyHp !== null) {
+      card.appendChild(node('hanjuku-duel',
+        `交戦 ${value.enemy} ${value.enemyHp} / ${value.ally} ${value.allyHp}`));
+    }
+    const details = node('hanjuku-details');
+    const group = title => {
+      const section = node('hanjuku-group');
+      section.appendChild(node('hanjuku-group-title', title));
+      details.appendChild(section);
+      return section;
+    };
+    const detail = (section, cls, label, text) => {
+      const row = node('hanjuku-detail-row');
+      row.appendChild(node('hanjuku-detail-label', label));
+      row.appendChild(node(cls, text));
+      section.appendChild(row);
+    };
+    if (value.duel) {
+      // #2364: both generals, the observed card stock and the shared 卵落
+      // prediction. These are live-battle observations, so they render only
+      // with a fresh 交戦HP pair and disappear with it on switch/end.
+      const section = group('交戦中の将軍・切り札（実測分）・卵落');
+      const line = (cls, text) => {
+        const row = node('hanjuku-detail-row hanjuku-duel-row');
+        row.appendChild(node(cls, text));
+        section.appendChild(row);
+      };
+      line('hanjuku-general', `敵将軍: ${value.duel.enemy}`);
+      line('hanjuku-general', `味方将軍: ${value.duel.ally}`);
+      line('hanjuku-eggpredict', `卵落: ${value.duel.egg}`);
+      for (const card of value.duel.cards) line('hanjuku-cardline', `切り札: ${card}`);
+      if (value.duel.note) line('hanjuku-cardline', value.duel.note);
+    }
+    // The left gap no longer carries the status card. Keep the status on the
+    // right whenever a live battle's reference block does not need the room.
+    const statusVisible = !value.gap || !value.duel;
+    // Owner 2026-11-03: 駐留/行軍中は不要（出撃は左のチャートで示す）。
+    if (statusVisible && value.intent) detail(details, 'hanjuku-intent', '出撃意図', value.intent);
+    if (value.stalled >= 30) detail(details, 'hanjuku-stalled', '進展なし', `${shown(value.stalled)}秒`);
+    const records = node('hanjuku-records');
+    records.appendChild(node('hanjuku-castles', `占領記録 ${shown(value.captured)}城（累計）`));
+    if (value.launched !== null) records.appendChild(node('hanjuku-orders', `出撃 成立 ${value.launched} / 失敗 ${value.failed}`));
+    // The left card is now a live toast/chart surface. Keep its compact
+    // territory/egg facts on the right while no live battle owns the card.
+    if (value.gap && !value.duel) {
+      if (value.lost) records.appendChild(node('hanjuku-lost', `失城: ${value.lost.replace(/\s*[／/]\s*/g, ' ・ ')}`));
+      if (value.eggs) records.appendChild(node('hanjuku-eggs', `卵: ${value.eggs.replace(/\s*[／/]\s*/g, ' ・ ')}`));
+    }
+    details.appendChild(records);
+    card.appendChild(details);
+    if (!value.fresh) card.appendChild(node('hanjuku-note', '観測が古いため数値は非表示'));
+    container.replaceChildren(card);
+  }
+  const gapLive = {last: null, toasts: [], seq: 0, decisionIds: [], decisionSeen: new Set()};
+  const gapDom = {content:null, news:null, toastBox:null, progress:null, decisionBox:null, flow:null,
+    toasts:new Map(), flowSig:null, progressSig:null, idle:null};
+  function gapResetLive() {
+    gapLive.last = null;
+    gapLive.toasts = [];
+    gapLive.decisionIds = [];
+    gapLive.decisionSeen.clear();
+    if (gapDom.decisionBox) gapDom.decisionBox.replaceChildren();
+    if (gapDom.toastBox) gapDom.toastBox.replaceChildren();
+    if (gapDom.progress) gapDom.progress.replaceChildren();
+    if (gapDom.flow) gapDom.flow.replaceChildren();
+    gapDom.toasts.clear();
+    gapDom.flowSig = null;
+    gapDom.progressSig = null;
+    gapDom.idle = null;
+  }
+  function gapNameSet(text) {
+    return new Set(String(text || '').split(/\s*[\/／]\s*/).map(n => n.trim()).filter(Boolean));
+  }
+  function gapPushToast(text, tone, now) {
+    gapLive.toasts.push({id:++gapLive.seq, text, tone, at:now});
+    gapLive.toasts = gapLive.toasts.filter(t => now - t.at <= 45000).slice(-5);
+  }
+  // A stage ID and the inferred "sortie" pending category are not proof of
+  // a sortie. Only an order with matching step, actor and recorded route
+  // may be labelled planned/issued. Status comes from the persisted policy.
+  function gapPlanInfo(value) {
+    const gap = value?.gap || {};
+    const step = String(value?.plan || '');
+    const intent = String(gap.intent || '').trim();
+    if (intent) {
+      const parts = intent.split(' / ');
+      const read = prefix => parts.find(part => part.startsWith(prefix))?.slice(prefix.length).trim() || '';
+      const intentStep = read('段階 ');
+      const status = read('状態 ');
+      const general = (parts[0] || '').trim();
+      const route = (parts[1] || '').trim();
+      const purpose = (parts[2] || '').trim();
+      const reasonAt = parts.findIndex(p => p.startsWith('理由 '));
+      const reason = reasonAt >= 0 ? parts.slice(reasonAt).join(' / ').slice(3).trim() : '';
+      const labels = {pending:'出撃予定', launched:'出撃命令済み',
+        launched_unconfirmed:'出撃命令済み（成立未確認）'};
+      // An exact stage match prevents J3's action from leaking into J30.
+      if ((!step || intentStep === step) && general && route.includes('→') && labels[status]) {
+        const details = [general, route, purpose, reason ? `理由 ${reason}` : ''].filter(Boolean);
+        return {label:labels[status], detail:details.join(' / '), known:true};
+      }
+    }
+    // A sortie chart row is a persisted, recent issued order, not the next
+    // action to perform. It is only usable as evidence for its exact step.
+    const move = (gap.moves || []).find(m => step && m.step === step && m.general
+      && (m.source || m.target) && ['行軍中','成立未確認','交戦中'].includes(m.status));
+    if (move) {
+      const label = {'行軍中':'出撃命令済み（行軍中）',
+        '成立未確認':'出撃命令済み（成立未確認）',
+        '交戦中':'出撃経過確認中'}[move.status];
+      const route = `${move.source || '未確認'}→${move.target || '未確認'}`;
+      return {label, detail:[move.general, route, move.reason ? `理由 ${move.reason}` : '']
+        .filter(Boolean).join(' / '), known:true};
+    }
+    // The battle plan is rendered separately, not masquerading as a sortie.
+    return {label:'計画確認中', detail:'行動内容未取得', known:false};
+  }
+  function gapFlowText(row) {
+    const stageNames = {
+      processing:'処理中', menu:'メニュー操作中', scan:'一覧確認中',
+      open_roster:'将軍一覧を開く', income_next:'収支を確認',
+      castle_verify:'城を確認', month_open:'月初の画面を開く',
+      close:'終了操作中', await_map:'地図へ戻るのを待機',
+      process:'状態を確認', to_camp:'野営地へ移動',
+      hero_focus:'主人公を選択', await_dispatch:'帰還成立を確認',
+      dest:'行先を選択', opening:'画面を開く', requested:'要求済み',
+      quantity_requested:'数量入力中', closing:'画面を閉じる',
+      confirming:'出撃成立を確認', target_seen:'行先を確認済み',
+      preparing:'出撃準備中', repositioning:'位置合わせ中',
+      tactics:'交戦判断中', announce:'効果の表示を確認',
+      select:'項目を選択', recovering:'結果を確認中'
+    };
+    const stage = stageNames[row.stage] || row.stage;
+    return row.title + '：' + stage + (row.detail ? ' / ' + row.detail : '');
+  }
+  function gapChanges(previous, value) {
+    const out = [];
+    const oldGap = previous?.gap || {};
+    const gap = value.gap;
+    const moveKey = m => `${m.general}|${m.source}|${m.target}`;
+    const seen = new Map((oldGap.moves || []).map(m => [moveKey(m), m]));
+    for (const move of gap.moves || []) {
+      const key = moveKey(move);
+      if (!seen.has(key)) out.push([`▲ 出撃 ${move.general} → ${move.target || '未確認'}`, 'move']);
+      seen.delete(key);
+    }
+    // Absence from the chart is not measured arrival, return, death or victory.
+    // Observed battle/castle changes are emitted separately.
+    for (const move of seen.values()) out.push([`■ ${move.general} の追跡記録が消失（行軍終了は未確認）`, 'end']);
+    const owned = gapNameSet(gap.captured), oldOwned = gapNameSet(oldGap.captured);
+    for (const name of owned) if (!oldOwned.has(name)) out.push([`＋ 城を奪取 ${name}`, 'gain']);
+    const lost = gapNameSet(value.lost), oldLost = gapNameSet(previous?.lost);
+    for (const name of lost) if (!oldLost.has(name)) out.push([`✕ 城を失陥 ${name}`, 'loss']);
+    if (Number.isFinite(value.wins) && Number.isFinite(previous?.wins) && value.wins > previous.wins)
+      out.push([`✓ 勝利（${value.wins}勝）`, 'win']);
+    if (Number.isFinite(value.losses) && Number.isFinite(previous?.losses) && value.losses > previous.losses)
+      out.push([`✕ 敗北（${value.losses}敗）`, 'loss']);
+    if (Number.isFinite(value.battlesStarted) && Number.isFinite(previous?.battlesStarted)
+        && value.battlesStarted > previous.battlesStarted)
+      out.push(['● 戦闘開始', 'battle']);
+    if (Number.isFinite(value.battlesFinished) && Number.isFinite(previous?.battlesFinished)
+        && value.battlesFinished > previous.battlesFinished)
+      out.push(['● 戦闘終了', 'battle']);
+    // Live battle detail (plan/cards/decision/egg guard) rides the until-gated
+    // 余白 lines and is shown as one truncated line under the chart head;
+    // a persistent multi-row block overflows the fixed 239px gap.
+    if (previous && value.chapter !== previous.chapter)
+      out.push([`月 第${value.chapter ?? '—'}話`, 'month']);
+    if (previous && (value.year !== previous.year || value.month !== previous.month))
+      out.push([`月 ${value.year ?? '—'}年${value.month ?? '—'}月`, 'month']);
+    if (Number.isFinite(value.generals) && Number.isFinite(previous?.generals)
+        && value.generals !== previous.generals) {
+      const delta = value.generals - previous.generals;
+      out.push([`★ 将軍 ${delta > 0 ? '+' : ''}${delta}人`, 'general']);
+    }
+    const earlier = new Map((oldGap.flows || []).map(row => [row.key, row]));
+    for (const row of gap.flows || []) {
+      const old = earlier.get(row.key);
+      if (!old || row.stage !== old.stage || row.detail !== old.detail
+          || row.title !== old.title)
+        out.push(['▸ 進行 ' + gapFlowText(row), 'flow']);
+    }
+    // Owner 2026-11-06: the sortie intent is shown once, in the 出撃意図 line.
+    // The chart no longer repeats it (neither as a live block nor a toast).
+    // "sortie" is only an inferred pending category, not a confirmed order.
+    if (previous && value.pending !== previous.pending && value.pending && value.pending !== '出撃')
+      out.push([`▸ 処理中 ${value.pending}`, 'plan']);
+    return out;
+  }
+  function gapBuildSkeleton(surface) {
+    surface.replaceChildren();
+    gapDom.content = document.createElement('div');
+    gapDom.content.className = 'hanjuku-gap-content';
+    gapDom.news = document.createElement('div'); gapDom.news.className = 'hanjuku-gap-news';
+    gapDom.progress = document.createElement('div'); gapDom.progress.className = 'hanjuku-gap-progress';
+    gapDom.decisionBox = document.createElement('div'); gapDom.decisionBox.className = 'hanjuku-gap-decisions';
+    gapDom.toastBox = document.createElement('div'); gapDom.toastBox.className = 'hanjuku-gap-toasts';
+    gapDom.flow = document.createElement('div'); gapDom.flow.className = 'hanjuku-gap-flow';
+    gapDom.news.append(gapDom.decisionBox, gapDom.toastBox);
+    gapDom.content.append(gapDom.news, gapDom.progress, gapDom.flow);
+    surface.appendChild(gapDom.content);
+    gapDom.toasts.clear(); gapLive.decisionSeen.clear(); gapLive.decisionIds = [];
+    gapDom.flowSig = null; gapDom.progressSig = null; gapDom.idle = null;
+  }
+
+  // Snapshot of docich.hanjuku_chart.CASTLES (2026-11-06). Chapters 1-3 are
+  // measured, later ordinary/boss coordinates include source-map estimates.
+  // あたしの家 uses HOUSE_VIEW converted into the same chart-cell frame.
+  // Display-only: none of these pixels are used for navigation or decisions.
+  const HANJUKU_MINIMAP_COORDS = {"1":{"アルマムーン":[731,805],"ナキューメラ":[711,645],"キカンドン":[567,725],"ジョンリギ":[551,574],"カストーラ":[599,382],"スペンソニア":[391,382],"ゴーメン":[295,606],"けっかい":[265,270],"あたしの家":[432,657]},"2":{"アルマムーン":[522,847],"ハドリバーグ":[742,732],"フーリック":[358,712],"グロン":[762,479],"ドミノーラ":[486,495],"ウラノポリス":[274,488],"スペランザ":[646,355],"アウスパジア":[298,291],"ボス":[520,200],"あたしの家":[514,396]},"3":{"アルマムーン":[710,144],"グリン":[852,320],"コラダイン":[661,409],"イーピヨル":[773,649],"ドンダム":[568,832],"メガパタ":[456,656],"パタゴーヌ":[341,425],"アバロン":[229,729],"リグア":[133,281],"ボス":[306,141],"あたしの家":[418,504]},"4":{"アルマムーン":[520,528],"マラコビア":[520,192],"フヌイヌム":[728,336],"ネクスドリア":[712,752],"ビクトリア":[520,880],"ミヒラギアン":[312,752],"アルカ":[312,336],"四季王城(北西)":[146,125],"四季王城(北東)":[882,125],"四季王城(南西)":[130,893],"四季王城(南東)":[898,909],"あたしの家":[558,340]},"5":{"アルマムーン":[120,112],"オトラント":[408,128],"クロチェット":[824,128],"カルーン":[568,304],"ジュメルズ":[792,416],"テラビル":[456,560],"ヒュペルボレア":[200,448],"ボッサール":[120,912],"アイアイエー":[424,816],"バスカビル":[712,736],"プトレマイス":[888,912],"ボス":[744,288],"あたしの家":[482,284]},"6":{"アルマムーン":[392,144],"アルブラーカ":[88,112],"イカリア":[232,288],"カバルッサ":[536,288],"オケアナ":[904,368],"バビラリー":[88,608],"ダーラント":[376,592],"セレーネ":[616,704],"グルーポフ":[152,944],"ユージア":[472,880],"アブダレ":[808,896],"トウトウ":[872,592],"ボス":[818,184],"あたしの家":[370,748]},"7":{"アルマムーン":[872,112],"ベンゴディ":[776,400],"レオナール":[488,112],"ロキュータ":[216,176],"リデンブロック":[200,448],"マンシー":[344,688],"プルートー":[88,880],"ハシオクラム":[424,896],"フィロメラ":[728,800],"ボス":[488,320],"あたしの家":[642,428]},"8":{"あるまむーん":[136,912],"おかざき":[392,640],"しらかわ":[520,912],"えど":[856,912],"おだわら":[856,656],"ながはま":[168,448],"いちじょうだに":[456,384],"しまばら":[168,160],"まつやま":[504,128],"ひめじ":[792,128],"ボス":[632,544],"あたしの家":[658,476]},"9":{"アルマムーン":[216,928],"ハヤク":[152,720],"タオ":[280,528],"サヌト":[152,320],"オシロガ":[280,176],"ドンドン":[360,384],"オオキク":[408,624],"ナッテ":[280,800],"シマウ":[376,944],"カラ":[504,864],"イソ":[504,640],"イデ！":[536,416],"あたしの家":[434,252]},"10":{"アルマムーン":[568,880],"マカリア":[792,800],"ピランドリア":[200,768],"トルストリア":[392,656],"ファルゲ":[632,592],"コッカーニュ":[872,512],"カルカル":[184,432],"カロナック":[232,240],"ケントルム":[776,240],"ジュアム":[504,160],"ボス":[488,384],"あたしの家":[530,572]},"11":{"アルマムーン":[472,848],"チリベット":[200,848],"タプロベイン":[344,704],"ジャンセニア":[856,640],"ゴンダル":[904,848],"マランマ":[136,656],"タタール":[504,480],"クラボニア":[248,368],"トリフェ":[824,352],"アエンタール":[152,160],"ネペンテ":[808,176],"ボス":[472,192],"あたしの家":[642,348]},"12":{"アルマムーン":[520,832],"ワフェルダ":[392,688],"ブラックランド":[632,688],"ユーフォニア":[104,544],"アトランテ":[920,544],"アファニア":[392,464],"ヘリオポリス":[632,464],"ファンゴル":[344,304],"ディランダ":[680,304],"バラタリア":[264,560],"ラグナグ":[760,560],"ボス":[504,272],"あたしの家":[514,412]}};
+  const HANJUKU_ROUTE_COLORS = {sortie:'#67e8f9', recall:'#4ade80', repair:'#f9a8d4'};
+  function gapSvg(tag, attrs) {
+    const el = document.createElementNS('http://www.w3.org/2000/svg', tag);
+    for (const [key, val] of Object.entries(attrs || {})) el.setAttribute(key, String(val));
+    return el;
+  }
+  function gapRouteKind(move) {
+    if (move.target === 'あたしの家' || /^(house|repair|卵修理|卵修復)$/.test(move.purpose || ''))
+      return 'repair';
+    if (/^(recall|return|帰還)$/.test(move.purpose || '')) return 'recall';
+    return 'sortie';
+  }
+  function gapMinimap(value, moves, owned, lost, recallRoute) {
+    const table = HANJUKU_MINIMAP_COORDS[value.chapter];
+    if (!table) return null;
+    const all = Object.entries(table).filter(([name]) => name !== 'あたしの家');
+    const routes = moves.map(move => ({...move, kind:gapRouteKind(move)}));
+    const observedReturn = recallRoute && table[recallRoute.target] ? recallRoute : null;
+    // The origin was measured against multiple castle roofs by the policy.
+    // Do not infer an origin from its camp menu, stage or general name.
+    const extraPoints = observedReturn ? {'帰還元':observedReturn.origin} : {};
+    if (observedReturn) {
+      all.push(['帰還元', observedReturn.origin]);
+      routes.push({source:'帰還元', target:observedReturn.target,
+        kind:'recall', status:'成立未確認'});
+    }
+    const houseUsed = routes.some(move => move.source === 'あたしの家' || move.target === 'あたしの家');
+    if (houseUsed) all.push(['あたしの家', table['あたしの家']]);
+    const xs = all.map(([,pt]) => pt[0]), ys = all.map(([,pt]) => pt[1]);
+    const minX = Math.min(...xs), maxX = Math.max(...xs);
+    const minY = Math.min(...ys), maxY = Math.max(...ys);
+    const width = 300, height = 300, margin = 25;
+    const scale = Math.min((width-2*margin)/Math.max(1,maxX-minX),
+                           (height-2*margin)/Math.max(1,maxY-minY));
+    const left = (width-(maxX-minX)*scale)/2, top = (height-(maxY-minY)*scale)/2;
+    const point = name => {
+      const pt = table[name] || extraPoints[name];
+      return pt ? [left+(pt[0]-minX)*scale, top+(pt[1]-minY)*scale] : null;
+    };
+    const svg = gapSvg('svg', {viewBox:'0 0 300 300', role:'img',
+      'aria-label':'第'+value.chapter+'話の城配置と進軍経路',
+      preserveAspectRatio:'xMidYMid meet', class:'hanjuku-gap-minimap'});
+    const defs = gapSvg('defs');
+    for (const [kind, color] of Object.entries(HANJUKU_ROUTE_COLORS)) {
+      const marker = gapSvg('marker', {id:'gap-arrow-'+kind, markerWidth:7, markerHeight:7,
+        refX:5.5, refY:3, orient:'auto', markerUnits:'strokeWidth'});
+      marker.appendChild(gapSvg('path', {d:'M0 0 L6 3 L0 6 Z', fill:color}));
+      defs.appendChild(marker);
+    }
+    svg.appendChild(defs);
+    for (let i=1; i<=3; i++) {
+      svg.appendChild(gapSvg('line', {x1:0,y1:i*height/4,x2:width,y2:i*height/4,
+        stroke:'#234055','stroke-width':.7,'stroke-dasharray':'3 6'}));
+    }
+    const endpoints = new Set(), segmentCount = new Map();
+    let unknown = 0;
+    for (const move of routes) {
+      const from = point(move.source), to = point(move.target);
+      if (!from || !to || move.source === move.target) { unknown++; continue; }
+      endpoints.add(move.source); endpoints.add(move.target);
+      const dx=to[0]-from[0], dy=to[1]-from[1], d=Math.hypot(dx,dy);
+      if (d < 3) { unknown++; continue; }
+      const key = [move.source,move.target].join('|');
+      const parallel = segmentCount.get(key) || 0;
+      segmentCount.set(key, parallel+1);
+      const shift = parallel === 0 ? 0 : (parallel % 2 ? 1 : -1)*Math.ceil(parallel/2)*5;
+      const nx = -dy/d*shift, ny = dx/d*shift, ux=dx/d, uy=dy/d;
+      const line = gapSvg('line', {
+        x1:from[0]+ux*8+nx, y1:from[1]+uy*8+ny,
+        x2:to[0]-ux*11+nx, y2:to[1]-uy*11+ny,
+        stroke:HANJUKU_ROUTE_COLORS[move.kind], class:'map-route',
+        'marker-end':'url(#gap-arrow-'+move.kind+')',
+        ...((move.status === '成立未確認' || move.status.startsWith('到着未確認'))
+           ? {'stroke-dasharray':'5 5'} : {})
+      });
+      line.appendChild(gapSvg('title')).textContent =
+        (move.kind==='repair'?'卵修復':move.kind==='recall'?'帰還':'出撃')+
+        ': '+move.source+' → '+move.target+' ('+(move.status||'進行中')+')';
+      svg.appendChild(line);
+    }
+    for (const [name] of all) {
+      const p = point(name);
+      const missing = lost.has(name);
+      const home = name === 'アルマムーン' || name === 'あるまむーん';
+      const own = owned.has(name) || (home && !missing);
+      const color = name === '帰還元' ? '#4ade80' : name === 'あたしの家' ? '#f9a8d4'
+        : missing ? '#fb7185' : own ? '#67e8f9' : '#64748b';
+      const active = endpoints.has(name);
+      const circle = gapSvg('circle', {cx:p[0],cy:p[1],r:active?5.4:home?4.8:3.7,
+        fill:color,stroke:'#061421','stroke-width':1.6});
+      circle.appendChild(gapSvg('title')).textContent = name;
+      svg.appendChild(circle);
+      if (active || home) {
+        const label = gapSvg('text', {x:p[0]+5.5,y:p[1]-6,class:'map-name'});
+        label.textContent = name.length > 6 ? name.slice(0,6)+'…' : name;
+        svg.appendChild(label);
+      }
+    }
+    return {svg, unknown};
+  }
+
+  function renderHanjukuGap(value) {
+    const surface = document.getElementById('hanjuku-gap');
+    const frame = SURFACE_REGION === 'game-gap' ? window.frameElement : null;
+    if (!value?.gap || !['full','game-gap'].includes(SURFACE_REGION)) {
+      // Hide once; never toggle the surface every poll (that flickers the card).
+      if (surface.style.display !== 'none') surface.style.display = 'none';
+      if (frame && frame.style.display !== 'none') frame.style.display = 'none';
+      gapResetLive();
+      return;
+    }
+    const gap = value.gap;
+    surface.classList.toggle('dense', (gap.moves || []).length >= 3
+      || ((gap.moves || []).length >= 2 && (gap.flows || []).length >= 2));
+    if (frame) {
+      // Crop the iframe itself; transparent space must not overlap game pixels.
+      frame.style.left = `${gap.left}px`;
+      frame.style.width = `${gap.width}px`;
+      if (frame.style.display !== 'block') frame.style.display = 'block';
+    }
+    surface.style.left = `${frame ? 0 : gap.left}px`; surface.style.width = `${gap.width}px`;
+    if (surface.style.display !== 'block') surface.style.display = 'block';
+    if (!gapDom.toastBox || !surface.contains(gapDom.toastBox)) gapBuildSkeleton(surface);
+    const now = Date.now();
+    if (gapLive.last?.gap) {
+      for (const [text, tone] of gapChanges(gapLive.last, value)) gapPushToast(text, tone, now);
+    }
+    gapLive.last = value;
+    // Current procedure stages persist between polls; transitions also enter
+    // the速報 history, but a toast expiry must not hide the live stage.
+    const activeFlows = (gap.flows || []).slice(0, 3);
+    const progressSig = JSON.stringify(activeFlows);
+    if (gapDom.progressSig !== progressSig) {
+      gapDom.progressSig = progressSig;
+      gapDom.progress.replaceChildren();
+      if (activeFlows.length) {
+        const head = document.createElement('div');
+        head.className = 'hanjuku-gap-progress-head';
+        head.textContent = '進行フロー';
+        gapDom.progress.appendChild(head);
+        for (const entry of activeFlows) {
+          const item = document.createElement('div');
+          item.className = 'hanjuku-gap-progress-item';
+          item.textContent = gapFlowText(entry);
+          item.title = item.textContent;
+          gapDom.progress.appendChild(item);
+        }
+      }
+    }
+    // Keep the latest four decisions in the fixed-height news strip. Persistent
+    // decision logs remain the source of full history; the overlay never rotates.
+    for (const row of gap.decisions || []) {
+      if (gapLive.decisionSeen.has(row.id)) continue;
+      gapLive.decisionSeen.add(row.id);
+      gapLive.decisionIds.push(row.id);
+      const labels = {a:'A', b:'B', x:'X', y:'Y', up:'↑', down:'↓',
+        left:'←', right:'→', select:'SELECT', start:'START', l:'L', r:'R'};
+      const actions = row.actions.map(a => String(a).split('+')
+        .map(button => labels[button] || button).join('+')).join(' → ');
+      // Owner 2026-11-06: no placeholder when a reason was not recorded and
+      // no raw JSON evidence; the operation alone is the entry.
+      const reasons = row.reasons.length ? row.reasons.join('\n') : '';
+      const item = document.createElement('div');
+      item.className = 'hanjuku-gap-decision';
+      const head = `[${row.screen}] ${actions ? '操作予定 '+actions : '操作保留'}`;
+      const fullText = reasons ? `${head}\n${reasons}` : head;
+      item.textContent = fullText;
+      item.title = fullText;
+      item.dataset.decisionId = row.id;
+      gapDom.decisionBox.prepend(item);
+      while (gapDom.decisionBox.children.length > 4)
+        gapDom.decisionBox.lastElementChild.remove();
+      // Deduplicate overlapping poll snapshots independently of the four
+      // rendered entries, otherwise old observations can reappear on refresh.
+      while (gapLive.decisionIds.length > 300)
+        gapLive.decisionSeen.delete(gapLive.decisionIds.shift());
+    }
+    gapDom.toastBox.classList.toggle('with-progress', activeFlows.length > 0);
+    // Update only the toast elements that changed: re-creating them every poll
+    // restarted the enter animation and made the strip flicker.
+    const live = gapLive.toasts.filter(t => now - t.at <= 45000).slice(-4);
+    const planInfo = gapPlanInfo(value);
+    const currentToast = `▸ ${planInfo.label} ${value.plan || '段階未取得'}\n${planInfo.detail}`;
+    // A historical toast is not the current plan; display the current card
+    // unless the exact same up-to-date details are visible in the toast.
+    const planToastVisible = live.some(t => t.tone === 'plan' && t.text === currentToast);
+    gapDom.toastBox.classList.toggle('has-plan', planToastVisible);
+    const ids = new Set(live.map(t => t.id));
+    for (const [id, el] of gapDom.toasts) {
+      if (!ids.has(id)) { el.remove(); gapDom.toasts.delete(id); }
+    }
+    for (const toast of live) {
+      let el = gapDom.toasts.get(toast.id);
+      if (!el) {
+        el = document.createElement('div'); el.className = `hanjuku-gap-toast tone-${toast.tone}`;
+        const body = document.createElement('span'); body.className = 'hanjuku-gap-toast-text';
+        body.textContent = toast.text;
+        const age = document.createElement('span'); age.className = 'hanjuku-gap-toast-age';
+        el.append(body, age);
+        gapDom.toastBox.prepend(el);  // newest first; existing nodes are not re-created
+        gapDom.toasts.set(toast.id, el);
+      }
+      const ageEl = el.querySelector('.hanjuku-gap-toast-age');
+      if (ageEl) ageEl.textContent = `${Math.max(0, Math.round((now - toast.at) / 1000))}秒`;
+    }
+    if (!live.length) {
+      if (!gapDom.idle) {
+        gapDom.idle = document.createElement('div'); gapDom.idle.className = 'hanjuku-gap-toast tone-idle';
+        gapDom.idle.textContent = '状態変化を待っています';
+        gapDom.toastBox.appendChild(gapDom.idle);
+      }
+    } else if (gapDom.idle) { gapDom.idle.remove(); gapDom.idle = null; }
+
+    const owned = gapNameSet(gap.captured), lost = gapNameSet(value.lost);
+    const moves = gap.moves || [];
+    const battleLine = [['計画',gap.tactics],['判断',gap.decision],['切り札',gap.cards],['卵対策',gap.egg]]
+      .filter(([,text]) => text).map(([label,text]) => label+': '+text).join(' / ');
+    // The source currently caps 余白出撃 at eight. 8+ is truthful until the
+    // producer supplies an uncapped count; never claim to know the total.
+    const moveCount = Number.isInteger(gap.marchCount) && gap.marchCount >= 0
+      ? String(gap.marchCount) : moves.length >= 8 ? '8+' : String(moves.length);
+    const sig = JSON.stringify({chapter:value.chapter, moves, owned:[...owned].sort(),
+      lost:[...lost].sort(), battleLine, moveCount, recallRoute:gap.recallRoute});
+    if (sig === gapDom.flowSig) return;
+    gapDom.flowSig = sig;
+    const flow = gapDom.flow;
+    flow.replaceChildren();
+    const head = document.createElement('div');
+    head.className = 'hanjuku-gap-flow-head';
+    const count = document.createElement('span');
+    count.className = 'hanjuku-gap-flow-count';
+    count.textContent = '進軍数 '+moveCount;
+    head.appendChild(count);
+    flow.appendChild(head);
+    const legend = document.createElement('div');
+    legend.className = 'hanjuku-gap-legend';
+    for (const [kind, label] of [['sortie','出撃'],['recall','帰還'],['repair','卵修復']]) {
+      const entry = document.createElement('span'); entry.className=kind; entry.textContent=label;
+      legend.appendChild(entry);
+    }
+    flow.appendChild(legend);
+    const map = gapMinimap(value,moves,owned,lost,gap.recallRoute);
+    if (map) {
+      flow.appendChild(map.svg);
+      if (map.unknown) {
+        const note = document.createElement('div'); note.className='hanjuku-gap-map-note';
+        note.textContent = '座標未確認の経路 '+map.unknown+'件は線を引いていません';
+        flow.appendChild(note);
+      }
+    } else {
+      const note = document.createElement('div'); note.className='hanjuku-gap-empty';
+      note.textContent='話数・城座標の確認待ち';
+      flow.appendChild(note);
+    }
+    if (battleLine) {
+      const war = document.createElement('div'); war.className='hanjuku-gap-battle-line';
+      war.textContent='交戦中 '+battleLine; flow.appendChild(war);
+    }
+  }
+  function setPanelState(element, label, tone) {
+    if (!element) return;
+    element.textContent = label;
+    element.className = `panel-state ${tone || ''}`.trim();
+  }
+  function gamePanelState(feed) {
+    const text = String(feed?.text || '');
+    if (/STATE (?:CONFLICT|INVALID)|unavailable/i.test(text)) return ['ALERT', 'down'];
+    const best = text.match(/Stats:\s*\d+\s+(?:results|reports)\s*\/\s*best=([^/\n]+)/);
+    if (best) return [`BEST ${best[1].trim()}`, 'info'];
+    if (/^Live:/m.test(text) || /SOREN\/CORNER:.*(?:進行中|ACTIVE)/i.test(text)
+        || /最終観測・記録/.test(text)) return ['LIVE', 'ok'];
+    return ['DATA', 'info'];
+  }
+  function opsPanelState(feed) {
+    const text = String(feed?.text || '');
+    const compact = text.match(/Workers\s+(\d+)\/(\d+)\s+(ONLINE|DEGRADED|CHECK)/);
+    if (compact) {
+      if (compact[3] === 'ONLINE') return [`${compact[1]}/${compact[2]} OK`, 'ok'];
+      return [compact[3], compact[3] === 'DEGRADED' ? 'down' : 'warn'];
+    }
+    const legacy = text.match(/Workers.*?(\d+)\/(\d+) expected online/);
+    if (legacy) return [`${legacy[1]}/${legacy[2]} OK`, 'ok'];
+    if (/\b(?:STOPPED|DOWN|FAILED|INVALID)\b|Duplicates\s+DETECTED/.test(text)) return ['ALERT', 'down'];
+    if (/\b(?:DEGRADED|UNKNOWN|PAUSED)\b/.test(text)) return ['CHECK', 'warn'];
+    if (/Backend\s+.*(?:FFMPEG LIVE|OBS)|Chat:\s*RUNNING/.test(text)) return ['LIVE', 'ok'];
+    return ['OPS', 'info'];
+  }
+
+  function renderFeed() {
+    const g = state?.feeds?.showStatusG;
+    const s = state?.feeds?.showStatus;
+    const i = state?.feeds?.improve;
+    const improveActive = Boolean(i?.active);
+    const [gameStateLabel, gameStateTone] = gamePanelState(g);
+    const [opsStateLabel, opsStateTone] = opsPanelState(s);
+    setPanelState(feedGState, gameStateLabel, gameStateTone);
+    setPanelState(feedSState, opsStateLabel, opsStateTone);
+    document.documentElement.dataset.improveActive = improveActive ? '1' : '';
+    const hanjuku = hanjukuView(g, Date.now() / 1000);
+    if (hanjuku && state.gameGapEnabled !== true) hanjuku.gap = null;
+    document.documentElement.dataset.hanjukuActive = hanjuku ? '1' : '';
+    renderHanjukuGap(hanjuku);
+    const gKey = `${g?.updatedAt || 0}:${g?.text || ''}:${hanjuku?.fresh}:${Boolean(hanjuku?.gap)}`;
+    const sKey = `${s?.updatedAt || 0}:${s?.text || ''}`;
+    if (gKey !== lastFeedGKey) {
+      const gView = stripHeaderBox(g?.text, g?.segments);
+      if (hanjuku) renderHanjuku(feedG, hanjuku);
+      else if (!renderGameDashboard(feedG, g) && !renderSorenMonitor(feedG, g, gView)) renderFeedLines(feedG, gView.text, { segmentLines: gView.segments });
+      document.documentElement.dataset.sorenMonitor = feedG.querySelector('.soren-monitor') ? '1' : '';
+      feedGLines.textContent = `${g?.lineCount || 0}L`;
+      lastFeedGKey = gKey;
+    }
+    if (sKey !== lastFeedSKey) {
+      if (!renderOpsDashboard(feedS, s, state?.feeds?.systemMetrics)) renderFeedLines(feedS, s?.text);
+      feedSLines.textContent = `${s?.lineCount || 0}L`;
+      lastFeedSKey = sKey;
+    }
+    updateOpsSystemMetrics(feedS, state?.feeds?.systemMetrics);
+    updateOpsDisk(feedS, state?.feeds?.systemMetrics);
+    if (improveActive) {
+      const iKey = `${i?.updatedAt || 0}:${(i?.logLines || []).join('\n')}`;
+      if (iKey !== lastFeedIKey) {
+        renderFeedLines(feedI, (i?.logLines || []).join('\n') || '改善ログを待機中…', { improve: true });
+        feedILines.textContent = `${i?.lineCount || 0}L`;
+        feedIStatus.textContent = [i?.status, i?.phase, i?.detail]
+          .filter(Boolean).join(' · ') || 'running';
+        lastFeedIKey = iKey;
+      }
+      feedLabel.textContent = 'IMPROVE + OPS';
+    } else {
+      if (lastFeedIKey !== '') {
+        feedI.replaceChildren();
+        feedILines.textContent = '0L';
+        feedIStatus.textContent = '';
+        lastFeedIKey = '';
+      }
+      feedLabel.textContent = 'GAME + OPS';
+    }
+    feedAge.textContent = ageLabel(Math.max(
+      g?.updatedAt || 0,
+      s?.updatedAt || 0,
+      improveActive ? (i?.logUpdatedAt || 0) : (i?.updatedAt || 0),
+    ));
+    feedProgress.textContent = `${(g?.lineCount || 0) + (s?.lineCount || 0) + (improveActive ? (i?.lineCount || 0) : 0)}L`;
+    adaptSorenMonitor(feedG);
+    adaptOpsDashboard(feedS);
+    // Raw feeds retain every source row. New panel chrome must not push the last
+    // rows below the frame; fit leading/type to the actual remaining height.
+    // Structured Hanjuku cards keep their natural height and all observations.
+    for (const container of [feedG, feedS, feedI]) {
+      if (container.querySelector('.game-dashboard,.ops-dashboard,.hanjuku-card')) {
+        container.style.fontSize = '';
+        container.style.lineHeight = '';
+        continue;
+      }
+      const rows = container.querySelectorAll('.feed-line');
+      const panel = container.parentElement;
+      const headerHeight = panel?.querySelector('.panel-head')?.offsetHeight;
+      const available = panel?.clientHeight - headerHeight;
+      if (!rows.length || !Number.isFinite(available) || available <= 0) continue;
+      const leading = Math.min(13.05, available / rows.length);
+      container.style.fontSize = `${Math.min(9, leading / 1.16)}px`;
+      container.style.lineHeight = `${leading}px`;
+    }
+  }
+  function summaryClass(text) {
+    if (/A\/B\s*残り:/.test(text)) return 'sum-ab';
+    if (/A\/B:/.test(text)) return 'sum-ab';
+    if (/^SOREN\b/.test(text)) return 'sum-head';
+    if (/Recent30/.test(text)) return 'sum-recent';
+    if (/Strategy/.test(text)) return 'sum-strategy';
+    if (/^Live:/.test(text)) return 'sum-live';
+    if (/Backend/.test(text)) return 'sum-backend';
+    if (/AI(?: 429|使用量上限)/.test(text)) return 'sum-ai';
+    if (/Game|Queued/.test(text)) return 'sum-queue';
+    if (/LastDrop/.test(text)) return 'sum-drop';
+    if (/AVSync/.test(text)) return 'sum-av';
+    return 'sum-muted';
+  }
+  // status_dashboard の A/B「あと何試合」行 (例:
+  // "      k13/19  adopt-look in 24g  max 96g  score") を上部レール向けの
+  // 短い1行に整形する。生の行が無い・数値が読めないときは null を返す。
+  function abRemainingSummary(stats) {
+    const raw = (Array.isArray(stats) ? stats : []).find((line) =>
+      /(?:adopt-look in \d+g|no adopt-look left)/.test(String(line)));
+    if (!raw) return null;
+    const clean = String(raw).replace(/[│┌┐└┘─━]/g, '').trim();
+    const look = clean.match(/\bk(\d+)\/(\d+)\b/);
+    const adopt = clean.match(/adopt-look in (\d+)g/);
+    const max = clean.match(/max (\d+)g/);
+    let text = 'A/B 残り:';
+    if (adopt && max) text += ` あと${adopt[1]}〜${max[1]}試合`;
+    else if (adopt) text += ` あと${adopt[1]}試合`;
+    else if (max) text += ` 最長${max[1]}試合`;
+    else return null;
+    if (look) text += ` k${look[1]}/${look[2]}`;
+    return text;
+  }
+  function selectedSummaryLines() {
+    const stats = String(state?.feeds?.showStatusG?.text || '').split('\n');
+    const ops = String(state?.feeds?.showStatus?.text || '').split('\n');
+    const pick = (pattern) => stats.find((line) => pattern.test(line));
+    // ヘッダーは箱付きで来るので先頭の │ を前提にしない (SOREN/FFMPEG も拾う)。
+    const head = pick(/SOREN\//);
+    const abLine = pick(/A\/B:/);
+    const abLeft = abLine ? abRemainingSummary(stats) : null;
+    let selected;
+    if (abLine) {
+      // A/B 進行中は Live を譲り、「あと何試合か」を1枠使う。Strategy 行は A の
+      // hash と重複するのでその間は落とす (上部の枠は4つだけ)。
+      selected = [head, abLine, abLeft || pick(/Strategy:/), pick(/Recent30:/)].filter(Boolean);
+    } else {
+      selected = [head, pick(/Recent30:/), pick(/Strategy:/), pick(/Live:/)].filter(Boolean);
+    }
+    if (selected.length < 4) {
+      for (const pattern of [/Backend/, /Game|Queued/, /LastDrop/, /AVSync/]) {
+        const line = ops.find((candidate) => pattern.test(candidate));
+        if (line && !selected.includes(line)) selected.push(line);
+        if (selected.length >= 4) break;
+      }
+    }
+    return selected.slice(0, 4).map((line) => monitorText(String(line).replace(/[│┌┐└┘─━]/g, '').trim()));
+  }
+  function renderTopRail() {
+    const workState = state?.notifications?.work || {};
+    const workActive = Boolean(workState.active);
+    const genTop = document.getElementById('gen-top');
+    let commentActive = false;
+    let cg = null;
+    try {
+      const gens = Array.isArray(state?.notifications?.generators) ? state.notifications.generators : [];
+      cg = gens.find((g) => String(g.key||'') === 'comment') || null;
+      commentActive = Boolean(cg);
+    } catch { commentActive = false; cg = null; }
+    // 作業インジケーター領域にコメント生成中を表示: work優先、次にcomment、最後にサマリ
+    if (workActive) {
+      work.classList.add('active');
+      genTop.classList.remove('active');
+      summary.style.display = 'none';
+      work.querySelector('.work-title').textContent = workState.title || 'システム作業中';
+      work.querySelector('.work-body').textContent = workState.body || '';
+      work.querySelector('.work-elapsed').textContent = elapsedLabel(workState.ts);
+      // work中でもコメント生成中なら work の body に追記で示す
+      if (commentActive) {
+        const bodyEl = work.querySelector('.work-body');
+        if (bodyEl && cg) bodyEl.textContent = `${workState.body || ''}  |  ${cg.icon || '💬'} ${cg.label || 'コメント生成中'} ${elapsedLabel(cg.ts)}`.trim();
+      }
+    } else if (commentActive) {
+      work.classList.remove('active');
+      summary.style.display = 'none';
+      genTop.classList.add('active');
+      const labelEl = genTop.querySelector('.gen-top-label');
+      if (labelEl) labelEl.textContent = `${cg.icon || '💬'} ${cg.label || 'コメント生成中'}`;
+      const elapsedEl = genTop.querySelector('.gen-top-elapsed');
+      if (elapsedEl) elapsedEl.textContent = elapsedLabel(cg.ts);
+    } else {
+      work.classList.remove('active');
+      genTop.classList.remove('active');
+      summary.style.display = 'grid';
+      const topO = state?.topOverride;
+      if (topO && topO.enabled === false) {
+        summary.style.display = 'none';
+        return;
+      }
+      const lines = (topO && topO.enabled === true && Array.isArray(topO.lines) && topO.lines.length)
+        ? topO.lines.slice(0, 4).map((s) => String(s).trim()).filter(Boolean)
+        : selectedSummaryLines();
+      const key = JSON.stringify(lines);
+      if (key !== lastSummaryKey) {
+        summary.replaceChildren(...lines.map((text) => {
+          const row = document.createElement('div');
+          row.className = `summary-line ${summaryClass(text)}`;
+          row.textContent = text;
+          return row;
+        }));
+        lastSummaryKey = key;
+      }
+    }
+  }
+  function monitorText(text) {
+    return text.replace(/\bBackend\s+(?:FFMPEG|OBS)\s*/g, '配信 ')
+      .replace(/\bSOREN\/(?:FFMPEG|OBS)\b/g, 'SOREN');
+  }
+  function liveStatusCards() {
+    const ops = String(state?.feeds?.showStatus?.text || '').split('\n');
+    return [/Backend/, /Game|Queued/, /LastDrop/].map((pattern) => ops.find((line) => pattern.test(line)))
+      .filter(Boolean).map((line) => ({
+        category: 'system',
+        title: 'LIVE STATUS',
+        body: monitorText(line.trim()),
+        ts: 0,
+        liveStatus: true,
+      }));
+  }
+  function aiThinkingCard(generators) {
+    const labels = generators.map((item) => String(item.label || '').trim()).filter(Boolean).sort();
+    return {
+      category: 'ai-thinking',
+      title: 'AI思考中',
+      body: labels.join(' / ') || '生成処理を実行中',
+      liveStatus: true,
+    };
+  }
+  function currentToasts() {
+    const now = Math.floor(Date.now() / 1000);
+    const visibleSec = Number(state?.notifications?.visibleSec || 18);
+    const events = (Array.isArray(state?.notifications?.events) ? state.notifications.events : [])
+      .filter((item) => now - Number(item.ts || 0) <= visibleSec);
+    const rawGenerators = Array.isArray(state?.notifications?.generators) ? state.notifications.generators : [];
+    const generatorEvents = rawGenerators.map((item) => ({
+      category: item.key || 'worker',
+      title: `${item.icon || '⏳'} ${item.label || '生成中'}`,
+      body: `処理継続中 ${elapsedLabel(item.ts)}`,
+      ts: item.ts || now,
+    }));
+    if (!events.length && rawGenerators.length) {
+      // AI思考中は下枠の先頭カードを思考中表示へ置き換え、LIVE STATUS は2枚へ圧縮する。
+      return [aiThinkingCard(rawGenerators), ...liveStatusCards().slice(0, TOASTS_PER_PAGE - 1)];
+    }
+    const displayItems = [...generatorEvents, ...events];
+    if (!displayItems.length) {
+      return liveStatusCards();
+    }
+    const pageCount = Math.max(1, Math.ceil(displayItems.length / TOASTS_PER_PAGE));
+    const page = Math.floor(Date.now() / TOAST_PAGE_MS) % pageCount;
+    return displayItems.slice(page * TOASTS_PER_PAGE, (page + 1) * TOASTS_PER_PAGE);
+  }
+  function renderToasts() {
+    const items = currentToasts();
+    const key = JSON.stringify(items.map((item) => item.liveStatus
+      ? ['live-status', item.category, item.title, item.body]
+      : [item.ts, item.category, item.title, item.body]));
+    const now = Math.floor(Date.now() / 1000);
+    if (key === lastToastKey) {
+      // 既定 LIVE STATUS カードは再構築せず時計だけ進め、enter アニメーションの再実行を防ぐ。
+      for (const card of toastGrid.querySelectorAll('.toast[data-live-status="1"]')) {
+        const time = card.querySelector('.toast-time');
+        if (time) time.textContent = timeLabel(now);
+      }
+      return;
+    }
+    toastGrid.replaceChildren(...items.map((item) => {
+      const category = String(item.category || 'system').toLowerCase().replace(/[^a-z0-9_-]/g, '');
+      const card = document.createElement('article');
+      card.className = `toast ${category}${!item.liveStatus && now - Number(item.ts || 0) <= 3 ? ' fresh' : ''}`;
+      // PAPER P/L titles wrap; other workers and live cards retain their layout.
+      // Real-money (LIVE) fills must be told apart from PAPER at a glance, so they
+      // get their own card colour: title prefix `実売｜` / `実買｜` (Issue #3623 §2.2).
+      const toastTitle = String(item.title || '');
+      const liveTrade = category === 'worker' && /^実(?:売|買)｜/.test(toastTitle);
+      if (liveTrade || (category === 'worker' && /^(?:売|買|裁定)｜/.test(toastTitle))) {
+        card.classList.add('paper-pnl');
+        card.classList.add(liveTrade ? 'live-trade' : 'paper-trade');
+      }
+      if (item.liveStatus) card.dataset.liveStatus = '1';
+      const bar = document.createElement('div');
+      bar.className = 'toast-bar';
+      const copy = document.createElement('div');
+      copy.className = 'toast-copy';
+      const head = document.createElement('div');
+      head.className = 'toast-head';
+      const title = document.createElement('div');
+      title.className = 'toast-title';
+      title.textContent = item.title || item.category || 'event';
+      const time = document.createElement('div');
+      time.className = 'toast-time';
+      time.textContent = item.liveStatus ? timeLabel(now) : timeLabel(item.ts);
+      const body = document.createElement('div');
+      body.className = 'toast-body';
+      body.textContent = item.body || '';
+      head.append(title, time);
+      copy.append(head, body);
+      card.append(bar, copy);
+      return card;
+    }));
+    lastToastKey = key;
+  }
+  function publishHealth(error = '') {
+    window.__sorenBroadcastOverlayHealth = {
+      version: 3,
+      updatedAt: state?.updatedAt || 0,
+      lastClientUpdateAt: Math.floor(Date.now() / 1000),
+      showStatusGLineCount: state?.feeds?.showStatusG?.lineCount || 0,
+      showStatusLineCount: state?.feeds?.showStatus?.lineCount || 0,
+      improveActive: Boolean(state?.feeds?.improve?.active),
+      improveLineCount: state?.feeds?.improve?.lineCount || 0,
+      feedLines: (state?.feeds?.showStatusG?.lineCount || 0)
+        + (state?.feeds?.showStatus?.lineCount || 0)
+        + (state?.feeds?.improve?.active ? (state?.feeds?.improve?.lineCount || 0) : 0),
+      notificationCount: state?.notifications?.events?.length || 0,
+      workActive: Boolean(state?.notifications?.work?.active),
+      generatorCount: state?.notifications?.generators?.length || 0,
+      merged: true,
+      error,
+      region: SURFACE_REGION,
+      layout: { game: [0, 90, 960, 540], sidebar: [960, 0, 320, 720], rails: [90, 90] },
+    };
+  }
+  let lastNextCornerKey = '';
+  function renderNextCorner() {
+    const notice = state?.nextCorner;
+    const active = Boolean(notice && notice.label && notice.when);
+    document.documentElement.dataset.nextCorner = active ? '1' : '0';
+    const key = active ? `${notice.corner}|${notice.label}|${notice.when}` : '';
+    if (lastNextCornerKey === key) return;
+    lastNextCornerKey = key;
+    const panel = document.getElementById('next-corner');
+    if (!active) { panel.replaceChildren(); return; }
+    const body = dashNode('next-corner-body');
+    body.appendChild(dashNode('next-corner-label', `次のコーナー: ${notice.label}`));
+    body.appendChild(dashNode('next-corner-when', `${notice.when} 予定`));
+    panel.replaceChildren(dashNode('next-corner-head', 'NEXT CORNER'), body);
+  }
+  function renderPrediction() {
+    const lines = String(state?.feeds?.showStatus?.text || '').split('\n').map(line => line.trim());
+    const progress = lines.find(line => line.startsWith('予想対象：'));
+    const current = lines.find(line => /^#\d+：今回の予想対象/.test(line));
+    document.documentElement.dataset.predictionActive = progress ? '1' : '0';
+    const panel = document.getElementById('prediction-round');
+    const text = progress ? progress.replace('｜終了', '\n終了') + (current ? '\n' + current : '') : '';
+    if (panel.textContent !== text) { panel.textContent = text; panel.style.whiteSpace = 'pre-line'; }
+  }
+  function render() {
+    renderPrediction();
+    renderNextCorner();
+    if (!state) return;
+    renderFeed();
+    renderTopRail();
+    renderToasts();
+    publishHealth();
+  }
+  async function refresh() {
+    try {
+      if (window.parent !== window && window.parent?.__sorenBroadcastState) {
+        state = window.parent.__sorenBroadcastState;
+        render();
+        return;
+      }
+      const response = await fetch(STATE_ROUTE, { cache: 'no-store' });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      state = await response.json();
+      render();
+    } catch (error) {
+      publishHealth(String(error?.message || error));
+    }
+  }
+  void refresh();
+  setInterval(refresh, 1000);
+  setInterval(render, 1000);
+})();
+</script>
+</body>
+</html>

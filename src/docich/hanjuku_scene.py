@@ -39,7 +39,7 @@ CARD_ROLES = frozenset({'nonlethal_egg_risk', 'damage_or_egg_risk_unclassified',
                        'single_card_lethal', 'healing_not_a_kill', 'no_autonomous_egg_trigger',
                        'egg_drop_candidate_not_a_kill', 'inspect_live_inventory_before_selection',
                        'observed_control_chain_not_a_kill', 'control_has_no_observed_followup',
-                       'summon_already_observed'})
+                       'halving_not_a_kill', 'summon_already_observed'})
 TARGET_KINDS = frozenset({'general', 'boss_general', 'egg_monster', 'boss_monster', 'unknown'})
 ESTIMATE_NUMBERS = ('raw_damage_min', 'enemy_soldier_hp_upper', 'damage_lower_bound',
                     'remaining_hp_upper')

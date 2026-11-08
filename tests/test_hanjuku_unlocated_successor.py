@@ -7,6 +7,7 @@ import pytest
 from docich.hanjuku.flows.battle import battle_step, battle_end
 from docich.hanjuku_screen import Battle, Screen, parse
 from docich.hanjuku_pixels import read_png
+from docich.hanjuku.state.regions import world as _world
 
 FIXTURES = Path(__file__).parent/'fixtures/hanjuku'
 IDENTITY = {'game': 'hanjuku-hero', 'runtime_id': 'g747-0fd8cf05', 'generation': 747,
@@ -66,7 +67,7 @@ def test_native_sequence_tracks_new_actor_and_never_claims_castle_or_death():
     assert all(r['castle'] is None and r['side'] is None for r in results)
     assert all(r['observed_metric']['general_loss']=='unclassified' for r in results)
     assert m['captured']==['アルマムーン'] and not m.get('lost')
-    assert m['general_location_unknown']==['シナモン']
+    assert _world(m)['general_location_unknown']==['シナモン']
     assert m['stats']['generals_lost'] is None
 
 

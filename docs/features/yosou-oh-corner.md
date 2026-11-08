@@ -10,8 +10,9 @@
   `config/docich.soren-live.toml` の当該行の変更で行う（§4参照）。TwiCa 前景への表示は
   **2026-10-15 のオーナー判断で対象外**（§4.1。docich 側は共通 eventOverlay までを担当する）。
   **PR-6（Soren 側の不成立キャンセル記録、§2.1 / §8-2。soviet_now PR ＋ docich gitlink）実装済み**。
-  5指標ボードの画面表示（1枚の表・18秒切替）は #2435 / #2436 で main 済み。読み上げの部門対応は
-  対象外（§8-5 (c) 不採用）。
+  5指標ボードの画面表示（1枚の表・18秒切替）は #2435 / #2436 で main 済み。
+  **2026-11-07 のオーナー指示で、各部門の結果読み上げと画面を連動**させた（部門ごとに1件ずつ読み上げ、
+  画面は読み上げ中の部門へ追従する。§8-5 (c) を採用に変更）。
 - 関連 Issue: [azumag/docich#933](https://github.com/azumag/docich/issues/933)（番組コーナー（24時間中ローテーション）に追加）、
   [azumag/docich#9](https://github.com/azumag/docich/issues/9)（自動チャネルポイント予想）
 - 関連実装: `src/docich/prediction_leaderboard.py`（記録・集計・ランキングの契約）、
@@ -194,11 +195,23 @@ Twitch Helix `GET /helix/predictions` の outcome に **`top_predictors`** が�
   `yoso_narration.overlay_body`、上位5件＋件数、本文は `OVERLAY_BODY_LIMIT` 以内）。
   共有キューは `source_id` ごとに最新1件だけを残すため、紹介と ranking は
   `source_id` を分ける（同じだと ranking が紹介を上書きする）。
-- 終了条件: `duration_minutes`（既定2分・1〜14分）は**上限**で、読み上げを入れた run は
+- 部門ごとの読み上げと画面の連動（2026-11-07）: 紹介の後、5部門を画面と同じ順
+  （的中率 → 賭けたpt → 得たpt → 失ったpt → 賭けた回数）に**1部門1件**で読む
+  （`context = yosou:board:<metric>`、各部門の上位3名、`yoso_narration.narration_text(board,
+  metric=...)`。文面は画面が `boards[metric]` で出す行と同じデータから作る。条件を満たす人がいない
+  部門は部門名つきの固定文で、sink の同文抑止に落とされない）。画面は `/api/yosou` の `voice`
+  （`yoso_view.voice_state`、共有 audio queue を**読み取りだけ**で観測。adapter が `--queue-dir` で渡す）に従う:
+  `speaking`（その部門の `.playing` マーカーがある間）の部門を出し、部門の合間は直前の部門のまま、
+  紹介中は先頭の部門を出す。コーナーの読み上げを一度でも観測した後は18秒の自動切替を止め
+  （終わっても勝手に回さない）、読み上げが観測されない run（音声オフ・投入失敗・キュー未解決）だけ
+  従来の18秒切替で回る。`.playing` は再生の合成開始前に付くため、画面は声の約0〜3秒前に切り替わる。
+  視聴者コメントが割り込んでも、画面は「いま読まれている部門」に従うので食い違わない。
+  古い（600秒超）マーカーは死んだ worker の残骸として無視する。
+- 終了条件: `duration_minutes`（既定2分・1〜14分、**本番 catalog は4分**）は**上限**で、読み上げを入れた run は
   自分の発話が共有 audio queue から消えた時点で `end_reason = "audio-complete"` として早期終了する
   （天気予報 corner の音声完了と同じ考え方。2026-10-15 オーナー判断）。
   queue が混んで発話が上限まで残る run は `end_reason = "duration"` で終わる。
-  判定は `yoso_narration.voice_items_in_flight()`（自分の `yosou:intro` / `yosou:ranking` の
+  判定は `yoso_narration.voice_items_in_flight()`（自分の `yosou:intro` / `yosou:board:<metric>` の
   `.txt` / `.playing` マーカーだけを数える）で、他 source のコメントや他 corner は数えない。
 - 開始境界（#2236）: 共有 audio queue が完全に静か（`comment_*.txt` / `comment_*.playing` が
   0件）で、Soren の予想が in-flight なら確定境界が来るまで開始しない。待ちは
@@ -244,7 +257,8 @@ Twitch Helix `GET /helix/predictions` の outcome に **`top_predictors`** が�
 - 得た・失ったポイントの部門は 0 の行を並べても意味がないため `> 0` の視聴者だけを載せる。
 - 表示: `yoso_view` の `/api/yosou` は5部門（`boards`）を返し、画面は**1枚の表を18秒ごとに部門替わりへ切り替える**（§8-5 の (a)、2026-10-17 オーナー判断）。
   表の列は 順位 / 表示名 / 部門の記録 / 的中率 / 純増 で、部門ごとに「記録」列の意味と最低数表示だけが変わる。
-  5部門 × 18秒 = 90秒で、コーナー上限2分に収まる。読み上げは従来どおり的中率ボードのみ。集計の意味は本節が正本。
+  5部門 × 18秒 = 90秒は、読み上げが無い run のフォールバック。読み上げがある run は部門ごとの読み上げに画面が
+  追従する（2026-11-07）。集計の意味は本節が正本。
 - 休止表示の解除は**取得成功した `render` だけ**が行う（PR #2435 P2）。部門切替の `draw()` は
   古い `lastData` を描き直すだけで、取得状態を変えない。成功 → 失敗 → 部門切替では休止表示を
   維持し、次の成功でのみ解除する（`tests/test_yoso_view.py` が実JSを node で実行して固定）。
@@ -264,8 +278,8 @@ Twitch Helix `GET /helix/predictions` の outcome に **`top_predictors`** が�
   { id = "yosou-oh", adapter = "yoso", game = "yosou-view", enabled = true }
   ```
 
-- 実行は他コーナーと同じ program slot 排他。表示時間は上限つき（既定 2 分、
-  catalog の `duration_minutes` で 1〜14 分）で自動終了し、既存の GameSwitch 復帰経路へ戻す。
+- 実行は他コーナーと同じ program slot 排他。表示時間は上限つき（既定 2 分、本番 catalog は
+  部門ごとの読み上げのため 4 分、`duration_minutes` で 1〜14 分）で自動終了し、既存の GameSwitch 復帰経路へ戻す。
   手動 stop は開始前・表示中・復帰中のどこでも同じ bounded な restore 経路を通る。
 - 配備済みの catalog 登録（**2026-10-14 有効化 / 2026-10-15 自動抽選へ追加・読み上げ有効化**）:
 
@@ -329,7 +343,7 @@ docich 単独で TwiCa の描画や配信フィードを追加しない。
 - [x] TwiCa 前景への表示: 2026-10-15 オーナー判断で**対象外**（§4.1）
 - [x] 不成立キャンセルの参加実績（`no-contest`）と5指標ボードのオフライン中核（`prediction_leaderboard.py`、PR-5。§2.1 / §3.1）
 - [x] 半熟英雄の不成立キャンセル記録フック（`hanjuku_predictions._record_canceled`、PR-5）
-- [x] 5指標ボードの view への表示（§3.1、1枚の表を18秒で部門切替。§8-5）。読み上げは的中率のみ
+- [x] 5指標ボードの view への表示（§3.1、1枚の表を18秒で部門切替。§8-5）。読み上げは部門ごと・画面と連動（2026-11-07）
 - [x] Soren 側の不成立キャンセル記録（soviet_now の handoff 拡張 + docich reader。PR-6。§8-2）
 - [ ] 台帳に実データを入れて ranking を実測する（初回は「確定した予想がまだありません」）
 - [ ] 不成立キャンセル・5指標ボードの実データでの受入（記録が本番で積まれてから）
@@ -443,7 +457,9 @@ docich 単独で TwiCa の描画や配信フィードを追加しない。
 - **8-5（解決・本案 / 2026-10-17 オーナー判断 (a)）** 5指標ボードの表示: **1枚の表を18秒ごとに部門替わりへ
   切り替える**。表は 順位 / 表示名 / 部門の記録 / 的中率 / 純増 の5列で、部門ごとに記録列と最低数の
   表示だけを変える（5部門×18秒=90秒でコーナー上限2分内）。部門ごとにコーナーを分けない。
-  読み上げは従来どおり的中率ボードのみ（(c) は採らない）。実装は `yoso_view`（§3.1）。
+  読み上げは当初「的中率ボードのみ（(c) は採らない）」としたが、**2026-11-07 のオーナー指示で
+  各部門の結果読み上げと画面を連動させる**ことに変更した（部門ごとに1件読み、画面は読み上げ中の部門へ
+  追従。§3.1 / 発表の節）。実装は `yoso_view`（`voice_state`・画面 JS）と `yoso_narration`。
 - **8-6（解決・本案）** 部門ごとの最低数: 的中率は `min_rounds`（既定 3）、
   参加・ポイント部門は `min_participations`（既定 1）。`min_rounds` を流用しない（§3.1）。
 - **8-7（解決・本案 / Issue #2216）** 半熟英雄の予想 round が `error=invalid_state` で停滞したときの

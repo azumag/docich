@@ -4,6 +4,7 @@ Walks the month menu, starts purchases, recruits and chikujou according to
 the economy plan, and verifies each transaction against the visible receipt.
 """
 from __future__ import annotations
+from ..state.regions import world as _world
 
 import re
 
@@ -319,19 +320,35 @@ def month_step(screen: Screen, mem):
         if move == 'here':
             if choice == 'うむッ!':
                 mem['month_exit'] = False
+                # An observed exit, not the earlier purchase-complete flag, arms
+                # the roster-first field sequence for the current month.
+                from .post_month_status import arm as arm_post_month_status
+                arm_post_month_status(mem)
             _record(mem, 'month_confirm', choice=choice, reason='月初メニュー終了の確認')
             return [pad('a')]
         return [move] if move else [pad('b')]
     count_check = _month_army_count_check(screen, mem, shop)
     if count_check is not None:
         return count_check
+    # Owner: 将軍募集を切り札購入 (しょうにん/ちくじょう) より優先する。
+    # 将軍が十分でなければ出撃できないため、募集が未決 (pending/check) や
+    # 卵回復待ち (deferred_egg) の間は、募集の要否が決まる前に商人の札・築城へ
+    # 進まない。卵回復と兵士補充は別扱い。人数未確認 (deferred_roster) の月は
+    # 従来の購入順位を保ち、翌月の国ステータスで人数を読む。
+    if shop and not mem.get('month_sub') and _recruit_precedes_cards(shop):
+        extra = _month_extra(screen, mem, shop, recruit_only=True)
+        if extra is not None:
+            return extra
+        _hold_month_cards(mem, shop)
     # Owner (2026-10-17): a low army's refill is bought before the cards.
-    if shop and not shop['merchant_done'] and shop['items'] and not low_army_first(shop):
+    if (shop and not shop.get('cards_held') and not shop['merchant_done']
+            and shop['items'] and not low_army_first(shop)):
         move = _month_menu_move(screen, mem, 'しょうにん')
         if isinstance(move, list):
             return move
         return [pad('a')] if move == 'here' else [move] if move else []
-    if shop and shop.get('items') and not shop.get('merchant_skip_logged'):
+    if (shop and shop.get('items') and not shop.get('merchant_skip_logged')
+            and not shop.get('cards_held')):
         # Diagnostic only: planned merchant items were skipped by the gate above
         # (g1059 8-5: bargain_plan, then month_done with bought []; no merchant
         # decision). Records which gate closed it, once per month.
@@ -421,8 +438,7 @@ def month_step(screen: Screen, mem):
     extra = _month_extra(screen, mem, shop)
     if extra is not None:
         return extra
-    if shop and not shop.get('closed') and _await_month_roster_scan(mem, shop):
-        return []
+    # 月一の将軍人数は国ステータスから直接取得するため、一覧巡回待ちは不要。
     if shop and not shop.get('closed') and _await_level_scan(mem, shop):
         return []
     if shop and not shop.get('closed'):
@@ -483,6 +499,27 @@ def _refill_month_outcome(mem, shop, header):
                                reason='兵士が不足し修理費の外に資金があったが、他の予約・優先順位で当月は補充しなかった')
     summary['outcome'] = shop.get('refill_outcome')
     return summary
+
+
+RECRUIT_BEFORE_CARDS = frozenset({'pending', 'check', 'deferred_egg'})
+
+
+def _recruit_precedes_cards(shop):
+    """Owner: an unresolved general recruitment outranks 商人 cards / 築城."""
+    return shop.get('recruit') in RECRUIT_BEFORE_CARDS
+
+
+def _hold_month_cards(mem, shop):
+    """Skip this month's card/castle purchases until the recruit question is settled."""
+    if shop.get('cards_held'):
+        return
+    shop['cards_held'] = 'recruit_pending'
+    if shop.get('chikujou') == 'check':
+        shop['chikujou'] = 'skipped'
+    held = [list(row) for row in (shop.get('items') or [])[:4]]
+    _record(mem, 'month_cards_held_for_recruit', month=shop.get('key'),
+            observed_metric={'recruit': shop.get('recruit'), 'planned': held},
+            reason='将軍募集が未決のため、切り札・築城の購入より募集を先に確定させる')
 
 
 def _month_extra(screen, mem, shop, *, recruit_only=False, egg_only=False):
@@ -582,7 +619,7 @@ def _month_extra(screen, mem, shop, *, recruit_only=False, egg_only=False):
                                 'left_menu': False}
             if sub == 'recruit':
                 mem['month_sub']['generals_before'] = sorted({
-                    g for gs in (mem.get('garrison') or {}).values() for g in gs or ()})
+                    g for gs in (_world(mem).get('garrison') or {}).values() for g in gs or ()})
             _record(mem, 'month_sub_open', month=shop.get('key'), gold=gold, choice=label,
                     reason=f'{label}を選択')
             return [pad('a')]
@@ -621,37 +658,14 @@ def _month_extra(screen, mem, shop, *, recruit_only=False, egg_only=False):
         elif sub == 'egg':
             shop.pop('egg_menu_wait', None)
         return [move]
-    return None if recruit_only or egg_only else _month_chikujou(screen, mem, shop)
+    if recruit_only or egg_only or shop.get('cards_held'):
+        return None
+    return _month_chikujou(screen, mem, shop)
 CHIKUJOU_SUB_LIMIT = 64        # bounded castle navigation, quote, result and return
 CHIKUJOU_WAIT_LIMIT = 6        # no repeated A while a selection/result frame persists
 
 
-MONTH_ROSTER_WAIT = 4   # menu observations held for the free roster scan to start
-LEVEL_SCAN_WAIT = 4     # menu observations held for the country-status visit to start
-
-
-def _await_month_roster_scan(mem, shop):
-    """Hold the month open briefly so a deferred roster recruit can be read.
-
-    g684 2-10 15:24:44: recruit was deferred_roster, the egg sub ended and
-    month_done fired in the same observation, before the monthly roster
-    scan (house.step) could start; the scan ran on the field instead and the
-    month passed without recruitment at 103G. Bounded: the month still
-    closes if the scan never starts.
-    """
-    if shop.get('recruit') != 'deferred_roster' or mem.get('month_sub'):
-        return False
-    attempts = mem.get('recruit_month_scan_attempts') or {}
-    if attempts.get('scope') == [mem.get('chapter'), mem.get('month')] and attempts.get('count', 0) >= 1:
-        return False
-    waits = int(shop.get('roster_scan_wait') or 0)
-    if waits >= MONTH_ROSTER_WAIT:
-        return False
-    shop['roster_scan_wait'] = waits + 1
-    if waits == 0:
-        _record(mem, 'month_roster_scan_wait', month=shop.get('key'),
-                reason='募集が一覧確認待ちのため、月一メニューを閉じる前に一覧確認の開始を短く待つ')
-    return True
+LEVEL_SCAN_WAIT = 4  # bounded wait for the country-status visit
 
 
 def _await_level_scan(mem, shop):
@@ -1166,7 +1180,7 @@ def _finish_month_sub(screen, mem, shop) -> bool:
         # A recruit joins the hero's castle, which need not be home.
         # Invalidate its old list; observe the candidate there before claiming
         # admission. Payment alone is not a roster increase.
-        garrison = mem.get('garrison') or {}
+        garrison = _world(mem).get('garrison') or {}
         placements = {c for c, gs in garrison.items() if NAME in (gs or ())}
         placements.add(chart.home_castle(mem.get('chapter') or 0))
         for c in placements:
@@ -1482,6 +1496,17 @@ def month_sub_step(screen: Screen, mem):
                 sub['joined_names'].append(joined[1])
                 from ..os_layer.roster import invalidate, record_join
                 record_join(mem, joined[1])  # keep a confirmed join in the count
+                # Payment alone is not a general. A unique join notice is.
+                from ..os_layer.roster import run_identity, MAX_GENERALS
+                country = mem.get('country_general_count')
+                if (isinstance(country, dict)
+                        and country.get('scope') == [mem.get('chapter'), mem.get('month')]
+                        and country.get('identity') == run_identity(mem.get('_run_identity'))
+                        and type(country.get('count')) is int
+                        and country['count'] < MAX_GENERALS
+                        and joined[1] not in country.setdefault('joined', [])):
+                    country['count'] += 1
+                    country['joined'].append(joined[1])
                 invalidate(mem)
                 _record(mem, 'recruit_join_announced', general=joined[1], month=sub.get('key'),
                         observed_metric={'placement': 'unclassified'},

@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 import json
 import math
 import os
@@ -10,7 +10,7 @@ from pathlib import Path
 import tempfile
 from typing import Mapping
 
-from ..overlay_queue import validate_event
+from ..overlay_queue import OVERLAY_TITLE_LIMIT, validate_event
 
 MODES = {"compact", "detailed"}
 _REASON_TEXT = {
@@ -139,6 +139,75 @@ def _signed_money(value) -> tuple[str, str]:
     if amount < 0:
         return f"-{_money(-amount)}", "マイナス"
     return _money(amount), "プラスマイナスゼロ"
+
+
+def _title_yen(value: object) -> str:
+    """Round a PAPER P/L amount to the nearest yen for the visual headline.
+
+    Keep the original decimal P/L in accounting and speech. Use half-up to
+    round positive and negative halves symmetrically; never print signed zero.
+    """
+    rounded = _decimal(value, "pnl").to_integral_value(rounding=ROUND_HALF_UP)
+    if rounded > 0:
+        return f"+{int(rounded):,}円"
+    if rounded < 0:
+        return f"{int(rounded):,}円"
+    return "0円"
+
+
+def _portfolio_pnl(status: Mapping[str, object] | None) -> tuple[str, str]:
+    """Brief, truthful mark-to-market P/L from the published PAPER snapshot.
+
+    Missing or incomplete marks are not zero, and realized totals must not be
+    mistaken for cumulative P/L while any position is unpriced.
+    """
+    perf = status.get("performance_summary") if isinstance(status, Mapping) else None
+    if not isinstance(perf, Mapping) or perf.get("complete") is not True:
+        return ("含み損益 評価待ち / 累計損益 評価待ち",
+                "現在の含み損益と評価込み累計損益は評価待ちです。")
+
+    def shown(value: object) -> tuple[str, str]:
+        numeric = _decimal(value, "performance pnl")
+        _, spoken_sign = _signed_money(numeric)
+        speech = "0円" if numeric == 0 else f"{spoken_sign}{_money(abs(numeric))}円"
+        return _title_yen(numeric), speech
+
+    try:
+        unrealized, unrealized_speech = shown(perf.get("unrealized_pnl_jpy"))
+        cumulative, cumulative_speech = shown(perf.get("cumulative_pnl_jpy"))
+    except PresentationError:
+        return ("含み損益 評価待ち / 累計損益 評価待ち",
+                "現在の含み損益と評価込み累計損益は評価待ちです。")
+    return (
+        f"含み損益 {unrealized} / 累計損益 {cumulative}",
+        f"現在の含み損益は{unrealized_speech}、評価込み累計損益は{cumulative_speech}です。",
+    )
+
+
+def _pnl_overlay_title(prefix: str, pnl_text: str, *, trade_pnl: str | None = None) -> str:
+    """Show P/L prominently, without repeating it in the notification body.
+
+    Titles have a hard limit in the shared overlay queue. If an unusually
+    large number would exceed it, do not clip digits into a false amount.
+    """
+    compact = (
+        pnl_text.replace("含み損益 ", "含み ")
+        .replace("累計損益 ", "累計 ")
+        .replace(" / ", "｜")
+    )
+    # Show transaction P/L first and portfolio P/L next. Currency pairs and
+    # reasoning stay in the body to keep the first title line readable.
+    marks = compact.split("｜")
+    if len(marks) == 2:
+        marks.reverse()  # cumulative, then unrealized
+    parts = [prefix]
+    if trade_pnl is not None:
+        parts.append(trade_pnl)
+    parts.extend(marks)
+    title = "｜".join(parts)
+    if len(title) > OVERLAY_TITLE_LIMIT:
+        return f"{prefix}｜損益 桁数超過"
+    return title
 
 
 def _safe_code(value: object, fallback: str = "unknown") -> str:
@@ -310,34 +379,39 @@ def _decision_commentary(reason_code: str, *, is_sell: bool) -> str:
 def _fill(
     event: Mapping[str, object], mode: str, status: Mapping[str, object] | None, *, display_at: float
 ) -> RenderedNotification:
-    del mode, status
+    del mode
+    pnl_body, pnl_speech = _portfolio_pnl(status)
     symbol = _safe_code(event.get("symbol"))
     is_sell = str(event.get("side")) == "sell"
     side = "売り" if is_sell else "買い"
     strategy = _safe_code(event.get("strategy_id"))
     reason_code = _safe_code(event.get("reason_code"))
     reason = _reason_text(reason_code, event.get("reason_context"))
-    title = "暗号資産 PAPER 約定"
     brief = f"{reason}を検出：{symbol}を{side}"
     body = f"{brief} / {strategy}"
     speech = f"{_decision_commentary(reason_code, is_sell=is_sell)}{brief}。"
+    trade_pnl_title = None
     if is_sell:
         if event.get("realized_pnl_reference") is None:
-            body += " / 実現損益 取得失敗"
+            trade_pnl_title = "今回 取得失敗"
             speech += "損益は確認できませんでした。"
         else:
             try:
-                pnl_text, spoken_sign = _signed_money(event.get("realized_pnl_reference"))
+                _, spoken_sign = _signed_money(event.get("realized_pnl_reference"))
                 pnl_value = _decimal(event.get("realized_pnl_reference"), "pnl")
             except PresentationError:
-                body += " / 実現損益 取得失敗"
+                trade_pnl_title = "今回 取得失敗"
                 speech += "損益は確認できませんでした。"
             else:
-                body += f" / 実現損益 {pnl_text}円"
+                trade_pnl_title = f"今回 {_title_yen(pnl_value)}"
                 if pnl_value == 0:
                     speech += "損益はプラスマイナスゼロです。"
                 else:
                     speech += f"損益は{spoken_sign}{_money(abs(pnl_value))}円です。"
+    title = _pnl_overlay_title(
+        "売" if is_sell else "買", pnl_body, trade_pnl=trade_pnl_title,
+    )
+    speech += pnl_speech
     overlay = validate_event(
         {
             "ts": int(display_at), "category": "worker", "title": title, "body": body[:500],
@@ -351,12 +425,13 @@ def _fill(
 def _settlement(
     event: Mapping[str, object], mode: str, status: Mapping[str, object] | None, *, display_at: float
 ) -> RenderedNotification:
-    del mode, status
+    del mode
+    pnl_body, pnl_speech = _portfolio_pnl(status)
     route = str(event.get("route_id") or "unknown").replace("\n", " ").strip()[:220]
     start_asset = _safe_code(event.get("start_asset"))
     start_amount = _money(event.get("start_amount"))
     complete = bool(event.get("complete"))
-    title = "暗号資産 PAPER 裁定観測"
+    title = _pnl_overlay_title("裁定", pnl_body)
     if complete:
         edge = _money(event.get("net_edge_bps"))
         body = f"{route} / {start_amount} {start_asset} / 模擬edge {edge} bps"
@@ -375,6 +450,7 @@ def _settlement(
             f"理由は{reason}です。無理に通さず見送れたので、次は条件が戻るかを見ます。"
         )
         level = "warn"
+    speech += pnl_speech
     overlay = validate_event(
         {
             "ts": int(display_at), "category": "worker", "title": title, "body": body[:500],

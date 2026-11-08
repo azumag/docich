@@ -80,32 +80,26 @@ def test_field_house_scan_stays_closed_without_a_house_coordinate(chapter, monke
     assert not mem.get('house') and not mem.get('sorties')
 
 
-def test_native_month_survey_finishes_without_a_status_read_or_a_trip(monkeypatch):
-    """The monthly list read needs no house coordinate and dispatches nothing.
-
-    Main's list-only month scan (#2367) merges visible names and ends on a
-    short page. This keeps the #2545 boundary: chapters without a measured
-    house still finish a complete monthly roster, open no per-general status
-    panel, and never start a repair trip. Only the list counts as evidence.
-    """
+def test_native_month_country_status_finishes_without_a_general_panel_or_trip(monkeypatch):
+    """A monthly count reads national status, never named status or map travel."""
+    from test_hanjuku_level_scan import _main_on, _country_page1, _country_page2
     monkeypatch.delitem(house.HOUSE_VIEW, 3, raising=False)
     monkeypatch.setattr(house, 'general_status',
-                        lambda screen: pytest.fail('status panel read'))
+                        lambda screen: pytest.fail('per-general status panel read'))
     mem = monthly_memory(3)
     assert feed(mem, month_canvas(250, on='メインメニュー', month=7)) == [policy.pad('a')]
-    assert feed(mem, _survey_main(7)) == [policy.pad('a')]
-    names = ['どうし', 'ゼウス']
-    # A page shorter than the native eight rows proves the list end on screen.
-    assert feed(mem, roster(names, 0)) == [policy.pad('b')]
-    assert feed(mem, _survey_main(7)) == [policy.pad('b')]
+    assert feed(mem, _main_on('しょうぐん')) == [policy.pad('down')]
+    assert feed(mem, _main_on('ステータス')) == [policy.pad('a')]
+    assert feed(mem, _country_page1()) == [policy.pad('a')]
+    assert feed(mem, _country_page2()) == [policy.pad('b')]
+    assert feed(mem, _main_on('ステータス')) == []
+    assert feed(mem, _main_on('ステータス')) == [policy.pad('b')]
     assert feed(mem, month_canvas(250, on='メインメニュー', month=7)) == []
     assert not mem.get('house')
-    receipt = receipts.fresh(mem)
-    assert receipt['complete'] is True
-    assert receipt['names'] == names
+    assert mem['country_general_count']['count'] == 10
+    assert receipts.fresh(mem) is None  # no named roster manufactured
     assert not mem.get('house_eggs')
     assert not mem.get('sorties') and not mem.get('y_jump')
-    # No repair trip may start in a chapter whose house is not measured.
     assert not any(r['decision'] in {'house_departed', 'house_repair_verified'}
                    for r in mem['_records'])
 
@@ -121,7 +115,8 @@ def test_partial_chapter_three_registration_only_releases_three_initial_orders(m
 def test_measured_juaam_remains_an_interim_target_without_a_chart_order(monkeypatch):
     home = chart.home_castle(10)
     monkeypatch.setitem(chart.CASTLES, 10, {home: (0, 0), 'ジュアム': (64, 0)})
-    mem = {'chapter': 10, 'orders': {}, 'garrison': {home: ['どうし', 'ゼウス']}}
+    # Owner 2026-11-06: the hero's castle keeps two others beside him.
+    mem = {'chapter': 10, 'orders': {}, 'garrison': {home: ['どうし', 'ゼウス', 'アルテミス', 'クミン']}}
     assert not any(o['target'] == 'ジュアム' for o in chart.orders(10))
     assert any(o['target'] == 'ジュアム' for o in policy.interim_candidates(mem).values())
     monkeypatch.setitem(chart.CASTLES, 10, {home: (0, 0)})

@@ -833,13 +833,13 @@ def test_defense_preclash_with_only_hidden_commands_scrolls_to_okunote_not_retre
     assert not mem['battle'].get('hero_retreat')
 
 
-def wounded_egg_screen(hp=30, ally='ヴィーナス', enemy='ダークエルフ', selected=0):
+def wounded_egg_screen(hp=30, ally='ヴィーナス', enemy='ダークエルフ', selected=0, enemy_hp=149):
     from docich.hanjuku_screen import EggRow
     sc = egg_menu_screen()
     sc.hand = None
     sc.menu_rows = sc.lines
     sc.menu_cursor = 176 + selected * 16
-    sc.egg_rows = [EggRow(ally, hp, 'ally', 80), EggRow(enemy, 149, 'enemy', 80)]
+    sc.egg_rows = [EggRow(ally, hp, 'ally', 80), EggRow(enemy, enemy_hp, 'enemy', 80)]
     return sc
 
 
@@ -868,6 +868,28 @@ def test_fierce_requires_live_wounded_matching_general_and_actual_monster(ally, 
     mem = wounded_egg_memory()
     assert p.egg_battle_step(wounded_egg_screen(hp, ally, enemy), mem) == [p.pad('a')]
     assert mem['battle']['egg_attack_label'] == 'こうげき'
+
+
+def test_fierce_never_selected_against_single_digit_enemy_hp():
+    mem = wounded_egg_memory()
+    # 敵召喚獣HP9: 一桁なのでもうこうげきへは動かず通常攻撃を確定する。
+    assert p.egg_battle_step(wounded_egg_screen(enemy_hp=9), mem) == [p.pad('a')]
+    assert mem['battle']['egg_attack_label'] == 'こうげき'
+    # 敵将軍HP5でも同じ (将軍は召喚獣テーブル外で fierce 対象外)。
+    mem = wounded_egg_memory()
+    assert p.egg_battle_step(wounded_egg_screen(enemy='カシュー', enemy_hp=5), mem) == [p.pad('a')]
+    assert mem['battle']['egg_attack_label'] == 'こうげき'
+    # もうこうげき確定済みの途中で敵HPが一桁へ落ちたら通常攻撃へ戻す。
+    mem = wounded_egg_memory()
+    mem['battle']['egg_attack_label'] = 'もうこうげき'
+    assert p.egg_battle_step(wounded_egg_screen(selected=1, enemy_hp=9), mem) == [p.pad('up')]
+    assert p.egg_battle_step(wounded_egg_screen(enemy_hp=9), mem) == [p.pad('a')]
+    assert mem['battle']['egg_attack_label'] == 'こうげき'
+    # HP10以上は従来通りもうこうげきを選ぶ。
+    mem = wounded_egg_memory()
+    assert p.egg_battle_step(wounded_egg_screen(enemy_hp=10), mem) == [p.pad('down')]
+    assert p.egg_battle_step(wounded_egg_screen(selected=1, enemy_hp=10), mem) == [p.pad('a')]
+    assert mem['battle']['egg_attack_label'] == 'もうこうげき'
 
 
 def test_last_resort_still_tries_attack_retreat_and_forbids_defense_retreat():

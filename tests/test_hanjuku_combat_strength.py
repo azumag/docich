@@ -181,12 +181,23 @@ def test_favorable_full_army_does_not_use_egg_when_card_row_is_missing():
 
 
 @pytest.mark.parametrize('change', [{'ally_hp': 12}, {'ally_hp': 40}, {'ally': p.NAME},
-                                    {'card_soldiers_current': False}, {'card_summon_observed': True},
+                                    {'card_summon_observed': True},
                                     {'enemy_soldiers': None}, {'ally_soldiers': 7},
                                     {'ally_soldiers': 3, 'enemy': 'ゼウス', 'enemy_hp': 85}])
 def test_missing_card_row_keeps_the_measured_health_and_attack_guards(change):
     cur = duel(ally='ヴィーナス', enemy='カシュー', hp=82, enemy_hp=39, soldiers=(6, 6))
     cur.update(change)
+    assert not p._hold_melee_egg({'battle': cur}, cur, {'たまごをつかう'})
+
+
+def test_unread_armies_keep_the_egg_only_on_a_clear_hp_and_combat_margin():
+    """Owner 2026-11-05 (有利なのに卵を無駄に使う) replaced the old rule that unread
+    soldiers never allow conservation: 82 against 39 is clear on HP alone, so the
+    egg stays; a nearly even fight (see test_hanjuku_hp_only_egg_margin.py) does not."""
+    cur = duel(ally='ヴィーナス', enemy='カシュー', hp=82, enemy_hp=39, soldiers=(6, 6))
+    cur['card_soldiers_current'] = False
+    assert p._hold_melee_egg({'battle': cur}, cur, {'たまごをつかう'})
+    cur.update(enemy='ゼウス', enemy_hp=85)    # an even, strong opponent: no clear margin
     assert not p._hold_melee_egg({'battle': cur}, cur, {'たまごをつかう'})
 
 

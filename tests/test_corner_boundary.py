@@ -841,3 +841,10 @@ def test_statusless_malformed_state_does_not_block(tmp_path, state_json):
     (state / 'prediction_worker.pid').write_text(str(os.getpid()))
     (state / 'current_prediction.json').write_text(json.dumps(state_json))
     assert boundary_ready(state, 100)
+
+
+def test_corrupt_current_prediction_json_does_not_block(tmp_path):
+    state = _state_dir(tmp_path)
+    (state / 'prediction_worker.pid').write_text(str(os.getpid()))
+    (state / 'current_prediction.json').write_text('{not json')
+    assert boundary_ready(state, 100)

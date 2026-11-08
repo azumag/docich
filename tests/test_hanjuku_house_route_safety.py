@@ -6,6 +6,7 @@ import pytest
 from docich import hanjuku_chart as chart
 from docich.hanjuku.flows import house
 from docich.hanjuku.os_layer import commands, navigation, readers, world
+from docich.hanjuku.state.regions import world as _world
 
 
 @pytest.fixture
@@ -58,7 +59,7 @@ def test_enemy_on_repair_route_cannot_be_confirmed(route, phase):
     assert mem['last_house_deferral']['code'] == 'route_unverified'
     assert mem['last_house_deferral']['phase'] == phase
     assert not mem['house'].get('departure_pending')
-    assert mem['garrison']['source'] == ['ゼウス', 'どうし']
+    assert _world(mem)['garrison']['source'] == ['ゼウス', 'どうし']
     assert not mem.get('sorties')
     assert any(r['decision'] == 'house_route_deferred' and 'crossing' in r['observed_metric']['blocked_castles']
                for r in mem['_records'])

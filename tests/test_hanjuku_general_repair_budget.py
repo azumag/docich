@@ -7,6 +7,7 @@ import pytest
 from docich import hanjuku_policy as p
 from docich.hanjuku_pixels import read_png
 from docich.hanjuku_screen import parse
+from docich.hanjuku.state.regions import world as _world
 
 
 def memory(name='ココット'):
@@ -61,7 +62,7 @@ def test_last_castles_only_defender_is_not_a_dispatchable_repair_budget():
     mem = memory()
     mem.update(home_lost=True, captured=['ドミノーラ'], garrison={'ドミノーラ': ['ココット']})
     assert p._chikujou_reserve(mem, dict(plan(mem), soldiers_done=True)) == 30
-    mem['garrison']['ドミノーラ'].append('ゼウス')
+    _world(mem)['garrison']['ドミノーラ'].append('ゼウス')
     assert p._chikujou_reserve(mem, dict(plan(mem), soldiers_done=True)) == 80
 
 

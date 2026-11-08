@@ -35,6 +35,7 @@ WORLD_VIEWS = {
     'hanjuku_recall_picker_20260929.png', 'g464-frame-022.png',
     'g1075-ch3-y-view-face-over-boss-skull.png',
     'g1075-ch4-y-view-season-skulls.png',
+    'g1133-ch6-y-view-grey-sea.png',
 }
 
 
@@ -162,3 +163,35 @@ def test_a_battle_between_two_view_runs_does_not_carry_the_episode():
     assert actions == [pad('a')]
     assert 'y_jump_unknown_hold' not in decisions(state)
     assert state['policy']['y_jump']['unknown_holds'] == 1
+
+
+# --- chapter 6 paints the sea grey-green: no WORLD_SEA pixel at all (g1133) ---
+
+CH6 = FIXTURES / 'g1133-ch6-y-view-grey-sea.png'
+
+
+def test_the_chapter_6_view_with_a_grey_green_sea_is_the_world_map():
+    """g1133 2026-11-04 22:23: the Y view read 'unknown', so every target jump
+    closed after six unreadable frames and no castle owner was read for an hour.
+
+    The fixture is a live stream capture (299 px wide) resampled to the 256 px
+    frame the bot reads. It has the gold frame and 1008/1008 backdrop samples
+    but not one WORLD_SEA pixel.
+    """
+    frame = read_png(CH6)
+    assert not any(frame.pixel(x, y) == WORLD_SEA
+                   for x in range(60, 200, 2) for y in range(60, 180, 2))
+    assert is_world_map(frame)
+    assert parse(frame).kind == 'world_map'
+
+
+def test_the_chapter_6_view_reads_its_cursor_and_flags():
+    from docich.hanjuku.os_layer.readers import world_flags
+    frame = read_png(CH6)
+    cursor = world_cursor(frame)
+    assert cursor is not None
+    # The cursor opens on the home castle アルマムーン (cell 392,144).
+    assert abs(cursor[0] - (392 / 8 + 63.0)) <= 2 and abs(cursor[1] - (144 / 8 + 47.5)) <= 2
+    flags = world_flags(frame, 6, cursor)
+    assert flags.get('オケアナ') == 'enemy' and flags.get('イカリア') == 'enemy'
+    assert 'アルマムーン' not in flags          # under the cursor: never read

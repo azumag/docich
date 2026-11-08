@@ -94,7 +94,7 @@ def test_selected_target_saves_actual_actor_even_after_plan_replacement(monkeypa
     assert request['step'] == '1-A3' and request['target'] == 'スペンソニア'
     assert request['general'] == 'ゼウス' and request['source'] == 'カストーラ'
     assert mem['orders']['1-A3'] == 'pending'
-    assert 'ゼウス' in mem['garrison']['カストーラ']
+    assert 'ゼウス' in _world(mem)['garrison']['カストーラ']
     assert not mem.get('sorties') and not _world(mem).get('launched_orders')
     assert_frozen(mem)
 

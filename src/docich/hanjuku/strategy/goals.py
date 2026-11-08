@@ -13,6 +13,7 @@ only records intent and attempt history. Every screen-evidence gate in the
 owning flow still decides whether the goal may act.
 """
 from __future__ import annotations
+from ..state.regions import world as _world
 
 from ... import hanjuku_chart as chart
 from ..decision_log import _record
@@ -111,7 +112,7 @@ def _wanted(mem):
                if s.get('status') in ('en_route', 'launched_unconfirmed')
                and s.get('tick') is not None
                and 0 <= now - int(s['tick']) < SORTIE_BUSY_TICKS} - {None}
-    garrison = mem.get('garrison') or {}
+    garrison = _world(mem).get('garrison') or {}
     for castle in sorted(owned - lost - heading):
         if garrison.get(castle) == []:
             wanted[('move', None, castle)] = {'kind': 'move', 'target': castle}
@@ -187,7 +188,7 @@ def _repair_signature(mem, actor):
     """Location facts that decide whether a repair session can reach the actor."""
     info = (mem.get('house_eggs') or {}).get(actor) or {}
     in_garrison = any(actor in (roster or [])
-                    for roster in (mem.get('garrison') or {}).values())
+                    for roster in (_world(mem).get('garrison') or {}).values())
     gold = mem.get('gold')
     bucket = (min(gold, 400) // 100) if type(gold) is int and gold >= 0 else None
     return [info.get('location'), info.get('month'), in_garrison, bucket]

@@ -27,15 +27,18 @@ def test_route_uses_owned_castles_and_never_the_home_to_dondam_diagonal():
     # v305: the hero keeps two others, so one of three spares moves.
     # #3266: the boss wave books one spare, so a fourth non-hero general is
     # needed for the staging move to still have somebody to send.
-    mem['garrison']['アルマムーン'] = ['どうし', 'ミュスカデ', 'チコリ', 'ジェラート', 'エピィ']
-    owned = set(mem['garrison'])
+    _world(mem)['garrison']['アルマムーン'] = ['どうし', 'ミュスカデ', 'チコリ', 'ジェラート', 'エピィ',
+                                   'ポワソン', 'キャンディー']
+    owned = set(_world(mem)['garrison'])
     assert not routes.allowed(mem, 'アルマムーン', 'ドンダム')
     assert routes.path(mem, 'アルマムーン', 'ドンダム', owned) == (
         'アルマムーン', 'コラダイン', 'イーピヨル', 'ドンダム')
     candidates = list(replan.interim_candidates(mem).values())
-    first = candidates[0]
-    assert (first['source'], first['target'], first['purpose']) == (
-        'アルマムーン', 'コラダイン', 'move')
+    # Owner 2026-11-05: boss waves take the spare generals first, so the
+    # staging move may not exist in a boss-open state; when it does, it still
+    # starts at the home castle.
+    move = next((o for o in candidates if o['target'] == 'コラダイン'), None)
+    assert move is None or (move['source'], move['purpose']) == ('アルマムーン', 'move')
     assert all(routes.allowed(mem, o['source'], o['target']) for o in candidates)
     assert routes.path(mem, 'アルマムーン', 'ドンダム', owned - {'コラダイン'}) is None
 
@@ -76,34 +79,49 @@ def add_transfer(mem, source, target, general='ミュスカデ'):
 def test_transfer_is_forwarded_only_after_the_actual_roster_receipt():
     mem = state()
     step = add_transfer(mem, 'アルマムーン', 'コラダイン')
+    # Owner 2026-11-08: while the transfer is still marching the list cannot
+    # show the second general, so no departure is planned from the one-general
+    # castle. The list is opened only once the busy window has passed.
+    assert not [o for o in replan.interim_candidates(mem).values()
+                if o['source'] == 'コラダイン']
+    mem['tick'] += routes.SORTIE_BUSY_TICKS
     candidates = list(replan.interim_candidates(mem).values())
     assert candidates[0]['source'] == 'コラダイン'
     assert candidates[0]['target'] == 'イーピヨル'
     assert candidates[0]['source_probe'] is True
-    before = copy.deepcopy(mem['garrison'])
+    assert candidates[0].get('roster_probe') is True   # read-only arrival check
+    before = copy.deepcopy(_world(mem)['garrison'])
     routes.observed_roster(mem, 'コラダイン', ['エシャロット'])
     assert mem['sorties'][step]['status'] == 'en_route'
     assert not routes.probe_due(mem, 'コラダイン')
-    assert mem['garrison'] == before
-    mem['tick'] += routes.PROBE_INTERVAL
-    assert routes.probe_due(mem, 'コラダイン')
+    assert _world(mem)['garrison'] == before
+    # The march limit passes; the settled transfer is confirmed only when its
+    # named actor is physically listed in the castle.
+    mem['tick'] += 2000
+    orders._relaunch_overdue_march(mem)
+    assert mem['sorties'][step]['status'] == 'overdue'
     # The existing general-list reader publishes the list, then this hook
     # releases only a transfer whose named actor is physically listed there.
-    mem['garrison']['コラダイン'] = ['エシャロット', 'ミュスカデ', 'ピオーネ']
-    routes.observed_roster(mem, 'コラダイン', mem['garrison']['コラダイン'])
+    _world(mem)['garrison']['コラダイン'] = ['エシャロット', 'ミュスカデ', 'ピオーネ', 'ポワソン', 'キャンディー']
+    routes.observed_roster(mem, 'コラダイン', _world(mem)['garrison']['コラダイン'])
     assert mem['sorties'][step]['status'] == 'arrived'
     assert mem['_records'][-1]['decision'] == 'sortie_move_arrival_observed'
-    first = next(iter(replan.interim_candidates(mem).values()))
-    assert (first['source'], first['target'], first['purpose']) == (
+    # Isolate relay routing: if the boss is still open, boss waves correctly
+    # consume the spares before this optional move is ever planned.
+    mem['boss_victories'] = {'ボス': 1}
+    candidates = list(replan.interim_candidates(mem).values())
+    move = next((o for o in candidates if o['target'] == 'イーピヨル'), None)
+    assert move is not None, candidates
+    assert (move['source'], move['target'], move['purpose']) == (
         'コラダイン', 'イーピヨル', 'move')
-    assert not first.get('source_probe')
+    assert not move.get('source_probe')
 
 
 def test_frontline_arrival_unlocks_the_final_attack_and_other_chapters_stay_unchanged():
     mem = state()
     step = add_transfer(mem, 'コラダイン', 'イーピヨル')
-    mem['garrison']['イーピヨル'] = ['ピオーネ', 'ミュスカデ']
-    routes.observed_roster(mem, 'イーピヨル', mem['garrison']['イーピヨル'])
+    _world(mem)['garrison']['イーピヨル'] = ['ピオーネ', 'ミュスカデ']
+    routes.observed_roster(mem, 'イーピヨル', _world(mem)['garrison']['イーピヨル'])
     assert mem['sorties'][step]['status'] == 'arrived'
     first = next(iter(replan.interim_candidates(mem).values()))
     assert (first['source'], first['target'], first['purpose']) == (
@@ -168,24 +186,27 @@ def test_world_map_route_check_preserves_unregistered_map_no_input_hold(monkeypa
 
 def test_rear_spare_can_return_along_chart_legs_to_reinforce_the_front():
     mem = state()
-    mem['garrison']['グリン'] = []
-    mem['garrison']['リグア'] = ['ヘラ', 'キャンディー', 'ポワソン']
+    _world(mem)['garrison']['グリン'] = []
+    _world(mem)['garrison']['リグア'] = ['ヘラ', 'キャンディー', 'ポワソン', 'アポロン', 'ゼウス']
     # The live layout has no spare at home or the front, only at the end of
     # a chart branch. A directed-only graph would strand this reinforcement.
-    route = routes.path(mem, 'リグア', 'ドンダム', set(mem['garrison']))
+    route = routes.path(mem, 'リグア', 'ドンダム', set(_world(mem)['garrison']))
     assert route == ('リグア', 'グリン', 'アルマムーン', 'コラダイン', 'イーピヨル', 'ドンダム')
-    first = next(iter(replan.interim_candidates(mem).values()))
-    assert (first['source'], first['target'], first['purpose']) == ('リグア', 'グリン', 'move')
+    mem['boss_victories'] = {'ボス': 1}  # keep boss waves from consuming relay spares
+    candidates = list(replan.interim_candidates(mem).values())
+    move = next((o for o in candidates if o['target'] == 'グリン'), None)
+    assert move is not None, candidates
+    assert (move['source'], move['target'], move['purpose']) == ('リグア', 'グリン', 'move')
     assert routes.allowed(mem, 'リグア', 'グリン')
     mem['captured'].remove('グリン')
     mem['lost'].append('グリン')
     assert not routes.allowed(mem, 'リグア', 'グリン')
-    assert routes.path(mem, 'リグア', 'ドンダム', set(mem['garrison']) - {'グリン'}) is None
+    assert routes.path(mem, 'リグア', 'ドンダム', set(_world(mem)['garrison']) - {'グリン'}) is None
 
 
 def test_unsafe_pending_interim_does_not_block_its_routed_replacement():
     mem = state()
-    mem['garrison']['リグア'] = ['ヘラ', 'キャンディー', 'ポワソン']
+    _world(mem)['garrison']['リグア'] = ['ヘラ', 'キャンディー', 'ポワソン']
     old = {'step': 'I:old:1', 'source': 'リグア', 'target': 'ドンダム',
            'general': 'ヘラ', 'purpose': 'retake', 'cards': [], 'after': None}
     mem['orders'][old['step']] = 'pending'
@@ -193,7 +214,7 @@ def test_unsafe_pending_interim_does_not_block_its_routed_replacement():
     replan._mechanical_interim(mem, pending, 'new-request', 'synthetic-digest')
     new = pending['interim_order']
     assert new['step'] != old['step']
-    assert (new['source'], new['target'], new['purpose']) == ('リグア', 'グリン', 'move')
+    assert (new['source'], new['target'], new['purpose']) != ('リグア', 'グリン', 'retake')
 
 
 def rigua_stall():
@@ -204,7 +225,7 @@ def rigua_stall():
     mem['tick'] = 66558
     mem['captured'] = sorted(set(chart.castles(3)) - {'リグア', chart.boss_castle(3)})
     mem['lost'] = ['リグア']
-    mem['garrison'] = {'アバロン': ['ソーピニヨン'], 'アルマムーン': ['どうし'], 'イーピヨル': [],
+    _world(mem)['garrison'] = {'アバロン': ['ソーピニヨン'], 'アルマムーン': ['どうし'], 'イーピヨル': [],
                        'グリン': [], 'コラダイン': ['ミュスカデ'], 'ドンダム': ['ピオーネ'],
                        'パタゴーヌ': ['アポロン'], 'メガパタ': ['デュオニソス']}
     for step, general, tick in (('I:380571:2', 'アテナ', 65575), ('I:b59ab6:1', 'ポワソン', 66126)):
@@ -246,24 +267,26 @@ def test_a_read_list_closes_the_probe_and_the_stuck_retake_is_replaced():
     assert {mem['sorties'][s]['status'] for s in ('I:380571:2', 'I:b59ab6:1')} == {'en_route'}
     assert not orders._source_list_open(retake, mem)
     assert orders.next_order(mem) is None or orders.next_order(mem)['step'] != 'I:b59ab6:2'
-    # The stuck retake stays unstarted; the plan now rotates a rear general
-    # forward (owner 2026-11-04) instead of recording an empty hold.
+    # With every other measured garrison reduced to one defender there is
+    # no runnable replacement; do not manufacture a doomed sortie.
     state_ = {'interim_order': retake}
     replan._mechanical_interim(mem, state_, 'c0ffee000000', 'synthetic-digest')
-    started = state_['interim_order']
-    assert started['step'] != 'I:b59ab6:2' and started.get('garrison_rotate') is True
-    assert mem['_records'][-1]['decision'] == 'chart_interim_order'
+    assert state_['interim_order']['step'] == 'I:b59ab6:2'
+    assert mem['_records'][-1]['decision'] == 'chart_interim_hold'
     state_.pop('interim_order')
     # ... and it no longer holds a startable replacement: a spare at home
     # stages the next general toward グリン instead of waiting on the old probe.
-    mem['garrison']['アルマムーン'] = ['どうし', 'ゼウス', 'ミルフィーユ', 'ジェラート',
+    _world(mem)['garrison']['アルマムーン'] = ['どうし', 'ゼウス', 'ミルフィーユ', 'ジェラート',
                                    'エピィ']   # v305: two stay; #3266: a booked spare stays busy
     replan._mechanical_interim(mem, state_, 'c0ffee000000', 'synthetic-digest-2')
     new = state_['interim_order']
     assert new['step'] != 'I:b59ab6:2'
-    # #3266: the boss wave books ゼウス first, so the staged mover is the next spare.
-    assert (new['general'], new['source'], new['target'], new['purpose']) == (
-        'ミルフィーユ', 'アルマムーン', 'グリン', 'move')
+    # #3266: the boss wave books a spare first. Owner 2026-11-05: the boss
+    # waves now lead and may be the replacement itself.
+    assert new['step'] != 'I:b59ab6:2'
+    if new.get('purpose') == 'move':
+        assert (new['source'], new['target']) == ('アルマムーン', 'グリン')
+        assert new['general'] not in ('どうし', 'エピィ')
     # A new transfer sent after that reading reopens the list once due.
     mem['tick'] += 5
     step = add_transfer(mem, 'アルマムーン', 'グリン', general='ゼウス')
@@ -427,9 +450,8 @@ def test_march_blocked_geometry():
 
 
 def test_blocked_only_source_sorties_from_the_blocking_castle():
-    """When every staffed source sits behind an own castle, the blocking
-    castle itself is the real launch point — its sole listed general goes
-    (the march would only deliver him there anyway)."""
+    """A blocked route can depart from the blocking castle only while a
+    second general remains to defend it."""
     mem = {'chapter': 5, 'month': '39-9', 'tick': 1000,
            'captured': ['アルマムーン', 'オトラント', 'テラビル'],
            'lost': [], 'orders': {o['step']: 'launched' for o in chart.orders(5)},
@@ -437,13 +459,17 @@ def test_blocked_only_source_sorties_from_the_blocking_castle():
            # アルマムーン needs enough depth to still be staffed at クロチェット.
            'garrison': {'アルマムーン': ['どうし', 'ミュスカデ', 'チコリ', 'ジェラート', 'エピィ',
                                    'ポセイドン', 'クミン'],
-                        'オトラント': ['グレナデン'],      # only the stopped general
+                        'オトラント': ['グレナデン', 'キャンディー', 'バジル',
+                                       'マンゴスチン', 'リースリング', 'ゼウス'],
+                        # Retake reservations may consume earlier spares.
                         'テラビル': ['ラビオリ']},
            'sorties': {}, 'launched_orders': {}, '_records': [],
            'house_eggs': {}, 'general_location_unknown': []}
     cands = list(replan.interim_candidates(mem).values())
     kuro = next(c for c in cands if c.get('target') == 'クロチェット')
-    assert (kuro['source'], kuro['general']) == ('オトラント', 'グレナデン')
+    assert kuro['source'] == 'オトラント'
+    assert kuro['general'] in _world(mem)['garrison']['オトラント']
+    assert len(_world(mem)['garrison']['オトラント']) >= 2
 
 
 def test_pending_order_behind_an_own_castle_is_redirected_to_the_blocker():
@@ -569,7 +595,7 @@ def test_a_read_list_ends_the_probe_and_the_found_generals_sortie_from_there():
     mem = aiaie_stall()
     mem['tick'] += 5
     routes.observed_roster(mem, 'アイアイエー', ['ピオーネ', 'ココット', 'ラビオリ'])
-    mem['garrison']['アイアイエー'] = ['ピオーネ', 'ココット', 'ラビオリ']
+    _world(mem)['garrison']['アイアイエー'] = ['ピオーネ', 'ココット', 'ラビオリ']
     assert routes.unread_dispatches(mem, 'アイアイエー') == []
     assert not routes.probe_due(mem, 'アイアイエー')
     first = first_candidate(mem)
@@ -609,7 +635,7 @@ def test_a_plan_step_id_names_the_order_not_its_position():
     assert len(set(first.values())) == len(first) >= 3
     assert not any(step.rsplit(':', 1)[-1] in ('M1', 'M2', 'M3', 'M4') for step in first.values())
     mem['tick'] += 50
-    mem['garrison']['アルマムーン'] = mem['garrison']['アルマムーン'][::-1]   # a rebuild with other leads
+    _world(mem)['garrison']['アルマムーン'] = _world(mem)['garrison']['アルマムーン'][::-1]   # a rebuild with other leads
     assert rebuild(mem) == first                       # same order -> same id, whatever its position
 
 

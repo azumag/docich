@@ -32,7 +32,7 @@ def memory(tick, *, status='en_route', target='ボス', lost=()):
         'captured': [c for c in NORMAL if c not in lost],
         'lost': list(lost),
         'garrison': {'アルマムーン': ['どうし', 'キャンディー', 'ラズベリー'],
-                     **({} if 'パタゴーヌ' in lost else {'パタゴーヌ': ['セルリアク']})},
+                     **({} if 'パタゴーヌ' in lost else {'パタゴーヌ': ['セルリアク', 'リースリング']})},
     }
 
 
@@ -49,7 +49,9 @@ def test_the_live_march_is_overdue_and_waits_for_the_boss_unlock():
     (record,) = decisions(mem, 'boss_sortie_overdue')
     assert record['chart_step'] == '3-B1' and record['general'] == 'アポロン'
     assert record['observed_metric'] == {'general': 'アポロン', 'source': 'パタゴーヌ',
-                                         'marching': 79599 - LAUNCH, 'relaunches': 0}
+                                         'marching': 79599 - LAUNCH, 'relaunches': 0,
+                                         'cell': list(chart.castles(CHAPTER)['ボス']),
+                                         'source_still_has_general': False}
     assert '3-B1' not in mem['general_override']
     assert '3-B1' not in _world(mem)['launched_orders']
 
@@ -300,3 +302,53 @@ def test_an_attempt_for_another_step_or_unconfirmed_is_kept():
     _flow(mem)['sortie_attempt'] = {'step': '3-B1', 'target_seen': True}  # no tick: no claim
     O._relaunch_overdue_march(mem)
     assert _flow(mem)['sortie_attempt']['step'] == '3-B1'
+
+
+def chapter6_memory(tick, *, source='アルマムーン', target='セレーネ', status='en_route'):
+    """A chapter 6 march; its chart has no measured orders, so the step is synthetic."""
+    return {
+        'chapter': 6, 'tick': tick,
+        'orders': {'6-X1': 'launched'},
+        'sorties': {'6-X1': {'general': 'チコリ', 'source': source, 'target': target,
+                              'status': status, 'tick': LAUNCH}},
+        'launched_orders': {'6-X1': {'step': '6-X1', 'general': 'チコリ',
+                                         'source': source, 'target': target}},
+        'captured': [c for c in chart.CASTLE_NAMES[6] if c != chart.boss_castle(6)],
+        'lost': [],
+    }
+
+
+def test_a_slow_chapter_6_march_waits_past_the_fixed_limit():
+    """g1133 2026-11-05: ナストリーニ took 23-32 min to セレーネ (603 cells)
+    and ピスタチオ 34 min to ユージア (740), but the fixed 20 min reset both."""
+    mem = chapter6_memory(LAUNCH + O.BOSS_ARRIVAL_LIMIT + 10)
+    limit = O._arrival_limit(mem, mem['sorties']['6-X1'])
+    assert limit > O.BOSS_ARRIVAL_LIMIT
+    O.next_order(mem)
+    assert mem['sorties']['6-X1']['status'] == 'en_route'
+    assert not decisions(mem, 'sortie_march_overdue')
+    mem['tick'] = LAUNCH + limit
+    O.next_order(mem)
+    assert mem['sorties']['6-X1']['status'] == 'overdue'
+    assert decisions(mem, 'sortie_march_overdue')
+
+
+def test_a_short_chapter_6_march_keeps_the_measured_limit():
+    mem = chapter6_memory(LAUNCH + O.BOSS_ARRIVAL_LIMIT + 10, target='イカリア')
+    assert O._arrival_limit(mem, mem['sorties']['6-X1']) == O.BOSS_ARRIVAL_LIMIT
+    O.next_order(mem)
+    assert mem['sorties']['6-X1']['status'] == 'overdue'
+
+
+def test_an_unmeasured_chapter_keeps_the_fixed_limit():
+    mem = chapter6_memory(LAUNCH + O.BOSS_ARRIVAL_LIMIT + 10)
+    mem['chapter'] = 3
+    assert O._arrival_limit(mem, mem['sorties']['6-X1']) == O.BOSS_ARRIVAL_LIMIT
+
+
+def test_the_scaled_wait_never_outlives_the_long_march_window():
+    assert O.MARCH_ARRIVAL_CAP == O.LONG_MARCH_TICKS
+    # アルブラーカ→アブダレ is 1064 chart cells: 1064*2.4 = 2554 exceeds the
+    # 2400-tick window, so the distance-scaled wait must clamp to the cap.
+    mem = chapter6_memory(LAUNCH, source='アルブラーカ', target='アブダレ')
+    assert O._arrival_limit(mem, mem['sorties']['6-X1']) == O.LONG_MARCH_TICKS

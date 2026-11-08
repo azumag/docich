@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from .screen import Screen, castle_roofs
 from ... import hanjuku_chart as chart
-from ..decision_log import _record
+from ..decision_log import _record, _tally
 from .commands import pad
 from .readers import UNDER_CURSOR_PX, _cursor, world_cursor, world_flags
 from .world import _apply_world_flags, _hero_castle, update_world
@@ -216,6 +216,7 @@ def nav_step(screen: Screen, mem, frame, goal, goal_name=None, step=None):
 Y_JUMP_OFFSET = chart.Y_JUMP_OFFSET
 Y_JUMP_FAR = 48                # world px from the goal before a jump is worth it
 Y_JUMP_LIMIT = 6               # jumps per order and screen mode (reset when the order starts).
+Y_JUMP_TOTAL_LIMIT = 18        # jumps per order and mode for the whole run (never reset).
                                # 2 ran out mid-order and left roof walking (g421 15:25: SELECT loops)
 Y_JUMP_MOVES = 8               # D-pad steps inside one jump before confirming anyway
 Y_JUMP_WAIT = 6                # frames without a readable cursor before closing Y
@@ -254,7 +255,8 @@ def _note_failed_jump(mem, jump, why):
     blinking per order while the ring cursor sat still on the sea).
     """
     last = {'step': jump.get('step'), 'mode': jump.get('mode'),
-            'moves': int(jump.get('moves') or 0), 'why': why}
+            'moves': int(jump.get('moves') or 0), 'why': why,
+            'tick': int(mem.get('tick') or 0)}
     if jump.get('foreground_interrupted'):
         last['foreground_interrupted'] = True
     mem['y_jump_last'] = last
@@ -313,21 +315,87 @@ def _drop_stale_y_jump(screen, mem):
     return False
 
 
+def boss_probe_cell(mem, name, step=None):
+    """The cell to aim at for ``name``: the chart cell or its probe candidate.
+
+    The candidate belongs to the order (``mem['boss_step_probe']``), not to the
+    chapter: several boss waves march at once, so each one may test a different
+    tile instead of the whole chapter waiting for one tile at a time (v404).
+    """
+    chapter = mem.get('chapter') or 0
+    index = (mem.get('boss_step_probe') or {}).get(step) or 0
+    return chart.boss_probe_cell(chapter, name, index)
+
+
+Y_JUMP_BLOCK_TICKS = 200   # observations (~5 min at 1.5 s) before a closed jump may be retried
+
+
+def _jump_block_expired(mem, last) -> bool:
+    """A closed jump blocks Y for this order only for a while.
+
+    g1133 2026-11-05: one ``cursor_stationary`` close (05:14) stayed in
+    ``y_jump_last`` for hours. The order was never restarted, so the block never
+    cleared; it walked instead, and the walk was frozen at its own start cell, so
+    the boss order launched nothing for over five hours. The block now lapses
+    after ``Y_JUMP_BLOCK_TICKS``; the per-order and per-run jump budgets still
+    bound the retries. A record without a tick (older state) is stamped on first
+    sight and lapses from there.
+    """
+    now = int(mem.get('tick') or 0)
+    stamped = last.get('tick')
+    if type(stamped) is not int:
+        last['tick'] = now
+        return False
+    return now - stamped >= Y_JUMP_BLOCK_TICKS
+
+
 def _want_y_jump(mem, order, name, mode) -> bool:
     chapter = mem.get('chapter') or 0
     if chapter not in Y_JUMP_OFFSET or mem.get('y_jump'):
+        return False
+    plan_steps = {o.get('step') for o in (mem.get('chart_plan') or {}).get('orders') or ()}
+    active = mem.get('active')
+    if active and order['step'] != active and order['step'] not in plan_steps:
+        # An order no plan and no active selection owns keeps its jump state
+        # forever: g1133 2026-11-05 opened the Y view for the abandoned step
+        # A:bf8c3dee:M97e81e 72 times in 2.5 minutes (always attempt 1). The
+        # plan is empty while it is being rebuilt, so the active step is the
+        # only order allowed to jump then.
         return False
     last = mem.get('y_jump_last') or {}
     if (last.get('step') == order['step'] and last.get('mode') == mode
             and ((not int(last.get('moves') or 0)
                   and not (last.get('why') == 'view_closed' and last.get('foreground_interrupted')))
-                 or last.get('why') == 'cursor_stationary')):
+                 or last.get('why') == 'cursor_stationary')
+            and not _jump_block_expired(mem, last)):
         # The last jump for this order closed without moving the cursor. The
         # view is not opening or readable here, so walk instead of toggling Y.
         # A fresh foreground event explains a view_closed receipt, permitting
         # another attempt within the existing budget; it proves no arrival.
         return False
     key = f"{order['step']}:{mode}"
+    # A tally survives even when the per-order jump counters do not (g1133
+    # 2026-11-05: the same order re-opened the Y view 22 times a minute because
+    # y_jumps was reset on every plan rebuild, issue #3417).
+    totals = mem.get('y_jumps_total') or {}
+    if ((mem.get('tally') or {}).get(f'yjump:{key}', 0) >= Y_JUMP_TOTAL_LIMIT
+            or int(totals.get(key) or 0) >= Y_JUMP_TOTAL_LIMIT):
+        # Two stores: the tally survives in this run, the plain dict survives
+        # a reload; either one reaching the cap stops the jumps.
+        return False
+    if ((mem.get('y_jumps') or {}).get(key, 0) >= Y_JUMP_LIMIT
+            and last.get('step') == order['step'] and last.get('mode') == mode
+            and last.get('why') == 'cursor_stationary'
+            and _jump_block_expired(mem, last)):
+        # v434 expiry alone could not help: the stationary close sets the
+        # per-order counter to Y_JUMP_LIMIT, so the budget check below kept
+        # blocking the retry the cooldown was meant to allow. g1133 boss map
+        # jump sat at 6 of 6 for hours with the walk frozen, so allow exactly
+        # one retry here; a fresh stationary close sets the counter back.
+        mem['y_jumps'][key] = Y_JUMP_LIMIT - 1
+        _record(mem, 'y_jump_block_retry', chart_step=order['step'], target=name,
+                observed_metric={'mode': mode, 'budget': Y_JUMP_LIMIT - 1},
+                reason='stale stationary budget retry')
     if (mem.get('y_jumps') or {}).get(key, 0) >= Y_JUMP_LIMIT:
         return False
     if (mode == 'target' and chart.is_boss_castle(name)
@@ -336,13 +404,16 @@ def _want_y_jump(mem, order, name, mode) -> bool:
         # so an estimate that already reads "near" must not skip it (g1075
         # 2026-10-29 13:37: the retry walked onto its stale estimate and stopped).
         return True
-    world, goal = mem.get('cursor'), chart.castles(chapter)[name]
+    world, goal = mem.get('cursor'), boss_probe_cell(mem, name, order.get('step'))
     return not world or abs(world[0] - goal[0]) + abs(world[1] - goal[1]) > Y_JUMP_FAR
 
 
 def _start_y_jump(mem, order, name, mode):
     key = f"{order['step']}:{mode}"
     jumps = mem.setdefault('y_jumps', {})
+    _tally(mem, f'yjump:{key}')
+    totals = mem.setdefault('y_jumps_total', {})
+    totals[key] = int(totals.get(key) or 0) + 1
     jumps[key] = jumps.get(key, 0) + 1
     mem['y_jump'] = {'goal': name, 'mode': mode, 'step': order['step'], 'moves': 0, 'wait': 0,
                      'tick': int(mem.get('tick') or 0)}
@@ -372,7 +443,7 @@ def _y_jump_step(mem, frame):
         _record(mem, 'y_jump_failed', chart_step=jump['step'], target=jump['goal'],
                 reason='全体マップのカーソルを読めないため閉じて通常の移動に戻る')
         return [pad('y')]
-    gx, gy = chart.castles(chapter)[jump['goal']]
+    gx, gy = boss_probe_cell(mem, jump['goal'], jump.get('step'))
     ox, oy = Y_JUMP_OFFSET[chapter]
     dx, dy = gx / 8 + ox - cursor[0], gy / 8 + oy - cursor[1]
     # A roof misread as the G stays fixed even while the real cursor moves
@@ -434,7 +505,8 @@ SELECT_EVERY = 40              # observations between hero-castle SELECTs
 
 ALIGN_RADIUS = 28              # screen px: a roof this close to the cursor after a Y jump
 ALIGN_TOL = 3                  # cursor-to-roof-target distance that selects the castle
-ALIGN_LIMIT = 10               # aligning steps before the jump is redone
+ALIGN_LIMIT = 2                # aligning steps before the jump is redone
+ALIGN_STALL = 2                # same-place corrections before the servo gives up
 
 
 def _align_on_roof(screen, mem, frame, kinds, key):
@@ -446,6 +518,12 @@ def _align_on_roof(screen, mem, frame, kinds, key):
     wandering). The roof in view is the ground truth: steer by its offset.
     Returns 'on', a list of pad actions, or None (no such roof / too long).
     """
+    def _clear_align():
+        for name in ('align_steps', 'align_offset', 'align_stall'):
+            tracker = mem.get(name)
+            if isinstance(tracker, dict):
+                tracker.pop(key, None)
+
     s = _cursor(screen)
     if not s or frame is None:
         return None
@@ -454,23 +532,44 @@ def _align_on_roof(screen, mem, frame, kinds, key):
         # Winter repaints the map (g421 18:13: the G stood on フーリック's
         # castle, no roof was read, and the jump was reopened six times).
         # A confirmed jump lands on the castle; nothing on screen contradicts it.
+        _clear_align()
         return 'on'
     near = [(abs(r['target'][0] - s[0]) + abs(r['target'][1] - s[1]), r) for r in roofs
             if r['kind'] in kinds and abs(r['target'][0] - s[0]) <= ALIGN_RADIUS
             and abs(r['target'][1] - s[1]) <= ALIGN_RADIUS]
     if not near:
+        _clear_align()
         return None
     roof = min(near, key=lambda item: item[0])[1]
     dx, dy = roof['target'][0] - s[0], roof['target'][1] - s[1]
     if abs(dx) <= ALIGN_TOL and abs(dy) <= ALIGN_TOL:
+        _clear_align()
         return 'on'
+    # Owner 2026-11-06: a servo that only paces around the same spot must not
+    # keep sending half-offset corrections. A strictly shrinking distance is
+    # progress; two corrections without progress mean the reading is noise.
+    offsets = mem.setdefault('align_offset', {})
+    previous = offsets.get(key)
+    stalls = int((mem.get('align_stall') or {}).get(key) or 0)
+    if (isinstance(previous, list) and len(previous) == 2
+            and all(type(value) is int for value in previous)):
+        stalls = (stalls + 1
+                  if abs(dx) + abs(dy) >= abs(previous[0]) + abs(previous[1]) else 0)
+    mem.setdefault('align_stall', {})[key] = stalls
+    offsets[key] = [dx, dy]
+    if stalls >= ALIGN_STALL:
+        within = abs(dx) <= UNDER_CURSOR_PX and abs(dy) <= UNDER_CURSOR_PX
+        _clear_align()
+        return 'on' if within else None
     steps = mem.setdefault('align_steps', {})
     steps[key] = steps.get(key, 0) + 1
     if steps[key] > ALIGN_LIMIT:
         # The confirm check accepts a roof within UNDER_CURSOR_PX of the
         # marker; never reopen the jump for a marker already that close.
         if abs(dx) <= UNDER_CURSOR_PX and abs(dy) <= UNDER_CURSOR_PX:
+            _clear_align()
             return 'on'
+        _clear_align()
         return None
     # Half the offset per step. The sortie target marker moved about 2 px
     # per held frame (g1075 2026-10-29 12:25: a 7-frame hold turned the

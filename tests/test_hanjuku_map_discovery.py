@@ -17,6 +17,7 @@ from docich.hanjuku_pixels import read_png
 from docich.hanjuku_screen import Screen, parse, castle_roofs
 from test_hanjuku_chart_bot import Canvas, HAND, UNKNOWN
 from test_hanjuku_sortie_evidence import actor_panel, measured_loaded_sortie
+from docich.hanjuku.state.regions import world as _world
 
 @pytest.fixture(autouse=True)
 def unmeasured_chapter_three(monkeypatch):
@@ -123,7 +124,8 @@ def caller_adopted_interim():
     mem['map_registration']['castles'] = {
         n: {**proof, 'name': n, 'position': list(p)} for n, p in positions.items()}
     mem['orders'] = {o['step']: 'failed' for o in chart.all_orders(3)}
-    mem['garrison'] = {'アルマムーン': ['ゼウス', 'どうし']}
+    # Owner 2026-11-06: the hero's castle keeps two others beside him.
+    _world(mem)['garrison'] = {'アルマムーン': ['ゼウス', 'どうし', 'アルテミス', 'クミン']}
     assert not mem.get('active') and not mem.get('chart_plan') and not mem.get('chart_adjust')
     _, state = decide(field(), {'policy': mem}, run_identity=IDENTITY)
     active = state['policy']['active']
@@ -186,12 +188,12 @@ def test_runtime_ready_checks_the_effective_source_override():
 @pytest.mark.parametrize('scenario', ['empty', 'lost', 'general_at_unregistered_castle'])
 def test_unselectable_partial_order_does_not_preempt_discovery(scenario):
     mem = initial_route_receipt()
-    mem['garrison'] = {'アルマムーン': []}
+    _world(mem)['garrison'] = {'アルマムーン': []}
     if scenario == 'lost':
         mem['home_lost'] = True
     elif scenario == 'general_at_unregistered_castle':
         mem['captured'] = ['メガパタ']
-        mem['garrison']['メガパタ'] = ['ゼウス']
+        _world(mem)['garrison']['メガパタ'] = ['ゼウス']
     for _ in range(5):
         actions = feed(mem, field(GRIN))
         assert actions is not None
@@ -695,7 +697,7 @@ def test_four_distinct_season_king_wins_are_not_owned_castles_or_a_single_boss_w
         king_battle(mem, king)
     assert set(mem['boss_victories']) == SEASON_KINGS
     assert mem['boss_defeated'] == 4 and mem['chapter'] == 4
-    assert mem['captured'] == ['マラコビア'] and mem['garrison'] == {}
+    assert mem['captured'] == ['マラコビア'] and _world(mem)['garrison'] == {}
     assert mem['boss_victories'][kings[-1]]['site'] is None
 
 
@@ -706,7 +708,7 @@ def test_unproven_season_king_result_is_never_victory_or_ownership(changes):
     king_battle(mem, 'サマカンテ', **changes)
     assert not mem.get('boss_victories') and not mem.get('boss_defeated')
     assert not mem.get('captured')
-    assert not mem.get('garrison')
+    assert not _world(mem).get('garrison')
     assert not any((r.get('resulting_event') or '').startswith(('captured:', 'lost:'))
                    for r in mem.get('_records', []))
 
@@ -816,7 +818,8 @@ def test_discovery_yields_the_field_to_a_startable_interim_retake():
     assert set(survey.verified_castles(mem, 3)) == {'アルマムーン', 'グリン'}
     mem['lost'] = ['グリン']
     mem['orders'] = {o['step']: 'failed' for o in chart.all_orders(3)}
-    mem['garrison'] = {'アルマムーン': ['ゼウス', 'どうし']}
+    # Owner 2026-11-06: the hero's castle keeps two others beside him.
+    _world(mem)['garrison'] = {'アルマムーン': ['ゼウス', 'どうし', 'アルテミス', 'クミン']}
     with chart.map_context(mem):
         assert survey.step(parse(field()), mem, field()) is None
     _, state = decide(field(), {'policy': mem}, run_identity=IDENTITY)

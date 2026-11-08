@@ -13,6 +13,7 @@ carries its result across equivalent A:/I: execution ids while the material
 world state is unchanged, and releases it as soon as that state changes.
 """
 from __future__ import annotations
+from ..state.regions import world as _world
 
 from ... import hanjuku_chart_adjust as chart_adjust
 from ..decision_log import _record
@@ -52,10 +53,10 @@ def _logical_key(order, mem, *, source=None, target=None, purpose=None):
 def _cancel_fingerprint(order, mem):
     source = _orders._source(order, mem)
     target = order.get('target')
-    garrison = mem.get('garrison') or {}
+    garrison = _world(mem).get('garrison') or {}
     present = garrison.get(source)
     busy, _ = _en_route(mem)
-    unavailable = busy | set(mem.get('general_location_unknown') or ())
+    unavailable = busy | set(_world(mem).get('general_location_unknown') or ())
     available = (sorted(set(present) - unavailable)
                  if isinstance(present, list) else None)
     owned = _owned(mem)
@@ -203,13 +204,13 @@ def install() -> None:
         original_cancelled(mem, order, sortie)
         _remember_cancel(order, mem, 'sortie_cancelled_observed')
 
-    def rollback(mem, step, probe, markers):
+    def rollback(mem, step, probe, markers, reason=None):
         key, fingerprint, row = _logical_launch_budget(mem, step, probe)
         launch_state = _launch_state(mem)
         if isinstance(row, dict):
             misses = launch_state.setdefault('launch_miss', {})
             misses[step] = max(int(misses.get(step) or 0), int(row.get('count') or 0))
-        result = original_rollback(mem, step, probe, markers)
+        result = original_rollback(mem, step, probe, markers, reason=reason)
         if key is not None:
             launch_state = _launch_state(mem)
             count = int((launch_state.get('launch_miss') or {}).get(step) or 0)

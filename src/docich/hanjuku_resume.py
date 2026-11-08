@@ -29,6 +29,11 @@ ROLLED_BACK_UNCONSUMED = 'rolled-back-unconsumed'
 
 
 def _start_mode(record):
+    if record.get('new_game') is True and (
+            record.get('start_policy') != START_POLICY or record.get('start_mode') != 'fresh'
+            or record.get('source_boundary') is not None
+            or record.get('dispatch_source') != 'manual' or record.get('explicit_resume') is not False):
+        raise AdapterError('explicit new game decision conflicts with its reservation')
     if record.get('start_policy') != START_POLICY:
         return 'resume'  # legacy claimed transfers retain their sealed snapshot
     mode, source = record.get('start_mode'), record.get('source_boundary')
@@ -195,6 +200,8 @@ def prepare_start(g, queued):
     if queued.get('corner') != 'hanjuku-hero':
         return
     if queued.get('resume_request_id') is not None:
+        if queued.get('new_game') is True:
+            raise AdapterError('new game cannot recover a checkpoint transfer')
         # The reviewed failed-before-AI recovery keeps the logical request and
         # sealed bytes; its derived attempt must never prepare a new decision.
         with _lock(g) as root:
@@ -308,9 +315,17 @@ def _persist_copy(source, destination):
 def prepare(g, game, queued):
     """Seal one start decision before publishing its durable request."""
     from .adapters.retroarch import resolve_rom, resolve_core
+    new_game = queued.get('new_game', False)
+    if type(new_game) is not bool or (new_game and (
+            queued.get('corner') != 'hanjuku-hero' or queued.get('source') != 'manual'
+            or queued.get('resume_latest') is True or queued.get('resume_request_id') is not None)):
+        raise AdapterError('invalid explicit new game reservation')
     uuid.UUID(queued['request_id'])
     with _lock(g) as root:
         prior = read_record(root / REQUEST_FILE)
+        if prior.get('request_id') == queued['request_id'] and (
+                (prior.get('new_game') is True) != new_game):
+            raise AdapterError('start intent changed for the same reservation')
         if prior and prior.get('status') in {'prepared', 'queued', 'claimed'}:
             if prior.get('request_id') == queued['request_id']:
                 if (prior.get('status') != 'claimed'
@@ -320,7 +335,10 @@ def prepare(g, game, queued):
             raise AdapterError('another checkpoint request is pending')
         if prior.get('request_id') == queued['request_id']:
             return  # a verified retry must not select from its own new run
-        selection = _latest_boundary(g, game, explicit_resume=queued.get('resume_latest') is True)
+        # Explicit new games boot in the new generation's isolated save dirs.
+        # Do not read, copy, delete or overwrite any previous run's save bytes.
+        selection = (dict(mode='fresh', source_boundary=None) if new_game else
+                     _latest_boundary(g, game, explicit_resume=queued.get('resume_latest') is True))
         if selection is None and queued.get('resume_latest') is True:
             raise AdapterError('no remaining checkpoint')
         selection = selection or dict(mode='fresh', source_boundary=None)
@@ -330,6 +348,8 @@ def prepare(g, game, queued):
             explicit_resume=queued.get('resume_latest') is True,
             request_id=queued['request_id'], corner=queued['corner'],
             selected_at=queued['selected_at'])
+        if new_game:
+            request['new_game'] = True
         if 'rewind_from_boundary' in selection:
             request['rewind_from_boundary'] = selection['rewind_from_boundary']
         if selection['mode'] == 'fresh':
@@ -388,6 +408,7 @@ def publish(g, queued):
         prior = read_record(root / REQUEST_FILE)
         if (prior.get('request_id') != queued.get('request_id')
                 or prior.get('corner') != queued.get('corner')
+                or (queued.get('new_game') is True) != (prior.get('new_game') is True)
                 or (queued.get('resume_latest') is True) != prior.get('explicit_resume', True)):
             raise AdapterError('checkpoint publication identity mismatch')
         if prior.get('status') == 'prepared':
@@ -437,6 +458,7 @@ def claim(adapter, deadline, cancel):
                 or (recovery is not None and pending.get('resume_request_id') != request.get('request_id'))
                 or pending.get('corner') != request.get('corner')
                 or pending.get('source', 'automatic') != request.get('dispatch_source', 'manual')
+                or (pending.get('new_game') is True) != (request.get('new_game') is True)
                 or (pending.get('resume_latest') is True) != request.get('explicit_resume', True)):
             if strict:
                 raise AdapterError('Hanjuku start reservation identity mismatch')

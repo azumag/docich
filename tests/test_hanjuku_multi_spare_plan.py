@@ -1,6 +1,7 @@
 """Regression coverage for #3266 plan-local sortie reservations."""
 
 from docich.hanjuku.strategy import replan
+from docich.hanjuku.state.regions import world as _world
 
 
 def crowded_home():
@@ -43,15 +44,18 @@ def retakes(mem):
 
 def test_one_plan_assigns_different_measured_spares_to_three_retakes():
     mem = crowded_home()
+    mem['garrison']['アルマムーン'].append('アポロン')  # one extra spare while the home retains its guards
+    # クロチェット is reachable from オトラント, which must retain one guard.
+    mem['garrison']['オトラント'].extend(('ゼウス', 'バジル', 'グレナデン'))
     mem['route_probe_read_tick']['アイアイエー'] = mem['tick']
     orders = retakes(mem)
-    assert {order['target'] for order in orders} == set(mem['lost'])
+    assert {order['target'] for order in orders} == set(mem['lost']), replan.interim_candidates(mem)
     # A march may be redirected to an occupied own castle that lies on the route;
     # source identity is therefore intentionally not fixed to アルマムーン.
     generals = [order['general'] for order in orders]
     assert len(generals) == 3 and len(set(generals)) == 3
     # The dense plan still preserves the existing hero-castle guard budget.
-    assert len(set(mem['garrison']['アルマムーン']) - set(generals)) >= 3
+    assert len(set(_world(mem)['garrison']['アルマムーン']) - set(generals)) >= 3
 
 
 def test_a_general_already_marching_is_not_reused_by_the_dense_plan():
@@ -80,10 +84,10 @@ def test_two_spares_cover_only_two_of_three_lost_castles():
     target is dropped rather than reusing an already-planned general."""
     mem = crowded_home()
     mem['route_probe_read_tick']['アイアイエー'] = mem['tick']
-    mem['garrison']['アルマムーン'] = mem['garrison']['アルマムーン'][:5]
+    _world(mem)['garrison']['アルマムーン'] = _world(mem)['garrison']['アルマムーン'][:5]
     # Keep the オトラント march blocker from supplying a third sortie general:
     # its list was read empty, so no spare may leave there either.
-    mem['garrison']['オトラント'] = []
+    _world(mem)['garrison']['オトラント'] = []
     orders = retakes(mem)
     assert len(orders) == 2
     generals = [order['general'] for order in orders]

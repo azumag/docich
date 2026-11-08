@@ -57,7 +57,9 @@ def test_unowned_partial_confirmation_keeps_existing_yes_no_behavior():
 
 
 def test_battle_month_and_unrelated_confirmation_do_not_consume_cancellation_budget():
-    mem=state()['policy'];before=deepcopy(mem)
+    mem=state()['policy']
+    from docich.hanjuku.state.regions import migrate_legacy_state
+    migrate_legacy_state(mem);before=deepcopy(mem)
     for kind in ('battle','battle_menu','month_menu','shop_quantity_prompt','yes_no'):
         assert p.boss_stock_restart_step(Screen([],None,'うむッ!いかんッ!',kind=kind),mem) is None
         assert mem==before

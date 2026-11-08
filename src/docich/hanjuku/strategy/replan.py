@@ -5,12 +5,13 @@ of them without waiting for a model, adopts a validated adjusted chart when
 one answers, and records every deviation.
 """
 from __future__ import annotations
+from ..state.regions import world as _world
 
 import hashlib
 
 from ... import (hanjuku_chart as chart, hanjuku_chart_adjust as chart_adjust,
                  hanjuku_reference as reference)
-from ..decision_log import _record
+from ..decision_log import _record, _tally
 from ..os_layer.world import NAME, SORTIE_BUSY_TICKS, _en_route, _owned
 from . import routes
 from .orders import (_arrival_castle, _boss_companion_source, _boss_egg_depleted,
@@ -47,8 +48,8 @@ def _interim_source(mem, target, chart_order, owned, busy, allow_sole=False):
     """
     chapter = mem.get('chapter') or 0
     home = chart.home_castle(chapter)
-    garrison = mem.get('garrison') or {}
-    busy = busy | set(mem.get('general_location_unknown') or ())
+    garrison = _world(mem).get('garrison') or {}
+    busy = busy | set(_world(mem).get('general_location_unknown') or ())
     unavailable_for_attack = {NAME} if _hero_egg_broken(mem) else set()
     sole = len(owned) == 1          # owner: a single castle may leave the hero alone
     free = {c: [g for g in garrison.get(c) or () if g not in busy] for c in owned}
@@ -60,9 +61,8 @@ def _interim_source(mem, target, chart_order, owned, busy, allow_sole=False):
     # クロチェット enters オトラント; every measured アルマムーン-launch
     # stalled while the only arrival was オトラント-launched 5-Z2), so a
     # source whose path crosses another own castle ranks behind a clear one.
-    need = 1 if allow_sole else 2
-    excluded = (set(mem.get('defense_break_blocked') or ()) | set(mem.get('lost') or ())
-                if allow_sole else set())
+    need = 2          # never empty a castle (owner 2026-11-06)
+    excluded = set()
     # Owner 2026-11-03 (g1097): generals moved into a castle recorded empty
     # stood there unseen while アルマムーン kept sending the sorties. The
     # castle's own list, opened once by a probe, is the arrival receipt; the
@@ -85,13 +85,18 @@ def _interim_source(mem, target, chart_order, owned, busy, allow_sole=False):
             # there anyway. An unread list is opened as a probe.
             blocker = _march_blocker(chapter, best, target, owned)
             if blocker:
-                spares = _spares([g for g in free.get(blocker) or ()
-                                  if g not in unavailable_for_attack],
-                                 unavailable_for_attack, sole)
-                if spares:
-                    return blocker, spares[0]
+                # A blocking own castle is a real departure source, not merely
+                # a waypoint. With one measured defender it cannot sortie,
+                # even when the distant castle has many available generals.
+                blocker_free = [g for g in free.get(blocker) or ()
+                                if g not in unavailable_for_attack]
+                if len(set(blocker_free)) >= need:
+                    spares = _spares(blocker_free, unavailable_for_attack, sole)
+                    if spares:
+                        return blocker, spares[0]
                 if garrison.get(blocker) is None:
                     return blocker, MOVE_ANY_GENERAL
+                return None  # reinforce the blocker before trying this target
         return best, _spares(free[best], unavailable_for_attack, sole)[0]
     probes = sorted(c for c in owned if routes.probe_due(mem, c))
     if probes:
@@ -106,9 +111,9 @@ def _interim_source(mem, target, chart_order, owned, busy, allow_sole=False):
     if (unplaced and arrival in owned and _source_location_recheck(mem, arrival) is None
             and not chart_adjust.hero_guard_short([*(garrison.get(arrival) or ()), *unplaced],
                                                   unplaced[0], busy, sole_castle=sole)):
-        # Joiners stand in the hero's castle; the sortie list is the reading
-        # and still cancels if fewer than two are really there.
-        return arrival, unplaced[0]
+        # A joiner has no verified source-list membership yet. Open the
+        # list as a probe, rather than naming a possibly absent actor.
+        return arrival, MOVE_ANY_GENERAL
     general = chart_order['general'] if chart_order else NAME
     if general in unavailable_for_attack:
         return None
@@ -125,7 +130,9 @@ def _interim_source(mem, target, chart_order, owned, busy, allow_sole=False):
         general = MOVE_ANY_GENERAL
     for source in ((chart_order or {}).get('source'), home):
         if source in owned and garrison.get(source) is None:
-            return source, general
+            # The chart name is not evidence that its actor occupies this
+            # unread castle. Identify the actor only from the opened list.
+            return source, MOVE_ANY_GENERAL
     # Refuting home does not refute every other owned castle. g684 4-2:
     # four known lists each held one defender, while ジョンリギ's list was
     # never opened and several current castle-status generals were unplaced.
@@ -155,14 +162,12 @@ def _interim_source(mem, target, chart_order, owned, busy, allow_sole=False):
 
 MOVE_ANY_GENERAL = 'しょうぐん'    # move from an unread list: the spare is picked on the list
 INTERIM_WAVE_LIMIT = 4         # extra sorties to the first target when spares allow
-# Owner 2026-11-04: the boss takes its waves while the previous one still
-# marches. The 2026-11-02 wave design below adds the boss target, but the
-# generic one-expedition-per-target guard removed it again for up to
-# SORTIE_BUSY_TICKS, so at chapter end (boss the only target) the planner
-# reported no candidates and the field map idled. The bound is the same wave
-# budget every other target gets (the first sortie plus INTERIM_WAVE_LIMIT
-# extra ones); spares and the one-defender rule still decide who goes.
-BOSS_WAVE_IN_FLIGHT = 1 + INTERIM_WAVE_LIMIT
+# Owner 2026-11-05: the boss dies to volume, not strength. Half-ripe eggs are
+# so weak that a strong general and a weak one remove about the same HP, so
+# every spare goes at the boss, from as many castles as possible (each keeps
+# one defender), with no per-plan wave bound. Owner 2026-11-05 (later the same
+# day): BOSS_WAVE_LIMIT is unnecessary — keep sending. The loop still ends
+# when no castle can send and every unread list has been opened once.
 # Owner 2026-11-04: a boss step that failed its launch-marker retries must not
 # end the chapter's sorties. The mechanical plan is rebuilt every observation
 # under the same request id and offers the same step, and next_order skips a
@@ -250,9 +255,12 @@ def _boss_wave_in_flight(mem, boss):
 
 
 def _boss_wave_open(mem, target):
-    """The boss may keep its wave going while one sortie is still marching."""
-    return (chart.is_boss_castle(target)
-            and _boss_wave_in_flight(mem, target) < BOSS_WAVE_IN_FLIGHT)
+    """The boss keeps taking waves while sorties to it are still marching.
+
+    Owner 2026-11-05: no in-flight budget. Every spare goes at the boss, and
+    the plan bounds itself by the generators and castles it can still send.
+    """
+    return chart.is_boss_castle(target)
 
 
 def _wave_pick(mem, target, owned, busy, allow_sole):
@@ -261,37 +269,71 @@ def _wave_pick(mem, target, owned, busy, allow_sole):
     Unlike ``_interim_source`` this never picks an unread castle: an unread
     list is a probe for the first sortie, not a known spare for a wave.
     Sources still keep one defender; the home castle is preferred.
+
+    A source must also be able to reach the target: chapter 3 keeps only the
+    measured castle-to-castle legs (``routes.allowed``), so a wave named from
+    any other castle is unstartable. g1153 2026-11-08 (ドンダム the only enemy
+    castle) filled the plan with パタゴーヌ→ドンダム and メガパタ→ドンダム
+    waves while only イーピヨル→ドンダム is a measured leg; ``orders._ready``
+    rejected them every tick and the month advanced with no sortie.
     """
     chapter = mem.get('chapter') or 0
     home = chart.home_castle(chapter)
-    garrison = mem.get('garrison') or {}
-    unavailable = set(mem.get('general_location_unknown') or ())
-    need = 1 if allow_sole else 2
+    garrison = _world(mem).get('garrison') or {}
+    unavailable = set(_world(mem).get('general_location_unknown') or ())
+    need = 2          # never empty a castle (owner 2026-11-06)
     for source in sorted(owned, key=lambda c: (c != home, c)):
+        if not routes.allowed(mem, source, target):
+            continue
         names = garrison.get(source)
         if not names:
             continue
         free = [g for g in names if g not in busy and g not in unavailable]
         if len(free) < need:
             continue
-        spares = [g for g in _spares(free, sole=allow_sole) if g != NAME]
+        spares = [g for g in _spares(free) if g != NAME]
         if spares:
             return source, spares[0]
     return None
 
 
 def _spares(free, unavailable=(), sole=False):
-    """Generals a castle may send, the hero last and only when alone.
+    """Generals a castle may send; no castle is ever left empty.
 
     The hero's castle keeps ``HERO_CASTLE_GUARD`` other generals (owner
-    2026-10-29) unless it is our only castle (``sole``); when they would leave
-    it thin, the hero is not sent instead.
+    2026-10-29). Owner 2026-11-06 dropped the sole-castle exception: an
+    emptied castle falls to the next enemy and ends the game, so even our
+    only castle keeps one general (the hero included).
     """
-    others = [g for g in free if g != NAME and g not in unavailable
-              and not chart_adjust.hero_guard_short(free, g, sole_castle=sole)]
-    if others:
-        return others
-    return [NAME] if set(free) == {NAME} and NAME not in unavailable else []
+    return [g for g in free if g != NAME and g not in unavailable
+            and not chart_adjust.hero_guard_short(free, g)]
+
+
+def _boss_egg_rank(mem, general):
+    """How usable the general's egg is as boss-fight damage: 0 best, 2 worst.
+
+    Owner 2026-11-05: the boss fight's damage comes from eggs, not general
+    strength. A general already measured with a broken/spent egg adds almost
+    nothing and may be lost, so when one castle has several spares the live
+    egg goes first. Only same-castle ordering changes; the castle choice and
+    every other rule stay as they are.
+    """
+    row = ((mem.get('general_statuses') or {}).get('statuses') or {}).get(general)
+    if isinstance(row, dict):
+        if row.get('broken') is True:
+            return 2
+        uses = row.get('uses')
+        if type(uses) is int and uses <= 0:
+            return 2
+        egg = row.get('egg')
+        if isinstance(egg, str) and egg:
+            return 2 if egg == 'くさってる' else 0
+    uses = (mem.get('egg_uses') or {}).get(general)
+    if type(uses) is int and uses <= 0:
+        return 2
+    if isinstance((mem.get('egg_types') or {}).get(general), str):
+        return 0 if type(uses) is int and uses > 0 else 1
+    return 1
 
 
 def _defense_rebalance(mem, owned, busy, heading):
@@ -306,10 +348,10 @@ def _defense_rebalance(mem, owned, busy, heading):
     qualify for reinforcement.
     """
     chapter = mem.get('chapter') or 0
-    garrison = mem.get('garrison') or {}
+    garrison = _world(mem).get('garrison') or {}
     home = chart.home_castle(chapter)
     priority = _defense_priority_castles(mem)
-    unlocated = set(mem.get('general_location_unknown') or ())
+    unlocated = set(_world(mem).get('general_location_unknown') or ())
     free = {c: [g for g in (garrison.get(c) or ())
                 if g not in busy and g not in unlocated] for c in owned}
     out = []
@@ -367,8 +409,8 @@ def _garrison_rotation(mem, owned, busy, heading, taken=()):
     plan = _garrison_plan(mem)
     if not plan:
         return []
-    garrison = mem.get('garrison') or {}
-    unavailable = set(busy) | set(mem.get('general_location_unknown') or ())
+    garrison = _world(mem).get('garrison') or {}
+    unavailable = set(busy) | set(_world(mem).get('general_location_unknown') or ())
     free = {c: [g for g in garrison.get(c) or () if g not in unavailable] for c in plan}
     sole = len(plan) == 1
     claimed = set(taken) | set(heading)
@@ -391,15 +433,18 @@ def _garrison_rotation(mem, owned, busy, heading, taken=()):
             source_distance, _source_want, source_floor = plan[source]
             if source_distance <= distance or not routes.allowed(mem, source, target):
                 continue
-            if garrison.get(source) is None or len(free[source]) - 1 < source_floor:
+            # Even a rear-castle floor of zero cannot override the actual
+            # game's minimum two-general requirement for a departure.
+            if (garrison.get(source) is None or len(set(free[source])) < 2
+                    or len(free[source]) - 1 < source_floor):
                 continue
-            spares = [g for g in _spares(free[source], sole=sole) if g != NAME]
+            spares = [g for g in _spares(free[source]) if g != NAME]
             if not spares:
                 continue
             general = sorted(spares, key=lambda g: _defense_score(mem, g),
                              reverse=True)[0]
-            # A castle already above its own target donates first; only then
-            # does a far castle give up its last general (floor zero).
+            # A castle already above its own target donates first; rear
+            # castles may thin down to one, but never dispatch their last.
             surplus = 1 if len(free[source]) > _source_want else 0
             donors.append((surplus, source_distance,
                            -_distance(chapter, source, target), source, general))
@@ -496,8 +541,9 @@ def interim_candidates(mem, allow_sole=False) -> dict:
     # Owner 2026-11-04: a castle whose retake keeps failing to launch must
     # not hold the boss waves forever (g1133 17:48-18:50, クロチェット).
     retakes_stalled = (not chain_held) and _retakes_stalled(mem, blocking)
-    if (boss in castles and boss_path and (chain_held or retakes_stalled)
-            and not (mem.get('boss_victories') or {})):
+    boss_open = bool(boss in castles and boss_path and (chain_held or retakes_stalled)
+                     and not (mem.get('boss_victories') or {}))
+    if boss_open:
         targets = [*targets, boss]
     # An interim sortie that has already gone out (launched/en route) must not be
     # re-issued while it is still in flight: otherwise the same target would be
@@ -524,21 +570,60 @@ def interim_candidates(mem, allow_sole=False) -> dict:
     # to later targets in the same plan; otherwise every retake names the first spare.
     planned_busy = set()
     planned_probe_sources = set()
-    def _boss_wave_pick(mem, owned, busy, allow_sole):
-        """(source, general) of the strongest sendable spare for the boss.
+    def _boss_wave_pick(mem, owned, busy, allow_sole, prefer_not=(),
+                        allow_probe=True):
+        """(source, general) of the next sendable spare for the boss.
 
-        Waves should throw the army's best spare at the boss, not whoever the
-        nearest staffed list happens to lead with — the boss fight is where a
-        weak substitute loses outright (owner 2026-11-02: 余剰兵力を連続投入).
+        Owner 2026-11-05: strength does not decide the boss fight (half-ripe
+        eggs make a weak general and a strong one remove about the same HP),
+        so the pick spreads waves over castles that have not sent one yet
+        instead of spending the strongest stack first. prefer_not holds the
+        sources this plan already used.
+
+        Within those equal sources the shortest march to the boss goes first.
+        The old tie-break was the castle's name, which put アルマムーン (428
+        cells) before the far closer オケアナ (203), so g1133 2026-11-06 only
+        ever entered the boss castle from オケアナ while the 306-1015-cell
+        marches were intercepted and camped on the road.
         """
         chapter = mem.get('chapter') or 0
         home = chart.home_castle(chapter)
-        garrison = mem.get('garrison') or {}
-        unavailable = set(busy) | set(mem.get('general_location_unknown') or ()) | {NAME}
+        cells = chart.castles(chapter)
+        boss_xy = next((xy for name, xy in cells.items() if chart.is_boss_castle(name)), None)
+        garrison = _world(mem).get('garrison') or {}
+        unavailable = set(busy) | set(_world(mem).get('general_location_unknown') or ()) | {NAME}
         if _hero_egg_broken(mem):
             unavailable |= {NAME}
         sole = len(owned) == 1
-        need = 1 if allow_sole else 2
+        need = 2          # never empty a castle (owner 2026-11-06)
+        # The one-general exception for post-conquest boss waves was left
+        # behind by #3567. The game refuses the sortie when the castle has
+        # only one general (e.g. ポセイドン at ボッサール), so it must not
+        # become a planned attack even if every normal castle is owned.
+        # docich#3515: a blind/kept boss launch actively asks for one roster
+        # read of its source castle. Mint that probe first so the read
+        # settles the phantom (still-listed rolls the launch back) instead
+        # of waiting for the arrival window. Only on the probe-allowed
+        # call: one roster probe per plan, throttled per castle.
+        if allow_probe:
+            try:
+                from ..state.regions import flow as _flow
+                probes = _flow(mem).get('launch_probe') or {}
+                due = mem.get('roster_read_due') or {}
+                now = int(mem.get('tick') or 0)
+                for c in sorted(due):
+                    if c not in owned or c in prefer_not:
+                        continue
+                    waiting = any((p.get('source') == c and (p.get('blind') or p.get('kept')))
+                                  for p in probes.values())
+                    if not waiting:
+                        continue
+                    asked = (mem.get('arrival_probe_tick') or {}).get(c)
+                    if type(asked) is int and 0 <= now - asked < routes.PROBE_INTERVAL:
+                        continue
+                    return c, MOVE_ANY_GENERAL
+            except Exception:
+                pass
         choices = []
         for c in owned:
             free = [g for g in garrison.get(c) or () if g not in busy]
@@ -547,12 +632,31 @@ def interim_candidates(mem, allow_sole=False) -> dict:
             spare = _spares(free, {NAME} if _hero_egg_broken(mem) else (), sole)
             for g in spare:
                 if g != MOVE_ANY_GENERAL and g not in unavailable:
-                    choices.append((reference.general_strength(g) or (0, 0), c, g))
-        if not choices:
-            return None
-        choices.sort(key=lambda x: (x[0], x[1] != home), reverse=True)
-        _, source, general = choices[0]
-        return source, general
+                    xy = cells.get(c)
+                    distance = (round(((xy[0] - boss_xy[0]) ** 2
+                                       + (xy[1] - boss_xy[1]) ** 2) ** 0.5)
+                                if boss_xy and xy else 0)
+                    choices.append((c in prefer_not, c == home, distance,
+                                    _boss_egg_rank(mem, g), c, g))
+        if choices:
+            choices.sort()
+            _, _, _, _, source, general = choices[0]
+            return source, general
+        # Owner 2026-11-05 (差分管理): when no castle knows a spare, read one
+        # castle's list instead of idling. The sortie menu opens the roster
+        # (general_list_scanned) and the deploy step then picks a measured
+        # general, so this both refreshes the bookkeeping and sends the wave.
+        # The oldest unread list goes first and the same castle is not probed
+        # twice in one plan.
+        # Probe at most one castle per plan, and only when the bookkeeping
+        # knows nobody at all: a castle that is merely unread while other
+        # generals are known is not worth a blind sortie.
+        if allow_probe and not any(garrison.get(c) for c in owned):
+            for c in sorted((c for c in owned
+                             if garrison.get(c) is None and c not in prefer_not),
+                            key=lambda c: (c == home, c)):
+                return c, MOVE_ANY_GENERAL
+        return None
     wave_target = None
     for target in targets:
         picked = (_boss_wave_pick(mem, owned, busy | planned_busy, allow_sole)
@@ -562,20 +666,33 @@ def interim_candidates(mem, allow_sole=False) -> dict:
         if picked is None:
             continue
         source, general = picked
+        roster_probe = False
         if general == MOVE_ANY_GENERAL:
             # An unread source is evidence gathering; one probe per source is enough.
             if source in planned_probe_sources:
                 continue
             planned_probe_sources.add(source)
+            # docich#3515: a blind/kept boss launch's source is a read-only
+            # roster probe: it opens the list and settles the phantom, then
+            # backs out without sending. An unread-castle probe still sends.
+            try:
+                from ..state.regions import flow as _flow
+                _probes = _flow(mem).get('launch_probe') or {}
+                roster_probe = (source in (mem.get('roster_read_due') or {})
+                                and any(p.get('source') == source and (p.get('blind') or p.get('kept'))
+                                        for p in _probes.values()))
+            except Exception:
+                roster_probe = False
         else:
             # Reserve only an actor measured in this source castle. Unread chart
             # actors are alternative future candidates, not simultaneous commitments.
-            present = (mem.get('garrison') or {}).get(source) or ()
+            present = (_world(mem).get('garrison') or {}).get(source) or ()
             if general in present:
                 planned_busy.add(general)
         purpose = 'retake' if target in lost else 'attack'
-        note = (f"暫定: {general}で奪われた{target}を奪還" if purpose == 'retake'
-                else f"暫定: {general}で{target}を攻撃")
+        note = ((f"暫定: {source}の将軍一覧を読んでボス出撃の成立を確認する" if roster_probe
+                 else f"暫定: {general}で奪われた{target}を奪還" if purpose == 'retake'
+                 else f"暫定: {general}で{target}を攻撃"))
         # Owner (2026-09-28): 切り札は持たせたほうが良い. The chart's cards for
         # this castle, else the retry opener (two イッテツーン). Cards out of
         # stock are dropped at the card list (card_drop), never waited for.
@@ -586,11 +703,57 @@ def interim_candidates(mem, allow_sole=False) -> dict:
         sorties[purpose].append({
             'general': general, 'target': target, 'cards': cards, 'source': source,
             'after': None, 'purpose': purpose, 'note': note,
-            **({'source_probe': True} if general == MOVE_ANY_GENERAL else {})})
+            **({'source_probe': True} if general == MOVE_ANY_GENERAL else {}),
+            **({'roster_probe': True} if roster_probe else {})})
+    # Owner 2026-11-05: keep throwing the known spares at the boss inside one
+    # plan, from as many castles as possible. Strength does not matter (a
+    # half-ripe egg removes about the same HP whoever carries it), so this
+    # only stops when no castle can send; each castle keeps its hero guard.
+    # Owner 2026-11-05: this runs before the staging/rotation moves, so a
+    # castle with ten generals sends seven (hero + two guards stay), not
+    # whoever the moves happen to leave.
+    boss_wave_orders = []
+    if boss in targets:
+        wave_busy = busy | planned_busy
+        used_sources = {o['source'] for o in sorties['attack']
+                        if chart.is_boss_castle(o.get('target'))}
+        extra = 0
+        while True:
+            more = _boss_wave_pick(
+                mem, owned, wave_busy, allow_sole, prefer_not=used_sources,
+                allow_probe=(extra == 0
+                             and not any(o.get('source_probe') for o in sorties['attack'])))
+            if more is None:
+                break
+            source2, general2 = more
+            probe = general2 == MOVE_ANY_GENERAL
+            roster_probe = False
+            if probe:
+                try:
+                    from ..state.regions import flow as _flow
+                    _probes = _flow(mem).get('launch_probe') or {}
+                    roster_probe = (source2 in (mem.get('roster_read_due') or {})
+                                    and any(p.get('source') == source2 and (p.get('blind') or p.get('kept'))
+                                            for p in _probes.values()))
+                except Exception:
+                    roster_probe = False
+            boss_wave_orders.append({
+                'general': general2, 'target': boss, 'cards': [], 'source': source2,
+                'after': None, 'purpose': 'attack',
+                'note': ((f'暫定: {source2}の将軍一覧を読んでボス出撃の成立を確認する' if roster_probe
+                          else f'暫定: {source2}の将軍一覧を読んでボスへ送る' if probe
+                          else f'暫定: {general2}でボスへ波状攻撃')),
+                **({'source_probe': True} if probe else {}),
+                **({'roster_probe': True} if roster_probe else {})})
+            used_sources.add(source2)
+            if not probe:
+                wave_busy = wave_busy | {general2}
+                planned_busy.add(general2)
+            extra += 1
     # #3266: a general already committed to a sortie above is busy for the
     # staging/refill moves below as well — one plan must not book him twice.
     busy = busy | planned_busy
-    garrison = mem.get('garrison') or {}
+    garrison = _world(mem).get('garrison') or {}
     moves = []
     if chapter == 3:
         # Stage spare generals along chart legs rather than aiming a distant
@@ -600,8 +763,14 @@ def interim_candidates(mem, allow_sole=False) -> dict:
             options = []
             for donor in sorted(owned):
                 free = [g for g in garrison.get(donor) or () if g not in busy
-                        and g not in (mem.get('general_location_unknown') or ())]
-                probe = routes.probe_due(mem, donor)
+                        and g not in (_world(mem).get('general_location_unknown') or ())]
+                # A staging move out of a castle with fewer than two generals
+                # is only ever an arrival check. Wait until the transfer into
+                # it has left the busy window: while it is still marching the
+                # list cannot show the second general, and the move would be
+                # planned against a one-general castle (g1153 2026-11-08
+                # 13:30 moved from メガパタ while ヴィーナス was still walking).
+                probe = routes.arrival_probe_due(mem, donor, cooldown=True)
                 if len(free) < 2 and not probe:
                     continue
                 if len(free) >= 2 and not [g for g in _spares(free) if g != NAME]:
@@ -625,9 +794,14 @@ def interim_candidates(mem, allow_sole=False) -> dict:
                           **({'source_probe': True} if general == MOVE_ANY_GENERAL else {})})
     # A castle that was sent a move after its list was last read is not known
     # to be empty: past the busy window it was picked again and again (#3037).
-    empty = [c for c in sorted(owned, key=lambda c: _distance(chapter, home, c))
-             if garrison.get(c) == [] and c not in heading
-             and not routes.unread_dispatches(mem, c)]
+    # Owner 2026-11-05: while the boss is open the spare generals are the
+    # next boss waves, not a garrison for an empty rear castle (armies were
+    # seen marching to ユージア/トウトウ/バビラリー while the boss was the only
+    # target). Normal chapters keep the fill.
+    empty = [] if boss_open else [
+        c for c in sorted(owned, key=lambda c: _distance(chapter, home, c))
+        if garrison.get(c) == [] and c not in heading
+        and not routes.unread_dispatches(mem, c)]
     for target in empty:
         # A castle whose list was never read may hold several generals: the
         # bot reads lists only when it sorties, so g407 knew one castle while
@@ -660,7 +834,7 @@ def interim_candidates(mem, allow_sole=False) -> dict:
                      if o['target'] in chart.boss_sites(4)
                      and (mem.get('orders') or {}).get(o['step']) in (None, 'pending')]
     if pending_sites and all(_boss_companion_source(o, mem) is None for o in pending_sites):
-        unavailable = busy | set(mem.get('general_location_unknown') or ())
+        unavailable = busy | set(_world(mem).get('general_location_unknown') or ())
         present = {c: [g for g in garrison.get(c) or () if g not in unavailable]
                    for c in owned}
         paired = False
@@ -756,8 +930,40 @@ def interim_candidates(mem, allow_sole=False) -> dict:
     # A stalled retake no longer gates the boss, so the boss wave leads: the
     # failing retake would otherwise take the front slot every cycle.
     front = [] if retakes_stalled else lead[:1]
-    for order in (*front, *waves, *(lead if retakes_stalled else lead[1:]),
+    for order in (*front, *waves, *boss_wave_orders,
+                  *(lead if retakes_stalled else lead[1:]),
                   *attacks, *rotation, *wave_orders):
+        # A generic source-list probe at a measured one-general castle is
+        # not a feasible sortie. Only an arrival or a new joiner expected at
+        # the hero's castle justifies opening that singleton, and even then
+        # the order is read-only: the game refuses to dispatch the last
+        # defender, so a departure from that castle would contradict the
+        # leave-one rule (owner 2026-11-08: 将軍が一人しかいない城からの
+        # 出撃計画がたつ).
+        # docich#3515: a roster probe for a blind launch must open even a
+        # one-general castle: that singleton is exactly the phantom's source.
+        # It reads and settles without sending.
+        present = (_world(mem).get('garrison') or {}).get(order['source'])
+        if (isinstance(present, (list, tuple)) and len(set(present)) == 1
+                and order.get('roster_probe') is not True):
+            # A new joiner is unconfirmed until the castle's live list is
+            # opened. Since #3578's confirmed-source policy names the generic
+            # probe actor (しょうぐん), test for that evidence-gathering probe,
+            # not a guessed recruit name. Never allow a named singleton sortie.
+            fresh_joiner = (order['source'] == _arrival_castle(mem, owned)
+                            and bool(_unplaced_castle_generals(mem))
+                            and order.get('source_probe') is True
+                            and order['general'] == MOVE_ANY_GENERAL)
+            arrival_probe = (order.get('source_probe') is True
+                             and routes.arrival_probe_due(mem, order['source'],
+                                                          cooldown=True))
+            if not (fresh_joiner or arrival_probe):
+                continue
+            # The list may now hold the arrival, but the recorded garrison is
+            # still one general: open it read-only and replan from the receipt.
+            order['roster_probe'] = True
+            order['note'] = (f"暫定: {order['source']}の将軍一覧を読んで"
+                             "増援の到着を確認する")
         if chart_adjust.startable(order, situation) is not None:
             continue
         out[f"{order['purpose']}_{len(out) + 1}"] = order
@@ -779,8 +985,8 @@ def _sole_starved(mem):
     if not owned or not [c for c in castles if c not in owned and not chart.is_boss_castle(c)]:
         return False
     busy, _ = _en_route(mem)
-    busy = busy | set(mem.get('general_location_unknown') or ())
-    garrison = mem.get('garrison') or {}
+    busy = busy | set(_world(mem).get('general_location_unknown') or ())
+    garrison = _world(mem).get('garrison') or {}
     free = {c: {g for g in garrison.get(c) or () if g not in busy} for c in owned}
     return all(len(free[c]) <= 1 for c in owned) and any(len(free[c]) == 1 for c in owned)
 
@@ -819,7 +1025,7 @@ def _defense_gate(mem):
         return None
     month = mem.get('month')
     owned = sorted(_owned(mem))
-    garrison = mem.get('garrison') or {}
+    garrison = _world(mem).get('garrison') or {}
     observed = {'owned': owned, 'garrison': {c: list(garrison.get(c) or ()) for c in owned},
                 'month': month, 'prospects': _joiner_prospects(mem)}
     wait = mem.get('defense_wait')
@@ -876,15 +1082,6 @@ def _mechanical_interim(mem, state, rid, digest, allow_sole=False):
                 goals.note_attempt(mem, goal['kind'], 'unavailable', target=goal.get('target'))
         return
     label, order = next(iter(candidates.items()))
-    if allow_sole and len(set(((mem.get('garrison') or {}).get(order['source']) or ()))) < 2:
-        # Only the monthly defence-break fallback sends a sole general out.
-        mem.setdefault('defense_break_sources', {})[order['source']] = order['target']
-        _record(mem, 'sortie_defense_break', chart_step=None, strategy_variant='chart_defense_break',
-                general=order['general'], source=order['source'], target=order['target'],
-                observed_metric={'source_garrison': list(
-                    (mem.get('garrison') or {}).get(order['source']) or ()),
-                    'month': mem.get('month')},
-                reason='守備制約下の月次フォールバック: 1将軍出撃（出撃元の喪失を監視）')
     state['interim_count'] = state.get('interim_count', 0) + 1
     step = f"{chart_adjust.INTERIM_PREFIX}{rid[:6]}:{state['interim_count']}"
     state['interim_order'] = {**order, 'step': step}
@@ -895,26 +1092,109 @@ def _mechanical_interim(mem, state, rid, digest, allow_sole=False):
             reason='LLM応答を待たず決定的候補の先頭から暫定出撃')
 
 
+def _suppress_recent_failures(mem, orders):
+    """Do not re-issue, at once, an order that just failed with that content.
+
+    A rebuilt plan carries a new execution id for the same (source>target:
+    purpose) step, so it looked new and was retried immediately; g1133
+    2026-11-05 retried the boss order 96 times in ten minutes while no castle
+    menu would open. The content stays failed until PLAN_STALE_TICKS passes.
+    """
+    now = int(mem.get('tick') or 0)
+    recent = mem.get('failed_local_step') or {}
+    if not recent:
+        return
+    status = mem.setdefault('orders', {})
+    for order in orders:
+        at = recent.get(order.get('step'))
+        if type(at) is not int or now - at >= PLAN_STALE_TICKS:
+            continue
+        status[order['step']] = 'failed'
+        _tally(mem, 'retry_suppressed')
+
+
+NONBOSS_STEP_REARM_LIMIT = 3     # failed non-boss attempts re-armed per step per month
+
+
+def _release_stale_failures(mem, orders, rid):
+    """A failed non-boss step the rebuilt plan offers again is retried once the
+    suppression window has passed.
+
+    ``next_order`` skips a 'failed' step forever, and a rebuilt mechanical plan
+    keeps the same execution id while the request id stays the same. Nothing
+    ever cleared that status, so a single failed attempt removed the order —
+    often the only route to the last enemy castle — for the rest of the
+    situation. g1153 2026-11-08 (chapter 3, ドンダム the only enemy castle):
+    the relay move that staffs イーピヨル failed once; イーピヨル then kept a
+    single general, the only measured leg to ドンダム (イーピヨル→ドンダム)
+    could never launch, and months advanced with no sortie at all.
+
+    The retry waits out ``PLAN_STALE_TICKS`` (the window
+    ``_suppress_recent_failures`` already uses) and is capped per month and
+    step, so a genuinely impossible order cannot drain the army.
+    """
+    now = int(mem.get('tick') or 0)
+    recent = mem.get('failed_local_step') or {}
+    month = mem.get('month')
+    status = mem.setdefault('orders', {})
+    book = mem.setdefault('plan_step_rearm', {})
+    for order in orders:
+        if chart.is_boss_castle(order.get('target')):
+            continue          # the boss keeps its own bounded re-arm below
+        step = chart_adjust.execution_step(rid, order['step'])
+        if status.get(step) != 'failed':
+            continue
+        at = recent.get(order['step'])
+        if type(at) is int and 0 <= now - at < PLAN_STALE_TICKS:
+            continue          # just failed: the suppression window spaces it
+        entry = book.get(step)
+        if not isinstance(entry, dict) or entry.get('month') != month:
+            entry = {'month': month, 'count': 0}
+        if entry['count'] >= NONBOSS_STEP_REARM_LIMIT:
+            continue
+        entry['count'] += 1
+        book[step] = entry
+        status[step] = 'pending'
+        # The failed attempt's actor/kit/source choices are not receipts for
+        # this one: a stale ``general_override`` (e.g. the ココット that was
+        # recorded elsewhere) must not steer the retry. Sortie records stay —
+        # an overdue move is still the only arrival evidence for its target.
+        for key in RELEASE_KEYS:
+            (mem.get(key) or {}).pop(step, None)
+        # ``launched_orders`` lives in the world region, not at the top level.
+        (_world(mem).get('launched_orders') or {}).pop(step, None)
+        _record(mem, 'plan_step_rearmed', chart_step=step, general=order.get('general'),
+                target=order.get('target'),
+                observed_metric={'count': entry['count'], 'month': month},
+                reason='計画に残った失敗指示が再発射されず、出撃できないまま月が進むため、月内の上限付きで未発射に戻す')
+    if len(book) > 32:
+        for key in list(book)[:-32]:
+            book.pop(key, None)
+    return book
+
+
 def _mechanical_chart(mem, state, rid, digest):
     """Construct and adopt a full chart mechanically (no LLM answer)."""
     if _plan_pending(mem):
         return
-    allow_sole = _defense_gate(mem) == 'break'
+    allow_sole = False   # no castle is ever emptied (owner 2026-11-06)
     stored = mem.get('chart_plan') or {}
-    if stored.get('request_id') == rid:
-        if stored.get('source') == 'mechanical':
-            # Owner 2026-11-04: 月の計画が尽きたら月の終わりを待たず、同じ
-            # 月のうちに余剰で新しい計画を作り続ける（守備1人は維持）。
-            # 候補は現在の状況から作り直すので、行軍中の目標は除外される。
-            mem['chart_plan'] = None
-        else:
-            # The stored plan belongs to this situation and the caller has just
-            # shown that none of its orders can start (_plan_pending is False).
-            # Rebuilding it would offer the same blocked orders again, so send
-            # the single deterministic interim sortie instead — the fallback
-            # the speedrun path already takes for an exhausted adopted plan.
-            _mechanical_interim(mem, state, rid, digest, allow_sole=allow_sole)
-            return
+    if stored.get('request_id') == rid and stored.get('source') == 'mechanical':
+        # Even within the same month, rebuild an exhausted mechanical chart
+        # against the current garrison and in-flight sorties (keep defenders).
+        mem['chart_plan'] = None
+    # A previously adopted LLM chart with no startable orders must also be
+    # replaced by a new full mechanical plan, not just one interim sortie.
+    # Keep it until a valid replacement exists; the fallback can still act
+    # when candidate generation fails.
+    # The same situation rebuilds the same candidate list on every call, and
+    # re-adopting it recorded the same plan over and over (g1133 2026-11-05:
+    # 487 identical chart_adjust_applied records). Keep the stored plan when
+    # the rebuilt content is identical: nothing about it changed. The stored
+    # orders carry their execution id, so the comparison uses each order's
+    # ``local_step`` — the execution id is derived from the request and never
+    # equals the local id the rebuild produces (#3729).
+    previous_local = [o.get('local_step') for o in stored.get('orders') or ()]
     candidates = interim_candidates(mem, allow_sole=allow_sole)
     if not candidates:
         _mechanical_interim(mem, state, rid, digest, allow_sole=allow_sole)
@@ -930,9 +1210,29 @@ def _mechanical_chart(mem, state, rid, digest):
             'target': order['target'],
             'cards': list(order.get('cards') or ()),
             'after': order.get('after'),
+            'purpose': order.get('purpose'),
             'note': order.get('note') or '',
+            **({'source_probe': True} if order.get('source_probe') is True else {}),
+            **({'roster_probe': True} if order.get('roster_probe') is True else {}),
         })
+    _suppress_recent_failures(mem, orders)
+    # Failed steps the plan still offers are retried after their bounded
+    # windows. This runs even when the rebuilt plan is identical: that is the
+    # stuck case, and the early return below would otherwise skip both re-arms
+    # and leave the one failing order (often the only route left) dead for as
+    # long as the situation lasts.
+    _release_stale_failures(mem, orders, rid)
     _rearm_failed_boss_steps(mem, orders, rid)
+    # A kept plan still needs its stale 'launched' steps released: the early
+    # return below must not make an in-flight marker permanent (#3729).
+    _release_stale_steps(mem, [chart_adjust.execution_step(rid, o['step']) for o in orders])
+    if (stored.get('source') == 'mechanical' and previous_local
+            and None not in previous_local
+            and [o['step'] for o in orders] == previous_local):
+        mem['chart_plan'] = stored
+        mem.setdefault('chart_plan_tick', int(mem.get('tick') or 0))
+        state.pop('interim_order', None)
+        return
     doc = {'schema': chart_adjust.SCHEMA, 'chapter': chapter, 'request_id': rid,
            'source': 'mechanical', 'orders': orders, 'purchases': None,
            'recruitment': None}
@@ -942,7 +1242,6 @@ def _mechanical_chart(mem, state, rid, digest):
         _mechanical_interim(mem, state, rid, digest, allow_sole=allow_sole)
         return
     validated = dict(validated, request_digest=digest)
-    _release_stale_steps(mem, [chart_adjust.execution_step(rid, o['step']) for o in orders])
     _adopt_plan(mem, validated, rid)
 
 
@@ -958,6 +1257,17 @@ def _mechanical_step(order, used, mem=None):
     was unused went out at a time. The id must identify the order's content.
     """
     key = '%s>%s:%s' % (order.get('source'), order.get('target'), order.get('purpose') or '')
+    if order.get('roster_probe') is True:
+        # A read-only roster probe verifies an arrival and then finishes
+        # 'done'; the sortie it verifies must not share that execution id or
+        # it would inherit the finished status and never start. The dispatch
+        # tick separates one arrival check from the next, so a later transfer
+        # into the same castle is probed again.
+        key += ':probe'
+        if mem is not None:
+            ticks = [s.get('tick') for _, s in routes.unread_dispatches(mem, order.get('source'))
+                     if isinstance(s, dict)]
+            key += ':' + str(max((t for t in ticks if type(t) is int), default=0))
     if (mem is not None and chart.is_boss_castle(order.get('target'))
             and _boss_wave_in_flight(mem, order.get('target')) >= 1):
         # 章末のボスは行軍中でも次の隊を出す（owner 2026-11-04）。同じ出撃元と
@@ -984,8 +1294,16 @@ def _release_stale_steps(mem, steps):
     marked launched whose sortie is not marching any more (arrived, overdue,
     never recorded) describes an earlier attempt. Keeping it made the order
     unstartable for as long as the situation id stayed the same.
+
+    The wait is the same one the overdue path uses (_arrival_limit). It was
+    BOSS_ARRIVAL_LIMIT (800) here while a chapter-6 boss march is allowed
+    MARCH_ARRIVAL_CAP (1600), so every plan rebuild released a boss march at
+    20 minutes and sent a second general after an army still walking (g1133
+    2026-11-05: plan_step_released for ポセイドン's boss march at age 872,
+    then ブレッツェル was sent on the same step).
     """
-    from .orders import BOSS_ARRIVAL_LIMIT, _drop_spent_sortie_attempt
+    from .orders import (_arrival_limit, _drop_spent_sortie_attempt,
+                         _queue_overdue_location_recheck)
     now = int(mem.get('tick') or 0)
     status = mem.setdefault('orders', {})
     for step in steps:
@@ -993,11 +1311,30 @@ def _release_stale_steps(mem, steps):
             continue
         sortie = (mem.get('sorties') or {}).get(step) or {}
         if (sortie.get('status') in ('en_route', 'launched_unconfirmed')
-                and type(sortie.get('tick')) is int and 0 <= now - sortie['tick'] < BOSS_ARRIVAL_LIMIT):
+                and type(sortie.get('tick')) is int
+                and 0 <= now - sortie['tick'] < _arrival_limit(mem, sortie)):
             continue
         for key in RELEASE_KEYS:
             (mem.get(key) or {}).pop(step, None)
         _drop_spent_sortie_attempt(mem, step)
+        # Owner 2026-11-05: a released attempt must not leave its march behind.
+        # グレナデン stayed launched_unconfirmed for 5971 observations while
+        # every plan kept the step, so the expiry's "planned" guard never let
+        # it go and his name stayed out of every wave.
+        if isinstance(sortie, dict) and sortie.get('status') in (
+                'en_route', 'launched_unconfirmed', 'overdue'):
+            # A released chart step does not prove that the old actor
+            # returned to its source. Recheck the actor's actual location at
+            # the next monthly named-status pass instead of adding a phantom
+            # garrison member (the newly pending step can choose a real spare).
+            _queue_overdue_location_recheck(mem, sortie)
+            (mem.get('sorties') or {}).pop(step, None)
+            general, source = sortie.get('general'), sortie.get('source')
+            _record(mem, 'sortie_record_expired', chart_step=step, general=general,
+                    observed_metric={'general': general, 'source': source,
+                                     'age': now - sortie['tick']
+                                     if type(sortie.get('tick')) is int else None},
+                    reason='解放した指示の行軍記録を破棄し、将軍の所在地を月次確認で再取得する')
         status[step] = 'pending'
         _record(mem, 'plan_step_released', chart_step=step,
                 observed_metric={'sortie_status': sortie.get('status'), 'general': sortie.get('general'),
@@ -1067,7 +1404,10 @@ def _adjust_situation(mem):
                        if s.get('status') in ('en_route', 'launched_unconfirmed') and s.get('general')
                        and s.get('tick') is not None and now - int(s['tick']) < SORTIE_BUSY_TICKS},
                       key=str)
-    return {'garrison': {castle: sorted(names) for castle, names in sorted((mem.get('garrison') or {}).items())},
+    # An unread castle may be stored as None; the situation digest still has
+    # to serialise (owner 2026-11-05: probing unread lists must not crash it).
+    return {'garrison': {castle: sorted(names or ())
+                         for castle, names in sorted((_world(mem).get('garrison') or {}).items())},
             'owned': sorted(_owned(mem)),
             'lost': sorted(mem.get('lost') or []), 'home_lost': bool(mem.get('home_lost')),
             'en_route': [{'general': g, 'target': t} for g, t in marching],
@@ -1079,22 +1419,97 @@ def _adopt_plan(mem, doc, rid):
     orders = [{**o, 'step': chart_adjust.execution_step(rid, o['step']), 'local_step': o['step'],
                'cards': list(o['cards']), 'after': list(o['after']) if o['after'] else None}
               for o in doc['orders']]
+    garrison = _world(mem).get('garrison') or {}
+    for order in orders:
+        present = garrison.get(order['source'])
+        if (order.get('source_probe') is True and order.get('roster_probe') is not True
+                and isinstance(present, (list, tuple)) and len(set(present)) == 1):
+            # An adopted plan may only inspect a measured one-general castle:
+            # the game refuses to dispatch its last defender, so the order is
+            # a read-only roster probe even if the plan called it a sortie.
+            order['roster_probe'] = True
     purchases = doc.get('purchases')
     mem['chart_plan'] = {
         'request_id': rid, 'source': doc.get('source'), 'orders': orders,
         'recruitment': doc.get('recruitment'),
         'purchases': ({**purchases, 'month': list(purchases['month']),
                        'cards': [list(c) for c in purchases['cards']]} if purchases else None)}
+    mem['chart_plan_tick'] = int(mem.get('tick') or 0)
+    mem.pop('plan_stale_signature', None)
+    # Several boss waves march at once, so each new boss order takes the next
+    # probe candidate in rotation instead of every wave aiming at the same
+    # tile (v404). Chapters without a probe list are untouched.
+    probes = chart.BOSS_CELL_PROBES.get(mem.get('chapter') or 0) or ()
+    if probes:
+        assigned = mem.setdefault('boss_step_probe', {})
+        rotation = mem.setdefault('boss_probe_rotation', {})
+        # The policy round-trips through JSON between observations, so dict
+        # keys reload as strings. g1133 2026-11-05: chapter arrived as int 6,
+        # ``rotation.get(6)`` missed the stored "6" every time, and all sixteen
+        # boss steps kept probe index 0 — every wave aimed at the same cell.
+        chapter = str(mem.get('chapter') or 0)
+        for order in orders:
+            if not chart.is_boss_castle(order['target']) or order['step'] in assigned:
+                continue
+            assigned[order['step']] = int(rotation.get(chapter) or 0) % len(probes)
+            rotation[chapter] = (int(rotation.get(chapter) or 0) + 1) % len(probes)
+        for stale in list(assigned)[:-40]:   # del on the temporary list is a no-op
+            assigned.pop(stale, None)
+
     state = mem.setdefault('chart_adjust', {})
     state.pop('interim_order', None)
     mem['variant'] = 'chart_adjusted'
     # Digest for commentary: grounded order content, not the full plan blob.
     order_digest = [{'general': o['general'], 'source': o['source'],
-                     'target': o['target'], 'cards': list(o['cards'])} for o in orders]
-    _record(mem, 'chart_adjust_applied', chart_step=None, strategy_variant='chart_adjusted',
-            request_id=rid, source=doc.get('source'), steps=[o['step'] for o in orders],
-            local_steps=[o['local_step'] for o in orders], order_digest=order_digest,
-            reason='調整チャートを受信したため独自の指示列で出撃を再開')
+                     'target': o['target'], 'cards': list(o['cards']),
+                     'roster_probe': bool(o.get('roster_probe'))} for o in orders]
+    # A mechanical plan is rebuilt whenever its orders stop being runnable;
+    # the same rebuild was recorded every observation (g1133 2026-11-05: 17
+    # identical records in 30 minutes). Record only a different plan.
+    # JSON round trip: the policy is reloaded between observations, so the
+    # stored value must be lists; a tuple reloads as a list and never compares
+    # equal (measured 2026-11-05: 24 records in 11 minutes, five of them the
+    # very same plan).
+    signature = [rid, [o['step'] for o in orders]]
+    if mem.get('chart_adjust_signature') != signature:
+        mem['chart_adjust_signature'] = signature
+        _record(mem, 'chart_adjust_applied', chart_step=None, strategy_variant='chart_adjusted',
+                request_id=rid, source=doc.get('source'), steps=[o['step'] for o in orders],
+                local_steps=[o['local_step'] for o in orders], order_digest=order_digest,
+                reason='調整チャートを受信したため独自の指示列で出撃を再開')
+
+
+PLAN_STALE_TICKS = 600      # ~15 min of observations with no order started
+
+
+def _drop_stale_plan(mem):
+    """Rebuild a plan whose every order stayed pending for a long time.
+
+    The rebuild used to wait for the situation digest to change (gold, month,
+    order status). A plan whose orders cannot start changes none of them, so it
+    sat pending forever: g1133 2026-11-05 had two staging moves pending for
+    over an hour, and the plan was never rebuilt with the purpose field that
+    would have let them run (v405). Dropping it here makes the next
+    ``_mechanical_chart`` rebuild from the current situation.
+
+    The drop is counted, not recorded: the planner is also run on copies (the
+    chart worker) where no state signature survives, so a decision record
+    repeated on every call (35 identical records a minute under v411).
+    """
+    plan = mem.get('chart_plan') or {}
+    adopted = mem.get('chart_plan_tick')
+    if not plan.get('orders') or type(adopted) is not int:
+        return
+    now = int(mem.get('tick') or 0)
+    if now - adopted < PLAN_STALE_TICKS:
+        return
+    status = mem.get('orders') or {}
+    if any(status.get(o.get('step')) not in (None, 'pending') for o in plan['orders']):
+        return
+    mem['chart_plan'] = None
+    mem.pop('chart_plan_tick', None)
+    mem.pop('plan_stale_signature', None)
+    _tally(mem, 'plan_stale_rebuild')
 
 
 def _off_chart_mechanical(mem, state, rid, gate):
@@ -1109,6 +1524,7 @@ def _off_chart_mechanical(mem, state, rid, gate):
               'captured': sorted(mem.get('captured') or []), 'orders': dict(status),
               'gold': mem.get('gold'), 'month': mem.get('month'), **_adjust_situation(mem)}
     digest = chart_adjust.request_digest(fields)
+    _drop_stale_plan(mem)
     if state.get('request_id') != rid:
         state.clear()
         state['request_id'] = rid
@@ -1119,7 +1535,7 @@ def _off_chart_mechanical(mem, state, rid, gate):
     if _plan_pending(mem):
         return
     if gate == 'break':
-        _mechanical_interim(mem, state, rid, digest, allow_sole=True)
+        _mechanical_interim(mem, state, rid, digest, allow_sole=False)
     else:
         _mechanical_chart(mem, state, rid, digest)
 
@@ -1218,6 +1634,6 @@ def _off_chart(mem):
         _mechanical_interim(mem, state, rid, digest, allow_sole=(gate == 'break'))
         return
     if gate == 'break':
-        _mechanical_interim(mem, state, rid, digest, allow_sole=True)
+        _mechanical_interim(mem, state, rid, digest, allow_sole=False)
     else:
         _mechanical_chart(mem, state, rid, digest)

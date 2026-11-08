@@ -16,6 +16,7 @@ should import the owning layer module instead. See
 ``docs/hanjuku_layered_architecture.md``.
 """
 from __future__ import annotations
+from docich.hanjuku.state.regions import world as _world
 
 import random
 import re
@@ -140,7 +141,7 @@ def _reprobe_stalled_season_boss_roster(mem) -> bool:
     home = chart.home_castle(4)
     if home not in _os_world._owned(mem):
         return False
-    garrison = mem.setdefault('garrison', {})
+    garrison = _world(mem).setdefault('garrison', {})
     if home not in garrison or garrison.get(home) is None:
         return False
 
@@ -151,7 +152,7 @@ def _reprobe_stalled_season_boss_roster(mem) -> bool:
 
     previous = list(garrison.get(home) or ())
     garrison.pop(home, None)
-    (mem.get('garrison_observed_at') or {}).pop(home, None)
+    (_world(mem).get('garrison_observed_at') or {}).pop(home, None)
     mem['boss_roster_reprobe_tick'] = now
     _decision_log._record(
         mem, 'boss_roster_reprobe',

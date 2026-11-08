@@ -20,6 +20,7 @@ RECALL_ARRIVE_PX = 4           # cursor cell onto the tent
 RECALL_CONFIRM_PX = 4          # marker onto the own castle's selecting cell
 RECALL_SKIP_TICKS = 400        # observations before retrying the same failed camp
 RECALL_SKIP_RADIUS = 48        # screen pixels: cover the measured camera shift for the same camp
+RECALL_SKIP_HISTORY = 6        # other failed camps whose hold is still running
 LOST_CAMP_RETRY_TICKS = 60     # first wait after a tent only went out of sight, doubling up to the skip
 FORT_RETRY_TICKS = 20          # first wait before the next general leaves the same 砦, doubling likewise
 FORT_STATUS_PRESS_EVERY = 4    # observations of the status panel between two A presses
@@ -51,6 +52,37 @@ def _remember_recall_target(mem, state):
     _flow(mem)['recall_skip_target'] = scoped
 
 
+def _stash_previous_skip(mem):
+    """Keep the hold of the camp that failed before this one.
+
+    The single ``recall_skip`` slot held only the latest failure, so two stuck
+    camps released each other: A failed, B was picked, B failed, A (no longer
+    held) was picked again. g1133 2026-11-05 14:16 retried ``[52,148]`` and
+    ``[11,46]`` alternately every few seconds and spent the short map windows
+    that the boss order needed.
+    """
+    flow = _flow(mem)
+    skip, scoped = flow.get('recall_skip'), flow.get('recall_skip_target')
+    chapter, now = mem.get('chapter'), int(mem.get('tick') or 0)
+    history = [h for h in flow.get('recall_skip_history') or [] if _history_alive(h, chapter, now)]
+    if (isinstance(skip, dict) and isinstance(scoped, dict) and _camp_target(scoped.get('target'))
+            and scoped.get('chapter') == chapter and type(skip.get('tick')) is int):
+        ticks = int(flow.get('recall_skip_ticks') or RECALL_SKIP_TICKS)
+        entry = {'chapter': chapter, 'target': list(scoped['target']), 'tick': skip['tick'],
+                 'ticks': ticks, **({'kind': scoped['kind']} if isinstance(scoped.get('kind'), str) else {})}
+        history = [h for h in history if not _same_skipped_camp(entry, h)] + [entry]
+    if history:
+        flow['recall_skip_history'] = history[-RECALL_SKIP_HISTORY:]
+    else:
+        flow.pop('recall_skip_history', None)
+
+
+def _history_alive(entry, chapter, now):
+    return (isinstance(entry, dict) and entry.get('chapter') == chapter
+            and _camp_target(entry.get('target')) and type(entry.get('tick')) is int
+            and type(entry.get('ticks')) is int and 0 <= now - entry['tick'] < entry['ticks'])
+
+
 def _arm_recall_skip(mem, state, base=None):
     """Hold the failed camp back; ``base`` starts a doubling wait for a mere retry.
 
@@ -60,6 +92,7 @@ def _arm_recall_skip(mem, state, base=None):
     the wait up to the full hold, which keeps the bound #3040 set after the
     same tent was lost eight times in eight minutes.
     """
+    _stash_previous_skip(mem)
     _flow(mem)['recall_skip'] = {'tick': int(mem.get('tick') or 0)}
     _remember_recall_target(mem, state)
     _flow(mem).pop('recall_skip_ticks', None)
@@ -90,7 +123,7 @@ def _same_skipped_camp(camp, scoped):
             and abs(target[1] - old[1]) <= RECALL_SKIP_RADIUS)
 
 
-def _filter_recall_skip(mem, camps):
+def _filter_single_recall_skip(mem, camps):
     """Apply a retry cooldown to only the camp that actually failed.
 
     This is deliberately reused both when choosing a camp and while tracking it:
@@ -121,10 +154,44 @@ def _filter_recall_skip(mem, camps):
     return [camp for camp in camps if not _same_skipped_camp(camp, scoped)]
 
 
+def _filter_recall_skip(mem, camps):
+    """Camps not held back by the latest failure nor by any earlier still-running hold."""
+    camps = _filter_single_recall_skip(mem, camps)
+    flow = _flow(mem)
+    history = flow.get('recall_skip_history') or []
+    if not history:
+        return camps
+    chapter, now = mem.get('chapter'), int(mem.get('tick') or 0)
+    alive = [h for h in history if _history_alive(h, chapter, now)]
+    if alive:
+        flow['recall_skip_history'] = alive
+    else:
+        flow.pop('recall_skip_history', None)
+    return [camp for camp in camps if not any(_same_skipped_camp(camp, h) for h in alive)]
+
 def camp_recall_step(screen: Screen, mem, frame):
     """Observe named retreaters before reusing the existing camp recall route."""
     from . import camp_recheck as hanjuku_camp_recheck
     return hanjuku_camp_recheck.step(screen, mem, frame, _camp_recall_step)
+
+
+def _mark_recall_interrupted(mem):
+    """Remember that a battle/event scene took the foreground from a recall.
+
+    The recall is planned one observation and sent on the next. When a
+    defense/attack message starts in between (g1139 2026-11-06 15:18:18 JST:
+    カルーン じょうが てきに せめこまれました right after the recall plan), the
+    A advances that scene instead of confirming the destination. The pending
+    recall state stays untouched (a combat foreground must not rewrite it),
+    but the dispatch step uses this marker to retry soon after the battle
+    instead of serving the long failed-camp skip.
+    """
+    state = _flow(mem).get('recall')
+    if not isinstance(state, dict):
+        return
+    if state.get('stage') != 'await_dispatch' or state.get('input_sent'):
+        return
+    _flow(mem)['recall_interrupted'] = int(mem.get('tick') or 0)
 
 
 def _camp_recall_step(screen: Screen, mem, frame, *, observed_camps=None):
@@ -139,8 +206,10 @@ def _camp_recall_step(screen: Screen, mem, frame, *, observed_camps=None):
     """
     if screen.kind in {'battle', 'battle_menu', 'egg_battle_menu', 'monster_menu',
                        'egg_choice_menu', 'attack_started', 'defense_started', 'boss_attack_started'}:
+        _mark_recall_interrupted(mem)
         return None  # combat owns this screen; keep the recall intention pending
     if mem.get('battle'):
+        _mark_recall_interrupted(mem)
         return [] if screen.kind == 'map' else None  # first result frame is not a finished battle
     state = _flow(mem).get('recall')
     if state is None:
@@ -363,6 +432,19 @@ def _camp_recall_step(screen: Screen, mem, frame, *, observed_camps=None):
                 return _finish_hero_recall(mem, state, goal)      # roofs hidden: trust the jump
             if goal and not roofs and not jumped and (mem.get('y_jumps') or {}).get('RECALL:target', 0) < 2:
                 return _start_y_jump(mem, {'step': 'RECALL'}, goal, 'target')
+        enemy_under_marker = marker and frame is not None and any(
+            r['kind'] == 'enemy' and abs(r['target'][0] - marker[0]) <= 12
+            and abs(r['target'][1] - marker[1]) <= 12 for r in castle_roofs(frame))
+        if marker and not roofs and not enemy_under_marker and not state.get('picker_forced'):
+            # Owner 2026-11-05: 最悪キャンセルにせず、どこでも良いから指定する。
+            # No own roof is in view, but the picker's marker stands somewhere:
+            # confirm it once. The dispatch step bounds what follows.
+            state['picker_forced'] = True
+            _record(mem, 'camp_recall_picker_fallback',
+                    observed_metric={'marker': list(marker), 'roofs': 0, 'goal': state.get('goal')},
+                    reason='可視範囲に自軍城の屋根がないため取り消さず、マーカーの位置で確定する')
+            return _request_recall(mem, state, state.get('goal'), [pad('a')],
+                                   target_cell=list(marker))
         if not marker or not roofs:
             _flow(mem).pop('recall', None)
             mem['uncertain'] = True
@@ -503,6 +585,12 @@ def _finish_hero_recall(mem, state, goal):
 
 def _request_recall(mem, state, goal, actions, **fields):
     """A proposal remains pending; neither an input nor an arrival receipt."""
+    # #3544: a `recall_interrupted` marker can outlive the recall it belonged
+    # to (e.g. the month-scene drop pops `recall` without the marker). It is
+    # only read by the dispatch wait's unconfirmed terminal, so clearing it at
+    # the head of every new request keeps a stale marker from shortening an
+    # unrelated recall's retry hold.
+    _flow(mem).pop('recall_interrupted', None)
     state.update(stage='await_dispatch', steps=0, goal=goal,
                  a_inputs=sum(a.get('buttons') == ['a'] for a in actions),
                  requested_tick=int(mem.get('tick') or 0), **fields)
@@ -535,12 +623,15 @@ def _recall_dispatch_step(screen, mem, state):
         state['picker_closed'] = True
     if state.get('picker_closed') or state['steps'] >= 6:
         status = 'arrival_unconfirmed' if state.get('input_sent') else 'dispatch_unconfirmed'
+        interrupted = _flow(mem).pop('recall_interrupted', None) is not None
         _flow(mem)['recall_verification'] = {**state, 'status': status}
         _flow(mem).pop('recall', None)
-        _arm_recall_skip(mem, state, FORT_RETRY_TICKS if state.get('fort') else None)
+        _arm_recall_skip(mem, state,
+                         FORT_RETRY_TICKS if (state.get('fort') or interrupted) else None)
         mem['uncertain'] = True
         _record(mem, 'camp_recall_unconfirmed', chart_step=None, observed_metric={'castle': state.get('goal'),
                 'input_sent': bool(state.get('input_sent')), 'picker_closed': bool(state.get('picker_closed')),
+                'interrupted': interrupted,
                 'general': state.get('general') if state.get('fort') else None}, resulting_event=status,
                 reason='帰還の本人・移動・到着を確認できず未確認として保持し、有限な操作を終了')
         return [pad('b')] if screen.kind in ('world_map', 'map_target') else []

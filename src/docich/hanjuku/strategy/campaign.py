@@ -12,31 +12,44 @@ from ..decision_log import _record
 from ..os_layer.readers import STATUS_NAMES
 
 
+# Phases of the free monthly country-status visit (house.step level_only).
+# A chapter change can land while this visit is opening the main menu; the
+# visit belongs to the *new* chapter's month, so it is kept instead of being
+# dropped and restarted (v511: the monthly status menu opened twice).
+MONTH_SCAN_RESUME_PHASES = frozenset({
+    'month_open', 'open_roster', 'level_status', 'leave_status', 'leave_roster'})
+
+
 def _enter_chapter(mem, chapter, *, reason, evidence=None):
     previous = mem.get('chapter')
+    house = mem.get('house')
+    month_scan = (dict(house) if isinstance(house, dict) and house.get('level_only')
+                  and house.get('phase') in MONTH_SCAN_RESUME_PHASES else None)
     from ..os_layer.roster import fresh
     previous_roster = fresh(mem)
     if previous_roster and previous_roster.get('complete') is True:
         mem['recruit_payroll_pending'] = list(previous_roster['names'])
     # Route state belongs to the measured map of one chapter. Keep
     # run-wide counters/name evidence, never carry coordinates/orders.
-    # country_income is a last observation (owner 2026-11-04): keep it until
-    # the next country-status read rewrites it, instead of blanking 現在収入.
+    # country_income / country_wages are last observations (owner 2026-11-04):
+    # keep them until the next country-status read rewrites them, instead of
+    # blanking 現在収入 / 総賃金.
     for key in ('map_registration', 'map_discovery', 'boss_victories', 'approx_fallback', 'approx_localize_miss',
                 'active', 'anchor', 'goal_anchor_lock', 'attack', 'battle', 'battle_seen',
                 'captured', 'card_override', 'rare_card_kit', 'strong_card_kit', 'dropper_card_kit', 'castle_defenders', 'boss_stock_restart', 'boss_stock_cancelled', 'rare_scan', 'rare_scan_month', 'cursor', 'egg_battle',
                 'expect_menu', 'general_override', 'launched', 'menu_miss', 'month_exit', 'month_sub',
-                'month_nav', 'house_nav', 'starter_party',
+                'month_nav', 'house_nav', 'starter_party', 'chapter_end_save',
                 'nav_last', 'nav_search', 'nav_search_leg', 'orders', 'picked', 'retries', 'retry_context', 'shop',
                 'source_override', 'uncertain', 'month', 'soldiers_seen', 'soldiers_seen_key',
                 'soldiers_seen_basis', 'soldiers_seen_scope', 'army_count_check',
                 'order_context', 'sortie_general', 'sortie_actor_miss',
                 'boss_defeated', 'boss_entry_hold',
                 'chart_adjust', 'chart_plan', 'launched_orders', 'sorties', 'retired_sorties', 'sortie_attempt',
+                'plan_step_rearm',
                 'departure_request', 'departure_miss', 'flow', 'world',
                 'garrison', 'unplaced_refuted', 'unplaced_refuted_castles', 'general_location_unknown', 'source_location_rechecks', 'recruit_verification', 'lost', 'owner_streak', 'source_miss', 'card_drop', 'card_miss',
                 'nav_prev', 'nav_still', 'nav_pressed', 'unverified', 'off_castle',
-                'target_miss', 'target_cancel', 'boss_cancel_cell', 'boss_relaunch', 'menu_hold', 'card_scroll', 'card_scroll_last', 'card_zero_at_start', 'card_unreadable',
+                'target_miss', 'target_cancel', 'boss_cancel_cell', 'boss_relaunch', 'boss_cell_probe', 'menu_hold', 'card_scroll', 'card_scroll_last', 'card_zero_at_start', 'card_unreadable',
                 'sortie_confirm_miss',
                 'world_map_tick', 'world_map_due', 'world_map_wait', 'world_map_close', 'home_lost',
                 'y_jump', 'y_jumps', 'y_jump_return', 'y_jump_target_confirmed', 'y_jumped', 'boss_absent', 'recall', 'recall_skip', 'recall_verification', 'retreat_rechecks', 'retreat_anonymous_budget',
@@ -52,6 +65,9 @@ def _enter_chapter(mem, chapter, *, reason, evidence=None):
                 'monster_menu_choice', 'monster_menu_choice_key', 'monster_menu_choice_scope', 'monster_menu_cursor_recheck', 'monster_panel', 'lampkin_cycle'):
         mem.pop(key, None)
     mem['chapter'] = chapter
+    if month_scan is not None:
+        month_scan['chapter'] = chapter
+        mem['house'] = month_scan
     mem['chapter_evidence'] = evidence or 'header'
     mem['variant'] = 'chart' if chart.orders(chapter) else 'chart_unavailable'
     _record(mem, 'chapter_seen', previous_stage=previous,

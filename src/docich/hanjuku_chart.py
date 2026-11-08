@@ -148,9 +148,9 @@ CASTLES_APPROX: dict[int, dict[str, tuple[int, int]]] = {
 # 2026-10-28) match all 24 ordinary castles of chapters 1–3 exactly. The
 # CASTLES_APPROX cell 8*(flag + (1, 3)) is within 8 px of every probe-measured
 # ordinary cell except chapter 3's large home castle (16 px); a Y jump lands
-# on the cell and the last pixels are walked onto the roof. Bosses are not in
-# the source table: boss cells stay unmeasured (chapter 4 has four sites and
-# chapter 9's boss moves).
+# on the cell and the last pixels are walked onto the roof. Single-site boss
+# flags use the same anchor as approximate cells below; measured boss cells
+# still win, chapter 4 has four sites and chapter 9's boss moves.
 SOURCE_CHAPTERS = frozenset(range(4, 13))
 for _chapter in sorted(SOURCE_CHAPTERS):
     CASTLES[_chapter] = dict(CASTLES_APPROX[_chapter])
@@ -188,6 +188,36 @@ CASTLES[4].update(SEASON_SITE_CELLS)
 # camped north-west.
 DEMON_CASTLE_CELLS = {5: {'ボス': (744, 288)}}
 for _chapter, _cells in DEMON_CASTLE_CELLS.items():
+    CASTLES[_chapter].update(_cells)
+del _chapter, _cells
+
+# Chapter 6's 完熟秘密基地 also spawns only after every ordinary castle is
+# ours (GCGX 06: 全ての城を制圧すると完熟秘密基地が出現する; a fan board puts
+# it at the centre of the upper-right forest). Without a cell the mechanical
+# planner has no boss target at chapter end and next_order() returns None
+# forever (g1133 simulation 2026-11-05: all twelve castles ours -> {}).
+# The 22:23 g1133 Y view measures that forest centre at (166.5, 68.0) with
+# the chapter offset (64.3, 45.0), so the cell is (818, 184). This is an
+# approximate first position: the roof checks and the inland search guard the
+# entry, and a live measurement replaces it once the base is seen.
+# A boss cell that never accepts an army is probed one tile at a time (v403).
+# 1 tile = 8 px = 64 chart units. Only chapters with a measured cell carry a
+# probe list; the first candidate is the chart cell itself.
+BOSS_CELL_PROBES = {6: ((0, 0), (0, 64), (64, 0), (-64, 0), (0, -64))}
+
+
+def boss_probe_cell(chapter, name, index=0):
+    """The cell to aim at for ``name``: the chart cell or its probe candidate."""
+    cell = castles(chapter).get(name)
+    probes = BOSS_CELL_PROBES.get(chapter)
+    if cell is None or not probes or not is_boss_castle(name):
+        return cell
+    dx, dy = probes[min(max(int(index or 0), 0), len(probes) - 1)]
+    return (cell[0] + dx, cell[1] + dy)
+
+
+SECRET_BASE_CELLS = {6: {'ボス': (818, 184)}}
+for _chapter, _cells in SECRET_BASE_CELLS.items():
     CASTLES[_chapter].update(_cells)
 del _chapter, _cells
 
@@ -270,6 +300,24 @@ BOSS_CASTLES: dict[int, str] = {
     2: 'ボス', 3: 'ボス', 4: 'ボス', 5: 'ボス', 6: 'ボス',
     7: 'ボス', 8: 'ボス', 9: 'ボス', 10: 'ボス', 11: 'ボス', 12: 'ボス',
 }
+
+# Chapters 7-12 each have one public boss flag. The same flag->cell anchor as
+# ordinary castles gives an approximate boss cell so the planner has a target
+# at all_captured instead of stopping with next_order() == None. Chapters 5/6
+# already carry measured cells above and win here; chapter 4's four sites and
+# chapter 9's moving boss stay special.
+APPROX_BOSS_CELLS: dict[int, tuple[int, int]] = {}
+for _chapter in sorted(SOURCE_CHAPTERS):
+    if _chapter in (4, 9):
+        continue
+    _flags = map_sources.SOURCE_BOSS_FLAGS.get(_chapter, ())
+    _name = BOSS_CASTLES.get(_chapter)
+    if len(_flags) != 1 or _name in CASTLES.get(_chapter, {}):
+        continue
+    _left, _top = _flags[0]
+    APPROX_BOSS_CELLS[_chapter] = (8 * (_left + 1), 8 * (_top + 3))
+    CASTLES[_chapter][_name] = APPROX_BOSS_CELLS[_chapter]
+del _chapter, _flags, _name, _left, _top
 
 # Castle labels this chart used before they matched the game's own text.
 # Chapter 1's home castle was labelled ほんじょう here while the game always

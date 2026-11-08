@@ -133,7 +133,7 @@ def build_prompt(request: dict, results: list[dict]) -> str:
         'target が X の指示（攻略・奪回）に付けると条件は指示自身の結果待ちになり永遠に出撃できない。'
         'いま奪う城の指示には必ず after: null を使うこと。',
         '- source は将軍を出す自軍の城。target は攻める城。general は将軍名。',
-        '- general は「駐留（garrison）」でその source にいると記録された将軍にすること。'
+        '- general は「駐留（garrison）」でその source にいると記録された将軍にすること。未記録・不明の将軍名を仮定して出撃計画を作らない。'
         '別の城にいると記録された将軍・進軍中（en_route）の将軍・失った城（lost）からの出撃は実行できず破棄される。'
         '駐留が記録されていない城は将軍不明として扱う。',
         '- purchases は任意。month は [年, 月]（これから来る月初）。generals は新規登用人数（現状は記録のみ）。'

@@ -643,6 +643,11 @@ def run_worker_cycle(
             "carried_symbols": sorted(set(_preserved_symbols(previous)) - set(frames)),
             "budget_exceeded": budget_exceeded,
         }
+        # The fill timestamps are sampled after market I/O, whereas `now`
+        # is the cycle start.  A start-of-cycle valuation timestamp makes a
+        # newly completed fill appear newer than the otherwise valid P/L mark
+        # and hides it from the notification as "評価待ち".
+        valuation_now = max(float(now), float(observation_now_fn()))
         payload = _status_payload(
             g,
             ledger,
@@ -668,7 +673,7 @@ def run_worker_cycle(
                 g,
                 ledger,
                 market_cache,
-                now=now,
+                now=valuation_now,
                 fallback=_preserved_summary(previous, "performance_summary"),
             ),
             market_freshness=freshness,

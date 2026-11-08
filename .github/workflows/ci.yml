@@ -107,6 +107,12 @@ jobs:
         if: needs.test-scope.outputs.suite != 'hanjuku'
         run: |
           if ! command -v ffmpeg >/dev/null 2>&1 || ! command -v ffprobe >/dev/null 2>&1; then
+            # Hosted Ubuntu runners sometimes use a slow Azure apt mirror.
+            # Only alter the mirror in real Actions; hermetic setup tests keep
+            # the existing two apt commands and no runner-specific dependency.
+            if [ "${GITHUB_ACTIONS:-}" = "true" ] && [ -f /etc/apt/apt-mirrors.txt ]; then
+              sudo sed -i 's#azure.archive.ubuntu.com#archive.ubuntu.com#g' /etc/apt/apt-mirrors.txt
+            fi
             sudo apt-get update
             sudo apt-get install -y ffmpeg
           fi

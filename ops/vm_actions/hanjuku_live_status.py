@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Render a fixed, secret-free live status for chapter-4 boss sorties.
+"""Render a fixed, secret-free live status for Hanjuku boss/field progress.
 
 Input is the already-sanitized ``diagnostics docich production <sha>`` JSON on
 stdin.  Output is a GitHub Issue comment body containing only fixed tokens and
@@ -25,6 +25,27 @@ RECENT_DECISIONS = (
     "order_start",
     "order_launched",
 )
+MARCH_STATES = frozenset({"active", "idle", "overdue", "parked"})
+BOSS_TARGETS = frozenset({
+    "ボス", "けっかい",
+    "四季王城(北西)", "四季王城(北東)", "四季王城(南西)", "四季王城(南東)",
+})
+BOSS_SORTIE_STATES = frozenset({
+    "pending", "launched_unconfirmed", "launched", "en_route", "overdue",
+})
+CHAPTER_BOSS_STEP = re.compile(r"([1-9]|1[0-2])-B[1-9][0-9]*\Z")
+MONTH_VALUE = re.compile(r"\d{1,3}-\d{1,2}\Z")
+PHASE_STATES = frozenset({
+    "title", "transition", "battle", "name", "shop", "concert",
+    "month_menu", "dialogue", "field_menu", "battle_intro", "field",
+    "title_or_intro", "event",
+})
+FIELD_TOKENS = (
+    "captured", "lost", "march", "overdue", "exhausted", "oldest_age_ticks",
+    "boss_wins", "boss_sorties", "boss_sorties_overdue", "active_boss",
+    "uncertain", "month", "phase", "unknown_generals", "generals_home",
+    "castles_unread",
+)
 BASE = "https://github.com/azumag/docich"
 
 
@@ -42,6 +63,78 @@ def _bool_token(value):
     if value is False:
         return "no"
     return "unknown"
+
+
+def _field_token(value):
+    if value is None:
+        return "unknown"
+    if type(value) is bool:
+        return "yes" if value else "no"
+    if type(value) is int:
+        return str(value)
+    if isinstance(value, str) and (value in MARCH_STATES or value in PHASE_STATES
+                                  or value == "unknown" or MONTH_VALUE.fullmatch(value)):
+        return value
+    return "unknown"
+
+
+def _compact_field(policy, chapter, active_step):
+    def bounded(value, high=64):
+        return _bounded_int(value, 0, high)
+
+    march = policy.get("march") if isinstance(policy.get("march"), dict) else {}
+    march_state = march.get("state")
+    if march_state not in MARCH_STATES:
+        march_state = "unknown"
+    overdue = march.get("overdue") if isinstance(march.get("overdue"), list) else []
+    exhausted = march.get("exhausted") if isinstance(march.get("exhausted"), list) else []
+    victories = (policy.get("boss_victories")
+                 if isinstance(policy.get("boss_victories"), dict) else {})
+    sorties = policy.get("sorties") if isinstance(policy.get("sorties"), dict) else {}
+    boss_rows = [row for row in sorties.values()
+                 if isinstance(row, dict)
+                 and row.get("target") in BOSS_TARGETS
+                 and row.get("status") in BOSS_SORTIE_STATES]
+    active_boss = False
+    if isinstance(active_step, str):
+        active_boss = (
+            active_step in STEPS
+            or (chapter is not None and CHAPTER_BOSS_STEP.fullmatch(active_step)
+                and active_step.startswith(f"{chapter}-B"))
+            or (isinstance(sorties.get(active_step), dict)
+                and sorties[active_step].get("target") in BOSS_TARGETS)
+        )
+    month = policy.get("month")
+    if not (isinstance(month, str) and MONTH_VALUE.fullmatch(month)):
+        month = None
+    phase = policy.get("phase")
+    if phase not in PHASE_STATES:
+        phase = None
+    garrison = (policy.get("garrison")
+                if isinstance(policy.get("garrison"), dict) else {})
+    garrison_counts = [value for value in garrison.values() if type(value) is int]
+    generals_home = (_bounded_int(sum(garrison_counts), 0, 10_000_000)
+                     if garrison_counts else None)
+    castles_unread = bounded(sum(1 for value in garrison.values() if value is None))
+    return {
+        "captured": bounded(policy.get("captured_count")),
+        "lost": bounded(policy.get("castle_loss_count")),
+        "month": month,
+        "phase": phase,
+        "unknown_generals": bounded(policy.get("unknown_generals")),
+        "generals_home": generals_home,
+        "castles_unread": castles_unread,
+        "march": march_state,
+        "overdue": bounded(len(overdue)),
+        "exhausted": bounded(len(exhausted)),
+        "oldest_age_ticks": _bounded_int(march.get("oldest_age_ticks"), 0, 10_000_000),
+        "boss_wins": _bounded_int(victories.get("count"), 0, 64),
+        "boss_sorties": bounded(len(boss_rows)),
+        "boss_sorties_overdue": bounded(sum(1 for row in boss_rows
+                                            if row.get("status") == "overdue")),
+        "active_boss": _fixed_bool(active_boss),
+        "uncertain": _fixed_bool(policy.get("uncertain")),
+    }
 
 
 def _fixed_hanjuku_pending(rotation):
@@ -90,9 +183,12 @@ def project(payload):
         value = orders.get(step)
         projected_orders[step] = value if value in ORDER_STATES else "unknown"
 
-    active = policy.get("active")
-    if active not in STEPS:
-        active = None
+    raw_active = policy.get("active")
+    active = raw_active if raw_active in STEPS else None
+    if (active is None and isinstance(raw_active, str) and chapter is not None
+            and CHAPTER_BOSS_STEP.fullmatch(raw_active)
+            and raw_active.startswith(f"{chapter}-B")):
+        active = raw_active
 
     recent_seen = {name: False for name in RECENT_DECISIONS}
     recent = policy.get("recent_decisions")
@@ -103,6 +199,7 @@ def project(payload):
             decision = row.get("decision")
             if decision in recent_seen:
                 recent_seen[decision] = True
+    field = _compact_field(policy, chapter, raw_active)
 
     # A manual Hanjuku start may be safely queued before the bot process exists.
     # In that state hanjuku_tactical legitimately has no chapter, so expose the
@@ -124,6 +221,7 @@ def project(payload):
         "age_sec": age_sec,
         "active": active,
         "orders": projected_orders,
+        "field": field,
         "recent": recent_seen,
         "rotation": {
             "status": rotation_status,
@@ -148,6 +246,7 @@ def reply(projected, env):
             raise ValueError("invalid_reply_metadata")
 
     orders = projected["orders"]
+    field = projected["field"]
     rotation = projected["rotation"]
     lines = [
         "Hanjuku live boss status: success",
@@ -164,6 +263,9 @@ def reply(projected, env):
         )),
         "Boss orders: " + ", ".join(f"`{step}={orders[step]}`" for step in STEPS),
         f"Active boss order: `{projected['active'] or 'none'}`",
+        "Field: " + ", ".join(
+            f"`{name}={_field_token(field.get(name))}`" for name in FIELD_TOKENS
+        ),
         "Recent fixed signals: " + ", ".join(
             f"`{name}={'yes' if projected['recent'][name] else 'no'}`"
             for name in RECENT_DECISIONS

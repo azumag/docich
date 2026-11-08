@@ -74,7 +74,9 @@ def summon_reading(screen, mem, cur):
             or type(full) is not int or proof['max_hp'] != full
             or type(ally[0].hp) is not int or not 0 < ally[0].hp <= full
             or enemy[0].name not in MONSTER_SKILLS or type(enemy[0].hp) is not int
-            or not 0 < enemy[0].hp <= 999):
+            # 召喚獣のHPは4桁表示で、ちきゅうちゃんは9999 (g1139 17:38)。999で切ると
+            # 照合が毎回失敗し、おくのて行だけが有効な箱でBを打ち続けて止まった。
+            or not 0 < enemy[0].hp <= 9999):
         return None
     if screen.kind == 'battle_menu' and not any(
             r.spans() == [(176, 'おくのて')] for r in screen.menu_rows):

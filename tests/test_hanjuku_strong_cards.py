@@ -210,12 +210,16 @@ def test_strong_general_opens_with_the_carried_strong_card():
     assert rec['strong_enemy']['enemy']['combat'] == 13 and rec['strong_enemy']['enemy']['hp'] == 99
 
 
-def test_weak_general_keeps_the_strong_card_in_reserve():
+def test_weak_general_also_opens_with_the_strong_card():
+    """Owner 2026-11-04: 切り札はピンチの救済ではなく状況を有利にするために使う。
+
+    A weak enemy is no reason to keep the carried card in reserve.
+    """
     mem = battle_memory('1-A1', 'キャラウェイ', 'ヴィーナス')   # 4/40 vs 12/82
     policy.battle_step(battle_screen('キャラウェイ', 'ヴィーナス'), mem)
-    assert mem['battle'].get('card_flow') is None
-    assert mem['strong_card_kit']['1-A1'] == 'クースカン'      # 携行は維持する
-    assert not [r for r in mem['_records'] if r['decision'] == 'battle_card']
+    assert mem['battle']['card_flow']['card'] == 'クースカン'
+    assert mem['strong_card_kit']['1-A1'] == 'クースカン'
+    assert [r for r in mem['_records'] if r['decision'] == 'battle_card']
 
 
 def test_boss_enemy_opens_with_the_carried_strong_card():
@@ -254,9 +258,10 @@ def test_adjusted_strong_card_does_not_enter_ungated_derived_tactics(card):
     assert policy._deploy_cards(policy._order(mem), mem) == [card]
     assert not [t for t in policy._tactics(mem, step)
                 if t.get('step') == step and t['card'] == card]
+    # The dedicated strong tactic opens it, whoever the enemy is (owner 2026-11-04).
     policy.battle_step(battle_screen('キャラウェイ', 'ヴィーナス'), mem)
-    assert mem['battle'].get('card_flow') is None
-    assert not [r for r in mem['_records'] if r['decision'] == 'battle_card']
+    assert mem['battle']['card_flow']['card'] == card
+    assert mem['battle']['card_flow']['tactic_id'].startswith('strong:')
 
 
 def adjusted_order_memory(step, enemy, ally, cards):
@@ -283,13 +288,13 @@ def test_a_strong_general_opens_with_the_strong_card_before_an_unverified_defaul
     assert rec['decision'] == 'battle_card' and rec.get('strong_enemy', {}).get('rule') == 'hp'
 
 
-def test_a_weak_general_still_opens_with_the_unverified_carried_card():
-    """The strong card stays in reserve, so the other carried card still opens."""
+def test_a_weak_general_opens_with_the_strong_card_before_the_unverified_one():
+    """The strong card opens even against a weak general; the unverified default stays last."""
     step = 'A:10e074de:M387e01'
     mem = adjusted_order_memory(step, 'キャラウェイ', 'ヴィーナス',
                                 ['ころぼぐんだん', 'クースカン'])
     policy.battle_step(battle_screen('キャラウェイ', 'ヴィーナス'), mem)
-    assert (mem['battle'].get('card_flow') or {}).get('card') == 'ころぼぐんだん'
+    assert (mem['battle'].get('card_flow') or {}).get('card') == 'クースカン'
 
 
 def test_strong_card_requires_measured_carry_even_when_the_plan_includes_it():

@@ -4,6 +4,7 @@ import pytest
 from docich import hanjuku_policy as policy
 from docich.hanjuku_font import TextLine
 from docich.hanjuku_screen import Screen
+from docich.hanjuku.state.regions import world as _world
 
 
 HOME = 'アルマムーン'
@@ -212,7 +213,7 @@ def test_three_holdings_are_all_upgraded_in_one_month():
     third = 'キカンドン'   # chart order: アルマムーン, キカンドン, ..., ジョンリギ
     mem = memory()
     mem['captured'] = [OTHER, third]
-    mem['garrison'][third] = ['ヴィーナス']
+    _world(mem)['garrison'][third] = ['ヴィーナス']
     names = (HOME, third, OTHER)
 
     def upgrade_listed(castle, gold, cost):
@@ -284,7 +285,7 @@ def test_unavailable_castle_advances_to_another_owned_castle(refusal):
 def test_unowned_or_known_empty_castles_are_not_building_candidates():
     mem = memory()
     mem['captured'] = ['ゴーメン']
-    mem['garrison'].update({'ゴーメン': [], 'キカンドン': ['ヴィーナス']})
+    _world(mem)['garrison'].update({'ゴーメン': [], 'キカンドン': ['ヴィーナス']})
     assert policy._chikujou_candidates(mem) == [HOME]
     # Old captured-home state must not override positive evidence of its loss.
     mem['home_lost'] = True

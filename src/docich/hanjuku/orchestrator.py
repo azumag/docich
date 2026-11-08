@@ -61,6 +61,59 @@ BATTLE_OWNED_KINDS = frozenset({'battle', 'battle_menu', 'battle_menu_pending',
 # observations with the same concert input, press A instead so the policy
 # itself leaves the screen rather than waiting for the stall watchdog.
 CONCERT_PICKER_REPEAT_MAX = 8
+# A scripted event dialogue (phase 'concert'/'event'/'dialogue', kind 'text')
+# can sit on the same narration line while another owner (status scan, map
+# registration, house flow) holds the frame and returns []: the ordinary A
+# handler then never runs, so the line advances only every 10-15 s or not at
+# all (g1139 2026-11-06: 12:06/12:48 ~30 min stalls, 13:35 multi-second line
+# gaps). Count unchanged narration observations in policy memory (persisted
+# every decision) and press A, the dialogue advance key, promptly.
+EVENT_TEXT_ADVANCE_PHASES = frozenset({'concert', 'event', 'dialogue'})
+EVENT_TEXT_ADVANCE_MAX = 3
+
+# Menu and banner panels drawn over the map: their identity for the no-input
+# hold is the text and cursor the panel itself reads, not the pixels behind
+# it. Water and other map animations give these kinds a fresh frame digest on
+# every observation, so a digest-keyed streak never passed 2 and the corner
+# ended input_stalled while the same menu sat open (#3599: a castle_menu held
+# ~100 s with zero input). Kinds outside this set keep the digest key: on a
+# bare map, a battle or an unreadable frame the animation *is* the content
+# and must not be counted as a frozen screen. Every listed kind carries
+# readable menu/banner text; an empty read falls back to the digest anyway.
+MENU_HOLD_KINDS = frozenset({
+    'month_menu', 'main_menu', 'castle_menu', 'castle_info', 'general_list',
+    'card_select', 'sortie_confirm', 'discharge_menu', 'shop_exit_confirm',
+    'shop_quantity_prompt', 'shop_quantity', 'shop_list', 'gift_request',
+    'summer_bonus', 'yes_no', 'name_entry',
+    'sealed_castle', 'boss_attack_started', 'field_encounter_started',
+    'attack_started', 'defense_started', 'barrier_removed',
+})
+
+
+def event_text_advance(mem, phase, kind, key, actions, guarded=False):
+    """True when an unchanged scripted event narration line should advance.
+
+    The counter lives in the policy memory, which the brain persists on every
+    decision, so it survives the fresh per-observation subprocess. Any action,
+    a phase/kind change, or a changed line resets it.
+    """
+    watch = mem.get('event_text_watch') or {}
+    raw = watch.get('count') if isinstance(watch, dict) else None
+    if guarded:
+        count = 0
+    elif phase in EVENT_TEXT_ADVANCE_PHASES and kind == 'text' and not actions:
+        count = (raw + 1 if watch.get('key') == key
+                 and type(raw) is int and raw >= 0 else 1)
+    else:
+        count = 0
+    advance = count >= EVENT_TEXT_ADVANCE_MAX
+    if advance:
+        count = 0
+    if count:
+        mem['event_text_watch'] = {'key': key, 'count': count}
+    else:
+        mem.pop('event_text_watch', None)
+    return advance
 
 
 def pad(button, ms=100):
@@ -88,6 +141,32 @@ Y_JUMP_UNKNOWN_HOLD_MAX = 6
 # 13:12:29-13:13:08, an arrival battle opened mid-jump and holds 2-4 landed on
 # its draws, using up the bound before the view came back at 13:13:09.
 Y_JUMP_VIEW_KINDS = frozenset({'map', 'map_target', 'world_map'})
+
+
+UNKNOWN_HOLD_ADVANCE = 6      # identical unreadable frames before one A is sent
+
+
+def unknown_hold_advance(screen, mem, actions, digest):
+    """Break a frozen unreadable screen with one A press.
+
+    g1133 2026-11-05 logged 35 `situation_held` in half an hour: the bot sent no
+    input while the screen stayed unknown. Many game screens need one button to
+    move on, so an identical frame repeated UNKNOWN_HOLD_ADVANCE times gets a
+    single A. A screen that reacts never reaches the bound.
+    """
+    watch = mem.get('unknown_hold_watch') or {}
+    if watch.get('digest') != digest:
+        mem['unknown_hold_watch'] = {'digest': digest, 'n': 1}
+        return actions
+    watch['n'] = int(watch.get('n') or 0) + 1
+    mem['unknown_hold_watch'] = watch
+    if watch['n'] < UNKNOWN_HOLD_ADVANCE:
+        return actions
+    watch['n'] = 0
+    decision_log._record(mem, 'unknown_hold_advance', screen=screen.kind,
+                         observed_metric={'digest': digest[:16], 'held': UNKNOWN_HOLD_ADVANCE},
+                         reason='読めない画面が同じままなので、Aを1回だけ送って進める')
+    return [pad('a')]
 
 
 def y_jump_unknown_hold_step(screen, mem, previous_kind, generic):
@@ -334,7 +413,7 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
         hanjuku_roster.invalidate(mem)
         if previous_identity != identity:
             reset_native_map_scope = bool(mem.get('map_registration') or mem.get('map_discovery'))
-            for key in ('house', 'house_field_scan', 'house_scan_tick', 'house_scan_month', 'month_roster_scan', 'country_income',
+            for key in ('house', 'post_month_status', 'post_month_status_last', 'boss_camp_exempt', 'boss_camp_exempt_scope', 'general_statuses', 'house_field_scan', 'house_scan_tick', 'house_scan_month', 'month_roster_scan', 'country_income', 'country_wages',
                         'recruit_field_scan_attempts', 'recruit_month_scan_attempts', 'recruit_roster_attempts',
                         'house_eggs', 'hero_repair_deferral', 'egg_uses', 'egg_zero_owners', 'egg_types', 'egg_recheck', 'castle_income', 'castle_ownership',
                         'starter_party', 'map_registration', 'map_discovery', 'boss_victories', 'obs_cost'):
@@ -507,7 +586,10 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
         # meanwhile ポセイドン (HP 1, no soldiers) marched back into リグア and
         # fell. The scene closes the picker anyway: drop the recall and let the
         # scene advance. The camp is found again on the map afterwards.
+        # #3544: the interruption marker belongs to this recall; sweep it too
+        # so a later unrelated recall cannot inherit the short retry hold.
         _flow(mem).pop('recall', None)
+        _flow(mem).pop('recall_interrupted', None)
         mem['uncertain'] = True
         decision_log._record(mem, 'camp_recall_interrupted', screen=kind, phase=phase,
                              observed_metric={'stage': recall.get('stage'), 'steps': recall.get('steps')},
@@ -527,7 +609,13 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
     # A planned summon-preemption must not become a blind A on an unfinished
     # command menu, or be replaced by an old monthly/house transaction.
     battle_flow.note_duel_event(screen, mem)
-    actions = egg_recovery_flow.resume_egg_ritual_step(screen, mem)
+    actions = map_flow.castle_jump_step(screen, mem, frame)
+    if actions is None:
+        # A successful reanchor is a nested interrupt: restore the exact
+        # foreground owner before unrelated normal-priority flows run.
+        actions = map_flow.resume_reanchored_owner(screen, mem, frame)
+    if actions is None:
+        actions = egg_recovery_flow.resume_egg_ritual_step(screen, mem)
     if actions is None:
         actions = deploy_flow.resume_sortie_step(screen, mem)
     sortie_cancel_hold = False
@@ -543,7 +631,11 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
     trade_guard_hold = False
     if actions is None:
         actions = prompts_flow.trade_guard_step(screen, mem, phase=phase)
-        trade_guard_hold = (phase == 'dialogue' and actions == []
+        # The monthly event that carries the trade is phase 'concert' (red
+        # curtain) or the classify() fallback 'event', so a held refusal must
+        # suppress the no-input fallback there too; otherwise its legacy A
+        # confirms the default upper row.
+        trade_guard_hold = (phase in ('dialogue', 'concert', 'event') and actions == []
                             and (mem.get('trade_guard') or {}).get('held') is True)
     bijin_guard_hold = False
     if actions is None:
@@ -577,6 +669,12 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
     # resumes on its own screen. This covers return and outbound flows alike.
     concert_house_event = (
         mem.get('house') is not None and phase == 'concert' and kind == 'text')
+    if actions is None:
+        from .flows import post_month_status
+        actions = post_month_status.step(screen, mem, frame)
+    if actions is None:
+        from .flows import arrival_status
+        actions = arrival_status.step(screen, mem)
     if actions is None:
         from .flows import map_registration
         actions = map_registration.step(screen, mem, frame)
@@ -671,6 +769,8 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
     elif kind in {'castle_info','sealed_castle','main_menu'}:
         decision_log._record(mem,'close_panel',screen=kind,reason='意図しない情報画面を閉じる')
         actions=[pad('b')]
+    elif kind == 'text' and mem.get('shop') and shop_flow.holding_limit_message(screen):
+        actions=shop_flow.shop_step(screen,mem)
     elif kind == 'text' and month_flow.chikujou_leftover(screen, mem):
         actions = [pad('b')]
     elif kind=='text' and readers.is_camp_menu(screen):
@@ -708,9 +808,14 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
                 mem['held_phase']=phase
                 decision_log._record(mem,'situation_held',screen=kind,phase=phase,
                                reason='状況判定保留: 文字・カーソル・戦闘表示を読めない画面')
+            actions = unknown_hold_advance(screen, mem, actions, frame.digest())
         else:
             mem['held_phase']=None
+            mem.pop('unknown_hold_watch', None)
     actions=battle_menus_flow.summon_dialogue_pace(screen,mem,phase,kind,actions,frame.digest())
+    # The reanchor FSM only repairs coordinates; dispatch may now resume a
+    # previously active order or explain why no safe action is available.
+    map_flow.note_reanchor_followup(screen, mem, actions)
     # A concert picker that B cannot close must not consume the whole stall
     # window. Count unchanged observations that produced the same picker B;
     # after CONCERT_PICKER_REPEAT_MAX, choose A once and start over. A real
@@ -732,6 +837,21 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
         mem['concert_picker_watch']={'digest':digest,'repeat':repeat}
     else:
         mem.pop('concert_picker_watch',None)
+    concert_key = (f'text:{screen.text}' if kind == 'text' and screen.text
+                   else digest)
+    # A battle's summon/monster dialogue has its own reviewed pacing
+    # (battle_menus_flow.summon_dialogue_pace): never shortcut it here, or an
+    # A lands on the skill box before the page settles.
+    event_guarded = (trade_guard_hold or bijin_guard_hold
+                     or mem.get('bijin_gift_hold') is True
+                     or (mem.get('trade_guard') or {}).get('held') is True
+                     or bool(mem.get('battle')))
+    if event_text_advance(mem, phase, kind, concert_key, actions, event_guarded):
+        decision_log._record(mem,'event_text_advance',screen=kind,phase=phase,
+                       observed_metric={'unchanged_observations':EVENT_TEXT_ADVANCE_MAX,
+                                        'frame_sha256':digest},
+                       reason='イベント会話が同一文面のまま他担当の待機で止まっているため、Aで会話を進める')
+        actions=[pad('a')]
     # 保留の廃止: a screen that froze while we planned no input must not stay
     # that way. The streak counts only observations whose frame digest is one of
     # the two most recent distinct images -- the same evidence
@@ -745,11 +865,24 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
     # the digest on every observation, the streak never passed 1, and the run
     # ended input_stalled. A message box is the same screen while it reads the
     # same text.
-    hold_key=f'text:{screen.text}' if kind=='text' and screen.text else digest
+    # 'text' keeps its historical key shape; menu/banner kinds get a semantic
+    # key (see MENU_HOLD_KINDS) so background animation cannot restart the
+    # count. Cursor position and hand location are part of the key, so moving
+    # the selection still counts as a real change and restarts the streak.
+    if kind=='text' and screen.text:
+        hold_key=f'text:{screen.text}'
+    elif kind in MENU_HOLD_KINDS and screen.text:
+        hold_key=(f'menu:{kind}:{screen.text}:{screen.menu_cursor}'
+                  f':{screen.selected}:{screen.hand}')
+    else:
+        hold_key=digest
     frozen=[d for d in (updated.get('no_input_frames') or []) if isinstance(d,str)][:2]
+    # A raw digest in the recent list is still evidence of the same screen:
+    # it keeps a blinking menu counted and stays compatible with state written
+    # before semantic keys existed (the seeded digest key simply ages out).
     if actions:
         streak=0
-    elif hold_key in frozen:
+    elif hold_key in frozen or digest in frozen:
         streak=int(updated.get('no_input_streak') or 0)+1
     else:
         streak=1

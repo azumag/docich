@@ -90,3 +90,57 @@ def test_within_the_busy_window_the_old_rules_still_apply():
     assert _match_sortie(mem, 'リグア', 'ポセイドン') == ('I:b59ab6:3', 'matched')
     mem['sorties']['twin'] = dict(mem['sorties']['I:b59ab6:3'], tick=68480)
     assert _match_sortie(mem, 'リグア', 'ポセイドン') == (None, 'ambiguous')
+
+
+# g1133-a3499a00 2026-11-05: ピスタチオ left for ユージア at observation 28800
+# and entered at 30451 (1651 later, 51 over the old 4x bound). The unmatched
+# entry ran the whole battle as side 'enemy', disabling the value-aware
+# retreat policy; he retreated at ally 9 vs enemy 7 with melee score ahead.
+
+def g1133(now=30451):
+    return {'chapter': 6, 'tick': now,
+            'sorties': {
+                'A:510711f6:Mc01022': {'general': 'ピスタチオ', 'source': 'アルマムーン',
+                                        'target': 'ユージア', 'status': 'en_route',
+                                        'tick': 28800},
+            },
+            'launched': {'ユージア': {'general': 'ヘラ', 'step': 'A:42d50d12:Mc01022'}}}
+
+PISTACHIO_ENTRY = 'ピスタチオしょうぐんがユージアじょうにのりこんだ!!'
+
+
+def test_the_1651_observation_march_binds_its_sortie():
+    assert 30451 - 28800 >= 4 * SORTIE_BUSY_TICKS
+    assert _match_sortie(g1133(), 'ユージア', 'ピスタチオ') == ('A:510711f6:Mc01022', 'matched')
+
+
+def test_the_1651_march_entry_is_our_attack_with_its_step():
+    mem = g1133()
+    with chart.map_context(mem):
+        message_step(SimpleNamespace(text=PISTACHIO_ENTRY), mem)
+    assert mem['attack'] == {'general': 'ピスタチオ', 'castle': 'ユージア',
+                             'side': 'attack', 'step': 'A:510711f6:Mc01022'}
+
+
+def test_a_known_general_beyond_the_bound_still_attacks():
+    mem = g1133(now=28800 + LONG_MARCH_TICKS + 100)
+    assert _match_sortie(mem, 'ユージア', 'ピスタチオ') == (None, 'none')
+    with chart.map_context(mem):
+        message_step(SimpleNamespace(text=PISTACHIO_ENTRY), mem)
+    assert mem['attack']['side'] == 'attack'
+    assert mem['attack']['step'] is None
+
+
+def test_an_unknown_general_is_still_side_enemy():
+    mem = g1133()
+    with chart.map_context(mem):
+        message_step(SimpleNamespace(text='ドリアンしょうぐんがユージアじょうにのりこんだ!!'), mem)
+    assert mem['attack']['side'] == 'enemy'
+
+
+def test_a_garrison_row_marks_the_general_as_ours():
+    mem = {'chapter': 6, 'tick': 40000,
+           'garrison': {'アルマムーン': ['どうし', 'ピスタチオ']}}
+    with chart.map_context(mem):
+        message_step(SimpleNamespace(text=PISTACHIO_ENTRY), mem)
+    assert mem['attack']['side'] == 'attack'

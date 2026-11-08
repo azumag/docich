@@ -12,8 +12,9 @@ from ..os_layer.commands import menu_to, pad
 from ..os_layer.font import UNKNOWN
 from ..os_layer.readers import month_menu_ready
 from ..os_layer.roster import fixed_wage, run_identity
-from ..strategy.bargains import merchant_card_spendable, plan_bargains
-from ..strategy.boss_cards import note_card_purchase
+from ..strategy.bargains import (HELD_FLOOR, HOLD_CAP, SINCE_READ, held_estimate, hold_room,
+                                 merchant_card_spendable, note_card_bought, plan_bargains)
+from ..strategy.boss_cards import UNSEEN, note_card_purchase
 from ..strategy.economy import (month_chart_step, MONTH_SUB_MENU_WAIT, SOLDIER_ENOUGH, _army_count_increment, _egg_before_soldiers, _limit_soldier_refill,
                                 _merchant_spendable, _month_key, _refresh_egg_priority, _reserve_general_repair,
                                 _soldier_count_current, _soldier_count_scope, _soldiers_enough, refill_outcome)
@@ -43,9 +44,119 @@ def _record_shop_exit(mem, shop, screen, reason, *, listed=None):
             reason='商人の品揃えを見ずに一覧から戻ったため、購入せず終了した理由を記録する')
 
 
+HOLD_LIMIT_PRESS_LIMIT = 4     # A presses on one refusal message before leaving the shop
+
+
+def holding_limit_message(screen: Screen) -> bool:
+    """The merchant refused a card: う〜んそれいじょうもてないようですな!
+
+    Match a short fragment: the wavy dash and the exclamation mark may not be
+    in the font table, and only part of the line may be read.
+    """
+    return 'もてない' in ''.join(screen.text.split())
+
+
+def _holding_limit_step(screen: Screen, mem, shop):
+    """Close the merchant's refusal, learn the ceiling, and retry smaller.
+
+    The message sits over the still-visible price list, so it classifies as
+    shop_list while the hand cursor is hidden: planning then waits for a cursor
+    that never comes (live 2026-11-06, no input for 78 observations).
+    The real cap is unmeasured (#3574 assumed 99). A refusal of ``q`` more
+    copies on top of ``stock`` proves the total for that card is below
+    ``stock + q``; keep that bound for later visits and retry the same card
+    with half as many. A refused single copy means the hand is full, so every
+    remaining card is dropped. Soldiers use another editor and stay.
+    """
+    if not isinstance(shop, dict):
+        return [pad('b')]
+    if shop.get('hold_limit_open') is not True:
+        shop['hold_limit_open'] = True
+        shop['hold_limit_presses'] = 0
+        _learn_holding_limit(screen, mem, shop)
+    presses = shop.get('hold_limit_presses')
+    presses = presses + 1 if type(presses) is int and presses >= 0 else 1
+    shop['hold_limit_presses'] = presses
+    # A message that A cannot clear must not become the next endless hold.
+    return [pad('a')] if presses <= HOLD_LIMIT_PRESS_LIMIT else [pad('b')]
+
+
+def _learn_holding_limit(screen: Screen, mem, shop):
+    last = shop.get('last_buy')
+    row = last.get('row') if isinstance(last, dict) else None
+    bought = shop.get('bought')
+    gold = (screen.header or {}).get('gold')
+    paid_nothing = (type(gold) is int and isinstance(last, dict)
+                    and type(last.get('gold')) is int and gold >= last['gold'])
+    want = shop.get('want')
+    # Snapshot the pre-refusal shop state before mutating shop.pop/shop['want'] below.
+    last_buy_snapshot = ({**last, 'row': list(last['row']) if isinstance(last.get('row'), list) else last.get('row')}\
+                     if isinstance(last, dict) else last)
+    want_snapshot = list(want) if isinstance(want, list) else want
+    if paid_nothing and isinstance(row, list) and isinstance(bought, list) and bought and bought[-1] == row:
+        bought.pop()                      # refused, not bought: do not count it
+        ledger = mem.get(SINCE_READ)
+        if isinstance(ledger, dict) and type(ledger.get(row[0])) is int:
+            ledger[row[0]] = max(0, ledger[row[0]] - row[1])
+        attempt = row
+    elif isinstance(want, list) and len(want) == 3 and not isinstance(last, dict):
+        attempt = want                    # refused before any quantity was confirmed
+    else:
+        attempt = None                    # cannot tie the message to one request
+    shop.pop('last_buy', None)
+    shop['want'] = None
+    shop['hold_limit'] = int(shop.get('hold_limit') or 0) + 1
+    items = [list(r) for r in (shop.get('items') or [])]
+    name = qty = retry = None
+    if (isinstance(attempt, list) and len(attempt) >= 2 and isinstance(attempt[0], str)
+            and type(attempt[1]) is int and attempt[1] > 0):
+        name, qty = attempt[0], attempt[1]
+    if name is None:
+        dropped, items = items, []        # unattributable: stop buying cards this visit
+    else:
+        # held + qty > 99 was refused, so at least 100 - qty copies are held.
+        floor = mem.setdefault(HELD_FLOOR, {})
+        floor[name] = max(floor.get(name, 0) if type(floor.get(name)) is int else 0, HOLD_CAP + 1 - qty)
+        retry = min(qty // 2, hold_room(mem, name))
+        dropped = [r for r in items if r[0] == name]
+        items = [r for r in items if r[0] != name]
+        if retry > 0:
+            items.insert(0, [name, retry])   # smaller ask; each refusal at least halves it
+    # Full holdings snapshot so a later refusal can be split between a
+    # per-card cap and a whole-hand cap: per-name stock and its total, the
+    # purchase ledgers, and this visit's buys (untruncated).
+    stock = mem.get('card_stock')
+    stock = {k: v for k, v in stock.items() if type(v) is int} if isinstance(stock, dict) else {}
+    _record(mem, 'buy_skip', card=name, qty=qty, deviation_reason='holding_limit',
+            observed_metric={'message': screen.text, 'dropped': dropped, 'retry': retry,
+                             'held_floor': (mem.get(HELD_FLOOR) or {}).get(name),
+                             'held_estimate': held_estimate(mem, name) if name else None,
+                             'card_stock': dict(stock), 'card_stock_total': sum(stock.values()),
+                             'card_bought_unseen': dict(mem.get(UNSEEN) or {}),
+                             'card_bought_since_read': dict(mem.get(SINCE_READ) or {}),
+                             'bought': ([list(r) if isinstance(r, (list, tuple)) else r for r in bought]
+                              if isinstance(bought, list) else bought),
+                             # Record the full post-refusal queue and shop context,
+                             # not just the first few dropped rows.
+                             'items': [list(r) for r in items],
+                             'shop_state': {'hold_limit': shop.get('hold_limit'),
+                                            'hold_limit_open': shop.get('hold_limit_open'),
+                                            'hold_limit_presses': shop.get('hold_limit_presses'),
+                                            'last_buy': last_buy_snapshot,
+                                            'want': want_snapshot,
+                                            'gold': gold}},
+            reason='商人が所持上限(種類ごと99)で売らなかったため、所持の下限を記録し半分の枚数で再試行する'
+                   '(再試行が0枚ならその札だけやめる)')
+    shop['items'] = items
+
+
 def shop_step(screen: Screen, mem):
     shop = mem.get('shop')
     kind = screen.kind
+    if kind in ('shop_list', 'text') and holding_limit_message(screen):
+        return _holding_limit_step(screen, mem, shop)
+    if isinstance(shop, dict) and shop.get('hold_limit_open'):
+        shop['hold_limit_open'] = False   # the refusal is closed; a later one counts anew
     if kind == 'shop_exit_confirm':
         move = menu_to(screen, 'うむッ!')
         if shop:
@@ -83,6 +194,7 @@ def shop_step(screen: Screen, mem):
         if (type(qty) is not int or qty <= 0 or price is None or price <= 0
                 or available is None or price > available):
             _record(mem, 'buy_skip', card=name, qty=qty, price=price, gold=gold,
+                    listed=dict(listed),
                     deviation_reason='invalid_quantity' if type(qty) is not int or qty <= 0
                                      else 'not_listed' if price is None else 'reserved_funds',
                     reason='商人の品揃えまたは全賃金・未払回復等を保持した購入予算の制約')
@@ -305,6 +417,9 @@ def quantity_step(screen: Screen, mem, soldiers=False):
                 if move == 'here':
                     bought = shop.setdefault('bought', [])
                     bought.append([want[0], value, want[2]])
+                    note_card_bought(mem, want[0], value)
+                    shop['last_buy'] = {'row': [want[0], value, want[2]],  # undone if refused
+                                        'gold': (screen.header or {}).get('gold')}
                     extra = want[0] in (shop.get('bargain_cards') or [])
                     _record(mem, 'buy', card=want[0], qty=value, price=want[2],
                             chart_step=month_chart_step(mem),

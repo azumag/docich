@@ -356,6 +356,10 @@ cleanup の成功・対象の不存在・すべての読み取りの成功を保
   `owned_submodule_missing_or_invalid` は 0|1。`scan_complete=0` のときは
   `unknown=1`・`drift_detected=1` とし、失敗したscanを drift なしの0件扱いにしない。
   path・filename・diff・file bytes・raw exception は出さない。severity は変えない。
+  `/home/ubuntu/docich` 上での `gh pr merge` や開発作業で checkout が別 branch / 非祖先
+  commit / 古い submodule HEAD に残った場合も同じ tracked drift として扱う。復旧は
+  production checkout 上の merge・開発を止め、checkout を変えない merge 経路と承認済み
+  正規化手順を使う。
 
 - gatewayの `ops_brief_projection.status` は親コミットの公開用生成物とVMの
   実バイト/modeを比較した `matched` / `drift` / `unmanaged` / `unknown`。

@@ -203,14 +203,11 @@ def test_a_dome_is_not_held_back_by_the_tent_it_grew_from(monkeypatch):
     assert _flow(mem)['recall']['camp_kind'] == 'dome'
 
 
-def test_a_visible_camp_goes_before_a_new_survey(monkeypatch):
+def test_a_visible_camp_no_longer_preempts_a_new_survey(monkeypatch):
+    # Monthly roster-first processing schedules named returns; a visible tent
+    # must not hijack the separate house/status survey.
     monkeypatch.setattr(camp_recheck, 'recall_ready', lambda _mem, _frame: True)
-    monkeypatch.setattr(house, '_field_budget', lambda _mem, _scope: (0, False))
-    mem = memory(month='35-8', house_scan_month='35-7', house_scan_tick=0,
-                 goals=[{'kind': 'repair', 'actor': 'ゼウス', 'target': None, 'attempts': 1}])
-    assert house.step(Screen([], None, '', kind='map', cursor=(100, 100)), mem, object()) is None
-    assert 'house' not in mem
-    assert not decisions(mem, 'scan_started') and not decisions(mem, 'goal_dispatch')
+    assert house._camp_recall_first(memory(), object()) is False
 
 
 def test_recall_ready_stops_once_the_camp_is_on_hold():

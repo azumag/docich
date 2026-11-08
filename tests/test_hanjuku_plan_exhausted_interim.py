@@ -9,9 +9,10 @@ stored plan's request id matched the current situation, even though
 generals stayed in the home castle, two castles stayed lost and the month
 advanced without a single sortie.
 
-The speedrun path already falls back to one deterministic interim sortie for an
-exhausted adopted plan; the mechanical path (the default since the speedrun
-chart was abolished) now does the same.
+When the adopted plan has no startable orders, the mechanical path (the
+production default) must generate and adopt a complete replacement plan from
+the current situation. An interim hold is only valid when no safe candidates
+can be constructed.
 
 The conftest enables the speedrun chart for the whole suite, so these tests
 disable it explicitly: the defect is in the mechanical path production uses.
@@ -25,6 +26,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
 
 from docich import hanjuku_chart_adjust as chart_adjust
 from docich.hanjuku.strategy import replan
+from docich.hanjuku.state.regions import world as _world
 
 
 HOME = 'アルマムーン'
@@ -68,18 +70,59 @@ def interim(mem):
     return (mem.get('chart_adjust') or {}).get('interim_order')
 
 
-def test_a_blocked_adopted_plan_falls_back_to_one_interim_sortie():
+def test_a_blocked_adopted_plan_is_replaced_by_full_mechanical_chart():
     mem = memory()
     step = adopt(mem, after=['captured', 'ゴーメン'])      # ゴーメン is not ours
     assert replan._plan_pending(mem) is False
+    expected = replan.interim_candidates(mem)
+    assert len(expected) > 1, 'must test full-plan generation, not a single fallback'
+
     replan._off_chart(mem)
-    order = interim(mem)
-    assert order is not None, 'a blocked adopted plan left the idle army with no sortie'
-    assert order['purpose'] == 'retake' and order['target'] == 'ジョンリギ'
-    assert order['source'] == HOME
-    # The adopted plan is kept: a new situation, not this fallback, replaces it.
-    assert mem['chart_plan']['orders'][0]['step'] == step
-    assert [r for r in mem['_records'] if r['decision'] == 'chart_interim_order']
+
+    plan = mem['chart_plan']
+    assert plan['source'] == 'mechanical', plan
+    assert len(plan['orders']) == len(expected), plan
+    assert step not in [o['step'] for o in plan['orders']]
+    assert any(o['purpose'] == 'retake' and o['target'] == 'ジョンリギ'
+               and o['source'] == HOME for o in plan['orders']), plan
+    assert interim(mem) is None
+    assert [r for r in mem['_records'] if r['decision'] == 'chart_adjust_applied'
+            and r.get('source') == 'mechanical']
+
+
+def test_an_exhausted_adopted_plan_regenerates_only_after_it_becomes_unstartable():
+    mem = memory()
+    step = adopt(mem, after=None)
+    assert replan._plan_pending(mem) is True
+    replan._off_chart(mem)
+    assert mem['chart_plan']['source'] == 'jev'
+    assert interim(mem) is None
+
+    # The source castle was vacated, while the army is available elsewhere.
+    # A stale actor name alone is not enough to invalidate _plan_pending.
+    _world(mem)['garrison'][HOME] = []
+    _world(mem)['garrison']['カストーラ'] = list(IDLE)
+    assert replan._plan_pending(mem) is False
+    replan._off_chart(mem)
+    assert mem['chart_plan']['source'] == 'mechanical'
+    assert step not in [o['step'] for o in mem['chart_plan']['orders']]
+    assert interim(mem) is None
+
+
+def test_a_chart_with_no_safe_candidates_records_hold_instead_of_fake_orders():
+    # Every owned castle has a measured empty roster. Leaving the other
+    # castles absent from garrison means "unread", not "empty", and correctly
+    # creates source-probe candidates instead of a hold.
+    mem = memory(garrison={c: [] for c in
+                          (HOME, 'キカンドン', 'ナキューメラ', 'カストーラ')})
+    adopt(mem, after=['captured', 'ゴーメン'])
+    assert not replan.interim_candidates(mem)
+
+    replan._off_chart(mem)
+
+    assert mem['chart_plan']['source'] == 'jev'  # no replacement to adopt yet
+    assert interim(mem) is None
+    assert any(r['decision'] == 'chart_interim_hold' for r in mem['_records'])
 
 
 def test_a_startable_adopted_plan_still_suppresses_the_interim_sortie():
@@ -112,7 +155,7 @@ def test_spare_generals_form_a_wave_on_the_first_target():
     attacks = [o for o in candidates.values() if o['target'] == target]
     assert len(attacks) == 3, candidates
     assert len({o['general'] for o in attacks}) == 3
-    assert {o['general'] for o in attacks} <= set(mem['garrison'][other])
+    assert {o['general'] for o in attacks} <= set(_world(mem)['garrison'][other])
     assert {o['purpose'] for o in attacks} == {'attack'}
 
 

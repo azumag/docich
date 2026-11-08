@@ -1,6 +1,7 @@
 """A stale 四季王 retry must refresh roster evidence instead of parking."""
 
 from docich import hanjuku_chart as chart, hanjuku_policy as policy
+from docich.hanjuku.state.regions import world as _world
 
 
 SITES = set(chart.boss_sites(4))
@@ -42,7 +43,7 @@ def test_stale_site_retry_reprobes_home_roster_when_cached_lists_have_no_actor()
 
     assert chosen is not None and chosen['step'] == order['step']
     assert policy._source(chosen, mem) == home
-    assert home not in mem['garrison']
+    assert home not in _world(mem)['garrison']
     assert mem['boss_roster_reprobe_tick'] == 5000
     records = [r for r in mem['_records'] if r['decision'] == 'boss_roster_reprobe']
     assert len(records) == 1
@@ -66,7 +67,7 @@ def test_roster_reprobe_is_bounded_until_the_interval_expires():
     }
 
     assert policy.next_order(mem) is None
-    assert mem['garrison'][home] == [chart.HERO, 'ゼウス']
+    assert _world(mem)['garrison'][home] == [chart.HERO, 'ゼウス']
 
     mem['tick'] += policy.BOSS_ROSTER_REPROBE_TICKS
     assert policy.next_order(mem)['step'] == order['step']

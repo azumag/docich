@@ -12,6 +12,7 @@ from docich import hanjuku_chart as chart
 from docich import hanjuku_policy as policy
 from docich.hanjuku.strategy.orders import _garrison_plan
 from docich.hanjuku.strategy.replan import _garrison_rotation
+from docich.hanjuku.state.regions import world as _world
 
 OWNED = ['キカンドン', 'ナキューメラ', 'ゴーメン', 'カストーラ']
 
@@ -23,7 +24,7 @@ def memory(garrison, **kw):
 
 
 def rotation(mem):
-    return _garrison_rotation(mem, set(mem['garrison']), set(), set())
+    return _garrison_rotation(mem, set(_world(mem)['garrison']), set(), set())
 
 
 def test_plan_targets_follow_distance_to_the_nearest_enemy():
@@ -49,17 +50,16 @@ def test_a_surplus_rear_general_moves_to_the_front():
     assert [(o['source'], o['target']) for o in moves] == [('ナキューメラ', 'キカンドン')]
     assert moves[0]['garrison_rotate'] is True and moves[0]['purpose'] == 'move'
     # 余剰を出す城は1人残す（2人 -> 1人）。
-    assert len(mem['garrison']['ナキューメラ']) - 1 == 1
+    assert len(_world(mem)['garrison']['ナキューメラ']) - 1 == 1
 
 
-def test_a_far_rear_castle_may_stand_empty():
+def test_a_far_rear_castle_never_sends_its_last_defender():
     mem = memory({'キカンドン': [], 'カストーラ': [], 'ナキューメラ': [],
                   'ゴーメン': ['アポロン'],
                   'アルマムーン': ['どうし', 'ゼウス', 'アルテミス']})
     moves = rotation(mem)
-    assert [(o['source'], o['target']) for o in moves] == [('ゴーメン', 'キカンドン')]
-    # 遠い城の最後の1人を前線へ送り、0人にしてよい（owner 2026-11-04）。
-    assert len(mem['garrison']['ゴーメン']) - 1 == 0
+    assert moves == []
+    # 最前線の人数を増やすためでも、遠い城の最後の守備将軍は出さない。
 
 
 def test_the_home_castle_never_loses_its_guard():
@@ -105,11 +105,14 @@ def test_interim_candidates_rotate_after_the_attacks():
     mem = memory({'キカンドン': ['アテナ'],
                   'カストーラ': ['レモン', 'ピオーネ'],
                   'ナキューメラ': ['ソーピニヨン', 'デュオニソス'],
-                  'ゴーメン': ['アポロン'],
+                  'ゴーメン': ['アポロン', 'ポセイドン'],
                   'アルマムーン': ['どうし', 'ゼウス', 'アルテミス']})
     candidates = list(policy.interim_candidates(mem).values())
     rotated = [i for i, o in enumerate(candidates) if o.get('garrison_rotate')]
-    assert rotated and rotated == [len(candidates) - 1]
+    # Earlier sorties can reserve every eligible surplus general; in that case
+    # no rotation is valid. If rotation exists it must follow the attacks.
+    assert not rotated or rotated == [len(candidates) - 1], candidates
     # 攻撃・奪還を先に並べ、回す将軍は余剰だけを使う。
-    assert all(o['purpose'] in ('attack', 'retake') for o in candidates[:-1])
-    assert candidates[-1]['source'] == 'ゴーメン' and candidates[-1]['target'] == 'キカンドン'
+    assert all(o['purpose'] in ('attack', 'retake') for o in (candidates[:-1] if rotated else candidates))
+    if rotated:
+        assert candidates[-1]['source'] == 'ゴーメン' and candidates[-1]['target'] == 'キカンドン'

@@ -90,3 +90,69 @@ def test_a_new_confirmed_target_episode_has_its_own_alignment_budget(route, monk
     assert house._repair_step(marker(164), mem, FRAME) == [commands.pad('y')]
     assert mem['house']['phase'] == 'house_view'
     assert mem['house']['alignment_moves'] == mem['house']['alignment_unread'] == 0
+
+
+def test_chapter5_own_cell_does_not_fall_back_to_known_wrong_charted_cell(route, monkeypatch):
+    """A readable castle constellation is not proof of the house roof."""
+    mem, _ = setup(route, monkeypatch)
+    mem['chapter'] = 5
+    # Chapter 5 has no HOUSE_VIEW coordinate in this test's chart data.
+    # Supply synthetic geometry to exercise the fail-closed own-cell guard.
+    monkeypatch.setitem(house.HOUSE_TARGET, 5, (140, 140))
+    monkeypatch.setattr(house, '_defer_unsafe_house_route', lambda _: False)
+    monkeypatch.setattr(house, '_house_roof_delta', lambda *args, **kwargs: None)
+    from docich.hanjuku.os_layer import navigation
+    monkeypatch.setattr(navigation, 'Y_JUMP_OFFSET', {5: (0, 0)})
+    # Exactly on the old charted coordinate: this used to authorize A.
+    target = [int(house.HOUSE_TARGET[5][a] * 8) for a in (0, 1)]
+    monkeypatch.setattr(world, 'observed_cursor_cell', lambda *args, **kwargs: target)
+    assert house._repair_step(marker(), mem, FRAME) == []
+    assert mem['house']['phase'] == 'close'
+    assert mem['last_house_deferral']['code'] == 'position_unread'
+    assert not mem['house'].get('departure_pending')
+    assert any(r['decision'] == 'house_entry_roof_unverified' for r in mem['_records'])
+
+
+def test_failed_same_entry_twice_does_not_dispatch_third_time(route, monkeypatch):
+    mem, _ = setup(route, monkeypatch)
+    mem['house_entry_failures'] = {'1:12,-8': 2}
+    assert house._repair_step(marker(), mem, FRAME) == []
+    assert mem['house']['phase'] == 'close'
+    assert not mem['house'].get('departure_pending')
+    assert any(r['decision'] == 'house_entry_retry_blocked' for r in mem['_records'])
+
+
+def test_failed_entry_count_survives_json_and_stops_same_candidate(route, monkeypatch):
+    mem, _ = setup(route, monkeypatch)
+    mem['house'].update(phase='close', target_observation={
+        'entry': [12, -8], 'basis': 'house_roof_delta'})
+    mem['sorties'] = {'HOUSE_OUT:1': {
+        'general': 'ゼウス', 'purpose': 'house', 'status': 'en_route'}}
+    house._finish(mem)
+    assert mem['house_entry_failures'] == {'1:12,-8': 1}
+    assert mem['sorties']['HOUSE_OUT:1']['status'] == 'closed'
+    mem = json.loads(json.dumps(mem))
+    assert house._entry_failures(mem, (12, -8)) == 1
+
+
+def test_gift_list_marks_arrival_before_purchase_or_return(route, monkeypatch):
+    from types import SimpleNamespace
+    from docich.hanjuku.strategy import orders
+
+    mem, _ = setup(route, monkeypatch)
+    mem['house'].update(phase='travel', target_observation={
+        'entry': [12, -8], 'basis': 'house_roof_delta'})
+    mem['sorties'] = {'HOUSE_OUT:1': {
+        'general': 'ゼウス', 'purpose': 'house', 'status': 'en_route'}}
+    mem['house_entry_failures'] = {'1:12,-8': 1}
+    monkeypatch.setattr(house, 'gift_prices', lambda _: dict(house.GIFTS))
+    monkeypatch.setattr(orders, '_garrison_move', lambda *args, **kwargs: None)
+    screen = SimpleNamespace(kind='text', text='', header={'gold': 250})
+    assert house._repair_step(screen, mem, FRAME) == []
+    assert mem['house']['phase'] == 'buy'
+    assert mem['sorties']['HOUSE_OUT:1']['status'] == 'arrived_house'
+    assert mem['house_entry_failures'] == {}
+    mem['house']['phase'] = 'close'
+    house._finish(mem)
+    assert mem.get('house_entry_failures') == {}
+    assert mem.get('house_entry_miss') is None

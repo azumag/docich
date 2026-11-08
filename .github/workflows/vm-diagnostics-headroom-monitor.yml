@@ -90,6 +90,51 @@ jobs:
           print(f'usage_percent={percent}')
           print(f'alert={int(percent >= warn)}')
           PY
+          # #3341 Phase 0 follow-up: the collector now reports per-section byte
+          # accounting under diagnostics.meta.section_bytes (top-N key names +
+          # others + total; bytes and key names only). Reparse the envelope the
+          # probe already downloaded so the aggregate survives in the run
+          # summary instead of being discarded with RUNNER_TEMP. A missing map
+          # means the deployed collector predates #3342 or dropped the
+          # accounting at the hard ceiling; record it, never fail the probe.
+          # Section names are collector-internal keys but are still filtered to
+          # a fixed character class so envelope content can never inject markup
+          # or workflow commands into the summary or the annotation.
+          if [[ -f "$RUNNER_TEMP/diagnostics-headroom.json" ]]; then
+            python3 - "$RUNNER_TEMP/diagnostics-headroom.json" >> "$GITHUB_STEP_SUMMARY" <<'PY' || echo '- section_bytes: extraction failed'
+          import json
+          import re
+          import sys
+          from pathlib import Path
+
+          doc = json.loads(Path(sys.argv[1]).read_text())
+          diagnostics = doc.get('diagnostics')
+          meta = diagnostics.get('meta') if isinstance(diagnostics, dict) else None
+          section_bytes = meta.get('section_bytes') if isinstance(meta, dict) else None
+          top = section_bytes.get('top') if isinstance(section_bytes, dict) else None
+          if not isinstance(top, dict) or not top:
+              print('- section_bytes: absent (collector predates #3342 or accounting dropped at hard ceiling)')
+              print('::notice::diagnostics section_bytes=absent', file=sys.stderr)
+              raise SystemExit(0)
+          total = section_bytes.get('total')
+          total = total if isinstance(total, int) else 0
+          others = section_bytes.get('others')
+          others = others if isinstance(others, int) else 0
+          print('- section_bytes:')
+          ranked = sorted(top.items(), key=lambda item: -item[1])
+          for name, size in ranked:
+              safe = name if re.fullmatch(r'[A-Za-z0-9_]+', name) else '?'
+              size = size if isinstance(size, int) else 0
+              percent = (size * 100) // total if total > 0 else 0
+              print(f'  - {safe}: {size} B ({percent}%)')
+          print(f'  - others: {others} B')
+          print(f'  - total: {total} B')
+          lead = ranked[0]
+          lead_name = lead[0] if re.fullmatch(r'[A-Za-z0-9_]+', lead[0]) else '?'
+          lead_size = lead[1] if isinstance(lead[1], int) else 0
+          print(f'::notice::diagnostics section_bytes top={lead_name}:{lead_size}B total={total}B', file=sys.stderr)
+          PY
+          fi
 
       - name: Record diagnostics headroom trend
         env:

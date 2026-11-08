@@ -92,7 +92,8 @@ def _prediction_in_flight(state_dir: Path) -> bool:
     if 'status' in state:
         return state.get('status') in PREDICTION_ACTIVE_STATUSES
     outcomes = state.get('outcome_ids')
-    return bool(state.get('prediction_id')) and isinstance(outcomes, list) and len(outcomes) >= 2
+    prediction_id = state.get('prediction_id')
+    return isinstance(prediction_id, str) and bool(prediction_id) and isinstance(outcomes, list) and len(outcomes) >= 2
 
 
 def _fresh_boundary(state_dir: Path, kind: str, requested_at: float, now: float) -> bool:
@@ -115,6 +116,17 @@ def _audio_queue_quiet(state_dir: Path) -> bool:
     is quiet, so a broken queue never blocks every corner.
     """
     return is_quiet(comment_queue_dir(Path(state_dir).parent.parent))
+
+
+def prediction_in_flight(state_dir: Path) -> bool:
+    """True while a Soren prediction holds the corner boundary (public view).
+
+    The advance notice uses this gate only: while the 48-game prediction is
+    waiting to settle, the exact corner start cannot be promised. The audio
+    queue is deliberately not part of this probe (it delays a corner that is
+    already starting, it does not move the scheduled time).
+    """
+    return _prediction_in_flight(Path(state_dir))
 
 
 def boundary_ready(state_dir: Path, requested_at: float, *, now=None) -> bool:

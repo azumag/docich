@@ -10,6 +10,7 @@ from docich import hanjuku_measure as measure
 from docich import hanjuku_policy as policy
 from docich import hanjuku_reference as ref
 from docich.hanjuku_screen import Screen
+from docich.hanjuku.state.regions import world as _world
 
 
 def map_screen():
@@ -236,7 +237,7 @@ def test_restored_native_intro_requires_both_independent_lines():
         assert mem['chapter_evidence'] == 'native_chapter_2_intro'
         assert 'resume_chapter_pending' not in mem
         assert 'resume_intro_clues' not in mem
-        assert not mem.get('garrison') and not mem.get('captured')
+        assert not _world(mem).get('garrison') and not mem.get('captured')
     # Ordinary dialogue and established chapters cannot be reassigned.
     for mem in ({}, {'chapter': 6}, {'chapter': 6, 'resume_chapter_pending': True}):
         before = mem.get('chapter')
@@ -346,7 +347,7 @@ def test_chapter_5_boss_cell_uses_its_wram_record_and_the_ordinary_anchor():
 
 
 def test_source_flags_are_the_games_own_castle_tiles_so_later_chapters_use_them():
-    from docich.hanjuku_map_sources import SOURCE_CASTLES
+    from docich.hanjuku_map_sources import SOURCE_CASTLES, SOURCE_BOSS_FLAGS
     for chapter, tiles in WRAM_TILES.items():
         assert {n: (x + 2, y + 1) for n, (x, y) in tiles.items()} == SOURCE_CASTLES[chapter]
         for name, cell in chart.CASTLES[chapter].items():
@@ -356,19 +357,31 @@ def test_source_flags_are_the_games_own_castle_tiles_so_later_chapters_use_them(
                 limit = 16 if (chapter, name) == (3, 'アルマムーン') else 8
                 assert max(abs(a - b) for a, b in zip(cell, approx)) <= limit, (chapter, name)
     measured = set(chart.SEASON_SITE_CELLS) | {
-        n for cells in chart.DEMON_CASTLE_CELLS.values() for n in cells}
+        n for cells in chart.DEMON_CASTLE_CELLS.values() for n in cells} | {
+        n for cells in chart.SECRET_BASE_CELLS.values() for n in cells}
     for chapter in range(4, 13):
-        # Chapter 4's 四季王 sites and chapter 5's 完熟大魔城 come from the
-        # live Y view, not the table.
+        # Chapter 4's 四季王 sites, chapter 5's 完熟大魔城 and chapter 6's
+        # 完熟秘密基地 come from the live Y view, not the table.
         ordinary = {n: c for n, c in chart.CASTLES[chapter].items() if n not in measured}
         assert ordinary == {
             n: (8 * (left + 1), 8 * (top + 3)) for n, (left, top) in SOURCE_CASTLES[chapter].items()}
         extra = set(chart.CASTLES[chapter]) - set(ordinary)
         expected = (set(chart.boss_sites(4)) if chapter == 4 else
-                    set(chart.DEMON_CASTLE_CELLS.get(chapter) or ()))
+                    set(chart.DEMON_CASTLE_CELLS.get(chapter) or ())
+                    | set(chart.SECRET_BASE_CELLS.get(chapter) or ())
+                    | ({chart.boss_castle(chapter)} if chapter in chart.APPROX_BOSS_CELLS else set()))
         assert extra == expected
+        if chapter in chart.APPROX_BOSS_CELLS:
+            left, top = SOURCE_BOSS_FLAGS[chapter][0]
+            assert chart.APPROX_BOSS_CELLS[chapter] == (8 * (left + 1), 8 * (top + 3))
+            assert chart.CASTLES[chapter][chart.boss_castle(chapter)] == chart.APPROX_BOSS_CELLS[chapter]
         assert chart.Y_JUMP_OFFSET[chapter] == (63.0, 47.5) and chapter in chart.WORLD_MAP_OFFSET
         assert chart.orders(chapter)
-        # Only a chapter whose boss cell was measured lists its boss order.
-        assert (any(o['target'] == 'ボス' for o in chart.orders(chapter))
-                == (chapter in chart.DEMON_CASTLE_CELLS))
+        # A generic boss order needs a boss cell: measured for 5/6, seeded from
+        # the public flag for the single-site chapters 7/8/10/11/12. Chapter 4
+        # uses its four site names and chapter 9's boss moves, so neither has
+        # a reusable 'ボス' target.
+        has_generic_boss = (chapter in chart.DEMON_CASTLE_CELLS
+                            or chapter in chart.SECRET_BASE_CELLS
+                            or chapter in chart.APPROX_BOSS_CELLS)
+        assert (any(o['target'] == 'ボス' for o in chart.orders(chapter)) == has_generic_boss)

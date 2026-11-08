@@ -4029,6 +4029,28 @@ class GameSwitchCoordinator:
                     cleanup_pending=False,
                     receipt=copy.deepcopy(dict(acceptance.receipt)),
                 )
+        # A boundary can fail because the old runtime is already gone (for
+        # example Hanjuku exited before terminal evidence, docich#3521).
+        # Retaining that corpse as ``active`` leaves a dead game tracked as
+        # live forever: nothing re-queues the drain, the presentation stays
+        # stopped, and the orphaned agent keeps observation-retrying a
+        # runtime nobody can reach.  Probe once on a fresh budget; only a
+        # definitive "not alive" retires the runtime -- an unknown probe
+        # keeps the conservative retained-active path below.
+        if old_adapter is not None and self._probe_alive(
+            old_adapter, time.monotonic() + self.step_timeouts.probe_s
+        ) is False:
+            return self._retire_dead_active_locked(
+                tx,
+                acceptance,
+                target,
+                old_active,
+                old_adapter,
+                state,
+                error_code=error_code,
+                detail=detail,
+                boundary_cancelled=bool(cancel_boundary),
+            )
         last_result = {
             "request_id": acceptance.request_id,
             "operation": str(acceptance.receipt["operation"]),
@@ -4066,6 +4088,105 @@ class GameSwitchCoordinator:
             detail=detail,
         )
         return _result_from_receipt(receipt)
+
+    def _retire_dead_active_locked(
+        self,
+        tx: GameSwitchTransaction,
+        acceptance: RequestAcceptance,
+        target: str | None,
+        old_active: Mapping[str, object],
+        old_adapter: CoordinatorAdapter,
+        state: Mapping[str, object],
+        *,
+        error_code: str,
+        detail: str,
+        boundary_cancelled: bool,
+    ) -> SwitchResult:
+        """Collect a boundary failure whose old runtime is confirmed dead.
+
+        The retained-active path exists so a still-playing game survives a
+        failed switch; a confirmed-dead runtime can never be drained again,
+        so it is moved to ``retiring`` first (crash-safe tracking, retried by
+        the normal recovery cleanup) and torn down immediately on a fresh
+        budget -- the request deadline is typically spent by the failed
+        boundary wait, same rule as rollback.  The canonical update must
+        land before teardown: contained adapters refuse to clean a runtime
+        still committed in ``active``/``previous`` (safe-boundary contract),
+        so the runtime is uncommitted first and collected second.  A teardown
+        that cannot be confirmed leaves the entry in ``retiring`` rather than
+        re-publishing the corpse as active.
+        """
+        retiring_entry = {**dict(old_active), "cleanup_role": "failed_boundary_active"}
+        tx.transition(
+            {"draining"},
+            "idle",
+            updates={
+                "active": None,
+                "candidate": None,
+                "previous": None,
+                "operation": None,
+                "request_id": None,
+                "deadline_at": None,
+                "retiring": [retiring_entry, *(state.get("retiring") or [])],
+                "last_error": {"error_code": error_code, "detail": detail},
+            },
+            crash_hook=self.crash_hook,
+        )
+        torn_down = self._teardown_runtime(
+            old_adapter, time.monotonic() + self.rollback_timeout_s
+        )
+        warnings: list[str] = []
+        cleanup_pending = not torn_down
+        if not torn_down:
+            warnings.append("停止確認済みruntimeの回収を確認できませんでした")
+        last_result = {
+            "request_id": acceptance.request_id,
+            "operation": str(acceptance.receipt["operation"]),
+            "status": "failed",
+            "from_game": old_active["game"],
+            "to_game": target,
+            "generation": acceptance.generation,
+            "error_code": error_code,
+            "detail": detail,
+            "failure_phase": "round_boundary",
+            # The runtime was provably dead, so nothing is retained: the
+            # restore-replay proof in retro_corner must not revive it.
+            "retained_active": None,
+            "active_retired": True,
+            "boundary_cancelled": boundary_cancelled,
+            "cleanup_pending": cleanup_pending,
+        }
+        tx.transition(
+            {"idle"},
+            "idle",
+            updates={
+                "retiring": (
+                    list(state.get("retiring") or [])
+                    if torn_down
+                    else [retiring_entry, *(state.get("retiring") or [])]
+                ),
+                "last_result": last_result,
+            },
+            crash_hook=self.crash_hook,
+        )
+        receipt = tx.finish_request(acceptance.request_id, "failed", last_result)
+        if torn_down:
+            self._write_retire_marker(retiring_entry, warnings, "idle")
+        try:
+            self._write_mirror(None)
+        except Exception as exc:
+            warnings.append(f"current_game mirror更新失敗: {_safe_detail(exc)}")
+        self._log(
+            "round_boundary_failed",
+            phase="idle",
+            result="failed",
+            error_code=error_code,
+            detail=detail,
+            cleanup_pending=cleanup_pending,
+        )
+        return _result_from_receipt(
+            receipt, warnings=tuple(warnings), cleanup_pending=cleanup_pending
+        )
 
     def _round_boundary_stale_result(
         self,
@@ -4183,7 +4304,24 @@ class GameSwitchCoordinator:
                 )
             boundary_method = getattr(old_adapter, "request_round_boundary", None)
             boundary_required = self._round_boundary_required(old_adapter)
-            if callable(boundary_method) or boundary_required:
+            if self._runtime_confirmed_dead(old_adapter, deadline):
+                # Issue #3521: canonical active still tracks a runtime whose
+                # game already exited (e.g. quiesce_failed left it behind and
+                # presentation later went stopped).  A dead runtime has no
+                # round boundary to wait for; reclaim it through the ordinary
+                # quiesce path so stop_agent/cleanup collect the residue and
+                # the switch proceeds instead of re-failing on a stale active.
+                self._log(
+                    "active_stale_reclaim",
+                    phase="preparing",
+                    detail="tracked active runtime is already dead; skipping round boundary",
+                )
+                tx.transition(
+                    {"preparing"}, "quiescing",
+                    updates={"active": None, "previous": old_active},
+                    crash_hook=self.crash_hook,
+                )
+            elif callable(boundary_method) or boundary_required:
                 tx.transition(
                     {"preparing"}, "draining",
                     crash_hook=self.crash_hook,
@@ -4454,6 +4592,20 @@ class GameSwitchCoordinator:
             time.sleep(self.poll_interval_s)
         return self._probe_alive(adapter, deadline) is False
 
+    def _runtime_confirmed_dead(self, adapter: CoordinatorAdapter, deadline: float) -> bool:
+        """True only when the adapter's liveness probe cleanly reports death.
+
+        ``alive() -> False`` is conclusive: window, pane and process are all
+        gone (Issue #3521: presentation stopped while canonical ``active``
+        still tracks the runtime).  ``_probe_alive`` already bounds the call
+        by ``step_timeouts.probe_s`` -- the same budget the boundary-failure
+        probe uses -- and returns a tri-state, so ``is False`` is the only
+        conclusive verdict: a raised error or a timeout is inconclusive, not
+        proof of death, and callers must keep the normal quiesce path in
+        that case (docich#3529).
+        """
+        return self._probe_alive(adapter, deadline) is False
+
     def _teardown_runtime(self, adapter: CoordinatorAdapter, deadline: float) -> bool:
         """Stop agent and game, then confirm the runtime is actually gone.
 
@@ -4524,7 +4676,16 @@ class GameSwitchCoordinator:
                     detail=f"old runtime adapter: {_safe_detail(exc)}",
                     keep_active=True,
                 )
-            if getattr(adapter, "requires_stop_boundary", False):
+            if self._runtime_confirmed_dead(adapter, deadline):
+                # Issue #3521: tracked active is already dead; there is no
+                # boundary to drain and nothing to lose by reclaiming it here.
+                self._log(
+                    "active_stale_reclaim",
+                    phase="validating",
+                    detail="tracked active runtime is already dead; skipping round boundary",
+                )
+                tx.transition({"validating"}, "quiescing", crash_hook=self.crash_hook)
+            elif getattr(adapter, "requires_stop_boundary", False):
                 tx.transition({"validating"}, "draining",
                               updates={"deadline_at": deadline_at}, crash_hook=self.crash_hook)
                 try:
@@ -4924,6 +5085,17 @@ class GameSwitchCoordinator:
                 },
                 crash_hook=self.crash_hook,
             )
+            # Rollback restore commits a runtime: announce it like a switch
+            # commit so the stream title follows the restored game. Without
+            # this the adapter's pre-commit sync was the only writer (removed
+            # 2026-11-05 for flap suppression), leaving e.g. sorengame on air
+            # while soren91 was active.
+            try:
+                restored_game = restored.get("game") if isinstance(restored, dict) else None
+                if isinstance(restored_game, str) and restored_game:
+                    self._emit_post_commit(restored_game)
+            except Exception:
+                pass
             receipt_done = (
                 tx.finish_request(request_id, "rolled_back", last_result) if finish_receipt else last_result
             )
@@ -5057,6 +5229,14 @@ class GameSwitchCoordinator:
             },
             crash_hook=self.crash_hook,
         )
+        # Same as alive restore above: the rollback commits a runtime, so
+        # announce it through the post-commit hook (flap fix 2026-11-05).
+        try:
+            rollback_game = rollback_rd.get("game") if isinstance(rollback_rd, dict) else None
+            if isinstance(rollback_game, str) and rollback_game:
+                self._emit_post_commit(rollback_game)
+        except Exception:
+            pass
         receipt_done = (
             tx.finish_request(request_id, "rolled_back", last_result) if finish_receipt else last_result
         )

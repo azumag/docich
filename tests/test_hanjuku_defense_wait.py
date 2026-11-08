@@ -1,7 +1,8 @@
-"""Sole-general starvation (#2846): wait for a second general, then a bounded break.
+"""Sole-general starvation (#2846): wait for a second general, never empty it.
 
 Chapter 3 head as observed: one owned castle with one general, no marching
-generals. No model request while waiting; one monthly fallback sortie allowed.
+generals. No model request while waiting. Owner 2026-11-06 abolished the
+monthly fallback sortie: an emptied castle falls to the next enemy.
 Synthetic memory only.
 """
 import sys
@@ -40,43 +41,31 @@ def test_same_month_adds_no_records():
     assert kinds(mem) == ['chart_defense_wait']
 
 
-def test_month_change_without_prospects_breaks_sole_general():
+def test_month_change_without_prospects_never_empties_the_sole_castle():
+    # Owner 2026-11-06: an emptied castle falls to the next enemy, so the
+    # starvation wait no longer sends the last general out.
     mem = starved_memory()
     mem['orders'] = {o['step']: 'launched' for o in chart.orders(3)}
     replan._off_chart(mem)
     mem['month'] = '8-2'
     replan._off_chart(mem)
     assert 'chart_defense_wait_eval' in kinds(mem)
-    assert 'sortie_defense_break' in kinds(mem)
-    brk = [r for r in mem['_records'] if r['decision'] == 'sortie_defense_break'][0]
-    assert brk['source'] == HOME and brk['general'] == 'アルテミス'
-    order = mem['chart_adjust']['interim_order']
-    assert orders.next_order(mem) == order
-    assert orders._source_spare_missing(order, mem, allow_probe=True) is False
+    assert 'sortie_defense_break' not in kinds(mem)
+    assert (mem.get('chart_adjust') or {}).get('interim_order') is None
 
 
-def test_defense_break_does_not_authorize_foreign_or_expired_order():
-    import copy
+def test_a_starved_sole_castle_gets_no_interim_order():
     mem = starved_memory()
     replan._off_chart(mem)
     mem['month'] = '8-2'
     replan._off_chart(mem)
-    order = mem['chart_adjust']['interim_order']
-    for field, value in [('step', 'I:foreign:1'), ('general', 'ゼウス'),
-                         ('target', 'foreign'), ('source', 'foreign')]:
-        assert orders._reserve_source_guard({**order, field: value}, mem)
-    for change in [{'month': '8-3'}, {'lost': [HOME]},
-                   {'defense_break_blocked': [HOME]}, {'defense_break_sources': {}},
-                   {'general_location_unknown': [order['general']]}, {'garrison': {HOME: []}},
-                   {'sorties': {'other': {'general': order['general'], 'status': 'en_route',
-                                         'target': order['target'], 'tick': mem['tick']}}},
-                   {'general_override': {order['step']: 'ゼウス'}}]:
-        altered = copy.deepcopy(mem)
-        altered.update(change)
-        assert orders._reserve_source_guard(order, altered)
+    mem['month'] = '8-3'
+    replan._off_chart(mem)
+    assert (mem.get('chart_adjust') or {}).get('interim_order') is None
+    assert 'sortie_defense_break' not in kinds(mem)
 
 
-def test_prospects_extend_once_then_cap_forces_break():
+def test_joiner_prospects_never_authorize_an_emptied_castle():
     mem = starved_memory()
     original = replan._joiner_prospects
     replan._joiner_prospects = lambda m: True
@@ -84,10 +73,10 @@ def test_prospects_extend_once_then_cap_forces_break():
         replan._off_chart(mem)
         mem['month'] = '8-2'
         replan._off_chart(mem)
-        assert 'sortie_defense_break' not in kinds(mem)
         mem['month'] = '8-3'
         replan._off_chart(mem)
-        assert 'sortie_defense_break' in kinds(mem)
+        assert 'sortie_defense_break' not in kinds(mem)
+        assert (mem.get('chart_adjust') or {}).get('interim_order') is None
     finally:
         replan._joiner_prospects = original
 
@@ -98,13 +87,14 @@ def test_two_generals_keep_normal_path():
     assert 'chart_defense_wait' not in kinds(mem)
 
 
-def test_lost_break_source_is_never_used_again():
+def test_a_lost_sole_castle_never_sends_its_last_general():
+    # Owner 2026-11-06: an emptied castle falls; the starvation wait no longer
+    # sends the last general, lost source or not.
     mem = starved_memory()
     replan._off_chart(mem)
     mem['month'] = '8-2'
     replan._off_chart(mem)
     mem['lost'] = [HOME]
     replan._defense_gate(mem)
-    assert 'defense_break_lost' in kinds(mem)
-    assert HOME in mem['defense_break_blocked']
+    assert 'sortie_defense_break' not in kinds(mem)
     assert replan.interim_candidates(mem, allow_sole=True) == {}

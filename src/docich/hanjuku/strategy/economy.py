@@ -5,9 +5,11 @@ priority and the chikujou reserve. These functions decide amounts and
 priorities; the month/shop flows carry them out through the menus.
 """
 from __future__ import annotations
+from ..state.regions import world as _world
 
 from ... import hanjuku_chart as chart
 from ...hanjuku_egg_reference import general_max_hp
+from ...hanjuku_reference import CARDS as REFERENCE_CARDS
 from ..decision_log import _record
 from ..os_layer.readers import STATUS_NAMES
 from ..os_layer.world import NAME, _owned
@@ -25,6 +27,15 @@ def _month_key(header):
 KNOWN_PRICES = {'イッテツーン': 1, 'ノリウツール': 18, 'クースカン': 24, 'ゼンマイン': 32,
                 'グリンボー': 6, 'ミックミー': 40, 'ブラッキー': 3,
                 'マグネガキン': 34, 'エンジェリン': 32, 'ころぼぐんだん': 5}
+# Other cards can be picked from an observed merchant listing when rich.
+# Reference prices are upper bounds, never proof that a merchant stocks a card.
+KNOWN_PRICES.update({name: data['price'] for name, data in REFERENCE_CARDS.items()
+                     if name not in KNOWN_PRICES and type(data.get('price')) is int
+                     and data['price'] > 0})
+# These two requested cards have *no* reference gold price (event/treasure
+# only). The large value is an acceptance ceiling, NOT an asserted shop price:
+# they may be bought only after a readable real listing and verified quote.
+KNOWN_PRICES.update({'フットバース': 999, 'ピッグローラー': 999})
 
 # 兵士は1G=1人で2桁入力が上限。チャート計画の無い月の残金はここまでの補充に使う。
 SOLDIER_CAP = 99
@@ -483,28 +494,146 @@ def _defer_recruit_for_egg(mem, shop):
         goals.note_attempt(mem, 'recruit', 'deferred')
 
 
+def _previous_recruit_month(month):
+    """Only the immediately preceding in-game month, including year rollover."""
+    if not isinstance(month, str):
+        return None
+    parts = month.split('-')
+    if (len(parts) != 2 or any(not part.isdecimal() for part in parts)
+            or any(not part or len(part) > 4 for part in parts)):
+        return None
+    year, number = map(int, parts)
+    if year < 1 or not 1 <= number <= 12:
+        return None
+    if number == 1:
+        return f'{year - 1}-12' if year > 1 else None
+    return f'{year}-{number - 1}'
+
+
+def _monthly_general_count_unverified(mem):
+    """A monthly status visit must not fall back to historical headcounts."""
+    from ..os_layer.roster import country_count
+    attempts = mem.get('recruit_month_scan_attempts') or {}
+    return (attempts.get('scope') == [mem.get('chapter'), mem.get('month')]
+            and type(attempts.get('count')) is int and attempts['count'] > 0
+            and country_count(mem, 'generals') is None)
+
+
+def _reset_unstarted_recruit_plan(mem):
+    """A fresh national total supersedes an unpaid provisional batch."""
+    shop = mem.get('shop')
+    if (not isinstance(shop, dict) or shop.get('key') != mem.get('month')
+            or mem.get('month_sub') or _batch_continuing(shop)
+            or shop.get('recruit') in ('opened', 'done', 'unverified')):
+        return
+    for key in ('recruit_batch', 'recruit_budget_version', 'recruit_measured_budget'):
+        shop.pop(key, None)
+    shop.update(recruit_priority=False, recruit_reserve=0)
+
+
+def _garrison_lower_bound(mem):
+    """Measured garrison names as a lower-bound headcount, or None.
+
+    Field/legacy planning can use distinct per-castle names without claiming
+    a full roster. Once this month's national-status inspection begins, its
+    missing count must hold recruitment instead (owner 2026-11-07).
+    """
+    if _monthly_general_count_unverified(mem):
+        return None
+    garrison = _world(mem).get('garrison')
+    if not isinstance(garrison, dict):
+        return None
+    names = set()
+    for value in garrison.values():
+        if isinstance(value, (list, tuple)):
+            names.update(g for g in value if isinstance(g, str) and g)
+    return len(names) if names else None
+
+
+def _recruit_headcount(mem):
+    """Prefer this month's exact total; use only last month's measured total
+    to bootstrap a shortage while the current national status is not yet read.
+
+    The monthly entry flow now inspects the national status before purchases.
+    After that inspection begins, a missing current count blocks historical
+    fallback. Older/field planning can still carry one provisional month
+    (complete=False), never a full new roster or a replacement for the check.
+    """
+    from ..os_layer.roster import MAX_GENERALS, fresh, run_identity
+    if _monthly_general_count_unverified(mem):
+        return None, False, []
+    country = mem.get('country_general_count') or {}
+    identity = run_identity(mem.get('_run_identity'))
+    chapter, month = mem.get('chapter'), mem.get('month')
+    valid_country = (isinstance(country, dict)
+                     and country.get('identity') == identity
+                     and type(country.get('count')) is int
+                     and 0 <= country['count'] <= MAX_GENERALS)
+    if valid_country and country.get('scope') == [chapter, month]:
+        return country['count'], True, []
+    seen = fresh(mem)
+    if seen is not None:
+        return len(seen['names']), seen.get('complete') is True, list(seen['names'])
+    # A previous run/chapter or a count from two months ago is never an
+    # authority to spend. The current run must have a real identity and tick.
+    previous = _previous_recruit_month(month)
+    if (valid_country and identity is not None and type(chapter) is int
+            and previous is not None and country.get('scope') == [chapter, previous]
+            and type(country.get('tick')) is int and type(mem.get('tick')) is int
+            and 0 <= country['tick'] <= mem['tick']):
+        return country['count'], False, []
+    return None, False, []
+
+
 def _recruit_spare_after_necessities(mem, shop, gold):
     """Once each owned castle can be staffed, only real spare cash recruits.
 
     Keep the existing demand/economy checks. This extra gate reserves pending
     purchases, soldiers and repair; it never borrows the goninja floor.
     """
-    from ..os_layer.roster import fresh
-    seen = fresh(mem)
+    count, complete, _ = _recruit_headcount(mem)
     owned = {STATUS_NAMES.get(c, c) for c in _owned(mem)}
     known = {STATUS_NAMES.get(c, c) for c in chart.CASTLE_NAMES.get(mem.get('chapter'), ())}
-    evidence = {'generals': len(seen['names']) if seen and seen.get('complete') is True else None,
+    evidence = {'generals': count if complete else None,
                 'owned_castles': len(owned) if owned and owned <= known else None,
                 'gold': gold, 'spare': None}
-    continuing = _batch_continuing(shop)
-    if not continuing and (evidence['generals'] is None or evidence['owned_castles'] is None):
+    if _monthly_general_count_unverified(mem):
+        evidence['country_count_unverified'] = True
         return None, evidence
-    if not continuing and evidence['generals'] < evidence['owned_castles']:
+    continuing = _batch_continuing(shop)
+    # A partial roster is only a lower bound, but an already approved
+    # comfortable-cash recruitment must still reach the real cash check.
+    # Keep unknown castle ownership and other incomplete rosters held.
+    partial_eligible = (not complete and _recruit_shortage(mem) is not None
+                        and type(gold) is int and gold >= RECRUIT_BATCH_GOLD
+                        and _recruit_wage_hires(mem) > 0)
+    if not continuing and (evidence['owned_castles'] is None
+                           or (evidence['generals'] is None and not partial_eligible)):
+        return None, evidence
+    if partial_eligible:
+        evidence['roster_lower_bound'] = count
+    if (not continuing and evidence['generals'] is not None
+            and evidence['generals'] < evidence['owned_castles']):
         return True, evidence  # the existing shortage cash rules still apply
     cards = [] if shop.get('merchant_done') else shop.get('items') or []
+    # A stale provisional refill must not consume the recruitment cash when
+    # this run's measured army already meets the current refill target.
+    # Keep the original budget if the observation is missing or from another
+    # run/month; a planned quantity is never proof of a paid refill.
+    key = shop.get('key')
+    parts = key.split('-') if isinstance(key, str) else []
+    measured_enough = False
+    if (len(parts) == 2 and all(part.isdigit() for part in parts)
+            and int(parts[0]) >= 1 and 1 <= int(parts[1]) <= 12
+            and type(gold) is int):
+        header = {'year': int(parts[0]), 'month': int(parts[1]), 'gold': gold}
+        measured_enough = (_soldier_count_current(mem, header)
+                           and _soldiers_enough(mem, shop, header))
     completed = (shop.get('soldiers_before_recruit_done', shop.get('soldiers_done')) is True
-                 or (shop.get('soldier_receipt') or {}).get('status') == 'paid')
+                 or (shop.get('soldier_receipt') or {}).get('status') == 'paid'
+                 or measured_enough)
     soldiers = (0 if completed else shop.get('soldiers_before_recruit', shop.get('soldiers')))
+    evidence['measured_army_enough'] = measured_enough
     repair = _house_repair_reserve(shop)
     if (type(gold) is not int or any(name not in KNOWN_PRICES for name, _ in cards)
             or type(soldiers) is not int or soldiers < 0
@@ -557,6 +686,27 @@ def _defer_recruit_cash(mem, shop, gold, evidence):
     goals.note_attempt(mem, 'recruit', 'deferred')
 
 
+def _recruit_wage_hires(mem):
+    """How many more hires the measured income can carry; 0 when unknown.
+
+    Owner 2026-11-06: with cash in hand (RECRUIT_BATCH_GOLD), keep hiring up
+    to MAX_GENERALS while income does not fall below the wages. Both values
+    are the measured month-page figures; an unobserved one is not headroom.
+    """
+    from ..os_layer.roster import MAX_RECRUIT_WAGE
+    income = mem.get('country_income')
+    wages = mem.get('country_wages')
+    inc = income.get('income') if isinstance(income, dict) else None
+    wag = wages.get('wages') if isinstance(wages, dict) else None
+    if type(inc) is not int or type(wag) is not int:
+        return 0
+    return max(0, (inc - wag) // MAX_RECRUIT_WAGE)
+
+
+def _recruit_wage_headroom(mem):
+    return _recruit_wage_hires(mem) > 0
+
+
 def _recruit_target(mem):
     from ..os_layer.roster import roles
     chapter = mem.get('chapter')
@@ -574,42 +724,62 @@ def _recruit_target(mem):
         spec = roles(raw)
     except ValueError:
         return None
-    target = spec['per_castle'] * len(owned) + spec['attack']
+    # Owner 2026-11-04: 資金に余裕がある（所持金1000G以上）月は、所有城だけで
+    # なく、その章のフィールド上の全城（ボス城を除く）の守備・交代分まで
+    # 募集してよい。所持金が未観測・1000G未満なら従来どおり所有城で数える。
+    # 1000Gは既存のまとめ募集（RECRUIT_BATCH_GOLD）と同じ閾値。
+    gold = mem.get('gold')
+    comfortable = type(gold) is int and gold >= RECRUIT_BATCH_GOLD
     from ..os_layer.roster import MAX_GENERALS
+    if comfortable and _recruit_wage_headroom(mem):
+        # Owner 2026-11-06: cash is comfortable and the payroll still leaves
+        # room under the income, so fill the roster to the cap.
+        return MAX_GENERALS
+    castles = expected if comfortable else owned
+    target = spec['per_castle'] * len(castles) + spec['attack']
     return min(target, MAX_GENERALS) if target > 0 else None
 
 
 def _recruit_sufficient(mem):
-    from ..os_layer.roster import fresh
-    seen, target = fresh(mem), _recruit_target(mem)
-    return seen is not None and target is not None and len(seen['names']) >= target
+    count, complete, names = _recruit_headcount(mem)
+    target = _recruit_target(mem)
+    # A carried national count can establish a possible shortage, not prove
+    # that the same number still serve after a month of battles.
+    return (count is not None and target is not None and count >= target
+            and (complete or bool(names)))
 
 
 def _stop_unneeded_recruit(mem, shop):
-    from ..os_layer.roster import fresh
     if shop.get('recruit') in ('opened', 'done', 'unverified'):
-        return True  # finish the existing transaction; do not invent a refund
+        return True
     if _batch_continuing(shop):
-        # Each paid recruit invalidates the roster, so the next round cannot
-        # re-prove the shortage; the first complete roster did (recruit_batch).
-        return False
-    seen, target = fresh(mem), _recruit_target(mem)
-    if seen is not None and target is not None and len(seen['names']) < target and seen.get('complete') is True:
-        return False
+        return False  # preserve the initial shortage across a paid batch
+    count, complete, _ = _recruit_headcount(mem)
+    if count is None:
+        count = _garrison_lower_bound(mem)
+    target = _recruit_target(mem)
+    if count is not None and target is not None and count < target:
+        # Owner 2026-11-06: a partial list is a lower bound; with cash in hand
+        # and wage headroom the roster still grows (g1139 48-1 kept
+        # recruit_hold=deferred_roster even after the shortage rule changed).
+        gold = mem.get('gold')
+        if (complete or (type(gold) is int and gold >= RECRUIT_BATCH_GOLD
+                         and _recruit_wage_hires(mem) > 0)):
+            return False
     sufficient = _recruit_sufficient(mem)
     status = 'not_needed' if sufficient else 'deferred_roster'
     if shop.get('recruit') != status:
         _record(mem, 'recruit_not_needed' if sufficient else 'recruit_roster_unknown',
                 month=shop.get('key'),
-                observed_metric={'roster_lower_bound': len(seen['names']) if seen else None,
-                                 'target': target, 'complete': seen.get('complete') if seen else False},
-                reason=('新鮮な同一scanの実一覧で必要人数以上を確認したため募集を見送る' if sufficient
-                        else '実在人数または必要人数が不明のため募集を保留し、実一覧を再確認する'))
+                observed_metric={'roster_lower_bound': count,
+                                 'target': target, 'complete': complete},
+                reason=('当月の実人数が必要人数以上のため募集を見送る' if sufficient
+                        else '当月の人数または必要人数が不明のため募集を保留する'))
     shop['recruit'] = status
     shop['recruit_priority'] = False
     mem['recruit_hold'] = {'chapter': mem.get('chapter'), 'month': shop.get('key'),
                           'reason': ('enough_observed' if sufficient
-                                     else 'roster_incomplete' if seen and target is not None
+                                     else 'roster_incomplete' if count is not None and target is not None
                                      else 'roster_or_demand_unknown'), 'status': status}
     if sufficient:
         shop['recruit_reserve'] = 0
@@ -619,14 +789,25 @@ def _stop_unneeded_recruit(mem, shop):
 
 
 def _recruit_shortage(mem):
-    from ..os_layer.roster import fresh
-    seen, target = fresh(mem), _recruit_target(mem)
-    if (seen is None or target is None or seen.get('complete') is not True
-            or len(seen['names']) >= target):
+    count, complete, names = _recruit_headcount(mem)
+    if count is None:
+        # Owner 2026-11-06: the month's first menu runs before the national
+        # status read; the garrison still proves a shortage (lower bound).
+        count = _garrison_lower_bound(mem)
+    target = _recruit_target(mem)
+    if count is None or target is None or count >= target:
         return None
-    return {'available_observed': list(seen['names']), 'count_lower_bound': len(seen['names']),
-            'target': target, 'total_roster': len(seen['names']),
-            'garrison': mem.get('garrison') or {}, 'placement': 'observed_only'}
+    if not complete:
+        # Owner 2026-11-06: a partial list is a lower bound. With cash in hand
+        # and wage headroom the roster still grows (g1139 47-12: 12 generals,
+        # 9899G, yet recruit_hold=roster_or_demand_unknown for the whole month).
+        gold = mem.get('gold')
+        if not (type(gold) is int and gold >= RECRUIT_BATCH_GOLD
+                and _recruit_wage_hires(mem) > 0):
+            return None
+    return {'available_observed': names, 'count_lower_bound': count,
+            'target': target, 'total_roster': count,
+            'garrison': _world(mem).get('garrison') or {}, 'placement': 'observed_only'}
 
 
 def _stop_uneconomic_recruit(mem, shop):
@@ -696,8 +877,8 @@ def _general_repair_targets(mem):
             targets.append(name)
             continue
         if len(owned) == 1 and not any(
-                name in (mem.get('garrison') or {}).get(c, [])
-                and len((mem.get('garrison') or {}).get(c, [])) > 1 for c in owned):
+                name in (_world(mem).get('garrison') or {}).get(c, [])
+                and len((_world(mem).get('garrison') or {}).get(c, [])) > 1 for c in owned):
             continue  # keep the last castle's sole defender; dispatch rechecks it too
         targets.append(name)
     return sorted(targets)
@@ -830,6 +1011,27 @@ def _prioritise_recruit(mem, shop, gold):
     Includes existing cached shops on hotload. Original card purchases and
     the existing egg reserves are kept; unconfirmed deaths are not used.
     """
+    # Hot-loaded fixes must also revive a cash hold recorded by the old
+    # partial-roster gate earlier in the *same* month. Only revive when the
+    # current shortage and real held-budget checks now both approve it.
+    if (shop.get('recruit') == 'deferred_cash'
+            and type(gold) is int and gold >= RECRUIT_BATCH_GOLD
+            and _recruit_shortage(mem) is not None
+            and _recruit_spare_after_necessities(mem, shop, gold)[0] is True):
+        shop['recruit'] = 'pending'
+        shop.pop('recruit_measured_budget', None)
+        _record(mem, 'recruit_cash_rechecked', month=shop.get('key'),
+                reason='同じ月の募集保留を実際の残金・兵士・修理予約で再判定して再開する')
+    # Recovery may finish later in this *same* monthly visit. An older
+    # deferred_egg must no longer cancel recruitment after a verified
+    # recovery/no-recovery result; the normal cash/shortage gates still apply.
+    if (shop.get('recruit') == 'deferred_egg'
+            and shop.get('egg') in ('done', 'not_needed')
+            and _recruit_shortage(mem) is not None):
+        shop['recruit'] = 'pending'
+        shop.pop('recruit_measured_budget', None)
+        _record(mem, 'recruit_egg_rechecked', month=shop.get('key'),
+                reason='同月の卵回復完了を確認したため募集を再計画する')
     if (egg_deferred_for_soldiers(shop)
             or shop.get('recruit') in ('deferred_egg', 'deferred_cash', 'deferred_army')
             or _stop_unneeded_recruit(mem, shop)):
@@ -847,6 +1049,15 @@ def _prioritise_recruit(mem, shop, gold):
     shop['recruit_budget_version'] = 2
     shop['recruit_priority'] = True
     need = shortage['target'] - shortage['count_lower_bound']
+    from ..os_layer.roster import MAX_GENERALS
+    if shortage['target'] >= MAX_GENERALS:
+        # Owner 2026-11-06: fill the roster only while the measured payroll
+        # still leaves room under the income; a partial roster's lower bound
+        # must not over-hire past that budget.
+        hires = _recruit_wage_hires(mem)
+        if hires <= 0:
+            return
+        need = min(need, hires)
     if ('recruit_batch' not in shop and need > 1 and type(gold) is int
             and gold >= RECRUIT_BATCH_GOLD and shop.get('recruit') not in ('opened', 'done', 'unverified')):
         shop['recruit_batch'] = {'left': need, 'initial': need, 'done': 0, 'gold_start': gold}
@@ -1162,7 +1373,7 @@ def _chikujou_candidates(mem):
     owned = _owned(mem)
     if mem.get('home_lost'):
         owned.discard(home)  # also protect a hotloaded stale captured-home record
-    garrison = mem.get('garrison') or {}
+    garrison = _world(mem).get('garrison') or {}
     names = [c for c in chart.CASTLE_NAMES.get(chapter, ())
              if c in owned and not (c in garrison and garrison[c] == [])]
     names.sort(key=lambda c: (c != home, not bool(garrison.get(c))))
@@ -1231,6 +1442,14 @@ def _merchant_spendable(mem, shop, header):
     egg, recruit = shop.get('reserve', 0), shop.get('recruit_reserve', 0)
     if repair is None or any(type(v) is not int or v < 0 for v in (egg, recruit)):
         return None
+    if (shop.get('recruit_priority')
+            and shop.get('recruit') not in ('done', 'not_needed', 'opened', 'unverified')):
+        # The merchant is visited before _prioritise_recruit measures the fee.
+        # Keep the whole batch's fee out of the spare-cash budget so an
+        # optional card cannot spend the month's recruitment money. The live
+        # 49-10 merchant had 8734G yet skipped an affordable card because the
+        # boolean necessity hold treated the pending recruit as unaffordable.
+        recruit = max(recruit, RECRUIT_COST * _recruit_units(shop))
     return max(0, header['gold'] - _egg_recovery_wage_floor(mem) - egg - repair - recruit)
 
 

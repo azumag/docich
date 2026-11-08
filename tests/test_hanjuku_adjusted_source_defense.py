@@ -6,6 +6,7 @@ import pytest
 from docich import hanjuku_policy as p
 from docich.hanjuku_font import TextLine
 from docich.hanjuku_screen import Screen
+from docich.hanjuku.state.regions import world as _world
 
 
 def memory(step='A:guard001:J1'):
@@ -45,7 +46,7 @@ def generals(names):
 def test_attack_guard_requires_two_distinct_available_generals(step, names):
     mem = memory(step)
     order = p._order(mem)
-    mem['garrison']['アルマムーン'] = names
+    _world(mem)['garrison']['アルマムーン'] = names
     before = deepcopy(mem)
     assert p._reserve_source_guard(order, mem)
     assert p._source_spare_missing(order, mem)
@@ -57,7 +58,7 @@ def test_explicit_adjusted_purpose_also_preserves_a_defender(purpose):
     mem = memory()
     order = p._order(mem)
     order['purpose'] = purpose
-    mem['garrison']['アルマムーン'] = ['ゼウス']
+    _world(mem)['garrison']['アルマムーン'] = ['ゼウス']
     assert p._source_spare_missing(order, mem)
 
 
@@ -74,7 +75,7 @@ def test_validated_and_adopted_real_plan_is_guarded():
     assert 'purpose' not in order
     assert order['step'] == p.chart_adjust.execution_step(rid, 'J1')
     mem['active'] = order['step']
-    mem['garrison']['アルマムーン'] = ['ゼウス']
+    _world(mem)['garrison']['アルマムーン'] = ['ゼウス']
     assert not p._plan_pending(mem)
     assert p._source_spare_missing(order, mem)
     assert p.deploy_step(generals(['ゼウス']), mem) == [p.pad('b'), p.pad('b')]
@@ -84,14 +85,14 @@ def test_validated_and_adopted_real_plan_is_guarded():
 def test_adjusted_attack_is_pending_but_does_not_starve_other_orders(monkeypatch):
     mem = memory()
     order = p._order(mem)
-    mem['garrison']['アルマムーン'] = ['ゼウス']
+    _world(mem)['garrison']['アルマムーン'] = ['ゼウス']
     monkeypatch.setattr(p.chart, 'orders', lambda _chapter: ())
     assert not p._plan_pending(mem)
     assert p.next_order(mem) is None
     assert mem['orders'].get(order['step']) in (None, 'pending')
 
     # A measured reinforcement releases the same order, not a new generation.
-    mem['garrison']['アルマムーン'].append('アルテミス')
+    _world(mem)['garrison']['アルマムーン'].append('アルテミス')
     assert p._plan_pending(mem)
     assert p.next_order(mem) is order
 
@@ -109,7 +110,7 @@ def test_live_adjusted_list_rechecks_stale_two_general_snapshot(names):
 @pytest.mark.parametrize('kind', ['card_select', 'sortie_confirm'])
 def test_hotloaded_adjusted_order_is_rechecked_after_source_changes(kind):
     mem = memory()
-    mem['garrison']['アルマムーン'] = ['ゼウス']
+    _world(mem)['garrison']['アルマムーン'] = ['ゼウス']
     screen = Screen(kind=kind, lines=[], hand=None, text='')
     assert p.deploy_step(screen, mem) == [p.pad('b'), p.pad('b')]
     assert mem['_records'][-1]['decision'] == 'sortie_held_source_defender'
@@ -129,18 +130,18 @@ def test_busy_spare_does_not_count_even_in_cached_live_list(status):
 @pytest.mark.parametrize('kind', ['card_select', 'sortie_confirm'])
 def test_location_unknown_spare_is_excluded_without_fresh_roster(kind):
     mem = memory()
-    mem['general_location_unknown'] = ['アルテミス']
+    _world(mem)['general_location_unknown'] = ['アルテミス']
     assert p._source_spare_missing(p._order(mem), mem)
     assert p.deploy_step(Screen(kind=kind, lines=[], hand=None, text=''), mem) == [p.pad('b'), p.pad('b')]
 
 
 def test_fresh_roster_can_resolve_unknown_spare_and_release_guard():
     mem = memory()
-    mem['general_location_unknown'] = ['アルテミス']
+    _world(mem)['general_location_unknown'] = ['アルテミス']
     assert p._source_spare_missing(p._order(mem), mem)
     # Actual re-observation is new evidence; stale unknown must not block forever.
     assert p.deploy_step(generals(['ゼウス', 'アルテミス']), mem) == [p.pad('a')]
-    assert 'アルテミス' not in (mem.get('general_location_unknown') or ())
+    assert 'アルテミス' not in (_world(mem).get('general_location_unknown') or ())
     assert not p._source_spare_missing(p._order(mem), mem)
 
 
@@ -148,7 +149,7 @@ def test_live_spare_allows_dispatch_without_claiming_departure():
     mem = memory()
     assert not p._source_spare_missing(p._order(mem), mem)
     assert p.deploy_step(generals(['ゼウス', 'アルテミス']), mem) == [p.pad('a')]
-    assert mem['garrison']['アルマムーン'] == ['ゼウス', 'アルテミス']
+    assert _world(mem)['garrison']['アルマムーン'] == ['ゼウス', 'アルテミス']
     assert not mem.get('sorties')
 
 
@@ -169,13 +170,13 @@ def test_guard_uses_observed_source_override():
     order = p._order(mem)
     mem['source_override'] = {order['step']: 'カストーラ'}
     assert p._source_spare_missing(order, mem)
-    mem['garrison']['カストーラ'].append('ココット')
+    _world(mem)['garrison']['カストーラ'].append('ココット')
     assert not p._source_spare_missing(order, mem)
 
 
 def test_unread_garrison_is_not_invented_but_live_list_still_guards():
     mem = memory()
-    del mem['garrison']['アルマムーン']
+    del _world(mem)['garrison']['アルマムーン']
     assert not p._source_spare_missing(p._order(mem), mem)
     assert p.deploy_step(generals(['ゼウス']), mem) == [p.pad('b'), p.pad('b')]
 
@@ -190,7 +191,7 @@ def test_unread_live_list_never_confirms():
 def test_unconfirmed_issued_sortie_is_reconciled_not_cancelled():
     mem = memory()
     order = p._order(mem)
-    mem['garrison']['アルマムーン'] = ['ゼウス']
+    _world(mem)['garrison']['アルマムーン'] = ['ゼウス']
     mem['orders'][order['step']] = 'launched_unconfirmed'
     assert not p._source_spare_missing(order, mem)
 
@@ -203,14 +204,14 @@ def test_boss_waves_remain_exempt_even_if_recorded_lost(step, purpose):
     order['target'] = p.chart.boss_castle(mem['chapter'])
     order['purpose'] = purpose
     mem['lost'] = [order['target']]
-    mem['garrison']['アルマムーン'] = ['ゼウス']
+    _world(mem)['garrison']['アルマムーン'] = ['ゼウス']
     assert not p._reserve_source_guard(order, mem)
     assert not p._source_spare_missing(order, mem)
 
 
 def test_original_non_recapture_chart_keeps_its_attack_sequence():
     mem = memory('1-A2')
-    mem['garrison']['アルマムーン'] = ['ゼウス']
+    _world(mem)['garrison']['アルマムーン'] = ['ゼウス']
     assert not p._reserve_source_guard(p._order(mem), mem)
 
 
@@ -218,7 +219,7 @@ def test_original_chart_recapture_still_requires_a_spare():
     mem = memory('1-A2')
     order = p._order(mem)
     mem['lost'] = [order['target']]
-    mem['garrison']['アルマムーン'] = ['ゼウス']
+    _world(mem)['garrison']['アルマムーン'] = ['ゼウス']
     assert p._source_spare_missing(order, mem)
 
 

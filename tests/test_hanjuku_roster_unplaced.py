@@ -44,8 +44,11 @@ def test_the_retake_opens_a_list_that_may_hold_them():
     assert orders, 'the 11:04-11:48 hold: no interim candidate at all'
     retake = orders[0]
     assert retake['target'] == 'フヌイヌム' and retake['purpose'] == 'retake'
-    # The hero's castle, where joiners stand, is opened with a missing general.
-    assert retake['source'] == 'アルマムーン' and retake['general'] in MISSING
+    # A month-roster name does not prove castle membership. Inspect the
+    # hero's castle without attributing the sortie to a guessed joiner.
+    assert retake['source'] == 'アルマムーン'
+    assert retake['general'] == p.MOVE_ANY_GENERAL
+    assert retake['source_probe'] is True
 
 
 def test_a_roster_from_another_month_says_nothing():

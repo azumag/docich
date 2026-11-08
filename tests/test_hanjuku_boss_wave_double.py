@@ -65,18 +65,19 @@ def test_a_second_boss_wave_is_planned_while_the_first_marches():
     assert attacks[0]['general'] not in ('ゼウス', 'どうし')
 
 
-def test_the_wave_budget_caps_concurrent_boss_sorties():
-    # Four in flight still leaves room in the five-sortie budget: the owner's
-    # double dispatch is inside it and the wave keeps going.
-    four = {f'A:test:M{i}': {'general': name, 'source': STAFFED5, 'target': BOSS5,
+def test_the_boss_keeps_taking_waves_with_many_already_in_flight():
+    # Owner 2026-11-05: no in-flight budget (BOSS_WAVE_LIMIT was unnecessary).
+    # Even with six waves already marching, the next plan sends the spare.
+    full = {f'A:test:M{i}': {'general': name, 'source': STAFFED5, 'target': BOSS5,
                              'status': 'en_route', 'tick': 990}
-            for i, name in enumerate(['ゼウス', 'ココット', 'ヴィーナス', 'ビーツ'])}
-    assert boss_attacks(replan.interim_candidates(memory(sorties=four)))
-    # At the budget no sixth sortie is planned even though spares remain.
-    five = {f'A:test:M{i}': {'general': name, 'source': STAFFED5, 'target': BOSS5,
-                             'status': 'en_route', 'tick': 990}
-            for i, name in enumerate(['ゼウス', 'ココット', 'ヴィーナス', 'ビーツ', 'トレビス'])}
-    assert boss_attacks(replan.interim_candidates(memory(sorties=five))) == []
+            for i, name in enumerate(['ゼウス', 'ココット', 'ヴィーナス', 'ビーツ',
+                                      'トレビス', 'アマンディーヌ'])}
+    mem = memory(sorties=full)
+    # Six are marching: two idle generals must remain, so one can still go.
+    mem['garrison'][STAFFED5].append('ポセイドン')
+    attacks = boss_attacks(replan.interim_candidates(mem))
+    assert attacks and attacks[0]['general'] not in (
+        'ゼウス', 'ココット', 'ヴィーナス', 'ビーツ', 'トレビス', 'アマンディーヌ')
 
 
 def test_an_ordinary_target_still_waits_for_its_marching_sortie():
@@ -287,3 +288,33 @@ def test_the_mechanical_rebuild_records_the_failures_before_clearing_the_plan():
     assert len(book[LOST5]) == replan.RETAKE_STALL_FAILS
     targets = [order['target'] for order in (mem.get('chart_plan') or {}).get('orders') or ()]
     assert BOSS5 in targets, targets
+
+
+HOME6 = chart.home_castle(6)
+BOSS6 = chart.boss_castle(6)
+ORDINARY6 = [c for c in chart.castles(6) if c != BOSS6]
+
+
+def memory6(**overrides):
+    mem = {
+        'chapter': 6, 'tick': 1000, 'month': '49-9', '_records': [],
+        'captured': list(ORDINARY6), 'lost': [],
+        'garrison': {HOME6: ['どうし', 'ポワソン', 'ガスパチョ', 'バゲット'], 'イカリア': ['ゼウス']},
+        'orders': {}, 'card_stock': {'イッテツーン': 3},
+    }
+    mem.update(overrides)
+    return mem
+
+
+def test_chapter_6_boss_is_targetable_once_every_castle_is_ours():
+    """g1133 2026-11-05: without a boss cell next_order() returned None with
+    all twelve castles ours, so the chapter could never be finished."""
+    assert BOSS6 in chart.castles(6)
+    candidates = replan.interim_candidates(memory6())
+    assert any(o['target'] == BOSS6 for o in candidates.values())
+
+
+def test_chapter_6_boss_waits_for_the_last_castle():
+    mem = memory6(captured=[c for c in ORDINARY6 if c != 'アブダレ'])
+    candidates = replan.interim_candidates(mem)
+    assert not any(o['target'] == BOSS6 for o in candidates.values())

@@ -178,6 +178,184 @@ def world_markers(frame) -> list:
             continue
         out.append((min(xs), min(ys), max(xs), max(ys)))
     return out
+
+# ------------------------------------------------------ general-list marker
+# The しょうぐん list draws a white/gray inverted triangle over the selected
+# general's current map position (measured on g1075 2026-11-05: the marker
+# moves between トレビス / ブカティーニ / ココット, while the red triangle stays
+# on the hero). The exact 7x7 sprite is stable across chapters: white cap,
+# gray body, black outline. It is not the red army marker of world_markers.
+GENERAL_MARKER_WHITE = (255, 254, 255)
+GENERAL_MARKER_GRAY = (90, 88, 90)
+GENERAL_MARKER_BLACK = (32, 32, 32)
+GENERAL_MARKER_TOLERANCE = 3
+
+# Castle flag icons on the same small island map: red = own, blue = enemy.
+# Their colour matches world_flags; the roster map is the same island at
+# 1/8 of the chart-cell coordinates.
+MAP_VIEW_SCALE = 8
+MAP_VIEW_DEFAULT_OFFSET = (17, 30)
+MAP_CASTLE_TOLERANCE = 96       # 12 screen px: the marker may sit over a unit
+MAP_VIEW_FLAG_TOLERANCE = 6
+MAP_VIEW_CALIBRATION_HITS = 3
+
+# (dx, dy, colour) of the measured selection triangle.
+_GENERAL_MARKER_PATTERN = (
+    *((dx, 0, GENERAL_MARKER_WHITE) for dx in range(7)),
+    (0, 1, GENERAL_MARKER_GRAY), *((dx, 1, GENERAL_MARKER_WHITE) for dx in range(1, 6)),
+    (6, 1, GENERAL_MARKER_GRAY),
+    (0, 2, GENERAL_MARKER_GRAY), (1, 2, GENERAL_MARKER_GRAY),
+    *((dx, 2, GENERAL_MARKER_WHITE) for dx in range(2, 5)),
+    (5, 2, GENERAL_MARKER_GRAY), (6, 2, GENERAL_MARKER_GRAY),
+    (0, 3, GENERAL_MARKER_BLACK), (1, 3, GENERAL_MARKER_GRAY), (2, 3, GENERAL_MARKER_GRAY),
+    (3, 3, GENERAL_MARKER_WHITE), (4, 3, GENERAL_MARKER_GRAY), (5, 3, GENERAL_MARKER_GRAY),
+    (6, 3, GENERAL_MARKER_BLACK),
+    (1, 4, GENERAL_MARKER_BLACK), (2, 4, GENERAL_MARKER_GRAY),
+    (3, 4, GENERAL_MARKER_GRAY), (4, 4, GENERAL_MARKER_GRAY), (5, 4, GENERAL_MARKER_BLACK),
+    (2, 5, GENERAL_MARKER_BLACK), (3, 5, GENERAL_MARKER_GRAY), (4, 5, GENERAL_MARKER_BLACK),
+    (3, 6, GENERAL_MARKER_BLACK),
+)
+
+
+def _near_rgb(pixel, colour, tolerance=GENERAL_MARKER_TOLERANCE):
+    return all(abs(a - b) <= tolerance for a, b in zip(pixel, colour))
+
+
+def _marker_shade_matches(pixel, colour):
+    """Match a grayscale sprite under a modest palette/brightness shift.
+
+    A single exact RGB template missed the entire triangle when the game
+    tinted the SNES grayscale palette by more than three levels. Preserve the
+    exact match first, then accept only near-neutral light/mid/dark shades.
+    The complete 7x7 triangle pattern is still required; coloured army
+    markers and castle flags cannot pass the neutral-colour guard.
+    """
+    if _near_rgb(pixel, colour):
+        return True
+    if max(pixel) - min(pixel) > 12:
+        return False
+    value = sum(pixel) / 3
+    if colour == GENERAL_MARKER_WHITE:
+        return value >= 210
+    if colour == GENERAL_MARKER_GRAY:
+        return 65 <= value <= 130
+    return value <= 60
+
+
+def selection_marker(frame):
+    """The inverted white/gray triangle over the selected general, or None."""
+    if frame is None:
+        return None
+    for y in range(16, min(frame.height - 7, 178)):
+        for x in range(16, min(frame.width - 7, 154)):
+            if all(_marker_shade_matches(frame.pixel(x + dx, y + dy), colour)
+                   for dx, dy, colour in _GENERAL_MARKER_PATTERN):
+                return {'box': (x, y, x + 6, y + 6), 'center': (x + 3, y + 3),
+                        'tip': (x + 3, y + 6)}
+    return None
+
+
+def _map_icon_centres(frame):
+    """Centres of the red/blue castle-flag icons inside the roster map panel."""
+    if frame is None:
+        return []
+    labels = {}
+    for y in range(16, min(frame.height, 178)):
+        for x in range(16, min(frame.width, 154)):
+            pixel = frame.pixel(x, y)
+            if _near_rgb(pixel, (230, 56, 90), MAP_VIEW_FLAG_TOLERANCE):
+                labels[(x, y)] = 'own'
+            elif _near_rgb(pixel, (0, 64, 189), MAP_VIEW_FLAG_TOLERANCE):
+                labels[(x, y)] = 'enemy'
+    seen, out = set(), []
+    for start in sorted(labels):
+        if start in seen:
+            continue
+        stack, comp = [start], []
+        seen.add(start)
+        while stack:
+            x, y = stack.pop()
+            comp.append((x, y))
+            for dx in (-1, 0, 1):
+                for dy in (-1, 0, 1):
+                    neighbour = (x + dx, y + dy)
+                    if neighbour not in seen and neighbour in labels:
+                        seen.add(neighbour)
+                        stack.append(neighbour)
+        if not 6 <= len(comp) <= 60:
+            continue
+        xs = [p[0] for p in comp]
+        ys = [p[1] for p in comp]
+        if max(xs) - min(xs) > 12 or max(ys) - min(ys) > 12:
+            continue
+        out.append(((min(xs) + max(xs)) / 2, (min(ys) + max(ys)) / 2))
+    return out
+
+
+def _map_view_offset(icons, castles):
+    """Best 1/8-view offset for this frame, or the measured default.
+
+    The roster map is the whole island in a fixed panel. Its exact origin
+    shifts by a few pixels between chapters, so the flag icons themselves are
+    matched to the chart cells; with too few icons the measured default keeps
+    the reader deterministic instead of inventing a position.
+    """
+    best_hits = MAP_VIEW_CALIBRATION_HITS - 1
+    best = MAP_VIEW_DEFAULT_OFFSET
+    best_gap = 0
+    for ox in range(5, 45):
+        for oy in range(10, 60):
+            hits = sum(1 for icon in icons if any(
+                abs(icon[0] - (cell[0] / MAP_VIEW_SCALE + ox)) <= 8
+                and abs(icon[1] - (cell[1] / MAP_VIEW_SCALE + oy)) <= 8
+                for cell in castles.values()))
+            gap = abs(ox - MAP_VIEW_DEFAULT_OFFSET[0]) + abs(oy - MAP_VIEW_DEFAULT_OFFSET[1])
+            if hits > best_hits or (hits == best_hits and hits >= MAP_VIEW_CALIBRATION_HITS
+                                    and gap < best_gap):
+                best_hits, best, best_gap = hits, (ox, oy), gap
+    return best
+
+
+def marker_castle(frame, chapter):
+    """Bind the selected-general triangle to a chart castle, or None.
+
+    Returns the castle cell under the marker together with the evidence used.
+    The marker is only meaningful for a status that already read
+    しろのなかにいます; a tent or marching unit must not be turned into a
+    castle. No inference is made when the view cannot be calibrated or the
+    nearest cell is beyond MAP_CASTLE_TOLERANCE.
+    """
+    if frame is None or type(chapter) is not int:
+        return None
+    castles = chart.castles(chapter)
+    marker = selection_marker(frame)
+    if not marker or not castles:
+        return None
+    icons = _map_icon_centres(frame)
+    offset = _map_view_offset(icons, castles)
+    tip = marker['tip']
+    icon = min(icons, key=lambda p: (p[0] - tip[0]) ** 2 + (p[1] - tip[1]) ** 2, default=None)
+    if icon is not None and (icon[0] - tip[0]) ** 2 + (icon[1] - tip[1]) ** 2 <= 14 ** 2:
+        point = icon
+    else:
+        point = tip
+    field = ((point[0] - offset[0]) * MAP_VIEW_SCALE,
+             (point[1] - offset[1]) * MAP_VIEW_SCALE)
+    ordered = sorted(castles.items(), key=lambda item: (
+        (item[1][0] - field[0]) ** 2 + (item[1][1] - field[1]) ** 2))
+    name, cell = ordered[0]
+    distance = ((cell[0] - field[0]) ** 2 + (cell[1] - field[1]) ** 2) ** 0.5
+    if distance > MAP_CASTLE_TOLERANCE:
+        return None
+    if len(ordered) > 1:
+        runner = ((ordered[1][1][0] - field[0]) ** 2
+                  + (ordered[1][1][1] - field[1]) ** 2) ** 0.5
+        if runner < distance * 1.5:
+            return None
+    return {'castle': name, 'field': [round(field[0]), round(field[1])],
+            'distance': round(distance, 1), 'marker': list(marker['box']),
+            'offset': list(offset), 'icons': len(icons), 'point': list(point)}
+
                                # around a flag in g419 (ring and flag overlap: +-1 px jitter)
 _Y_RING = [(dx, dy) for dx in range(-13, 14) for dy in range(-13, 14)
            if 100 <= dx * dx + dy * dy <= 169]          # radius 5-6.5 px, half-pixel units
@@ -374,7 +552,11 @@ def _sortie_inventory(screen):
     this recognizes text, not quantities or partial names. The receipt uses
     the canonical game catalogue, independently of the planning allowlist.
     """
-    if screen.kind != 'sortie_confirm' or screen.hand not in ((138, 105, 156, 118), (138, 105, 158, 118)):
+    # g1133 decision-003: the same confirm cursor measured x0=139 (the
+    # left-edge orange column jitters 138/139, see _measured_card_select).
+    if (screen.kind != 'sortie_confirm'
+            or screen.hand not in ((138, 105, 156, 118), (138, 105, 158, 118),
+                                   (139, 105, 156, 118), (139, 105, 158, 118))):
         return None
     def cells(y, left=136):
         return tuple((x, ch) for line in screen.lines if line.y == y
@@ -491,7 +673,11 @@ def _measured_card_select(screen):
         return None
     x0, y0, x1, y1 = screen.hand
     selected_y = y0 + 6
-    if (x0 != 138 or x1 not in (156, 158) or y1 != selected_y + 7
+    # g1133 2026-11-05: the same cursor's leftmost orange column jitters
+    # between x=138 and x=139 across frames (decision-001/002 vs decision-081,
+    # all row-1 selections). Accepting only 138 held every reading and
+    # cancelled ヘスティア/トレビス's boss sorties after CARD_UNREADABLE_LIMIT.
+    if (x0 not in (138, 139) or x1 not in (156, 158) or y1 != selected_y + 7
             or selected_y not in {row['y'] for row in rows}):
         return None
     return {'rows': rows, 'selected_y': selected_y, 'remaining': int(remaining),

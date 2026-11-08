@@ -13,8 +13,8 @@ def after_loss():
         'ally': 'ゼウス', 'ally_hp': 0, 'enemy_hp': 21, 'castle': 'ジョンリギ',
         'side': 'attack', 'step': None, 'away': 1})
     p.battle_end(mem, 'map')
-    assert mem['general_location_unknown'] == ['ゼウス']
-    assert mem['garrison']['アルマムーン'] == ['アルテミス']
+    assert _world(mem)['general_location_unknown'] == ['ゼウス']
+    assert _world(mem)['garrison']['アルマムーン'] == ['アルテミス']
     mem['active'] = 'I:retake:1'
     return mem
 
@@ -35,17 +35,17 @@ def test_unknown_name_after_loss_can_be_reobserved_after_json_then_select_a_real
     mem = after_loss()
     actions = p.deploy_step(generals(['ゼウス' + UNKNOWN, 'アルテミス']), mem)
     assert actions == [p.pad('b'), p.pad('b')]
-    assert mem['general_location_unknown'] == ['ゼウス']
-    assert mem['garrison']['アルマムーン'] == ['ゼウス', 'アルテミス']
+    assert _world(mem)['general_location_unknown'] == ['ゼウス']
+    assert _world(mem)['garrison']['アルマムーン'] == ['ゼウス', 'アルテミス']
     mem = json.loads(json.dumps(mem))
     order = source_retake(mem)
     assert order is not None
     assert order['source_probe'] is True
-    assert mem['general_location_unknown'] == ['ゼウス']
+    assert _world(mem)['general_location_unknown'] == ['ゼウス']
     select(mem, order)
     assert p.deploy_step(generals(['ゼウス', 'アルテミス']), mem) == [p.pad('a')]
-    assert mem['general_location_unknown'] == []
-    assert mem['garrison']['アルマムーン'] == ['ゼウス', 'アルテミス']
+    assert _world(mem)['general_location_unknown'] == []
+    assert _world(mem)['garrison']['アルマムーン'] == ['ゼウス', 'アルテミス']
     assert not mem.get('sorties')
 
 
@@ -67,7 +67,7 @@ def test_repeated_unknown_rows_have_a_finite_json_persistent_budget():
         assert p.deploy_step(partial, mem) == [p.pad('b'), p.pad('b')]
         assert mem['source_location_rechecks']['アルマムーン']['attempts'] == attempt + 1
         assert 'アルマムーン' not in mem.get('unplaced_refuted_castles', {})
-        assert mem['general_location_unknown'] == ['ゼウス']
+        assert _world(mem)['general_location_unknown'] == ['ゼウス']
         mem = json.loads(json.dumps(mem))
     assert source_retake(mem) is None
     stale = dict(_world(mem)['launched_orders']['I:retake:1'], source_probe=True)
@@ -84,17 +84,17 @@ def test_repeated_unknown_rows_have_a_finite_json_persistent_budget():
 
 def test_hotloaded_old_absence_record_does_not_prevent_unknown_location_probe():
     mem = after_loss()
-    mem['garrison']['アルマムーン'] = ['ゼウス', 'アルテミス']
+    _world(mem)['garrison']['アルマムーン'] = ['ゼウス', 'アルテミス']
     old = {'castle': 'アルマムーン', 'month': '1-7', 'names': []}
     mem['unplaced_refuted'] = old.copy()
     mem['unplaced_refuted_castles'] = {'アルマムーン': old.copy()}
     order = source_retake(mem)
     assert order is not None and order['source_probe'] is True
     assert mem['unplaced_refuted_castles']['アルマムーン'] == old
-    assert mem['general_location_unknown'] == ['ゼウス']
+    assert _world(mem)['general_location_unknown'] == ['ゼウス']
     select(mem, order)
     assert p.deploy_step(generals(['ゼウス', 'アルテミス']), mem) == [p.pad('a')]
-    assert mem['general_location_unknown'] == []
+    assert _world(mem)['general_location_unknown'] == []
     assert not mem.get('source_location_rechecks')
 
 
@@ -105,7 +105,7 @@ def test_actual_busy_general_cannot_make_an_unknown_only_shortage():
     assert p.deploy_step(generals(['ゼウス' + UNKNOWN, 'アルテミス']), mem) == [p.pad('b'), p.pad('b')]
     assert 'アルマムーン' not in mem.get('source_location_rechecks', {})
     assert source_retake(mem) is None
-    assert mem['general_location_unknown'] == ['ゼウス']
+    assert _world(mem)['general_location_unknown'] == ['ゼウス']
 
 
 def test_two_duplicate_names_are_not_a_second_defender_to_probe():
@@ -132,7 +132,7 @@ def test_adjusted_pending_retake_keeps_next_order_reobservation_path():
     mem = json.loads(json.dumps(mem))
     reopened = p.next_order(mem)
     assert reopened is not None and reopened['step'] == order['step']
-    assert mem['general_location_unknown'] == ['ゼウス']
+    assert _world(mem)['general_location_unknown'] == ['ゼウス']
     select(mem, reopened)
     assert p.deploy_step(generals(['ゼウス', 'アルテミス']), mem) == [p.pad('a')]
-    assert mem['general_location_unknown'] == []
+    assert _world(mem)['general_location_unknown'] == []

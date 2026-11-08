@@ -302,6 +302,26 @@ def _control_melee_advantage(cur, enemy_hp, ally_soldiers, enemy_soldiers):
             and hp >= enemy_hp * 2)
 
 
+def _card_halving_leads(cur, estimate):
+    """クースカン halves the general's HP: after it we are not behind in HP.
+
+    Owner 2026-11-04: 切り札はピンチの救済ではなく状況を有利にするために使う。
+    Holding it does not stop a lost melee, it only throws the card away (g1133
+    22:45: ally 38 vs enemy 46, クースカン refused six times in 36 s with no
+    input, then the general retreated with the card unused; 14 refusals in 90
+    minutes). The strict follow-up projection (``_control_melee_advantage``:
+    twice the HP, army and combat parity) still decides the melee hold after
+    the card; this only decides whether to open it. Bosses and unread HP keep
+    the old refusal.
+    """
+    hp, remaining = cur.get('ally_hp'), estimate['remaining_hp_upper']
+    return (estimate['effect_kind'] == 'half_enemy_hp' and not estimate['self_harm']
+            and estimate['target_kind'] == 'general'
+            and cur.get('enemy') not in reference.BOSS_GENERALS
+            and type(estimate['damage_lower_bound']) is int and estimate['damage_lower_bound'] > 0
+            and type(remaining) is int and type(hp) is int and hp > 0 and remaining <= hp)
+
+
 def _card_melee_projection(cur, card, context, estimate):
     # gcgx kirihuda.html: クースカン halves enemy general/soldier HP and
     # stuns. Keep the prospective effect separate from observed live HP.
@@ -455,7 +475,12 @@ def _card_damage_gate(mem, cur, card, *, listed_cards=None):
               'egg_risk_flags': asdict(triggers), 'egg_drop': drop,
               'egg_reach': reach, 'listed_followups': []}
     finished = any(type(cur.get(key)) is int and cur[key] <= 0 for key in ('enemy_hp', 'ally_hp'))
-    if (not finished and cur.get('card_context_unclassified') and not summoned
+    # Owner 2026-11-06: バルムンクはボス専用。チャート札にも使用直前の制限を適用。
+    measured_boss = bool(boss or cur.get('enemy') in chart.BOSSES.values()
+                         or cur.get('entry_evidence') == 'measured_boss_entry')
+    if card in reference.BOSS_ONLY_CARDS and not measured_boss:
+        result['role'] = 'boss_only_balmung'
+    elif (not finished and cur.get('card_context_unclassified') and not summoned
             and not cur.get('card_combatants_changed') and drop and drop.get('drops')):
         # 卵落 depends on the generals' max HP, not on this panel. g1097 07:11:
         # ミックミー would have dropped the egg and was refused as unclassified.
@@ -512,6 +537,8 @@ def _card_damage_gate(mem, cur, card, *, listed_cards=None):
             melee = _card_melee_projection(cur, card, context, estimate)
             if melee:
                 result.update(allowed=True, role='control_then_melee_not_a_kill', melee_followup=melee)
+            elif card == 'クースカン' and _card_halving_leads(cur, estimate):
+                result.update(allowed=True, role='halving_not_a_kill')
             else:
                 result['role'] = 'control_has_no_observed_followup'
     elif estimate['lethal'] is None:
@@ -579,25 +606,12 @@ def _card_gate_choice(mem, cur, candidates, names):
     else:
         choice = None
         for role in ('single_card_lethal', 'egg_drop_candidate_not_a_kill', 'damage_not_a_kill',
-                     'observed_control_chain_not_a_kill', 'control_then_melee_not_a_kill'):
+                     'observed_control_chain_not_a_kill', 'control_then_melee_not_a_kill',
+                     'halving_not_a_kill'):
             choices = [card for card in candidates if gates[card]['role'] == role]
             if choices:
                 choice = _rescue_card(choices, cur)
-                # Conserve firepower only between already-proven finishers.
-                # Critical/unknown HP keeps the existing emergency order;
-                # healing above, explicit chart choices, and final A gates
-                # remain unchanged. Do not rank guessed or self-harming hits.
-                if (role == 'single_card_lethal'
-                        and type(cur.get('ally_hp')) is int
-                        and cur['ally_hp'] > GENERAL_CRITICAL_RETREAT_HP):
-                    safe = [card for card in choices
-                            if gates[card]['estimate']['self_harm'] is False
-                            and type(gates[card]['estimate']['raw_damage_min']) is int
-                            and gates[card]['estimate']['raw_damage_min'] > 0]
-                    if safe:
-                        minimum = min(gates[card]['estimate']['raw_damage_min'] for card in safe)
-                        choice = _rescue_card([card for card in safe
-                            if gates[card]['estimate']['raw_damage_min'] == minimum], cur)
+                # Stronger finishers need not be conserved for a later fight.
                 break
         if choice is None:
             choice = _rescue_card(candidates, cur)
@@ -991,11 +1005,14 @@ def _egg_plan(mem, cur):
     plan['charted'] = sorted({t['card'] for t in _tactics(mem, cur.get('step'))
                               if t.get('step') in (None, cur.get('step'))
                               and t.get('enemy') in (None, enemy)})
-    if not (plan['threat'] is True and plan['droppers']
+    # Owner 2026-11-06: 卵持ちで落下条件が成立する携行札は、敵AIの
+    # 自発的な卵使用リスクにかかわらず開幕に使う。
+    if not (plan['has_egg'] is True and plan['droppers']
             and egg_state == 'available'):
         cur['egg_plan'] = plan
         return plan
-    # Owner 2026-10-21: 成立する開幕卵落を後続チャートの札予約より優先する。
+    # Owner 2026-11-06: 成立する開幕卵落を、チャート・再攻撃・
+    # 通常の温存/救済判断より優先する。
     free = list(plan['droppers'])
     # 卵落の強い札を先に、同値は将軍へのダメージが小さい札を (主力を温存)。
     plan['dropper'] = None if not free else min(free, key=lambda card: (
@@ -1530,6 +1547,48 @@ def _stale_army_melee_hold(mem, cur):
             'enemy_melee_score_max': enemy_score, 'army_basis': 'stale_upper_bounds'}
 
 
+HP_ONLY_MARGIN_NUM, HP_ONLY_MARGIN_DEN = 3, 2    # own score at least 1.5x the enemy's
+
+
+def _hp_only_clear_margin(mem, cur):
+    """Keep the egg when the HP-and-combat comparison is clearly ours, armies unread.
+
+    Owner 2026-11-05: 有利なのに卵を無駄に使ってしまう. g1133 23:23:22 ヘスティア
+    (HP 25/25, combat 9) against ヘーゼル (HP 33, combat 4) spent the egg at the
+    pre-clash check: the soldier counts were unread (``card_soldiers_current``
+    False), every conservation rule needs them, so the egg went although the
+    score was 225 to 132. With both armies unread the comparison is HP only on
+    both sides (``_melee_balance`` credits nobody), a fair estimate; a clear 1.5x
+    margin with a healthy general keeps the melee. Nothing is spent for good:
+    the survival menu re-asks on every ordinary panel, so an HP loss, a read
+    army or a summon takes the egg back at once. Strong generals, the hero,
+    wounded generals and unread HP keep the old behaviour.
+    """
+    if (cur.get('card_hp_unread') or cur.get('card_context_unclassified')
+            or cur.get('ally') in (NAME, 'しゅじんこう')):
+        return None
+    hp, enemy = cur.get('ally_hp'), cur.get('enemy_hp')
+    maximum = max((n for n in (general_max_hp(cur.get('ally')), cur.get('ref_ally_hp'),
+                               cur.get('start_ally_hp')) if type(n) is int and n > 0),
+                  default=None)
+    balance = _melee_balance(cur)
+    ac, ec = balance['ally_combat'], balance['enemy_combat']
+    if (any(type(n) is not int or n <= 0 for n in (hp, enemy, maximum, ac, ec))
+            or hp > maximum or hp * 10 <= maximum * BEHIND_EGG_RATIO_TENTHS
+            or hp <= GENERAL_CRITICAL_RETREAT_HP):
+        return None
+    strong, _ = _strong_enemy(mem, cur)
+    if strong:
+        return None
+    own, theirs = hp * ac, enemy * ec
+    if own * HP_ONLY_MARGIN_DEN < theirs * HP_ONLY_MARGIN_NUM:
+        return None
+    return {'rule': 'hp_only_clear_margin', 'ally_hp': hp, 'ally_max_hp': maximum,
+            'enemy_hp': enemy, 'ally_combat': ac, 'enemy_combat': ec,
+            'ally_melee_score': own, 'enemy_melee_score': theirs,
+            'army_basis': 'unread_both_sides_hp_only'}
+
+
 def _hold_melee_egg(mem, cur, labels):
     """Preserve a healthy advantage or a scoped, overwhelming ordinary melee.
 
@@ -1548,7 +1607,8 @@ def _hold_melee_egg(mem, cur, labels):
             or cur.get('card_hp_unread') or cur.get('card_context_unclassified')):
         # The live panel is covered: the last observed counts are upper
         # bounds, so only the conservative stale evidence may hold the egg.
-        return _stale_army_melee_hold(mem, cur) is not None
+        return (_stale_army_melee_hold(mem, cur) is not None
+                or _hp_only_clear_margin(mem, cur) is not None)
     if _healthy_melee_margin_evidence(mem, cur) is not None:
         return True
     hp, enemy = cur.get('ally_hp'), cur.get('enemy_hp')

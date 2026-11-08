@@ -5,6 +5,7 @@ from docich import hanjuku_policy as policy, hanjuku_screen
 from docich.hanjuku_bot import decide
 from docich.hanjuku_pixels import Frame
 from docich.hanjuku_screen import Screen
+from docich.hanjuku.state.regions import world as _world
 
 
 def memory(side='defense'):
@@ -18,10 +19,10 @@ def memory(side='defense'):
 @pytest.mark.parametrize('side', ['defense', 'attack', 'enemy'])
 @pytest.mark.parametrize('kind', sorted(policy.ENTRY_RETURN_KINDS))
 def test_return_to_management_expires_unstarted_entry_without_inventing_loss(side, kind):
-    mem = memory(side); captured = deepcopy(mem['captured']); garrison = deepcopy(mem['garrison'])
+    mem = memory(side); captured = deepcopy(mem['captured']); garrison = deepcopy(_world(mem)['garrison'])
     policy.observe_entry_return(Screen(lines=[], hand=None, text="", kind=kind), mem)
     assert mem['attack'] is None and 'battle_seen' not in mem
-    assert mem['captured'] == captured and mem['garrison'] == garrison
+    assert mem['captured'] == captured and _world(mem)['garrison'] == garrison
     assert not mem.get('lost') and not mem.get('stats')
     assert mem['_records'][0]['decision'] == 'battle_entry_expired'
     assert policy._battle_context(mem, 'ヴィーナス')['castle'] is None

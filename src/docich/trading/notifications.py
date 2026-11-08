@@ -15,6 +15,7 @@ from ..config import GlobalConfig
 from .events import PublicEventError, read_public_events
 from .performance import realized_pnl_for_fill
 from .presentation import PresentationError, read_presentation, render_notification
+from .status import performance_summary_payload
 from .soren_output import enqueue_speech, send_overlay
 
 
@@ -92,7 +93,9 @@ def _source_path(g: GlobalConfig, state_dir: Path | None = None) -> Path:
     return _trading_state_dir(g, state_dir) / "events.jsonl"
 
 
-def _safe_status(g: GlobalConfig, state_dir: Path | None = None) -> dict[str, object] | None:
+def _safe_status(
+    g: GlobalConfig, state_dir: Path | None = None, *, now: float | None = None,
+) -> dict[str, object] | None:
     path = _trading_state_dir(g, state_dir) / "status.json"
     try:
         raw = json.loads(path.read_text(encoding="utf-8"))
@@ -105,6 +108,14 @@ def _safe_status(g: GlobalConfig, state_dir: Path | None = None) -> dict[str, ob
         value = raw.get(key)
         if value is not None:
             result[key] = value
+    performance = performance_summary_payload(raw.get("performance_summary"))
+    as_of = performance.get("as_of")
+    # Do not announce stale or undated marks as a current portfolio valuation.
+    if (
+        performance and as_of is not None
+        and (now is None or -30 <= now - as_of <= max(180, g.trading.interval_s * 3))
+    ):
+        result["performance_summary"] = performance
     return result
 
 
@@ -197,7 +208,15 @@ def _render_event_with_local_facts(
         pnl = realized_pnl_for_fill(trading_dir / "paper.sqlite3", fill_id)
         if pnl is not None:
             enriched["realized_pnl_reference"] = str(pnl)
-    return render_notification(enriched, mode=mode, status=status, display_at=display_at)
+    # The event can be newer than status.json when a delivery races the worker.
+    # In that case its current P/L is not yet known; never report the old mark.
+    presentation_status = status
+    perf = status.get("performance_summary") if isinstance(status, Mapping) else None
+    if isinstance(perf, Mapping):
+        as_of = perf.get("as_of")
+        if isinstance(as_of, (int, float)) and as_of < float(item["occurred_at"]):
+            presentation_status = {key: value for key, value in status.items() if key != "performance_summary"}
+    return render_notification(enriched, mode=mode, status=presentation_status, display_at=display_at)
 
 
 def _deliver_pending_notifications_unlocked(
@@ -231,7 +250,7 @@ def _deliver_pending_notifications_unlocked(
 
     state.overlay_ids = _bounded(state.overlay_ids, source_ids)
     state.speech_ids = _bounded(state.speech_ids, source_ids)
-    status = _safe_status(g, state_dir)
+    status = _safe_status(g, state_dir, now=timestamp)
     trading_dir = _trading_state_dir(g, state_dir)
     render_cache: dict[str, object] = {}
     overlay_fn = overlay_sender or send_overlay

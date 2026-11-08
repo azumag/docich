@@ -154,6 +154,7 @@ PROD_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(PROD_ROOT / "src"))
 
 from docich.runtime_backend import _pid_is_active, _process_is_zombie  # noqa: E402
+from docich.stream_identity import is_docich_runner_args as _is_docich_stream_runner  # noqa: E402
 from docich.semantic_decision.diagnostics import describe as _describe_semantic_decision  # noqa: E402
 
 import importlib.util as _importlib_util  # noqa: E402
@@ -221,7 +222,7 @@ _HARD_DROP_ORDER = ("corners", "ai", "workers", "nethack_history",
 # the production envelope stays above the ceiling the 予想王 ledger can only be
 # observed from a run that happened to fit. ``prediction`` duplicates the same
 # already-bounded dicts under a key the whole-section drops never take away.
-_HARD_KEEP = ("meta", "prediction", "lawsim")
+_HARD_KEEP = ("meta", "prediction", "lawsim", "severity_triggers")
 # Production thresholds of the 予想王 boards, kept in sync with
 # ``docich.prediction_leaderboard.DEFAULT_MIN_ROUNDS`` /
 # ``DEFAULT_MIN_PARTICIPATIONS``: the yoso adapter passes no ``--min-rounds`` or
@@ -5728,6 +5729,11 @@ ROTATION_FAILED_CORNER_REASONS = frozenset({
     "execution-or-state-unverified",
     "base-game-unrestored",
     "restore-recovery-exhausted",
+    "terminal-owner-absent",
+    # Written by the fixed owner-only stale-owner release operation (#3682):
+    # the release evidence had left every durable record and the operator
+    # re-created it after re-proving the shared slot.
+    "stale-owner-admin-released",
 })
 ROTATION_AUTO_RESTORE_STATUSES = frozenset({
     "succeeded", "queued", "failed", "noop", "interrupted", "completed", "unknown", "none",
@@ -6836,6 +6842,137 @@ def _project_corner_state(data):
             "hanjuku-chart-v383-boss-step-rearm",
             "hanjuku-chart-v384-boss-damage-cards",
             "hanjuku-chart-v385-boss-wave-past-stalled-retake",
+            "hanjuku-chart-v386-ch6-world-map-grey-sea",
+            "hanjuku-chart-v387-cards-open-proactively",
+            "hanjuku-chart-v388-ch6-slate-enemy-castle",
+            "hanjuku-chart-v389-recall-picker-fallback-egg-margin",
+            "hanjuku-chart-v390-launch-roster-evidence",
+            "hanjuku-chart-v391-country-status-after-recruit",
+            "hanjuku-chart-v392-ch6-march-arrival",
+            "hanjuku-chart-v393-recall-picker-axis-alternate",
+            "hanjuku-chart-v394-merchant-recruit-reserve",
+            "hanjuku-chart-v395-ch6-boss-cell",
+            "hanjuku-chart-v396-recall-picker-cycle",
+            "hanjuku-chart-v397-picker-visit-budget",
+            "hanjuku-chart-v398-decision-record-dedupe",
+            "hanjuku-chart-v399-house-idle-escape",
+            "hanjuku-chart-v400-dedupe-json-signature",
+            "hanjuku-chart-v401-boss-march-window",
+            "hanjuku-chart-v402-boss-cell-evidence",
+            "hanjuku-chart-v403-boss-cell-probe",
+            "hanjuku-chart-v404-boss-probe-rotation",
+            "hanjuku-chart-v405-plan-purpose",
+            "hanjuku-chart-v406-plan-stale",
+            "hanjuku-chart-v407-boss-wave-solo",
+            "hanjuku-chart-v408-order-start-backoff",
+            "hanjuku-chart-v409-stale-plan-once",
+            "hanjuku-chart-v410-boss-marker-confirm",
+            "hanjuku-chart-v411-stale-record-once",
+            "hanjuku-chart-v412-stale-tally",
+            "hanjuku-chart-v413-plan-readopt",
+            "hanjuku-chart-v414-stale-active",
+            "hanjuku-chart-v415-retry-suppress",
+            "hanjuku-chart-v416-source-content-key",
+            "hanjuku-chart-v417-source-mismatch",
+            "hanjuku-chart-v418-giveup-fallback",
+            "hanjuku-chart-v419-giveup-probe",
+            "hanjuku-chart-v420-code-probe",
+            "hanjuku-chart-v421-fallback-tally",
+            "hanjuku-chart-v422-miss-reset",
+            "hanjuku-chart-v423-giveup-gate",
+            "hanjuku-chart-v424-stale-yjump",
+            "hanjuku-chart-v425-yjump-active-only",
+            "hanjuku-chart-v426-yjump-budget",
+            "hanjuku-chart-v427-yjump-budget-hard",
+            "hanjuku-chart-v428-unknown-hold",
+            "hanjuku-chart-v429-select-centered",
+            "hanjuku-chart-v430-cursor-still",
+            "hanjuku-chart-v431-cursor-still-6",
+            "hanjuku-chart-v432-nav-continuity",
+            "hanjuku-chart-v433-map-no-cursor",
+            "hanjuku-chart-v434-y-jump-block-lapses",
+            "hanjuku-chart-v435-nav-last-seed",
+            "hanjuku-chart-v436-stationary-budget-retry",
+            "hanjuku-chart-v438-brain-exit-location",
+            "hanjuku-chart-v439-drive-after-recenter",
+            "hanjuku-chart-v440-mixed-key-state",
+            "hanjuku-chart-v441-recall-skip-per-camp",
+            "hanjuku-chart-v442-friendly-entry-after-long-march",
+            "hanjuku-chart-v443-card-select-hand-left-edge",
+            "hanjuku-chart-v444-boss-probe-rotation-key",
+            "hanjuku-chart-v445-boss-march-plan-window",
+            "hanjuku-chart-v446-boss-launch-kept",
+            "hanjuku-chart-v447-surplus-card-buy",
+            "hanjuku-chart-v448-boss-priority-moves",
+            "hanjuku-chart-v449-boss-probe-shift",
+            "hanjuku-chart-v450-boss-approx-cells",
+            "hanjuku-chart-v451-boss-wave-volume",
+            "hanjuku-chart-v452-lampkin-boss-forms",
+            "hanjuku-chart-v453-boss-probe-source",
+            "hanjuku-chart-v454-spent-sortie-expiry",
+            "hanjuku-chart-v455-forget-defeated-unknown",
+            "hanjuku-chart-v456-sortie-outcome",
+            "hanjuku-chart-v457-boss-first-waves",
+            "hanjuku-chart-v458-zombie-sortie-expiry",
+            "hanjuku-chart-v459-post-month-status",
+            "hanjuku-chart-v460-release-clears-sortie",
+            "hanjuku-chart-v461-zombie-hard-expiry",
+            "hanjuku-chart-v462-castle-jump",
+            "hanjuku-chart-v463-post-month-marker",
+            "hanjuku-chart-v464-locate-status-panel",
+            "hanjuku-chart-v465-dialogue-yield",
+            "hanjuku-chart-v466-castle-select-occluded-roof",
+            "hanjuku-chart-v467-observed-march-end",
+            "hanjuku-chart-v468-live-march-refresh",
+            "hanjuku-chart-v469-boss-wave-nearest",
+            "hanjuku-chart-v470-boss-wave-egg-rank",
+            "hanjuku-chart-v471-boss-entry-no-return",
+            "hanjuku-chart-v472-boss-hp-note",
+            "hanjuku-chart-v473-house-entry-own-cell",
+            "hanjuku-chart-v474-concert-text-advance",
+            "hanjuku-chart-v475-event-text-advance",
+            "hanjuku-chart-v476-house-entry-verified",
+            "hanjuku-chart-v477-recall-interruption",
+            "hanjuku-chart-v478-recruit-wage-headroom",
+            "hanjuku-chart-v479-summon-monster-hp-9999",
+            "hanjuku-chart-v480-recruit-partial-roster",
+            "hanjuku-chart-v481-recruit-partial-gate",
+            "hanjuku-chart-v482-recruit-partial-cash",
+            "hanjuku-chart-v483-no-empty-castle",
+            "hanjuku-chart-v484-recruit-month-count-carry",
+            "hanjuku-chart-v485-recruit-garrison-lower-bound",
+            "hanjuku-chart-v486-reanchor-resume",
+            "hanjuku-chart-v487-shop-holding-limit",
+            "hanjuku-chart-v488-card-hold-cap",
+            "hanjuku-chart-v489-post-month-stray-menu",
+            "hanjuku-chart-v490-reanchor-owner-resume",
+            "hanjuku-chart-v491-post-month-battle-resume",
+            "hanjuku-chart-v492-align-stall",
+            "hanjuku-chart-v493-concert-trade-guard",
+            "hanjuku-chart-v494-move-honors-plan-general",
+            "hanjuku-chart-v495-sortie-stops-at-named-general",
+            "hanjuku-chart-v496-align-limit-2",
+            "hanjuku-chart-v497-castle-jump-hand-blink",
+            "hanjuku-chart-v498-month-locate-ownership",
+            "hanjuku-chart-v499-semantic-hold-key",
+            "hanjuku-chart-v500-boss-roster-probe",
+            "hanjuku-chart-v505-post-month-blocked-release",
+            "hanjuku-chart-v506-roster-end-stall",
+            "hanjuku-chart-v507-trade-result-release",
+            "hanjuku-chart-v508-unknown-location-recheck",
+            "hanjuku-chart-v509-month-status-counts-and-recruit-priority",
+            "hanjuku-chart-v510-broken-boss-camp-recall",
+            "hanjuku-chart-v511-month-status-single-read-and-counts",
+            "hanjuku-chart-v512-month-status-page1-marker",
+            "hanjuku-chart-v513-chapter-end-save-party",
+            "hanjuku-chart-v514-plan-failed-step-rearm",
+            "hanjuku-chart-v515-plan-identity-compare",
+            "hanjuku-chart-v516-singleton-roster-probe",
+            "hanjuku-chart-v517-summon-attack-data",
+            "hanjuku-chart-v501-idle-reanchor",
+            "hanjuku-chart-v502-idle-and-roster-joins",
+            "hanjuku-chart-v503-month-start-counts",
+            "hanjuku-chart-v504-namaste-dialogue",
             "hanjuku-chart-v129-battle-card-progress",
             "hanjuku-chart-v130-summer-cursor-evidence",
             "hanjuku-chart-v131-defense-month-economy",
@@ -9485,21 +9622,35 @@ def _probe_cc_adapter(port, timeout=1.0):
         body.get("upstream"), str
     ):
         return {"state": "invalid"}
-    return {"state": "ok", "upstream": body["upstream"]}
+    health = {"state": "ok", "upstream": body["upstream"]}
+    failures = body.get("consecutive_failures")
+    if isinstance(failures, int) and not isinstance(failures, bool) and failures >= 0:
+        health["consecutive_failures"] = failures
+    kind = body.get("last_failure_kind")
+    if isinstance(kind, str) and kind:
+        health["last_failure_kind"] = kind
+    return health
 
 
 def _collect_cc_translation_adapter():
     """Read-only healthz of the CC translation adapter (docich#2894).
 
-    Reports the probe state and the upstream name the adapter advertises only;
-    no prompt, key, or response body is read into the envelope.
+    Reports the probe state, the upstream name the adapter advertises, and its
+    failure counters only; no prompt, key, or response body is read into the
+    envelope.
     """
     port = CC_ADAPTER_DEFAULT_PORT
     raw_port = os.environ.get("DOCICH_CC_ADAPTER_PORT", "")
     if raw_port.isdigit() and 1 <= int(raw_port) <= 65535:
         port = int(raw_port)
     health = _probe_cc_adapter(port)
-    return {"port": port, "state": health["state"], "upstream": health.get("upstream")}
+    return {
+        "port": port,
+        "state": health["state"],
+        "upstream": health.get("upstream"),
+        "consecutive_failures": health.get("consecutive_failures"),
+        "last_failure_kind": health.get("last_failure_kind"),
+    }
 
 
 GAME_SWITCH_WATCHDOG_UNIT = "docich-game-switch-fifo.timer"
@@ -9967,65 +10118,138 @@ def _worker_down_severity(workers, lifecycle_pause=None):
     return "warn"
 
 
-def _severity(workers, queues, ai, improvement, corners=None, hanjuku_resume=None, lifecycle_pause=None):
+# Fixed names for every condition that can raise ``status`` above ``ok``
+# (#3658). The map is emitted under ``severity_triggers`` so the public runtime
+# summary can name the branch that fired instead of showing ``warn`` next to
+# all-zero actionable counters. It is computed at severity time -- before
+# ``_diagnostics_budget`` may stub the evidence sections -- and the key is in
+# ``_HARD_KEEP`` so the trigger names survive even when the section that
+# caused them does not.
+SEVERITY_TRIGGERS = (
+    "hanjuku_resume_detached_claim",
+    "retro_corner_recovery_required",
+    "corner_rotation_recovery_required",
+    "required_worker_stale",
+    "required_worker_down",
+    "paused_workers_actionable",
+    "unregistered_workers_actionable",
+    "worker_duplicates",
+    "worker_zombies",
+    "stale_locks",
+    "ai_all_failed",
+    "ai_queue_giveups",
+    "improvement_stale",
+    "improvement_retry_pending",
+    "improvement_persist_fail",
+    "improvement_persist_stale",
+    "improvement_persist_unreadable",
+    "improvement_persist_failure",
+    "improvement_persist_clone_disappeared",
+)
+
+
+def _positive_count(value):
+    return isinstance(value, int) and not isinstance(value, bool) and value > 0
+
+
+def _nonnegative_int(value):
+    return isinstance(value, int) and not isinstance(value, bool) and value >= 0
+
+
+def _severity_report(workers, queues, ai, improvement, corners=None, hanjuku_resume=None, lifecycle_pause=None):
+    """Evaluate every severity condition and name the branches that fired.
+
+    Returns ``{"status": ..., "triggers": {name: bool}}``. Unlike the former
+    early-return ladder, every warn condition is evaluated so the payload can
+    carry all contributing triggers; ``status`` keeps the exact same value as
+    before.
+    """
+    triggers = {name: False for name in SEVERITY_TRIGGERS}
     worker_down_sev = _worker_down_severity(workers, lifecycle_pause)
-    if worker_down_sev == "critical":
-        return "critical"
+    workers = workers if isinstance(workers, dict) else {}
+    queues = queues if isinstance(queues, dict) else {}
+    ai = ai if isinstance(ai, dict) else {}
+    improvement = improvement if isinstance(improvement, dict) else {}
+    triggers["required_worker_stale"] = bool(workers.get("required_stale"))
+    triggers["required_worker_down"] = bool(workers.get("required_down"))
     # A detached resume claim is an actionable operational condition: raise it
     # through the runtime health alert so the owner is notified within hours
     # (#2870). Normal claimed/queued/verified transitions must not trigger.
-    if isinstance(hanjuku_resume, dict) and hanjuku_resume.get("status") == "detached_claim":
-        return "warn"
+    triggers["hanjuku_resume_detached_claim"] = (
+        isinstance(hanjuku_resume, dict)
+        and hanjuku_resume.get("status") == "detached_claim"
+    )
     retro = corners.get("retro_corner") if isinstance(corners, dict) else None
-    if isinstance(retro, dict) and retro.get("recovery_required") is True:
-        return "warn"
+    triggers["retro_corner_recovery_required"] = (
+        isinstance(retro, dict) and retro.get("recovery_required") is True
+    )
     # A latched common rotation stops every automatic corner while the shared
     # plane stays healthy, so it must reach the runtime health alert (#986).
     rotation = corners.get("corner_rotation") if isinstance(corners, dict) else None
-    if isinstance(rotation, dict) and rotation.get("status") == "recovery_required":
-        return "warn"
-    if worker_down_sev == "warn":
-        return "warn"
-    if (
-        _paused_workers_actionable(workers)
-        or _unregistered_workers_actionable(workers)
-        or workers["duplicates"]
-        or workers["zombies"]
-        or queues["stale_locks"] > 0
-        or ai["all_failed"] > 0
-        or ai["queue_giveups"] > 0
-        or improvement["stale"]
-        or improvement["retry_pending"]
-    ):
-        return "warn"
+    triggers["corner_rotation_recovery_required"] = (
+        isinstance(rotation, dict) and rotation.get("status") == "recovery_required"
+    )
+    triggers["paused_workers_actionable"] = _paused_workers_actionable(workers)
+    triggers["unregistered_workers_actionable"] = _unregistered_workers_actionable(workers)
+    triggers["worker_duplicates"] = bool(workers.get("duplicates"))
+    triggers["worker_zombies"] = bool(workers.get("zombies"))
+    triggers["stale_locks"] = _positive_count(queues.get("stale_locks"))
+    # radio_prepass is an optional pre-pass: its all_failed / budget_exhausted
+    # iterations are structural (8-candidate chain vs 60s/30s cap, docich#3657)
+    # and only cost a skipped corner generation, so they must not raise WARN.
+    # budget_exhausted never feeds this gate anyway; only the all_failed count
+    # needs the prepass contribution subtracted. queue_giveups and every other
+    # component's all_failed still signal real provider outages (docich#3661).
+    all_failed_components = ai.get("all_failed_components")
+    all_failed_components = all_failed_components if isinstance(all_failed_components, dict) else {}
+    raw_all_failed = ai.get("all_failed")
+    prepass_all_failed = all_failed_components.get("radio_prepass", 0)
+    actionable_all_failed = (
+        raw_all_failed - prepass_all_failed
+        if _nonnegative_int(raw_all_failed) and _nonnegative_int(prepass_all_failed)
+        else 0
+    )
+    triggers["ai_all_failed"] = actionable_all_failed > 0
+    triggers["ai_queue_giveups"] = _positive_count(ai.get("queue_giveups"))
+    triggers["improvement_stale"] = bool(improvement.get("stale"))
+    triggers["improvement_retry_pending"] = bool(improvement.get("retry_pending"))
     # An adopted strategy that never reached the reviewed lineage (docich#657,
     # #2489) is an actionable regression even while the loop itself keeps
     # running. A later successful/no-change persist overwrites the status and
     # clears the durable failure record.
     persist = improvement.get("persist")
-    clone_disappeared = (
-        isinstance(persist, dict)
-        and persist.get("clone_present") is False
+    persist = persist if isinstance(persist, dict) else {}
+    triggers["improvement_persist_fail"] = persist.get("result") == "fail"
+    triggers["improvement_persist_stale"] = bool(persist.get("stale"))
+    triggers["improvement_persist_unreadable"] = (
+        bool(persist.get("present")) and not persist.get("readable")
+    )
+    # clone_missing is only actionable while the improve loop is running; a
+    # projection deployment without soren-persist is normal when it is idle.
+    failure = persist.get("last_failure")
+    triggers["improvement_persist_failure"] = (
+        isinstance(failure, dict)
+        and (failure.get("reason") != "clone_missing" or bool(improvement.get("running")))
+    )
+    triggers["improvement_persist_clone_disappeared"] = (
+        persist.get("clone_present") is False
         and (
             bool(improvement.get("running"))
             or persist.get("last_success_at") is not None
         )
     )
-    # clone_missing is only actionable while the improve loop is running; a
-    # projection deployment without soren-persist is normal when it is idle.
-    failure = persist.get("last_failure") if isinstance(persist, dict) else None
-    failure_actionable = isinstance(failure, dict) and (
-        failure.get("reason") != "clone_missing" or bool(improvement.get("running"))
+    status = (
+        "critical" if worker_down_sev == "critical"
+        else "warn" if any(triggers.values())
+        else "ok"
     )
-    if isinstance(persist, dict) and (
-        persist.get("result") == "fail"
-        or persist.get("stale")
-        or (persist.get("present") and not persist.get("readable"))
-        or failure_actionable
-        or clone_disappeared
-    ):
-        return "warn"
-    return "ok"
+    return {"status": status, "triggers": triggers}
+
+
+def _severity(workers, queues, ai, improvement, corners=None, hanjuku_resume=None, lifecycle_pause=None):
+    return _severity_report(
+        workers, queues, ai, improvement, corners, hanjuku_resume, lifecycle_pause
+    )["status"]
 
 
 # Fixed v1 Soren91 sent-to-sent metrics, never game acceptance or raw records.
@@ -11849,12 +12073,15 @@ def _compact_hanjuku_policy(mem, state=None):
     def count(value, maximum=1_000_000):
         return value if type(value) is int and 0 <= value <= maximum else None
     orders = mem.get('orders') if isinstance(mem.get('orders'), dict) else {}
-    garrison = mem.get('garrison') if isinstance(mem.get('garrison'), dict) else {}
+    world = mem.get('world') if isinstance(mem.get('world'), dict) else {}
+    garrison = mem.get('garrison') if isinstance(mem.get('garrison'), dict) else world.get('garrison', {})
     sorties = mem.get('sorties') if isinstance(mem.get('sorties'), dict) else {}
     relaunches = mem.get('boss_relaunch') if isinstance(mem.get('boss_relaunch'), dict) else {}
     victories = mem.get('boss_victories') if isinstance(mem.get('boss_victories'), dict) else {}
     retries = mem.get('retries') if isinstance(mem.get('retries'), dict) else {}
     lost = mem.get('lost') if isinstance(mem.get('lost'), list) else None
+    unknown = mem.get('general_location_unknown')
+    unknown = unknown if isinstance(unknown, list) else None
     discovery = mem.get('map_discovery') if isinstance(mem.get('map_discovery'), dict) else {}
     registration = mem.get('map_registration') if isinstance(mem.get('map_registration'), dict) else {}
     chart_adjust = mem.get('chart_adjust') if isinstance(mem.get('chart_adjust'), dict) else {}
@@ -11919,6 +12146,7 @@ def _compact_hanjuku_policy(mem, state=None):
                     for step, value in list(retries.items())[:20] if isinstance(step, str)},
         'garrison': {text(castle, 32) or '?': len(present) if isinstance(present, list) else None
                      for castle, present in list(garrison.items())[:12] if isinstance(castle, str)},
+        'unknown_generals': (len(unknown) if unknown is not None and len(unknown) <= 64 else None),
         'sorties': dict(rows[:12]),
         # Direct march-stall evidence: whether a launched sortie is overdue,
         # how long it has gone unmeasured and whether its bounded relaunch
@@ -12134,10 +12362,11 @@ def _collect_hanjuku_tactical(state_dir, now):
                                'camp': _hanjuku_camp_tail(rows)},
                     'last_card_assessment': assessment, 'refill': refill, 'last_house_deferral': house_deferral}
         captured = mem.get('captured', [])
-        garrison = mem.get('garrison', {})
+        world = mem.get('world') if isinstance(mem.get('world'), dict) else {}
+        garrison = mem.get('garrison', world.get('garrison', {}))
         sorties = mem.get('sorties', {})
         tick = mem.get('tick')
-        unknown = mem.get('general_location_unknown', [])
+        unknown = mem.get('general_location_unknown', world.get('general_location_unknown', []))
         if (not isinstance(captured, list) or not isinstance(garrison, dict)
                 or not isinstance(sorties, dict) or not isinstance(unknown, list)
                 or type(tick) is not int or tick < 0):
@@ -14411,7 +14640,11 @@ def _compute_section_bytes(payload):
     separators=(",", ":")``) and measured including the quoted key name and
     the ``:`` separator, so ``total`` tracks the real envelope size (differing
     only by the outer braces, commas and the ``section_bytes`` entry itself,
-    which is injected after measurement). Returns ``{"top": {name: bytes,
+    which is injected after measurement). ``total`` is a collector-side
+    measurement: the headroom monitor publishes the gateway's re-serialized
+    output, which differs by the sanitizer's truncation and the sections the
+    gateway appends, so these two numbers are not expected to match. Returns
+    ``{"top": {name: bytes,
     ...}, "others": n, "total": n}`` where ``top`` holds the largest
     ``_SECTION_BYTES_TOP_N`` sections and ``others`` sums the rest.
     Serialization failure cannot occur in practice -- the caller runs this on
@@ -14829,6 +15062,14 @@ def _shared_runtime_process(soren, proc_root, role, pid):
                 process_kind = 'native'
             else:
                 raise ValueError('unexpected encoder')
+        elif role == 'shared_stream' and _is_docich_stream_runner([os.fsdecode(arg) for arg in argv], soren):
+            # ADR 0007: docich-stream.service owns the encoder. Exact argv shape only
+            # (`python3 -m docich.stream_supervisor [--root <soren>] run`), same user,
+            # same working directory as the legacy runner.
+            if not python:
+                raise ValueError('unexpected interpreter')
+            if cwd != str(soren):
+                raise ValueError('unexpected working directory')
         else:
             expected = 'lib/direct_stream.py' if role == 'shared_stream' else 'workers/audio_worker.sh'
             if (role == 'shared_stream' and not re.fullmatch(r'python3(?:\.[0-9]+)?', executable)
@@ -15061,11 +15302,15 @@ def main(argv):
     corners = _collect_programs(_program_state_dir(), soren, now)
     hanjuku_resume = _collect_hanjuku_resume(_program_state_dir())
     lifecycle_pause = _collect_lifecycle_pause(soren, now, workers)
+    severity_report = _severity_report(
+        workers, queues, ai, improvement, corners, hanjuku_resume, lifecycle_pause
+    )
     title_sync = _collect_stream_title_sync(
         soren, now, meta.get("soren_gitlink_sha"), meta.get("soren_code")
     )
     payload = {
-        "status": _severity(workers, queues, ai, improvement, corners, hanjuku_resume, lifecycle_pause),
+        "status": severity_report["status"],
+        "severity_triggers": severity_report["triggers"],
         "meta": meta,
         "stream_title_sync": title_sync,
         "twitch_oauth": _collect_twitch_oauth(now),

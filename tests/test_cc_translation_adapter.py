@@ -8,7 +8,14 @@ from docich import captions
 import socket
 import unittest.mock
 
-from docich.cc_translation_adapter import describe_health, make_server, parse_upstream, probe_health
+from docich.cc_translation_adapter import (
+    describe_health,
+    dispatch_translator,
+    make_server,
+    parse_upstream,
+    parse_upstreams,
+    probe_health,
+)
 
 
 def _post(url, payload, *, raw=None):
@@ -78,10 +85,76 @@ class CcTranslationAdapterTest(unittest.TestCase):
         self.assertEqual((status, body["error"]["type"]), (400, "invalid_request"))
         self.assertEqual(self.prompts, [])
 
-    def test_healthz_reports_upstream_name_only(self):
+    def test_healthz_reports_upstream_name_and_failure_counters(self):
         with urllib.request.urlopen(f"http://127.0.0.1:{self.port}/healthz", timeout=5) as response:
             body = json.loads(response.read().decode("utf-8"))
-        self.assertEqual(body, {"status": "ok", "upstream": "vercel-api:m"})
+        self.assertEqual(
+            body,
+            {
+                "status": "ok",
+                "upstream": "vercel-api:m",
+                "consecutive_failures": 0,
+                "last_failure_kind": "",
+            },
+        )
+
+    def test_healthz_counts_failures_and_resets_on_success(self):
+        self.result = ("", "rate_limit")
+        _post(self.url, self._payload())
+        _post(self.url, self._payload())
+        self.result = ('{"translations":["hi"]}', "")
+        _post(self.url, self._payload())
+        self.result = ("", "provider_failed")
+        _post(self.url, self._payload())
+        with urllib.request.urlopen(f"http://127.0.0.1:{self.port}/healthz", timeout=5) as response:
+            body = json.loads(response.read().decode("utf-8"))
+        self.assertEqual(body["consecutive_failures"], 1)
+        self.assertEqual(body["last_failure_kind"], "provider_failed")
+        health = probe_health(self.port, timeout=2.0)
+        self.assertEqual(health["consecutive_failures"], 1)
+        self.assertEqual(health["last_failure_kind"], "provider_failed")
+        self.assertIn("consecutive_failures=1", describe_health(health))
+        self.assertIn("last_failure=provider_failed", describe_health(health))
+
+    def test_concurrent_failures_and_health_reads_are_consistent(self):
+        # Requests are handled by separate ThreadingHTTPServer worker threads.
+        # A barrier makes the failure completions overlap rather than run serially.
+        from concurrent.futures import ThreadPoolExecutor
+
+        count = 12
+        barrier = threading.Barrier(count)
+
+        def failing_translate(prompt, timeout):
+            barrier.wait(timeout=5)
+            return "", "rate_limit"
+
+        server = make_server(failing_translate, port=0, upstream="vercel-api:m")
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        url = f"http://127.0.0.1:{server.server_address[1]}"
+        try:
+            with ThreadPoolExecutor(max_workers=count + 1) as pool:
+                futures = [
+                    pool.submit(_post, url + "/v1/chat/completions", self._payload())
+                    for _ in range(count)
+                ]
+                health_reads = [
+                    pool.submit(urllib.request.urlopen, url + "/healthz", timeout=5)
+                    for _ in range(3)
+                ]
+                for future in futures:
+                    self.assertEqual(future.result(timeout=10)[0], 502)
+                for future in health_reads:
+                    with future.result(timeout=10) as response:
+                        body = json.loads(response.read().decode("utf-8"))
+                    self.assertEqual(body["last_failure_kind"], "" if body["consecutive_failures"] == 0 else "rate_limit")
+            with urllib.request.urlopen(url + "/healthz", timeout=5) as response:
+                health = json.loads(response.read().decode("utf-8"))
+            self.assertEqual(health["consecutive_failures"], count)
+            self.assertEqual(health["last_failure_kind"], "rate_limit")
+        finally:
+            server.shutdown()
+            server.server_close()
 
     def test_bind_is_loopback_only(self):
         self.assertEqual(self.server.server_address[0], "127.0.0.1")
@@ -92,6 +165,21 @@ class CcTranslationAdapterTest(unittest.TestCase):
         for raw in ("opencode:x", "vercel-api:", "vercel-api", ""):
             with self.assertRaises(ValueError):
                 parse_upstream(raw)
+
+    def test_upstream_list_parses_fallback_chain_and_local(self):
+        specs = parse_upstreams("vercel-api:m1, local:gemma4:12b ,sarashina-api:sarashina3-nano")
+        self.assertEqual(
+            [(s.provider, s.model) for s in specs],
+            [
+                ("vercel-api", "m1"),
+                ("local", "gemma4:12b"),
+                ("sarashina-api", "sarashina3-nano"),
+            ],
+        )
+        self.assertEqual(parse_upstreams("vercel-api:m")[0].raw, "vercel-api:m")
+        for raw in ("", "vercel-api:m,", ",vercel-api:m", "vercel-api:m,,local:x", "opencode:x"):
+            with self.assertRaises(ValueError):
+                parse_upstreams(raw)
 
     def test_timeout_bounds(self):
         with self.assertRaises(ValueError):
@@ -117,7 +205,9 @@ class CcAdapterHealthProbeTest(unittest.TestCase):
     def test_probe_reports_upstream_name_from_live_adapter(self):
         port = self._serve("vercel-api:m")
         health = probe_health(port, timeout=2.0)
-        self.assertEqual(health, {"state": "ok", "upstream": "vercel-api:m"})
+        self.assertEqual(health["state"], "ok")
+        self.assertEqual(health["upstream"], "vercel-api:m")
+        self.assertEqual(health["consecutive_failures"], 0)
         self.assertEqual(describe_health(health), "ok (upstream=vercel-api:m)")
 
     def test_probe_unreachable_when_nothing_listens(self):
@@ -166,7 +256,7 @@ class CcTranslationDispatchIntegrationTest(unittest.TestCase):
     def test_adapter_request_passes_real_gate_and_returns_transport_output(self):
         from docich.cc_translation_adapter import dispatch_translator
         spec = parse_upstream("vercel-api:openai/gpt-4.1-nano")
-        translate = dispatch_translator(spec, self.ENV)
+        translate = dispatch_translator((spec,), self.ENV)
         with unittest.mock.patch(
             "docich.reply_research_api.answer_once", return_value='{"translations":["hi"]}'
         ) as answer:
@@ -177,7 +267,7 @@ class CcTranslationDispatchIntegrationTest(unittest.TestCase):
     def test_gate_rejection_surfaces_as_502_kind_without_prompt_leak(self):
         from docich.cc_translation_adapter import dispatch_translator
         spec = parse_upstream("vercel-api:openai/gpt-4.1-nano")
-        translate = dispatch_translator(spec, {})  # no key: gate must fail before transport
+        translate = dispatch_translator((spec,), {})  # no key: gate must fail before transport
         url = self._serve(translate)
         with unittest.mock.patch("docich.reply_research_api.answer_once") as answer:
             status, body = _post(url, {"messages": [{"role": "user", "content": "secret prompt text"}]})
@@ -185,6 +275,42 @@ class CcTranslationDispatchIntegrationTest(unittest.TestCase):
         self.assertNotIn("secret prompt text", json.dumps(body))
         self.assertIn(body["error"]["type"], {"invalid_provider", "provider_failed"})
         answer.assert_not_called()
+
+
+class CcTranslationFallbackTest(unittest.TestCase):
+    """dispatch_translator tries upstreams in order under one deadline."""
+
+    def test_first_success_wins_and_failures_fall_through(self):
+        calls = []
+
+        def fake_call_agent(spec, request, *, timeout, env):
+            calls.append((spec.raw, timeout))
+            if spec.provider == "vercel-api":
+                return type("R", (), {"returncode": 1, "failure_kind": "rate_limit", "output": ""})()
+            return type("R", (), {"returncode": 0, "failure_kind": "", "output": "ok"})()
+
+        specs = parse_upstreams("vercel-api:m1,local:gemma4:12b")
+        with unittest.mock.patch("docich.llm.providers.call_agent", side_effect=fake_call_agent):
+            translate = dispatch_translator(specs, {})
+            output, kind = translate("ja", 5.0)
+        self.assertEqual((output, kind), ("ok", ""))
+        self.assertEqual([raw for raw, _ in calls], ["vercel-api:m1", "local:gemma4:12b"])
+        self.assertTrue(all(0 < t <= 5.0 for _, t in calls))
+
+    def test_all_upstreams_fail_returns_last_kind(self):
+        def fake_call_agent(spec, request, *, timeout, env):
+            kind = "rate_limit" if spec.provider == "vercel-api" else "provider_failed"
+            return type("R", (), {"returncode": 1, "failure_kind": kind, "output": ""})()
+
+        specs = parse_upstreams("vercel-api:m1,local:gemma4:12b")
+        with unittest.mock.patch("docich.llm.providers.call_agent", side_effect=fake_call_agent):
+            translate = dispatch_translator(specs, {})
+            output, kind = translate("ja", 5.0)
+        self.assertEqual((output, kind), ("", "provider_failed"))
+
+    def test_empty_specs_rejected(self):
+        with self.assertRaises(ValueError):
+            dispatch_translator((), {})
 
 
 class CcAdapterSarashinaStartupTest(unittest.TestCase):

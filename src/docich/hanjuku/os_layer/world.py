@@ -6,6 +6,7 @@ castles, marching generals, the hero's castle). These are observations, not
 plans: the strategy layer reads them to choose orders.
 """
 from __future__ import annotations
+from ..state.regions import world as _world
 
 from .screen import Screen, castle_roofs
 from .pixels import Frame
@@ -80,6 +81,9 @@ def observed_cursor_cell(screen, mem, frame, *, max_error=12, ambiguity=24):
     return [cursor[0] + best[0][0], cursor[1] + best[0][1]]
 
 
+NAV_CONTINUITY_TICKS = 30      # ticks between map frames that still integrate
+
+
 def update_world(screen: Screen, mem, frame, goal_name=None):
     """Track the cursor's map cell from measured screen motion and roof anchors.
 
@@ -107,8 +111,13 @@ def update_world(screen: Screen, mem, frame, goal_name=None):
         # rule (trust only anchored frames or the inland search).
         trusted = not mem.get('uncertain') or last.get('search')
     else:
-        trusted = (type(last_tick) is int and type(tick) is int
-                   and last_tick == tick - 1 and last.get('kind') == screen.kind)
+        # Map frames are sparse while the chapter throws battles (g1133
+        # 2026-11-05: two map frames in 8.4 minutes), so requiring the very
+        # next tick froze the estimate for hours. A short gap still integrates;
+        # a long one does not.
+        gap = tick - last_tick if type(last_tick) is int and type(tick) is int else None
+        trusted = (gap is not None and 0 <= gap <= NAV_CONTINUITY_TICKS
+                   and last.get('kind') == screen.kind)
     if world and last and last.get('screen') and trusted:
         moved = []
         for axis, bounds in ((0, EDGE_X), (1, EDGE_Y)):
@@ -117,7 +126,14 @@ def update_world(screen: Screen, mem, frame, goal_name=None):
             else:
                 moved.append(s[axis] - last['screen'][axis])
         world = [world[0] + moved[0], world[1] + moved[1]]
-    mem['nav_last'] = None
+    # Seed the continuity record from this frame when there is none: `nav_step`
+    # only writes it after it computes a direction, so one early return left it
+    # None for good and no later frame could integrate (g1133 2026-11-05 froze
+    # at [392,144] for hours: every order was stuck at its source).
+    if not isinstance(mem.get('nav_last'), dict):
+        mem['nav_last'] = {'screen': list(s), 'expected': [0, 0],
+                           'tick': int(tick) if type(tick) is int else None,
+                           'kind': screen.kind, 'search': bool(mem.get('nav_search'))}
     box = (s[0] - 2, s[1] - 2, s[0] + 18, s[1] + 18)
     roofs = [r for r in castle_roofs(frame, exclude=box) if not r['clipped']]
     predicted = (world[0] - s[0], world[1] - s[1]) if world else None
@@ -229,7 +245,7 @@ def observe_owners(mem, roofs, cam):
             lost = mem.setdefault('lost', [])
             if castle not in lost:
                 lost.append(castle)
-            (mem.get('garrison') or {}).pop(castle, None)
+            (_world(mem).get('garrison') or {}).pop(castle, None)
             # Ownership changed hands: the remembered defender is stale.
             (mem.get('castle_defenders') or {}).pop(castle, None)
             _record(mem, 'castle_lost_observed', castle=castle,
@@ -261,22 +277,57 @@ def observe_owners(mem, roofs, cam):
                     reason='城の屋根が自軍の色のため占領として扱う')
 
 
-SORTIE_BUSY_TICKS = 400       # observations (~10 min at 1.5 s) a marching general stays busy
+SORTIE_BUSY_TICKS = 400       # legacy observation window (~10 min), NOT proof of arrival
+BOSS_ARRIVAL_LIMIT = 2 * SORTIE_BUSY_TICKS
+# g1133 chapter 6: 603 chart cells took 23-32 min and 740 cells took 34 min.
+MARCH_TICKS_PER_CELL = {6: 2.4}
+LONG_MARCH_TICKS = 6 * SORTIE_BUSY_TICKS   # window for late arrival binding
+MARCH_ARRIVAL_CAP = LONG_MARCH_TICKS
+
+
+def march_arrival_limit(mem, sortie):
+    """Bound an unconfirmed march by the chapter's measured chart distance.
+
+    Keep this pure estimate in the observed-world layer so both strategy and
+    busy-general bookkeeping use the same bound without an upwards import.
+    An exceeded bound is not evidence that a general has arrived.
+    """
+    rate = MARCH_TICKS_PER_CELL.get(mem.get('chapter') or 0)
+    if not rate:
+        return BOSS_ARRIVAL_LIMIT
+    cells = chart.castles(mem.get('chapter'))
+    source = cells.get(sortie.get('source'))
+    target_name = sortie.get('target') or sortie.get('planned_target')
+    target = cells.get(target_name)
+    if not source or not target:
+        return BOSS_ARRIVAL_LIMIT
+    distance = ((source[0] - target[0]) ** 2 + (source[1] - target[1]) ** 2) ** 0.5
+    limit = max(BOSS_ARRIVAL_LIMIT, min(MARCH_ARRIVAL_CAP, round(distance * rate)))
+    # Boss paths can detour through forest; the Euclidean distance underestimates.
+    if chart.is_boss_castle(target_name):
+        limit = MARCH_ARRIVAL_CAP
+    return limit
 
 
 def _en_route(mem):
-    """(generals, targets) of sorties launched but not yet seen arriving.
+    """(generals, targets) of launches without an observed end.
 
-    Only recent ones: an arrival that was never read kept どうし and ココット
-    "marching" for over an hour in g407 (01:38-02:39), which blocked every
-    order of the adopted plan and, through it, every off-chart sortie. A
-    sortie without a tick predates this bound and no longer counts.
+    The 400-observation display window is shorter than measured 20-40 minute
+    marches. Keep generals and their targets busy until the strategy's
+    distance-aware arrival limit; then overdue reconciliation determines
+    whether to retry. An overdue/arrived receipt is never treated as moving.
+    Missing or future ticks are not evidence of a fresh march.
     """
     now = int(mem.get('tick') or 0)
-    sorties = [s for s in (mem.get('sorties') or {}).values()
-               if s.get('status') in ('en_route', 'launched_unconfirmed')
-               and s.get('tick') is not None and now - int(s['tick']) < SORTIE_BUSY_TICKS]
-    return {s.get('general') for s in sorties}, {s['target'] for s in sorties if s.get('target')}
+    sorties = [
+        s for s in (mem.get('sorties') or {}).values()
+        if isinstance(s, dict)
+        and s.get('status') in ('en_route', 'launched_unconfirmed')
+        and type(s.get('tick')) is int
+        and 0 <= now - s['tick'] < max(SORTIE_BUSY_TICKS, march_arrival_limit(mem, s))
+    ]
+    return ({s.get('general') for s in sorties if s.get('general')},
+            {s['target'] for s in sorties if s.get('target')})
 
 
 WORLD_FLAG_TRUST = 200   # observations a world-map (Y) flag outranks a roof reading
@@ -319,7 +370,7 @@ def _apply_world_flags(mem, flags):
         lost = mem.setdefault('lost', [])
         if home not in lost:
             lost.insert(0, home)
-        (mem.get('garrison') or {}).pop(home, None)
+        (_world(mem).get('garrison') or {}).pop(home, None)
     elif home_owner == 'own' and (mem.get('home_lost') or home in (mem.get('lost') or [])):
         # A defense loss lists home in lost without home_lost; the own flag
         # clears that too (g1075 14:24: アルマムーン own, still lost).
@@ -334,7 +385,7 @@ def _apply_world_flags(mem, flags):
             lost = mem.setdefault('lost', [])
             if castle not in lost:
                 lost.append(castle)
-            (mem.get('garrison') or {}).pop(castle, None)
+            (_world(mem).get('garrison') or {}).pop(castle, None)
             # Ownership changed hands: the remembered defender is stale.
             (mem.get('castle_defenders') or {}).pop(castle, None)
             changed.append(('lost', castle))
@@ -342,9 +393,19 @@ def _apply_world_flags(mem, flags):
             captured.append(castle)
             mem['lost'] = [c for c in mem.get('lost') or [] if c != castle]
             changed.append(('captured', castle))
-    _record(mem, 'world_map_owners', observed_metric=flags,
-            resulting_event=[f'{k}:{c}' for k, c in changed] or None,
-            reason='全体マップの旗の色で全城の所有を確認')
+    # The Y view is read once per picker step and once per survey; recording
+    # the same flag set again (g1133 2026-11-05: 204 owners records an hour,
+    # most of them identical picker steps) hid real changes in the log.
+    # The signature has to survive the policy's JSON round trip: a tuple is
+    # reloaded as a list, so a tuple never compares equal again and the same
+    # flag set was recorded on every observation anyway (measured 2026-11-05:
+    # 147 owners records an hour over nine distinct flag sets).
+    signature = [[k, v] for k, v in sorted(flags.items())]
+    if mem.get('world_map_signature') != signature:
+        mem['world_map_signature'] = signature
+        _record(mem, 'world_map_owners', observed_metric=flags,
+                resulting_event=[f'{k}:{c}' for k, c in changed] or None,
+                reason='全体マップの旗の色で全城の所有を確認')
     for kind, castle in changed:
         _record(mem, 'castle_lost_observed' if kind == 'lost' else 'castle_owned_observed',
                 castle=castle, observed_metric={'world_map': flags[castle]},
@@ -371,7 +432,7 @@ def _hero_castle(mem):
         return None
     owned = _owned(mem)
     castles = chart.castles(mem.get('chapter') or 0)
-    for castle, present in (mem.get('garrison') or {}).items():
+    for castle, present in (_world(mem).get('garrison') or {}).items():
         if castle in owned and castle in castles and NAME in (present or ()):
             return castle
     return None

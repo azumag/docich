@@ -11,7 +11,7 @@ from test_hanjuku_chart_bot import camp_menu
 from test_hanjuku_house import status
 from test_hanjuku_empty_eggs import menu as egg_menu
 from test_hanjuku_egg_timing import memory as battle_memory
-from docich.hanjuku.state.regions import flow as _flow, journal as _journal
+from docich.hanjuku.state.regions import world as _world, flow as _flow, journal as _journal
 
 
 def open_status(mem, mode):
@@ -45,7 +45,7 @@ def test_verified_zero_replaces_cached_two_before_a_critical_enemy_contact(mode,
     assert mem['egg_uses'][actor] == 0
     assert mem['egg_types'][actor] == 'エラベルエッグ'
     assert mem['sorties'] == before
-    assert not mem.get('garrison') and not mem.get('house_eggs')
+    assert not _world(mem).get('garrison') and not mem.get('house_eggs')
     critical_contact(mem, actor)
 
 
@@ -57,7 +57,7 @@ def test_actual_positive_and_zero_quantities_are_observed_without_guessing_consu
     assert mem['egg_uses']['ゼウス'] == uses
     assert mem['egg_types']['ゼウス'] == 'エラベルエッグ'
     assert _flow(mem)['retreat_rechecks']['ゼウス']['status'] == 'needs_observation'
-    assert not mem.get('garrison') and not mem.get('house_eggs')
+    assert not _world(mem).get('garrison') and not mem.get('house_eggs')
 
 
 def test_another_named_actor_does_not_update_the_intended_actors_quantity():
@@ -116,7 +116,7 @@ def test_actual_zero_is_kept_even_when_hp_prevents_return(hp):
         assert 'ゼウス' not in (_flow(mem).get('retreat_rechecks') or {})
     else:
         assert _flow(mem)['retreat_rechecks']['ゼウス']['status'] == 'needs_observation'
-    assert not mem.get('garrison') and not mem.get('house_eggs')
+    assert not _world(mem).get('garrison') and not mem.get('house_eggs')
     critical_contact(mem, 'ゼウス')
 
 
@@ -126,10 +126,10 @@ def test_quantity_observation_dirties_only_the_old_roster_egg_fact():
     mem = completed(); mem['egg_uses']['ゼウス'] = 2
     recheck.capture(mem, {'ally': 'ゼウス', 'side': 'attack', 'ally_hp': 6, 'hero_retreat': {'selected': 1}})
     before_rows = deepcopy(mem['roster_survey']['statuses'])
-    before_locations = deepcopy(mem['garrison'])
+    before_locations = deepcopy(_world(mem)['garrison'])
     focus(mem)
     assert p.camp_recall_step(parse(status('ゼウス', 'エラベルエッグ0', main=False, hp=6)), mem, FRAME) == [p.pad('b')]
     assert mem['egg_uses']['ゼウス'] == 0
     assert mem['roster_survey']['dirty'] == {'ゼウス': ['egg']}
     assert mem['roster_survey']['statuses'] == before_rows
-    assert mem['garrison'] == before_locations
+    assert _world(mem)['garrison'] == before_locations

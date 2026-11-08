@@ -12,6 +12,7 @@ import json
 from types import SimpleNamespace
 
 from docich import hanjuku_policy as policy
+from docich.hanjuku.state.regions import world as _world
 
 HOME = 'アルマムーン'
 PRESENT = ['どうし', 'ピスタチオ', 'アンディーブ']
@@ -46,7 +47,7 @@ def test_a_joiner_on_the_list_releases_the_hold(monkeypatch):
     mem = memory()
     assert hold(mem, monkeypatch)
     mem = reload(mem)
-    mem['garrison'][HOME] = [*PRESENT, 'タピオカ']
+    _world(mem)['garrison'][HOME] = [*PRESENT, 'タピオカ']
     assert policy._source_defender_suppressed(ORDER, mem) is False
 
 

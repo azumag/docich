@@ -9,6 +9,7 @@ castle (chart_defense_wait: 候補0件) while どうし, ヘーゼル, ピスタ
 フヌイヌム and アルカ waited for the 00:39 adjusted chart.
 """
 from docich import hanjuku_policy as policy
+from docich.hanjuku.state.regions import world as _world
 
 HOME = 'アルマムーン'
 OTHERS = {'ネクスドリア': ['トレビス'], 'ビクトリア': ['アルファルファ'],
@@ -36,14 +37,14 @@ def test_defence_win_does_not_turn_an_unread_list_into_one_general():
     mem = defended({'アルカ': ['ブカティーニ'], **OTHERS})       # the recruit popped HOME
     finish(mem)
     assert results(mem) == ['win']
-    assert HOME not in mem['garrison']
+    assert HOME not in _world(mem)['garrison']
 
 
 def test_defence_win_still_adds_the_defender_to_a_read_list():
     mem = defended({HOME: ['どうし'], 'アルカ': ['ブカティーニ'], **OTHERS})
     finish(mem)
     assert results(mem) == ['win']
-    assert mem['garrison'][HOME] == ['どうし', 'ビシソワーズ']
+    assert _world(mem)['garrison'][HOME] == ['どうし', 'ビシソワーズ']
 
 
 def test_the_retake_reads_the_hero_castle_instead_of_waiting():

@@ -640,7 +640,7 @@ def test_a_general_with_an_event_since_the_last_read_is_reopened(carry_on):
 
 
 @pytest.mark.parametrize('change', ['hp', 'field', 'broken', 'unobserved'])
-def test_injured_field_broken_or_unobserved_generals_are_never_carried(carry_on, change):
+def test_only_unknown_location_or_unobserved_castle_requires_a_fresh_status(carry_on, change):
     mem = completed()
     row = mem['roster_survey']['statuses']['ゼウス']
     if change == 'hp':
@@ -652,18 +652,19 @@ def test_injured_field_broken_or_unobserved_generals_are_never_carried(carry_on,
     else:
         row['location_observed'] = False
     mem = _next_month(mem)
-    assert r.carry_forward(mem) == {'carried': ['どうし'], 'reopen': ['ゼウス']}
+    if change in ('field', 'unobserved'):
+        assert r.carry_forward(mem) == {'carried': ['どうし'], 'reopen': ['ゼウス']}
+    else:
+        assert r.carry_forward(mem) == {'carried': NAMES, 'reopen': []}
 
 
-def test_a_row_is_carried_at_most_two_months_in_a_row(carry_on):
+def test_a_row_is_carried_after_any_number_of_unchanged_months(carry_on):
     mem = completed()
-    for month, expect in (('1-7', NAMES), ('1-8', NAMES), ('1-9', [])):
+    for month in ('1-7', '1-8', '1-9', '1-10', '1-11'):
         mem = _next_month(mem, month=month, tick=mem['tick'] + 400)
         out = r.carry_forward(mem)
-        assert out['carried'] == expect, month
-        assert sorted(out['reopen']) == sorted(set(NAMES) - set(expect))
-        # a real read of everyone ends the reopened ones' streak
-        mem['roster_survey']['dirty'] = {}
+        assert out == {'carried': NAMES, 'reopen': []}, month
+    assert mem['house_eggs']['ゼウス']['carry_depth'] == 5
 
 
 def test_a_gap_in_months_or_another_run_or_chapter_is_not_carried(carry_on):
@@ -862,3 +863,72 @@ def test_sortie_attempt_keys_stay_bounded():
     entry = mem['obs_cost']['sortie_retry']
     assert entry['n'] == house.SORTIE_ATTEMPT_KEYS + 5
     assert len(entry['by_key']) == house.SORTIE_ATTEMPT_KEYS
+    # Rejected inserts are not silent: saturation is distinguishable from ≈0.
+    assert mem['obs_cost_dropped']['sortie_retry_key'] == 5
+
+
+def test_sortie_attempt_outer_key_saturation_is_counted():
+    # Fill every obs_cost slot without sortie_retry: attempts still happen,
+    # but no row can be created. The drop counter must not return them as 0.
+    mem = {'obs_cost': {f'k{i}': {'n': 1} for i in range(house.TALLY_KEYS)}}
+    house._tally_sortie_attempt(mem, '砦B', 'attack', 'cancelled_unsent', [1, 'castle', 0, 0])
+    house._tally_sortie_attempt(mem, '砦B', 'attack', 'departed', [1, 'castle', 0, 0])
+    assert 'sortie_retry' not in mem['obs_cost']
+    assert mem['obs_cost_dropped']['sortie_retry'] == 2
+
+# ---- Issue #3326 (34 stage 3): cancel→retry round-trip pairs ----
+def test_sortie_cancel_retry_pair_counts_gap_and_signature():
+    mem = {'tick': 100, 'gold': 250,
+           'garrison': {'城A': ['ゼウス', 'どうし']},
+           'house_eggs': {'ゼウス': {'hp': 80, 'location': 'castle'}}}
+    sig = house._sortie_state_sig(mem, '城A', 'ゼウス')
+    house._tally_sortie_attempt(mem, '砦B', 'attack', 'cancelled_unsent', sig)
+    # An attempt before any cancel is not a round trip.
+    mem['tick'] = 108
+    house._tally_sortie_attempt(mem, '砦B', 'attack', 'departed', sig)
+    row = mem['obs_cost']['sortie_retry']['by_key']['砦B|attack']
+    pairs = row['pairs']
+    assert pairs['n'] == 1
+    assert pairs['same_sig'] == 1 and 'diff_sig' not in pairs
+    assert pairs['departed'] == 1
+    assert pairs['gap_sum'] == 8 and pairs['gap_max'] == 8
+    assert pairs['gap_le_10'] == 1
+    # The departed retry closed the pair: nothing is pending, so the next
+    # attempt starts a new window instead of double-counting the old cancel.
+    assert 'cancel_pending' not in row
+
+
+def test_sortie_pair_rearms_on_consecutive_cancel_and_splits_by_outcome():
+    mem = {'tick': 10}
+    sig = [50, 'castle', 0, 1]
+    house._tally_sortie_attempt(mem, '砦C', 'attack', 'cancelled_unsent', sig)
+    # A second cancel at the same key IS the retry: it closes one pair and
+    # re-arms with the newer cancel.
+    mem['tick'] = 30
+    house._tally_sortie_attempt(mem, '砦C', 'attack', 'cancelled_observed', sig)
+    # State changed before the next retry: a legitimate re-check, diff_sig.
+    mem['tick'] = 120
+    house._tally_sortie_attempt(mem, '砦C', 'attack', 'released', [60, 'field', 0, 1])
+    pairs = mem['obs_cost']['sortie_retry']['by_key']['砦C|attack']['pairs']
+    assert pairs['n'] == 2
+    assert pairs['same_sig'] == 1 and pairs['diff_sig'] == 1
+    assert pairs['cancelled_observed'] == 1 and pairs['released'] == 1
+    # Gaps 20 (10→30) and 90 (30→120) both land in the ≤100 bucket.
+    assert pairs['gap_le_100'] == 2 and pairs['gap_sum'] == 110 and pairs['gap_max'] == 90
+    # 'released' is not a cancel: the chain ends without a pending pair.
+    row = mem['obs_cost']['sortie_retry']['by_key']['砦C|attack']
+    assert 'cancel_pending' not in row
+    # A different (target, purpose) key never inherits this pending cancel.
+    house._tally_sortie_attempt(mem, '砦D', 'attack', 'departed', sig)
+    assert 'pairs' not in mem['obs_cost']['sortie_retry']['by_key']['砦D|attack']
+
+
+def test_month_carry_has_no_fixed_maximum_after_observed_unchanged_months():
+    from docich.hanjuku.os_layer import roster as records
+    row = {'general': 'ゼウス', 'location': 'castle',
+           'location_observed': True, 'broken': False,
+           'hp': 50, 'max_hp': 50, 'carry_depth': 99}
+    assert records._carry_eligible(row, []) is True
+    assert records._carry_eligible(row, ['location']) is False
+    row['broken'] = True
+    assert records._carry_eligible(row, []) is True

@@ -170,6 +170,11 @@ STRONG_CARDS = ('クースカン', 'ミックミー', 'マグネガキン', 'ノ
 #   ゼンマイン50。グルミー100・キャトルミュー90 はイベント限定で別経路(レア札)。
 BOSS_DAMAGE_CARDS = ('バルムンク', 'ハリケーン', 'ビッグウェイブ', 'ファバード',
                      'マグネガキン', 'ドデカヘー', 'リューキーシ', 'ゼンマイン')
+# ボス以外に使わない札 (owner 2026-11-06: 「バルムンクはボス専用」)。将軍へのダメージは
+# 16しかなく、ボス250・モンスター255が本領なので、通常戦の卵落としや強い札として
+# 携行しても戦闘側の使用直前ゲートが開かない。携行だけして将軍の敗北で失う矛盾を
+# 防ぐため、出撃側の追加札選びからも外す (owner 2026-11-08、g1153 ココット)。
+BOSS_ONLY_CARDS = ('バルムンク',)
 # 自爆札: ボス50ダメージと引き換えに両軍の将軍・兵士のHPを半減する(イベント限定)。
 # 使い捨てにできる弱い将軍の出撃だけに携行する。
 BOSS_SACRIFICE_CARDS = ('バグストーム',)
@@ -243,6 +248,13 @@ BOSS_HP = {
     'ハードマン': 500,
     'ハードロボ': 1688,
 }
+
+# ボス城のモンスター型ボスは chart.BOSSES の初形態だけではない。第6話は
+# ハードマン→ハードロボ、第12話は クーモン→スーモン→ボイルド と形態が続く
+# (hanjuku_chart 6-B1 / 12-B1 の note)。後形態は chart.BOSSES に載らないため
+# ここでボスとして明示する (owner 2026-11-05: ボスモンスターに「かぼちゃ」は
+# きかない)。
+BOSS_MONSTERS: frozenset[str] = frozenset({'ハードロボ', 'スーモン', 'ボイルド'})
 
 # gcgx shogun.html 将軍一覧 (fetched 2026-10-03; SFC ID 0..127 の128名)。
 # owner 2026-10-03: 「ここを参考に、この評をハードコードしてしまって、値を照らし
@@ -541,16 +553,498 @@ GENERAL_TRAITS: dict[str, tuple[int, str, str, str]] = {
 # https://wikiwiki.jp/hjksfc/エッグモンスター/攻撃データ
 # Each entry: monster name -> {'skill1': (name, vs_monster, vs_general,
 #   hits, is_all, self_damage), 'skill2': (...)}.
-# Only representative / policy-relevant rows are transcribed here; unknown
-# monsters fall back to the generic opponent-aware heuristics below.
+# The whole 121-monster table is transcribed. The first transcription covered
+# only ワラワラ/ウッドボール, so the opponent-aware choice in
+# hanjuku/judgment/events.py fell back to the first skill for every other
+# summon. 攻撃回数 is kept per hit: total damage ranks as 威力 x 回数.
+# 'AL' (all targets) becomes hits=1 + is_all=True. Skills whose row lists
+# only an effect (即死, HP半減, HP吸収, ...) have 対モ/対将 0 and are never
+# preferred over a damaging skill. 自傷 is the wiki 分類 自爆 marker.
 MONSTER_ATTACK_DATA: dict[str, dict[str, tuple]] = {
-    'ワラワラ': {
-        'skill1': ('９９かいパンチ', 4, 15, 99, False, False),
-        'skill2': ('９９かいキック', 15, 4, 99, False, False),
+    'エッグスライム': {
+        'skill1': ('どろどろ', 5, 3, 1, False, False),
+        'skill2': ('ぐちゃぐちゃ', 0, 0, 1, False, False),
+    },
+    'コロボックル': {
+        'skill1': ('たたかう', 0, 0, 1, False, False),
+        'skill2': ('あいさつする', 2, 2, 4, False, False),
+    },
+    'バリゾーゴン': {
+        'skill1': ('ばらす', 0, 0, 1, False, False),
+        'skill2': ('わるぐち', 0, 0, 1, False, False),
+    },
+    'ライトきょうだい': {
+        'skill1': ('せかいでさいしょ', 4, 3, 2, False, False),
+        'skill2': ('なかまわれ', 0, 0, 1, False, False),
+    },
+    'モザイクマン': {
+        'skill1': ('れんぞくこうげき', 4, 3, 2, False, False),
+        'skill2': ('コマンダーＸ', 0, 0, 1, False, False),
+    },
+    'ケロベロス': {
+        'skill1': ('かみつく', 4, 3, 2, False, False),
+        'skill2': ('しっぽをふる', 0, 0, 1, False, False),
+    },
+    'ランプキン': {
+        'skill1': ('へんなおどり', 0, 0, 1, False, False),
+        'skill2': ('かぼちゃ', 0, 0, 1, False, False),
     },
     'ウッドボール': {
-        'skill1': ('たいあたり', 10, 10, 1, False, False),
-        'skill2': ('ばくはつする', 0, 0, 1, True, True),
+        'skill1': ('たいあたり', 9, 6, 1, False, False),
+        'skill2': ('ばくはつする', 0, 0, 1, False, True),
+    },
+    'セクシーボンバー': {
+        'skill1': ('ダイナマイト', 10, 6, 1, False, False),
+        'skill2': ('ミサイルくん', 7, 4, 1, False, False),
+    },
+    'おーでーん': {
+        'skill1': ('ざんてつけん', 12, 8, 1, False, False),
+        'skill2': ('グングニル', 9, 5, 1, False, False),
+    },
+    'バルーンフィンチ': {
+        'skill1': ('ふくらむ', 0, 0, 1, False, False),
+        'skill2': ('シャウト', 0, 0, 1, False, False),
+    },
+    'ボルシチ': {
+        'skill1': ('ちゃんこ', 13, 8, 1, False, False),
+        'skill2': ('げきからカレー', 0, 0, 1, False, False),
+    },
+    'くちびるナイト': {
+        'skill1': ('じょうねつのキス', 0, 0, 1, False, False),
+        'skill2': ('メイクアップ', 0, 0, 1, False, False),
+    },
+    'てつじん８ごう': {
+        'skill1': ('コダイミサイル', 4, 3, 4, False, False),
+        'skill2': ('サイシュウヘイキ', 0, 0, 1, False, True),
+    },
+    'はんぎょじん': {
+        'skill1': ('もりこうげき', 13, 8, 1, False, False),
+        'skill2': ('あしひれアタック', 7, 5, 2, False, False),
+    },
+    'グランドパパ': {
+        'skill1': ('わらう', 13, 8, 1, False, False),
+        'skill2': ('いかる', 0, 0, 1, False, False),
+    },
+    'グランドパパ(怒)': {
+        'skill1': ('だいげきど', 10, 8, 16, False, False),
+        'skill2': ('ひっくりかえる', 0, 0, 1, False, False),
+    },
+    'ガートルード': {
+        'skill1': ('であい', 13, 8, 1, False, False),
+        'skill2': ('そして わかれ', 5, 4, 4, False, False),
+    },
+    'デス': {
+        'skill1': ('しにがみのカマ', 14, 8, 1, False, False),
+        'skill2': ('タマシイヌキ', 0, 0, 1, False, False),
+    },
+    'さすらいマンボー': {
+        'skill1': ('あのひのおもい', 0, 0, 1, False, False),
+        'skill2': ('さすらいのうた', 11, 7, 1, False, False),
+    },
+    'しろまどうし': {
+        'skill1': ('ケアル', 0, 0, 1, False, False),
+        'skill2': ('ソーリー', 0, 0, 1, False, False),
+    },
+    'ワラワラ': {
+        'skill1': ('９９かいパンチ', 4, 15, 1, False, False),
+        'skill2': ('９９かいキック', 15, 4, 1, False, False),
+    },
+    'ピスクピグプレム': {
+        'skill1': ('いばらのむち', 7, 7, 5, False, False),
+        'skill2': ('わかくさのかおり', 15, 11, 1, False, False),
+    },
+    'ムーンマッスル': {
+        'skill1': ('ムーンライト', 11, 11, 1, True, False),
+        'skill2': ('ダンベルボム', 10, 9, 6, False, False),
+    },
+    'スカイプリンセス': {
+        'skill1': ('ナパームだん', 7, 7, 6, False, False),
+        'skill2': ('さいるいだん', 0, 0, 1, False, False),
+    },
+    'ハデデス': {
+        'skill1': ('ギャグ', 11, 8, 1, True, False),
+        'skill2': ('ダジャレ', 0, 0, 1, False, True),
+    },
+    'おやすみメリー': {
+        'skill1': ('バリカンでかる', 5, 4, 1, False, False),
+        'skill2': ('ヴァイオリン', 0, 0, 1, False, False),
+    },
+    'さんようちゅう': {
+        'skill1': ('ぺろぺろなめる', 2, 1, 1, False, False),
+        'skill2': ('もぐりこむ', 0, 0, 1, False, False),
+    },
+    'ムンクゴースト': {
+        'skill1': ('シッポビンタ', 3, 3, 2, False, False),
+        'skill2': ('さけび', 0, 0, 1, False, False),
+    },
+    'メイジュース': {
+        'skill1': ('かるくずつき', 6, 5, 1, False, False),
+        'skill2': ('メイクイーン', 0, 0, 1, False, False),
+    },
+    'ファイナルゼリー': {
+        'skill1': ('けんかをうる', 6, 1, 1, False, False),
+        'skill2': ('へばりつく', 0, 0, 1, False, False),
+    },
+    'やよい': {
+        'skill1': ('そちゃ', 8, 6, 1, False, False),
+        'skill2': ('おちゃうけ', 0, 0, 1, False, False),
+    },
+    'オイジュース': {
+        'skill1': ('ずつき', 9, 7, 1, False, False),
+        'skill2': ('じゃがいも', 0, 0, 1, False, False),
+    },
+    'カメレオンマン': {
+        'skill1': ('たべちゃうぞー', 11, 8, 1, False, False),
+        'skill2': ('とけこむぞー', 0, 0, 1, False, False),
+    },
+    'ダークエルフ': {
+        'skill1': ('ひとだまくん', 0, 0, 1, False, False),
+        'skill2': ('ダークフォース', 0, 0, 1, False, False),
+    },
+    'ウゴカザル': {
+        'skill1': ('なぐれっ！', 0, 0, 1, False, False),
+        'skill2': ('かきむしれ！', 0, 0, 1, False, False),
+    },
+    'プチデビル': {
+        'skill1': ('とびげり', 9, 6, 1, False, False),
+        'skill2': ('リトルモアモア', 0, 0, 1, False, False),
+    },
+    'キャンドロー': {
+        'skill1': ('ロウをたらす', 10, 6, 1, False, False),
+        'skill2': ('かなしいはなし', 0, 0, 1, False, False),
+    },
+    'なめくじおとこ': {
+        'skill1': ('たんをはく', 12, 9, 1, False, False),
+        'skill2': ('ねんえきネバネバ', 0, 0, 1, False, False),
+    },
+    'キノコやろう': {
+        'skill1': ('トリップダケ', 11, 8, 1, False, False),
+        'skill2': ('ワライダケ', 12, 8, 2, False, False),
+    },
+    'ゲーラス': {
+        'skill1': ('ひっかく', 8, 7, 2, False, False),
+        'skill2': ('クサイいきをはく', 0, 0, 1, False, False),
+    },
+    'クレクレ': {
+        'skill1': ('ムシャムシャくう', 0, 0, 1, False, False),
+        'skill2': ('しょうかえき', 7, 5, 1, True, False),
+    },
+    'とうめいにんげん': {
+        'skill1': ('イタズラがき', 0, 0, 1, False, False),
+        'skill2': ('イナイイナイバア', 0, 0, 1, False, False),
+    },
+    'ラビットサタン': {
+        'skill1': ('デスのカマ', 14, 11, 1, False, False),
+        'skill2': ('ラビットキック', 7, 6, 4, False, False),
+    },
+    'スモーキーガスト': {
+        'skill1': ('けむにまく', 10, 8, 1, True, False),
+        'skill2': ('ちっそくスモーク', 0, 0, 1, False, False),
+    },
+    'フランソワーズ': {
+        'skill1': ('にげまどう', 15, 14, 1, False, False),
+        'skill2': ('すねる', 10, 8, 8, False, False),
+    },
+    'アモン': {
+        'skill1': ('きゅうしゅう', 0, 0, 1, False, False),
+        'skill2': ('あんこく', 15, 12, 2, False, False),
+    },
+    'デビルウーマン': {
+        'skill1': ('モーニングスター', 12, 10, 2, False, False),
+        'skill2': ('とっつかまえる', 11, 8, 4, False, False),
+    },
+    'ルキュフェル': {
+        'skill1': ('６まいのつばさ', 10, 7, 6, False, False),
+        'skill2': ('だらくさせる', 0, 0, 1, False, False),
+    },
+    'バブリー': {
+        'skill1': ('バブルストーム', 14, 11, 1, True, False),
+        'skill2': ('シルキーミスト', 0, 0, 1, False, False),
+    },
+    'バール': {
+        'skill1': ('もうどく', 15, 12, 1, True, False),
+        'skill2': ('マリオネット', 12, 8, 8, False, False),
+    },
+    'フラフラ': {
+        'skill1': ('フラフラアタック', 5, 4, 1, False, False),
+        'skill2': ('バタバタアタック', 3, 2, 2, False, False),
+    },
+    'ゾンビ': {
+        'skill1': ('ゾンビパンチ', 0, 0, 1, False, False),
+        'skill2': ('ケアル', 0, 0, 1, False, False),
+    },
+    'ニンフ': {
+        'skill1': ('うっふんウインク', 7, 4, 1, False, False),
+        'skill2': ('にくたいび', 3, 2, 3, False, False),
+    },
+    'エルフドラゴン': {
+        'skill1': ('かわいいツメ', 8, 6, 1, False, False),
+        'skill2': ('かわいくはばたく', 0, 0, 1, False, False),
+    },
+    'ドラゴンたろう': {
+        'skill1': ('ツメとキバ', 5, 4, 2, False, False),
+        'skill2': ('キックとパンチ', 3, 3, 4, False, False),
+    },
+    'ベビーモス': {
+        'skill1': ('でんぐりがえし', 8, 6, 1, False, False),
+        'skill2': ('おぶさる', 0, 0, 1, False, False),
+    },
+    'モーグリ': {
+        'skill1': ('トライデント', 5, 3, 3, False, False),
+        'skill2': ('とっしん', 0, 0, 1, False, False),
+    },
+    'ハーフドラゴン': {
+        'skill1': ('しっぽ', 10, 6, 1, False, False),
+        'skill2': ('キック', 5, 4, 2, False, False),
+    },
+    'コマイヌ': {
+        'skill1': ('かみつく', 7, 5, 2, False, False),
+        'skill2': ('おどす', 0, 0, 1, False, False),
+    },
+    'ドラゴンフライ': {
+        'skill1': ('シャチホコ', 8, 5, 2, False, False),
+        'skill2': ('エビフリャー', 0, 0, 1, False, False),
+    },
+    'ローラーキラー': {
+        'skill1': ('ダッシュプレス', 5, 3, 1, True, False),
+        'skill2': ('メガトンプレス', 0, 0, 1, False, False),
+    },
+    'たまごキャリー': {
+        'skill1': ('うっちゃり', 11, 8, 1, False, False),
+        'skill2': ('たまご', 0, 0, 1, False, False),
+    },
+    'ぼーぼーどり': {
+        'skill1': ('ほのおのはね', 6, 5, 4, False, False),
+        'skill2': ('へるファイア', 0, 0, 1, False, False),
+    },
+    'マシンナイト': {
+        'skill1': ('ロケットパンチ', 7, 5, 4, False, False),
+        'skill2': ('すもうタックル', 6, 4, 1, True, False),
+    },
+    'ダディ': {
+        'skill1': ('ボディプレス', 14, 10, 1, False, False),
+        'skill2': ('にくあつ', 0, 0, 1, False, False),
+    },
+    'ドラゴンパピー': {
+        'skill1': ('ほのおをはく', 7, 7, 1, True, False),
+        'skill2': ('なつく', 0, 0, 1, False, False),
+    },
+    'ヘビーモス': {
+        'skill1': ('けんかをする', 8, 6, 3, False, False),
+        'skill2': ('しっぽをふる', 4, 3, 6, False, False),
+    },
+    'テュポーン': {
+        'skill1': ('クジラアタック', 8, 6, 4, False, False),
+        'skill2': ('しおふき', 0, 0, 1, False, False),
+    },
+    'ハニワゴーレム': {
+        'skill1': ('ハニードリル', 13, 9, 2, False, False),
+        'skill2': ('ハニーはりて', 8, 6, 4, False, False),
+    },
+    'あ た し ♥': {
+        'skill1': ('く ち づ け♥', 15, 11, 1, False, False),
+        'skill2': ('か た ら い♥', 0, 0, 1, False, False),
+    },
+    'ぞうさんだいおう': {
+        'skill1': ('パオーのはな', 15, 11, 2, False, False),
+        'skill2': ('パオーのおなか', 11, 9, 2, False, False),
+    },
+    'サイクロプス': {
+        'skill1': ('にくだんこうげき', 15, 12, 2, False, False),
+        'skill2': ('ほうがんなげ', 10, 9, 4, False, False),
+    },
+    'にんげんライダー': {
+        'skill1': ('ドラゴンアタック', 11, 9, 1, True, False),
+        'skill2': ('にんげんアタック', 15, 11, 1, False, False),
+    },
+    'てんりゅう': {
+        'skill1': ('イカズチ', 15, 12, 2, False, False),
+        'skill2': ('ほうこう', 11, 9, 2, False, False),
+    },
+    'ちきゅうちゃん': {
+        'skill1': ('だいじしん', 0, 0, 1, False, False),
+        'skill2': ('ハルマゲドン', 0, 0, 1, False, True),
+    },
+    'コロコロムシ': {
+        'skill1': ('せなかにはりつく', 5, 4, 1, False, False),
+        'skill2': ('いとをだす', 0, 0, 1, False, False),
+    },
+    'あいのししゃ': {
+        'skill1': ('あいのひかり', 6, 4, 1, False, False),
+        'skill2': ('だきしめる', 0, 0, 1, False, False),
+    },
+    'マミー': {
+        'skill1': ('ファラオのさばき', 0, 0, 1, False, False),
+        'skill2': ('ほうたいのまい', 0, 0, 1, False, False),
+    },
+    'メトロノーム': {
+        'skill1': ('もっとはやく！！', 5, 4, 2, False, False),
+        'skill2': ('もっとおそく！！', 0, 0, 1, False, False),
+    },
+    'フリージーボーイ': {
+        'skill1': ('エアコン', 0, 0, 1, False, False),
+        'skill2': ('れいとう', 0, 0, 1, False, False),
+    },
+    'ニンニクマン': {
+        'skill1': ('でまえいっちょ', 8, 6, 1, False, False),
+        'skill2': ('ニオウンデス', 0, 0, 1, False, False),
+    },
+    'バッティングマン': {
+        'skill1': ('ホームラン', 0, 0, 1, False, False),
+        'skill2': ('せんぼんノック', 3, 2, 1, True, False),
+    },
+    'エルフ': {
+        'skill1': ('こうきゅう', 12, 8, 1, False, False),
+        'skill2': ('かえんのまい', 0, 0, 1, False, False),
+    },
+    'サンドワーム': {
+        'skill1': ('ドリルでほる', 11, 9, 1, False, False),
+        'skill2': ('てぬきこうじ', 4, 3, 3, False, False),
+    },
+    'コーヒービート': {
+        'skill1': ('マラカスビート', 6, 5, 2, False, False),
+        'skill2': ('エスプレッソ', 0, 0, 1, False, False),
+    },
+    'なると': {
+        'skill1': ('ぎざぎざ', 2, 2, 1, False, False),
+        'skill2': ('うずまき', 0, 0, 1, False, False),
+    },
+    'エクスカリバー': {
+        'skill1': ('エクスカリバる', 0, 0, 1, False, False),
+        'skill2': ('マサムネる', 4, 3, 4, False, False),
+    },
+    'ヒュドラ': {
+        'skill1': ('まきつく', 12, 9, 1, False, False),
+        'skill2': ('ウォーター', 4, 3, 4, False, False),
+    },
+    'ユニコーン': {
+        'skill1': ('つのでつく', 0, 0, 1, False, False),
+        'skill2': ('うしろあしキック', 9, 6, 2, False, False),
+    },
+    'ガーコイル': {
+        'skill1': ('スプリング', 14, 10, 1, False, False),
+        'skill2': ('するどいツメ', 7, 5, 3, False, False),
+    },
+    'スロウケンタ': {
+        'skill1': ('ばていしゅりけん', 6, 4, 4, False, False),
+        'skill2': ('ぴたんこアロー', 0, 0, 1, False, False),
+    },
+    'メデューサ': {
+        'skill1': ('おうふくビンタ', 10, 8, 2, False, False),
+        'skill2': ('せきぞうにおなり', 0, 0, 1, False, False),
+    },
+    'たまごまじん': {
+        'skill1': ('どつく', 14, 10, 2, False, False),
+        'skill2': ('いかずちをおとす', 9, 7, 1, True, False),
+    },
+    'アマゾン': {
+        'skill1': ('サラマンドのけん', 11, 9, 2, False, False),
+        'skill2': ('ガラハドのけん', 7, 6, 4, False, False),
+    },
+    'シカルドラゴン': {
+        'skill1': ('ステッキでたたく', 13, 10, 2, False, False),
+        'skill2': ('せっきょう', 9, 7, 2, False, False),
+    },
+    'フロストベビー': {
+        'skill1': ('バブー', 15, 13, 1, False, False),
+        'skill2': ('オギャー', 10, 8, 1, True, False),
+    },
+    'アレス': {
+        'skill1': ('けんできる', 15, 12, 2, False, False),
+        'skill2': ('けんをかざす', 11, 10, 1, True, False),
+    },
+    'レッドドラゴン': {
+        'skill1': ('ウイング', 12, 10, 1, True, False),
+        'skill2': ('マグマふんしゃ', 11, 10, 6, False, False),
+    },
+    'カバドラゴン': {
+        'skill1': ('きこうだん', 15, 12, 2, False, False),
+        'skill2': ('ぼんじこうせん', 10, 9, 6, False, False),
+    },
+    'ハデス': {
+        'skill1': ('デビルオーラ', 15, 6, 1, False, False),
+        'skill2': ('サイコバーン', 0, 0, 1, False, False),
+    },
+    'エッグマン': {
+        'skill1': ('エッグチョップ', 0, 0, 1, False, False),
+        'skill2': ('エッグキック', 0, 0, 1, False, False),
+    },
+    'エッグマンナイト': {
+        'skill1': ('エッグソード', 3, 2, 1, False, False),
+        'skill2': ('エッグビーム', 0, 0, 1, False, False),
+    },
+    'しんエッグマン': {
+        'skill1': ('メガチョップ', 0, 0, 1, False, False),
+        'skill2': ('メガキック', 0, 0, 1, False, False),
+    },
+    'キングエッグマン': {
+        'skill1': ('キングこづち', 0, 0, 1, False, False),
+        'skill2': ('スーパー…ビーム', 15, 15, 1, False, False),
+    },
+    'エッグベビー': {
+        'skill1': ('バブーチョップ', 15, 8, 1, False, False),
+        'skill2': ('オギャービーム', 0, 0, 1, False, False),
+    },
+    'あけまつ': {
+        'skill1': ('ごあいさつ', 0, 0, 1, False, False),
+        'skill2': ('おもてなし', 0, 0, 1, False, False),
+    },
+    'おめでとり': {
+        'skill1': ('ミカンをおす', 1, 1, 16, False, False),
+        'skill2': ('あたためる', 0, 0, 1, False, True),
+    },
+    'スプリミョーネ': {
+        'skill1': ('つくしんボム', 6, 5, 4, False, False),
+        'skill2': ('はるのうた', 0, 0, 1, False, False),
+    },
+    'フォーリシア': {
+        'skill1': ('かれはのまい', 5, 4, 4, False, False),
+        'skill2': ('うらみうた', 0, 0, 1, False, False),
+    },
+    'ウイナッツォ': {
+        'skill1': ('あついおでん', 11, 10, 1, False, False),
+        'skill2': ('こたつでねむれ', 0, 0, 1, False, False),
+    },
+    'サマカンテ': {
+        'skill1': ('ホットないちげき', 12, 10, 1, False, False),
+        'skill2': ('ひとなつのこい', 0, 0, 1, False, False),
+    },
+    'だいまおう': {
+        'skill1': ('かんぺきこうげき', 5, 4, 4, False, False),
+        'skill2': ('てんぺんちい', 3, 3, 6, False, False),
+    },
+    'ハードマン': {
+        'skill1': ('ハードアタック', 9, 5, 1, False, False),
+        'skill2': ('ハードバズーカ', 2, 2, 1, True, False),
+    },
+    'ハードロボ': {
+        'skill1': ('かたゆでぎり', 15, 10, 1, False, False),
+        'skill2': ('エッグスライサー', 7, 5, 1, True, False),
+    },
+    'ランパイア': {
+        'skill1': ('デッドリーネイル', 7, 6, 4, False, False),
+        'skill2': ('エキスキッス', 0, 0, 1, False, False),
+    },
+    'ノブナーガ': {
+        'skill1': ('おけはざまぎり', 13, 9, 2, False, False),
+        'skill2': ('ナーガいもの', 0, 0, 1, False, False),
+    },
+    'だいとうりょう': {
+        'skill1': ('じょうりゅうけん', 15, 11, 1, False, False),
+        'skill2': ('ズグラーク！', 6, 4, 1, True, False),
+    },
+    'エッグママ': {
+        'skill1': ('ぼせいほんのう', 11, 8, 1, True, False),
+        'skill2': ('せんのう', 0, 0, 1, False, False),
+    },
+    'クーモン': {
+        'skill1': ('ちょうみりょう', 0, 0, 1, False, False),
+        # Wiki row marks the 回数 cell as AL: エグモン即死x2 / 将軍単独時即死.
+        'skill2': ('くうもん！', 0, 0, 1, True, False),
+    },
+    'スーモン': {
+        'skill1': ('マントをとじる', 8, 8, 2, False, False),
+        'skill2': ('すうもん！', 0, 0, 1, False, False),
     },
 }
 
@@ -563,6 +1057,16 @@ MONSTER_ATTACK_DATA: dict[str, dict[str, tuple]] = {
 # with no 自爆 note, so it is intentionally omitted.
 MONSTER_SELF_DAMAGE_SKILLS: frozenset[str] = frozenset({
     'ばくはつする',
+})
+
+# Skills whose attack-data row is 分類 即死 (instant death).  The wiki notes
+# that 即死 is guaranteed against a general and his soldiers but only a low
+# probability against an egg monster or boss, so the summon policy only values
+# them on a general turn.  ムシャムシャくう is the 将軍・兵士確定即死 variant.
+MONSTER_INSTANT_DEATH_SKILLS: frozenset[str] = frozenset({
+    'タマシイヌキ', 'ひとだまくん', 'ムシャムシャくう', 'イタズラがき',
+    'とっしん', 'ファラオのさばき', 'ホームラン', 'エクスカリバる',
+    'つのでつく', 'オギャービーム', 'くうもん！',
 })
 
 # Summoned-monster skill tables (wikiwiki attack-data page, transcribed).
@@ -728,6 +1232,20 @@ ENDURE_HEADROOM = 16
 # Sources: https://blog.livedoor.jp/hanjukueiyu/archives/1035528547.html
 #          https://gcgx.games/hanjuku/03.html and /09.html (soldiers: HP100)
 BOSS_GENERALS = frozenset({'クイーン', 'にせヒーロー', 'プリンス', 'せいめいたい'})
+
+
+def is_boss_target(name: str | None) -> bool:
+    """A named boss general or boss monster in the reference tables.
+
+    ``chart.BOSSES`` (the chapter's current boss name) lives in the chart
+    module and is checked by the caller.  This covers boss generals, the boss
+    rows recorded in ``BOSS_HP`` and the later boss-monster forms in
+    ``BOSS_MONSTERS`` that the chart does not list as the chapter boss.
+    """
+    return bool(name) and (name in BOSS_GENERALS or name in BOSS_HP
+                           or name in BOSS_MONSTERS)
+
+
 GENERAL_SOLDIER_HP = 10
 GENERAL_BOSS_SOLDIER_HP = {'クイーン': 10, 'にせヒーロー': 10,
                            'プリンス': 100, 'せいめいたい': 100}

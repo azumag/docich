@@ -1,6 +1,5 @@
-# ADR 0006: opencode session ファイルストアの age-based pruning（dry-run 配線済み・apply は owner ゲート）
-
-- Status: **Accepted**（2026-11-02 DSH レビュー。設計確定・dry-run 配線済み。session 削除の apply は owner 確認待ちで分離）
+# ADR 0006: opencode session ファイルストアの age-based pruning（auto-apply 有効化済み・owner 承認 #3140 comment 6635080145）
+- Status: **Accepted**（2026-11-02 DSH レビュー。設計確定・auto-apply 有効化済み（owner 承認 #3140 comment 6635080145））
 - Issue: [azumag/docich#3140](https://github.com/azumag/docich/issues/3140)（#389 follow-up）
 - Precedents: [ADR 0002](./0002-opencode-db-retention.md)（opencode.db bounded retention、writer exclusion gate 付き）、#1906（`opencode.log` logrotate・`tool-output` 除外、完了）
 - Related lanes: #3109 / #3120 / #3121（`github-vm-ops` state 側の retention。本ADRの対象外）
@@ -97,7 +96,7 @@
 - 既存 `docich-opencode-retention.timer`（hourly oneshot、`opencode_db_retention_now.sh --scheduled`、deadline 780s）は `opencode.db` と worker DB のみを対象とし、本ファイル prune と**対象が非重複**。
 - **確定（DSH 推奨 ②）**: ファイル prune を DB pass と同じ hourly スケジュール・同じ排他 gate（`OPENCODE_ROTATION_GATE`、`flock -x`）に集約し、別 timer は作らない。
 - **配線方式（暫定・2026-11-02）**: soren 側 `lib/opencode_db_retention.{sh,py}` へ file pass を足す形が筋だが、soren レーンを本 PR に持ち込まないため、当面は `ops/vm_actions/opencode_db_retention_now.sh` が DB rotate の直後に `opencode_session_file_reclaim.py` を呼ぶ。**2 つの連続した mutation window**（同一 hourly スケジュール・同一 gate ファイル）であり、1 window 集約ではない点が暫定。将来 soren 側へ集約する。
-- **この epoch は dry-run のみ**を配線する（`--apply` / `--auto-apply` を渡さない）。apply の有効化は owner 確認後。DB pass と file pass は独立 stage として扱い、片方の失敗でもう片方を止めない。DB pass の 75（deferred）はそのまま維持し、file pass の `gate_timeout` も 75 として deferred に扱う。
+- owner 承認（#3140 comment 6635080145）に基づき **auto-apply** を配線する（`--auto-apply` と `--manifest-file` を渡す）。DB pass と file pass は独立 stage として扱い、片方の失敗でもう片方を止めない。DB pass の 75（deferred）はそのまま維持し、file pass の `gate_timeout` も 75 として deferred に扱う。
 - gate の互換性: producer（soviet_now 側 `opencode run` 全呼出点）は既に共有ロック保持済み（ADR 0002 配線済み）のため、ファイル prune も自動的に exclusion される。追加の producer 変更は不要。
 
 ### 4.4 成功指標（DSH条件2・monitor 観測可能）

@@ -1485,3 +1485,95 @@ def test_boundary_cancel_claim_invokes_the_adapter_once_for_concurrent_callers()
         assert not first.is_alive() and not second.is_alive()
         assert calls == [request_id]
         assert results == [(True, None), (True, None)]
+
+
+class ExitedBoundaryAdapter(BoundaryAdapter):
+    """Old runtime dies mid-drain before terminal evidence (docich#3521).
+
+    The boundary request is recorded so the failure path cancels it exactly
+    like a live drain, then the runtime is reported dead and the boundary
+    wait raises the same AdapterError the RetroArch adapter raises for
+    "exited before terminal evidence".
+    """
+
+    def request_round_boundary(self, request_id, deadline, cancel):
+        self.boundary_request_ids.append(request_id)
+        self.runtime.alive = False
+        raise game_switch.AdapterError("exited before terminal evidence")
+
+
+class ExitedBoundaryFactory(BoundaryFactory):
+    def __call__(self, spec):
+        key = (spec.game, spec.generation)
+        if key not in self.adapters:
+            self.adapters[key] = ExitedBoundaryAdapter(spec)
+        return self.adapters[key]
+
+
+def test_dead_active_is_retired_after_boundary_failure():
+    """docich#3521: quiesce_failed on a dead runtime must not retain it as
+    ``active`` -- the corpse is collected and the request still fails."""
+    with tempfile.TemporaryDirectory() as tmp:
+        state_dir = Path(tmp) / "run"
+        factory = ExitedBoundaryFactory()
+        store, coordinator = _coordinator(factory, state_dir)
+        _assert_started(coordinator)
+        old = factory.adapters[("nethack", 1)]
+
+        result = coordinator.switch("robots", timeout_s=30.0)
+
+        assert result.status == "failed"
+        assert result.error_code == game_switch.ERROR_QUIESCE_FAILED
+        assert result.cleanup_pending is False
+        final, _ = store.canonical.load()
+        assert final["phase"] == "idle"
+        assert final["active"] is None
+        assert final["retiring"] == []
+        receipt = store.receipts.load(result.request_id)
+        assert receipt["status"] == "failed"
+        assert receipt["result"]["failure_phase"] == "round_boundary"
+        assert receipt["result"]["active_retired"] is True
+        assert receipt["result"]["retained_active"] is None
+        # The dead runtime was actually collected, not just untracked.
+        assert "stop_agent" in old.runtime.events
+        assert "cleanup" in old.runtime.events
+
+
+class UndeadCorpseAdapter(ExitedBoundaryAdapter):
+    """Dead runtime whose agent refuses to die (teardown unconfirmed)."""
+
+    def stop_agent(self, deadline, cancel):
+        raise game_switch.AdapterError("agent window kill failed")
+
+
+class UndeadCorpseFactory(BoundaryFactory):
+    def __call__(self, spec):
+        key = (spec.game, spec.generation)
+        if key not in self.adapters:
+            self.adapters[key] = UndeadCorpseAdapter(spec)
+        return self.adapters[key]
+
+
+def test_dead_active_stays_tracked_in_retiring_when_teardown_unconfirmed():
+    """docich#3521: an unconfirmed teardown keeps the runtime in ``retiring``
+    for recovery instead of re-publishing the corpse as active."""
+    with tempfile.TemporaryDirectory() as tmp:
+        state_dir = Path(tmp) / "run"
+        factory = UndeadCorpseFactory()
+        store, coordinator = _coordinator(factory, state_dir)
+        _assert_started(coordinator)
+
+        result = coordinator.switch("robots", timeout_s=30.0)
+
+        assert result.status == "failed"
+        assert result.error_code == game_switch.ERROR_QUIESCE_FAILED
+        assert result.cleanup_pending is True
+        final, _ = store.canonical.load()
+        assert final["phase"] == "idle"
+        assert final["active"] is None
+        assert len(final["retiring"]) == 1
+        assert final["retiring"][0]["runtime_id"] == "g1-00000000" or \
+            final["retiring"][0]["cleanup_role"] == "failed_boundary_active"
+        receipt = store.receipts.load(result.request_id)
+        assert receipt["result"]["active_retired"] is True
+        assert receipt["result"]["cleanup_pending"] is True

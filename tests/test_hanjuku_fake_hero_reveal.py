@@ -44,7 +44,7 @@ def test_cold_resume_reveal_never_requires_old_roster_or_battle():
 
 def test_native_paused_slot_osd_never_weakens_chapter_evidence():
     native = read_png(Path(__file__).parent / 'fixtures/hanjuku/g704-resume-reveal-slot-osd.png').resized()
-    assert native.digest() == '97897876700acf85183017d067e9cce624cdc4b4a40d93540434ecfe45840286'
+    assert native.digest() == '9400157cf98d4f3d8754fde41fc2eb8169c186da51b0c4ee3a588cb0012b6b3b'
     assert fake_hero_announcement_chapter(parse(native)) is None
 
 

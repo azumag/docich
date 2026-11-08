@@ -22,6 +22,36 @@ def stalled_month(count=133, seen='1-7'):
     return mem, screen
 
 
+
+@pytest.mark.parametrize('same_scope,opens', [(True, True), (False, False)])
+def test_measured_sufficient_army_releases_stale_soldier_hold_for_recruit(same_scope, opens):
+    # A previous provisional refill is not a new expense when a scoped
+    # reading proves there are already plenty of soldiers. Do not mistake
+    # an older run/month's reading for the current stock.
+    mem, _ = stalled_month(133)
+    identity = {'game': 'hanjuku-hero', 'runtime_id': 'recruit-army',
+                'generation': 123, 'lease_id': 'recruit-army-lease'}
+    mem['_run_identity'] = identity
+    mem['country_general_count'] = {'scope': [1, '1-7'], 'identity': identity,
+                                    'count': 6, 'tick': 100}
+    mem['soldiers_seen_scope'] = [identity, 1, '1-7' if same_scope else '1-6']
+    mem['shop'].update(recruit='check', recruit_priority=True,
+                       soldiers_done=True, soldiers_before_recruit=56,
+                       soldiers_before_recruit_done=False)
+    spare, evidence = policy._recruit_spare_after_necessities(mem, mem['shop'], 86)
+    assert (spare is True) is opens
+    assert evidence['measured_army_enough'] is opens
+    assert evidence['held'] == (0 if opens else 56)
+    if opens:
+        actions = policy.month_step(parse(month_canvas(86, on='しょうぐんぼしゅう')), mem)
+        assert actions == [policy.pad('a')]
+        assert mem['month_sub']['kind'] == 'recruit'
+        assert mem['shop']['recruit'] == 'opened'
+    else:
+        policy.month_step(parse(month_canvas(86, on='しょうぐんぼしゅう')), mem)
+        assert (mem.get('month_sub') or {}).get('kind') != 'recruit'
+
+
 @pytest.mark.parametrize('count', [50, 133])
 def test_skip_reopens_cash_check_then_recruits_from_real_menu(count):
     mem, screen = stalled_month(count)

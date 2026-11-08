@@ -27,7 +27,10 @@ class CcAdapterDiagnosticsTest(unittest.TestCase):
     def test_section_reports_unreachable_with_port_only(self):
         with mock.patch.dict("os.environ", {"DOCICH_CC_ADAPTER_PORT": str(_closed_port())}):
             section = collector._collect_cc_translation_adapter()
-        self.assertEqual(set(section), {"port", "state", "upstream"})
+        self.assertEqual(
+            set(section),
+            {"port", "state", "upstream", "consecutive_failures", "last_failure_kind"},
+        )
         self.assertEqual(section["state"], "unreachable")
         self.assertIsNone(section["upstream"])
 

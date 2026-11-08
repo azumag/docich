@@ -207,7 +207,8 @@ def test_health_need_decides_whether_healing_precedes_a_lethal_card(hp, choice):
 
 
 def test_control_without_attack_follows_a_visible_heal_instead():
-    mem = memory('クースカン')
+    # ally 10 vs enemy 27: halving (14 left) would still leave us behind.
+    mem = memory('クースカン', ally_hp=10)
     assert p.card_list_step(cards(['クースカン', 'エンジェリン']), mem) == [p.pad('down')]
     assert p.card_list_step(cards(['クースカン', 'エンジェリン'], 1), mem) == [p.pad('a')]
     assert mem['battle']['cards_selected'] == ['エンジェリン']

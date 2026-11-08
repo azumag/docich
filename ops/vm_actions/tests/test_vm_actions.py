@@ -741,7 +741,10 @@ class GatewayTests(unittest.TestCase):
         self._write_baseline(base)
         p=self.call(f'deploy docich production {sha}')
         self.assertEqual(p.returncode,0,p.stderr.decode())
-        self.assertEqual(json.loads(p.stdout),{'status':'deployed','sha':sha,'rebaselined_from':base})
+        payload = json.loads(p.stdout)
+        self.assertEqual(payload.pop('git_gc'), {'status': 'unavailable'})
+        payload.pop('bundle_mode', None)
+        self.assertEqual(payload, {'status':'deployed','sha':sha,'rebaselined_from':base})
         state=json.loads((self.state/'current'/'docich.json').read_text())
         self.assertEqual(state['sha'],sha)
         self.assertEqual(state['rebaseline_history'][-1],

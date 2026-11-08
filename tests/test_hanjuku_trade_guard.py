@@ -145,6 +145,88 @@ def decide_trade(frame, state=None):
     return decide(frame, trade_state() if state is None else state)
 
 
+def concert_pixels(*, question=True, rows=('そうする', 'やめる'), selected=0,
+                   hand=True, name='ゼウス', prose=None):
+    """The red-curtain monthly-event scene (classify() -> 'concert')."""
+    from test_hanjuku_chart_bot import Canvas, GREEN
+    canvas = Canvas((0, 0, 0))
+    for y in range(128):
+        for x in range(32):
+            canvas.put(x, y, (200, 40, 50))
+            canvas.put(224 + x, y, (200, 40, 50))
+    for y in range(150, 208):
+        for x in range(18, 236):
+            canvas.put(x, y, GREEN)
+    if prose is not None:
+        canvas.text(24, 151, prose)
+    if question:
+        canvas.text(24, 151, f'そちらの{name}しょうぐんと')
+        canvas.text(24, 167, 'イキのいいのとではどーだ?')
+    for i, word in enumerate(rows):
+        canvas.text(40, 183 + 16 * i, word)
+    if hand:
+        canvas.hand(18, 183 + 16 * selected - 6)
+    return canvas.frame()
+
+
+def decide_concert(frame, state=None):
+    from docich.hanjuku_bot import classify, decide
+    from docich.hanjuku_screen import parse
+    screen = parse(frame)
+    assert classify(frame) == 'concert' and screen.kind == 'text'
+    return decide(frame, {'policy': {'tick': 10, 'chapter': 1}} if state is None else state)
+
+
+def test_a_concert_trade_offer_is_owned_and_declined():
+    # g1139 2026-11-06 23:13: the monthly event is phase 'concert', the guard
+    # never ran there, and the fallback A accepted カシス -> チキータ.
+    actions, state = decide_concert(concert_pixels())
+    assert actions == [policy.pad('down')]
+    assert state['policy']['trade_guard']['accept'] is False
+    actions, state = decide_concert(concert_pixels(selected=1), state)
+    assert actions == [policy.pad('a')]
+    assert state['_records'][-1]['strategy_variant'] == 'decline_general_trade'
+
+
+def test_a_concert_trade_choice_without_a_readable_hand_is_held():
+    actions, state = decide_concert(concert_pixels(hand=False))
+    assert actions == []
+    assert state['policy']['trade_guard']['held'] is True
+    assert not any(row['decision'] == 'no_input_fallback' for row in state['_records'])
+
+
+def test_a_concert_trade_hold_suppresses_the_no_input_fallback():
+    from docich.hanjuku_bot import NO_INPUT_HOLD_MAX
+    frame = concert_pixels(hand=False)
+    state = None
+    for observation in range(1, NO_INPUT_HOLD_MAX + 3):
+        actions, state = decide_concert(frame, state)
+        assert actions == []
+        assert state['policy']['trade_guard']['held'] is True
+        assert not any(row['decision'] == 'no_input_fallback' for row in state['_records'])
+
+
+def test_a_concert_scene_without_trade_wording_keeps_the_event_advance():
+    actions, state = decide_concert(concert_pixels(
+        question=False, rows=(), hand=False,
+        prose='こんげつは あたらしい つきです'))
+    assert actions == [policy.pad('a')]
+    assert 'trade_guard' not in state['policy']
+
+
+@pytest.mark.parametrize('phase', ['concert', 'event'])
+def test_the_monthly_scene_phases_own_trade_wording(phase):
+    mem = {'tick': 1}
+    assert policy.trade_guard_step(text('トレードをしようじゃないか'), mem, phase=phase) is None
+    assert mem['trade_guard']['tick'] == 1
+
+
+def test_a_combat_phase_trade_lookalike_is_not_owned():
+    mem = {'tick': 1}
+    assert policy.trade_guard_step(text('トレードをしよう'), mem, phase='battle') is None
+    assert 'trade_guard' not in mem
+
+
 def test_question_lines_are_not_choices_in_the_public_pixel_decision_path():
     actions, state = decide_trade(trade_pixels())
     assert actions == [policy.pad('down')]
@@ -337,6 +419,52 @@ def test_a_completed_trade_releases_its_guard():
     actions, state = decide_trade(trade_pixels(rows=(), hand=False), state)
     assert actions == [policy.pad('a')]
     assert 'trade_guard' not in state['policy']
+
+
+def _trade_result_frame(gap=True):
+    """The measured closing page (g1139 00:48, g1146 19:50): 3 rows, the last one
+    "これにて トレードしゅうりょう!" on y=183, inside the 176-208 choice band."""
+    from test_hanjuku_chart_bot import Canvas, GREEN
+    canvas = Canvas((0, 0, 0))
+    canvas.rgb[144 * 256 * 3:] = bytes(GREEN) * (256 * 80)
+    canvas.text(24, 151, 'ということでアマンディーヌは')
+    canvas.text(24, 167, 'わがぐんのシャルドネとこうかんだ!')
+    if gap:
+        canvas.text(24, 183, 'これにて')
+        canvas.text(24 + 8 * 5, 183, 'トレードしゅうりょう!')
+    else:
+        canvas.text(24, 183, 'これにてトレードしゅうりょう!')
+    return canvas.frame()
+
+
+@pytest.mark.parametrize('gap', [True, False])
+def test_the_trade_result_page_is_advanced_not_held_after_a_seen_choice(gap):
+    import json
+    # The offer's choice was seen but never confirmed through this guard (the
+    # hand was lost), so choice_seen is set: the state that froze the run.
+    _, state = decide_trade(trade_pixels(rows=('そうする', 'やめる'), hand=False))
+    assert state['policy']['trade_guard']['choice_seen'] is True
+    frame = _trade_result_frame(gap)
+    for _ in range(4):
+        actions, state = decide_trade(frame, json.loads(json.dumps(state)))
+        assert actions == [policy.pad('a')]
+        assert 'trade_guard' not in state['policy']
+        assert not any(r['decision'] in ('trade_offer_seen', 'situation_held')
+                       for r in state['policy'].get('_records', []))
+
+
+def test_the_trade_result_page_does_not_arm_the_guard_on_its_own():
+    state = {'policy': {'tick': 10, 'chapter': 1}}
+    actions, state = decide_trade(_trade_result_frame(), state)
+    assert actions == [policy.pad('a')]
+    assert 'trade_guard' not in state['policy']
+    assert not any(r['decision'] == 'trade_offer_seen' for r in state['policy'].get('_records', []))
+
+
+def test_a_lead_in_that_only_mentions_the_trade_still_arms_the_guard():
+    mem = {'tick': 3}
+    assert policy.trade_guard_step(text('ここでしょうぐんどうしのトレードをしようじゃないか'), mem) is None
+    assert 'trade_guard' in mem
 
 
 def test_trade_hold_releases_ownership_when_a_measured_confirmation_returns():

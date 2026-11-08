@@ -5,12 +5,13 @@ import json
 import sys
 from decimal import Decimal
 from pathlib import Path
+from types import SimpleNamespace
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from docich.trading.ledger import PaperLedger  # noqa: E402
 from docich.trading.models import AllocationDecision  # noqa: E402
-from docich.trading.notifications import _render_event_with_local_facts  # noqa: E402
+from docich.trading.notifications import _render_event_with_local_facts, _safe_status  # noqa: E402
 from docich.trading.paper import PaperBroker  # noqa: E402
 from docich.trading.performance import (  # noqa: E402
     build_theoretical_benchmark,
@@ -242,11 +243,55 @@ def test_sell_notification_reads_realized_pnl_from_paper_ledger(tmp_path):
     rendered = _render_event_with_local_facts(
         event, mode="compact", status=None, display_at=1100.0, trading_dir=tmp_path
     )
-    assert "実現損益 +20円" in rendered.overlay_event["body"]
+    assert "今回 +20円" in rendered.overlay_event["title"]
+    assert "今回" not in rendered.overlay_event["body"]
     assert rendered.speech_text == (
         "利益を確保する狙いでポジションを軽くする利確です。売った後にさらに伸びても、取り逃しより、"
-        "決めたルールを守れたかを重視します。利確条件を検出：BTC/JPYを売り。損益はプラス20円です。"
+        "決めたルールを守れたかを重視します。利確条件を検出：BTC/JPYを売り。損益はプラス20円です。現在の含み損益と評価込み累計損益は評価待ちです。"
     )
+
+
+
+def test_notification_status_uses_only_fresh_paper_performance(tmp_path):
+    g = SimpleNamespace(trading=SimpleNamespace(interval_s=60))
+    path = tmp_path / "status.json"
+    status = {
+        "mode": "paper", "schema_version": 1,
+        "performance_summary": {
+            "as_of": 1999.0, "complete": True,
+            "unrealized_pnl_jpy": "25", "cumulative_pnl_jpy": "30",
+        },
+    }
+    path.write_text(json.dumps(status), encoding="utf-8")
+    fresh = _safe_status(g, tmp_path, now=2000.0)
+    assert fresh["performance_summary"]["cumulative_pnl_jpy"] == "30"
+    assert "performance_summary" not in _safe_status(g, tmp_path, now=2300.0)
+    del status["performance_summary"]["as_of"]
+    path.write_text(json.dumps(status), encoding="utf-8")
+    assert "performance_summary" not in _safe_status(g, tmp_path, now=2000.0)
+
+
+def test_notification_does_not_report_pre_fill_performance_as_current(tmp_path):
+    event = {
+        "schema_version": 1,
+        "event_id": "fill:missing",
+        "event_type": "paper_fill",
+        "occurred_at": 1100.0,
+        "symbol": "BTC/JPY",
+        "side": "buy",
+        "strategy_id": "test",
+        "reason_code": "momentum_breakout",
+    }
+    status = {"mode": "paper", "performance_summary": {
+        "as_of": 1050.0, "complete": True,
+        "unrealized_pnl_jpy": "50", "cumulative_pnl_jpy": "50",
+    }}
+    rendered = _render_event_with_local_facts(
+        event, mode="compact", status=status, display_at=1100.0, trading_dir=tmp_path,
+    )
+    assert "含み 評価待ち" in rendered.overlay_event["title"]
+    assert "累計 評価待ち" in rendered.overlay_event["title"]
+    assert "評価待ち" not in rendered.overlay_event["body"]
 
 
 def test_round_trips_pair_buys_sells_and_keep_entry_context(tmp_path):

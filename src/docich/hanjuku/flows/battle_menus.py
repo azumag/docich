@@ -1455,8 +1455,46 @@ def _partial_enemy_general_command(screen):
     return enemy
 
 
+def note_boss_monster_hp(mem, battle, enemy_rows):
+    """Remember the boss monster's displayed HP for progress / kill detection.
+
+    g1133 2026-11-06: the boss fight happens but the ally panel is unreadable,
+    so no battle record survives (see #3501). The enemy monster's HP is still
+    readable and fell across entries (ハードロボ 1041→1005→860→754). Keeping
+    the last value lets the status and diagnostics show boss progress, and a
+    later policy can react to a low boss without inventing a battle result.
+    """
+    attack = mem.get('attack') or {}
+    if not chart.is_boss_castle(attack.get('castle')):
+        return
+    if not enemy_rows or len(enemy_rows) != 1:
+        return
+    row = enemy_rows[0]
+    name, hp = getattr(row, 'name', None), getattr(row, 'hp', None)
+    if not isinstance(name, str) or type(hp) is not int or not 0 < hp <= 9999:
+        return
+    mem['boss_hp_seen'] = {'castle': attack.get('castle'), 'monster': name, 'hp': hp,
+                           'general': attack.get('general') or battle.get('ally'),
+                           'tick': int(mem.get('tick') or 0)}
+
+
 def _egg_retreat_return(screen, mem, battle):
     """Reuse the finite return-to-human-command route; B is not a receipt."""
+    attack = mem.get('attack') or {}
+    if chart.is_boss_castle(attack.get('castle')):
+        # g1133 2026-11-06: three measured boss entries (ヘラ 04:39,
+        # アマンディーヌ 04:43, パプリカ 04:48) reached the boss battle menu,
+        # pressed the B return below three times, and ended at the main menu
+        # with battle_entry_expired: the boss fight never started. B here
+        # cancels the boss attack, so a boss entry never takes this route.
+        if not battle.get('boss_return_held_recorded'):
+            battle['boss_return_held_recorded'] = True
+            _record(mem, 'boss_battle_return_held', **_battle_labels(battle),
+                    observed_metric={'castle': attack.get('castle'),
+                                     'general': attack.get('general'),
+                                     'enemy': battle.get('enemy')},
+                    reason='ボス城突入中のB復帰は攻撃を取り消すため、復帰を使わず戦闘を続ける')
+        return None
     attempts = int(battle.get('egg_retreat_attempts') or 0)
     battle['egg_retreat_needed'] = True
     battle['egg_retreat_tried'] = True
@@ -1784,8 +1822,13 @@ def egg_battle_step(screen: Screen, mem):
         # use it only as a bounded-resource last resort with actual panels.
         enemy_rows = [r for r in screen.egg_rows if r.side == 'enemy'
                       and r.name in _MONSTER_SKILLS and type(r.hp) is int and r.hp > 0]
+        # 敵が将軍でも召喚獣でも、敵HPが一桁なら通常攻撃で倒せるため、
+        # 命中・先手を損なうもうこうげきは選ばない。
+        enemy_low_hp = any(r.side == 'enemy' and type(r.hp) is int and 0 < r.hp < 10
+                           for r in screen.egg_rows)
         fierce = (general_reading is not None and 0 < general_reading[0] * 2 <= general_reading[1]
-                  and len(enemy_rows) == 1 and not cards_left
+                  and len(enemy_rows) == 1 and not enemy_low_hp
+                  and not cards_left
                   and (empty_egg or 'たまごをつかう' not in screen.text))
         # Owner 2026-11-02 (城防衛で対召喚獣戦、卵もない時はおくのて): a castle
         # defender facing an enemy summon with the egg row dead and no card left
@@ -1842,10 +1885,12 @@ def egg_battle_step(screen: Screen, mem):
             return [] if fierce or battle.get('egg_attack_label') == 'もうこうげき' else [pad('a')]
         if battle.get('egg_attack_label') != label:
             battle['egg_attack_label'] = label
+            note_boss_monster_hp(mem, battle, enemy_rows)
             _record(mem, 'battle_egg_general_attack', **_battle_labels(battle),
                     observed_metric={'command': label, 'general_hp': battle.get('ally_hp'),
                                      'max_hp': general_reading[1] if general_reading else None,
-                                     'enemy_monster': enemy_rows[0].name if len(enemy_rows) == 1 else None},
+                                     'enemy_monster': enemy_rows[0].name if len(enemy_rows) == 1 else None,
+                                     'enemy_hp': enemy_rows[0].hp if len(enemy_rows) == 1 else None},
                     reason=('卵・予定札がなく退却もできない負傷将軍は、実HPに基づきもうこうげきで応戦する'
                             if fierce else '実コマンド位置を確認して通常攻撃へ戻す'))
         return [pad('a')] if move == 'here' else [move]
@@ -2193,13 +2238,18 @@ def monster_menu_step(screen: Screen, mem):
         #     attack pick, matching policy 1-3 which assume a non-behind
         #     position for the summoned monster's own attack.
         #   - `not heal_first` keeps heal-first monsters on their recovery path.
+        policy_evidence = None
         if (not special_cycle and not damage_first and not damage_second and not chikyu
                 and not lampkin and not powerless and len(skill_lines) >= 2
                 and default == 'skill1' and not heal_first and not behind):
+            policy_evidence = {}
             policy_default = _monster_attack_policy_default(
-                owner, ally, enemy, skill_lines, first, second, ally_hp, enemy_hp, mem)
+                owner, ally, enemy, skill_lines, first, second, ally_hp, enemy_hp, mem,
+                evidence=policy_evidence)
             if policy_default is not None:
                 default = policy_default
+            if not policy_evidence:
+                policy_evidence = None
         # Owner 2026-11-03: ランプキンは自分のHPが一桁になったら、倒される
         # 前に「たまごにもどる」で帰還する。攻撃継続より卵へ戻す判断を優先し、
         # ボス/HP1の強制スキル選択より先に適用する。
@@ -2307,6 +2357,13 @@ def monster_menu_step(screen: Screen, mem):
             why = ('自爆は将軍と兵士を確定で全滅させるため、敵将軍だけの今ハルマゲドンで決着させる'
                    if action == 'skill2' else
                    '自爆は召喚獣に自分の残りHP分・ボスに最大HPの1/8しか効かないため、だいじしんで敵を半減し続ける')
+        elif (policy_evidence and policy_evidence.get('choice') == action
+              and action in ('skill1', 'skill2')):
+            label = second if action == 'skill2' else first
+            kind = ('召喚獣' if policy_evidence.get('opponent_kind') == 'monster' else '将軍')
+            why = (f"攻撃データ上、{kind}「{policy_evidence.get('opponent')}」への実効ダメージが"
+                   f"{policy_evidence.get('score1')}対{policy_evidence.get('score2')}のため"
+                   f"「{label}」を選ぶ")
         elif action == 'skill2' and len(skill_lines) >= 2:
             label = second
             why = ('敵召喚獣には即死の反復より通常2回攻撃を優先する'
@@ -2342,6 +2399,7 @@ def monster_menu_step(screen: Screen, mem):
                                      and return_risk['rule'] == 'wounded_general'),
                                  'general_return_blocked': protected_return,
                                  'general_return_risk': return_risk,
+                                 'monster_attack_policy': policy_evidence,
                                  'experience_key': key},
                 reason=f'召喚獣の技メニューで「{label}」を選択: {why}')
     action = mem.get('monster_menu_choice')

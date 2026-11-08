@@ -199,5 +199,9 @@ def _observe_card_stock(mem, inventory):
             read.add(card)
     for card in read.intersection(unseen):
         unseen.pop(card)
+    for ledger in (mem.get('card_bought_since_read'), mem.get('card_held_floor')):
+        if isinstance(ledger, dict):
+            for card in read:
+                ledger.pop(card, None)   # a panel read is the truth again
     while len(stock) > CARD_STOCK_LIMIT:
         stock.pop(next(iter(stock)))

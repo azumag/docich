@@ -146,9 +146,26 @@ def _free_cursor(masks_white, frame: Frame):
     return found[0] if len(found) == 1 else None
 
 
+# Chapter 6 draws the enemy castle with a slate roof: (74,88,139) lit, (49,64,90)
+# shaded (g1133 2026-11-04 23:40 オケアナ and 23:20 カバルッサ: roofs=0 at the
+# target, the cursor wandered and the sortie was cancelled). Neither is the blue
+# of chapters 1-5, so a component counts only when it holds both tones.
+SLATE_LIT = (74, 88, 139)
+SLATE_SHADE = (49, 64, 90)
+SLATE_TOLERANCE = 3
+SLATE_SHADE_MIN = 8
+
+
+def _slate_near(p, target, tol):
+    return all(abs(a - b) <= tol for a, b in zip(p, target))
+
+
 def _roof_kind(r, g, b):
     if r <= 50 and 80 <= g <= 120 and 120 <= b <= 160:
         return 'enemy'
+    if (_slate_near((r, g, b), SLATE_LIT, SLATE_TOLERANCE)
+            or _slate_near((r, g, b), SLATE_SHADE, SLATE_TOLERANCE)):
+        return 'enemy_slate'
     if r >= 190 and g <= 70 and 30 <= b <= 85:
         return 'own'
     return None
@@ -162,7 +179,7 @@ def castle_roofs(frame: Frame, exclude=None) -> list[dict]:
             kind = _roof_kind(*frame.pixel(x, y))
             if kind and not (exclude and exclude[0] <= x <= exclude[2] and exclude[1] <= y <= exclude[3]):
                 labels[(x, y)] = kind
-    seen, out = set(), []
+    seen, out, slate = set(), [], []
     for start, kind in labels.items():
         if start in seen:
             continue
@@ -179,15 +196,55 @@ def castle_roofs(frame: Frame, exclude=None) -> list[dict]:
                         stack.append(n)
         if len(pts) < 25:
             continue
+        slate_roof = kind == 'enemy_slate'
+        if slate_roof:
+            shade = sum(1 for q in pts if _slate_near(frame.pixel(*q), SLATE_SHADE, SLATE_TOLERANCE))
+            if shade < SLATE_SHADE_MIN or shade == len(pts):
+                continue            # one tone alone is rock or shadow, not a roof
+            kind = 'enemy'
         x0, x1 = min(p[0] for p in pts), max(p[0] for p in pts)
         y0, y1 = min(p[1] for p in pts), max(p[1] for p in pts)
         if x1 - x0 > 40 or y1 - y0 > 30:
+            continue
+        if slate_roof:
+            slate.append((x0, y0, x1, y1))
             continue
         clipped = x0 <= 1 or y0 <= 1 or x1 >= frame.width - 2 or y1 >= frame.height - 2
         out.append({'kind': kind, 'box': (x0, y0, x1, y1), 'clipped': clipped,
                     # Cursor top-left that selects this castle.
                     'target': ((x0 + x1) // 2, y1 - 8)})
+    for x0, y0, x1, y1 in _merge_boxes(slate, SLATE_MERGE_GAP):
+        clipped = x0 <= 1 or y0 <= 1 or x1 >= frame.width - 2 or y1 >= frame.height - 2
+        # The slate roof is only the top of the sprite: the castle body hangs
+        # SLATE_BODY_BELOW px under it, so the selecting cell is that far lower
+        # than for a roof that covers the whole castle (live: cursor y = roof
+        # bottom + 1 on オケアナ 2026-11-04 23:40).
+        out.append({'kind': 'enemy', 'box': (x0, y0, x1, y1), 'clipped': clipped,
+                    'target': ((x0 + x1) // 2, y1 + SLATE_BODY_BELOW - 8)})
     return out
+
+
+SLATE_MERGE_GAP = 6        # the tower and the body of one castle are separate roof pieces
+SLATE_BODY_BELOW = 9       # castle body below the slate roof's bottom edge, px
+
+
+def _merge_boxes(boxes, gap):
+    boxes = list(boxes)
+    merged = True
+    while merged:
+        merged = False
+        for i in range(len(boxes)):
+            for j in range(i + 1, len(boxes)):
+                a, b = boxes[i], boxes[j]
+                if (a[0] - gap <= b[2] and b[0] - gap <= a[2]
+                        and a[1] - gap <= b[3] and b[1] - gap <= a[3]):
+                    boxes[i] = (min(a[0], b[0]), min(a[1], b[1]), max(a[2], b[2]), max(a[3], b[3]))
+                    del boxes[j]
+                    merged = True
+                    break
+            if merged:
+                break
+    return boxes
 
 
 # Our camping tent (野営): a yellow/orange body with a light-blue base band
@@ -925,6 +982,13 @@ def parse(frame: Frame, *, phase: str | None = None) -> Screen:
         from .font import without_attached_marks
         screen.priest_ritual_scene = True
         screen.lines = without_attached_marks(frame, screen.lines, rect=(16, 135, 240, 215))
+        if _priest_continue_marker(frame):
+            # The measured g1147 dialogue-advance ornament occupies exactly
+            # these two bottom tiles. Never discard other unread message ink.
+            screen.lines = [TextLine(line.y, tuple(
+                (x, ch) for x, ch in line.cells
+                if not (line.y == 207 and x in (120, 128) and ch == UNKNOWN)))
+                for line in screen.lines]
         # The same sprite remains through the chant and the result dialogue.
         # It is not a menu cursor. Ambiguous/other hands and incomplete text
         # cannot become permission to acknowledge an unread option.
@@ -971,6 +1035,7 @@ WORLD_SEA_MIN = 1500           # chapter 1/2 views: 2106-2470 sampled sea pixels
 # other saved frame.
 WORLD_SEA_FRAMED_MIN = 1000
 WORLD_BACKDROP_MIN = 900       # of 1008 samples
+WORLD_BACKDROP_FRAME_ONLY_MIN = 1000   # frame + backdrop alone, no sea colour needed
 
 
 def _world_backdrop(frame: Frame) -> int:
@@ -985,7 +1050,15 @@ def is_world_map(frame: Frame) -> bool:
     sea = sum(1 for x in range(60, 200, 2) for y in range(60, 180, 2) if frame.pixel(x, y) == WORLD_SEA)
     if sea >= WORLD_SEA_MIN:
         return True
-    return sea >= WORLD_SEA_FRAMED_MIN and _world_backdrop(frame) >= WORLD_BACKDROP_MIN
+    backdrop = _world_backdrop(frame)
+    if sea >= WORLD_SEA_FRAMED_MIN and backdrop >= WORLD_BACKDROP_MIN:
+        return True
+    # Chapter 6 paints the sea grey-green, so no pixel is WORLD_SEA at all
+    # (g1133 2026-11-04 22:23: 0 sampled; every jump closed as 'unknown' and
+    # the owners were never read). The gold frame plus the intact dark green
+    # backdrop identify the view on their own: 1008/1008 on every saved Y view
+    # and under 10 on every other saved frame.
+    return backdrop >= WORLD_BACKDROP_FRAME_ONLY_MIN
 
 
 # 月イチイベント「8月バカンス」(odoru7094 のイベントデータと gcgx event.html
@@ -1178,11 +1251,20 @@ def egg_ritual_recitation_panel(screen: Screen) -> bool:
 
 
 def _priest_sprite(frame: Frame) -> bool:
-    """Measured g731/g739 ritual priest art, independent of the dialogue text."""
+    """Measured g731/g739 and g1147 priest art, independent of dialogue text."""
     if (frame.width, frame.height) != (256, 224):
         return False
     raw = bytes(c for y in range(80, 104) for x in range(108, 148) for c in frame.pixel(x, y))
-    return hashlib.sha256(raw).hexdigest() == '021ae70f38cddd6a354d1aee2a508db7f57ca05dfd743f795745ad68da76f980'
+    return hashlib.sha256(raw).hexdigest() in {
+        '021ae70f38cddd6a354d1aee2a508db7f57ca05dfd743f795745ad68da76f980',
+        '7a27f65fc4d31567cb70e60e8e98f4b2d998f4d97d6946ef16c487e1652f3ff9',
+    }
+
+
+def _priest_continue_marker(frame: Frame) -> bool:
+    """Only the exact native g1147 bottom-centre continue ornament."""
+    raw = bytes(c for y in range(207, 215) for x in range(120, 136) for c in frame.pixel(x, y))
+    return hashlib.sha256(raw).hexdigest() == '6ddd33c177ba8769804df3da325f13ecff77ba3bff3fb4a8c65109bdcd623f1d'
 
 
 def _priest_dialogue_body(screen: Screen) -> bool:

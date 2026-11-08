@@ -74,11 +74,28 @@
 
 ストリームキー、OAuth token、APIキー、秘密鍵、push targetなどの機密情報は、`handoff.md` を含むこのリポジトリのどのファイル、ログ、Issueにも書かない。テストや進捗表示を理由に資格情報を探索・抽出しない。
 
-### 3.1 投稿前スキャンと合成値の使用（2026-10-23）
+### 3.1 投稿前スキャンと合成値の使用（2026-10-23、2026-11-05 フォールバック追補）
 
 レビューコメントの実測表へ実行環境の資格情報の実値を貼った事案（2026-10-23）を受け、以下を必須とする。
 
-- GitHub へのコメント投稿は、エージェント共通の投稿前スキャン `agent-guards/gh-comment`（ワークスペース直下、リポジトリ外）を経由する。ラッパーを経由しない直接投稿は禁止する。Issue / PR 本文も、投稿前に `agent-guards/secret_scan.py` で走査する。
+必須なのは**投稿前スキャンの実施**であり、投稿経路は実行環境の可否に応じて可変とする
+（docich#3337 の環境別整理と DSH 判断 2026-11-05 に基づく追補）。
+
+- GitHub への投稿（Issue / PR のコメントおよび本文）は、投稿前に `agent-guards/secret_scan.py`（ワークスペース直下、リポジトリ外）で走査し、clean を確認してから投稿する。**スキャン抜きの投稿は経路を問わず禁止する。**
+- 投稿経路は以下のフォールバック表に従う。上から順に、実行可能な最初の経路を使う。
+
+| 環境条件 | 第1経路 | フォールバック | 逸脱記録 |
+|---|---|---|---|
+| `agent-guards` 配置済み・bash と gh が実行可 | `agent-guards/gh-comment` 経由で投稿（正規） | — | 不要 |
+| `agent-guards` 配置済み・gh が実行不可（TLS 検証失敗等） | `secret_scan.py` で走査し clean を証跡化 → curl / GitHub Web UI 等で投稿 | clean 証跡つき代理投稿依頼 | 要 `[process-deviation]` |
+| bash 実行不可・`agent-guards` 未配置 | 実行可能な別環境で `secret_scan.py` を走査（リモートスキャン）→ MCP / 代理投稿 | スキャン結果を明記した代理投稿依頼 | 要 `[process-deviation]` |
+
+- フォールバック経路で投稿した場合は、本文またはスレッドへ逸脱記録を1行残す。形式:
+  `[process-deviation] 環境 / スキャン結果 / 投稿経路 / 理由`
+  （例: `[process-deviation] envA-mac-sandbox / secret_scan: clean / curl 投稿 / gh TLS 検証失敗`）
+- curl での投稿は最終手段とする。代理投稿（健全な環境の gh / MCP）が可能なら curl より優先する。
+- curl を使う場合、`gh auth token` 等で取得したトークンの値を echo・ログ・ファイル保存しない（コマンド置換で変数へ直接入れ、再利用しない）。
+- フォールバック利用中も、下記の合成値・要約の規律は変わらず適用する。
 - 実測・検証・レビューの入力例には合成値のみを使う。実物の資格情報・トークン・コマンド出力の実値を、表・フィクスチャ・ログへ貼らない。
 - 秘密情報を含みうるコマンド出力やログはそのまま貼らず、要約して書く。
 - スキャンは最後の網であり、上記の規律の代替ではない。
@@ -144,6 +161,8 @@ worker（radio/chat/improve_daemon）は起動時に `core/config.sh` の `VAR="
 
 - production VM 上の tracked file の直接編集。
 - ad-hoc な `git pull` / `reset` / `checkout` や手動コピーを正式 deployment として使う。
+- `/home/ubuntu/docich` の production checkout 上での `gh pr merge`、branch switch、開発・merge 作業。PR merge は checkout を変えない GitHub API/UI または別 worktree から行い、merge 後に必要なら承認手順で production checkout を `main` へ正規化する。
+- gateway の deploy / rebaseline / reconcile 実行中に、production checkout の HEAD を動かす操作（branch switch・`git checkout`・`git reset`・手動 merge/fetch）。deploy transaction は checkout HEAD を baseline 採用の判定材料に使うため、実行中に HEAD が動くと途中 HEAD が baseline として記録され rollback_incomplete になる（docich#3709）。checkout を正規化する必要がある場合は、進行中の deploy または recovery の完了を gateway status で確認してから行う。
 - PR / protected main を迂回する通常変更。
 - unknown drift の無条件上書き。drift は fail-closed とし、原因診断から修復する。
 - secret・token・Authorization header・prompt 本文・生成本文・環境変数の Actions 出力。

@@ -318,7 +318,11 @@ def test_interim_candidates_exclude_boss_and_captured_castles():
     mem = stuck_memory()
     candidates = policy.interim_candidates(mem)
     targets = {c['target'] for c in candidates.values()}
-    assert targets == {'ジョンリギ', 'スペンソニア'}
+    # Only one unidentified source can be probed per plan; a second named
+    # sortie must wait until the source list identifies actual members.
+    assert targets == {'ジョンリギ'}
+    assert all(c['general'] == policy.MOVE_ANY_GENERAL and c['source_probe'] is True
+               for c in candidates.values())
     assert all(c['after'] is None for c in candidates.values())
     # Owner (2026-09-28): attacks carry cards - the chart's for that castle, else the opener.
     chart_cards = {o['target']: list(o['cards']) for o in chart.orders(1) if o['cards']}
@@ -431,6 +435,11 @@ def test_prompt_forbids_a_capture_condition_on_the_orders_own_target():
 def test_worker_generates_validates_and_saves_adjusted_chart(tmp_path):
     from docich import hanjuku_chart_worker as worker
     request = _requested(tmp_path)
+    # A named model order now requires source membership in the request.
+    source_file = tmp_path / adjust.REQUEST_FILE
+    source_payload = json.loads(source_file.read_text(encoding='utf-8'))
+    source_payload['garrison'] = {'ゴーメン': ['ココット', 'アテナ'], 'スペンソニア': [chart.HERO]}
+    source_file.write_text(json.dumps(source_payload, ensure_ascii=False), encoding='utf-8')
     prompts = []
 
     def generate(g, cfg, prompt):
@@ -1153,13 +1162,18 @@ def test_worker_prompts_with_garrisons_and_drops_orders_whose_general_is_elsewhe
     # where, and orders that cannot start are dropped at save.
     from docich import hanjuku_chart_worker as worker
     mem = stuck_memory()
-    mem.update(tick=500, lost=['ジョンリギ'],
-               garrison={'スペンソニア': [chart.HERO], 'カストーラ': ['ヴィーナス']},
-               sorties={'I:1': {'general': 'ゼウス', 'target': 'スペンソニア', 'status': 'en_route', 'tick': 450},
-                        'I:0': {'general': 'ココット', 'target': 'ゴーメン', 'status': 'en_route', 'tick': 1}})
+    mem.update(tick=1500, lost=['ジョンリギ'],
+               garrison={'スペンソニア': [chart.HERO, 'アテナ'], 'カストーラ': ['ヴィーナス']},
+               sorties={'I:1': {'general': 'ゼウス', 'target': 'スペンソニア', 'status': 'en_route', 'tick': 1450},
+                        'I:0': {'general': 'ココット', 'target': 'ゴーメン', 'status': 'en_route', 'tick': 1}},
+               # An independently observed camp ends the old ココット sortie;
+               # the chart-worker test is about source/roster validation, not
+               # the separate monthly overdue-location hold.
+               general_statuses={'statuses': {'ココット': {
+                   'location': 'camp', 'location_observed': True, 'tick': 2}}})
     policy.map_step(map_screen(), mem, FRAME)
     [record] = decisions(mem, 'chart_adjust_request')
-    assert record['garrison'] == {'カストーラ': ['ヴィーナス'], 'スペンソニア': [chart.HERO]}
+    assert record['garrison'] == {'カストーラ': ['ヴィーナス'], 'スペンソニア': [chart.HERO, 'アテナ']}
     assert record['lost'] == ['ジョンリギ'] and record['home_lost'] is False
     assert record['en_route'] == [{'general': 'ゼウス', 'target': 'スペンソニア'}]   # stale ココット ages out
     adjust.write_request(tmp_path, record, {'game': 'hanjuku-hero', 'runtime_id': 'r', 'generation': 1,
@@ -1175,18 +1189,19 @@ def test_worker_prompts_with_garrisons_and_drops_orders_whose_general_is_elsewhe
         body = {'orders': [order('F1', chart.HERO, 'スペンソニア'),      # recorded there
                            order('F2', 'ヴィーナス', 'スペンソニア'),     # recorded at カストーラ
                            order('F3', 'ゼウス', 'スペンソニア'),         # marching
-                           order('F4', 'ココット', 'ゴーメン'),           # unknown: allowed
+                           order('F4', 'ココット', 'ゴーメン'),           # unknown: rejected
                            order('F5', chart.HERO, 'ジョンリギ')]}        # lost source
         return json.dumps(body, ensure_ascii=False), 'codex'
     assert worker.consider(None, Game(), tmp_path, generate=generate, background=False)
     assert '"garrison"' in prompts[0] and 'カストーラ' in prompts[0] and '"en_route"' in prompts[0]
     saved = adjust.load(tmp_path)
-    assert [o['step'] for o in saved['orders']] == ['F1', 'F4']
+    assert [o['step'] for o in saved['orders']] == ['F1']
     events = [json.loads(line) for line in
               (tmp_path / f'{adjust.HISTORY_LOG}.jsonl').read_text(encoding='utf-8').splitlines()]
     [dropped] = [e for e in events if e['event'] == 'adjusted_orders_dropped']
     assert {d['step']: d['why'] for d in dropped['dropped']} == {
-        'F2': 'general_elsewhere', 'F3': 'general_marching', 'F5': 'source_lost'}
+        'F2': 'general_elsewhere', 'F3': 'general_marching',
+        'F4': 'general_unconfirmed_at_source', 'F5': 'source_lost'}
 
 
 def test_adjust_prompt_grounds_cards_in_observed_stock_and_chapter_purchases(tmp_path):
@@ -1380,16 +1395,27 @@ def test_g514_adopted_self_locked_plan_reopens_existing_retake_candidates(monkey
     # of that capture.
     candidates = {k: v for k, v in policy.interim_candidates(mem).items()
                   if not v.get('garrison_rotate')}
-    assert candidates == receipt['candidates']
+    # This persisted snapshot predates the source-membership contract.
+    # Its assumed ヴィーナス is now a read-only roster probe; a second
+    # unrelated order from another unread castle cannot claim that actor.
+    assert candidates['retake_1']['general'] == policy.MOVE_ANY_GENERAL
+    assert candidates['retake_1']['source_probe'] is True
+    assert len([c for c in candidates.values() if c['purpose'] == 'retake']) == 1
     assert mem.get('active') is None and not _flow(mem).get('recall')
     assert policy.next_order(mem) is None
     policy._off_chart(mem)     # no model answer needed: the first candidate starts
     order = policy.next_order(mem)
     assert order['target'] == 'ナキューメラ' and order['source'] == 'アルマムーン'
-    assert order['purpose'] == 'retake' and order['general'] == 'ヴィーナス'
+    assert order['purpose'] == 'retake' and order['general'] == policy.MOVE_ANY_GENERAL
+    assert order['source_probe'] is True
     assert order['after'] is None
     assert mem['captured'] == before['captured'] and mem['lost'] == before['lost']
-    assert mem['garrison'] == before['garrison']
+    # Stale pre-snapshot sortie actors are no longer presumed to reside in
+    # those castles just because a tracking window elapsed. They wait for
+    # the monthly named location verification instead.
+    for castle in ('カストーラ', 'キカンドン', 'ジョンリギ'):
+        assert _world(mem)['garrison'][castle] == []
+    assert {'ココット', 'ビーツ', 'チコリ'} <= set(_world(mem)['general_location_unknown'])
     assert mem.get('house') == before.get('house')  # an in-progress scan remains owned by house
     assert not decisions(mem, 'chart_adjust_applied')  # no duplicate adoption
 
@@ -1417,7 +1443,7 @@ def test_g514_recovered_retake_still_requires_a_readable_spare_defender(monkeypa
 def test_g514_live_plan_and_recent_target_reservation_still_suppress_retake():
     _, mem = g514_locked_plan()
     mem['chart_plan']['orders'][0]['after'] = None
-    mem['garrison']['カストーラ'] = ['ココット', 'ゼウス']
+    _world(mem)['garrison']['カストーラ'] = ['ココット', 'ゼウス']
     assert policy._plan_pending(mem)
     policy._off_chart(mem)
     assert not mem['chart_adjust'].get('interim_order')
@@ -1425,3 +1451,17 @@ def test_g514_live_plan_and_recent_target_reservation_still_suppress_retake():
     mem['sorties']['recent'] = {'general': 'ヴィーナス', 'target': 'ナキューメラ',
                                'status': 'en_route', 'tick': mem['tick'] - 1}
     assert not any(o['target'] == 'ナキューメラ' for o in policy.interim_candidates(mem).values())
+
+
+def test_roster_probe_is_read_only_and_requires_a_source_probe():
+    # Owner 2026-11-08: a one-general castle may only be inspected, never
+    # dispatched. The read-only marker is valid only on a source probe.
+    doc = adjusted_doc('0123456789abcdef')
+    doc['orders'] = [{'step': 'J1', 'general': 'しょうぐん', 'source': 'ゴーメン',
+                      'target': 'スペンソニア', 'cards': [], 'after': None,
+                      'source_probe': True, 'roster_probe': True}]
+    validated = adjust.validate(doc)
+    assert validated['orders'][0]['roster_probe'] is True
+    doc['orders'][0].pop('source_probe')
+    with pytest.raises(ValueError):
+        adjust.validate(doc)

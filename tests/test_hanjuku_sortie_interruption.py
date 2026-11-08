@@ -8,7 +8,7 @@ import pytest
 from docich import hanjuku_policy as p
 from docich.hanjuku_screen import Screen
 from docich.hanjuku_font import TextLine, UNKNOWN
-from docich.hanjuku.state.regions import flow as _flow, journal as _journal
+from docich.hanjuku.state.regions import world as _world, flow as _flow, journal as _journal
 
 
 def memory():
@@ -33,7 +33,9 @@ def test_interrupt_records_unknown_destination_once_and_blocks_same_general(kind
     assert mem['active'] is None
     assert mem['sorties']['1-A2']['target'] is None
     assert p._en_route(mem) == ({'ゼウス'}, set())
-    assert p.next_order(mem)['step'] != '1-A2'
+    next_order = p.next_order(mem)
+    # No other departure is required to exist; the interrupted actor stays busy.
+    assert next_order is None or next_order['step'] != '1-A2'
     first = deepcopy(mem['sorties'])
     mem['active'] = '1-A2'  # later source verification must not count as a new interruption
     p.observe_sortie_transition(screen('general_list'), mem, 'castle_menu')
@@ -71,7 +73,7 @@ def test_real_entry_confirms_actual_not_planned_destination():
     assert mem['sorties']['1-A2']['status'] == 'arrived'
     assert mem['attack']['step'] == '1-A2'
     assert mem['orders']['1-A2'] == 'launched'
-    assert mem['garrison']['アルマムーン'] == ['どうし']
+    assert _world(mem)['garrison']['アルマムーン'] == ['どうし']
     assert not _flow(mem).get('sortie_attempt')
 
 
@@ -109,11 +111,15 @@ def test_a_general_listed_in_an_intervening_own_castle_continues_his_order():
     assert sortie['transit_to'] == 'けっかい'
     assert mem['source_override']['A:1:J1'] == 'ジョンリギ'
     assert mem['orders']['A:1:J1'] == 'pending'
-    assert mem['garrison']['ジョンリギ'] == ['ゼウス']
+    assert _world(mem)['garrison']['ジョンリギ'] == ['ゼウス']
     assert any(r['decision'] == 'sortie_transit_continue' for r in mem['_records'])
-    # The same order runs again, now from the castle he actually stopped in.
-    # A new leg to the boss must also satisfy the current unlock prerequisite.
+    # The actual list still holds only the transit actor. Even after the
+    # boss path is unlocked, the castle must keep its last defender.
     mem['captured'] = list(set(p.chart.CASTLE_NAMES[1]) - {'アルマムーン', 'けっかい'})
+    assert p.next_order(mem) != order
+    # Once the other observed defender is in the garrison, continuing the
+    # original route is allowed from the newly observed source.
+    _world(mem)['garrison']['ジョンリギ'] = ['ゼウス', 'リーキ']
     assert p.next_order(mem) == order
 
 
@@ -212,13 +218,13 @@ def test_unbound_attack_loss_invalidates_old_garrison_without_guessing_a_home():
          'battle':{'ally':'ゼウス','ally_hp':0,'enemy_hp':21,'castle':'ジョンリギ',
                    'side':'attack','step':None,'away':1}}
     p.battle_end(mem,'map')
-    assert mem['garrison']=={'アルマムーン':['どうし']}
-    assert mem['general_location_unknown']==['ゼウス']
+    assert _world(mem)['garrison']=={'アルマムーン':['どうし']}
+    assert _world(mem)['general_location_unknown']==['ゼウス']
     assert not mem.get('retries')
     assert p._interim_source(mem,'ジョンリギ',{'general':'ゼウス','source':'キカンドン'}, {'キカンドン'},set()) is None
     mem.update(active='1-A2',source_override={'1-A2':'アルマムーン'})
     p._observe_garrison(screen('general_list',['ゼウス']),mem,p._order(mem))
-    assert mem['general_location_unknown']==[]
+    assert _world(mem)['general_location_unknown']==[]
 
 
 def test_decide_hooks_interruption_before_dispatch(monkeypatch):
@@ -238,6 +244,6 @@ def test_real_general_row_geometry_ignores_hand_and_distant_border():
 
 
 def test_unknown_name_does_not_reestablish_defeated_general_location():
-    mem=memory();mem['general_location_unknown']=['ゼウス']
+    mem=memory();_world(mem)['general_location_unknown']=['ゼウス']
     p._observe_garrison(screen('general_list',['ゼウス'+UNKNOWN]),mem,p._order(mem))
-    assert mem['general_location_unknown']==['ゼウス']
+    assert _world(mem)['general_location_unknown']==['ゼウス']

@@ -1541,6 +1541,59 @@ def test_bot_records_plans_separately_from_sent_input_with_full_identity(tmp_pat
     assert not (runtime/'hanjuku_events.jsonl').exists()
 
 
+def test_decision_records_deduped_against_log_tail(tmp_path):
+    import importlib.util
+    path = Path(__file__).resolve().parents[1] / 'brains/hanjuku/bot.py'
+    spec = importlib.util.spec_from_file_location('hanjuku_decision_dedupe_test', path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    identity = {'game': 'hanjuku-hero', 'runtime_id': 'g1-abc123',
+                'generation': 1, 'lease_id': 'lease-1'}
+    runtime = tmp_path / identity['runtime_id']
+    runtime.mkdir()
+    record = {'decision': 'y_jump_open', 'chart_step': 'J1', 'target': 'アルマムーン',
+              'observed_metric': {'cursor': [10, 20], 'mode': 'target', 'attempt': 1},
+              'reason': '全体マップ（Y）で目的の城を直接選ぶ'}
+    meta = {'hanjuku': identity}
+    module.persist(runtime, {'step': 1, 'screen_kind': 'map'}, [record], meta,
+                   actions=[], frame_sha256='a' * 64)
+    # A caller replaying the policy on a copy re-emits the byte-identical
+    # record; the durable log keeps it once.
+    module.persist(runtime, {'step': 1, 'screen_kind': 'map'}, [record], meta,
+                   actions=[], frame_sha256='b' * 64)
+    rows = [json.loads(x) for x in (runtime/'hanjuku_decisions.jsonl').read_text().splitlines()]
+    decisions = [r for r in rows if r.get('event') == 'decision']
+    assert len(decisions) == 1
+    # A genuinely different attempt still records.
+    retry = {**record, 'observed_metric': {'cursor': [10, 20], 'mode': 'target', 'attempt': 2}}
+    module.persist(runtime, {'step': 2, 'screen_kind': 'map'}, [retry], meta,
+                   actions=[], frame_sha256='c' * 64)
+    decisions = [json.loads(x) for x in (runtime/'hanjuku_decisions.jsonl').read_text().splitlines()
+                 if json.loads(x).get('event') == 'decision']
+    assert len(decisions) == 2
+    assert decisions[1]['observed_metric']['attempt'] == 2
+
+
+def test_decision_dedupe_respects_generation_and_missing_fields(tmp_path):
+    import importlib.util
+    path = Path(__file__).resolve().parents[1] / 'brains/hanjuku/bot.py'
+    spec = importlib.util.spec_from_file_location('hanjuku_dedupe_identity_test', path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    identity = {'game': 'hanjuku-hero', 'runtime_id': 'g1', 'generation': 1,
+                'lease_id': 'lease-1'}
+    record = {'decision': 'y_jump_open', 'chart_step': 'J1', 'reason': None}
+    rows = [{'event': 'decision', **identity, **record}]
+    assert module._recorded_before(rows, record, identity)
+    assert not module._recorded_before(
+        rows, record, {**identity, 'generation': 2})
+    assert not module._recorded_before(
+        rows, record, {**identity, 'lease_id': 'lease-2'})
+    assert not module._recorded_before(
+        [{'event': 'decision', **identity, 'decision': 'y_jump_open',
+          'chart_step': 'J1'}], record, identity)
+
+
 def test_name_confirmation_keeps_the_exact_decision_frame(tmp_path):
     import importlib.util
     path = Path(__file__).resolve().parents[1] / 'brains/hanjuku/bot.py'
@@ -1724,7 +1777,9 @@ def test_failed_menu_drops_cursor_estimate_and_stops_sea_a_spam():
     assert 'localize' in kinds and 'nav_reset' in kinds
     assert mem.get('cursor') and not mem.get('anchor') and mem.get('nav_search') is True
     assert mem['menu_miss'] == 1 and mem['uncertain'] is True
-    # Without a roof anchor, a later arrived must not re-send A.
+    # After a failed X/しろ recovery, the bounded fallback must still
+    # avoid a blind A on open water.
+    mem['castle_jump_skip'] = {'mode': 'reanchor', 'tick': int(mem.get('tick') or 0)}
     mem['_records'] = []
     mem['expect_menu'] = False
     # Simulate update_world wrongly still "at goal" without anchor.
@@ -2184,7 +2239,11 @@ def test_an_empty_egg_reserves_its_recovery_ahead_of_soldiers():
 
 def test_month_menu_recovers_egg_then_defers_recruit_until_actual_roster_is_known():
     home = {'year': 1, 'month': 7, 'gold': 300}
-    mem = {'chapter': 1, 'egg_uses': {'ココット': 0}, 'orders': {}, 'picked': []}
+    # The bounded monthly count visit has already failed; egg recovery can
+    # proceed, but an unverified general total still cannot fund recruitment.
+    mem = {'chapter': 1, 'month': '1-7', 'egg_uses': {'ココット': 0},
+           'orders': {}, 'picked': [],
+           'recruit_month_scan_attempts': {'scope': [1, '1-7'], 'count': 2}}
     shop = policy._plan(mem, home)
     shop['soldiers_done'] = True                                   # refill already bought 99
     assert shop['soldiers'] == 99
@@ -2396,6 +2455,8 @@ def test_open_sea_search_spirals_around_the_centroid_and_records_each_leg(monkey
     mem = {'chapter': 1, 'variant': 'chart', 'active': '1-A1', 'orders': {'1-A1': 'pending'},
            'picked': [], 'uncertain': True, 'nav_search': True, 'menu_miss': 1, '_records': [],
            'select_used': True}
+    # Test the legacy inland spiral only while X/しろ recovery is cooling down.
+    mem['castle_jump_skip'] = {'mode': 'reanchor', 'tick': int(mem.get('tick') or 0)}
     centroid = policy._search_goal(mem)
     mem['cursor'] = list(centroid)
     screen = Screen(lines=[], hand=None, text='', kind='map', cursor=(120, 120))
@@ -2764,25 +2825,38 @@ def test_camp_recall_walks_cursor_menu_and_own_castle(monkeypatch):
     assert not any(r['decision'] == 'camp_recall' for r in mem['_records'])
 
 
-def test_camp_recall_cancels_when_no_own_castle_is_visible():
+def test_camp_recall_confirms_the_marker_when_no_own_castle_is_visible():
+    """Owner 2026-11-05: 最悪キャンセルにせず、どこでも良いから指定する。"""
     frame = _camp_frame()
     mem = {'chapter': 1, '_records': [], 'recall': {'stage': 'dest', 'target': [26, 66], 'steps': 1}}
     marker_only = Screen(lines=[], hand=None, text='', kind='map_target', marker=(100, 100))
-    assert policy.camp_recall_step(marker_only, mem, frame) == [policy.pad('b')]
+    assert policy.camp_recall_step(marker_only, mem, frame) == [policy.pad('a')]
+    assert _flow(mem)['recall']['stage'] == 'await_dispatch'
+    assert [r['decision'] for r in mem['_records']][-2:] == [
+        'camp_recall_picker_fallback', 'camp_recall_requested']
+
+
+def test_camp_recall_without_a_marker_still_cancels():
+    frame = _camp_frame()
+    mem = {'chapter': 1, '_records': [], 'recall': {'stage': 'dest', 'target': [26, 66], 'steps': 1}}
+    no_marker = Screen(lines=[], hand=None, text='', kind='map_target')
+    assert policy.camp_recall_step(no_marker, mem, frame) == [policy.pad('b')]
     assert 'recall' not in _flow(mem)
     assert [r['decision'] for r in mem['_records']][-1] == 'camp_recall_skipped'
 
 
-def test_map_step_recalls_a_visible_camp_before_any_order():
-    # g421: the recall never started because it waited for a chartless idle
-    # map. A visible camp must win over any order state.
+def test_map_step_does_not_preempt_orders_for_a_visible_camp():
+    # The monthly roster-first owner now schedules named camp recalls.
+    # A stray visible tent cannot interrupt a running attack order.
     frame = _camp_frame()
     mem = {'chapter': 1, 'variant': 'chart', 'picked': [], '_records': [],
            'tick': 500, 'world_map_tick': 400, 'active': 'I:test:1'}
     screen = Screen(lines=[], hand=None, text='', kind='map', cursor=(80, 90))
-    assert policy.map_step(screen, mem, frame) == [policy.pad('left', 8)]
-    assert _flow(mem)['recall']['stage'] == 'to_camp'
-    assert [r['decision'] for r in mem['_records']][-1] == 'camp_found'
+    # The source jump now opens X (しろ一覧) instead of the Y world map.
+    assert policy.map_step(screen, mem, frame) == [policy.pad('x')]
+    assert mem['castle_jump']['phase'] == 'menu'
+    assert 'recall' not in _flow(mem)
+    assert not [r for r in mem['_records'] if r['decision'] == 'camp_found']
 
 
 def test_map_step_does_not_start_a_camp_recall_while_a_y_jump_view_is_opening():
@@ -3800,7 +3874,7 @@ def test_same_month_cached_shop_is_migrated_only_once():
 def test_garrisons_and_sortie_records_do_not_replace_fresh_global_roster():
     mem = _short_recruit_memory()
     mem['captured'] = ['キカンドン']
-    mem['garrison']['キカンドン'] = ['ココット', 'ヴィーナス', 'クミン']
+    _world(mem)['garrison']['キカンドン'] = ['ココット', 'ヴィーナス', 'クミン']
     mem['sorties'] = {'x': {'general': 'シャルドネ', 'status': 'en_route', 'tick': 99}}
     assert policy._recruit_shortage(mem)['total_roster'] == 2
     mem.pop('recruit_roster')
@@ -3833,7 +3907,7 @@ def test_recruit_join_is_verified_at_the_heros_observed_castle():
            'month_sub': {'kind': 'recruit', 'gold_before': 100, 'key': '1-7',
                          'candidate_names': ['ラズベリー'], 'generals_before': ['どうし']}}
     policy._finish_month_sub(parse(month_canvas(50)), mem, {'recruit': 'opened'})
-    assert 'ジョンリギ' not in mem['garrison']
+    assert 'ジョンリギ' not in _world(mem)['garrison']
     c = Canvas(); c.text(64, 31, 'しゅつげき'); c.text(64, 47, 'ステータス')
     c.text(144, 39, 'どうし'); c.text(144, 55, 'ラズベリー'); c.hand(122, 33)
     policy._observe_garrison(parse(c.frame()), mem,
@@ -3954,7 +4028,7 @@ def _broken_hero_memory():
 
 def test_broken_hero_waits_for_real_repair_status_not_house_departure():
     mem = _broken_hero_memory()
-    mem['garrison']['アルマムーン'] = ['どうし']
+    _world(mem)['garrison']['アルマムーン'] = ['どうし']
     order = {'step': 'x', 'general': 'どうし', 'source': 'アルマムーン',
              'target': 'ゴーメン', 'cards': ['フットバース'], 'after': None}
     assert not policy._ready(order, mem)
@@ -3977,8 +4051,13 @@ def test_broken_hero_allows_other_general_and_friendly_staffing_move():
 
 def test_interim_attack_uses_another_general_instead_of_broken_hero():
     mem = _broken_hero_memory()
+    # Owner 2026-11-06: the hero's castle keeps two others beside him, so a
+    # spare only leaves from a properly staffed castle.
+    mem['garrison']['アルマムーン'] = ['どうし', 'ゼウス', 'アルテミス', 'クミン']
+    mem['recruit_roster']['names'] = ['どうし', 'ゼウス', 'アルテミス', 'クミン']
+    mem['recruit_roster']['wages'] = {n: 4 for n in mem['recruit_roster']['names']}
     assert policy._interim_source(mem, 'ゴーメン', None, {'アルマムーン'}, set()) == ('アルマムーン', 'ゼウス')
-    mem['garrison']['アルマムーン'] = ['どうし']
+    _world(mem)['garrison']['アルマムーン'] = ['どうし']
     mem['recruit_roster']['names'] = ['どうし']      # ゼウス gone from the roster too (#3077)
     assert policy._interim_source(mem, 'ゴーメン', None, {'アルマムーン'}, set()) is None
 

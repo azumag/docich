@@ -8,7 +8,7 @@ from docich.hanjuku_screen import Screen, parse
 from test_hanjuku_retreat_recheck import memory, focus, MAP, FRAME
 from test_hanjuku_chart_bot import camp_menu
 from test_hanjuku_house import status
-from docich.hanjuku.state.regions import flow as _flow, journal as _journal
+from docich.hanjuku.state.regions import world as _world, flow as _flow, journal as _journal
 
 
 def opened(mode='named', actor='ゼウス'):
@@ -163,7 +163,7 @@ def test_same_actor_hp_zero_keeps_actual_quantity_and_invalidates_only_that_inte
     assert p.camp_recall_step(parse(status('ゼウス', 'エラベルエッグ0', main=False, hp=0)), mem, FRAME) == [p.pad('b')]
     assert mem['egg_uses']['ゼウス'] == 0 and 'ゼウス' not in _flow(mem)['retreat_rechecks']
     assert _flow(mem)['retreat_rechecks']['ヴィーナス']['status'] == 'needs_observation'
-    assert not _flow(mem).get('recall') and not mem.get('garrison')
+    assert not _flow(mem).get('recall') and not _world(mem).get('garrison')
 
 
 def test_another_actor_hp_zero_does_not_invalidate_the_requested_actor_or_update_its_quantity():
