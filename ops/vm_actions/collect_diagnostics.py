@@ -6973,6 +6973,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v519-carry-manifest",
             "hanjuku-chart-v520-recall-task-retry",
             "hanjuku-chart-v521-powerless-return",
+            "hanjuku-chart-v522-hero-not-planned",
             "hanjuku-chart-v501-idle-reanchor",
             "hanjuku-chart-v502-idle-and-roster-joins",
             "hanjuku-chart-v503-month-start-counts",

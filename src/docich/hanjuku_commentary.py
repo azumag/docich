@@ -52,6 +52,15 @@ def compose(rec: dict) -> tuple[str, str | None]:
             # not a sortie, so it must not be announced as an attack plan.
             return (f'order_probe:{step}',
                     f"{rec['source']}城の将軍一覧を読んで、増援が着いているか確認します。")
+        from .hanjuku_chart import HERO
+        if rec.get('general') == HERO:
+            # Owner 2026-11-08: 主人公はアルマムーンから動かない。Deploy answers a
+            # hero-led order with a companion picked from the live list, and a
+            # boss order may change its source too, so announcing the hero (or
+            # his castle) as this sortie's actor is a plan nobody executes.
+            return (f'order_hero:{step}',
+                    f"主人公は動かさず、{rec['target']}城へは代わりの将軍を向かわせる計画です。"
+                    f"持たせる切り札は{_cards(rec.get('cards'))}です。")
         return (f'order:{step}',
                 f"出撃準備の予定です。{rec['general']}将軍を{rec['source']}から{rec['target']}城へ向かわせる計画です。"
                 f"持たせる切り札は{_cards(rec.get('cards'))}です。")

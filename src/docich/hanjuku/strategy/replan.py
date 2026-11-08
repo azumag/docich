@@ -115,6 +115,19 @@ def _interim_source(mem, target, chart_order, owned, busy, allow_sole=False):
         # list as a probe, rather than naming a possibly absent actor.
         return arrival, MOVE_ANY_GENERAL
     general = chart_order['general'] if chart_order else NAME
+    if general == NAME:
+        # Owner 2026-11-08: 主人公はアルマムーンから動かさない。A chart order that
+        # names the hero still runs, because deploy answers it with a live
+        # companion, but an interim copy of it must not stand as a hero sortie
+        # plan. Send a spare measured at the chart source, else let the live
+        # list choose the actor.
+        source = (chart_order or {}).get('source')
+        spare_pool = [g for g in (garrison.get(source) or ()) if g not in busy]
+        if source in owned and len(set(spare_pool)) >= need:
+            spares = _spares(spare_pool, unavailable_for_attack, sole)
+            if spares:
+                return source, spares[0]
+        general = MOVE_ANY_GENERAL
     if general in unavailable_for_attack:
         return None
     if general in busy:
