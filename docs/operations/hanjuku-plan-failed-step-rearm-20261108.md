@@ -67,7 +67,7 @@
   release_sortie_cleanup / overwhelming_egg_conservation / hotload を対象に、
   まとまりごとに 218 / 267 / 125 / 107 件成功（対象は重複）。
 
-## 本番反映（2026-11-08 13:09〜13:22 JST）
+## 本番反映（2026-11-08 13:09〜13:30 JST）
 
 - main `40ab1f27`（PR #3728）。VM operations の deploy は `success`、反映後の
   production checkout HEAD は `40ab1f27`、`version.py` は v514。
@@ -77,9 +77,14 @@
 - 13:14 中継を出撃（`world.launched['イーピヨル'] = ヘパイストス`）。到着後、
   イーピヨルは ココット＋ヘパイストス の2人になった。
 - 13:19〜13:21 イーピヨルから ドンダム へ攻撃
-  （`attack = {castle: ドンダム, general: ココット, side: attack}`）、13:22:08 戦闘結果。
-  `castle_ownership['ドンダム'] = own` になり、第3話の9城すべてが自軍になった。
-- 以後はボスへ進行（`order_retry`「城を取らないと後続手順とボスへ進めない」）。
+  （`attack = {castle: ドンダム, general: ココット, side: attack}`）。
+  13:22:08 の結果は敗北（`sortie_history`: `ally_hp 0` / `enemy_hp 85`）。
+- 13:29 に次の中継（トレビス コラダイン→イーピヨル）を出撃し、次の波を準備した。
+  全体マップの所有読みは途中で一時 `own` を示したが、13:29 の再読で `enemy` に戻った
+  （`castle_ownership` tick 45005）。ドンダムは依然 enemy で、奪還は継続中。
+
+旧停滞（10:20〜12:41 に出撃ゼロで月送り）は解消し、以後は中継→奪還の波が
+回っている。ドンダムの制圧そのものはまだで、今後はボスを含むゲーム進行の問題。
 
 ## 残件
 
