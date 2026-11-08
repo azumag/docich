@@ -1175,7 +1175,10 @@ def _mechanical_chart(mem, state, rid, digest):
     # re-adopting it recorded the same plan over and over (g1133 2026-11-05:
     # 487 identical chart_adjust_applied records). Keep the stored plan when
     # the rebuilt steps are identical: nothing about it changed.
-    previous_steps = [o.get('step') for o in stored.get('orders') or ()]
+    # Stored 'step' is the per-generation execution id (``A:<rid>:M...``)
+    # while rebuilt candidates carry the local id: compare 'local_step'
+    # on both sides or the identity check never matches (docich#3729).
+    previous_steps = [o.get('local_step') for o in stored.get('orders') or ()]
     candidates = interim_candidates(mem, allow_sole=allow_sole)
     if not candidates:
         _mechanical_interim(mem, state, rid, digest, allow_sole=allow_sole)

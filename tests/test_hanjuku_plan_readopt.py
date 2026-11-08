@@ -59,3 +59,43 @@ def test_a_different_candidate_list_still_replaces_the_plan():
     adopt(mem, 1001)
     assert [o['step'] for o in mem['chart_plan']['orders']] != first
     assert len(records(mem)) >= 2
+
+
+def test_an_identical_rebuild_after_failures_keeps_the_plan_and_tick():
+    """docich#3729: stored 'step' is the execution id (A:<rid>:M...), the
+    rebuilt candidate carries the local step - comparing 'step' to 'step'
+    never matched, so the same plan was re-adopted and chart_plan_tick
+    refreshed on every observation (g1153)."""
+    mem = memory()
+    adopt(mem, 1000)
+    plan = mem['chart_plan']
+    tick = mem['chart_plan_tick']
+    # Every order failed inside its suppression window: nothing is pending,
+    # so the planner rebuilds and hits the identity check (the bug's path).
+    mem['orders'] = {o['step']: 'failed' for o in plan['orders']}
+    mem['failed_local_step'] = {o['local_step']: 1000 for o in plan['orders']}
+    adopt(mem, 1001)
+    assert mem['chart_plan'] is plan
+    assert mem['chart_plan_tick'] == tick
+
+
+def test_a_plan_that_cannot_start_becomes_stale_under_an_unchanged_situation():
+    """docich#3729: while the rebuilt plan is identical the adoption tick must
+    not move, or _drop_stale_plan never sees the plan age and a plan whose
+    orders can never start sits forever."""
+    mem = memory()
+    adopt(mem, 1000)
+    plan = mem['chart_plan']
+    # Suppress every order as a cancelled sortie observed this month: each
+    # stays pending (status None) but none is live, so the planner rebuilds
+    # an identical plan on every call without ever starting an order.
+    mem['sortie_cancelled_observed_gates'] = {
+        o['step']: {'general': o['general'], 'source': o['source'],
+                    'month': mem['month'], 'count': 0}
+        for o in plan['orders']}
+    mem['sorties'] = {o['step']: {'status': 'cancelled', 'tick': 999}
+                      for o in plan['orders']}
+    adopt(mem, 1001)
+    assert mem['chart_plan_tick'] == 1000   # identical rebuild: tick must not move
+    adopt(mem, 1000 + replan.PLAN_STALE_TICKS)
+    assert (mem.get('tally') or {}).get('plan_stale_rebuild') == 1
