@@ -1,4 +1,4 @@
-# 将軍が1人の城から出撃計画を作らない（v515、2026-11-08）
+# 将軍が1人の城から出撃計画を作らない（v516、2026-11-08）
 
 ## 事象
 
@@ -37,7 +37,7 @@ g1153 2026-11-08 13:30、第3話で `メガパタ` の駐留が `チコリ` 1人
 
 ## 確認の仕方
 
-`bot_version` が `hanjuku-chart-v515-singleton-roster-probe` になったあと:
+`bot_version` が `hanjuku-chart-v516-singleton-roster-probe` になったあと:
 
 - 判断ログの `order_start` が `roster_probe: true` で、`reason` が
   「〜の将軍一覧を読んで増援の到着を確認する」になっている。
