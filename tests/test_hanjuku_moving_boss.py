@@ -151,3 +151,11 @@ def test_a_measurement_from_another_chapter_is_ignored():
                         'boss_cell': {'chapter': 5, 'cell': [500, 600], 'tick': 100}}}
     decide(blank, state)
     assert chart.moving_boss_cell(6) is None
+
+
+def test_a_chapter_with_a_measured_cell_never_takes_a_skull_estimate():
+    """Chapters 1-5 already have measured cells; a skull estimate may be 2 tiles off."""
+    for chapter in (1, 2, 3, 5):
+        before = chart.castles(chapter).get(chart.boss_castle(chapter))
+        assert chart.set_boss_cell(chapter, (10, 10)) is None
+        assert chart.castles(chapter).get(chart.boss_castle(chapter)) == before

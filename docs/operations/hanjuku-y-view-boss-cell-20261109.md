@@ -9,9 +9,11 @@ Y ビューから正確なセルを測れます。
 
 ## 変更（v538 `hanjuku-chart-v538-y-view-boss-cell`）
 
-- `hanjuku_chart`: `set_boss_cell(chapter, cell)` を全章に開放（`moving_boss_cell` は
-  別名として維持）。`castles(chapter)` は実測セルがある章だけ `ボス` を実測値へ差し替える
-  （近似セルより実測が優先）。
+- `hanjuku_chart`: `set_boss_cell(chapter, cell)` を追加（`moving_boss_cell` は別名）。
+  `castles(chapter)` は実測セルがある章だけ `ボス` を実測値へ差し替える。
+  **受け付けるのは近似セルの章（6・7・8・9・10・11・12話）だけ**。1〜5話は既に実測済みの
+  セルを持ち、ドクロ由来のセルは城タイルから最大2タイルずれ得る（第4話の4地点で実測）ため、
+  実測値を上書きしない。
 - `os_layer/world._apply_skull_boss`: 章4以外のYビューでドクロが**1つだけ**・
   **2回連続一致**のとき `boss_cell = {chapter, cell, tick}` を記録（`boss_cell_measured`）。
   章4は4地点を `_apply_season_sites` が読むため対象外。

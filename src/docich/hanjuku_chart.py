@@ -1170,6 +1170,8 @@ def verified_castles(mem, chapter):
 # here. The value expires when the reading ages out (the orchestrator clears
 # it) or the chapter changes, so a stale cell can never authorize an attack.
 MOVING_BOSS_CHAPTER = 9
+# Chapters whose boss cell is an estimate may take a Y-view measured cell.
+MOVEABLE_BOSS_CELL_CHAPTERS = frozenset({6, 7, 8, 9, 10, 11, 12})
 # A moving boss's measurement stays usable for about half a month of
 # observations; the map flow refreshes it on every Y view, so a moved boss
 # ages out quickly. Static bosses keep their measured cell for the chapter.
@@ -1178,8 +1180,16 @@ DYNAMIC_BOSS_CELLS: dict[int, tuple[int, int]] = {}
 
 
 def set_boss_cell(chapter, cell):
-    """Record (or clear with None) a Y-view measured boss cell for ``chapter``."""
+    """Record (or clear with None) a Y-view measured boss cell for ``chapter``.
+
+    Only a chapter whose chart cell is an estimate accepts one: the probe
+    chapters (6, 7, 8, 10, 11, 12) and the moving boss (9). Chapters 1-5 have
+    measured cells already, and a skull-derived cell can sit ~2 tiles off the
+    castle tile (chapter 4's sites), so a measurement must never replace them.
+    """
     if type(chapter) is not int or chapter not in CASTLE_NAMES:
+        return None
+    if chapter not in MOVEABLE_BOSS_CELL_CHAPTERS:
         return None
     if cell is None:
         DYNAMIC_BOSS_CELLS.pop(chapter, None)
