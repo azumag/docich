@@ -344,6 +344,16 @@ def decide(frame: Frame, state: dict, *, adjusted: dict | None = None,
     hanjuku_chart.migrate_legacy_labels(state)
     memory = dict(state.get('policy') or {})
     memory['approx_map'] = bool(approx_map)
+    # Chapter 9's boss moves: only a fresh Y-view measurement may stand in
+    # for its missing static cell (see chart.MOVING_BOSS_CHAPTER).
+    moving = memory.get('moving_boss')
+    tick = memory.get('tick')
+    fresh = (memory.get('chapter') == hanjuku_chart.MOVING_BOSS_CHAPTER
+             and isinstance(moving, dict) and isinstance(moving.get('cell'), (list, tuple))
+             and type(moving.get('tick')) is int and type(tick) is int
+             and 0 <= tick - moving['tick'] <= hanjuku_chart.MOVING_BOSS_TICKS)
+    hanjuku_chart.set_moving_boss_cell(hanjuku_chart.MOVING_BOSS_CHAPTER,
+                                       moving.get('cell') if fresh else None)
     with hanjuku_chart.map_context(memory, approx=approx_map):
         return _decide_impl(frame, state, adjusted=adjusted, interim=interim,
                             experience=experience, recall_inputs=recall_inputs,

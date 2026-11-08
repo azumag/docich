@@ -593,8 +593,13 @@ def _boss_target_unlocked(order, mem):
     if not chart.is_boss_castle(order.get('target')):
         return True
     chapter = mem.get('chapter')
-    if chapter == 9 or (chapter == 4 and (order.get('target') not in chart.boss_sites(4)
-                                          or _season_site_held(order, mem))):
+    if chapter == 9:
+        # The moving boss may only be attacked at a cell measured on this
+        # month's Y view; the orchestrator clears the registry when the
+        # reading expires, so a stale position never unlocks the order.
+        return order.get('target') == chart.boss_castle(9) and bool(chart.moving_boss_cell(9))
+    if chapter == 4 and (order.get('target') not in chart.boss_sites(4)
+                         or _season_site_held(order, mem)):
         return False
     if _season_site_ready(order, mem):
         return True

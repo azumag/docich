@@ -200,6 +200,62 @@ def season_sites(frame, chapter, cursor=None):
     return out
 
 
+# Chapter 3's boss skull, measured on the Y view (top-left (101, 63) for the
+# cell (306, 141)). The same sprite marks the chapter-4 sites, and a moving
+# boss draws it too. A boss on the Y view is therefore locatable by its skull
+# alone, without knowing a fixed cell in advance.
+Y_VIEW_SKULL_TEMPLATE = (
+    (1, 0, (32, 32, 32)), (2, 0, (32, 32, 32)), (3, 0, (32, 32, 32)),
+    (4, 0, (32, 32, 32)), (5, 0, (32, 32, 32)),
+    (0, 1, (32, 32, 32)), (1, 1, (164, 165, 164)), (2, 1, (164, 165, 164)),
+    (3, 1, (164, 165, 164)), (4, 1, (164, 165, 164)), (5, 1, (164, 165, 164)),
+    (6, 1, (32, 32, 32)),
+    (0, 2, (164, 165, 164)), (1, 2, (164, 165, 164)), (2, 2, (255, 254, 255)),
+    (3, 2, (255, 254, 255)), (4, 2, (255, 254, 255)), (5, 2, (164, 165, 164)),
+    (6, 2, (164, 165, 164)), (7, 2, (32, 32, 32)),
+    (0, 3, (164, 165, 164)), (1, 3, (32, 32, 32)), (2, 3, (32, 32, 32)),
+    (3, 3, (255, 254, 255)), (4, 3, (32, 32, 32)), (5, 3, (32, 32, 32)),
+    (6, 3, (164, 165, 164)), (7, 3, (32, 32, 32)),
+    (0, 4, (164, 165, 164)), (1, 4, (32, 32, 32)), (2, 4, (32, 32, 32)),
+    (3, 4, (255, 254, 255)), (4, 4, (32, 32, 32)), (5, 4, (32, 32, 32)),
+    (6, 4, (164, 165, 164)), (7, 4, (32, 32, 32)),
+)
+Y_VIEW_SKULL_FIRST = (1, 1)          # the template's first gray pixel (anchor)
+# The sprite's top-left sits 0.25/2.125 px above-left of the cell's view point
+# (chapter 3 measured: skull (101, 63) = cell (306, 141)).
+SKULL_CELL_DX = 0.25
+SKULL_CELL_DY = 2.125
+
+
+def y_view_skulls(frame):
+    """Top-left positions of the boss skull sprite on the whole-island view."""
+    if frame is None or not hasattr(frame, 'pixel'):
+        return []
+    gray = Y_VIEW_SKULL_TEMPLATE[[i for i, item in enumerate(Y_VIEW_SKULL_TEMPLATE)
+                                  if item[2] == (164, 165, 164)][0]][2]
+    first_x, first_y = Y_VIEW_SKULL_FIRST
+    out = []
+    for y in range(20, min(180, frame.height)):
+        for x in range(20, min(236, frame.width)):
+            if frame.pixel(x, y) != gray:
+                continue
+            ox, oy = x - first_x, y - first_y
+            if all(frame.pixel(ox + dx, oy + dy) == colour
+                   for dx, dy, colour in Y_VIEW_SKULL_TEMPLATE):
+                out.append((ox, oy))
+    return out
+
+
+def skull_cell_at(skull_xy, chapter):
+    """The chart cell under a Y-view skull sprite (chapter 3's measured anchor)."""
+    offset = chart.Y_JUMP_OFFSET.get(chapter)
+    if not offset or not skull_xy:
+        return None
+    x, y = skull_xy
+    return (round((x + SKULL_CELL_DX - offset[0]) * 8),
+            round((y + SKULL_CELL_DY - offset[1]) * 8))
+
+
 def world_markers(frame) -> list:
     """▲ army markers on the whole-island view, as (x0, y0, x1, y1) boxes.
 

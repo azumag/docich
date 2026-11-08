@@ -480,6 +480,42 @@ def _apply_season_sites(mem, sites):
                         '全体マップの四季王の印がドクロのため、撃破済みの記録を取り消して出撃対象へ戻す'))
 
 
+MOVING_BOSS_READINGS = 2      # equal Y-view skull readings before the cell is used
+
+
+def _apply_moving_boss(mem, frame):
+    """Locate chapter 9's moving boss from the Y view's boss skull.
+
+    The boss has no static cell, so the only authorization to attack it is a
+    measured position. Two equal readings are required, an unreadable view
+    keeps the previous value (it ages out on its own), and the orchestrator
+    clears the chart registry once the reading is stale.
+    """
+    if (mem.get('chapter') or 0) != chart.MOVING_BOSS_CHAPTER or frame is None:
+        return
+    from .readers import skull_cell_at, y_view_skulls
+    skulls = y_view_skulls(frame)
+    if len(skulls) != 1:
+        mem.pop('moving_boss_streak', None)
+        return
+    cell = skull_cell_at(skulls[0], chart.MOVING_BOSS_CHAPTER)
+    if cell is None:
+        return
+    streak = mem.get('moving_boss_streak') or {}
+    count = (streak.get('count', 0) + 1) if streak.get('cell') == list(cell) else 1
+    mem['moving_boss_streak'] = {'cell': list(cell), 'count': count}
+    if count < MOVING_BOSS_READINGS:
+        return
+    previous = mem.get('moving_boss') or {}
+    mem['moving_boss'] = {'cell': list(cell), 'tick': int(mem.get('tick') or 0),
+                          'readings': count}
+    if previous.get('cell') != list(cell):
+        _record(mem, 'moving_boss_seen',
+                observed_metric={'cell': list(cell), 'readings': count},
+                resulting_event=f'moving_boss:{cell[0]},{cell[1]}',
+                reason='全体マップのボスのドクロ位置から移動ボスの現在セルを実測した')
+
+
 def _owned(mem):
     """Captured castles plus the home castle, unless the Y map showed it taken (g407 03:53)."""
     home = set() if mem.get('home_lost') else {chart.home_castle(mem.get('chapter') or 0)}

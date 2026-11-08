@@ -1164,6 +1164,42 @@ def verified_castles(mem, chapter):
     return out
 
 
+# Chapter 9's boss moves, so it has no reusable static coordinate. The Y view
+# draws it with the same skull sprite as chapter 3's boss; the map flow
+# measures that position each month (two equal readings) and registers it
+# here. The value expires when the reading ages out (the orchestrator clears
+# it) or the chapter changes, so a stale cell can never authorize an attack.
+MOVING_BOSS_CHAPTER = 9
+# A measurement stays usable for about half a month of observations; the map
+# flow refreshes it on every Y view, so a moved boss ages out quickly.
+MOVING_BOSS_TICKS = 1200
+DYNAMIC_BOSS_CELLS: dict[int, tuple[int, int]] = {}
+
+
+def set_moving_boss_cell(chapter, cell):
+    """Record (or clear with None) the measured cell of a moving boss."""
+    if chapter != MOVING_BOSS_CHAPTER:
+        return None
+    if cell is None:
+        DYNAMIC_BOSS_CELLS.pop(chapter, None)
+        return None
+    try:
+        x, y = int(cell[0]), int(cell[1])
+    except (TypeError, ValueError, IndexError):
+        DYNAMIC_BOSS_CELLS.pop(chapter, None)
+        return None
+    if not (0 <= x <= 2047 and 0 <= y <= 2047):
+        DYNAMIC_BOSS_CELLS.pop(chapter, None)
+        return None
+    DYNAMIC_BOSS_CELLS[chapter] = (x, y)
+    return (x, y)
+
+
+def moving_boss_cell(chapter):
+    """The measured moving-boss cell for ``chapter``, or None."""
+    return DYNAMIC_BOSS_CELLS.get(chapter) if chapter == MOVING_BOSS_CHAPTER else None
+
+
 def castles(chapter: int) -> dict:
     static = CASTLES.get(chapter, {})
     memory = _MAP_MEMORY.get()
@@ -1171,8 +1207,11 @@ def castles(chapter: int) -> dict:
         static = {**CASTLES_APPROX.get(chapter, {}), **static}
     if chapter in (4, 9):
         # A generic chapter-4 point cannot identify four separate sites.
-        # Chapter 9's moving boss has no reusable static coordinate.
+        # Chapter 9's moving boss has no reusable static coordinate; only the
+        # measured dynamic cell below may stand in for it.
         static = {n: p for n, p in static.items() if n != boss_castle(chapter)}
+    if chapter == MOVING_BOSS_CHAPTER and chapter in DYNAMIC_BOSS_CELLS:
+        static = {**static, boss_castle(chapter): DYNAMIC_BOSS_CELLS[chapter]}
     memory = _MAP_MEMORY.get()
     if memory is None:
         return static
