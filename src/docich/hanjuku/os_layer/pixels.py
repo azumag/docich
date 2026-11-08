@@ -37,29 +37,40 @@ class Frame:
         # 丸め誤差を完全に排除する（stdlib オンリー・決定論的であることが要件）。
         # 拡大時も同じ式で、各出力画素が覆う範囲がほぼ1ソース画素に収まるため
         # 実質最近傍相当の結果になる。
-        def axis(src_len, dst_len):
-            # 出力位置 d が覆うソース区間は [d*src_len/dst_len, (d+1)*src_len/dst_len)。
-            # 各ソース画素 i の区間は [i, i+1) に相当し、重なり量を
-            # dst_len 分の1単位の整数 overlap として返す。
-            spans = []
-            for d in range(dst_len):
-                lo = d * src_len
-                hi = (d + 1) * src_len
-                pairs = []
-                i = lo // dst_len
-                while i * dst_len < hi and i < src_len:
-                    overlap = min(hi, (i + 1) * dst_len) - max(lo, i * dst_len)
-                    pairs.append((i, overlap))
-                    i += 1
-                spans.append(pairs)
-            return spans
-
-        x_spans = axis(self.width, width)
-        y_spans = axis(self.height, height)
+        x_spans = _resize_axis(self.width, width)
+        y_spans = _resize_axis(self.height, height)
         data = bytearray(width * height * 3)
         o = 0
         for y_pairs in y_spans:
             for x_pairs in x_spans:
+                # At native capture height (299x224 -> 256x224), each
+                # output pixel covers one or two source pixels. For two
+                # different luminances the weighted mean lies between them,
+                # so the majority cluster is simply the heavier sample;
+                # equal weights choose the brighter one. Preserve the exact
+                # weighted colour average when luminances are equal.
+                if len(y_pairs) == 1 and len(x_pairs) <= 2:
+                    base = y_pairs[0][0] * self.width * 3
+                    sx, w0 = x_pairs[0]
+                    i = base + sx * 3
+                    if len(x_pairs) == 1:
+                        data[o:o+3] = self.rgb[i:i+3]
+                    else:
+                        sx, w1 = x_pairs[1]
+                        j = base + sx * 3
+                        l0 = self.rgb[i] + self.rgb[i+1] + self.rgb[i+2]
+                        l1 = self.rgb[j] + self.rgb[j+1] + self.rgb[j+2]
+                        if l0 == l1:
+                            total = w0 + w1
+                            half = total // 2
+                            for channel in range(3):
+                                data[o+channel] = (self.rgb[i+channel] * w0
+                                                   + self.rgb[j+channel] * w1 + half) // total
+                        else:
+                            chosen = i if (w0 > w1 or w0 == w1 and l0 > l1) else j
+                            data[o:o+3] = self.rgb[chosen:chosen+3]
+                    o += 3
+                    continue
                 # 寄与するソース画素と重みを集める。
                 contribs = []
                 for sy, wy in y_pairs:
@@ -123,6 +134,22 @@ class Frame:
         return (b'\x89PNG\r\n\x1a\n'
                 +chunk(b'IHDR',struct.pack('>IIBBBBB',self.width,self.height,8,2,0,0,0))
                 +chunk(b'IDAT',zlib.compress(raw))+chunk(b'IEND',b''))
+
+
+@lru_cache(maxsize=16)
+def _resize_axis(src_len: int, dst_len: int):
+    """Immutable geometry only; never cache observations or recognition."""
+    spans = []
+    for d in range(dst_len):
+        lo, hi = d * src_len, (d + 1) * src_len
+        pairs = []
+        i = lo // dst_len
+        while i * dst_len < hi and i < src_len:
+            overlap = min(hi, (i + 1) * dst_len) - max(lo, i * dst_len)
+            pairs.append((i, overlap))
+            i += 1
+        spans.append(tuple(pairs))
+    return tuple(spans)
 
 
 @lru_cache(maxsize=128)

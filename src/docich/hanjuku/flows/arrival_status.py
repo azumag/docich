@@ -118,11 +118,13 @@ def step(screen, mem):
             probe['menu_reads'] = 0
             return [pad('x')]
         if kind == 'main_menu':
-            probe['phase'] = 'menu'
-            return []
-        if kind in PICKER_KINDS:
+            # Already on the required screen: no input or new observation
+            # is needed merely to change the owner phase.
+            probe['phase'] = phase = 'menu'
+        elif kind in PICKER_KINDS:
             return [pad('b')]
-        return None
+        else:
+            return None
 
     if phase == 'menu':
         if kind == 'map':

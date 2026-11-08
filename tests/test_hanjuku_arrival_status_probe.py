@@ -127,3 +127,15 @@ def test_probe_is_bounded_and_respects_month_owner():
     mem.pop('post_month_status')
     mem.pop('arrival_status_probe')
     assert not A.queue(mem, {'step': 'J1'}, 'ココット')
+
+
+
+def test_backout_already_on_main_menu_navigates_without_an_idle_cycle():
+    mem = memory()
+    assert A.queue(mem, {'step': 'J1'}, 'ココット')
+    assert A.step(main(39), mem) == [A.pad('down')]
+    assert mem['arrival_status_probe']['phase'] == 'menu'
+    assert mem['arrival_status_probe']['reads'] == 1
+    assert A.step(main(55), mem) == [A.pad('a')]
+    # The same menu after A does not stand in for the next roster frame.
+    assert A.step(main(55), mem) == []

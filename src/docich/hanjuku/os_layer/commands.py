@@ -47,7 +47,7 @@ MENU_NAV_PROGRESS_PX = 4
 _FEEDBACK_MENU_KINDS = frozenset({'month_menu', 'main_menu', 'castle_menu', 'general_list',
                                 'yes_no', 'shop_list', 'card_select', 'sortie_confirm',
                                 'battle_menu', 'monster_menu', 'egg_battle_menu',
-                                'okunote_menu', 'egg_choice_menu'})
+                                'okunote_menu', 'egg_choice_menu', 'name_entry'})
 
 
 def menu_navigation_reading(screen):
@@ -78,6 +78,11 @@ def menu_navigation_reading(screen):
     for button, sign in (('up', -1), ('down', 1)):
         if any(abs(tx - x) <= 8 and (ty - y) * sign > 2 for tx, ty, word in options if word):
             directions.append(button)
+    # menu_to/name_step also move horizontally, one observed press at a
+    # time. Reading the next frame sooner never authorizes a confirm.
+    for button, sign in (('left', -1), ('right', 1)):
+        if any(abs(ty - y) <= 2 and (tx - x) * sign > 2 for tx, ty, word in options if word):
+            directions.append(button)
     return {'kind': screen.kind, 'cursor': [x, y], 'directions': directions} if directions else None
 
 
@@ -92,8 +97,8 @@ def menu_navigation_feedback(state, actions):
         return False
     directions = reading.get('directions')
     cursor = reading.get('cursor')
-    if (not isinstance(directions, list) or not 1 <= len(directions) <= 2
-            or any(d not in ('up', 'down') for d in directions)
+    if (not isinstance(directions, list) or not 1 <= len(directions) <= 4
+            or any(d not in ('up', 'down', 'left', 'right') for d in directions)
             or not isinstance(cursor, list) or len(cursor) != 2
             or any(type(n) is not int or not 0 <= n < bound for n, bound in zip(cursor, (256, 224)))):
         return False
@@ -102,7 +107,7 @@ def menu_navigation_feedback(state, actions):
         return False
     buttons, hold = action.get('buttons'), action.get('hold_ms')
     return (action.get('type') == 'pad' and isinstance(buttons, list) and len(buttons) == 1
-            and buttons[0] in ('up', 'down') and buttons[0] in directions
+            and buttons[0] in ('up', 'down', 'left', 'right') and buttons[0] in directions
             and type(hold) is int and 16 <= hold <= 100)
 
 

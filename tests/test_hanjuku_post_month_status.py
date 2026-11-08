@@ -571,7 +571,7 @@ def test_task_menu_still_owns_the_roster_text_panel():
     state.update(stage='task_menu', job={'kind': 'locate', 'name': 'ゼウス'})
     roster_screen = parse(roster(names=('どうし', 'ゼウス'), selected=0))
     assert roster_screen.kind == 'text'
-    assert post.step(roster_screen, mem, None) == []
+    assert post.step(roster_screen, mem, None) == [pad('down')]
     assert state['stage'] == 'task_select'
 
 
@@ -1176,3 +1176,42 @@ def test_a_recheck_queued_during_the_pass_still_reaches_the_next_month():
     mem['month'] = '1-8'
     post.arm(mem)
     assert mem['post_month_status']['dirty'] == ['ゼウス']
+
+
+
+def test_visible_roster_hop_uses_first_frame_for_highlight_gate():
+    mem = memory()
+    post.arm(mem)
+    state = mem['post_month_status']
+    state['stage'] = 'open_menu'
+    first = parse(roster(names=('どうし', 'ゼウス'), selected=0))
+    assert post.step(first, mem, None) == []  # first distinct highlight reading
+    assert state['stage'] == 'roster'
+    assert state['steps'] == 1
+    assert post.step(first, mem, None) == [pad('a')]
+    assert state['steps'] == 2
+    # A waits for a genuinely new status frame; no second input is appended.
+    assert post.step(first, mem, None) == []
+    assert not state['statuses']
+
+
+def test_visible_roster_hop_moves_cached_member_without_idle_observation():
+    mem = memory()
+    post.arm(mem)
+    state = mem['post_month_status']
+    state.update(stage='open_menu', statuses={'どうし': {'location': 'castle'}})
+    first = parse(roster(names=('どうし', 'ゼウス'), selected=0))
+    assert post.step(first, mem, None) == [pad('down')]
+    assert state['steps'] == 1
+    assert state['names'] == ['どうし']
+
+
+def test_task_menu_hop_selects_visible_named_actor_once():
+    mem = memory()
+    post.arm(mem)
+    state = mem['post_month_status']
+    state.update(stage='task_menu', job={'kind': 'locate', 'name': 'ゼウス'})
+    frame = parse(roster(names=('どうし', 'ゼウス'), selected=1))
+    assert post.step(frame, mem, None) == [pad('select')]
+    assert state['stage'] == 'task_jump'
+    assert state['steps'] == 1
