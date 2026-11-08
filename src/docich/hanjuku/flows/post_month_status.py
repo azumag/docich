@@ -704,10 +704,16 @@ def step(screen, mem, frame):
             # recovery, rather than allowing deploy_step to claim the list.
             return [pad('b')]
         return None
+    # These hops only relabel an already visible roster. Continue on the
+    # same observation, with one budget increment and at most one pad. The
+    # stable-highlight/marker gate in 'roster' still needs distinct frames.
+    if stage == 'open_menu' and house.roster(screen):
+        _stage(state, 'roster')
+        stage = 'roster'
+    if stage == 'task_menu' and house.roster(screen):
+        _stage(state, 'task_select', seeks=0)
+        stage = 'task_select'
     if stage == 'open_menu':
-        if house.roster(screen):
-            _stage(state, 'roster')
-            return []
         if screen.kind == 'main_menu' and screen.hand:
             direction = menu_to(screen, 'しょうぐん')
             if direction == 'here':
@@ -885,9 +891,6 @@ def step(screen, mem, frame):
         _stage(state, 'task_menu', seeks=0, locate_retries=0)
         return [pad('x')]
     if stage == 'task_menu':
-        if house.roster(screen):
-            _stage(state, 'task_select', seeks=0)
-            return []
         if screen.kind == 'main_menu' and screen.hand:
             direction = menu_to(screen, 'しょうぐん')
             if direction == 'here':
