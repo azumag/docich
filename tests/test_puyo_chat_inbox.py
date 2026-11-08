@@ -291,6 +291,53 @@ class TestSeenSidecar(ChatInboxTestBase):
         # A failed reservation must never reach the consumer inbox.
         self.assertEqual(len(self._lines(runtime)), 0)
 
+    def test_partial_seen_write_rolls_back_torn_tail(self):
+        """A partial (non-zero) id write must not corrupt later dedup records."""
+        from unittest.mock import patch
+
+        runtime = self._activate()
+        seen = runtime_directory(
+            self.state_dir, runtime["runtime_id"]) / inbox.SEEN_FILENAME
+        seen.write_text("m1\n", encoding="utf-8")
+        original = seen.read_bytes()
+        original_write = inbox.os.write
+
+        def partial_write(fd, data):
+            if data == b"torn-id\n":
+                # A real short write can still persist a leading fragment.
+                return original_write(fd, data[:3])
+            return original_write(fd, data)
+
+        with patch.object(inbox.os, "write", side_effect=partial_write):
+            with self.assertRaises(inbox.ChatInboxError):
+                inbox.append_chat(
+                    self.state_dir, user_id="1", display_name="v",
+                    text="!puyo join", msg_id="torn-id",
+                )
+        # (a) the torn tail is rolled back: the sidecar keeps its exact
+        # pre-failure content, with no newline-less fragment.
+        self.assertEqual(seen.read_bytes(), original)
+        # (b) dedup still works for ids that were already recorded.
+        result = inbox.append_chat(
+            self.state_dir, user_id="1", display_name="v",
+            text="!puyo join", msg_id="m1",
+        )
+        self.assertEqual(result, {"status": "skipped", "reason": "duplicate"})
+        # (c) the next id lands on its own line instead of concatenating
+        # onto a torn tail, so its dedup record stays usable on retry.
+        result = inbox.append_chat(
+            self.state_dir, user_id="1", display_name="v",
+            text="!puyo join", msg_id="next-id",
+        )
+        self.assertEqual(result["status"], "appended")
+        self.assertEqual(
+            seen.read_text(encoding="utf-8").splitlines(), ["m1", "next-id"])
+        retry = inbox.append_chat(
+            self.state_dir, user_id="1", display_name="v",
+            text="!puyo join", msg_id="next-id",
+        )
+        self.assertEqual(retry, {"status": "skipped", "reason": "duplicate"})
+
     def test_inbox_failure_after_reservation_does_not_duplicate_on_retry(self):
         """At-most-once: a failed inbox write leaves the id reserved."""
         from unittest.mock import patch

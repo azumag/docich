@@ -141,11 +141,22 @@ def _seen_append(path: Path, msg_id: str) -> None:
         return
     fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
     try:
-        encoded = (msg_id + "\n").encode("utf-8")
-        written = os.write(fd, encoded)
-        if written != len(encoded):
-            raise OSError("short chat seen write")
-        os.fsync(fd)
+        original_size = os.fstat(fd).st_size
+        try:
+            encoded = (msg_id + "\n").encode("utf-8")
+            written = os.write(fd, encoded)
+            if written != len(encoded):
+                raise OSError("short chat seen write")
+            os.fsync(fd)
+        except OSError:
+            # A partial write leaves a newline-less torn tail; the next id
+            # would concatenate onto it and silently lose its own dedup
+            # record, which can turn a later mirror retry into a duplicate
+            # inbox row. Roll the file back to its previous size -- the same
+            # pattern as _append_line's JSONL rollback.
+            os.ftruncate(fd, original_size)
+            os.fsync(fd)
+            raise
     finally:
         os.close(fd)
 
