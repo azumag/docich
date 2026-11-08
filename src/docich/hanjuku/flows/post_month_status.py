@@ -346,7 +346,10 @@ def _apply_manifest(mem, state, names, *, complete, evidence):
     world = _world(mem)
     garrison = world.setdefault('garrison', {})
     if isinstance(castle, str) and listed:
-        if complete:
+        # A complete sortie list is the resident manifest, but keep the hero
+        # entry if the list omitted him (a non-sortie display is not proof he
+        # left).  An incomplete walk only adds positive evidence.
+        if complete and NAME in listed:
             garrison[castle] = list(listed)
         else:
             members = garrison.setdefault(castle, [])
