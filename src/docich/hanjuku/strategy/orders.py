@@ -1689,6 +1689,7 @@ def _source_spare_missing(order, mem, *, allow_probe=False):
     # bot idled for the next chart. Decide it before opening the castle menu.
     if (mem.get('active') != order.get('step')
             and len(_owned(mem)) > 1
+            and order.get('source_probe') is not True
             and str(order.get('step') or '').startswith(
                 (chart_adjust.INTERIM_PREFIX, chart_adjust.PLAN_PREFIX))
             and source == chart.home_castle(mem.get('chapter') or 0)
