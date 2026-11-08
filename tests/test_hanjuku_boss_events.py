@@ -5,6 +5,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
 from docich import hanjuku_policy as policy
 from docich.hanjuku_screen import Screen, Battle, classify_text
+from docich.hanjuku.state.regions import world as _world, sorties as _sorties
 
 MESSAGE = 'ゼウスしょうぐんがボスじょうにせめこんだ!!'
 
@@ -213,8 +214,8 @@ def test_unconfirmed_boss_sortie_keeps_measured_kit_without_claiming_arrival():
     assert cur['planned_cards'] == ['クースカン', 'ノリウツール']
     assert cur['castle'] is None and cur['side'] is None
     assert cur['context'] == 'unclassified_location'
-    assert mem['sorties']['1-B1']['status'] == 'launched_unconfirmed'
-    assert mem['sorties']['1-B1']['target'] is None
+    assert _sorties(mem)['1-B1']['status'] == 'launched_unconfirmed'
+    assert _sorties(mem)['1-B1']['target'] is None
     assert not mem.get('boss_seen')
     # Actual g506: the Queen stays at 70, only the hero loses HP at clash.
     hurt = Screen([], None, '', battle=Battle('クイーン', 70, 'どうし', 55), kind='battle')
@@ -242,11 +243,11 @@ def test_unconfirmed_boss_kit_is_not_spent_on_road_enemy():
 def test_unconfirmed_sortie_binding_stays_unclassified_when_no_unique_march(kind):
     mem = unconfirmed_boss_memory()
     if kind == 'ambiguous':
-        mem['sorties']['other'] = dict(mem['sorties']['1-B1'])
+        _world(mem).setdefault('sorties', {})['other'] = dict(_sorties(mem)['1-B1'])
     elif kind == 'different_general':
-        mem['sorties']['1-B1']['general'] = 'ゼウス'
+        _sorties(mem)['1-B1']['general'] = 'ゼウス'
     else:
-        mem['sorties']['1-B1']['status'] = 'finished'
+        _sorties(mem)['1-B1']['status'] = 'finished'
     cur = policy._battle_context(mem, 'どうし')
     assert cur['step'] is None and cur['castle'] is None and cur['side'] is None
 

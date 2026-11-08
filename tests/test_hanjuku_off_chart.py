@@ -16,7 +16,7 @@ from docich import hanjuku_commentary, hanjuku_interim
 from docich import hanjuku_policy as policy
 from docich.hanjuku_pixels import Frame
 from docich.hanjuku_screen import Screen
-from docich.hanjuku.state.regions import world as _world, flow as _flow, journal as _journal
+from docich.hanjuku.state.regions import world as _world, sorties as _sorties, flow as _flow, journal as _journal
 
 FRAME = Frame(256, 224, bytes(256 * 224 * 3))
 CASTLES = chart.castles(1)
@@ -174,7 +174,7 @@ def test_off_chart_uses_measured_idle_generals_not_the_marching_chart_general():
     assert first['source'] == 'カストーラ' and first['general'] != 'どうし'
     # Recent expeditions reserve their targets, instead of being offered last.
     mem['tick'] = 10
-    for sortie in mem['sorties'].values():
+    for sortie in _sorties(mem).values():
         sortie['tick'] = 5
     targets = {c['target'] for c in policy.interim_candidates(mem).values()}
     assert 'ジョンリギ' in targets
@@ -534,7 +534,7 @@ def test_sorties_without_a_recent_tick_no_longer_block_their_generals():
     # K1's source was last read empty; K3 can launch ココット and leave ゼウス defending.
     assert policy.next_order(mem)['step'] == 'A:p:K3'
     mem['tick'] = 50
-    mem['sorties']['I:b:1']['tick'] = 45
+    _sorties(mem)['I:b:1']['tick'] = 45
     assert policy.next_order(mem) is None                     # ココット marching right now
     # Chapter 1's measured arrival wait is 800 observations, not the obsolete
     # 400-observation display limit. Never free a still-travelling general early.
@@ -554,7 +554,7 @@ def test_a_plan_of_orders_that_can_never_run_does_not_block_off_chart_sorties():
     # K4 waits on キカンドン, which no marching unit is taking.
     assert policy._plan_pending(mem) is False
     mem['tick'] = 10
-    mem['sorties']['X'] = {'general': 'ゼウス', 'target': 'キカンドン', 'status': 'en_route', 'tick': 9}
+    mem['world']['sorties']['X'] = {'general': 'ゼウス', 'target': 'キカンドン', 'status': 'en_route', 'tick': 9}
     assert policy._plan_pending(mem) is True
 
 
@@ -1199,7 +1199,7 @@ def test_the_island_picker_confirms_the_observed_owned_castle_with_a_twice(monke
     assert policy.world_map_step(view, mem, FRAME) == [policy.pad('a'), {'type': 'wait', 'ms': 700},
                                                         policy.pad('a')]
     assert _flow(mem)['recall']['stage'] == 'await_dispatch'
-    assert mem['sorties']['1-A2']['status'] == 'en_route'
+    assert _sorties(mem)['1-A2']['status'] == 'en_route'
     assert decisions(mem, 'camp_recall_requested')[0]['observed_metric']['castle'] == 'アルマムーン'
 
 
@@ -1442,7 +1442,7 @@ def test_a_hero_weakened_by_a_road_battle_is_recalled_before_his_next_fight(monk
     mem.pop('y_jump')
     mem.setdefault('y_jumped', {})['RECALL'] = 'キカンドン'          # the jump confirmed there
     assert policy.camp_recall_step(marker, mem, FRAME) == [policy.pad('a')]
-    assert _flow(mem)['recall']['stage'] == 'await_dispatch' and mem['sorties']['1-A2']['status'] == 'en_route'
+    assert _flow(mem)['recall']['stage'] == 'await_dispatch' and _sorties(mem)['1-A2']['status'] == 'en_route'
     assert decisions(mem, 'camp_recall_requested')[0]['observed_metric']['castle'] == 'キカンドン'
 
 
@@ -1728,7 +1728,7 @@ def test_an_unverified_target_walks_onto_the_enemy_roof_beside_the_marker(monkey
     _journal(mem)['_departure_input'] = {'request_trace': trace, 'a_inputs': 1}
     flow_map.observe_sortie_transition(Screen(lines=[], hand=None, text='', kind='map'),
                                        mem, 'map_target')
-    assert mem['sorties']['I:1']['target'] == 'グリン'
+    assert _sorties(mem)['I:1']['target'] == 'グリン'
 
 
 def test_an_unverified_target_without_a_nearby_roof_still_cancels(monkeypatch):

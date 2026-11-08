@@ -17,7 +17,7 @@ from docich.hanjuku_font import TextLine, UNKNOWN
 from docich.hanjuku_pixels import Frame, read_png
 from docich.hanjuku_screen import Screen
 from docich.hanjuku.state.regions import flow as _flow, journal as _journal
-from docich.hanjuku.state.regions import world as _world
+from docich.hanjuku.state.regions import world as _world, sorties as _sorties
 
 
 def menu(kind, words, hand=True):
@@ -1041,7 +1041,7 @@ def test_hero_priority_full_boss_departure_keeps_real_actor_through_battle(monke
     monkeypatch.setattr(policy, 'nav_step', lambda *args: 'arrived')
     assert policy.target_step(menu('map_target', []), mem, None) == [policy.pad('a')]
     commit_departure(mem)
-    assert _world(mem)['sorties']['1-B1']['general'] == _world(mem)['launched']['けっかい']['general'] == 'ゼウス'
+    assert _sorties(mem)['1-B1']['general'] == _world(mem)['launched']['けっかい']['general'] == 'ゼウス'
     launch = mem['_records'][-1]
     assert launch['general'] == 'ゼウス' and launch['planned_general'] == 'どうし'
     message = Screen([], None, 'ゼウスしょうぐんがボスじょうにせめこんだ!!', kind='boss_attack_started')

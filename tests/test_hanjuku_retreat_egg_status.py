@@ -11,7 +11,7 @@ from test_hanjuku_chart_bot import camp_menu
 from test_hanjuku_house import status
 from test_hanjuku_empty_eggs import menu as egg_menu
 from test_hanjuku_egg_timing import memory as battle_memory
-from docich.hanjuku.state.regions import world as _world, flow as _flow, journal as _journal
+from docich.hanjuku.state.regions import world as _world, sorties as _sorties, flow as _flow, journal as _journal
 
 
 def open_status(mem, mode):
@@ -38,7 +38,7 @@ def test_verified_zero_replaces_cached_two_before_a_critical_enemy_contact(mode,
     mem = memory(); mem['egg_uses'] = {'ゼウス': 2, 'ヴィーナス': 2}
     mem['egg_types'] = {'ゼウス': 'エッグ', 'ヴィーナス': 'エッグ'}
     mem['egg_recheck'] = [actor]
-    before = deepcopy(mem['sorties'])
+    before = deepcopy(_sorties(mem))
     open_status(mem, mode)
     screen = parse(status(actor, 'エラベルエッグ0', main=False, hp=6))
     assert p.camp_recall_step(screen, mem, FRAME) == [p.pad('b')]

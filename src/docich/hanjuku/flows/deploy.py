@@ -5,7 +5,7 @@ source castle and general, selects the planned cards and confirms the sortie,
 holding or cancelling when the visible menu contradicts the plan.
 """
 from __future__ import annotations
-from ..state.regions import world as _world, flow as _flow, journal as _journal
+from ..state.regions import world as _world, flow as _flow, journal as _journal, sorties as _sorties
 
 import re
 import time
@@ -69,7 +69,7 @@ def _verify_sortie_source(screen, mem, order):
     name on it is not evidence of departure.
     """
     step = order['step']
-    sortie = _world(mem)['sorties'][step]
+    sortie = _sorties(mem).get(step)
     present = _present_generals(screen)
     if present and sortie['general'] in present and not _general_visible(screen, sortie['general']):
         present = None

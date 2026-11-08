@@ -1,7 +1,7 @@
 """A released plan step must not leave a marching ghost behind."""
 from docich.hanjuku.strategy import replan
 from docich.hanjuku.strategy import orders as O
-from docich.hanjuku.state.regions import world as _world
+from docich.hanjuku.state.regions import world as _world, sorties as _sorties
 
 
 def memory(age=5000):
@@ -17,7 +17,7 @@ def memory(age=5000):
 def test_a_released_step_drops_its_marching_ghost():
     mem = memory(age=O.SITE_LATE_ENTRY_TICKS + 1)
     replan._release_stale_steps(mem, ['A:x:M1'])
-    assert 'A:x:M1' not in mem['sorties']
+    assert 'A:x:M1' not in _sorties(mem)
     assert mem['orders']['A:x:M1'] == 'pending'
     assert _world(mem)['garrison']['アルマムーン'] == []
     assert _world(mem)['general_location_unknown'] == ['グレナデン']
@@ -27,5 +27,5 @@ def test_a_released_step_drops_its_marching_ghost():
 def test_a_running_march_is_not_released():
     mem = memory(age=100)
     replan._release_stale_steps(mem, ['A:x:M1'])
-    assert 'A:x:M1' in mem['sorties']
+    assert 'A:x:M1' in _sorties(mem)
     assert mem['orders']['A:x:M1'] == 'launched'

@@ -6,7 +6,7 @@ current battle state and returns a judgment or bookkeeping update; none of
 them reads the screen or produces pad input (see ``flows.battle``).
 """
 from __future__ import annotations
-from ..state.regions import world as _world
+from ..state.regions import world as _world, sorties as _sorties
 
 from dataclasses import asdict
 
@@ -39,7 +39,7 @@ def _battle_context(mem, ally):
         return {'castle': attack.get('castle'), 'side': side, 'step': step,
                 'entry_evidence': attack.get('entry_evidence')}
     captured = set(mem.get('captured', []))
-    en_route = [step for step, sortie in (_world(mem).get('sorties') or {}).items()
+    en_route = [step for step, sortie in _sorties(mem).items()
                 if sortie.get('general') == ally
                 and sortie.get('status') in ('en_route', 'arrived', 'launched_unconfirmed')
                 and sortie.get('target') not in captured]
@@ -2248,7 +2248,7 @@ def _rescue_rearm(mem, cur, context):
 
 def _hero_marching(mem):
     now = int(mem.get('tick') or 0)
-    return [step for step, s in (_world(mem).get('sorties') or {}).items()
+    return [step for step, s in _sorties(mem).items()
             if s.get('general') == NAME and s.get('status') in ('en_route', 'launched_unconfirmed')
             and s.get('tick') is not None and now - int(s['tick']) < SORTIE_BUSY_TICKS]
 

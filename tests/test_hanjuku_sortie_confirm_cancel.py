@@ -18,6 +18,7 @@ from docich.hanjuku.os_layer.pixels import Frame, read_png
 from docich.hanjuku.os_layer.screen import Screen, parse
 from docich.hanjuku.os_layer.commands import pad
 from test_hanjuku_sortie_evidence import memory, actor_panel, measured_loaded_sortie
+from docich.hanjuku.state.regions import sorties as _sorties
 from docich.hanjuku.state.regions import flow as _flow, journal as _journal
 
 FIXTURE = Path(__file__).parent / 'fixtures/hanjuku/g700-balmung-kit-confirm.png'
@@ -201,14 +202,14 @@ def test_confirmed_normal_boss_kit_keeps_existing_departure_permission():
 def test_unconfirmed_sent_sortie_never_becomes_pending_or_loses_receipts(status):
     mem = memory(); mem['orders']['1-B1'] = status
     mem['sorties'] = {'1-B1': {'status': status, 'general': 'ゼウス'}}
-    receipt = deepcopy(mem['sorties'])
+    receipt = deepcopy(_sorties(mem))
     # Owner 2026-11-02 (#3201): a readable mismatched kit is approved after
     # the bounded hold instead of declined; sent-sortie receipts still stay
     # untouched and the order is never re-queued.
     for _ in range(deploy.SORTIE_CONFIRM_LIMIT - 1):
         assert deploy.deploy_step(panel(), mem) == []
     assert deploy.deploy_step(panel(), mem) == [pad('a')]
-    assert mem['orders']['1-B1'] == status and mem['sorties'] == receipt
+    assert mem['orders']['1-B1'] == status and _sorties(mem) == receipt
     assert not mem.get('boss_stock_cancelled')
 
 

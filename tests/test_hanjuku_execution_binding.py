@@ -12,7 +12,7 @@ from docich.hanjuku.os_layer.screen import Screen
 from docich.hanjuku.strategy.execution import confirm_departure_order
 from test_hanjuku_sortie_evidence import actor_panel, measured_loaded_sortie
 from docich.hanjuku.state.regions import flow as _flow, journal as _journal
-from docich.hanjuku.state.regions import world as _world
+from docich.hanjuku.state.regions import world as _world, sorties as _sorties
 
 
 def memory():
@@ -67,8 +67,8 @@ def test_unconfirmed_departure_saves_actual_actor_source_and_unknown_destination
     mem = memory(); confirm(mem); mutate_plan(mem); interrupt(mem)
     assert _world(mem)['launched_orders']['1-A3']['general'] == 'ゼウス'
     assert _world(mem)['launched_orders']['1-A3']['source'] == 'カストーラ'
-    assert _world(mem)['sorties']['1-A3']['target'] is None
-    assert _world(mem)['sorties']['1-A3']['planned_target'] == 'スペンソニア'
+    assert _sorties(mem)['1-A3']['target'] is None
+    assert _sorties(mem)['1-A3']['planned_target'] == 'スペンソニア'
     assert_frozen(json.loads(json.dumps(mem)))
 
 
@@ -118,7 +118,7 @@ def test_foreign_or_corrupt_saved_execution_cannot_fall_back_to_the_hero(change)
         mem['_run_identity'][change] = 742 if change == 'generation' else 'different'
     elif change == 'chapter': mem['chapter'] = 2
     elif change == 'future': mem['tick'] = 19
-    elif change == 'serial': _world(mem)['sorties']['1-A3']['confirmation_tick'] = True
+    elif change == 'serial': _sorties(mem)['1-A3']['confirmation_tick'] = True
     else:
         key = {'actor': 'general', 'source': 'source', 'cards': 'cards'}[change]
         _world(mem)['launched_orders']['1-A3'][key] = {'actor': 'どうし', 'source': 'ゴーメン',

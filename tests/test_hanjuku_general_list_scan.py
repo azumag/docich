@@ -14,7 +14,7 @@ where it started, stops moving, or a press limit.
 from docich import hanjuku_policy as policy
 from docich.hanjuku_screen import parse
 from test_hanjuku_chart_bot import Canvas
-from docich.hanjuku.state.regions import world as _world
+from docich.hanjuku.state.regions import world as _world, sorties as _sorties
 
 ROSTER = ['アルファルファ', 'ゼウス', 'ラズベリー', 'キャンディー', 'ココット', 'リースリング']
 
@@ -203,7 +203,7 @@ def test_a_completed_roster_settles_a_blind_launch_probe():
     """g1133 2026-11-05: chapter 6's Y view drew units as portraits, so the
     launch probe could never see the committed unit; the source roster is the
     evidence that settles it."""
-    from docich.hanjuku.state.regions import world as _world, flow as _flow
+    from docich.hanjuku.state.regions import world as _world, sorties as _sorties, flow as _flow
     mem = memory()
     mem['orders']['1-A3'] = 'launched'
     mem['sorties'] = {'1-A3': {'general': 'ゼウス', 'source': 'アルマムーン',
@@ -308,7 +308,7 @@ def test_a_roster_probe_reads_and_backs_out_without_sending():
     assert actions == [policy.pad('b'), policy.pad('b')]
     assert mem['orders']['Mprobe'] == 'done'
     assert mem['orders']['1-A3'] == 'pending'
-    assert '1-A3' not in mem['sorties']
+    assert '1-A3' not in _sorties(mem)
     assert any(r['decision'] == 'roster_probe_complete' for r in mem['_records'])
 
 

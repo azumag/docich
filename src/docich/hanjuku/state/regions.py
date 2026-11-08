@@ -143,6 +143,15 @@ def world(mem):
     return region(mem, WORLD)
 
 
+def sorties(mem):
+    """sorties 読み取りアクセサ (docich#3193 W4 accessor 化)。
+
+    未存在時は空 dict を返し、``mem`` を汚さない。手順側は読み取り専用。
+    書き込みは ``_world(mem).setdefault('sorties', {})`` 経由で行う。
+    """
+    return world(mem).get('sorties') or {}
+
+
 def flow(mem):
     """FlowSession: 手順が所有するセッション状態。"""
     migrate_legacy_state(mem)

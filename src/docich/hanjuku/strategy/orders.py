@@ -19,7 +19,7 @@ from .kit import _deploy_cards, _is_boss_order
 from . import edition
 from . import routes
 from .execution import bound_fields, execution_claimed, execution_order
-from ..state.regions import world as _world, flow as _flow, journal as _journal
+from ..state.regions import world as _world, flow as _flow, journal as _journal, sorties as _sorties
 
 
 # ---------------------------------------------------------------- orders
@@ -253,7 +253,7 @@ def _sortie_cancelled_observed_suppressed(order, mem) -> bool:
         if (mem.get('orders') or {}).get(step) == 'failed':
             mem.setdefault('orders', {})[step] = None
         return False
-    sortie = (_world(mem).get('sorties') or {}).get(step)
+    sortie = _sorties(mem).get(step)
     if not (isinstance(sortie, dict) and sortie.get('status') == 'cancelled'):
         gates.pop(step, None)
         if (mem.get('orders') or {}).get(step) == 'failed':
@@ -820,7 +820,7 @@ def parked_boss_steps(mem):
     orders_status = mem.get('orders') or {}
     relaunches = mem.get('boss_relaunch') or {}
     out = []
-    for step, sortie in (_world(mem).get('sorties') or {}).items():
+    for step, sortie in _sorties(mem).items():
         if not isinstance(sortie, dict):
             continue
         target = sortie.get('target') or sortie.get('planned_target')
@@ -903,7 +903,7 @@ def _relaunch_overdue_boss(mem):
     """
     now = int(mem.get('tick') or 0)
     status = mem.setdefault('orders', {})
-    for step, sortie in (_world(mem).get('sorties') or {}).items():
+    for step, sortie in _sorties(mem).items():
         # An unconfirmed launch keeps its cell in planned_target only; g1075
         # 4-B2 カペリーニ stayed en route for 3066 ticks (2026-10-30 09:28).
         target = sortie.get('target') or sortie.get('planned_target')
@@ -1030,7 +1030,7 @@ def _relaunch_overdue_march(mem):
     now = int(mem.get('tick') or 0)
     status = mem.setdefault('orders', {})
     relaunches = mem.setdefault('sortie_relaunch', {})
-    for step, sortie in (_world(mem).get('sorties') or {}).items():
+    for step, sortie in _sorties(mem).items():
         target = sortie.get('target') or sortie.get('planned_target')
         if sortie.get('status') == 'overdue':
             # Already settled: still drop a spent attempt that claims the
@@ -1130,7 +1130,7 @@ def _refresh_live_marches(mem):
     if not isinstance(rows, dict):
         return
     refreshed = 0
-    for sortie in (_world(mem).get('sorties') or {}).values():
+    for sortie in _sorties(mem).values():
         if (not isinstance(sortie, dict)
                 or sortie.get('status') not in ('en_route', 'launched_unconfirmed')):
             continue
@@ -1146,7 +1146,7 @@ def _refresh_live_marches(mem):
     if refreshed:
         _record(mem, 'sortie_march_refreshed',
                 observed_metric={'refreshed': refreshed,
-                                 'remaining': len(_world(mem).get('sorties') or {})},
+                                 'remaining': len_sorties(mem)},
                 reason='出撃後に行軍中を実測したため行軍記録の期限を更新する')
 
 
@@ -1469,7 +1469,7 @@ def _sortie_reserved_target(mem, step, sortie):
 def _reserved_targets(mem):
     now = int(mem.get('tick') or 0)
     return {_sortie_reserved_target(mem, step, s)
-            for step, s in (_world(mem).get('sorties') or {}).items()
+            for step, s in _sorties(mem).items()
             if s.get('status') in ('en_route', 'launched_unconfirmed')
             and s.get('tick') is not None
             and 0 <= now - int(s['tick']) < max(SORTIE_BUSY_TICKS, _arrival_limit(mem, s))} - {None}
@@ -1533,7 +1533,7 @@ def _retake_reserved(order, mem):
                and s.get('status') in ('en_route', 'launched_unconfirmed')
                and s.get('tick') is not None
                and 0 <= now - int(s['tick']) < max(SORTIE_BUSY_TICKS, _arrival_limit(mem, s))
-               for step, s in (_world(mem).get('sorties') or {}).items())
+               for step, s in _sorties(mem).items())
 
 
 def _unplaced_castle_generals(mem):
@@ -1681,7 +1681,7 @@ def _give_up_source(mem, order):
     step = order['step']
     source = _source(order, mem)
     if (mem.get('orders') or {}).get(step) == 'launched_unconfirmed':
-        _world(mem)['sorties'][step]['verification_unavailable'] = True
+        _world(mem).setdefault('sorties', {})[step]['verification_unavailable'] = True
         mem['active'] = None
         _record(mem, 'sortie_verification_held', chart_step=step,
                 reason='出撃元の一覧を開けないため未確定の出撃を維持し再指示を抑止')
@@ -1755,7 +1755,7 @@ def _recall_goal(mem, flags=None):
     # 距離判定へ使う（issue #2907 の方向 b）。出撃元が自軍城でなくなって
     # いても座標は有効なので、そこへ最も近い自軍城を選べる。
     sources = [cells[s] for s in
-               (((_world(mem).get('sorties') or {}).get(step) or {}).get('source')
+               ((_sorties(mem).get(step) or {}).get('source')
                  for step in (state.get('sorties') or ()))
                if s in cells]
     if sources:
@@ -1797,7 +1797,7 @@ def _fort_recall_goal(mem, state):
     members = [name for name in (state.get('fort_members') or ()) if isinstance(name, str)]
     if isinstance(general, str) and general not in members:
         members.append(general)
-    sorties = [s for s in (_world(mem).get('sorties') or {}).values()
+    sorties = [s for s in _sorties(mem).values()
                if isinstance(s, dict) and s.get('general') in members
                and s.get('source') in cells and type(s.get('tick')) is int]
     if sorties:
@@ -1965,13 +1965,13 @@ def _promote_retired_sortie(mem, step, castle, general):
         if isinstance(current, dict):
             rows.append(current)
             del rows[:-RETIRED_SORTIES_PER_STEP]
-        _world(mem)['sorties'][step] = old
+        _world(mem).setdefault('sorties', {})[step] = old
         return old
     return None
 
 
 def _bind_sortie(mem, step, castle, general=None):
-    sortie = (_world(mem).get('sorties') or {}).get(step)
+    sortie = _sorties(mem).get(step)
     if general and (sortie is None or sortie.get('general') != general):
         sortie = _promote_retired_sortie(mem, step, castle, general) or sortie
     if sortie:
@@ -2008,7 +2008,7 @@ def _transit_sorties(mem, castle, names):
     # general stopped inside was never continued — g1097 held 26 stale
     # en_route marches (up to 40k ticks) whose generals sat garrisoned at
     # テラビル/バスカビル/オトラント while their targets still needed them.
-    for step, sortie in (_world(mem).get('sorties') or {}).items():
+    for step, sortie in _sorties(mem).items():
         source = sortie.get('source')
         if (sortie.get('status') not in ('en_route', 'launched_unconfirmed')
                 or sortie.get('general') not in listed
@@ -2036,7 +2036,7 @@ def _continue_transit_sorties(mem, castle, names):
     changed = []
     listed = sorted(set(names or ()))
     for step in _transit_sorties(mem, castle, names):
-        sortie = _world(mem)['sorties'][step]
+        sortie = _sorties(mem).get(step)
         planned = sortie.get('target')
         _garrison_move(mem, sortie['general'], source=sortie.get('source'), target=castle)
         sortie.update(status='arrived', target=castle, transit_to=planned)
@@ -2066,7 +2066,7 @@ def _sortie_step_for(mem, general, castle):
     if not general or not castle:
         return None
     march = [(sortie.get('tick') or 0, step)
-             for step, sortie in (_world(mem).get('sorties') or {}).items()
+             for step, sortie in _sorties(mem).items()
              if sortie.get('general') == general
              and sortie.get('target') == castle
              and sortie.get('status') in ('en_route', 'arrived')]

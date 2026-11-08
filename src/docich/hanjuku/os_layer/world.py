@@ -6,7 +6,7 @@ castles, marching generals, the hero's castle). These are observations, not
 plans: the strategy layer reads them to choose orders.
 """
 from __future__ import annotations
-from ..state.regions import world as _world
+from ..state.regions import world as _world, sorties as _sorties
 
 from .screen import Screen, castle_roofs
 from .pixels import Frame
@@ -320,7 +320,7 @@ def _en_route(mem):
     """
     now = int(mem.get('tick') or 0)
     sorties = [
-        s for s in (_world(mem).get('sorties') or {}).values()
+        s for s in _sorties(mem).values()
         if isinstance(s, dict)
         and s.get('status') in ('en_route', 'launched_unconfirmed')
         and type(s.get('tick')) is int

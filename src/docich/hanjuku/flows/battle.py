@@ -5,7 +5,7 @@ tactic or rescue is due, opens the command menu for it and settles the record
 when the battle ends.
 """
 from __future__ import annotations
-from ..state.regions import world as _world, flow as _flow, journal as _journal
+from ..state.regions import world as _world, flow as _flow, journal as _journal, sorties as _sorties
 
 import re
 import time
@@ -1433,7 +1433,7 @@ def battle_end(mem, next_kind, *, defense_continues=False, actor_continues=False
     # status chart kept showing a march that was already over and the ledger
     # never learned win/loss/retreat by diff. A battle on the road (castle
     # different from the sortie target) leaves the march running.
-    sortie = ((_world(mem).get('sorties') or {}).get(step)) if step else None
+    sortie = (_sorties(mem).get(step)) if step else None
     if isinstance(sortie, dict) and cur.get('side') == 'attack':
         target = sortie.get('target') or sortie.get('planned_target')
         retreat = bool((cur.get('hero_retreat') or {}).get('selected'))
@@ -1441,7 +1441,7 @@ def battle_end(mem, next_kind, *, defense_continues=False, actor_continues=False
         won_battle = outcome == 'win' and (enemy_hp == 0)
         if castle and target and castle == target and (won_battle or lost_battle):
             result = 'won' if won_battle else ('retreated' if retreat else 'lost')
-            (_world(mem).get('sorties') or {}).pop(step, None)
+            _sorties(mem).pop(step, None)
             history = mem.setdefault('sortie_history', [])
             history.append({'step': step, 'general': sortie.get('general'),
                             'source': sortie.get('source'), 'target': target,
@@ -1512,7 +1512,7 @@ def _boss_entry_cell(mem, general):
         # An unconfirmed launch keeps its site as planned_target only (g1075
         # 08:34:57: カペリーニ's 4-B2 entry matched nothing and was held 7 times).
         now = int(mem.get('tick') or 0)
-        sorties = [s for s in (_world(mem).get('sorties') or {}).values()
+        sorties = [s for s in _sorties(mem).values()
                    if isinstance(s, dict) and s.get('general') == general
                    and (s.get('target') or s.get('planned_target')) in chart.boss_sites(4)]
         # A re-sent step replaces its sortie; the retired attempt still names

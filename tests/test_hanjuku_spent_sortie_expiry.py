@@ -5,7 +5,7 @@ the next monthly named-status scan rechecks their actual whereabouts.
 """
 from docich.hanjuku.strategy import orders as O
 from docich.hanjuku.flows import post_month_status as post
-from docich.hanjuku.state.regions import world as _world
+from docich.hanjuku.state.regions import world as _world, sorties as _sorties
 
 
 def memory(age, status='overdue', garrison=None):
