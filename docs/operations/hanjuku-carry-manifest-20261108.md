@@ -93,3 +93,8 @@
   確認できたら、住人が5人以下のときの近道として使える。
 - しゅつげき名簿が傷病・卵持ちなど一部の住人を出さない場合、その将軍は
   待ちのまま残る。overdue再確認で拾うが、名簿の完全性は実測が必要。
+- 2026-11-08 19:26 の g1153 で、`manifest_satisfied` を `set` で持ったため
+  `hanjuku_bot.json` の書き込みが全観測で失敗し、決定済み入力が送られず
+  `input_stalled` でコーナーが終了した。v523
+  （[`hanjuku-manifest-json-state-20261108.md`](./hanjuku-manifest-json-state-20261108.md)）
+  で list 化と副作用の隔離を入れた。実ランの再確認は未実施。
