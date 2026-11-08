@@ -1420,10 +1420,15 @@ def battle_end(mem, next_kind, *, defense_continues=False, actor_continues=False
     resulting = None
     if season_win:
         victories = mem.setdefault('boss_victories', {})
-        victories[cur['enemy']] = {
-            'enemy': cur['enemy'], 'chapter': 4,
-            'site': castle if castle in chart.boss_sites(4) else None,
-            'evidence': 'measured_boss_entry_hp_win', 'tick': mem.get('tick')}
+        previous = victories.get(cur['enemy'])
+        # A repeated/generic ボス entry proves the king's defeat again,
+        # but cannot erase the corner already measured for that king.
+        site = castle if castle in chart.boss_sites(4) else None
+        if not (site is None and isinstance(previous, dict)
+                and previous.get('site') in chart.boss_sites(4)):
+            victories[cur['enemy']] = {
+                'enemy': cur['enemy'], 'chapter': 4, 'site': site,
+                'evidence': 'measured_boss_entry_hp_win', 'tick': mem.get('tick')}
         resulting = f"season_king_defeated:{cur['enemy']}"
         if SEASON_KINGS <= set(victories):
             mem['boss_defeated'] = 4
