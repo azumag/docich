@@ -6989,6 +6989,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v536-moving-boss-y-view",
             "hanjuku-chart-v537-launch-marker-size",
             "hanjuku-chart-v538-y-view-boss-cell",
+            "hanjuku-chart-v539-boss-cell-diagnostics",
             "hanjuku-chart-v501-idle-reanchor",
             "hanjuku-chart-v502-idle-and-roster-joins",
             "hanjuku-chart-v503-month-start-counts",
@@ -12075,6 +12076,24 @@ HANJUKU_SEASON_SITES = frozenset({
     '四季王城(北西)', '四季王城(北東)', '四季王城(南西)', '四季王城(南東)'})
 
 
+def _compact_boss_cell(reading, now):
+    """The Y-view measured boss cell (v538): fixed chapter/cell/counts only."""
+    if not isinstance(reading, dict):
+        return None
+    chapter = reading.get('chapter')
+    cell = reading.get('cell')
+    tick = reading.get('tick')
+    readings = reading.get('readings')
+    point = None
+    if isinstance(cell, (list, tuple)) and len(cell) == 2 and all(type(v) is int for v in cell):
+        point = [cell[0], cell[1]]
+    age = tick if type(tick) is int and type(now) is int else None
+    return {'chapter': chapter if type(chapter) is int else None,
+            'cell': point,
+            'readings': readings if type(readings) is int and readings > 0 else None,
+            'age_ticks': (max(0, now - age) if age is not None else None)}
+
+
 def _compact_hanjuku_policy(mem, state=None):
     """Small map/route summary that survives the tactical detail drop.
 
@@ -12179,6 +12198,7 @@ def _compact_hanjuku_policy(mem, state=None):
                                             if row['status'] == 'overdue'
                                             and row['age_ticks'] is not None), default=None)},
         'boss_victories': {'count': len(victories), 'sites': won_sites[:8]},
+        'boss_cell': _compact_boss_cell(mem.get('boss_cell'), mem.get('tick')),
         'cursor': ([item for item in cursor[:2] if type(item) is int]
                    if isinstance(cursor, (list, tuple)) and len(cursor) == 2 else None),
         'uncertain': mem.get('uncertain') is True,
