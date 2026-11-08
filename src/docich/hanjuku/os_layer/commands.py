@@ -8,6 +8,7 @@ layers want.
 from __future__ import annotations
 
 from .screen import Screen, month_confirmation_positions
+from . import menu_feedback
 from ..decision_log import _record
 from .readers import _current, _options
 
@@ -56,6 +57,9 @@ def menu_navigation_reading(screen):
     This never creates an input, a target selection, or an arrival receipt.
     Unknown cursors/rows and clipped/fading menus keep normal cadence.
     """
+    semantic = menu_feedback.reading(screen)
+    if semantic is not None:
+        return semantic
     if screen.kind not in _FEEDBACK_MENU_KINDS:
         return None
     options = _options(screen)
@@ -91,7 +95,8 @@ def menu_navigation_feedback(state, actions):
     reading = state.get('menu_navigation_reading')
     if (not isinstance(reading, dict) or type(state.get('step')) is not int
             or type(reading.get('step')) is not int or reading.get('step') != state['step']
-            or reading.get('kind') not in _FEEDBACK_MENU_KINDS
+            or (reading.get('kind') not in _FEEDBACK_MENU_KINDS
+                and not menu_feedback.valid_context(reading.get('kind'), reading.get('menu')))
             or reading.get('kind') != state.get('screen_kind')
             or not isinstance(actions, list) or len(actions) != 1):
         return False
