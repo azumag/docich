@@ -121,6 +121,12 @@ def step(screen, mem, frame):
                     observed_metric={'selected': episode.get('selected'), 'screen': screen.kind},
                     reason='先発隊の確定後に別画面へ遷移したことを確認。次章の在城・到着は別途実測する')
             mem.pop('starter_party', None)
+            # The starter party only appears between chapters. Drop the
+            # finished chapter's orders and route state now: keeping them let
+            # one chapter-4 site sortie start after the chapter-end save and
+            # before the next chapter was measured (g1163 2026-11-09 04:04).
+            from ..strategy import campaign
+            campaign.finish_chapter(mem)
         return None
     identity = mem.get('_run_identity')
     if not episode or episode.get('run_identity') != identity or episode.get('chapter') != mem.get('chapter'):
