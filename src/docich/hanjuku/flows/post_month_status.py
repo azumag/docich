@@ -1302,6 +1302,10 @@ def step(screen, mem, frame):
             _task_complete(mem, state, result='general_not_found')
             return [pad('b')]
         state['seeks'] += 1
+        if job.get('kind') == 'manifest' and job['name'] not in names:
+            # The hero is the first roster row.  A list opened at a later
+            # scroll position must walk up to it; Down would move away.
+            return [pad('up')]
         direction = menu_to(screen, job['name'])
         return [pad('down')] if direction is None else [pad('a')] if direction == 'here' else [direction]
     if stage == 'task_jump':
