@@ -39,6 +39,26 @@ class BroadcastTemplateOwnershipTest(unittest.TestCase):
         self.assertIn("white-space: normal;", html)
         self.assertIn("text-overflow: clip;", html)
 
+    def test_paper_and_live_trade_cards_have_distinct_backgrounds(self):
+        # Owner 2026-11-08: PAPER and real-money short reports must be told
+        # apart by card background. LIVE is keyed by the `実売｜`/`実買｜`
+        # title prefix; PAPER keeps `売｜`/`買｜`/`裁定｜`.
+        html = TEMPLATE.read_text(encoding="utf-8")
+        paper = _declarations(html, ".toast.paper-trade")
+        live = _declarations(html, ".toast.live-trade")
+        paper_bg = re.search(r"background:\s*(#[0-9a-fA-F]{6})", paper)
+        live_bg = re.search(r"background:\s*(#[0-9a-fA-F]{6})", live)
+        self.assertTrue(paper_bg and live_bg)
+        self.assertNotEqual(paper_bg.group(1).lower(), live_bg.group(1).lower())
+        # Neither may fall back to the shared worker-card navy.
+        self.assertNotEqual(paper_bg.group(1).lower(), "#051422")
+        self.assertNotEqual(live_bg.group(1).lower(), "#051422")
+        self.assertIn("card.classList.add(liveTrade ? 'live-trade' : 'paper-trade')", html)
+        # `実売｜` must not be swallowed by the PAPER pattern: PAPER's regex is
+        # anchored at the start, so `実` prefixed titles never match it.
+        self.assertIn("/^実(?:売|買)｜/", html)
+        self.assertIn("/^(?:売|買|裁定)｜/", html)
+
     def test_news_area_stays_bounded_and_non_paginated(self):
         html = TEMPLATE.read_text(encoding="utf-8")
         self.assertIn("hanjuku-gap-news", html)
