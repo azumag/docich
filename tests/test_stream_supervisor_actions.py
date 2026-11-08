@@ -188,7 +188,7 @@ class OwnerFlagTest(unittest.TestCase):
                     {"SOREN_DIRECT_STREAM_FPS": "999"}):  # even an invalid config is not even loaded
             with self.subTest(env=env):
                 proc = self.run_main(env, "run")
-                self.assertEqual(proc.returncode, 0, proc.stderr)
+                self.assertEqual(proc.returncode, sup.NOT_OWNER_EXIT, proc.stderr)
                 self.assertIn("legacy runner owns the encoder", proc.stderr)
                 self.assertEqual(proc.stdout, "")
 

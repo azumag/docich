@@ -116,14 +116,18 @@ def test_repair_uses_roster_select_then_verified_castle_entry():
     assert mem['house']['general'] == 'ゼウス'
 
 
-def test_unknown_status_never_allows_planning():
+def test_unknown_status_never_allows_planning_and_releases_the_field():
     mem = memory()
     post.arm(mem)
     state = mem['post_month_status']
     state.update(stage='status', selected='ゼウス', phase_reads=post.STATUS_RETRIES)
     assert post.step(Screen([], None, '', kind='unknown'), mem, None) == [pad('b')]
     assert state['stage'] == 'blocked'
-    assert post.step(Screen([], None, '', kind='map'), mem, None) == []
+    # The failed read must not hold the map: record it and hand control back.
+    assert post.step(Screen([], None, '', kind='map'), mem, None) is None
+    assert 'post_month_status' not in mem
+    assert mem['post_month_status_last']['failed'] == 'status_unreadable'
+    assert mem['post_month_status_last']['complete'] is False
     assert 'general_statuses' not in mem
 
 
@@ -567,17 +571,36 @@ def test_task_menu_still_owns_the_roster_text_panel():
     state.update(stage='task_menu', job={'kind': 'locate', 'name': 'ゼウス'})
     roster_screen = parse(roster(names=('どうし', 'ゼウス'), selected=0))
     assert roster_screen.kind == 'text'
-    assert post.step(roster_screen, mem, None) == []
+    assert post.step(roster_screen, mem, None) == [pad('down')]
     assert state['stage'] == 'task_select'
 
 
-def test_blocked_status_releases_scene_but_keeps_holding_the_map():
+def test_blocked_status_releases_the_field_instead_of_holding_it():
+    scene = parse(event_dialogue_frame())
+    field = Screen([], None, '', kind='map')
+    for frame in (scene, field):
+        mem = memory()
+        post.arm(mem)
+        mem['post_month_status'].update(stage='blocked', failure='observation_budget')
+        assert post.step(frame, mem, None) is None
+        assert 'post_month_status' not in mem
+        last = mem['post_month_status_last']
+        assert last['failed'] == 'observation_budget'
+        assert last['complete'] is False
+
+
+def test_observation_budget_failure_releases_the_map_on_the_next_observation():
     mem = memory()
     post.arm(mem)
     state = mem['post_month_status']
-    state.update(stage='blocked')
-    assert post.step(parse(event_dialogue_frame()), mem, None) is None
-    assert post.step(Screen([], None, '', kind='map'), mem, None) == []
+    state.update(stage='process', steps=post.MAX_STEPS + 1, tasks=[])
+    field = Screen([], None, '', kind='map')
+    assert post.step(field, mem, None) == []
+    assert state['stage'] == 'blocked'
+    assert state['failure'] == 'observation_budget'
+    assert post.step(field, mem, None) is None
+    assert 'post_month_status' not in mem
+    assert mem['post_month_status_last']['failed'] == 'observation_budget'
 
 
 def test_month_event_dialogue_is_advanced_while_post_month_tasks_wait():
@@ -686,6 +709,58 @@ def test_boss_adjacent_camp_is_not_a_monthly_recall_task():
         {'kind': 'recall', 'name': 'カバルッサ'}]
 
 
+def test_broken_boss_adjacent_camp_is_recalled_for_repair():
+    # 実測 g1153 2026-11-07: ヴィーナス HP3/82・卵こわれ・けっかい野営。
+    # 卵こわれは修理タスクの合図だが、修理は在城確認後のタスクでしか始まらない。
+    # ボス至近というだけで月次帰還から除外すると野営に固定される。
+    statuses = {
+        'ヴィーナス': {
+            'location': 'camp', 'broken': True, 'hp': 3, 'max_hp': 82,
+            'marker': {'castle_candidate': 'けっかい'}},
+        'デーメーテール': {
+            'location': 'camp', 'broken': False, 'hp': 49, 'max_hp': 49,
+            'marker': {'castle_candidate': 'ボス'}},
+    }
+    assert post._tasks(statuses, list(statuses)) == [
+        {'kind': 'recall', 'name': 'ヴィーナス'}]
+
+
+def test_arm_recalls_a_broken_boss_camp_without_exempting_it():
+    # 月次 arm はキャッシュ済みでも、こわれたボス至近野営を帰還タスクへ戻し、
+    # その将軍を除外月数へ数えない（翌月以降も帰還対象のまま）。
+    mem = memory(month='2-12')
+    mem['general_statuses'] = {
+        'scope': [1, '2-12'], 'complete': True, 'dirty': {},
+        'identity': receipts.run_identity(mem.get('_run_identity')),
+        'statuses': {'ヴィーナス': {
+            'location': 'camp', 'broken': True, 'hp': 3, 'max_hp': 82,
+            'marker': {'castle_candidate': 'けっかい'}}}}
+    post.arm(mem)
+    assert mem['post_month_status']['tasks'] == [
+        {'kind': 'recall', 'name': 'ヴィーナス'}]
+    assert 'boss_camp_exempt' not in mem
+
+
+def test_recall_task_starts_the_named_return_on_the_selected_camp(monkeypatch):
+    # 月次の queue から実際の帰還シーケンス（recall state と wait_recall）へ入る。
+    from docich.hanjuku.state.regions import flow as _flow
+    mem = memory(month='2-12')
+    post.arm(mem)
+    state = mem['post_month_status']
+    state.update(stage='task_jump',
+                 job={'kind': 'recall', 'name': 'ヴィーナス'},
+                 statuses={'ヴィーナス': {'location': 'camp', 'broken': True}})
+    screen = Screen(lines=[], hand=None, text='', kind='map', cursor=(150, 100))
+    monkeypatch.setattr(post, 'own_camps',
+                        lambda _frame: [{'target': [150, 100], 'kind': 'tent'}])
+    monkeypatch.setattr(post.recall_flow, 'camp_recall_step',
+                        lambda _screen, _mem, _frame: [pad('a')])
+    assert post.step(screen, mem, object()) == [pad('a')]
+    assert _flow(mem)['recall']['general'] == 'ヴィーナス'
+    assert _flow(mem)['recall']['stage'] == 'to_camp'
+    assert state['stage'] == 'wait_recall'
+
+
 def test_boss_adjacent_camp_exemption_expires_into_a_recall():
     # docich#3659: ボス城至近の野営除外に期限を設ける。除外が
     # BOSS_CAMP_EXEMPT_MONTHS か月連続した野営は、翌月の月次処理で
@@ -767,12 +842,15 @@ def test_open_menu_backs_out_of_a_stray_castle_menu():
     assert post.step(_castle_menu_with_hand(), mem, None) == [pad('b')]
 
 
-def test_blocked_status_still_backs_out_of_a_stray_castle_menu():
+def test_blocked_status_closes_a_stray_castle_menu_before_releasing():
     mem = memory()
     post.arm(mem)
-    mem['post_month_status'].update(stage='blocked')
+    mem['post_month_status'].update(stage='blocked', failure='roster_end_unconfirmed')
     assert post.step(_castle_menu_with_hand(), mem, None) == [pad('b')]
-    assert post.step(Screen([], None, '', kind='map'), mem, None) == []   # the map hold is unchanged
+    assert 'post_month_status' not in mem
+    assert mem['post_month_status_last']['failed'] == 'roster_end_unconfirmed'
+    # The next field observation belongs to the ordinary planner.
+    assert post.step(Screen([], None, '', kind='map'), mem, None) is None
 
 
 def test_stray_menu_back_out_is_bounded():
@@ -898,3 +976,475 @@ def test_battle_result_closes_old_roster_before_reopening_monthly_scan():
     assert post.step(old_roster, mem, None) == [pad('b')]
     assert post.step(Screen([], None, '', kind='map'), mem, None) == [pad('x')]
     assert state['stage'] == 'open_menu'
+
+
+EIGHT_GENERALS = ('どうし', 'ゼウス', 'ヴィーナス', 'ココット', 'アマンディーヌ',
+                  'リースリング', 'ビシソワーズ', 'マカデミア')
+
+
+def _full_walk_state(mem, visited):
+    state = mem['post_month_status']
+    state.update(stage='roster', names=list(visited),
+                 statuses={name: _known_status(name) for name in EIGHT_GENERALS},
+                 dirty=[], markers={}, top_confirmed=True,
+                 list_moves=len(visited))
+    return state
+
+
+def test_full_page_roster_without_wrap_completes_via_end_stall():
+    # g1147 2026-11-07 1-8: an 8-name roster fills the visible page, so the
+    # short-page end proof never applies. Live 299x224 frames never satisfy
+    # the 256x224 scroll-end pixels, and down on the last row does not wrap.
+    # The walk had read all 8 yet failed roster_end_unconfirmed after 13
+    # identical downs. A short stall on the visible last row of a full walk
+    # is now an end proof when the membership proof passes.
+    mem = memory()
+    post.arm(mem)
+    state = _full_walk_state(mem, EIGHT_GENERALS[:7])
+    last = parse(roster(names=EIGHT_GENERALS, selected=7))
+    assert last.kind == 'text'
+    assert post.step(last, mem, None) == [pad('down')]  # cached 8th joins
+    assert state['names'] == list(EIGHT_GENERALS)
+    assert post.step(last, mem, None) == [pad('down')]
+    assert state['end_stall'] == 1
+    assert post.step(last, mem, None) == [pad('down')]
+    assert state['end_stall'] == 2
+    assert post.step(last, mem, None) == [pad('b')]
+    assert 'end_stall' not in state
+    assert mem['general_statuses']['complete'] is True
+    assert list(mem['general_statuses']['statuses']) == list(EIGHT_GENERALS)
+    assert state['stage'] == 'process'
+    assert not any(r['decision'] == 'post_month_status_unverified'
+                   for r in mem['_records'])
+
+
+def test_end_stall_resets_when_selection_moves():
+    mem = memory()
+    post.arm(mem)
+    state = _full_walk_state(mem, EIGHT_GENERALS)
+    last = parse(roster(names=EIGHT_GENERALS, selected=7))
+    mid = parse(roster(names=EIGHT_GENERALS, selected=5))
+    assert post.step(last, mem, None) == [pad('down')]
+    assert state['end_stall'] == 1
+    assert post.step(last, mem, None) == [pad('down')]
+    assert state['end_stall'] == 2
+    # Moving off the last row drops the stall count instead of completing.
+    assert post.step(mid, mem, None) == [pad('down')]
+    assert 'end_stall' not in state
+    assert post.step(last, mem, None) == [pad('down')]
+    assert state['end_stall'] == 1
+    assert post.step(last, mem, None) == [pad('down')]
+    assert state['end_stall'] == 2
+    assert post.step(last, mem, None) == [pad('b')]
+    assert mem['general_statuses']['complete'] is True
+
+
+def test_end_stall_never_completes_a_partial_walk():
+    mem = memory()
+    post.arm(mem)
+    state = _full_walk_state(mem, EIGHT_GENERALS[:3])
+    last = parse(roster(names=EIGHT_GENERALS, selected=7))
+    outs = [post.step(last, mem, None) for _ in range(post.STATUS_RETRIES + 2)]
+    assert state['failure'] == 'roster_end_unconfirmed'
+    assert [pad('b')] in outs
+    # The blocked owner then releases the field (v505): the failure is kept
+    # in post_month_status_last without writing anything verified.
+    assert post.step(last, mem, None) is None
+    assert 'post_month_status' not in mem
+    assert mem['post_month_status_last']['failed'] == 'roster_end_unconfirmed'
+    assert 'general_statuses' not in mem
+    assert not any(r['decision'] == 'post_month_general_departed'
+                   for r in mem['_records'])
+    unverified = [r for r in mem['_records']
+                  if r['decision'] == 'post_month_status_unverified']
+    assert len(unverified) == 1
+    assert unverified[0]['observed_metric']['selected'] == 'マカデミア'
+
+
+def test_lost_march_general_is_rechecked_by_the_next_status_pass():
+    # 2026-11-07: a march record expired while a monthly pass was running. The
+    # pass committed its snapshot and dropped the queued location dirty flag,
+    # so the general stayed in ``general_location_unknown`` and every later
+    # month reused the cache: his status was never opened again. The unknown
+    # entry itself must request the next individual status confirmation.
+    mem = _persistent_memory('どうし', 'ゼウス')
+    _world(mem)['garrison']['アルマムーン'] = ['どうし']
+    _world(mem)['general_location_unknown'] = ['ゼウス']
+    assert mem['general_statuses']['dirty'] == {}
+    post.arm(mem)
+    state = mem['post_month_status']
+    assert state['stage'] == 'await_map'
+    assert state['dirty'] == ['ゼウス']
+    assert mem['post_month_status'] is state
+    state['stage'] = 'roster'
+    first = parse(roster(names=('どうし', 'ゼウス'), selected=0))
+    second = parse(roster(names=('どうし', 'ゼウス'), selected=1))
+    assert post.step(first, mem, None) == [pad('down')]
+    assert post.step(second, mem, None) == []
+    assert post.step(second, mem, None) == [pad('a')]
+    assert post.step(parse(status('ゼウス', egg='エラベルエッグ4')), mem, None) == [pad('b')]
+    assert post.step(second, mem, None) == [pad('down')]
+    assert post.step(second, mem, None) == [pad('b')]
+    # The status only says しろのなかにいます; the castle name comes from the
+    # SELECT locate task, never from the stale pre-march row.
+    assert state['tasks'] == [{'kind': 'locate', 'name': 'ゼウス'}]
+    assert _world(mem)['general_location_unknown'] == ['ゼウス']
+
+
+def test_unknown_location_outside_the_verified_roster_is_pruned():
+    # g1139 2026-11-07 23:40: a departed general's leftover sortie expired and
+    # queued a location recheck. He is not on the verified roster, so no status
+    # pass could ever read him; the entry stayed and kept him unavailable.
+    mem = _persistent_memory('どうし')
+    _world(mem)['general_location_unknown'] = ['セルリアク']
+    post.arm(mem)
+    assert _world(mem)['general_location_unknown'] == []
+    assert 'post_month_status' not in mem
+    pruned = [r for r in mem['_records']
+              if r['decision'] == 'post_month_unknown_location_pruned']
+    assert len(pruned) == 1
+    assert pruned[0]['observed_metric']['generals'] == ['セルリアク']
+
+
+def test_unknown_joined_general_is_kept_until_the_roster_reads_him():
+    mem = _persistent_memory('どうし')
+    mem['general_statuses']['pending_joins'] = ['ゼウス']
+    _world(mem)['general_location_unknown'] = ['ゼウス']
+    post.arm(mem)
+    assert _world(mem)['general_location_unknown'] == ['ゼウス']
+    state = mem['post_month_status']
+    assert state['stage'] == 'await_map'  # the pending join forces the walk
+    assert 'ゼウス' not in state['dirty']  # read as a new name, not as cached
+
+
+def test_completed_walk_prunes_unknown_names_the_roster_does_not_hold():
+    mem = memory()
+    post.arm(mem)
+    state = _full_walk_state(mem, EIGHT_GENERALS)
+    _world(mem)['general_location_unknown'] = ['セルリアク', EIGHT_GENERALS[0]]
+    last = parse(roster(names=EIGHT_GENERALS, selected=7))
+    assert post.step(last, mem, None) == [pad('down')]
+    assert post.step(last, mem, None) == [pad('down')]
+    assert post.step(last, mem, None) == [pad('b')]
+    assert mem['general_statuses']['complete'] is True
+    assert _world(mem)['general_location_unknown'] == [EIGHT_GENERALS[0]]
+
+
+def test_departed_general_leaves_the_unknown_location_queue():
+    # The purge read the flat key after the world region had migrated it, so a
+    # general proven absent from the roster stayed queued for a recheck.
+    mem = memory()
+    post.arm(mem)
+    state = mem['post_month_status']
+    state.update(stage='roster', names=[EIGHT_GENERALS[0]], dirty=[],
+                 markers={}, top_confirmed=True, list_moves=1,
+                 statuses={EIGHT_GENERALS[0]: _known_status(EIGHT_GENERALS[0]),
+                           'セルリアク': _known_status('セルリアク')})
+    _world(mem)['general_location_unknown'] = ['セルリアク']
+    short = parse(roster(names=(EIGHT_GENERALS[0],), selected=0))
+    assert post.step(short, mem, None) == [pad('b')]
+    assert _world(mem)['general_location_unknown'] == []
+    departed = [r for r in mem['_records']
+                if r['decision'] == 'post_month_general_departed']
+    assert [r['general'] for r in departed] == ['セルリアク']
+
+
+def test_a_recheck_queued_during_the_pass_still_reaches_the_next_month():
+    # A march can expire while the monthly walk is running. The pass commits
+    # its snapshot with an empty dirty set, so the flag queued by the expiry
+    # disappears; the unknown entry must still schedule the next read.
+    from docich.hanjuku.strategy import orders
+    mem = _persistent_memory('どうし', 'ゼウス')
+    # Force the walk without a dirty flag: only the headcount looks wrong.
+    mem['country_general_count'] = {'scope': [1, '1-7'], 'identity': None,
+                                    'count': 3}
+    post.arm(mem)
+    state = mem['post_month_status']
+    assert state['dirty'] == []
+    mem.pop('country_general_count')  # only needed to open the walk
+    state.update(stage='roster', names=['どうし', 'ゼウス'], top_confirmed=True,
+                 list_moves=2, markers={})
+    orders._queue_overdue_location_recheck(
+        mem, {'general': 'ゼウス', 'source': 'アルマムーン',
+              'target': 'ジョンリギ', 'tick': 1})
+    assert mem['general_statuses']['dirty'] == {'ゼウス': ['location']}
+    assert _world(mem)['general_location_unknown'] == ['ゼウス']
+    short = parse(roster(names=('どうし', 'ゼウス'), selected=1))
+    assert post.step(short, mem, None) == [pad('b')]
+    assert mem['general_statuses']['dirty'] == {}  # the pass overwrote it
+    assert _world(mem)['general_location_unknown'] == ['ゼウス']
+    mem['month'] = '1-8'
+    post.arm(mem)
+    assert mem['post_month_status']['dirty'] == ['ゼウス']
+
+
+
+def test_visible_roster_hop_uses_first_frame_for_highlight_gate():
+    mem = memory()
+    post.arm(mem)
+    state = mem['post_month_status']
+    state['stage'] = 'open_menu'
+    first = parse(roster(names=('どうし', 'ゼウス'), selected=0))
+    assert post.step(first, mem, None) == []  # first distinct highlight reading
+    assert state['stage'] == 'roster'
+    assert state['steps'] == 1
+    assert post.step(first, mem, None) == [pad('a')]
+    assert state['steps'] == 2
+    # A waits for a genuinely new status frame; no second input is appended.
+    assert post.step(first, mem, None) == []
+    assert not state['statuses']
+
+
+def test_visible_roster_hop_moves_cached_member_without_idle_observation():
+    mem = memory()
+    post.arm(mem)
+    state = mem['post_month_status']
+    state.update(stage='open_menu', statuses={'どうし': {'location': 'castle'}})
+    first = parse(roster(names=('どうし', 'ゼウス'), selected=0))
+    assert post.step(first, mem, None) == [pad('down')]
+    assert state['steps'] == 1
+    assert state['names'] == ['どうし']
+
+
+def test_task_menu_hop_selects_visible_named_actor_once():
+    mem = memory()
+    post.arm(mem)
+    state = mem['post_month_status']
+    state.update(stage='task_menu', job={'kind': 'locate', 'name': 'ゼウス'})
+    frame = parse(roster(names=('どうし', 'ゼウス'), selected=1))
+    assert post.step(frame, mem, None) == [pad('select')]
+    assert state['stage'] == 'task_jump'
+    assert state['steps'] == 1
+
+
+def _carry_status(name='ゼウス'):
+    c = Canvas()
+    c.text(24, 39, name)
+    c.text(88, 39, 'しょうぐん')
+    c.text(24, 55, 'HP')
+    c.text(64, 55, '50/ 50 P')
+    c.text(24, 119, 'たまご')
+    c.text(56, 119, 'エラベルエッグ4')
+    c.text(24, 151, 'いまこちらにむかっております')
+    return parse(c.frame())
+
+
+def _general_list(names, selected=0):
+    c = Canvas()
+    for index, name in enumerate(names):
+        c.text(144, 39 + index * 16, name)
+    c.hand(120, 33 + selected * 16)
+    screen = parse(c.frame())
+    screen.kind = 'general_list'
+    return screen
+
+
+def test_chapter_carry_status_is_a_known_waiting_queue():
+    screen = _carry_status()
+    assert post._location(screen) == 'carry'
+    info = post.house.general_status(screen)
+    assert info['carry_waiting'] is True
+    assert info['location'] == 'field'
+    assert info['location_observed'] is True
+
+
+def test_carry_queue_arms_the_hero_castle_manifest_without_a_status_walk():
+    mem = _persistent_memory('どうし', 'ゼウス', 'ヴィーナス')
+    for name in ('ゼウス', 'ヴィーナス'):
+        mem['general_statuses']['statuses'][name].update(location='carry', castle=None)
+    mem['garrison'] = {'アルマムーン': ['どうし']}
+    post.arm(mem)
+    state = mem['post_month_status']
+    assert state['stage'] == 'manifest'
+    assert state['dirty'] == []
+    assert state['manifest']['castle'] == 'アルマムーン'
+    assert state['manifest']['waiting'] == ['ゼウス', 'ヴィーナス']
+    assert not any(r['decision'] == 'post_month_status_reused' for r in mem['_records'])
+
+
+def test_carry_queue_without_a_hero_castle_reuses_the_cache_without_input():
+    mem = _persistent_memory('ゼウス')
+    mem['general_statuses']['statuses']['ゼウス'].update(location='carry', castle=None)
+    mem['garrison'] = {}
+    post.arm(mem)
+    assert 'post_month_status' not in mem
+    assert mem['post_month_status_last']['result'] == 'unchanged_cached'
+    assert mem['post_month_status_last']['carry'] == ['ゼウス']
+
+
+def test_complete_scan_accepts_carry_and_starts_queue_tracking():
+    mem = memory()
+    post.arm(mem)
+    state = _full_walk_state(mem, EIGHT_GENERALS[:7])
+    state['statuses']['ゼウス'] = {**_known_status('ゼウス'),
+                                  'location': 'carry', 'castle': None}
+    last = parse(roster(names=EIGHT_GENERALS, selected=7))
+    assert post.step(last, mem, None) == [pad('down')]
+    assert post.step(last, mem, None) == [pad('down')]
+    assert post.step(last, mem, None) == [pad('down')]
+    assert post.step(last, mem, None) == [pad('b')]
+    assert mem['general_statuses']['complete'] is True
+    assert mem['general_statuses']['statuses']['ゼウス']['location'] == 'carry'
+    assert mem['carry_tracking']['initial'] == 1
+    assert mem['carry_tracking']['remaining'] == 1
+
+
+def test_manifest_binds_residents_and_leaves_unlisted_carry_waiters():
+    mem = _persistent_memory('どうし', 'ゼウス', 'ヴィーナス')
+    for name in ('ゼウス', 'ヴィーナス'):
+        mem['general_statuses']['statuses'][name].update(location='carry', castle=None)
+    mem['garrison'] = {'アルマムーン': ['どうし']}
+    post.arm(mem)
+    state = mem['post_month_status']
+    post._apply_manifest(mem, state, ['どうし', 'ゼウス'],
+                         complete=True, evidence='wrapped')
+    assert state['statuses']['ゼウス']['location'] == 'castle'
+    assert state['statuses']['ゼウス']['castle'] == 'アルマムーン'
+    assert state['statuses']['ゼウス']['castle_evidence'] == 'hero_castle_manifest'
+    assert state['statuses']['ヴィーナス']['location'] == 'carry'
+    assert state['dirty'] == []
+    assert _world(mem)['garrison']['アルマムーン'] == ['どうし', 'ゼウス']
+    assert mem['general_statuses']['statuses']['ゼウス']['location'] == 'castle'
+    assert mem['carry_manifest_scope'] == [1, '1-7']
+    assert mem['post_month_status_last'] if 'post_month_status_last' in mem else True
+
+
+def test_manifest_navigation_reaches_the_hero_castle_and_finishes():
+    mem = _persistent_memory('どうし', 'ゼウス')
+    mem['general_statuses']['statuses']['ゼウス'].update(location='carry', castle=None)
+    mem['garrison'] = {'アルマムーン': ['どうし']}
+    post.arm(mem)
+    state = mem['post_month_status']
+    with patch.object(post, 'menu_to', return_value='here'), \
+         patch.object(post.map_registration, '_label', return_value='アルマムーン'):
+        assert post.step(Screen([], None, '', kind='map'), mem, None) == [pad('x')]
+        assert state['stage'] == 'task_menu'
+        main = Screen([], (40, 40), '', kind='main_menu')
+        assert post.step(main, mem, None) == [pad('a')]
+        assert state['stage'] == 'task_select'
+        hero = parse(roster(names=('どうし', 'ゼウス'), selected=0))
+        assert post.step(hero, mem, None) == [pad('select')]
+        assert post.step(Screen([], None, '', kind='map'), mem, None) == [pad('a')]
+        castle = Screen([], (40, 184), 'しゅつげき', kind='castle_menu')
+        assert post.step(castle, mem, None) == []
+        assert post.step(castle, mem, None) == [pad('a')]
+        assert state['stage'] == 'manifest_list'
+        for index in (0, 1, 0):
+            assert post.step(_general_list(('どうし', 'ゼウス'), index),
+                             mem, None) is not None
+    assert state['statuses']['ゼウス']['location'] == 'castle'
+    assert state['stage'] == 'manifest_close'
+    assert post.step(Screen([], (40, 184), '', kind='castle_menu'), mem, None) == [pad('b')]
+    assert post.step(Screen([], None, '', kind='map'), mem, None) == []
+    assert 'post_month_status' not in mem
+    assert mem['post_month_status_last']['manifest_done'] is True
+
+
+def test_manifest_walks_the_sortie_list_and_finishes_without_individual_status():
+    mem = _persistent_memory('どうし', 'ゼウス', 'ヴィーナス')
+    for name in ('ゼウス', 'ヴィーナス'):
+        mem['general_statuses']['statuses'][name].update(location='carry', castle=None)
+    mem['garrison'] = {'アルマムーン': ['どうし']}
+    post.arm(mem)
+    state = mem['post_month_status']
+    state['stage'] = 'manifest_list'
+    for index in (0, 1, 2, 0):
+        assert post.step(_general_list(('どうし', 'ゼウス', 'ヴィーナス'), index),
+                         mem, None) is not None
+    assert state['manifest']['done'] is True
+    assert state['statuses']['ゼウス']['location'] == 'castle'
+    assert state['statuses']['ヴィーナス']['location'] == 'castle'
+    assert state['stage'] == 'manifest_close'
+    assert post.step(Screen([], None, '', kind='map'), mem, None) == []
+    assert 'post_month_status' not in mem
+    assert mem['post_month_status_last']['manifest_done'] is True
+    assert not any(r['decision'] == 'post_month_status_complete'
+                   for r in mem['_records'])
+
+
+def test_manifest_satisfied_resident_with_hp_dirty_skips_the_triangle():
+    mem = _persistent_memory('どうし', 'ゼウス')
+    mem['general_statuses']['statuses']['ゼウス'].update(location='carry', castle=None)
+    mem['garrison'] = {'アルマムーン': ['どうし']}
+    post.arm(mem)
+    state = mem['post_month_status']
+    post._apply_manifest(mem, state, ['どうし', 'ゼウス'],
+                         complete=True, evidence='wrapped')
+    state.update(stage='roster', names=[], dirty=['ゼウス'],
+                 top_confirmed=True, list_moves=1)
+    frame = parse(roster(names=('どうし', 'ゼウス'), selected=1))
+    with patch.object(post, '_marker', side_effect=AssertionError('marker must not be read')):
+        assert post.step(frame, mem, None) == []
+        assert post.step(frame, mem, None) == [pad('a')]
+    assert post.step(parse(status('ゼウス', egg='エラベルエッグ4')), mem, None) == [pad('b')]
+    assert state['statuses']['ゼウス']['location'] == 'castle'
+    assert 'ゼウス' not in state['dirty']
+
+
+def test_waiting_carry_row_can_cross_the_month_boundary():
+    row = {'location': 'field', 'carry_waiting': True,
+           'location_observed': True, 'broken': False,
+           'hp': 50, 'max_hp': 50}
+    assert receipts._carry_eligible(row, ()) is True
+    assert receipts._carry_eligible(row, ('location',)) is False
+
+
+def _wait_recall_state(mem, name='ヴィーナス'):
+    post.arm(mem)
+    state = mem['post_month_status']
+    state.update(stage='wait_recall', started_tick=100,
+                 job={'kind': 'recall', 'name': name}, tasks=[])
+    return state
+
+
+def test_interrupted_recall_task_is_requeued_in_the_same_month():
+    # 実測 g1153 2026-11-08 17:00/17:05: 目的地ピッカー中に防衛・攻撃イベントが
+    # 割り込み、帰還Aを送らないまま recall state が消えた。タスクを完了扱いに
+    # すると翌月まで再試行されず、野営の将軍が残る。
+    from docich.hanjuku.state.regions import flow as _flow
+    mem = memory(month='2-12')
+    state = _wait_recall_state(mem)
+    _flow(mem).pop('recall', None)
+    assert post.step(Screen([], None, '', kind='map'), mem, None) == []
+    assert state['tasks'] == [{'kind': 'recall', 'name': 'ヴィーナス'}]
+    assert state['recall_task_retries'] == {'ヴィーナス': 1}
+    assert state['stage'] == 'process'
+    assert any(r['decision'] == 'post_month_recall_requeued'
+               for r in mem['_records'])
+
+
+def test_dispatched_recall_task_is_not_requeued():
+    # 帰還Aの送信記録がある場合は再送しない（同じ帰還の二重指示を避ける）。
+    from docich.hanjuku.state.regions import flow as _flow
+    mem = memory(month='2-12')
+    state = _wait_recall_state(mem)
+    _flow(mem)['recall_verification'] = {
+        'general': 'ヴィーナス', 'input_sent': True,
+        'status': 'arrival_unconfirmed', 'requested_tick': 120}
+    assert post.step(Screen([], None, '', kind='map'), mem, None) == []
+    assert state['tasks'] == []
+    assert not any(r['decision'] == 'post_month_recall_requeued'
+                   for r in mem['_records'])
+
+
+def test_stale_dispatch_receipt_does_not_suppress_the_retry():
+    # 前月の同名将軍の送信記録を今月の帰還と取り違えない。
+    from docich.hanjuku.state.regions import flow as _flow
+    mem = memory(month='2-12')
+    state = _wait_recall_state(mem)
+    _flow(mem)['recall_verification'] = {
+        'general': 'ヴィーナス', 'input_sent': True,
+        'status': 'arrival_unconfirmed', 'requested_tick': 50}
+    assert post.step(Screen([], None, '', kind='map'), mem, None) == []
+    assert state['tasks'] == [{'kind': 'recall', 'name': 'ヴィーナス'}]
+
+
+def test_recall_task_retry_is_bounded():
+    from docich.hanjuku.state.regions import flow as _flow
+    mem = memory(month='2-12')
+    state = _wait_recall_state(mem)
+    state['recall_task_retries'] = {'ヴィーナス': post.RECALL_TASK_RETRIES}
+    _flow(mem).pop('recall', None)
+    assert post.step(Screen([], None, '', kind='map'), mem, None) == []
+    assert state['tasks'] == []
+    assert state['stage'] == 'process'

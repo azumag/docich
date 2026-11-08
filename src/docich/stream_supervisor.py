@@ -9,8 +9,10 @@ explicit cutover (stage E).
 
 Safety properties (each covered by process-level tests):
 
-* ``run`` does nothing (exit 0) unless ``DOCICH_STREAM_OWNER=docich``; the
-  default keeps the legacy runner as the owner. It then waits for the canonical
+* ``run`` does nothing (exit 75, "not the owner") unless
+  ``DOCICH_STREAM_OWNER=docich``; the default keeps the legacy runner as the
+  owner. While ``tmp/state/docich_stream.paused`` exists it idles without
+  starting an encoder or taking a lock. It then waits for the canonical
   PulseAudio (never starting it) before validating the host.
 * ``run``/``record`` take the fixed host-wide lease and then
   ``state_dir/direct_stream.lock`` before any child starts; a legacy runner
@@ -37,6 +39,7 @@ from .stream_config import load_stream_config, public_stream_config
 from .stream_encoder_command import build_direct_stream_ffmpeg_command
 from .stream_host_checks import RuntimeCheckError, prepare_caption_runtime, validate_runtime
 from .stream_prereqs import PrerequisiteError, ensure_pulse_ready, wait_seconds
+from .stream_pause import wait_while_paused
 from .stream_runner import AlreadyRunningError, run_supervised, stop_runner
 from .stream_state_files import read_stream_status
 from .stream_supervision_policy import load_audio_watchdog_policy, load_reconnect_policy
@@ -46,6 +49,10 @@ PACKAGE_ROOT = Path(__file__).resolve().parents[2]
 TWICA_WRAPPER_RELATIVE = "bin/docich-twica-ffmpeg"
 TWICA_KEYS = ("DOCICH_TWICA_REAL_FFMPEG", "SOREN_DIRECT_STREAM_FFMPEG_BIN")
 OWNERS = ("soren", "docich")
+# Exit status of ``run`` when the legacy runner owns the encoder. The unit lists
+# it in SuccessExitStatus/RestartPreventExitStatus so Restart=always (needed for
+# the operator stop/start cycle) does not respawn a process with nothing to do.
+NOT_OWNER_EXIT = 75
 
 
 def _positive_duration(raw: str) -> int:
@@ -187,7 +194,9 @@ def main(
         if owner != "docich":
             print("stream_supervisor: DOCICH_STREAM_OWNER is not 'docich'; not starting "
                   "(the legacy runner owns the encoder)", file=sys.stderr)
-            return 0
+            return NOT_OWNER_EXIT
+        # Operator intent wins: idle (holding no lock) while the marker exists.
+        wait_while_paused(root, announce=lambda text: print(text, file=sys.stderr))
     pulse = prepare_pulse or _default_prepare_pulse
     check = validate or (lambda cfg, mode: validate_runtime(cfg, mode=mode))
     extra = {} if canonical_opener is None else {"canonical_opener": canonical_opener}

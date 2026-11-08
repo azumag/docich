@@ -18,7 +18,7 @@ OPS={'upload','deploy','bootstrap','status','exec','configure_jev','disable_jev'
      'diagnostics','github_auth_diagnostics','rebaseline','reconcile'}
 TARGETS={'preview','production'}
 DIAGNOSTICS_FILES=('ops/vm_actions/collect_diagnostics.py','ops/vm_actions/recover_soren_game.py','ops/vm_actions/runtime_registry.py','src/docich/runtime_backend.py',
-                   'src/docich/pulse_volume.py','src/docich/corner_rotation.py',
+                   'src/docich/pulse_volume.py','src/docich/corner_rotation.py','src/docich/stream_identity.py',
                    'src/docich/game_switch.py','src/docich/hanjuku_manual_cancel.py',
                    'src/docich/hanjuku_manual_evidence.py',
                    'src/docich/naming.py','src/docich/tmux.py','src/docich/procs.py',
@@ -966,6 +966,17 @@ def deploy_git(cfg,repo,sha):
             # conditions of the reviewed manual rebaseline_git recovery. An
             # out-of-band commit that never reached main (the 2026-10-23
             # docich#2681 incident) is not an ancestor and still fails closed.
+            # #3709: auto-rebaseline is forward-only. A branch switch or reset
+            # racing this deploy can transiently leave the production checkout
+            # on an *older* main commit that is still an ancestor of the
+            # requested sha; adopting it would rewind the recorded baseline
+            # (2026-11-07 docich#3709 incident: a mid-deploy checkout to an
+            # older main was recorded as state['sha'] and the deploy ended
+            # rollback_incomplete). Require head to descend from the recorded
+            # baseline, i.e. old < head <= sha, before adopting anything.
+            forward=subprocess.run(['git','-C',str(root),'-c','core.hooksPath=/dev/null','merge-base','--is-ancestor',old,head],
+                                   stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+            if forward.returncode!=0: raise ValueError('tracked VM drift detected')
             _verify_ops_brief(cfg,repo,head)
             ancestor=subprocess.run(['git','-C',str(root),'-c','core.hooksPath=/dev/null','merge-base','--is-ancestor',head,sha],
                                     stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
@@ -1289,8 +1300,16 @@ def _bundle_verify(root: Path, bundle: Path) -> tuple[bool, list[str]]:
          'bundle', 'verify', str(bundle)],
         stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
         stderr=subprocess.DEVNULL, text=True, timeout=120)
-    prerequisites = re.findall(
-        r'The bundle requires this ref:\s*([0-9a-f]{40})', proc.stdout or '')
+    # git words one boundary commit as "requires this ref:" and several as
+    # "requires these N refs:" (any range over a merge commit), each sha on its
+    # own following line. Matching only the singular form read a multi-commit
+    # thin bundle as having no prerequisites, so staging was never seeded and
+    # the fetch failed (2026-11-07 deploy outage, issue #3700).
+    prerequisites = []
+    for block in re.findall(
+            r'The bundle requires (?:this ref|these [0-9]+ refs):\s*((?:[0-9a-f]{40}[^\n]*\n?)+)',
+            proc.stdout or ''):
+        prerequisites.extend(re.findall(r'[0-9a-f]{40}', block))
     return proc.returncode == 0, prerequisites
 
 

@@ -7,6 +7,12 @@ from test_hanjuku_chart_bot import month_canvas, _short_recruit_memory
 
 def planned(gold):
     mem = _short_recruit_memory()
+    # Monthly totals were checked before this batch was planned. Paid rounds
+    # invalidate the named roster, not the country's current-month counts.
+    for key, count in (('country_general_count', len(mem['recruit_roster']['names'])),
+                       ('country_soldier_count', 70)):
+        mem[key] = {'scope': [1, '1-7'], 'identity': None,
+                    'tick': mem['tick'], 'count': count}
     shop = policy._plan(mem, {'year': 1, 'month': 7, 'gold': gold})
     shop['egg'] = 'not_needed'  # egg recovery is its own gate and is settled here
     return mem, shop

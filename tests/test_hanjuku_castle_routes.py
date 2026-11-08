@@ -79,17 +79,27 @@ def add_transfer(mem, source, target, general='ミュスカデ'):
 def test_transfer_is_forwarded_only_after_the_actual_roster_receipt():
     mem = state()
     step = add_transfer(mem, 'アルマムーン', 'コラダイン')
+    # Owner 2026-11-08: while the transfer is still marching the list cannot
+    # show the second general, so no departure is planned from the one-general
+    # castle. The list is opened only once the busy window has passed.
+    assert not [o for o in replan.interim_candidates(mem).values()
+                if o['source'] == 'コラダイン']
+    mem['tick'] += routes.SORTIE_BUSY_TICKS
     candidates = list(replan.interim_candidates(mem).values())
     assert candidates[0]['source'] == 'コラダイン'
     assert candidates[0]['target'] == 'イーピヨル'
     assert candidates[0]['source_probe'] is True
+    assert candidates[0].get('roster_probe') is True   # read-only arrival check
     before = copy.deepcopy(_world(mem)['garrison'])
     routes.observed_roster(mem, 'コラダイン', ['エシャロット'])
     assert mem['sorties'][step]['status'] == 'en_route'
     assert not routes.probe_due(mem, 'コラダイン')
     assert _world(mem)['garrison'] == before
-    mem['tick'] += routes.PROBE_INTERVAL
-    assert routes.probe_due(mem, 'コラダイン')
+    # The march limit passes; the settled transfer is confirmed only when its
+    # named actor is physically listed in the castle.
+    mem['tick'] += 2000
+    orders._relaunch_overdue_march(mem)
+    assert mem['sorties'][step]['status'] == 'overdue'
     # The existing general-list reader publishes the list, then this hook
     # releases only a transfer whose named actor is physically listed there.
     _world(mem)['garrison']['コラダイン'] = ['エシャロット', 'ミュスカデ', 'ピオーネ', 'ポワソン', 'キャンディー']

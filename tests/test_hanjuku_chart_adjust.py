@@ -1194,13 +1194,15 @@ def test_worker_prompts_with_garrisons_and_drops_orders_whose_general_is_elsewhe
         return json.dumps(body, ensure_ascii=False), 'codex'
     assert worker.consider(None, Game(), tmp_path, generate=generate, background=False)
     assert '"garrison"' in prompts[0] and 'カストーラ' in prompts[0] and '"en_route"' in prompts[0]
-    saved = adjust.load(tmp_path)
-    assert [o['step'] for o in saved['orders']] == ['F1']
+    # Owner 2026-11-08: the hero is never the actor of an adopted plan, so the
+    # prompt says so and no answer that names him is saved.
+    assert '主人公（どうし）は出撃させない' in prompts[0]
+    assert adjust.load(tmp_path) is None
     events = [json.loads(line) for line in
               (tmp_path / f'{adjust.HISTORY_LOG}.jsonl').read_text(encoding='utf-8').splitlines()]
     [dropped] = [e for e in events if e['event'] == 'adjusted_orders_dropped']
     assert {d['step']: d['why'] for d in dropped['dropped']} == {
-        'F2': 'general_elsewhere', 'F3': 'general_marching',
+        'F1': 'hero_not_dispatchable', 'F2': 'general_elsewhere', 'F3': 'general_marching',
         'F4': 'general_unconfirmed_at_source', 'F5': 'source_lost'}
 
 
@@ -1451,3 +1453,17 @@ def test_g514_live_plan_and_recent_target_reservation_still_suppress_retake():
     mem['sorties']['recent'] = {'general': 'ヴィーナス', 'target': 'ナキューメラ',
                                'status': 'en_route', 'tick': mem['tick'] - 1}
     assert not any(o['target'] == 'ナキューメラ' for o in policy.interim_candidates(mem).values())
+
+
+def test_roster_probe_is_read_only_and_requires_a_source_probe():
+    # Owner 2026-11-08: a one-general castle may only be inspected, never
+    # dispatched. The read-only marker is valid only on a source probe.
+    doc = adjusted_doc('0123456789abcdef')
+    doc['orders'] = [{'step': 'J1', 'general': 'しょうぐん', 'source': 'ゴーメン',
+                      'target': 'スペンソニア', 'cards': [], 'after': None,
+                      'source_probe': True, 'roster_probe': True}]
+    validated = adjust.validate(doc)
+    assert validated['orders'][0]['roster_probe'] is True
+    doc['orders'][0].pop('source_probe')
+    with pytest.raises(ValueError):
+        adjust.validate(doc)

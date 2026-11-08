@@ -72,6 +72,8 @@ from .runtime_backend import (
     _set_worker_paused,
     _worker_pause_marker_path,
 )
+from . import stream_pause
+from .stream_identity import runner_kind
 
 # --- allowlist / validation --------------------------------------------------
 
@@ -2972,6 +2974,67 @@ def _voice_endpoint_action(soren_root: Path, action: str, url: str = "") -> dict
     return {"ok": True, "action": action, "url": url, "endpoints": report["endpoints"]}
 
 
+_OWNER_ASSIGNMENT = re.compile(r"^\s*(?:export\s+)?DOCICH_STREAM_OWNER=(.*?)\s*$")
+
+
+def _configured_stream_owner(soren_root: Path) -> str:
+    """Owner from this process's environment, else the runtime .env (last assignment wins).
+
+    Only the exact value ``docich`` selects docich; anything else (unset, empty,
+    ``soren``, malformed) means the legacy runner, which is also what
+    ``start_all.sh`` does for the unset case.
+    """
+    raw = os.environ.get("DOCICH_STREAM_OWNER")
+    if raw is None:
+        try:
+            lines = _dotenv_path(soren_root).read_text(encoding="utf-8", errors="ignore").splitlines()
+        except OSError:
+            lines = []
+        for line in lines:
+            match = _OWNER_ASSIGNMENT.match(line)
+            if match:
+                raw = match.group(1)
+                # Shell quoting: only a matching pair is removed, and nothing is trimmed
+                # (`VAR= docich` assigns an empty value in a shell).
+                if len(raw) >= 2 and raw[0] == raw[-1] and raw[0] in "'\"":
+                    raw = raw[1:-1]
+    return "docich" if raw == "docich" else "soren"
+
+
+def _live_runner_owner(soren_root: Path, pid: Any) -> str | None:
+    """Evidence beats configuration: which kind of runner is actually alive?"""
+    if not isinstance(pid, int) or pid <= 0 or not _is_pid_alive(pid):
+        return None
+    try:
+        raw = Path(f"/proc/{pid}/cmdline").read_bytes()
+        cwd = os.readlink(f"/proc/{pid}/cwd")
+    except OSError:
+        return None
+    parts = [p.decode("utf-8", "ignore") for p in raw.split(b"\x00") if p]
+    kind = runner_kind(parts, soren_root, cwd=cwd)
+    return {"legacy": "soren", "docich": "docich"}.get(kind or "")
+
+
+def _stream_owner(soren_root: Path) -> str:
+    """``soren`` or ``docich``: the live runner's kind if one is running, else the configuration."""
+    data = _load_json_file(_stream_status_file(soren_root))
+    live = _live_runner_owner(soren_root, data.get("pid") if isinstance(data, dict) else None)
+    return live or _configured_stream_owner(soren_root)
+
+
+def _stream_is_paused(soren_root: Path, owner: str) -> bool:
+    if owner == "docich":
+        return stream_pause.is_paused(soren_root)
+    return _is_worker_paused(soren_root, STREAM_WORKER)
+
+
+def _set_stream_paused(soren_root: Path, owner: str, paused: bool) -> None:
+    if owner == "docich":
+        stream_pause.set_paused(soren_root, paused, source="webui")
+    else:
+        _set_worker_paused(soren_root, STREAM_WORKER, paused)
+
+
 def _stream_status_file(soren_root: Path) -> Path:
     # lib/direct_stream.py load_config 既定の SOREN_DIRECT_STREAM_STATE_DIR
     return soren_root / "tmp/state/direct_stream/status.json"
@@ -2985,10 +3048,11 @@ def _get_stream_status(soren_root: Path) -> dict[str, Any]:
       - "paused": 停止マーカーあり (オペレータ意図によるオフ、supervisor respawn 対象外)
       - "off":    マーカーなしでプロセスがいない (異常終了・supervisor 停止など)
     """
-    paused = _is_worker_paused(soren_root, STREAM_WORKER)
     data = _load_json_file(_stream_status_file(soren_root))
     if not isinstance(data, dict):
         data = {}
+    owner = _stream_owner(soren_root)
+    paused = _stream_is_paused(soren_root, owner)
     runner_pid = data.get("pid")
     ffmpeg_pid = data.get("ffmpeg_pid")
     runner_alive = isinstance(runner_pid, int) and _is_pid_alive(runner_pid)
@@ -3007,6 +3071,7 @@ def _get_stream_status(soren_root: Path) -> dict[str, Any]:
     out: dict[str, Any] = {
         "ok": True,
         "state": state,
+        "owner": owner,
         "paused": paused,
         "running": running,
         "backend": str(data.get("backend", "")) or None,
@@ -3038,7 +3103,7 @@ def _get_stream_status(soren_root: Path) -> dict[str, Any]:
     return out
 
 
-def _pid_matches_stream_process(pid: int) -> bool:
+def _pid_matches_stream_process(pid: int, soren_root: Path | None = None) -> bool:
     """Linux /proc で cmdline を確認し、誤って無関係プロセスを殺さないガード。
 
     /proc が読めない環境 (macOS 等) は確認不能のため True (許可) を返す。
@@ -3055,6 +3120,8 @@ def _pid_matches_stream_process(pid: int) -> bool:
         return False
     joined = " ".join(parts)
     if "direct_stream" in joined:
+        return True
+    if soren_root is not None and runner_kind(parts, soren_root) == "docich":
         return True
     argv0 = Path(parts[0]).name
     return argv0 == "ffmpeg"
@@ -3077,7 +3144,7 @@ def _stream_runner_pids(soren_root: Path) -> list[int]:
     for c in candidates:
         if isinstance(c, int) and c > 0 and c not in seen:
             seen.add(c)
-            if _pid_matches_stream_process(c):
+            if _pid_matches_stream_process(c, soren_root):
                 pids.append(c)
     return pids
 
@@ -3110,6 +3177,33 @@ def _run_direct_stream_stop_script(soren_root: Path) -> dict[str, Any]:
     return {"ok": proc.returncode == 0, "rc": proc.returncode, "detail": detail[-300:]}
 
 
+def _run_docich_stream_stop(soren_root: Path) -> dict[str, Any]:
+    """docich-owned encoder: ``python3 -m docich.stream_supervisor stop``.
+
+    Same graceful chain (SIGTERM -> runner's q -> SIGINT -> SIGKILL fallback)
+    as the legacy stop. The command only signals a ``docich.stream_supervisor
+    ... run`` process, never a legacy runner.
+    """
+    source_root = str(Path(__file__).resolve().parents[1])
+    env = dict(os.environ)
+    env["PYTHONPATH"] = source_root + (os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
+    try:
+        proc = subprocess.run(
+            [sys.executable, "-m", "docich.stream_supervisor", "--root", str(soren_root), "stop"],
+            cwd=str(soren_root),
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=STREAM_STOP_SCRIPT_TIMEOUT_SEC,
+        )
+    except subprocess.TimeoutExpired:
+        return {"ok": False, "detail": f"timeout after {STREAM_STOP_SCRIPT_TIMEOUT_SEC}s"}
+    except OSError as exc:
+        return {"ok": False, "detail": str(exc)[:200]}
+    detail = ((proc.stderr or "") + "\n" + (proc.stdout or "")).strip()
+    return {"ok": proc.returncode == 0, "rc": proc.returncode, "detail": detail[-300:]}
+
+
 def _stop_stream_runner(soren_root: Path) -> dict[str, Any]:
     """pause マーカー作成後、配信を明示終了する。
 
@@ -3119,9 +3213,14 @@ def _stop_stream_runner(soren_root: Path) -> dict[str, Any]:
     SIGKILL へのエスカレートは runner の q/SIGINT 猶予 (最大約30秒) を守るため
     STREAM_STOP_GRACE_BEFORE_KILL_SEC 経過後のみ。
     """
-    _set_worker_paused(soren_root, STREAM_WORKER, True)
-    script_result = _run_direct_stream_stop_script(soren_root)
-    method = "direct_stream_stop" if script_result.get("ok") else "signal_fallback"
+    owner = _stream_owner(soren_root)
+    _set_stream_paused(soren_root, owner, True)
+    if owner == "docich":
+        script_result = _run_docich_stream_stop(soren_root)
+        method = "docich_stream_stop" if script_result.get("ok") else "signal_fallback"
+    else:
+        script_result = _run_direct_stream_stop_script(soren_root)
+        method = "direct_stream_stop" if script_result.get("ok") else "signal_fallback"
     escalated = False
 
     def alive_pids() -> list[int]:
@@ -4582,11 +4681,15 @@ class _Handler(BaseHTTPRequestHandler):
             )
             return 200
         # start: pause マーカーを外し、supervisor による respawn を待つ
-        _set_worker_paused(self.soren_root, STREAM_WORKER, False)
+        owner = _stream_owner(self.soren_root)
+        _set_stream_paused(self.soren_root, owner, False)
         after = _wait_for_stream_start(self.soren_root)
         hint = None
         if after.get("state") != "live":
-            hint = "supervisor (start_all.sh / soren-runtime) が稼働していれば数秒〜数十秒で自動起動します。稼働していない場合は手動で起動してください。"
+            if owner == "docich":
+                hint = "docich-stream.service が稼働していれば数秒〜数十秒で自動起動します。稼働していない場合は手動で起動してください。"
+            else:
+                hint = "supervisor (start_all.sh / soren-runtime) が稼働していれば数秒〜数十秒で自動起動します。稼働していない場合は手動で起動してください。"
         self._send_json(
             200,
             {"ok": after.get("state") == "live", "action": action, "state": after.get("state"), "hint": hint},
@@ -4942,10 +5045,10 @@ class _Handler(BaseHTTPRequestHandler):
             self._send_error_json(428, "confirmation_required", "corner操作には confirm:true が必要です")
             return 428
         action = str(data.get("action", "")).strip().lower()
-        if action not in ("start", "resume-latest", "stop", "recover", "schedule", "cancel-schedule"):
+        if action not in ("start", "new-game", "resume-latest", "stop", "recover", "schedule", "cancel-schedule"):
             self._send_error_json(
                 400, "invalid_action",
-                "action must be start, resume-latest, stop, recover, schedule or cancel-schedule",
+                "action must be start, new-game, resume-latest, stop, recover, schedule or cancel-schedule",
             )
             return 400
         if action == "recover":
@@ -4999,6 +5102,12 @@ class _Handler(BaseHTTPRequestHandler):
             return 400
         if action in ("schedule", "cancel-schedule"):
             return self._handle_scheduled_corner_action(row, action, data)
+        if action == "new-game":
+            if row.game not in _CORNER_QUEUED_MANUAL_GAMES:
+                self._send_error_json(400, "new_game_unsupported",
+                                      "第1話からの新規開始は半熟英雄だけに対応しています")
+                return 400
+            return self._handle_hanjuku_corner_start(row, new_game=True)
         if action == "resume-latest":
             if row.game not in _CORNER_QUEUED_MANUAL_GAMES:
                 self._send_error_json(400, "resume_latest_unsupported",
@@ -5060,7 +5169,7 @@ class _Handler(BaseHTTPRequestHandler):
         })
         return 200
 
-    def _handle_hanjuku_corner_start(self, row, *, resume_latest: bool = False) -> int:
+    def _handle_hanjuku_corner_start(self, row, *, resume_latest: bool = False, new_game: bool = False) -> int:
         """Queue the fixed Hanjuku start through the common coordinator (#2024).
 
         docich.hanjuku_corner / start-hanjuku と同じ起動要求
@@ -5076,8 +5185,12 @@ class _Handler(BaseHTTPRequestHandler):
 
         try:
             manager = CornerRotationManager(self.g)
-            outcome = ((queue_failed_start(self.g) or manager.queue_manual(row.game, resume_latest=True))
-                       if resume_latest else manager.queue_manual(row.game))
+            if new_game:
+                outcome = manager.queue_manual(row.game, new_game=True)
+            elif resume_latest:
+                outcome = queue_failed_start(self.g) or manager.queue_manual(row.game, resume_latest=True)
+            else:
+                outcome = manager.queue_manual(row.game)
             status = outcome.get("status") if isinstance(outcome, dict) else None
         except RotationError as exc:
             reasons = {
@@ -5128,7 +5241,7 @@ class _Handler(BaseHTTPRequestHandler):
             return 500
         self._send_json(200, {
             "ok": True,
-            "action": "resume-latest" if resume_latest else "start",
+            "action": "new-game" if new_game else "resume-latest" if resume_latest else "start",
             "status": status,
             "corner": {"id": row.id, "adapter": row.adapter,
                        "game": row.game, "target": "rotation"},

@@ -14,6 +14,7 @@ import unittest
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 import docich.stream_runner as runner  # noqa: E402
+import docich.stream_supervisor as supervisor  # noqa: E402
 
 UNIT = ROOT / "deploy/docich-stream/docich-stream.service"
 WRAPPER = ROOT / "bin/docich-stream-run"
@@ -43,7 +44,12 @@ class UnitTest(unittest.TestCase):
     def test_kill_semantics_protect_against_orphans_and_hard_kills(self):
         self.assertEqual(self.service["KillMode"], "mixed")
         self.assertEqual(self.service["KillSignal"], "SIGTERM")
-        self.assertEqual(self.service["Restart"], "on-failure", "exit 0 (not the owner) must stay stopped")
+        # Restart=always makes the sudo-free operator stop/start cycle work; the
+        # "not the owner" exit status must be neither a failure nor restarted.
+        self.assertEqual(self.service["Restart"], "always")
+        self.assertEqual(self.service["SuccessExitStatus"], str(supervisor.NOT_OWNER_EXIT))
+        self.assertEqual(self.service["RestartPreventExitStatus"], str(supervisor.NOT_OWNER_EXIT))
+        self.assertEqual(supervisor.NOT_OWNER_EXIT, 75)
         self.assertEqual(self.service["Type"], "simple")
 
     def test_it_runs_the_wrapper_as_the_runtime_user(self):
@@ -112,7 +118,7 @@ class WrapperTest(unittest.TestCase):
 
     def test_the_default_action_is_run_and_without_the_owner_flag_it_does_nothing(self):
         proc = self.run_wrapper("X=1\n")
-        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(proc.returncode, supervisor.NOT_OWNER_EXIT, proc.stderr)
         self.assertIn("legacy runner owns the encoder", proc.stderr)
         self.assertEqual(list((self.root / "repo").glob("**/*")) if (self.root / "repo").exists() else [], [])
 

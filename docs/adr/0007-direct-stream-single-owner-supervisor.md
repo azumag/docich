@@ -1,6 +1,6 @@
 # ADR 0007: 直接配信エンコーダーの単一所有者を docich にする
 
-- 状態: **方針確定（2026-11-07）。段階 A〜D は実装・マージ済み（本番未適用）。D2（運用ツールの所有者認識）は未着手。段階 E（本番切替）は、D2 完了後に実行の直前に時刻を示して明示承認を得てから行う**。この文書のマージは本番切替の承認ではない。
+- 状態: **方針確定（2026-11-07）。段階 A〜D、D2、unit の配置ツールは実装・マージ済み（本番未適用）。段階 E（本番切替）は、実行の直前に時刻を示して明示承認を得てから行う**。この文書のマージは本番切替の承認ではない。
 - 関連: ADR 0006（リポジトリ境界）、docich #3621 / #3625 / #3633 / #3635 / #3638 / #3640 / #3642
 - 方針: 二重 encoder を絶対に起こさない。稼働中の配信を止める手順は、利用者の明示承認と作業窓なしに実行しない。
 
@@ -58,7 +58,7 @@ systemd: soren-runtime.service   ← worker "direct_stream" を登録しない�
 | B（完了） | `docich.stream_supervisor` の読み取り専用 `config`/`command`/`status`（旧 CLI と 50 パターン出力一致） | なし | CI + ローカル差分 |
 | C（完了、#3649〜#3653） | `run`/`stop`/`record`/`validate` の実装。固定ロック＋旧ロックを常に必須、`stop` は自分の runner のみ、TwiCa wrapper 差し替え。旧 `_run_ffmpeg` との差分テスト 5 シナリオ一致（ローカル） | なし（どの service からも未起動） | CI + 実プロセステスト + Linux コンテナ |
 | D（完了、docich #3654、soviet_now #816） | `docich-stream.service`（配置のみ、`.env` は shell 方式のラッパー経由）、`DOCICH_STREAM_OWNER`（既定 `soren`）、Pulse 前提確認。`start_all.sh` と `direct_stream.py run` が `owner=docich` で何も起動しない | なし（owner 既定 `soren`＝現状維持） | CI + 静的検証 + Linux コンテナ |
-| D2 | **運用ツールの所有者認識を直す**（§8）。`direct_stream.py` の存在や `lib/direct_stream.py stop` を前提とするものを、docich の entry も所有者として認識し、停止・再起動を `DOCICH_STREAM_OWNER` で振り分ける | なし | 各ツールの契約テスト |
+| D2（完了、docich #3668/#3670/#3671/#3669、soviet_now #817） | 運用ツールの所有者認識（§8）。`stream_identity`（厳密な cmdline 判別）、docich 用一時停止マーカー、unit を `Restart=always`（sudo なしの停止/開始）、WebUI、`ops/vm_actions`、正午監査 | なし（旧 owner のままなら挙動不変を契約テストで固定） | CI + 実プロセステスト + Linux コンテナ |
 | E | **本番切替**（本書 §5）。 | **あり（配信中断の可能性）** | D2 完了 + 利用者の明示承認 + 作業窓 |
 | F | 旧 Soren 実装の撤去 | なし | E 後の実配信確認 |
 | G | OBS 関連の撤去（`obs_*.sh`、backend `obs` 分岐、`obs.service` drop-in、`obs_capture_watchdog`） | なし（OBS が使われていないことを E で確認済みの場合） | 撤去前に参照箇所の網羅検索 |
@@ -85,6 +85,16 @@ A〜D は本番を触らずに進められる。E は §5 の承認なしに実�
 4. 固定ロックのディレクトリを整備（`ubuntu` 所有・0700、なければ作成）。`.env` に `DOCICH_STREAM_OWNER=docich` を設定（ラッパーと旧 sh は起動のたびに読み直す）。
 5. `systemctl start docich-stream.service`。unit の起動順序は §7 の要求どおり。
 6. 確認（実測できたものだけ報告する）: FFmpeg が 1 プロセスであること、固定ロックと旧ロックの保持者が `docich-stream.service` 配下であること、リレーの受信、実配信フレーム／四面 ready／crop、音声（Pulse 取り込み）、TwiCa、`status.json` の更新。
+
+**マーカーの対応（D2 で確定）**: 旧 supervisor のマーカーは `tmp/state/direct_stream.paused`、docich は `tmp/state/docich_stream.paused`（別ファイル）。手順 1 の `direct_stream.paused` は旧 worker の再起動を止めるためのもので、切替後も supervisor が一度再起動されるまで残してよい。切替後の WebUI の停止/開始と正午監査は docich のマーカーだけを操作する。`docich-stream.service` は `Restart=always`（非所有者の終了コード 75 のみ再起動しない）なので、マーカーを作って runner を停止し、後でマーカーを外すだけで、sudo なしに停止/開始できる。
+
+**unit の配置と事前条件の確認（実装済み、`bin/docich-stream-install`）**
+- `--status`（読取専用）が段階 E の事前条件を一括で読む: unit の配置状態とハッシュ一致、`is-enabled`/`is-active`、wrapper の実行可否、固定ロックのディレクトリ、`.env` の backend／所有者フラグ／固定ロックのフラグ（**列挙値のみ。他の値は出さない**）、Pulse の応答と `soren_null` の有無、両マーカー。
+- `--install --confirm-unit-placement` は unit を `root:root 0644` で置いて `daemon-reload` するだけ。`enable`/`start`/`restart`/`stop`/`disable` は一切しない（テストで固定）。既に別内容の unit があれば上書きしない。
+- `--provision-lock-dir --confirm-lock-dir` は固定ロックの 0700 ディレクトリだけを作る（空のディレクトリは固定ロックを有効化しない）。
+- どれも段階 E の「切替」ではない。配置と切替は別の承認として扱う。
+
+**段階 E の事前条件（`--status` で読み取り確認する。VM 未確認）**: `env.backend=ffmpeg`、`pulse.server_answers=true` かつ `soren_null_sink=true`、`lock_dir=ready`、`unit.matches_source=true`（配置済み）、`unit.enabled/active` が意図どおり（配置直後は `disabled`/`inactive`）、旧 runner の状態と PID の記録。
 
 **ロールバック**
 - `systemctl stop docich-stream.service`（graceful。ここでも短い中断）→ `.env` を `DOCICH_STREAM_OWNER=soren` に戻す → `rm tmp/state/direct_stream.paused`。supervisor が backoff 後に旧 worker を再起動する。旧 state_dir ロックは docich 側も取っていたため二重起動は起こらない。
@@ -115,19 +125,19 @@ A〜D は本番を触らずに進められる。E は §5 の承認なしに実�
 3. 起動前に Pulse 到達性と `soren_null` シンクの存在を確認する `ExecStartPre` を docich 側に持つ（Soren のスクリプトに依存しない）。シンクが無い場合の作成は既存スクリプトと同じ動作にそろえ、Pulse が落ちている場合は **起動せず失敗する**（無音配信を始めない）。
 4. 段階 E の事前条件に、`pactl info`、`soren_null` の存在、`pulseaudio.service` が user session 配下であることの読み取り確認を加える。
 
-## 8. 切替前に直す運用ツール（段階 D2、リポジトリの棚卸し結果）
+## 8. 切替前に直す運用ツール（段階 D2、リポジトリの棚卸し結果と対応状況）
 
 稼働中の encoder を「`direct_stream.py` のプロセス」として識別する、または `lib/direct_stream.py stop` / `./direct_stream.sh run` で操作するコードがある。docich が所有者になると、これらは**誤判定（所有者なしに見える）・停止の拒否・何もしない再起動**を起こす。`status.json` は同じ形式・同じ場所なので、読み取り専用の利用者（`show_status.sh` の `direct_stream.sh status`、診断の status 読取）は変更不要。
 
-| 利用者 | 依存している前提 | 必要な対応 |
+| 利用者 | 依存している前提 | 対応（すべてマージ済み） |
 | --- | --- | --- |
-| soviet_now `workers/stream_noon_audit.sh` | 逸脱時に `lib/direct_stream.py stop` と `./direct_stream.sh run`（`STREAM_NOON_AUDIT_STOP_CMD`/`RUN_CMD`）。`start_all.sh` が常に登録する | `owner=docich` では停止を `python3 -m docich.stream_supervisor stop`、再起動を unit 経由に差し替える。旧コマンドを無改造で呼ぶと停止は拒否され、起動は何もせず終了する |
-| docich `ops/vm_actions/twica_common.py` | `_owned_process(stream.get('pid'), 'direct_stream.py')` と `direct_stream.sh stop` | docich entry も所有者と認識し、stop を owner で振り分ける |
-| docich `ops/vm_actions/probe_twica_runtime.py` | runner の引数に `direct_stream.py` を期待 | 同上 |
-| docich `ops/vm_actions/collect_diagnostics.py`、`runtime_registry.py` | role `shared_stream` の期待プロセスが `lib/direct_stream.py` | 診断が「期待プロセス不在」と誤報しないよう、owner に応じた期待値にする |
-| docich `src/docich/webui.py`、`soren_recovery_process.py`、`runtime_backend.py`、`webui_resources/index.html` | 停止手順 `python3 lib/direct_stream.py stop`、runner 検出に `direct_stream.py` | 同上。WebUI の停止も owner で振り分ける |
-| docich `ops/vm_actions/restart_direct_stream_overlay.sh`、`reload_shared_overlay.py`、`probe_twica_card_window.py` | encoder の識別・参照 | 参照内容を確認して同様に更新 |
-| soviet_now `cutover_direct_stream.sh`、`direct_stream_recovery_test.sh`、`benchmark_direct_stream.sh`、`configure_linux_stream_profile.sh` | 旧 owner 専用の運用スクリプト | 切替後は使用しない旨を明記。本番では実行しない |
+| soviet_now `workers/stream_noon_audit.sh` | 逸脱時に `lib/direct_stream.py stop` と `./direct_stream.sh run`（`STREAM_NOON_AUDIT_STOP_CMD`/`RUN_CMD`）。`start_all.sh` が常に登録する | `owner=docich` では停止を `python3 -m docich.stream_supervisor stop`、再起動を unit 経由に差し替える。旧コマンドを無改造で呼ぶと停止は拒否され、起動は何もせず終了する。**済（soviet_now #817）**: 所有者を張り直しの直前に `.env` から読み直し、docich 時は `stream_supervisor stop`・docich マーカー・自前起動なし |
+| docich `ops/vm_actions/twica_common.py` | `_owned_process(stream.get('pid'), 'direct_stream.py')` と `direct_stream.sh stop` | docich entry も所有者と認識し、stop を owner で振り分ける。**済（#3671）**: `systemctl show`（読取専用）で `ActiveState`/`MainPID`/`Restart=always` を確認してから再起動 |
+| docich `ops/vm_actions/probe_twica_runtime.py` | runner の引数に `direct_stream.py` を期待 | **済（#3671）**: 自己完結の厳密 matcher（`stream_identity` と全ケース同値をテストで固定） |
+| docich `ops/vm_actions/collect_diagnostics.py`、`runtime_registry.py` | role `shared_stream` の期待プロセスが `lib/direct_stream.py` | 診断が「期待プロセス不在」と誤報しないよう、owner に応じた期待値にする。**済（#3671）**: `shared_stream` に docich の形を追加。ゲートウェイの検証対象一覧（`DIAGNOSTICS_FILES`）にも追加。登録表の `direct_stream` は必須扱いでないため不在でも警報しない |
+| docich `src/docich/webui.py`、`soren_recovery_process.py`、`runtime_backend.py`、`webui_resources/index.html` | 停止手順 `python3 lib/direct_stream.py stop`、runner 検出に `direct_stream.py` | **済（#3670）**: 生きている runner の種類を設定より優先して owner を判定。owner 別マーカー、docich 時は `stream_supervisor stop`、runner 識別に docich を追加（未認識のまま「停止済み」と誤報する不具合を防止）|
+| docich `ops/vm_actions/restart_direct_stream_overlay.sh`、`reload_shared_overlay.py`、`probe_twica_card_window.py` | encoder の識別・参照 | **済（#3671）**: `restart_direct_stream_overlay.sh` は pid ファイルが古い/無いとき `status.json` の pid を使い cmdline 厳密一致。`reload_shared_overlay.py`・`probe_twica_card_window.py` は status.json の読取のみで変更不要 |
+| soviet_now `cutover_direct_stream.sh`、`direct_stream_recovery_test.sh`、`benchmark_direct_stream.sh`、`configure_linux_stream_profile.sh` | 旧 owner 専用の運用スクリプト | 切替後は使用しない（本番では実行しない）。未変更 |
 
 各対応は、旧 owner のままなら挙動が変わらないことを契約テストで固定する（既定 `soren` で完全に従来どおり）。
 

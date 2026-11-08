@@ -57,7 +57,7 @@ max_spread_bps = "10"
 # that chain: it uses only direct_agents below, and an empty/invalid value
 # fails closed as needs_ai_or_news_configuration.
 agents = ""
-direct_agents = "cloudflare-api:cf/qwen/qwen3-30b-a3b-fp8"
+direct_agents = "cloudflare-api:cf/meta/llama-3.1-8b-instruct-fp8-fast"
 
 [news]
 # Operator-approved HTTPS RSS sources. Empty means no fabricated news and no

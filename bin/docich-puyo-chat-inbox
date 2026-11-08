@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# docich puyo chat-inbox producer launcher (#3372).
+#
+# Runs only the reviewed docich.puyo_chat_inbox from this checkout. The
+# Soren chat fetch loop calls it from the Soren root, so neither the
+# caller's cwd (-P: never prepend it to sys.path) nor its PYTHONPATH may
+# shadow the package — the same import isolation as
+# bin/docich-comment-classify.
+# Usage: docich-puyo-chat-inbox --user-id ID --display-name NAME --text MSG
+#        [--msg-id ID] [--state-dir DIR] [--config TOML]
+set -euo pipefail
+
+ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." >/dev/null 2>&1 && pwd)"
+export PYTHONPATH="$ROOT/src"
+exec python3 -P -m docich.puyo_chat_inbox "$@"

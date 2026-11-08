@@ -114,7 +114,8 @@ class SectionBytesAccountingTests(unittest.TestCase):
         ns["_collect_opencode_retention"].return_value = {
             "attempt": {"present": False}, "timer": {"active": True}
         }
-        ns["_severity"].return_value = "ok"
+        # main() reads status/triggers from _severity_report (#3658), not _severity.
+        ns["_severity_report"].return_value = {"status": "ok", "triggers": []}
         ns["_diagnostics_budget"] = lambda payload: json.dumps(
             payload, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
         exec(compile(ast.fix_missing_locations(

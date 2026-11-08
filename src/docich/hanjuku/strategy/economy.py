@@ -510,15 +510,36 @@ def _previous_recruit_month(month):
     return f'{year}-{number - 1}'
 
 
+def _monthly_general_count_unverified(mem):
+    """A monthly status visit must not fall back to historical headcounts."""
+    from ..os_layer.roster import country_count
+    attempts = mem.get('recruit_month_scan_attempts') or {}
+    return (attempts.get('scope') == [mem.get('chapter'), mem.get('month')]
+            and type(attempts.get('count')) is int and attempts['count'] > 0
+            and country_count(mem, 'generals') is None)
+
+
+def _reset_unstarted_recruit_plan(mem):
+    """A fresh national total supersedes an unpaid provisional batch."""
+    shop = mem.get('shop')
+    if (not isinstance(shop, dict) or shop.get('key') != mem.get('month')
+            or mem.get('month_sub') or _batch_continuing(shop)
+            or shop.get('recruit') in ('opened', 'done', 'unverified')):
+        return
+    for key in ('recruit_batch', 'recruit_budget_version', 'recruit_measured_budget'):
+        shop.pop(key, None)
+    shop.update(recruit_priority=False, recruit_reserve=0)
+
+
 def _garrison_lower_bound(mem):
     """Measured garrison names as a lower-bound headcount, or None.
 
-    The national status is read after the monthly purchases, and the first
-    monthly-menu frame still carries the previous month's roster scope. The
-    garrison is a per-castle observation, so its distinct names can prove a
-    shortage without claiming a complete roster (owner 2026-11-06: keep
-    recruiting while cash and wage headroom allow).
+    Field/legacy planning can use distinct per-castle names without claiming
+    a full roster. Once this month's national-status inspection begins, its
+    missing count must hold recruitment instead (owner 2026-11-07).
     """
+    if _monthly_general_count_unverified(mem):
+        return None
     garrison = _world(mem).get('garrison')
     if not isinstance(garrison, dict):
         return None
@@ -533,12 +554,14 @@ def _recruit_headcount(mem):
     """Prefer this month's exact total; use only last month's measured total
     to bootstrap a shortage while the current national status is not yet read.
 
-    The national-status visit runs *after* monthly purchases. Without this
-    one-month carry, an otherwise affordable recruitment cannot start because
-    the prior count loses its scope on the first monthly-menu frame.
-    Carried counts are provisional (complete=False), never a full new roster.
+    The monthly entry flow now inspects the national status before purchases.
+    After that inspection begins, a missing current count blocks historical
+    fallback. Older/field planning can still carry one provisional month
+    (complete=False), never a full new roster or a replacement for the check.
     """
     from ..os_layer.roster import MAX_GENERALS, fresh, run_identity
+    if _monthly_general_count_unverified(mem):
+        return None, False, []
     country = mem.get('country_general_count') or {}
     identity = run_identity(mem.get('_run_identity'))
     chapter, month = mem.get('chapter'), mem.get('month')
@@ -574,6 +597,9 @@ def _recruit_spare_after_necessities(mem, shop, gold):
     evidence = {'generals': count if complete else None,
                 'owned_castles': len(owned) if owned and owned <= known else None,
                 'gold': gold, 'spare': None}
+    if _monthly_general_count_unverified(mem):
+        evidence['country_count_unverified'] = True
+        return None, evidence
     continuing = _batch_continuing(shop)
     # A partial roster is only a lower bound, but an already approved
     # comfortable-cash recruitment must still reach the real cash check.

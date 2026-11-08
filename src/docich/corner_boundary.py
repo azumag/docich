@@ -118,6 +118,17 @@ def _audio_queue_quiet(state_dir: Path) -> bool:
     return is_quiet(comment_queue_dir(Path(state_dir).parent.parent))
 
 
+def prediction_in_flight(state_dir: Path) -> bool:
+    """True while a Soren prediction holds the corner boundary (public view).
+
+    The advance notice uses this gate only: while the 48-game prediction is
+    waiting to settle, the exact corner start cannot be promised. The audio
+    queue is deliberately not part of this probe (it delays a corner that is
+    already starting, it does not move the scheduled time).
+    """
+    return _prediction_in_flight(Path(state_dir))
+
+
 def boundary_ready(state_dir: Path, requested_at: float, *, now=None) -> bool:
     """Confirmed prediction and audio boundary before a corner may start.
 

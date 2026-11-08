@@ -120,7 +120,7 @@ class ReadOnlyPurityTest(unittest.TestCase):
                 attrs.add(node.attr)
         self.assertEqual(imported, {
             "__future__", "argparse", "json", "os", "pathlib", "sys", "typing",
-            ".stream_config", ".stream_encoder_command", ".stream_host_checks", ".stream_prereqs",
+            ".stream_config", ".stream_encoder_command", ".stream_host_checks", ".stream_pause", ".stream_prereqs",
             ".stream_runner", ".stream_state_files", ".stream_supervision_policy", ".twica_operator",
         })
         self.assertFalse(attrs & {"Popen", "system", "kill", "send_signal", "flock", "mkdir",

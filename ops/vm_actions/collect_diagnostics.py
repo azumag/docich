@@ -154,6 +154,7 @@ PROD_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(PROD_ROOT / "src"))
 
 from docich.runtime_backend import _pid_is_active, _process_is_zombie  # noqa: E402
+from docich.stream_identity import is_docich_runner_args as _is_docich_stream_runner  # noqa: E402
 from docich.semantic_decision.diagnostics import describe as _describe_semantic_decision  # noqa: E402
 
 import importlib.util as _importlib_util  # noqa: E402
@@ -5729,6 +5730,10 @@ ROTATION_FAILED_CORNER_REASONS = frozenset({
     "base-game-unrestored",
     "restore-recovery-exhausted",
     "terminal-owner-absent",
+    # Written by the fixed owner-only stale-owner release operation (#3682):
+    # the release evidence had left every durable record and the operator
+    # re-created it after re-proving the shared slot.
+    "stale-owner-admin-released",
 })
 ROTATION_AUTO_RESTORE_STATUSES = frozenset({
     "succeeded", "queued", "failed", "noop", "interrupted", "completed", "unknown", "none",
@@ -6951,6 +6956,28 @@ def _project_corner_state(data):
             "hanjuku-chart-v498-month-locate-ownership",
             "hanjuku-chart-v499-semantic-hold-key",
             "hanjuku-chart-v500-boss-roster-probe",
+            "hanjuku-chart-v505-post-month-blocked-release",
+            "hanjuku-chart-v506-roster-end-stall",
+            "hanjuku-chart-v507-trade-result-release",
+            "hanjuku-chart-v508-unknown-location-recheck",
+            "hanjuku-chart-v509-month-status-counts-and-recruit-priority",
+            "hanjuku-chart-v510-broken-boss-camp-recall",
+            "hanjuku-chart-v511-month-status-single-read-and-counts",
+            "hanjuku-chart-v512-month-status-page1-marker",
+            "hanjuku-chart-v513-chapter-end-save-party",
+            "hanjuku-chart-v514-plan-failed-step-rearm",
+            "hanjuku-chart-v515-plan-identity-compare",
+            "hanjuku-chart-v516-singleton-roster-probe",
+            "hanjuku-chart-v517-summon-attack-data",
+            "hanjuku-chart-v518-input-tempo",
+            "hanjuku-chart-v519-carry-manifest",
+            "hanjuku-chart-v520-recall-task-retry",
+            "hanjuku-chart-v521-powerless-return",
+            "hanjuku-chart-v522-hero-not-planned",
+            "hanjuku-chart-v501-idle-reanchor",
+            "hanjuku-chart-v502-idle-and-roster-joins",
+            "hanjuku-chart-v503-month-start-counts",
+            "hanjuku-chart-v504-namaste-dialogue",
             "hanjuku-chart-v129-battle-card-progress",
             "hanjuku-chart-v130-summer-cursor-evidence",
             "hanjuku-chart-v131-defense-month-economy",
@@ -15040,6 +15067,14 @@ def _shared_runtime_process(soren, proc_root, role, pid):
                 process_kind = 'native'
             else:
                 raise ValueError('unexpected encoder')
+        elif role == 'shared_stream' and _is_docich_stream_runner([os.fsdecode(arg) for arg in argv], soren):
+            # ADR 0007: docich-stream.service owns the encoder. Exact argv shape only
+            # (`python3 -m docich.stream_supervisor [--root <soren>] run`), same user,
+            # same working directory as the legacy runner.
+            if not python:
+                raise ValueError('unexpected interpreter')
+            if cwd != str(soren):
+                raise ValueError('unexpected working directory')
         else:
             expected = 'lib/direct_stream.py' if role == 'shared_stream' else 'workers/audio_worker.sh'
             if (role == 'shared_stream' and not re.fullmatch(r'python3(?:\.[0-9]+)?', executable)

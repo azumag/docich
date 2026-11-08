@@ -23,6 +23,7 @@ from __future__ import annotations
 from collections import Counter
 
 from ... import hanjuku_chart as chart
+from ... import hanjuku_reference as reference
 from ..decision_log import _record
 from .economy import KNOWN_PRICES, _merchant_spendable, _soldier_spendable
 from .kit import _is_boss_order
@@ -190,14 +191,22 @@ def note_card_purchase(mem, card, qty):
 
 
 def boss_card_reserved(mem, order, card):
-    """A non-boss sortie may not add a copy the pending boss kit still needs.
+    """A non-boss sortie may not add a copy the battle cannot spend.
 
     Strong cards are carried to strong generals (owner 2026-10-03); only the
     measured surplus beyond the base boss kit is spare for that (g825: the
     strong-card kit took 1-B1's クースカン in ordinary sorties).
+
+    A boss-only card (``reference.BOSS_ONLY_CARDS``) is never a supplement: the
+    battle refuses it before a measured boss entry (owner 2026-11-06), so
+    carrying it only risks losing it with the general (owner 2026-11-08;
+    g1153 13:21 ココット carried a surplus バルムンク as the measured
+    egg-dropper to ドンダム, never spent it against ゼウス and lost it).
     """
     if _is_boss_order(order, mem):
         return False
+    if card in reference.BOSS_ONLY_CARDS:
+        return True
     kit = boss_kit(mem)
     if kit is None or card not in kit[1]:
         return False

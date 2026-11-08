@@ -529,7 +529,7 @@ def _month_roster(state, visited=None):
     status_frame = _main_on('ステータス')
     assert house.step(parse(status_frame), mem, status_frame) == [p.pad('a')]
     if visited is None:
-        page1 = _country_page1()
+        page1 = _country_page1(soldiers=70)
     else:
         from test_hanjuku_house import Canvas
         c = Canvas()
@@ -699,8 +699,8 @@ def test_hotload_freezes_legacy_field_exhaustion_before_two_new_month_scans():
     assert state['policy']['recruit_field_scan_attempts']['count']==2
 
 
-@pytest.mark.parametrize('egg,opens', [('unverified', True), ('pending', False), ('check', False)])
-def test_an_unverified_egg_recovery_does_not_block_the_month_roster_scan(egg, opens):
+@pytest.mark.parametrize('egg', ['unverified', 'pending', 'check'])
+def test_monthly_counts_precede_unopened_egg_recovery(egg):
     # g684 1-12 / 2-1: recovery paid (309->259) but 'unverified'; the month
     # roster scan never ran and recruitment stayed deferred_roster.
     from test_hanjuku_chart_bot import month_canvas
@@ -710,7 +710,8 @@ def test_an_unverified_egg_recovery_does_not_block_the_month_roster_scan(egg, op
     mem['egg_uses']={'ゼウス':3}
     mem['shop']={'key':'1-7','egg':egg,'recruit':'deferred_roster'}
     actions=house.step(parse(month_canvas(250,on='メインメニュー',month=7)),mem,None)
-    assert (actions==[p.pad('a')])==opens
+    assert actions == [p.pad('a')]
+    assert mem['house']['level_only'] is True
 
 
 @pytest.mark.parametrize('income', [40, 5])
@@ -921,6 +922,35 @@ def test_observed_member_records_a_join_and_invalidate_keeps_the_count():
     assert mem[r.LAST_COMPLETE_KEY]['names'] == NAMES[:3]
     assert r.completed_survey(mem) is None  # the old survey no longer applies
     assert mem[r.LAST_COMPLETE_KEY]['names'] == NAMES[:3]
+
+
+@pytest.mark.parametrize('held_payroll', [False, True])
+def test_new_roster_names_update_kept_count_without_current_status_survey(held_payroll):
+    # g1147: the previous complete roster had four names, while the current
+    # page visibly contained six. A month change left no reusable survey.
+    mem = memory(NAMES[:4])
+    mem['_run_identity'] = dict(IDENTITY)
+    r._remember_complete(mem, dict(mem['recruit_roster'], identity=dict(IDENTITY)))
+    mem.update(month='1-8', tick=110)
+    mem.pop('recruit_roster')
+    if held_payroll:
+        # Even an existing bill containing the new names must not suppress
+        # the independent count update on a later roster observation.
+        mem['payroll_membership_hold'] = {
+            'schema': 1, 'identity': dict(IDENTITY), 'scope': [1, '1-8'],
+            'wages': {name: r.fixed_wage(name) for name in NAMES[:6]},
+            'saturated': False}
+    r.page(mem, NAMES[:6])
+    r.page(mem, NAMES[:6])
+    assert mem[r.PENDING_JOINS_KEY] == NAMES[4:6]
+    assert mem[r.LAST_COMPLETE_KEY]['names'] == NAMES[:4]
+    assert len(mem[r.LAST_COMPLETE_KEY]['names']) + len(mem[r.PENDING_JOINS_KEY]) == 6
+    # Seeing a page updates membership additions, not full-list/status proof.
+    assert r.fresh(mem)['names'] == NAMES[:6]
+    assert r.fresh(mem)['complete'] is False
+    assert r.completed_survey(mem) is None
+    assert 'country_general_count' not in mem
+    assert ('payroll_membership_hold' in mem) is held_payroll
 
 
 def test_confirmed_departure_keeps_a_number_and_refreshes_the_kept_list():

@@ -1445,7 +1445,10 @@ def _tactics(mem, step):
             # into an already-done tactic (two carried イッテツーン).
             derived.append({'enemy': None, 'card': card, 'open': True, 'step': step,
                             'tactic_id': f'd:{step}:{card}:{ordinal}',
-                            'boss_only': _is_boss_order(order, mem),
+                            # ボス専用札はボス注文でなくても開かない。通常戦の
+                            # 携行分を「未使用の計画札」として予定に数えない。
+                            'boss_only': (_is_boss_order(order, mem)
+                                          or card in reference.BOSS_ONLY_CARDS),
                             'note': '調整チャート既定: 検証済み戦術のない携行切り札を開幕使用'})
     return (*rare, *base, *derived)
 
@@ -1605,6 +1608,8 @@ def _source_location_recheck_due(mem, source):
 def _source_spare_missing(order, mem, *, allow_probe=False):
     if (mem.get('orders') or {}).get(order['step']) == 'launched_unconfirmed':
         return False  # reconcile an issued sortie; do not cancel its carried-kit receipt
+    if order.get('roster_probe') is True:
+        return False  # read-only: opening the list dispatches nobody
     source = _source(order, mem)
     present = (_world(mem).get('garrison') or {}).get(source)
     # A genuine arrival or newly joined general may have changed the list
