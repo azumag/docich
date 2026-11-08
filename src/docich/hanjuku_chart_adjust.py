@@ -177,6 +177,10 @@ def startable(order, request) -> str | None:
     source_probe with the non-person placeholder しょうぐん; its actual
     actor is chosen only from the live general list. Refuse absent, marching,
     elsewhere, and unconfirmed named actors before adopting a plan.
+
+    The hero is never a candidate: the owner keeps him at アルマムーン, and
+    deploy already answers every hero-led order with a companion, so a plan
+    naming him would stand as a sortie nobody carries out (owner 2026-11-08).
     """
     if not isinstance(request, dict):
         return None
@@ -184,6 +188,8 @@ def startable(order, request) -> str | None:
     lost = set(request.get('lost') or ())
     if source in lost:
         return 'source_lost'
+    if general == chart.HERO:
+        return 'hero_not_dispatchable'
     marching = {item.get('general') for item in request.get('en_route') or () if isinstance(item, dict)}
     if general in marching:
         return 'general_marching'
