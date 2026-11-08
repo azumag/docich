@@ -67,10 +67,22 @@
   release_sortie_cleanup / overwhelming_egg_conservation / hotload を対象に、
   まとまりごとに 218 / 267 / 125 / 107 件成功（対象は重複）。
 
+## 本番反映（2026-11-08 13:09〜13:22 JST）
+
+- main `40ab1f27`（PR #3728）。VM operations の deploy は `success`、反映後の
+  production checkout HEAD は `40ab1f27`、`version.py` は v514。
+- 稼働中 g1153 は 13:09:28 の判断から v514 を記録（ホットロード）。
+- 13:12:58 `plan_step_rearmed` `A:fa94e7a5:Mdd0c77`（中継移動 コラダイン→イーピヨル）。
+  同時に `order_start`。再構築後の計画は到達不能な波状2件が消え、中継1件だけになった。
+- 13:14 中継を出撃（`world.launched['イーピヨル'] = ヘパイストス`）。到着後、
+  イーピヨルは ココット＋ヘパイストス の2人になった。
+- 13:19〜13:21 イーピヨルから ドンダム へ攻撃
+  （`attack = {castle: ドンダム, general: ココット, side: attack}`）、13:22:08 戦闘結果。
+  `castle_ownership['ドンダム'] = own` になり、第3話の9城すべてが自軍になった。
+- 以後はボスへ進行（`order_retry`「城を取らないと後続手順とボスへ進めない」）。
+
 ## 残件
 
 - 計画の同一判定は `previous_steps`（実行 step）と再構築側（local step）を比べて
   いて一致せず、early return が常に外れている。今回は再発射をその前に置いて
-  回避したが、比較自体の修正は別途行う。
-- 稼働中 g1153 のホットロード後、次の出撃で中継が発射されドンダムへ進むかは
-  deploy 後に実測する。
+  回避したが、比較自体の修正は #3729 で行う。
