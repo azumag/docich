@@ -19,10 +19,13 @@ from docich.hanjuku.strategy.orders import _site_king_down
 FIXTURES = Path(__file__).resolve().parent / 'fixtures' / 'hanjuku'
 # 2026-10-30 07:44:16 JST: all four kings still hold their sites.
 ALL_SKULLS = read_png(FIXTURES / 'g1075-ch4-y-view-season-skulls.png')
+# 2026-11-09 02:45 JST live g1163: 北西/南西 have no marker (cleared), 南東 keeps
+# the skull, and 北東 is covered by a general's portrait (unreadable).
+LIVE_CLEARED = read_png(FIXTURES / 'g1163-ch4-y-view-cleared-sites.png')
 SITES = chart.boss_sites(4)
 ANCHOR = chart.CASTLES[3][chart.boss_castle(3)]
-GRASS = (24, 141, 24)
-PENNANT = (255, 181, 0)
+GRASS = (24, 141, 24)          # plain island terrain
+PENNANT = (255, 181, 0)        # a marching army's own marker
 
 
 def icon_origin(site):
@@ -30,19 +33,15 @@ def icon_origin(site):
     return (101 + (cell[0] - ANCHOR[0]) // 8, 63 + (cell[1] - ANCHOR[1]) // 8)
 
 
-def painted(closed):
-    """The fixture with the named sites drawn as cleared pennants."""
+def painted(closed, colour=GRASS):
+    """The fixture with the named sites' markers replaced by ``colour``."""
     pixels = bytearray(ALL_SKULLS.rgb)
     for site in closed:
         x, y = icon_origin(site)
         for px in range(x - 2, x + 12):
             for py in range(y - 2, y + 13):
                 i = (py * ALL_SKULLS.width + px) * 3
-                pixels[i:i + 3] = bytes(GRASS)
-        for px in range(x + 1, x + 9):
-            for py in range(y + 2, y + 7):
-                i = (py * ALL_SKULLS.width + px) * 3
-                pixels[i:i + 3] = bytes(PENNANT)
+                pixels[i:i + 3] = bytes(colour)
     return Frame(ALL_SKULLS.width, ALL_SKULLS.height, bytes(pixels))
 
 
@@ -58,12 +57,32 @@ def test_the_2026_10_30_fixture_shows_all_four_kings():
     assert season_sites(ALL_SKULLS, 4) == {site: 'open' for site in SITES}
 
 
-def test_a_pennant_replaces_the_skull_as_the_cleared_marker():
+def test_the_2026_11_09_live_view_reads_the_owner_reported_state():
+    assert season_sites(LIVE_CLEARED, 4) == {
+        '四季王城(北西)': 'closed', '四季王城(南西)': 'closed',
+        '四季王城(南東)': 'open'}          # 北東 is covered by a portrait
+
+
+def test_no_marker_left_is_the_cleared_state():
     closed = '四季王城(北西)'
     read = season_sites(painted({closed}), 4)
     assert read[closed] == 'closed'
     assert {site: state for site, state in read.items() if site != closed} == {
         site: 'open' for site in SITES if site != closed}
+
+
+def test_an_army_standing_on_a_site_is_unreadable_not_cleared():
+    """g1163 2026-11-09: three orange pennants were armies, not closures."""
+    occupied = '四季王城(北西)'
+    read = season_sites(painted({occupied}, colour=PENNANT), 4)
+    assert occupied not in read
+
+
+def test_a_generals_portrait_on_a_site_is_unreadable():
+    covered = '四季王城(北東)'
+    skin = (255, 206, 164)
+    read = season_sites(painted({covered}, colour=skin), 4)
+    assert covered not in read
 
 
 def test_a_site_under_the_cursor_is_not_read():
