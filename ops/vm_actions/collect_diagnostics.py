@@ -6985,6 +6985,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v531-endgame-boss-probes",
             "hanjuku-chart-v532-hero-guard-preflight",
             "hanjuku-chart-v534-probe-preflight-exemption",
+            "hanjuku-chart-v535-adjust-part-salvage",
             "hanjuku-chart-v501-idle-reanchor",
             "hanjuku-chart-v502-idle-and-roster-joins",
             "hanjuku-chart-v503-month-start-counts",

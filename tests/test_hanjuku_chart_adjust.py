@@ -238,13 +238,27 @@ def test_chapter_change_drops_adjusted_chart():
                  'after': ['whenever']}]},
     {'orders': [{'step': 'J1', 'general': 'x', 'source': 'ゴーメン', 'target': 'けっかい'}] * 2},
     {'request_digest': 'nothex'},
-    {'purchases': {'month': [1, 13]}},
-    {'purchases': {'month': [1, 8], 'cards': [['ハッキング', 1]]}},
-    {'purchases': {'month': [1, 8], 'soldiers': -1}},
 ])
 def test_invalid_adjusted_charts_are_rejected(patch):
     with pytest.raises(ValueError):
         adjust.validate(adjusted_doc('a' * 16, **patch))
+
+
+@pytest.mark.parametrize('patch', [
+    {'purchases': {'month': [1, 13]}},
+    {'purchases': {'month': [1, 8], 'cards': [['ハッキング', 1]]}},
+    {'purchases': {'month': [1, 8], 'soldiers': -1}},
+])
+def test_a_malformed_purchase_part_keeps_the_orders(patch):
+    """The orders are the plan; a broken optional part must not discard them.
+
+    History: adjust_worker generate_failed invalid_output 'invalid purchases'
+    five times, each one costing another LLM cycle.
+    """
+    validated = adjust.validate(adjusted_doc('a' * 16, **patch))
+    assert validated['orders']
+    assert validated['purchases'] is None
+    assert validated['dropped_parts'] == ['purchases']
 
 
 def test_save_load_and_request_files_are_atomic_runtime_records(tmp_path):
@@ -1467,3 +1481,18 @@ def test_roster_probe_is_read_only_and_requires_a_source_probe():
     doc['orders'][0].pop('source_probe')
     with pytest.raises(ValueError):
         adjust.validate(doc)
+
+
+def test_save_records_a_dropped_optional_part_and_keeps_the_plan(tmp_path):
+    doc = adjusted_doc('c' * 16, purchases={'month': [1, 13]})
+    saved = adjust.save(tmp_path, doc)
+    assert saved['purchases'] is None
+    assert saved['orders']
+    assert saved['dropped_parts'] == ['purchases']
+    stored = json.loads((tmp_path / adjust.ADJUSTED_FILE).read_text(encoding='utf-8'))
+    assert stored['orders'] == json.loads(json.dumps(saved['orders']))
+    history = [json.loads(line) for line in
+               (tmp_path / f'{adjust.HISTORY_LOG}.jsonl').read_text(encoding='utf-8').splitlines()]
+    assert history[0]['event'] == 'adjusted_parts_dropped'
+    assert history[0]['parts'] == ['purchases']
+    assert history[-1]['event'] == 'adjusted_chart_saved'
