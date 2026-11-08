@@ -612,10 +612,9 @@ def _season_site_held(order, mem):
     it later that day: a single lost castle no longer holds the sites (全城
     条件は厳しい), two or more still waits for retakes.
     """
-    won = {v.get('site') for v in (mem.get('boss_victories') or {}).values() if isinstance(v, dict)}
     lost = mem.get('lost') or ()
     return (chart.home_castle(mem.get('chapter') or 0) in lost
-            or len(lost) > SEASON_SITE_MISSING_LIMIT or order.get('target') in won)
+            or len(lost) > SEASON_SITE_MISSING_LIMIT or _site_king_down(mem, order.get('target')))
 
 
 def _ready(order, mem) -> bool:
@@ -797,6 +796,9 @@ def _retire_unentered_sortie(mem, step, sortie):
 
 def _site_king_down(mem, target):
     """A 四季王 site whose king's defeat is already measured."""
+    if (mem.get('chapter') == 4 and mem.get('boss_defeated') == 4
+            and target in chart.boss_sites(4)):
+        return True
     return any(isinstance(victory, dict) and victory.get('site') == target
                for victory in (mem.get('boss_victories') or {}).values())
 
