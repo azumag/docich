@@ -80,14 +80,20 @@
   （`attack = {castle: ドンダム, general: ココット, side: attack}`）。
   13:22:08 の結果は敗北（`sortie_history`: `ally_hp 0` / `enemy_hp 85`）。
 - 13:29 に次の中継（トレビス コラダイン→イーピヨル）を出撃し、次の波を準備した。
-  全体マップの所有読みは途中で一時 `own` を示したが、13:29 の再読で `enemy` に戻った
-  （`castle_ownership` tick 45005）。ドンダムは依然 enemy で、奪還は継続中。
+  全体マップの所有読みは途中で一時 `own` を示したが、13:29 の再読では `enemy` に戻った
+  （`castle_ownership` tick 45005）。
+- 13:42 に ヘパイストス が ドンダム を制圧（`sortie_history`: `outcome won`、
+  `enemy_hp 0`、tick 45711）。`captured` に ドンダム が入り、`lost` は空、
+  第3話の9城すべてが自軍になった。以後はボス攻撃の波へ進んでいる。
 
-旧停滞（10:20〜12:41 に出撃ゼロで月送り）は解消し、以後は中継→奪還の波が
-回っている。ドンダムの制圧そのものはまだで、今後はボスを含むゲーム進行の問題。
+旧停滞（10:20〜12:41 に出撃ゼロで月送り）は解消し、中継→奪還の波で最後の敵城を
+制圧した。
 
-## 残件
+## 関連修正・残件
 
 - 計画の同一判定は `previous_steps`（実行 step）と再構築側（local step）を比べて
-  いて一致せず、early return が常に外れている。今回は再発射をその前に置いて
-  回避したが、比較自体の修正は #3729 で行う。
+  いて一致せず、early return が常に外れていた。比較は #3729 で `local_step` に
+  直し、v515 として反映済み（保持中も stale な launched を解放する）。
+- `_release_stale_steps` の `RELEASE_KEYS` のうち `launched_orders` は world 領域に
+  あるため `mem.get` では消えない。`_release_stale_failures` 側では個別に消して
+  いるが、既存の解放経路の整理は別途。
