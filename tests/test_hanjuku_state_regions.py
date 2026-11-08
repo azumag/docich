@@ -115,9 +115,10 @@ def test_migrated_departure_and_recall_keys_live_in_their_regions():
                         ('_recall_inputs', JOURNAL)):
         assert KEY_OWNERSHIP[key]['region'] == region
         assert KEY_OWNERSHIP[key]['migrated'] is True
-    # World/plan keys are still declarations only: the procedures read them
-    # but the owning layer migrates them in a later stage.
-    assert KEY_OWNERSHIP['sorties']['migrated'] is False
+    # W4: sorties is now physically owned by world; orders remains a declaration.
+    assert KEY_OWNERSHIP['sorties']['region'] == WORLD
+    assert KEY_OWNERSHIP['sorties']['lifetime'] == 'chapter'
+    assert KEY_OWNERSHIP['sorties']['migrated'] is True
     assert KEY_OWNERSHIP['orders']['migrated'] is False
     # W1 (C後続): launched/launched_orders は world 領域へ実移行。
     assert KEY_OWNERSHIP['launched']['region'] == WORLD
