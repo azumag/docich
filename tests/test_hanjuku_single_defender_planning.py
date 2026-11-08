@@ -96,7 +96,7 @@ def chapter3_memory(*, mekapata=('チコリ',), transfer=None):
     if transfer:
         general, status, age = transfer
         step = 'A:test:M1'
-        me_world(m)['sorties'][step] = {'source': 'アルマムーン', 'target': 'メガパタ',
+        _world(mem)['sorties'][step] = {'source': 'アルマムーン', 'target': 'メガパタ',
                                 'general': general, 'status': status,
                                 'tick': mem['tick'] - age, 'purpose': 'move'}
         _world(mem)['launched_orders'][step] = {
@@ -149,7 +149,7 @@ def test_the_verified_sortie_does_not_inherit_the_probe_step():
             != replan._mechanical_step(sortie, set(), mem))
     # A later transfer into the same castle needs its own probe step.
     earlier = replan._mechanical_step(probe, set(), mem)
-    me_world(m)['sorties']['A:test:M2'] = {'source': 'アルマムーン', 'target': 'メガパタ',
+    _world(mem)['sorties']['A:test:M2'] = {'source': 'アルマムーン', 'target': 'メガパタ',
                                    'general': 'ヘラ', 'status': 'overdue',
                                    'tick': mem['tick'], 'purpose': 'move'}
     assert replan._mechanical_step(probe, set(), mem) != earlier
