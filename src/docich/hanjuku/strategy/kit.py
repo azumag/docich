@@ -159,7 +159,16 @@ def _with_strong_card(cards, strong, mem, step):
 
 RARE_SCAN_LIMIT = 32          # the entire 32-card catalogue, once per observed month
 CARRY_SLOTS = 3               # card_select「あとNこ」の携行枠(実測 header は 0..3)
-CARD_SCROLL_LIMIT = 8         # downward presses looking for a card below a full panel
+# One Down moves the cursor one row and, from the fourth row, scrolls the panel
+# one row. Reaching the last row of the catalogue therefore costs up to
+# ``rows - 1`` presses, so the fixed 8 only walked four rows of a full list.
+# g1163 2026-11-08 23:55-23:56: the panel held 15 rows in card-ID order
+# (1,2,3,5,6,7,8,11,...); 8 Downs reached ノリウツール(11), and the planned
+# エンジェリン(22), マグネガキン(27) and ファバード(31) were never shown, so
+# each boss sortie held five readings and then dropped the card (196 scroll
+# decisions, 68 holds and 16 drops of those three cards in 1.5 h). Bound the
+# search by the whole catalogue, like the rare scan, instead of by a guess.
+CARD_SCROLL_LIMIT = len(reference.ALL_CARD_IDS)
 CARD_MISS_LIMIT = 5           # card_select readings before a missing card is left behind
 CARD_UNREADABLE_LIMIT = 6     # unreadable card_select readings before cancelling the sortie
 SORTIE_CONFIRM_LIMIT = 8      # readings before a readable but mismatched kit is approved
