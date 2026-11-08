@@ -350,7 +350,13 @@ def _apply_manifest(mem, state, names, *, complete, evidence):
         # entry if the list omitted him (a non-sortie display is not proof he
         # left).  An incomplete walk only adds positive evidence.
         if complete and NAME in listed:
-            garrison[castle] = list(listed)
+            # Keep known residents the sortie list omitted (non-sortie display
+            # is not evidence they left).  A later full scan still corrects it.
+            keep = [name for name, row in statuses.items()
+                    if name not in listed
+                    and row.get('location') == 'castle'
+                    and row.get('castle') == castle]
+            garrison[castle] = list(dict.fromkeys([*listed, *keep]))
         else:
             members = garrison.setdefault(castle, [])
             for name in listed:
