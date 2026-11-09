@@ -578,7 +578,11 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
         mem.pop('monster_own_choice', None)
     battle_flow.observe_entry_return(screen, mem)
     battle_flow.observe_season_king_panel(screen, mem)
-    if kind != 'egg_choice_menu':
+    # A spinning reel can be unreadable between full glyphs. Such a frame
+    # must not refill its bounded stop allowance or lose proven slot mode.
+    slot_drawing = ((mem.get('egg_choice') or {}).get('mode') == 'slot'
+                    and kind in {'unknown', 'text', 'battle_menu_pending', 'monster_menu_pending'})
+    if kind != 'egg_choice_menu' and not slot_drawing:
         mem.pop('egg_choice', None)
     if kind != 'egg_battle_menu':
         mem.pop('egg_menu_stage',None)
