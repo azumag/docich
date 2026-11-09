@@ -646,7 +646,15 @@ def _selected_actor_guard(screen, mem, order):
         return None
     row = next((line for line in screen.lines if line.y == 31), None)
     name = row.span(16, 80).strip() if row else None
-    if (not row or row.span(80, 128) != 'しょうぐん' or not name
+    # The name itself is the strong evidence. A readable name that equals the
+    # intended actor is accepted even when the しょうぐん menu label is not at
+    # its measured columns: the label drifts with the frame's layout while the
+    # name stays the actor (g1163 2026-11-10 01:0x: 7 sorties an hour were
+    # cancelled after three label misses).
+    named_ok = (bool(row) and bool(name) and UNKNOWN not in name
+                and general_max_hp('しゅじんこう' if name == NAME else name) is not None
+                and name == selected)
+    if (not row or (row.span(80, 128) != 'しょうぐん' and not named_ok) or not name
             or UNKNOWN in name or general_max_hp('しゅじんこう' if name == NAME else name) is None):
         misses = mem.setdefault('sortie_actor_miss', {})
         misses[order['step']] = misses.get(order['step'], 0) + 1

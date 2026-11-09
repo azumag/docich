@@ -1147,3 +1147,20 @@ def test_new_nonhero_selection_does_not_inherit_previous_sortie_actor():
     from docich import hanjuku_chart as chart
     order = next(o for o in chart.orders(1) if o['step'] == '1-C1')
     assert policy._deploy_context(order, mem)['general'] == 'ココット'
+
+
+def test_a_readable_actor_name_is_accepted_without_the_menu_label(monkeypatch=None):
+    """g1163 2026-11-10: 7 sorties an hour were cancelled on label misses.
+
+    The name is the strong evidence; the しょうぐん label's columns drift.
+    """
+    from docich.hanjuku.flows import deploy
+
+    row = type('Row', (), {'y': 31,
+                           'span': lambda self, a, b: ('ゼウス' if (a, b) == (16, 80) else '')})()
+    screen = type('Screen', (), {'lines': [row], 'kind': 'general_list'})()
+    mem = {'_records': [], '_run_identity': None,
+           'sortie_general': {'A:x:M1': 'ゼウス'}}
+    order = {'step': 'A:x:M1', 'general': 'ゼウス', 'source': 'あるまむーん',
+             'source_probe': True}
+    assert deploy._selected_actor_guard(screen, mem, order) is None
