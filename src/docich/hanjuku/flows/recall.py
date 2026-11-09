@@ -27,6 +27,27 @@ FORT_STATUS_PRESS_EVERY = 4    # observations of the status panel between two A 
 MENU_OPEN_WAIT = 3             # bare map observations after A on the tent before pressing again
 MENU_REOPEN_LIMIT = 3          # presses again per recall
 DOME_SCREEN_WAIT = 6           # other-screen observations after A on a dome before B
+BOSS_RETRY_TICKS = 120         # first wait before a camp is sent at the moving boss again
+BOSS_JUMP_LIMIT = 2            # Y jumps to the boss per redirect
+
+
+def boss_redirect_goal(mem):
+    """The boss castle a camped general is re-sent at, or None (owner 2026-11-09).
+
+    Chapter 9's boss moves, so an army sent at the skull's old cell ends up
+    camped on the road. Such a camp is not recalled home: it is ordered at the
+    boss's current Y-view cell instead. Only a fresh skull measurement
+    (``chart.moving_boss_cell``) counts, never a stale cell.
+    """
+    chapter = mem.get('chapter')
+    if chapter != chart.MOVING_BOSS_CHAPTER or not chart.moving_boss_cell(chapter):
+        return None
+    return chart.boss_castle(chapter)
+
+
+def camp_stays(mem) -> bool:
+    """A camp is never recalled home on a moving-boss chapter (owner 2026-11-09)."""
+    return mem.get('chapter') == chart.MOVING_BOSS_CHAPTER
 
 
 def _camp_target(value):
@@ -215,6 +236,9 @@ def _camp_recall_step(screen: Screen, mem, frame, *, observed_camps=None):
     if state is None:
         if screen.kind != 'map' or frame is None:
             return None
+        boss_goal = boss_redirect_goal(mem)
+        if camp_stays(mem) and boss_goal is None:
+            return None     # moving boss unseen: the camp waits where it is, never goes home
         camps = own_camps(frame) if observed_camps is None else observed_camps
         camps = _filter_recall_skip(mem, camps)
         if not camps:
@@ -224,10 +248,16 @@ def _camp_recall_step(screen: Screen, mem, frame, *, observed_camps=None):
                                          + abs(c['target'][1] - cursor[1])) if cursor else 0)
         state = _flow(mem)['recall'] = {'stage': 'to_camp', 'target': list(camp['target']),
                                  'last_seen': list(camp['target']), 'steps': 0,
-                                 **({'camp_kind': camp['kind']} if camp.get('kind') else {})}
+                                 **({'camp_kind': camp['kind']} if camp.get('kind') else {}),
+                                 **({'boss': True, 'goal': boss_goal} if boss_goal else {})}
+        if boss_goal:
+            (mem.get('y_jumps') or {}).pop('RECALL:target', None)
         _record(mem, 'camp_found', observed_metric={'camp': list(camp['target']),
-                                                    **({'kind': camp['kind']} if camp.get('kind') else {})},
-                reason='画面に自軍の野営を見つけたため補給できる自軍城への帰還を指示する')
+                                                    **({'kind': camp['kind']} if camp.get('kind') else {}),
+                                                    **({'boss_redirect': boss_goal} if boss_goal else {})},
+                reason=('画面に自軍の野営を見つけたため、帰還させずボスの現在位置へ再出撃させる'
+                        if boss_goal else
+                        '画面に自軍の野営を見つけたため補給できる自軍城への帰還を指示する'))
     if state.get('stage') == 'await_dispatch':
         return _recall_dispatch_step(screen, mem, state)
     state['steps'] = int(state.get('steps') or 0) + 1
@@ -387,7 +417,8 @@ def _camp_recall_step(screen: Screen, mem, frame, *, observed_camps=None):
                             reason='野営で決定したが野営メニューが開かずマップに戻ったため、野営へ合わせ直して決定し直す')
             return []              # the window is still fading in
         state.pop('menu_map_waits', None)
-        move = menu_to(screen, 'きかん')
+        choice = 'いどう' if state.get('boss') else 'きかん'
+        move = menu_to(screen, choice)
         if move is None:
             misses = state['cursor_misses'] = int(state.get('cursor_misses', 0)) + 1
             if misses == 1:
@@ -403,7 +434,9 @@ def _camp_recall_step(screen: Screen, mem, frame, *, observed_camps=None):
             return []
         state.pop('cursor_misses', None)
         _record(mem, 'camp_recall_cursor', chart_step=None, observed_metric={'current': _current(screen),
-                'choice': 'きかん', 'move': move}, reason='野営の実手カーソルを帰還項目へ合わせる')
+                'choice': choice, 'move': move},
+                reason=('野営の実手カーソルをいどう項目へ合わせる（ボスへ再出撃）' if state.get('boss')
+                        else '野営の実手カーソルを帰還項目へ合わせる'))
         if move != 'here':
             return [move]
         state['stage'] = 'dest'
@@ -417,6 +450,8 @@ def _camp_recall_step(screen: Screen, mem, frame, *, observed_camps=None):
                 _hold_after_picker(mem, state)
             return [pad('b')] if screen.kind == 'world_map' else []
         marker = screen.marker
+        if state.get('boss'):
+            return _boss_redirect_dest_step(screen, mem, frame, state, marker)
         roofs = ([r for r in castle_roofs(frame) if r['kind'] == 'own' and not r['clipped']]
                  if frame is not None else [])
         if (state.get('hero') or state.get('fort')) and marker:
@@ -465,6 +500,43 @@ def _camp_recall_step(screen: Screen, mem, frame, *, observed_camps=None):
             return [pad('right' if dx > 0 else 'left', min(6, abs(dx)))]
         return [pad('down' if dy > 0 else 'up', min(6, abs(dy)))]
     return []
+
+
+def _boss_redirect_dest_step(screen, mem, frame, state, marker):
+    """Aim the destination marker at the moving boss's measured cell and confirm.
+
+    The marker is put on the cell by a Y jump to the boss (the same route a
+    normal boss sortie takes) and confirmed by the boss rule of
+    ``map._target_roof_under_marker`` (a Y jump or the marker on the cell).
+    Never snaps to an own roof: the goal is the boss, not a castle.
+    """
+    from . import map as _map
+    goal = chart.boss_castle(mem.get('chapter') or 0)
+    state['goal'] = goal
+    if not marker or frame is None or not chart.moving_boss_cell(mem.get('chapter')):
+        # The measurement aged out or the picker shows nothing: never confirm blind.
+        state['boss_lost'] = int(state.get('boss_lost') or 0) + 1
+        if state['boss_lost'] < 3:
+            return []
+        return _abort_boss_redirect(mem, state, 'boss_position_lost',
+                                    'ボスの現在位置を確認できないため再出撃を取り消す')
+    pseudo = {'step': 'RECALL', 'target': goal, 'source': None}
+    if _map._target_roof_under_marker(screen, mem, frame, pseudo):
+        return _request_recall(mem, state, goal, [pad('a')], target_cell=list(marker), boss=True)
+    if (mem.get('y_jumps') or {}).get('RECALL:target', 0) < BOSS_JUMP_LIMIT:
+        return _start_y_jump(mem, {'step': 'RECALL'}, goal, 'target')
+    return _abort_boss_redirect(mem, state, 'boss_jump_failed',
+                                'ボスのセルへマーカーを合わせられないため再出撃を取り消す')
+
+
+def _abort_boss_redirect(mem, state, event, reason):
+    _flow(mem).pop('recall', None)
+    mem['uncertain'] = True
+    _arm_recall_skip(mem, state, BOSS_RETRY_TICKS)
+    _record(mem, 'camp_boss_redirect_aborted', resulting_event=event,
+            observed_metric={'camp': state.get('target'), 'goal': state.get('goal')},
+            reason=reason)
+    return [pad('b')]
 
 
 FORT_STAGES = ('fort_menu', 'fort_list', 'fort_status')
@@ -627,7 +699,8 @@ def _recall_dispatch_step(screen, mem, state):
         _flow(mem)['recall_verification'] = {**state, 'status': status}
         _flow(mem).pop('recall', None)
         _arm_recall_skip(mem, state,
-                         FORT_RETRY_TICKS if (state.get('fort') or interrupted) else None)
+                         BOSS_RETRY_TICKS if state.get('boss')
+                         else FORT_RETRY_TICKS if (state.get('fort') or interrupted) else None)
         mem['uncertain'] = True
         _record(mem, 'camp_recall_unconfirmed', chart_step=None, observed_metric={'castle': state.get('goal'),
                 'input_sent': bool(state.get('input_sent')), 'picker_closed': bool(state.get('picker_closed')),

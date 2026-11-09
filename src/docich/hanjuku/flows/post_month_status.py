@@ -71,6 +71,11 @@ def _log(mem, event, **details):
     decision_log._record(mem, event, **details)
 
 
+def _camp_stays(mem):
+    from ... import hanjuku_chart as chart
+    return mem.get('chapter') == chart.MOVING_BOSS_CHAPTER
+
+
 def _boss_camp_holds_siege(info):
     """Whether a boss-adjacent camp still justifies keeping the general there.
 
@@ -90,11 +95,15 @@ def _boss_camp_holds_siege(info):
             and info.get('broken') is not True)
 
 
-def _tasks(statuses, names, boss_camp_months=None):
+def _tasks(statuses, names, boss_camp_months=None, camp_stays=False):
+    """``camp_stays``: a moving-boss chapter never recalls a camp home (owner
+    2026-11-09); the camp is re-sent at the boss by the camp flow instead."""
     months = boss_camp_months or {}
     queue = []
     for name in names:
         info = statuses[name]
+        if info.get('location') == 'camp' and camp_stays:
+            continue
         if info.get('location') == 'camp':
             # #3505: a camp whose roster triangle maps onto the boss castle is a
             # siege in progress, not a straggler. ``marker_castle`` already binds
@@ -261,7 +270,8 @@ def arm(mem):
             mem['boss_camp_exempt'] = counted
         else:
             mem.pop('boss_camp_exempt', None)
-    tasks = _tasks(statuses, list(statuses), mem.get('boss_camp_exempt'))
+    tasks = _tasks(statuses, list(statuses), mem.get('boss_camp_exempt'),
+                   camp_stays=_camp_stays(mem))
     if not scan and not manifest_due and not tasks:
         # Common case: zero input and zero roster navigation this month.
         mem['post_month_status_last'] = {
@@ -859,7 +869,7 @@ def _complete_scan(mem, state):
     else:
         mem.pop('carry_tracking', None)
     state['tasks'] = _tasks(state['statuses'], state['names'],
-                            mem.get('boss_camp_exempt'))
+                            mem.get('boss_camp_exempt'), camp_stays=_camp_stays(mem))
     mem['general_statuses'] = {
         'scope': list(state['scope']), 'identity': state['identity'],
         'statuses': state['statuses'], 'dirty': {}, 'pending_joins': [],
