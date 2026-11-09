@@ -311,6 +311,21 @@ def _wave_pick(mem, target, owned, busy, allow_sole):
     return None
 
 
+GENERAL_LABEL = '一覧の余剰'   # how a MOVE_ANY_GENERAL order reads to a person
+
+
+def _general_label(general):
+    """A human-readable actor for an order note.
+
+    ``しょうぐん`` is the internal sentinel for "pick the spare on the live
+    list" (MOVE_ANY_GENERAL), not a general named しょうぐん and not the hero
+    (the hero is どうし and never sorties). Notes that printed the sentinel
+    read as if a hero-like しょうぐん were attacking (owner report
+    2026-11-09 16:24).
+    """
+    return GENERAL_LABEL if general == MOVE_ANY_GENERAL else general
+
+
 def _current_hp(mem, general):
     """The general's measured current HP, or None when unread."""
     row = ((mem.get('general_statuses') or {}).get('statuses') or {}).get(general)
@@ -439,7 +454,7 @@ def _defense_rebalance(mem, owned, busy, heading):
         out.append({'general': general, 'target': target, 'cards': [],
                     'source': source, 'after': None, 'purpose': 'move',
                     'defense_rebalance': True,
-                    'note': f'暫定: ボス出撃待ちの防衛優先として{general}を{source}から{target}へ移動'})
+                    'note': f'暫定: ボス出撃待ちの防衛優先として{_general_label(general)}を{source}から{target}へ移動'})
     return out
 
 
@@ -507,7 +522,7 @@ def _garrison_rotation(mem, owned, busy, heading, taken=()):
         out.append({'general': general, 'target': target, 'cards': [],
                     'source': source, 'after': None, 'purpose': 'move',
                     'garrison_rotate': True,
-                    'note': f'暫定: 敵城に近い{target}を厚くするため{general}を{source}から移動'})
+                    'note': f'暫定: 敵城に近い{target}を厚くするため{_general_label(general)}を{source}から移動'})
         used.add(source)
         claimed.add(target)
     return out
@@ -754,8 +769,9 @@ def interim_candidates(mem, allow_sole=False) -> dict:
                 planned_busy.add(general)
         purpose = 'retake' if target in lost else 'attack'
         note = ((f"暫定: {source}の将軍一覧を読んでボス出撃の成立を確認する" if roster_probe
-                 else f"暫定: {general}で奪われた{target}を奪還" if purpose == 'retake'
-                 else f"暫定: {general}で{target}を攻撃"))
+                 else f"暫定: {_general_label(general)}で奪われた{target}を奪還"
+                 if purpose == 'retake'
+                 else f"暫定: {_general_label(general)}で{target}を攻撃"))
         # Owner (2026-09-28): 切り札は持たせたほうが良い. The chart's cards for
         # this castle, else the retry opener (two イッテツーン). Cards out of
         # stock are dropped at the card list (card_drop), never waited for.
@@ -805,7 +821,7 @@ def interim_candidates(mem, allow_sole=False) -> dict:
                 'after': None, 'purpose': 'attack',
                 'note': ((f'暫定: {source2}の将軍一覧を読んでボス出撃の成立を確認する' if roster_probe
                           else f'暫定: {source2}の将軍一覧を読んでボスへ送る' if probe
-                          else f'暫定: {general2}でボスへ波状攻撃')),
+                          else f'暫定: {_general_label(general2)}でボスへ波状攻撃')),
                 **({'source_probe': True} if probe else {}),
                 **({'roster_probe': True} if roster_probe else {})})
             used_sources.add(source2)
@@ -887,7 +903,7 @@ def interim_candidates(mem, allow_sole=False) -> dict:
         moves.append({
             'general': general, 'target': target, 'cards': [], 'source': donors[0],
             'after': None, 'purpose': 'move',
-            'note': f"暫定: {general}を{donors[0]}から空の{target}へ移動"})
+            'note': f"暫定: {_general_label(general)}を{donors[0]}から空の{target}へ移動"})
     # A pending 四季王 site order with no companion needs an egg pair at one
     # castle: move a spare general to join a lone egg-holder (or the hero's
     # castle) so one can sortie while an egg-holder stays. g1075 held every

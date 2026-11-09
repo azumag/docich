@@ -7015,6 +7015,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v565-boss-probe-scope",
             "hanjuku-chart-v566-live-status-region",
             "hanjuku-chart-v567-current-hp-sortie",
+            "hanjuku-chart-v568-general-label",
             "hanjuku-chart-v560-castle-list-scroll",
             "hanjuku-chart-v561-post-month-repair-status",
             "hanjuku-chart-v501-idle-reanchor",
