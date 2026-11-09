@@ -30,15 +30,16 @@ def memory(castle=BOSS, general='ヘーゼル', uses=None):
     return mem
 
 
-def test_a_boss_entry_with_a_grey_egg_row_records_the_general_as_unusable():
+def test_a_boss_entry_with_a_grey_egg_row_is_logged_but_not_benched():
+    """g1163 2026-11-09 14:55: ペコリーノ's grey row still took 152 -> 70."""
     mem = memory()
     B.egg_battle_step(screen(text='こうげき'), mem)
-    assert mem['egg_uses']['ヘーゼル'] == 0
-    assert any(r['decision'] == 'egg_unusable_recorded' for r in mem['_records'])
+    assert not (mem.get('egg_uses') or {})
+    assert any(r['decision'] == 'egg_row_unavailable' for r in mem['_records'])
+    assert not any(r['decision'] == 'egg_unusable_recorded' for r in mem['_records'])
 
 
-def test_a_normal_castle_battle_never_records_it():
+def test_a_normal_castle_battle_never_logs_it():
     mem = memory(castle='セレーネ')
     B.egg_battle_step(screen(text='こうげき'), mem)
-    assert not (mem.get('egg_uses') or {})
-    assert not any(r['decision'] == 'egg_unusable_recorded' for r in mem['_records'])
+    assert not any(r['decision'] == 'egg_row_unavailable' for r in mem['_records'])

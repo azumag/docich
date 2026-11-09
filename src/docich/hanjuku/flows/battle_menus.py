@@ -1813,22 +1813,21 @@ def egg_battle_step(screen: Screen, mem):
                     reason=('使用回数0を観測済みのため卵を使わず既存の退却・応戦へ進む'
                             if empty_egg else
                             'たまごをつかうが使えない表示のため卵を諦めてこうげきで応戦する'))
-        # A greyed egg row is measured evidence that this general cannot
-        # summon, so the boss waves stop spending him (g1163 2026-11-09 13:36:
-        # ヘーゼル entered ハードロボ, the row was grey, the fight dealt no
-        # damage, and he was queued again). Only the boss entry records it;
-        # a normal battle may grey the row for its own reasons.
+        # A greyed egg row in a boss fight is worth logging, but it is NOT
+        # proof that the general cannot hurt the boss: g1163 2026-11-09
+        # 14:55:50 ペコリーノ entered ハードロボ with the row grey and the boss
+        # went 152 -> 70 in the same fight. v562 wrote egg_uses=0 from this row
+        # and would have benched the wave that was actually working, so the
+        # evidence stays a log only.
         if not empty_egg and chart.is_boss_castle((mem.get('attack') or {}).get('castle')):
             general = ((mem.get('attack') or {}).get('general')
                        or (battle or {}).get('ally'))
-            if isinstance(general, str) and general:
-                uses = (mem.get('egg_uses') or {}).get(general)
-                if uses != 0:
-                    mem.setdefault('egg_uses', {})[general] = 0
-                    _record(mem, 'egg_unusable_recorded', general=general,
-                            observed_metric={'castle': (mem.get('attack') or {}).get('castle'),
-                                             'egg_row': 'unavailable', 'previous_uses': uses},
-                            reason='ボス戦で卵の行が灰色だったため、この将軍は召喚不能として記録し次の波に回さない')
+            if isinstance(general, str) and general and not mem.get('egg_row_unavailable_logged'):
+                mem['egg_row_unavailable_logged'] = general
+                _record(mem, 'egg_row_unavailable', general=general,
+                        observed_metric={'castle': (mem.get('attack') or {}).get('castle'),
+                                         'egg_row': 'unavailable'},
+                        reason='ボス戦で卵の行が灰色だったことを記録する（召喚不能とは断定しない）')
         action = 'attack'
         if empty_egg:
             mem['egg_action'] = 'attack'
