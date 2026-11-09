@@ -27,7 +27,11 @@ CHAPTER_SCOPE_KEYS = ('map_registration', 'map_discovery', 'boss_victories', 'ap
                 # them. Left behind they outlive their step ids (g1163: the
                 # chapter-4 boss HP was still shown in chapter 5) and grow the
                 # policy for eleven more chapters.
-                'boss_hp_seen', 'order_start_tick', 'site_step_rearm', 'boss_step_rearm',
+                'boss_hp_seen', 'order_start_tick', 'site_step_rearm',
+                # Boss probe assignments are per-step ids of the chapter that
+                # made them (g1163 chapter 7 kept forty chapter-6 steps, and the
+                # diagnostics showed them as the current chapter's probes).
+                'boss_step_rearm', 'boss_step_probe', 'boss_probe_rotation',
                 'season_sites_refused', 'cards_capped', 'equivalent_launch_miss',
                 'kit_spent', 'sortie_relaunch', 'source_mismatch_castle',
                 'y_jumps_total', 'sortie_held_source_defender_counts',

@@ -74,3 +74,16 @@ def test_per_step_and_boss_records_do_not_outlive_their_chapter():
                 'source_defender_cancel_gates'):
         assert key not in mem, key
     assert mem['chapter'] == 5                     # the chapter itself stays
+
+
+def test_boss_probe_state_does_not_outlive_its_chapter():
+    """g1163 chapter 7 kept forty chapter-6 boss probe assignments."""
+    mem = {'chapter': 7, 'month': '13-6', 'captured': ['ベンゴディ'], 'orders': {},
+           'boss_step_probe': {'A:old:M1': 3, 'A:old:M2': 4},
+           'boss_probe_rotation': {'6': 5},
+           'boss_step_rearm': {'A:old:M1': 100}}
+    campaign.finish_chapter(mem, reason='test')
+    assert 'boss_step_probe' not in mem
+    assert 'boss_probe_rotation' not in mem
+    assert 'boss_step_rearm' not in mem
+    assert mem['chapter'] == 7
