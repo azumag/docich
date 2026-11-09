@@ -803,7 +803,8 @@ def _want_castle_jump(mem, order, source, goal):
 
 
 def _start_castle_jump(mem, order, source):
-    mem['castle_jump'] = {'step': order['step'], 'source': source, 'phase': 'menu',
+    mem['castle_jump'] = {'step': order['step'], 'source': source,
+                          'target': order.get('target'), 'phase': 'menu',
                           'age': 0, 'total': 0, 'tick': int(mem.get('tick') or 0),
                           'menu_presses': 1, 'selects': 0, 'scrolls': 0, 'waits': 0}
     _record(mem, 'castle_jump_open', chart_step=order['step'], target=source,
@@ -833,23 +834,31 @@ def _end_castle_jump(screen, mem, why):
     return []
 
 
-def _jump_successor(mem, order):
+def _jump_successor(mem, order, jump=None):
     """The live order that continues a re-planned jump, or None.
 
     Same departure castle, same target and the same general (or a substitute
     the plan itself picked) mean the walk to the castle is still the right
     physical action; only the step id changed.
     """
-    if not isinstance(order, dict):
-        return None
     active = _order_for_step(mem, mem.get('active'))
     if not isinstance(active, dict):
         return None
-    if active.get('step') == (order.get('step') or ''):
+    if isinstance(order, dict):
+        if active.get('step') == (order.get('step') or ''):
+            return None
+        target, source = order.get('target'), _source(order, mem)
+    else:
+        # The old step disappeared with the replaced plan; the jump itself
+        # still remembers where it was going (g1163 2026-11-10 06:22: the
+        # jump died at age 1 every time a re-plan dropped its step).
+        jump = jump if isinstance(jump, dict) else {}
+        target, source = jump.get('target'), jump.get('source')
+        if not target:
+            return None
+    if (target or None) != (active.get('target') or None):
         return None
-    if (order.get('target') or None) != (active.get('target') or None):
-        return None
-    if _source(order, mem) != _source(active, mem):
+    if source != _source(active, mem):
         return None
     # The general may change with the re-plan (the chart worker re-picks the
     # actor each time: シュゼット's jump was replaced by マンゴスチン's at
@@ -881,7 +890,7 @@ def castle_jump_step(screen, mem, frame):
             # aborted at age 1 with order_changed, so the sortie never left).
             # The physical trip is still valid when the same general leaves
             # the same castle for the same target, so carry the jump over.
-            adopted = _jump_successor(mem, order)
+            adopted = _jump_successor(mem, order, jump)
             if adopted is None:
                 return _end_castle_jump(screen, mem, 'order_changed')
             jump['step'] = adopted['step']
