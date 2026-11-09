@@ -7009,6 +7009,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v557-battle-unknown-advance",
             "hanjuku-chart-v558-boss-wave-egg-first",
             "hanjuku-chart-v559-boss-panel-entry-bind",
+            "hanjuku-chart-v562-boss-egg-unusable",
             "hanjuku-chart-v560-castle-list-scroll",
             "hanjuku-chart-v561-post-month-repair-status",
             "hanjuku-chart-v501-idle-reanchor",
