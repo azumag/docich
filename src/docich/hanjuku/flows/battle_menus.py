@@ -1350,18 +1350,30 @@ def _screen_egg_empty(screen, mem, battle):
 
 
 def egg_choice_step(screen: Screen, mem):
-    """Choose a real offered summon; never type a name or infer an egg result."""
+    """Stop a proven slot reel, or navigate a stationary Elabel picker."""
     if _screen_egg_empty(screen, mem, mem.get('battle')):
         return [pad('b')]
     from ..os_layer.screen import egg_choice_names
     names = egg_choice_names(screen)
-    if not names or screen.menu_cursor not in (176, 192, 208):
+    if not names:
         return []
-    _summon_scene(mem)
     key = tuple(names)
     flow = mem.get('egg_choice')
-    if not flow or tuple(flow.get('names') or ()) != key:
-        flow = mem['egg_choice'] = {'names': names, 'selected': 0, 'wait': 0}
+    actor = (mem.get('battle') or {}).get('ally')
+    slot = ('ハズレ' in names
+            or (mem.get('egg_types') or {}).get(actor) == 'スロットエッグ'
+            or (flow or {}).get('mode') == 'slot')
+    if not slot and screen.menu_cursor not in (176, 192, 208):
+        return []
+    _summon_scene(mem)
+    mode = 'slot' if slot else 'elabel'
+    # Reel labels and the knight change automatically. Neither is a new
+    # episode or a target to navigate toward. Also discard an old Elabel
+    # retry latch when a hotloaded observation first proves this is a slot.
+    if (not flow or flow.get('mode', 'elabel') != mode
+            or (not slot and tuple(flow.get('names') or ()) != key)):
+        flow = mem['egg_choice'] = {'names': names, 'mode': mode, 'selected': 0, 'wait': 0}
+    flow['names'] = names
     if flow['selected']:
         flow['wait'] += 1
         if flow['wait'] <= 3:
@@ -1370,8 +1382,17 @@ def egg_choice_step(screen: Screen, mem):
             if not flow.get('held'):
                 flow['held'] = True
                 _record(mem, 'egg_choice_unconfirmed', observed_metric={'candidates': names},
-                        reason='有限回の召喚選択後も同じ三択のため、召喚成功とせず保留')
+                        reason='有限回の卵入力後も選択画面が続くため、召喚成功とせず保留')
             return []
+    if slot:
+        flow['selected'] += 1
+        flow['wait'] = 0
+        _record(mem, 'egg_choice_select',
+                observed_metric={'candidates': names, 'mode': 'slot',
+                                 'cursor_y': screen.menu_cursor},
+                resulting_event='slot_stop_requested_not_yet_confirmed',
+                reason='スロット卵種またはハズレ表示で回転中と確認し、上下で候補を追わずAで停止を要求。停止結果は次画面で確認')
+        return [pad('a')]
     # The first actual candidate is a valid summon. No unverified power ranking
     # or arbitrary entry is introduced; later skill/HP policy handles its fight.
     choice = names[0]
