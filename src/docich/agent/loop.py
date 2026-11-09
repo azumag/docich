@@ -146,6 +146,34 @@ def _run_iteration(adapter, brain, interval_ms: int, *, fence=None, state_dir=No
             brain.discard_action_plan()
 
 
+def _maybe_periodic_savestate(game, adapter, clock) -> None:
+    """Save the emulator state every ``periodic_savestate_s`` (opt-in).
+
+    A run that never saves loses everything since launch when the corner
+    restarts: g1163 recovered only the state captured at 23:14 after nine
+    hours of play (2026-11-10). Games without the lifecycle key are untouched.
+    """
+    interval = getattr(game.lifecycle, 'periodic_savestate_s', None)
+    if type(interval) is not int or interval <= 0:
+        return
+    now = time.monotonic()
+    if clock['last'] and now - clock['last'] < interval:
+        return
+    clock['last'] = now
+    port = getattr(adapter, '_network_port', None)
+    if port is None:
+        return
+    try:
+        from . import netcmd  # noqa: F401  (kept local for the adapter path)
+    except Exception:
+        pass
+    try:
+        from ..netcmd import send_ra_cmd
+        send_ra_cmd('SAVE_STATE', port=port(), wait_reply_s=.2)
+    except Exception as exc:                      # never break the play loop
+        print(f"[agent] 警告: periodical savestate に失敗しました: {exc}", flush=True)
+
+
 def run_agent(
     g: GlobalConfig,
     name: str,
@@ -173,6 +201,7 @@ def run_agent(
     # counted through the process-local binding added in #3287.
     telemetry_mod.set_active(tel)
 
+    save_clock = {'last': 0.0}
     while True:
         t0 = time.monotonic()
         effective_interval = interval_ms
@@ -196,6 +225,7 @@ def run_agent(
             # observe/act/brain のいずれの例外もここで一括して握りつぶし、次のイテレーションへ進む。
             print(f"[agent] 警告: {game.name} のループでエラーが発生しました: {exc}", flush=True)
 
+        _maybe_periodic_savestate(game, adapter, save_clock)
         _flush_telemetry(tel)
         elapsed_s = time.monotonic() - t0
         remaining_s = max(effective_interval / 1000 - elapsed_s, 0)
