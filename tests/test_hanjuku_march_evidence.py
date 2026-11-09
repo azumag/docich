@@ -74,3 +74,17 @@ def test_overlay_absence_is_not_observed_march_completion():
               "overlays/direct_broadcast_overlay.html").read_text(encoding="utf-8")
     assert "の行軍が終了`" not in source
     assert "の追跡記録が消失（行軍終了は未確認）" in source
+
+
+def test_the_measured_slow_march_still_fits_the_limit():
+    """g1133: 603 chart cells took up to 32 min; the limit must cover that."""
+    mem = memory()
+    sortie = mem["sorties"]["6-X1"]
+    limit = march_arrival_limit(mem, sortie)
+    # アルマムーン (392,144) → セレーネ (616,704) is a 603-cell march.
+    assert limit >= 1920          # 32 minutes of observations
+    # The other measured march (740 cells, 34 min) also fits under the cap.
+    far = {"source": "アルマムーン", "target": "グルーポフ"}
+    assert march_arrival_limit(mem, far) >= 2040
+    # Nothing exceeds the bounded reconciliation window.
+    assert march_arrival_limit(mem, far) <= 6 * SORTIE_BUSY_TICKS
