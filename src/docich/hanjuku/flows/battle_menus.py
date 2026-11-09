@@ -1813,6 +1813,22 @@ def egg_battle_step(screen: Screen, mem):
                     reason=('使用回数0を観測済みのため卵を使わず既存の退却・応戦へ進む'
                             if empty_egg else
                             'たまごをつかうが使えない表示のため卵を諦めてこうげきで応戦する'))
+        # A greyed egg row is measured evidence that this general cannot
+        # summon, so the boss waves stop spending him (g1163 2026-11-09 13:36:
+        # ヘーゼル entered ハードロボ, the row was grey, the fight dealt no
+        # damage, and he was queued again). Only the boss entry records it;
+        # a normal battle may grey the row for its own reasons.
+        if not empty_egg and chart.is_boss_castle((mem.get('attack') or {}).get('castle')):
+            general = ((mem.get('attack') or {}).get('general')
+                       or (battle or {}).get('ally'))
+            if isinstance(general, str) and general:
+                uses = (mem.get('egg_uses') or {}).get(general)
+                if uses != 0:
+                    mem.setdefault('egg_uses', {})[general] = 0
+                    _record(mem, 'egg_unusable_recorded', general=general,
+                            observed_metric={'castle': (mem.get('attack') or {}).get('castle'),
+                                             'egg_row': 'unavailable', 'previous_uses': uses},
+                            reason='ボス戦で卵の行が灰色だったため、この将軍は召喚不能として記録し次の波に回さない')
         action = 'attack'
         if empty_egg:
             mem['egg_action'] = 'attack'
