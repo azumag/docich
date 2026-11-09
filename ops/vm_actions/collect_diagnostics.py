@@ -7049,6 +7049,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v599-marker-window",
             "hanjuku-chart-v600-marker-tolerance-hint",
             "hanjuku-chart-v601-rare-scan-jump",
+            "hanjuku-chart-v602-actor-name-guard",
             "hanjuku-chart-v560-castle-list-scroll",
             "hanjuku-chart-v561-post-month-repair-status",
             "hanjuku-chart-v501-idle-reanchor",
