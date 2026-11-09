@@ -78,19 +78,34 @@ def _field_token(value):
     return "unknown"
 
 
+def _region(policy, key):
+    """A declared state region's dict, read from the flat key or ``world``.
+
+    The policy's declared keys (``sorties``, ``garrison``, ``boss_victories``)
+    moved into the ``world`` region (docich#3193), so a reader that only looks
+    at the flat key silently sees nothing: g1163 2026-11-09 15:50 the live
+    status lost every sortie row this way and the 出撃チャート card emptied.
+    """
+    value = policy.get(key)
+    if isinstance(value, dict):
+        return value
+    world = policy.get("world") if isinstance(policy.get("world"), dict) else {}
+    value = world.get(key)
+    return value if isinstance(value, dict) else {}
+
+
 def _compact_field(policy, chapter, active_step):
     def bounded(value, high=64):
         return _bounded_int(value, 0, high)
 
-    march = policy.get("march") if isinstance(policy.get("march"), dict) else {}
+    march = _region(policy, "march")
     march_state = march.get("state")
     if march_state not in MARCH_STATES:
         march_state = "unknown"
     overdue = march.get("overdue") if isinstance(march.get("overdue"), list) else []
     exhausted = march.get("exhausted") if isinstance(march.get("exhausted"), list) else []
-    victories = (policy.get("boss_victories")
-                 if isinstance(policy.get("boss_victories"), dict) else {})
-    sorties = policy.get("sorties") if isinstance(policy.get("sorties"), dict) else {}
+    victories = _region(policy, "boss_victories")
+    sorties = _region(policy, "sorties")
     boss_rows = [row for row in sorties.values()
                  if isinstance(row, dict)
                  and row.get("target") in BOSS_TARGETS
@@ -110,8 +125,7 @@ def _compact_field(policy, chapter, active_step):
     phase = policy.get("phase")
     if phase not in PHASE_STATES:
         phase = None
-    garrison = (policy.get("garrison")
-                if isinstance(policy.get("garrison"), dict) else {})
+    garrison = _region(policy, "garrison")
     garrison_counts = [value for value in garrison.values() if type(value) is int]
     generals_home = (_bounded_int(sum(garrison_counts), 0, 10_000_000)
                      if garrison_counts else None)
