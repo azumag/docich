@@ -27,11 +27,11 @@ def _march_blocked(chapter, source, target, owned):
     # Chapter 3 marches follow the road table (``routes``), not the straight
     # line — an own castle off the road is no blocker even when it sits on
     # the segment.
-    return chapter != 3 and chart.march_blocked(chapter, source, target, owned)
+    return not routes.is_road(chapter) and chart.march_blocked(chapter, source, target, owned)
 
 
 def _march_blocker(chapter, source, target, owned):
-    return chart.march_blocker(chapter, source, target, owned) if chapter != 3 else None
+    return chart.march_blocker(chapter, source, target, owned) if not routes.is_road(chapter) else None
 
 
 def _interim_source(mem, target, chart_order, owned, busy, allow_sole=False):
@@ -53,7 +53,7 @@ def _interim_source(mem, target, chart_order, owned, busy, allow_sole=False):
     unavailable_for_attack = {NAME} if _hero_egg_broken(mem) else set()
     sole = len(owned) == 1          # owner: a single castle may leave the hero alone
     free = {c: [g for g in garrison.get(c) or () if g not in busy] for c in owned}
-    if chapter == 3:
+    if routes.is_road(chapter):
         owned = {c for c in owned if routes.allowed(mem, c, target)}
     # Emptying a castle is how the undefended ジョンリギ fell (g401), so a
     # castle that keeps somebody behind is required. Owner 2026-11-02: an
@@ -61,7 +61,7 @@ def _interim_source(mem, target, chart_order, owned, busy, allow_sole=False):
     # クロチェット enters オトラント; every measured アルマムーン-launch
     # stalled while the only arrival was オトラント-launched 5-Z2), so a
     # source whose path crosses another own castle ranks behind a clear one.
-    need = 2          # never empty a castle (owner 2026-11-06)
+    need = chart.sender_min(chapter)    # never empty a castle (owner 2026-11-06); 1 on chapter 9
     excluded = set()
     # Owner 2026-11-03 (g1097): generals moved into a castle recorded empty
     # stood there unseen while アルマムーン kept sending the sorties. The
@@ -295,7 +295,7 @@ def _wave_pick(mem, target, owned, busy, allow_sole):
     home = chart.home_castle(chapter)
     garrison = _world(mem).get('garrison') or {}
     unavailable = set(_world(mem).get('general_location_unknown') or ())
-    need = 2          # never empty a castle (owner 2026-11-06)
+    need = chart.sender_min(chapter)    # never empty a castle (owner 2026-11-06); 1 on chapter 9
     for source in sorted(owned, key=lambda c: (c != home, c)):
         if not routes.allowed(mem, source, target):
             continue
@@ -540,6 +540,12 @@ def interim_candidates(mem, allow_sole=False) -> dict:
     chart_orders = {}
     for order in chart.orders(chapter):
         chart_orders.setdefault(order['target'], order)
+    # A road chapter runs without chart orders, but its encoded chart still
+    # says which cards each castle wants (chapter 9's soldiers have HP100).
+    card_orders = {}
+    if chart.corridor(chapter):
+        for order in chart.all_orders(chapter):
+            card_orders.setdefault(order['target'], order)
     lost = [c for c in mem.get('lost') or () if c in castles]
     # Owner 2026-11-02: a lost castle that gates the boss path must come back
     # before unrelated retakes — otherwise the bot keeps re-taking minor
@@ -583,6 +589,13 @@ def interim_candidates(mem, allow_sole=False) -> dict:
         rest = sorted((c for c in targets if c not in lost),
                       key=lambda c: (min((_distance(chapter, o, c) for o in owned), default=0), c))
         targets = [*(c for c in targets if c in lost), *rest]
+    if chart.corridor(chapter):
+        # A single-road chapter (owner 2026-11-09, chapter 9): only the next
+        # castle on the road can be attacked; the others are unreachable
+        # (impassable terrain) or would be marched at across owned castles.
+        # A lost castle in the middle of the road is the next one again.
+        road_next = chart.corridor_next(chapter, owned)
+        targets = [c for c in targets if c == road_next]
     # Owner 2026-11-02 (ボス城へ余剰兵力を連続投入): while the boss chain is
     # held and the boss unbeaten, send every spare general at it in successive
     # waves — the charted single sortie is not the only assault. The in-flight
@@ -648,7 +661,7 @@ def interim_candidates(mem, allow_sole=False) -> dict:
         if _hero_egg_broken(mem):
             unavailable |= {NAME}
         sole = len(owned) == 1
-        need = 2          # never empty a castle (owner 2026-11-06)
+        need = chart.sender_min(chapter)    # never empty a castle (owner 2026-11-06); 1 on chapter 9
         # The one-general exception for post-conquest boss waves was left
         # behind by #3567. The game refuses the sortie when the castle has
         # only one general (e.g. ポセイドン at ボッサール), so it must not
@@ -759,7 +772,7 @@ def interim_candidates(mem, allow_sole=False) -> dict:
         # Owner (2026-09-28): 切り札は持たせたほうが良い. The chart's cards for
         # this castle, else the retry opener (two イッテツーン). Cards out of
         # stock are dropped at the card list (card_drop), never waited for.
-        base = chart_orders.get(target)
+        base = chart_orders.get(target) or card_orders.get(target)
         cards = list(base['cards']) if base and base.get('cards') else list(INTERIM_CARDS)
         if chart.is_boss_castle(target):
             cards = []   # 波: strict kit waits for nobody — carry what is there
@@ -818,7 +831,7 @@ def interim_candidates(mem, allow_sole=False) -> dict:
     busy = busy | planned_busy
     garrison = _world(mem).get('garrison') or {}
     moves = []
-    if chapter == 3:
+    if routes.is_road(chapter):
         # Stage spare generals along chart legs rather than aiming a distant
         # enemy straight across a cliff. Every stage ends at an owned castle.
         seen_legs = set()
@@ -834,9 +847,10 @@ def interim_candidates(mem, allow_sole=False) -> dict:
                 # planned against a one-general castle (g1153 2026-11-08
                 # 13:30 moved from メガパタ while ヴィーナス was still walking).
                 probe = routes.arrival_probe_due(mem, donor, cooldown=True)
-                if len(free) < 2 and not probe:
+                stage_min = chart.sender_min(chapter)
+                if len(free) < stage_min and not probe:
                     continue
-                if len(free) >= 2 and not [g for g in _spares(free) if g != NAME]:
+                if len(free) >= stage_min and not [g for g in _spares(free) if g != NAME]:
                     continue
                 route = routes.path(mem, donor, target, owned)
                 if route and len(route) > 2 and route[1] not in heading:
@@ -848,7 +862,7 @@ def interim_candidates(mem, allow_sole=False) -> dict:
             if leg in seen_legs:
                 continue
             seen_legs.add(leg)
-            general = (MOVE_ANY_GENERAL if len(free) < 2
+            general = (MOVE_ANY_GENERAL if len(free) < chart.sender_min(chapter)
                        else (_defense_move_pick(mem, donor, route[1],
                                                 _spares(free)) or _spares(free)[0]))
             moves.append({'general': general, 'source': donor, 'target': route[1],
@@ -861,7 +875,9 @@ def interim_candidates(mem, allow_sole=False) -> dict:
     # next boss waves, not a garrison for an empty rear castle (armies were
     # seen marching to ユージア/トウトウ/バビラリー while the boss was the only
     # target). Normal chapters keep the fill.
-    empty = [] if boss_open else [
+    # Chapter 9 (owner 2026-11-09): rear castles may stand empty behind the
+    # front, so nothing is pulled off the road to fill them.
+    empty = [] if boss_open or chart.guard_free(chapter) else [
         c for c in sorted(owned, key=lambda c: _distance(chapter, home, c))
         if garrison.get(c) == [] and c not in heading
         and not routes.unread_dispatches(mem, c)]
@@ -953,7 +969,7 @@ def interim_candidates(mem, allow_sole=False) -> dict:
         wave_committed = committed
         wave_busy = busy | planned_busy | committed
         purpose = 'retake' if wave_target in lost else 'attack'
-        base = chart_orders.get(wave_target)
+        base = chart_orders.get(wave_target) or card_orders.get(wave_target)
         cards = list(base['cards']) if base and base.get('cards') else list(INTERIM_CARDS)
         extra = 0
         while extra < INTERIM_WAVE_LIMIT:
@@ -1008,6 +1024,7 @@ def interim_candidates(mem, allow_sole=False) -> dict:
         # It reads and settles without sending.
         present = (_world(mem).get('garrison') or {}).get(order['source'])
         if (isinstance(present, (list, tuple)) and len(set(present)) == 1
+                and not chart.guard_free(chapter)       # chapter 9: the last general may go
                 and order.get('roster_probe') is not True):
             # A new joiner is unconfirmed until the castle's live list is
             # opened. Since #3578's confirmed-source policy names the generic
@@ -1027,6 +1044,9 @@ def interim_candidates(mem, allow_sole=False) -> dict:
             order['roster_probe'] = True
             order['note'] = (f"暫定: {order['source']}の将軍一覧を読んで"
                              "増援の到着を確認する")
+        if (routes.is_road(chapter) and not chart.is_boss_castle(order.get('target'))
+                and not routes.order_allowed(mem, order, order['source'])):
+            continue        # a road chapter's ``_ready`` would reject it on every tick
         if chart_adjust.startable(order, situation) is not None:
             continue
         out[f"{order['purpose']}_{len(out) + 1}"] = order

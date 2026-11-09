@@ -14,19 +14,34 @@ from ..os_layer.world import SORTIE_BUSY_TICKS, _owned
 PROBE_INTERVAL = 40
 
 
+ROAD_CHAPTERS = frozenset({3, 9})     # marches follow a road table, not a straight line
+
+
+def is_road(chapter) -> bool:
+    return chapter in ROAD_CHAPTERS
+
+
 def legs(chapter):
+    if chapter == 9:
+        # One winding road: a march goes to the adjacent castle, both ways
+        # (a lost castle is retaken from either neighbour).
+        road = chart.corridor(9)
+        return {pair for a, b in zip(road, road[1:]) for pair in ((a, b), (b, a))}
     return {(o['source'], o['target']) for o in chart.measured_orders(chapter)
             if not chart.is_boss_castle(o['target'])} if chapter == 3 else set()
 
 
 def allowed(mem, source, target):
-    return (mem.get('chapter') != 3 or chart.is_boss_castle(target)
+    chapter = mem.get('chapter')
+    if chapter == 9:
+        return (chart.is_boss_castle(target) or (source, target) in legs(9))
+    return (chapter != 3 or chart.is_boss_castle(target)
             or (source, target) in legs(3)
             or (target in _owned(mem) and (target, source) in legs(3)))
 
 
 def order_allowed(mem, order, source):
-    if mem.get('chapter') != 3 or chart.is_boss_castle(order.get('target')):
+    if not is_road(mem.get('chapter')) or chart.is_boss_castle(order.get('target')):
         return True
     owned = _owned(mem)
     return (source in owned and allowed(mem, source, order.get('target'))
@@ -125,7 +140,7 @@ def arrival_probe_due(mem, castle, *, cooldown=False):
 
 def probe_due(mem, castle):
     """A dispatched transfer permits opening a list, never guessing arrival."""
-    if mem.get('chapter') != 3:
+    if not is_road(mem.get('chapter')):
         return arrival_probe_due(mem, castle)
     now = int(mem.get('tick') or 0)
     last = (mem.get('route_probe_read_tick') or {}).get(castle)

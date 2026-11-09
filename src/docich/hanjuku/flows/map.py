@@ -270,6 +270,13 @@ def world_map_step(screen, mem, frame):
     recall = _flow(mem).get('recall')
     if recall and recall.get('stage') == 'await_dispatch':
         return _recall_dispatch_step(screen, mem, recall)
+    if recall and recall.get('boss') and recall.get('stage') == 'dest':
+        # いどう opened a whole-island picker, whose confirmation below sends
+        # the unit to an own castle. A boss redirect must never do that: close
+        # it and keep the camp where it is. Unmeasured: the event names the screen.
+        from .recall import _abort_boss_redirect
+        return _abort_boss_redirect(mem, recall, 'boss_picker_is_world_map',
+                                    'いどうが全島ピッカーを開いたため、自軍城へ帰還させず取り消す')
     if recall and recall.get('stage') == 'dest':
         # きかん opens a whole-island picker (chapter 1 and 2, isolated probe
         # 2026-09-29): the R ring starts on the home castle, A selects it and a
