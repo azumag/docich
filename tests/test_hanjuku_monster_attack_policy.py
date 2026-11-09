@@ -84,3 +84,25 @@ def test_evidence_reports_the_scored_pair_for_the_decision_log():
     assert (evidence['score1'], evidence['score2']) == (11, 24)
     assert evidence['choice'] == 'skill2'
     assert evidence['rule'] == 'damage_rank'
+
+
+def test_the_menu_skills_identify_a_monster_the_panel_name_missed():
+    """g1163 2026-11-09 21:26: エクスカリバる/マサムネる had no policy.
+
+    The ally panel named the summon differently from the table key, but the two
+    visible skill labels are the table's own strings, so exactly one entry can
+    be matched on them.
+    """
+    from types import SimpleNamespace
+    from docich.hanjuku.judgment import events
+    from docich import hanjuku_reference as reference
+
+    ally = SimpleNamespace(name='エクスカリバる')      # not a table key
+    enemy = SimpleNamespace(name='テュポーン')
+    mem = {'chapter': 8, 'battle': {'enemy_soldiers': 0}}
+    evidence = {}
+    choice = events._monster_attack_policy_default(
+        'ally', ally, enemy, [], 'エクスカリバる', 'マサムネる', 200, 200, mem, evidence)
+    assert choice in ('skill1', 'skill2')
+    assert evidence.get('monster') == 'エクスカリバる'
+    assert evidence.get('skill1') in reference.MONSTER_ATTACK_DATA['エクスカリバー']['skill1'][0]
