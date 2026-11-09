@@ -681,9 +681,16 @@ def _marker(mem, frame, general=None):
     boxes = [b for b in world_markers(frame)
              if b[2] < 164 and b[3] < 150]
     if len(boxes) != 1:
-        return None
+        # No white selection triangle and no single army marker either: the
+        # monthly walk pays a status panel for this, so name the cause
+        # (g1163 2026-11-09 23:35-23:37: 20 of 25 markers were unbound with no
+        # recorded reason).
+        return {'box': None, 'source': 'none',
+                'marker_reason': 'no_selection_marker' if not boxes else 'many_markers',
+                'candidate_boxes': [list(b) for b in boxes[:4]]}
     box = boxes[0]
-    result = {'box': list(box), 'source': 'roster_triangle_candidate'}
+    result = {'box': list(box), 'source': 'roster_triangle_candidate',
+              'marker_reason': 'army_marker_fallback'}
     last = mem.get('nav_last') or {}
     cell = mem.get('cursor')
     if (mem.get('uncertain') or last.get('kind') != 'map'
