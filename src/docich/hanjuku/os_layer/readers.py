@@ -783,7 +783,12 @@ def _measured_card_select(screen):
         return None
     if header != text_cells(136, 'きりふだセレクト') + text_cells(208, f'あと{remaining}こ'):
         return None
-    if cells(127, 136) != text_cells(136, 'バトルようのきりふだです'):
+    # The description line is a static label, not data: an OCR dropout of one
+    # glyph ('バトルよ' + 'のきりふだです' with う missing) rejected the whole
+    # panel and cost the sortie (g1163 2026-11-10 07:4x: 15 holds an hour).
+    note = cells(127, 136)
+    note_text = ''.join(ch for _, ch in note)
+    if not note_text.startswith('バトル') or len(note_text) < 10 or UNKNOWN in note_text:
         return None
     rows = []
     empty_tail = False

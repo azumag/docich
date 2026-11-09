@@ -1258,3 +1258,16 @@ def test_a_card_missing_from_the_price_table_still_leaves_the_panel_readable():
     assert 'ゲンゴナイト' in readers.ALL_CARD_NAMES
     assert 'ゲンゴナイト' not in readers.reference.CARD_IDS
     assert 'ライチスイム' in readers.ALL_CARD_NAMES
+
+
+def test_one_missing_glyph_in_the_description_still_reads_the_panel():
+    """'バトルよ' + 'のきりふだです' (う missing) rejected the panel (v621).
+
+    g1163 2026-11-10 07:4x: 15 card-list holds an hour from this dropout alone.
+    """
+    screen = measured_card_select(selected=3)
+    from docich.hanjuku.os_layer.font import TextLine
+    screen.lines = [TextLine(y=l.y, cells=tuple((x, ch) for x, ch in l.cells if not (l.y == 127 and x == 168)))
+                    for l in screen.lines]
+    inventory = policy._measured_card_select(screen)
+    assert inventory is not None and len(inventory['rows']) == 4
