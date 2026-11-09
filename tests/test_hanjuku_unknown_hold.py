@@ -33,3 +33,27 @@ def test_existing_actions_are_kept_until_the_bound():
     mem = {}
     for _ in range(O.UNKNOWN_HOLD_ADVANCE - 1):
         assert O.unknown_hold_advance(screen(), mem, [O.pad('b')], 'same') == [O.pad('b')]
+
+
+def test_an_animating_battle_frame_still_gets_the_bounded_press():
+    """g1163 2026-11-09 13:12-13:16: the boss entry held six minutes, no input.
+
+    A battle frame animates, so no two digests match and the identical-frame
+    bound never fires; the consecutive-frame bound inside a battle does.
+    """
+    mem = {'battle': {'ally': 'デーメーテール', 'enemy': 'ハードマン'}}
+    for i in range(O.UNKNOWN_BATTLE_ADVANCE - 1):
+        assert O.unknown_hold_advance(screen(), mem, [], f'battle{i}') == []
+    pressed = O.unknown_hold_advance(screen(), mem, [], 'battle-last')
+    assert pressed == [O.pad('a')]
+    record = mem['_records'][-1]
+    assert record['decision'] == 'unknown_hold_advance'
+    assert record['observed_metric']['battle'] is True
+    # The counter restarts: the next frame does not press again.
+    assert O.unknown_hold_advance(screen(), mem, [], 'battle-next') == []
+
+
+def test_outside_a_battle_a_changing_screen_never_presses():
+    mem = {}
+    for i in range(O.UNKNOWN_BATTLE_ADVANCE * 3):
+        assert O.unknown_hold_advance(screen(), mem, [], f'd{i}') == []
