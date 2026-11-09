@@ -8,6 +8,7 @@ from types import SimpleNamespace
 
 from docich import hanjuku_chart as chart
 from docich.hanjuku.flows import battle_menus as B
+from docich.hanjuku.state.regions import world as _world
 
 BOSS = chart.boss_castle(6)
 
@@ -24,7 +25,9 @@ def test_the_panel_binds_the_in_flight_boss_sortie():
     mem = memory()
     rows = [SimpleNamespace(name='ハードロボ', hp=152)]
     B.note_boss_monster_hp(mem, {'ally': 'ヘーゼル'}, rows)
-    assert mem['sorties']['A:x:M1']['status'] == 'arrived'
+    # The world region owns sorties after the first access (the top-level key
+    # is migrated away), so read them through the same accessor.
+    assert (_world(mem).get('sorties') or {})['A:x:M1']['status'] == 'arrived'
     assert mem['attack']['step'] == 'A:x:M1'
     assert any(r['decision'] == 'boss_entry_bound_by_panel' for r in mem['_records'])
     assert mem['boss_hp_seen']['hp'] == 152
