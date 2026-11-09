@@ -153,7 +153,8 @@ def _maybe_periodic_savestate(game, adapter, clock) -> None:
     restarts: g1163 recovered only the state captured at 23:14 after nine
     hours of play (2026-11-10). Games without the lifecycle key are untouched.
     """
-    interval = getattr(game.lifecycle, 'periodic_savestate_s', None)
+    lifecycle = getattr(game, 'lifecycle', None)
+    interval = getattr(lifecycle, 'periodic_savestate_s', None)
     if type(interval) is not int or interval <= 0:
         return
     now = time.monotonic()
