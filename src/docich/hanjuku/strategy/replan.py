@@ -1024,6 +1024,35 @@ def interim_candidates(mem, allow_sole=False) -> dict:
         mem, owned, busy | planned_busy | wave_committed
         | (committed - {MOVE_ANY_GENERAL}), heading,
         taken={o['target'] for o in (*sorties['retake'], *sorties['attack'], *moves)})
+    # An owned castle recorded empty loses itself to the next enemy stack, and
+    # the attack generator books every spare before the rotation can run (g1163
+    # chapter 8 2026-11-09: しらかわ sat at 0 defenders while attacks kept the
+    # front slot). Drop the lowest-priority attack of this cycle and send its
+    # general there instead: nothing is duplicated, retakes keep their booked
+    # generals (owner 2026-11-05 #3266), and a boss-only endgame is exempt
+    # (owner 2026-11-05: ボスだけが残った局面での空城移動は廃止).
+    empty_targets = [c for c in sorted(owned)
+                     if isinstance((_world(mem).get('garrison') or {}).get(c), list)
+                     and not (_world(mem).get('garrison') or {}).get(c)
+                     and c not in heading]
+    normal_left = [c for c in castles if c != boss and c not in _owned(mem)]
+    staffing = []
+    if empty_targets and normal_left:
+        covered = {o.get('target') for o in (*moves, *rotation)}
+        for castle in empty_targets:
+            if castle in covered or not sorties['attack']:
+                continue
+            donor = sorties['attack'][-1]
+            general = donor.get('general')
+            source = donor.get('source')
+            if not isinstance(general, str) or general == MOVE_ANY_GENERAL:
+                continue
+            sorties['attack'].pop()
+            staffing.append({'general': general, 'target': castle, 'cards': [],
+                             'source': source, 'after': None, 'purpose': 'move',
+                             'garrison_rotate': True,
+                             'note': f'暫定: 空の{castle}へ{_general_label(general)}を{source}から移動'})
+            covered.add(castle)
     # Every candidate must be startable from the recorded garrisons, so a
     # chart general named in another castle never reaches the castle menu.
     situation = _adjust_situation(mem)
@@ -1039,7 +1068,7 @@ def interim_candidates(mem, allow_sole=False) -> dict:
     # A stalled retake no longer gates the boss, so the boss wave leads: the
     # failing retake would otherwise take the front slot every cycle.
     front = [] if retakes_stalled else lead[:1]
-    for order in (*front, *waves, *boss_wave_orders,
+    for order in (*front, *staffing, *waves, *boss_wave_orders,
                   *(lead if retakes_stalled else lead[1:]),
                   *attacks, *rotation, *wave_orders):
         # A generic source-list probe at a measured one-general castle is

@@ -7040,6 +7040,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v590-marker-hint",
             "hanjuku-chart-v591-slot-egg-stop",
             "hanjuku-chart-v592-garrison-deficit-first",
+            "hanjuku-chart-v593-empty-castle-staffing",
             "hanjuku-chart-v560-castle-list-scroll",
             "hanjuku-chart-v561-post-month-repair-status",
             "hanjuku-chart-v501-idle-reanchor",
