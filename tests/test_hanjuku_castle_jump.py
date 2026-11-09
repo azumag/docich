@@ -502,3 +502,49 @@ def test_fade_frames_end_the_trip_when_the_menu_never_appears():
     assert mem['castle_jump_skip']['step'] == 'J1'
     failed = [r for r in mem['_records'] if r['decision'] == 'castle_jump_failed']
     assert failed and failed[-1]['observed_metric']['why'] == 'unexpected_menu'
+
+
+# --- long castle rosters (g1133 ユージア, g1163 アブダレ) -------------------
+CHAPTER_6_LONG = [
+    'アルマムーン', 'アルブラーカ', 'イカリア', 'カバルッサ', 'オケアナ',
+    'バビラリー', 'ダーラント', 'セレーネ', 'グルーポフ', 'ユージア',
+    'アブダレ', 'トウトウ',
+]
+
+
+def _castle_list_window(names, offset, selected):
+    """An eight-row page of the しろ list with the hand on the selected row."""
+    hand_y = 39 + 16 * (selected - offset)
+    return _castle_list(names[offset:offset + 8], hand_y=hand_y)
+
+
+def test_last_page_source_is_reached_past_the_old_eight_row_bound():
+    """g1163 2026-11-09: the list stopped at row 8, so アブダレ (row 10) failed.
+
+    The list opens on the home castle at row 0 and shows eight rows. Reaching
+    row 10 needs ten Downs and one page shift; the old bound of eight ended
+    every trip with ``castle_missing`` before the row could appear.
+    """
+    mem = _memory()
+    mem['castle_jump'] = _jump('list', menu_presses=2, source='アブダレ')
+    selected = offset = downs = 0
+    for _ in range(20):
+        screen = _castle_list_window(CHAPTER_6_LONG, offset, selected)
+        actions = M.castle_jump_step(screen, mem, None)
+        if actions == [M.pad('select')]:
+            break
+        assert actions == [M.pad('down')]
+        downs += 1
+        selected = min(selected + 1, len(CHAPTER_6_LONG) - 1)
+        if selected - offset >= 8:
+            offset = selected - 7   # native eight-row window scrolls at the bottom
+    else:
+        raise AssertionError('the source row was never reached')
+    assert downs == 10
+    assert mem['castle_jump']['phase'] == 'confirm'
+    assert not [r for r in mem['_records'] if r['decision'] == 'castle_jump_failed']
+
+
+def test_scroll_bound_covers_the_longest_chapter_roster():
+    longest = max(len(names) for names in M.chart.CASTLE_NAMES.values())
+    assert M.CASTLE_JUMP_SCROLL_LIMIT >= longest - 1

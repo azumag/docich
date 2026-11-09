@@ -274,6 +274,42 @@ def write_json(path,obj): atomic_write(path,(json.dumps(obj,sort_keys=True)+'\n'
 def read_json(path): return json.loads(path.read_text()) if path.exists() else None
 
 
+def last_reject_file(cfg): return state_root(cfg)/'last_deploy_reject.json'
+
+def _record_deploy_reject(cfg, sha, code):
+    # docich#3666: the workflow's reconcile step can only observe a failed
+    # deploy through the status op, and the catch-all below collapses every
+    # unknown exception to `operation_rejected` -- the upstream reject cause
+    # was invisible. Persist the fixed reason code under the state root so
+    # `status` can report it; recording is best-effort and must never turn a
+    # rejection report into a new failure mode.
+    try:
+        write_json(last_reject_file(cfg),{'reason':code,'sha':sha,'recorded_at':int(time.time())})
+    except Exception:
+        pass
+
+def _clear_deploy_reject(cfg):
+    # A successful deploy supersedes any earlier rejection: the blocker is
+    # gone and a stale reason must not be reported by `status` forever.
+    try: last_reject_file(cfg).unlink(missing_ok=True)
+    except OSError: pass
+
+def _last_deploy_reject(cfg, sha):
+    # Only the allowlisted fixed-code shape is surfaced; a corrupt or
+    # unexpected record reads as absent rather than leaking raw content.
+    # The record is bound to the rejected sha: a status query for a different
+    # sha must not inherit an older rejection's reason (PR #3667 review) --
+    # otherwise a stale code would be misread as the current push's cause.
+    try:
+        rec=read_json(last_reject_file(cfg)) or {}
+        if rec.get('sha') != sha:
+            return None
+        reason=rec.get('reason')
+        return reason if isinstance(reason,str) and re.fullmatch(r'[a-z0-9_]+',reason) else None
+    except Exception:
+        return None
+
+
 def _filesystem_status(path:Path):
     info=os.statvfs(path)
     block_size=info.f_frsize or info.f_bsize
@@ -1974,13 +2010,19 @@ def status_result(cfg,repo,target,sha):
         except Exception: health_status='drift'
     soren_root=cfg['repos'][repo].get('projections',{}).get('games/soviet_now')
     return {'status':health_status,'sha':head,'storage':_filesystem_status(root),'capabilities':_brief_capabilities(),
+            # docich#3666: the fixed reason code of the deploy rejection
+            # recorded for THIS requested sha (or null), so the workflow's
+            # reconcile step can tell a terminal-state reject apart from the
+            # gitlink-drift mode it exists to heal without misattributing an
+            # older push's reason.
+            'last_deploy_reject':_last_deploy_reject(cfg,sha),
             'ops_brief_projection':{'status':_ops_brief_health(cfg,repo,expected)},
             'projection_guard_last_event':_projection_guard_event(soren_root),
             'pending_repairs':[{k:r.get(k) for k in ('id','status','candidate_sha','pr_url')} for r in cur.get('pending_repairs',[])]}
 
 def main():
     if len(sys.argv)!=2: die()
-    cfg = None
+    cfg = None; op = None; sha = None
     try:
         cfg=load_config(Path(sys.argv[1])); op,repo,target,sha=parse_command(cfg)
         lock=state_root(cfg)/'vm-operations.lock'; lock.parent.mkdir(parents=True,exist_ok=True)
@@ -2005,8 +2047,10 @@ def main():
             elif op=='github_auth_diagnostics': result=github_auth_diagnostics(cfg,repo,target,sha)
             else: result=status_result(cfg,repo,target,sha)
     except ValueError as exc:
+        if op=='deploy': _record_deploy_reject(cfg,sha,reason_code(exc))
         die('VM operation rejected: %s' % reason_code(exc))
     except Exception:
+        if op=='deploy': _record_deploy_reject(cfg,sha,'operation_rejected')
         # Issue #410: deploy経路の non-ValueError (CalledProcessError /
         # TimeoutExpired / OSError 等) が bare raise で素通しし、traceback
         # 越しに command argv や filesystem path を Actions へ出す経路を塞ぐ。
@@ -2016,6 +2060,7 @@ def main():
         _log_unexpected_traceback(cfg)
         die('VM operation rejected: operation_rejected')
     print(json.dumps(result,separators=(',',':')))
+    if op=='deploy' and not result.get('exit_code',0): _clear_deploy_reject(cfg)
     if result.get('exit_code',0): raise SystemExit(result['exit_code'])
 
 if __name__=='__main__':

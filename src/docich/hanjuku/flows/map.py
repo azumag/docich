@@ -19,13 +19,14 @@ from .recall import (MENU_HOLD_LIMIT, RECALL_LIMIT, _hold_after_picker, _recall_
 from ..os_layer.commands import menu_to, pad
 from ..os_layer.navigation import (Y_JUMP_LIMIT, Y_JUMP_OFFSET, _align_on_roof, _drop_stale_y_jump, _start_y_jump,
                                    _forget_failed_jump, _want_y_jump, _y_jump_step, nav_step)
-from ..os_layer.readers import (UNDER_CURSOR_PX, WORLD_MAP_OFFSET, _cursor, _roof_under_cursor, world_cursor,
-                                world_flags, world_markers)
-from ..os_layer.world import NAME, _apply_world_flags, _hero_castle, _owned, update_world
+from ..os_layer.readers import (UNDER_CURSOR_PX, WORLD_MAP_OFFSET, _cursor, _roof_under_cursor, season_sites,
+                                world_cursor, world_flags, world_markers)
+from ..os_layer.world import (NAME, _apply_season_sites, _apply_skull_boss, _apply_world_flags,
+                              _hero_castle, _owned, update_world)
 from ..strategy import goals
 from ..strategy.kit import _deploy_cards, _is_boss_order
 from ..strategy.execution import departure_snapshot
-from ..state.regions import world as _world, flow, journal, flow as _flow, journal as _journal
+from ..state.regions import world as _world, flow, journal, flow as _flow, journal as _journal, sorties as _sorties
 from ..strategy.orders import (BOSS_TARGET_CANCEL_LIMIT, SOURCE_MISS_LIMIT, _broken_hero_order, _finish_order,
                                _garrison_move, _give_up_source, _near_goal, _order, _order_for_step, _ready,
                                _recall_goal, _retire_unentered_sortie, _sortie_general, _source,
@@ -68,7 +69,7 @@ def observe_sortie_transition(screen, mem, previous_kind=None):
             if (mem.get('orders') or {}).get(step) == 'launched_unconfirmed':
                 mem['active'] = step
                 mem['orders'][step] = 'pending'
-                (mem.get('sorties') or {}).pop(step, None)
+                _sorties(mem).pop(step, None)
                 # The interruption moved the camera: the resumed selection gets
                 # fresh target jumps (g421 18:24: six were spent before a defense
                 # battle, the marker came back unplaced and the bot idled).
@@ -120,10 +121,10 @@ def observe_sortie_transition(screen, mem, previous_kind=None):
         return  # a foreign confirmation never becomes departure ownership
     general = snapshot['general']
     _world(mem).setdefault('launched_orders', {})[step] = snapshot
-    previous = (mem.get('sorties') or {}).get(step)
+    previous = _sorties(mem).get(step)
     if previous:
         _retire_unentered_sortie(mem, step, previous)
-    mem.setdefault('sorties', {})[step] = {
+    _world(mem).setdefault('sorties', {})[step] = {
         'general': general, 'source': snapshot['source'], 'target': None,
         'planned_target': order['target'], 'status': 'launched_unconfirmed',
         'evidence': deepcopy({k: v for k, v in context.items() if k != 'departure_order'}),
@@ -382,6 +383,14 @@ def world_map_step(screen, mem, frame):
         return [] if waited < WORLD_MAP_WAIT else _close_world_map(mem)
     mem.pop('world_map_wait', None)
     _apply_world_flags(mem, flags)
+    # The same view draws chapter 4's 四季王 sites: a cleared one keeps a
+    # pennant, a live king keeps the skull.
+    if (mem.get('chapter') or 0) == 4 and hasattr(frame, 'pixel'):
+        _apply_season_sites(mem, season_sites(frame, 4, world_cursor(frame)))
+    if (mem.get('chapter') or 0) != 4 and hasattr(frame, 'pixel'):
+        # A single boss skull on the Y view is the boss's measured cell (the
+        # moving boss included; chapter 4's four sites use the scan above).
+        _apply_skull_boss(mem, frame)
     markers = world_markers(frame)
     _probe_launch_markers(mem, markers)
     mem['_world_units_prev'] = [list(b) for b in markers]
@@ -666,8 +675,16 @@ def _watch_cursor_still(mem):
 # rows from y=39, with the orange hand left of the selected row. SELECT flies
 # the cursor to that castle (manual p.15: 将軍と同じく、セレクトボタンでその城へ飛べる).
 CASTLE_JUMP_HINT = 'Aボタンでステータスひょうじ'
-CASTLE_JUMP_LIMIT = 32          # observations across the whole menu trip
-CASTLE_JUMP_SCROLL_LIMIT = 8    # list scrolls while looking for the source
+CASTLE_JUMP_LIMIT = 48          # observations across the whole menu trip
+# The しろ list is an eight-row window (y=39..151). In the observed failures
+# it opened on the home castle at row 0, so reaching the last row of a
+# 12-castle chapter needs 11 Downs. The old bound of 8 stopped at row 8 and
+# left every source from ユージア onward (chapter 6 indices 9+) unreachable:
+# g1133 recorded five ユージア castle_missing failures on 2026-11-06 and
+# g1163 seven アブダレ failures on 2026-11-09, each with the eight-scroll
+# bound exhausted. Keep the bound above the longest chapter roster; the loop
+# still stops as soon as the source is visible.
+CASTLE_JUMP_SCROLL_LIMIT = 16   # list scrolls while looking for the source
 CASTLE_JUMP_COOLDOWN = 40       # observations before retrying a failed source
 CASTLE_JUMP_FAR = 48            # same distance gate as the Y jump (map px)
 # The orange hand of the main menu and of the しろ list blinks, so whole frames
@@ -1198,7 +1215,7 @@ def map_step(screen: Screen, mem, frame):
                 reason='全城の所有を全体マップで確認するためYを押す')
         return [pad('y')]
     if order is None:
-        order = next((_order_for_step(mem, step) for step, sortie in (mem.get('sorties') or {}).items()
+        order = next((_order_for_step(mem, step) for step, sortie in _sorties(mem).items()
                       if sortie.get('status') == 'launched_unconfirmed'
                       and not sortie.get('verification_unavailable')
                       and sortie.get('source') in _owned(mem)), None)
@@ -1469,10 +1486,10 @@ def _commit_departure(mem, order, context, snapshot):
     _world(mem).setdefault('launched_orders', {})[order['step']] = snapshot
     # Per execution id: ``launched`` keeps one sortie per castle, so a later
     # sortie to the same castle must not unbind an earlier unit en route.
-    previous = (mem.get('sorties') or {}).get(order['step'])
+    previous = _sorties(mem).get(order['step'])
     if previous:
         _retire_unentered_sortie(mem, order['step'], previous)
-    mem.setdefault('sorties', {})[order['step']] = {
+    _world(mem).setdefault('sorties', {})[order['step']] = {
         'general': general, 'source': snapshot['source'],
         'target': order['target'], 'status': 'en_route',
         'purpose': snapshot.get('purpose'),
@@ -1509,6 +1526,10 @@ DEPARTURE_UNKNOWN_HOLD_LIMIT = 3  # unverifiable receipt readings; never a blind
 LAUNCH_PROBE_READS = 3            # world-map surveys without the new unit before the roster check
 LAUNCH_PROBE_RADIUS = 10        # world-map px from source/target flag counting as that unit
 LAUNCH_PROBE_NEW_MARKER_PX = 4  # centre distance that still counts as the same marker
+# A marching unit's triangle is ~7x6; a 3x3 red decoration must not confirm a
+# launch (g1163 2026-11-09 05:28: [[149,63,152,66]] confirmed three launches
+# while only the hero's own marker was on the view).
+LAUNCH_PROBE_MIN_BOX = 20      # bounding-box pixels for a plausible unit marker
 LAUNCH_PROBE_ROSTER_TICKS = 200  # blind probe ticks to wait for the source roster before rollback
 LAUNCH_MISS_LIMIT = 2           # unverified launches an order may retry before failing
 
@@ -1564,7 +1585,7 @@ def _probe_launch_markers(mem, markers):
         return
     now = int(mem.get('tick') or 0)
     for step, probe in list(probes.items()):
-        sortie = (mem.get('sorties') or {}).get(step)
+        sortie = _sorties(mem).get(step)
         if not sortie or sortie.get('status') not in ('en_route', 'launched_unconfirmed'):
             probes.pop(step, None)
             continue
@@ -1613,9 +1634,10 @@ def _probe_launch_markers(mem, markers):
             continue
         baseline = probe.get('baseline') or []
         fresh = [b for b in markers
-                 if not any(abs((b[0] + b[2]) / 2 - (o[0] + o[2]) / 2) <= LAUNCH_PROBE_NEW_MARKER_PX
-                            and abs((b[1] + b[3]) / 2 - (o[1] + o[3]) / 2) <= LAUNCH_PROBE_NEW_MARKER_PX
-                            for o in baseline)]
+                 if (b[2] - b[0] + 1) * (b[3] - b[1] + 1) >= LAUNCH_PROBE_MIN_BOX
+                 and not any(abs((b[0] + b[2]) / 2 - (o[0] + o[2]) / 2) <= LAUNCH_PROBE_NEW_MARKER_PX
+                             and abs((b[1] + b[3]) / 2 - (o[1] + o[3]) / 2) <= LAUNCH_PROBE_NEW_MARKER_PX
+                             for o in baseline)]
         near = [b for b in fresh
                 if _marker_near_castle(mem, b, probe.get('source'))
                 or _marker_near_castle(mem, b, probe.get('target'))]
@@ -1669,7 +1691,7 @@ def settle_launch_probes_from_roster(mem, castle, generals):
                                         reason='出撃元の将軍一覧にまだ出撃した将軍がいるため、出撃を未発射に戻す')
             continue
         probes.pop(step, None)
-        sortie = (mem.get('sorties') or {}).get(step)
+        sortie = _sorties(mem).get(step)
         if isinstance(sortie, dict):
             sortie['launch_confirmed'] = True
             sortie.pop('launch_kept', None)
@@ -1699,7 +1721,7 @@ def _rollback_unverified_launch(mem, step, probe, markers, reason=None):
                 'sortie_actor_miss'):
         (mem.get(key) or {}).pop(step, None)
     (_world(mem).get('launched_orders') or {}).pop(step, None)
-    (mem.get('sorties') or {}).pop(step, None)
+    _sorties(mem).pop(step, None)
     for target, entry in list((_world(mem).get('launched') or {}).items()):
         if entry.get('step') == step:
             _world(mem)['launched'].pop(target, None)

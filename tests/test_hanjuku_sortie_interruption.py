@@ -8,7 +8,7 @@ import pytest
 from docich import hanjuku_policy as p
 from docich.hanjuku_screen import Screen
 from docich.hanjuku_font import TextLine, UNKNOWN
-from docich.hanjuku.state.regions import world as _world, flow as _flow, journal as _journal
+from docich.hanjuku.state.regions import world as _world, sorties as _sorties, flow as _flow, journal as _journal
 
 
 def memory():
@@ -31,15 +31,15 @@ def test_interrupt_records_unknown_destination_once_and_blocks_same_general(kind
     p.observe_sortie_transition(screen(kind), mem, 'map_target')
     assert mem['orders']['1-A2'] == 'launched_unconfirmed'
     assert mem['active'] is None
-    assert mem['sorties']['1-A2']['target'] is None
+    assert _sorties(mem)['1-A2']['target'] is None
     assert p._en_route(mem) == ({'ゼウス'}, set())
     next_order = p.next_order(mem)
     # No other departure is required to exist; the interrupted actor stays busy.
     assert next_order is None or next_order['step'] != '1-A2'
-    first = deepcopy(mem['sorties'])
+    first = deepcopy(_sorties(mem))
     mem['active'] = '1-A2'  # later source verification must not count as a new interruption
     p.observe_sortie_transition(screen('general_list'), mem, 'castle_menu')
-    assert mem['sorties'] == first
+    assert _sorties(mem) == first
     assert len([r for r in mem['_records'] if r['decision']=='order_launched_unconfirmed']) == 1
 
 
@@ -56,7 +56,7 @@ def test_marker_return_resumes_same_target(active):
     mem['active'] = active
     p.observe_sortie_transition(screen('map_target'), mem, 'unknown')
     assert mem['active'] == '1-A2' and mem['orders']['1-A2'] == 'pending'
-    assert not mem['sorties']
+    assert not _sorties(mem)
     assert not _flow(mem)['sortie_attempt'].get('interrupted')
 
 
@@ -69,8 +69,8 @@ def test_confirm_before_any_target_is_not_departure():
 def test_real_entry_confirms_actual_not_planned_destination():
     mem = memory(); p.observe_sortie_transition(screen('defense_started'), mem, 'map_target')
     p.message_step(screen('attack_started', ['ゼウスしょうぐんがジョンリギじょうにのりこんだ']), mem)
-    assert mem['sorties']['1-A2']['target'] == 'ジョンリギ'
-    assert mem['sorties']['1-A2']['status'] == 'arrived'
+    assert _sorties(mem)['1-A2']['target'] == 'ジョンリギ'
+    assert _sorties(mem)['1-A2']['status'] == 'arrived'
     assert mem['attack']['step'] == '1-A2'
     assert mem['orders']['1-A2'] == 'launched'
     assert _world(mem)['garrison']['アルマムーン'] == ['どうし']
@@ -79,7 +79,7 @@ def test_real_entry_confirms_actual_not_planned_destination():
 
 def test_ambiguous_general_does_not_bind_unknown_destination():
     mem = memory(); p.observe_sortie_transition(screen('unknown'), mem, 'map_target')
-    mem['sorties']['other'] = dict(mem['sorties']['1-A2'])
+    mem['world']['sorties']['other'] = dict(mem['world']['sorties']['1-A2'])
     assert p._match_sortie(mem, 'ジョンリギ', 'ゼウス') == (None, 'ambiguous')
 
 
@@ -106,7 +106,7 @@ def test_a_general_listed_in_an_intervening_own_castle_continues_his_order():
              'cards': [], 'after': None, 'note': 't'}
     mem['chart_plan'] = {'request_id': 'x', 'orders': [order]}
     assert p._continue_transit_sorties(mem, 'ジョンリギ', ['ゼウス', 'リーキ']) == ['A:1:J1']
-    sortie = mem['sorties']['A:1:J1']
+    sortie = _sorties(mem)['A:1:J1']
     assert sortie['status'] == 'arrived' and sortie['target'] == 'ジョンリギ'
     assert sortie['transit_to'] == 'けっかい'
     assert mem['source_override']['A:1:J1'] == 'ジョンリギ'
@@ -132,8 +132,8 @@ def test_a_stale_general_listed_mid_route_is_a_transit_arrival():
               'source': 'スペンソニア', 'tick': mem['tick'] - p.SORTIE_BUSY_TICKS - 1}
     mem['sorties'] = {'A:1:J1': dict(sortie)}
     assert p._continue_transit_sorties(mem, 'ジョンリギ', ['ゼウス']) == ['A:1:J1']
-    assert mem['sorties']['A:1:J1']['status'] == 'arrived'
-    assert mem['sorties']['A:1:J1']['transit_to'] == 'けっかい'
+    assert _sorties(mem)['A:1:J1']['status'] == 'arrived'
+    assert _sorties(mem)['A:1:J1']['transit_to'] == 'けっかい'
 
 
 def test_an_unlisted_general_is_not_a_transit_arrival():
@@ -142,7 +142,7 @@ def test_an_unlisted_general_is_not_a_transit_arrival():
               'source': 'スペンソニア', 'tick': mem['tick'] - 1}
     mem['sorties'] = {'A:1:J1': dict(sortie)}
     assert p._continue_transit_sorties(mem, 'ジョンリギ', ['リーキ']) == []
-    assert mem['sorties']['A:1:J1'] == sortie
+    assert mem['world']['sorties']['A:1:J1'] == sortie
 
 
 @pytest.mark.parametrize('words,expected', [(['ゼウス','どうし'], 'pending'),
@@ -153,7 +153,7 @@ def test_source_evidence_allows_retry_only_when_general_is_still_there(words, ex
     actions = p.deploy_step(screen('general_list', words), mem)
     assert actions == [p.pad('b'), p.pad('b')]
     assert mem['orders']['1-A2'] == expected
-    assert mem['sorties']['1-A2']['target'] is None
+    assert _sorties(mem)['1-A2']['target'] is None
     assert mem['active'] is None
 
 
@@ -171,7 +171,7 @@ def test_unreachable_verification_does_not_fail_or_resend_sortie():
     mem['active'] = '1-A2'
     p._give_up_source(mem, p._order(mem))
     assert mem['orders']['1-A2'] == 'launched_unconfirmed'
-    assert mem['sorties']['1-A2']['verification_unavailable']
+    assert _sorties(mem)['1-A2']['verification_unavailable']
     assert mem['active'] is None
 
 

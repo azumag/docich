@@ -1505,7 +1505,8 @@ def test_hanjuku_hotload_versions_are_fixed_values_not_an_arbitrary_prefix():
                  "hanjuku-chart-v341-chikyu-harmagedon-general",
                  "hanjuku-chart-v343-defender-okunote-melee-behind",
                  "hanjuku-chart-v344-sortie-list-walk",
-                 "hanjuku-chart-v345-roster-unplaced",)
+                 "hanjuku-chart-v345-roster-unplaced",
+                 "hanjuku-chart-v526-completed-season-sites",)
     for version in versions:
         assert module._project_corner_state({'bot_version': version})['bot_version'] == version
     for version in (None, 'SECRET', 'hanjuku-chart-v130-SECRET',
@@ -4202,6 +4203,19 @@ def _ownership(module, root, row):
     return module._collect_hanjuku_predictions(root)["ownership"]
 
 
+def test_hanjuku_prediction_achieved_count_is_projected_as_cleared(tmp_path):
+    """Goal-settled rows have no terminal result; diagnostics still show the count."""
+    module = load_collector()
+    _prediction_round(tmp_path, _round_row(status="RESOLVED", achieved=2))
+    entry = module._collect_hanjuku_predictions(tmp_path)
+    assert entry["cleared"] == 2 and entry["status"] == "RESOLVED"
+
+    # A terminal result is authoritative when it carries a count.
+    _prediction_round(tmp_path, _round_row(status="RESOLVED", achieved=2,
+                                           result={"cleared": 1}))
+    assert module._collect_hanjuku_predictions(tmp_path)["cleared"] == 1
+
+
 def test_hanjuku_prediction_ownership_reports_the_decisive_record(tmp_path):
     module = load_collector()
     run_name, result_name, progress_name = (
@@ -5067,3 +5081,57 @@ def test_hanjuku_chart_worker_projection_is_bounded(tmp_path):
     assert odd['attempts'] is None
     empty=module._project_hanjuku_chart_worker(tmp_path/'no-such',now)
     assert empty=={'present':False,'readable':False}
+
+
+def test_compact_policy_projects_the_measured_boss_cell_without_free_text():
+    module = load_collector()
+    policy = module._compact_hanjuku_policy({
+        'chapter': 7, 'tick': 5000, 'active': None,
+        'boss_cell': {'chapter': 7, 'cell': [488, 300], 'tick': 4700,
+                      'readings': 2, 'note': 'DO-NOT-PUBLISH'},
+        'captured': ['PRIVATE'],
+    })
+    assert policy['boss_cell'] == {'chapter': 7, 'cell': [488, 300],
+                                   'readings': 2, 'age_ticks': 300}
+    assert 'DO-NOT-PUBLISH' not in json.dumps(policy)
+    assert 'PRIVATE' not in json.dumps(policy)
+
+
+def test_compact_policy_marks_a_malformed_boss_cell_as_unknown():
+    module = load_collector()
+    policy = module._compact_hanjuku_policy({
+        'chapter': 7, 'tick': 5000, 'active': None,
+        'boss_cell': {'chapter': 'PRIVATE', 'cell': ['a', 'b'], 'tick': 'x',
+                      'readings': -1},
+    })
+    assert policy['boss_cell'] == {'chapter': None, 'cell': None,
+                                   'readings': None, 'age_ticks': None}
+    assert 'PRIVATE' not in json.dumps(policy)
+    assert module._compact_hanjuku_policy({'chapter': 7})['boss_cell'] is None
+
+
+def test_compact_policy_projects_the_boss_probe_rotation():
+    module = load_collector()
+    policy = module._compact_hanjuku_policy({
+        'chapter': 7, 'tick': 100, 'active': None,
+        'boss_step_probe': {'A:x:M1': 0, 'A:x:M2': 1, 'A:x:M3': 1, 'A:x:M4': 'x'},
+    })
+    assert policy['boss_probes'] == {'steps': 4, 'indices': [0, 1]}
+    assert module._compact_hanjuku_policy({'chapter': 7})['boss_probes'] is None
+
+
+def test_compact_policy_projects_the_month_status_walk_outcome():
+    module = load_collector()
+    policy = module._compact_hanjuku_policy({
+        'chapter': 6, 'tick': 100, 'active': None,
+        'post_month_status_last': {'complete': True, 'failed': None,
+                                   'manifest': {'done': True, 'arrived': ['a', 'b']},
+                                   'carry': ['a', 'b'], 'note': 'DO-NOT-PUBLISH'},
+    })
+    assert policy['post_month'] == {'complete': True, 'failed': None, 'manifest_done': True,
+                                    'manifest_arrived': 2, 'carry': 2}
+    assert 'DO-NOT-PUBLISH' not in json.dumps(policy)
+    assert module._compact_hanjuku_policy({'chapter': 6})['post_month'] is None
+    odd = module._compact_hanjuku_policy({'chapter': 6, 'post_month_status_last': {'failed': 'PRIVATE'}})
+    assert odd['post_month'] == {'complete': False, 'failed': 'PRIVATE', 'manifest_done': False,
+                                 'manifest_arrived': None, 'carry': None}

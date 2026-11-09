@@ -177,6 +177,10 @@ def startable(order, request) -> str | None:
     source_probe with the non-person placeholder しょうぐん; its actual
     actor is chosen only from the live general list. Refuse absent, marching,
     elsewhere, and unconfirmed named actors before adopting a plan.
+
+    The hero is never a candidate: the owner keeps him at アルマムーン, and
+    deploy already answers every hero-led order with a companion, so a plan
+    naming him would stand as a sortie nobody carries out (owner 2026-11-08).
     """
     if not isinstance(request, dict):
         return None
@@ -184,6 +188,8 @@ def startable(order, request) -> str | None:
     lost = set(request.get('lost') or ())
     if source in lost:
         return 'source_lost'
+    if general == chart.HERO:
+        return 'hero_not_dispatchable'
     marching = {item.get('general') for item in request.get('en_route') or () if isinstance(item, dict)}
     if general in marching:
         return 'general_marching'
@@ -332,11 +338,24 @@ def validate(doc) -> dict:
                                or not re.fullmatch(r'[0-9a-f]{64}', digest)):
         raise ValueError('invalid request_digest')
     from .hanjuku_roster import roles
+    # The orders are the plan; the month's purchases are an optional side
+    # part. A malformed purchase plan used to discard a whole otherwise-valid
+    # answer (history: adjust_worker generate_failed invalid_output
+    # 'invalid purchases' five times), costing another LLM cycle. Keep the
+    # orders and drop only the purchases. Recruitment stays strict: its roles
+    # drive who is hired, so a malformed spec is not silently ignored.
+    dropped_parts = []
     recruitment = roles(doc['recruitment']) if doc.get('recruitment') is not None else None
+    try:
+        purchases = _purchases(doc.get('purchases'))
+    except ValueError:
+        purchases = None
+        dropped_parts.append('purchases')
     return {'schema': SCHEMA, 'chapter': chapter, 'request_id': rid, 'orders': orders,
             'recruitment': recruitment,
             'request_digest': digest,
-            'purchases': _purchases(doc.get('purchases')),
+            'dropped_parts': dropped_parts,
+            'purchases': purchases,
             'generated_at': (doc['generated_at'] if type(doc.get('generated_at')) in (int, float)
                              and math.isfinite(doc['generated_at']) else None),
             'source': _text(doc.get('source'), 'source', limit=40, required=False),
@@ -369,6 +388,10 @@ def save(runtime_dir: Path, doc, request=None) -> dict:
     from .game_switch import atomic_write_json
     from .hanjuku_run import append_log
     normalized = validate(doc)
+    if normalized.get('dropped_parts'):
+        append_log(Path(runtime_dir), HISTORY_LOG, {'event': 'adjusted_parts_dropped',
+                                                    'request_id': normalized['request_id'],
+                                                    'parts': list(normalized['dropped_parts'])})
     if isinstance(request, dict) and isinstance(request.get('request_digest'), str):
         # Bind the answer to the payload revision it answered; the policy
         # refuses an answer whose digest is not the current request's.

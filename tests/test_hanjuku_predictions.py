@@ -233,10 +233,12 @@ def test_existing_unrelated_remote_is_never_modified(env, status):
 @pytest.mark.parametrize('chapter', [1, 2, 3, 7])
 def test_terminal_uses_cleared_maximum_and_frozen_thresholds(env, reason, chapter):
     # 4択目（画面停滞で一時終了）は run の終わり方で選ぶため突破数に依存しない。
+    # ただし目標到達が同時に確認できた row は、挑戦終了を待たず達成時点で
+    # outcome-0 に精算される（2026-11-09 オーナー判断）。
     # game_over / input_stalled は従来どおり突破数で判定する（#2238）。
     index = {'game_over': {1: 2, 2: 1, 3: 0, 7: 0},
              'input_stalled': {1: 2, 2: 1, 3: 0, 7: 0},
-             'screen_stalled': {1: 3, 2: 3, 3: 3, 7: 3}}[reason][chapter]
+             'screen_stalled': {1: 3, 2: 3, 3: 0, 7: 0}}[reason][chapter]
     env.tick()
     progress.record(env.runtime, ID, {'chapter': chapter, 'chapter_evidence': 'header'}, [], DIGEST)
     terminal(env, reason)
@@ -368,11 +370,16 @@ def test_api_outage_persists_result_and_common_tick_retries_after_teardown(env):
     assert env.tick(101)['error'] == 'transport'
     assert env.state()['round']['result']['cleared'] == 2
     assert env.state()['best_cleared'] == 2
+    # 失敗後は 300 秒 backoff を守り、観測 tick ごとに PATCH を再試行しない。
+    calls_after_error = len(env.remote.calls)
+    assert env.tick(200, None)['mode'] != 'resolved'
+    assert len(env.remote.calls) == calls_after_error
     env.setup(ID2)
     env.remote.failure = None
     assert env.tick(401, None)['mode'] == 'resolved'
-    # 画面停滞の終端なので、突破数ではなく4択目（outcome-3）で確定する（#2238）。
-    assert env.remote.rows[0]['winning_outcome_id'] == 'outcome-3'
+    # 停滞終了でも目標到達（2話突破）が確認できているため outcome-0 で精算する
+    # （2026-11-09 オーナー判断。停滞は到達より弱い証拠）。
+    assert env.remote.rows[0]['winning_outcome_id'] == 'outcome-0'
 
 
 def test_unknown_score_resolves_as_temporary_end_without_guessing_zero(env):
@@ -595,12 +602,80 @@ def test_top_outcome_already_known_does_not_open_betting(env):
     assert env.remote.calls == []
 
 
-def test_top_outcome_during_voting_locks_but_waits_for_terminal(env):
+def test_top_outcome_during_voting_settles_at_achievement(env):
+    """目標到達は run の終端を待たず、その時点で outcome-0 に精算する。
+
+    2026-11-09 オーナー判断。到達は検証済み突破数で、後から減らないため
+    挑戦終了まで betting を開けたままにする理由がない。
+    """
     env.tick()
     progress.record(env.runtime, ID, {'chapter': 3, 'chapter_evidence': 'header'}, [], DIGEST)
     env.tick(131)
-    assert env.remote.rows[0]['status'] == 'LOCKED'
+    assert env.remote.rows[0]['status'] == 'RESOLVED'
+    assert env.remote.rows[0]['winning_outcome_id'] == 'outcome-0'
+    row = env.state()['round']
+    assert row['achieved'] == 2 and row.get('result') is None
     assert not (env.runtime / p.RESULT_FILE).exists()
+
+
+def test_goal_achievement_settles_then_opens_the_next_goal_in_the_same_run(env):
+    """達成で精算し、同じ挑戦の続きで次の目標(T+1)の予想を作る（2026-11-09）。"""
+    env.tick()
+    progress.record(env.runtime, ID, {'chapter': 3, 'chapter_evidence': 'header'}, [], DIGEST)
+    assert env.tick(131)['mode'] == 'resolved'
+    assert env.remote.rows[0]['winning_outcome_id'] == 'outcome-0'
+    assert env.state()['best_cleared'] == 2
+
+    assert env.tick(161)['mode'] == 'active'
+    row = env.state()['round']
+    assert row['runtime_id'] == ID['runtime_id']
+    assert row['kind'] == p.NEXT_PREDICTION_KIND
+    assert row['target'] == 3 and row.get('middle') is None
+    assert row['title'].startswith('半熟英雄：3話を突破できる？ #')
+    assert row['outcome_titles'] == ['3話突破', '3話突破ならず', '停滞で一時停止']
+    assert len(env.remote.rows) == 2
+    assert env.remote.rows[1]['status'] == 'ACTIVE'
+    # 同じ row は durable reread（_load）でも受理される。
+    assert p._load(env.g.state_dir, 1)['round']['kind'] == p.NEXT_PREDICTION_KIND
+
+    # 次の目標も達成したら、またその場で精算して次へ引き継ぐ。
+    progress.record(env.runtime, ID, {'chapter': 4, 'chapter_evidence': 'header'}, [], DIGEST)
+    assert env.tick(191)['mode'] == 'resolved'
+    assert env.remote.rows[1]['winning_outcome_id'] == 'outcome-0'
+    assert env.state()['best_cleared'] == 3
+    assert env.tick(221)['mode'] == 'active'
+    assert env.state()['round']['target'] == 4
+
+
+def test_next_goal_is_not_opened_after_a_terminal_settlement(env):
+    """run の終端で精算した場合は、次目標の予想を同じ挑戦に作らない。"""
+    env.tick()
+    progress.record(env.runtime, ID, {'chapter': 3, 'chapter_evidence': 'header'}, [], DIGEST)
+    terminal(env, 'game_over')
+    assert env.tick(131)['mode'] == 'resolved'
+    env.tick(161)
+    assert len([c for c in env.remote.calls if c[0] == 'POST']) == 1
+    assert env.state()['round']['target'] == 2
+
+
+def test_next_goal_is_not_opened_after_a_refund(env):
+    """返金で終わった予想のあとに、黙って次の賭けを開かない。"""
+    env.setup(identity=ID2, chapter=None)
+    env.tick(100, ID2)
+    terminal(env, 'input_stalled', ID2)
+    assert env.tick(101, ID2)['mode'] == 'canceled'
+    env.tick(131, ID2)
+    assert len([c for c in env.remote.calls if c[0] == 'POST']) == 1
+
+
+def test_chain_target_stops_at_the_final_chapter(env):
+    env.tick()
+    state = env.state()
+    row = state['round']
+    row.update(status='RESOLVED', achieved=12)
+    chain_state = {'best_cleared': 11}
+    assert p._chain_target(env.g.state_dir, row, chain_state) is None
+    assert chain_state['best_cleared'] == 12
 
 
 def test_pause_blocks_creation_not_result_recording_or_pending_settlement(env):

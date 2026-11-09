@@ -17,7 +17,7 @@ HOME = chart.home_castle(6)
 
 def memory(captured=None, garrison=None):
     return {'chapter': 6, 'tick': 1000, 'month': '50-11', 'gold': 500, '_records': [],
-            'orders': {}, 'sorties': {}, 'lost': [],
+            'orders': {}, 'world': {'sorties': {}},
             'captured': list(NORMAL if captured is None else captured),
             'garrison': dict(garrison if garrison is not None else
                              {c: ['ゼウス'] for c in NORMAL})}
@@ -80,3 +80,29 @@ def test_before_every_normal_castle_is_held_the_reserve_still_applies():
     mem = memory(captured=[c for c in NORMAL if c != missing],
                  garrison={c: ['ゼウス'] for c in NORMAL if c != missing})
     assert boss_attacks(mem) == []
+
+
+def test_a_live_egg_outranks_a_nearer_eggless_castle():
+    """g1163 2026-11-09 13:36: an eggless ヘーゼル was sent and lost for nothing.
+
+    The wave picker used to rank the march distance before the egg, so the
+    nearest castle's spent-egg general went first even when another castle held
+    a live egg.
+    """
+    garrison = {c: ['ゼウス'] for c in NORMAL}
+    cells = CELLS
+    boss = cells['ボス']
+    near, far = sorted((c for c in NORMAL if c != HOME),
+                       key=lambda c: sum((cells[c][i] - boss[i]) ** 2 for i in (0, 1)))[:2]
+    garrison[near] = ['ヘーゼル', 'ゼウス']
+    garrison[far] = ['ポセイドン', 'アマンディーヌ']
+    mem = memory(garrison=garrison)
+    mem['general_statuses'] = {'statuses': {
+        'ヘーゼル': {'broken': True, 'egg': None, 'uses': 0},
+        'ゼウス': {'broken': True, 'egg': None, 'uses': 0},
+        'ポセイドン': {'broken': False, 'egg': 'ベビーエッグ', 'uses': 3},
+        'アマンディーヌ': {'broken': True, 'egg': None, 'uses': 0}}}
+    attacks = boss_attacks(mem)
+    assert attacks
+    assert attacks[0]['source'] == far
+    assert attacks[0]['general'] == 'ポセイドン'

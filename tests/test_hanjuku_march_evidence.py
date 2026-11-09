@@ -5,6 +5,7 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from docich.hanjuku.os_layer.world import _en_route, SORTIE_BUSY_TICKS, march_arrival_limit
+from docich.hanjuku.state.regions import world as _world, sorties as _sorties
 from docich.hanjuku.strategy.orders import _arrival_limit, _reserved_targets, _retake_reserved
 
 
@@ -21,14 +22,14 @@ def memory(chapter=6, age=500, status="en_route"):
 
 def test_strategy_and_world_share_the_same_arrival_deadline():
     mem = memory()
-    sortie = mem["sorties"]["6-X1"]
+    sortie = _sorties(mem)["6-X1"]
     assert _arrival_limit(mem, sortie) == march_arrival_limit(mem, sortie)
 
 
 
 def test_long_march_remains_busy_after_old_display_deadline():
     mem = memory()
-    sortie = mem["sorties"]["6-X1"]
+    sortie = _sorties(mem)["6-X1"]
     assert _arrival_limit(mem, sortie) > SORTIE_BUSY_TICKS
     assert _en_route(mem) == ({"ナストリーニ"}, {"セレーネ"})
     assert "セレーネ" in _reserved_targets(mem)
@@ -36,8 +37,8 @@ def test_long_march_remains_busy_after_old_display_deadline():
 
 def test_reconciliation_window_is_bounded():
     mem = memory()
-    limit = _arrival_limit(mem, mem["sorties"]["6-X1"])
-    mem["tick"] = mem["sorties"]["6-X1"]["tick"] + limit - 1
+    limit = _arrival_limit(mem, _sorties(mem)["6-X1"])
+    mem["tick"] = _sorties(mem)["6-X1"]["tick"] + limit - 1
     assert "ナストリーニ" in _en_route(mem)[0]
     mem["tick"] += 1
     assert "ナストリーニ" not in _en_route(mem)[0]
@@ -64,7 +65,7 @@ def test_explicitly_overdue_or_arrived_is_not_claimed_to_be_marching():
 
 def test_bad_or_future_tick_does_not_make_live_route():
     mem = memory()
-    mem["sorties"]["6-X1"]["tick"] = mem["tick"] + 1
+    _world(mem).setdefault('sorties', {})["6-X1"]["tick"] = mem["tick"] + 1
     assert _en_route(mem) == (set(), set())
     assert not _reserved_targets(mem)
 
@@ -74,3 +75,17 @@ def test_overlay_absence_is_not_observed_march_completion():
               "overlays/direct_broadcast_overlay.html").read_text(encoding="utf-8")
     assert "の行軍が終了`" not in source
     assert "の追跡記録が消失（行軍終了は未確認）" in source
+
+
+def test_the_measured_slow_march_still_fits_the_limit():
+    """g1133: 603 chart cells took up to 32 min; the limit must cover that."""
+    mem = memory()
+    sortie = mem["sorties"]["6-X1"]
+    limit = march_arrival_limit(mem, sortie)
+    # アルマムーン (392,144) → セレーネ (616,704) is a 603-cell march.
+    assert limit >= 1920          # 32 minutes of observations
+    # The other measured march (740 cells, 34 min) also fits under the cap.
+    far = {"source": "アルマムーン", "target": "グルーポフ"}
+    assert march_arrival_limit(mem, far) >= 2040
+    # Nothing exceeds the bounded reconciliation window.
+    assert march_arrival_limit(mem, far) <= 6 * SORTIE_BUSY_TICKS

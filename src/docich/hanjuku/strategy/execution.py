@@ -11,7 +11,7 @@ from ... import hanjuku_chart as chart, hanjuku_reference as reference
 from ...hanjuku_egg_reference import general_max_hp
 from ..os_layer.roster import run_identity
 from ..os_layer.world import NAME
-from ..state.regions import world as _world, flow as _flow, journal as _journal
+from ..state.regions import world as _world, flow as _flow, journal as _journal, sorties as _sorties
 
 
 def _role_cards(raw, cards):
@@ -102,7 +102,7 @@ def execution_order(mem, step):
             and attempt.get('confirmation_tick') == confirmed['departure_binding']['confirm_tick']):
         return {**deepcopy(confirmed), '_execution_bound': True}
     snapshot = (_world(mem).get('launched_orders') or {}).get(step)
-    sortie = (mem.get('sorties') or {}).get(step) or {}
+    sortie = _sorties(mem).get(step) or {}
     if ((mem.get('orders') or {}).get(step) in ('launched', 'launched_unconfirmed')
             and _valid_departure(snapshot, mem)
             and type(sortie.get('confirmation_tick')) is int

@@ -143,6 +143,119 @@ def world_flags(frame, chapter, cursor=None):
     return out
 
 
+# Chapter 4's four 四季王 sites draw chapter 3's boss skull while the king
+# holds the site and plain terrain once it is cleared. The skull is chapter 3's
+# boss skull sprite, top-left (101, 63) in the chapter 3 view; a site's sprite
+# sits at that anchor plus the site cell's view offset
+# (tests/test_hanjuku_season_king_sites.py pins the same anchor).
+# g1163 2026-11-09: a cleared site has no marker left at all — 北西/南西 read
+# as plain terrain while the owner reported them cleared, and 南東 kept the
+# skull as the remaining king. An orange pennant seen earlier at three sites
+# was a marching army standing on them, not a cleared marker, so the cleared
+# test is "no skull and nothing but terrain": any unit portrait, army marker
+# or cloud leaves the site unreadable instead of guessing.
+SEASON_SITE_ANCHOR = (101, 63)          # chapter 3 skull top-left on the Y view
+SEASON_SKULL_LIGHT = ((164, 165, 164), (255, 254, 255))
+# The island's own palette inside a site box (grass, water, sand, forest).
+SEASON_TERRAIN = ((24, 141, 24), (90, 214, 8), (84, 208, 9), (0, 72, 24),
+                  (106, 165, 205), (57, 88, 123), (172, 157, 65), (197, 133, 49))
+SEASON_TERRAIN_RATIO = 0.95
+
+
+def season_sites(frame, chapter, cursor=None):
+    """{site: 'closed'|'open'} from the Y view's four corner markers.
+
+    Skull light is a live king. A box that is nothing but island terrain has
+    no marker: the site is cleared. Anything else (a general's portrait, an
+    army marker, a cloud, the cursor's gold) is unreadable and left out so the
+    caller keeps its previous state.
+    """
+    if chapter != 4 or frame is None or not hasattr(frame, 'pixel'):
+        return {}
+    anchor = chart.CASTLES[3].get(chart.boss_castle(3))
+    if anchor is None:
+        return {}
+    out = {}
+    for name in chart.boss_sites(4):
+        cell = chart.castles(4).get(name)
+        if cell is None:
+            continue
+        x = SEASON_SITE_ANCHOR[0] + (cell[0] - anchor[0]) // 8
+        y = SEASON_SITE_ANCHOR[1] + (cell[1] - anchor[1]) // 8
+        if cursor and abs(x + 5 - cursor[0]) <= 10 and abs(y + 5 - cursor[1]) <= 10:
+            continue
+        pixels = [frame.pixel(px, py) for px in range(x - 2, x + 12)
+                  for py in range(y - 2, y + 13)
+                  if 0 <= px < frame.width and 0 <= py < frame.height]
+        if len(pixels) < 100:
+            continue
+        light = sum(1 for px in pixels
+                    if any(_near_colour(px, colour) for colour in SEASON_SKULL_LIGHT))
+        terrain = sum(1 for px in pixels
+                      if any(_near_colour(px, colour) for colour in SEASON_TERRAIN))
+        if light >= 6:
+            out[name] = 'open'
+        elif terrain >= len(pixels) * SEASON_TERRAIN_RATIO:
+            out[name] = 'closed'
+    return out
+
+
+# Chapter 3's boss skull, measured on the Y view (top-left (101, 63) for the
+# cell (306, 141)). The same sprite marks the chapter-4 sites, and a moving
+# boss draws it too. A boss on the Y view is therefore locatable by its skull
+# alone, without knowing a fixed cell in advance.
+Y_VIEW_SKULL_TEMPLATE = (
+    (1, 0, (32, 32, 32)), (2, 0, (32, 32, 32)), (3, 0, (32, 32, 32)),
+    (4, 0, (32, 32, 32)), (5, 0, (32, 32, 32)),
+    (0, 1, (32, 32, 32)), (1, 1, (164, 165, 164)), (2, 1, (164, 165, 164)),
+    (3, 1, (164, 165, 164)), (4, 1, (164, 165, 164)), (5, 1, (164, 165, 164)),
+    (6, 1, (32, 32, 32)),
+    (0, 2, (164, 165, 164)), (1, 2, (164, 165, 164)), (2, 2, (255, 254, 255)),
+    (3, 2, (255, 254, 255)), (4, 2, (255, 254, 255)), (5, 2, (164, 165, 164)),
+    (6, 2, (164, 165, 164)), (7, 2, (32, 32, 32)),
+    (0, 3, (164, 165, 164)), (1, 3, (32, 32, 32)), (2, 3, (32, 32, 32)),
+    (3, 3, (255, 254, 255)), (4, 3, (32, 32, 32)), (5, 3, (32, 32, 32)),
+    (6, 3, (164, 165, 164)), (7, 3, (32, 32, 32)),
+    (0, 4, (164, 165, 164)), (1, 4, (32, 32, 32)), (2, 4, (32, 32, 32)),
+    (3, 4, (255, 254, 255)), (4, 4, (32, 32, 32)), (5, 4, (32, 32, 32)),
+    (6, 4, (164, 165, 164)), (7, 4, (32, 32, 32)),
+)
+Y_VIEW_SKULL_FIRST = (1, 1)          # the template's first gray pixel (anchor)
+# The sprite's top-left sits 0.25/2.125 px above-left of the cell's view point
+# (chapter 3 measured: skull (101, 63) = cell (306, 141)).
+SKULL_CELL_DX = 0.25
+SKULL_CELL_DY = 2.125
+
+
+def y_view_skulls(frame):
+    """Top-left positions of the boss skull sprite on the whole-island view."""
+    if frame is None or not hasattr(frame, 'pixel'):
+        return []
+    gray = Y_VIEW_SKULL_TEMPLATE[[i for i, item in enumerate(Y_VIEW_SKULL_TEMPLATE)
+                                  if item[2] == (164, 165, 164)][0]][2]
+    first_x, first_y = Y_VIEW_SKULL_FIRST
+    out = []
+    for y in range(20, min(180, frame.height)):
+        for x in range(20, min(236, frame.width)):
+            if frame.pixel(x, y) != gray:
+                continue
+            ox, oy = x - first_x, y - first_y
+            if all(frame.pixel(ox + dx, oy + dy) == colour
+                   for dx, dy, colour in Y_VIEW_SKULL_TEMPLATE):
+                out.append((ox, oy))
+    return out
+
+
+def skull_cell_at(skull_xy, chapter):
+    """The chart cell under a Y-view skull sprite (chapter 3's measured anchor)."""
+    offset = chart.Y_JUMP_OFFSET.get(chapter)
+    if not offset or not skull_xy:
+        return None
+    x, y = skull_xy
+    return (round((x + SKULL_CELL_DX - offset[0]) * 8),
+            round((y + SKULL_CELL_DY - offset[1]) * 8))
+
+
 def world_markers(frame) -> list:
     """▲ army markers on the whole-island view, as (x0, y0, x1, y1) boxes.
 

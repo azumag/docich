@@ -5,7 +5,7 @@ of them without waiting for a model, adopts a validated adjusted chart when
 one answers, and records every deviation.
 """
 from __future__ import annotations
-from ..state.regions import world as _world
+from ..state.regions import world as _world, sorties as _sorties
 
 import hashlib
 
@@ -91,13 +91,14 @@ def _interim_source(mem, target, chart_order, owned, busy, allow_sole=False):
                 blocker_free = [g for g in free.get(blocker) or ()
                                 if g not in unavailable_for_attack]
                 if len(set(blocker_free)) >= need:
-                    spares = _spares(blocker_free, unavailable_for_attack, sole)
+                    spares = _strongest_first(mem, _spares(blocker_free, unavailable_for_attack, sole))
                     if spares:
                         return blocker, spares[0]
                 if garrison.get(blocker) is None:
                     return blocker, MOVE_ANY_GENERAL
                 return None  # reinforce the blocker before trying this target
-        return best, _spares(free[best], unavailable_for_attack, sole)[0]
+        spares = _strongest_first(mem, _spares(free[best], unavailable_for_attack, sole))
+        return best, spares[0]
     probes = sorted(c for c in owned if routes.probe_due(mem, c))
     if probes:
         return probes[0], MOVE_ANY_GENERAL
@@ -115,6 +116,19 @@ def _interim_source(mem, target, chart_order, owned, busy, allow_sole=False):
         # list as a probe, rather than naming a possibly absent actor.
         return arrival, MOVE_ANY_GENERAL
     general = chart_order['general'] if chart_order else NAME
+    if general == NAME:
+        # Owner 2026-11-08: 主人公はアルマムーンから動かさない。A chart order that
+        # names the hero still runs, because deploy answers it with a live
+        # companion, but an interim copy of it must not stand as a hero sortie
+        # plan. Send a spare measured at the chart source, else let the live
+        # list choose the actor.
+        source = (chart_order or {}).get('source')
+        spare_pool = [g for g in (garrison.get(source) or ()) if g not in busy]
+        if source in owned and len(set(spare_pool)) >= need:
+            spares = _spares(spare_pool, unavailable_for_attack, sole)
+            if spares:
+                return source, spares[0]
+        general = MOVE_ANY_GENERAL
     if general in unavailable_for_attack:
         return None
     if general in busy:
@@ -235,7 +249,7 @@ def _boss_wave_in_flight(mem, boss):
     cannot be passed by the gap between the launch and its receipt.
     """
     now = int(mem.get('tick') or 0)
-    sorties = mem.get('sorties') or {}
+    sorties = _world(mem).get('sorties') or {}
     steps = set()
     for step, sortie in sorties.items():
         if (not isinstance(sortie, dict)
@@ -295,6 +309,27 @@ def _wave_pick(mem, target, owned, busy, allow_sole):
         if spares:
             return source, spares[0]
     return None
+
+
+def _strongest_first(mem, generals):
+    """Order a castle's spare generals by known max HP, strongest first.
+
+    g1163 chapter 5 (2026-11-09): プトレマイス was attacked five times with
+    expiring weak generals (ビシソワーズ 27, セミヨン 36) while カルーン held
+    ポセイドン 85. The garrison list is the game's roster order, not strength,
+    so the first spare was not the best one. A general whose max HP is unread
+    keeps its list position after the measured ones.
+    """
+    statuses = ((mem.get('general_statuses') or {}).get('statuses') or {})
+    rows = statuses if isinstance(statuses, dict) else {}
+
+    def rank(item):
+        index, name = item
+        row = rows.get(name)
+        hp = row.get('max_hp') if isinstance(row, dict) else None
+        return (0 if type(hp) is int else 1, -(hp if type(hp) is int else 0), index)
+
+    return [name for _, name in sorted(enumerate(generals), key=rank)]
 
 
 def _spares(free, unavailable=(), sole=False):
@@ -552,7 +587,7 @@ def interim_candidates(mem, allow_sole=False) -> dict:
     # to arrive must not hold its target forever (launched/launched_orders are
     # never pruned).
     now = int(mem.get('tick') or 0)
-    inflight = {sortie['target'] for step, sortie in (mem.get('sorties') or {}).items()
+    inflight = {sortie['target'] for step, sortie in _sorties(mem).items()
                 if isinstance(step, str) and step.startswith(chart_adjust.INTERIM_PREFIX)
                 and isinstance(sortie, dict)
                 and sortie.get('status') in ('en_route', 'launched_unconfirmed', 'launched', 'pending')
@@ -636,8 +671,13 @@ def interim_candidates(mem, allow_sole=False) -> dict:
                     distance = (round(((xy[0] - boss_xy[0]) ** 2
                                        + (xy[1] - boss_xy[1]) ** 2) ** 0.5)
                                 if boss_xy and xy else 0)
-                    choices.append((c in prefer_not, c == home, distance,
-                                    _boss_egg_rank(mem, g), c, g))
+                    # The egg is the boss fight's damage (owner 2026-11-05), so
+                    # its rank outranks march distance: g1163 2026-11-09 13:36
+                    # sent an eggless ヘーゼル at ハードロボ (152) and lost
+                    # without a point of damage while egg-carrying generals
+                    # waited in the same chapter.
+                    choices.append((c in prefer_not, c == home, _boss_egg_rank(mem, g),
+                                    distance, c, g))
         if choices:
             choices.sort()
             _, _, _, _, source, general = choices[0]
@@ -1309,7 +1349,7 @@ def _release_stale_steps(mem, steps):
     for step in steps:
         if status.get(step) != 'launched':
             continue
-        sortie = (mem.get('sorties') or {}).get(step) or {}
+        sortie = _sorties(mem).get(step) or {}
         if (sortie.get('status') in ('en_route', 'launched_unconfirmed')
                 and type(sortie.get('tick')) is int
                 and 0 <= now - sortie['tick'] < _arrival_limit(mem, sortie)):
@@ -1328,7 +1368,7 @@ def _release_stale_steps(mem, steps):
             # the next monthly named-status pass instead of adding a phantom
             # garrison member (the newly pending step can choose a real spare).
             _queue_overdue_location_recheck(mem, sortie)
-            (mem.get('sorties') or {}).pop(step, None)
+            _sorties(mem).pop(step, None)
             general, source = sortie.get('general'), sortie.get('source')
             _record(mem, 'sortie_record_expired', chart_step=step, general=general,
                     observed_metric={'general': general, 'source': source,
@@ -1400,7 +1440,7 @@ def _adjust_situation(mem):
     """
     now = int(mem.get('tick') or 0)
     # Same bound as _en_route: an unread arrival stops counting as marching.
-    marching = sorted({(s['general'], s.get('target')) for s in (mem.get('sorties') or {}).values()
+    marching = sorted({(s['general'], s.get('target')) for s in _sorties(mem).values()
                        if s.get('status') in ('en_route', 'launched_unconfirmed') and s.get('general')
                        and s.get('tick') is not None and now - int(s['tick']) < SORTIE_BUSY_TICKS},
                       key=str)

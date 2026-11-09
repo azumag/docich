@@ -144,6 +144,7 @@ Y_JUMP_VIEW_KINDS = frozenset({'map', 'map_target', 'world_map'})
 
 
 UNKNOWN_HOLD_ADVANCE = 6      # identical unreadable frames before one A is sent
+UNKNOWN_BATTLE_ADVANCE = 10   # any unreadable frames inside a battle before one A
 
 
 def unknown_hold_advance(screen, mem, actions, digest):
@@ -153,18 +154,29 @@ def unknown_hold_advance(screen, mem, actions, digest):
     input while the screen stayed unknown. Many game screens need one button to
     move on, so an identical frame repeated UNKNOWN_HOLD_ADVANCE times gets a
     single A. A screen that reacts never reaches the bound.
+
+    Inside a battle the frame animates (the boss breathes, the panels flash), so
+    no two frames carry the same digest and the identical-frame bound is never
+    reached: g1163 2026-11-09 13:12-13:16 held on the chapter-6 boss entry for
+    six minutes and the fight expired without a single input. Count consecutive
+    unreadable battle frames instead and send the same bounded A.
     """
     watch = mem.get('unknown_hold_watch') or {}
-    if watch.get('digest') != digest:
-        mem['unknown_hold_watch'] = {'digest': digest, 'n': 1}
-        return actions
-    watch['n'] = int(watch.get('n') or 0) + 1
+    same = watch.get('digest') == digest
+    watch['n'] = (int(watch.get('n') or 0) + 1) if same else 1
+    watch['digest'] = digest
+    watch['total'] = int(watch.get('total') or 0) + 1
     mem['unknown_hold_watch'] = watch
-    if watch['n'] < UNKNOWN_HOLD_ADVANCE:
+    in_battle = bool(mem.get('battle'))
+    if watch['n'] < UNKNOWN_HOLD_ADVANCE and not (
+            in_battle and watch['total'] >= UNKNOWN_BATTLE_ADVANCE):
         return actions
     watch['n'] = 0
+    watch['total'] = 0
     decision_log._record(mem, 'unknown_hold_advance', screen=screen.kind,
-                         observed_metric={'digest': digest[:16], 'held': UNKNOWN_HOLD_ADVANCE},
+                         observed_metric={'digest': digest[:16],
+                                          'held': UNKNOWN_HOLD_ADVANCE,
+                                          'battle': in_battle},
                          reason='読めない画面が同じままなので、Aを1回だけ送って進める')
     return [pad('a')]
 
@@ -344,6 +356,18 @@ def decide(frame: Frame, state: dict, *, adjusted: dict | None = None,
     hanjuku_chart.migrate_legacy_labels(state)
     memory = dict(state.get('policy') or {})
     memory['approx_map'] = bool(approx_map)
+    # Chapter 9's boss moves: only a fresh Y-view measurement may stand in
+    # for its missing static cell (see chart.MOVING_BOSS_CHAPTER).
+    reading = memory.get('boss_cell')
+    tick = memory.get('tick')
+    chapter = memory.get('chapter')
+    fresh = (isinstance(reading, dict) and reading.get('chapter') == chapter
+             and isinstance(reading.get('cell'), (list, tuple))
+             and type(reading.get('tick')) is int and type(tick) is int)
+    if fresh and chapter == hanjuku_chart.MOVING_BOSS_CHAPTER:
+        # A moving boss's position ages out; a static boss keeps its cell.
+        fresh = 0 <= tick - reading['tick'] <= hanjuku_chart.MOVING_BOSS_TICKS
+    hanjuku_chart.set_boss_cell(chapter, reading.get('cell') if fresh else None)
     with hanjuku_chart.map_context(memory, approx=approx_map):
         return _decide_impl(frame, state, adjusted=adjusted, interim=interim,
                             experience=experience, recall_inputs=recall_inputs,
@@ -803,7 +827,8 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
         settle_hold = y_jump_target_settle_step(screen, mem, actions)
         if settle_hold is not None:
             actions = settle_hold
-        if kind in {'unknown'} and phase not in {'transition','title','title_or_intro'} and mem.get('chapter'):
+        if (kind in {'unknown'} and mem.get('chapter')
+                and (phase not in {'transition', 'title', 'title_or_intro'} or mem.get('battle'))):
             if mem.get('held_phase')!=phase:
                 mem['held_phase']=phase
                 decision_log._record(mem,'situation_held',screen=kind,phase=phase,

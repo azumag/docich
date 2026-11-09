@@ -12,7 +12,7 @@ from docich.hanjuku.os_layer.screen import Screen
 from docich.hanjuku.strategy.execution import confirm_departure_order
 from test_hanjuku_sortie_evidence import actor_panel, measured_loaded_sortie
 from docich.hanjuku.state.regions import flow as _flow, journal as _journal
-from docich.hanjuku.state.regions import world as _world
+from docich.hanjuku.state.regions import world as _world, sorties as _sorties
 
 
 def memory():
@@ -67,8 +67,8 @@ def test_unconfirmed_departure_saves_actual_actor_source_and_unknown_destination
     mem = memory(); confirm(mem); mutate_plan(mem); interrupt(mem)
     assert _world(mem)['launched_orders']['1-A3']['general'] == 'ゼウス'
     assert _world(mem)['launched_orders']['1-A3']['source'] == 'カストーラ'
-    assert mem['sorties']['1-A3']['target'] is None
-    assert mem['sorties']['1-A3']['planned_target'] == 'スペンソニア'
+    assert _sorties(mem)['1-A3']['target'] is None
+    assert _sorties(mem)['1-A3']['planned_target'] == 'スペンソニア'
     assert_frozen(json.loads(json.dumps(mem)))
 
 
@@ -95,7 +95,7 @@ def test_selected_target_saves_actual_actor_even_after_plan_replacement(monkeypa
     assert request['general'] == 'ゼウス' and request['source'] == 'カストーラ'
     assert mem['orders']['1-A3'] == 'pending'
     assert 'ゼウス' in _world(mem)['garrison']['カストーラ']
-    assert not mem.get('sorties') and not _world(mem).get('launched_orders')
+    assert not _world(mem).get('sorties') and not _world(mem).get('launched_orders')
     assert_frozen(mem)
 
 
@@ -105,7 +105,7 @@ def test_marker_return_is_same_execution_but_new_retry_requires_fresh_confirmati
     assert mem['orders']['1-A3'] == 'pending'
     assert_frozen(mem)
     # A lost/cancelled sortie can be replanned. No old confirmation owns it.
-    _flow(mem).pop('sortie_attempt'); mem['sorties'] = {}
+    _flow(mem).pop('sortie_attempt'); _world(mem)['sorties'] = {}
     assert p._order_for_step(mem, '1-A3')['target'] == 'けっかい'
     assert p._sortie_general(p._order_for_step(mem, '1-A3'), mem) == 'ヴィーナス'
 
@@ -118,7 +118,7 @@ def test_foreign_or_corrupt_saved_execution_cannot_fall_back_to_the_hero(change)
         mem['_run_identity'][change] = 742 if change == 'generation' else 'different'
     elif change == 'chapter': mem['chapter'] = 2
     elif change == 'future': mem['tick'] = 19
-    elif change == 'serial': mem['sorties']['1-A3']['confirmation_tick'] = True
+    elif change == 'serial': _sorties(mem)['1-A3']['confirmation_tick'] = True
     else:
         key = {'actor': 'general', 'source': 'source', 'cards': 'cards'}[change]
         _world(mem)['launched_orders']['1-A3'][key] = {'actor': 'どうし', 'source': 'ゴーメン',
@@ -159,7 +159,7 @@ def test_real_confirmation_handler_binds_named_actor_actual_source_and_carried_c
     assert stored['general'] == 'ゼウス' and stored['source'] == 'カストーラ'
     assert stored['cards'] == ['クースカン'] and 'departure_binding' in stored
     assert _flow(mem)['sortie_attempt']['target_seen'] is False
-    assert not mem.get('sorties')  # planned confirmation is not actual departure
+    assert not _world(mem).get('sorties')  # planned confirmation is not actual departure
 
 
 @pytest.mark.parametrize('name', ['どうし', 'unknown', 'ゼウス□'])
@@ -225,7 +225,7 @@ def test_reconciled_attempt_does_not_claim_a_repicked_pending_order():
     mem = memory(); confirm(mem); interrupt(mem)
     assert _flow(mem)['sortie_attempt']['interrupted'] is True
     # The launched march resolved; a retry put the step back to pending.
-    mem['sorties'] = {}
+    _world(mem)['sorties'] = {}
     _world(mem)['launched_orders'] = {}
     mem['orders']['1-A3'] = 'pending'
     assert p._order_for_step(mem, '1-A3') is not None

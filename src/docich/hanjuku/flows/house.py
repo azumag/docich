@@ -14,7 +14,7 @@ from ..os_layer import roster as receipts
 # World facts shared with the economy strategy live in the OS layer.
 from ..os_layer.world import HOUSE_VIEW, _castle_status_after_sortie, _repair_hp_ready
 from ..strategy import goals
-from ..state.regions import world as _world, flow as _flow, journal as _journal
+from ..state.regions import world as _world, flow as _flow, journal as _journal, sorties as _sorties
 
 # The heart's centre and the selectable cell differ by half a view pixel
 # (four field pixels). Chapter 2's successful isolated trip used (128, 94).
@@ -91,6 +91,9 @@ CAMP_LOCATIONS = frozenset({'キャンプしています', 'キャンプのな�
 # しんぐんちゅうです is what the game prints for a marching general (probe of
 # g1097, 2026-11-01); いどうしています was never seen on a real status panel.
 MARCH_LOCATIONS = frozenset({'いどうしています', 'しんぐんちゅうです', 'いまこちらにむかっています'})
+# 章またぎの引き継ぎ待ち。フィールド行軍ではないが、所在は「城ではない」
+# 既知の待ち状態として扱う（実画面 g1153 2026-11-08）。
+CARRY_LOCATIONS = frozenset({'いまこちらにむかっております'})
 LEVEL_STATUS_WAIT = 12   # observations allowed for the two country-status pages
 LEVEL_REPRESS_EVERY = 3  # observations between A presses on the unopened ステータス row
 LEVEL_UNREAD_LIMIT = 2   # unread months in a chapter before the page is left alone
@@ -150,13 +153,17 @@ def general_status(screen):
         if hp is not None and not 0 <= hp <= max_hp:
             hp, max_hp = None, None
         wage_value = receipts.fixed_wage(name)  # stable salary; no extra individual screen
-        camp = location_row(screen) in CAMP_LOCATIONS if (x, y) == (24, 39) else False
+        location_text = location_row(screen)
+        camp = location_text in CAMP_LOCATIONS if (x, y) == (24, 39) else False
+        carry = any(phrase in screen.text for phrase in CARRY_LOCATIONS)
         return {'general': name, 'broken': broken, 'hp': hp, 'max_hp': max_hp, 'wage': wage_value,
                 'egg': uses[1] if uses else None, 'uses': int(uses[2]) if uses else None,
                 **({'camp_observed': True} if camp else {}),
+                'carry_waiting': carry,
                 'location': 'castle' if 'しろのなかにいます' in screen.text else 'field',
-                'location_observed': camp or any(phrase in screen.text for phrase in
-                                         ('しろのなかにいます', *MARCH_LOCATIONS))}
+                'location_observed': camp or carry
+                                    or any(phrase in screen.text for phrase in
+                                           ('しろのなかにいます', *MARCH_LOCATIONS))}
     return None
 
 
@@ -491,11 +498,11 @@ def _finish(mem):
     # _bind_sortie, which claimed キカンドン as this sortie's arrival at
     # 2026-10-01 07:08 and could turn later arrivals ambiguous. Close them
     # here; a successful trip already recorded them as 'recalled'.
-    stale = [key for key, sortie in (mem.get('sorties') or {}).items()
+    stale = [key for key, sortie in _sorties(mem).items()
              if sortie.get('purpose') == 'house'
              and sortie.get('status') in ('en_route', 'launched_unconfirmed')]
     for key in stale:
-        mem['sorties'][key]['status'] = 'closed'
+        _world(mem).setdefault('sorties', {})[key]['status'] = 'closed'
     if stale:
         # The registered entry cell can sit on a neighbouring impassable
         # tile in some chapters (g1097 ch5: the general stopped beside the
@@ -858,7 +865,7 @@ def _next_general(mem):
     # instead charged キカンドン at 07:08 instead of the house. Wait for her
     # arrival instead of spending the session on a destination the game
     # ignores; the next scan retries her.
-    marching = next((s for s in (mem.get('sorties') or {}).values()
+    marching = next((s for s in _sorties(mem).values()
                      if s.get('general') == name
                      and s.get('status') in ('en_route', 'launched_unconfirmed')
                      and not _castle_status_after_sortie(info, s, mem)), None)
@@ -1314,7 +1321,7 @@ def _step_once(screen, mem, frame):
                     # records it, so mirroring would count one need twice.
                     _tally(mem, 'reopened_rows')
                 _record(mem, 'survey_carried', observed_metric=carry,
-                        reason='前月に健康で城に居た将軍の行を引き継ぎ、残りの本人だけ開き直す(月境界の持ち越し)')
+                        reason='前月に健康で城に居た将軍と章またぎ待ちの行を引き継ぎ、残りの本人だけ開き直す(月境界の持ち越し)')
             reused, actions = _resume_completed_survey(screen, mem, frame, scope, field_count, field_tick)
             if reused:
                 return actions
@@ -2265,11 +2272,11 @@ def _repair_step(screen, mem, frame):
                 # observation below: leaving the map only proves the unit
                 # started moving, not that it reached the house (W4
                 # reroute, issuecomment-6645962702).
-                for sortie in (mem.get('sorties') or {}).values():
+                for sortie in _sorties(mem).values():
                     if sortie.get('general') == name and sortie.get('status') in ('en_route', 'launched_unconfirmed'):
                         sortie['status'] = 'redirected_house'
                 tick = int(mem.get('tick') or 0)
-                mem.setdefault('sorties', {})[f'HOUSE_OUT:{tick}'] = {
+                _world(mem).setdefault('sorties', {})[f'HOUSE_OUT:{tick}'] = {
                     'general': name, 'source': state.get('source'),
                     'target': None, 'status': 'en_route', 'purpose': 'house', 'tick': tick}
                 _record(mem, 'departed', reason='移動先選択からフィールドへ戻ったことを確認')
@@ -2281,7 +2288,7 @@ def _repair_step(screen, mem, frame):
         if prices:
             # The gift list proves actual arrival, even if a later purchase or
             # return step aborts. Never miscount such a visit as a bad entry.
-            for sortie in (mem.get('sorties') or {}).values():
+            for sortie in _sorties(mem).values():
                 if (sortie.get('general') == name and sortie.get('purpose') == 'house'
                         and sortie.get('status') in ('en_route', 'launched_unconfirmed')):
                     sortie['status'] = 'arrived_house'
@@ -2405,10 +2412,10 @@ def _repair_step(screen, mem, frame):
         if screen.kind == 'map':
             receipts.dirty_status(mem, [name], fields=('hp', 'location'))
             tick = int(mem.get('tick') or 0)
-            for sortie in (mem.get('sorties') or {}).values():
+            for sortie in _sorties(mem).values():
                 if sortie.get('general') == name and sortie.get('purpose') == 'house':
                     sortie['status'] = 'recalled'
-            mem.setdefault('sorties', {})[f'HOUSE:{tick}'] = {
+            _world(mem).setdefault('sorties', {})[f'HOUSE:{tick}'] = {
                 'general': name, 'target': state['return_goal'], 'status': 'en_route',
                 'purpose': 'move', 'tick': tick}
             _next_general(mem)

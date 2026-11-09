@@ -6970,6 +6970,52 @@ def _project_corner_state(data):
             "hanjuku-chart-v516-singleton-roster-probe",
             "hanjuku-chart-v517-summon-attack-data",
             "hanjuku-chart-v518-input-tempo",
+            "hanjuku-chart-v519-carry-manifest",
+            "hanjuku-chart-v520-recall-task-retry",
+            "hanjuku-chart-v521-powerless-return",
+            "hanjuku-chart-v522-hero-not-planned",
+            "hanjuku-chart-v523-manifest-json-state",
+            "hanjuku-chart-v524-menu-cursor-feedback",
+            "hanjuku-chart-v525-card-scroll-catalogue",
+            "hanjuku-chart-v526-completed-season-sites",
+            "hanjuku-chart-v527-season-site-markers",
+            "hanjuku-chart-v528-season-site-terrain",
+            "hanjuku-chart-v529-site-step-rearm",
+            "hanjuku-chart-v530-chapter-scope-clear",
+            "hanjuku-chart-v531-endgame-boss-probes",
+            "hanjuku-chart-v532-hero-guard-preflight",
+            "hanjuku-chart-v534-probe-preflight-exemption",
+            "hanjuku-chart-v535-adjust-part-salvage",
+            "hanjuku-chart-v536-moving-boss-y-view",
+            "hanjuku-chart-v537-launch-marker-size",
+            "hanjuku-chart-v538-y-view-boss-cell",
+            "hanjuku-chart-v539-boss-cell-diagnostics",
+            "hanjuku-chart-v540-strongest-attacker",
+            "hanjuku-chart-v541-chapter-scope-hygiene",
+            "hanjuku-chart-v542-empty-garrison-read",
+            "hanjuku-chart-v543-capped-card-skip",
+            "hanjuku-chart-v544-boss-probe-fine-ring",
+            "hanjuku-chart-v545-boss-probe-diagnostics",
+            "hanjuku-chart-v546-boss-probe-diagonal",
+            "hanjuku-chart-v547-static-roster-marker",
+            "hanjuku-chart-v548-house-read-reuse",
+            "hanjuku-chart-v549-march-rate",
+            "hanjuku-chart-v550-post-month-diagnostics",
+            "hanjuku-chart-v551-card-scroll-hold",
+            "hanjuku-chart-v552-card-scroll-taps",
+            "hanjuku-chart-v554-post-month-result-fix",
+            "hanjuku-chart-v555-boss-phantom-step",
+            "hanjuku-chart-v556-ch6-boss-cell-up",
+            "hanjuku-chart-v557-battle-unknown-advance",
+            "hanjuku-chart-v558-boss-wave-egg-first",
+            "hanjuku-chart-v559-boss-panel-entry-bind",
+            "hanjuku-chart-v562-boss-egg-unusable",
+            "hanjuku-chart-v563-boss-egg-row-log",
+            "hanjuku-chart-v564-ch6-boss-cell-revert",
+            "hanjuku-chart-v565-boss-probe-scope",
+            "hanjuku-chart-v566-live-status-region",
+            "hanjuku-chart-v560-castle-list-scroll",
+            "hanjuku-chart-v561-post-month-repair-status",
             "hanjuku-chart-v501-idle-reanchor",
             "hanjuku-chart-v502-idle-and-roster-joins",
             "hanjuku-chart-v503-month-start-counts",
@@ -8343,7 +8389,10 @@ def _collect_hanjuku_predictions(state_dir):
                                 and 1 <= row["window"] <= 1800 else None),
              "status": choice(row.get("status"), {
                  "INTENT", "ACTIVE", "LOCKED", "RESOLVED", "CANCELED"}),
-             "cleared": chapter(result.get("cleared")),
+             # A goal settled at achievement carries no terminal result; its
+             # verified count is `achieved` (2026-11-09). Counts only, no prose.
+             "cleared": chapter(result.get("cleared") if result.get("cleared") is not None
+                                else row.get("achieved")),
              "next_poll_at": _finite_number(data.get("next_poll_at"))}
     health = _collect_hanjuku_prediction_health(state_dir, errors)
     if health is not None:
@@ -12056,6 +12105,51 @@ HANJUKU_SEASON_SITES = frozenset({
     '四季王城(北西)', '四季王城(北東)', '四季王城(南西)', '四季王城(南東)'})
 
 
+def _compact_post_month(last):
+    """The month's status-walk outcome: fixed tokens and counts only.
+
+    The walk records ``complete``, ``failed`` and the hero-castle manifest
+    result; there is no free-text result token (v550 projected one that the
+    policy never writes, so it always read null).
+    """
+    if not isinstance(last, dict):
+        return None
+    carry = last.get('carry')
+    manifest = last.get('manifest') if isinstance(last.get('manifest'), dict) else {}
+    return {'complete': last.get('complete') is True,
+            'failed': last.get('failed') if isinstance(last.get('failed'), str) else None,
+            'manifest_done': manifest.get('done') is True,
+            'manifest_arrived': (len(manifest['arrived'])
+                                 if isinstance(manifest.get('arrived'), (list, tuple)) else None),
+            'carry': len(carry) if isinstance(carry, (list, tuple)) else None}
+
+
+def _compact_boss_probes(probes):
+    """Which boss-cell candidates the adopted plan rotates (v544): counts only."""
+    if not isinstance(probes, dict) or not probes:
+        return None
+    indices = sorted({v for v in probes.values() if type(v) is int and v >= 0})
+    return {'steps': len(probes), 'indices': indices[:12]}
+
+
+def _compact_boss_cell(reading, now):
+    """The Y-view measured boss cell (v538): fixed chapter/cell/counts only."""
+    if not isinstance(reading, dict):
+        return None
+    chapter = reading.get('chapter')
+    cell = reading.get('cell')
+    tick = reading.get('tick')
+    readings = reading.get('readings')
+    point = None
+    if isinstance(cell, (list, tuple)) and len(cell) == 2 and all(type(v) is int for v in cell):
+        point = [cell[0], cell[1]]
+    age = tick if type(tick) is int and type(now) is int else None
+    return {'chapter': chapter if type(chapter) is int else None,
+            'cell': point,
+            'readings': readings if type(readings) is int and readings > 0 else None,
+            'age_ticks': (max(0, now - age) if age is not None else None)}
+
+
 def _compact_hanjuku_policy(mem, state=None):
     """Small map/route summary that survives the tactical detail drop.
 
@@ -12076,7 +12170,7 @@ def _compact_hanjuku_policy(mem, state=None):
     orders = mem.get('orders') if isinstance(mem.get('orders'), dict) else {}
     world = mem.get('world') if isinstance(mem.get('world'), dict) else {}
     garrison = mem.get('garrison') if isinstance(mem.get('garrison'), dict) else world.get('garrison', {})
-    sorties = mem.get('sorties') if isinstance(mem.get('sorties'), dict) else {}
+    sorties = mem.get('sorties') if isinstance(mem.get('sorties'), dict) else world.get('sorties', {})
     relaunches = mem.get('boss_relaunch') if isinstance(mem.get('boss_relaunch'), dict) else {}
     victories = mem.get('boss_victories') if isinstance(mem.get('boss_victories'), dict) else {}
     retries = mem.get('retries') if isinstance(mem.get('retries'), dict) else {}
@@ -12160,6 +12254,9 @@ def _compact_hanjuku_policy(mem, state=None):
                                             if row['status'] == 'overdue'
                                             and row['age_ticks'] is not None), default=None)},
         'boss_victories': {'count': len(victories), 'sites': won_sites[:8]},
+        'boss_cell': _compact_boss_cell(mem.get('boss_cell'), mem.get('tick')),
+        'boss_probes': _compact_boss_probes(mem.get('boss_step_probe')),
+        'post_month': _compact_post_month(mem.get('post_month_status_last')),
         'cursor': ([item for item in cursor[:2] if type(item) is int]
                    if isinstance(cursor, (list, tuple)) and len(cursor) == 2 else None),
         'uncertain': mem.get('uncertain') is True,
@@ -12365,7 +12462,7 @@ def _collect_hanjuku_tactical(state_dir, now):
         captured = mem.get('captured', [])
         world = mem.get('world') if isinstance(mem.get('world'), dict) else {}
         garrison = mem.get('garrison', world.get('garrison', {}))
-        sorties = mem.get('sorties', {})
+        sorties = mem.get('sorties', world.get('sorties', {}))
         tick = mem.get('tick')
         unknown = mem.get('general_location_unknown', world.get('general_location_unknown', []))
         if (not isinstance(captured, list) or not isinstance(garrison, dict)

@@ -5,7 +5,7 @@ source castle and general, selects the planned cards and confirms the sortie,
 holding or cancelling when the visible menu contradicts the plan.
 """
 from __future__ import annotations
-from ..state.regions import world as _world, flow as _flow, journal as _journal
+from ..state.regions import world as _world, flow as _flow, journal as _journal, sorties as _sorties
 
 import re
 import time
@@ -33,6 +33,9 @@ from ..strategy.orders import (SOURCE_LOCATION_RECHECK_LIMIT, SORTIE_CANCELLED_O
                                _record_sortie_cancelled_observed, _reserve_source_guard, _retake_reserved,
                                _sortie_general, _source, _source_location_recheck, _source_spare_missing,
                                _staffed_elsewhere, _unplaced_castle_generals)
+
+
+CARD_SCROLL_HOLD_MAX = 4        # rows one held scroll may cross
 
 
 def _cancel_broken_hero_sortie(mem, order):
@@ -69,7 +72,12 @@ def _verify_sortie_source(screen, mem, order):
     name on it is not evidence of departure.
     """
     step = order['step']
-    sortie = mem['sorties'][step]
+    sortie = _sorties(mem).get(step)
+    if not isinstance(sortie, dict) or not isinstance(sortie.get('general'), str) or not sortie.get('general'):
+        _record(mem, 'sortie_verification_held', chart_step=step,
+                reason='出撃記録または将軍名が欠損しているため在城・不在を推定せず検証を保留する')
+        mem['active'] = None
+        return [pad('b'), pad('b')]
     present = _present_generals(screen)
     if present and sortie['general'] in present and not _general_visible(screen, sortie['general']):
         present = None
@@ -532,6 +540,28 @@ def _card_proven_absent(card, inventory, *, bottom=False):
     return len(rows) < 4 or min(ids) < target < max(ids) or (bottom and target > max(ids))
 
 
+def _card_scroll_frames(mem, card, inventory):
+    """Frames to hold one scroll toward ``card`` (1 = the measured single down).
+
+    The card list is ID-sorted and shows the cards with stock, so the number of
+    held cards between the visible edge and the target is the number of rows
+    left to scroll. Holding four at once replaces four observations with one
+    (g1163 2026-11-09: 68 scrolls in 15 minutes, ~8 per sortie). The landing is
+    still read before any selection, and the flow can scroll back up.
+    """
+    target = CARD_IDS.get(card)
+    rows = inventory.get('rows') or []
+    ids = [CARD_IDS.get(r['card']) for r in rows]
+    if target is None or None in ids or len(rows) != 4:
+        return 1
+    down = target > max(ids)
+    lo, hi = (max(ids), target) if down else (target, min(ids))
+    stock = mem.get('card_stock') if isinstance(mem.get('card_stock'), dict) else {}
+    between = [c for c, cid in CARD_IDS.items()
+               if type(cid) is int and lo < cid < hi and int(stock.get(c, 0) or 0) > 0]
+    return max(1, min(len(between), CARD_SCROLL_HOLD_MAX))
+
+
 def _lower_card_boundary(mem, order, inventory):
     """The panel shows the list's last row: Down twice left it unchanged.
 
@@ -873,6 +903,9 @@ def _list_menu_to(screen, mem, order, general):
     return pad('down' if names.index(general) > names.index(cur[2]) else 'up')
 
 
+GARRISON_EMPTY_READINGS = 2      # equal empty list frames before "no generals"
+
+
 def _observe_garrison(screen, mem, order, *, complete=True):
     """Remember who a castle's general list showed (``interim_candidates``).
 
@@ -884,6 +917,20 @@ def _observe_garrison(screen, mem, order, *, complete=True):
     castle = _source(order, mem)
     if present is None or not castle:
         return
+    if not present:
+        # A frame that shows the game's own "no generals" line is evidence on
+        # its own. Anything else is a transition/OCR miss until it repeats: the
+        # menu frame of a staffed castle can read as no rows (g1163 2026-11-09
+        # 08:31:26 recorded {} for アルマムーン with どうし+3 standing there),
+        # and a known-empty castle would stop its sorties and defender checks.
+        if 'おりません' not in (screen.text or ''):
+            streak = mem.setdefault('garrison_empty_streak', {})
+            count = int(streak.get(castle) or 0) + 1
+            streak[castle] = count
+            if count < GARRISON_EMPTY_READINGS or not complete:
+                return
+    else:
+        (mem.get('garrison_empty_streak') or {}).pop(castle, None)
     garrison = _world(mem).setdefault('garrison', {})
     visible = set(_present_generals(screen) or ())
     _world(mem)['general_location_unknown'] = [g for g in _world(mem).get('general_location_unknown') or ()
@@ -1691,7 +1738,12 @@ def deploy_step(screen: Screen, mem):
             if direction == 'up' and isinstance(boundary, dict):
                 boundary['await_input'] = True
                 boundary.pop('request_trace', None)
-            return [pad(direction)]
+            frames = _card_scroll_frames(mem, card, inventory)
+            # The card list does not auto-repeat: a held direction moved exactly
+            # one row in the live check (g1163 2026-11-09 11:46:26-27: the window
+            # advanced one row per four-frame hold). Send distinct taps instead;
+            # the landing is read before any selection.
+            return [pad(direction) for _ in range(frames)]
         if row is None or row['stock'] == 0 or inventory['remaining'] == 0:
             proven = upper_absent or _card_proven_absent(card, inventory, bottom=bottom)
             if proven:

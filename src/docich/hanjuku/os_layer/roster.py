@@ -556,11 +556,21 @@ def _previous_month(month):
 
 
 def _carry_eligible(row, dirty_fields):
-    """Any verified, unchanged castle resident is reusable, even wounded or broken."""
+    """Any verified, unchanged resident or carry waiter is reusable."""
     if not isinstance(row, dict) or dirty_fields:
         return False
     hp, maximum = row.get('hp'), row.get('max_hp')
-    return (row.get('location') == 'castle' and row.get('location_observed') is True
+    if row.get('location') == 'castle':
+        return (row.get('location_observed') is True
+                and type(row.get('broken')) is bool
+                and type(hp) is int and type(maximum) is int
+                and maximum > 0 and 0 < hp <= maximum)
+    # A chapter carry-over waiter is a known queue state, not an unread field
+    # location.  The hero-castle manifest refreshes this row each month, so a
+    # clean waiting row can cross the month boundary without another status A.
+    return (row.get('location') in ('field', 'carry')
+            and row.get('carry_waiting') is True
+            and row.get('location_observed') is True
             and type(row.get('broken')) is bool
             and type(hp) is int and type(maximum) is int
             and maximum > 0 and 0 < hp <= maximum)
@@ -571,8 +581,9 @@ def carry_forward(mem):
 
     The roster names come from this month's complete names-only count, so
     membership is always re-read. A previous-month row is reused only if the
-    general was a verified castle resident (even wounded or with a broken egg),
-    and no battle/sortie/recall/egg event marked it dirty since.
+    general was a verified castle resident (even wounded or with a broken egg)
+    or a known chapter carry-over waiter, and no battle/sortie/recall/egg event
+    marked it dirty since.
     Every other general gets a placeholder row that is dirty in all fields, so
     the ordinary partial walk opens exactly those. Returns ``None`` when
     nothing was done, else ``{'carried': [...], 'reopen': [...]}``.

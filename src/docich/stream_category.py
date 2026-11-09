@@ -44,6 +44,9 @@ RECONCILE_SCHEMA = 1
 # rewritten; a parked loop stops updating it.
 BACKGROUND_STATE_FRESH_S = 120.0
 BACKGROUND_GAME = "sorengame"
+#: The only game whose viewer title names a measured in-run goal. A chapter
+#: clear changes the title to the next goal (see ``stream_title_context``).
+PROGRESS_TITLE_GAME = "hanjuku-hero"
 # A failed announce is retried only after this backoff, so an unreachable
 # platform cannot turn a one-minute tick into a request storm.
 RECONCILE_RETRY_BACKOFF_S = 300.0
@@ -287,12 +290,16 @@ def _announce_explicit_category(
     return True
 
 
-def announce_stream_game(g: GlobalConfig, game: str, *, spawn=None) -> bool:
+def announce_stream_game(
+    g: GlobalConfig, game: str, *, spawn=None, title_only: bool = False
+) -> bool:
     """Ask the Soren updater to follow ``game``; ``False`` when skipped.
 
     Fixed arguments only: the game name (validated) and the reviewed games
     directory.  ``--games-dir`` is required because the script defaults to the
     Soren checkout, while the game definitions live in this repository.
+    ``title_only`` is used when the game is already on air and only its
+    measured progress (the next goal) changed; the category stays untouched.
     """
     try:
         game = validate_game_name(game)
@@ -305,12 +312,17 @@ def announce_stream_game(g: GlobalConfig, game: str, *, spawn=None) -> bool:
     if not script.is_file() or not os.access(script, os.X_OK):
         _record_title_sync_skip(g, "updater_missing")
         raise StreamCategoryError(f"{SCRIPT_NAME} が見つかりません: {script}")
+    # Capture the goal marker before the title is composed. If the count moves
+    # while the arguments are built, the older marker is stored and the next
+    # tick re-announces instead of leaving the title one chapter behind.
+    marker = _title_marker(g, game)
     argv = [
         str(script),
         "--game",
         game,
         "--games-dir",
         str(Path(g.games_dir).resolve()),
+        *(["--title-only"] if title_only else []),
         *viewer_title_args(game, g),
     ]
     try:
@@ -322,7 +334,7 @@ def announce_stream_game(g: GlobalConfig, game: str, *, spawn=None) -> bool:
     except Exception:
         _record_title_sync_skip(g, "dispatch_failed")
         raise
-    _record_announced(g, game)
+    _record_announced(g, game, marker)
     return True
 
 
@@ -330,21 +342,47 @@ def _announced_state_path(g: GlobalConfig) -> Path:
     return Path(g.state_dir) / RECONCILE_STATE_NAME
 
 
-def _record_announced(g: GlobalConfig, game: str) -> None:
-    """Remember which runtime the stream metadata was last pointed at.
+def _title_marker(g: GlobalConfig, game: str) -> str | None:
+    """The bounded progress marker of a game whose title follows its record.
+
+    Only Hanjuku has a measured in-run count that changes a viewer title. A
+    missing or unreadable marker returns ``None``; reconciliation then treats
+    the game name alone as the identity and never re-announces on that alone.
+    """
+    if game != PROGRESS_TITLE_GAME:
+        return None
+    try:
+        from .stream_title_context import hanjuku_progress_marker
+
+        return hanjuku_progress_marker(Path(g.state_dir))
+    except Exception:
+        return None
+
+
+_MARKER_UNSET = object()
+
+
+def _record_announced(g: GlobalConfig, game: str, marker=_MARKER_UNSET) -> None:
+    """Remember which runtime (and progress) the metadata was last pointed at.
 
     Best-effort: this record only dedupes reconciliation, so a failed write
-    must never disturb the announce that already happened.
+    must never disturb the announce that already happened. Callers that
+    composed a title pass the marker captured before composing; others let it
+    be read here.
     """
-    _write_announce_record(g, game, "announced")
+    if marker is _MARKER_UNSET:
+        marker = _title_marker(g, game)
+    _write_announce_record(g, game, "announced", marker)
 
 
 def _record_dispatch_failure(g: GlobalConfig, game: str) -> None:
     """Remember a failed attempt so reconciliation backs off instead of spamming."""
-    _write_announce_record(g, game, "failed")
+    _write_announce_record(g, game, "failed", _title_marker(g, game))
 
 
-def _write_announce_record(g: GlobalConfig, game: str, status: str) -> None:
+def _write_announce_record(
+    g: GlobalConfig, game: str, status: str, marker: str | None = None
+) -> None:
     if not isinstance(game, str) or not game:
         return
     try:
@@ -352,7 +390,13 @@ def _write_announce_record(g: GlobalConfig, game: str, status: str) -> None:
 
         atomic_write_json(
             _announced_state_path(g),
-            {"schema": RECONCILE_SCHEMA, "game": game, "status": status, "at": time.time()},
+            {
+                "schema": RECONCILE_SCHEMA,
+                "game": game,
+                "status": status,
+                "marker": marker,
+                "at": time.time(),
+            },
         )
     except Exception:
         return
@@ -434,29 +478,42 @@ def intended_stream_game(g: GlobalConfig) -> str | None:
 
 
 def reconcile_stream_metadata(g: GlobalConfig, *, spawn=None) -> bool:
-    """Re-announce metadata when the visible runtime diverged from the last one.
+    """Re-announce metadata when the visible runtime or its goal changed.
 
     Runs from the corner-rotation tick.  Returns ``True`` only when a new
     announce was dispatched.  Never raises: a cosmetic mismatch must not take
     the rotation down.  A failed attempt is remembered so a broken updater is
     retried after a backoff instead of once per tick.
+
+    The game name alone is the identity for every game except
+    ``PROGRESS_TITLE_GAME``, whose title names the current chapter goal. For
+    that game a changed progress marker re-announces only the title, so the
+    stream follows the next goal after a chapter clear without touching the
+    category.
     """
     try:
         intended = intended_stream_game(g)
         if intended is None:
             return False
         record = _announce_record(g)
-        if record is not None and record.get("game") == intended:
-            if record.get("status") != "failed":
-                return False
-            last = record.get("at")
-            if (isinstance(last, (int, float)) and not isinstance(last, bool)
-                    and time.time() - float(last) < RECONCILE_RETRY_BACKOFF_S):
+        marker = _title_marker(g, intended)
+        same_game = record is not None and record.get("game") == intended
+        if same_game:
+            if record.get("status") == "failed":
+                last = record.get("at")
+                if (isinstance(last, (int, float)) and not isinstance(last, bool)
+                        and time.time() - float(last) < RECONCILE_RETRY_BACKOFF_S):
+                    return False
+            elif marker is None or record.get("marker") == marker:
                 return False
         if twitch_category(g, intended) is None:
             return False
         try:
-            announced = announce_stream_game(g, intended, spawn=spawn)
+            announced = announce_stream_game(
+                g, intended, spawn=spawn,
+                title_only=bool(same_game and record.get("status") != "failed"
+                                and marker is not None),
+            )
         except Exception:
             _record_dispatch_failure(g, intended)
             return False
@@ -524,6 +581,7 @@ def announce_running_view(g: GlobalConfig, game: str, *, spawn=None) -> bool:
     """
     from .adapters.program import PAPER_VIEW_NAME
 
+    view = game in (PAPER_VIEW_NAME, MYSTERY_VIEW_NAME, SPECIAL_VIEW_NAME)
     if game == PAPER_VIEW_NAME:
         announced = announce_stream_paper(g, spawn=spawn)
     elif game == MYSTERY_VIEW_NAME:
@@ -532,10 +590,10 @@ def announce_running_view(g: GlobalConfig, game: str, *, spawn=None) -> bool:
         announced = announce_stream_special(g, spawn=spawn)
     else:
         announced = announce_stream_game(g, game, spawn=spawn)
-    if announced:
+    if announced and view:
         # The reconciliation hook compares against this record, so every
-        # commit-driven announce must update it too (view paths record here;
-        # games already recorded inside ``announce_stream_game``).
+        # commit-driven announce must update it too. Game paths record their
+        # own marker inside ``announce_stream_game``; view paths record here.
         _record_announced(g, game)
     return announced
 
