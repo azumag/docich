@@ -197,9 +197,11 @@ del _chapter, _cells
 # planner has no boss target at chapter end and next_order() returns None
 # forever (g1133 simulation 2026-11-05: all twelve castles ours -> {}).
 # The 22:23 g1133 Y view measures that forest centre at (166.5, 68.0) with
-# the chapter offset (64.3, 45.0), so the cell is (818, 184). This is an
-# approximate first position: the roof checks and the inland search guard the
-# entry, and a live measurement replaces it once the base is seen.
+# the chapter offset (64.3, 45.0), giving (818, 184); the owner watched the
+# chapter-6 cursor land one tile below the base (2026-11-09), so the first
+# position is one tile up at (818, 120). 1 tile = 64 chart units. This is
+# still an approximate position: the roof checks and the inland search guard
+# the entry, and a live measurement replaces it once the base is seen.
 # A boss cell that never accepts an army is probed one tile at a time (v403).
 # 1 tile = 8 px = 64 chart units. The first candidate is the chart cell itself.
 # Chapter 6's cell is a Y-view estimate; chapters 7, 8, 10, 11 and 12 use the
@@ -229,7 +231,7 @@ def boss_probe_cell(chapter, name, index=0):
     return (cell[0] + dx, cell[1] + dy)
 
 
-SECRET_BASE_CELLS = {6: {'ボス': (818, 184)}}
+SECRET_BASE_CELLS = {6: {'ボス': (818, 120)}}
 for _chapter, _cells in SECRET_BASE_CELLS.items():
     CASTLES[_chapter].update(_cells)
 del _chapter, _cells

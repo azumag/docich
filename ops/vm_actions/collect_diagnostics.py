@@ -7005,6 +7005,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v552-card-scroll-taps",
             "hanjuku-chart-v554-post-month-result-fix",
             "hanjuku-chart-v555-boss-phantom-step",
+            "hanjuku-chart-v556-ch6-boss-cell-up",
             "hanjuku-chart-v501-idle-reanchor",
             "hanjuku-chart-v502-idle-and-roster-joins",
             "hanjuku-chart-v503-month-start-counts",
