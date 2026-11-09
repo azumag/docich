@@ -1902,7 +1902,10 @@ def deploy_step(screen: Screen, mem):
                                 **_deploy_context(order, mem, expected_metric=sorted(_deploy_cards(order, mem))),
                                 observed_metric={'carried': None, 'screen': screen.kind},
                                 reason='出撃確認の携行札を読めないため既定（はい）で出撃を承認する')
-                        return [pad('a')]
+                        # Two presses: the confirmation panel takes the
+                        # selection and then the うむッ! row (g1163 2026-11-10
+                        # 04:04: a single blind A left the screen unchanged).
+                        return [pad('a'), {'type': 'wait', 'ms': 150}, pad('a')]
                     misses.pop(order['step'], None)
                     _finish_order(mem, 'failed', deviation_reason='出撃確認の携行札を読めない',
                                   observed_metric={'carried': None},
