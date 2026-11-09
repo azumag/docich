@@ -1326,11 +1326,54 @@ def _rearm_phantom_site_steps(mem):
                 reason='撃破実測のない四季王stepの行軍記録が消えていたため、次の出撃のために開き直す')
 
 
+BOSS_PHANTOM_TICKS = 2 * BOSS_ARRIVAL_LIMIT   # grace before a launch-less boss step re-arms
+BOSS_STEP_REARM_COOLDOWN = 300
+
+
+def _rearm_phantom_boss_steps(mem):
+    """Re-open a boss step whose march record vanished.
+
+    A boss order marked launched with no sortie record can never finish: the
+    overdue relaunch and the expiry both work on a sortie, so the step keeps
+    the boss target reserved forever (g1163 chapter 6 2026-11-09 12:47:
+    A:bf8c3dee:M256898 stayed launched with no sortie while every other boss
+    wave waited behind it). Clearing only the bookkeeping is safe: a live
+    sortie, a live fight or a fresh step is left alone, and the same bounded
+    cooldown keeps a step from re-arming on every observation.
+    """
+    if (mem.get('chapter') or 0) == 4:
+        return          # chapter 4's sites have their own re-arm and king rules
+    status = mem.get('orders') or {}
+    sorties = mem.get('sorties') or {}
+    now = int(mem.get('tick') or 0)
+    started = mem.get('order_start_tick') or {}
+    rearmed = mem.setdefault('boss_step_rearm', {})
+    for order in _orders(mem):
+        step, target = order.get('step'), order.get('target')
+        if (status.get(step) != 'launched' or not chart.is_boss_castle(target)
+                or step in sorties or _boss_fight_live(mem, step)):
+            continue
+        tick = started.get(step)
+        if type(tick) is not int or now - tick < BOSS_PHANTOM_TICKS:
+            continue
+        last = rearmed.get(step)
+        if type(last) is int and now - last < BOSS_STEP_REARM_COOLDOWN:
+            continue
+        rearmed[step] = now
+        status[step] = 'pending'
+        _record(mem, 'boss_step_rearmed', chart_step=step, general=order.get('general'),
+                observed_metric={'target': target, 'launched_for': now - tick,
+                                 'sorties': sorted(sorties)},
+                resulting_event=f'rearm:{step}',
+                reason='行軍記録が消えたボスstepは完了できないため、次の出撃のために開き直す')
+
+
 def next_order(mem):
     # A measured しんぐんちゅうです reading restarts the age of a live march
     # before the fixed windows can relaunch it while it is still walking.
     _refresh_live_marches(mem)
     _rearm_phantom_site_steps(mem)
+    _rearm_phantom_boss_steps(mem)
     _relaunch_overdue_boss(mem)
     _relaunch_overdue_march(mem)
     _expire_spent_sorties(mem)
