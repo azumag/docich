@@ -833,6 +833,32 @@ def _end_castle_jump(screen, mem, why):
     return []
 
 
+def _jump_successor(mem, order):
+    """The live order that continues a re-planned jump, or None.
+
+    Same departure castle, same target and the same general (or a substitute
+    the plan itself picked) mean the walk to the castle is still the right
+    physical action; only the step id changed.
+    """
+    if not isinstance(order, dict):
+        return None
+    active = _order_for_step(mem, mem.get('active'))
+    if not isinstance(active, dict):
+        return None
+    if active.get('step') == (order.get('step') or ''):
+        return None
+    if (order.get('target') or None) != (active.get('target') or None):
+        return None
+    if _source(order, mem) != _source(active, mem):
+        return None
+    same_actor = order.get('general') == active.get('general')
+    if not same_actor:
+        overrides = mem.get('general_override') or {}
+        current, planned = overrides.get(active.get('step')), overrides.get(order.get('step'))
+        same_actor = current is not None and current == planned
+    return active if same_actor else None
+
+
 def castle_jump_step(screen, mem, frame):
     """Drive X -> しろ -> castle name -> SELECT for the order's source.
 
@@ -851,7 +877,17 @@ def castle_jump_step(screen, mem, frame):
     if not reanchor:
         order = _order_for_step(mem, jump['step'])
         if order is None or mem.get('active') != jump['step']:
-            return _end_castle_jump(screen, mem, 'order_changed')
+            # The chart worker may re-plan while the jump is in flight, which
+            # renumbers every step (g1163 2026-11-10 05:38-05:50: five jumps
+            # aborted at age 1 with order_changed, so the sortie never left).
+            # The physical trip is still valid when the same general leaves
+            # the same castle for the same target, so carry the jump over.
+            adopted = _jump_successor(mem, order)
+            if adopted is None:
+                return _end_castle_jump(screen, mem, 'order_changed')
+            jump['step'] = adopted['step']
+            jump['source'] = _source(adopted, mem) or jump.get('source')
+            order = adopted
 
     phase = jump.get('phase')
     if phase == 'menu':
