@@ -702,10 +702,21 @@ def _selected_actor_guard(screen, mem, order):
                 observed=name, screen=screen.kind,
                 reason=f'出撃画面の将軍名{name}を{selected}の読み違いとして扱う')
         return None
+    elif name != NAME and general_max_hp(name) is not None:
+        # Owner 2026-11-10: a different general may depart in place of the
+        # planned one as a fallback, so a readable roster name is adopted
+        # instead of cancelling the whole sortie. The hero still never goes:
+        # the owner keeps him at アルマムーン.
+        mem.setdefault('sortie_general', {})[order['step']] = name
+        (mem.get('general_override') or {}).pop(order['step'], None)
+        (mem.get('sortie_actor_miss') or {}).pop(order['step'], None)
+        _record(mem, 'sortie_actor_substituted', **_deploy_context(order, mem),
+                observed=name, screen=screen.kind,
+                reason=f'計画の{selected}に代わり実画面の{name}を出撃させる（オーナー指示の代替出撃）')
+        return None
     else:
-        # A readable, different actor cancels at once: the planned substitute
-        # must never be relabelled onto whoever the panel shows (the hero
-        # included). Only an *unreadable* name earns the three holds above.
+        # The hero (or an unknown name) still cancels: sending the hero would
+        # break the owner's "主人公は出撃しない" rule.
         reason = f'選択予定の{selected}と実画面の{name}が違うため出撃を取り消す'
     (mem.get('general_override') or {}).pop(order['step'], None)
     (mem.get('sortie_actor_miss') or {}).pop(order['step'], None)
