@@ -1245,3 +1245,16 @@ def test_a_different_general_may_depart_for_an_ordinary_castle():
     assert deploy._selected_actor_guard(screen, mem, order) is None
     assert mem['sortie_general']['A:x:M1'] == 'アテナ'
     assert any(r['decision'] == 'sortie_actor_substituted' for r in mem['_records'])
+
+
+def test_a_card_missing_from_the_price_table_still_leaves_the_panel_readable():
+    """ゲンゴナイト/ライチスイム rejected the whole きりふだ panel (v613).
+
+    g1163 2026-11-10 04:52: five holds then a cancel while ゲンゴナイト was on
+    screen. The row is read; the card is never selected by name.
+    """
+    from docich.hanjuku.os_layer import readers
+
+    assert 'ゲンゴナイト' in readers.ALL_CARD_NAMES
+    assert 'ゲンゴナイト' not in readers.reference.CARD_IDS
+    assert 'ライチスイム' in readers.ALL_CARD_NAMES

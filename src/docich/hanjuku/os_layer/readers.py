@@ -31,7 +31,13 @@ CARD_NAMES = frozenset({
     'ハリケーン', 'キャトルミュー'})
 # Every real card name (the 32-card gcgx table). The panel reader accepts
 # these as rows; only CARD_NAMES can be planned or selected.
-ALL_CARD_NAMES = frozenset(reference.ALL_CARD_IDS)
+# Cards the reference ID table does not price yet. They still occupy rows in
+# the real きりふだ panel, and rejecting the panel for them made every sortie
+# unreadable while one was visible (g1163 2026-11-10 04:52: ゲンゴナイト and
+# ライチスイム on screen, five holds then a cancel). Read them, never select
+# them by name: selection comes from CARD_IDS, which stays the priced subset.
+EXTRA_CARD_NAMES = frozenset({'ゲンゴナイト', 'ライチスイム'})
+ALL_CARD_NAMES = frozenset(reference.ALL_CARD_IDS) | EXTRA_CARD_NAMES
 
 
 # ---------------------------------------------------------------- menus
