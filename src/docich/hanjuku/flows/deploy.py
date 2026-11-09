@@ -320,8 +320,12 @@ def _rare_card_inventory(screen, mem, order, inventory):
     frames = 1
     target = CARD_IDS.get('キャトルミュー')
     ids = [CARD_IDS.get(name) for name in rows]
+    remaining_presses = max(1, RARE_SCAN_LIMIT - int(scan.get('presses') or 0))
     if target is not None and None not in ids and target > max(ids):
         frames = max(1, min((target - max(ids)) // 4 + 1, 4))
+    # Owner 2026-11-10 (tests/test_hanjuku_merchant_bargains.py): a jump never
+    # spends more than the sweep's remaining press budget.
+    frames = min(frames, remaining_presses)
     scan.update(presses=scan['presses'] + frames, rows=rows, was_bottom=at_bottom)
     _record(mem, 'sortie_input', **_deploy_context(order, mem), screen='card_select',
             observed_metric={'rare_scan': 'discover', 'presses': scan['presses'], 'rows': rows,
