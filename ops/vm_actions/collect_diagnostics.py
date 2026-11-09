@@ -7018,6 +7018,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v568-ch9-corridor",
             "hanjuku-chart-v569-general-label",
             "hanjuku-chart-v570-minimap-port",
+            "hanjuku-chart-v571-march-blocked-settle",
             "hanjuku-chart-v560-castle-list-scroll",
             "hanjuku-chart-v561-post-month-repair-status",
             "hanjuku-chart-v501-idle-reanchor",

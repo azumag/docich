@@ -1093,6 +1093,24 @@ def _relaunch_overdue_march(mem):
                     general=sortie.get('general'), observed_metric=observed,
                     reason='自城への移動の入城は行先の一覧でしか観測できず、出し直しても同じ確認漏れになるため、指示を閉じて行先一覧の確認へ委ねる')
             continue
+        # A march whose straight path is now covered by our own castle stops
+        # inside that castle and can never reach the target: re-issuing it just
+        # repeats the same stall (g1163 chapter 7 2026-11-09 15:30/16:32 sent
+        # アルマムーン → ロキュータ twice after レオナール had been captured on
+        # that line, and アルマムーン → フィロメラ once behind ベンゴディ).
+        # Close the order so the planner sorties from the blocking castle.
+        source = sortie.get('source') or order.get('source')
+        chapter = mem.get('chapter') or 0
+        if (isinstance(source, str) and isinstance(target, str)
+                and not chart.is_boss_castle(target)
+                and target not in _owned(mem)
+                and not routes.is_road(chapter)
+                and chart.march_blocked(chapter, source, target, set(_owned(mem)))):
+            status[step] = 'failed'
+            _record(mem, 'sortie_march_blocked_settled', chart_step=step,
+                    general=sortie.get('general'), observed_metric=observed,
+                    reason='行路が自城に塞がれて入城できないため指示を閉じ、塞ぐ城からの出撃へ委ねる')
+            continue
         if relaunches.get(step, 0) >= MARCH_RELAUNCH_LIMIT:
             _record(mem, 'sortie_march_relaunch_exhausted', chart_step=step,
                     observed_metric=observed,
