@@ -6995,6 +6995,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v542-empty-garrison-read",
             "hanjuku-chart-v543-capped-card-skip",
             "hanjuku-chart-v544-boss-probe-fine-ring",
+            "hanjuku-chart-v545-boss-probe-diagnostics",
             "hanjuku-chart-v501-idle-reanchor",
             "hanjuku-chart-v502-idle-and-roster-joins",
             "hanjuku-chart-v503-month-start-counts",
@@ -12081,6 +12082,14 @@ HANJUKU_SEASON_SITES = frozenset({
     '四季王城(北西)', '四季王城(北東)', '四季王城(南西)', '四季王城(南東)'})
 
 
+def _compact_boss_probes(probes):
+    """Which boss-cell candidates the adopted plan rotates (v544): counts only."""
+    if not isinstance(probes, dict) or not probes:
+        return None
+    indices = sorted({v for v in probes.values() if type(v) is int and v >= 0})
+    return {'steps': len(probes), 'indices': indices[:12]}
+
+
 def _compact_boss_cell(reading, now):
     """The Y-view measured boss cell (v538): fixed chapter/cell/counts only."""
     if not isinstance(reading, dict):
@@ -12204,6 +12213,7 @@ def _compact_hanjuku_policy(mem, state=None):
                                             and row['age_ticks'] is not None), default=None)},
         'boss_victories': {'count': len(victories), 'sites': won_sites[:8]},
         'boss_cell': _compact_boss_cell(mem.get('boss_cell'), mem.get('tick')),
+        'boss_probes': _compact_boss_probes(mem.get('boss_step_probe')),
         'cursor': ([item for item in cursor[:2] if type(item) is int]
                    if isinstance(cursor, (list, tuple)) and len(cursor) == 2 else None),
         'uncertain': mem.get('uncertain') is True,

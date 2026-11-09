@@ -5095,3 +5095,13 @@ def test_compact_policy_marks_a_malformed_boss_cell_as_unknown():
                                    'readings': None, 'age_ticks': None}
     assert 'PRIVATE' not in json.dumps(policy)
     assert module._compact_hanjuku_policy({'chapter': 7})['boss_cell'] is None
+
+
+def test_compact_policy_projects_the_boss_probe_rotation():
+    module = load_collector()
+    policy = module._compact_hanjuku_policy({
+        'chapter': 7, 'tick': 100, 'active': None,
+        'boss_step_probe': {'A:x:M1': 0, 'A:x:M2': 1, 'A:x:M3': 1, 'A:x:M4': 'x'},
+    })
+    assert policy['boss_probes'] == {'steps': 4, 'indices': [0, 1]}
+    assert module._compact_hanjuku_policy({'chapter': 7})['boss_probes'] is None
