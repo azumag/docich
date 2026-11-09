@@ -7000,6 +7000,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v547-static-roster-marker",
             "hanjuku-chart-v548-house-read-reuse",
             "hanjuku-chart-v549-march-rate",
+            "hanjuku-chart-v550-post-month-diagnostics",
             "hanjuku-chart-v501-idle-reanchor",
             "hanjuku-chart-v502-idle-and-roster-joins",
             "hanjuku-chart-v503-month-start-counts",
@@ -12086,6 +12087,18 @@ HANJUKU_SEASON_SITES = frozenset({
     '四季王城(北西)', '四季王城(北東)', '四季王城(南西)', '四季王城(南東)'})
 
 
+def _compact_post_month(last):
+    """The month's status-walk outcome: fixed tokens and counts only."""
+    if not isinstance(last, dict):
+        return None
+    result = last.get('result')
+    tokens = ('unchanged_cached', 'complete', 'reused', 'finished')
+    carry = last.get('carry')
+    return {'complete': last.get('complete') is True,
+            'result': result if result in tokens else None,
+            'carry': len(carry) if isinstance(carry, (list, tuple)) else None}
+
+
 def _compact_boss_probes(probes):
     """Which boss-cell candidates the adopted plan rotates (v544): counts only."""
     if not isinstance(probes, dict) or not probes:
@@ -12218,6 +12231,7 @@ def _compact_hanjuku_policy(mem, state=None):
         'boss_victories': {'count': len(victories), 'sites': won_sites[:8]},
         'boss_cell': _compact_boss_cell(mem.get('boss_cell'), mem.get('tick')),
         'boss_probes': _compact_boss_probes(mem.get('boss_step_probe')),
+        'post_month': _compact_post_month(mem.get('post_month_status_last')),
         'cursor': ([item for item in cursor[:2] if type(item) is int]
                    if isinstance(cursor, (list, tuple)) and len(cursor) == 2 else None),
         'uncertain': mem.get('uncertain') is True,

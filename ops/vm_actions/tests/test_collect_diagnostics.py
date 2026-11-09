@@ -5105,3 +5105,18 @@ def test_compact_policy_projects_the_boss_probe_rotation():
     })
     assert policy['boss_probes'] == {'steps': 4, 'indices': [0, 1]}
     assert module._compact_hanjuku_policy({'chapter': 7})['boss_probes'] is None
+
+
+def test_compact_policy_projects_the_month_status_walk_outcome():
+    module = load_collector()
+    policy = module._compact_hanjuku_policy({
+        'chapter': 6, 'tick': 100, 'active': None,
+        'post_month_status_last': {'complete': True, 'result': 'unchanged_cached',
+                                   'carry': ['a', 'b'], 'note': 'DO-NOT-PUBLISH'},
+    })
+    assert policy['post_month'] == {'complete': True, 'result': 'unchanged_cached', 'carry': 2}
+    assert 'DO-NOT-PUBLISH' not in json.dumps(policy)
+    assert module._compact_hanjuku_policy({'chapter': 6})['post_month'] is None
+    odd = module._compact_hanjuku_policy({'chapter': 6, 'post_month_status_last': {'result': 'PRIVATE'}})
+    assert odd['post_month'] == {'complete': False, 'result': None, 'carry': None}
+    assert 'PRIVATE' not in json.dumps(odd)
