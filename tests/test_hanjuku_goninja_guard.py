@@ -123,3 +123,24 @@ def test_pending_month_sub_keeps_its_owner():
     state = owned_state('recruit')
     out, state = decide(degraded_offer(5000), state)
     assert 'goninja_guard' not in state['policy']
+
+
+def test_unrelated_month_choice_with_same_rows_is_not_owned():
+    # Cursor and two visible rows alone are not evidence of a goninja offer.
+    # A degraded unrelated monthly prompt must not be captured by this guard.
+    c = Canvas((50, 30, 10))
+    for y in range(0, 32):
+        for x in range(256):
+            c.put(x, y, (50, 30, 10))
+    c.text(16, 15, '2ねん11のつき5000G')
+    for y in range(128, 207):
+        for x in range(18, 236):
+            c.put(x, y, GREEN)
+    c.text(24, 151, 'こんげつの おしらせです')
+    c.text(24, 167, 'どうしますか?')
+    c.text(184, 183, 'ああああ')
+    c.text(184, 199, 'いいいい')
+    c.hand(162, 177)
+    state = owned_state('none')
+    _, state = decide(c.frame(), state)
+    assert 'goninja_guard' not in state['policy']
