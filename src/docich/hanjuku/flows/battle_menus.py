@@ -163,10 +163,31 @@ def _battle_menu_move(screen, mem, label, *, key='battle_menu_move'):
     return move
 
 
+def _retreat_forbidden(mem, cur):
+    """Owner 2026-11-09: in chapter 9 only the hero (どうし) may retreat.
+
+    Every other general fights on with eggs, cards and おくのて; the retreat
+    row is left alone so a chapter-9 sortie never ends by sending a general
+    home mid-chapter.
+    """
+    if mem.get('chapter') != 9:
+        return False
+    ally = cur.get('ally')
+    return isinstance(ally, str) and ally not in ('', NAME, 'しゅじんこう', 'しじんこう')
+
+
 def _hero_retreat_menu(screen, mem, cur):
     # A castle defense cannot retreat (owner 2026-09-29; the menu has no
     # たいきゃく row there), so never try to select it.
     if not (egg_bait.retreat_due(mem, cur) or _hero_retreat_needed(cur)) or cur.get('side') == 'defense':
+        return None
+    if _retreat_forbidden(mem, cur):
+        if not cur.get('retreat_forbidden_noted'):
+            cur['retreat_forbidden_noted'] = True
+            _record(mem, 'battle_retreat_forbidden', **_battle_labels(cur),
+                    general=cur.get('ally'), enemy=cur.get('enemy'),
+                    castle=cur.get('castle'), side=cur.get('side'),
+                    reason='第9話では主人公以外は退却しないため、卵・切り札・奥の手で応戦する')
         return None
     if _egg_rescue_pending(cur):
         return []
