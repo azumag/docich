@@ -606,3 +606,17 @@ def test_an_empty_active_order_does_not_end_the_trip():
     screen = type('Screen', (), {'kind': 'unknown', 'hand': None, 'lines': [], 'text': ''})()
     out = map_flow.castle_jump_step(screen, mem, None)
     assert out == [] and mem['castle_jump']['orphan'] == 1
+
+
+def test_an_unresolvable_active_step_holds_the_trip():
+    """The active step survived a re-plan as a bare id (g1163 07:01)."""
+    from docich.hanjuku.flows import map as map_flow
+
+    mem = {'chapter': 8, 'active': 'A:ghost:M1', 'orders': {}, 'chart_plan': {'orders': []},
+           'sorties': {}, 'world': {},
+           'castle_jump': {'step': 'A:old:M1', 'source': 'あるまむーん',
+                           'target': 'しまばら', 'phase': 'menu', 'age': 0, 'total': 0,
+                           'menu_presses': 1}}
+    screen = type('Screen', (), {'kind': 'unknown', 'hand': None, 'lines': [], 'text': ''})()
+    assert map_flow.castle_jump_step(screen, mem, None) == []
+    assert mem['castle_jump']['orphan'] == 1

@@ -891,10 +891,12 @@ def castle_jump_step(screen, mem, frame):
             # aborted at age 1 with order_changed, so the sortie never left).
             # The physical trip is still valid when the same general leaves
             # the same castle for the same target, so carry the jump over.
-            if not mem.get('active'):
-                # Between plans the active order can be empty for a frame or
-                # two; that is not a change of intent (g1163 2026-11-10 06:40:
-                # five jumps still died at age 1 this way).
+            if (not mem.get('active')
+                    or _order_for_step(mem, mem.get('active')) is None):
+                # Between plans the active order can be empty, or name a step
+                # the replaced plan no longer holds; that is not a change of
+                # intent (g1163 2026-11-10 07:01: the jump still died at age 1
+                # one second after order_start).
                 jump['orphan'] = int(jump.get('orphan') or 0) + 1
                 if jump['orphan'] <= CASTLE_JUMP_ORPHAN_HOLD:
                     return []
