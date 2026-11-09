@@ -280,7 +280,10 @@ def observe_owners(mem, roofs, cam):
 SORTIE_BUSY_TICKS = 400       # legacy observation window (~10 min), NOT proof of arrival
 BOSS_ARRIVAL_LIMIT = 2 * SORTIE_BUSY_TICKS
 # g1133 chapter 6: 603 chart cells took 23-32 min and 740 cells took 34 min.
-MARCH_TICKS_PER_CELL = {6: 2.4}
+# The rate must cover the slow end (32 min / 603 cells = 3.18 ticks/cell): at
+# 2.4 the limit was 1447 and a march measured at 1701 ticks was declared
+# overdue while it could still arrive, re-sending the same order.
+MARCH_TICKS_PER_CELL = {6: 3.2}
 LONG_MARCH_TICKS = 6 * SORTIE_BUSY_TICKS   # window for late arrival binding
 MARCH_ARRIVAL_CAP = LONG_MARCH_TICKS
 
