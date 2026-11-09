@@ -488,9 +488,13 @@ def _garrison_rotation(mem, owned, busy, heading, taken=()):
         if len(out) >= GARRISON_ROTATION_LIMIT:
             break
         distance, want, _floor = plan[target]
-        if (garrison.get(target) is None or target in claimed
-                or routes.unread_dispatches(mem, target)):
+        if target in claimed or routes.unread_dispatches(mem, target):
             continue
+        # An unread garrison (no row at all) still gets a second defender: the
+        # castle that fell last (g1163 2026-11-09 19:49 フィロメラ) had a
+        # defender fighting while the bookkeeping held no row, so "unread" is
+        # exactly the state that loses castles. The arrival also reads the
+        # list, so the next pass knows what is really there.
         if len(set(free[target])) >= want:
             continue
         donors = []
