@@ -36,6 +36,7 @@ from ..strategy.orders import (SOURCE_LOCATION_RECHECK_LIMIT, SORTIE_CANCELLED_O
 
 
 CARD_SCROLL_HOLD_MAX = 4        # rows one held scroll may cross
+RARE_REWIND_STEPS = 4           # rows one rewind observation may return
 
 
 def _cancel_broken_hero_sortie(mem, order):
@@ -270,13 +271,19 @@ def _rare_card_inventory(screen, mem, order, inventory):
     scan_field, scan_key = 'rare_scan_month', month
     scan = mem.get('rare_scan') or {}
     if scan.get('rewind', 0) > 0:
-        scan['rewind'] -= 1
+        # Same row batching as the sweep itself: one up per observation cost 52
+        # decisions an hour (g1163 2026-11-10 05:3x). The list clamps at the
+        # top, and the landing is always re-read before any selection.
+        steps = max(1, min(RARE_REWIND_STEPS, int(scan['rewind'])))
+        scan['rewind'] -= steps
         if not scan['rewind']:
             mem.pop('rare_scan', None)
         _record(mem, 'sortie_input', **_deploy_context(order, mem),
-                screen='card_select', observed_metric={'rare_scan': 'rewind', 'remaining': scan['rewind']},
+                screen='card_select', observed_metric={'rare_scan': 'rewind',
+                                                       'remaining': scan['rewind'],
+                                                       'steps': steps},
                 reason='レア札在庫の有限探索後に選択カーソルを戻す')
-        return [pad('up')]
+        return [pad('up') for _ in range(steps)]
     if boss_generic and _boss_balmung_kit(mem, order, inventory) is not None:
         mem[scan_field] = scan_key
         return []                        # バルムンクを確認: 次の観測で選択する

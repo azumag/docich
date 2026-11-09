@@ -78,8 +78,9 @@ def test_four_row_inventory_is_scanned_boundedly_and_rewound():
         presses+=_down_presses(out)
     for _ in range(policy.RARE_SCAN_LIMIT):
         out=policy._rare_card_inventory(None,mem,order,rows)
-        if out != [policy.pad('up')]:
+        if not out:
             break
+        assert all(a == policy.pad('up') for a in out) and 1 <= len(out) <= 4
     assert policy._rare_card_inventory(None,mem,order,rows) is None
     assert policy._deploy_cards(order,mem) == list(order['cards'])
 
