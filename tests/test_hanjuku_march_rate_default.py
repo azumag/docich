@@ -26,3 +26,11 @@ def test_a_short_march_scales_with_the_distance():
 def test_the_measured_chapter_6_rate_is_unchanged():
     rate = world.MARCH_TICKS_PER_CELL[6]
     assert rate == world.DEFAULT_MARCH_TICKS_PER_CELL == 3.2
+
+
+def test_chapters_3_and_4_keep_their_calibrated_window():
+    """Their relaunch budgets are calibrated to the fixed bound."""
+    for chapter in (3, 4):
+        assert world.march_arrival_limit(
+            {'chapter': chapter},
+            {'source': 'アルマムーン', 'target': 'ボス'}) == world.BOSS_ARRIVAL_LIMIT

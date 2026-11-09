@@ -27,10 +27,12 @@ g1163 第8話 2026-11-09 23:22:34、**あるまむーん発の3件**が同時に
 - あるまむーん→おだわら: 800 → **2400**（`MARCH_ARRIVAL_CAP`）
 - あるまむーん→おかざき: 800 → **1195**（距離比例）
 - ボス行軍は従来どおり `MARCH_ARRIVAL_CAP`。
+- **第3話・第4話は従来の固定上限のまま**（道路マップの実測が無く、再送予算が
+  800上限に合わせて校正されているため。`FIXED_LIMIT_CHAPTERS`）。
 
 ## 確認
 
-- `tests/test_hanjuku_march_rate_default.py`（新規3件）: 章別未登録でも実測レート／距離比例／
+- `tests/test_hanjuku_march_rate_default.py`（新規4件）: 章別未登録でも実測レート／距離比例／
   第6話の値は不変。
 - 行軍・計画・出撃 468件 passed。
 - 本番反映後: 長距離行軍の `sortie_march_overdue` が減り、入城（`attack_observed`）が
