@@ -171,12 +171,25 @@ def _sole_castle(request) -> bool:
     return len(set(captured) | home) == 1
 
 
+# The actor token a source-probe order carries. It is a placeholder, not a
+# person: the real general is chosen from the live list when the sortie opens.
+# The literal しょうぐん is what older prompts and stored plans used, so it stays
+# accepted on input; new plans are written with the readable token so the
+# broadcast's 出撃計画 does not present a nonexistent general (owner 2026-11-09).
+PROBE_GENERAL = '余剰将軍'
+LEGACY_PROBE_GENERALS = frozenset({'しょうぐん'})
+
+
+def _probe_actor(general) -> bool:
+    return general == PROBE_GENERAL or general in LEGACY_PROBE_GENERALS
+
+
 def startable(order, request) -> str | None:
     """Why ``order`` cannot start in the requested situation, or None.
 
     A named actor is eligible only when the source garrison records that
     actor. An unread castle may instead be inspected by an explicit
-    source_probe with the non-person placeholder しょうぐん; its actual
+    source_probe with the non-person placeholder 余剰将軍; its actual
     actor is chosen only from the live general list. Refuse absent, marching,
     elsewhere, and unconfirmed named actors before adopting a plan.
 
@@ -199,7 +212,7 @@ def startable(order, request) -> str | None:
     # A source probe is an information-gathering step, not a claimed actor.
     # The real list/guard checks in deploy decide whether anyone can leave.
     if order.get('source_probe') is True:
-        return None if general == 'しょうぐん' else 'invalid_source_probe'
+        return None if _probe_actor(general) else 'invalid_source_probe'
     present = garrison.get(source) or ()
     if general in present:
         # A measured singleton cannot dispatch its last defender (chapter 9
@@ -277,7 +290,7 @@ def _order(raw, castles, base_steps):
         order['purpose'] = purpose
     probe = raw.get('source_probe')
     if probe is not None:
-        if probe is not True or order['general'] != 'しょうぐん':
+        if probe is not True or not _probe_actor(order['general']):
             raise ValueError('invalid source_probe')
         order['source_probe'] = True
     roster_probe = raw.get('roster_probe')
