@@ -51,3 +51,16 @@ def test_the_failure_reason_is_reported():
          mock.patch.object(readers, '_map_icon_centres', lambda f: []):
         assert readers.marker_castle(_frame(), 8, evidence=evidence) is None
     assert evidence.get('reason') == 'no_marker'
+
+
+def test_a_missing_selection_marker_reports_its_cause():
+    """20 of 25 unbound markers carried no reason (g1163 2026-11-09 23:35)."""
+    from unittest import mock
+
+    from docich.hanjuku.flows import post_month_status as post
+    with mock.patch.object(readers, 'selection_marker', lambda f: None), \
+         mock.patch.object(post, 'world_markers', lambda f: []):
+        result = post._marker({'chapter': 8}, SimpleNamespace(
+            width=256, height=224, pixel=lambda x, y: (0, 0, 0)))
+    assert result is not None
+    assert result['marker_reason'] == 'no_selection_marker'
