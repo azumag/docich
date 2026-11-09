@@ -1180,3 +1180,12 @@ def test_a_one_character_ocr_slip_is_the_intended_actor():
     # A real general is never a slip, and an unrelated name is not either.
     assert deploy._actor_name_slip('ゼウス', 'ポセイドン') is False
     assert deploy._actor_name_slip('アテナ', 'アテナ') is False
+
+
+def test_an_unreadable_name_goes_through_the_slip_rule():
+    """ポセイドン's name read as ポ??ドン for 26 minutes of retries (v604)."""
+    from docich.hanjuku.flows import deploy
+
+    from docich.hanjuku.os_layer.font import UNKNOWN
+    assert deploy._actor_name_slip('ポ' + UNKNOWN * 2 + 'ドン', 'ポセイドン') is True
+    assert deploy._actor_name_slip('ホセイドン', 'ポセイドン') is True

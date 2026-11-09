@@ -7051,6 +7051,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v601-rare-scan-jump",
             "hanjuku-chart-v602-actor-name-guard",
             "hanjuku-chart-v603-actor-ocr-slip",
+            "hanjuku-chart-v604-unreadable-name-slip",
             "hanjuku-chart-v560-castle-list-scroll",
             "hanjuku-chart-v561-post-month-repair-status",
             "hanjuku-chart-v501-idle-reanchor",
