@@ -119,3 +119,14 @@ def test_a_zero_hp_general_is_ranked_last_for_a_boss_wave():
     attacks = boss_attacks(mem)
     assert attacks
     assert attacks[0]['general'] == 'ポセイドン'
+
+
+def test_a_general_whose_boss_wave_dealt_nothing_is_ranked_behind():
+    """g1163 chapter 7 2026-11-09: the boss stayed at 426 after an arrival."""
+    garrison = {c: ['ゼウス'] for c in NORMAL}
+    garrison['オケアナ'] = ['アマンディーヌ', 'ゼウス']
+    mem = memory(garrison=garrison)
+    mem['boss_no_damage'] = ['アマンディーヌ']
+    attacks = boss_attacks(mem)
+    assert attacks
+    assert attacks[0]['general'] == 'ゼウス'

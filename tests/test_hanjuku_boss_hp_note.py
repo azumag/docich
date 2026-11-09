@@ -47,3 +47,15 @@ def test_the_boss_panel_readings_keep_a_bounded_history():
                            [SimpleNamespace(name='ランパイア', hp=298)])
     assert [row['hp'] for row in mem['boss_hp_history']] == [426, 298]
     assert [row['general'] for row in mem['boss_hp_history']] == ['ミモザ', 'ココット']
+
+
+def test_a_wave_that_left_the_hp_unchanged_is_remembered():
+    """g1163 chapter 7: the boss sat at 426 through one arrival."""
+    mem = {'chapter': 7, 'tick': 100, '_records': [],
+           'attack': {'general': 'ココット', 'castle': 'ボス', 'side': 'attack', 'step': 'A:x:M1'}}
+    B.note_boss_monster_hp(mem, {'ally': 'ココット'}, [SimpleNamespace(name='ランパイア', hp=426)])
+    mem['tick'] = 200
+    mem['attack']['general'] = 'ミモザ'
+    B.note_boss_monster_hp(mem, {'ally': 'ミモザ'}, [SimpleNamespace(name='ランパイア', hp=426)])
+    assert mem['boss_no_damage'] == ['ココット']
+    assert [row['hp'] for row in mem['boss_hp_history']] == [426, 426]

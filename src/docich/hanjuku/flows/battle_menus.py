@@ -1505,6 +1505,17 @@ def note_boss_monster_hp(mem, battle, enemy_rows):
     history = mem.get('boss_hp_history')
     history = history if isinstance(history, list) else []
     if not history or history[-1].get('hp') != hp or history[-1].get('general') != seen['general']:
+        # A new reading that repeats the previous HP after a different general
+        # entered means that general's wave dealt nothing to the boss, so the
+        # next wave should look elsewhere (g1163 chapter 7 2026-11-09: the boss
+        # sat at 426 through one arrival and only fell on the next).
+        prior = history[-1] if history else None
+        if (isinstance(prior, dict) and prior.get('hp') == hp
+                and prior.get('general') and prior['general'] != seen['general']):
+            hurtless = mem.get('boss_no_damage')
+            hurtless = hurtless if isinstance(hurtless, list) else []
+            if prior['general'] not in hurtless:
+                mem['boss_no_damage'] = (hurtless + [prior['general']])[-8:]
         history.append(seen)
         mem['boss_hp_history'] = history[-8:]
     # A readable boss battle panel is itself proof of the entry. The 「せめこんだ」
