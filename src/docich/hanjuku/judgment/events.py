@@ -301,6 +301,19 @@ def _monster_attack_policy_default(owner, ally, enemy, skill_lines, first, secon
         return None
     data = attack_data.get(ally.name) or attack_data.get(_monster_display_name(ally.name))
     if not (isinstance(data, dict) and 'skill1' in data and 'skill2' in data):
+        # The panel's monster name can differ from the table's key (a kana
+        # variant, a truncation, or an extra る), while the menu's two skill
+        # labels are the table's own strings. Match on those when exactly one
+        # entry fits: g1163 2026-11-09 21:26 showed エクスカリバる/マサムネる
+        # with no policy because the ally was not found by name.
+        wanted = {_fold_skill(first), _fold_skill(second)}
+        if all(wanted):
+            matches = [row for row in attack_data.values()
+                       if isinstance(row, dict) and row.get('skill1') and row.get('skill2')
+                       and {_fold_skill(row['skill1'][0]), _fold_skill(row['skill2'][0])} == wanted]
+            if len(matches) == 1:
+                data = matches[0]
+    if not (isinstance(data, dict) and 'skill1' in data and 'skill2' in data):
         return None
 
     # Fail closed unless both visible menu labels match the row we are about to
