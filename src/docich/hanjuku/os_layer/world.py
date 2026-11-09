@@ -286,6 +286,7 @@ BOSS_ARRIVAL_LIMIT = 2 * SORTIE_BUSY_TICKS
 MARCH_TICKS_PER_CELL = {6: 3.2}
 LONG_MARCH_TICKS = 6 * SORTIE_BUSY_TICKS   # window for late arrival binding
 MARCH_ARRIVAL_CAP = LONG_MARCH_TICKS
+BOSS_DETOUR_FACTOR = 2.0    # forest detours double the straight-line march
 
 
 def march_arrival_limit(mem, sortie):
@@ -306,9 +307,14 @@ def march_arrival_limit(mem, sortie):
         return BOSS_ARRIVAL_LIMIT
     distance = ((source[0] - target[0]) ** 2 + (source[1] - target[1]) ** 2) ** 0.5
     limit = max(BOSS_ARRIVAL_LIMIT, min(MARCH_ARRIVAL_CAP, round(distance * rate)))
-    # Boss paths can detour through forest; the Euclidean distance underestimates.
     if chart.is_boss_castle(target_name):
-        limit = MARCH_ARRIVAL_CAP
+        # Boss paths can detour through forest, so the Euclidean distance
+        # underestimates. A full 2400-tick window is too slow for a probe
+        # rotation, though: every wrong candidate cost ~40 minutes (g1163
+        # chapter 6: thirteen candidates). A 2x detour factor still covers the
+        # measured forest routes and rotates the candidates twice as fast.
+        limit = max(BOSS_ARRIVAL_LIMIT,
+                    min(MARCH_ARRIVAL_CAP, round(distance * rate * BOSS_DETOUR_FACTOR)))
     return limit
 
 

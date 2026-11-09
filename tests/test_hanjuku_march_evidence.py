@@ -88,3 +88,14 @@ def test_the_measured_slow_march_still_fits_the_limit():
     assert march_arrival_limit(mem, far) >= 2040
     # Nothing exceeds the bounded reconciliation window.
     assert march_arrival_limit(mem, far) <= 6 * SORTIE_BUSY_TICKS
+
+
+def test_a_boss_probe_is_not_waited_out_for_the_full_cap():
+    """A wrong candidate must rotate faster than 2400 ticks when it is near."""
+    mem = memory()
+    near = march_arrival_limit(mem, {"source": "オケアナ", "target": "ボス"})
+    far = march_arrival_limit(mem, {"source": "アルマムーン", "target": "ボス"})
+    assert 1200 <= near < 2400          # 203 cells with the 2x detour factor
+    assert far == 2400                  # a long boss route keeps the cap
+    # Every limit stays under the reconciliation window.
+    assert max(near, far) <= 6 * SORTIE_BUSY_TICKS

@@ -7003,6 +7003,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v550-post-month-diagnostics",
             "hanjuku-chart-v551-card-scroll-hold",
             "hanjuku-chart-v552-card-scroll-taps",
+            "hanjuku-chart-v553-boss-detour-bound",
             "hanjuku-chart-v501-idle-reanchor",
             "hanjuku-chart-v502-idle-and-roster-joins",
             "hanjuku-chart-v503-month-start-counts",
