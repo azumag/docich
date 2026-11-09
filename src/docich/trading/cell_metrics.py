@@ -23,25 +23,38 @@ Accounting
 
 Buy-fee correction
 ------------------
-Historically PAPER buys carried no fee (``taker_fee_rate_base`` = 0, see PR
-#3744 / cost model ``paper-cost-v2``).  ``corrected_*`` figures re-price
-buy fills that did not charge a buy fee as ``price * (1 + rate)``; sell fills
-are never changed.  The correction is decided per buy fill from its recorded
-``cost_context`` so fills that already include the fee (v2) are never charged
-twice:
+Fee history of PAPER buy fills (by ``cost_context``):
 
-1. ``cost_context`` absent (NULL / column missing): legacy, uncorrected ->
-   correct.
+* ``cost_context`` NULL (before PR #1905 introduced the cost model; 2026-09-09
+  .. 2026-10-07 JST in production): the broker applied ``DEFAULT_TAKER_FEE_RATE``
+  (0.0012) to *both* sides, ``effective = price*(1+slip)*(1+fee)`` (see commits
+  3a4d750656, 1600cd8a7c, a20fad6083: ``PaperBroker(ledger)`` with the default
+  rate at every call site).  Those buy prices already include the fee.
+* ``paper-cost-v1`` (#1905, 2026-10-07 on): the fee came from the market's
+  ``taker_fee_rate_base``, which bitbank publishes as 0, so buys were recorded
+  with ``fee_rate`` "0" and carry *no* fee.  This is the bug being corrected.
+* ``paper-cost-v2`` (PR #3744): buys charge ``max(quote, base)`` and already
+  include the fee in the fill price.
+
+``corrected_*`` figures re-price only the fee-free buys as ``price * (1 + rate)``;
+sell fills are never changed.  The decision is made per buy fill:
+
+1. ``cost_context`` absent (NULL / column missing): pre-#1905 fill that already
+   carries the 0.0012 fee -> do NOT correct (counted in
+   ``legacy_no_cost_context``, a subset of ``already_fee_bearing``).
 2. ``cost_context`` present but not a JSON object, or without a parseable
-   ``fee_rate`` -> the ledger is *not* aggregated (fail closed; we cannot tell
-   whether the fee is already in the price).
+   non-negative ``fee_rate`` -> the ledger is *not* aggregated
+   (``invalid`` / ``cost_context_invalid``): we cannot tell whether the fee is
+   in the price.
 3. recorded ``fee_rate`` > 0 -> the fee is already in the fill price -> do not
    correct (any model version).
-4. recorded ``fee_rate`` == 0 and model version >= 2 (``paper-cost-vN``) ->
-   zero is the deliberate v2 result (market publishes zero on both sides) ->
-   do not correct.
-5. recorded ``fee_rate`` == 0 and model version < 2 / missing / unparseable ->
-   the known historical free-buy bug -> correct.
+4. recorded ``fee_rate`` == 0 and model ``paper-cost-vN`` with N >= 2 -> zero is
+   the deliberate v2 result (market publishes zero on both sides) -> do not
+   correct.
+5. recorded ``fee_rate`` == 0 and model exactly ``paper-cost-v1`` -> the known
+   free-buy bug -> correct.
+6. recorded ``fee_rate`` == 0 and any other / missing model -> fail closed
+   (``invalid`` / ``cost_context_unknown_model``) rather than guess.
 
 Rate used when correcting: a recorded quote-side market fee when the context
 carries one (``fee_rate_quote`` / ``taker_fee_rate_quote``, > 0); otherwise
@@ -62,7 +75,10 @@ Failure policy (as ``strategy_metrics``)
 ----------------------------------------
 A missing/unreadable ledger or any malformed fill row returns an explicit
 non-``ok`` status with ``cells = None``; it is never an empty success.  An
-empty but valid ledger returns ``status = "ok"`` and ``cells = []``.
+empty but valid ledger returns ``status = "ok"`` and ``cells = []``.  A sell
+larger than the held quantity (an incomplete ledger basis), by *any* strategy,
+makes the status ``partial`` (``ignored_unpaired_sells``); cells are still
+returned.
 """
 from __future__ import annotations
 
@@ -84,6 +100,7 @@ JST = dt.timezone(dt.timedelta(hours=9), "JST")
 
 SCHEMA_VERSION = 1
 FEE_AWARE_MIN_MODEL_VERSION = 2  # paper-cost-v2: buys already carry the fee
+FEE_FREE_BUY_MODEL = "paper-cost-v1"  # buys recorded fee_rate 0 and carry no fee
 BTC_JPY_BUY_FEE_RATE = D("0.0010")
 JPY_PAIR_BUY_FEE_RATE = D("0.0012")
 DUST_COST_THRESHOLD_JPY = D("1")
@@ -124,7 +141,7 @@ def buy_fee_correction_rate(symbol: str, cost_context_text: object) -> Decimal |
     Raises ``_CellMetricsError`` when ``cost_context`` is present but unusable.
     """
     if cost_context_text is None:
-        return _fallback_rate(symbol, None)
+        return None  # pre-#1905 fill: the 0.0012 fee is already in the price
     try:
         context = json.loads(str(cost_context_text))
         if not isinstance(context, dict):
@@ -136,22 +153,24 @@ def buy_fee_correction_rate(symbol: str, cost_context_text: object) -> Decimal |
         raise _CellMetricsError("invalid", "cost_context_invalid") from exc
     if recorded > 0:
         return None
-    match = _MODEL_RE.match(str(context.get("model") or ""))
+    model = context.get("model")
+    if model == FEE_FREE_BUY_MODEL:
+        return _fallback_rate(symbol, context)
+    match = _MODEL_RE.match(model) if isinstance(model, str) else None
     if match is not None and int(match.group(1)) >= FEE_AWARE_MIN_MODEL_VERSION:
         return None
-    return _fallback_rate(symbol, context)
+    raise _CellMetricsError("invalid", "cost_context_unknown_model")
 
 
-def _fallback_rate(symbol: str, context: dict | None) -> Decimal:
-    if context is not None:
-        for key in _QUOTE_FEE_KEYS:
-            if key in context:
-                try:
-                    rate = _decimal(context[key])
-                except (ValueError, DecimalException):
-                    continue
-                if 0 < rate < 1:
-                    return rate
+def _fallback_rate(symbol: str, context: dict) -> Decimal:
+    for key in _QUOTE_FEE_KEYS:
+        if key in context:
+            try:
+                rate = _decimal(context[key])
+            except (ValueError, DecimalException):
+                continue
+            if 0 < rate < 1:
+                return rate
     if symbol == "BTC/JPY":
         return BTC_JPY_BUY_FEE_RATE
     if symbol.endswith("/JPY"):
@@ -266,7 +285,7 @@ def aggregate_cell_metrics_from_rows(rows: Iterable[tuple]) -> dict[str, object]
     total_pnl = ZERO
     cell_pnl = ZERO
     unpaired = 0
-    buys = {"total": 0, "corrected": 0, "no_cost_context": 0, "already_fee_bearing": 0}
+    buys = {"total": 0, "corrected": 0, "legacy_no_cost_context": 0, "already_fee_bearing": 0}
 
     try:
         for raw in rows:
@@ -277,9 +296,9 @@ def aggregate_cell_metrics_from_rows(rows: Iterable[tuple]) -> dict[str, object]
                 buys["total"] += 1
                 if rate is None:
                     buys["already_fee_bearing"] += 1
+                    buys["legacy_no_cost_context"] += int(context is None)
                 else:
                     buys["corrected"] += 1
-                    buys["no_cost_context"] += int(context is None)
                 pool.held += amount
                 pool.cost += amount * price
                 pool.corrected_cost += amount * price * (ONE if rate is None else ONE + rate)
@@ -375,8 +394,8 @@ def aggregate_cell_metrics_from_rows(rows: Iterable[tuple]) -> dict[str, object]
         "buy_fee_correction": {
             "buy_fills": buys["total"],
             "corrected": buys["corrected"],
-            "corrected_without_cost_context": buys["no_cost_context"],
             "already_fee_bearing": buys["already_fee_bearing"],
+            "legacy_no_cost_context": buys["legacy_no_cost_context"],
         },
     })
     return result

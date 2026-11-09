@@ -211,7 +211,7 @@ def test_v1_zero_fee_buy_is_corrected_jpy_pair(ledger):
     # buy re-priced at 1000 * 1.0012 = 1001.2 -> 10 * (1100 - 1001.2)
     assert D(c["corrected_realized_pnl_jpy"]) == D("988")
     assert ledger.result()["buy_fee_correction"] == {
-        "buy_fills": 1, "corrected": 1, "corrected_without_cost_context": 0, "already_fee_bearing": 0,
+        "buy_fills": 1, "corrected": 1, "already_fee_bearing": 0, "legacy_no_cost_context": 0,
     }
 
 
@@ -240,10 +240,27 @@ def test_v2_zero_fee_is_deliberate_and_not_corrected(ledger):
     assert c["corrected_realized_pnl_jpy"] == c["realized_pnl_jpy"]
 
 
-def test_buy_without_cost_context_is_legacy_and_corrected(ledger):
-    c = _round_trip(ledger, None)
-    assert D(c["corrected_realized_pnl_jpy"]) == D("988")
-    assert ledger.result()["buy_fee_correction"]["corrected_without_cost_context"] == 1
+def test_buy_without_cost_context_is_pre_1905_fee_bearing_and_not_corrected(ledger):
+    # pre-#1905 broker charged 0.0012 on buys; the recorded price already includes it.
+    c = _round_trip(ledger, None, buy_price=D("1001.2"))
+    assert c["corrected_realized_pnl_jpy"] == c["realized_pnl_jpy"]
+    assert D(c["realized_pnl_jpy"]) == D("988")
+    assert ledger.result()["buy_fee_correction"] == {
+        "buy_fills": 1, "corrected": 0, "already_fee_bearing": 1, "legacy_no_cost_context": 1,
+    }
+
+
+def test_mixed_null_v1_zero_and_v2_buys_correct_only_the_v1_zero_buy(ledger):
+    ledger.fill("lab:A:e1", "buy", 10, D("1001.2"), T0)                 # NULL: fee included
+    ledger.fill("lab:A:e1", "buy", 10, 1000, T0 + 1, cost=V1_ZERO)      # fee-free: corrected
+    ledger.fill("lab:A:e1", "buy", 10, D("1001.2"), T0 + 2, cost=V2_FEE)
+    ledger.fill("lab-exit:A:x", "sell", 30, 1100, T0 + 3)
+    result = ledger.result()
+    c = cell(result, "A")
+    assert D(c["realized_pnl_jpy"]) - D(c["corrected_realized_pnl_jpy"]) == D("12")  # 10 * 1.2 once
+    assert result["buy_fee_correction"] == {
+        "buy_fills": 3, "corrected": 1, "already_fee_bearing": 2, "legacy_no_cost_context": 1,
+    }
 
 
 def test_mixed_v1_and_v2_buys_in_one_pool_charge_only_the_v1_part(ledger):
@@ -263,13 +280,14 @@ def test_recorded_quote_fee_in_context_is_preferred(ledger):
 
 
 def test_correction_rate_rule_directly():
-    assert buy_fee_correction_rate("ETH/JPY", None) == D("0.0012")
-    assert buy_fee_correction_rate("BTC/JPY", None) == D("0.0010")
+    assert buy_fee_correction_rate("ETH/JPY", None) is None
+    assert buy_fee_correction_rate("BTC/JPY", None) is None
     assert buy_fee_correction_rate("ETH/JPY", json.dumps(V1_ZERO)) == D("0.0012")
     assert buy_fee_correction_rate("ETH/JPY", json.dumps(V2_FEE)) is None
     assert buy_fee_correction_rate("ETH/JPY", json.dumps(V2_ZERO)) is None
-    assert buy_fee_correction_rate("ETH/JPY", json.dumps({"fee_rate": "0"})) == D("0.0012")
-    assert buy_fee_correction_rate("ETH/JPY", json.dumps({"model": "weird", "fee_rate": "0"})) == D("0.0012")
+    assert buy_fee_correction_rate("BTC/JPY", json.dumps(V1_ZERO)) == D("0.0010")
+    assert buy_fee_correction_rate("ETH/JPY", json.dumps(V1_FEE)) is None
+    assert buy_fee_correction_rate("ETH/JPY", json.dumps({"model": "paper-cost-v3", "fee_rate": "0"})) is None
 
 
 def test_return_blocks_carry_corrected_mean(ledger):
@@ -331,8 +349,10 @@ def test_legacy_ledger_without_cost_context_column(tmp_path):
                       "0", "0", "x", T0 + i))
     conn.commit()
     conn.close()
-    c = cell(aggregate_cell_metrics(path), "A")
-    assert D(c["corrected_realized_pnl_jpy"]) == D("988")
+    result = aggregate_cell_metrics(path)
+    c = cell(result, "A")
+    assert c["corrected_realized_pnl_jpy"] == c["realized_pnl_jpy"]  # NULL buy = fee already in price
+    assert result["buy_fee_correction"]["legacy_no_cost_context"] == 1
 
 
 @pytest.mark.parametrize(
@@ -350,6 +370,10 @@ def test_legacy_ledger_without_cost_context_column(tmp_path):
         ("ETH/JPY", "buy", "lab:A:e", "1", "1000", T0, "[1]"),        # cost_context not an object
         ("ETH/JPY", "buy", "lab:A:e", "1", "1000", T0, '{"model":"paper-cost-v2"}'),  # no fee_rate
         ("ETH/JPY", "buy", "lab:A:e", "1", "1000", T0, '{"fee_rate":"x"}'),
+        ("ETH/JPY", "buy", "lab:A:e", "1", "1000", T0, '{"fee_rate":"0"}'),                          # no model
+        ("ETH/JPY", "buy", "lab:A:e", "1", "1000", T0, '{"model":"weird","fee_rate":"0"}'),
+        ("ETH/JPY", "buy", "lab:A:e", "1", "1000", T0, '{"model":"paper-cost-v0","fee_rate":"0"}'),
+        ("ETH/JPY", "buy", "lab:A:e", "1", "1000", T0, '{"model":5,"fee_rate":"0"}'),
     ],
 )
 def test_malformed_rows_return_cannot_aggregate(bad_row):
@@ -359,6 +383,35 @@ def test_malformed_rows_return_cannot_aggregate(bad_row):
     assert result["status"] == "invalid"
     assert result["cells"] is None
     assert result["total_realized_pnl_jpy"] is None
+
+
+def test_unknown_model_with_zero_fee_reports_reason():
+    row = ("ETH/JPY", "buy", "lab:A:e", "1", "1000", T0, '{"model":"weird","fee_rate":"0"}')
+    result = aggregate_cell_metrics_from_rows([row])
+    assert (result["status"], result["reason_code"]) == ("invalid", "cost_context_unknown_model")
+    # an unknown model is fine when the fee is visibly in the price
+    ok = ("ETH/JPY", "buy", "lab:A:e", "1", "1000", T0, '{"model":"weird","fee_rate":"0.001"}')
+    assert aggregate_cell_metrics_from_rows([ok])["status"] == "ok"
+
+
+def test_non_terminating_average_matches_build_performance_string_for_string(ledger):
+    ledger.fill("lab:A:e1", "buy", 1, 100, T0)
+    ledger.fill("lab:A:e1", "buy", 2, 101, T0 + 1)
+    ledger.fill("lab:B:e1", "buy", 3, D("103.3"), T0 + 2)
+    ledger.fill("lab-exit:A:x", "sell", D("0.7"), 104, T0 + 3)
+    ledger.fill("momentum-v1", "sell", D("0.9"), 99, T0 + 4)
+    ledger.fill("lab-exit:B:x", "sell", D("1.9"), 105, T0 + 5)
+    ledger.fill("lab-exit:A:x", "sell", D("0.3"), 98, T0 + 6)
+    ledger.fill("lab-exit:A:x", "sell", D("3.2"), 107, T0 + 7)
+    result = ledger.result()
+    performance = build_performance(
+        ledger.path, capital_reference="1000000", positions={}, prices={}, now=T0 + 100
+    )
+    assert result["total_realized_pnl_jpy"] == performance["realized_total_jpy"]
+    # the per-cell sums are accumulated in a different order than the chronological
+    # running total, so they may differ from it only in the last Decimal digits
+    cell_sum = sum(D(c["realized_pnl_jpy"]) for c in result["cells"])
+    assert abs(cell_sum - D(result["cell_realized_pnl_jpy"])) < D("1e-20")
 
 
 def test_out_of_range_sell_timestamp_returns_cannot_aggregate():
