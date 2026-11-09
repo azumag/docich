@@ -647,7 +647,13 @@ def _actor_name_slip(observed, selected):
         known += 1
         if a != b:
             mismatches += 1
-    return known >= 3 and mismatches <= 1
+    if known >= 3 and mismatches <= 1:
+        return True
+    # A short name with most of its characters unread (キール read as キ??)
+    # still names the intended general when every readable character matches in
+    # place and no other known general fits: g1163 2026-11-10 02:1x cancelled
+    # every キール sortie this way.
+    return known >= 1 and mismatches == 0 and len(selected) >= 3
 
 
 def _selected_actor_guard(screen, mem, order):
@@ -677,27 +683,44 @@ def _selected_actor_guard(screen, mem, order):
     # its measured columns: the label drifts with the frame's layout while the
     # name stays the actor (g1163 2026-11-10 01:0x: 7 sorties an hour were
     # cancelled after three label misses).
-    named_ok = (bool(row) and bool(name) and UNKNOWN not in name
-                and general_max_hp('しゅじんこう' if name == NAME else name) is not None
-                and name == selected)
-    if (not row or (row.span(80, 128) != 'しょうぐん' and not named_ok) or not name
-            or UNKNOWN in name or general_max_hp('しゅじんこう' if name == NAME else name) is None):
+    if not row or not name:
         misses = mem.setdefault('sortie_actor_miss', {})
         misses[order['step']] = misses.get(order['step'], 0) + 1
         if misses[order['step']] < 3:
             return _hold_deploy(screen, mem, order, '代役の出撃画面の本人名を読めないため保留')
         reason = '代役の出撃画面の本人名を3回で確認できず出撃を取り消す'
-    elif name != selected and _actor_name_slip(name, selected):
+    elif name == selected:
+        # The name is the actor; the menu label and its columns may drift.
+        (mem.get('sortie_actor_miss') or {}).pop(order['step'], None)
+        return None
+    elif _actor_name_slip(name, selected):
+        # OCR read ポセイドン as ホセイドン or ポ??ドン; the readable characters
+        # still name the intended general, so the sortie is not cancelled
+        # (g1163 2026-11-10 01:19-01:46: fifteen retries of this one sortie).
         (mem.get('sortie_actor_miss') or {}).pop(order['step'], None)
         _record(mem, 'sortie_actor_ocr_slip', **_deploy_context(order, mem),
-                general=selected, observed=name, screen=screen.kind,
+                observed=name, screen=screen.kind,
                 reason=f'出撃画面の将軍名{name}を{selected}の読み違いとして扱う')
         return None
-    elif name != selected:
-        reason = f'選択予定の{selected}と実画面の{name}が違うため出撃を取り消す'
-    else:
+    elif (isinstance(selected, str) and selected and selected != NAME and name != NAME
+          and general_max_hp(name) is not None
+          and not chart.is_boss_castle(order.get('target'))
+          and not _strict_boss_cards(order, mem)):
+        # Owner 2026-11-10: for an ordinary castle a different general may
+        # depart in place of the planned one. Boss sorties keep the strict
+        # check (their card kit and cancellation budget belong to the plan).
+        mem.setdefault('sortie_general', {})[order['step']] = name
+        (mem.get('general_override') or {}).pop(order['step'], None)
         (mem.get('sortie_actor_miss') or {}).pop(order['step'], None)
+        _record(mem, 'sortie_actor_substituted', **_deploy_context(order, mem),
+                observed=name, screen=screen.kind,
+                reason=f'計画の{selected}に代わり実画面の{name}を出撃させる（オーナー指示の代替出撃）')
         return None
+    else:
+        # A readable, different actor cancels at once: the planned substitute
+        # must never be relabelled onto whoever the panel shows (the hero
+        # included). Only an *unreadable* name earns the three holds above.
+        reason = f'選択予定の{selected}と実画面の{name}が違うため出撃を取り消す'
     (mem.get('general_override') or {}).pop(order['step'], None)
     (mem.get('sortie_actor_miss') or {}).pop(order['step'], None)
     return _hold_guarded_sortie(mem, order, 'sortie_actor_unconfirmed', reason,
@@ -745,6 +768,11 @@ def _hold_deploy(screen, mem, order, reason, *, card=None, carried=None, hold_va
                        else 'sortie_menu_unclassified', deviation_reason=reason)
     _record(mem, 'situation_held', **context, screen=screen.kind, card=card,
             observed_metric={'hand': screen.hand,
+                             # OCR yield: live frames can render with no
+                             # readable text at all (g1163 2026-11-10 04:39:
+                             # 299x224 frames parsed to ''), so the held screen
+                             # records how much text it actually produced.
+                             'text_len': len(getattr(screen, 'text', '') or ''),
                              'candidates': [{'x': x, 'y': y, 'text': w[:80]} for x, y, w in _options(screen)[:32]],
                              'carried_cards_read': carried, 'confirmation': 'unclassified',
                              'hold_variant': hold_variant},
@@ -1723,12 +1751,19 @@ def deploy_step(screen: Screen, mem):
                 misses = mem.setdefault('card_unreadable', {})
                 misses[order['step']] = misses.get(order['step'], 0) + 1
                 if misses[order['step']] >= CARD_UNREADABLE_LIMIT:
+                    # Owner 2026-11-10: depart without the planned cards rather
+                    # than cancelling the sortie (シュゼット/バーミセリ lost their
+                    # sorties to six unreadable readings each). Closing the list
+                    # once reaches the departure confirmation, whose readable
+                    # kit is the truth (sortie_kit_mismatch approves it).
                     misses.pop(order['step'], None)
-                    _finish_order(mem, 'failed', deviation_reason='切り札一覧を実測構造として読めない',
-                                  observed_metric={'screen': screen.kind,
-                                                   'readings': CARD_UNREADABLE_LIMIT},
-                                  reason='切り札一覧を読み取れないため出撃を取り消して次の指示へ進む')
-                    return [pad('b'), pad('b')]
+                    mem.setdefault('card_skip_departure', {})[order['step']] = True
+                    _record(mem, 'card_list_unreadable_depart',
+                            **_deploy_context(order, mem),
+                            observed_metric={'screen': screen.kind,
+                                             'readings': CARD_UNREADABLE_LIMIT},
+                            reason='切り札一覧を読み取れないため、計画の切り札無しで出撃を続行する')
+                    return [pad('b')]
             return _hold_deploy(screen, mem, order,
                                 '切り札一覧の名前・数量・配置またはカーソルが実測構造と一致しないため保留', card=card)
         mem.get('card_unreadable', {}).pop(order['step'], None)
@@ -1858,6 +1893,24 @@ def deploy_step(screen: Screen, mem):
             # anyway (owner 2026-11-02: 切り札不足でも延期しない).
             if misses[order['step']] >= SORTIE_CONFIRM_LIMIT:
                 if carried is None:
+                    # Owner 2026-11-10: an unreadable departure confirmation
+                    # must not cancel the sortie — press the default (はい)
+                    # once and let the departure itself prove it. A second
+                    # unreadable round means the blind A did nothing, so the
+                    # existing cancel path takes over.
+                    ordinary = (not chart.is_boss_castle(order.get('target'))
+                                and not _strict_boss_cards(order, mem))
+                    if ordinary and not (mem.get('sortie_confirm_blind') or {}).get(order['step']):
+                        mem.setdefault('sortie_confirm_blind', {})[order['step']] = True
+                        misses.pop(order['step'], None)
+                        _record(mem, 'sortie_confirm_blind_approve',
+                                **_deploy_context(order, mem, expected_metric=sorted(_deploy_cards(order, mem))),
+                                observed_metric={'carried': None, 'screen': screen.kind},
+                                reason='出撃確認の携行札を読めないため既定（はい）で出撃を承認する')
+                        # Two presses: the confirmation panel takes the
+                        # selection and then the うむッ! row (g1163 2026-11-10
+                        # 04:04: a single blind A left the screen unchanged).
+                        return [pad('a'), {'type': 'wait', 'ms': 150}, pad('a')]
                     misses.pop(order['step'], None)
                     _finish_order(mem, 'failed', deviation_reason='出撃確認の携行札を読めない',
                                   observed_metric={'carried': None},

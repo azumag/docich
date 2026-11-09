@@ -116,15 +116,18 @@ def test_card_select_hand_left_edge_jitter_is_accepted():
     assert policy._measured_card_select(screen) is None
 
 
-def test_unreadable_card_select_is_bounded_and_cancels_the_sortie():
+def test_unreadable_card_select_departs_without_the_planned_cards():
+    """Owner 2026-11-10: a sortie continues without its cards rather than cancelling."""
     mem = {'chapter': 1, 'active': '1-A2', 'variant': 'chart',
-           'orders': {'1-A2': 'pending'}, 'picked': []}
+           'orders': {'1-A2': 'pending'}, 'picked': [], '_records': []}
     screen = menu('card_select', ['クースカン1'], True)
     for _ in range(policy.CARD_UNREADABLE_LIMIT - 1):
         assert policy.deploy_step(screen, mem) == []
         assert mem['orders']['1-A2'] == 'pending'
-    assert policy.deploy_step(screen, mem) == [policy.pad('b'), policy.pad('b')]
-    assert mem['orders']['1-A2'] == 'failed' and mem['active'] is None
+    assert policy.deploy_step(screen, mem) == [policy.pad('b')]
+    assert mem['orders']['1-A2'] == 'pending'          # not failed
+    assert mem.get('card_skip_departure', {}).get('1-A2') is True
+    assert any(r['decision'] == 'card_list_unreadable_depart' for r in mem['_records'])
 
 
 def test_a_base_boss_sortie_cancels_after_bounded_reads_without_dropping_required_cards():
@@ -914,9 +917,19 @@ def test_a_readable_but_mismatched_kit_is_approved_after_bounded_readings():
     assert [r['decision'] for r in mem['_records'][-2:]] == ['sortie_kit_mismatch', 'sortie_confirm']
 
 
-def test_an_unreadable_sortie_confirmation_is_bounded_and_cancelled():
+def test_an_unreadable_sortie_confirmation_approves_once_then_cancels():
+    """Owner 2026-11-10: an unreadable departure confirmation departs anyway.
+
+    The first unreadable round presses the default (はい); a second round means
+    the blind A did nothing, so the existing cancel path takes over.
+    """
     mem = _c2_memory()
     screen = menu('sortie_confirm', ['うむッ!'], hand=False)
+    for _ in range(policy.SORTIE_CONFIRM_LIMIT - 1):
+        assert policy.deploy_step(screen, mem) == []
+    blind = policy.deploy_step(screen, mem)
+    assert blind[0] == policy.pad('a') and blind[-1] == policy.pad('a')
+    assert mem['_records'][-1]['decision'] == 'sortie_confirm_blind_approve'
     for _ in range(policy.SORTIE_CONFIRM_LIMIT - 1):
         assert policy.deploy_step(screen, mem) == []
     assert policy.deploy_step(screen, mem) == [policy.pad('b'), policy.pad('b')]
@@ -1180,3 +1193,55 @@ def test_a_one_character_ocr_slip_is_the_intended_actor():
     # A real general is never a slip, and an unrelated name is not either.
     assert deploy._actor_name_slip('ゼウス', 'ポセイドン') is False
     assert deploy._actor_name_slip('アテナ', 'アテナ') is False
+
+
+def test_an_unreadable_name_goes_through_the_slip_rule():
+    """ポセイドン's name read as ポ??ドン for 26 minutes of retries (v604)."""
+    from docich.hanjuku.flows import deploy
+
+    from docich.hanjuku.os_layer.font import UNKNOWN
+    assert deploy._actor_name_slip('ポ' + UNKNOWN * 2 + 'ドン', 'ポセイドン') is True
+    assert deploy._actor_name_slip('ホセイドン', 'ポセイドン') is True
+
+
+def test_the_slip_record_does_not_pass_general_twice():
+    """v604 crashed every actor observation: _deploy_context already has general.
+
+    docich decision_log._record() raised TypeError (duplicate 'general') and the
+    brain exited with code 2 on every observation (g1163 2026-11-10 02:0x).
+    """
+    import inspect
+
+    from docich.hanjuku.flows import deploy
+
+    source = inspect.getsource(deploy._selected_actor_guard)
+    slip = source.split("sortie_actor_ocr_slip", 1)[1].split("return None", 1)[0]
+    assert "general=selected" not in slip
+
+
+def test_a_short_name_with_unreadable_characters_is_the_actor():
+    """キール read as キ?? cancelled every キール sortie (2026-11-10 02:1x)."""
+    from docich.hanjuku.flows import deploy
+    from docich.hanjuku.os_layer.font import UNKNOWN
+
+    assert deploy._actor_name_slip('キ' + UNKNOWN * 2, 'キール') is True
+    # A different readable character still fails, and so does a real general.
+    assert deploy._actor_name_slip('ヒ' + UNKNOWN * 2, 'キール') is False
+    # A readable, different real general is never a slip.
+    assert deploy._actor_name_slip('ゼウス', 'キール') is False
+
+
+def test_a_different_general_may_depart_for_an_ordinary_castle():
+    """Owner 2026-11-10: 計画と違う将軍でもかわりを出撃OK（通常城のみ）。"""
+    from docich.hanjuku.flows import deploy
+
+    row = type('Row', (), {'y': 31,
+                           'span': lambda self, a, b: ('アテナ' if (a, b) == (16, 80) else '')})()
+    screen = type('Screen', (), {'lines': [row], 'kind': 'card_select'})()
+    mem = {'_records': [], '_run_identity': None,
+           'sortie_general': {'A:x:M1': 'ゼウス'}}
+    order = {'step': 'A:x:M1', 'general': 'ゼウス', 'source': 'あるまむーん',
+             'target': 'ゴーメン', 'source_probe': True}
+    assert deploy._selected_actor_guard(screen, mem, order) is None
+    assert mem['sortie_general']['A:x:M1'] == 'アテナ'
+    assert any(r['decision'] == 'sortie_actor_substituted' for r in mem['_records'])
