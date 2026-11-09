@@ -1291,7 +1291,8 @@ def battle_end(mem, next_kind, *, defense_continues=False, actor_continues=False
         # only loss path that never recorded castle_lost_observed (g1163
         # chapter 7 2026-11-09: マンシー and リデンブロック fell with no loss
         # record at all), and the garrison is what a later fix needs.
-        _garrison_before = list((_world(mem).get('garrison') or {}).get(castle) or ())
+        _garrison_row = (_world(mem).get('garrison') or {}).get(castle)
+        _garrison_before = list(_garrison_row or ())
         (_world(mem).get('garrison') or {}).pop(castle, None)
         lost = mem.setdefault('lost', [])
         if castle not in lost:
@@ -1299,6 +1300,12 @@ def battle_end(mem, next_kind, *, defense_continues=False, actor_continues=False
             _record(mem, 'castle_lost_observed', castle=castle,
                     observed_metric={'cause': 'defense_loss',
                                      'garrison': _garrison_before[:8],
+                                     # g1163 2026-11-09 19:49 フィロメラ: a
+                                     # defender fought while the bookkeeping
+                                     # held no row at all, so the empty list
+                                     # alone reads as "undefended" when it was
+                                     # only unread.
+                                     'garrison_known': isinstance(_garrison_row, list),
                                      'ally': cur.get('ally'), 'enemy': cur.get('enemy')},
                     resulting_event=f'lost:{castle}',
                     reason='守備戦で敗れて城を失ったため、守備人数と相手を残して奪還対象にする')

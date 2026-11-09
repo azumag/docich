@@ -7027,6 +7027,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v579-month-elapsed",
             "hanjuku-chart-v580-roster-end-assumed",
             "hanjuku-chart-v581-launch-probe-window",
+            "hanjuku-chart-v582-loss-garrison-known",
             "hanjuku-chart-v574-castle-cursor-feedback",
             "hanjuku-chart-v577-status-open-feedback",
             "hanjuku-chart-v560-castle-list-scroll",

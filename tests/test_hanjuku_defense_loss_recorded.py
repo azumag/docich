@@ -28,5 +28,17 @@ def test_a_defense_loss_records_the_castle_and_its_garrison():
     metric = losses[-1]['observed_metric']
     assert metric['cause'] == 'defense_loss'
     assert metric['garrison'] == ['アテナ']
+    assert metric['garrison_known'] is True
     assert 'マンシー' in mem['lost']
     assert not (_world(mem).get('garrison') or {}).get('マンシー')
+
+
+def test_an_unread_garrison_is_not_reported_as_undefended():
+    """g1163 2026-11-09 19:49 フィロメラ: a defender fought, no row was held."""
+    mem = memory()
+    del mem['world']['garrison']['マンシー']
+    B.battle_end(mem, 'map')
+    metric = [r for r in mem['_records']
+              if r['decision'] == 'castle_lost_observed'][-1]['observed_metric']
+    assert metric['garrison'] == []
+    assert metric['garrison_known'] is False
