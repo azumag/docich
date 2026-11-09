@@ -592,3 +592,17 @@ def test_a_jump_survives_its_step_disappearing_from_the_plan():
     assert map_flow._jump_successor(mem, None, jump) is active
     jump_other = dict(jump, target='ひめじ')
     assert map_flow._jump_successor(mem, None, jump_other) is None
+
+
+def test_an_empty_active_order_does_not_end_the_trip():
+    """Between plans the active order is briefly empty (g1163 2026-11-10 06:40)."""
+    from docich.hanjuku.flows import map as map_flow
+
+    mem = {'chapter': 8, 'active': None, 'orders': {}, 'chart_plan': {'orders': []},
+           'sorties': {}, 'world': {},
+           'castle_jump': {'step': 'A:old:M1', 'source': 'あるまむーん',
+                           'target': 'しまばら', 'phase': 'menu', 'age': 0, 'total': 0,
+                           'menu_presses': 1}}
+    screen = type('Screen', (), {'kind': 'unknown', 'hand': None, 'lines': [], 'text': ''})()
+    out = map_flow.castle_jump_step(screen, mem, None)
+    assert out == [] and mem['castle_jump']['orphan'] == 1

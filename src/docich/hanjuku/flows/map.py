@@ -706,6 +706,7 @@ CASTLE_JUMP_CURSOR_BLIND = 4    # consecutive cursor-less frames before giving u
 # observation, then a readable main menu). Re-observe briefly; a real
 # mis-pressed panel still ends the trip on the same bound.
 CASTLE_JUMP_FADE_BLIND = 2      # consecutive unreadable frames after the X
+CASTLE_JUMP_ORPHAN_HOLD = 4     # frames an empty active order may interrupt the trip
 
 
 def _castle_key(name):
@@ -890,6 +891,13 @@ def castle_jump_step(screen, mem, frame):
             # aborted at age 1 with order_changed, so the sortie never left).
             # The physical trip is still valid when the same general leaves
             # the same castle for the same target, so carry the jump over.
+            if not mem.get('active'):
+                # Between plans the active order can be empty for a frame or
+                # two; that is not a change of intent (g1163 2026-11-10 06:40:
+                # five jumps still died at age 1 this way).
+                jump['orphan'] = int(jump.get('orphan') or 0) + 1
+                if jump['orphan'] <= CASTLE_JUMP_ORPHAN_HOLD:
+                    return []
             adopted = _jump_successor(mem, order, jump)
             if adopted is None:
                 return _end_castle_jump(screen, mem, 'order_changed')
