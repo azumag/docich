@@ -7008,6 +7008,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v556-ch6-boss-cell-up",
             "hanjuku-chart-v557-battle-unknown-advance",
             "hanjuku-chart-v558-boss-wave-egg-first",
+            "hanjuku-chart-v559-boss-panel-entry-bind",
             "hanjuku-chart-v501-idle-reanchor",
             "hanjuku-chart-v502-idle-and-roster-joins",
             "hanjuku-chart-v503-month-start-counts",

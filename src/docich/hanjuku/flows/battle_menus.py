@@ -1476,6 +1476,24 @@ def note_boss_monster_hp(mem, battle, enemy_rows):
     mem['boss_hp_seen'] = {'castle': attack.get('castle'), 'monster': name, 'hp': hp,
                            'general': attack.get('general') or battle.get('ally'),
                            'tick': int(mem.get('tick') or 0)}
+    # A readable boss battle panel is itself proof of the entry. The 「せめこんだ」
+    # text can be missed on the frames between the map and the panel (g1163
+    # 2026-11-09 13:36: ヘーゼル fought ハードロボ but no attack_observed was
+    # recorded, so the wave stayed en route and was re-sent as overdue at 14:00
+    # while the boss HP never moved). Bind the in-flight sortie here.
+    if attack.get('step') is None:
+        from ..strategy.orders import _bind_sortie, _match_sortie
+        general = attack.get('general') or battle.get('ally')
+        step, match = _match_sortie(mem, attack.get('castle'), general)
+        if step is not None and match == 'matched':
+            _bind_sortie(mem, step, attack.get('castle'), general)
+            attack['step'] = step
+            mem['attack'] = attack
+            from ..decision_log import _record
+            _record(mem, 'boss_entry_bound_by_panel', chart_step=step, general=general,
+                    castle=attack.get('castle'),
+                    observed_metric={'monster': name, 'hp': hp, 'sortie_match': match},
+                    reason='突入文を読めなかったがボスの戦闘パネルを実測したため、在途の出撃と結び付ける')
 
 
 def _egg_retreat_return(screen, mem, battle):
