@@ -1559,6 +1559,34 @@ def _adjust_situation(mem):
             'card_stock': dict(sorted((mem.get('card_stock') or {}).items()))}
 
 
+def _supersede_unstarted_steps(mem, new_orders):
+    """Retire the previous plan's steps that never started.
+
+    A replaced plan must not leave its unstarted steps standing: they would
+    keep naming a general who already sortied under the new plan (g1163
+    chapter 8 2026-11-09: A:046e819d:M5f4f03 stayed pending while
+    A:8e54a3af:M5f4f03 was already launched). Only a step with no sortie of its
+    own is superseded; anything launched keeps its own lifecycle.
+    """
+    previous = (mem.get('chart_plan') or {}).get('orders') or []
+    statuses = mem.setdefault('orders', {})
+    sorties_now = _sorties(mem)
+    keep = {o.get('step') for o in new_orders if isinstance(o, dict)}
+    superseded = []
+    for old_order in previous:
+        step = old_order.get('step') if isinstance(old_order, dict) else None
+        if not isinstance(step, str) or step in keep:
+            continue
+        if statuses.get(step) in (None, 'pending') and step not in sorties_now:
+            statuses[step] = 'superseded'
+            superseded.append(step)
+    if superseded:
+        _record(mem, 'plan_steps_superseded', observed_metric={'steps': superseded[:8]},
+                expected_metric={'pending_generals': 0},
+                reason='計画が差し替わったため、未発射の旧手順を破棄して同じ将軍の二重計画を防ぐ')
+    return superseded
+
+
 def _adopt_plan(mem, doc, rid):
     """Adopt a validated adjusted chart as the plan, with per-generation step ids."""
     orders = [{**o, 'step': chart_adjust.execution_step(rid, o['step']), 'local_step': o['step'],
@@ -1574,6 +1602,7 @@ def _adopt_plan(mem, doc, rid):
             # a read-only roster probe even if the plan called it a sortie.
             order['roster_probe'] = True
     purchases = doc.get('purchases')
+    _supersede_unstarted_steps(mem, orders)
     mem['chart_plan'] = {
         'request_id': rid, 'source': doc.get('source'), 'orders': orders,
         'recruitment': doc.get('recruitment'),
