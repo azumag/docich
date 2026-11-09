@@ -1942,7 +1942,10 @@ def deploy_step(screen: Screen, mem):
                         'identity': run_identity(mem.get('_run_identity'))}
                     return _cancelled_sortie_step(screen, mem, owner)
                 return _hold_deploy(screen, mem, order,
-                                    '携行切り札の読取が不確実または計画と不一致のため出撃承認を保留', carried=carried)
+                                    '携行切り札の読取が不確実または計画と不一致のため出撃承認を保留',
+                                    carried=carried,
+                                    hold_variant=(f'kit_mismatch:{len(carried)}/{len(want)}'
+                                                  if isinstance(carried, list) else 'kit_unreadable'))
         else:
             mem.get('sortie_confirm_miss', {}).pop(order['step'], None)
         move = menu_to(screen, 'うむッ!')
