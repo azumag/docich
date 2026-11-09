@@ -130,3 +130,31 @@ def test_a_general_whose_boss_wave_dealt_nothing_is_ranked_behind():
     attacks = boss_attacks(mem)
     assert attacks
     assert attacks[0]['general'] == 'ゼウス'
+
+
+def test_a_wave_leaves_from_the_nearest_castle_with_a_spare():
+    """あるまむーん→しまばら is ~753 cells; まつやま is 336 (g1163 2026-11-10).
+
+    The wave picker preferred the home castle regardless of distance, so every
+    sortie paid a ~40-minute march.
+    """
+    from docich import hanjuku_chart as chart
+    from docich.hanjuku.strategy import replan
+
+    chapter = 8
+    cells = chart.castles(chapter)
+    home = chart.home_castle(chapter)
+    target = 'しまばら'
+    far = ((cells[home][0] - cells[target][0]) ** 2
+           + (cells[home][1] - cells[target][1]) ** 2) ** 0.5
+    near = min((c for c in cells if c not in (target, 'ボス')),
+               key=lambda c: ((cells[c][0] - cells[target][0]) ** 2
+                              + (cells[c][1] - cells[target][1]) ** 2) ** 0.5)
+    assert (cells[near][0] - cells[target][0]) ** 2 + (cells[near][1] - cells[target][1]) ** 2 < far ** 2
+    mem = {'chapter': chapter,
+           'world': {'garrison': {home: ['どうし', 'アテナ', 'ゼウス'],
+                                  near: ['アテナ', 'ゼウス']}},
+           'sorties': {}, 'orders': {}}
+    picked = replan._wave_pick(mem, target, {home, near}, set(), False)
+    assert picked is not None
+    assert picked[0] == near

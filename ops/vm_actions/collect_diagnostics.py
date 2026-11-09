@@ -7066,6 +7066,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v617-jump-survives-replan",
             "hanjuku-chart-v618-jump-orphan-hold",
             "hanjuku-chart-v619-jump-unresolved-hold",
+            "hanjuku-chart-v620-wave-nearest-source",
             "hanjuku-chart-v560-castle-list-scroll",
             "hanjuku-chart-v561-post-month-repair-status",
             "hanjuku-chart-v501-idle-reanchor",
