@@ -379,3 +379,28 @@ def test_the_rare_card_sweep_moves_several_rows_per_observation():
     target = 21
     frames = max(1, min((target - max(ids)) // 4 + 1, 4))
     assert frames == 3
+
+
+def test_rare_card_scan_respects_remaining_press_budget(monkeypatch):
+    """A batched sweep must not exceed its existing per-month press limit."""
+    from docich.hanjuku.flows import deploy
+
+    target = deploy.CARD_IDS['キャトルミュー']
+    visible = [name for name, card_id in sorted(
+        deploy.CARD_IDS.items(), key=lambda item: item[1])
+        if card_id < target][:4]
+    assert len(visible) == 4
+    mem = {'month': '1-1', 'rare_scan': {
+        'step': 1, 'presses': deploy.RARE_SCAN_LIMIT - 1,
+        'rows': None}}
+    inventory = {'remaining': 3,
+                 'rows': [{'card': name, 'stock': 0, 'y': i * 16}
+                          for i, name in enumerate(visible)],
+                 'selected_y': 0}
+    monkeypatch.setattr(deploy, '_boss_balmung_generic', lambda *args: False)
+    monkeypatch.setattr(deploy, '_note_balmung_stock', lambda *args: None)
+    monkeypatch.setattr(deploy, '_record', lambda *args, **kwargs: None)
+    monkeypatch.setattr(deploy, '_deploy_context', lambda *args: {})
+    actions = deploy._rare_card_inventory(None, mem, {'step': 1}, inventory)
+    assert actions == [deploy.pad('down')]
+    assert mem['rare_scan']['presses'] == deploy.RARE_SCAN_LIMIT
