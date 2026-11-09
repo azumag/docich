@@ -624,6 +624,32 @@ def _upper_card_boundary(mem, order, card, inventory):
     return state.get('confirmed') == 2
 
 
+def _actor_name_slip(observed, selected):
+    """An unreadable-by-one-character OCR slip of the intended actor.
+
+    The sortie screen prints the general's name; OCR read ポセイドン as
+    ホセイドン and ポ??ドン (g1163 2026-11-10 01:09-01:30: every ポセイドン
+    sortie was cancelled after three "unconfirmed" reads). The observed text is
+    not a known general, so a single mismatching character is a read error, not
+    a different actor.
+    """
+    if not isinstance(observed, str) or not isinstance(selected, str):
+        return False
+    if len(observed) != len(selected) or len(selected) < 3:
+        return False
+    if general_max_hp(observed) is not None:
+        return False          # a real general: never treat it as a slip
+    mismatches = 0
+    known = 0
+    for a, b in zip(observed, selected):
+        if a == UNKNOWN:
+            continue
+        known += 1
+        if a != b:
+            mismatches += 1
+    return known >= 3 and mismatches <= 1
+
+
 def _selected_actor_guard(screen, mem, order):
     """A runtime sortie must show its actual named actor before confirmation.
 
@@ -661,6 +687,12 @@ def _selected_actor_guard(screen, mem, order):
         if misses[order['step']] < 3:
             return _hold_deploy(screen, mem, order, '代役の出撃画面の本人名を読めないため保留')
         reason = '代役の出撃画面の本人名を3回で確認できず出撃を取り消す'
+    elif name != selected and _actor_name_slip(name, selected):
+        (mem.get('sortie_actor_miss') or {}).pop(order['step'], None)
+        _record(mem, 'sortie_actor_ocr_slip', **_deploy_context(order, mem),
+                general=selected, observed=name, screen=screen.kind,
+                reason=f'出撃画面の将軍名{name}を{selected}の読み違いとして扱う')
+        return None
     elif name != selected:
         reason = f'選択予定の{selected}と実画面の{name}が違うため出撃を取り消す'
     else:

@@ -1164,3 +1164,19 @@ def test_a_readable_actor_name_is_accepted_without_the_menu_label(monkeypatch=No
     order = {'step': 'A:x:M1', 'general': 'ゼウス', 'source': 'あるまむーん',
              'source_probe': True}
     assert deploy._selected_actor_guard(screen, mem, order) is None
+
+
+def test_a_one_character_ocr_slip_is_the_intended_actor():
+    """g1163 2026-11-10 01:09-01:30: every ポセイドン sortie was cancelled.
+
+    OCR read the sortie screen's ポセイドン as ホセイドン (and ポ??ドン); the
+    observed text is not a known general, so one bad character is a read error.
+    """
+    from docich.hanjuku.flows import deploy
+
+    assert deploy._actor_name_slip('ホセイドン', 'ポセイドン') is True
+    from docich.hanjuku.os_layer.font import UNKNOWN
+    assert deploy._actor_name_slip('ポ' + UNKNOWN * 2 + 'ドン', 'ポセイドン') is True
+    # A real general is never a slip, and an unrelated name is not either.
+    assert deploy._actor_name_slip('ゼウス', 'ポセイドン') is False
+    assert deploy._actor_name_slip('アテナ', 'アテナ') is False
