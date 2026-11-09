@@ -675,8 +675,16 @@ def _watch_cursor_still(mem):
 # rows from y=39, with the orange hand left of the selected row. SELECT flies
 # the cursor to that castle (manual p.15: 将軍と同じく、セレクトボタンでその城へ飛べる).
 CASTLE_JUMP_HINT = 'Aボタンでステータスひょうじ'
-CASTLE_JUMP_LIMIT = 32          # observations across the whole menu trip
-CASTLE_JUMP_SCROLL_LIMIT = 8    # list scrolls while looking for the source
+CASTLE_JUMP_LIMIT = 48          # observations across the whole menu trip
+# The しろ list is an eight-row window (y=39..151). In the observed failures
+# it opened on the home castle at row 0, so reaching the last row of a
+# 12-castle chapter needs 11 Downs. The old bound of 8 stopped at row 8 and
+# left every source from ユージア onward (chapter 6 indices 9+) unreachable:
+# g1133 recorded five ユージア castle_missing failures on 2026-11-06 and
+# g1163 seven アブダレ failures on 2026-11-09, each with the eight-scroll
+# bound exhausted. Keep the bound above the longest chapter roster; the loop
+# still stops as soon as the source is visible.
+CASTLE_JUMP_SCROLL_LIMIT = 16   # list scrolls while looking for the source
 CASTLE_JUMP_COOLDOWN = 40       # observations before retrying a failed source
 CASTLE_JUMP_FAR = 48            # same distance gate as the Y jump (map px)
 # The orange hand of the main menu and of the しろ list blinks, so whole frames
