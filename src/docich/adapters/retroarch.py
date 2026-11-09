@@ -213,14 +213,28 @@ def retroarch_cfg_lines(g, game, cfg_path: Path, network_port: int) -> list[str]
         lines += ['video_fullscreen = "false"', 'video_scale = "3.0"',
                   'video_force_aspect = "true"', 'video_crop_overscan = "false"',
                   'savestate_auto_index = "false"', 'state_slot = "0"']
+    # [retroarch] force_aspect = false asks for the core's raw pixels (Snes9x
+    # 256x224) instead of the 4:3 window (299x224). The deterministic screen
+    # signatures match 8-pixel glyph cells exactly, so a horizontally stretched
+    # 299-wide capture reads as zero text (g1163 2026-11-10 04:39: live card
+    # select parsed to ''; the 256x224 fixture parsed in full).
+    force_aspect = retroarch_raw(game).get("force_aspect")
+    if force_aspect is not None:
+        if type(force_aspect) is not bool:
+            raise AdapterError("[retroarch] force_aspect は真偽値である必要があります")
+        value = "true" if force_aspect else "false"
+        lines = [line for line in lines if not line.startswith('video_force_aspect')]
+        lines.append(f'video_force_aspect = "{value}"')
     from ..hanjuku_hotload import enabled as scripted_hanjuku
     if scripted_hanjuku(game):
         if d.viewport_width > 0:
             # Keep the core's aspect ratio at the small window scale (Snes9x:
-            # 299x224). Disabling force_aspect produces a 256x224 window with
-            # vertically compressed content, breaking exact-tile recognition.
+            # 299x224). An explicit [retroarch] force_aspect overrides this.
             lines = [line for line in lines if not line.startswith('video_scale =')]
             lines.append('video_scale = "1.0"')
+            if force_aspect is False:
+                lines = [line for line in lines if not line.startswith('video_force_aspect')]
+                lines.append('video_force_aspect = "false"')
         # Stable native pixels for the deterministic screen signatures.
         lines += ['video_smooth = "false"',
                   # Paused LOAD/SAVE/slot OSD persists over native dialogue
