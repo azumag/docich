@@ -64,3 +64,21 @@ def test_a_missing_selection_marker_reports_its_cause():
             width=256, height=224, pixel=lambda x, y: (0, 0, 0)))
     assert result is not None
     assert result['marker_reason'] == 'no_selection_marker'
+
+
+def test_a_triangle_right_of_the_old_window_is_found():
+    """The roster's name column starts at x=168, so the sprite can sit past 154."""
+    from types import SimpleNamespace
+
+    from docich.hanjuku.os_layer import readers as r
+
+    def frame_with(ox, oy):
+        palette = {}
+        for dx, dy, colour in r._GENERAL_MARKER_PATTERN:
+            palette[(ox + dx, oy + dy)] = colour
+        return SimpleNamespace(width=299, height=224,
+                               pixel=lambda x, y: palette.get((x, y), (12, 12, 12)))
+
+    found = r.selection_marker(frame_with(162, 40))
+    assert found is not None, 'a triangle at x=162 must be inside the search window'
+    assert found['box'][0] == 162
