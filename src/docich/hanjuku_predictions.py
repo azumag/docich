@@ -365,26 +365,32 @@ def _row_target_cleared(root, row):
 
 
 def _chain_target(root, row, state):
-    """The next goal target for a row that settled at achievement.
+    """The next goal target for a live run that already reached the wager's goal.
 
-    Returns ``None`` when the run is over, the row was not settled mid-run, or
-    the record is already at the final chapter. The cleared total carries
-    forward into ``best_cleared``, so a prediction that settles after the next
-    chapter is already clear never opens a wager for a known result.
+    The wager may have settled as a win at achievement (``RESOLVED``) or been
+    refunded as a no-contest at the same moment (``CANCELED``); builds before
+    2026-11-09 recorded only the refund and no ``achieved`` marker. Both are
+    mid-run settlements of the same challenge, so the series continues to the
+    next chapter (owner decisions 2026-11-09). ``None`` means the attempt is
+    over (a durable terminal result or terminal evidence exists), the goal is
+    not proven yet, the row did not settle mid-run, or the record already
+    reached the final chapter. The cleared total carries forward into
+    ``best_cleared``, so a prediction that settles after the next chapter is
+    already clear never opens a wager for a known result.
     """
-    if row.get('status') != 'RESOLVED' or row.get('result') is not None:
-        return None
-    achieved = row.get('achieved')
-    if type(achieved) is not int or not 1 <= achieved <= progress.MAX_CHAPTER:
-        return None
-    if achieved < row.get('target', 0):
+    if row.get('status') not in DONE or row.get('result') is not None:
         return None
     runtime = runtime_directory(root, row['runtime_id'])
     identity = {k: row[k] for k in progress.KEYS}
     if hanjuku_hotload.terminal(runtime, identity) is not None:
         return None
+    achieved = row.get('achieved')
+    if achieved is not None:
+        progress.count(achieved)
     cleared = progress.completed_count(runtime, identity)
-    best = max(achieved, cleared if cleared is not None else 0)
+    best = max((value for value in (achieved, cleared) if value is not None), default=None)
+    if best is None or best < row.get('target', 0):
+        return None
     state['best_cleared'] = max(state['best_cleared'], best)
     return None if best >= progress.MAX_CHAPTER else best + 1
 

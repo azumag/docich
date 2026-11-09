@@ -668,6 +668,58 @@ def test_next_goal_is_not_opened_after_a_refund(env):
     assert len([c for c in env.remote.calls if c[0] == 'POST']) == 1
 
 
+def test_achievement_refund_continues_to_the_next_goal(env):
+    """達成と同時に不成立返金になっても、同じ挑戦の次目標を作る（2026-11-09）。"""
+    env.tick()
+    _set_bets(env, {0: 1})
+    progress.record(env.runtime, ID, {'chapter': 3, 'chapter_evidence': 'header'}, [], DIGEST)
+    assert env.tick(131)['mode'] == 'canceled'
+    assert env.remote.rows[0]['status'] == 'CANCELED'
+    settled = env.state()['round']
+    assert settled['achieved'] == 2 and settled.get('result') is None
+
+    assert env.tick(161)['mode'] == 'active'
+    row = env.state()['round']
+    assert row['kind'] == p.NEXT_PREDICTION_KIND and row['target'] == 3
+    assert row['title'].startswith('半熟英雄：3話を突破できる？ #')
+    assert env.remote.rows[1]['status'] == 'ACTIVE'
+    assert len([c for c in env.remote.calls if c[0] == 'POST']) == 2
+
+
+def test_refunded_row_from_an_older_build_continues_from_verified_progress(env):
+    """2026-11-09 以前の build が残した「achieved 無しの返金」でも系列を再開する。"""
+    nonce = '0' * 12
+    row = {**ID, 'kind': p.RESUME_PREDICTION_KIND, 'target': 4, 'middle': None,
+           'nonce': nonce, 'title': p._chapter_title(4, nonce),
+           'outcome_titles': p.resume_outcome_titles(4),
+           'window': 600, 'attempted': True, 'status': 'CANCELED',
+           'id': 'prediction-old', 'outcome_ids': ['old-0', 'old-1', 'old-2']}
+    atomic_write_json(env.g.state_dir / p.FILE, {
+        'schema': 1, 'best_cleared': 3, 'round': row, 'mode': 'canceled',
+        'next_poll_at': 0, 'last_poll_at': 0, 'error': None})
+    assert p._load(env.g.state_dir, 1)['round']['target'] == 4
+    progress.record(env.runtime, ID, {'chapter': 8, 'chapter_evidence': 'header'}, [], DIGEST)
+
+    assert env.tick(200)['mode'] == 'active'
+    created = env.state()['round']
+    assert created['kind'] == p.NEXT_PREDICTION_KIND and created['target'] == 8
+    assert created['title'].startswith('半熟英雄：8話を突破できる？ #')
+    assert created['outcome_titles'] == ['8話突破', '8話突破ならず', '停滞で一時停止']
+    assert env.state()['best_cleared'] == 7
+    assert len([c for c in env.remote.calls if c[0] == 'POST']) == 1
+
+
+def test_chain_target_requires_proven_progress_and_a_live_attempt(env):
+    state = {'best_cleared': 1}
+    row = {**ID, 'target': 4, 'status': 'CANCELED'}
+    assert p._chain_target(env.g.state_dir, row, state) is None
+    progress.record(env.runtime, ID, {'chapter': 5, 'chapter_evidence': 'header'}, [], DIGEST)
+    assert p._chain_target(env.g.state_dir, row, state) == 5
+    assert state['best_cleared'] == 4
+    terminal(env)
+    assert p._chain_target(env.g.state_dir, row, state) is None
+
+
 def test_chain_target_stops_at_the_final_chapter(env):
     env.tick()
     state = env.state()
