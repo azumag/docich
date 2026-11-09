@@ -1530,7 +1530,12 @@ DEPARTURE_SENT_HOLD_LIMIT = 4     # sent picker readings before treating the A a
 DEPARTURE_RESEND_LIMIT = 2        # journal-proven unsent resends inside one request
 DEPARTURE_REQUEST_LIMIT = 2       # released request cycles per order before failing it
 DEPARTURE_UNKNOWN_HOLD_LIMIT = 3  # unverifiable receipt readings; never a blind resend
-LAUNCH_PROBE_READS = 3            # world-map surveys without the new unit before the roster check
+# g1163 2026-11-09 19:00-19:40: 12 of 15 unverified launches were marker misses that
+# fell through to a source-roster trip (a castle jump plus a general list, ~20-30 s
+# each) even though the army had left. The departure cutscene can render the new
+# triangle after the third survey, so allow two more reads before the expensive
+# roster check: an absent marker costs 2 extra frames, a false miss costs a trip.
+LAUNCH_PROBE_READS = 5            # world-map surveys without the new unit before the roster check
 LAUNCH_PROBE_RADIUS = 10        # world-map px from source/target flag counting as that unit
 LAUNCH_PROBE_NEW_MARKER_PX = 4  # centre distance that still counts as the same marker
 # A marching unit's triangle is ~7x6; a 3x3 red decoration must not confirm a
