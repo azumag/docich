@@ -647,7 +647,13 @@ def _actor_name_slip(observed, selected):
         known += 1
         if a != b:
             mismatches += 1
-    return known >= 3 and mismatches <= 1
+    if known >= 3 and mismatches <= 1:
+        return True
+    # A short name with most of its characters unread (キール read as キ??)
+    # still names the intended general when every readable character matches in
+    # place and no other known general fits: g1163 2026-11-10 02:1x cancelled
+    # every キール sortie this way.
+    return known >= 1 and mismatches == 0 and len(selected) >= 3
 
 
 def _selected_actor_guard(screen, mem, order):
