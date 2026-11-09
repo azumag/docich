@@ -296,7 +296,18 @@ def _wave_pick(mem, target, owned, busy, allow_sole):
     garrison = _world(mem).get('garrison') or {}
     unavailable = set(_world(mem).get('general_location_unknown') or ())
     need = chart.sender_min(chapter)    # never empty a castle (owner 2026-11-06); 1 on chapter 9
-    for source in sorted(owned, key=lambda c: (c != home, c)):
+    # Nearest source first: a wave from あるまむーん to しまばら walks ~753 cells
+    # (~40 minutes at the measured rate) while まつやま is 336 cells away
+    # (g1163 2026-11-10 07:xx: six sorties, three battles). Home stays the
+    # tiebreak so an equal-distance choice still prefers it.
+    cells = chart.castles(chapter)
+    goal = cells.get(target)
+    def _reach(castle):
+        cell = cells.get(castle)
+        if not goal or not cell:
+            return 0.0
+        return ((cell[0] - goal[0]) ** 2 + (cell[1] - goal[1]) ** 2) ** 0.5
+    for source in sorted(owned, key=lambda c: (round(_reach(c), 1), c != home, c)):
         if not routes.allowed(mem, source, target):
             continue
         names = garrison.get(source)
