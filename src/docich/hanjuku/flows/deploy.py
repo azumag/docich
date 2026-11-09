@@ -693,7 +693,7 @@ def _selected_actor_guard(screen, mem, order):
         # (g1163 2026-11-10 01:19-01:46: fifteen retries of this one sortie).
         (mem.get('sortie_actor_miss') or {}).pop(order['step'], None)
         _record(mem, 'sortie_actor_ocr_slip', **_deploy_context(order, mem),
-                general=selected, observed=name, screen=screen.kind,
+                observed=name, screen=screen.kind,
                 reason=f'出撃画面の将軍名{name}を{selected}の読み違いとして扱う')
         return None
     else:

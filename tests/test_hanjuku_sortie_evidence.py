@@ -1189,3 +1189,18 @@ def test_an_unreadable_name_goes_through_the_slip_rule():
     from docich.hanjuku.os_layer.font import UNKNOWN
     assert deploy._actor_name_slip('ポ' + UNKNOWN * 2 + 'ドン', 'ポセイドン') is True
     assert deploy._actor_name_slip('ホセイドン', 'ポセイドン') is True
+
+
+def test_the_slip_record_does_not_pass_general_twice():
+    """v604 crashed every actor observation: _deploy_context already has general.
+
+    docich decision_log._record() raised TypeError (duplicate 'general') and the
+    brain exited with code 2 on every observation (g1163 2026-11-10 02:0x).
+    """
+    import inspect
+
+    from docich.hanjuku.flows import deploy
+
+    source = inspect.getsource(deploy._selected_actor_guard)
+    slip = source.split("sortie_actor_ocr_slip", 1)[1].split("return None", 1)[0]
+    assert "general=selected" not in slip
