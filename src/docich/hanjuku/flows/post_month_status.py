@@ -812,6 +812,21 @@ def _promote_pending(mem, statuses):
     return promoted
 
 
+def _roster_end_assumable(state):
+    """The walk listed the game's whole roster, only its end pixels failed.
+
+    The roster caps at 32 (``MAX_SCAN``): once a walk that started at the hero
+    has collected that many names, every resident is enumerated even when the
+    live 299x224 frame shows no scroll-end pixels and ``down`` on the last row
+    is a no-op (g1163 2026-11-09 19:00/19:17: ``roster_end_unconfirmed`` with
+    ``names: 32`` and 13 stalled reads). The month then continues into the
+    per-general tasks instead of dropping them, and nothing is evicted because
+    ``complete`` stays False.
+    """
+    return (bool(state.get('top_confirmed'))
+            and len(list(state.get('names') or ())) >= MAX_SCAN)
+
+
 def _complete_scan(mem, state):
     if (not state['names'] or len(set(state['names'])) != len(state['names'])
             or not state.get('top_confirmed')
@@ -1264,6 +1279,20 @@ def step(screen, mem, frame):
                 state.pop('end_stall', None)
                 state.pop('end_stall_selected', None)
             if state['phase_reads'] > STATUS_RETRIES:
+                if _roster_end_assumable(state):
+                    # The whole roster is enumerated; only the end proof is
+                    # missing. Continue into the per-general tasks (no eviction)
+                    # instead of failing the month and repeating it next month.
+                    state['roster_end_assumed'] = True
+                    state.pop('end_stall', None)
+                    state.pop('end_stall_selected', None)
+                    _log(mem, 'post_month_roster_end_assumed',
+                         observed_metric={'names': len(state['names']),
+                                          'dirty': list(state.get('dirty') or ()),
+                                          'selected': selected},
+                         reason='名簿上限まで列挙できたため末尾の未確認は置き、将軍別の確認へ進む')
+                    _stage(state, 'process')
+                    return [pad('b')]
                 state['failure'] = 'roster_end_unconfirmed'
                 _log(mem, 'post_month_status_unverified',
                      observed_metric={'names': len(state['names']),
