@@ -548,3 +548,27 @@ def test_last_page_source_is_reached_past_the_old_eight_row_bound():
 def test_scroll_bound_covers_the_longest_chapter_roster():
     longest = max(len(names) for names in M.chart.CASTLE_NAMES.values())
     assert M.CASTLE_JUMP_SCROLL_LIMIT >= longest - 1
+
+
+def test_a_replan_does_not_abort_the_trip_to_the_source_castle():
+    """Five jumps died at age 1 with order_changed (g1163 2026-11-10 05:38).
+
+    The chart worker renumbers every step when it re-plans, but the walk to the
+    same departure castle for the same target by the same general is still the
+    right physical action.
+    """
+    from docich.hanjuku.flows import map as map_flow
+
+    old = {'step': 'A:old:M1', 'general': 'シュゼット', 'source': 'あるまむーん',
+           'target': 'しまばら'}
+    new = {'step': 'A:new:M1', 'general': 'シュゼット', 'source': 'あるまむーん',
+           'target': 'しまばら'}
+    mem = {'chapter': 8, 'active': 'A:new:M1', 'orders': {'A:new:M1': 'pending'},
+           'chart_plan': {'orders': [new]}, 'sorties': {}, 'world': {}}
+    assert map_flow._jump_successor(mem, old) is new
+    other_target = dict(new, target='ひめじ')
+    mem2 = dict(mem, chart_plan={'orders': [other_target]})
+    assert map_flow._jump_successor(mem2, old) is None
+    other_general = dict(new, general='アテナ')
+    mem3 = dict(mem, chart_plan={'orders': [other_general]})
+    assert map_flow._jump_successor(mem3, old) is None
