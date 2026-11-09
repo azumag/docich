@@ -141,6 +141,8 @@ def world(mem):
     """WorldState: 観測層が書き、手順は読むのみの観測事実。"""
     migrate_legacy_state(mem)
     return region(mem, WORLD)
+def plan(mem):
+    \"\"\"PlanState: 戦略層の指示・計画 (orders・order_context・chart_plan 等)。\n    手順は読むのみ。寿命は章。\"\"\"\n    migrate_legacy_state(mem)\n    return region(mem, PLAN)
 
 
 def flow(mem):
