@@ -334,3 +334,30 @@ def test_bargain_plan_records_only_considered_cards_not_total_holdings(ready):
     assert 'seen_total' not in metric
     assert 'バルムンク' not in metric['seen']
     assert metric['planned_cards_seen_total'] != sum(ready['card_stock'].values())
+
+
+def test_a_card_at_the_holding_cap_is_dropped_without_asking(ready):
+    """g1163 2026-11-09 08:53-08:57: fifteen capped cards cost 3.5 minutes."""
+    mem = deepcopy(ready)
+    screen = listing(gold=300, rows=(('ノリウツール', 18),))
+    mem['card_stock'] = {'ノリウツール': b.HOLD_CAP}
+    mem['shop']['items'] = [['ノリウツール', 5]]
+    mem['shop']['key'] = '1-5'
+    actions = p.shop_step(screen, mem)
+    assert actions == [] or all(a.get('type') != 'pad' or a.get('key') != 'a' for a in actions)
+    skips = [r for r in mem['_records'] if r['decision'] == 'buy_skip']
+    assert skips and skips[-1]['deviation_reason'] == 'holding_cap'
+    assert skips[-1]['card'] == 'ノリウツール'
+    assert not mem['shop']['items']
+
+
+def test_a_card_one_below_the_cap_is_still_asked_for(ready):
+    mem = deepcopy(ready)
+    screen = listing(gold=300, rows=(('ノリウツール', 18),))
+    mem['card_stock'] = {'ノリウツール': b.HOLD_CAP - 1}
+    mem['shop']['items'] = [['ノリウツール', 1]]
+    mem['shop']['key'] = '1-5'
+    p.shop_step(screen, mem)
+    assert not [r for r in mem.get('_records') or []
+                if r['decision'] == 'buy_skip' and r.get('deviation_reason') == 'holding_cap']
+    assert mem['shop']['want'] == ['ノリウツール', 1, 18]
