@@ -1893,7 +1893,9 @@ def deploy_step(screen: Screen, mem):
                     # once and let the departure itself prove it. A second
                     # unreadable round means the blind A did nothing, so the
                     # existing cancel path takes over.
-                    if not (mem.get('sortie_confirm_blind') or {}).get(order['step']):
+                    ordinary = (not chart.is_boss_castle(order.get('target'))
+                                and not _strict_boss_cards(order, mem))
+                    if ordinary and not (mem.get('sortie_confirm_blind') or {}).get(order['step']):
                         mem.setdefault('sortie_confirm_blind', {})[order['step']] = True
                         misses.pop(order['step'], None)
                         _record(mem, 'sortie_confirm_blind_approve',
