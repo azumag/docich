@@ -1204,3 +1204,15 @@ def test_the_slip_record_does_not_pass_general_twice():
     source = inspect.getsource(deploy._selected_actor_guard)
     slip = source.split("sortie_actor_ocr_slip", 1)[1].split("return None", 1)[0]
     assert "general=selected" not in slip
+
+
+def test_a_short_name_with_unreadable_characters_is_the_actor():
+    """キール read as キ?? cancelled every キール sortie (2026-11-10 02:1x)."""
+    from docich.hanjuku.flows import deploy
+    from docich.hanjuku.os_layer.font import UNKNOWN
+
+    assert deploy._actor_name_slip('キ' + UNKNOWN * 2, 'キール') is True
+    # A different readable character still fails, and so does a real general.
+    assert deploy._actor_name_slip('ヒ' + UNKNOWN * 2, 'キール') is False
+    # A readable, different real general is never a slip.
+    assert deploy._actor_name_slip('ゼウス', 'キール') is False
