@@ -6998,6 +6998,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v545-boss-probe-diagnostics",
             "hanjuku-chart-v546-boss-probe-diagonal",
             "hanjuku-chart-v547-static-roster-marker",
+            "hanjuku-chart-v548-house-read-reuse",
             "hanjuku-chart-v501-idle-reanchor",
             "hanjuku-chart-v502-idle-and-roster-joins",
             "hanjuku-chart-v503-month-start-counts",

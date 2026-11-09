@@ -21,6 +21,7 @@ MAX_SCAN = receipts.MAX_GENERALS
 MENU_RETRIES = 4
 STATUS_RETRIES = 12
 MARKER_RETRIES = 4  # bounded roster frames before status A; avoids transient sprite misses
+HOUSE_READ_FRESH_TICKS = 300  # a same-month house status read newer than this needs no re-open
 LOCATE_RETRIES = 2  # retry the named SELECT -> actual castle status, never infer a castle
 # g1147 2026-11-07 1-8: an 8-name roster fills the visible page, so the
 # short-page end proof never applies. The pixel end proof needs a 256x224
@@ -121,6 +122,27 @@ def _tasks(statuses, names, boss_camp_months=None):
     return queue
 
 
+def _house_freshly_read(mem):
+    """Generals whose individual status a same-month house scan already read.
+
+    A house pass reads the same status panel this walk would open. Reusing a
+    read that is seconds old saves a panel visit per general (g1163
+    2026-11-09: the house pass read at 09:55 and this walk at 09:58).
+    """
+    now = mem.get('tick')
+    fresh = set()
+    for name, info in (mem.get('house_eggs') or {}).items():
+        if not isinstance(info, dict) or info.get('month') != mem.get('month'):
+            continue
+        tick = info.get('observed_tick')
+        if (info.get('location') in ('castle', 'carry', 'march', 'camp', 'field', 'unknown')
+                and info.get('location_observed') is not False
+                and type(tick) is int and type(now) is int
+                and 0 <= now - tick <= HOUSE_READ_FRESH_TICKS):
+            fresh.add(name)
+    return fresh
+
+
 def arm(mem):
     """The month alone never invalidates a verified per-general reading."""
     scope = [mem.get('chapter'), mem.get('month')]
@@ -141,7 +163,14 @@ def arm(mem):
     # opening every general every month.
     from ..os_layer.world import _owned
     owned = _owned(mem)
+    # A house scan of this same month has already read the individual status
+    # panel for these generals (egg, HP, location). Re-opening every one of
+    # them here spent minutes per month re-reading data that was seconds old
+    # (g1163 2026-11-09: the house pass ran at 09:55 and this walk at 09:58).
+    freshly_read = _house_freshly_read(mem)
     for name, row in statuses.items():
+        if name in freshly_read:
+            continue
         if (row.get('location') in ('march', 'unknown')
                 or row.get('location') == 'castle'
                    and (not row.get('castle') or row['castle'] not in owned)):

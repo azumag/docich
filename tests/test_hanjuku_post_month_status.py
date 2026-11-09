@@ -1481,3 +1481,22 @@ def test_a_static_unresolvable_marker_is_not_re_read_for_every_general():
     resolved = {'box': [70, 120, 75, 125], 'castle_candidate': 'アルマムーン'}
     assert post._static_marker(state, resolved) is False
     assert post._static_marker(state, {}) is False
+
+
+def test_a_same_month_house_read_skips_the_individual_reopen():
+    """g1163 2026-11-09: the house pass read at 09:55, this walk at 09:58."""
+    mem = memory(tick=1000, month='2-6')
+    mem['house_eggs'] = {'どうし': {'location': 'castle', 'location_observed': True,
+                                   'castle': 'アルマムーン', 'month': '2-6',
+                                   'observed_tick': 900},
+                         'ゼウス': {'location': 'march', 'month': '2-6',
+                                   'observed_tick': 100}}
+    assert post._house_freshly_read(mem) == {'どうし'}
+    mem['month'] = '2-7'                                   # another month says nothing
+    assert post._house_freshly_read(mem) == set()
+    mem['month'] = '2-6'
+    mem['house_eggs']['アテナ'] = {'location': 'castle', 'location_observed': False,
+                                  'month': '2-6', 'observed_tick': 990}
+    assert 'アテナ' not in post._house_freshly_read(mem)   # the location was not observed
+    mem['house_eggs']['エピィ'] = {'location': 'castle', 'month': '2-6', 'observed_tick': 'x'}
+    assert 'エピィ' not in post._house_freshly_read(mem)   # an unreadable tick is no evidence
