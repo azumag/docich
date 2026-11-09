@@ -574,3 +574,21 @@ def test_a_replan_does_not_abort_the_trip_to_the_source_castle():
     # A re-plan may pick another actor for the same castle trip; the walk is
     # still the right action (a substitute may depart from there).
     assert map_flow._jump_successor(mem3, old) is other_general
+
+
+def test_a_jump_survives_its_step_disappearing_from_the_plan():
+    """The jump died at age 1 whenever a re-plan dropped its step (2026-11-10).
+
+    The jump itself keeps the departure castle and target, so the trip can
+    continue to the new active order for the same castle.
+    """
+    from docich.hanjuku.flows import map as map_flow
+
+    active = {'step': 'A:new:M1', 'general': 'マンゴスチン', 'source': 'あるまむーん',
+              'target': 'しまばら'}
+    mem = {'chapter': 8, 'active': 'A:new:M1', 'orders': {'A:new:M1': 'pending'},
+           'chart_plan': {'orders': [active]}, 'sorties': {}, 'world': {}}
+    jump = {'step': 'A:old:M1', 'source': 'あるまむーん', 'target': 'しまばら'}
+    assert map_flow._jump_successor(mem, None, jump) is active
+    jump_other = dict(jump, target='ひめじ')
+    assert map_flow._jump_successor(mem, None, jump_other) is None
