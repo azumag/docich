@@ -15,6 +15,9 @@ audio_volume_percent = 80               # 半熟英雄のゲーム音声stream�
 [lifecycle]
 require_round_boundary = true
 boundary_timeout_s = 300
+# 15分ごとにエミュレータのセーブステートを取る。コーナーが落ちても直近の状態から
+# 再開できる（2026-11-10: 9時間ぶんの進行が23:14の状態しか残っていなかった）。
+periodic_savestate_s = 900
 
 [agent]
 enabled = true

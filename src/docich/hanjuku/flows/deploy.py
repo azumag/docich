@@ -1764,13 +1764,30 @@ def deploy_step(screen: Screen, mem):
                     # once reaches the departure confirmation, whose readable
                     # kit is the truth (sortie_kit_mismatch approves it).
                     misses.pop(order['step'], None)
-                    mem.setdefault('card_skip_departure', {})[order['step']] = True
+                    skips = mem.setdefault('card_skip_departure', {})
+                    attempts = int(skips.get(order['step']) or 0)
+                    skips[order['step']] = attempts + 1
                     _record(mem, 'card_list_unreadable_depart',
                             **_deploy_context(order, mem),
                             observed_metric={'screen': screen.kind,
-                                             'readings': CARD_UNREADABLE_LIMIT},
+                                             'readings': CARD_UNREADABLE_LIMIT,
+                                             'attempt': attempts + 1},
                             reason='切り札一覧を読み取れないため、計画の切り札無しで出撃を続行する')
-                    return [pad('b')]
+                    if attempts == 0:
+                        # One B closes the card list and reaches the departure
+                        # confirmation.
+                        return [pad('b')]
+                    if attempts <= 3:
+                        # The list is still on screen: B did not leave it
+                        # (g1163 2026-11-10 08:39: the same ながはま sortie
+                        # looped here). Take the highlighted card so the flow
+                        # can move on; the kit is settled at the confirmation.
+                        return [pad('a')]
+                    skips.pop(order['step'], None)
+                    _finish_order(mem, 'failed', deviation_reason='切り札一覧から抜けられない',
+                                  observed_metric={'attempts': attempts},
+                                  reason='切り札一覧を閉じても進めないため出撃を取り消して次の指示へ進む')
+                    return [pad('b'), pad('b')]
             return _hold_deploy(screen, mem, order,
                                 '切り札一覧の名前・数量・配置またはカーソルが実測構造と一致しないため保留', card=card)
         mem.get('card_unreadable', {}).pop(order['step'], None)
