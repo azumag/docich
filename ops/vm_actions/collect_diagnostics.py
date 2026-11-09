@@ -8384,7 +8384,10 @@ def _collect_hanjuku_predictions(state_dir):
                                 and 1 <= row["window"] <= 1800 else None),
              "status": choice(row.get("status"), {
                  "INTENT", "ACTIVE", "LOCKED", "RESOLVED", "CANCELED"}),
-             "cleared": chapter(result.get("cleared")),
+             # A goal settled at achievement carries no terminal result; its
+             # verified count is `achieved` (2026-11-09). Counts only, no prose.
+             "cleared": chapter(result.get("cleared") if result.get("cleared") is not None
+                                else row.get("achieved")),
              "next_poll_at": _finite_number(data.get("next_poll_at"))}
     health = _collect_hanjuku_prediction_health(state_dir, errors)
     if health is not None:
