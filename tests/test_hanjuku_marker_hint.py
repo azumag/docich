@@ -41,3 +41,13 @@ def test_a_hint_outside_the_tolerance_is_ignored():
     # 乙 is 80 from the marker; a hint naming it still has to pass tolerance,
     # and both candidates are inside it, so the hint decides.
     assert _run((10, 0), '乙')['castle'] == '乙'
+
+
+def test_the_failure_reason_is_reported():
+    """The monthly walk pays a status panel per unbound marker (g1163 2026-11-09)."""
+    evidence = {}
+    with mock.patch.object(readers.chart, 'castles', lambda chapter: dict(CASTLES)), \
+         mock.patch.object(readers, 'selection_marker', lambda f: None), \
+         mock.patch.object(readers, '_map_icon_centres', lambda f: []):
+        assert readers.marker_castle(_frame(), 8, evidence=evidence) is None
+    assert evidence.get('reason') == 'no_marker'
