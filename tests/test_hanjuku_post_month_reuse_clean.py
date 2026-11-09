@@ -39,3 +39,14 @@ def test_the_finished_record_reports_the_walk_length():
     from docich.hanjuku.flows import post_month_status as P
     source = inspect.getsource(P)
     assert "'elapsed_ticks'" in source
+
+
+def test_a_full_roster_walk_is_assumed_enumerated():
+    """g1163 2026-11-09: 32 names collected, then roster_end_unconfirmed."""
+    from docich.hanjuku.flows import post_month_status as P
+    state = {'top_confirmed': True, 'names': [f'g{i}' for i in range(P.MAX_SCAN)]}
+    assert P._roster_end_assumable(state) is True
+    state['names'] = state['names'][:-1]
+    assert P._roster_end_assumable(state) is False
+    state = {'top_confirmed': False, 'names': [f'g{i}' for i in range(P.MAX_SCAN)]}
+    assert P._roster_end_assumable(state) is False
