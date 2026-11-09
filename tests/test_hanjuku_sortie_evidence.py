@@ -1219,3 +1219,19 @@ def test_a_short_name_with_unreadable_characters_is_the_actor():
     assert deploy._actor_name_slip('ヒ' + UNKNOWN * 2, 'キール') is False
     # A readable, different real general is never a slip.
     assert deploy._actor_name_slip('ゼウス', 'キール') is False
+
+
+def test_a_different_general_may_depart_for_an_ordinary_castle():
+    """Owner 2026-11-10: 計画と違う将軍でもかわりを出撃OK（通常城のみ）。"""
+    from docich.hanjuku.flows import deploy
+
+    row = type('Row', (), {'y': 31,
+                           'span': lambda self, a, b: ('アテナ' if (a, b) == (16, 80) else '')})()
+    screen = type('Screen', (), {'lines': [row], 'kind': 'card_select'})()
+    mem = {'_records': [], '_run_identity': None,
+           'sortie_general': {'A:x:M1': 'ゼウス'}}
+    order = {'step': 'A:x:M1', 'general': 'ゼウス', 'source': 'あるまむーん',
+             'target': 'ゴーメン', 'source_probe': True}
+    assert deploy._selected_actor_guard(screen, mem, order) is None
+    assert mem['sortie_general']['A:x:M1'] == 'アテナ'
+    assert any(r['decision'] == 'sortie_actor_substituted' for r in mem['_records'])

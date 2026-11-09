@@ -7055,6 +7055,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v605-actor-slip-crash",
             "hanjuku-chart-v606-short-name-slip",
             "hanjuku-chart-v608-card-skip-departure",
+            "hanjuku-chart-v609-substitute-nonboss",
             "hanjuku-chart-v560-castle-list-scroll",
             "hanjuku-chart-v561-post-month-repair-status",
             "hanjuku-chart-v501-idle-reanchor",

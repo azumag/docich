@@ -702,6 +702,20 @@ def _selected_actor_guard(screen, mem, order):
                 observed=name, screen=screen.kind,
                 reason=f'出撃画面の将軍名{name}を{selected}の読み違いとして扱う')
         return None
+    elif (isinstance(selected, str) and selected and selected != NAME and name != NAME
+          and general_max_hp(name) is not None
+          and not chart.is_boss_castle(order.get('target'))
+          and not _strict_boss_cards(order, mem)):
+        # Owner 2026-11-10: for an ordinary castle a different general may
+        # depart in place of the planned one. Boss sorties keep the strict
+        # check (their card kit and cancellation budget belong to the plan).
+        mem.setdefault('sortie_general', {})[order['step']] = name
+        (mem.get('general_override') or {}).pop(order['step'], None)
+        (mem.get('sortie_actor_miss') or {}).pop(order['step'], None)
+        _record(mem, 'sortie_actor_substituted', **_deploy_context(order, mem),
+                observed=name, screen=screen.kind,
+                reason=f'計画の{selected}に代わり実画面の{name}を出撃させる（オーナー指示の代替出撃）')
+        return None
     else:
         # A readable, different actor cancels at once: the planned substitute
         # must never be relabelled onto whoever the panel shows (the hero
