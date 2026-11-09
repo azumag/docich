@@ -1732,12 +1732,19 @@ def deploy_step(screen: Screen, mem):
                 misses = mem.setdefault('card_unreadable', {})
                 misses[order['step']] = misses.get(order['step'], 0) + 1
                 if misses[order['step']] >= CARD_UNREADABLE_LIMIT:
+                    # Owner 2026-11-10: depart without the planned cards rather
+                    # than cancelling the sortie (シュゼット/バーミセリ lost their
+                    # sorties to six unreadable readings each). Closing the list
+                    # once reaches the departure confirmation, whose readable
+                    # kit is the truth (sortie_kit_mismatch approves it).
                     misses.pop(order['step'], None)
-                    _finish_order(mem, 'failed', deviation_reason='切り札一覧を実測構造として読めない',
-                                  observed_metric={'screen': screen.kind,
-                                                   'readings': CARD_UNREADABLE_LIMIT},
-                                  reason='切り札一覧を読み取れないため出撃を取り消して次の指示へ進む')
-                    return [pad('b'), pad('b')]
+                    mem.setdefault('card_skip_departure', {})[order['step']] = True
+                    _record(mem, 'card_list_unreadable_depart',
+                            **_deploy_context(order, mem),
+                            observed_metric={'screen': screen.kind,
+                                             'readings': CARD_UNREADABLE_LIMIT},
+                            reason='切り札一覧を読み取れないため、計画の切り札無しで出撃を続行する')
+                    return [pad('b')]
             return _hold_deploy(screen, mem, order,
                                 '切り札一覧の名前・数量・配置またはカーソルが実測構造と一致しないため保留', card=card)
         mem.get('card_unreadable', {}).pop(order['step'], None)

@@ -116,15 +116,18 @@ def test_card_select_hand_left_edge_jitter_is_accepted():
     assert policy._measured_card_select(screen) is None
 
 
-def test_unreadable_card_select_is_bounded_and_cancels_the_sortie():
+def test_unreadable_card_select_departs_without_the_planned_cards():
+    """Owner 2026-11-10: a sortie continues without its cards rather than cancelling."""
     mem = {'chapter': 1, 'active': '1-A2', 'variant': 'chart',
-           'orders': {'1-A2': 'pending'}, 'picked': []}
+           'orders': {'1-A2': 'pending'}, 'picked': [], '_records': []}
     screen = menu('card_select', ['クースカン1'], True)
     for _ in range(policy.CARD_UNREADABLE_LIMIT - 1):
         assert policy.deploy_step(screen, mem) == []
         assert mem['orders']['1-A2'] == 'pending'
-    assert policy.deploy_step(screen, mem) == [policy.pad('b'), policy.pad('b')]
-    assert mem['orders']['1-A2'] == 'failed' and mem['active'] is None
+    assert policy.deploy_step(screen, mem) == [policy.pad('b')]
+    assert mem['orders']['1-A2'] == 'pending'          # not failed
+    assert mem.get('card_skip_departure', {}).get('1-A2') is True
+    assert any(r['decision'] == 'card_list_unreadable_depart' for r in mem['_records'])
 
 
 def test_a_base_boss_sortie_cancels_after_bounded_reads_without_dropping_required_cards():
