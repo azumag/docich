@@ -677,27 +677,30 @@ def _selected_actor_guard(screen, mem, order):
     # its measured columns: the label drifts with the frame's layout while the
     # name stays the actor (g1163 2026-11-10 01:0x: 7 sorties an hour were
     # cancelled after three label misses).
-    named_ok = (bool(row) and bool(name) and UNKNOWN not in name
-                and general_max_hp('しゅじんこう' if name == NAME else name) is not None
-                and name == selected)
-    if (not row or (row.span(80, 128) != 'しょうぐん' and not named_ok) or not name
-            or UNKNOWN in name or general_max_hp('しゅじんこう' if name == NAME else name) is None):
+    if not row or not name:
         misses = mem.setdefault('sortie_actor_miss', {})
         misses[order['step']] = misses.get(order['step'], 0) + 1
         if misses[order['step']] < 3:
             return _hold_deploy(screen, mem, order, '代役の出撃画面の本人名を読めないため保留')
         reason = '代役の出撃画面の本人名を3回で確認できず出撃を取り消す'
-    elif name != selected and _actor_name_slip(name, selected):
+    elif name == selected:
+        # The name is the actor; the menu label and its columns may drift.
+        (mem.get('sortie_actor_miss') or {}).pop(order['step'], None)
+        return None
+    elif _actor_name_slip(name, selected):
+        # OCR read ポセイドン as ホセイドン or ポ??ドン; the readable characters
+        # still name the intended general, so the sortie is not cancelled
+        # (g1163 2026-11-10 01:19-01:46: fifteen retries of this one sortie).
         (mem.get('sortie_actor_miss') or {}).pop(order['step'], None)
         _record(mem, 'sortie_actor_ocr_slip', **_deploy_context(order, mem),
                 general=selected, observed=name, screen=screen.kind,
                 reason=f'出撃画面の将軍名{name}を{selected}の読み違いとして扱う')
         return None
-    elif name != selected:
-        reason = f'選択予定の{selected}と実画面の{name}が違うため出撃を取り消す'
     else:
-        (mem.get('sortie_actor_miss') or {}).pop(order['step'], None)
-        return None
+        # A readable, different actor cancels at once: the planned substitute
+        # must never be relabelled onto whoever the panel shows (the hero
+        # included). Only an *unreadable* name earns the three holds above.
+        reason = f'選択予定の{selected}と実画面の{name}が違うため出撃を取り消す'
     (mem.get('general_override') or {}).pop(order['step'], None)
     (mem.get('sortie_actor_miss') or {}).pop(order['step'], None)
     return _hold_guarded_sortie(mem, order, 'sortie_actor_unconfirmed', reason,
