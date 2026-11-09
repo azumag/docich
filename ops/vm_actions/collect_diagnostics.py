@@ -7037,6 +7037,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v587-boss-hurtless-wave",
             "hanjuku-chart-v588-monster-all-attack",
             "hanjuku-chart-v589-monster-menu-identity",
+            "hanjuku-chart-v590-marker-hint",
             "hanjuku-chart-v591-slot-egg-stop",
             "hanjuku-chart-v560-castle-list-scroll",
             "hanjuku-chart-v561-post-month-repair-status",

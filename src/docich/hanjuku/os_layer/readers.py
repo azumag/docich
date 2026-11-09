@@ -429,7 +429,7 @@ def _map_view_offset(icons, castles):
     return best
 
 
-def marker_castle(frame, chapter):
+def marker_castle(frame, chapter, hint=None):
     """Bind the selected-general triangle to a chart castle, or None.
 
     Returns the castle cell under the marker together with the evidence used.
@@ -437,6 +437,12 @@ def marker_castle(frame, chapter):
     しろのなかにいます; a tent or marching unit must not be turned into a
     castle. No inference is made when the view cannot be calibrated or the
     nearest cell is beyond MAP_CASTLE_TOLERANCE.
+
+    ``hint`` is the castle this general was last recorded in. When two castles
+    sit nearly equidistant under the marker the reading is ambiguous, and the
+    recorded castle settles it as long as it is itself inside the tolerance
+    (g1163 2026-11-09: 29 unverified markers in 40 minutes each cost a full
+    status panel).
     """
     if frame is None or type(chapter) is not int:
         return None
@@ -464,7 +470,14 @@ def marker_castle(frame, chapter):
         runner = ((ordered[1][1][0] - field[0]) ** 2
                   + (ordered[1][1][1] - field[1]) ** 2) ** 0.5
         if runner < distance * 1.5:
-            return None
+            settled = False
+            if isinstance(hint, str) and hint in castles:
+                cell = castles[hint]
+                hinted = ((cell[0] - field[0]) ** 2 + (cell[1] - field[1]) ** 2) ** 0.5
+                if hinted <= MAP_CASTLE_TOLERANCE:
+                    name, distance, settled = hint, hinted, True
+            if not settled:
+                return None
     return {'castle': name, 'field': [round(field[0]), round(field[1])],
             'distance': round(distance, 1), 'marker': list(marker['box']),
             'offset': list(offset), 'icons': len(icons), 'point': list(point)}

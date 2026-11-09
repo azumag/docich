@@ -647,7 +647,7 @@ def _static_marker(state, marker):
     return static
 
 
-def _marker(mem, frame):
+def _marker(mem, frame, general=None):
     """Record the roster selection triangle and bind its castle from the map.
 
     The roster draws a white/gray inverted triangle over the selected general.
@@ -662,7 +662,8 @@ def _marker(mem, frame):
     marker = selection_marker(frame) if hasattr(frame, 'pixel') else None
     if marker is not None:
         result = {'box': list(marker['box']), 'source': 'selection_marker'}
-        mapped = marker_castle(frame, mem.get('chapter') or 0)
+        mapped = marker_castle(frame, mem.get('chapter') or 0,
+                               hint=_recorded_castle(mem, general))
         # A triangle without any castle flag on the same map is not enough to
         # name a castle; leave it to the SELECT/status confirmation task.
         if isinstance(mapped, dict) and int(mapped.get('icons') or 0) >= 1:
@@ -825,6 +826,22 @@ def _roster_end_assumable(state):
     """
     return (bool(state.get('top_confirmed'))
             and len(list(state.get('names') or ())) >= MAX_SCAN)
+
+
+def _recorded_castle(mem, name):
+    """The castle this general was last recorded in, when it is known."""
+    if not isinstance(name, str) or not name:
+        return None
+    row = ((mem.get('post_month_status') or {}).get('statuses') or {}).get(name)
+    if isinstance(row, dict) and isinstance(row.get('castle'), str):
+        return row['castle']
+    cached = ((mem.get('general_statuses') or {}).get('statuses') or {}).get(name)
+    if isinstance(cached, dict) and isinstance(cached.get('castle'), str):
+        return cached['castle']
+    house = (mem.get('house_eggs') or {}).get(name)
+    if isinstance(house, dict) and isinstance(house.get('castle'), str):
+        return house['castle']
+    return None
 
 
 def _complete_scan(mem, state):
@@ -1333,7 +1350,7 @@ def step(screen, mem, frame):
         # The white selection triangle can be absent in one rendered frame.
         # The old path sampled it once then unconditionally entered the status
         # panel, so every failed sample became an expensive SELECT visit.
-        marker = _marker(mem, frame)
+        marker = _marker(mem, frame, general=selected)
         reads = int(state.get('marker_reads') or 0) + 1
         state['marker_reads'] = reads
         candidate = marker.get('castle_candidate') if isinstance(marker, dict) else None
