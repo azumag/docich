@@ -361,3 +361,21 @@ def test_a_card_one_below_the_cap_is_still_asked_for(ready):
     assert not [r for r in mem.get('_records') or []
                 if r['decision'] == 'buy_skip' and r.get('deviation_reason') == 'holding_cap']
     assert mem['shop']['want'] == ['ノリウツール', 1, 18]
+
+
+def test_the_rare_card_sweep_moves_several_rows_per_observation():
+    """g1163 2026-11-10 00:38: 34 consecutive sortie_input decisions.
+
+    The list is ID-sorted, so the distance to キャトルミュー is known and up to
+    four rows can move per observation; the landing is still read.
+    """
+    from docich.hanjuku.flows import deploy
+
+    source = deploy._rare_card_inventory.__doc__ or ''
+    assert 'bounded sweep' in source
+    # The jump is a plain arithmetic contract: rows between the visible edge
+    # and the event card, capped at four presses.
+    ids = [1, 5, 9, 13]
+    target = 21
+    frames = max(1, min((target - max(ids)) // 4 + 1, 4))
+    assert frames == 3

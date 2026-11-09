@@ -313,11 +313,21 @@ def _rare_card_inventory(screen, mem, order, inventory):
             return [pad('up')]
         mem.pop('rare_scan', None)
         return None
-    scan.update(presses=scan['presses'] + 1, rows=rows, was_bottom=at_bottom)
+    # The list is ID-sorted, so the distance to キャトルミュー is known: send up
+    # to four rows per observation instead of one (g1163 2026-11-10 00:38: 34
+    # consecutive sortie_input decisions, ~1 minute, for a single monthly
+    # sweep). The landing is still read before any selection.
+    frames = 1
+    target = CARD_IDS.get('キャトルミュー')
+    ids = [CARD_IDS.get(name) for name in rows]
+    if target is not None and None not in ids and target > max(ids):
+        frames = max(1, min((target - max(ids)) // 4 + 1, 4))
+    scan.update(presses=scan['presses'] + frames, rows=rows, was_bottom=at_bottom)
     _record(mem, 'sortie_input', **_deploy_context(order, mem), screen='card_select',
-            observed_metric={'rare_scan': 'discover', 'presses': scan['presses'], 'rows': rows},
+            observed_metric={'rare_scan': 'discover', 'presses': scan['presses'], 'rows': rows,
+                             'frames': frames},
             reason='未選択の実在庫を有限回探索し、隠れたイベント札の有無を確認する')
-    return [pad('down')]
+    return [pad('down') for _ in range(frames)]
 
 
 def _egg_drop_substitutes(mem, order, present):
