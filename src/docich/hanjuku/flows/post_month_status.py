@@ -576,6 +576,26 @@ def _manifest_close_step(screen, mem, state):
     return []
 
 
+def _static_marker(state, marker):
+    """True when this marker box already failed to resolve for another general.
+
+    A box that never produced a castle candidate is a static decoration, not a
+    transient sprite miss: re-reading it costs one observation per read and
+    cannot give any general a castle (g1163 2026-11-09 09:58-10:02: box
+    [59,120,64,125] repeated for twenty generals, four reads each).
+    """
+    box = tuple(marker.get('box') or ()) if isinstance(marker, dict) else ()
+    if not box:
+        return False
+    if marker.get('castle_candidate'):
+        state.pop('static_marker', None)   # this box can resolve; remember nothing
+        return False
+    static = box == tuple(state.get('static_marker') or ())
+    if not static:
+        state['static_marker'] = list(box)
+    return static
+
+
 def _marker(mem, frame):
     """Record the roster selection triangle and bind its castle from the map.
 
@@ -1232,7 +1252,8 @@ def step(screen, mem, frame):
         reads = int(state.get('marker_reads') or 0) + 1
         state['marker_reads'] = reads
         candidate = marker.get('castle_candidate') if isinstance(marker, dict) else None
-        if frame is not None and not candidate and reads < MARKER_RETRIES:
+        static = _static_marker(state, marker)
+        if frame is not None and not candidate and reads < MARKER_RETRIES and not static:
             return []  # stay on the same highlighted general for another frame
         state.setdefault('markers', {})[selected] = marker
         if not candidate:

@@ -1466,3 +1466,18 @@ def test_recall_task_retry_is_bounded():
     assert post.step(Screen([], None, '', kind='map'), mem, None) == []
     assert state['tasks'] == []
     assert state['stage'] == 'process'
+
+
+def test_a_static_unresolvable_marker_is_not_re_read_for_every_general():
+    """g1163 2026-11-09: box [59,120,64,125] repeated for twenty generals."""
+    state = {}
+    first = {'box': [59, 120, 64, 125], 'source': 'roster_triangle_candidate'}
+    assert post._static_marker(state, first) is False      # first sighting: retry once
+    assert state['static_marker'] == [59, 120, 64, 125]
+    second = {'box': [59, 120, 64, 125], 'source': 'roster_triangle_candidate'}
+    assert post._static_marker(state, second) is True      # known static: no retries
+    moved = {'box': [70, 120, 75, 125], 'source': 'roster_triangle_candidate'}
+    assert post._static_marker(state, moved) is False      # a new box may resolve
+    resolved = {'box': [70, 120, 75, 125], 'castle_candidate': 'アルマムーン'}
+    assert post._static_marker(state, resolved) is False
+    assert post._static_marker(state, {}) is False
