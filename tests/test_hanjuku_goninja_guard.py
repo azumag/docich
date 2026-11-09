@@ -96,7 +96,8 @@ def test_clean_yes_no_offer_still_uses_the_cash_floor():
     assert out == [policy.pad('a')]
     records = state['policy'].get('_records') or state.get('_records') or []
     assert records[-1]['strategy_variant'] == 'accept_goninja'
-    assert 'goninja_guard' in state['policy'] or True  # armed but passive
+    # The acceptance record above verifies the clean yes/no path without
+    # imposing an internal guard-lifetime requirement.
 
 
 def test_narration_page_without_choice_band_is_not_owned():
