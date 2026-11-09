@@ -9,7 +9,7 @@ from __future__ import annotations
 from .. import decision_log
 from ..os_layer import roster as receipts
 from ..os_layer.commands import menu_to, pad
-from ..os_layer.readers import _roof_under_cursor, world_markers
+from ..os_layer.readers import world_markers
 from ..os_layer.screen import castle_roofs, own_camps
 from ..os_layer.world import NAME
 from ..state.regions import flow as _flow, world as _world
@@ -1404,10 +1404,12 @@ def step(screen, mem, frame):
         if screen.kind == 'world_map':
             return [pad('y')]
         if screen.kind != 'map':
-            if (job['kind'] in ('locate', 'manifest') and house.roster(screen)
+            if (job['kind'] in ('locate', 'manifest', 'repair') and house.roster(screen)
                     and screen.selected == name
                     and state['phase_reads'] in (4, 8)):
                 # A SELECT can be lost during the roster's closing animation.
+                # Resend it even for repair: an A on the still-open roster
+                # would open the individual status, not the castle menu.
                 return [pad('select')]
             if state['phase_reads'] >= STATUS_RETRIES:
                 if job['kind'] == 'locate':
@@ -1454,12 +1456,16 @@ def step(screen, mem, frame):
             if mem.get('house'):
                 return []
             source = state['statuses'][name].get('castle')
-            if not source or not _roof_under_cursor(screen, frame):
+            if not source:
                 _task_complete(mem, state, result='repair_source_unconfirmed')
                 return []
-            # SELECT already put the cursor on this general. Read the actual
-            # castle status before handing the existing guarded house FSM its
-            # castle_sortie / card / destination / receipt transaction.
+            # SELECT is the observed anchor for *this named general*. The
+            # cursor brackets can completely cover the castle roof, so the
+            # roof image is not a prerequisite for opening its menu — the
+            # same occlusion that ended the locate task before #3487. The
+            # house castle_verify FSM reads the actual castle name and its
+            # resident list (and backs out of a camp/menu mismatch) before
+            # any castle_sortie / card / destination / receipt transaction.
             mem['house'] = {
                 'phase': 'castle_verify', 'chapter': mem['chapter'],
                 'roster_month': mem.get('month'), 'age': 0, 'total': 0,

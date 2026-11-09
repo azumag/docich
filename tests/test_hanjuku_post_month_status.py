@@ -103,18 +103,49 @@ def test_castle_location_is_confirmed_by_native_status_name():
     assert 'ゼウス' not in _world(mem)['garrison']['グリン']
 
 
-def test_repair_uses_roster_select_then_verified_castle_entry():
+def test_repair_opens_castle_status_even_when_cursor_hides_roof():
+    # g1153 2026-11-07 00:29 and g1163 2026-11-09 13:58: after the roster
+    # SELECT centred the cursor on the broken general, _roof_under_cursor was
+    # False (the cursor brackets covered the roof) and the task finished with
+    # repair_source_unconfirmed without ever opening the castle status.
     mem = memory()
     post.arm(mem)
     state = mem['post_month_status']
     state.update(stage='task_jump', job={'kind': 'repair', 'name': 'ゼウス'},
                  statuses={'ゼウス': {'location': 'castle', 'broken': True,
                                      'castle': 'アルマムーン'}})
-    with patch.object(post, '_roof_under_cursor', return_value=True):
-        assert post.step(Screen([], None, '', kind='map'), mem, None) == [pad('a')]
+    # No roof gate: the cursor can hide the roof, and the house FSM verifies
+    # the castle by opening ステータス itself.
+    assert post.step(Screen([], None, '', kind='map'), mem, None) == [pad('a')]
     assert state['stage'] == 'wait_repair'
     assert mem['house']['phase'] == 'castle_verify'
     assert mem['house']['general'] == 'ゼウス'
+    assert mem['house']['source'] == 'アルマムーン'
+
+
+def test_repair_with_unknown_source_does_not_open_a_castle():
+    mem = memory()
+    post.arm(mem)
+    state = mem['post_month_status']
+    state.update(stage='task_jump', job={'kind': 'repair', 'name': 'ゼウス'},
+                 statuses={'ゼウス': {'location': 'castle', 'broken': True}})
+    assert post.step(Screen([], None, '', kind='map'), mem, None) == []
+    assert state['stage'] == 'process'
+    assert 'house' not in mem
+
+
+def test_repair_select_lost_in_roster_resends_select_before_opening():
+    mem = memory()
+    post.arm(mem)
+    state = mem['post_month_status']
+    state.update(stage='task_jump', job={'kind': 'repair', 'name': 'ゼウス'},
+                 statuses={'ゼウス': {'location': 'castle', 'broken': True,
+                                     'castle': 'アルマムーン'}},
+                 phase_reads=3)
+    still_roster = parse(roster(names=('どうし', 'ゼウス'), selected=1))
+    assert post.step(still_roster, mem, None) == [pad('select')]
+    assert state['stage'] == 'task_jump'
+    assert 'house' not in mem
 
 
 def test_unknown_status_never_allows_planning_and_releases_the_field():
@@ -154,8 +185,7 @@ def test_select_locate_opens_castle_even_when_roof_is_hidden_by_cursor():
     state = mem['post_month_status']
     state.update(stage='task_jump', job={'kind': 'locate', 'name': 'ゼウス'},
                  statuses={'ゼウス': {'location': 'castle'}})
-    with patch.object(post, '_roof_under_cursor', return_value=False):
-        assert post.step(Screen([], None, '', kind='map'), mem, None) == [pad('a')]
+    assert post.step(Screen([], None, '', kind='map'), mem, None) == [pad('a')]
     assert state['stage'] == 'locate_open'
     assert not _world(mem).get('general_location_unknown')
     assert post.step(Screen([], None, '', kind='castle_menu'), mem, None) == []
