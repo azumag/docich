@@ -662,8 +662,10 @@ def _marker(mem, frame, general=None):
     marker = selection_marker(frame) if hasattr(frame, 'pixel') else None
     if marker is not None:
         result = {'box': list(marker['box']), 'source': 'selection_marker'}
+        _why = {}
         mapped = marker_castle(frame, mem.get('chapter') or 0,
-                               hint=_recorded_castle(mem, general))
+                               hint=_recorded_castle(mem, general), evidence=_why)
+        result['marker_reason'] = _why.get('reason')
         # A triangle without any castle flag on the same map is not enough to
         # name a castle; leave it to the SELECT/status confirmation task.
         if isinstance(mapped, dict) and int(mapped.get('icons') or 0) >= 1:
@@ -1362,6 +1364,8 @@ def step(screen, mem, frame):
             _log(mem, 'post_month_roster_marker_unverified', general=selected,
                  observed_metric={'reads': reads, 'marker_seen': isinstance(marker, dict),
                                   'source': marker.get('source') if isinstance(marker, dict) else None,
+                                  'marker_reason': (marker.get('marker_reason')
+                                                    if isinstance(marker, dict) else None),
                                   'icons_seen': (marker.get('icons_seen')
                                                  if isinstance(marker, dict) else None),
                                   'marker_box': (marker.get('box')
@@ -1369,7 +1373,8 @@ def step(screen, mem, frame):
                  reason='一覧の三角マークから城を確定できず個別状態確認後にSELECTへ委ねる')
         else:
             _log(mem, 'post_month_roster_marker_mapped', general=selected, castle=candidate,
-                 observed_metric={'reads': reads, 'source': marker.get('source')},
+                 observed_metric={'reads': reads, 'source': marker.get('source'),
+                                  'marker_reason': marker.get('marker_reason')},
                  reason='一覧の選択三角マークから在城候補を観測した')
         state['selected'] = selected
         _stage(state, 'status')

@@ -429,7 +429,7 @@ def _map_view_offset(icons, castles):
     return best
 
 
-def marker_castle(frame, chapter, hint=None):
+def marker_castle(frame, chapter, hint=None, evidence=None):
     """Bind the selected-general triangle to a chart castle, or None.
 
     Returns the castle cell under the marker together with the evidence used.
@@ -444,12 +444,20 @@ def marker_castle(frame, chapter, hint=None):
     (g1163 2026-11-09: 29 unverified markers in 40 minutes each cost a full
     status panel).
     """
-    if frame is None or type(chapter) is not int:
+    def _why(reason):
+        # Why a marker did not bind: the monthly walk pays a status panel for
+        # every one of these, so the reason is worth recording (g1163
+        # 2026-11-09: 53 unverified markers in 40 minutes, no reason logged).
+        if isinstance(evidence, dict):
+            evidence['reason'] = reason
         return None
+
+    if frame is None or type(chapter) is not int:
+        return _why('no_frame')
     castles = chart.castles(chapter)
     marker = selection_marker(frame)
     if not marker or not castles:
-        return None
+        return _why('no_marker')
     icons = _map_icon_centres(frame)
     offset = _map_view_offset(icons, castles)
     tip = marker['tip']
@@ -465,7 +473,7 @@ def marker_castle(frame, chapter, hint=None):
     name, cell = ordered[0]
     distance = ((cell[0] - field[0]) ** 2 + (cell[1] - field[1]) ** 2) ** 0.5
     if distance > MAP_CASTLE_TOLERANCE:
-        return None
+        return _why('out_of_tolerance')
     if len(ordered) > 1:
         runner = ((ordered[1][1][0] - field[0]) ** 2
                   + (ordered[1][1][1] - field[1]) ** 2) ** 0.5
@@ -477,7 +485,9 @@ def marker_castle(frame, chapter, hint=None):
                 if hinted <= MAP_CASTLE_TOLERANCE:
                     name, distance, settled = hint, hinted, True
             if not settled:
-                return None
+                return _why('ambiguous')
+    if isinstance(evidence, dict):
+        evidence['reason'] = 'mapped'
     return {'castle': name, 'field': [round(field[0]), round(field[1])],
             'distance': round(distance, 1), 'marker': list(marker['box']),
             'offset': list(offset), 'icons': len(icons), 'point': list(point)}
