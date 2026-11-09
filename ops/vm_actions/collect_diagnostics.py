@@ -7023,6 +7023,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v573-ch9-hero-retreat-only",
             "hanjuku-chart-v576-defense-loss-record",
             "hanjuku-chart-v574-castle-cursor-feedback",
+            "hanjuku-chart-v577-status-open-feedback",
             "hanjuku-chart-v560-castle-list-scroll",
             "hanjuku-chart-v561-post-month-repair-status",
             "hanjuku-chart-v501-idle-reanchor",

@@ -457,6 +457,7 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
     _journal(mem)['_departure_input']=departure_input
     mem['_experience']=experience if isinstance(experience, dict) else experience_module.empty()
     updated={**state,'phase':phase,'step':step,'phase_step':phase_step,'bot_version':BOT_VERSION}
+    updated['status_panel_feedback'] = None
     updated.pop('_records',None)
     updated.pop('_experience',None)
     screen=parse(frame,phase=phase)
@@ -696,6 +697,16 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
     if actions is None:
         from .flows import post_month_status
         actions = post_month_status.step(screen, mem, frame)
+        monthly = mem.get('post_month_status') or {}
+        # Only this owner's freshly entered status stage may accelerate A.
+        # A generic confirm, a pending/retried read, or another flow cannot
+        # borrow an old marker. The next frame must still prove the panel.
+        if (kind == 'text' and actions == [pad('a')]
+                and monthly.get('stage') == 'status' and monthly.get('phase_reads') == 0
+                and monthly.get('selected') == screen.selected
+                and navigation and navigation.get('menu') == 'global_roster'):
+            updated['status_panel_feedback'] = {
+                'step': step, 'kind': kind, 'transition': 'general_status_open'}
     if actions is None:
         from .flows import arrival_status
         actions = arrival_status.step(screen, mem)
