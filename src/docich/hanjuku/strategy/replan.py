@@ -484,7 +484,14 @@ def _garrison_rotation(mem, owned, busy, heading, taken=()):
     claimed = set(taken) | set(heading)
     used = set()
     out = []
-    for target in sorted(plan, key=lambda c: (plan[c][0], c)):
+    # The thinnest castle first: a castle holding one defender loses it (and
+    # the castle) to the first enemy stack (g1163 chapter 8 2026-11-09 21:33:
+    # ながはま held only アテナ when キッシュ attacked). Distance only breaks
+    # ties between equal deficits.
+    def _deficit(castle):
+        return plan[castle][1] - len(set(free.get(castle) or ()))
+
+    for target in sorted(plan, key=lambda c: (-_deficit(c), plan[c][0], c)):
         if len(out) >= GARRISON_ROTATION_LIMIT:
             break
         distance, want, _floor = plan[target]
