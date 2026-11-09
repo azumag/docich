@@ -311,7 +311,7 @@ def _wave_pick(mem, target, owned, busy, allow_sole):
     return None
 
 
-GENERAL_LABEL = '一覧の余剰'   # how a MOVE_ANY_GENERAL order reads to a person
+GENERAL_LABEL = '一覧の余剰'   # how a MOVE_ANY_GENERAL order reads inside a note
 
 
 def _general_label(general):
