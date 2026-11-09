@@ -1,6 +1,6 @@
 # ADR 0007: 直接配信エンコーダーの単一所有者を docich にする
 
-- 状態: **方針確定（2026-11-07）。段階 A〜D、D2、unit の配置ツールは実装・マージ済み（本番未適用）。段階 E（本番切替）は、実行の直前に時刻を示して明示承認を得てから行う**。この文書のマージは本番切替の承認ではない。
+- 状態: **方針確定（2026-11-07）。段階 A〜D、D2、unit の配置ツールは実装・マージ済み。段階 E（本番切替）は 2026-11-07 14:10–14:11 JST に適用済み**（実測は §5「適用記録」）。段階 F（旧 Soren 実装の撤去）と段階 G（OBS 関連の撤去）は未適用。
 - 関連: ADR 0006（リポジトリ境界）、docich #3621 / #3625 / #3633 / #3635 / #3638 / #3640 / #3642
 - 方針: 二重 encoder を絶対に起こさない。稼働中の配信を止める手順は、利用者の明示承認と作業窓なしに実行しない。
 
@@ -59,7 +59,7 @@ systemd: soren-runtime.service   ← worker "direct_stream" を登録しない�
 | C（完了、#3649〜#3653） | `run`/`stop`/`record`/`validate` の実装。固定ロック＋旧ロックを常に必須、`stop` は自分の runner のみ、TwiCa wrapper 差し替え。旧 `_run_ffmpeg` との差分テスト 5 シナリオ一致（ローカル） | なし（どの service からも未起動） | CI + 実プロセステスト + Linux コンテナ |
 | D（完了、docich #3654、soviet_now #816） | `docich-stream.service`（配置のみ、`.env` は shell 方式のラッパー経由）、`DOCICH_STREAM_OWNER`（既定 `soren`）、Pulse 前提確認。`start_all.sh` と `direct_stream.py run` が `owner=docich` で何も起動しない | なし（owner 既定 `soren`＝現状維持） | CI + 静的検証 + Linux コンテナ |
 | D2（完了、docich #3668/#3670/#3671/#3669、soviet_now #817） | 運用ツールの所有者認識（§8）。`stream_identity`（厳密な cmdline 判別）、docich 用一時停止マーカー、unit を `Restart=always`（sudo なしの停止/開始）、WebUI、`ops/vm_actions`、正午監査 | なし（旧 owner のままなら挙動不変を契約テストで固定） | CI + 実プロセステスト + Linux コンテナ |
-| E | **本番切替**（本書 §5）。 | **あり（配信中断の可能性）** | D2 完了 + 利用者の明示承認 + 作業窓 |
+| E（適用済み 2026-11-07 14:11 JST） | **本番切替**（本書 §5）。 | 適用時に短い中断が発生（実測は §5 末尾）。 | 適用済み。ロールバック手順は §5 |
 | F | 旧 Soren 実装の撤去 | なし | E 後の実配信確認 |
 | G | OBS 関連の撤去（`obs_*.sh`、backend `obs` 分岐、`obs.service` drop-in、`obs_capture_watchdog`） | なし（OBS が使われていないことを E で確認済みの場合） | 撤去前に参照箇所の網羅検索 |
 
@@ -99,6 +99,14 @@ A〜D は本番を触らずに進められる。E は §5 の承認なしに実�
 **ロールバック**
 - `systemctl stop docich-stream.service`（graceful。ここでも短い中断）→ `.env` を `DOCICH_STREAM_OWNER=soren` に戻す → `rm tmp/state/direct_stream.paused`。supervisor が backoff 後に旧 worker を再起動する。旧 state_dir ロックは docich 側も取っていたため二重起動は起こらない。
 - 切替後に `soren-runtime.service` が再起動された場合、`owner=docich` なら supervisor は `direct_stream` を登録しない。このときも `paused` マーカーは supervisor が一度再起動されるまで残す（外すと旧 worker が起動のたびに何もせず終了する）。
+
+### 適用記録（2026-11-09 18:00 JST 実測）
+
+- `docich-stream.service` は active（2026-11-07 14:11:02 JST 起動）。`.env` の `DOCICH_STREAM_OWNER=docich`、backend は `ffmpeg`。
+- FFmpeg と `docich.twica_encoder` は `docich-stream.service` の cgroup 内で動作している。旧 `lib/direct_stream.py run` の runner プロセスは無い。
+- `bin/docich-stream-install --status` の読取結果: `unit.installed=true` / `matches_source=true` / `enabled=enabled` / `active=active`、`lock_dir=ready`、`pulse.server_answers=true` かつ `soren_null_sink=true`、`markers.legacy_paused=true`、`markers.docich_paused=false`。
+- 未適用: 段階 F（旧 Soren 実装の撤去）、段階 G（OBS 関連の撤去）。
+- 運用上の注意: 同日時点で `docich-stream.service` を含む複数 unit が systemd 上 "changed on disk"（daemon-reload 未実施）と表示された。unit の配置・再起動を行う作業では、daemon-reload の扱いを先に決める。
 
 ## 6. 決定事項と残る確認事項
 
