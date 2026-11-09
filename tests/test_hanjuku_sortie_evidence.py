@@ -1243,5 +1243,5 @@ def test_a_different_general_may_depart_for_an_ordinary_castle():
     order = {'step': 'A:x:M1', 'general': 'ゼウス', 'source': 'あるまむーん',
              'target': 'ゴーメン', 'source_probe': True}
     assert deploy._selected_actor_guard(screen, mem, order) is None
-    assert mem['sortie_general']['A:x:M1'] == 'アテナ'
+    assert _plan_region(mem)['sortie_general']['A:x:M1'] == 'アテナ'
     assert any(r['decision'] == 'sortie_actor_substituted' for r in mem['_records'])
