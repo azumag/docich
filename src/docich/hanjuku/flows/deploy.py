@@ -70,6 +70,11 @@ def _verify_sortie_source(screen, mem, order):
     """
     step = order['step']
     sortie = _sorties(mem).get(step)
+    if not isinstance(sortie, dict) or not isinstance(sortie.get('general'), str) or not sortie.get('general'):
+        _record(mem, 'sortie_verification_held', chart_step=step,
+                reason='出撃記録または将軍名が欠損しているため在城・不在を推定せず検証を保留する')
+        mem['active'] = None
+        return [pad('b'), pad('b')]
     present = _present_generals(screen)
     if present and sortie['general'] in present and not _general_visible(screen, sortie['general']):
         present = None
