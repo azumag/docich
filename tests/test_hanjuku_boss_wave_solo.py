@@ -106,3 +106,16 @@ def test_a_live_egg_outranks_a_nearer_eggless_castle():
     assert attacks
     assert attacks[0]['source'] == far
     assert attacks[0]['general'] == 'ポセイドン'
+
+
+def test_a_zero_hp_general_is_ranked_last_for_a_boss_wave():
+    """g1163 chapter 7 2026-11-09: five waves ended at ally 0 with no egg used."""
+    garrison = {c: ['ゼウス'] for c in NORMAL}
+    garrison['オケアナ'] = ['アルテミス', 'ポセイドン']
+    mem = memory(garrison=garrison)
+    mem['general_statuses'] = {'statuses': {
+        'アルテミス': {'hp': 0, 'max_hp': 49, 'egg': 'カラフルエッグ', 'uses': 2},
+        'ポセイドン': {'hp': 40, 'max_hp': 85, 'egg': 'ベビーエッグ', 'uses': 3}}}
+    attacks = boss_attacks(mem)
+    assert attacks
+    assert attacks[0]['general'] == 'ポセイドン'

@@ -50,3 +50,19 @@ def test_the_choice_keeps_the_hero_castle_guard():
     _world(mem)['garrison'][chart.home_castle(1)].append('ミルフィーユ')
     source, general = p._interim_source(mem, 'スペンソニア', None, p._owned(mem), set())
     assert general == 'ポセイドン'
+
+
+def test_current_hp_outranks_max_hp_and_zero_hp_goes_last():
+    """g1163 chapter 7 2026-11-09: hp 1/49 and hp 10/30 were sent and lost."""
+    mem = statuses({'general_statuses': {'statuses': {
+        'アルテミス': {'hp': 1, 'max_hp': 49},
+        'リーキ': {'hp': 10, 'max_hp': 30},
+        'ポセイドン': {'hp': 40, 'max_hp': 85},
+        'ゼウス': {'hp': 0, 'max_hp': 99}}}}, {})
+    mem['general_statuses']['statuses'] = {
+        'アルテミス': {'hp': 1, 'max_hp': 49},
+        'リーキ': {'hp': 10, 'max_hp': 30},
+        'ポセイドン': {'hp': 40, 'max_hp': 85},
+        'ゼウス': {'hp': 0, 'max_hp': 99}}
+    assert p._strongest_first(mem, ['アルテミス', 'ゼウス', 'リーキ', 'ポセイドン']) == [
+        'ポセイドン', 'リーキ', 'アルテミス', 'ゼウス']
