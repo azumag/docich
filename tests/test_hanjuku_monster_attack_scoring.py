@@ -59,3 +59,22 @@ def test_instant_death_is_guaranteed_only_against_a_lone_general():
     assert _score_monster_attack(death, 'general', True) < _score_monster_attack(
         hits, 'general', True
     )
+
+
+def test_a_monster_opponent_prefers_the_all_target_attack():
+    """Owner 2026-11-09: 相手もモンスターなら「全体攻撃」を選ぶ。
+
+    An ALL row clears the enemy monster's escort as well as the monster, so it
+    outranks a bigger single-target number in a summon battle.
+    """
+    single = ('single', 20, 40, 1, False, False)
+    all_target = ('all', 5, 5, 1, True, False)
+
+    assert _score_monster_attack(all_target, 'monster', False) > _score_monster_attack(
+        single, 'monster', False
+    )
+    # Among ALL rows the damage columns still order them.
+    stronger_all = ('all2', 9, 9, 1, True, False)
+    assert _score_monster_attack(stronger_all, 'monster', False) > _score_monster_attack(
+        all_target, 'monster', False
+    )
