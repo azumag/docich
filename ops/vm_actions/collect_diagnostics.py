@@ -7059,6 +7059,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v610-confirm-blind-approve",
             "hanjuku-chart-v611-confirm-double-a",
             "hanjuku-chart-v612-hold-text-yield",
+            "hanjuku-chart-v613-card-name-table",
             "hanjuku-chart-v560-castle-list-scroll",
             "hanjuku-chart-v561-post-month-repair-status",
             "hanjuku-chart-v501-idle-reanchor",
