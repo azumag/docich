@@ -310,3 +310,22 @@ class WorkflowTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def test_region_fields_are_read_from_the_world_region_too():
+    """The declared keys moved into ``world`` (docich#3193).
+
+    g1163 2026-11-09 15:50: every sortie row vanished from the live status
+    because only the flat key was read.
+    """
+    module = load(STATUS_PATH, "hanjuku_live_status_region")
+    _compact_field = module._compact_field
+    flat = {'sorties': {'A:x:M1': {'target': 'ボス', 'status': 'en_route'}},
+            'boss_victories': {'count': 2},
+            'garrison': {'アルマムーン': 3, 'セレーネ': 2}}
+    moved = {'world': flat}
+    assert _compact_field(flat, 6, 'A:x:M1') == _compact_field(moved, 6, 'A:x:M1')
+    field = _compact_field(moved, 6, 'A:x:M1')
+    assert field['boss_sorties'] == 1
+    assert field['generals_home'] == 5
+    assert field['boss_wins'] == 2
