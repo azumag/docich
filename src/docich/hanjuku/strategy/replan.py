@@ -671,8 +671,13 @@ def interim_candidates(mem, allow_sole=False) -> dict:
                     distance = (round(((xy[0] - boss_xy[0]) ** 2
                                        + (xy[1] - boss_xy[1]) ** 2) ** 0.5)
                                 if boss_xy and xy else 0)
-                    choices.append((c in prefer_not, c == home, distance,
-                                    _boss_egg_rank(mem, g), c, g))
+                    # The egg is the boss fight's damage (owner 2026-11-05), so
+                    # its rank outranks march distance: g1163 2026-11-09 13:36
+                    # sent an eggless ヘーゼル at ハードロボ (152) and lost
+                    # without a point of damage while egg-carrying generals
+                    # waited in the same chapter.
+                    choices.append((c in prefer_not, c == home, _boss_egg_rank(mem, g),
+                                    distance, c, g))
         if choices:
             choices.sort()
             _, _, _, _, source, general = choices[0]
