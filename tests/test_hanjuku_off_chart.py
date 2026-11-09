@@ -1784,3 +1784,17 @@ def test_a_probe_order_note_does_not_read_as_a_general_named_shogun():
     assert replan._general_label(replan.MOVE_ANY_GENERAL) == replan.GENERAL_LABEL
     assert replan._general_label('ゼウス') == 'ゼウス'
     assert replan._general_label(None) is None
+
+
+def test_a_probe_order_names_a_readable_actor_not_shogun():
+    """The broadcast shows an order's general verbatim (owner 2026-11-09).
+
+    New plans carry 余剰将軍; the older しょうぐん token stays accepted on input
+    so a stored plan or an older model answer still validates.
+    """
+    from docich import hanjuku_chart_adjust as ca
+    from docich.hanjuku.strategy import replan
+    assert replan.MOVE_ANY_GENERAL == ca.PROBE_GENERAL == '余剰将軍'
+    assert ca._probe_actor('しょうぐん') is True
+    assert ca._probe_actor('余剰将軍') is True
+    assert ca._probe_actor('ゼウス') is False

@@ -174,7 +174,7 @@ def _interim_source(mem, target, chart_order, owned, busy, allow_sole=False):
     return None
 
 
-MOVE_ANY_GENERAL = 'しょうぐん'    # move from an unread list: the spare is picked on the list
+MOVE_ANY_GENERAL = chart_adjust.PROBE_GENERAL   # move from an unread list: the spare is picked there
 INTERIM_WAVE_LIMIT = 4         # extra sorties to the first target when spares allow
 # Owner 2026-11-05: the boss dies to volume, not strength. Half-ripe eggs are
 # so weak that a strong general and a weak one remove about the same HP, so

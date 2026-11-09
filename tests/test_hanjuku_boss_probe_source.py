@@ -8,7 +8,7 @@ from docich import hanjuku_chart as chart
 from docich.hanjuku.strategy import replan
 from docich.hanjuku.state.regions import world as _world
 
-ANY = 'しょうぐん'
+ANY = replan.MOVE_ANY_GENERAL   # 余剰将軍（旧: しょうぐん も後方互換で受理）
 
 
 def memory(garrison=None):
