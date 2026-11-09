@@ -25,6 +25,11 @@ from .hanjuku_prediction_api import APIError, configured_client
 from .naming import runtime_directory
 from .retroarch_boundary import read_record
 
+#: The Hanjuku logic generation this module loaded (#1469); see hanjuku_bot.
+#: The corner resolves this module through the hot-load trampoline (#3838), so a
+#: predictions deploy reaches the running corner worker without a restart.
+LOGIC_GENERATION = hanjuku_hotload.logic_generation()
+
 FILE = 'hanjuku_predictions.json'
 RESULT_FILE = 'hanjuku_prediction_result.json'
 #: Consecutive failing ticks, kept in a separate bounded record so that a ledger

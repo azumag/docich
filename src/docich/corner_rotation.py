@@ -1604,9 +1604,11 @@ class CornerRotationManager:
         except Exception:
             pass
         # The common timer owns only retry/reconciliation, never new predictions.
-        from .hanjuku_predictions import tick as prediction_tick
+        # Resolved through the hot-load trampoline (#3838) so a predictions
+        # deploy reaches the long-lived corner worker without a restart.
+        from . import hanjuku_hotload
         from .soren_predictions import tick as soren_prediction_tick
-        prediction_tick(self.g)
+        hanjuku_hotload.module('hanjuku_predictions').tick(self.g)
         # 予想王 (#933): Soren の resolve 済み row を台帳へ記録する。best-effort で、
         # 失敗しても rotation の tick は止めない。
         soren_prediction_tick(self.g)

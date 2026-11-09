@@ -24,8 +24,13 @@ assessment 待ちのまま強制終了する。
 
 長寿命 observer（agent / corner）は毎観測この module を通る。
 
-- `LOGIC_MODULES = ('hanjuku_bot', 'hanjuku_run')` の source bytes から SHA-256 の
-  **Hanjuku logic generation** を決定的に求める（`deployed_generation()`）。
+- `LOGIC_MODULES = ('hanjuku_bot', 'hanjuku_run', 'hanjuku_predictions')` の
+  source bytes から SHA-256 の **Hanjuku logic generation** を決定的に求める
+  （`deployed_generation()`）。`hanjuku_predictions` は #3838 で追加した:
+  corner worker が予想 tick を process 内で実行するため、trampoline を通さないと
+  配備が長寿命 process に届かなかった。fresh-load 中は `docich` package の
+  attribute も差し替える（`from . import hanjuku_run` が package attr 経由で
+  canonical module に bind されるため）。
 - digest と compile は **同じ 1 回の snapshot** から取る（`read_sources()` →
   `digest_snapshot()`。`_fresh()` は snapshot だけを compile する）。canonical deploy が
   2 回の read の間に file を置換しても、handle の generation は必ずその handle が実行する
@@ -41,7 +46,11 @@ assessment 待ちのまま強制終了する。
   RetroArch、save/state、配信・audio process は触らない。
 
 `hanjuku_policy`（467 KB、bot subprocess 側で実行される）は reload 集合に含めない。
-境界は「長寿命 observer が実行する per-observation の terminal/policy 判定」に限る。
+`hanjuku_predictions` 以外の推移的依存（`stream_category`、`hanjuku_prediction_api` 等）も
+対象外であり、それらを変更した配備では corner worker の再起動が必要（
+`docs/operations/hanjuku-predictions.md`「ロジック変更の反映」参照）。
+予想ロジックのみの配備では generation が変わり、両 observer が再採用するまで
+mixed として `screen_stalled` 解体を一時猶予する（fail-closed、bounded grace で収束）。
 
 ### 2. 世代一致の durable 公開
 

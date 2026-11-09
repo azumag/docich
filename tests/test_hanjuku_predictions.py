@@ -866,9 +866,12 @@ def test_diagnostics_is_allowlisted_and_contains_no_titles_or_tokens(env):
 def test_integration_uses_side_channel_outside_input_gate():
     source = (ROOT/'src/docich/retro_corner.py').read_text()
     loop = source[source.index('    def _wait_hanjuku'):source.index('    def _retry_restoring_tick')]
-    assert loop.index('shared_section(self.g.state_dir, adapter.observe)') < loop.index('prediction_tick(self.g, owned_identity)')
-    assert loop.index('prediction_tick(self.g, owned_identity)') < loop.index('with self._locked():', loop.index('prediction_tick(self.g, owned_identity)'))
-    assert 'prediction_tick(self.g)' in (ROOT/'src/docich/corner_rotation.py').read_text()
+    # The tick is resolved through the hot-load trampoline (#3838), so the
+    # deployed generation -- not a stale import -- runs in the corner worker.
+    tick_call = "module('hanjuku_predictions').tick(\n                self.g, owned_identity)"
+    assert loop.index('shared_section(self.g.state_dir, adapter.observe)') < loop.index(tick_call)
+    assert loop.index(tick_call) < loop.index('with self._locked():', loop.index(tick_call))
+    assert "module('hanjuku_predictions').tick(self.g)" in (ROOT/'src/docich/corner_rotation.py').read_text()
 
 
 def test_saved_settlement_survives_runtime_retention(env):
