@@ -212,7 +212,9 @@ BOSS_PROBE_CHAPTERS = (6, 7, 8, 10, 11, 12)
 # ring is fine (2 tiles) and the coarse 8-tile ring follows. The old order
 # jumped straight to 8 tiles, which never lands on a neighbouring tile: a
 # two-tile error would have missed every candidate.
-BOSS_CELL_PROBES = {chapter: ((0, 0), (16, 0), (-16, 0), (0, 16), (0, -16),
+BOSS_CELL_PROBES = {chapter: ((0, 0),
+                              (16, 0), (-16, 0), (0, 16), (0, -16),
+                              (16, 16), (-16, 16), (16, -16), (-16, -16),
                               (64, 0), (-64, 0), (0, 64), (0, -64))
                     for chapter in BOSS_PROBE_CHAPTERS}
 

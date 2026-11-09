@@ -143,9 +143,10 @@ def test_an_unentered_endgame_boss_relaunch_advances_its_candidate(chapter):
 
 
 def test_the_first_ring_covers_a_two_tile_estimate_error():
-    """A neighbouring tile must be reachable before the 8-tile ring."""
+    """All eight neighbouring tiles must be reachable before the 8-tile ring."""
     probes = chart.BOSS_CELL_PROBES[7]
     assert probes[0] == (0, 0)
-    fine = set(probes[1:5])
-    assert {(16, 0), (-16, 0), (0, 16), (0, -16)} == fine
-    assert {(64, 0), (-64, 0), (0, 64), (0, -64)} == set(probes[5:])
+    axis = {(16, 0), (-16, 0), (0, 16), (0, -16)}
+    diagonal = {(16, 16), (-16, 16), (16, -16), (-16, -16)}
+    assert axis | diagonal == set(probes[1:9])
+    assert {(64, 0), (-64, 0), (0, 64), (0, -64)} == set(probes[9:])
