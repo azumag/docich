@@ -29,8 +29,8 @@ def live(month='28-9'):
             'unplaced_refuted': {'castle': 'マラコビア', 'month': '27-10', 'names': []},
             'unplaced_refuted_castles': {'アルマムーン': {'castle': 'アルマムーン', 'month': '25-4', 'names': []},
                                          'マラコビア': {'castle': 'マラコビア', 'month': '27-10', 'names': []}},
-            'sorties': {'I:d7d27e:3': {'general': 'クランベリー', 'source': 'アルマムーン', 'target': 'マラコビア',
-                                       'status': 'en_route', 'tick': 137262}},
+            'world': {'sorties': {'I:d7d27e:3': {'general': 'クランベリー', 'source': 'アルマムーン', 'target': 'マラコビア',
+                                       'status': 'en_route', 'tick': 137262}}},
             'orders': {'4-B2': 'pending', '4-B3': 'pending', 'I:d7d27e:3': 'launched'}}
 
 

@@ -573,7 +573,7 @@ def test_repair_purchase_confirmation_uses_only_the_real_price(gold, selected):
 def test_marching_general_dispatch_defers_until_arrival():
     mem = memory('leave_roster', pending=['ヴィーナス', 'ゼウス'])
     mem['gold'] = 250
-    mem['sorties'] = {'A:ce:J2': {'general': 'ヴィーナス', 'target': 'ナキューメラ',
+    _world(mem)['sorties'] = {'A:ce:J2': {'general': 'ヴィーナス', 'target': 'ナキューメラ',
                                   'status': 'en_route', 'purpose': 'sortie', 'tick': 9}}
     mem['house_eggs'] = {'ヴィーナス': {'location': 'field'}, 'ゼウス': {'location': 'field'}}
     house._next_general(mem)
@@ -583,7 +583,7 @@ def test_marching_general_dispatch_defers_until_arrival():
     # A sole marching candidate closes the trip instead of dispatching:
     # re-aiming an army in march was measured not to reach the house.
     mem = memory('leave_roster', pending=['ヴィーナス'])
-    mem['sorties'] = {'A:ce:J2': {'general': 'ヴィーナス', 'status': 'launched_unconfirmed', 'tick': 9}}
+    _world(mem)['sorties'] = {'A:ce:J2': {'general': 'ヴィーナス', 'status': 'launched_unconfirmed', 'tick': 9}}
     house._next_general(mem)
     assert mem['house']['phase'] == 'close'
     assert any(r['decision'] == 'house_general_deferred' for r in mem['_records'])
@@ -591,15 +591,15 @@ def test_marching_general_dispatch_defers_until_arrival():
 
 def test_fresh_named_castle_status_allows_recheck_despite_old_marching_hint():
     mem = memory('leave_roster', pending=['どうし'])
-    mem['sorties'] = {'old': {'general': 'どうし', 'target': 'キカンドン',
+    _world(mem)['sorties'] = {'old': {'general': 'どうし', 'target': 'キカンドン',
                               'status': 'en_route', 'tick': 100}}
-    original = dict(mem['sorties']['old'])
+    original = dict(_world(mem)['sorties']['old'])
     house._observe_status(parse(status('どうし', castle=True, hp=90, max_hp=90)), mem)
     mem['tick'] += 25
     house._next_general(mem)
     assert mem['house']['phase'] == 'find_castle'
     assert mem['house']['general'] == 'どうし'
-    assert mem['sorties']['old'] == original  # no inferred destination/arrival
+    assert _world(mem)['sorties']['old'] == original  # no inferred destination/arrival
     assert not any(r['decision'] == 'house_dispatch_requested' for r in mem['_records'])
 
 
@@ -611,7 +611,7 @@ def test_fresh_named_castle_status_allows_recheck_despite_old_marching_hint():
 ])
 def test_uncertain_or_old_castle_status_cannot_override_marching(changes):
     mem = memory('leave_roster', pending=['どうし'])
-    mem['sorties'] = {'old': {'general': 'どうし', 'status': 'en_route', 'tick': 100}}
+    _world(mem)['sorties'] = {'old': {'general': 'どうし', 'status': 'en_route', 'tick': 100}}
     house._observe_status(parse(status('どうし')), mem)
     mem['house_eggs']['どうし'].update(changes)
     house._next_general(mem)
@@ -622,12 +622,12 @@ def test_uncertain_or_old_castle_status_cannot_override_marching(changes):
 def test_newer_departure_or_expired_observation_still_blocks_repair():
     for expired in (False, True):
         mem = memory('leave_roster', pending=['どうし'])
-        mem['sorties'] = {'old': {'general': 'どうし', 'status': 'en_route', 'tick': 100}}
+        _world(mem)['sorties'] = {'old': {'general': 'どうし', 'status': 'en_route', 'tick': 100}}
         house._observe_status(parse(status('どうし')), mem)
         if expired:
             mem['tick'] += 401
         else:
-            mem['sorties']['new'] = {'general': 'どうし', 'status': 'launched_unconfirmed', 'tick': 501}
+            _world(mem)['sorties']['new'] = {'general': 'どうし', 'status': 'launched_unconfirmed', 'tick': 501}
             mem['tick'] = 502
         house._next_general(mem)
         assert mem['house']['phase'] == 'close'
@@ -660,7 +660,7 @@ def test_travel_map_arrival_text_is_dismissed_and_wrong_visitor_exits():
 
 def test_house_finish_closes_stale_bookkeeping_sorties():
     mem = memory('close', tick=9)
-    mem['sorties'] = {
+    _world(mem)['sorties'] = {
         'HOUSE_OUT:9': {'general': 'ゼウス', 'target': None, 'status': 'en_route',
                         'purpose': 'house', 'tick': 9},
         'HOUSE:10': {'general': 'ゼウス', 'target': 'アルマムーン', 'status': 'en_route',
@@ -670,9 +670,9 @@ def test_house_finish_closes_stale_bookkeeping_sorties():
     }
     assert house.step(Screen([], None, '', kind='map'), mem, None) == []
     # target=None must stop matching every castle arrival (_bind_sortie).
-    assert mem['sorties']['HOUSE_OUT:9']['status'] == 'closed'
-    assert mem['sorties']['HOUSE:10']['status'] == 'en_route'
-    assert mem['sorties']['A:ce:J2']['status'] == 'en_route'
+    assert _world(mem)['sorties']['HOUSE_OUT:9']['status'] == 'closed'
+    assert _world(mem)['sorties']['HOUSE:10']['status'] == 'en_route'
+    assert _world(mem)['sorties']['A:ce:J2']['status'] == 'en_route'
     assert 'house' not in mem
     assert any(r['decision'] == 'house_sortie_closed' for r in mem['_records'])
 
@@ -725,10 +725,10 @@ def test_departure_pending_alone_leaves_garrison_unchanged():
     # arrival observation (#3193, DSH requirement ①).
     mem = memory('travel', departure_pending=True, source='アルマムーン')
     _world(mem)['garrison'] = {'アルマムーン': ['ゼウス', 'どうし']}
-    mem['sorties'] = {'1-A1': {'general': 'ゼウス', 'status': 'en_route'}}
+    _world(mem)['sorties'] = {'1-A1': {'general': 'ゼウス', 'status': 'en_route'}}
     house.step(Screen([], None, '', kind='map'), mem, None)
     assert _world(mem).get('garrison') == {'アルマムーン': ['ゼウス', 'どうし']}
-    assert mem['sorties']['1-A1']['status'] == 'redirected_house'
+    assert _world(mem)['sorties']['1-A1']['status'] == 'redirected_house'
 
 
 def test_prices_observation_moves_general_from_dispatch_source():

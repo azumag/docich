@@ -26,7 +26,7 @@ from ..os_layer.world import (NAME, _apply_season_sites, _apply_skull_boss, _app
 from ..strategy import goals
 from ..strategy.kit import _deploy_cards, _is_boss_order
 from ..strategy.execution import departure_snapshot
-from ..state.regions import world as _world, flow, journal, flow as _flow, journal as _journal
+from ..state.regions import world as _world, flow, journal, flow as _flow, journal as _journal, sorties as _sorties
 from ..strategy.orders import (BOSS_TARGET_CANCEL_LIMIT, SOURCE_MISS_LIMIT, _broken_hero_order, _finish_order,
                                _garrison_move, _give_up_source, _near_goal, _order, _order_for_step, _ready,
                                _recall_goal, _retire_unentered_sortie, _sortie_general, _source,
@@ -69,7 +69,7 @@ def observe_sortie_transition(screen, mem, previous_kind=None):
             if (mem.get('orders') or {}).get(step) == 'launched_unconfirmed':
                 mem['active'] = step
                 mem['orders'][step] = 'pending'
-                (mem.get('sorties') or {}).pop(step, None)
+                _sorties(mem).pop(step, None)
                 # The interruption moved the camera: the resumed selection gets
                 # fresh target jumps (g421 18:24: six were spent before a defense
                 # battle, the marker came back unplaced and the bot idled).
@@ -121,10 +121,10 @@ def observe_sortie_transition(screen, mem, previous_kind=None):
         return  # a foreign confirmation never becomes departure ownership
     general = snapshot['general']
     _world(mem).setdefault('launched_orders', {})[step] = snapshot
-    previous = (mem.get('sorties') or {}).get(step)
+    previous = _sorties(mem).get(step)
     if previous:
         _retire_unentered_sortie(mem, step, previous)
-    mem.setdefault('sorties', {})[step] = {
+    _world(mem).setdefault('sorties', {})[step] = {
         'general': general, 'source': snapshot['source'], 'target': None,
         'planned_target': order['target'], 'status': 'launched_unconfirmed',
         'evidence': deepcopy({k: v for k, v in context.items() if k != 'departure_order'}),
@@ -1215,7 +1215,7 @@ def map_step(screen: Screen, mem, frame):
                 reason='全城の所有を全体マップで確認するためYを押す')
         return [pad('y')]
     if order is None:
-        order = next((_order_for_step(mem, step) for step, sortie in (mem.get('sorties') or {}).items()
+        order = next((_order_for_step(mem, step) for step, sortie in _sorties(mem).items()
                       if sortie.get('status') == 'launched_unconfirmed'
                       and not sortie.get('verification_unavailable')
                       and sortie.get('source') in _owned(mem)), None)
@@ -1486,10 +1486,10 @@ def _commit_departure(mem, order, context, snapshot):
     _world(mem).setdefault('launched_orders', {})[order['step']] = snapshot
     # Per execution id: ``launched`` keeps one sortie per castle, so a later
     # sortie to the same castle must not unbind an earlier unit en route.
-    previous = (mem.get('sorties') or {}).get(order['step'])
+    previous = _sorties(mem).get(order['step'])
     if previous:
         _retire_unentered_sortie(mem, order['step'], previous)
-    mem.setdefault('sorties', {})[order['step']] = {
+    _world(mem).setdefault('sorties', {})[order['step']] = {
         'general': general, 'source': snapshot['source'],
         'target': order['target'], 'status': 'en_route',
         'purpose': snapshot.get('purpose'),
@@ -1585,7 +1585,7 @@ def _probe_launch_markers(mem, markers):
         return
     now = int(mem.get('tick') or 0)
     for step, probe in list(probes.items()):
-        sortie = (mem.get('sorties') or {}).get(step)
+        sortie = _sorties(mem).get(step)
         if not sortie or sortie.get('status') not in ('en_route', 'launched_unconfirmed'):
             probes.pop(step, None)
             continue
@@ -1691,7 +1691,7 @@ def settle_launch_probes_from_roster(mem, castle, generals):
                                         reason='出撃元の将軍一覧にまだ出撃した将軍がいるため、出撃を未発射に戻す')
             continue
         probes.pop(step, None)
-        sortie = (mem.get('sorties') or {}).get(step)
+        sortie = _sorties(mem).get(step)
         if isinstance(sortie, dict):
             sortie['launch_confirmed'] = True
             sortie.pop('launch_kept', None)
@@ -1721,7 +1721,7 @@ def _rollback_unverified_launch(mem, step, probe, markers, reason=None):
                 'sortie_actor_miss'):
         (mem.get(key) or {}).pop(step, None)
     (_world(mem).get('launched_orders') or {}).pop(step, None)
-    (mem.get('sorties') or {}).pop(step, None)
+    _sorties(mem).pop(step, None)
     for target, entry in list((_world(mem).get('launched') or {}).items()):
         if entry.get('step') == step:
             _world(mem)['launched'].pop(target, None)

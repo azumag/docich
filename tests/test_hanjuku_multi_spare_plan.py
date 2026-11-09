@@ -1,7 +1,7 @@
 """Regression coverage for #3266 plan-local sortie reservations."""
 
 from docich.hanjuku.strategy import replan
-from docich.hanjuku.state.regions import world as _world
+from docich.hanjuku.state.regions import world as _world, sorties as _sorties
 
 
 def crowded_home():

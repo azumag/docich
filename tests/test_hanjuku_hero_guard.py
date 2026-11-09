@@ -75,9 +75,9 @@ def test_companion_preparation_waits_for_known_injury_or_egg_failure(status):
 
 def test_busy_unknown_location_and_duplicate_names_cannot_license_substitute():
     order, mem = boss_memory()
-    mem['sorties'] = {'old': {'general': 'ゼウス', 'tick': 99, 'status': 'en_route'}}
+    _world(mem)['sorties'] = {'old': {'general': 'ゼウス', 'tick': 99, 'status': 'en_route'}}
     assert p._order_hero_alternatives(order, mem, [p.NAME, 'ゼウス']) == []
-    mem.pop('sorties'); _world(mem)['general_location_unknown'] = ['ゼウス']
+    _world(mem).pop('sorties'); _world(mem)['general_location_unknown'] = ['ゼウス']
     assert p._order_hero_alternatives(order, mem, ['ゼウス']) == []
     _world(mem).pop('general_location_unknown')
     assert p._order_hero_alternatives(order, mem, ['ゼウス', 'ゼウス']) == []

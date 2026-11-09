@@ -14,7 +14,7 @@ from docich.hanjuku.strategy import orders as _orders_mod
 from docich.hanjuku_pixels import Frame
 from docich.hanjuku_screen import Screen
 from docich.hanjuku.state.regions import flow as _flow, journal as _journal
-from docich.hanjuku.state.regions import world as _world
+from docich.hanjuku.state.regions import world as _world, sorties as _sorties
 
 FRAME = Frame(256, 224, bytes(256 * 224 * 3))
 BASE_ORDERS = copy.deepcopy(chart.CHAPTER_1_ORDERS)
@@ -1054,19 +1054,19 @@ def test_ambiguous_sorties_are_not_guessed(monkeypatch):
         'A:dddddddd:J9': {'general': chart.HERO, 'target': 'けっかい', 'status': 'en_route'}}
     _world(mem)['launched_orders'] = {k: {'step': k, 'general': v['general'], 'target': v['target'],
                                   'source': 'ゴーメン', 'cards': [], 'after': None}
-                              for k, v in mem['sorties'].items()}
+                              for k, v in _sorties(mem).items()}
     assert policy.message_step(
         _text_screen('ココットしょうぐんがスペンソニアじょうにのりこんだ'), mem) == [policy.pad('a')]
     assert mem['attack']['step'] is None
     assert decisions(mem, 'attack_observed')[-1]['deviation_reason'] == 'ambiguous_sortie'
-    assert all(v['status'] == 'en_route' for v in mem['sorties'].values())
+    assert all(v['status'] == 'en_route' for v in _sorties(mem).values())
     # An ambiguous boss entry advances the screen without binding either sortie.
     mem['attack'] = None
     entry = f'{chart.HERO}しょうぐんがボスじょうにせめこんだ!!'
     assert policy.message_step(_text_screen(entry), mem) == [policy.pad('a')]
     assert mem['attack']['step'] is None
     assert decisions(mem, 'attack_observed')[-1]['deviation_reason'] == 'ambiguous_sortie'
-    assert all(v['status'] == 'en_route' for v in mem['sorties'].values())
+    assert all(v['status'] == 'en_route' for v in _sorties(mem).values())
 
 
 def test_ambiguous_boss_entry_fights_with_the_marching_sorties_kit():
@@ -1104,7 +1104,7 @@ def test_ambiguous_boss_entry_fights_with_the_marching_sorties_kit():
     # A battle at a castle we hold is a defence and keeps its own step.
     context = policy._battle_context({'attack': {'general': chart.HERO, 'castle': 'スペンソニア',
                                                  'side': 'attack', 'step': None},
-                                      'captured': ['スペンソニア'], 'sorties': mem['sorties']},
+                                      'captured': ['スペンソニア'], 'sorties': _sorties(mem)},
                                      chart.HERO)
     assert (context['side'], context['step']) == ('defense', None)
 
@@ -1464,7 +1464,7 @@ def test_g514_live_plan_and_recent_target_reservation_still_suppress_retake():
     policy._off_chart(mem)
     assert not mem['chart_adjust'].get('interim_order')
     _, mem = g514_locked_plan()
-    mem['sorties']['recent'] = {'general': 'ヴィーナス', 'target': 'ナキューメラ',
+    _world(mem).setdefault('sorties', {})['recent'] = {'general': 'ヴィーナス', 'target': 'ナキューメラ',
                                'status': 'en_route', 'tick': mem['tick'] - 1}
     assert not any(o['target'] == 'ナキューメラ' for o in policy.interim_candidates(mem).values())
 

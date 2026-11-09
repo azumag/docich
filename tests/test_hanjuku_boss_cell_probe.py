@@ -72,9 +72,9 @@ def test_the_assignment_stays_bounded():
 def overdue_boss(index=0, tick=100000):
     return {'chapter': 6, 'tick': tick, '_records': [],
             'orders': {'A:x:M1': 'launched'},
-            'sorties': {'A:x:M1': {'general': 'ヘルメス', 'source': 'アルマムーン',
+            'world': {'sorties': {'A:x:M1': {'general': 'ヘルメス', 'source': 'アルマムーン',
                                    'target': 'ボス', 'status': 'en_route',
-                                   'tick': tick - O.MARCH_ARRIVAL_CAP - 1}},
+                                   'tick': tick - O.MARCH_ARRIVAL_CAP - 1}}},
             'launched_orders': {},
             'boss_step_probe': {'A:x:M1': index}}
 
@@ -102,7 +102,7 @@ def test_the_last_candidate_is_not_shifted_past_the_list():
 def test_an_arrived_boss_relaunch_keeps_the_same_candidate():
     # A completed entry must not be treated as evidence that the tile is wrong.
     mem = overdue_boss(index=1)
-    mem['sorties']['A:x:M1']['status'] = 'arrived'
+    mem['world']['sorties']['A:x:M1']['status'] = 'arrived'
     O._relaunch_overdue_boss(mem)
     assert mem['boss_step_probe']['A:x:M1'] == 1
     assert not [r for r in mem['_records'] if r['decision'] == 'boss_cell_probe_shift']

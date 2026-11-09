@@ -18,7 +18,7 @@ FRAME = _camp_frame()
 
 def memory(name='ゼウス'):
     mem = {'chapter': 1, 'tick': 100, '_run_identity': dict(ID), '_records': [],
-           'sorties': {'old': {'general': name, 'status': 'arrived', 'target': 'キカンドン', 'tick': 80}},
+           'world': {'sorties': {'old': {'general': name, 'status': 'arrived', 'target': 'キカンドン', 'tick': 80}}},
            'battle': {'ally': name, 'enemy': 'タピオカ', 'ally_hp': 6, 'enemy_hp': 35,
                       'start_ally_hp': 24, 'side': 'attack', 'castle': 'キカンドン',
                       'away': 1, 'cards_used': [], 'hero_retreat': {'selected': 1}}}
@@ -47,7 +47,7 @@ def test_actual_selection_surviving_actor_only_queues_unknown_location():
     assert row['status'] == 'needs_observation'
     assert row['attempts'] == 0
     assert not _flow(mem).get('recall')
-    assert mem['sorties']['old']['status'] == 'arrived'
+    assert _world(mem)['sorties']['old']['status'] == 'arrived'
     assert not _world(mem).get('garrison')
 
 
@@ -61,7 +61,7 @@ def test_unselected_dead_unknown_or_defending_actor_does_not_queue(change):
 
 
 def test_named_focus_requires_current_tent_and_matching_status_before_return():
-    mem = memory(); before_sorties = deepcopy(mem['sorties'])
+    mem = memory(); before_sorties = deepcopy(_world(mem)['sorties'])
     focus(mem)
     screen = parse(status('ゼウス', main=False, castle=False, hp=6))
     assert p.camp_recall_step(screen, mem, FRAME) == [p.pad('b')]
@@ -69,7 +69,7 @@ def test_named_focus_requires_current_tent_and_matching_status_before_return():
     assert _flow(mem)['recall']['general'] == 'ゼウス'
     assert p.camp_recall_step(camp_menu(3), mem, FRAME) == [p.pad('a')]
     assert _flow(mem)['recall']['stage'] == 'dest'
-    assert mem['sorties'] == before_sorties
+    assert _world(mem)['sorties'] == before_sorties
     assert not mem.get('house_eggs') and not _world(mem).get('garrison')
 
 
@@ -148,7 +148,7 @@ def test_matching_inputs_do_not_mark_camp_or_arrival_complete():
     assert p.camp_recall_step(MAP, mem, FRAME) == []
     assert _flow(mem)['retreat_rechecks']['ゼウス']['status'] == 'arrival_unconfirmed'
     assert _flow(mem)['recall_verification']['status'] == 'arrival_unconfirmed'
-    assert mem['sorties']['old']['status'] == 'arrived'
+    assert _world(mem)['sorties']['old']['status'] == 'arrived'
     assert not _world(mem).get('garrison')
 
 
@@ -460,7 +460,7 @@ def test_hotload_rejects_malformed_rows_without_restoring_arrival_or_inventory(c
     assert recheck._scope(mem) == {}
     assert not _flow(mem).get('retreat_rechecks')
     assert not _world(mem).get('garrison') and not mem.get('house_eggs')
-    assert mem['sorties']['old']['status'] == 'arrived'
+    assert _world(mem)['sorties']['old']['status'] == 'arrived'
 
 
 @pytest.mark.parametrize('value', [None, [], ['ゼウス'], 'bad', {'ゼウス': None}])
@@ -857,7 +857,7 @@ def test_new_observed_departure_rearms_same_camp_status_once_after_castle(hp):
     assert not (state['policy'].get('flow') or {}).get('retreat_rechecks')  # old camp page alone
     # A plan / A-side en_route cache is insufficient. Observe this actor moving.
     mem = state['policy']; mem['tick'] = 200
-    mem['sorties'] = {'new': {'general': 'ゼウス', 'status': 'en_route', 'tick': 200}}
+    _world(mem)['sorties'] = {'new': {'general': 'ゼウス', 'status': 'en_route', 'tick': 200}}
     _, state = decide(camp_status_frame(hp=hp), state, run_identity=ID)
     assert not (state['policy'].get('flow') or {}).get('retreat_rechecks')
     _, state = decide(status('ゼウス', main=True, castle=False, hp=hp), state, run_identity=ID)
@@ -878,7 +878,7 @@ def test_source_absence_observation_rearms_only_the_new_departing_actor():
     from test_hanjuku_sortie_interruption import screen
     mem = camp_memory(); c.observe_camp_status(parse(camp_status_frame(hp=85)), mem)
     _flow(mem).pop('retreat_rechecks'); mem['tick'] = 200
-    mem['sorties'] = {'new': {'general': 'ゼウス', 'source': 'アルマムーン',
+    _world(mem)['sorties'] = {'new': {'general': 'ゼウス', 'source': 'アルマムーン',
                              'status': 'launched_unconfirmed', 'tick': 150}}
     assert _verify_sortie_source(screen('general_list', ['しょうぐんはおりません']), mem,
                                 {'step': 'new'}) == [p.pad('b'), p.pad('b')]
@@ -893,7 +893,7 @@ def test_no_departure_receipt_can_rearm_camp_status(case):
     from test_hanjuku_sortie_interruption import screen
     mem = camp_memory(); c.observe_camp_status(parse(camp_status_frame(hp=85)), mem)
     _flow(mem).pop('retreat_rechecks'); mem['tick'] = 200
-    mem['sorties'] = {'new': {'general': 'ヴィーナス' if case == 'other_actor' else 'ゼウス',
+    _world(mem)['sorties'] = {'new': {'general': 'ヴィーナス' if case == 'other_actor' else 'ゼウス',
                              'source': 'アルマムーン', 'status': 'launched_unconfirmed',
                              'tick': 50 if case == 'old' else 201 if case == 'future' else 150}}
     if case == 'foreign': mem['_run_identity'] = {**ID, 'generation': 2}

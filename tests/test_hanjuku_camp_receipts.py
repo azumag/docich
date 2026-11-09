@@ -16,6 +16,7 @@ from docich.hanjuku_pixels import read_png
 from docich.hanjuku_screen import Screen, parse
 from test_hanjuku_chart_bot import camp_menu
 from docich.hanjuku.state.regions import flow as _flow, journal as _journal
+from docich.hanjuku.state.regions import world as _world
 
 ID = {'game': 'hanjuku-hero', 'runtime_id': 'g514-8937051b', 'generation': 514, 'lease_id': 'lease-test'}
 
@@ -76,11 +77,11 @@ def test_actual_recall_picker_keeps_proposal_without_changing_sortie_or_owner():
     frame = picker(); screen = parse(frame, phase=classify(frame))
     assert screen.kind == 'world_map'
     mem = {'chapter': 2, 'tick': 50, '_records': [],
-           'sorties': {'old': {'general': p.NAME, 'status': 'en_route', 'target': 'ドミノーラ'}},
+           'world': {'sorties': {'old': {'general': p.NAME, 'status': 'en_route', 'target': 'ドミノーラ'}}},
            'recall': {'stage': 'dest', 'steps': 0, 'hero': True, 'sorties': ['old']}}
     assert p.world_map_step(screen, mem, frame) == [p.pad('a'), {'type': 'wait', 'ms': 700}, p.pad('a')]
     assert _flow(mem)['recall']['stage'] == 'await_dispatch'
-    assert mem['sorties']['old']['status'] == 'en_route'
+    assert mem['world']['sorties']['old']['status'] == 'en_route'
     assert not any(r['decision'] in ('hero_recalled', 'camp_recall') for r in mem['_records'])
     # Same picker after the proposal must not get another pair of A's or Y.
     assert p.world_map_step(screen, mem, frame) == []
@@ -180,5 +181,5 @@ def test_recall_target_screen_never_confirms_a_different_chart_sortie(stage):
          'sortie_attempt':{'step':'1-A2','target_seen':True},
          'recall':{'stage':stage},'_records':[]}
     p.observe_sortie_transition(Screen([],None,'',kind='world_map'),mem,'map_target')
-    assert mem['orders']['1-A2']=='pending' and not mem.get('sorties')
+    assert mem['orders']['1-A2']=='pending' and not _world(mem).get('sorties')
     assert not mem['_records']

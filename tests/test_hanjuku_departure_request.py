@@ -13,7 +13,7 @@ from docich import hanjuku_chart as chart, hanjuku_policy as p
 from docich.hanjuku.os_layer.screen import Screen
 from test_hanjuku_execution_binding import confirm, memory
 from docich.hanjuku.state.regions import flow as _flow, journal as _journal
-from docich.hanjuku.state.regions import world as _world
+from docich.hanjuku.state.regions import world as _world, sorties as _sorties
 
 TRACE = {'game': 'hanjuku-hero', 'runtime_id': 'test-runtime', 'generation': 741,
          'lease_id': 'test-lease', 'decision_id': 'test-runtime:741:20',
@@ -59,7 +59,7 @@ def test_picker_closed_without_a_send_is_an_unconfirmed_departure():
     mem = memory(); confirm(mem); request(mem)
     p.observe_sortie_transition(FIELD, mem, 'map_target')
     assert mem['orders']['1-A3'] == 'launched_unconfirmed'
-    assert mem['sorties']['1-A3']['status'] == 'launched_unconfirmed'
+    assert _sorties(mem)['1-A3']['status'] == 'launched_unconfirmed'
     assert 'departure_request' not in _flow(mem)
     assert _world(mem)['garrison']['カストーラ'] == ['ゼウス', 'ヴィーナス']
 
@@ -70,8 +70,8 @@ def test_journaled_send_and_closed_picker_commit_the_fixed_departure():
     sent(mem, 1)
     p.observe_sortie_transition(FIELD, mem, 'map_target')
     assert mem['orders']['1-A3'] == 'launched'
-    assert mem['sorties']['1-A3']['status'] == 'en_route'
-    assert mem['sorties']['1-A3']['target'] == 'スペンソニア'
+    assert _sorties(mem)['1-A3']['status'] == 'en_route'
+    assert _sorties(mem)['1-A3']['target'] == 'スペンソニア'
     assert _world(mem)['launched_orders']['1-A3']['general'] == 'ゼウス'
     assert _world(mem)['garrison']['カストーラ'] == ['ヴィーナス']
     assert 'departure_request' not in _flow(mem)
@@ -174,7 +174,7 @@ def test_new_marker_near_source_confirms_launch(monkeypatch):
     survey(monkeypatch, mem, [marker_at('カストーラ', dx=8)])
     assert '1-A3' not in (_flow(mem).get('launch_probe') or {})
     assert mem['orders']['1-A3'] == 'launched'
-    assert mem['sorties']['1-A3']['status'] == 'en_route'
+    assert _sorties(mem)['1-A3']['status'] == 'en_route'
     assert _world(mem)['garrison']['カストーラ'] == ['ヴィーナス']
     assert any(r['decision'] == 'sortie_launch_confirmed' for r in mem['_records'])
 
@@ -188,7 +188,7 @@ def test_unseen_unit_waits_for_the_source_roster(monkeypatch):
     probe = (_flow(mem).get('launch_probe') or {}).get('1-A3')
     assert isinstance(probe, dict) and probe.get('blind') is True
     assert mem['orders']['1-A3'] == 'launched'
-    assert mem['sorties']['1-A3']['status'] == 'en_route'
+    assert _sorties(mem)['1-A3']['status'] == 'en_route'
     assert _world(mem)['garrison']['カストーラ'] == ['ヴィーナス']
     assert not _flow(mem).get('launch_miss')
     records = [r for r in mem['_records'] if r['decision'] == 'sortie_launch_unverified']
@@ -265,10 +265,10 @@ def test_a_boss_launch_is_kept_when_the_marker_survey_and_roster_wait_expire(mon
     survey(monkeypatch, mem, [])
     probe = (_flow(mem).get('launch_probe') or {}).get('1-A3')
     assert isinstance(probe, dict) and probe.get('kept') is True
-    assert mem['sorties']['1-A3'].get('launch_kept') is True
+    assert _sorties(mem)['1-A3'].get('launch_kept') is True
     assert 'カストーラ' in (mem.get('roster_read_due') or {})
     assert mem['orders']['1-A3'] == 'launched'
-    assert mem['sorties']['1-A3']['status'] == 'en_route'
+    assert _sorties(mem)['1-A3']['status'] == 'en_route'
     assert not _flow(mem).get('launch_miss')
     kept = [r for r in mem['_records'] if r['decision'] == 'sortie_launch_unconfirmed_kept']
     assert len(kept) == 1
@@ -307,13 +307,13 @@ def test_a_kept_boss_launch_confirms_on_gone_roster(monkeypatch):
     p.settle_launch_probes_from_roster(mem, 'カストーラ', ['ヴィーナス'])
     assert '1-A3' not in (_flow(mem).get('launch_probe') or {})
     assert mem['orders']['1-A3'] == 'launched'
-    assert mem['sorties']['1-A3'].get('launch_confirmed') is True
+    assert _sorties(mem)['1-A3'].get('launch_confirmed') is True
     assert not _flow(mem).get('launch_miss')
 
 
 def test_sortie_settled_elsewhere_drops_the_probe_without_rollback(monkeypatch):
     mem = memory(); confirm(mem); commit(mem)
-    mem['sorties']['1-A3']['status'] = 'arrived'
+    _sorties(mem)['1-A3']['status'] = 'arrived'
     survey(monkeypatch, mem, [])
     assert '1-A3' not in (_flow(mem).get('launch_probe') or {})
     assert mem['orders']['1-A3'] == 'launched'
@@ -357,7 +357,7 @@ def test_defense_interruption_releases_reservation_without_committing():
     battle = Screen([], None, '', kind='defense_started')
     p.observe_sortie_transition(battle, mem, 'map_target')
     assert mem['orders']['1-A3'] == 'launched_unconfirmed'
-    assert mem['sorties']['1-A3']['status'] == 'launched_unconfirmed'
+    assert _sorties(mem)['1-A3']['status'] == 'launched_unconfirmed'
     assert 'departure_request' not in _flow(mem)
     assert _world(mem)['garrison']['カストーラ'] == ['ゼウス', 'ヴィーナス']
 

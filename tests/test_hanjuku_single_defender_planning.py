@@ -21,7 +21,7 @@ def memory(*, generals=('ポセイドン',), chapter=5):
     garrison['ボッサール'] = list(generals)
     return {'chapter': chapter, 'tick': 1000, 'month': '50-5',
             'captured': normal, 'garrison': garrison, 'lost': [],
-            'sorties': {}, 'orders': {}, '_records': []}
+            'world': {'sorties': {}}, 'orders': {}, '_records': []}
 
 
 def bossar_orders(mem):
@@ -91,12 +91,12 @@ def chapter3_memory(*, mekapata=('チコリ',), transfer=None):
     mem = {'chapter': 3, 'tick': 5000, 'month': '8-4',
            'captured': [c for c in CHAPTER3 if c != 'ドンダム'],
            'lost': ['ドンダム'], 'garrison': garrison,
-           'sorties': {}, 'launched_orders': {}, 'orders': {},
+           'world': {'sorties': {}}, 'launched_orders': {}, 'orders': {},
            '_records': [], 'house_eggs': {}, 'general_location_unknown': []}
     if transfer:
         general, status, age = transfer
         step = 'A:test:M1'
-        mem['sorties'][step] = {'source': 'アルマムーン', 'target': 'メガパタ',
+        _world(mem)['sorties'][step] = {'source': 'アルマムーン', 'target': 'メガパタ',
                                 'general': general, 'status': status,
                                 'tick': mem['tick'] - age, 'purpose': 'move'}
         _world(mem)['launched_orders'][step] = {
@@ -149,7 +149,7 @@ def test_the_verified_sortie_does_not_inherit_the_probe_step():
             != replan._mechanical_step(sortie, set(), mem))
     # A later transfer into the same castle needs its own probe step.
     earlier = replan._mechanical_step(probe, set(), mem)
-    mem['sorties']['A:test:M2'] = {'source': 'アルマムーン', 'target': 'メガパタ',
+    _world(mem)['sorties']['A:test:M2'] = {'source': 'アルマムーン', 'target': 'メガパタ',
                                    'general': 'ヘラ', 'status': 'overdue',
                                    'tick': mem['tick'], 'purpose': 'move'}
     assert replan._mechanical_step(probe, set(), mem) != earlier

@@ -12166,7 +12166,7 @@ def _compact_hanjuku_policy(mem, state=None):
     orders = mem.get('orders') if isinstance(mem.get('orders'), dict) else {}
     world = mem.get('world') if isinstance(mem.get('world'), dict) else {}
     garrison = mem.get('garrison') if isinstance(mem.get('garrison'), dict) else world.get('garrison', {})
-    sorties = mem.get('sorties') if isinstance(mem.get('sorties'), dict) else {}
+    sorties = mem.get('sorties') if isinstance(mem.get('sorties'), dict) else world.get('sorties', {})
     relaunches = mem.get('boss_relaunch') if isinstance(mem.get('boss_relaunch'), dict) else {}
     victories = mem.get('boss_victories') if isinstance(mem.get('boss_victories'), dict) else {}
     retries = mem.get('retries') if isinstance(mem.get('retries'), dict) else {}
@@ -12458,7 +12458,7 @@ def _collect_hanjuku_tactical(state_dir, now):
         captured = mem.get('captured', [])
         world = mem.get('world') if isinstance(mem.get('world'), dict) else {}
         garrison = mem.get('garrison', world.get('garrison', {}))
-        sorties = mem.get('sorties', {})
+        sorties = mem.get('sorties', world.get('sorties', {}))
         tick = mem.get('tick')
         unknown = mem.get('general_location_unknown', world.get('general_location_unknown', []))
         if (not isinstance(captured, list) or not isinstance(garrison, dict)

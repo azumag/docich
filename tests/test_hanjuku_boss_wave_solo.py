@@ -17,7 +17,7 @@ HOME = chart.home_castle(6)
 
 def memory(captured=None, garrison=None):
     return {'chapter': 6, 'tick': 1000, 'month': '50-11', 'gold': 500, '_records': [],
-            'orders': {}, 'sorties': {}, 'lost': [],
+            'orders': {}, 'world': {'sorties': {}},
             'captured': list(NORMAL if captured is None else captured),
             'garrison': dict(garrison if garrison is not None else
                              {c: ['ゼウス'] for c in NORMAL})}

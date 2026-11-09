@@ -68,7 +68,7 @@ KEY_OWNERSHIP = {
     'garrison':        {'region': WORLD, 'lifetime': 'chapter', 'migrated': True},
     'garrison_observed_at': {'region': WORLD, 'lifetime': 'chapter', 'migrated': True},
     'general_location_unknown': {'region': WORLD, 'lifetime': 'chapter', 'migrated': True},
-    'sorties':         {'region': WORLD, 'lifetime': 'chapter', 'migrated': False},
+    'sorties':         {'region': WORLD, 'lifetime': 'chapter', 'migrated': True},
     'launched_orders': {'region': WORLD, 'lifetime': 'chapter', 'migrated': True},
     'retired_sorties': {'region': WORLD, 'lifetime': 'chapter', 'migrated': True},
     'launched':        {'region': WORLD, 'lifetime': 'chapter', 'migrated': True},
@@ -142,6 +142,15 @@ def world(mem):
     """WorldState: 観測層が書き、手順は読むのみの観測事実。"""
     migrate_legacy_state(mem)
     return region(mem, WORLD)
+
+
+def sorties(mem):
+    """sorties 読み取りアクセサ (docich#3193 W4 accessor 化)。
+
+    未存在時は空 dict を返し、``mem`` を汚さない。手順側は読み取り専用。
+    書き込みは ``_world(mem).setdefault('sorties', {})`` 経由で行う。
+    """
+    return world(mem).get('sorties') or {}
 
 
 def flow(mem):

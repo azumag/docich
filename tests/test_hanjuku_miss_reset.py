@@ -12,7 +12,7 @@ from docich.hanjuku.strategy import orders as O
 def memory():
     return {'chapter': 6, 'tick': 100, '_records': [], 'source_miss': {'A:x:M1': 5},
             'garrison': {'オケアナ': ['トレビス']}, 'captured': ['オケアナ'],
-            'sorties': {}, 'orders': {}, 'active': 'A:x:M1'}
+            'world': {'sorties': {}}}
 
 
 def order():
