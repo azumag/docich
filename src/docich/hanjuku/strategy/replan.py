@@ -731,11 +731,14 @@ def interim_candidates(mem, allow_sole=False) -> dict:
                     # chapter 7 2026-11-09 15:53-16:02: five waves lost that
                     # way). Rank him last within every other preference.
                     dead = 1 if _current_hp(mem, g) == 0 else 0
-                    choices.append((c in prefer_not, c == home, dead,
+                    # A general whose boss wave left the monster's HP unchanged
+                    # is ranked behind one that has not been tried there.
+                    hurtless = 1 if g in (mem.get('boss_no_damage') or ()) else 0
+                    choices.append((c in prefer_not, c == home, dead, hurtless,
                                     _boss_egg_rank(mem, g), distance, c, g))
         if choices:
             choices.sort()
-            _, _, _, _, _, source, general = choices[0]
+            _, _, _, _, _, _, source, general = choices[0]
             return source, general
         # Owner 2026-11-05 (差分管理): when no castle knows a spare, read one
         # castle's list instead of idling. The sortie menu opens the roster

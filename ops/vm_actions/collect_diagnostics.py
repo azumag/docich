@@ -7034,6 +7034,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v584-map-cursor-alignment",
             "hanjuku-chart-v585-boss-hp-history",
             "hanjuku-chart-v586-probe-actor-token",
+            "hanjuku-chart-v587-boss-hurtless-wave",
             "hanjuku-chart-v560-castle-list-scroll",
             "hanjuku-chart-v561-post-month-repair-status",
             "hanjuku-chart-v501-idle-reanchor",
