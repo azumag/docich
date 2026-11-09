@@ -1734,7 +1734,11 @@ def deploy_step(screen: Screen, mem):
                 boundary['await_input'] = True
                 boundary.pop('request_trace', None)
             frames = _card_scroll_frames(mem, card, inventory)
-            return [pad(direction, frames)] if frames > 1 else [pad(direction)]
+            # The card list does not auto-repeat: a held direction moved exactly
+            # one row in the live check (g1163 2026-11-09 11:46:26-27: the window
+            # advanced one row per four-frame hold). Send distinct taps instead;
+            # the landing is read before any selection.
+            return [pad(direction) for _ in range(frames)]
         if row is None or row['stock'] == 0 or inventory['remaining'] == 0:
             proven = upper_absent or _card_proven_absent(card, inventory, bottom=bottom)
             if proven:

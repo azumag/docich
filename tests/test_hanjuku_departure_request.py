@@ -454,6 +454,10 @@ def test_a_held_card_scroll_crosses_only_measured_rows():
     mem = {'card_stock': {c: 1 for c in names}}
     frames = d._card_scroll_frames(mem, deep, inventory)
     assert 1 < frames <= d.CARD_SCROLL_HOLD_MAX
+    # The list does not auto-repeat, so the jump is a burst of taps, never a hold.
+    from docich.hanjuku.os_layer.commands import pad as _pad
+    assert [_pad('down') for _ in range(frames)] == [{'type': 'pad', 'buttons': ['down'], 'hold_ms': 100}
+                                                     for _ in range(frames)]
     # Without measured stock the jump is not taken (a single measured down).
     assert d._card_scroll_frames({}, deep, inventory) == 1
     # A three-row panel or an unreadable row keeps the single down.
