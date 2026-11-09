@@ -31,3 +31,11 @@ def test_a_previous_month_read_is_not_reused():
     mem = memory()
     mem['house_eggs']['アテナ']['month'] = '13-12'
     assert P._house_freshly_read(mem) == {'キール'}
+
+
+def test_the_finished_record_reports_the_walk_length():
+    """Without elapsed_ticks a reuse change cannot be compared with the next run."""
+    import inspect
+    from docich.hanjuku.flows import post_month_status as P
+    source = inspect.getsource(P)
+    assert "'elapsed_ticks'" in source

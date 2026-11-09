@@ -925,6 +925,11 @@ def _finish(mem, state):
     mem.pop('post_month_status', None)
     _log(mem, 'post_month_sequence_finished',
          observed_metric={'complete': bool(state['complete']), 'failed': failure,
+                          # How long the monthly walk took, in ticks: the only
+                          # way to prove a reuse change helped (a run without
+                          # this field cannot be compared with the next one).
+                          'elapsed_ticks': max(0, int(mem.get('tick') or 0)
+                                               - int(state.get('started_tick') or 0)),
                           'manifest': bool(state.get('manifest_done')),
                           'manifest_failed': state.get('manifest_failed'),
                           'carry': carry,
