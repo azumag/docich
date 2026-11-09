@@ -1794,7 +1794,7 @@ def test_a_probe_order_names_a_readable_actor_not_shogun():
     """
     from docich import hanjuku_chart_adjust as ca
     from docich.hanjuku.strategy import replan
-    assert replan.MOVE_ANY_GENERAL == ca.PROBE_GENERAL == '余剰将軍'
-    assert ca._probe_actor('しょうぐん') is True
-    assert ca._probe_actor('余剰将軍') is True
+    assert replan.MOVE_ANY_GENERAL == ca.PROBE_GENERAL == '—'
+    for legacy in ('しょうぐん', '余剰将軍', ''):
+        assert ca._probe_actor(legacy) is True
     assert ca._probe_actor('ゼウス') is False

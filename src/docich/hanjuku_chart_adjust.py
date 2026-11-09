@@ -173,11 +173,11 @@ def _sole_castle(request) -> bool:
 
 # The actor token a source-probe order carries. It is a placeholder, not a
 # person: the real general is chosen from the live list when the sortie opens.
-# The literal しょうぐん is what older prompts and stored plans used, so it stays
-# accepted on input; new plans are written with the readable token so the
-# broadcast's 出撃計画 does not present a nonexistent general (owner 2026-11-09).
-PROBE_GENERAL = '余剰将軍'
-LEGACY_PROBE_GENERALS = frozenset({'しょうぐん'})
+# Owner 2026-11-09 (twice): any name-like token reads as a nonexistent general
+# in the broadcast's 出撃計画, so a probe is written as a dash and the older
+# しょうぐん/余剰将軍/'' stay accepted on input.
+PROBE_GENERAL = '—'
+LEGACY_PROBE_GENERALS = frozenset({'しょうぐん', '余剰将軍', ''})
 
 
 def _probe_actor(general) -> bool:
