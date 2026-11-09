@@ -311,23 +311,41 @@ def _wave_pick(mem, target, owned, busy, allow_sole):
     return None
 
 
+def _current_hp(mem, general):
+    """The general's measured current HP, or None when unread."""
+    row = ((mem.get('general_statuses') or {}).get('statuses') or {}).get(general)
+    if not isinstance(row, dict):
+        return None
+    hp = row.get('hp')
+    return hp if type(hp) is int and hp >= 0 else None
+
+
 def _strongest_first(mem, generals):
-    """Order a castle's spare generals by known max HP, strongest first.
+    """Order a castle's spare generals by known current HP, strongest first.
 
     g1163 chapter 5 (2026-11-09): プトレマイス was attacked five times with
     expiring weak generals (ビシソワーズ 27, セミヨン 36) while カルーン held
     ポセイドン 85. The garrison list is the game's roster order, not strength,
-    so the first spare was not the best one. A general whose max HP is unread
-    keeps its list position after the measured ones.
+    so the first spare was not the best one. A general whose HP is unread keeps
+    its list position after the measured ones.
+
+    Current HP is what a sortie fights with: g1163 chapter 7 2026-11-09 15:53
+    sent アルテミス (hp 1/49) and リーキ (hp 10/30) and both battles ended at
+    ally 0 before a single egg command. A general measured at 0 HP is left for
+    the repair pass instead of being sent to die.
     """
     statuses = ((mem.get('general_statuses') or {}).get('statuses') or {})
     rows = statuses if isinstance(statuses, dict) else {}
 
     def rank(item):
         index, name = item
+        hp = _current_hp(mem, name)
         row = rows.get(name)
-        hp = row.get('max_hp') if isinstance(row, dict) else None
-        return (0 if type(hp) is int else 1, -(hp if type(hp) is int else 0), index)
+        max_hp = row.get('max_hp') if isinstance(row, dict) else None
+        value = hp if hp is not None else max_hp
+        dead = 1 if hp == 0 else 0
+        return (dead, 0 if type(value) is int else 1,
+                -(value if type(value) is int else 0), index)
 
     return [name for _, name in sorted(enumerate(generals), key=rank)]
 
@@ -676,11 +694,16 @@ def interim_candidates(mem, allow_sole=False) -> dict:
                     # sent an eggless ヘーゼル at ハードロボ (152) and lost
                     # without a point of damage while egg-carrying generals
                     # waited in the same chapter.
-                    choices.append((c in prefer_not, c == home, _boss_egg_rank(mem, g),
-                                    distance, c, g))
+                    # A general measured at 0 HP cannot fight: the boss wave
+                    # would end at ally 0 before any egg command (g1163
+                    # chapter 7 2026-11-09 15:53-16:02: five waves lost that
+                    # way). Rank him last within every other preference.
+                    dead = 1 if _current_hp(mem, g) == 0 else 0
+                    choices.append((c in prefer_not, c == home, dead,
+                                    _boss_egg_rank(mem, g), distance, c, g))
         if choices:
             choices.sort()
-            _, _, _, _, source, general = choices[0]
+            _, _, _, _, _, source, general = choices[0]
             return source, general
         # Owner 2026-11-05 (差分管理): when no castle knows a spare, read one
         # castle's list instead of idling. The sortie menu opens the roster
