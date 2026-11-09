@@ -7003,6 +7003,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v550-post-month-diagnostics",
             "hanjuku-chart-v551-card-scroll-hold",
             "hanjuku-chart-v552-card-scroll-taps",
+            "hanjuku-chart-v554-post-month-result-fix",
             "hanjuku-chart-v501-idle-reanchor",
             "hanjuku-chart-v502-idle-and-roster-joins",
             "hanjuku-chart-v503-month-start-counts",
@@ -12090,14 +12091,21 @@ HANJUKU_SEASON_SITES = frozenset({
 
 
 def _compact_post_month(last):
-    """The month's status-walk outcome: fixed tokens and counts only."""
+    """The month's status-walk outcome: fixed tokens and counts only.
+
+    The walk records ``complete``, ``failed`` and the hero-castle manifest
+    result; there is no free-text result token (v550 projected one that the
+    policy never writes, so it always read null).
+    """
     if not isinstance(last, dict):
         return None
-    result = last.get('result')
-    tokens = ('unchanged_cached', 'complete', 'reused', 'finished')
     carry = last.get('carry')
+    manifest = last.get('manifest') if isinstance(last.get('manifest'), dict) else {}
     return {'complete': last.get('complete') is True,
-            'result': result if result in tokens else None,
+            'failed': last.get('failed') if isinstance(last.get('failed'), str) else None,
+            'manifest_done': manifest.get('done') is True,
+            'manifest_arrived': (len(manifest['arrived'])
+                                 if isinstance(manifest.get('arrived'), (list, tuple)) else None),
             'carry': len(carry) if isinstance(carry, (list, tuple)) else None}
 
 

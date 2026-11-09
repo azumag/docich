@@ -5111,12 +5111,14 @@ def test_compact_policy_projects_the_month_status_walk_outcome():
     module = load_collector()
     policy = module._compact_hanjuku_policy({
         'chapter': 6, 'tick': 100, 'active': None,
-        'post_month_status_last': {'complete': True, 'result': 'unchanged_cached',
+        'post_month_status_last': {'complete': True, 'failed': None,
+                                   'manifest': {'done': True, 'arrived': ['a', 'b']},
                                    'carry': ['a', 'b'], 'note': 'DO-NOT-PUBLISH'},
     })
-    assert policy['post_month'] == {'complete': True, 'result': 'unchanged_cached', 'carry': 2}
+    assert policy['post_month'] == {'complete': True, 'failed': None, 'manifest_done': True,
+                                    'manifest_arrived': 2, 'carry': 2}
     assert 'DO-NOT-PUBLISH' not in json.dumps(policy)
     assert module._compact_hanjuku_policy({'chapter': 6})['post_month'] is None
-    odd = module._compact_hanjuku_policy({'chapter': 6, 'post_month_status_last': {'result': 'PRIVATE'}})
-    assert odd['post_month'] == {'complete': False, 'result': None, 'carry': None}
-    assert 'PRIVATE' not in json.dumps(odd)
+    odd = module._compact_hanjuku_policy({'chapter': 6, 'post_month_status_last': {'failed': 'PRIVATE'}})
+    assert odd['post_month'] == {'complete': False, 'failed': 'PRIVATE', 'manifest_done': False,
+                                 'manifest_arrived': None, 'carry': None}
