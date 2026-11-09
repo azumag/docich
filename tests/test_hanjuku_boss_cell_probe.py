@@ -1,6 +1,6 @@
 """Boss waves test different entry tiles in parallel (v404).
 
-g1133 2026-11-05: the chapter-6 boss cell (818, 120) is the building centre
+g1133 2026-11-05: the chapter-6 boss cell (818, 184) is the building centre
 measured from the Y view (v402), yet armies that verifiably left their castle
 never entered it (v402 record: marching 1634, source_still_has_general false).
 Waiting one tile at a time costs a full march window per candidate, so each new
@@ -20,7 +20,7 @@ def plan(*steps):
 
 
 def test_the_first_boss_cell_is_the_measured_chart_cell():
-    assert N.boss_probe_cell({'chapter': 6}, 'ボス', 'A:x:M1') == (818, 120)
+    assert N.boss_probe_cell({'chapter': 6}, 'ボス', 'A:x:M1') == (818, 184)
 
 
 def test_each_new_boss_order_takes_the_next_candidate():
@@ -52,9 +52,9 @@ def test_a_step_keeps_its_candidate_when_the_plan_is_rebuilt():
 
 def test_the_aim_follows_the_order_not_the_chapter():
     mem = {'chapter': 6, 'boss_step_probe': {'A:x:M1': 1, 'A:x:M2': 2}}
-    assert N.boss_probe_cell(mem, 'ボス', 'A:x:M1') == (818 + 16, 120)
-    assert N.boss_probe_cell(mem, 'ボス', 'A:x:M2') == (818 - 16, 120)
-    assert N.boss_probe_cell(mem, 'ボス', 'A:x:M9') == (818, 120)
+    assert N.boss_probe_cell(mem, 'ボス', 'A:x:M1') == (818 + 16, 184)
+    assert N.boss_probe_cell(mem, 'ボス', 'A:x:M2') == (818 - 16, 184)
+    assert N.boss_probe_cell(mem, 'ボス', 'A:x:M9') == (818, 184)
 
 
 def test_a_normal_castle_is_never_probed():
@@ -80,12 +80,12 @@ def overdue_boss(index=0, tick=100000):
 
 
 def test_an_unentered_boss_relaunch_advances_the_step_candidate():
-    # g1133 2026-11-05: the step kept re-sending cell (818, 120) for 2500
+    # g1133 2026-11-05: the step kept re-sending cell (818, 184) for 2500
     # observations while the wave that entered used candidate 2.
     mem = overdue_boss(index=0)
     O._relaunch_overdue_boss(mem)
     assert mem['boss_step_probe']['A:x:M1'] == 1
-    assert N.boss_probe_cell(mem, 'ボス', 'A:x:M1') == (818 + 16, 120)
+    assert N.boss_probe_cell(mem, 'ボス', 'A:x:M1') == (818 + 16, 184)
     assert mem['orders']['A:x:M1'] == 'pending'
     assert mem['boss_relaunch']['A:x:M1'] == 1
     assert [r for r in mem['_records'] if r['decision'] == 'boss_cell_probe_shift']

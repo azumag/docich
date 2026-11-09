@@ -7011,6 +7011,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v559-boss-panel-entry-bind",
             "hanjuku-chart-v562-boss-egg-unusable",
             "hanjuku-chart-v563-boss-egg-row-log",
+            "hanjuku-chart-v564-ch6-boss-cell-revert",
             "hanjuku-chart-v560-castle-list-scroll",
             "hanjuku-chart-v561-post-month-repair-status",
             "hanjuku-chart-v501-idle-reanchor",
