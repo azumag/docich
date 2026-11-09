@@ -616,6 +616,60 @@ class TestReconcileStreamMetadata(StreamCategoryTestBase):
             encoding="utf-8",
         )
 
+    def _write_hanjuku(self, *, cleared: int) -> None:
+        (self.root / "config" / "games" / "hanjuku-hero.toml").write_text(
+            '[game]\nname = "hanjuku-hero"\ntitle = "半熟英雄"\nadapter = "retroarch"\n'
+            '[twitch]\ncategory_id = "11585"\ncategory_name = "Hanjuku Hero"\n',
+            encoding="utf-8",
+        )
+        identity = {"game": "hanjuku-hero", "generation": 9,
+                    "runtime_id": "g9-aaaaaaaa", "lease_id": "lease"}
+        self._write_plane("ready", game="hanjuku-hero", generation=9)
+        runtime = Path(self.g.state_dir) / "runtimes" / "g9-aaaaaaaa"
+        runtime.mkdir(parents=True, exist_ok=True)
+        digest = "a" * 64
+        (runtime / "hanjuku_run.json").write_text(json.dumps({
+            **identity, "schema": 1, "frame_sha256": digest, "playing": True,
+            "observed_at": time.time(), "terminal_candidate": False,
+            "terminal_reason": None}), encoding="utf-8")
+        (runtime / "hanjuku_progress.json").write_text(json.dumps({
+            **identity, "schema": 1, "cleared": cleared, "ambiguous": False,
+            "frame_sha256": digest}), encoding="utf-8")
+
+    def test_hanjuku_clear_reannounces_only_the_title_for_the_next_goal(self) -> None:
+        """突破話数が増えたときだけ、カテゴリを触らずタイトルを次目標へ変える。"""
+        self._install_script()
+        self._write_hanjuku(cleared=2)
+
+        self.assertTrue(reconcile_stream_metadata(self.g, spawn=self._recorder))
+        first = self.spawned[0]["argv"]
+        self.assertNotIn("--title-only", first)
+        self.assertIn("この冒険で第2話まで突破", " ".join(first))
+
+        # Same goal: no repeat announce.
+        self.assertFalse(reconcile_stream_metadata(self.g, spawn=self._recorder))
+        self.assertEqual(len(self.spawned), 1)
+
+        # A cleared chapter moves the title to the next goal, title only.
+        self._write_hanjuku(cleared=3)
+        self.assertTrue(reconcile_stream_metadata(self.g, spawn=self._recorder))
+        second = self.spawned[-1]["argv"]
+        self.assertIn("--title-only", second)
+        self.assertIn("この冒険で第3話まで突破", " ".join(second))
+        self.assertIn("第4話", " ".join(second))
+
+    def test_hanjuku_untrusted_progress_does_not_look_like_a_goal_change(self) -> None:
+        self._install_script()
+        self._write_hanjuku(cleared=2)
+        self.assertTrue(reconcile_stream_metadata(self.g, spawn=self._recorder))
+        runtime = Path(self.g.state_dir) / "runtimes" / "g9-aaaaaaaa"
+        run = json.loads((runtime / "hanjuku_run.json").read_text(encoding="utf-8"))
+        run["observed_at"] = 1
+        (runtime / "hanjuku_run.json").write_text(json.dumps(run), encoding="utf-8")
+
+        self.assertFalse(reconcile_stream_metadata(self.g, spawn=self._recorder))
+        self.assertEqual(len(self.spawned), 1)
+
     def test_idle_plane_announces_the_live_background_game(self) -> None:
         self._write_sorengame()
         self._install_script()

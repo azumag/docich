@@ -96,6 +96,20 @@ def test_resume_prediction_resolves_immediately_when_target_chapter_clears(env):
     assert env.remote.rows[0]['winning_outcome_id'] == 'outcome-0'
 
 
+def test_resume_clear_continues_to_the_next_chapter_in_the_same_run(env):
+    """再開した章の達成後も、再開用の章を繰り返さず次の目標へ引き継ぐ。"""
+    verified_resume(env, 2)
+    assert env.tick()['mode'] == 'active'
+    progress.record(env.runtime, ID, {'chapter': 3, 'chapter_evidence': 'header'}, [], DIGEST)
+    assert env.tick(101)['mode'] == 'resolved'
+    assert env.tick(131)['mode'] == 'active'
+    row = env.state()['round']
+    assert row['kind'] == p.NEXT_PREDICTION_KIND
+    assert row['target'] == 3 and row.get('middle') is None
+    assert row['title'].startswith('半熟英雄：3話を突破できる？ #')
+    assert env.state()['best_cleared'] == 2
+
+
 @pytest.mark.parametrize('reason, outcome', [
     ('game_over', 1),
     ('screen_stalled', 2),
