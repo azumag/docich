@@ -49,6 +49,8 @@ def hero_guard_short(names, general, unavailable=(), *, sole_castle=False) -> bo
     never lifted, not even for our only castle — an emptied castle falls to
     the next enemy and ends the game.
     """
+    if chart.guard_free():
+        return False        # chapter 9's road: rear castles sit behind the front
     present = set(names or ()) - set(unavailable or ())
     if chart.HERO not in present or general == chart.HERO:
         return False
@@ -200,8 +202,9 @@ def startable(order, request) -> str | None:
         return None if general == 'しょうぐん' else 'invalid_source_probe'
     present = garrison.get(source) or ()
     if general in present:
-        # A measured singleton cannot dispatch its last defender.
-        if len(set(present) - marching) < 2:
+        # A measured singleton cannot dispatch its last defender (chapter 9
+        # excepted, owner 2026-11-09: ``chart.sender_min`` is 1 there).
+        if len(set(present) - marching) < chart.sender_min(request.get('chapter')):
             return 'source_last_defender'
         if not chart.is_boss_castle(order['target']) and hero_guard_short(
                 present, general, marching, sole_castle=_sole_castle(request)):

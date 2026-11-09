@@ -784,35 +784,35 @@ CHAPTER_9_ORDERS = (
      'cards': ('ブラッキー', 'クースカン', 'ファバード'),
      'target': 'オシロガ', 'after': ('captured', 'サヌト'),
      'note': '騎馬A オシロガ城へ'},
-    {'step': '9-K8', 'general': '騎馬B', 'source': 'サヌト',
+    {'step': '9-K8', 'general': '騎馬B', 'source': 'オシロガ',
      'cards': ('ブラッキー', 'クースカン', 'ファバード'),
-     'target': 'ドンドン', 'after': ('captured', 'サヌト'),
-     'note': '騎馬B ドンドン城へ'},
-    {'step': '9-K9', 'general': '騎馬A', 'source': 'オシロガ',
+     'target': 'ドンドン', 'after': ('captured', 'オシロガ'),
+     'note': '騎馬B ドンドン城へ（一本道: オシロガの次）'},
+    {'step': '9-K9', 'general': '騎馬A', 'source': 'ドンドン',
      'cards': ('ブラッキー', 'クースカン', 'ファバード'),
-     'target': 'オオキク', 'after': ('captured', 'オシロガ'),
+     'target': 'オオキク', 'after': ('captured', 'ドンドン'),
      'note': '騎馬A オオキク城へ'},
-    {'step': '9-K10', 'general': '騎馬B', 'source': 'ドンドン',
+    {'step': '9-K10', 'general': '騎馬B', 'source': 'オオキク',
      'cards': ('ブラッキー', 'クースカン', 'ファバード'),
-     'target': 'ナッテ', 'after': ('captured', 'ドンドン'),
+     'target': 'ナッテ', 'after': ('captured', 'オオキク'),
      'note': '騎馬B ナッテ城へ'},
-    {'step': '9-K11', 'general': '騎馬A', 'source': 'オオキク',
+    {'step': '9-K11', 'general': '騎馬A', 'source': 'ナッテ',
      'cards': ('ブラッキー', 'クースカン', 'ファバード'),
-     'target': 'シマウ', 'after': ('captured', 'オオキク'),
+     'target': 'シマウ', 'after': ('captured', 'ナッテ'),
      'note': '騎馬A シマウ城へ'},
-    {'step': '9-K12', 'general': '騎馬B', 'source': 'ナッテ',
+    {'step': '9-K12', 'general': '騎馬B', 'source': 'シマウ',
      'cards': ('ブラッキー', 'クースカン', 'ファバード'),
-     'target': 'カラ', 'after': ('captured', 'ナッテ'),
+     'target': 'カラ', 'after': ('captured', 'シマウ'),
      'note': '騎馬B カラ城へ'},
-    {'step': '9-K13', 'general': '騎馬A', 'source': 'シマウ',
+    {'step': '9-K13', 'general': '騎馬A', 'source': 'カラ',
      'cards': ('ブラッキー', 'クースカン', 'ファバード'),
-     'target': 'イソ', 'after': ('captured', 'シマウ'),
+     'target': 'イソ', 'after': ('captured', 'カラ'),
      'note': '騎馬A イソ城へ'},
-    {'step': '9-K14', 'general': '騎馬B', 'source': 'カラ',
+    {'step': '9-K14', 'general': '騎馬B', 'source': 'イソ',
      'cards': ('ブラッキー', 'クースカン', 'ファバード'),
-     'target': 'イデ！', 'after': ('captured', 'カラ'),
+     'target': 'イデ！', 'after': ('captured', 'イソ'),
      'note': '騎馬B イデ！城へ'},
-    {'step': '9-B1', 'general': '騎馬A', 'source': 'イソ',
+    {'step': '9-B1', 'general': '騎馬A', 'source': 'イデ！',
      'cards': ('マグネガキン', 'マグネガキン', 'ファバード'),
      'target': 'ボス', 'after': ('all_captured',),
      'note': 'ハデス（エグモン） 騎馬のどちらかが攻略'},
@@ -1086,14 +1086,81 @@ def boss_castle(chapter: int) -> str:
     return BOSS_CASTLES.get(chapter, BOSS_CASTLES[1])
 
 
+# Chapter 9 is a single winding road: the black terrain on the stage map is
+# impassable (GCGX 第9話「黒いところは進入不可なので、くねくねしながら１本道を
+# 進軍することになる」), so a march can only go castle to adjacent castle.
+# The order is the castle-name sentence the guide prints (「早く倒さぬとお城が
+# ドンドン大きくなってしまうから急いで！」 = the table order of the castles).
+# Source: public guide text; the first seven castles agree with a flood fill of
+# the 130 px stage map, the tail does not (thin walls vanish at that scale).
+# NOT measured in the game: re-check against the first live run.
+CORRIDORS: dict[int, tuple[str, ...]] = {
+    9: ('アルマムーン', 'ハヤク', 'タオ', 'サヌト', 'オシロガ', 'ドンドン',
+        'オオキク', 'ナッテ', 'シマウ', 'カラ', 'イソ', 'イデ！'),
+}
+CORRIDOR_STEP = 1000     # distance units per road hop (``_distance`` on a road chapter)
+
+
+def corridor(chapter) -> tuple[str, ...]:
+    """The castles of a single-road chapter in march order, else ``()``."""
+    return CORRIDORS.get(chapter, ())
+
+
+def corridor_gap(chapter, a, b):
+    """Road hops between two castles of the corridor, or None when off it."""
+    road = corridor(chapter)
+    if a in road and b in road:
+        return abs(road.index(a) - road.index(b))
+    return None
+
+
+def corridor_neighbours(chapter, name) -> tuple[str, ...]:
+    road = corridor(chapter)
+    if name not in road:
+        return ()
+    i = road.index(name)
+    return tuple(road[j] for j in (i - 1, i + 1) if 0 <= j < len(road))
+
+
+def corridor_next(chapter, owned):
+    """The first road castle (march order) that is not ours, or None.
+
+    A lost castle in the middle of the road is the next target again: nothing
+    beyond it can be reached while it is held by the enemy.
+    """
+    return next((c for c in corridor(chapter) if c not in owned), None)
+
+
+GUARD_FREE_CHAPTERS = frozenset({9})
+
+
+def sender_min(chapter=None) -> int:
+    """Generals a castle must hold before it may send one (2, or 1 when guard-free)."""
+    return 1 if guard_free(chapter) else 2
+
+
+def guard_free(chapter=None) -> bool:
+    """Whether a castle may send its last general (owner 2026-11-09).
+
+    Chapter 9's road puts every rear castle behind the front, so the "keep a
+    defender" policies (the never-empty rule, HERO_CASTLE_GUARD) are lifted
+    there. The owner stated the one-general limit is not a game rule.
+    """
+    if chapter is None:
+        memory = _MAP_MEMORY.get()
+        chapter = memory.get('chapter') if isinstance(memory, dict) else None
+    return chapter in GUARD_FREE_CHAPTERS
+
+
 # Owner 2026-11-02: the speedrun chart's order list was misleading progress
 # (orders waiting on conditions while castles stayed uncaptured), so castles
 # are taken mechanically, nearest first (``replan.interim_candidates``).
-# Chapters 4 (four boss sites) and 9 (a moving boss) have no generic boss
-# castle, so their boss assault still comes from the chart.
+# Chapter 4 (four boss sites) has no generic boss castle, so its boss assault
+# still comes from the chart. Chapter 9 (a moving boss, a single road) runs
+# mechanically along ``CORRIDORS``; its boss cell is the Y-view skull.
 # DOCICH_HANJUKU_SPEEDRUN_CHART=1 restores the chart everywhere.
 SPEEDRUN_CHART_ENV = 'DOCICH_HANJUKU_SPEEDRUN_CHART'
-CHART_ONLY_CHAPTERS = frozenset({4, 9})
+CHART_ONLY_CHAPTERS = frozenset({4})
 
 
 def speedrun_enabled(chapter=None) -> bool:

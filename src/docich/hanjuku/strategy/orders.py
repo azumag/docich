@@ -623,7 +623,7 @@ def _season_site_held(order, mem):
 
 
 def _ready(order, mem) -> bool:
-    if (mem.get('chapter') == 3 and not chart.is_boss_castle(order.get('target'))
+    if (routes.is_road(mem.get('chapter')) and not chart.is_boss_castle(order.get('target'))
             and not routes.order_allowed(mem, order,
                                          _source(order, mem) if 'step' in order else order.get('source'))):
         return False
@@ -1013,7 +1013,7 @@ def _redirect_blocked_sources(mem):
     geometric check does not apply there.
     """
     chapter = mem.get('chapter') or 0
-    if chapter == 3:
+    if routes.is_road(chapter):
         return
     owned = _owned(mem) & set(chart.castles(chapter))
     overrides = mem.setdefault('source_override', {})
@@ -1557,6 +1557,12 @@ def _tactics(mem, step):
 
 
 def _distance(chapter, a, b) -> int:
+    # A single-road chapter measures in road hops: straight-line closeness
+    # means nothing across impassable terrain (ナッテ sits beside アルマムーン
+    # in a straight line and is the 7th castle on chapter 9's road).
+    hops = chart.corridor_gap(chapter, a, b)
+    if hops is not None:
+        return hops * chart.CORRIDOR_STEP
     castles = chart.castles(chapter)
     (ax, ay), (bx, by) = castles[a], castles[b]
     return abs(ax - bx) + abs(ay - by)
@@ -1614,6 +1620,8 @@ def _defense_break_allowed(order, mem):
 
 
 def _reserve_source_guard(order, mem):
+    if chart.guard_free(mem.get('chapter')):
+        return False        # chapter 9 (owner 2026-11-09): a castle may send its last general
     if _defense_break_allowed(order, mem):
         return False
     # Original chart offensives and boss waves retain their sequences. A
@@ -1728,6 +1736,7 @@ def _source_spare_missing(order, mem, *, allow_probe=False):
             and source == _arrival_castle(mem, _owned(mem))):
         return False   # fresh joiners are checked by _keep_sortie_defender
     if (mem.get('active') != order.get('step')
+            and not chart.guard_free(mem.get('chapter'))
             and isinstance(present, (list, tuple)) and present
             and len(set(present) - unavailable) < 2):
         return True  # pre-flight only: never reopen a plan for the last defender

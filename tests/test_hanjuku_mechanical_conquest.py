@@ -35,8 +35,9 @@ def attack_targets(mem):
 def test_the_chart_orders_are_off_by_default_but_the_measured_table_stays():
     assert chart.speedrun_enabled(1) is False and chart.orders(1) == ()
     assert chart.orders(5) == () and len(chart.measured_orders(5)) > 0
-    # Chapters 4 (boss sites) and 9 (moving boss) still take their boss orders from the chart.
-    assert chart.speedrun_enabled(4) and chart.speedrun_enabled(9)
+    # Chapter 4 (boss sites) still takes its boss orders from the chart; chapter 9
+    # (moving boss, single road) runs mechanically along chart.CORRIDORS.
+    assert chart.speedrun_enabled(4) and not chart.speedrun_enabled(9)
     assert len(chart.orders(4)) > 0
 
 
