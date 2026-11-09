@@ -10,9 +10,14 @@ from .readers import (
 )
 from .screen import _card_picker_rows
 from ...hanjuku_egg_reference import GENERAL_HP
+from ...hanjuku_map_sources import SOURCE_CASTLES
 
-TEXT_MENUS = frozenset({'global_roster', 'egg_recovery', 'fort_roster',
+TEXT_MENUS = frozenset({'global_roster', 'castle_list', 'egg_recovery', 'fort_roster',
                         'fort_commands', 'camp_commands', 'battle_cards'})
+# Match the source-jump spelling rule (long-vowel marks may move in OCR).
+# These names identify the panel only, never ownership or a destination.
+_CASTLE_NAMES = frozenset(name.replace('ー', '')
+                          for chapter in SOURCE_CASTLES.values() for name in chapter)
 
 
 def valid_context(kind, menu):
@@ -34,6 +39,22 @@ def _named_rows(screen, x, ys):
                     or not _name_read_cleanly(line, word)):
                 return None
             rows.append((x, line.y, word))
+    if not rows or len({y for _, y, _ in rows}) != len(rows):
+        return None
+    return rows
+
+
+def _castle_rows(screen):
+    rows = []
+    for line in screen.lines:
+        if line.y not in range(39, 152, 16):
+            continue
+        word = dict(line.spans()).get(168)
+        if word:
+            if (word.replace('ー', '') not in _CASTLE_NAMES
+                    or not _name_read_cleanly(line, word)):
+                return None
+            rows.append((168, line.y, word))
     if not rows or len({y for _, y, _ in rows}) != len(rows):
         return None
     return rows
@@ -105,7 +126,14 @@ def reading(screen):
         return None
     if screen.has('Aボタンでステータスひょうじ'):
         rows = _named_rows(screen, 168, range(39, 152, 16))
-        return _reading(screen, 'global_roster', rows, _hand_cursor(screen, rows or []), scrolling=True)
+        if rows:
+            return _reading(screen, 'global_roster', rows, _hand_cursor(screen, rows), scrolling=True)
+        # The しろ list shares the roster geometry/help text, but contains
+        # castle names. Keep blind/fading/partial rows at the normal cadence.
+        if screen.has('コマンドにもどります'):
+            rows = _castle_rows(screen)
+            return _reading(screen, 'castle_list', rows, _hand_cursor(screen, rows or []), scrolling=True)
+        return None
     if (screen.has('どのしょうぐんのたまごを')
             and screen.has('おはらいしますか?')):
         rows = _named_rows(screen, 32, range(71, 168, 16))

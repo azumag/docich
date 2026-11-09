@@ -1417,8 +1417,10 @@ def test_hanjuku_hotload_projection_is_bounded_state_and_digests():
 
 
 def test_hanjuku_hotload_versions_are_fixed_values_not_an_arbitrary_prefix():
+    from docich.hanjuku.version import BOT_VERSION
+
     module = load_collector()
-    versions = ("hanjuku-script-v1", "hanjuku-chart-v2",
+    versions = (BOT_VERSION, "hanjuku-script-v1", "hanjuku-chart-v2",
                 "hanjuku-chart-v129-battle-card-progress",
                 "hanjuku-chart-v130-summer-cursor-evidence",
                 "hanjuku-chart-v131-defense-month-economy",
