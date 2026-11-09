@@ -7057,6 +7057,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v608-card-skip-departure",
             "hanjuku-chart-v609-substitute-nonboss",
             "hanjuku-chart-v610-confirm-blind-approve",
+            "hanjuku-chart-v611-confirm-double-a",
             "hanjuku-chart-v560-castle-list-scroll",
             "hanjuku-chart-v561-post-month-repair-status",
             "hanjuku-chart-v501-idle-reanchor",
