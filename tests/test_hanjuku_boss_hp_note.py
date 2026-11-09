@@ -34,3 +34,16 @@ def test_an_unreadable_hp_is_not_invented():
     mem['attack'] = {'castle': 'ボス'}
     B.note_boss_monster_hp(mem, {}, [SimpleNamespace(name=None, hp=100)])
     assert 'boss_hp_seen' not in mem
+
+
+def test_the_boss_panel_readings_keep_a_bounded_history():
+    """The boss's HP falling across entries is the only proof a wave hurt it."""
+    mem = {'chapter': 7, 'tick': 100, '_records': [],
+           'attack': {'general': 'ミモザ', 'castle': 'ボス', 'side': 'attack', 'step': 'A:x:M1'}}
+    B.note_boss_monster_hp(mem, {'ally': 'ミモザ'}, [SimpleNamespace(name='ランパイア', hp=426)])
+    mem['tick'] = 200
+    mem['attack']['general'] = 'ココット'
+    B.note_boss_monster_hp(mem, {'ally': 'ココット'},
+                           [SimpleNamespace(name='ランパイア', hp=298)])
+    assert [row['hp'] for row in mem['boss_hp_history']] == [426, 298]
+    assert [row['general'] for row in mem['boss_hp_history']] == ['ミモザ', 'ココット']

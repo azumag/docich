@@ -1494,9 +1494,19 @@ def note_boss_monster_hp(mem, battle, enemy_rows):
     name, hp = getattr(row, 'name', None), getattr(row, 'hp', None)
     if not isinstance(name, str) or type(hp) is not int or not 0 < hp <= 9999:
         return
-    mem['boss_hp_seen'] = {'castle': attack.get('castle'), 'monster': name, 'hp': hp,
-                           'general': attack.get('general') or battle.get('ally'),
-                           'tick': int(mem.get('tick') or 0)}
+    seen = {'castle': attack.get('castle'), 'monster': name, 'hp': hp,
+            'general': attack.get('general') or battle.get('ally'),
+            'tick': int(mem.get('tick') or 0)}
+    mem['boss_hp_seen'] = seen
+    # Keep a bounded history of boss-panel readings: the boss's HP falling
+    # across entries is the only proof a wave actually hurt it, and without the
+    # per-attacker rows a wave that entered but dealt nothing looks identical
+    # (g1163 chapter 7 2026-11-09 20:2x: 426 -> 298 across two arrivals).
+    history = mem.get('boss_hp_history')
+    history = history if isinstance(history, list) else []
+    if not history or history[-1].get('hp') != hp or history[-1].get('general') != seen['general']:
+        history.append(seen)
+        mem['boss_hp_history'] = history[-8:]
     # A readable boss battle panel is itself proof of the entry. The 「せめこんだ」
     # text can be missed on the frames between the map and the panel (g1163
     # 2026-11-09 13:36: ヘーゼル fought ハードロボ but no attack_observed was
