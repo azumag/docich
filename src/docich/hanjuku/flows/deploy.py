@@ -1888,6 +1888,21 @@ def deploy_step(screen: Screen, mem):
             # anyway (owner 2026-11-02: 切り札不足でも延期しない).
             if misses[order['step']] >= SORTIE_CONFIRM_LIMIT:
                 if carried is None:
+                    # Owner 2026-11-10: an unreadable departure confirmation
+                    # must not cancel the sortie — press the default (はい)
+                    # once and let the departure itself prove it. A second
+                    # unreadable round means the blind A did nothing, so the
+                    # existing cancel path takes over.
+                    ordinary = (not chart.is_boss_castle(order.get('target'))
+                                and not _strict_boss_cards(order, mem))
+                    if ordinary and not (mem.get('sortie_confirm_blind') or {}).get(order['step']):
+                        mem.setdefault('sortie_confirm_blind', {})[order['step']] = True
+                        misses.pop(order['step'], None)
+                        _record(mem, 'sortie_confirm_blind_approve',
+                                **_deploy_context(order, mem, expected_metric=sorted(_deploy_cards(order, mem))),
+                                observed_metric={'carried': None, 'screen': screen.kind},
+                                reason='出撃確認の携行札を読めないため既定（はい）で出撃を承認する')
+                        return [pad('a')]
                     misses.pop(order['step'], None)
                     _finish_order(mem, 'failed', deviation_reason='出撃確認の携行札を読めない',
                                   observed_metric={'carried': None},

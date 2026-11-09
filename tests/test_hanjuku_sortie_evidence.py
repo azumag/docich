@@ -917,9 +917,18 @@ def test_a_readable_but_mismatched_kit_is_approved_after_bounded_readings():
     assert [r['decision'] for r in mem['_records'][-2:]] == ['sortie_kit_mismatch', 'sortie_confirm']
 
 
-def test_an_unreadable_sortie_confirmation_is_bounded_and_cancelled():
+def test_an_unreadable_sortie_confirmation_approves_once_then_cancels():
+    """Owner 2026-11-10: an unreadable departure confirmation departs anyway.
+
+    The first unreadable round presses the default (はい); a second round means
+    the blind A did nothing, so the existing cancel path takes over.
+    """
     mem = _c2_memory()
     screen = menu('sortie_confirm', ['うむッ!'], hand=False)
+    for _ in range(policy.SORTIE_CONFIRM_LIMIT - 1):
+        assert policy.deploy_step(screen, mem) == []
+    assert policy.deploy_step(screen, mem) == [policy.pad('a')]
+    assert mem['_records'][-1]['decision'] == 'sortie_confirm_blind_approve'
     for _ in range(policy.SORTIE_CONFIRM_LIMIT - 1):
         assert policy.deploy_step(screen, mem) == []
     assert policy.deploy_step(screen, mem) == [policy.pad('b'), policy.pad('b')]
