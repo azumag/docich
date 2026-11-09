@@ -768,6 +768,11 @@ def _hold_deploy(screen, mem, order, reason, *, card=None, carried=None, hold_va
                        else 'sortie_menu_unclassified', deviation_reason=reason)
     _record(mem, 'situation_held', **context, screen=screen.kind, card=card,
             observed_metric={'hand': screen.hand,
+                             # OCR yield: live frames can render with no
+                             # readable text at all (g1163 2026-11-10 04:39:
+                             # 299x224 frames parsed to ''), so the held screen
+                             # records how much text it actually produced.
+                             'text_len': len(getattr(screen, 'text', '') or ''),
                              'candidates': [{'x': x, 'y': y, 'text': w[:80]} for x, y, w in _options(screen)[:32]],
                              'carried_cards_read': carried, 'confirmation': 'unclassified',
                              'hold_variant': hold_variant},
