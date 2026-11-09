@@ -851,12 +851,11 @@ def _jump_successor(mem, order):
         return None
     if _source(order, mem) != _source(active, mem):
         return None
-    same_actor = order.get('general') == active.get('general')
-    if not same_actor:
-        overrides = mem.get('general_override') or {}
-        current, planned = overrides.get(active.get('step')), overrides.get(order.get('step'))
-        same_actor = current is not None and current == planned
-    return active if same_actor else None
+    # The general may change with the re-plan (the chart worker re-picks the
+    # actor each time: シュゼット's jump was replaced by マンゴスチン's at
+    # 05:38). The castle trip is still the same physical action, and a
+    # different general may depart from there (owner 2026-11-10 fallback).
+    return active
 
 
 def castle_jump_step(screen, mem, frame):

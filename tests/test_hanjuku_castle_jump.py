@@ -571,4 +571,6 @@ def test_a_replan_does_not_abort_the_trip_to_the_source_castle():
     assert map_flow._jump_successor(mem2, old) is None
     other_general = dict(new, general='アテナ')
     mem3 = dict(mem, chart_plan={'orders': [other_general]})
-    assert map_flow._jump_successor(mem3, old) is None
+    # A re-plan may pick another actor for the same castle trip; the walk is
+    # still the right action (a substitute may depart from there).
+    assert map_flow._jump_successor(mem3, old) is other_general
