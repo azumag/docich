@@ -540,6 +540,12 @@ def interim_candidates(mem, allow_sole=False) -> dict:
     chart_orders = {}
     for order in chart.orders(chapter):
         chart_orders.setdefault(order['target'], order)
+    # A road chapter runs without chart orders, but its encoded chart still
+    # says which cards each castle wants (chapter 9's soldiers have HP100).
+    card_orders = {}
+    if chart.corridor(chapter):
+        for order in chart.all_orders(chapter):
+            card_orders.setdefault(order['target'], order)
     lost = [c for c in mem.get('lost') or () if c in castles]
     # Owner 2026-11-02: a lost castle that gates the boss path must come back
     # before unrelated retakes — otherwise the bot keeps re-taking minor
@@ -766,7 +772,7 @@ def interim_candidates(mem, allow_sole=False) -> dict:
         # Owner (2026-09-28): 切り札は持たせたほうが良い. The chart's cards for
         # this castle, else the retry opener (two イッテツーン). Cards out of
         # stock are dropped at the card list (card_drop), never waited for.
-        base = chart_orders.get(target)
+        base = chart_orders.get(target) or card_orders.get(target)
         cards = list(base['cards']) if base and base.get('cards') else list(INTERIM_CARDS)
         if chart.is_boss_castle(target):
             cards = []   # 波: strict kit waits for nobody — carry what is there
@@ -963,7 +969,7 @@ def interim_candidates(mem, allow_sole=False) -> dict:
         wave_committed = committed
         wave_busy = busy | planned_busy | committed
         purpose = 'retake' if wave_target in lost else 'attack'
-        base = chart_orders.get(wave_target)
+        base = chart_orders.get(wave_target) or card_orders.get(wave_target)
         cards = list(base['cards']) if base and base.get('cards') else list(INTERIM_CARDS)
         extra = 0
         while extra < INTERIM_WAVE_LIMIT:
@@ -1038,6 +1044,9 @@ def interim_candidates(mem, allow_sole=False) -> dict:
             order['roster_probe'] = True
             order['note'] = (f"暫定: {order['source']}の将軍一覧を読んで"
                              "増援の到着を確認する")
+        if (routes.is_road(chapter) and not chart.is_boss_castle(order.get('target'))
+                and not routes.order_allowed(mem, order, order['source'])):
+            continue        # a road chapter's ``_ready`` would reject it on every tick
         if chart_adjust.startable(order, situation) is not None:
             continue
         out[f"{order['purpose']}_{len(out) + 1}"] = order

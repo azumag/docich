@@ -31,23 +31,37 @@ BOSS_RETRY_TICKS = 120         # first wait before a camp is sent at the moving 
 BOSS_JUMP_LIMIT = 2            # Y jumps to the boss per redirect
 
 
+def boss_phase(mem) -> bool:
+    """Chapter 9 with every road castle ours: the moving boss is the only target.
+
+    Before that, a camped general is an ordinary straggler (a lost battle's
+    retreat, say) and is recalled home as usual.
+    """
+    chapter = mem.get('chapter')
+    if chapter != chart.MOVING_BOSS_CHAPTER or not chart.corridor(chapter):
+        return False
+    from ..os_layer.world import _owned
+    return chart.corridor_next(chapter, _owned(mem)) is None
+
+
 def boss_redirect_goal(mem):
     """The boss castle a camped general is re-sent at, or None (owner 2026-11-09).
 
     Chapter 9's boss moves, so an army sent at the skull's old cell ends up
     camped on the road. Such a camp is not recalled home: it is ordered at the
     boss's current Y-view cell instead. Only a fresh skull measurement
-    (``chart.moving_boss_cell``) counts, never a stale cell.
+    (``chart.moving_boss_cell``) counts, never a stale cell, and only in the
+    boss phase.
     """
     chapter = mem.get('chapter')
-    if chapter != chart.MOVING_BOSS_CHAPTER or not chart.moving_boss_cell(chapter):
+    if not boss_phase(mem) or not chart.moving_boss_cell(chapter):
         return None
     return chart.boss_castle(chapter)
 
 
 def camp_stays(mem) -> bool:
-    """A camp is never recalled home on a moving-boss chapter (owner 2026-11-09)."""
-    return mem.get('chapter') == chart.MOVING_BOSS_CHAPTER
+    """A camp is never recalled home in the moving boss's phase (owner 2026-11-09)."""
+    return boss_phase(mem)
 
 
 def _camp_target(value):
@@ -251,7 +265,7 @@ def _camp_recall_step(screen: Screen, mem, frame, *, observed_camps=None):
                                  **({'camp_kind': camp['kind']} if camp.get('kind') else {}),
                                  **({'boss': True, 'goal': boss_goal} if boss_goal else {})}
         if boss_goal:
-            (mem.get('y_jumps') or {}).pop('RECALL:target', None)
+            _reset_boss_jump(mem)
         _record(mem, 'camp_found', observed_metric={'camp': list(camp['target']),
                                                     **({'kind': camp['kind']} if camp.get('kind') else {}),
                                                     **({'boss_redirect': boss_goal} if boss_goal else {})},
@@ -522,6 +536,7 @@ def _boss_redirect_dest_step(screen, mem, frame, state, marker):
                                     'ボスの現在位置を確認できないため再出撃を取り消す')
     pseudo = {'step': 'RECALL', 'target': goal, 'source': None}
     if _map._target_roof_under_marker(screen, mem, frame, pseudo):
+        _reset_boss_jump(mem)       # the receipt is spent by this confirmation
         return _request_recall(mem, state, goal, [pad('a')], target_cell=list(marker), boss=True)
     if (mem.get('y_jumps') or {}).get('RECALL:target', 0) < BOSS_JUMP_LIMIT:
         return _start_y_jump(mem, {'step': 'RECALL'}, goal, 'target')
@@ -529,7 +544,18 @@ def _boss_redirect_dest_step(screen, mem, frame, state, marker):
                                 'ボスのセルへマーカーを合わせられないため再出撃を取り消す')
 
 
+def _reset_boss_jump(mem):
+    """Forget the previous redirect's Y-jump receipt and attempt count.
+
+    The goal is always the boss, so an old ``y_jumped['RECALL']`` would
+    confirm the next redirect without aiming the marker at the moved boss.
+    """
+    (mem.get('y_jumps') or {}).pop('RECALL:target', None)
+    (mem.get('y_jumped') or {}).pop('RECALL', None)
+
+
 def _abort_boss_redirect(mem, state, event, reason):
+    _reset_boss_jump(mem)
     _flow(mem).pop('recall', None)
     mem['uncertain'] = True
     _arm_recall_skip(mem, state, BOSS_RETRY_TICKS)

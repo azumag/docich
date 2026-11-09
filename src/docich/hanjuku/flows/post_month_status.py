@@ -72,8 +72,8 @@ def _log(mem, event, **details):
 
 
 def _camp_stays(mem):
-    from ... import hanjuku_chart as chart
-    return mem.get('chapter') == chart.MOVING_BOSS_CHAPTER
+    from .recall import camp_stays
+    return camp_stays(mem)
 
 
 def _boss_camp_holds_siege(info):

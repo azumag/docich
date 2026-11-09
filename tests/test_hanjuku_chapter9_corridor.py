@@ -137,3 +137,34 @@ def test_a_front_castle_may_send_its_last_general_on_chapter_nine_only():
     mem = memory(3, garrison={HOME: ['どうし'], 'ハヤク': ['ココット', 'リーキ'], 'タオ': ['ヘラ']})
     got = attacks(mem)
     assert [(o['source'], o['target'], o['general']) for o in got] == [('タオ', 'サヌト', 'ヘラ')]
+
+
+def test_attacks_carry_the_charts_cards_not_the_generic_opener():
+    # Leaving the chart-only set must not strip chapter 9's soldier-HP100 kit.
+    got = attacks(memory(3))
+    assert got and all(o['cards'] == ['ブラッキー', 'クースカン', 'ファバード'] for o in got)
+
+
+STATES = {
+    **{f'owned_{n}': (lambda n=n: memory(n)) for n in range(1, len(ROAD) + 1)},
+    'lost_middle': lambda: {**memory(7, lost=['サヌト']),
+                            'captured': [c for c in ROAD[1:7] if c != 'サヌト']},
+    'lost_home_side': lambda: {**memory(4, lost=['ハヤク']),
+                               'captured': [c for c in ROAD[1:4] if c != 'ハヤク']},
+}
+
+
+@pytest.mark.parametrize('name', sorted(STATES))
+def test_every_candidate_is_one_the_road_ready_check_accepts(name):
+    # Chapter 3's failure class: candidates ``_ready`` rejects on every tick leave the
+    # month advancing with no sortie. Also covers the boss phase with a skull cell.
+    chart.set_boss_cell(9, (500, 300))
+    try:
+        mem = STATES[name]()
+        with chart.map_context(mem):
+            candidates = list(replan.interim_candidates(mem).values())
+        for order in candidates:
+            assert chart.is_boss_castle(order['target']) or routes.order_allowed(
+                mem, order, order['source']), (name, order)
+    finally:
+        chart.set_boss_cell(9, None)

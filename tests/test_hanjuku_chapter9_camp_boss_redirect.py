@@ -25,8 +25,13 @@ def boss_cell():
     chart.set_boss_cell(9, None)
 
 
-def mem9(**extra):
-    return {'chapter': 9, 'tick': 100, '_records': [], **extra}
+ROAD = chart.corridor(9)
+
+
+def mem9(owned=len(ROAD), **extra):
+    """Chapter 9 with the first ``owned`` road castles ours (default: all, the boss phase)."""
+    return {'chapter': 9, 'tick': 100, '_records': [],
+            'captured': list(ROAD[1:owned]), **extra}
 
 
 def field(cursor=(60, 60)):
@@ -43,6 +48,20 @@ def test_the_goal_exists_only_with_a_fresh_skull_cell_on_chapter_nine():
     assert recall.boss_redirect_goal(mem9()) is None
     chart.set_boss_cell(9, BOSS_CELL)
     assert recall.boss_redirect_goal({'chapter': 5}) is None
+
+
+def test_before_the_boss_phase_a_camp_is_recalled_home_as_usual():
+    # Five road castles ours: a camp is a straggler (a lost battle's retreat), not
+    # an army that missed the boss. Even a skull cell must not turn it into one.
+    for cell in (None, BOSS_CELL):
+        chart.set_boss_cell(9, cell)
+        mem = mem9(owned=5)
+        assert recall.boss_redirect_goal(mem) is None and not recall.camp_stays(mem)
+        recall._camp_recall_step(field(), mem, FRAME, observed_camps=[{'target': [60, 60]}])
+        state = _flow(mem)['recall']
+        assert not state.get('boss') and 'goal' not in state and state['stage'] in ('to_camp', 'menu')
+    assert pms._tasks({'ヘラ': {'location': 'camp'}}, ['ヘラ'],
+                      camp_stays=pms._camp_stays(mem9(owned=5))) == [{'kind': 'recall', 'name': 'ヘラ'}]
 
 
 def test_a_camp_is_picked_up_for_the_boss_not_for_a_castle():
@@ -135,4 +154,23 @@ def test_the_monthly_pass_leaves_camps_alone_on_chapter_nine_only():
     statuses = {'ヘラ': {'location': 'camp'}}
     assert pms._tasks(statuses, ['ヘラ'], camp_stays=True) == []
     assert pms._tasks(statuses, ['ヘラ']) == [{'kind': 'recall', 'name': 'ヘラ'}]
-    assert pms._camp_stays({'chapter': 9}) and not pms._camp_stays({'chapter': 3})
+    assert pms._camp_stays(mem9()) and not pms._camp_stays(mem9(owned=5)) and not pms._camp_stays({'chapter': 3})
+
+
+def test_a_second_redirect_cannot_reuse_the_first_redirects_jump_receipt():
+    mem = dest_mem(y_jumped={'RECALL': BOSS})
+    assert recall._camp_recall_step(target_screen(), mem, FRAME) == [pad('a')]       # first redirect confirmed
+    assert 'RECALL' not in (mem.get('y_jumped') or {})
+    # The boss moved; a new camp is found and sent again.
+    _flow(mem).pop('recall', None)
+    recall._camp_recall_step(field(), mem, FRAME, observed_camps=[{'target': [80, 80]}])
+    _flow(mem)['recall'].update(stage='dest', steps=0)
+    assert recall._camp_recall_step(target_screen(), mem, FRAME) == [pad('y')]       # aims again, never a blind A
+
+
+def test_an_aborted_redirect_also_forgets_its_receipt():
+    mem = dest_mem(y_jumped={'RECALL': BOSS}, y_jumps={'RECALL:target': recall.BOSS_JUMP_LIMIT})
+    chart.set_boss_cell(9, None)
+    for _ in range(3):
+        recall._camp_recall_step(target_screen(), mem, FRAME)
+    assert 'RECALL' not in (mem.get('y_jumped') or {}) and 'RECALL:target' not in (mem.get('y_jumps') or {})
