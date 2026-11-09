@@ -56,8 +56,8 @@ KEY_OWNERSHIP = {
     # --- 出撃/帰還が読む PlanState ---
     'orders':           {'region': PLAN, 'lifetime': 'chapter', 'migrated': False},
     'active':           {'region': PLAN, 'lifetime': 'chapter', 'migrated': False},
-    'order_context':    {'region': PLAN, 'lifetime': 'chapter', 'migrated': False},
-    'sortie_general':   {'region': PLAN, 'lifetime': 'chapter', 'migrated': False},
+    'order_context':    {'region': PLAN, 'lifetime': 'chapter', 'migrated': True},
+    'sortie_general':   {'region': PLAN, 'lifetime': 'chapter', 'migrated': True},
     'chart_plan':       {'region': PLAN, 'lifetime': 'chapter', 'migrated': False},
     'general_override': {'region': PLAN, 'lifetime': 'chapter', 'migrated': False},
     'plan_step_rearm':  {'region': PLAN, 'lifetime': 'chapter', 'migrated': False},
@@ -76,7 +76,7 @@ KEY_OWNERSHIP = {
     '_run_identity':   {'region': JOURNAL, 'lifetime': 'run', 'migrated': False},
 }
 
-_REGION_KEY = {WORLD: 'world', FLOW: 'flow', JOURNAL: 'journal'}
+_REGION_KEY = {WORLD: 'world', PLAN: 'plan', FLOW: 'flow', JOURNAL: 'journal'}
 
 # 実移行したキー → 収容領域 (migrate_legacy_state の対象表)。
 _MIGRATED = {key: spec['region'] for key, spec in KEY_OWNERSHIP.items()
@@ -151,6 +151,19 @@ def sorties(mem):
     書き込みは ``_world(mem).setdefault('sorties', {})`` 経由で行う。
     """
     return world(mem).get('sorties') or {}
+
+
+def plan(mem):
+    """PlanState: 戦略層の計画 (order_context・sortie_general 等)。
+
+    P1 (docich#3193): order_context + sortie_general を mem['plan'] へ位置移行。
+    未存在時は空 dict を返し、``mem`` を汚さない。書き込みは
+    ``_plan_region(mem).setdefault(...)`` 経由で行う（``_plan`` は
+    ``strategy.economy._plan`` と衝突するため、層モジュール側の別名は
+    ``_plan_region`` を使う）。
+    """
+    migrate_legacy_state(mem)
+    return region(mem, PLAN)
 
 
 def flow(mem):

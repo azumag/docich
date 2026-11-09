@@ -9,7 +9,7 @@ accessors themselves.
 """
 from docich.hanjuku.state import regions
 from docich.hanjuku.state.regions import (FLOW, JOURNAL, PLAN, WORLD,
-                                          KEY_OWNERSHIP, flow, journal, world,
+                                          KEY_OWNERSHIP, flow, journal, plan, world,
                                           migrate_legacy_state)
 from test_hanjuku_execution_binding import confirm, memory
 
@@ -133,6 +133,15 @@ def test_migrated_departure_and_recall_keys_live_in_their_regions():
         assert KEY_OWNERSHIP[key]['region'] == WORLD
         assert KEY_OWNERSHIP[key]['lifetime'] == 'chapter'
         assert KEY_OWNERSHIP[key]['migrated'] is True
+    # P1: order_context＋sortie_general は plan 領域へ実移行（deploy.py 単独所有）。
+    for key in ('order_context', 'sortie_general'):
+        assert KEY_OWNERSHIP[key]['region'] == PLAN
+        assert KEY_OWNERSHIP[key]['lifetime'] == 'chapter'
+        assert KEY_OWNERSHIP[key]['migrated'] is True
+    # P2/P3 は未移行のまま（orders・active・chart_plan 等は宣言のみ）。
+    for key in ('orders', 'active', 'chart_plan', 'general_override',
+                'source_override', 'card_override', 'attack'):
+        assert KEY_OWNERSHIP[key]['migrated'] is False
 
 
 def test_sorties_flat_migration_prefers_latest_observation_and_is_idempotent():
@@ -152,3 +161,41 @@ def test_sorties_world_read_does_not_create_empty_region():
     mem = {}
     assert world(mem).get('sorties') is None
     assert 'world' not in mem
+
+
+def test_plan_flat_migration_prefers_latest_observation_and_is_idempotent():
+    # P1: old runtime snapshots may still contain flat order_context /
+    # sortie_general. The latest flat output must replace an older plan
+    # copy, not coexist with it.
+    mem = {'plan': {'order_context': {'old': {'actual_general': 'old'}},
+                    'sortie_general': {'old': 'old'}},
+           'order_context': {'1-A3': {'actual_general': 'ゼウス'}},
+           'sortie_general': {'1-A3': 'ゼウス'}}
+    migrate_legacy_state(mem)
+    assert 'order_context' not in mem and 'sortie_general' not in mem
+    assert plan(mem)['order_context'] == {'1-A3': {'actual_general': 'ゼウス'}}
+    assert plan(mem)['sortie_general'] == {'1-A3': 'ゼウス'}
+    migrate_legacy_state(mem)
+    assert plan(mem)['order_context'] == {'1-A3': {'actual_general': 'ゼウス'}}
+    assert plan(mem)['sortie_general'] == {'1-A3': 'ゼウス'}
+
+
+def test_plan_read_does_not_create_empty_region():
+    # A read-only probe must not mutate an empty state snapshot.
+    mem = {}
+    assert plan(mem).get('order_context') is None
+    assert 'plan' not in mem
+
+
+def test_plan_region_dies_with_the_chapter_but_journal_survives():
+    # P1: _enter_chapter must clear the plan region (chapter lifetime)
+    # while the journal region (run lifetime) is untouched.
+    from docich.hanjuku.strategy import campaign
+    mem = memory(); confirm(mem)
+    plan(mem)['order_context'] = {'1-A3': {'actual_general': 'ゼウス'}}
+    plan(mem)['sortie_general'] = {'1-A3': 'ゼウス'}
+    journal(mem)['_departure_input'] = {'request_trace': {'d': 2}}
+    campaign._enter_chapter(mem, 2, reason='test')
+    assert 'plan' not in mem
+    assert 'order_context' not in mem and 'sortie_general' not in mem
+    assert mem['journal']['_departure_input']['request_trace'] == {'d': 2}

@@ -25,7 +25,7 @@ from docich.hanjuku_glyphs import GLYPHS, MARKS
 from docich.hanjuku_pixels import Frame
 from docich.hanjuku_screen import parse
 from docich.hanjuku.state.regions import flow as _flow, journal as _journal
-from docich.hanjuku.state.regions import world as _world
+from docich.hanjuku.state.regions import world as _world, plan as _plan_region
 
 CODE = {ch: code for code, ch in GLYPHS.items()}
 MARK = {v: k for k, v in MARKS.items()}
@@ -4378,9 +4378,9 @@ def test_native_list_hero_priority_waits_for_companion_cursor_before_a():
     mem = {'chapter': 1, 'active': '1-B1', 'orders': {'1-B1': 'pending'},
            'captured': list(set(chart.CASTLE_NAMES[1]) - {'アルマムーン', 'けっかい'})}
     assert policy.deploy_step(frame(0), mem) == [policy.pad('down')]
-    assert not mem.get('sortie_general')
+    assert not _plan_region(mem).get('sortie_general')
     assert policy.deploy_step(frame(1), mem) == [policy.pad('a')]
-    assert mem['sortie_general']['1-B1'] == 'ゼウス'
+    assert _plan_region(mem)['sortie_general']['1-B1'] == 'ゼウス'
 
 
 def test_merchant_scene_finds_the_hand_and_does_not_hold_silently():

@@ -5,7 +5,7 @@ source castle and general, selects the planned cards and confirms the sortie,
 holding or cancelling when the visible menu contradicts the plan.
 """
 from __future__ import annotations
-from ..state.regions import world as _world, flow as _flow, journal as _journal, sorties as _sorties
+from ..state.regions import world as _world, flow as _flow, journal as _journal, sorties as _sorties, plan as _plan_region
 
 import re
 import time
@@ -660,7 +660,7 @@ def _selected_actor_guard(screen, mem, order):
     from ..os_layer.roster import run_identity
     scoped = run_identity(mem.get('_run_identity')) is not None
     selected = (_sortie_general(order, mem) if scoped else
-                (mem.get('sortie_general') or {}).get(order['step']))
+                (_plan_region(mem).get('sortie_general') or {}).get(order['step']))
     if order.get('source_probe') is True and (not selected or selected == NAME):
         (mem.get('general_override') or {}).pop(order['step'], None)
         (mem.get('sortie_actor_miss') or {}).pop(order['step'], None)
@@ -1123,8 +1123,8 @@ def _hold_guarded_sortie(mem, order, decision, reason, observed):
         orders[order['step']] = 'failed' if order['step'].startswith('I:') else 'pending'
     mem['active'] = None
     mem['picked'] = []
-    mem.setdefault('sortie_general', {}).pop(order['step'], None)
-    mem.setdefault('order_context', {}).pop(order['step'], None)
+    _plan_region(mem).setdefault('sortie_general', {}).pop(order['step'], None)
+    _plan_region(mem).setdefault('order_context', {}).pop(order['step'], None)
     _record(mem, decision, chart_step=order['step'], source=_source(order, mem),
             target=order['target'], observed_metric=observed, reason=reason)
     return [pad('b'), pad('b')]
@@ -1495,8 +1495,8 @@ def deploy_step(screen: Screen, mem):
     if kind == 'general_list' and (mem.get('orders') or {}).get(order['step']) != 'launched_unconfirmed':
         # A newly selected sortie may use a different actor. An interrupted
         # departure instead retains its evidence for source reconciliation.
-        (mem.get('order_context') or {}).pop(order['step'], None)
-        (mem.get('sortie_general') or {}).pop(order['step'], None)
+        _plan_region(mem).setdefault('order_context', {}).pop(order['step'], None)
+        _plan_region(mem).setdefault('sortie_general', {}).pop(order['step'], None)
     if (_broken_hero_order(order, mem)
             and kind != 'general_list'
             and not (kind == 'castle_menu' and _hero_source_alternative(order, mem))):
@@ -1569,8 +1569,8 @@ def deploy_step(screen: Screen, mem):
         # Prefer an idle companion when the planned attacker is the hero;
         # preserve a chart's explicit non-hero role.
         if order['general'] == NAME or _is_boss_order(order, mem) or order.get('source_probe') is True:
-            mem.setdefault('sortie_general', {}).pop(order['step'], None)
-            mem.setdefault('order_context', {}).pop(order['step'], None)
+            _plan_region(mem).setdefault('sortie_general', {}).pop(order['step'], None)
+            _plan_region(mem).setdefault('order_context', {}).pop(order['step'], None)
             (mem.get('sortie_actor_miss') or {}).pop(order['step'], None)
             present = _listed_generals(screen, mem, order)
             visible = set(_present_generals(screen) or ())
@@ -1615,7 +1615,7 @@ def deploy_step(screen: Screen, mem):
                     '選択本人へカーソルを合わせられないため保留', 'cursor_unreachable')
             (mem.get('general_list_hold') or {}).pop(order['step'], None)
             if move == 'here':
-                mem['sortie_general'][order['step']] = general
+                _plan_region(mem).setdefault('sortie_general', {})[order['step']] = general
                 if general != order['general']:
                     _record(mem, 'hero_priority_selected', **_deploy_context(order, mem),
                             observed_metric={'present': present[:8], 'selected': general},
@@ -1690,21 +1690,21 @@ def deploy_step(screen: Screen, mem):
         mem.setdefault('orders', {})[order['step']] = 'pending'
         mem['active'] = None
         mem['picked'] = []
-        mem.setdefault('order_context', {}).pop(order['step'], None)
+        _plan_region(mem).setdefault('order_context', {}).pop(order['step'], None)
         _record(mem, 'boss_sortie_cancelled_for_egg', chart_step=order['step'],
                 observed_metric={'general': NAME, 'egg_uses': mem['egg_uses'][NAME],
                                  'screen': kind}, expected_metric={'egg_uses': 4},
                 reason='出撃画面で主人公の卵の消耗を確認したため、ボス出撃を取り消して回復を待つ')
         return [pad('b'), pad('b')]
     if kind in {'card_select', 'sortie_confirm'} and _is_boss_order(order, mem):
-        mem.setdefault('order_context', {}).pop(order['step'], None)
-        if not (mem.get('sortie_general') or {}).get(order['step']):
+        _plan_region(mem).setdefault('order_context', {}).pop(order['step'], None)
+        if not (_plan_region(mem).get('sortie_general') or {}).get(order['step']):
             if kind == 'card_select' and _strict_boss_cards(order, mem):
                 return _hold_boss_card_selection(screen, mem, order,
                     'ボス出撃の選択本人cacheを確認できないため承認せず保留')
             return _hold_deploy(screen, mem, order, 'ボス出撃の選択本人を確認できないため保留')
     if kind == 'card_select':
-        mem.setdefault('order_context', {}).pop(order['step'], None)
+        _plan_region(mem).setdefault('order_context', {}).pop(order['step'], None)
         picked = mem.setdefault('picked', [])
         wanted = _deploy_cards(order, mem)
         for card in picked:
@@ -1840,7 +1840,7 @@ def deploy_step(screen: Screen, mem):
                 reason='実測配置の正数在庫と携行余枠を確認し、予定切り札へカーソルを移動')
         return [move]
     if kind == 'sortie_confirm':
-        mem.setdefault('order_context', {}).pop(order['step'], None)
+        _plan_region(mem).setdefault('order_context', {}).pop(order['step'], None)
         empty_receipt = _empty_sortie_inventory(screen)
         slot_receipt = _sortie_inventory(screen)
         carried = [] if empty_receipt else slot_receipt
@@ -1898,7 +1898,7 @@ def deploy_step(screen: Screen, mem):
                 return _hold_guarded_sortie(mem, order, 'sortie_actor_unconfirmed',
                     '確認した将軍・出撃元・持ち札が一致しないため出撃を取り消す',
                     {'general': context['general'], 'source': source})
-            mem['order_context'][order['step']] = {
+            _plan_region(mem).setdefault('order_context', {})[order['step']] = {
                 'strategy_variant': context['strategy_variant'],
                 'deviation_reason': context['deviation_reason'],
                 'actual_general': context['general'], 'planned_general': order['general'],

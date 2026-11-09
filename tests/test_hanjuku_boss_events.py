@@ -5,7 +5,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
 from docich import hanjuku_policy as policy
 from docich.hanjuku_screen import Screen, Battle, classify_text
-from docich.hanjuku.state.regions import world as _world, sorties as _sorties
+from docich.hanjuku.state.regions import world as _world, sorties as _sorties, plan as _plan_region
 
 MESSAGE = 'ゼウスしょうぐんがボスじょうにせめこんだ!!'
 
@@ -97,8 +97,10 @@ def test_confirmed_boss_defeat_retries_the_chart_kit_without_guessing_general_lo
     policy.battle_end(mem, 'map')
     assert mem['orders']['1-B1'] == 'pending'
     assert mem['retries']['1-B1'] == 1
-    for key in ('general_override', 'card_override', 'order_context', 'sortie_general'):
+    for key in ('general_override', 'card_override'):
         assert '1-B1' not in mem[key]
+    assert '1-B1' not in _plan_region(mem).get('order_context', {})
+    assert '1-B1' not in _plan_region(mem).get('sortie_general', {})
     context = mem['retry_context']['1-B1']
     assert context['strategy_variant'] == 'retry_chart_boss_kit'
     assert context['expected_metric']['cards'] == ['クースカン', 'ノリウツール']

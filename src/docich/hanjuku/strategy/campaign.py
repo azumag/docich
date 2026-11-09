@@ -46,7 +46,7 @@ CHAPTER_SCOPE_KEYS = ('map_registration', 'map_discovery', 'boss_victories', 'ap
                 'nav_last', 'nav_search', 'nav_search_leg', 'orders', 'picked', 'retries', 'retry_context', 'shop',
                 'source_override', 'uncertain', 'month', 'soldiers_seen', 'soldiers_seen_key',
                 'soldiers_seen_basis', 'soldiers_seen_scope', 'army_count_check',
-                'order_context', 'sortie_general', 'sortie_actor_miss',
+                'order_context', 'sortie_general', 'sortie_actor_miss', 'plan',
                 'boss_defeated', 'boss_entry_hold',
                 'chart_adjust', 'chart_plan', 'launched_orders', 'sorties', 'retired_sorties', 'sortie_attempt',
                 'plan_step_rearm',

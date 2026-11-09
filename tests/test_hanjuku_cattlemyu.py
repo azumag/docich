@@ -8,6 +8,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
 from docich import hanjuku_policy as policy, hanjuku_chart as chart, hanjuku_chart_adjust as adjust
 from docich.hanjuku_font import TextLine
 from docich.hanjuku_screen import Screen, Battle
+from docich.hanjuku.state.regions import plan as _plan_region
 
 RARE = 'キャトルミュー'
 
@@ -96,7 +97,7 @@ def test_hidden_rare_row_becomes_usable_during_inventory_sweep(month):
 def test_no_rare_tactic_without_actual_carry_or_after_selected_use():
     order,mem=memory(confirmed=False)
     assert not any(t['card']==RARE for t in policy._tactics(mem,order['step']))
-    mem['order_context'][order['step']]['observed_metric']['cards']=[RARE]
+    _plan_region(mem)['order_context'][order['step']]['observed_metric']['cards']=[RARE]
     assert policy._tactics(mem,order['step'])[0]['card']==RARE
     mem['kit_spent']={order['step']:[RARE]}
     assert not any(t['card']==RARE for t in policy._tactics(mem,order['step']))

@@ -26,7 +26,7 @@ from ..os_layer.world import (NAME, _apply_season_sites, _apply_skull_boss, _app
 from ..strategy import goals
 from ..strategy.kit import _deploy_cards, _is_boss_order
 from ..strategy.execution import departure_snapshot
-from ..state.regions import world as _world, flow, journal, flow as _flow, journal as _journal, sorties as _sorties
+from ..state.regions import world as _world, flow, journal, flow as _flow, journal as _journal, sorties as _sorties, plan as _plan_region
 from ..strategy.orders import (BOSS_TARGET_CANCEL_LIMIT, SOURCE_MISS_LIMIT, _broken_hero_order, _finish_order,
                                _garrison_move, _give_up_source, _near_goal, _order, _order_for_step, _ready,
                                _recall_goal, _retire_unentered_sortie, _sortie_general, _source,
@@ -50,7 +50,7 @@ def observe_sortie_transition(screen, mem, previous_kind=None):
     order = _order(mem)
     attempt = _flow(mem).get('sortie_attempt')
     if not attempt and order and previous_kind == 'map_target':
-        context = (mem.get('order_context') or {}).get(order['step']) or {}
+        context = (_plan_region(mem).get('order_context') or {}).get(order['step']) or {}
         if context.get('actual_general'):
             attempt = {'step': order['step'], 'target_seen': True}
             _flow(mem)['sortie_attempt'] = attempt
@@ -112,7 +112,7 @@ def observe_sortie_transition(screen, mem, previous_kind=None):
         # The picker closed without a recorded send, or into a screen that
         # is not the field: fall through to the unconfirmed-departure
         # record. The observed garrison fact stays.
-    context = (mem.get('order_context') or {}).get(step) or {}
+    context = (_plan_region(mem).get('order_context') or {}).get(step) or {}
     general = context.get('actual_general')
     if not general:
         return
@@ -1381,10 +1381,10 @@ def target_step(screen: Screen, mem, frame):
     if _broken_hero_order(order, mem):
         return _cancel_broken_hero_sortie(mem, order)
     if _is_boss_order(order, mem):
-        context = (mem.get('order_context') or {}).get(order['step']) or {}
+        context = (_plan_region(mem).get('order_context') or {}).get(order['step']) or {}
         if (not context.get('actual_general')
                 or context.get('actual_general') != _sortie_general(order, mem)
-                or (mem.get('sortie_general') or {}).get(order['step']) != context.get('actual_general')
+                or (_plan_region(mem).get('sortie_general') or {}).get(order['step']) != context.get('actual_general')
                 or (context.get('observed_metric') or {}).get('cards') != sorted(_deploy_cards(order, mem))):
             return _hold_deploy(screen, mem, order, 'ボス出撃の選択本人と携行品の確認証拠がないため目標確定を保留')
     request = flow(mem).get('departure_request')
@@ -1501,12 +1501,12 @@ def _commit_departure(mem, order, context, snapshot):
         'target': order['target'], 'status': 'en_route',
         'purpose': snapshot.get('purpose'),
         'evidence': deepcopy({k: v for k, v in
-            ((mem.get('order_context') or {}).get(order['step']) or {}).items()
+            ((_plan_region(mem).get('order_context') or {}).get(order['step']) or {}).items()
             if k != 'departure_order'}),
         'tick': int(mem.get('tick') or 0),
         **({'confirmation_tick': snapshot['departure_binding']['confirm_tick']}
            if 'departure_binding' in snapshot else {})}
-    ((mem.get('order_context') or {}).get(order['step']) or {}).pop('departure_order', None)
+    ((_plan_region(mem).get('order_context') or {}).get(order['step']) or {}).pop('departure_order', None)
     chapter = mem.get('chapter') or 0
     castles = chart.castles(chapter)
     if (WORLD_MAP_OFFSET.get(chapter) and order['target'] in castles
@@ -1729,9 +1729,10 @@ def _rollback_unverified_launch(mem, step, probe, markers, reason=None):
     misses = _flow(mem).setdefault('launch_miss', {})
     misses[step] = misses.get(step, 0) + 1
     for key in ('general_override', 'source_override', 'card_override', 'rare_card_kit',
-                'strong_card_kit', 'dropper_card_kit', 'order_context', 'sortie_general',
-                'sortie_actor_miss'):
+                'strong_card_kit', 'dropper_card_kit', 'sortie_actor_miss'):
         (mem.get(key) or {}).pop(step, None)
+    _plan_region(mem).setdefault('order_context', {}).pop(step, None)
+    _plan_region(mem).setdefault('sortie_general', {}).pop(step, None)
     (_world(mem).get('launched_orders') or {}).pop(step, None)
     _sorties(mem).pop(step, None)
     for target, entry in list((_world(mem).get('launched') or {}).items()):
