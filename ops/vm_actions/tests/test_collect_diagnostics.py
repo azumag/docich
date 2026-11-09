@@ -4203,6 +4203,19 @@ def _ownership(module, root, row):
     return module._collect_hanjuku_predictions(root)["ownership"]
 
 
+def test_hanjuku_prediction_achieved_count_is_projected_as_cleared(tmp_path):
+    """Goal-settled rows have no terminal result; diagnostics still show the count."""
+    module = load_collector()
+    _prediction_round(tmp_path, _round_row(status="RESOLVED", achieved=2))
+    entry = module._collect_hanjuku_predictions(tmp_path)
+    assert entry["cleared"] == 2 and entry["status"] == "RESOLVED"
+
+    # A terminal result is authoritative when it carries a count.
+    _prediction_round(tmp_path, _round_row(status="RESOLVED", achieved=2,
+                                           result={"cleared": 1}))
+    assert module._collect_hanjuku_predictions(tmp_path)["cleared"] == 1
+
+
 def test_hanjuku_prediction_ownership_reports_the_decisive_record(tmp_path):
     module = load_collector()
     run_name, result_name, progress_name = (
