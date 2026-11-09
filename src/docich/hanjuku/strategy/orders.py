@@ -1396,6 +1396,9 @@ def next_order(mem):
     _relaunch_overdue_march(mem)
     _expire_spent_sorties(mem)
     _redirect_blocked_sources(mem)
+    # A new loss outranks the pending mechanical plan (retake before staffing).
+    from . import replan as _replan          # local: replan imports this module
+    _replan.invalidate_plan_for_loss(mem)
     status = mem.setdefault('orders', {})
     current = list(_orders(mem))
     steps = {o['step'] for o in current}

@@ -1639,6 +1639,34 @@ def _off_chart_mechanical(mem, state, rid, gate):
         _mechanical_chart(mem, state, rid, digest)
 
 
+def invalidate_plan_for_loss(mem):
+    """A lost castle outranks a pending mechanical plan (owner retake rule).
+
+    g1163 chapter 7 2026-11-09 17:52: マンシー fell while the mechanical plan
+    still held a single staffing move, so the retake candidates waited for that
+    order to finish (the plan is only replaced once no order is ready). A loss
+    is urgent: discard a plan that names no retake as long as nothing in it is
+    actually in flight, and the next decision plans the retake first.
+    """
+    plan = mem.get('chart_plan') or {}
+    lost = [c for c in (mem.get('lost') or []) if isinstance(c, str)]
+    if not plan or not lost or plan.get('source') != 'mechanical':
+        return False
+    orders = plan.get('orders') or []
+    if any(str(o.get('purpose')) == 'retake' and o.get('target') in lost for o in orders):
+        return False
+    statuses = mem.get('orders') or {}
+    if any(statuses.get(o.get('step')) in ('launched', 'launched_unconfirmed')
+           for o in orders):
+        return False          # an in-flight sortie keeps the plan it belongs to
+    mem['chart_plan'] = None
+    mem.pop('chart_adjust_applied', None)
+    _record(mem, 'plan_invalidated_for_loss',
+            observed_metric={'lost': lost[:8], 'orders': len(orders)},
+            reason='奪われた城があり実行中の指示も無いため、暫定計画を破棄して奪還を先に計画する')
+    return True
+
+
 def _off_chart(mem):
     """No order is ready: request an adjusted chart, or adopt one that answered.
 
