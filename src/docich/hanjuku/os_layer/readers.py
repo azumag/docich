@@ -477,6 +477,20 @@ def marker_castle(frame, chapter, hint=None, evidence=None):
     name, cell = ordered[0]
     distance = ((cell[0] - field[0]) ** 2 + (cell[1] - field[1]) ** 2) ** 0.5
     if distance > MAP_CASTLE_TOLERANCE:
+        # Chapter cells 7-12 are source-map estimates, so the whole map can sit
+        # a little off and every marker lands outside the tolerance (g1163
+        # 2026-11-10 00:35: 6 of 9 monthly markers). The recorded castle is
+        # prior knowledge about this general, so accept it inside a wider bound
+        # instead of paying a status panel for each one.
+        if isinstance(hint, str) and hint in castles:
+            cell = castles[hint]
+            hinted = ((cell[0] - field[0]) ** 2 + (cell[1] - field[1]) ** 2) ** 0.5
+            if hinted <= MAP_CASTLE_TOLERANCE * 1.5:
+                if isinstance(evidence, dict):
+                    evidence['reason'] = 'out_of_tolerance_hint'
+                return {'castle': hint, 'field': [round(field[0]), round(field[1])],
+                        'distance': round(hinted, 1), 'marker': list(marker['box']),
+                        'offset': list(offset), 'icons': len(icons), 'point': list(point)}
         return _why('out_of_tolerance')
     if len(ordered) > 1:
         runner = ((ordered[1][1][0] - field[0]) ** 2
