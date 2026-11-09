@@ -35,6 +35,9 @@ from ..strategy.orders import (SOURCE_LOCATION_RECHECK_LIMIT, SORTIE_CANCELLED_O
                                _staffed_elsewhere, _unplaced_castle_generals)
 
 
+CARD_SCROLL_HOLD_MAX = 4        # rows one held scroll may cross
+
+
 def _cancel_broken_hero_sortie(mem, order):
     step = order['step']
     counts = mem.setdefault('hero_broken_sortie_cancel', {})
@@ -530,6 +533,28 @@ def _card_proven_absent(card, inventory, *, bottom=False):
     if target is None or None in ids or ids != sorted(ids):
         return False
     return len(rows) < 4 or min(ids) < target < max(ids) or (bottom and target > max(ids))
+
+
+def _card_scroll_frames(mem, card, inventory):
+    """Frames to hold one scroll toward ``card`` (1 = the measured single down).
+
+    The card list is ID-sorted and shows the cards with stock, so the number of
+    held cards between the visible edge and the target is the number of rows
+    left to scroll. Holding four at once replaces four observations with one
+    (g1163 2026-11-09: 68 scrolls in 15 minutes, ~8 per sortie). The landing is
+    still read before any selection, and the flow can scroll back up.
+    """
+    target = CARD_IDS.get(card)
+    rows = inventory.get('rows') or []
+    ids = [CARD_IDS.get(r['card']) for r in rows]
+    if target is None or None in ids or len(rows) != 4:
+        return 1
+    down = target > max(ids)
+    lo, hi = (max(ids), target) if down else (target, min(ids))
+    stock = mem.get('card_stock') if isinstance(mem.get('card_stock'), dict) else {}
+    between = [c for c, cid in CARD_IDS.items()
+               if type(cid) is int and lo < cid < hi and int(stock.get(c, 0) or 0) > 0]
+    return max(1, min(len(between), CARD_SCROLL_HOLD_MAX))
 
 
 def _lower_card_boundary(mem, order, inventory):
@@ -1708,7 +1733,8 @@ def deploy_step(screen: Screen, mem):
             if direction == 'up' and isinstance(boundary, dict):
                 boundary['await_input'] = True
                 boundary.pop('request_trace', None)
-            return [pad(direction)]
+            frames = _card_scroll_frames(mem, card, inventory)
+            return [pad(direction, frames)] if frames > 1 else [pad(direction)]
         if row is None or row['stock'] == 0 or inventory['remaining'] == 0:
             proven = upper_absent or _card_proven_absent(card, inventory, bottom=bottom)
             if proven:

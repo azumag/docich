@@ -441,3 +441,22 @@ def test_a_full_size_unit_marker_far_from_both_flags_still_confirms(monkeypatch)
     far = marker_at('カストーラ', dx=60, dy=60)
     survey(monkeypatch, mem, [marker_at('アルマムーン'), far])
     assert any(r['decision'] == 'sortie_launch_confirmed' for r in mem['_records'])
+
+
+def test_a_held_card_scroll_crosses_only_measured_rows():
+    """The card list is ID-sorted; held stock between edge and target = rows."""
+    from docich.hanjuku_reference import CARD_IDS
+    from docich.hanjuku.flows import deploy as d
+    names = sorted(CARD_IDS, key=lambda c: CARD_IDS[c])
+    deep = names[-1]
+    rows = [{'card': c, 'stock': 1, 'y': 40 + 16 * i} for i, c in enumerate(names[:4])]
+    inventory = {'rows': rows, 'remaining': 3}
+    mem = {'card_stock': {c: 1 for c in names}}
+    frames = d._card_scroll_frames(mem, deep, inventory)
+    assert 1 < frames <= d.CARD_SCROLL_HOLD_MAX
+    # Without measured stock the jump is not taken (a single measured down).
+    assert d._card_scroll_frames({}, deep, inventory) == 1
+    # A three-row panel or an unreadable row keeps the single down.
+    assert d._card_scroll_frames(mem, deep, {'rows': rows[:3], 'remaining': 3}) == 1
+    assert d._card_scroll_frames(mem, deep, {'rows': [{**rows[0], 'card': 'x'}, *rows[1:]],
+                                             'remaining': 3}) == 1
