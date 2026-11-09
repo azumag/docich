@@ -1772,3 +1772,15 @@ def test_a_single_empty_read_does_not_make_a_staffed_castle_empty(monkeypatch):
                                     kind='general_list'), mem, order)
     assert _world(mem)['garrison']['アルマムーン'] == ['どうし']
     assert not mem.get('garrison_empty_streak', {}).get('アルマムーン')
+
+
+def test_a_probe_order_note_does_not_read_as_a_general_named_shogun():
+    """しょうぐん is the "pick the spare on the list" sentinel, not a general.
+
+    The hero is どうし and never sorties; an order note that printed the
+    sentinel read as if a しょうぐん were attacking (owner report 2026-11-09).
+    """
+    from docich.hanjuku.strategy import replan
+    assert replan._general_label(replan.MOVE_ANY_GENERAL) == replan.GENERAL_LABEL
+    assert replan._general_label('ゼウス') == 'ゼウス'
+    assert replan._general_label(None) is None
