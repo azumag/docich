@@ -1287,10 +1287,21 @@ def battle_end(mem, next_kind, *, defense_continues=False, actor_continues=False
             and not (defense_continues or defense_retained)):
         (mem.get('castle_income') or {}).pop(STATUS_NAMES.get(castle, castle), None)
         mem['captured'] = [c for c in mem.get('captured', []) if c != castle]
+        # Snapshot the garrison before it is dropped: a defense loss is the
+        # only loss path that never recorded castle_lost_observed (g1163
+        # chapter 7 2026-11-09: マンシー and リデンブロック fell with no loss
+        # record at all), and the garrison is what a later fix needs.
+        _garrison_before = list((_world(mem).get('garrison') or {}).get(castle) or ())
         (_world(mem).get('garrison') or {}).pop(castle, None)
         lost = mem.setdefault('lost', [])
         if castle not in lost:
             lost.append(castle)
+            _record(mem, 'castle_lost_observed', castle=castle,
+                    observed_metric={'cause': 'defense_loss',
+                                     'garrison': _garrison_before[:8],
+                                     'ally': cur.get('ally'), 'enemy': cur.get('enemy')},
+                    resulting_event=f'lost:{castle}',
+                    reason='守備戦で敗れて城を失ったため、守備人数と相手を残して奪還対象にする')
         # g1075 15:42:43: パタゴーヌ fell, the survey Y closed before its
         # enemy flag was read, and the roof streak built while it was ours
         # (164 readings) took it back 3 s later. The loss is the newest flag.
