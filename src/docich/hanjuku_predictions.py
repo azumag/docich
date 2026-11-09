@@ -365,7 +365,7 @@ def _row_target_cleared(root, row):
 
 
 def _chain_target(root, row, state):
-    """The next goal target for a chapter row that settled at achievement.
+    """The next goal target for a row that settled at achievement.
 
     Returns ``None`` when the run is over, the row was not settled mid-run, or
     the record is already at the final chapter. The cleared total carries
