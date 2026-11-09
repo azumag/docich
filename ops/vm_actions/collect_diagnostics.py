@@ -6993,6 +6993,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v540-strongest-attacker",
             "hanjuku-chart-v541-chapter-scope-hygiene",
             "hanjuku-chart-v542-empty-garrison-read",
+            "hanjuku-chart-v543-capped-card-skip",
             "hanjuku-chart-v501-idle-reanchor",
             "hanjuku-chart-v502-idle-and-roster-joins",
             "hanjuku-chart-v503-month-start-counts",
