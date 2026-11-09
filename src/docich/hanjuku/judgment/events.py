@@ -273,7 +273,12 @@ def _score_monster_attack(entry, opponent_kind, multiple):
         return 10 ** 6
     base = vs_monster if opponent_kind == 'monster' else vs_general
     score = base * (hits if isinstance(hits, int) and hits > 0 else 1)
-    if opponent_kind == 'general' and multiple and is_all:
+    # Owner 2026-11-09: in a summon battle against another monster the ALL
+    # attack is the pick. An ALL row clears the enemy monster's escort as well
+    # as the monster, so it outranks a bigger single-target number; the damage
+    # columns still order the ALL rows among themselves. General battles keep
+    # the existing rule (ALL only while enemy soldiers remain).
+    if is_all and (opponent_kind == 'monster' or (opponent_kind == 'general' and multiple)):
         score += 100000
     return score
 
