@@ -7044,6 +7044,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v594-plan-superseded",
             "hanjuku-chart-v595-probe-dash",
             "hanjuku-chart-v596-marker-reason",
+            "hanjuku-chart-v597-march-rate-default",
             "hanjuku-chart-v560-castle-list-scroll",
             "hanjuku-chart-v561-post-month-repair-status",
             "hanjuku-chart-v501-idle-reanchor",

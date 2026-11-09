@@ -283,7 +283,19 @@ BOSS_ARRIVAL_LIMIT = 2 * SORTIE_BUSY_TICKS
 # The rate must cover the slow end (32 min / 603 cells = 3.18 ticks/cell): at
 # 2.4 the limit was 1447 and a march measured at 1701 ticks was declared
 # overdue while it could still arrive, re-sending the same order.
+# Measured on chapter 6 (g1163 2026-11-05): a march takes ~3.2 observations per
+# chart cell. The rate is the game's walking speed, not a chapter property, so
+# it applies to every chapter that has no measured override. Chapters without an
+# entry used the fixed 800-observation default and declared long marches overdue
+# while they were still walking (g1163 chapter 8 2026-11-09 23:22: three
+# あるまむーん marches to おだわら/まつやま were abandoned at 1675-1813).
 MARCH_TICKS_PER_CELL = {6: 3.2}
+DEFAULT_MARCH_TICKS_PER_CELL = 3.2
+# Chapters whose short-map marches keep the fixed window: chapter 3's sites and
+# chapter 4's four kings are reached across a road map whose walking time was
+# never measured in cells, and their relaunch budgets are calibrated to the
+# 800-observation bound (tests/test_hanjuku_boss_sortie_overdue.py).
+FIXED_LIMIT_CHAPTERS = frozenset({3, 4})
 LONG_MARCH_TICKS = 6 * SORTIE_BUSY_TICKS   # window for late arrival binding
 MARCH_ARRIVAL_CAP = LONG_MARCH_TICKS
 
@@ -295,9 +307,12 @@ def march_arrival_limit(mem, sortie):
     busy-general bookkeeping use the same bound without an upwards import.
     An exceeded bound is not evidence that a general has arrived.
     """
-    rate = MARCH_TICKS_PER_CELL.get(mem.get('chapter') or 0)
-    if not rate:
-        return BOSS_ARRIVAL_LIMIT
+    chapter_now = mem.get('chapter') or 0
+    rate = MARCH_TICKS_PER_CELL.get(chapter_now)
+    if rate is None:
+        if chapter_now in FIXED_LIMIT_CHAPTERS:
+            return BOSS_ARRIVAL_LIMIT
+        rate = DEFAULT_MARCH_TICKS_PER_CELL
     cells = chart.castles(mem.get('chapter'))
     source = cells.get(sortie.get('source'))
     target_name = sortie.get('target') or sortie.get('planned_target')
