@@ -51,7 +51,9 @@ for f in \
   docich-soren91-corner.service \
   docich-soren91-corner.timer \
   docich-nethack-daily-improve.service \
-  docich-nethack-daily-improve.timer
+  docich-nethack-daily-improve.timer \
+  docich-paper-improve.service \
+  docich-paper-improve.timer
 do
   sed "s|__DOCICH_ROOT__|${DOCICH_ROOT}|g" "scripts/systemd/${f}" \
     > ~/.config/systemd/user/"${f}"
@@ -75,6 +77,10 @@ systemctl --user enable --now docich-corner-rotation.timer
 # production profileで設定済みのNetHack日次改善候補生成。
 # timerはゲームを起動・操作せず、要約からcanary候補を作る。
 systemctl --user enable --now docich-nethack-daily-improve.timer
+
+# 暗号資産PAPER戦略改善を毎日06:20 JSTに1回、コーナー完了と無関係に実行する。
+# 緊急停止は <state_dir>/trading/paper_improve_scheduled.disabled を置く。
+systemctl --user enable --now docich-paper-improve.timer
 
 # ゲーム切替の呼び出し元が停止しても、期限切れdrainingとFIFOを復旧する。
 # 期限前の試合終了待ちは変更せず、共通配信基盤も再起動しない。

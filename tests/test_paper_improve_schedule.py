@@ -62,10 +62,41 @@ def test_unreadable_pending_state_does_not_block(tmp_path):
     assert gate(tmp_path, pending_exists=boom).run
 
 
+def _experiment_payload(experiment_id: str) -> dict:
+    return {
+        "experiment_id": experiment_id,
+        "name": "複合モメンタム実験",
+        "thesis": "値動きとRSIを組み合わせ、単純な閾値より誤発注を減らせるか検証する。",
+        "entry_rules": [{
+            "rule_id": "entry-1", "combine": "all", "max_notional_fraction": 0.10,
+            "conditions": [
+                {"feature": "return_bps", "lookback": 3, "op": ">=", "threshold": 100},
+                {"feature": "rsi", "lookback": 3, "op": ">=", "threshold": 60},
+            ],
+        }],
+        "exit_rules": [{
+            "rule_id": "exit-1", "combine": "any",
+            "conditions": [
+                {"feature": "pnl_bps", "op": ">=", "threshold": 150},
+                {"feature": "hold_minutes", "op": ">=", "threshold": 90},
+            ],
+        }],
+        "max_pair_correlation": 0.70,
+    }
+
+
 def test_default_pending_loader_uses_real_state_files(tmp_path):
+    from docich.trading import strategy_lab
+
     assert sched.evaluate_gate(tmp_path, now=NOW).run
-    (tmp_path / "strategy_experiment_pending.json").write_text("{broken", encoding="utf-8")
-    assert sched.evaluate_gate(tmp_path, now=NOW).run  # invalid pending is unusable
+    # An invalid pending file is unusable evidence, not a block.
+    (tmp_path / strategy_lab.PENDING_FILENAME).write_text("{broken", encoding="utf-8")
+    assert sched.evaluate_gate(tmp_path, now=NOW).run
+    # A valid, saved pending experiment blocks with the real (default) loader.
+    spec = strategy_lab.experiment_from_mapping(_experiment_payload("sched-pending"))
+    strategy_lab.save_pending_experiment(tmp_path, spec, proposed_at=NOW - 3600)
+    decision = sched.evaluate_gate(tmp_path, now=NOW)
+    assert not decision.run and decision.reason == "pending-exists"
 
 
 @pytest.mark.parametrize("status", ["failed", "improved", "rejected", "rolled_back"])
