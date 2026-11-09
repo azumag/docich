@@ -52,8 +52,8 @@ def test_a_step_keeps_its_candidate_when_the_plan_is_rebuilt():
 
 def test_the_aim_follows_the_order_not_the_chapter():
     mem = {'chapter': 6, 'boss_step_probe': {'A:x:M1': 1, 'A:x:M2': 2}}
-    assert N.boss_probe_cell(mem, 'ボス', 'A:x:M1') == (818, 184 + 64)
-    assert N.boss_probe_cell(mem, 'ボス', 'A:x:M2') == (818 + 64, 184)
+    assert N.boss_probe_cell(mem, 'ボス', 'A:x:M1') == (818 + 16, 184)
+    assert N.boss_probe_cell(mem, 'ボス', 'A:x:M2') == (818 - 16, 184)
     assert N.boss_probe_cell(mem, 'ボス', 'A:x:M9') == (818, 184)
 
 
@@ -85,7 +85,7 @@ def test_an_unentered_boss_relaunch_advances_the_step_candidate():
     mem = overdue_boss(index=0)
     O._relaunch_overdue_boss(mem)
     assert mem['boss_step_probe']['A:x:M1'] == 1
-    assert N.boss_probe_cell(mem, 'ボス', 'A:x:M1') == (818, 184 + 64)
+    assert N.boss_probe_cell(mem, 'ボス', 'A:x:M1') == (818 + 16, 184)
     assert mem['orders']['A:x:M1'] == 'pending'
     assert mem['boss_relaunch']['A:x:M1'] == 1
     assert [r for r in mem['_records'] if r['decision'] == 'boss_cell_probe_shift']
@@ -94,7 +94,7 @@ def test_an_unentered_boss_relaunch_advances_the_step_candidate():
 def test_the_last_candidate_is_not_shifted_past_the_list():
     mem = overdue_boss(index=len(chart.BOSS_CELL_PROBES[6]) - 1)
     O._relaunch_overdue_boss(mem)
-    assert mem['boss_step_probe']['A:x:M1'] == 4
+    assert mem['boss_step_probe']['A:x:M1'] == len(chart.BOSS_CELL_PROBES[6]) - 1
     assert mem['orders']['A:x:M1'] == 'pending'      # normal relaunch still runs
     assert not [r for r in mem['_records'] if r['decision'] == 'boss_cell_probe_shift']
 
@@ -119,7 +119,7 @@ def test_every_estimated_boss_cell_can_be_probed(chapter):
     cell = chart.castles(chapter)['ボス']
     assert N.boss_probe_cell({'chapter': chapter, 'boss_step_probe': {}}, 'ボス', 'A:x:M1') == cell
     assert N.boss_probe_cell({'chapter': chapter, 'boss_step_probe': {'A:x:M1': 1}},
-                             'ボス', 'A:x:M1') == (cell[0], cell[1] + 64)
+                             'ボス', 'A:x:M1') == (cell[0] + 16, cell[1])
 
 
 @pytest.mark.parametrize('chapter', [5, 9])
@@ -138,5 +138,14 @@ def test_an_unentered_endgame_boss_relaunch_advances_its_candidate(chapter):
            'launched_orders': {}, 'boss_step_probe': {'A:x:M1': 0}}
     O._relaunch_overdue_boss(mem)
     assert mem['boss_step_probe']['A:x:M1'] == 1
-    assert N.boss_probe_cell(mem, 'ボス', 'A:x:M1') == (cell[0], cell[1] + 64)
+    assert N.boss_probe_cell(mem, 'ボス', 'A:x:M1') == (cell[0] + 16, cell[1])
     assert [r for r in mem['_records'] if r['decision'] == 'boss_cell_probe_shift']
+
+
+def test_the_first_ring_covers_a_two_tile_estimate_error():
+    """A neighbouring tile must be reachable before the 8-tile ring."""
+    probes = chart.BOSS_CELL_PROBES[7]
+    assert probes[0] == (0, 0)
+    fine = set(probes[1:5])
+    assert {(16, 0), (-16, 0), (0, 16), (0, -16)} == fine
+    assert {(64, 0), (-64, 0), (0, 64), (0, -64)} == set(probes[5:])

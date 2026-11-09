@@ -208,7 +208,12 @@ del _chapter, _cells
 # chapter can never end. Chapter 5's cell is WRAM-measured and chapter 9's boss
 # moves, so neither carries probes.
 BOSS_PROBE_CHAPTERS = (6, 7, 8, 10, 11, 12)
-BOSS_CELL_PROBES = {chapter: ((0, 0), (0, 64), (64, 0), (-64, 0), (0, -64))
+# A source-map estimate can be off by one or two castle tiles, so the first
+# ring is fine (2 tiles) and the coarse 8-tile ring follows. The old order
+# jumped straight to 8 tiles, which never lands on a neighbouring tile: a
+# two-tile error would have missed every candidate.
+BOSS_CELL_PROBES = {chapter: ((0, 0), (16, 0), (-16, 0), (0, 16), (0, -16),
+                              (64, 0), (-64, 0), (0, 64), (0, -64))
                     for chapter in BOSS_PROBE_CHAPTERS}
 
 
