@@ -139,15 +139,27 @@ def _house_freshly_read(mem):
     2026-11-09: the house pass read at 09:55 and this walk at 09:58).
     """
     now = mem.get('tick')
+    dirty = ((mem.get('general_statuses') or {}).get('dirty') or {})
+    dirty = dirty if isinstance(dirty, dict) else {}
     fresh = set()
     for name, info in (mem.get('house_eggs') or {}).items():
         if not isinstance(info, dict) or info.get('month') != mem.get('month'):
             continue
+        if (info.get('location') not in ('castle', 'carry', 'march', 'camp', 'field', 'unknown')
+                or info.get('location_observed') is False):
+            continue
         tick = info.get('observed_tick')
-        if (info.get('location') in ('castle', 'carry', 'march', 'camp', 'field', 'unknown')
-                and info.get('location_observed') is not False
-                and type(tick) is int and type(now) is int
-                and 0 <= now - tick <= HOUSE_READ_FRESH_TICKS):
+        if type(tick) is int and type(now) is int and 0 <= now - tick <= HOUSE_READ_FRESH_TICKS:
+            fresh.add(name)
+            continue
+        # A general read inside a castle this month keeps that reading until a
+        # battle marks him dirty (``battle_end`` does): the monthly walk
+        # re-read all 27 generals even though only a handful had taken damage
+        # (g1163 2026-11-09 18:21-18:26: five minutes of panel visits a month).
+        # A marching/field reading stays on the tick window alone, because an
+        # arrival can change it with no battle to mark.
+        if (info.get('location') == 'castle' and name not in dirty
+                and type(tick) is int):
             fresh.add(name)
     return fresh
 
