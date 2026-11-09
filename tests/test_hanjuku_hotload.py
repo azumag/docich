@@ -17,7 +17,8 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
 
-from docich import hanjuku_bot, hanjuku_hotload as hotload, hanjuku_run
+from docich import (hanjuku_bot, hanjuku_hotload as hotload,
+                    hanjuku_predictions, hanjuku_run)
 from docich.adapters.base import AdapterError
 from docich.game_switch import atomic_write_json
 from docich.naming import runtime_directory
@@ -43,21 +44,27 @@ def _write_record(runtime_dir, identity, role, generation):
 def _fixture_sources(tmp_path, value):
     bot = tmp_path / 'hanjuku_bot.py'
     run = tmp_path / 'hanjuku_run.py'
+    predictions = tmp_path / 'hanjuku_predictions.py'
     bot.write_text(f"VALUE = '{value}'\n", encoding='utf-8')
     run.write_text("from .hanjuku_bot import VALUE\nRESULT = VALUE\n", encoding='utf-8')
-    return {'hanjuku_bot': bot, 'hanjuku_run': run}
+    predictions.write_text("from . import hanjuku_run\n"
+                           "RESULT = hanjuku_run.RESULT\n", encoding='utf-8')
+    return {'hanjuku_bot': bot, 'hanjuku_run': run,
+            'hanjuku_predictions': predictions}
 
 
 # --- generation -------------------------------------------------------------
 
 def test_generation_is_the_digest_of_the_logic_sources():
-    assert hotload.LOGIC_MODULES == ('hanjuku_bot', 'hanjuku_run')
+    assert hotload.LOGIC_MODULES == ('hanjuku_bot', 'hanjuku_run',
+                                     'hanjuku_predictions')
     assert hotload.deployed_generation() == hotload.digest_sources(hotload.logic_sources())
     # Every logic module records the generation it actually loaded, which is how
     # the trampoline tells the process' own copy apart from a redeployed one
     # regardless of import order.
     assert hanjuku_bot.LOGIC_GENERATION == hotload.deployed_generation()
     assert hanjuku_run.LOGIC_GENERATION == hotload.deployed_generation()
+    assert hanjuku_predictions.LOGIC_GENERATION == hotload.deployed_generation()
 
 
 def test_digest_follows_the_source_bytes(tmp_path):
@@ -75,13 +82,16 @@ def test_fresh_load_is_versioned_isolated_and_does_not_touch_the_process(tmp_pat
     first = hotload._fresh(_fixture_sources(tmp_path, 'one'))
     assert first.generation == hotload.digest_sources(
         {'hanjuku_bot': tmp_path / 'hanjuku_bot.py',
-         'hanjuku_run': tmp_path / 'hanjuku_run.py'})
+         'hanjuku_run': tmp_path / 'hanjuku_run.py',
+         'hanjuku_predictions': tmp_path / 'hanjuku_predictions.py'})
     assert first.modules['hanjuku_run'].RESULT == 'one'
+    assert first.modules['hanjuku_predictions'].RESULT == 'one'
 
     second = hotload._fresh(_fixture_sources(tmp_path, 'two'))
     assert second.generation != first.generation
     assert second.modules['hanjuku_run'].RESULT == 'two'
     assert second.modules['hanjuku_bot'].VALUE == 'two'
+    assert second.modules['hanjuku_predictions'].RESULT == 'two'
     # The already loaded generation keeps the code it was loaded with.
     assert first.modules['hanjuku_run'].RESULT == 'one'
 
@@ -128,7 +138,8 @@ def test_fresh_load_compiles_exactly_the_bytes_it_digests(tmp_path, monkeypatch)
     monkeypatch.setattr(Path, 'read_bytes', read_bytes_with_redeploy)
     handle = hotload._fresh(sources)
 
-    assert reads == {'hanjuku_bot.py': 1, 'hanjuku_run.py': 1}
+    assert reads == {'hanjuku_bot.py': 1, 'hanjuku_run.py': 1,
+                     'hanjuku_predictions.py': 1}
     assert handle.generation == expected
     assert handle.modules['hanjuku_run'].RESULT == 'one'
     assert handle.modules['hanjuku_bot'].VALUE == 'one'

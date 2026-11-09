@@ -29,9 +29,14 @@ the distribution/audio processes: the trampoline only decides which copy of the
 per-observation Hanjuku logic runs, and records that decision.
 
 The generation is a SHA-256 over the source bytes of :data:`LOGIC_MODULES`, so
-it changes exactly when that terminal/policy boundary changes.  The Hanjuku
-policy itself (``hanjuku_policy``) is *not* part of the set: it is executed in
-the per-observation bot subprocess, which is always fresh.
+it changes when the terminal/policy boundary changes -- and also when the
+corner's in-process prediction logic (``hanjuku_predictions``) is deployed
+(#3838).  A predictions-only deploy therefore briefly leaves the two observers
+on mixed generations until both re-adopt, which the gate treats as it does any
+other unproven boundary: it holds the ``screen_stalled`` teardown (fail closed)
+until they converge.  The Hanjuku policy itself (``hanjuku_policy``) is *not*
+part of the set: it is executed in the per-observation bot subprocess, which is
+always fresh.
 """
 from __future__ import annotations
 
@@ -47,8 +52,10 @@ from typing import Mapping
 
 #: The modules whose source defines the Hanjuku terminal/policy boundary that a
 #: long-lived observer executes.  Dependency order: later entries import the
-#: earlier ones.
-LOGIC_MODULES = ('hanjuku_bot', 'hanjuku_run')
+#: earlier ones.  ``hanjuku_predictions`` is part of the set because the corner
+#: runs its durable prediction tick in-process (#3838): without the trampoline a
+#: predictions deploy never reached the already running corner worker.
+LOGIC_MODULES = ('hanjuku_bot', 'hanjuku_run', 'hanjuku_predictions')
 
 #: Runtime identity a publication and its reader must agree on.
 IDENTITY_KEYS = ('game', 'runtime_id', 'generation', 'lease_id')
@@ -165,8 +172,13 @@ def _fresh(sources: Mapping | None = None) -> LogicHandle:
 
     Each module is installed into ``sys.modules`` under its real dotted name
     *while* it executes so its cross-imports bind to the fresh copies, and the
-    previous entries are restored afterwards.  Callers keep using the returned
-    handle, never ``sys.modules``, so the swap is invisible outside this call.
+    previous entries are restored afterwards.  The parent package's attributes
+    are swapped along with it: ``from . import hanjuku_run`` binds through the
+    ``docich`` package object first, so without that swap a fresh
+    ``hanjuku_predictions`` would silently bind the *canonical* ``hanjuku_run``
+    and pair new prediction code with an old terminal boundary (#3838).
+    Callers keep using the returned handle, never ``sys.modules``, so the swap
+    is invisible outside this call.
     The sources are compiled here instead of through the standard loader: a
     redeployed file with the same size in the same second must not be served
     from a stale ``__pycache__`` entry.
@@ -183,6 +195,8 @@ def _fresh(sources: Mapping | None = None) -> LogicHandle:
     generation = digest_snapshot(snapshot)
     modules: dict = {}
     saved: dict = {}
+    package = sys.modules['docich']
+    saved_attrs: dict = {}
     try:
         for name in LOGIC_MODULES:
             full = f'docich.{name}'
@@ -192,6 +206,9 @@ def _fresh(sources: Mapping | None = None) -> LogicHandle:
             if full not in saved:
                 saved[full] = sys.modules.get(full, _MISSING)
             sys.modules[full] = module
+            if name not in saved_attrs:
+                saved_attrs[name] = getattr(package, name, _MISSING)
+            setattr(package, name, module)
             try:
                 exec(code, module.__dict__)
             except BaseException:
@@ -208,6 +225,14 @@ def _fresh(sources: Mapping | None = None) -> LogicHandle:
                 sys.modules.pop(full, None)
             else:
                 sys.modules[full] = previous
+        for name, previous in saved_attrs.items():
+            if previous is _MISSING:
+                try:
+                    delattr(package, name)
+                except AttributeError:
+                    pass
+            else:
+                setattr(package, name, previous)
     return LogicHandle(generation, modules)
 
 
@@ -234,7 +259,7 @@ def adopted_generation() -> str:
 
 
 def module(name: str):
-    """The current-generation module object (``hanjuku_run`` / ``hanjuku_bot``)."""
+    """The current-generation module object (one of :data:`LOGIC_MODULES`)."""
     return handle().modules[name]
 
 

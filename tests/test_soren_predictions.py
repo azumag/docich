@@ -225,9 +225,11 @@ def test_rotation_timer_runs_the_soren_reader_beside_the_hanjuku_tick():
     source = (Path(__file__).resolve().parents[1] / "src/docich/corner_rotation.py").read_text(
         encoding="utf-8")
 
-    assert "prediction_tick(self.g)" in source
+    # The Hanjuku tick is resolved through the hot-load trampoline (#3838).
+    hanjuku_tick = "module('hanjuku_predictions').tick(self.g)"
+    assert hanjuku_tick in source
     assert "soren_prediction_tick(self.g)" in source
-    assert source.index("prediction_tick(self.g)") < source.index("soren_prediction_tick(self.g)")
+    assert source.index(hanjuku_tick) < source.index("soren_prediction_tick(self.g)")
 
 
 @pytest.mark.parametrize("damage", [

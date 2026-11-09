@@ -147,6 +147,24 @@ OAuthは既存Soren `.env` / 環境の `TWITCH_PREDICTIONS_ENABLED`,
 トークン・応答本文・HTTP headerを台帳/診断/ログに保存しない。
 `run/hanjuku_predictions.paused` は新規開始だけを休止し、既存の精算は継続する。
 
+## ロジック変更の反映（#3838）
+
+予想ロジックの実行主体は長命の corner プロセス
+（`docich-paper-corner.service`）である。`hanjuku_predictions` は
+`hanjuku_hotload` の `LOGIC_MODULES` に含まれるため、配備後は corner と
+agent がそれぞれ次の観測から新しい世代を採用する。worker の再起動は不要。
+配備直後に両 observer が世代を再公開するまでの間は hotload の
+`generation_gate` が `screen_stalled` 解体を一時猶予する（fail-closed、
+既存の bounded grace で収束する）。
+
+`LOGIC_MODULES` に含まれないモジュール（例: `stream_category`、
+`soren_predictions`、`hanjuku_prediction_api` 等の推移的依存）を変更した
+場合は、この trampoline では届かない。配備後に
+`systemctl --user restart docich-paper-corner.service` で corner worker を
+入れ替える。再起動しても `_wait_and_finish` は同一 `request_id` で再開でき、
+corner 状態は active のまま、game/agent/encoder の PID は不変である
+（2026-11-09 実測）。
+
 ## Runtime変更チェック
 
 - registry / worker health: 新規常駐worker・PID・サービスは追加しない。
