@@ -6,8 +6,7 @@ import sys
 from typing import Sequence
 
 
-def is_paper_improve_invocation(argv: Sequence[str]) -> bool:
-    """Return true for the existing ``docich ... trading ... paper-improve`` route."""
+def _is_trading_subcommand(argv: Sequence[str], name: str) -> bool:
     args = list(argv)
     command_index = 0
     if len(args) >= 2 and args[0] == "--config":
@@ -19,13 +18,23 @@ def is_paper_improve_invocation(argv: Sequence[str]) -> bool:
     tail = args[command_index + 1 :]
     if not tail:
         return False
-    if tail[0] == "paper-improve":
+    if tail[0] == name:
         return True
     if tail[0] == "--state-dir":
-        return len(tail) >= 3 and tail[2] == "paper-improve"
+        return len(tail) >= 3 and tail[2] == name
     if tail[0].startswith("--state-dir="):
-        return len(tail) >= 2 and tail[1] == "paper-improve"
+        return len(tail) >= 2 and tail[1] == name
     return False
+
+
+def is_paper_improve_invocation(argv: Sequence[str]) -> bool:
+    """Return true for the existing ``docich ... trading ... paper-improve`` route."""
+    return _is_trading_subcommand(argv, "paper-improve")
+
+
+def is_paper_improve_scheduled_invocation(argv: Sequence[str]) -> bool:
+    """Return true for the timer-driven ``trading ... paper-improve-scheduled`` route."""
+    return _is_trading_subcommand(argv, "paper-improve-scheduled")
 
 
 def build_validation_repair_prompt(prompt: str, reason: str) -> str:
@@ -50,61 +59,85 @@ def _read_validation_failure(status_path):
     return str(data.get("detail") or "candidate validation failed")[:240]
 
 
+def run_improve_with_validation_retry(g, state_dir, agents, dry_run: bool) -> dict:
+    """Run one improvement with the single validation-repair retry.
+
+    Shared by the corner-triggered ``paper-improve`` and the timer-driven
+    ``paper-improve-scheduled`` entrypoints.
+    """
+    from .trading.ai_text import generate_text
+    from .trading.paper_improve import DEFAULT_TIMEOUT, IMPROVE_LABEL, PAPER_AGENT_TIMEOUT_S, run_paper_improve
+
+    cleaned_agents = (agents or "").strip()
+    summary = run_paper_improve(
+        g,
+        trading_dir=state_dir,
+        agents=cleaned_agents,
+        dry_run=bool(dry_run),
+    )
+    retry_reason = None if dry_run else _read_validation_failure(
+        state_dir / "paper_improve_status.json"
+    )
+    summary_reason = str(summary.get("reason") or "")[:240]
+    if (
+        summary.get("status") == "failed"
+        and retry_reason
+        and retry_reason == summary_reason
+        and cleaned_agents
+    ):
+        def repair_llm(prompt_text):
+            return generate_text(
+                g,
+                label=IMPROVE_LABEL,
+                agents=cleaned_agents,
+                prompt_text=build_validation_repair_prompt(prompt_text, retry_reason),
+                timeout=min(DEFAULT_TIMEOUT, PAPER_AGENT_TIMEOUT_S),
+                overall_timeout_s=float(DEFAULT_TIMEOUT + 60),
+            )
+
+        summary = run_paper_improve(
+            g,
+            trading_dir=state_dir,
+            agents=cleaned_agents,
+            dry_run=False,
+            llm=repair_llm,
+        )
+        summary = dict(summary)
+        summary["validation_retry"] = True
+    return summary
+
+
+def run_scheduled_improve(g, state_dir, agents, dry_run: bool, *, now=None) -> dict:
+    """Gate (no AI) and then run the shared improvement path at most once."""
+    from .trading.paper_improve_schedule import run_scheduled
+
+    return run_scheduled(
+        state_dir,
+        run=lambda: run_improve_with_validation_retry(g, state_dir, agents, dry_run),
+        dry_run=bool(dry_run),
+        now=now,
+    )
+
+
 def main(argv: list[str] | None = None) -> int:
     from . import cli as docich_cli
     from .trading import cli as trading_cli
-    from .trading.ai_text import generate_text
-    from .trading.paper_improve import DEFAULT_TIMEOUT, IMPROVE_LABEL, PAPER_AGENT_TIMEOUT_S, run_paper_improve
 
     args_list = list(sys.argv[1:] if argv is None else argv)
     parser = docich_cli.build_parser()
     args = parser.parse_args(args_list)
     try:
-        if args.command != "trading" or args.trading_command != "paper-improve":
+        if args.command != "trading" or args.trading_command not in ("paper-improve", "paper-improve-scheduled"):
             raise trading_cli.TradingCliError("paper-improve retry entrypoint received another command")
         g = docich_cli._load_global(args)
         state_dir = trading_cli._state_dir(args, docich_cli._repo_root(), g)
         agents = args.agents
         if agents is None:
             agents = trading_cli._paper_corner_improve_agents(g)
-        cleaned_agents = (agents or "").strip()
-
-        summary = run_paper_improve(
-            g,
-            trading_dir=state_dir,
-            agents=cleaned_agents,
-            dry_run=bool(args.dry_run),
-        )
-        retry_reason = None if args.dry_run else _read_validation_failure(
-            state_dir / "paper_improve_status.json"
-        )
-        summary_reason = str(summary.get("reason") or "")[:240]
-        if (
-            summary.get("status") == "failed"
-            and retry_reason
-            and retry_reason == summary_reason
-            and cleaned_agents
-        ):
-            def repair_llm(prompt_text):
-                return generate_text(
-                    g,
-                    label=IMPROVE_LABEL,
-                    agents=cleaned_agents,
-                    prompt_text=build_validation_repair_prompt(prompt_text, retry_reason),
-                    timeout=min(DEFAULT_TIMEOUT, PAPER_AGENT_TIMEOUT_S),
-                    overall_timeout_s=float(DEFAULT_TIMEOUT + 60),
-                )
-
-            summary = run_paper_improve(
-                g,
-                trading_dir=state_dir,
-                agents=cleaned_agents,
-                dry_run=False,
-                llm=repair_llm,
-            )
-            summary = dict(summary)
-            summary["validation_retry"] = True
-
+        if args.trading_command == "paper-improve-scheduled":
+            summary = run_scheduled_improve(g, state_dir, agents, bool(args.dry_run))
+        else:
+            summary = run_improve_with_validation_retry(g, state_dir, agents, bool(args.dry_run))
         trading_cli._json_print(summary)
         return 0
     except docich_cli.USER_ERRORS as exc:

@@ -45,6 +45,26 @@
 
 混合原価の売却は self/carry 両方の内訳件数に含まれるので、内訳件数の単純合計は総決済数とは限らない。原価が復元できないときは `partial / ledger_incomplete_basis` とし、ゼロ損益の正常評価にしない。PF とドローダウンもこの実現損益の範囲であり、含み損益や戦略全体のリターンを表さない。carry の利益を今回の entry の成果とみなさない。今回確認したのは会計・制御の整合性であり、将来の収益改善は継続観測が必要。
 
+## 定時改善 timer（1日1回、コーナー非依存）
+
+コーナー終了時の改善起動（`paper_corner.py::_spawn_improve_once`）は変更しない。PAPERコーナーが長期間完了しないと改善が止まるため、別系統として user timer `docich-paper-improve.timer` を追加した（毎日 06:20 JST、`Persistent=true`、`AccuracySec=1min`。05:10 JST の `docich-nethack-daily-improve.timer` と重ねない）。`docich-paper-improve.service` は `ops/vm_actions/run_paper_improve_with_ai_env.sh` 経由で `docich trading paper-improve-scheduled` を1回実行する oneshot（`TimeoutStartSec=3600`）。production deploy 時に `ops/vm_actions/ensure_paper_improve_timer.sh` が配置・enable する。
+
+`paper-improve-scheduled` は AI を呼ぶ前に、ローカル状態だけを読む次のgateを上から順に評価し、最初に該当した理由でスキップする（`reason` を JSON 出力。`trading/` 配下 = `<state_dir>/trading/`）。
+
+| 順 | `reason` | 条件 |
+| --- | --- | --- |
+| 1 | `disabled` | 緊急停止ファイル `trading/paper_improve_scheduled.disabled` が存在する |
+| 2 | `already-running` | `paper_improve_status.json` が `running` で `updated_at` が70分以内 |
+| 3 | `pending-exists` | 検証済みの有効な pending 候補が既にある（採用は常駐 worker の `assess_experiment` が行う） |
+| 4 | `daily-limit` | `paper_improve_status.json` の `started_at` が20時間以内（`skipped` と `dry-run` は試行に数えない） |
+| 5 | `run` | 上記以外。コーナー終了時と同じ `trading paper-improve` の経路（検証エラー1回修復リトライ込み）を1回実行 |
+
+`daily-limit` は状態ファイルだけで判定するため、コーナー起動の改善も数え、AIの呼び出しは全体で概ね1日1回に収まる。失敗した日は翌日まで待つ（別のbackoff状態は持たない）。コーナー起動との重複は既存の singleflight lock と improve lane が防ぐ。
+
+**停止方法（unit変更・再deploy不要）:** `touch <state_dir>/trading/paper_improve_scheduled.disabled` で次回tickからAIを呼ばない。再開は同ファイルを削除する。完全に外す場合は `systemctl --user disable --now docich-paper-improve.timer`。手動確認は `docich --config config/docich.soren-live.toml trading paper-improve-scheduled --dry-run`（gateを通さずAIも呼ばない）。
+
+注意: この timer が再開すると、評価待ちが解消した現行実験は建玉が flat になった後に交代する。ルール v2 セルの前向き評価（Issue #3623 §2.8）はその時点で終わる。
+
 ## 次回の観測手順
 
 正規の [read-only diagnostics](runtime-diagnostics.md) で以下を確認する。診断と同時に lock 削除、再起動、state 修復を行わない。
