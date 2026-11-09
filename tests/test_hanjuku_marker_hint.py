@@ -82,3 +82,25 @@ def test_a_triangle_right_of_the_old_window_is_found():
     found = r.selection_marker(frame_with(162, 40))
     assert found is not None, 'a triangle at x=162 must be inside the search window'
     assert found['box'][0] == 162
+
+
+def test_a_recorded_castle_past_the_tolerance_still_binds():
+    """Chapter cells 7-12 are estimates, so the whole map can sit off (v600).
+
+    g1163 2026-11-10 00:35: 6 of 9 monthly markers were out_of_tolerance.
+    """
+    from types import SimpleNamespace
+    from unittest import mock
+
+    wide = {'甲': (0, 0), '乙': (600, 0)}
+    frame = SimpleNamespace(width=299, height=224, pixel=lambda x, y: (0, 0, 0))
+    evidence = {}
+    with mock.patch.object(readers.chart, 'castles', lambda chapter: dict(wide)), \
+         mock.patch.object(readers, 'selection_marker',
+                           lambda f: {'tip': (18, 0), 'box': [15, -8, 21, 0]}), \
+         mock.patch.object(readers, '_map_icon_centres', lambda f: []), \
+         mock.patch.object(readers, '_map_view_offset', lambda icons, castles: (0, 0)):
+        plain = readers.marker_castle(frame, 8, evidence=evidence)
+        hinted = readers.marker_castle(frame, 8, hint='甲', evidence={})
+    assert plain is None and evidence.get('reason') == 'out_of_tolerance'
+    assert hinted is not None and hinted['castle'] == '甲'
