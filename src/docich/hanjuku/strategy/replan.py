@@ -1034,7 +1034,10 @@ def interim_candidates(mem, allow_sole=False) -> dict:
     empty_targets = [c for c in sorted(owned)
                      if isinstance((_world(mem).get('garrison') or {}).get(c), list)
                      and not (_world(mem).get('garrison') or {}).get(c)
-                     and c not in heading]
+                     and c not in heading
+                     # Someone is already on the way: the arrival receipt is
+                     # that castle's own list, not another dispatch.
+                     and not routes.unread_dispatches(mem, c)]
     normal_left = [c for c in castles if c != boss and c not in _owned(mem)]
     staffing = []
     if empty_targets and normal_left:
