@@ -7046,6 +7046,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v596-marker-reason",
             "hanjuku-chart-v597-march-rate-default",
             "hanjuku-chart-v598-marker-fallback-cause",
+            "hanjuku-chart-v599-marker-window",
             "hanjuku-chart-v560-castle-list-scroll",
             "hanjuku-chart-v561-post-month-repair-status",
             "hanjuku-chart-v501-idle-reanchor",

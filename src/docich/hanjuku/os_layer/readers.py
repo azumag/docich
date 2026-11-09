@@ -359,8 +359,12 @@ def selection_marker(frame):
     """The inverted white/gray triangle over the selected general, or None."""
     if frame is None:
         return None
-    for y in range(16, min(frame.height - 7, 178)):
-        for x in range(16, min(frame.width - 7, 154)):
+    # The roster draws the triangle immediately left of the name column, which
+    # starts at x=168 (house._names_at), so the sprite can begin past the old
+    # x=154 edge. g1163 2026-11-09: 20 of 25 monthly markers were unbound with
+    # no reason, and the live 299x224 frame is wider than the 256-wide design.
+    for y in range(8, min(frame.height - 7, 216)):
+        for x in range(8, min(frame.width - 7, 200)):
             if all(_marker_shade_matches(frame.pixel(x + dx, y + dy), colour)
                    for dx, dy, colour in _GENERAL_MARKER_PATTERN):
                 return {'box': (x, y, x + 6, y + 6), 'center': (x + 3, y + 3),
