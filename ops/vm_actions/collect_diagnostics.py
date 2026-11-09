@@ -7031,6 +7031,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v583-unread-garrison-reinforce",
             "hanjuku-chart-v574-castle-cursor-feedback",
             "hanjuku-chart-v577-status-open-feedback",
+            "hanjuku-chart-v584-map-cursor-alignment",
             "hanjuku-chart-v560-castle-list-scroll",
             "hanjuku-chart-v561-post-month-repair-status",
             "hanjuku-chart-v501-idle-reanchor",

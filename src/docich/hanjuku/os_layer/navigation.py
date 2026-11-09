@@ -571,13 +571,16 @@ def _align_on_roof(screen, mem, frame, kinds, key):
             return 'on'
         _clear_align()
         return None
-    # Half the offset per step. The sortie target marker moved about 2 px
+    # The sortie target marker moved about 2 px
     # per held frame (g1075 2026-10-29 12:25: a 7-frame hold turned the
     # roof offset (-7, +7) into (+7, -7) and back, ten times per jump, and
-    # the retake of リグア reopened Y three times). A 1 px/frame cursor
-    # undershoots instead and still converges within ALIGN_LIMIT.
+    # the retake of リグア reopened Y three times). Keep its half-offset hold.
+    # A normal map cursor uses nav_step's 1 px/frame model below 30 frames;
+    # halving that hold needlessly splits one correction over two observations.
+    pixels_per_frame = 1 if screen.kind == 'map' and screen.cursor and not screen.marker else 2
     actions = []
     for d, neg, pos in ((dx, 'left', 'right'), (dy, 'up', 'down')):
         if abs(d) > ALIGN_TOL:
-            actions.append(pad(pos if d > 0 else neg, min(max(1, (abs(d) + 1) // 2), MAX_HOLD_FRAMES)))
+            frames = (abs(d) + pixels_per_frame - 1) // pixels_per_frame
+            actions.append(pad(pos if d > 0 else neg, min(max(1, frames), MAX_HOLD_FRAMES)))
     return actions
