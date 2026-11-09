@@ -106,7 +106,7 @@ def configure_parser(parser) -> None:
     improve.add_argument("--dry-run", action="store_true", help="AIを呼ばずプロンプトだけ確認する")
     scheduled = sub.add_parser(
         "paper-improve-scheduled",
-        help="timer起動の戦略改善。安価なgate(停止ファイル/保留候補/失敗backoff)を通った時だけ1回実行する",
+        help="timer起動の戦略改善。安価なgate(停止ファイル/実行中/保留候補/1日1回の上限)を通った時だけ1回実行する",
     )
     scheduled.add_argument("--agents", default=None, metavar="CSV", help="LLM委任先 (既定は [paper_corner] improve_agents)")
     scheduled.add_argument("--dry-run", action="store_true", help="gateを通さずAIも呼ばずプロンプトだけ確認する")
