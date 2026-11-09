@@ -116,6 +116,26 @@ def menu_navigation_feedback(state, actions):
             and type(hold) is int and 16 <= hold <= 100)
 
 
+def status_panel_feedback(state, actions):
+    """One early look after the monthly owner opens a read-only status.
+
+    The orchestrator replaces this annotation on every observation. It says
+    nothing about delivery, the panel opening, or the general's actual state.
+    """
+    reading = state.get('status_panel_feedback')
+    if (not isinstance(reading, dict) or set(reading) != {'step', 'kind', 'transition'}
+            or type(state.get('step')) is not int or type(reading.get('step')) is not int
+            or reading['step'] != state['step']
+            or reading.get('kind') != 'text' or state.get('screen_kind') != 'text'
+            or reading.get('transition') != 'general_status_open'
+            or not isinstance(actions, list) or len(actions) != 1
+            or not isinstance(actions[0], dict)):
+        return False
+    action = actions[0]
+    return (action.get('type') == 'pad' and action.get('buttons') == ['a']
+            and type(action.get('hold_ms')) is int and action['hold_ms'] == 100)
+
+
 def _menu_distance(screen: Screen, label: str):
     """Manhattan distance from the hand to the row :func:`menu_to` would pick."""
     cur = _current(screen)
