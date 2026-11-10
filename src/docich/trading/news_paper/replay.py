@@ -74,6 +74,8 @@ def _depth(obj, d=0):
 def load_manifest(data: dict, chunk_loader: Callable[[str], bytes] | None = None) -> Manifest:
     if chunk_loader is None:
         raise ReplayError("chunk_loader required: inline records are not supported")
+    if not isinstance(data, dict) or set(data) != {"header"}:
+        raise ReplayError("UNKNOWN_KEY: manifest")
     # header size check
     header_bytes = json.dumps(data.get("header", {})).encode()
     if len(header_bytes) > MAX_HEADER_BYTES:
@@ -84,8 +86,18 @@ def load_manifest(data: dict, chunk_loader: Callable[[str], bytes] | None = None
     for k in ("schema_version", "run_id", "scenario_id", "versions", "clock", "arm", "chunks"):
         if k not in h:
             raise ReplayError(f"missing header field {k}")
+    if set(h) != {"schema_version", "run_id", "scenario_id", "versions", "clock", "arm", "chunks"}:
+        raise ReplayError("UNKNOWN_KEY: header")
+    if h["schema_version"] != "1" or h["arm"] not in ("A", "B"):
+        raise ReplayError("VALUE_OUT_OF_RANGE: schema_version or arm")
+    if any(not isinstance(h[k], str) or not h[k] for k in ("run_id", "scenario_id")):
+        raise ReplayError("VALUE_OUT_OF_RANGE: identifier")
+    if not isinstance(h["versions"], dict) or not isinstance(h["clock"], dict) or set(h["clock"]) != {"fence_at"}:
+        raise ReplayError("UNKNOWN_KEY: clock or versions")
+    if type(h["clock"]["fence_at"]) not in (int, float):
+        raise ReplayError("VALUE_OUT_OF_RANGE: fence_at")
     chunks_meta = h["chunks"]
-    if not (1 <= len(chunks_meta) <= MAX_CHUNKS):
+    if not isinstance(chunks_meta, list) or not (1 <= len(chunks_meta) <= MAX_CHUNKS):
         raise ReplayError("chunks count out of range")
     # chunks array meta
     seqs = []
@@ -93,7 +105,9 @@ def load_manifest(data: dict, chunk_loader: Callable[[str], bytes] | None = None
     for cm in chunks_meta:
         if not isinstance(cm, dict):
             raise ReplayError("bad chunk meta")
-        if not (1 <= cm.get("seq", 0) <= MAX_CHUNKS):
+        if set(cm) != {"seq", "filename", "sha256", "record_count"}:
+            raise ReplayError("UNKNOWN_KEY: chunk metadata")
+        if type(cm.get("seq")) is not int or not (1 <= cm["seq"] <= MAX_CHUNKS):
             raise ReplayError("bad seq")
         seqs.append(cm["seq"])
         fn = cm.get("filename")
@@ -108,7 +122,7 @@ def load_manifest(data: dict, chunk_loader: Callable[[str], bytes] | None = None
         if not (isinstance(sha, str) and len(sha) == 64 and all(c in "0123456789abcdef" for c in sha.lower())):
             raise ReplayError("bad sha256")
         rc = cm.get("record_count")
-        if not (isinstance(rc, int) and 1 <= rc <= MAX_RECORDS_PER_CHUNK):
+        if not (type(rc) is int and 1 <= rc <= MAX_RECORDS_PER_CHUNK):
             raise ReplayError("bad record_count")
     if seqs != sorted(set(seqs)) or len(set(seqs)) != len(seqs):
         raise ReplayError("seq not strictly increasing unique")
