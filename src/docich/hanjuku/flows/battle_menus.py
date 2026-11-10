@@ -290,7 +290,17 @@ def _survival_menu(screen, mem, cur):
         rescue.update(critical_menu_recheck=True, exhausted=False, menu_ticks=1)
     if rescue['menu_ticks'] > 12 or rescue.get('exhausted'):
         rescue['exhausted'] = True
-        return [pad('b')]
+        # One B hands the spent rescue back; repeating it every observation
+        # left the battle box open forever (g1163 2026-11-10 19:3x-20:0x: 414
+        # identical [b] plans with no recorded reason).
+        if not rescue.get('exhausted_closed'):
+            rescue['exhausted_closed'] = True
+            _record(mem, 'battle_menu_rescue_exhausted', **_battle_labels(cur),
+                    observed_metric={'menu_ticks': rescue.get('menu_ticks'),
+                                     'labels': sorted(labels)},
+                    reason='救済メニューの観測予算を使い切ったため一度だけ戻り、以後は通常のコマンド判定に委ねる')
+            return [pad('b')]
+        return None
     # A visible list is authoritative. Do not infer carried cards from the
     # chart, a different general's sortie, or a planned inventory.
     # Cards first, then the egg (owner: 切り札が先 - the chart's order).

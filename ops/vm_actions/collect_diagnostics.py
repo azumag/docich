@@ -7082,6 +7082,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v634-okunote-exhausted-confirm",
             "hanjuku-chart-v635-blind-confirm-top-row",
             "hanjuku-chart-v636-empty-egg-card-fallback",
+            "hanjuku-chart-v637-rescue-exhausted-fallthrough",
             "hanjuku-chart-v560-castle-list-scroll",
             "hanjuku-chart-v561-post-month-repair-status",
             "hanjuku-chart-v501-idle-reanchor",
