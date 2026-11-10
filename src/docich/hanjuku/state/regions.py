@@ -195,6 +195,9 @@ def migrate_legacy_state(mem):
             store = mem[_REGION_KEY[region_name]] = {}
         # フラットに残っている値は未移行プロデューサ (旧形式テスト注入・
         # orchestrator の毎判断注入) の最新出力とみなし、領域へ上書きする。
+        # この置換意味論は src 側にフラットアクセスが残らないことが前提:
+        # tests/test_hanjuku_state_regions.py::test_src_has_no_flat_access_to_migrated_keys
+        # が移行済みキーへの直接 mem アクセスを静的に禁止する (docich#3921)。
         store[key] = mem[key]
         del mem[key]
 

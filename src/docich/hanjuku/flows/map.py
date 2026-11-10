@@ -589,7 +589,7 @@ def _release_stale_active(mem):
         return False
     plan = mem.get('chart_plan') or {}
     plan_steps = {o.get('step') for o in plan.get('orders') or ()}
-    launched = (mem.get('world') or {}).get('launched_orders') or mem.get('launched_orders') or {}
+    launched = _world(mem).get('launched_orders') or {}
     status = (_plan_region(mem).get('orders') or {}).get(step)
     if not plan_steps or step in plan_steps or step in launched or status is not None:
         return False

@@ -16,7 +16,7 @@ should import the owning layer module instead. See
 ``docs/hanjuku_layered_architecture.md``.
 """
 from __future__ import annotations
-from docich.hanjuku.state.regions import world as _world, plan as _plan_region
+from docich.hanjuku.state.regions import world as _world, plan as _plan_region, flow as _flow
 
 import random
 import re
@@ -76,7 +76,7 @@ _camp_recheck_step_without_stale_rearm = _flow_camp_recheck.step
 
 
 def _rearm_exhausted_camp_rechecks(mem):
-    if mem.get('recall'):
+    if _flow(mem).get('recall'):
         return []
     now = mem.get('tick')
     if type(now) is not int or now < 0:
@@ -103,8 +103,9 @@ def _rearm_exhausted_camp_rechecks(mem):
 
 
 def _camp_recheck_step_with_stale_rearm(screen, mem, frame, existing):
-    if (screen.kind == 'map' and frame is not None and not mem.get('recall') and not any(
-            mem.get(key) for key in ('battle', 'month_sub', 'house', 'y_jump', 'sortie_attempt', 'attack'))):
+    if (screen.kind == 'map' and frame is not None
+            and not _flow(mem).get('recall') and not _flow(mem).get('sortie_attempt')
+            and not any(mem.get(key) for key in ('battle', 'month_sub', 'house', 'y_jump', 'attack'))):
         _rearm_exhausted_camp_rechecks(mem)
     return _camp_recheck_step_without_stale_rearm(screen, mem, frame, existing)
 
