@@ -131,8 +131,11 @@ def observe_chapter_castle(mem, castle):
     # its own. A bare scratch dict (tests, one-off calls) keeps the old rule.
     running = (mem.get('resume_chapter_pending') is True
                or type(mem.get('tick')) is int or isinstance(mem.get('journal'), dict))
+    # あるまむーん (hiragana) is chapter 8's own home castle label in the chart
+    # and exists in no other chapter, so it is proof; the katakana アルマムーン
+    # is every other chapter's home castle and stays excluded.
     if (not chapter and running and castle
-            and castle not in {'アルマムーン', 'あるまむーん', 'ほんじょう', 'ボス'}):
+            and castle not in {'アルマムーン', 'ほんじょう', 'ボス'}):
         # A restored party picker has no chapter label. Resolve from a fresh
         # full castle name unique across all chapters, never from the old bot.
         matches = [n for n, names in chart.CASTLE_NAMES.items()
