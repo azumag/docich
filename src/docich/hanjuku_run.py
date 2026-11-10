@@ -220,25 +220,7 @@ def observe(runtime_dir: Path, identity: dict, frame: Frame, *,
         raise AdapterError('invalid Hanjuku observation time')
     old=load(runtime_dir,identity)
     if old.get('terminal_reason') in TERMINAL_REASONS:
-        # A terminal verdict ends the attempt, but the same runtime can come
-        # back to life (the emulator was restarted and the state restored:
-        # g1163 2026-11-10 17:4x recorded game_over, then blocked every input
-        # for two hours while the restored game sat on a defense prompt).
-        # A different, non-title frame with the emulator playing disproves the
-        # evidence, so the attempt continues instead of locking the corner.
-        digest_now=frame.digest()
-        phase_now=classify(frame)
-        revived=(old.get('terminal_reason')=='game_over' and playing is True
-                 and digest_now != old.get('frame_sha256') and phase_now != 'title')
-        if not revived:
-            return old
-        old={**old, 'terminal_reason': None, 'terminal_candidate': None,
-             'terminal_evidence': None, 'terminal_at': None,
-             'terminal_revivals': int(old.get('terminal_revivals') or 0)+1}
-        event(runtime_dir,{'event':'terminal_cleared','at':wall,
-                           'reason':'game_over','frame_sha256':digest_now,
-                           'bot_version':BOT_VERSION,
-                           'revivals':old['terminal_revivals']})
+        return old
     digest=frame.digest()
     phase=classify(frame)
     previous=old.get('observed_monotonic')
