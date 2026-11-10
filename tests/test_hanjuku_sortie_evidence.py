@@ -929,12 +929,12 @@ def test_an_unreadable_sortie_confirmation_approves_once_then_cancels():
     """
     mem = _c2_memory()
     screen = menu('sortie_confirm', ['うむッ!'], hand=False)
-    for _ in range(policy.SORTIE_CONFIRM_LIMIT - 1):
+    for _ in range(policy.SORTIE_CONFIRM_UNREADABLE_LIMIT - 1):
         assert policy.deploy_step(screen, mem) == []
     blind = policy.deploy_step(screen, mem)
     assert blind[0] == policy.pad('a') and blind[-1] == policy.pad('a')
     assert mem['_records'][-1]['decision'] == 'sortie_confirm_blind_approve'
-    for _ in range(policy.SORTIE_CONFIRM_LIMIT - 1):
+    for _ in range(policy.SORTIE_CONFIRM_UNREADABLE_LIMIT - 1):
         assert policy.deploy_step(screen, mem) == []
     assert policy.deploy_step(screen, mem) == [policy.pad('b'), policy.pad('b')]
     assert mem['orders']['1-C2'] == 'failed' and mem['active'] is None
