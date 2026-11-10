@@ -7072,6 +7072,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v623-periodic-savestate",
             "hanjuku-chart-v624-card-list-escape",
             "hanjuku-chart-v625-ordinary-card-escape",
+            "hanjuku-chart-v626-confirm-unreadable-short",
             "hanjuku-chart-v560-castle-list-scroll",
             "hanjuku-chart-v561-post-month-repair-status",
             "hanjuku-chart-v501-idle-reanchor",

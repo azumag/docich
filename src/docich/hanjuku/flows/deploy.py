@@ -21,7 +21,7 @@ from ..os_layer.readers import (CASTLE_STATUS, STATUS_NAMES, _empty_sortie_inven
 from ..os_layer.world import NAME, _en_route, _owned
 from ..strategy.boss_cards import UNSEEN, boss_card_reserved, boss_kit
 from ..strategy.kit import (CARD_IDS, CARD_MISS_LIMIT, CARD_SCROLL_LIMIT, CARD_UNREADABLE_LIMIT, CARRY_SLOTS,
-                           NORMAL_CARD_UNREADABLE_LIMIT,
+                           NORMAL_CARD_UNREADABLE_LIMIT, SORTIE_CONFIRM_UNREADABLE_LIMIT,
                             ENEMY_EGG_CARD_ID_SUM, RARE_SCAN_LIMIT, SORTIE_CONFIRM_LIMIT, _cap_card_ids,
                             _deploy_cards, _extra_card_name, _is_boss_order, _observe_card_stock,
                             _sortie_defender, _strict_boss_cards)
@@ -1916,15 +1916,20 @@ def deploy_step(screen: Screen, mem):
             # Strict boss kits approve a readable carried kit too — the
             # assault must not be cancelled over cards that cannot be bought
             # anyway (owner 2026-11-02: 切り札不足でも延期しない).
-            if misses[order['step']] >= SORTIE_CONFIRM_LIMIT:
+            ordinary = (not chart.is_boss_castle(order.get('target'))
+                        and not _strict_boss_cards(order, mem))
+            # An ordinary sortie departs after a short unreadable spell (the
+            # panel is unreadable for 63 of 165 holds in 40 minutes); a boss
+            # keeps its full cancellation budget (#3201).
+            limit = (SORTIE_CONFIRM_UNREADABLE_LIMIT
+                     if carried is None and ordinary else SORTIE_CONFIRM_LIMIT)
+            if misses[order['step']] >= limit:
                 if carried is None:
                     # Owner 2026-11-10: an unreadable departure confirmation
                     # must not cancel the sortie — press the default (はい)
                     # once and let the departure itself prove it. A second
                     # unreadable round means the blind A did nothing, so the
                     # existing cancel path takes over.
-                    ordinary = (not chart.is_boss_castle(order.get('target'))
-                                and not _strict_boss_cards(order, mem))
                     if ordinary and not (mem.get('sortie_confirm_blind') or {}).get(order['step']):
                         mem.setdefault('sortie_confirm_blind', {})[order['step']] = True
                         misses.pop(order['step'], None)
@@ -1941,7 +1946,7 @@ def deploy_step(screen: Screen, mem):
                                   observed_metric={'carried': None},
                                   reason='出撃確認を読み取れないため出撃を取り消して次の指示へ進む')
                     return [pad('b'), pad('b')]
-                if misses[order['step']] == SORTIE_CONFIRM_LIMIT:
+                if misses[order['step']] == limit:
                     # A readable panel is the truth: approve the shown kit.
                     _record(mem, 'sortie_kit_mismatch',
                             **_deploy_context(order, mem, expected_metric=want),
