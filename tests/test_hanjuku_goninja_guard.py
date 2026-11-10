@@ -144,3 +144,19 @@ def test_unrelated_month_choice_with_same_rows_is_not_owned():
     state = owned_state('none')
     _, state = decide(c.frame(), state)
     assert 'goninja_guard' not in state['policy']
+
+
+def test_armed_guard_releases_on_map_transition():
+    # Unlike the unrelated-month-choice test, start with an already armed
+    # guard. A definitive map transition must release stale prompt ownership.
+    from types import SimpleNamespace
+    from docich.hanjuku.flows.prompts import goninja_guard_step
+
+    state = owned_state('none')
+    _, state = decide(degraded_offer(5000), state)
+    guard = state['policy'].get('goninja_guard')
+    assert isinstance(guard, dict) and guard.get('choice_seen') is True
+
+    map_screen = SimpleNamespace(kind='map', text='')
+    assert goninja_guard_step(map_screen, state['policy']) is None
+    assert 'goninja_guard' not in state['policy']
