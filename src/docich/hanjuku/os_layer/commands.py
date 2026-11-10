@@ -177,7 +177,7 @@ def menu_navigation_feedback(state, actions):
 
 
 def status_panel_feedback(state, actions):
-    """One early look after the monthly owner opens a read-only status.
+    """One early look after the monthly owner opens/closes a read-only status.
 
     The orchestrator replaces this annotation on every observation. It says
     nothing about delivery, the panel opening, or the general's actual state.
@@ -187,12 +187,13 @@ def status_panel_feedback(state, actions):
             or type(state.get('step')) is not int or type(reading.get('step')) is not int
             or reading['step'] != state['step']
             or reading.get('kind') != 'text' or state.get('screen_kind') != 'text'
-            or reading.get('transition') != 'general_status_open'
+            or reading.get('transition') not in ('general_status_open', 'general_status_close')
             or not isinstance(actions, list) or len(actions) != 1
             or not isinstance(actions[0], dict)):
         return False
     action = actions[0]
-    return (action.get('type') == 'pad' and action.get('buttons') == ['a']
+    button = 'a' if reading['transition'] == 'general_status_open' else 'b'
+    return (action.get('type') == 'pad' and action.get('buttons') == [button]
             and type(action.get('hold_ms')) is int and action['hold_ms'] == 100)
 
 
