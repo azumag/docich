@@ -16,7 +16,7 @@ from .deploy import (_cancel_broken_hero_sortie, _deploy_context, _deploy_input,
                             _hold_guarded_sortie, _hold_locked_boss, _hold_unrouted_sortie)
 from .recall import (MENU_HOLD_LIMIT, RECALL_LIMIT, _hold_after_picker, _recall_dispatch_step, _request_recall,
                             camp_recall_step)
-from ..os_layer.commands import menu_to, pad
+from ..os_layer.commands import castle_list_batch, menu_to, pad
 from ..os_layer.navigation import (Y_JUMP_LIMIT, Y_JUMP_OFFSET, _align_on_roof, _drop_stale_y_jump, _start_y_jump,
                                    _forget_failed_jump, _want_y_jump, _y_jump_step, nav_step)
 from ..os_layer.readers import (UNDER_CURSOR_PX, WORLD_MAP_OFFSET, _cursor, _roof_under_cursor, season_sites,
@@ -1017,7 +1017,7 @@ def castle_jump_step(screen, mem, frame):
             jump['age'] = 0
             return [pad('select')]
         if move:
-            return [move]
+            return castle_list_batch(screen, target) or [move]
         return _end_castle_jump(screen, mem, 'castle_unreachable')
 
     if phase == 'confirm':
