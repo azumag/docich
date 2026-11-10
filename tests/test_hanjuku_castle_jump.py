@@ -11,6 +11,7 @@ The measured list is the right-hand panel of the main menu: names at x=168 on
 from docich.hanjuku.flows import map as M
 from docich.hanjuku.os_layer.font import TextLine
 from docich.hanjuku.os_layer.screen import Screen
+from docich.hanjuku.state.regions import plan as _plan_region
 
 
 def _line(y, x, text):
@@ -139,7 +140,7 @@ def test_missing_castle_scrolls_then_gives_up():
 
 def test_lost_cursor_uses_x_castle_list_without_an_active_order_or_roof(monkeypatch):
     mem = _memory()
-    mem['active'] = None
+    _plan_region(mem)['active'] = None
     mem['nav_search'] = True
     mem['uncertain'] = True
     mem['anchor'] = None
@@ -203,7 +204,7 @@ def test_reanchor_success_releases_same_frame_to_interrupted_order(monkeypatch):
 
 def test_reanchor_without_active_order_picks_next_ready_plan(monkeypatch):
     mem = _memory()
-    mem['active'] = None
+    _plan_region(mem)['active'] = None
     mem['nav_search'] = True
     mem['uncertain'] = True
     assert M._start_reanchor_jump(mem) == [M.pad('x')]
@@ -220,7 +221,7 @@ def test_reanchor_without_active_order_picks_next_ready_plan(monkeypatch):
     monkeypatch.setattr(M, 'nav_step', lambda *_args, **_kwargs: [M.pad('right')])
     actions = M.resume_reanchored_owner(screen, mem, None)
     assert actions == [M.pad('right')]
-    assert mem['active'] == 'J1'
+    assert _plan_region(mem)['active'] == 'J1'
     M.note_reanchor_followup(screen, mem, actions)
     assert mem['_records'][-1]['decision'] == 'cursor_reanchor_resumed'
 
@@ -243,7 +244,7 @@ def test_reanchor_named_source_opens_even_when_cursor_hides_roof(monkeypatch):
 
 def test_reanchor_without_ready_order_reports_hold_and_rechecks(monkeypatch):
     mem = _memory()
-    mem['active'] = None
+    _plan_region(mem)['active'] = None
     mem['reanchor_resume'] = {'source': 'アルマムーン', 'tick': 10, 'active_before': None}
     mem['map_idle_tick'] = 10
     screen = _screen('map', [], cursor=(80, 90))
@@ -301,7 +302,7 @@ def test_idle_map_with_stale_search_does_not_repeat_reanchor(monkeypatch):
     assert M.map_step(screen, mem, None) == []
     mem['tick'] += 1
     assert M.map_step(screen, mem, None) == [M.pad('x')]
-    assert mem['active'] == 'J1'
+    assert _plan_region(mem)['active'] == 'J1'
     assert mem['castle_jump']['return_to']['active_step'] == 'J1'
 
 
@@ -407,7 +408,7 @@ def test_reanchor_does_not_replay_sortie_replaced_during_jump():
     mem = _memory()
     mem['nav_search'] = True
     assert M._start_reanchor_jump(mem) == [M.pad('x')]
-    mem['active'] = 'OTHER'
+    _plan_region(mem)['active'] = 'OTHER'
     mem['castle_jump']['phase'] = 'confirm'
     screen = _screen('map', [], cursor=(80, 90))
     assert M.castle_jump_step(screen, mem, None) is None

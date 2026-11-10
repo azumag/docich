@@ -12,7 +12,7 @@ from docich import hanjuku_chart as chart
 from docich.hanjuku.strategy import orders as O
 from docich.hanjuku.strategy.campaign import _enter_chapter
 from docich.hanjuku.state.regions import flow as _flow, journal as _journal
-from docich.hanjuku.state.regions import world as _world, sorties as _sorties
+from docich.hanjuku.state.regions import world as _world, plan as _plan_region, sorties as _sorties
 
 CHAPTER = 3
 LAUNCH = 76407
@@ -43,7 +43,7 @@ def decisions(mem, name):
 def test_the_live_march_is_overdue_and_waits_for_the_boss_unlock():
     mem = memory(79599, lost=['パタゴーヌ'])
     assert O.next_order(mem) is None                    # パタゴーヌ lost: boss still locked
-    assert mem['orders']['3-B1'] == 'pending'
+    assert _plan_region(mem)['orders']['3-B1'] == 'pending'
     assert _sorties(mem)['3-B1']['status'] == 'overdue'
     assert mem['boss_relaunch'] == {'3-B1': 1}
     (record,) = decisions(mem, 'boss_sortie_overdue')
@@ -74,7 +74,7 @@ def test_the_old_march_no_longer_holds_its_general():
 def test_a_march_inside_the_limit_is_left_alone():
     mem = memory(LAUNCH + O.BOSS_ARRIVAL_LIMIT - 1)
     O.next_order(mem)
-    assert mem['orders']['3-B1'] == 'launched'
+    assert _plan_region(mem)['orders']['3-B1'] == 'launched'
     assert _sorties(mem)['3-B1']['status'] == 'en_route'
     assert not decisions(mem, 'boss_sortie_overdue')
 
@@ -86,7 +86,7 @@ def test_the_limit_is_above_the_longest_measured_march():
 def test_a_march_that_was_cancelled_is_not_sent_again():
     mem = memory(79599, status='cancelled')
     O.next_order(mem)
-    assert mem['orders']['3-B1'] == 'launched'
+    assert _plan_region(mem)['orders']['3-B1'] == 'launched'
     assert not decisions(mem, 'boss_sortie_overdue')
 
 
@@ -95,7 +95,7 @@ def test_an_entry_whose_fight_left_no_result_is_sent_again():
     fights closed without a measured result; nothing else could reset them."""
     mem = memory(79599, status='arrived')
     O.next_order(mem)
-    assert mem['orders']['3-B1'] == 'pending'
+    assert _plan_region(mem)['orders']['3-B1'] == 'pending'
     assert _sorties(mem)['3-B1']['status'] == 'overdue'
     assert mem['boss_relaunch'] == {'3-B1': 1}
     (record,) = decisions(mem, 'boss_sortie_overdue')
@@ -108,11 +108,11 @@ def test_an_entry_with_a_live_fight_is_not_sent_again():
     mem = memory(79599, status='arrived')
     mem['battle'] = {'step': '3-B1', 'ally': 'アポロン', 'enemy': 'プリンス'}
     O.next_order(mem)
-    assert mem['orders']['3-B1'] == 'launched'
+    assert _plan_region(mem)['orders']['3-B1'] == 'launched'
     assert _sorties(mem)['3-B1']['status'] == 'arrived'
     mem['battle'] = {'step': 'other', 'ally': 'アポロン', 'enemy': 'プリンス'}
     O.next_order(mem)
-    assert mem['orders']['3-B1'] == 'pending'           # another step's fight is not ours
+    assert _plan_region(mem)['orders']['3-B1'] == 'pending'           # another step's fight is not ours
     assert _sorties(mem)['3-B1']['status'] == 'overdue'
 
 
@@ -120,14 +120,14 @@ def test_an_entry_to_a_site_already_won_is_not_sent_again():
     mem = memory(79599, status='arrived')
     mem['boss_victories'] = {'プリンス': {'site': 'ボス'}}
     O.next_order(mem)
-    assert mem['orders']['3-B1'] == 'launched'
+    assert _plan_region(mem)['orders']['3-B1'] == 'launched'
     assert not decisions(mem, 'boss_sortie_overdue')
 
 
 def test_an_entry_inside_the_limit_is_not_sent_again():
     mem = memory(LAUNCH + O.BOSS_ARRIVAL_LIMIT - 1, status='arrived')
     O.next_order(mem)
-    assert mem['orders']['3-B1'] == 'launched'
+    assert _plan_region(mem)['orders']['3-B1'] == 'launched'
     assert not decisions(mem, 'boss_sortie_overdue')
 
 
@@ -137,7 +137,7 @@ def test_an_old_march_to_a_normal_castle_is_settled_and_relaunched():
     settle it overdue and hand the order back to pending."""
     mem = memory(79599, target='パタゴーヌ')
     O.next_order(mem)
-    assert mem['orders']['3-B1'] == 'pending'
+    assert _plan_region(mem)['orders']['3-B1'] == 'pending'
     assert _sorties(mem)['3-B1']['status'] == 'overdue'
     assert mem['sortie_relaunch']['3-B1'] == 1
 
@@ -147,22 +147,22 @@ def test_a_march_relaunch_is_bounded():
     for n in range(1, O.MARCH_RELAUNCH_LIMIT + 1):
         O.next_order(mem)
         assert mem['sortie_relaunch']['3-B1'] == n
-        mem['orders']['3-B1'] = 'launched'
+        _plan_region(mem)['orders']['3-B1'] = 'launched'
         mem['world']['sorties']['3-B1'] = {'general': 'セルリアク', 'source': 'アルマムーン',
                                   'target': 'パタゴーヌ', 'status': 'en_route',
                                   'tick': mem['tick']}
         mem['tick'] += O.BOSS_ARRIVAL_LIMIT
     O.next_order(mem)
-    assert mem['orders']['3-B1'] == 'launched'
+    assert _plan_region(mem)['orders']['3-B1'] == 'launched'
     assert _sorties(mem)['3-B1']['status'] == 'overdue'
     assert len(decisions(mem, 'sortie_march_relaunch_exhausted')) == 1
 
 
 def test_a_march_without_a_launched_order_is_just_closed():
     mem = memory(79599, target='パタゴーヌ')
-    mem['orders']['3-B1'] = 'failed'
+    _plan_region(mem)['orders']['3-B1'] = 'failed'
     O.next_order(mem)
-    assert mem['orders']['3-B1'] == 'failed'
+    assert _plan_region(mem)['orders']['3-B1'] == 'failed'
     assert _sorties(mem)['3-B1']['status'] == 'overdue'
     assert not decisions(mem, 'sortie_march_overdue')
     assert decisions(mem, 'sortie_march_overdue_settled')
@@ -179,7 +179,7 @@ def test_a_confirmed_move_to_an_own_castle_is_settled_not_relaunched():
     mem = memory(79599, target='パタゴーヌ')
     _world(mem).setdefault('sorties', {})['3-B1']['purpose'] = 'move'
     O.next_order(mem)
-    assert mem['orders']['3-B1'] == 'failed'
+    assert _plan_region(mem)['orders']['3-B1'] == 'failed'
     assert _sorties(mem)['3-B1']['status'] == 'overdue'
     assert 'sortie_relaunch' not in mem or '3-B1' not in mem['sortie_relaunch']
     assert not decisions(mem, 'sortie_march_overdue')
@@ -192,7 +192,7 @@ def test_a_move_into_lost_or_enemy_ground_still_relaunches():
     mem = memory(79599, target='パタゴーヌ', lost=['パタゴーヌ'])
     _world(mem).setdefault('sorties', {})['3-B1']['purpose'] = 'move'
     O.next_order(mem)
-    assert mem['orders']['3-B1'] == 'pending'
+    assert _plan_region(mem)['orders']['3-B1'] == 'pending'
     assert mem['sortie_relaunch']['3-B1'] == 1
 
 
@@ -201,7 +201,7 @@ def test_an_unconfirmed_move_launch_still_relaunches():
     _sorties(mem)['3-B1']['status'] = 'launched_unconfirmed'
     _world(mem).setdefault('sorties', {})['3-B1']['purpose'] = 'move'
     O.next_order(mem)
-    assert mem['orders']['3-B1'] == 'pending'
+    assert _plan_region(mem)['orders']['3-B1'] == 'pending'
     assert mem['sortie_relaunch']['3-B1'] == 1
 
 
@@ -211,7 +211,7 @@ def test_a_move_known_only_by_the_order_snapshot_is_settled_too():
     mem = memory(79599, target='パタゴーヌ')
     _world(mem)['launched_orders']['3-B1']['purpose'] = 'move'
     O.next_order(mem)
-    assert mem['orders']['3-B1'] == 'failed'
+    assert _plan_region(mem)['orders']['3-B1'] == 'failed'
     assert decisions(mem, 'sortie_move_overdue_settled')
 
 
@@ -221,12 +221,12 @@ def test_relaunches_are_bounded_per_step():
         O.next_order(mem)
         assert mem['boss_relaunch']['3-B1'] == n
         # the relaunched march is again launched and never enters
-        mem['orders']['3-B1'] = 'launched'
+        _plan_region(mem)['orders']['3-B1'] = 'launched'
         mem['world']['sorties']['3-B1'] = {'general': 'セルリアク', 'source': 'パタゴーヌ', 'target': 'ボス',
                                   'status': 'en_route', 'tick': mem['tick']}
         mem['tick'] += O.BOSS_ARRIVAL_LIMIT
     O.next_order(mem)
-    assert mem['orders']['3-B1'] == 'launched'
+    assert _plan_region(mem)['orders']['3-B1'] == 'launched'
     assert _sorties(mem)['3-B1']['status'] == 'overdue'
     assert len(decisions(mem, 'boss_sortie_overdue')) == O.BOSS_RELAUNCH_LIMIT
     assert len(decisions(mem, 'boss_relaunch_exhausted')) == 1
@@ -258,7 +258,7 @@ def test_an_unconfirmed_site_launch_goes_overdue_by_its_planned_target():
     mem = site_memory('四季王城(南東)')
     O._relaunch_overdue_boss(mem)
     assert _sorties(mem)['4-B2']['status'] == 'overdue'
-    assert mem['orders']['4-B2'] == 'pending'
+    assert _plan_region(mem)['orders']['4-B2'] == 'pending'
     (record,) = decisions(mem, 'boss_sortie_overdue')
     assert record['chart_step'] == '4-B2' and record['general'] == 'カペリーニ'
     # An unconfirmed march to a normal castle is still left alone.
@@ -276,7 +276,7 @@ def test_an_overdue_relaunch_drops_the_spent_sortie_attempt():
                              'interrupted': True, 'target_seen': True}
     O.next_order(mem)
     assert _sorties(mem)['3-B1']['status'] == 'overdue'
-    assert mem['orders']['3-B1'] == 'pending'
+    assert _plan_region(mem)['orders']['3-B1'] == 'pending'
     assert 'sortie_attempt' not in _flow(mem)
     assert O._order_for_step(mem, '3-B1') is not None
 
@@ -286,7 +286,7 @@ def test_an_already_overdue_sortie_drops_the_spent_attempt():
     stale claimed attempt still blocking the menu flow."""
     mem = memory(79599)
     _sorties(mem)['3-B1']['status'] = 'overdue'
-    mem['orders']['3-B1'] = 'pending'
+    _plan_region(mem)['orders']['3-B1'] = 'pending'
     _flow(mem)['sortie_attempt'] = {'step': '3-B1', 'confirmation_tick': LAUNCH - 6,
                              'interrupted': True, 'target_seen': True}
     O._relaunch_overdue_march(mem)

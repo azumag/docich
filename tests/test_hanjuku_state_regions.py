@@ -115,11 +115,11 @@ def test_migrated_departure_and_recall_keys_live_in_their_regions():
                         ('_recall_inputs', JOURNAL)):
         assert KEY_OWNERSHIP[key]['region'] == region
         assert KEY_OWNERSHIP[key]['migrated'] is True
-    # W4: sorties is now physically owned by world; orders remains a declaration.
+    # W4: sorties is now physically owned by world; P2 moved orders to plan too.
     assert KEY_OWNERSHIP['sorties']['region'] == WORLD
     assert KEY_OWNERSHIP['sorties']['lifetime'] == 'chapter'
     assert KEY_OWNERSHIP['sorties']['migrated'] is True
-    assert KEY_OWNERSHIP['orders']['migrated'] is False
+    assert KEY_OWNERSHIP['orders']['migrated'] is True
     # W1 (C後続): launched/launched_orders は world 領域へ実移行。
     assert KEY_OWNERSHIP['launched']['region'] == WORLD
     assert KEY_OWNERSHIP['launched_orders']['region'] == WORLD
@@ -138,8 +138,13 @@ def test_migrated_departure_and_recall_keys_live_in_their_regions():
         assert KEY_OWNERSHIP[key]['region'] == PLAN
         assert KEY_OWNERSHIP[key]['lifetime'] == 'chapter'
         assert KEY_OWNERSHIP[key]['migrated'] is True
-    # P2/P3 は未移行のまま（orders・active・chart_plan 等は宣言のみ）。
-    for key in ('orders', 'active', 'chart_plan', 'general_override',
+    # P2: orders・active は plan 領域へ実移行。
+    for key in ('orders', 'active'):
+        assert KEY_OWNERSHIP[key]['region'] == PLAN
+        assert KEY_OWNERSHIP[key]['lifetime'] == 'chapter'
+        assert KEY_OWNERSHIP[key]['migrated'] is True
+    # P3 は未移行のまま（chart_plan 等は宣言のみ）。
+    for key in ('chart_plan', 'general_override',
                 'source_override', 'card_override', 'attack'):
         assert KEY_OWNERSHIP[key]['migrated'] is False
 

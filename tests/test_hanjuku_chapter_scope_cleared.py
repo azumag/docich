@@ -9,6 +9,7 @@ number.
 from docich.hanjuku.flows import starter
 from docich.hanjuku.strategy import campaign
 from docich.hanjuku_screen import Screen
+from docich.hanjuku.state.regions import plan as _plan_region
 
 
 def memory():
@@ -30,7 +31,7 @@ def test_finish_chapter_drops_the_orders_and_keeps_the_measured_chapter():
     mem = memory()
     campaign.finish_chapter(mem)
     assert mem['chapter'] == 4                     # still measured, never guessed
-    assert not mem.get('orders') and not mem.get('sorties')
+    assert not _plan_region(mem).get('orders') and not mem.get('sorties')
     assert not mem.get('chart_plan') and not mem.get('season_sites')
     assert not mem.get('captured')                 # the next map is measured afresh
     assert mem['chapter_transition_pending'] is True
@@ -43,7 +44,7 @@ def test_the_starter_departure_clears_the_finished_chapter():
     starter.step(screen, mem, None)
     assert records(mem, 'starter_departed_observed')
     assert records(mem, 'chapter_scope_cleared')
-    assert not mem.get('orders') and not mem.get('season_sites')
+    assert not _plan_region(mem).get('orders') and not mem.get('season_sites')
     assert mem['chapter'] == 4
 
 

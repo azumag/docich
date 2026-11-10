@@ -5,6 +5,7 @@ g1163 chapter 8 2026-11-09: `A:046e819d:M5f4f03` stayed pending while
 broadcast showed a sortie plan for a general who had already left.
 """
 from docich.hanjuku.strategy import replan
+from docich.hanjuku.state.regions import plan as _plan_region
 
 NEW_ORDERS = [{'step': 'A:new:M1', 'source': 'あるまむーん', 'general': '乙',
                'target': 'おかざき', 'cards': [], 'after': None}]
@@ -23,8 +24,8 @@ def memory(statuses, sorties):
 def test_an_unstarted_old_step_is_superseded():
     mem = memory({'A:old:M1': 'pending', 'A:old:M2': 'launched'}, {})
     replan._supersede_unstarted_steps(mem, NEW_ORDERS)
-    assert mem['orders']['A:old:M1'] == 'superseded'
-    assert mem['orders']['A:old:M2'] == 'launched'
+    assert _plan_region(mem)['orders']['A:old:M1'] == 'superseded'
+    assert _plan_region(mem)['orders']['A:old:M2'] == 'launched'
     assert any(r['decision'] == 'plan_steps_superseded' for r in mem['_records'])
 
 
@@ -32,10 +33,10 @@ def test_a_step_with_its_own_sortie_is_left_alone():
     mem = memory({'A:old:M1': 'pending'},
                  {'A:old:M1': {'general': '甲', 'status': 'en_route', 'tick': 4000}})
     replan._supersede_unstarted_steps(mem, NEW_ORDERS)
-    assert mem['orders']['A:old:M1'] == 'pending'
+    assert _plan_region(mem)['orders']['A:old:M1'] == 'pending'
 
 
 def test_a_step_carried_into_the_new_plan_is_kept():
     mem = memory({'A:old:M1': 'pending'}, {})
     replan._supersede_unstarted_steps(mem, [{'step': 'A:old:M1'}])
-    assert mem['orders']['A:old:M1'] == 'pending'
+    assert _plan_region(mem)['orders']['A:old:M1'] == 'pending'

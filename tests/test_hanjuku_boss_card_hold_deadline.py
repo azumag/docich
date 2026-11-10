@@ -52,7 +52,7 @@ def test_public_decide_native_unread_boss_panel_cancels_with_kit_requirements_in
         actions, state = decide(frame, json.loads(json.dumps(state)), run_identity=ID)
         assert actions == ([] if n + 1 < p.CARD_UNREADABLE_LIMIT else [p.pad('b'), p.pad('b')])
     mem = state['policy']
-    assert mem['active'] is None and mem['orders']['1-B1'] == 'pending'
+    assert _plan_region(mem)['active'] is None and _plan_region(mem)['orders']['1-B1'] == 'pending'
     assert not mem['picked'] and not mem.get('card_drop') and not mem.get('kit_spent')
     assert p._deploy_cards(next(o for o in p.chart.orders(1) if o['step'] == '1-B1'), mem) == before
     assert not mem.get('sorties') and not _plan_region(mem).get('order_context')
@@ -85,7 +85,7 @@ def test_strict_unverified_stock_or_capacity_has_one_budget_across_json_and_chan
         assert actions == [] or actions == [p.pad('b')]
     # The strict kit's unselectable cards are left behind; the sortie
     # keeps running with the rest — never cancelled for missing stock.
-    assert mem['orders']['1-B1'] == 'pending' and mem['active'] == '1-B1'
+    assert _plan_region(mem)['orders']['1-B1'] == 'pending' and _plan_region(mem)['active'] == '1-B1'
     assert not mem.get('boss_stock_cancelled')
     if case != 'alternating':
         assert mem.get('card_drop', {}).get('1-B1')
@@ -101,7 +101,7 @@ def test_readable_live_required_card_at_the_deadline_still_uses_normal_selection
     live = actor_panel(measured_card_select(('クースカン', 'ノリウツール', 'ブラッキー', 'ファバード')),
                        'シェーブル')
     assert p.deploy_step(live, mem) == [p.pad('a')]
-    assert mem['picked'] == ['クースカン'] and mem['active'] == '1-B1'
+    assert mem['picked'] == ['クースカン'] and _plan_region(mem)['active'] == '1-B1'
 
 
 @pytest.mark.parametrize('saved', [None, True, -1, '5', {'1-B1': True}, {'1-B1': -1}, {'1-B1': 1.0}])
@@ -111,7 +111,7 @@ def test_malformed_saved_budget_fails_closed_without_restoring_waits(saved):
         # An absent newly introduced budget is valid, a saved noninteger counter is not.
         mem['boss_card_hold'] = {'1-B1': None}
     assert p.deploy_step(parse(unread_native()), mem) == [p.pad('b'), p.pad('b')]
-    assert mem['active'] is None and not mem.get('card_drop')
+    assert _plan_region(mem)['active'] is None and not mem.get('card_drop')
 
 
 def test_requeued_intent_cannot_refresh_an_exhausted_ui_until_observed_backout():
@@ -181,9 +181,9 @@ def test_cancel_only_owner_yields_to_unrelated_foregrounds_without_spending_its_
 
 
 def test_a_different_active_order_does_not_get_the_old_cancellation_owner():
-    mem = cancelled_state()['policy']; mem['active'] = '1-A2'
+    mem = cancelled_state()['policy']; _plan_region(mem)['active'] = '1-A2'
     assert p.boss_stock_restart_step(parse(unread_native()), mem) is None
-    assert not mem.get('boss_stock_restart') and mem['active'] == '1-A2'
+    assert not mem.get('boss_stock_restart') and _plan_region(mem)['active'] == '1-A2'
 
 
 @pytest.mark.parametrize('capped', [False, True])
@@ -251,12 +251,12 @@ def test_public_decide_cancel_then_free_map_then_survey_through_json(capped):
 def test_capped_cancel_cannot_hold_a_different_active_order(kind):
     mem = cancelled_state()['policy']
     for _ in range(12): p.boss_stock_restart_step(parse(unread_native()), mem)
-    assert mem['boss_stock_cancelled'] and mem['active'] is None
-    mem = json.loads(json.dumps(mem)); mem['active'] = '1-A2'
+    assert mem['boss_stock_cancelled'] and _plan_region(mem)['active'] is None
+    mem = json.loads(json.dumps(mem)); _plan_region(mem)['active'] = '1-A2'
     for _ in range(14):
         assert p.boss_stock_restart_step(Screen([], None, '', kind=kind), mem) is None
         assert not mem.get('boss_stock_cancelled') and not mem.get('boss_stock_restart')
-        assert mem['active'] == '1-A2'
+        assert _plan_region(mem)['active'] == '1-A2'
 
 
 def test_capped_cancel_is_bound_to_the_chapter_as_well_as_the_run():
@@ -286,4 +286,4 @@ def test_public_decide_capped_owner_yields_to_another_order_like_an_unowned_view
 def test_legacy_unscoped_latch_cannot_claim_a_new_selection_or_survey(kind):
     mem = memory(); mem.update(boss_stock_cancelled=True, active='1-A2')
     assert p.boss_stock_restart_step(Screen([], None, '', kind=kind), mem) is None
-    assert not mem.get('boss_stock_cancelled') and mem['active'] == '1-A2'
+    assert not mem.get('boss_stock_cancelled') and _plan_region(mem)['active'] == '1-A2'

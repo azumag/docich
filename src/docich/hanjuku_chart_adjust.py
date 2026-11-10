@@ -18,6 +18,7 @@ import re
 import json
 from pathlib import Path
 
+from docich.hanjuku.state.regions import plan as _plan_region
 from . import hanjuku_chart as chart
 
 SCHEMA = 1
@@ -123,7 +124,7 @@ def request_id(mem) -> str:
     # Interim (JEV) orders do not change the situation the LLM was asked
     # about; otherwise every interim sortie would discard a pending answer.
     basis = {'chapter': mem.get('chapter'), 'captured': sorted(mem.get('captured') or []),
-             'orders': dict(sorted((k, v) for k, v in (mem.get('orders') or {}).items()
+             'orders': dict(sorted((k, v) for k, v in (_plan_region(mem).get('orders') or {}).items()
                                    if not str(k).startswith(INTERIM_PREFIX)
                                    and ':M' not in str(k)))}
     raw = json.dumps(basis, ensure_ascii=False, sort_keys=True, separators=(',', ':'))

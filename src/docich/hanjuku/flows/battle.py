@@ -1373,7 +1373,7 @@ def battle_end(mem, next_kind, *, defense_continues=False, actor_continues=False
         _plan_region(mem).setdefault('order_context', {}).pop(step, None)
         _plan_region(mem).setdefault('sortie_general', {}).pop(step, None)
         if retries[step] <= 3:
-            mem.setdefault('orders', {})[step] = 'pending'
+            _plan_region(mem).setdefault('orders', {})[step] = 'pending'
             context = {'strategy_variant': 'retry_chart_boss_kit',
                        'deviation_reason': ('ボス戦のHP敗北を確認。出撃将軍と既定切り札を再確認して再試行'
                                             if outcome == 'loss' else
@@ -1388,7 +1388,7 @@ def battle_end(mem, next_kind, *, defense_continues=False, actor_continues=False
                     reason=('既定のチャート装備を確認してボスへ再挑戦' if outcome == 'loss' else
                             '決着が実測できないままボス戦が終わったため、チャート装備を確認してボスへ再挑戦'))
         else:
-            mem.setdefault('orders', {})[step] = 'failed'
+            _plan_region(mem).setdefault('orders', {})[step] = 'failed'
             _record(mem, 'situation_held', chart_step=step, strategy_variant='boss_retry_exhausted',
                     observed_metric={'retries': retries[step]}, reason='ボス再試行の上限に到達したため保留')
     elif outcome == 'loss' and (_is_boss_order(boss_order, mem) or cur.get('enemy') == boss_name):
@@ -1401,7 +1401,7 @@ def battle_end(mem, next_kind, *, defense_continues=False, actor_continues=False
         retries = mem.setdefault('retries', {})
         retries[step] = retries.get(step, 0) + 1
         if retries[step] <= 2:
-            mem.setdefault('orders', {})[step] = 'pending'
+            _plan_region(mem).setdefault('orders', {})[step] = 'pending'
             # Better than repeating a lost melee: open with up to two イッテツーン
             # (10 general damage each per the chart's card table). Only copies
             # the measured stock holds: a card at 0 cannot be carried, and
@@ -1431,7 +1431,7 @@ def battle_end(mem, next_kind, *, defense_continues=False, actor_continues=False
             # Leaving the exhausted step 'launched' made it look like a march
             # still heading for the target: steps waiting on that capture and
             # the off-chart planner kept waiting on a sortie that had ended.
-            mem.setdefault('orders', {})[step] = 'failed'
+            _plan_region(mem).setdefault('orders', {})[step] = 'failed'
             _record(mem, 'situation_held', chart_step=step, strategy_variant='attack_retry_exhausted',
                     observed_metric={'retries': retries[step], 'outcome': outcome,
                                      'enemy_hp': enemy_hp, 'ally_hp': ally_hp},

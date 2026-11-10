@@ -27,6 +27,7 @@ from ... import hanjuku_reference as reference
 from ..decision_log import _record
 from .economy import KNOWN_PRICES, _merchant_spendable, _soldier_spendable
 from .kit import _is_boss_order
+from ..state.regions import plan as _plan_region
 
 # Copies bought (confirmed at the merchant's quote) that no card panel has shown
 # yet. card_stock stays an observation; this keeps a bought card from being
@@ -49,7 +50,7 @@ def boss_kit(mem):
     if order is None or not order['cards']:
         return None
     step = order['step']
-    if ((mem.get('orders') or {}).get(step) not in (None, 'pending')
+    if ((_plan_region(mem).get('orders') or {}).get(step) not in (None, 'pending')
             or (mem.get('rare_card_kit') or {}).get(step) is not None):
         return None
     return step, Counter(order['cards'])

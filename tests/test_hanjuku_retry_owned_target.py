@@ -7,6 +7,7 @@ base chart's remaining orders are looked at after the retries.
 """
 from docich import hanjuku_chart as chart
 from docich.hanjuku.strategy.orders import next_order
+from docich.hanjuku.state.regions import plan as _plan_region
 
 RETRY = 'I:b59ab6:3'
 
@@ -23,8 +24,8 @@ def state(retry_target='リグア', purpose='retake', captured=None):
            'launched_orders': {RETRY: {'step': RETRY, 'general': 'ポセイドン', 'source': 'グリン',
                                        'target': retry_target, 'cards': ['イッテツーン', 'イッテツーン'],
                                        'after': None, 'purpose': purpose, 'note': 'retry'}}}
-    mem['orders']['A:b59ab675:K1'] = 'launched'
-    mem['orders'][RETRY] = 'pending'
+    _plan_region(mem)['orders']['A:b59ab675:K1'] = 'launched'
+    _plan_region(mem)['orders'][RETRY] = 'pending'
     return mem
 
 
@@ -39,7 +40,7 @@ def test_a_retry_of_a_castle_we_hold_gives_way_to_the_boss_sortie():
     assert decisions(mem) == ['order_retry_retired']
     record = mem['_records'][0]
     assert (record['chart_step'], record['target']) == (RETRY, 'リグア')
-    assert mem['orders'][RETRY] == 'pending'          # status untouched
+    assert _plan_region(mem)['orders'][RETRY] == 'pending'          # status untouched
 
 
 def test_the_retirement_is_recorded_once():

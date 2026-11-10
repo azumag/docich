@@ -220,7 +220,7 @@ def _failed_retakes(mem, record=False):
     found = {c: list(steps) for c, steps in (stored or {}).items()
              if c in lost and isinstance(steps, list)}
     plan = mem.get('chart_plan') or {}
-    status = mem.get('orders') or {}
+    status = _plan_region(mem).get('orders') or {}
     if plan.get('chapter') in (None, chapter):
         for order in plan.get('orders') or ():
             target, step = order.get('target'), order.get('step')
@@ -262,7 +262,7 @@ def _boss_wave_in_flight(mem, boss):
                 or not 0 <= now - sortie['tick'] < SORTIE_BUSY_TICKS):
             continue
         steps.add(step)
-    status = mem.get('orders') or {}
+    status = _plan_region(mem).get('orders') or {}
     for order in (mem.get('chart_plan') or {}).get('orders') or ():
         if (isinstance(order, dict) and order.get('target') == boss
                 and status.get(order.get('step')) == 'launched'
@@ -958,7 +958,7 @@ def interim_candidates(mem, allow_sole=False) -> dict:
     # castle (owner 2026-10-30: 城に戻って出撃できる人員を探す).
     pending_sites = [o for o in chart.orders(chapter)
                      if o['target'] in chart.boss_sites(4)
-                     and (mem.get('orders') or {}).get(o['step']) in (None, 'pending')]
+                     and (_plan_region(mem).get('orders') or {}).get(o['step']) in (None, 'pending')]
     if pending_sites and all(_boss_companion_source(o, mem) is None for o in pending_sites):
         unavailable = busy | set(_world(mem).get('general_location_unknown') or ())
         present = {c: [g for g in garrison.get(c) or () if g not in unavailable]
@@ -1216,7 +1216,7 @@ def _mechanical_interim(mem, state, rid, digest, allow_sole=False):
     An adjusted chart from the worker still replaces it when it is adopted.
     """
     interim = state.get('interim_order')
-    status = mem.get('orders') or {}
+    status = _plan_region(mem).get('orders') or {}
     busy = (interim and status.get(interim['step']) in (None, 'pending')
             and _source(interim, mem) in _owned(mem)
             and routes.order_allowed(mem, interim, _source(interim, mem))
@@ -1266,7 +1266,7 @@ def _suppress_recent_failures(mem, orders):
     recent = mem.get('failed_local_step') or {}
     if not recent:
         return
-    status = mem.setdefault('orders', {})
+    status = _plan_region(mem).setdefault('orders', {})
     for order in orders:
         at = recent.get(order.get('step'))
         if type(at) is not int or now - at >= PLAN_STALE_TICKS:
@@ -1298,7 +1298,7 @@ def _release_stale_failures(mem, orders, rid):
     now = int(mem.get('tick') or 0)
     recent = mem.get('failed_local_step') or {}
     month = mem.get('month')
-    status = mem.setdefault('orders', {})
+    status = _plan_region(mem).setdefault('orders', {})
     book = mem.setdefault('plan_step_rearm', {})
     for order in orders:
         if chart.is_boss_castle(order.get('target')):
@@ -1469,7 +1469,7 @@ def _release_stale_steps(mem, steps):
     from .orders import (_arrival_limit, _drop_spent_sortie_attempt,
                          _queue_overdue_location_recheck)
     now = int(mem.get('tick') or 0)
-    status = mem.setdefault('orders', {})
+    status = _plan_region(mem).setdefault('orders', {})
     for step in steps:
         if status.get(step) != 'launched':
             continue
@@ -1522,7 +1522,7 @@ def _rearm_failed_boss_steps(mem, orders, rid):
     Only the boss is re-armed, and only within a per-month budget and
     cooldown: a genuinely unreachable target must not drain the army forever.
     """
-    status = mem.setdefault('orders', {})
+    status = _plan_region(mem).setdefault('orders', {})
     now = int(mem.get('tick') or 0)
     month = mem.get('month')
     rearmed = mem.get('boss_step_rearm')
@@ -1590,7 +1590,7 @@ def _supersede_unstarted_steps(mem, new_orders):
     own is superseded; anything launched keeps its own lifecycle.
     """
     previous = (mem.get('chart_plan') or {}).get('orders') or []
-    statuses = mem.setdefault('orders', {})
+    statuses = _plan_region(mem).setdefault('orders', {})
     sorties_now = _sorties(mem)
     keep = {o.get('step') for o in new_orders if isinstance(o, dict)}
     superseded = []
@@ -1698,7 +1698,7 @@ def _drop_stale_plan(mem):
     now = int(mem.get('tick') or 0)
     if now - adopted < PLAN_STALE_TICKS:
         return
-    status = mem.get('orders') or {}
+    status = _plan_region(mem).get('orders') or {}
     if any(status.get(o.get('step')) not in (None, 'pending') for o in plan['orders']):
         return
     mem['chart_plan'] = None
@@ -1714,7 +1714,7 @@ def _off_chart_mechanical(mem, state, rid, gate):
     but nothing is requested and no model answer is ever adopted, so the next
     sortie is always the first deterministic candidate.
     """
-    status = mem.get('orders') or {}
+    status = _plan_region(mem).get('orders') or {}
     fields = {'request_id': rid, 'off_chart_reason': 'mechanical',
               'captured': sorted(mem.get('captured') or []), 'orders': dict(status),
               'gold': mem.get('gold'), 'month': mem.get('month'), **_adjust_situation(mem)}
@@ -1754,7 +1754,7 @@ def _off_chart(mem):
     waiting = next((o for o in _orders(mem) if _boss_egg_depleted(o, mem)
                     and not _hero_source_alternative(o, mem)
                     and _ready(o, {**mem, 'egg_uses': {}})
-                    and (mem.get('orders') or {}).get(o['step']) in (None, 'pending')), None)
+                    and (_plan_region(mem).get('orders') or {}).get(o['step']) in (None, 'pending')), None)
     if waiting:
         key = (waiting['step'], mem.get('month'), (mem.get('egg_uses') or {}).get(NAME))
         if mem.get('boss_egg_wait') != list(key):
@@ -1773,7 +1773,7 @@ def _off_chart(mem):
     if not chart.speedrun_enabled(mem.get('chapter') or 0):
         return _off_chart_mechanical(mem, state, rid, gate)
     orders = [o for o in _orders(mem) if not o['step'].startswith(chart_adjust.INTERIM_PREFIX)]
-    status = mem.get('orders') or {}
+    status = _plan_region(mem).get('orders') or {}
     blocked = [{'step': o['step'], 'after': list(o['after'] or ())} for o in orders
                if status.get(o['step']) in (None, 'pending')]
     reason = ('chart_unavailable' if not orders

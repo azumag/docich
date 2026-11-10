@@ -66,8 +66,8 @@ def test_unreadable_card_target_never_becomes_missing_or_picked(word, hand):
     # A known card preceding an unknown glyph is still not a complete label.
     for _ in range(2):
         assert policy.deploy_step(screen, mem) == []
-        assert mem['picked'] == [] and mem['active'] == '1-B1'
-        assert mem['orders']['1-B1'] == 'pending'
+        assert mem['picked'] == [] and _plan_region(mem)['active'] == '1-B1'
+        assert _plan_region(mem)['orders']['1-B1'] == 'pending'
     assert all(r['decision'] == 'situation_held' for r in mem['_records'])
     record = mem['_records'][-1]
     assert record['card'] == 'クースカン'
@@ -123,10 +123,10 @@ def test_unreadable_card_select_departs_without_the_planned_cards():
     screen = menu('card_select', ['クースカン1'], True)
     for _ in range(policy.NORMAL_CARD_UNREADABLE_LIMIT - 1):
         assert policy.deploy_step(screen, mem) == []
-        assert mem['orders']['1-A2'] == 'pending'
+        assert _plan_region(mem)['orders']['1-A2'] == 'pending'
     assert policy.deploy_step(screen, mem) == [policy.pad('b')]
-    assert mem['orders']['1-A2'] == 'pending'          # not failed
-    assert mem.get('card_skip_departure', {}).get('1-A2') == 1
+    assert _plan_region(mem)['orders']['1-A2'] == 'pending'          # not failed
+    assert mem.get('card_skip_departure', {}).get('1-A2') == 1  # v624: skip count, not a flag (P2 changed this to `is True` by mistake)
     # B did not leave the list: take the highlighted card instead of looping.
     for _ in range(policy.NORMAL_CARD_UNREADABLE_LIMIT - 1):
         assert policy.deploy_step(screen, mem) == []
@@ -140,7 +140,7 @@ def test_a_base_boss_sortie_cancels_after_bounded_reads_without_dropping_require
     for _ in range(policy.CARD_UNREADABLE_LIMIT - 1):
         assert policy.deploy_step(screen, mem) == []
     assert policy.deploy_step(screen, mem) == [policy.pad('b'), policy.pad('b')]
-    assert mem['orders']['1-B1'] == 'pending' and mem['active'] is None
+    assert _plan_region(mem)['orders']['1-B1'] == 'pending' and _plan_region(mem)['active'] is None
     assert not mem.get('card_drop') and not mem.get('kit_spent')
 
 
@@ -173,7 +173,7 @@ def test_general_cursor_failure_does_not_install_a_substitute():
     mem = memory()
     assert policy.deploy_step(menu('general_list', ['どうし', 'ゼウス'], hand=False), mem) == []
     assert not mem.get('general_override') and not mem.get('source_override')
-    assert mem['active'] == '1-B1' and mem['_records'][-1]['decision'] == 'situation_held'
+    assert _plan_region(mem)['active'] == '1-B1' and mem['_records'][-1]['decision'] == 'situation_held'
 
 
 @pytest.mark.parametrize('cards,hand', [([], True), (['クースカン'], True),
@@ -185,7 +185,7 @@ def test_uncertain_or_mismatched_sortie_is_not_approved(cards, hand):
     mem['picked'] = ['クースカン', 'ノリウツール']  # even a legacy false selection is insufficient
     _plan_region(mem)['order_context'] = {'1-B1': {'actual_general': 'old'}}
     assert policy.deploy_step(menu('sortie_confirm', ['うむッ!'] + cards, hand), mem) == []
-    assert mem['active'] == '1-B1' and mem['orders']['1-B1'] == 'pending'
+    assert _plan_region(mem)['active'] == '1-B1' and _plan_region(mem)['orders']['1-B1'] == 'pending'
     assert 'cursor' not in mem and '1-B1' not in _plan_region(mem).get('order_context', {})
     assert mem['picked'] == ['クースカン', 'ノリウツール']
     rec = mem['_records'][-1]
@@ -263,7 +263,7 @@ def test_boss_never_substitutes_from_an_unreadable_list(words, hand):
     assert policy.deploy_step(menu('general_list', words, hand), mem) == []
     assert '1-B1' not in _plan_region(mem).get('sortie_general', {})
     assert not mem.get('source_override')
-    assert mem['orders']['1-B1'] == 'pending' and mem['active'] == '1-B1'
+    assert _plan_region(mem)['orders']['1-B1'] == 'pending' and _plan_region(mem)['active'] == '1-B1'
     assert mem['_records'][-1]['decision'] == 'situation_held'
 
 
@@ -309,7 +309,7 @@ def test_legacy_boss_flow_without_hero_evidence_is_held(kind, monkeypatch):
     monkeypatch.setattr(policy, 'nav_step', lambda *args: pytest.fail('unverified boss navigation'))
     screen = menu(kind, ['うむッ!', 'クースカン', 'ノリウツール'])
     actions = policy.target_step(screen, mem, None) if kind == 'map_target' else policy.deploy_step(screen, mem)
-    assert actions == [] and mem['active'] == '1-B1'
+    assert actions == [] and _plan_region(mem)['active'] == '1-B1'
     assert mem['_records'][-1]['decision'] == 'situation_held'
 
 
@@ -526,7 +526,7 @@ def test_unmeasured_card_menu_cells_never_select_or_infer_missing(y, x, value):
     replace_cell(screen, y, x, value)
     mem = foot_order_memory()
     assert policy.deploy_step(screen, mem) == []
-    assert mem['picked'] == [] and mem['active'] == '1-A2'
+    assert mem['picked'] == [] and _plan_region(mem)['active'] == '1-A2'
     assert mem['_records'][-1]['decision'] == 'situation_held'
     assert not policy._measured_card_select(screen)
 
@@ -556,7 +556,7 @@ def test_zero_inventory_or_unmeasured_list_layout_is_held(change):
     mem = foot_order_memory()
     if change == 'wrong_name':
         # A full panel is first scrolled for the card; past that bound it holds.
-        mem['card_scroll'] = {mem['active']: policy.CARD_SCROLL_LIMIT}
+        mem['card_scroll'] = {_plan_region(mem)['active']: policy.CARD_SCROLL_LIMIT}
     assert policy.deploy_step(screen, mem) == []
     assert mem['picked'] == []
     assert mem['_records'][-1]['decision'] == 'situation_held'
@@ -866,7 +866,7 @@ def test_empty_general_list_falls_back_to_home_source_instead_of_silent_hold():
     # the override and closes the menus (same as any missing general).
     assert policy.deploy_step(screen, mem) == [policy.pad('b'), policy.pad('b')]
     assert mem['source_override']['1-C1'] == 'アルマムーン'
-    assert mem['active'] is None and mem['orders']['1-C1'] == 'pending'
+    assert _plan_region(mem)['active'] is None and _plan_region(mem)['orders']['1-C1'] == 'pending'
     assert mem['_records'][-1]['decision'] == 'order_source_changed'
     assert not mem.get('general_override')
 
@@ -876,7 +876,7 @@ def test_empty_general_list_after_home_fallback_fails_the_order_with_evidence():
     mem['source_override'] = {'1-C1': 'アルマムーン'}
     screen = empty_general_list_screen()
     assert policy.deploy_step(screen, mem) == [policy.pad('b')]
-    assert mem['orders']['1-C1'] == 'failed' and mem['active'] is None
+    assert _plan_region(mem)['orders']['1-C1'] == 'failed' and _plan_region(mem)['active'] is None
     rec = mem['_records'][-1]
     assert rec['decision'] == 'order_failed'
     assert rec['deviation_reason']
@@ -886,7 +886,7 @@ def test_castle_menu_without_hand_holds_with_evidence_instead_of_empty_plan():
     mem = memory()
     screen = menu('castle_menu', ['しゅつげき', 'ステータス'], hand=False)
     assert policy.deploy_step(screen, mem) == []
-    assert mem['active'] == '1-B1'
+    assert _plan_region(mem)['active'] == '1-B1'
     assert mem['_records'][-1]['decision'] == 'situation_held'
     assert 'しゅつげき' in mem['_records'][-1]['reason']
 
@@ -937,7 +937,7 @@ def test_an_unreadable_sortie_confirmation_approves_once_then_cancels():
     for _ in range(policy.SORTIE_CONFIRM_UNREADABLE_LIMIT - 1):
         assert policy.deploy_step(screen, mem) == []
     assert policy.deploy_step(screen, mem) == [policy.pad('b'), policy.pad('b')]
-    assert mem['orders']['1-C2'] == 'failed' and mem['active'] is None
+    assert _plan_region(mem)['orders']['1-C2'] == 'failed' and _plan_region(mem)['active'] is None
 
 
 def test_a_card_absent_from_the_panel_is_left_behind_after_bounded_readings():
@@ -990,7 +990,7 @@ def test_boss_kit_is_never_dropped_while_a_card_may_be_hidden():
     assert mem['card_drop']['1-B1'] == ['クースカン', 'ノリウツール']
     assert policy.deploy_step(screen, mem) == [policy.pad('b')]
     assert policy._deploy_cards(order, mem) == []
-    assert mem['active'] == '1-B1' and mem['orders'][order['step']] == 'pending'
+    assert _plan_region(mem)['active'] == '1-B1' and _plan_region(mem)['orders'][order['step']] == 'pending'
 
 
 def test_a_boss_card_below_a_full_panel_is_reached_by_scrolling_after_visible_ones():
@@ -1077,7 +1077,7 @@ def test_priority_selection_input_missing_never_relabels_actual_hero(kind):
     policy.deploy_step(selected_list(['どうし', 'ゼウス'], 1), mem)
     screen = measured_card_select() if kind == 'card_select' else measured_loaded_sortie(('クースカン', 'ノリウツール'))
     assert policy.deploy_step(actor_panel(screen, 'どうし'), mem) == [policy.pad('b'), policy.pad('b')]
-    assert mem['active'] is None and '1-B1' not in _plan_region(mem).get('sortie_general', {})
+    assert _plan_region(mem)['active'] is None and '1-B1' not in _plan_region(mem).get('sortie_general', {})
     assert not any(r['decision'] == 'sortie_confirm' for r in mem['_records'])
     assert mem['_records'][-1]['decision'] == 'sortie_actor_unconfirmed'
 
@@ -1090,7 +1090,7 @@ def test_priority_actor_unknown_is_bounded_and_does_not_issue_more_a():
     for _ in range(2):
         assert policy.deploy_step(screen, mem) == []
     assert policy.deploy_step(screen, mem) == [policy.pad('b'), policy.pad('b')]
-    assert mem['active'] is None and not mem['sortie_actor_miss']
+    assert _plan_region(mem)['active'] is None and not mem['sortie_actor_miss']
 
 
 @pytest.mark.parametrize('words', [['どうし', 'ゼウス', 'ゼウス'], ['どうし', '未確認'],
@@ -1106,7 +1106,7 @@ def test_busy_companion_does_not_force_a_substitute_or_remove_hero_guard():
     mem.update(tick=100, egg_uses={'どうし': 3},
                sorties={'elsewhere': {'general': 'ゼウス', 'target': 'ゴーメン', 'tick': 99, 'status': 'en_route'}})
     assert policy.deploy_step(selected_list(['どうし', 'ゼウス']), mem) == [policy.pad('b'), policy.pad('b')]
-    assert mem['active'] is None and '1-B1' not in _plan_region(mem).get('sortie_general', {})
+    assert _plan_region(mem)['active'] is None and '1-B1' not in _plan_region(mem).get('sortie_general', {})
 
 
 def test_broken_or_depleted_hero_may_open_list_but_only_companion_can_commit():
@@ -1124,7 +1124,7 @@ def test_broken_or_depleted_hero_may_open_list_but_only_companion_can_commit():
     other.update(egg_uses={'どうし': 0}, house_eggs={'どうし': {'broken': True}},
                  garrison={'スペンソニア': ['どうし', 'ゼウス']})
     assert policy.deploy_step(selected_list(['どうし']), other) == [policy.pad('b'), policy.pad('b')]
-    assert other['active'] is None and not _plan_region(other).get('sortie_general')
+    assert _plan_region(other).get('active') is None and not _plan_region(other).get('sortie_general')
 
 
 def test_priority_keeps_single_defender_and_explicit_nonhero_chart_role():
@@ -1147,8 +1147,8 @@ def test_chart_source_companion_is_inspected_before_following_a_busy_hero():
     mem.update(tick=100, captured=list(chart.castles(1)),
                garrison={'スペンソニア': ['ゼウス', 'ココット'], 'ゴーメン': ['どうし']},
                sorties={'other': {'general': 'どうし', 'target': 'ジョンリギ', 'tick': 99, 'status': 'en_route'}})
-    mem['orders'] = {o['step']: 'launched' for o in chart.orders(1)}
-    mem['orders']['1-B1'] = 'pending'
+    _plan_region(mem)['orders'] = {o['step']: 'launched' for o in chart.orders(1)}
+    _plan_region(mem)['orders']['1-B1'] = 'pending'
     assert policy.next_order(mem) == boss
     assert not mem.get('source_override')
     assert policy.deploy_step(selected_list(['ゼウス', 'ココット']), mem) == [policy.pad('a')]

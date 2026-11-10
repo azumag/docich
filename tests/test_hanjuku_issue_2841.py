@@ -8,7 +8,7 @@ from docich import hanjuku_policy as p
 from docich.hanjuku.os_layer.screen import Screen
 from docich.hanjuku_font import TextLine
 from docich.hanjuku.flows.deploy import _verify_sortie_source
-from docich.hanjuku.state.regions import world as _world
+from docich.hanjuku.state.regions import world as _world, plan as _plan_region
 
 
 def _screen(words=()):
@@ -26,7 +26,7 @@ def test_hero_broken_sortie_is_not_reissued_while_egg_stays_broken():
     order = {'step': '1-A1', 'general': 'どうし', 'source': 'アルマムーン',
              'target': 'ゴーメン', 'cards': [], 'after': None}
     p.deploy_step(Screen(lines=[], hand=None, text='', kind='castle_menu'), mem)
-    assert mem['orders']['1-A1'] != 'launched'
+    assert _plan_region(mem)['orders']['1-A1'] != 'launched'
     assert not p._ready(order, mem)
 
 
@@ -39,7 +39,7 @@ def test_sortie_cancelled_observed_is_not_reissued_while_general_stays():
     _verify_sortie_source(_screen(['ゼウス', 'どうし']), mem, {'step': 'new'})
     order = {'step': 'new', 'general': 'ゼウス', 'source': 'アルマムーン',
              'target': 'ゴーメン', 'cards': [], 'after': None}
-    assert mem['orders']['new'] != 'launched'
+    assert _plan_region(mem)['orders']['new'] != 'launched'
     assert not p._ready(order, mem)
 
 
@@ -69,7 +69,7 @@ def test_equivalent_source_defender_cancel_survives_a_new_execution_step():
     assert p._keep_sortie_defender(_screen(['ゼウス']), mem, old) is not None
 
     new = dict(old, step='A:new00002:Mabc123')
-    mem['orders'][new['step']] = 'pending'
+    _plan_region(mem)['orders'][new['step']] = 'pending'
     assert not p._ready(new, mem)
     assert any(r['decision'] == 'sortie_equivalent_suppressed' and
                r.get('chart_step') == new['step'] for r in mem['_records'])
@@ -87,7 +87,7 @@ def _launch_order(step):
 
 def _arm_unverified_launch(mem, step):
     order = _launch_order(step)
-    mem.setdefault('orders', {})[step] = 'launched'
+    _plan_region(mem).setdefault('orders', {})[step] = 'launched'
     mem.setdefault('launched_orders', {})[step] = dict(order)
     mem.setdefault('sorties', {})[step] = {
         'general': 'ゼウス', 'source': 'アルマムーン', 'target': 'ゴーメン',
@@ -114,7 +114,7 @@ def test_launch_probe_retry_budget_survives_equivalent_replanned_step():
 
     first = 'A:old00001:Mabc123'
     p._rollback_unverified_launch(mem, first, _arm_unverified_launch(mem, first), [])
-    assert mem['orders'][first] == 'pending'
+    assert _plan_region(mem)['orders'][first] == 'pending'
     assert _launch_misses(mem)[first] == 1
 
     # A rebuilt mechanical/adjusted plan gives the same sortie another
@@ -122,7 +122,7 @@ def test_launch_probe_retry_budget_survives_equivalent_replanned_step():
     second = 'A:new00002:Mabc123'
     p._rollback_unverified_launch(mem, second, _arm_unverified_launch(mem, second), [])
     assert _launch_misses(mem)[second] == p.LAUNCH_MISS_LIMIT
-    assert mem['orders'][second] == 'failed'
+    assert _plan_region(mem)['orders'][second] == 'failed'
     failed = [r for r in mem['_records'] if r['decision'] == 'sortie_launch_failed']
     assert failed and failed[-1]['chart_step'] == second
     assert failed[-1]['observed_metric']['misses'] == p.LAUNCH_MISS_LIMIT

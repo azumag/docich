@@ -34,6 +34,7 @@ class DiagnosticsGatewayTests(unittest.TestCase):
         self.doc = self.base / "docich"
         (self.doc / "ops" / "vm_actions").mkdir(parents=True)
         (self.doc / "src" / "docich" / "semantic_decision").mkdir(parents=True)
+        (self.doc / "src" / "docich" / "hanjuku" / "state").mkdir(parents=True)
         (self.doc / "ops" / "audio_priority").mkdir(parents=True, exist_ok=True)
         self.soren = self.base / "soren"
         (self.soren / "tmp" / "state").mkdir(parents=True)
@@ -55,6 +56,9 @@ class DiagnosticsGatewayTests(unittest.TestCase):
             "src/docich/semantic_decision/__init__.py",
             "src/docich/semantic_decision/diagnostics.py",
             "src/docich/semantic_decision/routes.py",
+            "src/docich/hanjuku/__init__.py",
+            "src/docich/hanjuku/state/__init__.py",
+            "src/docich/hanjuku/state/regions.py",
             "ops/audio_priority/priority.py",
         ):
             src = ROOT / rel

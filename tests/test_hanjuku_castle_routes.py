@@ -62,9 +62,9 @@ def test_a_relay_castle_lost_after_planning_is_not_attacked_as_an_empty_move():
     mem['captured'].remove('コラダイン')
     mem['lost'].append('コラダイン')
     assert not orders._ready(order, mem)
-    mem['active'] = order['step']
+    _plan_region(mem)['active'] = order['step']
     assert deploy._hold_unrouted_sortie(mem, order) is not None
-    assert mem['active'] is None
+    assert _plan_region(mem)['active'] is None
 
 
 def add_transfer(mem, source, target, general='ミュスカデ'):
@@ -164,8 +164,8 @@ def test_hotloaded_unsafe_pending_order_cannot_finish_the_old_confirmation(kind)
     else:
         actions = deploy.deploy_step(screen, mem)
     assert all(a.get('buttons') == ['b'] for a in actions)
-    assert mem['active'] is None and 'y_jump' not in mem
-    assert mem['orders'][order['step']] == 'failed'
+    assert _plan_region(mem)['active'] is None and 'y_jump' not in mem
+    assert _plan_region(mem)['orders'][order['step']] == 'failed'
     assert mem['_records'][-1]['decision'] == 'sortie_route_unverified'
 
 
@@ -179,7 +179,7 @@ def test_world_map_route_check_preserves_unregistered_map_no_input_hold(monkeypa
                y_jump={'step': order['step'], 'goal': 'ドンダム', 'mode': 'target'})
     with chart.map_context(mem):
         assert map_flow.world_map_step(Screen([], None, '', kind='world_map'), mem, None) == []
-    assert mem['active'] is None and 'y_jump' not in mem
+    assert _plan_region(mem)['active'] is None and 'y_jump' not in mem
     assert mem['_map_registration_hold'] is True
     assert mem['_records'][-1]['decision'] == 'map_coordinates_unavailable'
 
@@ -209,7 +209,7 @@ def test_unsafe_pending_interim_does_not_block_its_routed_replacement():
     _world(mem)['garrison']['リグア'] = ['ヘラ', 'キャンディー', 'ポワソン']
     old = {'step': 'I:old:1', 'source': 'リグア', 'target': 'ドンダム',
            'general': 'ヘラ', 'purpose': 'retake', 'cards': [], 'after': None}
-    mem['orders'][old['step']] = 'pending'
+    _plan_region(mem)['orders'][old['step']] = 'pending'
     pending = {'interim_order': old}
     replan._mechanical_interim(mem, pending, 'new-request', 'synthetic-digest')
     new = pending['interim_order']
@@ -233,7 +233,7 @@ def rigua_stall():
                                 'status': 'en_route', 'tick': tick}
         _world(mem)['launched_orders'][step] = {'purpose': 'move', 'source': 'アルマムーン',
                                         'target': 'グリン', 'general': general, 'step': step}
-        mem['orders'][step] = 'launched'
+        _plan_region(mem)['orders'][step] = 'launched'
     retake = {'step': 'I:b59ab6:2', 'general': 'しょうぐん', 'source': 'グリン', 'target': 'リグア',
               'cards': ['イッテツーン', 'グリンボー', 'グリンボー'], 'after': None,
               'purpose': 'retake', 'source_probe': True,
@@ -324,7 +324,7 @@ def victoria_drain():
                                 'status': 'en_route', 'tick': tick}
         _world(mem)['launched_orders'][step] = {'purpose': 'move', 'source': 'アルマムーン',
                                         'target': 'ビクトリア', 'general': general, 'step': step}
-        mem['orders'][step] = 'launched'
+        _plan_region(mem)['orders'][step] = 'launched'
     return mem
 
 
@@ -556,7 +556,7 @@ def aiaie_stall():
         _world(mem)['sorties'][step] = {'source': 'アルマムーン', 'target': 'アイアイエー',
                                 'general': general, 'status': status, 'tick': tick,
                                 'purpose': 'move'}
-        mem['orders'][step] = 'failed'
+        _plan_region(mem)['orders'][step] = 'failed'
     return mem
 
 
@@ -643,13 +643,13 @@ def test_an_old_launched_flag_does_not_block_an_order_the_plan_offers_again():
     mem = aiaie_stall()
     steps = rebuild(mem)
     karun = steps['カルーン']
-    mem['orders'][karun] = 'launched'
+    _plan_region(mem)['orders'][karun] = 'launched'
     _world(mem)['sorties'][karun] = {'source': 'アルマムーン', 'target': 'カルーン', 'general': 'キッシュ',
                              'status': 'arrived', 'tick': mem['tick'] - 17000}
     mem['general_override'] = {karun: 'キッシュ'}
     _plan_region(mem)['order_context'] = {karun: {'actual_general': 'キッシュ'}}
     rebuild(mem)
-    assert mem['orders'][karun] == 'pending'
+    assert _plan_region(mem)['orders'][karun] == 'pending'
     assert karun not in mem['general_override'] and karun not in _plan_region(mem).get('order_context', {})
     assert mem['_records'][-1]['decision'] in ('plan_step_released', 'chart_adjust_applied')
     assert any(r['decision'] == 'plan_step_released' and r['chart_step'] == karun for r in mem['_records'])
@@ -659,8 +659,8 @@ def test_an_order_really_marching_keeps_its_launched_flag():
     mem = aiaie_stall()
     steps = rebuild(mem)
     step = steps['ジュメルズ']
-    mem['orders'][step] = 'launched'
+    _plan_region(mem)['orders'][step] = 'launched'
     _world(mem)['sorties'][step] = {'source': 'アルマムーン', 'target': 'ジュメルズ', 'general': 'セルリアク',
                             'status': 'en_route', 'tick': mem['tick'] - 100}
     rebuild(mem)
-    assert mem['orders'][step] == 'launched'
+    assert _plan_region(mem)['orders'][step] == 'launched'

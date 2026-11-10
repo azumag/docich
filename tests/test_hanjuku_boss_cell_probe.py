@@ -11,6 +11,7 @@ from docich import hanjuku_chart as chart
 from docich.hanjuku.os_layer import navigation as N
 from docich.hanjuku.strategy import orders as O
 from docich.hanjuku.strategy import replan
+from docich.hanjuku.state.regions import plan as _plan_region
 
 
 def plan(*steps):
@@ -86,7 +87,7 @@ def test_an_unentered_boss_relaunch_advances_the_step_candidate():
     O._relaunch_overdue_boss(mem)
     assert mem['boss_step_probe']['A:x:M1'] == 1
     assert N.boss_probe_cell(mem, 'ボス', 'A:x:M1') == (818 + 16, 184)
-    assert mem['orders']['A:x:M1'] == 'pending'
+    assert _plan_region(mem)['orders']['A:x:M1'] == 'pending'
     assert mem['boss_relaunch']['A:x:M1'] == 1
     assert [r for r in mem['_records'] if r['decision'] == 'boss_cell_probe_shift']
 
@@ -95,7 +96,7 @@ def test_the_last_candidate_is_not_shifted_past_the_list():
     mem = overdue_boss(index=len(chart.BOSS_CELL_PROBES[6]) - 1)
     O._relaunch_overdue_boss(mem)
     assert mem['boss_step_probe']['A:x:M1'] == len(chart.BOSS_CELL_PROBES[6]) - 1
-    assert mem['orders']['A:x:M1'] == 'pending'      # normal relaunch still runs
+    assert _plan_region(mem)['orders']['A:x:M1'] == 'pending'      # normal relaunch still runs
     assert not [r for r in mem['_records'] if r['decision'] == 'boss_cell_probe_shift']
 
 

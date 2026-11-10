@@ -253,7 +253,7 @@ def test_attack_loss_requeues_the_chart_order_with_bounded_retries():
                'battle': {'enemy': 'ラズベリー', 'ally': 'ココット', 'enemy_hp': 45, 'ally_hp': 0,
                           'castle': 'ジョンリギ', 'side': 'attack', 'step': '1-C1', 'cards_used': []}}
         policy.battle_end(mem, 'map'); policy.battle_end(mem, 'map')
-        assert mem['orders']['1-C1'] == ('pending' if attempt <= 2 else 'failed')
+        assert _plan_region(mem)['orders']['1-C1'] == ('pending' if attempt <= 2 else 'failed')
     held = [r for r in mem['_records'] if r.get('strategy_variant') == 'attack_retry_exhausted']
     assert held and held[-1]['chart_step'] == '1-C1'
 
@@ -272,13 +272,13 @@ def test_chart_orders_follow_the_chart_and_unlock_on_captures(monkeypatch):
     monkeypatch.delitem(chart.Y_JUMP_OFFSET, 5)
     mem = {'chapter': 1, 'orders': {}}
     assert [policy.next_order(mem)['step']] == ['1-A1']
-    mem['orders'] = {'1-A1': 'launched', '1-V1': 'launched', '1-C1': 'launched'}
+    _plan_region(mem)['orders'] = {'1-A1': 'launched', '1-V1': 'launched', '1-C1': 'launched'}
     assert policy.next_order(mem) is None
     mem['captured'] = ['キカンドン']
     order = policy.next_order(mem)
     assert order['step'] == '1-A2' and order['cards'] == ('フットバース',) and order['target'] == 'ゴーメン'
     mem['captured'] = ['キカンドン', 'ナキューメラ', 'ジョンリギ', 'ゴーメン', 'スペンソニア', 'カストーラ']
-    mem['orders'].update({s: 'launched' for s in ('1-A2', '1-V2', '1-C2', '1-A3')})
+    _plan_region(mem)['orders'].update({s: 'launched' for s in ('1-A2', '1-V2', '1-C2', '1-A3')})
     assert policy.next_order(mem)['target'] == 'けっかい'
     assert policy.next_order({'chapter': 5, 'orders': {}}) is None
 
@@ -513,7 +513,7 @@ def test_a_lost_source_castle_releases_the_running_order_instead_of_steer_back()
     mem = {'chapter': 1, 'captured': [], 'active': 'A:test:J3', 'orders': {},
            'chart_plan': {'request_id': 'test', 'orders': [order]}}
     for base in chart.orders(1):
-        mem['orders'][base['step']] = 'launched'
+        _plan_region(mem)['orders'][base['step']] = 'launched'
     screen = S(lines=[], hand=None, text='', kind='map')
     # The source castle was taken back: the cursor must not be steered there.
     assert policy.map_step(screen, mem, None) == []
@@ -523,10 +523,10 @@ def test_a_lost_source_castle_releases_the_running_order_instead_of_steer_back()
     assert lost['chart_step'] == 'A:test:J3'
     assert lost['observed_metric'] == {'captured': [], 'after': ['captured', 'ジョンリギ'],
                                       'source': 'ジョンリギ'}
-    assert mem['active'] != 'A:test:J3'        # the unready order is not re-picked
+    assert _plan_region(mem)['active'] != 'A:test:J3'        # the unready order is not re-picked
     assert all(r.get('chart_step') != 'A:test:J3' for r in mem['_records'] if r['decision'] == 'order_start')
     assert 'chart_adjust_request' in names     # asks for a chart; a mechanical interim runs meanwhile
-    assert mem['active'] is None or mem['active'].startswith('I:') or (isinstance(mem['active'], str) and ':M' in mem['active'])
+    assert _plan_region(mem)['active'] is None or _plan_region(mem)['active'].startswith('I:') or (isinstance(_plan_region(mem)['active'], str) and ':M' in _plan_region(mem)['active'])
 
 
 def test_commentary_is_grounded_and_holds_when_unknown():
@@ -1142,10 +1142,10 @@ def test_missing_chart_general_is_never_replaced_by_the_hero():
     decisions = [r['decision'] for r in mem['_records']]
     assert 'hero_substitute_refused' in decisions and 'order_substitute' not in decisions
     # Second visit with only the hero again: the order fails, the hero stays.
-    mem['active'] = '1-C1'
+    _plan_region(mem)['active'] = '1-C1'
     actions = policy.deploy_step(parse(c.frame()), mem)
     assert not (mem.get('general_override') or {}).get('1-C1')
-    assert mem['orders']['1-C1'] == 'failed'
+    assert _plan_region(mem)['orders']['1-C1'] == 'failed'
 
 
 def test_empty_general_list_canvas_parses_as_general_list_without_hand():
@@ -1469,9 +1469,9 @@ def test_visible_chapter_transition_clears_old_route_state_and_records_evidence(
     assert rec['observed_metric'] == {'chapter': 2}
     assert rec['resulting_stage'] == 2 and rec['previous_stage'] == 1
     assert all(r['chapter'] == 2 for r in mem['_records'])
-    mem['orders'] = {'2-A1': 'launched'}
+    _plan_region(mem)['orders'] = {'2-A1': 'launched'}
     policy.observe_events(screen, mem)
-    assert mem['orders'] == {'2-A1': 'launched'}
+    assert _plan_region(mem)['orders'] == {'2-A1': 'launched'}
 
 
 @pytest.mark.parametrize('change', ['lease', 'game', 'terminal'])
@@ -4065,13 +4065,13 @@ def test_interim_attack_uses_another_general_instead_of_broken_hero():
 @pytest.mark.parametrize('kind', ['card_select', 'sortie_confirm', 'map_target'])
 def test_hotloaded_broken_hero_sortie_is_cancelled_before_commit(kind):
     mem = _broken_hero_memory()
-    mem['active'] = '1-A1'; mem['orders']['1-A1'] = 'pending'
+    _plan_region(mem)['active'] = '1-A1'; _plan_region(mem)['orders']['1-A1'] = 'pending'
     _flow(mem)['sortie_attempt'] = {'step': '1-A1'}
     screen = parse(Canvas().frame()); screen.kind = kind
     actions = (policy.target_step(screen, mem, None) if kind == 'map_target'
                else policy.deploy_step(screen, mem))
     assert actions == [policy.pad('b')]
-    assert mem['active'] is None and mem['orders']['1-A1'] == 'pending'
+    assert _plan_region(mem)['active'] is None and _plan_region(mem)['orders']['1-A1'] == 'pending'
     assert 'sortie_attempt' not in _flow(mem)
     assert mem['_records'][0]['decision'] == 'hero_broken_egg_sortie_held'
 

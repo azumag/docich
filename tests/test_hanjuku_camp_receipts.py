@@ -16,7 +16,7 @@ from docich.hanjuku_pixels import read_png
 from docich.hanjuku_screen import Screen, parse
 from test_hanjuku_chart_bot import camp_menu
 from docich.hanjuku.state.regions import flow as _flow, journal as _journal
-from docich.hanjuku.state.regions import world as _world
+from docich.hanjuku.state.regions import world as _world, plan as _plan_region
 
 ID = {'game': 'hanjuku-hero', 'runtime_id': 'g514-8937051b', 'generation': 514, 'lease_id': 'lease-test'}
 
@@ -181,5 +181,5 @@ def test_recall_target_screen_never_confirms_a_different_chart_sortie(stage):
          'sortie_attempt':{'step':'1-A2','target_seen':True},
          'recall':{'stage':stage},'_records':[]}
     p.observe_sortie_transition(Screen([],None,'',kind='world_map'),mem,'map_target')
-    assert mem['orders']['1-A2']=='pending' and not _world(mem).get('sorties')
+    assert _plan_region(mem)['orders']['1-A2']=='pending' and not _world(mem).get('sorties')
     assert not mem['_records']

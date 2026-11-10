@@ -18,7 +18,7 @@ from docich.hanjuku.os_layer.pixels import Frame, read_png
 from docich.hanjuku.os_layer.screen import Screen, parse
 from docich.hanjuku.os_layer.commands import pad
 from test_hanjuku_sortie_evidence import memory, actor_panel, measured_loaded_sortie
-from docich.hanjuku.state.regions import sorties as _sorties
+from docich.hanjuku.state.regions import sorties as _sorties, plan as _plan_region
 from docich.hanjuku.state.regions import flow as _flow, journal as _journal
 
 FIXTURE = Path(__file__).parent / 'fixtures/hanjuku/g700-balmung-kit-confirm.png'
@@ -94,7 +94,7 @@ def test_direction_then_later_read_no_allows_one_refusal_a_not_departure():
     for _ in range(20):
         assert observe(panel('no'), mem) == []
     assert mem.get('boss_stock_cancelled') and not _flow(mem).get('sortie_attempt')
-    assert mem['orders']['1-B1'] == 'pending' and not mem.get('sorties')
+    assert _plan_region(mem)['orders']['1-B1'] == 'pending' and not mem.get('sorties')
 
 
 def test_first_no_read_and_same_observation_replay_do_not_confirm():
@@ -139,6 +139,7 @@ def test_only_full_measured_layout_may_decline_under_a_generic_kind(kind):
 @pytest.mark.parametrize('kind', ['battle', 'battle_menu', 'month_menu', 'shop_quantity_prompt', 'yes_no'])
 def test_unrelated_payment_and_battle_keep_their_own_receipts(kind):
     mem = cancelled(); mem['month_sub'] = {'kind': 'recruit', 'paid': True, 'receipt': {'amount': 50}}
+    _plan_region(mem)  # P2: snapshot in region form; the restart step migrates flat keys.
     before = deepcopy(mem)
     screen = Screen([], None, '50Gうむッ!いかんッ!', kind=kind)
     assert deploy.boss_stock_restart_step(screen, mem) is None
@@ -151,7 +152,7 @@ def test_stale_cancel_owner_never_drives_a_new_foreground(change):
     if change == 'run': mem['_run_identity']['runtime_id'] = 'g890-1234abcd'
     elif change == 'lease': mem['_run_identity']['lease_id'] = 'another-lease'
     elif change == 'chapter': mem['chapter'] = 2
-    elif change == 'active': mem['active'] = '1-C1'
+    elif change == 'active': _plan_region(mem)['active'] = '1-C1'
     else: del mem['boss_stock_cancelled']['identity']
     assert observe(panel('no'), mem) is None
     assert not mem.get('boss_stock_cancelled')
@@ -186,7 +187,7 @@ def test_owner_is_not_cleared_by_a_planned_refusal_only_an_observed_backout(kind
     assert mem.get('boss_stock_cancelled')
     assert observe(Screen([], None, '', kind=kind), mem) is None
     assert not mem.get('boss_stock_cancelled')
-    assert mem['orders']['1-B1'] == 'pending'
+    assert _plan_region(mem)['orders']['1-B1'] == 'pending'
     assert mem['_records'][-1]['decision'] == 'sortie_cancel_backout_observed'
 
 
@@ -200,7 +201,7 @@ def test_confirmed_normal_boss_kit_keeps_existing_departure_permission():
 
 @pytest.mark.parametrize('status', ['launched', 'launched_unconfirmed'])
 def test_unconfirmed_sent_sortie_never_becomes_pending_or_loses_receipts(status):
-    mem = memory(); mem['orders']['1-B1'] = status
+    mem = memory(); _plan_region(mem)['orders']['1-B1'] = status
     mem['sorties'] = {'1-B1': {'status': status, 'general': 'ゼウス'}}
     receipt = deepcopy(_sorties(mem))
     # Owner 2026-11-02 (#3201): a readable mismatched kit is approved after
@@ -209,7 +210,7 @@ def test_unconfirmed_sent_sortie_never_becomes_pending_or_loses_receipts(status)
     for _ in range(deploy.SORTIE_CONFIRM_LIMIT - 1):
         assert deploy.deploy_step(panel(), mem) == []
     assert deploy.deploy_step(panel(), mem) == [pad('a')]
-    assert mem['orders']['1-B1'] == status and _sorties(mem) == receipt
+    assert _plan_region(mem)['orders']['1-B1'] == status and _sorties(mem) == receipt
     assert not mem.get('boss_stock_cancelled')
 
 

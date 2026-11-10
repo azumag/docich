@@ -17,6 +17,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
 from docich import hanjuku_policy as policy, hanjuku_reference as reference
 from docich.hanjuku_egg_reference import GENERAL_EGGS, enemy_egg_triggers, general_max_hp
 from docich.hanjuku_screen import Battle, Screen
+from docich.hanjuku.state.regions import plan as _plan_region
 
 
 # gcgx kirihuda.html と wikiwiki 切り札表が一致する全32札（転記元の確認用アンカー）。
@@ -99,7 +100,7 @@ def opening(state, enemy, enemy_hp, ally, ally_hp):
     view = screen(enemy, enemy_hp, ally, ally_hp)
     assert policy.battle_step(view, state) == []        # 1回目の読みは安定待ち
     policy.battle_step(view, state)
-    assert state['battle']['enemy'] == enemy and state['battle']['step'] == state['active']
+    assert state['battle']['enemy'] == enemy and state['battle']['step'] == _plan_region(state).get('active')
     return view
 
 

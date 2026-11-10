@@ -10,6 +10,7 @@ import pytest
 from docich.hanjuku.flows import map as field
 from docich import hanjuku_policy as p
 from docich.hanjuku.os_layer.screen import Screen
+from docich.hanjuku.state.regions import plan as _plan_region
 from test_hanjuku_sortie_evidence import menu
 
 
@@ -31,7 +32,7 @@ def start(order, mem, monkeypatch):
     monkeypatch.setattr(field, 'next_order', lambda _: order)
     monkeypatch.setattr(field, '_measured_goal', lambda *args: None)
     assert field.map_step(Screen([], None, '', kind='map'), mem, None) == []
-    assert mem['active'] == order['step']
+    assert _plan_region(mem)['active'] == order['step']
 
 
 def test_retry_gets_the_first_card_backout_instead_of_immediate_cancellation(case, monkeypatch):
@@ -46,7 +47,7 @@ def test_retry_gets_the_first_card_backout_instead_of_immediate_cancellation(cas
         assert p.deploy_step(panel, mem) == []
     assert p.deploy_step(panel, mem) == [p.pad('b')]
     assert mem['card_skip_departure'][order['step']] == 1
-    assert mem['orders'][order['step']] == 'pending'
+    assert _plan_region(mem)['orders'][order['step']] == 'pending'
 
 
 def test_retry_can_approve_once_but_not_repeat_forever(case, monkeypatch):
@@ -59,7 +60,7 @@ def test_retry_can_approve_once_but_not_repeat_forever(case, monkeypatch):
     for _ in range(p.SORTIE_CONFIRM_UNREADABLE_LIMIT - 1):
         assert p.deploy_step(panel, mem) == []
     assert p.deploy_step(panel, mem) == [p.pad('b'), p.pad('b')]
-    assert mem['orders'][order['step']] == 'failed'
+    assert _plan_region(mem)['orders'][order['step']] == 'failed'
 
 
 def test_continuing_an_active_attempt_does_not_rearm_recovery(case, monkeypatch):

@@ -95,7 +95,7 @@ def test_confirmed_boss_defeat_retries_the_chart_kit_without_guessing_general_lo
     mem = boss_loss()
     policy.battle_end(mem, 'map')
     policy.battle_end(mem, 'map')
-    assert mem['orders']['1-B1'] == 'pending'
+    assert _plan_region(mem)['orders']['1-B1'] == 'pending'
     assert mem['retries']['1-B1'] == 1
     for key in ('general_override', 'card_override'):
         assert '1-B1' not in mem[key]
@@ -111,11 +111,11 @@ def test_confirmed_boss_defeat_retries_the_chart_kit_without_guessing_general_lo
 def test_boss_retry_is_bounded_and_unknown_location_does_not_repair_orders():
     mem = boss_loss(3)
     policy.battle_end(mem, 'map'); policy.battle_end(mem, 'map')
-    assert mem['orders']['1-B1'] == 'failed'
+    assert _plan_region(mem)['orders']['1-B1'] == 'failed'
     assert not any(r['decision']=='order_retry' for r in mem['_records'])
     old = boss_loss(side=None, castle=None, measured=False)
     policy.battle_end(old, 'map'); policy.battle_end(old, 'map')
-    assert old['orders']['1-B1'] == 'launched'
+    assert _plan_region(old)['orders']['1-B1'] == 'launched'
     assert old['retries']['1-B1'] == 0
 
 
@@ -136,7 +136,7 @@ def test_an_indecisive_boss_end_retries_the_chart_kit():
     mem = boss_unclassified()
     policy.battle_end(mem, 'map'); policy.battle_end(mem, 'map')
     assert mem['stats']['unclassified'] == 1 and mem['stats']['losses'] == 0
-    assert mem['orders']['1-B1'] == 'pending'
+    assert _plan_region(mem)['orders']['1-B1'] == 'pending'
     assert mem['retries']['1-B1'] == 1
     assert any(r['decision'] == 'order_retry' and r['strategy_variant'] == 'retry_chart_boss_kit'
                for r in mem['_records'])
@@ -145,7 +145,7 @@ def test_an_indecisive_boss_end_retries_the_chart_kit():
 def test_indecisive_boss_retries_stay_bounded():
     mem = boss_unclassified(3)
     policy.battle_end(mem, 'map'); policy.battle_end(mem, 'map')
-    assert mem['orders']['1-B1'] == 'failed'
+    assert _plan_region(mem)['orders']['1-B1'] == 'failed'
     assert not any(r['decision'] == 'order_retry' for r in mem['_records'])
 
 
@@ -177,7 +177,7 @@ def test_legacy_or_unclassified_boss_loss_never_falls_back_to_generic_retry(side
     mem = boss_loss(side=side, castle=castle, measured=False)
     before = dict(mem['card_override'])
     policy.battle_end(mem, 'map'); policy.battle_end(mem, 'map')
-    assert mem['orders']['1-B1'] == 'launched'
+    assert _plan_region(mem)['orders']['1-B1'] == 'launched'
     assert mem['retries']['1-B1'] == 0
     assert mem['card_override'] == before
     assert not any(r['decision'] == 'order_retry' for r in mem['_records'])

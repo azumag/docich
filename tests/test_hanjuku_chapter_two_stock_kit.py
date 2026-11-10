@@ -67,7 +67,8 @@ def test_existing_or_committed_attempts_are_not_rekitted(state):
     elif state == 'spent': mem['kit_spent'] = {'2-B1': ['バルムンク']}
     elif state == 'dropped': mem['card_drop'] = {'2-B1': ['イッテツーン']}
     elif state == 'existing': mem['rare_card_kit'] = {'2-B1': ['キャトルミュー']}
-    else: mem['orders'] = {'2-B1': 'launched' if state == 'launched' else 'launched_unconfirmed'}
+    else: _plan_region(mem)['orders'] = {'2-B1': 'launched' if state == 'launched' else 'launched_unconfirmed'}
+    _plan_region(mem)  # P2: snapshot in region form; the inventory read migrates flat keys.
     before = deepcopy(mem)
     assert p._chapter_two_balmung_inventory(mem, order(), inventory()) is None
     assert mem == before
@@ -149,9 +150,9 @@ def test_zero_boss_panel_never_spends_the_spare_event_card():
 def test_partial_original_kit_cancels_without_rewriting_reserved_cards(remaining):
     mem = memory(); mem['picked'] = ['イッテツーン']; inv = inventory(); inv['remaining'] = remaining
     assert p._chapter_two_balmung_inventory(mem, order(), inv) == [p.pad('b'), p.pad('b')]
-    assert mem['active'] == '2-B1' and mem['picked'] == []
+    assert _plan_region(mem)['active'] == '2-B1' and mem['picked'] == []
     assert mem['boss_stock_restart'] == {'step': '2-B1', 'readings': 0}
-    assert mem['orders']['2-B1'] == 'pending'
+    assert _plan_region(mem)['orders']['2-B1'] == 'pending'
     assert not mem.get('rare_card_kit') and not mem.get('kit_spent')
     assert mem['_records'][-1]['decision'] == 'boss_stock_kit_restart'
 
@@ -169,7 +170,7 @@ def test_restart_backs_out_before_reselecting_and_is_bounded():
         assert p.deploy_step(screen, mem) == [p.pad('b')]
         assert not _plan_region(mem).get('order_context')
     assert p.deploy_step(screen, mem) == [p.pad('b'), p.pad('b')]
-    assert mem['active'] is None and not mem.get('boss_stock_restart')
+    assert _plan_region(mem)['active'] is None and not mem.get('boss_stock_restart')
 
 
 def test_restart_flag_is_cleared_on_full_backout_and_other_order(monkeypatch):
@@ -181,7 +182,7 @@ def test_restart_flag_is_cleared_on_full_backout_and_other_order(monkeypatch):
     mem = memory(); mem['boss_stock_restart'] = {'step': '2-B1', 'readings': 2}
     monkeypatch.setattr(p, '_check_source_castle', lambda *args: [p.pad('b')])
     p.deploy_step(Screen([], None, '', kind='castle_menu'), mem)
-    assert not mem.get('boss_stock_restart') and mem['active'] == '2-B1'
+    assert not mem.get('boss_stock_restart') and _plan_region(mem)['active'] == '2-B1'
 
 
 def test_chapter_two_boss_keeps_comparable_companions_and_accepts_a_weaker_fit_one():

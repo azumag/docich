@@ -1,7 +1,7 @@
 """Regression coverage for #3266 plan-local sortie reservations."""
 
 from docich.hanjuku.strategy import replan
-from docich.hanjuku.state.regions import world as _world, sorties as _sorties
+from docich.hanjuku.state.regions import world as _world, plan as _plan_region, sorties as _sorties
 
 
 def crowded_home():
@@ -28,11 +28,11 @@ def crowded_home():
         ('A:d0871b56:M2', 'ピスタチオ', 93200),
         ('A:86477f11:M3', 'ラビオリ', 99900),
     ):
-        mem['sorties'][step] = {
+        _world(mem)['sorties'][step] = {
             'source': 'アルマムーン', 'target': 'アイアイエー',
             'general': general, 'status': 'overdue', 'tick': tick, 'purpose': 'move',
         }
-        mem['orders'][step] = 'failed'
+        _plan_region(mem)['orders'][step] = 'failed'
     return mem
 
 
@@ -44,9 +44,9 @@ def retakes(mem):
 
 def test_one_plan_assigns_different_measured_spares_to_three_retakes():
     mem = crowded_home()
-    mem['garrison']['アルマムーン'].append('アポロン')  # one extra spare while the home retains its guards
+    _world(mem)['garrison']['アルマムーン'].append('アポロン')  # one extra spare while the home retains its guards
     # クロチェット is reachable from オトラント, which must retain one guard.
-    mem['garrison']['オトラント'].extend(('ゼウス', 'バジル', 'グレナデン'))
+    _world(mem)['garrison']['オトラント'].extend(('ゼウス', 'バジル', 'グレナデン'))
     mem['route_probe_read_tick']['アイアイエー'] = mem['tick']
     orders = retakes(mem)
     assert {order['target'] for order in orders} == set(mem['lost']), replan.interim_candidates(mem)
@@ -61,7 +61,7 @@ def test_one_plan_assigns_different_measured_spares_to_three_retakes():
 def test_a_general_already_marching_is_not_reused_by_the_dense_plan():
     mem = crowded_home()
     mem['route_probe_read_tick']['アイアイエー'] = mem['tick']
-    mem['sorties']['busy'] = {
+    _world(mem)['sorties']['busy'] = {
         'source': 'アルマムーン', 'target': 'アイアイエー', 'general': 'ペコリーノ',
         'status': 'en_route', 'tick': mem['tick'] - 10, 'purpose': 'move',
     }

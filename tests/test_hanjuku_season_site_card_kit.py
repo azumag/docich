@@ -10,6 +10,7 @@ four site orders had nothing that could ever supply the missing cards.
 from docich import hanjuku_chart as chart, hanjuku_policy as policy
 from docich.hanjuku.strategy.kit import _deploy_cards, _strict_boss_cards
 from test_hanjuku_sortie_evidence import actor_panel, measured_card_select
+from docich.hanjuku.state.regions import plan as _plan_region
 
 # g1075 08:15:14-19 の一覧 (クースカン, バルムンク, ミックミー, バグストーム)。バルムンク(ボス250)の
 # 実在庫がある一覧は専用キットになる (test_hanjuku_boss_balmung_generic) ため、ここでは
@@ -51,4 +52,4 @@ def test_g1075_site_sortie_leaves_the_missing_cards_and_goes_on():
     # Then a card the list does hold is picked; the sortie is still this one.
     assert records[-1]['decision'] == 'sortie_input' and records[-1]['card'] in BOTTOM
     assert actions == [policy.pad('up')]
-    assert mem['orders']['4-B1'] == 'pending' and mem['active'] == '4-B1'
+    assert _plan_region(mem)['orders']['4-B1'] == 'pending' and _plan_region(mem)['active'] == '4-B1'

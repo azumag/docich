@@ -173,7 +173,7 @@ def test_deploy_step_carries_the_strong_card_after_the_planned_one():
 
 def test_sortie_without_planned_cards_still_carries_a_held_strong_card():
     mem = memory()                                    # 1-B1 ではなく 1-A1 (予定札なし)
-    mem['active'] = '1-A1'
+    _plan_region(mem)['active'] = '1-A1'
     screen = measured_card_select(('クースカン', 'フットバース', 'イッテツーン', 'ブラッキー'))
     assert policy.deploy_step(screen, mem) == [policy.pad('a')]
     assert mem['strong_card_kit']['1-A1'] == 'クースカン'

@@ -12,6 +12,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
 from docich import hanjuku_chart as chart
 from docich.hanjuku.strategy import replan
 from docich.hanjuku.strategy import orders
+from docich.hanjuku.state.regions import plan as _plan_region
 
 HOME = chart.home_castle(3)
 
@@ -45,7 +46,7 @@ def test_month_change_without_prospects_never_empties_the_sole_castle():
     # Owner 2026-11-06: an emptied castle falls to the next enemy, so the
     # starvation wait no longer sends the last general out.
     mem = starved_memory()
-    mem['orders'] = {o['step']: 'launched' for o in chart.orders(3)}
+    _plan_region(mem)['orders'] = {o['step']: 'launched' for o in chart.orders(3)}
     replan._off_chart(mem)
     mem['month'] = '8-2'
     replan._off_chart(mem)

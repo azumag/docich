@@ -449,7 +449,7 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
     if reset_native_map_scope and type(mem.get('chapter')) is int and mem['chapter'] in hanjuku_chart.CASTLE_NAMES:
         campaign._enter_chapter(mem, mem['chapter'], evidence='native_map_run_identity_changed',
                                 reason='ランIDが変わったため旧ランの実測地図と出撃状態を破棄')
-    from .state.regions import flow as _flow, journal as _journal
+    from .state.regions import flow as _flow, journal as _journal, plan as _plan_region
     mem['_adjusted']=adjusted
     mem['_interim']=interim
     _journal(mem)['_recall_inputs']=recall_inputs
@@ -956,7 +956,7 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
                      and isinstance(mem.get('boss_stock_cancelled'), dict)))
             and not mem.get('_map_registration_hold')
             and not (kind == 'card_select' and isinstance(mem.get('boss_card_hold'), dict)
-                     and mem['boss_card_hold'].get(mem.get('active')))
+                     and mem['boss_card_hold'].get(_plan_region(mem).get('active')))
             and not isinstance(mem.get('resume_egg_ritual'), dict)
             and not isinstance(mem.get('orphan_battle_menu'), dict)
             and not (kind == 'egg_battle_menu'

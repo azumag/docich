@@ -30,7 +30,7 @@ def _sortie_general(order, mem):
     if order.get('_execution_bound') is True:
         return bound['general'] if bound is not None else None
     context = (_plan_region(mem).get('order_context') or {}).get(step) or {}
-    if mem.get('active') == step and 'departure_order' not in context:
+    if _plan_region(mem).get('active') == step and 'departure_order' not in context:
         selected = context.get('actual_general') or (_plan_region(mem).get('sortie_general') or {}).get(step)
         if selected:
             return selected
@@ -208,24 +208,24 @@ def _hero_broken_sortie_suppressed(order, mem) -> bool:
         return False
     if not _hero_egg_broken(mem):
         gates.pop(step, None)
-        if (mem.get('orders') or {}).get(step) == 'failed':
-            mem.setdefault('orders', {})[step] = None
+        if (_plan_region(mem).get('orders') or {}).get(step) == 'failed':
+            _plan_region(mem).setdefault('orders', {})[step] = None
         return False
     current_alternative = _hero_source_alternative(order, mem)
     if gate.get('alternative') != current_alternative:
         gates.pop(step, None)
-        if (mem.get('orders') or {}).get(step) == 'failed':
-            mem.setdefault('orders', {})[step] = None
+        if (_plan_region(mem).get('orders') or {}).get(step) == 'failed':
+            _plan_region(mem).setdefault('orders', {})[step] = None
         return False
     if gate.get('month') != mem.get('month'):
         gates.pop(step, None)
-        if (mem.get('orders') or {}).get(step) == 'failed':
-            mem.setdefault('orders', {})[step] = None
+        if (_plan_region(mem).get('orders') or {}).get(step) == 'failed':
+            _plan_region(mem).setdefault('orders', {})[step] = None
         return False
     count = gate.get('count', 0)
     if count >= HERO_BROKEN_SORTIE_CANCEL_LIMIT:
         gates.pop(step, None)
-        mem.setdefault('orders', {})[step] = 'failed'
+        _plan_region(mem).setdefault('orders', {})[step] = 'failed'
         return True
     return True
 
@@ -243,26 +243,26 @@ def _sortie_cancelled_observed_suppressed(order, mem) -> bool:
     source = gate.get('source')
     if gate.get('month') != mem.get('month'):
         gates.pop(step, None)
-        if (mem.get('orders') or {}).get(step) == 'failed':
-            mem.setdefault('orders', {})[step] = None
+        if (_plan_region(mem).get('orders') or {}).get(step) == 'failed':
+            _plan_region(mem).setdefault('orders', {})[step] = None
         return False
     garrison = (_world(mem).get('garrison') or {}).get(source)
     general_present = isinstance(garrison, list) and general in garrison
     if not general_present:
         gates.pop(step, None)
-        if (mem.get('orders') or {}).get(step) == 'failed':
-            mem.setdefault('orders', {})[step] = None
+        if (_plan_region(mem).get('orders') or {}).get(step) == 'failed':
+            _plan_region(mem).setdefault('orders', {})[step] = None
         return False
     sortie = _sorties(mem).get(step)
     if not (isinstance(sortie, dict) and sortie.get('status') == 'cancelled'):
         gates.pop(step, None)
-        if (mem.get('orders') or {}).get(step) == 'failed':
-            mem.setdefault('orders', {})[step] = None
+        if (_plan_region(mem).get('orders') or {}).get(step) == 'failed':
+            _plan_region(mem).setdefault('orders', {})[step] = None
         return False
     count = gate.get('count', 0)
     if count >= SORTIE_CANCELLED_OBSERVED_LIMIT:
         gates.pop(step, None)
-        mem.setdefault('orders', {})[step] = 'failed'
+        _plan_region(mem).setdefault('orders', {})[step] = 'failed'
         return True
     return True
 
@@ -285,20 +285,20 @@ def _source_defender_suppressed(order, mem) -> bool:
     source = gate.get('source') or _source(order, mem)
     if gate.get('month') != mem.get('month'):
         gates.pop(step, None)
-        if (mem.get('orders') or {}).get(step) == 'failed':
-            mem.setdefault('orders', {})[step] = None
+        if (_plan_region(mem).get('orders') or {}).get(step) == 'failed':
+            _plan_region(mem).setdefault('orders', {})[step] = None
         return False
     if source != _source(order, mem):
         gates.pop(step, None)
-        if (mem.get('orders') or {}).get(step) == 'failed':
-            mem.setdefault('orders', {})[step] = None
+        if (_plan_region(mem).get('orders') or {}).get(step) == 'failed':
+            _plan_region(mem).setdefault('orders', {})[step] = None
         return False
     current_present = (_world(mem).get('garrison') or {}).get(source)
     current_present_tuple = tuple(sorted(current_present)) if isinstance(current_present, list) else None
     if current_present_tuple != _gate_names(gate.get('present')):
         gates.pop(step, None)
-        if (mem.get('orders') or {}).get(step) == 'failed':
-            mem.setdefault('orders', {})[step] = None
+        if (_plan_region(mem).get('orders') or {}).get(step) == 'failed':
+            _plan_region(mem).setdefault('orders', {})[step] = None
         return False
     busy, _ = _en_route(mem)
     unknown = set(_world(mem).get('general_location_unknown') or ())
@@ -308,13 +308,13 @@ def _source_defender_suppressed(order, mem) -> bool:
         current_available = tuple(sorted(set(current_present) - unavailable))
     if current_available != _gate_names(gate.get('available')):
         gates.pop(step, None)
-        if (mem.get('orders') or {}).get(step) == 'failed':
-            mem.setdefault('orders', {})[step] = None
+        if (_plan_region(mem).get('orders') or {}).get(step) == 'failed':
+            _plan_region(mem).setdefault('orders', {})[step] = None
         return False
     count = gate.get('count', 0)
     if count >= SOURCE_DEFENDER_CANCEL_LIMIT:
         gates.pop(step, None)
-        mem.setdefault('orders', {})[step] = 'failed'
+        _plan_region(mem).setdefault('orders', {})[step] = 'failed'
         return True
     return True
 
@@ -350,7 +350,7 @@ def _record_source_defender_cancel(mem, order, present=None, available=None, gat
     limit = SOURCE_DEFENDER_CANCEL_LIMIT
     if count >= limit:
         gates.pop(step, None)
-        mem.setdefault('orders', {})[step] = 'failed'
+        _plan_region(mem).setdefault('orders', {})[step] = 'failed'
     elif not gate:
         gates.pop(step, None)     # a location recheck reopens the same list at once
     else:
@@ -378,7 +378,7 @@ def _record_sortie_cancelled_observed(mem, order, sortie):
     limit = SORTIE_CANCELLED_OBSERVED_LIMIT
     if count >= limit:
         gates.pop(step, None)
-        mem.setdefault('orders', {})[step] = 'failed'
+        _plan_region(mem).setdefault('orders', {})[step] = 'failed'
     else:
         gates[step] = {'general': general, 'source': source, 'month': month,
                        'count': count, 'target': sortie.get('target')}
@@ -710,7 +710,7 @@ def _plan_pending(mem) -> bool:
     Orders that can never run (source lost, capture nobody is making) kept
     off-chart sorties (retake, staffing) off for an hour in g407.
     """
-    status = mem.get('orders') or {}
+    status = _plan_region(mem).get('orders') or {}
     owned = _owned(mem)
     sorties = _world(mem).get('sorties') or {}
     plan = (mem.get('chart_plan') or {}).get('orders') or ()
@@ -758,7 +758,7 @@ def _boss_retry_due(order, mem) -> bool:
     no longer holds, or cancels recorded before cells were kept, leave the
     current cell untried (g1075 2026-10-29: four cancels at the cave)."""
     chapter = mem.get('chapter') or 0
-    if ((mem.get('orders') or {}).get(order['step']) != 'failed'
+    if ((_plan_region(mem).get('orders') or {}).get(order['step']) != 'failed'
             or not chart.is_boss_castle(order.get('target'))):
         return False
     cancels = (mem.get('target_cancel') or {}).get(order['step'], 0)
@@ -840,7 +840,7 @@ def parked_boss_steps(mem):
     prioritize returning to the field map.
     """
     now = int(mem.get('tick') or 0)
-    orders_status = mem.get('orders') or {}
+    orders_status = _plan_region(mem).get('orders') or {}
     relaunches = mem.get('boss_relaunch') or {}
     out = []
     for step, sortie in _sorties(mem).items():
@@ -925,7 +925,7 @@ def _relaunch_overdue_boss(mem):
     measured defeated keeps the sortie out of this rule.
     """
     now = int(mem.get('tick') or 0)
-    status = mem.setdefault('orders', {})
+    status = _plan_region(mem).setdefault('orders', {})
     for step, sortie in _sorties(mem).items():
         # An unconfirmed launch keeps its cell in planned_target only; g1075
         # 4-B2 カペリーニ stayed en route for 3066 ticks (2026-10-30 09:28).
@@ -1019,7 +1019,7 @@ def _redirect_blocked_sources(mem):
         return
     owned = _owned(mem) & set(chart.castles(chapter))
     overrides = mem.setdefault('source_override', {})
-    status = mem.get('orders') or {}
+    status = _plan_region(mem).get('orders') or {}
     seen = set()
     for order in [*_orders(mem), *(_world(mem).get('launched_orders') or {}).values()]:
         step = order.get('step')
@@ -1053,7 +1053,7 @@ def _relaunch_overdue_march(mem):
     busy marches.
     """
     now = int(mem.get('tick') or 0)
-    status = mem.setdefault('orders', {})
+    status = _plan_region(mem).setdefault('orders', {})
     relaunches = mem.setdefault('sortie_relaunch', {})
     for step, sortie in _sorties(mem).items():
         target = sortie.get('target') or sortie.get('planned_target')
@@ -1261,7 +1261,7 @@ def _expire_spent_sorties(mem):
             # already confirmed: a retreat discards only.
             probe = (_flow(mem).get('launch_probe') or {}).get(step) or {}
             unconfirmed = bool(sortie.get('launch_kept') or probe.get('kept') or probe.get('blind'))
-            if unconfirmed and (mem.get('orders') or {}).get(step) == 'launched':
+            if unconfirmed and (_plan_region(mem).get('orders') or {}).get(step) == 'launched':
                 # Mirrors flows.map.LAUNCH_MISS_LIMIT; strategy must not import
                 # flows (layers test), so the budget lives here.
                 _MISS_LIMIT = 2
@@ -1284,13 +1284,13 @@ def _expire_spent_sorties(mem):
                             'status_tick': row.get('tick') if isinstance(row, dict) else None,
                             'misses': misses[step]}
                 if misses[step] >= _MISS_LIMIT:
-                    mem.setdefault('orders', {})[step] = 'failed'
+                    _plan_region(mem).setdefault('orders', {})[step] = 'failed'
                     _record(mem, 'sortie_launch_failed', chart_step=step, general=general,
                             deviation_reason='出撃確定後に部隊が現れない',
                             observed_metric=observed,
                             reason='野営・在城を実測したが出撃が未発射のため再試行の上限に達し指示を失敗にする')
                 else:
-                    mem.setdefault('orders', {})[step] = 'pending'
+                    _plan_region(mem).setdefault('orders', {})[step] = 'pending'
                     _record(mem, 'sortie_launch_unverified', chart_step=step, general=general,
                             observed_metric=observed, resulting_event='order_reopened',
                             reason='出撃後の野営・在城を実測し出撃が成立していないため出撃を未発射に戻す')
@@ -1328,8 +1328,8 @@ def _rearm_phantom_site_steps(mem):
     """
     if (mem.get('chapter') or 0) != 4:
         return
-    status = mem.get('orders') or {}
-    sorties = mem.get('sorties') or {}
+    status = _plan_region(mem).get('orders') or {}
+    sorties = _world(mem).get('sorties') or {}
     now = int(mem.get('tick') or 0)
     started = mem.get('order_start_tick') or {}
     rearmed = mem.setdefault('site_step_rearm', {})
@@ -1371,8 +1371,8 @@ def _rearm_phantom_boss_steps(mem):
     """
     if (mem.get('chapter') or 0) == 4:
         return          # chapter 4's sites have their own re-arm and king rules
-    status = mem.get('orders') or {}
-    sorties = mem.get('sorties') or {}
+    status = _plan_region(mem).get('orders') or {}
+    sorties = _world(mem).get('sorties') or {}
     now = int(mem.get('tick') or 0)
     started = mem.get('order_start_tick') or {}
     rearmed = mem.setdefault('boss_step_rearm', {})
@@ -1406,7 +1406,7 @@ def next_order(mem):
     _relaunch_overdue_march(mem)
     _expire_spent_sorties(mem)
     _redirect_blocked_sources(mem)
-    status = mem.setdefault('orders', {})
+    status = _plan_region(mem).setdefault('orders', {})
     current = list(_orders(mem))
     steps = {o['step'] for o in current}
     # A launched order put back to pending by a lost battle keeps its retry
@@ -1487,7 +1487,7 @@ def _follow_general(mem, order, garrison, owned):
 def _order(mem):
     # A mechanical chart is a stand-in while the LLM answer is pending; once a
     # normal chart order becomes ready, discard it so the base chart resumes.
-    if mem.get('active') is None:
+    if _plan_region(mem).get('active') is None:
         plan = mem.get('chart_plan') or {}
         if plan.get('source') == 'mechanical':
             chapter = mem.get('chapter') or 0
@@ -1496,7 +1496,7 @@ def _order(mem):
                     mem['chart_plan'] = None
             except Exception:
                 pass
-    return _order_for_step(mem, mem.get('active'))
+    return _order_for_step(mem, _plan_region(mem).get('active'))
 
 
 def _tactics(mem, step):
@@ -1668,7 +1668,7 @@ def _reserve_source_guard(order, mem):
 
 def _retake_reserved(order, mem):
     if (not _retake_order(order, mem)
-            or (mem.get('orders') or {}).get(order['step']) == 'launched_unconfirmed'):
+            or (_plan_region(mem).get('orders') or {}).get(order['step']) == 'launched_unconfirmed'):
         return False
     now = int(mem.get('tick') or 0)
     return any(step != order['step'] and _sortie_reserved_target(mem, step, s) == order.get('target')
@@ -1745,7 +1745,7 @@ def _source_location_recheck_due(mem, source):
 
 
 def _source_spare_missing(order, mem, *, allow_probe=False):
-    if (mem.get('orders') or {}).get(order['step']) == 'launched_unconfirmed':
+    if (_plan_region(mem).get('orders') or {}).get(order['step']) == 'launched_unconfirmed':
         return False  # reconcile an issued sortie; do not cancel its carried-kit receipt
     if order.get('roster_probe') is True:
         return False  # read-only: opening the list dispatches nobody
@@ -1763,7 +1763,7 @@ def _source_spare_missing(order, mem, *, allow_probe=False):
     if (present is not None and _unplaced_castle_generals(mem)
             and source == _arrival_castle(mem, _owned(mem))):
         return False   # fresh joiners are checked by _keep_sortie_defender
-    if (mem.get('active') != order.get('step')
+    if (_plan_region(mem).get('active') != order.get('step')
             and not chart.guard_free(mem.get('chapter'))
             and isinstance(present, (list, tuple)) and present
             and len(set(present) - unavailable) < 2):
@@ -1772,7 +1772,7 @@ def _source_spare_missing(order, mem, *, allow_probe=False):
     # g1163 2026-11-09 04:39: a plan order sent a general from アルマムーン
     # (hero + 2), the real list cancelled it (sortie_held_hero_guard) and the
     # bot idled for the next chart. Decide it before opening the castle menu.
-    if (mem.get('active') != order.get('step')
+    if (_plan_region(mem).get('active') != order.get('step')
             and len(_owned(mem)) > 1
             and order.get('source_probe') is not True
             and str(order.get('step') or '').startswith(
@@ -1787,9 +1787,9 @@ def _source_spare_missing(order, mem, *, allow_probe=False):
 
 
 def _finish_order(mem, state, **fields):
-    step = mem.get('active')
+    step = _plan_region(mem).get('active')
     if step:
-        mem.setdefault('orders', {})[step] = state
+        _plan_region(mem).setdefault('orders', {})[step] = state
         if state == 'launched':
             # A new sortie carries a fresh kit: attempted uses from the
             # previous one must not shrink it (``kit_spent`` is per sortie).
@@ -1807,7 +1807,7 @@ def _finish_order(mem, state, **fields):
             goal_kind = {'retake': 'retake', 'move': 'move'}.get(order.get('purpose'))
             if goal_kind:
                 goals.note_attempt(mem, goal_kind, 'failed', target=order.get('target'))
-    mem['active'] = None
+    _plan_region(mem)['active'] = None
     mem['picked'] = []
 
 
@@ -1839,9 +1839,9 @@ def _give_up_source(mem, order):
     """
     step = order['step']
     source = _source(order, mem)
-    if (mem.get('orders') or {}).get(step) == 'launched_unconfirmed':
+    if (_plan_region(mem).get('orders') or {}).get(step) == 'launched_unconfirmed':
         _world(mem).setdefault('sorties', {})[step]['verification_unavailable'] = True
-        mem['active'] = None
+        _plan_region(mem)['active'] = None
         _record(mem, 'sortie_verification_held', chart_step=step,
                 reason='出撃元の一覧を開けないため未確定の出撃を維持し再指示を抑止')
         return
@@ -2138,9 +2138,9 @@ def _bind_sortie(mem, step, castle, general=None):
             _record(mem, 'sortie_arrival_confirmed', chart_step=step, general=sortie['general'],
                     castle=castle, reason='将軍名の一致する入城表示で未確定だった出撃と行先を確定')
             _garrison_move(mem, sortie['general'], source=sortie.get('source'))
-            mem.setdefault('orders', {})[step] = 'launched'
-            if mem.get('active') == step:
-                mem['active'] = None
+            _plan_region(mem).setdefault('orders', {})[step] = 'launched'
+            if _plan_region(mem).get('active') == step:
+                _plan_region(mem)['active'] = None
             if (_flow(mem).get('sortie_attempt') or {}).get('step') == step:
                 _flow(mem).pop('sortie_attempt', None)
         sortie.update(status='arrived', target=castle)
@@ -2200,9 +2200,9 @@ def _continue_transit_sorties(mem, castle, names):
         _garrison_move(mem, sortie['general'], source=sortie.get('source'), target=castle)
         sortie.update(status='arrived', target=castle, transit_to=planned)
         mem.setdefault('source_override', {})[step] = castle
-        mem.setdefault('orders', {})[step] = 'pending'
-        if mem.get('active') == step:
-            mem['active'] = None
+        _plan_region(mem).setdefault('orders', {})[step] = 'pending'
+        if _plan_region(mem).get('active') == step:
+            _plan_region(mem)['active'] = None
         if (_flow(mem).get('sortie_attempt') or {}).get('step') == step:
             _flow(mem).pop('sortie_attempt', None)
         _record(mem, 'sortie_transit_continue', chart_step=step, general=sortie['general'],

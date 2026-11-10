@@ -20,6 +20,7 @@ from test_hanjuku_boss_card_proven_absent import G825, panel
 from test_hanjuku_chart_bot import Canvas, _short_recruit_memory, month_canvas
 from test_hanjuku_low_army_refill_first import editor
 from test_hanjuku_merchant_reserve import quote
+from docich.hanjuku.state.regions import plan as _plan_region
 
 BOSS = next(o for o in p.chart.orders(1) if o['step'] == '1-B1')
 CART = (('イッテツーン', 1), ('ノリウツール', 18), ('クースカン', 24))
@@ -230,9 +231,9 @@ def test_no_rebuy_without_a_measured_shortage_for_a_boss_still_to_sortie(change)
     elif change == 'enough':
         mem['card_stock']['クースカン'] = 1
     elif change == 'launched':
-        mem['orders']['1-B1'] = 'launched'  # the sortie carries its kit
+        _plan_region(mem)['orders']['1-B1'] = 'launched'  # the sortie carries its kit
     elif change == 'failed':
-        mem['orders']['1-B1'] = 'failed'
+        _plan_region(mem)['orders']['1-B1'] = 'failed'
     elif change == 'defeated':
         mem['boss_defeated'] = 1
     else:

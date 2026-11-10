@@ -10,6 +10,7 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
 
 from docich import hanjuku_policy as p
+from docich.hanjuku.state.regions import plan as _plan_region
 
 STEP = '1-A3'
 
@@ -36,7 +37,7 @@ def loss(stock):
 
 def test_two_copies_in_stock_keep_the_two_opening_cards():
     mem = loss({'イッテツーン': 2})
-    assert mem['orders'][STEP] == 'pending' and mem['retries'][STEP] == 1
+    assert _plan_region(mem)['orders'][STEP] == 'pending' and mem['retries'][STEP] == 1
     assert mem['card_override'][STEP] == ['イッテツーン', 'イッテツーン']
     assert mem['retry_context'][STEP]['expected_metric'] == {'enemy_hp_after_open': 10}
 
@@ -53,7 +54,7 @@ def test_no_stock_clears_the_plan_and_keeps_the_chart_kit():
     assert STEP not in (mem.get('card_override') or {})
     assert mem['retry_context'][STEP]['expected_metric'] == {'enemy_hp_after_open': None}
     assert '実在庫の切り札なし' in mem['retry_context'][STEP]['deviation_reason']
-    assert mem['orders'][STEP] == 'pending'          # 再攻撃自体は続ける
+    assert _plan_region(mem)['orders'][STEP] == 'pending'          # 再攻撃自体は続ける
     retry = [r for r in mem['_records'] if r['decision'] == 'order_retry']
     assert retry and retry[-1]['strategy_variant'] == 'retry_with_opening_cards'
 

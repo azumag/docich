@@ -209,6 +209,7 @@ class ProjectionReviewTests(unittest.TestCase):
             "src/docich/semantic_decision/__init__.py",
             "src/docich/semantic_decision/diagnostics.py",
             "src/docich/semantic_decision/routes.py",
+            "src/docich/hanjuku/state/regions.py",
         ):
             src = ROOT / rel
             if src.is_file():

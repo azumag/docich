@@ -23,7 +23,7 @@ def memory(chapter):
 
 def boss_order(chapter, mem):
     order = next(o for o in chart.orders(chapter) if o['target'] == chart.boss_castle(chapter))
-    mem['active'] = order['step']
+    _plan_region(mem)['active'] = order['step']
     return order
 
 
@@ -67,7 +67,7 @@ def test_no_balmung_in_stock_or_a_started_attempt_changes_nothing():
         step = order['step']
         if change == 'picked': mem['picked'] = ['ファバード']
         elif change == 'spent': mem['kit_spent'] = {step: ['ファバード']}
-        elif change == 'launched': mem['orders'] = {step: 'launched'}
+        elif change == 'launched': _plan_region(mem)['orders'] = {step: 'launched'}
         before = deepcopy(mem)
         assert p._chapter_two_balmung_inventory(mem, order, inventory(rows)) is None
         assert mem == before
@@ -76,7 +76,7 @@ def test_no_balmung_in_stock_or_a_started_attempt_changes_nothing():
 def test_ordinary_sorties_never_receive_the_boss_balmung_kit():
     mem = memory(5)
     order = next(o for o in chart.orders(5) if o['target'] != chart.boss_castle(5))
-    mem['active'] = order['step']
+    _plan_region(mem)['active'] = order['step']
     assert p._chapter_two_balmung_inventory(mem, order, inventory([('バルムンク', 2)])) is None
     assert not mem.get('rare_card_kit')
 
@@ -114,7 +114,7 @@ def _wave_memory(general):
     mem = memory(5)
     order = {'step': '5-W9', 'general': general, 'source': chart.castles(5) and next(iter(chart.castles(5))),
              'cards': ('イッテツーン',), 'target': chart.boss_castle(5), 'after': None, 'note': 'wave'}
-    mem['active'] = order['step']
+    _plan_region(mem)['active'] = order['step']
     _plan_region(mem)['sortie_general'] = {order['step']: general}
     return order, mem
 

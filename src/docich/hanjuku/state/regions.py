@@ -17,8 +17,9 @@ FlowResult 契約にした。C 段階は残る共有状態 ``mem`` のフラッ�
              departure_miss 等)。手順終了・中断・章遷移で死ぬ。
 
 段階2で出撃・帰還ドメインの手順セッション状態を実移行済み (migrated=True)。
-world/plan キーは観測層・戦略層の所有物として宣言のみのまま (振り分け案:
-issue #3193 issuecomment-6585024310)。
+P1 で order_context / sortie_general を plan 領域へ移行済み。P2 で orders / active も
+plan 領域へ位置移行 (migrated=True)。active は手順の作業ポインタでもあり、
+PLAN 契約の将来的な精緻化候補 (docich#3193 P2)。
 
 ``flow(mem)``/``journal(mem)`` の戻り値は遅延ビュー: 読み取りのみの経路で
 空領域を ``mem`` に実体化しない。呼び出し側は戻り値を保持せず、都度
@@ -54,8 +55,8 @@ KEY_OWNERSHIP = {
     'retreat_anonymous_budget': {'region': FLOW, 'lifetime': 'procedure', 'migrated': True},
     '_recall_inputs':       {'region': JOURNAL, 'lifetime': 'run', 'migrated': True},
     # --- 出撃/帰還が読む PlanState ---
-    'orders':           {'region': PLAN, 'lifetime': 'chapter', 'migrated': False},
-    'active':           {'region': PLAN, 'lifetime': 'chapter', 'migrated': False},
+    'orders':           {'region': PLAN, 'lifetime': 'chapter', 'migrated': True},
+    'active':           {'region': PLAN, 'lifetime': 'chapter', 'migrated': True},
     'order_context':    {'region': PLAN, 'lifetime': 'chapter', 'migrated': True},
     'sortie_general':   {'region': PLAN, 'lifetime': 'chapter', 'migrated': True},
     'chart_plan':       {'region': PLAN, 'lifetime': 'chapter', 'migrated': False},

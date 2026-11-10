@@ -78,7 +78,7 @@ def _verify_sortie_source(screen, mem, order):
     if not isinstance(sortie, dict) or not isinstance(sortie.get('general'), str) or not sortie.get('general'):
         _record(mem, 'sortie_verification_held', chart_step=step,
                 reason='出撃記録または将軍名が欠損しているため在城・不在を推定せず検証を保留する')
-        mem['active'] = None
+        _plan_region(mem)['active'] = None
         return [pad('b'), pad('b')]
     present = _present_generals(screen)
     if present and sortie['general'] in present and not _general_visible(screen, sortie['general']):
@@ -87,7 +87,7 @@ def _verify_sortie_source(screen, mem, order):
         sortie['verification_reads'] = sortie.get('verification_reads', 0) + 1
         if sortie['verification_reads'] >= 3:
             sortie['verification_unavailable'] = True
-            mem['active'] = None
+            _plan_region(mem)['active'] = None
             _record(mem, 'sortie_verification_held', chart_step=step,
                     reason='一覧で在城・不在を確定できないため出撃未確定を維持して別の指示へ進む')
             return [pad('b'), pad('b')]
@@ -101,11 +101,11 @@ def _verify_sortie_source(screen, mem, order):
                               sortie.get('purpose'), 'cancelled_observed',
                               _sortie_state_sig(mem, sortie.get('source'), sortie['general']))
         _record_sortie_cancelled_observed(mem, order, sortie)
-        status = (mem.get('orders') or {}).get(step)
+        status = (_plan_region(mem).get('orders') or {}).get(step)
         if status not in ('failed',):
-            mem.setdefault('orders', {})[step] = 'pending'
+            _plan_region(mem).setdefault('orders', {})[step] = 'pending'
     else:
-        mem.setdefault('orders', {})[step] = 'launched'
+        _plan_region(mem).setdefault('orders', {})[step] = 'launched'
     if not cancelled:
         _garrison_move(mem, sortie['general'], source=sortie['source'])
         from .camp_recheck import observe_departure
@@ -116,7 +116,7 @@ def _verify_sortie_source(screen, mem, order):
             reason='将軍一覧で本人の在城を確認したため再試行可能' if cancelled
             else '出撃元が無人と確認できたため出撃を確定、行先は未確認')
     _flow(mem).pop('sortie_attempt', None)
-    mem['active'] = None
+    _plan_region(mem)['active'] = None
     mem['picked'] = []
     return [pad('b'), pad('b')]
 BOSS_ABSENT_LIMIT = 10         # general-list readings without the boss general before giving up
@@ -170,7 +170,7 @@ def _boss_balmung_kit(mem, order, inventory):
     planned card. The measured copies carried decide the battle tactics.
     """
     step = order['step']
-    if ((mem.get('orders') or {}).get(step) not in (None, 'pending')
+    if ((_plan_region(mem).get('orders') or {}).get(step) not in (None, 'pending')
             or (mem.get('rare_card_kit') or {}).get(step) is not None
             or (mem.get('kit_spent') or {}).get(step)
             or (mem.get('card_drop') or {}).get(step)
@@ -217,7 +217,7 @@ def _chapter_two_balmung_inventory(mem, order, inventory):
         return _boss_balmung_kit(mem, order, inventory)
     if (mem.get('chapter') != 2 or step != '2-B1'
             or order.get('target') != chart.boss_castle(2)
-            or (mem.get('orders') or {}).get(step) not in (None, 'pending')
+            or (_plan_region(mem).get('orders') or {}).get(step) not in (None, 'pending')
             or (mem.get('rare_card_kit') or {}).get(step) is not None
             or (mem.get('kit_spent') or {}).get(step)
             or (mem.get('card_drop') or {}).get(step)):
@@ -235,7 +235,7 @@ def _chapter_two_balmung_inventory(mem, order, inventory):
              'visible_stocks': {c: stocks[c] for c in ('イッテツーン', 'バルムンク')}})
         # Keep this already-started boss order ahead of a new field survey.
         # The restart backs out completely before selecting another actor.
-        mem['active'] = step
+        _plan_region(mem)['active'] = step
         mem['boss_stock_restart'] = {'step': step, 'readings': 0}
         return actions
     if mem.get('picked') or inventory['remaining'] != CARRY_SLOTS:
@@ -899,7 +899,7 @@ def _planned_general_on_page(screen, mem, order, present):
     list: they pick companions from it, prove a source roster, or settle a
     launch.
     """
-    if ((mem.get('orders') or {}).get(order['step']) == 'launched_unconfirmed'
+    if ((_plan_region(mem).get('orders') or {}).get(order['step']) == 'launched_unconfirmed'
             or _is_boss_order(order, mem) or order.get('source_probe') is True):
         return None
     general = _sortie_general(order, mem) or order.get('general')
@@ -920,7 +920,7 @@ def _general_list_scan(screen, mem, order):
     change who sorties. An unreadable frame leaves the walk where it was and
     lets the callers hold as before.
     """
-    if (mem.get('orders') or {}).get(order['step']) == 'launched_unconfirmed':
+    if (_plan_region(mem).get('orders') or {}).get(order['step']) == 'launched_unconfirmed':
         return None
     present = _present_generals(screen)
     if present is None:
@@ -1150,8 +1150,8 @@ def _keep_last_castle(screen, mem, order):
             or not _few_castles(mem) or _staffed_elsewhere(mem, source)):
         return None
     mem['last_castle_hold'] = {'castle': source, 'tick': int(mem.get('tick') or 0)}
-    mem['orders'][order['step']] = 'pending'
-    mem['active'] = None
+    _plan_region(mem)['orders'][order['step']] = 'pending'
+    _plan_region(mem)['active'] = None
     mem['picked'] = []
     _record(mem, 'sortie_held_last_castle', chart_step=order['step'], source=source,
             observed_metric=present[:4],
@@ -1160,12 +1160,12 @@ def _keep_last_castle(screen, mem, order):
 
 
 def _hold_guarded_sortie(mem, order, decision, reason, observed):
-    orders = mem.setdefault('orders', {})
+    orders = _plan_region(mem).setdefault('orders', {})
     # A cancel limit may have just retired the step (failed); an adjusted
     # step put back to pending was re-issued every 10 s (g1075 J2 x15).
     if orders.get(order['step']) != 'failed':
         orders[order['step']] = 'failed' if order['step'].startswith('I:') else 'pending'
-    mem['active'] = None
+    _plan_region(mem)['active'] = None
     mem['picked'] = []
     _plan_region(mem).setdefault('sortie_general', {}).pop(order['step'], None)
     _plan_region(mem).setdefault('order_context', {}).pop(order['step'], None)
@@ -1176,7 +1176,7 @@ def _hold_guarded_sortie(mem, order, decision, reason, observed):
 
 def _hold_locked_boss(mem, order):
     """Recheck unsent active orders too; retain already-sent reconciliation."""
-    status = (mem.get('orders') or {}).get(order['step'])
+    status = (_plan_region(mem).get('orders') or {}).get(order['step'])
     if (status in ('launched', 'launched_unconfirmed')
             or _boss_target_unlocked(order, mem)):
         return None
@@ -1188,7 +1188,7 @@ def _hold_locked_boss(mem, order):
 
 def _hold_unrouted_sortie(mem, order):
     from ..strategy import routes
-    if ((mem.get('orders') or {}).get(order['step']) in ('launched', 'launched_unconfirmed')
+    if ((_plan_region(mem).get('orders') or {}).get(order['step']) in ('launched', 'launched_unconfirmed')
             or routes.order_allowed(mem, order, _source(order, mem))):
         return None
     mem.pop('y_jump', None)
@@ -1450,7 +1450,7 @@ def boss_stock_restart_step(screen: Screen, mem):
         owner = mem.get('boss_stock_cancelled')
         if (isinstance(owner, dict) and owner.get('identity') == run_identity(mem.get('_run_identity'))
                 and owner.get('chapter') == mem.get('chapter')
-                and mem.get('active') in (None, owner.get('step'))):
+                and _plan_region(mem).get('active') in (None, owner.get('step'))):
             _record(mem, 'sortie_cancel_backout_observed', screen=screen.kind,
                     reason='自由マップまたは城メニューへの復帰を観測し出撃取消ownerを解除')
         for key in ('boss_stock_restart', 'boss_stock_cancelled', 'boss_stock_cancelled_identity',
@@ -1468,7 +1468,7 @@ def boss_stock_restart_step(screen: Screen, mem):
         if isinstance(cancelled, dict) and (
                 not isinstance(cancelled.get('step'), str) or not cancelled['step']
                 or type(cancelled.get('chapter')) is not int
-                or mem.get('active') not in (None, cancelled.get('step'))
+                or _plan_region(mem).get('active') not in (None, cancelled.get('step'))
                 or cancelled.get('chapter') != mem.get('chapter')
                 or 'identity' not in cancelled
                 or cancelled['identity'] != run_identity(mem.get('_run_identity'))):
@@ -1504,7 +1504,7 @@ def boss_stock_restart_step(screen: Screen, mem):
     if restarting.get('cancel_only') is True:
         order = next((row for row in chart.orders(mem.get('chapter') or 0)
                       if row['step'] == restarting.get('step') and _is_boss_order(row, mem)), None)
-        if (mem.get('active') not in (None, restarting.get('step')) or 'identity' not in restarting
+        if (_plan_region(mem).get('active') not in (None, restarting.get('step')) or 'identity' not in restarting
                 or restarting['identity'] != run_identity(mem.get('_run_identity'))):
             order = None  # a different actor/order keeps its own foreground
     if order is None or restarting.get('step') != order['step']:
@@ -1543,7 +1543,7 @@ def deploy_step(screen: Screen, mem):
         # Menus we did not open (e.g. confirm pressed by an earlier fallback).
         return [pad('b')]
     if ('_run_identity' in mem
-            and (mem.get('orders') or {}).get(order['step']) != 'launched_unconfirmed'):
+            and (_plan_region(mem).get('orders') or {}).get(order['step']) != 'launched_unconfirmed'):
         # The deploy continuation (castle menu, general list, card select,
         # sortie confirm) runs without ``_ready``: an adopted interim order
         # can outlive the run map receipt that verified its endpoints, so a
@@ -1568,7 +1568,7 @@ def deploy_step(screen: Screen, mem):
                                      'chapter': mem.get('chapter'),
                                      'registered': sorted(cells)},
                     reason='このランの地図に出撃元・目標城の登録座標がそろわないため、未送信の出撃を取り消して指示を選び直す')
-            mem['active'] = None
+            _plan_region(mem)['active'] = None
             mem['picked'] = []
             return []
     routed = _hold_unrouted_sortie(mem, order)
@@ -1577,7 +1577,7 @@ def deploy_step(screen: Screen, mem):
     locked = _hold_locked_boss(mem, order)
     if locked is not None:
         return locked
-    if kind == 'general_list' and (mem.get('orders') or {}).get(order['step']) != 'launched_unconfirmed':
+    if kind == 'general_list' and (_plan_region(mem).get('orders') or {}).get(order['step']) != 'launched_unconfirmed':
         # A newly selected sortie may use a different actor. An interrupted
         # departure instead retains its evidence for source reconciliation.
         _plan_region(mem).setdefault('order_context', {}).pop(order['step'], None)
@@ -1636,7 +1636,7 @@ def deploy_step(screen: Screen, mem):
             _finish_order(mem, 'done',
                           reason='読取のみの指示を終了し、未確定なら次回再試行する')
             return [pad('b'), pad('b')]
-        if (mem.get('orders') or {}).get(order['step']) == 'launched_unconfirmed':
+        if (_plan_region(mem).get('orders') or {}).get(order['step']) == 'launched_unconfirmed':
             return _verify_sortie_source(screen, mem, order)
         guard = _keep_sortie_defender(screen, mem, order)
         if guard is not None:
@@ -1748,11 +1748,11 @@ def deploy_step(screen: Screen, mem):
                 mem.setdefault('source_override', {})[order['step']] = chart.home_castle(
                     mem.get('chapter') or 1)
                 mem.setdefault('general_override', {}).pop(order['step'], None)
-                mem['orders'][order['step']] = 'pending'
+                _plan_region(mem)['orders'][order['step']] = 'pending'
                 _record(mem, 'order_source_changed', strategy_variant='source_fallback',
                         deviation_reason=f"{order['source']}に出撃できる将軍がいない",
                         observed_metric=present[:8], reason='本城から出撃し直す')
-                mem['active'] = None
+                _plan_region(mem)['active'] = None
                 return [pad('b'), pad('b')]
         if move is None:
             _finish_order(mem, 'failed', deviation_reason=f"{order['general']}が出撃一覧に見えない",
@@ -1762,7 +1762,7 @@ def deploy_step(screen: Screen, mem):
         return _deploy_input(screen, mem, order, [pad('a')] if move == 'here' else [move], '出撃将軍を選択')
     if kind in {'card_select', 'sortie_confirm'}:
         if (_is_boss_order(order, mem) and _sortie_general(order, mem) == NAME
-                and (mem.get('orders') or {}).get(order['step']) != 'launched_unconfirmed'):
+                and (_plan_region(mem).get('orders') or {}).get(order['step']) != 'launched_unconfirmed'):
             return _hold_guarded_sortie(mem, order, 'boss_companion_required',
                 '主人公のボス出撃を取り消し、十分な戦力の代役を待つ',
                 {'general': NAME, 'screen': kind, 'hero_forbidden': True})
@@ -1772,8 +1772,8 @@ def deploy_step(screen: Screen, mem):
     if kind in {'card_select', 'sortie_confirm'} and _boss_egg_depleted(order, mem):
         # observe_events reads the egg row before this decision. Cancel a
         # sortie that was chosen while its quantity was still unknown.
-        mem.setdefault('orders', {})[order['step']] = 'pending'
-        mem['active'] = None
+        _plan_region(mem).setdefault('orders', {})[order['step']] = 'pending'
+        _plan_region(mem)['active'] = None
         mem['picked'] = []
         _plan_region(mem).setdefault('order_context', {}).pop(order['step'], None)
         _record(mem, 'boss_sortie_cancelled_for_egg', chart_step=order['step'],
@@ -2004,7 +2004,7 @@ def deploy_step(screen: Screen, mem):
                             reason='読み取れた携行札を実際の携行として出撃を承認（計画と不一致）')
             else:
                 if (_strict_boss_cards(order, mem) and misses[order['step']] >= SORTIE_CONFIRM_LIMIT
-                        and (mem.get('orders') or {}).get(order['step']) not in {'launched', 'launched_unconfirmed'}):
+                        and (_plan_region(mem).get('orders') or {}).get(order['step']) not in {'launched', 'launched_unconfirmed'}):
                     from ..os_layer.roster import run_identity
                     _hold_guarded_sortie(mem, order, 'sortie_confirmation_unconfirmed',
                         '必須携行札を有限観測で確認できないため装備条件を変えず出撃拒否へ進む',

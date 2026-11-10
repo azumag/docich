@@ -103,7 +103,7 @@ def execution_order(mem, step):
         return {**deepcopy(confirmed), '_execution_bound': True}
     snapshot = (_world(mem).get('launched_orders') or {}).get(step)
     sortie = _sorties(mem).get(step) or {}
-    if ((mem.get('orders') or {}).get(step) in ('launched', 'launched_unconfirmed')
+    if ((_plan_region(mem).get('orders') or {}).get(step) in ('launched', 'launched_unconfirmed')
             and _valid_departure(snapshot, mem)
             and type(sortie.get('confirmation_tick')) is int
             and sortie.get('confirmation_tick') == snapshot['departure_binding']['confirm_tick']
@@ -149,5 +149,5 @@ def execution_claimed(mem, step):
     snapshot = (_world(mem).get('launched_orders') or {}).get(step) or {}
     return ((attempt.get('step') == step and 'confirmation_tick' in attempt
              and not attempt.get('interrupted'))
-            or ((mem.get('orders') or {}).get(step) in ('launched', 'launched_unconfirmed')
+            or ((_plan_region(mem).get('orders') or {}).get(step) in ('launched', 'launched_unconfirmed')
                 and 'departure_binding' in snapshot))

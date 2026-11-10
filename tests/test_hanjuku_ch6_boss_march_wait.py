@@ -10,7 +10,7 @@ whole window in which its battle can still bind to the order.
 """
 from docich.hanjuku.strategy import orders as O
 from docich.hanjuku.strategy import replan
-from docich.hanjuku.state.regions import sorties as _sorties
+from docich.hanjuku.state.regions import sorties as _sorties, plan as _plan_region
 
 
 def boss_sortie(tick=39917, target='ボス'):
@@ -42,7 +42,7 @@ def test_a_ch6_march_to_a_normal_castle_keeps_the_distance_limit():
 def test_the_live_boss_march_is_not_declared_lost_at_819_observations():
     mem = memory(39917 + 819)
     O._relaunch_overdue_boss(mem)
-    assert mem['orders']['6-B1'] == 'launched'
+    assert _plan_region(mem)['orders']['6-B1'] == 'launched'
     assert _sorties(mem)['6-B1']['status'] == 'en_route'
     assert not decisions(mem, 'boss_sortie_overdue')
 
@@ -50,7 +50,7 @@ def test_the_live_boss_march_is_not_declared_lost_at_819_observations():
 def test_the_same_march_is_sent_again_after_the_full_window():
     mem = memory(39917 + O.MARCH_ARRIVAL_CAP)
     O._relaunch_overdue_boss(mem)
-    assert mem['orders']['6-B1'] == 'pending'
+    assert _plan_region(mem)['orders']['6-B1'] == 'pending'
     assert _sorties(mem)['6-B1']['status'] == 'overdue'
     assert mem['boss_relaunch'] == {'6-B1': 1}
     (record,) = decisions(mem, 'boss_sortie_overdue')
@@ -67,7 +67,7 @@ def test_a_plan_rebuild_does_not_release_a_boss_march_at_900_observations():
     # sent after an army still walking (plan_step_released age 872, ポセイドン).
     mem = memory(39917 + 900)
     replan._release_stale_steps(mem, ['6-B1'])
-    assert mem['orders']['6-B1'] == 'launched'
+    assert _plan_region(mem)['orders']['6-B1'] == 'launched'
     assert not decisions(mem, 'plan_step_released')
 
 
@@ -75,13 +75,13 @@ def test_a_normal_march_is_still_released_after_its_distance_limit():
     limit = O._arrival_limit({'chapter': 6}, boss_sortie(target='トウトウ'))
     mem = memory(39917 + limit + 1, target='トウトウ')
     replan._release_stale_steps(mem, ['6-B1'])
-    assert mem['orders']['6-B1'] == 'pending'
+    assert _plan_region(mem)['orders']['6-B1'] == 'pending'
     assert decisions(mem, 'plan_step_released')
 
 
 def test_a_boss_march_is_released_after_the_whole_bindable_window():
     mem = memory(39917 + O.MARCH_ARRIVAL_CAP + 1)
     replan._release_stale_steps(mem, ['6-B1'])
-    assert mem['orders']['6-B1'] == 'pending'
+    assert _plan_region(mem)['orders']['6-B1'] == 'pending'
     (record,) = decisions(mem, 'plan_step_released')
     assert record['observed_metric']['target'] == 'ボス'

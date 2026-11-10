@@ -9,7 +9,7 @@ from docich import hanjuku_policy as policy
 from docich.hanjuku.flows import map as map_flow
 from docich.hanjuku.strategy import orders as O
 from docich.hanjuku_screen import Screen
-from docich.hanjuku.state.regions import flow as _flow, journal as _journal
+from docich.hanjuku.state.regions import flow as _flow, journal as _journal, plan as _plan_region
 
 SITE = '四季王城(南西)'
 
@@ -34,7 +34,7 @@ def test_a_step_inside_its_budget_or_cooldown_is_not_parked():
     assert O.parked_boss_steps(memory(relaunch=O.BOSS_RELAUNCH_LIMIT - 1)) == []
     assert O.parked_boss_steps(memory(status='en_route')) == []
     mem = memory()
-    mem['orders']['4-B1'] = 'pending'
+    _plan_region(mem)['orders']['4-B1'] = 'pending'
     assert O.parked_boss_steps(mem) == []
 
 
@@ -64,7 +64,7 @@ def test_the_escape_does_not_preempt_a_map_battle_or_another_owner():
                         ('world_map', 'event')):
         assert map_flow.boss_stall_escape_step(memory(), kind, phase) is None
     mem = memory()
-    mem['active'] = '4-B1'
+    _plan_region(mem)['active'] = '4-B1'
     assert map_flow.boss_stall_escape_step(mem, 'shop_list', 'shop') is None
     mem = memory()
     _flow(mem)['recall'] = {'stage': 'dest'}
@@ -94,7 +94,7 @@ def test_the_orchestrator_returns_the_escape_action(monkeypatch):
 
 def test_a_held_boss_general_list_is_cancelled_before_the_stall_terminal():
     mem = memory()
-    mem['active'] = '4-B1'
+    _plan_region(mem)['active'] = '4-B1'
     assert map_flow.boss_sortie_menu_escape_step(mem, 'general_list', []) is None
     mem['tick'] += map_flow.BOSS_SORTIE_MENU_HOLD_TICKS - 1
     assert map_flow.boss_sortie_menu_escape_step(mem, 'general_list', []) is None
@@ -111,20 +111,20 @@ def test_the_sortie_menu_escape_only_owns_a_boss_order_with_no_action():
     for kind, actions in (('map', []), ('general_list', [policy.pad('a')]),
                           ('battle', []), ('general_list', None)):
         mem = memory()
-        mem['active'] = '4-B1'
+        _plan_region(mem)['active'] = '4-B1'
         assert map_flow.boss_sortie_menu_escape_step(mem, kind, actions) is None
     mem = memory()
-    mem['active'] = '4-C1'   # a normal castle order is not in this watchdog
+    _plan_region(mem)['active'] = '4-C1'   # a normal castle order is not in this watchdog
     assert map_flow.boss_sortie_menu_escape_step(mem, 'general_list', []) is None
     mem = memory()
-    mem['active'] = '4-B1'
+    _plan_region(mem)['active'] = '4-B1'
     _flow(mem)['recall'] = {'stage': 'dest'}
     assert map_flow.boss_sortie_menu_escape_step(mem, 'general_list', []) is None
 
 
 def test_a_changed_step_or_screen_restarts_the_hold_window():
     mem = memory()
-    mem['active'] = '4-B1'
+    _plan_region(mem)['active'] = '4-B1'
     assert map_flow.boss_sortie_menu_escape_step(mem, 'general_list', []) is None
     mem['tick'] += map_flow.BOSS_SORTIE_MENU_HOLD_TICKS
     assert map_flow.boss_sortie_menu_escape_step(mem, 'card_select', []) is None
@@ -142,7 +142,7 @@ def test_the_orchestrator_escapes_a_held_general_list(monkeypatch):
     monkeypatch.setattr('docich.hanjuku.os_layer.screen.parse',
                         lambda frame, phase=None: screen)
     mem = memory(tick=1000)
-    mem['active'] = '4-B1'
+    _plan_region(mem)['active'] = '4-B1'
     state = {'policy': mem}
     first, state = orchestrator.decide(Frame(256, 224, bytes(256 * 224 * 3)), state)
     assert first == []
@@ -157,5 +157,5 @@ def test_the_escape_stops_after_the_step_is_rearmed():
     mem = memory()
     assert map_flow.boss_stall_escape_step(mem, 'shop_list', 'shop') == [policy.pad('b')]
     mem['tick'] += map_flow.BOSS_STALL_ESCAPE_TICKS
-    mem['orders']['4-B1'] = 'pending'
+    _plan_region(mem)['orders']['4-B1'] = 'pending'
     assert map_flow.boss_stall_escape_step(mem, 'shop_list', 'shop') is None

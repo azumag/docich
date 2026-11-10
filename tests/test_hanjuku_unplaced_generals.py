@@ -5,6 +5,7 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from docich import hanjuku_policy as p
+from docich.hanjuku.state.regions import plan as _plan_region
 
 
 def memory(joiners_month='2-5'):
@@ -57,7 +58,7 @@ def test_a_read_list_refutes_the_arrival_assumption_until_the_unplaced_set_chang
     mem = memory()
     order = {'step': 'A:x:P1', 'general': 'どうし', 'source': 'アルマムーン',
              'target': 'ナキューメラ', 'cards': [], 'after': None, 'purpose': 'retake'}
-    mem['orders'] = {'A:x:P1': 'pending'}
+    _plan_region(mem)['orders'] = {'A:x:P1': 'pending'}
     assert p._source_spare_missing(order, mem) is False
     from unittest import mock
     with mock.patch.object(p, '_present_generals', return_value=['どうし']):
