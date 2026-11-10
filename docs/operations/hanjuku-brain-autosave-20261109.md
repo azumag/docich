@@ -33,3 +33,9 @@ v623 で `[lifecycle] periodic_savestate_s = 900` を入れてエージェント
 
 `act()` だけで要求を処理していたため、保留（0アクション）が続くと保存されませんでした
 （実測 20:38: 要求ファイルが数分未処理）。`observe()` の冒頭でも要求を処理するようにしました。
+
+## 追加（v640）: ポート取得の修正
+
+実機のアダプタは旧 `RetroArchAdapter` で `_network_port` を持たず、自動セーブが
+`'RetroArchAdapter' object has no attribute '_network_port'` で失敗していました（実測 20:54）。
+`retroarch_network_port(self.ctx.fence.generation)` から求めるよう修正しました。
