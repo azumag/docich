@@ -1374,6 +1374,15 @@ def map_step(screen: Screen, mem, frame):
         # The bounded inventory search belongs to this attempt, not the
         # order forever. A cancelled attempt must not exhaust every retry.
         (mem.get('card_scroll') or {}).pop(order['step'], None)
+        if (mem.get('orders') or {}).get(order['step']) != 'launched_unconfirmed':
+            # The unreadable-panel fallback also belongs to this attempt.
+            # Keeping its spent B/A budget makes a later sortie with the same
+            # step cancel immediately, before it can recover its own panel.
+            # A source-roster check of an unconfirmed launch is reconciliation,
+            # not permission to rearm the previous departure's blind A.
+            for key in ('card_unreadable', 'card_skip_departure',
+                        'sortie_confirm_miss', 'sortie_confirm_blind'):
+                (mem.get(key) or {}).pop(order['step'], None)
         mem.pop('card_upper_boundary', None)
         mem.pop('card_scroll_last', None)
         stock = mem.get('card_stock') if isinstance(mem.get('card_stock'), dict) else {}
