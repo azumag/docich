@@ -376,6 +376,13 @@ def observe(runtime_dir: Path, identity: dict, frame: Frame, *,
            'phase':phase,'frame_sha256':digest,'recent_frame_sha256':recent,'observed_monotonic':now,
            'observed_at':wall,'unchanged_since':since,'unchanged_seconds':duration,
            'playing':playing,'terminal_reason':reason,
+           # Keep the manual release stamp: this dict is rebuilt every
+           # observation, and dropping it re-armed game_over immediately
+           # (g1163 2026-11-10 22:0x).
+           'terminal_cleared_at': (old.get('terminal_cleared_at')
+                                   if isinstance(old.get('terminal_cleared_at'), (int, float))
+                                   else None),
+           'terminal_cleared_reason': old.get('terminal_cleared_reason'),
            'frame_unchanged_since':frame_since,'frame_unchanged_seconds':frame_duration,
            'repetition':repetition,'repetition_input':{},
            'repetition_evidence':loop_proof,

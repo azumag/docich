@@ -22,3 +22,9 @@
 - `tests/test_hanjuku_game_over_grace.py`（2件: 猶予内は非ラッチ／猶予後はラッチ）。
 - 端末・損失・スクリプト・診断 145件 passed。
 - 本番反映後: 解除後にボットがタイトルを抜けてゲームに戻ることを実測する。
+
+## 追加（v643）: 解除スタンプを観測で消さない
+
+`observe()` は状態辞書を作り直すため、`terminal_cleared_at` が次の観測で消え、
+猶予が効かずに**即再ラッチ**していました（実測 22:0x: `cleared_at` が None）。
+`terminal_cleared_at` / `terminal_cleared_reason` を観測後も保持するよう修正しました。
