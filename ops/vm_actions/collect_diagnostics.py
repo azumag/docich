@@ -7077,6 +7077,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v628-wave-six",
             "hanjuku-chart-v629-native-pixels",
             "hanjuku-chart-v630-aspect-restored",
+            "hanjuku-chart-v631-terminal-revival",
             "hanjuku-chart-v560-castle-list-scroll",
             "hanjuku-chart-v561-post-month-repair-status",
             "hanjuku-chart-v501-idle-reanchor",
