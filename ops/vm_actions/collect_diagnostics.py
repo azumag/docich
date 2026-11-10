@@ -7099,6 +7099,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v652-visible-castle-batch",
             "hanjuku-chart-v654-sortie-retry-budget",
             "hanjuku-chart-v655-repair-panel-sprite",
+            "hanjuku-chart-v656-target-close-settle",
             "hanjuku-chart-v560-castle-list-scroll",
             "hanjuku-chart-v561-post-month-repair-status",
             "hanjuku-chart-v501-idle-reanchor",
