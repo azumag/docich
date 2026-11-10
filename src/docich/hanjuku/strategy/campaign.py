@@ -126,7 +126,12 @@ def observe_chapter_castle(mem, castle):
     A name absent from this chapter and present in the next one is proof.
     """
     chapter = mem.get('chapter') or 0
-    if (not chapter and mem.get('resume_chapter_pending') is True and castle
+    # A running memory with no chapter yet (a restart that cleared the state,
+    # a fresh start) still needs its chapter: a unique castle name is proof on
+    # its own. A bare scratch dict (tests, one-off calls) keeps the old rule.
+    running = (mem.get('resume_chapter_pending') is True
+               or type(mem.get('tick')) is int or isinstance(mem.get('journal'), dict))
+    if (not chapter and running and castle
             and castle not in {'アルマムーン', 'あるまむーん', 'ほんじょう', 'ボス'}):
         # A restored party picker has no chapter label. Resolve from a fresh
         # full castle name unique across all chapters, never from the old bot.
