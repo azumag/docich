@@ -1089,6 +1089,14 @@ def _check_source_castle(screen, mem, order):
     name = m.group(1)
     if name == source or STATUS_NAMES.get(source) == name:
         mem['castle_verified'] = step
+        # The open castle menu belongs to the castle under the cursor, and its
+        # status just named it: that is the cursor's position. g1163
+        # 2026-11-11 00:07: after the jump to ながはま the estimate stayed on
+        # あるまむーん, so the next home order pressed A on ながはま
+        # (source_castle_mismatch) and lost ~20 s plus the hero-select jump.
+        cell = chart.castles(mem.get('chapter') or 0).get(source)
+        if cell:
+            mem['cursor'], mem['uncertain'] = list(cell), False
         # Verification does not prove the status panel has closed. Its hand
         # is hidden while open, so attempting a sortie here can wait forever.
         # Keep closing only the positively identified panel until it is gone.

@@ -734,3 +734,22 @@ def test_real_garrison_with_the_hero_selects_the_home_castle():
     order = mem['chart_plan']['orders'][0]
     assert M._hero_castle(mem) == 'アルマムーン'
     assert M._start_castle_jump(mem, order, order['source']) == [M.pad('select')]
+
+
+# ---------------------------------------------------------------- v650
+def test_named_list_jump_moves_the_cursor_estimate_to_the_source():
+    mem = _memory(_order(source='ナキューメラ'))
+    mem['castle_jump'] = {'step': 'J1', 'source': 'ナキューメラ', 'phase': 'confirm',
+                          'age': 0, 'total': 0, 'tick': 0}
+    assert M.castle_jump_step(_screen('map', [], cursor=(80, 90)), mem, None) == [M.pad('a')]
+    assert mem['cursor'] == list(M.chart.castles(1)['ナキューメラ'])
+    assert mem['uncertain'] is False
+
+
+def test_named_list_confirm_keeps_the_policy_variant_in_the_log():
+    mem = _memory()
+    mem['variant'] = 'chart_adjusted'
+    mem['castle_jump'] = {'step': 'J1', 'source': 'アルマムーン', 'phase': 'confirm',
+                          'age': 0, 'total': 0, 'tick': 0}
+    M.castle_jump_step(_screen('map', [], cursor=(80, 90)), mem, None)
+    assert mem['_records'][-1]['strategy_variant'] == 'chart_adjusted'
