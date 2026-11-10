@@ -158,3 +158,20 @@ def test_a_wave_leaves_from_the_nearest_castle_with_a_spare():
     picked = replan._wave_pick(mem, target, {home, near}, set(), False)
     assert picked is not None
     assert picked[0] == near
+
+
+def test_a_wave_sends_the_strongest_spare_first():
+    """しまばら's successor defender (85 HP) beat the weakest spare (v627).
+
+    g1163 2026-11-10 09:38: the first defender fell at ally 18 HP, then a
+    85-HP successor appeared and the sortie ended.
+    """
+    from docich.hanjuku.strategy import replan
+
+    mem = {'chapter': 8,
+           'world': {'garrison': {'ながはま': ['どうし', 'よわい', 'つよい', 'ふつう']}},
+           'general_statuses': {'statuses': {'よわい': {'hp': 12}, 'つよい': {'hp': 88},
+                                             'ふつう': {'hp': 50}}},
+           'sorties': {}, 'orders': {}}
+    picked = replan._wave_pick(mem, 'しまばら', {'ながはま'}, set(), False)
+    assert picked is not None and picked[1] == 'つよい'

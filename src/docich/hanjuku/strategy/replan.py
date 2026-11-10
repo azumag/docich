@@ -318,7 +318,10 @@ def _wave_pick(mem, target, owned, busy, allow_sole):
             continue
         spares = [g for g in _spares(free) if g != NAME]
         if spares:
-            return source, spares[0]
+            # Strongest first: a castle with a successor defender kept beating
+            # the wave's weakest spare (g1163 2026-11-10 09:38: しまばら's
+            # first defender fell at ally 18, the next one at 85 HP).
+            return source, _strongest_first(mem, spares)[0]
     return None
 
 
