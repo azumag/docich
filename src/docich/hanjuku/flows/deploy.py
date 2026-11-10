@@ -21,6 +21,7 @@ from ..os_layer.readers import (CASTLE_STATUS, STATUS_NAMES, _empty_sortie_inven
 from ..os_layer.world import NAME, _en_route, _owned
 from ..strategy.boss_cards import UNSEEN, boss_card_reserved, boss_kit
 from ..strategy.kit import (CARD_IDS, CARD_MISS_LIMIT, CARD_SCROLL_LIMIT, CARD_UNREADABLE_LIMIT, CARRY_SLOTS,
+                           NORMAL_CARD_UNREADABLE_LIMIT,
                             ENEMY_EGG_CARD_ID_SUM, RARE_SCAN_LIMIT, SORTIE_CONFIRM_LIMIT, _cap_card_ids,
                             _deploy_cards, _extra_card_name, _is_boss_order, _observe_card_stock,
                             _sortie_defender, _strict_boss_cards)
@@ -1757,7 +1758,7 @@ def deploy_step(screen: Screen, mem):
                 # base boss kit has its own cancellation budget above.
                 misses = mem.setdefault('card_unreadable', {})
                 misses[order['step']] = misses.get(order['step'], 0) + 1
-                if misses[order['step']] >= CARD_UNREADABLE_LIMIT:
+                if misses[order['step']] >= NORMAL_CARD_UNREADABLE_LIMIT:
                     # Owner 2026-11-10: depart without the planned cards rather
                     # than cancelling the sortie (シュゼット/バーミセリ lost their
                     # sorties to six unreadable readings each). Closing the list

@@ -121,14 +121,14 @@ def test_unreadable_card_select_departs_without_the_planned_cards():
     mem = {'chapter': 1, 'active': '1-A2', 'variant': 'chart',
            'orders': {'1-A2': 'pending'}, 'picked': [], '_records': []}
     screen = menu('card_select', ['クースカン1'], True)
-    for _ in range(policy.CARD_UNREADABLE_LIMIT - 1):
+    for _ in range(policy.NORMAL_CARD_UNREADABLE_LIMIT - 1):
         assert policy.deploy_step(screen, mem) == []
         assert mem['orders']['1-A2'] == 'pending'
     assert policy.deploy_step(screen, mem) == [policy.pad('b')]
     assert mem['orders']['1-A2'] == 'pending'          # not failed
     assert mem.get('card_skip_departure', {}).get('1-A2') == 1
     # B did not leave the list: take the highlighted card instead of looping.
-    for _ in range(policy.CARD_UNREADABLE_LIMIT - 1):
+    for _ in range(policy.NORMAL_CARD_UNREADABLE_LIMIT - 1):
         assert policy.deploy_step(screen, mem) == []
     assert policy.deploy_step(screen, mem) == [policy.pad('a')]
     assert any(r['decision'] == 'card_list_unreadable_depart' for r in mem['_records'])
