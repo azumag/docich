@@ -423,7 +423,10 @@ class RetroArchAdapter(Adapter):
         except OSError:
             return
         try:
-            send_ra_cmd('SAVE_STATE', port=self._network_port(), wait_reply_s=.2)
+            # The live adapter is the legacy adapter: it has no _network_port,
+            # so derive the port from the generation exactly like observe().
+            port = retroarch_network_port(self.ctx.fence.generation)
+            send_ra_cmd('SAVE_STATE', port=port, wait_reply_s=.2)
         except Exception as exc:
             print(f"docich: 警告: autosave に失敗しました: {exc}", file=sys.stderr)
             return
