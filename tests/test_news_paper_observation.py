@@ -471,7 +471,7 @@ class MarketAdapterTests(unittest.TestCase):
             "bid_size": "1000", "ask_size": "900", "size_semantics": "executable",
             "tradeable": True, "realtime": True, "session_id": "fx-session-1",
             "calendar_version": "fixture-calendar-v1", "provenance_class": "test_fixture",
-            "instrument_constraints_version": "fixture-instr-v1",
+            "instrument_constraints_version": "fixture-instr-v1", "volatility_bps": "35",
         }
         base.update(overrides)
         return base
@@ -482,6 +482,16 @@ class MarketAdapterTests(unittest.TestCase):
         self.assertEqual(first.quote_digest, again.quote_digest)
         changed = adapt_quote(self._complete(bid="150.11"))
         self.assertNotEqual(first.quote_digest, changed.quote_digest)
+
+    def test_quote_without_volatility_is_refused(self):
+        # docich#2644 item 3: the N02 boundary refuses a record that lacks
+        # volatility_bps instead of adapting it as a Phase-2-eligible quote.
+        record = self._complete()
+        del record["volatility_bps"]
+        result = adapt_quote(record)
+        self.assertIsInstance(result, AdapterRejection)
+        self.assertEqual(result.code, market_observation_adapter.CODE_PROVENANCE_INCOMPLETE)
+        self.assertIn("volatility_bps", result.missing)
 
     def test_missing_or_invalid_provenance_is_not_inferred(self):
         naive = adapt_quote(self._complete(available_at=(NOW + timedelta(seconds=2)).replace(tzinfo=None)))

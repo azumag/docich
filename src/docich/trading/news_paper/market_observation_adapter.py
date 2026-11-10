@@ -29,7 +29,7 @@ REQUIRED_FIELDS = (
     "observation_id", "source", "asset", "ingest_sequence", "market_event_at",
     "market_available_at", "available_at", "bid", "ask", "bid_size", "ask_size",
     "size_semantics", "tradeable", "realtime", "session_id", "calendar_version",
-    "provenance_class", "instrument_constraints_version",
+    "provenance_class", "instrument_constraints_version", "volatility_bps",
 )
 CODE_PROVENANCE_INCOMPLETE = "PROVENANCE_INCOMPLETE"
 CODE_FIELD_INVALID = "FIELD_INVALID"
@@ -78,6 +78,10 @@ def adapt_quote(record: Mapping[str, object]) -> MarketObservation | AdapterReje
             quote_digest=quote_digest,
             provenance_class=str(record["provenance_class"]),
             instrument_constraints_version=str(record["instrument_constraints_version"]),
+            # docich#2644 acceptance item 3: an observation without a volatility
+            # figure is Phase-2 ineligible, so the N02 boundary refuses records
+            # that lack it rather than adapting them with a silent None.
+            volatility_bps=Decimal(str(record["volatility_bps"])),
         )
     except (ExecutionError, InvalidOperation, TypeError, ValueError):
         return AdapterRejection(CODE_FIELD_INVALID)

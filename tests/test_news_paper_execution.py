@@ -121,6 +121,7 @@ def observation(**changes):
         quote_digest="b" * 64,
         provenance_class="test_fixture",
         instrument_constraints_version="fixture-stocks-v1",
+        volatility_bps=D("50"),
     )
     base.update(changes)
     return ex.MarketObservation(**base)
@@ -278,6 +279,21 @@ class ExecutionTests(unittest.TestCase):
         volatile = observation(volatility_bps=D("500"))
         out = self.run_order(observations=[volatile])
         self.assertIn("VOLATILITY_LIMIT", out.reason_codes)
+
+    def test_volatility_unknown_is_ineligible_fail_closed(self):
+        # docich#2644 item 3: with a configured limit, a missing volatility
+        # figure must reject the observation instead of passing fail-open.
+        out = self.run_order(observations=[observation(volatility_bps=None)])
+        self.assertIn("VOLATILITY_UNKNOWN", out.reason_codes)
+        self.assertEqual(out.fills, ())
+
+    def test_volatility_not_gated_without_configured_limit(self):
+        # Design decision recorded in #2644: instruments that configure no
+        # volatility limit keep no volatility gate, so a missing figure does
+        # not block fills for them.
+        out = self.run_order(observations=[observation(volatility_bps=None)],
+                             constraints=constraints(volatility_limit_bps=None))
+        self.assertNotIn("VOLATILITY_UNKNOWN", out.reason_codes)
 
     # -- pricing and cost separation ---------------------------------------
 
