@@ -27,7 +27,8 @@ class ExhaustedLatchTest(unittest.TestCase):
                 mock.patch.object(okunote, "summon_reading", return_value=None):
             # One confirm hands the stuck menu back instead of pressing B forever.
             first = battle_menus.okunote_step(screen, mem)
-            self.assertEqual(first, [battle_menus.pad("a")])
+            self.assertEqual(first, [battle_menus.pad("up"), battle_menus.pad("up"),
+                                     battle_menus.pad("a")])
             self.assertIsNone(battle_menus.okunote_step(screen, mem))
         self.assertFalse([r for r in mem["_records"]
                           if r.get("decision", "").startswith("battle_okunote_summon_unconfirmed")])
