@@ -19,7 +19,7 @@ from .kit import _deploy_cards, _is_boss_order
 from . import edition
 from . import routes
 from .execution import bound_fields, execution_claimed, execution_order
-from ..state.regions import world as _world, flow as _flow, journal as _journal, sorties as _sorties
+from ..state.regions import world as _world, flow as _flow, journal as _journal, sorties as _sorties, plan as _plan_region
 
 
 # ---------------------------------------------------------------- orders
@@ -29,9 +29,9 @@ def _sortie_general(order, mem):
     bound = bound_fields(order, mem)
     if order.get('_execution_bound') is True:
         return bound['general'] if bound is not None else None
-    context = (mem.get('order_context') or {}).get(step) or {}
+    context = (_plan_region(mem).get('order_context') or {}).get(step) or {}
     if mem.get('active') == step and 'departure_order' not in context:
-        selected = context.get('actual_general') or (mem.get('sortie_general') or {}).get(step)
+        selected = context.get('actual_general') or (_plan_region(mem).get('sortie_general') or {}).get(step)
         if selected:
             return selected
     return (mem.get('general_override') or {}).get(step, order.get('general'))
@@ -986,8 +986,10 @@ def _relaunch_overdue_boss(mem):
                     reason='ボス出撃の出し直しが上限後も長期間進まないため、間隔を置いて出し直す')
         relaunches[step] = relaunches.get(step, 0) + 1
         for key in ('general_override', 'source_override', 'card_override', 'rare_card_kit', 'strong_card_kit',
-                    'dropper_card_kit', 'order_context', 'sortie_general', 'sortie_actor_miss'):
+                    'dropper_card_kit', 'sortie_actor_miss'):
             (mem.get(key) or {}).pop(step, None)
+        _plan_region(mem).setdefault('order_context', {}).pop(step, None)
+        _plan_region(mem).setdefault('sortie_general', {}).pop(step, None)
         (_world(mem).get('launched_orders') or {}).pop(step, None)
         status[step] = 'pending'
         _record(mem, 'boss_sortie_overdue', chart_step=step, general=sortie.get('general'),
@@ -1118,9 +1120,10 @@ def _relaunch_overdue_march(mem):
             continue
         relaunches[step] = relaunches.get(step, 0) + 1
         for key in ('general_override', 'source_override', 'card_override', 'rare_card_kit',
-                    'strong_card_kit', 'dropper_card_kit', 'order_context', 'sortie_general',
-                    'sortie_actor_miss'):
+                    'strong_card_kit', 'dropper_card_kit', 'sortie_actor_miss'):
             (mem.get(key) or {}).pop(step, None)
+        _plan_region(mem).setdefault('order_context', {}).pop(step, None)
+        _plan_region(mem).setdefault('sortie_general', {}).pop(step, None)
         (_world(mem).get('launched_orders') or {}).pop(step, None)
         status[step] = 'pending'
         _record(mem, 'sortie_march_overdue', chart_step=step, general=sortie.get('general'),
@@ -1259,9 +1262,10 @@ def _expire_spent_sorties(mem):
                 misses = _flow(mem).setdefault('launch_miss', {})
                 misses[step] = int(misses.get(step) or 0) + 1
                 for key in ('general_override', 'source_override', 'card_override', 'rare_card_kit',
-                            'strong_card_kit', 'dropper_card_kit', 'order_context', 'sortie_general',
-                            'sortie_actor_miss'):
+                            'strong_card_kit', 'dropper_card_kit', 'sortie_actor_miss'):
                     (mem.get(key) or {}).pop(step, None)
+                _plan_region(mem).setdefault('order_context', {}).pop(step, None)
+                _plan_region(mem).setdefault('sortie_general', {}).pop(step, None)
                 (_world(mem).get('launched_orders') or {}).pop(step, None)
                 for target, entry in list((_world(mem).get('launched') or {}).items()):
                     if isinstance(entry, dict) and entry.get('step') == step:
@@ -1517,7 +1521,7 @@ def _tactics(mem, step):
     carried = None
     if rare_kit is not None and order:
         carried = (list(order['cards']) if bound_fields(order, mem) is not None else
-                   list(((mem.get('order_context') or {}).get(step) or {}).get('observed_metric', {}).get('cards') or []))
+                   list(((_plan_region(mem).get('order_context') or {}).get(step) or {}).get('observed_metric', {}).get('cards') or []))
         for card in (mem.get('kit_spent') or {}).get(step) or ():
             if card in carried:
                 carried.remove(card)

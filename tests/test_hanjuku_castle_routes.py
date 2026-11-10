@@ -6,7 +6,7 @@ from docich import hanjuku_chart as chart
 from docich.hanjuku.strategy import routes, replan, orders
 from docich.hanjuku.flows import deploy, map as map_flow
 from docich.hanjuku_screen import Screen
-from docich.hanjuku.state.regions import world as _world
+from docich.hanjuku.state.regions import world as _world, plan as _plan_region
 
 
 def state():
@@ -647,10 +647,10 @@ def test_an_old_launched_flag_does_not_block_an_order_the_plan_offers_again():
     _world(mem)['sorties'][karun] = {'source': 'アルマムーン', 'target': 'カルーン', 'general': 'キッシュ',
                              'status': 'arrived', 'tick': mem['tick'] - 17000}
     mem['general_override'] = {karun: 'キッシュ'}
-    mem['order_context'] = {karun: {'actual_general': 'キッシュ'}}
+    _plan_region(mem)['order_context'] = {karun: {'actual_general': 'キッシュ'}}
     rebuild(mem)
     assert mem['orders'][karun] == 'pending'
-    assert karun not in mem['general_override'] and karun not in mem['order_context']
+    assert karun not in mem['general_override'] and karun not in _plan_region(mem).get('order_context', {})
     assert mem['_records'][-1]['decision'] in ('plan_step_released', 'chart_adjust_applied')
     assert any(r['decision'] == 'plan_step_released' and r['chart_step'] == karun for r in mem['_records'])
 

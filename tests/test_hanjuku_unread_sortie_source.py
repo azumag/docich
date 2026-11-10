@@ -5,7 +5,7 @@ import pytest
 
 from docich import hanjuku_policy as p
 from test_hanjuku_retake_guard import generals
-from docich.hanjuku.state.regions import world as _world
+from docich.hanjuku.state.regions import world as _world, plan as _plan_region
 
 
 def stalled():
@@ -59,7 +59,7 @@ def test_two_observed_generals_choose_spare_and_keep_hero_at_castle():
     assert p.deploy_step(screen, mem) == [p.pad('a')]
     assert _world(mem)['garrison']['ジョンリギ'] == ['ゼウス', 'どうし', 'クミン', 'タルタル']
     assert mem['general_override'][order['step']] == 'ゼウス'
-    assert mem['sortie_general'][order['step']] == 'ゼウス'
+    assert _plan_region(mem)['sortie_general'][order['step']] == 'ゼウス'
     assert not mem.get('sorties')  # selecting is not a dispatch/arrival receipt
     p._garrison_move(mem, 'ゼウス', source='ジョンリギ')
     assert _world(mem)['garrison']['ジョンリギ'] == ['どうし', 'クミン', 'タルタル']
@@ -151,7 +151,7 @@ def test_probe_does_not_select_an_unrecognized_actor_from_a_partial_read():
     mem.update(active=order['step'], orders={}, launched_orders={order['step']: order})
     actions = p.deploy_step(generals(['ゼウス', '未知の将軍']), mem)
     assert not any('a' in a.get('buttons', []) for a in actions)
-    assert not mem.get('sortie_general') and not mem.get('sorties')
+    assert not _plan_region(mem).get('sortie_general') and not mem.get('sorties')
 
 
 @pytest.mark.parametrize('kind', ['card_select', 'sortie_confirm'])
@@ -183,7 +183,7 @@ def test_partial_list_reobservation_invalidates_probe_actor_evidence(kind, actor
     # A later incomplete observation clears the list selection. The stale
     # override remains a plan, even if the next panel happens to match it.
     p.deploy_step(generals(['ゼウス', 'クミン' + UNKNOWN]), mem)
-    assert order['step'] not in mem['sortie_general']
+    assert order['step'] not in _plan_region(mem).get('sortie_general', {})
     assert mem['general_override'][order['step']] == 'ゼウス'
     mem = json.loads(json.dumps(mem))
     screen = (measured_card_select() if kind == 'card_select'
@@ -191,5 +191,5 @@ def test_partial_list_reobservation_invalidates_probe_actor_evidence(kind, actor
     actions = p.deploy_step(actor_panel(screen, actor), mem)
     assert actions == [p.pad('b'), p.pad('b')]
     assert not mem.get('sorties') and mem['active'] is None
-    assert not mem.get('order_context') and not mem.get('general_override')
+    assert not _plan_region(mem).get('order_context') and not mem.get('general_override')
     assert mem['_records'][-1]['decision'] == 'sortie_actor_unconfirmed'

@@ -13,6 +13,7 @@ from docich import hanjuku_policy as p
 from docich.hanjuku_bot import decide, NO_INPUT_HOLD_MAX
 from docich.hanjuku_pixels import Frame, read_png
 from docich.hanjuku_screen import parse, Screen
+from docich.hanjuku.state.regions import plan as _plan_region
 from test_hanjuku_sortie_evidence import memory, measured_card_select
 from docich.hanjuku.flows import map as map_flow
 
@@ -33,7 +34,7 @@ def unread_native(cause='hand', change=0):
 
 def native_state():
     mem = memory()
-    mem['sortie_general']['1-B1'] = 'シェーブル'
+    _plan_region(mem)['sortie_general']['1-B1'] = 'シェーブル'
     mem.update(_run_identity=dict(ID), survey_run_identity=dict(ID))
     return {'policy': mem}
 
@@ -54,7 +55,7 @@ def test_public_decide_native_unread_boss_panel_cancels_with_kit_requirements_in
     assert mem['active'] is None and mem['orders']['1-B1'] == 'pending'
     assert not mem['picked'] and not mem.get('card_drop') and not mem.get('kit_spent')
     assert p._deploy_cards(next(o for o in p.chart.orders(1) if o['step'] == '1-B1'), mem) == before
-    assert not mem.get('sorties') and not mem.get('order_context')
+    assert not mem.get('sorties') and not _plan_region(mem).get('order_context')
     for _ in range(3):
         actions, state = decide(frame, state, run_identity=ID)
         assert actions == [p.pad('b')]  # an unclosed menu never gets A after the cancellation
@@ -72,7 +73,7 @@ def test_strict_unverified_stock_or_capacity_has_one_budget_across_json_and_chan
     for i in range(p.CARD_UNREADABLE_LIMIT):
         screen = parse(unread_native()) if case == 'alternating' and i % 2 else unavailable
         mem = json.loads(json.dumps(mem))
-        if case == 'alternating': mem['sortie_general']['1-B1'] = 'シェーブル'
+        if case == 'alternating': _plan_region(mem)['sortie_general']['1-B1'] = 'シェーブル'
         # Structured observations share the real native actor for this mixed sequence.
         if case == 'alternating' and i % 2 == 0:
             from test_hanjuku_sortie_evidence import actor_panel
@@ -92,7 +93,7 @@ def test_strict_unverified_stock_or_capacity_has_one_budget_across_json_and_chan
 
 def test_readable_live_required_card_at_the_deadline_still_uses_normal_selection():
     mem = memory(); unread = parse(unread_native())
-    mem['sortie_general']['1-B1'] = 'シェーブル'
+    _plan_region(mem)['sortie_general']['1-B1'] = 'シェーブル'
     for _ in range(p.CARD_UNREADABLE_LIMIT - 1):
         assert p.deploy_step(unread, mem) == []
     from test_hanjuku_sortie_evidence import actor_panel
@@ -119,18 +120,18 @@ def test_requeued_intent_cannot_refresh_an_exhausted_ui_until_observed_backout()
     for _ in range(4):
         mem = json.loads(json.dumps(mem))
         mem.update(active='1-B1', picked=[])
-        mem['sortie_general'] = {'1-B1': 'シェーブル'}
+        _plan_region(mem)['sortie_general'] = {'1-B1': 'シェーブル'}
         assert p.deploy_step(screen, mem) == [p.pad('b')]
         assert mem['boss_card_hold']['1-B1'] == p.CARD_UNREADABLE_LIMIT
     p.deploy_step(Screen([], None, '', kind='castle_menu'), mem)
     assert not mem.get('boss_card_hold')
-    mem.update(active='1-B1'); mem['sortie_general'] = {'1-B1': 'シェーブル'}
+    mem.update(active='1-B1'); _plan_region(mem)['sortie_general'] = {'1-B1': 'シェーブル'}
     assert p.deploy_step(screen, mem) == []
     assert mem['boss_card_hold']['1-B1'] == 1
 
 
 def test_missing_selected_actor_cache_has_the_same_finite_hold_without_borrowing_the_plan():
-    mem = memory(); mem.pop('sortie_general')
+    mem = memory(); _plan_region(mem).pop('sortie_general', None)
     mem.update(_run_identity=dict(ID), general_override={'1-B1': 'ゼウス'})
     screen = measured_card_select()
     for i in range(p.CARD_UNREADABLE_LIMIT):

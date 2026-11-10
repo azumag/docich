@@ -6,7 +6,7 @@ current battle state and returns a judgment or bookkeeping update; none of
 them reads the screen or produces pad input (see ``flows.battle``).
 """
 from __future__ import annotations
-from ..state.regions import world as _world, sorties as _sorties
+from ..state.regions import world as _world, sorties as _sorties, plan as _plan_region
 
 from dataclasses import asdict
 
@@ -81,7 +81,7 @@ def _bind_battle_strategy(mem, cur):
         return
     step = cur.get('step')
     retry = (mem.get('retry_context') or {}).get(step)
-    sortie = (mem.get('order_context') or {}).get(step) or {}
+    sortie = (_plan_region(mem).get('order_context') or {}).get(step) or {}
     if sortie.get('actual_general') != cur.get('ally'):
         sortie = {}
     if retry or (mem.get('card_override') or {}).get(step):
@@ -216,7 +216,7 @@ def _strong_cards_carried(mem, cur):
     kit = (mem.get('strong_card_kit') or {}).get(step)
     if not kit or not step:
         return []
-    context = (mem.get('order_context') or {}).get(step) or {}
+    context = (_plan_region(mem).get('order_context') or {}).get(step) or {}
     observed = (context.get('observed_metric') or {}).get('cards')
     if not isinstance(observed, list):
         return []

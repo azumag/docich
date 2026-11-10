@@ -8,6 +8,7 @@ from docich import hanjuku_policy as policy
 from docich.hanjuku_font import TextLine, UNKNOWN
 from docich.hanjuku_pixels import read_png
 from docich.hanjuku_screen import Screen, parse
+from docich.hanjuku.state.regions import plan as _plan_region
 
 
 @pytest.fixture(autouse=True)
@@ -94,7 +95,7 @@ def test_native_card_receipt_cannot_approve_a_different_boss_kit():
     record = mem['_records'][-1]
     assert record['decision'] == 'situation_held'
     assert record['observed_metric']['carried_cards_read'] == ['バルムンク']
-    assert not mem.get('order_context')
+    assert not _plan_region(mem).get('order_context')
 
 
 def test_native_exact_kit_can_be_confirmed_when_that_is_the_actual_plan(monkeypatch):
@@ -106,7 +107,7 @@ def test_native_exact_kit_can_be_confirmed_when_that_is_the_actual_plan(monkeypa
     screen = actor_panel(parse(read_png(FIXTURE)), 'ゼウス')
     mem = boss_memory()
     assert policy.deploy_step(screen, mem) == [policy.pad('a')]
-    context = mem['order_context']['2-B1']
+    context = _plan_region(mem)['order_context']['2-B1']
     assert context['observed_metric']['cards'] == ['バルムンク']
     assert context['actual_general'] == 'ゼウス'
     assert mem['_records'][-1]['inventory_evidence'] == 'measured_single_card_sortie'

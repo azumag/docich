@@ -5,7 +5,7 @@ of them without waiting for a model, adopts a validated adjusted chart when
 one answers, and records every deviation.
 """
 from __future__ import annotations
-from ..state.regions import world as _world, sorties as _sorties
+from ..state.regions import world as _world, sorties as _sorties, plan as _plan_region
 
 import hashlib
 
@@ -1323,6 +1323,8 @@ def _release_stale_failures(mem, orders, rid):
         # an overdue move is still the only arrival evidence for its target.
         for key in RELEASE_KEYS:
             (mem.get(key) or {}).pop(step, None)
+        _plan_region(mem).setdefault('order_context', {}).pop(step, None)
+        _plan_region(mem).setdefault('sortie_general', {}).pop(step, None)
         # ``launched_orders`` lives in the world region, not at the top level.
         (_world(mem).get('launched_orders') or {}).pop(step, None)
         _record(mem, 'plan_step_rearmed', chart_step=step, general=order.get('general'),
@@ -1445,7 +1447,7 @@ def _mechanical_step(order, used, mem=None):
 
 
 RELEASE_KEYS = ('general_override', 'source_override', 'card_override', 'rare_card_kit',
-                'strong_card_kit', 'dropper_card_kit', 'order_context', 'sortie_general',
+                'strong_card_kit', 'dropper_card_kit',
                 'sortie_actor_miss', 'launched_orders', 'target_cancel')
 
 
@@ -1478,6 +1480,8 @@ def _release_stale_steps(mem, steps):
             continue
         for key in RELEASE_KEYS:
             (mem.get(key) or {}).pop(step, None)
+        _plan_region(mem).setdefault('order_context', {}).pop(step, None)
+        _plan_region(mem).setdefault('sortie_general', {}).pop(step, None)
         _drop_spent_sortie_attempt(mem, step)
         # Owner 2026-11-05: a released attempt must not leave its march behind.
         # グレナデン stayed launched_unconfirmed for 5971 observations while

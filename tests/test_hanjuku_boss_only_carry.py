@@ -13,7 +13,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'tests'))
 
 from docich import hanjuku_policy as p
 from docich import hanjuku_reference as reference
-from docich.hanjuku.state.regions import flow as _flow, world as _world
+from docich.hanjuku.state.regions import flow as _flow, world as _world, plan as _plan_region
 from docich.hanjuku.strategy.execution import confirm_departure_order
 from test_hanjuku_dropper_carry import defender, sortie
 
@@ -52,7 +52,7 @@ def bound_execution(cards=('バルムンク', 'ミックミー')):
              'target': 'ゴーメン', 'cards': list(cards), 'after': None}
     frozen = confirm_departure_order(order, mem, 'ゼウス', 'カストーラ', list(cards))
     assert frozen is not None
-    mem['order_context'][step] = {'actual_general': 'ゼウス', 'departure_order': frozen,
+    _plan_region(mem)['order_context'][step] = {'actual_general': 'ゼウス', 'departure_order': frozen,
                                   'observed_metric': {'general': 'ゼウス',
                                                       'cards': list(cards)}}
     _flow(mem)['sortie_attempt'] = {'step': step, 'target_seen': True,

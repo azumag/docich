@@ -5,7 +5,7 @@ tactic or rescue is due, opens the command menu for it and settles the record
 when the battle ends.
 """
 from __future__ import annotations
-from ..state.regions import world as _world, flow as _flow, journal as _journal, sorties as _sorties
+from ..state.regions import world as _world, flow as _flow, journal as _journal, sorties as _sorties, plan as _plan_region
 
 import re
 import time
@@ -1368,8 +1368,10 @@ def battle_end(mem, next_kind, *, defense_continues=False, actor_continues=False
     if outcome in ('loss', 'unclassified') and boss_attempt:
         retries = mem.setdefault('retries', {})
         retries[step] = retries.get(step, 0) + 1
-        for key in ('general_override', 'card_override', 'rare_card_kit', 'strong_card_kit', 'dropper_card_kit', 'order_context', 'sortie_general', 'sortie_actor_miss'):
+        for key in ('general_override', 'card_override', 'rare_card_kit', 'strong_card_kit', 'dropper_card_kit', 'sortie_actor_miss'):
             mem.setdefault(key, {}).pop(step, None)
+        _plan_region(mem).setdefault('order_context', {}).pop(step, None)
+        _plan_region(mem).setdefault('sortie_general', {}).pop(step, None)
         if retries[step] <= 3:
             mem.setdefault('orders', {})[step] = 'pending'
             context = {'strategy_variant': 'retry_chart_boss_kit',

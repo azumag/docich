@@ -12,7 +12,7 @@ from docich.hanjuku.os_layer.screen import Screen
 from docich.hanjuku.strategy.execution import confirm_departure_order
 from test_hanjuku_sortie_evidence import actor_panel, measured_loaded_sortie
 from docich.hanjuku.state.regions import flow as _flow, journal as _journal
-from docich.hanjuku.state.regions import world as _world, sorties as _sorties
+from docich.hanjuku.state.regions import world as _world, sorties as _sorties, plan as _plan_region
 
 
 def memory():
@@ -28,7 +28,7 @@ def confirm(mem):
     order = next(o for o in chart.orders(1) if o['step'] == '1-A3')
     frozen = confirm_departure_order(order, mem, 'ゼウス', 'カストーラ', ['クースカン'])
     assert frozen is not None
-    mem['order_context']['1-A3'] = {'actual_general': 'ゼウス', 'departure_order': frozen,
+    _plan_region(mem)['order_context']['1-A3'] = {'actual_general': 'ゼウス', 'departure_order': frozen,
                                   'observed_metric': {'general': 'ゼウス', 'cards': ['クースカン']}}
     _flow(mem)['sortie_attempt'] = {'step': '1-A3', 'target_seen': True, 'confirmation_tick': 20}
     return order
@@ -75,8 +75,8 @@ def test_unconfirmed_departure_saves_actual_actor_source_and_unknown_destination
 def test_independent_saved_binding_survives_mutation_of_confirmation_context():
     mem = memory(); confirm(mem); interrupt(mem)
     _flow(mem)['sortie_attempt'] = None
-    mem['order_context']['1-A3']['actual_general'] = 'どうし'
-    mem['order_context']['1-A3']['departure_order']['general'] = 'どうし'
+    _plan_region(mem)['order_context']['1-A3']['actual_general'] = 'どうし'
+    _plan_region(mem)['order_context']['1-A3']['departure_order']['general'] = 'どうし'
     mutate_plan(mem); assert_frozen(mem)
 
 
@@ -135,7 +135,7 @@ def test_spent_copies_and_actual_kit_are_not_replaced_by_later_card_plans():
 
 def test_legacy_context_can_record_metadata_but_does_not_gain_a_bound_execution():
     mem = memory(); mem.pop('_run_identity')
-    mem['order_context']['1-A3'] = {'actual_general': 'ゼウス'}
+    _plan_region(mem)['order_context']['1-A3'] = {'actual_general': 'ゼウス'}
     _flow(mem)['sortie_attempt'] = {'step': '1-A3', 'target_seen': True}
     interrupt(mem)
     assert _world(mem)['launched_orders']['1-A3']['general'] == 'ゼウス'
@@ -155,7 +155,7 @@ def test_real_confirmation_handler_binds_named_actor_actual_source_and_carried_c
                                 card_override={'1-A3':['クースカン']})
     panel = actor_panel(measured_loaded_sortie(('クースカン',)), 'ゼウス')
     assert p.deploy_step(panel, mem) == [p.pad('a')]
-    stored = mem['order_context']['1-A3']['departure_order']
+    stored = _plan_region(mem)['order_context']['1-A3']['departure_order']
     assert stored['general'] == 'ゼウス' and stored['source'] == 'カストーラ'
     assert stored['cards'] == ['クースカン'] and 'departure_binding' in stored
     assert _flow(mem)['sortie_attempt']['target_seen'] is False
@@ -169,14 +169,14 @@ def test_scoped_ordinary_sortie_checks_actual_name_before_confirming(name):
     panel = actor_panel(measured_loaded_sortie(('クースカン',)), name)
     assert p.deploy_step(panel, mem) != [p.pad('a')]
     assert not _flow(mem).get('sortie_attempt')
-    assert not any(c.get('departure_order') for c in mem['order_context'].values())
+    assert not any(c.get('departure_order') for c in _plan_region(mem)['order_context'].values())
 
 
 def test_boolean_one_marker_is_not_the_integer_one_execution():
     mem = memory(); mem['tick'] = 1
     order = next(o for o in chart.orders(1) if o['step']=='1-A3')
     frozen = confirm_departure_order(order, mem, 'ゼウス', 'カストーラ', [])
-    mem['order_context']['1-A3'] = {'departure_order': frozen}
+    _plan_region(mem)['order_context']['1-A3'] = {'departure_order': frozen}
     _flow(mem)['sortie_attempt'] = {'step':'1-A3', 'confirmation_tick':True}
     assert p._order_for_step(mem, '1-A3') is None
 

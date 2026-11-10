@@ -14,7 +14,7 @@ from docich.hanjuku.strategy import orders as _orders_mod
 from docich.hanjuku_pixels import Frame
 from docich.hanjuku_screen import Screen
 from docich.hanjuku.state.regions import flow as _flow, journal as _journal
-from docich.hanjuku.state.regions import world as _world, sorties as _sorties
+from docich.hanjuku.state.regions import world as _world, sorties as _sorties, plan as _plan_region
 
 FRAME = Frame(256, 224, bytes(256 * 224 * 3))
 BASE_ORDERS = copy.deepcopy(chart.CHAPTER_1_ORDERS)
@@ -845,9 +845,9 @@ def test_adjusted_boss_order_reaches_boss_entry_and_battle_tactics(monkeypatch):
     assert mem['active'] == j2
     # Boss guard still applies: no companion/cards evidence, no target confirmation.
     assert _launch(monkeypatch, mem) == []
-    mem['order_context'] = {j2: {'actual_general': 'ゼウス',
+    _plan_region(mem)['order_context'] = {j2: {'actual_general': 'ゼウス',
                                  'observed_metric': {'cards': sorted(['クースカン', 'ノリウツール'])}}}
-    mem['sortie_general'] = {j2: 'ゼウス'}
+    _plan_region(mem)['sortie_general'] = {j2: 'ゼウス'}
     assert _launch(monkeypatch, mem) == [policy.pad('a')]
     assert _world(mem)['launched']['けっかい'] == {'general': 'ゼウス', 'step': j2}
     # Unknown general on the measured boss entry text is still refused.

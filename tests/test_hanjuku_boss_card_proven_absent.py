@@ -5,6 +5,7 @@ from docich import hanjuku_policy as policy
 from docich.hanjuku.flows.deploy import _card_proven_absent
 from docich.hanjuku.strategy.kit import _deploy_cards
 from test_hanjuku_sortie_evidence import actor_panel, measured_card_select, menu
+from docich.hanjuku.state.regions import plan as _plan_region
 
 # g825 2-9 (2026-10-17 09:3x): 1-B1 wanted クースカン(13) after ノリウツール was
 # picked; the panel showed these rows and the strict boss kit held for good.
@@ -78,7 +79,7 @@ def test_card_that_may_be_scrolled_off_is_dropped_without_cancelling_the_boss_ki
 
 def test_unreadable_boss_panel_cancels_without_dropping_any_card():
     mem = memory()
-    mem['sortie_general']['1-B1'] = 'ゼウス'  # the actor menu() draws
+    _plan_region(mem)['sortie_general']['1-B1'] = 'ゼウス'  # the actor menu() draws
     screen = menu('card_select', ['クースカン1'], True)
     for _ in range(policy.CARD_UNREADABLE_LIMIT - 1):
         assert policy.deploy_step(screen, mem) == []

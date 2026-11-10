@@ -11,7 +11,7 @@ from ... import hanjuku_chart as chart, hanjuku_reference as reference
 from ...hanjuku_egg_reference import general_max_hp
 from ..os_layer.roster import run_identity
 from ..os_layer.world import NAME
-from ..state.regions import world as _world, flow as _flow, journal as _journal, sorties as _sorties
+from ..state.regions import world as _world, flow as _flow, journal as _journal, sorties as _sorties, plan as _plan_region
 
 
 def _role_cards(raw, cards):
@@ -93,7 +93,7 @@ def confirm_departure_order(order, mem, general, source, cards):
 
 def execution_order(mem, step):
     """Resolve an in-flight attempt first, then its independently saved sortie."""
-    context = (mem.get('order_context') or {}).get(step) or {}
+    context = (_plan_region(mem).get('order_context') or {}).get(step) or {}
     attempt = _flow(mem).get('sortie_attempt') or {}
     confirmed = context.get('departure_order')
     if (attempt.get('step') == step and not attempt.get('interrupted')
@@ -122,7 +122,7 @@ def bound_fields(order, mem):
 
 def departure_snapshot(order, mem, general, source):
     """Save actual metadata; untagged legacy context acquires no new authority."""
-    confirmed = ((mem.get('order_context') or {}).get(order['step']) or {}).get('departure_order')
+    confirmed = ((_plan_region(mem).get('order_context') or {}).get(order['step']) or {}).get('departure_order')
     if confirmed is not None:
         if not _valid_departure(confirmed, mem):
             return None
