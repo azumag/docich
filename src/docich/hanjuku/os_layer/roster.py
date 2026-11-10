@@ -311,9 +311,14 @@ def _purge_verified_departure(mem, name):
     for key in ('house_eggs', 'egg_types', 'egg_uses'):
         if isinstance(mem.get(key), dict):
             mem[key].pop(name, None)
-    for key in ('general_location_unknown', 'egg_recheck', PENDING_JOINS_KEY):
+    for key in ('egg_recheck', PENDING_JOINS_KEY):
         if isinstance(mem.get(key), list):
             mem[key] = [g for g in mem[key] if g != name]
+    # general_location_unknown lives in the world region (#3193 W3); a flat
+    # mem access would always miss the migrated copy (#3923).
+    unknown_list = _world(mem).get('general_location_unknown')
+    if isinstance(unknown_list, list):
+        _world(mem)['general_location_unknown'] = [g for g in unknown_list if g != name]
 
 
 def invalidate(mem):

@@ -19,7 +19,7 @@ from ..os_layer.font import UNKNOWN
 from ..os_layer.readers import CASTLE_STATUS, STATUS_NAMES
 from ..os_layer.roster import run_identity
 from ..os_layer.screen import castle_roofs
-from ..state.regions import world as _world, flow as _flow
+from ..state.regions import world as _world, flow as _flow, plan as _plan_region
 
 SCHEMA = chart.MAP_SCHEMA
 verified_castles = chart.verified_castles
@@ -257,8 +257,10 @@ def step(screen, mem, frame):
                     'reanchor_stationary'):
             state.pop(key, None)
     state['last_tick'] = tick
-    if (any(mem.get(k) for k in ('battle', 'month_sub', 'house', 'active',
+    if (any(mem.get(k) for k in ('battle', 'month_sub', 'house',
                                 'y_jump', 'resume_egg_ritual'))
+            # 'active' lives in the plan region (#3193 P2) (#3923).
+            or _plan_region(mem).get('active')
             or any(_flow(mem).get(k) for k in ('recall', 'sortie_attempt'))):
         state.pop('probe', None)
         state.pop('roof_world', None)

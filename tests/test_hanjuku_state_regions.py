@@ -206,56 +206,168 @@ def test_plan_region_dies_with_the_chapter_but_journal_survives():
     assert mem['journal']['_departure_input']['request_trace'] == {'d': 2}
 
 
-def test_src_has_no_flat_access_to_migrated_keys():
-    # #3921 (follow-up #3918): migrate_legacy_state replaces the whole region
-    # value with any leftover flat value, so a single missed conversion that
-    # writes ``mem['sortie_general']`` flat silently drops every other step's
-    # data.  Flat *reads* are the same class of bug in reverse: after
-    # migration they always observe ``None`` and ignore the region copy.
-    # This scan forbids direct ``mem`` access to any migrated key in src/ so
-    # the replace semantics can be kept safely: producers must go through the
-    # region accessors (``world/plan/flow/journal``), which is also what makes
-    # whole-value replacement correct for legacy snapshots.
-    # Known blind spot: ``mem.get(var)`` where ``var`` is a computed key name
-    # cannot be matched statically; the tuple-literal form ``mem.get(k) for k
-    # in (...)`` is covered separately below.
-    import re
-    from pathlib import Path
+def _flat_migrated_accesses(source, filename='<test>'):
+    """AST scan: return ``(lineno, form)`` for direct ``mem`` access to migrated keys.
 
+    docich#3923 (owner review of #3922): the previous line/regex guard missed
+    ``#`` inside strings, multi-line calls, and ``mem.update({...})``.  AST
+    inspection covers the actual semantics instead of text:
+
+    - ``mem['k']``            subscript read/write/del
+    - ``mem.get/pop/setdefault('k'``  call with a migrated key literal
+    - ``mem.update({'k': ..})`` / ``mem.update(k=..)``  dict args and kwargs
+    - ``'k' in mem`` / ``not in``     Compare against the flat dict
+    - ``mem.get(v)`` / ``mem[v]`` where ``v`` is bound by a comprehension or
+      ``for`` loop whose iterable is a literal containing migrated keys
+      (the hanjuku_policy/house pre-#3921 shape)
+
+    Known blind spot (documented): a key name computed dynamically (e.g.
+    ``v = 'act' + 'ive'; mem.get(v)``) is not resolvable statically.
+    """
+    import ast
+
+    tree = ast.parse(source, filename=filename)
     migrated = {k for k, spec in KEY_OWNERSHIP.items() if spec['migrated']}
-    alt = '|'.join(sorted(map(re.escape, migrated)))
-    direct = [
-        re.compile(r"\bmem\[(['\"])(?:%s)\1\]" % alt),                      # mem['k'] (read/write/del)
-        re.compile(r"\bmem\.(?:get|pop|setdefault|update)\((['\"])(?:%s)\1" % alt),
-        re.compile(r"(['\"])(?:%s)\1\s+(?:not\s+)?in\s+mem\b" % alt),       # 'k' in mem
-    ]
-    # ``mem.get(var) for var in (<literal tuple>)`` where the literal contains
-    # migrated keys (the form used by hanjuku_policy/house pre-#3921).  The
-    # access and its generator are matched as one unit so that a second,
-    # accessor-routed comprehension reusing the same variable name on the
-    # same line does not produce false positives.
-    indirect = [
-        re.compile(r"\bmem\.(?:get|pop)\((\w+)\)\s+for\s+\1\s+in\s*[\(\[]([^\)\]]+)[\)\]]"),
-        re.compile(r"\bmem\[(\w+)\]\s+for\s+\1\s+in\s*[\(\[]([^\)\]]+)[\)\]]"),
-    ]
-    str_lit = re.compile(r"(['\"])(%s)\1" % alt)
+    hits = []
+
+    def lit(node):
+        return node.value if (isinstance(node, ast.Constant)
+                              and isinstance(node.value, str)) else None
+
+    def is_mem(node):
+        return isinstance(node, ast.Name) and node.id == 'mem'
+
+    def name_arg(node):
+        return node.id if isinstance(node, ast.Name) else None
+
+    # ``mem.get(v)`` / ``mem[v]`` where ``v`` is bound by a literal iterable
+    # containing migrated keys.  Scope is limited to the binding construct's
+    # own subtree so a reused variable name elsewhere does not flag.
+    def scan_indirect(root):
+        out = []
+        for node in ast.walk(root):
+            pairs = []
+            if isinstance(node, ast.For):
+                pairs.append((node.target, node.iter,
+                              node.body + node.orelse))
+            elif isinstance(node, (ast.ListComp, ast.SetComp,
+                                 ast.GeneratorExp)):
+                for g in node.generators:
+                    pairs.append((g.target, g.iter,
+                                  [node.elt] + g.ifs))
+            elif isinstance(node, ast.DictComp):
+                for g in node.generators:
+                    pairs.append((g.target, g.iter,
+                                  [node.key, node.value] + g.ifs))
+            for target, iter_node, subtree in pairs:
+                var = name_arg(target)
+                if not (var and isinstance(iter_node, (ast.Tuple, ast.List, ast.Set))
+                        and any(lit(e) in migrated for e in iter_node.elts)):
+                    continue
+                for use_root in subtree:
+                    for use in ast.walk(use_root):
+                        if (isinstance(use, ast.Subscript) and is_mem(use.value)
+                                and name_arg(use.slice) == var):
+                            out.append((use.lineno, f"mem[{var}] via literal iterable"))
+                        elif (isinstance(use, ast.Call)
+                                and isinstance(use.func, ast.Attribute)
+                                and is_mem(use.func.value)
+                                and use.func.attr in ('get', 'pop', 'setdefault')
+                                and use.args and name_arg(use.args[0]) == var):
+                            out.append((use.lineno,
+                                        f"mem.{use.func.attr}({var}) via literal iterable"))
+        return out
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Subscript) and is_mem(node.value):
+            key = lit(node.slice)
+            if key in migrated:
+                hits.append((node.lineno, f"mem[{key!r}]"))
+        elif isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and is_mem(node.func.value):
+            attr = node.func.attr
+            if attr in ('get', 'pop', 'setdefault'):
+                arg = node.args[0] if node.args else None
+                key = lit(arg) if arg is not None else None
+                if key in migrated:
+                    hits.append((node.lineno, f"mem.{attr}({key!r})"))
+            elif attr == 'update':
+                for arg in node.args:
+                    if isinstance(arg, ast.Dict):
+                        for k in arg.keys:
+                            if lit(k) in migrated:
+                                hits.append((node.lineno, f"mem.update({{{lit(k)!r}: ...}})"))
+                for kw in node.keywords:
+                    if kw.arg in migrated:
+                        hits.append((node.lineno, f"mem.update({kw.arg}=...)"))
+        elif isinstance(node, ast.Compare):
+            key = lit(node.left)
+            if key in migrated and any(
+                    isinstance(op, (ast.In, ast.NotIn)) and is_mem(comp)
+                    for op, comp in zip(node.ops, node.comparators)):
+                hits.append((node.lineno, f"{key!r} in mem"))
+    hits.extend(scan_indirect(tree))
+    return hits
+
+
+def test_src_has_no_flat_access_to_migrated_keys():
+    # #3921/#3923: migrate_legacy_state replaces the whole region value with
+    # any leftover flat value, so a single missed conversion that writes
+    # ``mem['sortie_general']`` flat silently drops every other step's data.
+    # Flat *reads* are the same class of bug in reverse: after migration they
+    # always observe ``None`` and ignore the region copy.  This AST scan
+    # forbids direct ``mem`` access to any migrated key in src/ so the
+    # replace semantics can be kept safely: producers must go through the
+    # region accessors (``world/plan/flow/journal``).
+    from pathlib import Path
 
     src_root = Path(__file__).resolve().parents[1] / 'src' / 'docich'
     violations = []
     for path in sorted(src_root.rglob('*.py')):
         if path.name == 'regions.py' and path.parent.name == 'state':
             continue  # migrate_legacy_state itself owns the flat->region move
-        lines = path.read_text(encoding='utf-8').splitlines()
-        for lineno, line in enumerate(lines, 1):
-            code = line.split('#', 1)[0]
-            if any(p.search(code) for p in direct):
-                violations.append(f"{path}:{lineno}: {line.strip()}")
-                continue
-            for pat in indirect:
-                for m in pat.finditer(code):
-                    if str_lit.search(m.group(2)):
-                        violations.append(f"{path}:{lineno}: {line.strip()}")
-                        break
+        for lineno, form in _flat_migrated_accesses(
+                path.read_text(encoding='utf-8'), filename=str(path)):
+            violations.append(f"{path}:{lineno}: {form}")
     assert not violations, (
         "flat access to migrated keys must go through the region accessors:\n"
         + '\n'.join(violations))
+
+
+import pytest
+
+
+@pytest.mark.parametrize('snippet', [
+    "mem['sortie_general'] = {}",
+    "x = mem.get('sortie_general')",
+    "del mem['orders']",
+    "mem.setdefault('order_context', {})",
+    "mem.pop('orders', None)",
+    "mem.update({'active': None})",
+    "mem.update(active=None)",
+    "if 'recall' in mem:\n    pass",
+    "if 'launched' not in mem:\n    pass",
+    # multi-line call: the string guard could not span lines (#3923)
+    "mem.get(\n    'launched_orders')",
+    # '#' inside a string literal must not truncate the scan (#3923)
+    "tag = '#not_a_comment'\nmem['recall'] = {}",
+    # key literal reached through a literal-iterable loop variable
+    "any(mem.get(k) for k in ('active', 'y_jump'))",
+    "for k in ('recall', 'other'):\n    mem[k] = 1",
+])
+def test_flat_access_guard_detects_forbidden_shapes(snippet):
+    # Each shape is pinned so a future refactor of the scanner cannot
+    # silently lose a detection class (#3923).
+    assert _flat_migrated_accesses(snippet), snippet
+
+
+@pytest.mark.parametrize('snippet', [
+    "x = _world(mem).get('launched_orders')",
+    "_flow(mem)['recall'] = {'stage': 'x'}",
+    "mem.get('chart_plan')",                       # declared but unmigrated
+    "mem.get('_run_identity')",                    # journal, unmigrated
+    "x = mem['chapter']",
+    "any(mem.get(k) for k in ('y_jump', 'battle'))",
+    "state.get('recall')",
+])
+def test_flat_access_guard_ignores_accessor_and_unmigrated_forms(snippet):
+    assert not _flat_migrated_accesses(snippet), snippet

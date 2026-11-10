@@ -490,9 +490,13 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
                        reason='二行の城の正体告知を実画面で確認したため会話を進める',
                        observed_metric={'chapter': reveal_chapter})
         updated.update(screen_kind=kind, no_input_streak=0, no_input_frames=[])
-        for key in ('_adjusted', '_interim', '_recall_inputs', '_card_scroll_input'):
+        # '_recall_inputs' is a migrated journal key: popping it flat would
+        # leave the journal copy and could drop a legacy value migrate would
+        # have folded in (#3923). The other three are still flat keys.
+        for key in ('_adjusted', '_interim', '_card_scroll_input'):
             mem.pop(key, None)
         _journal(mem).pop('_departure_input', None)
+        _journal(mem).pop('_recall_inputs', None)
         updated['_records'] = mem.pop('_records')
         updated['_experience'] = mem.pop('_experience', None)
         updated['policy'] = mem
@@ -503,9 +507,13 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
         # Never let the generic shop/event/no-input fallback skip this list,
         # or let an old monthly/repair transaction own the chapter foreground.
         updated.update(screen_kind=kind, no_input_streak=0, no_input_frames=[])
-        for key in ('_adjusted', '_interim', '_recall_inputs', '_card_scroll_input'):
+        # '_recall_inputs' is a migrated journal key: popping it flat would
+        # leave the journal copy and could drop a legacy value migrate would
+        # have folded in (#3923). The other three are still flat keys.
+        for key in ('_adjusted', '_interim', '_card_scroll_input'):
             mem.pop(key, None)
         _journal(mem).pop('_departure_input', None)
+        _journal(mem).pop('_recall_inputs', None)
         updated['_records'] = mem.pop('_records')
         updated['_experience'] = mem.pop('_experience', None)
         updated['policy'] = mem
@@ -519,9 +527,13 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
         # hours. One bounded B returns to the field map, where next_order can
         # re-arm the stale step; normal flows resume if no step is parked.
         updated.update(screen_kind=kind, no_input_streak=0, no_input_frames=[])
-        for key in ('_adjusted', '_interim', '_recall_inputs', '_card_scroll_input'):
+        # '_recall_inputs' is a migrated journal key: popping it flat would
+        # leave the journal copy and could drop a legacy value migrate would
+        # have folded in (#3923). The other three are still flat keys.
+        for key in ('_adjusted', '_interim', '_card_scroll_input'):
             mem.pop(key, None)
         _journal(mem).pop('_departure_input', None)
+        _journal(mem).pop('_recall_inputs', None)
         updated['_records'] = mem.pop('_records')
         updated['_experience'] = mem.pop('_experience', None)
         updated['policy'] = mem
