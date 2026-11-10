@@ -1,7 +1,7 @@
 """Regression coverage for #3266 plan-local sortie reservations."""
 
 from docich.hanjuku.strategy import replan
-from docich.hanjuku.state.regions import world as _world, sorties as _sorties
+from docich.hanjuku.state.regions import world as _world, plan as _plan_region, sorties as _sorties
 
 
 def crowded_home():
@@ -32,7 +32,7 @@ def crowded_home():
             'source': 'アルマムーン', 'target': 'アイアイエー',
             'general': general, 'status': 'overdue', 'tick': tick, 'purpose': 'move',
         }
-        mem['orders'][step] = 'failed'
+        _plan_region(mem)['orders'][step] = 'failed'
     return mem
 
 

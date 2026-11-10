@@ -36,7 +36,7 @@ def confirm(mem):
 
 def interrupt(mem):
     p.observe_sortie_transition(Screen([], None, '', kind='defense_started'), mem, 'map_target')
-    assert mem['orders']['1-A3'] == 'launched_unconfirmed'
+    assert _plan_region(mem)['orders']['1-A3'] == 'launched_unconfirmed'
 
 
 def mutate_plan(mem):
@@ -93,7 +93,7 @@ def test_selected_target_saves_actual_actor_even_after_plan_replacement(monkeypa
     request = _flow(mem)['departure_request']
     assert request['step'] == '1-A3' and request['target'] == 'スペンソニア'
     assert request['general'] == 'ゼウス' and request['source'] == 'カストーラ'
-    assert mem['orders']['1-A3'] == 'pending'
+    assert _plan_region(mem)['orders']['1-A3'] == 'pending'
     assert 'ゼウス' in _world(mem)['garrison']['カストーラ']
     assert not _world(mem).get('sorties') and not _world(mem).get('launched_orders')
     assert_frozen(mem)
@@ -102,7 +102,7 @@ def test_selected_target_saves_actual_actor_even_after_plan_replacement(monkeypa
 def test_marker_return_is_same_execution_but_new_retry_requires_fresh_confirmation():
     mem = memory(); confirm(mem); interrupt(mem); mutate_plan(mem)
     p.observe_sortie_transition(Screen([], None, '', kind='map_target'), mem, 'unknown')
-    assert mem['orders']['1-A3'] == 'pending'
+    assert _plan_region(mem)['orders']['1-A3'] == 'pending'
     assert_frozen(mem)
     # A lost/cancelled sortie can be replanned. No old confirmation owns it.
     _flow(mem).pop('sortie_attempt'); _world(mem)['sorties'] = {}
@@ -227,5 +227,5 @@ def test_reconciled_attempt_does_not_claim_a_repicked_pending_order():
     # The launched march resolved; a retry put the step back to pending.
     _world(mem)['sorties'] = {}
     _world(mem)['launched_orders'] = {}
-    mem['orders']['1-A3'] = 'pending'
+    _plan_region(mem)['orders']['1-A3'] = 'pending'
     assert p._order_for_step(mem, '1-A3') is not None

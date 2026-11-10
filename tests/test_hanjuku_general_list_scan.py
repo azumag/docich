@@ -14,7 +14,7 @@ where it started, stops moving, or a press limit.
 from docich import hanjuku_policy as policy
 from docich.hanjuku_screen import parse
 from test_hanjuku_chart_bot import Canvas
-from docich.hanjuku.state.regions import world as _world, sorties as _sorties
+from docich.hanjuku.state.regions import world as _world, plan as _plan_region, sorties as _sorties
 
 ROSTER = ['アルファルファ', 'ゼウス', 'ラズベリー', 'キャンディー', 'ココット', 'リースリング']
 
@@ -75,7 +75,7 @@ def test_the_planned_general_below_the_window_ends_the_walk_at_his_page():
     assert mem['general_list_scan']['end'] == 'named'
     assert mem['general_list_scan']['general'] == 'ココット'
     assert not [r for r in mem['_records'] if r['decision'] == 'order_substitute']
-    assert mem['orders']['1-C1'] != 'failed'
+    assert _plan_region(mem)['orders']['1-C1'] != 'failed'
     assert not (mem.get('general_override') or {}).get('1-C1')
 
 
@@ -203,9 +203,9 @@ def test_a_completed_roster_settles_a_blind_launch_probe():
     """g1133 2026-11-05: chapter 6's Y view drew units as portraits, so the
     launch probe could never see the committed unit; the source roster is the
     evidence that settles it."""
-    from docich.hanjuku.state.regions import world as _world, sorties as _sorties, flow as _flow
+    from docich.hanjuku.state.regions import world as _world, plan as _plan_region, sorties as _sorties, flow as _flow
     mem = memory()
-    mem['orders']['1-A3'] = 'launched'
+    _plan_region(mem)['orders']['1-A3'] = 'launched'
     mem['sorties'] = {'1-A3': {'general': 'ゼウス', 'source': 'アルマムーン',
                                'target': 'スペンソニア', 'status': 'en_route', 'tick': 400}}
     _flow(mem)['launch_probe'] = {'1-A3': {
@@ -217,7 +217,7 @@ def test_a_completed_roster_settles_a_blind_launch_probe():
                                 'tick': mem['tick']}
     walk(mem, [general_list(gone, 0)])
     assert '1-A3' not in (_flow(mem).get('launch_probe') or {})
-    assert mem['orders']['1-A3'] == 'launched'
+    assert _plan_region(mem)['orders']['1-A3'] == 'launched'
     assert not (_flow(mem).get('launch_miss') or {}).get('1-A3')
     (record,) = [r for r in mem['_records'] if r['decision'] == 'sortie_launch_confirmed']
     assert record['general'] == 'ゼウス' and record['observed_metric']['castle'] == 'アルマムーン'
@@ -226,7 +226,7 @@ def test_a_completed_roster_settles_a_blind_launch_probe():
 def test_a_completed_roster_still_listing_him_rolls_the_launch_back():
     from docich.hanjuku.state.regions import flow as _flow
     mem = memory()
-    mem['orders']['1-A3'] = 'launched'
+    _plan_region(mem)['orders']['1-A3'] = 'launched'
     mem['sorties'] = {'1-A3': {'general': 'ゼウス', 'source': 'アルマムーン',
                                'target': 'スペンソニア', 'status': 'en_route', 'tick': 400}}
     _flow(mem)['launch_probe'] = {'1-A3': {
@@ -238,7 +238,7 @@ def test_a_completed_roster_still_listing_him_rolls_the_launch_back():
                                 'tick': mem['tick']}
     walk(mem, [general_list(ROSTER, 0)])
     assert '1-A3' not in (_flow(mem).get('launch_probe') or {})
-    assert mem['orders']['1-A3'] == 'pending'
+    assert _plan_region(mem)['orders']['1-A3'] == 'pending'
     assert _flow(mem)['launch_miss']['1-A3'] == 1
 
 
@@ -246,7 +246,7 @@ def test_a_roster_read_settles_a_probe_before_the_marker_surveys_finish():
     """The roster often arrives first (g1133 00:38:04 survey, 00:38:40 roster)."""
     from docich.hanjuku.state.regions import flow as _flow
     mem = memory()
-    mem['orders']['1-A3'] = 'launched'
+    _plan_region(mem)['orders']['1-A3'] = 'launched'
     mem['sorties'] = {'1-A3': {'general': 'ゼウス', 'source': 'アルマムーン',
                                'target': 'スペンソニア', 'status': 'en_route', 'tick': 400}}
     _flow(mem)['launch_probe'] = {'1-A3': {
@@ -258,7 +258,7 @@ def test_a_roster_read_settles_a_probe_before_the_marker_surveys_finish():
                                 'tick': mem['tick']}
     walk(mem, [general_list(gone, 0)])
     assert '1-A3' not in (_flow(mem).get('launch_probe') or {})
-    assert mem['orders']['1-A3'] == 'launched'
+    assert _plan_region(mem)['orders']['1-A3'] == 'launched'
     assert not (_flow(mem).get('launch_miss') or {}).get('1-A3')
 
 
@@ -267,7 +267,7 @@ def test_a_short_list_still_listing_him_rolls_a_kept_probe_back():
     must settle from the short list itself."""
     from docich.hanjuku.state.regions import flow as _flow
     mem = memory()
-    mem['orders']['1-A3'] = 'launched'
+    _plan_region(mem)['orders']['1-A3'] = 'launched'
     mem['sorties'] = {'1-A3': {'general': 'ゼウス', 'source': 'アルマムーン',
                                'target': 'ボス', 'status': 'en_route', 'tick': 400,
                                'launch_kept': True}}
@@ -277,7 +277,7 @@ def test_a_short_list_still_listing_him_rolls_a_kept_probe_back():
     mem['garrison'] = {'アルマムーン': []}
     walk(mem, [general_list(['ゼウス', 'ココット'], 0)])
     assert '1-A3' not in (_flow(mem).get('launch_probe') or {})
-    assert mem['orders']['1-A3'] == 'pending'
+    assert _plan_region(mem)['orders']['1-A3'] == 'pending'
     assert _flow(mem)['launch_miss']['1-A3'] == 1
 
 
@@ -290,7 +290,7 @@ def test_a_roster_probe_reads_and_backs_out_without_sending():
     mem['chapter'] = 6
     owned = [c for c in chart.castles(6) if not chart.is_boss_castle(c)]
     mem['captured'] = list(owned)
-    mem['orders']['1-A3'] = 'launched'
+    _plan_region(mem)['orders']['1-A3'] = 'launched'
     mem['sorties'] = {'1-A3': {'general': 'ゼウス', 'source': 'アルマムーン',
                                'target': 'ボス', 'status': 'en_route', 'tick': 400,
                                'launch_kept': True}}
@@ -301,13 +301,13 @@ def test_a_roster_probe_reads_and_backs_out_without_sending():
                    'target': 'ボス', 'cards': [], 'after': None, 'purpose': 'attack',
                    'note': 'probe', 'source_probe': True, 'roster_probe': True}
     mem['chart_plan'] = {'orders': [probe_order]}
-    mem['active'] = 'Mprobe'
-    mem['orders']['Mprobe'] = 'pending'
+    _plan_region(mem)['active'] = 'Mprobe'
+    _plan_region(mem)['orders']['Mprobe'] = 'pending'
     mem['garrison'] = {'アルマムーン': []}
     (actions,) = walk(mem, [general_list(['ゼウス', 'ココット'], 0)])
     assert actions == [policy.pad('b'), policy.pad('b')]
-    assert mem['orders']['Mprobe'] == 'done'
-    assert mem['orders']['1-A3'] == 'pending'
+    assert _plan_region(mem)['orders']['Mprobe'] == 'done'
+    assert _plan_region(mem)['orders']['1-A3'] == 'pending'
     assert '1-A3' not in _sorties(mem)
     assert any(r['decision'] == 'roster_probe_complete' for r in mem['_records'])
 
@@ -317,7 +317,7 @@ def test_incomplete_long_roster_keeps_due_for_retry():
     from docich.hanjuku.state.regions import flow as _flow
     mem = memory()
     mem['roster_read_due'] = {'アルマムーン': 490}
-    mem['orders']['1-A3'] = 'launched'
+    _plan_region(mem)['orders']['1-A3'] = 'launched'
     mem['sorties'] = {'1-A3': {'general': 'ゼウス', 'source': 'アルマムーン',
                                'target': 'ボス', 'status': 'en_route', 'tick': 400}}
     _flow(mem)['launch_probe'] = {'1-A3': {
@@ -330,7 +330,7 @@ def test_incomplete_long_roster_keeps_due_for_retry():
     walk(mem, [general_list(ROSTER[:4], 0)])
     assert mem['roster_read_due'] == {'アルマムーン': 490}
     assert '1-A3' in _flow(mem)['launch_probe']
-    assert mem['orders']['1-A3'] == 'launched'
+    assert _plan_region(mem)['orders']['1-A3'] == 'launched'
 
 
 def test_partial_short_ocr_during_scan_does_not_settle_probe():
@@ -338,7 +338,7 @@ def test_partial_short_ocr_during_scan_does_not_settle_probe():
     from docich.hanjuku.state.regions import flow as _flow
     mem = memory()
     mem['roster_read_due'] = {'アルマムーン': 490}
-    mem['orders']['1-A3'] = 'launched'
+    _plan_region(mem)['orders']['1-A3'] = 'launched'
     mem['sorties'] = {'1-A3': {'general': 'ゼウス', 'source': 'アルマムーン',
                                'target': 'ボス', 'status': 'en_route', 'tick': 400}}
     _flow(mem)['launch_probe'] = {'1-A3': {

@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from docich.hanjuku.state.regions import plan as _plan_region
 from .game_switch import atomic_write_json
 from .hanjuku_chart import HERO
 from . import hanjuku_reference as reference
@@ -96,7 +97,7 @@ def situation_key(kind: str, mem: dict) -> str:
         str(mem.get('chapter') or ''),
         str(battle.get('enemy') or ''),
         str(battle.get('ally') or ''),
-        str(battle.get('step') or mem.get('active') or ''),
+        str(battle.get('step') or _plan_region(mem).get('active') or ''),
     ]
     if kind in ('battle_menu', 'egg_summon'):
         parts.append(_hp_band(battle.get('enemy_hp'), battle.get('ally_hp')))

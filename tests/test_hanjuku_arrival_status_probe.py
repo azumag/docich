@@ -5,7 +5,7 @@ not a triangle, establishes whether the named actor is still in a castle.
 """
 from docich.hanjuku.flows import arrival_status as A
 from docich.hanjuku.flows import map as M
-from docich.hanjuku.state.regions import world as _world
+from docich.hanjuku.state.regions import world as _world, plan as _plan_region
 from docich.hanjuku.os_layer.font import TextLine
 from docich.hanjuku.os_layer.screen import Screen
 
@@ -61,8 +61,8 @@ def test_cancelled_unverified_target_queues_named_probe_not_false_departure():
              'source': 'アルマムーン', 'target': 'ジョンリギ',
              'cards': [], 'after': None, 'note': 'test'}
     assert M._unverified_target(screen('map_target'), mem, order) == [M.pad('b')]
-    assert mem['active'] is None
-    assert mem['orders']['J1'] == 'pending'
+    assert _plan_region(mem)['active'] is None
+    assert _plan_region(mem)['orders']['J1'] == 'pending'
     assert mem['arrival_status_probe']['general'] == 'ココット'
     assert not mem.get('sorties')
     assert decisions(mem, 'arrival_status_probe_queued')

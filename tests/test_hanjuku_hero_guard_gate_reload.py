@@ -12,7 +12,7 @@ import json
 from types import SimpleNamespace
 
 from docich import hanjuku_policy as policy
-from docich.hanjuku.state.regions import world as _world
+from docich.hanjuku.state.regions import world as _world, plan as _plan_region
 
 HOME = 'アルマムーン'
 PRESENT = ['どうし', 'ピスタチオ', 'アンディーブ']
@@ -57,4 +57,4 @@ def test_the_third_hold_retires_an_adjusted_step(monkeypatch):
         mem = reload(mem)
         mem['month'] = month
         assert hold(mem, monkeypatch)
-    assert mem['orders'][ORDER['step']] == 'failed'
+    assert _plan_region(mem)['orders'][ORDER['step']] == 'failed'

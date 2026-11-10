@@ -6,7 +6,7 @@ import pytest
 from docich import hanjuku_policy as p
 from docich.hanjuku_font import TextLine
 from docich.hanjuku_screen import Screen
-from docich.hanjuku.state.regions import world as _world
+from docich.hanjuku.state.regions import world as _world, plan as _plan_region
 
 
 def memory(step='A:guard001:J1'):
@@ -74,12 +74,12 @@ def test_validated_and_adopted_real_plan_is_guarded():
     order = mem['chart_plan']['orders'][0]
     assert 'purpose' not in order
     assert order['step'] == p.chart_adjust.execution_step(rid, 'J1')
-    mem['active'] = order['step']
+    _plan_region(mem)['active'] = order['step']
     _world(mem)['garrison']['アルマムーン'] = ['ゼウス']
     assert not p._plan_pending(mem)
     assert p._source_spare_missing(order, mem)
     assert p.deploy_step(generals(['ゼウス']), mem) == [p.pad('b'), p.pad('b')]
-    assert mem['orders'][order['step']] == 'pending'
+    assert _plan_region(mem)['orders'][order['step']] == 'pending'
 
 
 def test_adjusted_attack_is_pending_but_does_not_starve_other_orders(monkeypatch):
@@ -89,7 +89,7 @@ def test_adjusted_attack_is_pending_but_does_not_starve_other_orders(monkeypatch
     monkeypatch.setattr(p.chart, 'orders', lambda _chapter: ())
     assert not p._plan_pending(mem)
     assert p.next_order(mem) is None
-    assert mem['orders'].get(order['step']) in (None, 'pending')
+    assert _plan_region(mem)['orders'].get(order['step']) in (None, 'pending')
 
     # A measured reinforcement releases the same order, not a new generation.
     _world(mem)['garrison']['アルマムーン'].append('アルテミス')
@@ -100,11 +100,11 @@ def test_adjusted_attack_is_pending_but_does_not_starve_other_orders(monkeypatch
 @pytest.mark.parametrize('names', [['ゼウス'], [], ['ゼウス', 'ゼウス']])
 def test_live_adjusted_list_rechecks_stale_two_general_snapshot(names):
     mem = memory()
-    step = mem['active']
+    step = _plan_region(mem)['active']
     assert p.deploy_step(generals(names), mem) == [p.pad('b'), p.pad('b')]
     assert mem['_records'][-1]['decision'] == 'sortie_held_source_defender'
-    assert mem['active'] is None
-    assert mem['orders'][step] == 'pending'
+    assert _plan_region(mem)['active'] is None
+    assert _plan_region(mem)['orders'][step] == 'pending'
 
 
 @pytest.mark.parametrize('kind', ['card_select', 'sortie_confirm'])
@@ -185,14 +185,14 @@ def test_unread_live_list_never_confirms():
     mem = memory()
     actions = p.deploy_step(Screen(kind='general_list', lines=[], hand=None, text=''), mem)
     assert not any('a' in action.get('buttons', ()) for action in actions)
-    assert mem['active'] == 'A:guard001:J1'
+    assert _plan_region(mem)['active'] == 'A:guard001:J1'
 
 
 def test_unconfirmed_issued_sortie_is_reconciled_not_cancelled():
     mem = memory()
     order = p._order(mem)
     _world(mem)['garrison']['アルマムーン'] = ['ゼウス']
-    mem['orders'][order['step']] = 'launched_unconfirmed'
+    _plan_region(mem)['orders'][order['step']] = 'launched_unconfirmed'
     assert not p._source_spare_missing(order, mem)
 
 

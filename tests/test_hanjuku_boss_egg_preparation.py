@@ -27,7 +27,7 @@ def test_depleted_boss_order_waits_and_does_not_request_replacement(uses):
     assert 'chart_adjust' not in mem
     assert len(mem['_records']) == 1
     assert mem['_records'][0]['decision'] == 'boss_egg_recovery_wait'
-    assert mem['orders']['1-B1'] == 'pending'
+    assert _plan_region(mem)['orders']['1-B1'] == 'pending'
 
 
 def test_newly_read_depletion_cancels_sortie_and_recovery_reopens_check():
@@ -36,7 +36,7 @@ def test_newly_read_depletion_cancels_sortie_and_recovery_reopens_check():
     screen = sortie_canvas('どうし', 3)
     policy.observe_events(screen, mem)
     assert policy.deploy_step(screen, mem) == [policy.pad('b'), policy.pad('b')]
-    assert mem['active'] is None and mem['picked'] == []
+    assert _plan_region(mem)['active'] is None and mem['picked'] == []
     assert not policy._ready(order(), mem)
     # Existing recovery payment path clears stale counts, never invents 4.
     mem['month'] = '1-7'

@@ -35,9 +35,9 @@ def test_an_unlocated_duplicate_win_keeps_the_measured_corner_closed(site):
     assert not orders._ready(order, mem)
     assert orders.next_order(mem)['target'] != order['target']
     # A plan already selected before the win must back out before sending.
-    mem['active'] = order['step']
+    _plan_region(mem)['active'] = order['step']
     assert deploy._hold_locked_boss(mem, order)
-    assert mem['active'] is None
+    assert _plan_region(mem)['active'] is None
 
 
 def test_four_measured_wins_close_every_site_even_without_corner_bindings():

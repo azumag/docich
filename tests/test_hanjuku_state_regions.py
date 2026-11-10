@@ -138,8 +138,13 @@ def test_migrated_departure_and_recall_keys_live_in_their_regions():
         assert KEY_OWNERSHIP[key]['region'] == PLAN
         assert KEY_OWNERSHIP[key]['lifetime'] == 'chapter'
         assert KEY_OWNERSHIP[key]['migrated'] is True
-    # P2/P3 は未移行のまま（orders・active・chart_plan 等は宣言のみ）。
-    for key in ('orders', 'active', 'chart_plan', 'general_override',
+    # P2: orders・active は plan 領域へ実移行。
+    for key in ('orders', 'active'):
+        assert KEY_OWNERSHIP[key]['region'] == PLAN
+        assert KEY_OWNERSHIP[key]['lifetime'] == 'chapter'
+        assert KEY_OWNERSHIP[key]['migrated'] is True
+    # P3 は未移行のまま（chart_plan 等は宣言のみ）。
+    for key in ('chart_plan', 'general_override',
                 'source_override', 'card_override', 'attack'):
         assert KEY_OWNERSHIP[key]['migrated'] is False
 

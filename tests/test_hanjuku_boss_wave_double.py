@@ -122,7 +122,7 @@ def test_an_exhausted_boss_plan_rebuilds_a_wave_with_a_new_step():
         'orders': [{'step': step, 'general': 'ゼウス', 'source': STAFFED5,
                     'target': BOSS5, 'cards': [], 'after': None, 'note': ''}],
     }
-    mem['orders'] = {step: 'launched'}
+    _plan_region(mem)['orders'] = {step: 'launched'}
     mem['sorties'] = boss_sortie('ゼウス', step=step)
     replan._off_chart(mem)
     plan = mem.get('chart_plan') or {}
@@ -130,7 +130,7 @@ def test_an_exhausted_boss_plan_rebuilds_a_wave_with_a_new_step():
     targets = [order['target'] for order in plan.get('orders') or ()]
     assert BOSS5 in targets, plan
     assert all(order['step'] != step for order in plan['orders']), plan
-    assert mem.setdefault('orders', {}).get(plan['orders'][0]['step']) in (None, 'pending')
+    assert _plan_region(mem).setdefault('orders', {}).get(plan['orders'][0]['step']) in (None, 'pending')
 
 
 def _failed_boss_step(mem):
@@ -145,7 +145,7 @@ def _failed_boss_step(mem):
         'source': 'mechanical',
         'orders': [dict(boss, step=local, cards=[], after=None, note='')],
     }
-    mem['orders'] = {step: 'failed'}
+    _plan_region(mem)['orders'] = {step: 'failed'}
     return step
 
 
@@ -154,7 +154,7 @@ def test_a_failed_boss_step_is_rearmed_for_the_next_plan():
     mem = memory()
     step = _failed_boss_step(mem)
     replan._off_chart(mem)
-    assert mem['orders'][step] == 'pending'
+    assert _plan_region(mem)['orders'][step] == 'pending'
     assert any(record['decision'] == 'plan_step_rearmed' for record in mem['_records'])
 
 
@@ -163,7 +163,7 @@ def test_the_rearm_waits_for_its_cooldown():
     step = _failed_boss_step(mem)
     mem['boss_step_rearm'] = {step: {'month': mem['month'], 'count': 1, 'tick': mem['tick']}}
     replan._off_chart(mem)
-    assert mem['orders'][step] == 'failed'
+    assert _plan_region(mem)['orders'][step] == 'failed'
 
 
 def test_the_rearm_budget_is_per_month():
@@ -173,16 +173,16 @@ def test_the_rearm_budget_is_per_month():
                                      'count': replan.BOSS_STEP_REARM_LIMIT,
                                      'tick': mem['tick'] - 10_000}}
     replan._off_chart(mem)
-    assert mem['orders'][step] == 'failed'
+    assert _plan_region(mem)['orders'][step] == 'failed'
 
 
 def test_a_failed_non_boss_step_is_not_rearmed():
     mem = memory()
     step = chart_adjust.execution_step('rid', 'Mfeed')
-    mem['orders'] = {step: 'failed'}
+    _plan_region(mem)['orders'] = {step: 'failed'}
     replan._rearm_failed_boss_steps(
         mem, [{'step': 'Mfeed', 'target': ORDINARY5[0], 'general': 'ゼウス'}], 'rid')
-    assert mem['orders'][step] == 'failed'
+    assert _plan_region(mem)['orders'][step] == 'failed'
 
 
 # --- a lost castle whose retake keeps failing must not hold the boss (g1133) ---
@@ -202,7 +202,7 @@ def _plan_with_failed_retakes(mem, castle, count):
         status[step] = 'failed'
     mem['chart_plan'] = {'schema': chart_adjust.SCHEMA, 'chapter': 5, 'request_id': rid,
                          'source': 'mechanical', 'orders': orders}
-    mem['orders'] = status
+    _plan_region(mem)['orders'] = status
     return [order['step'] for order in orders]
 
 

@@ -16,7 +16,7 @@ should import the owning layer module instead. See
 ``docs/hanjuku_layered_architecture.md``.
 """
 from __future__ import annotations
-from docich.hanjuku.state.regions import world as _world
+from docich.hanjuku.state.regions import world as _world, plan as _plan_region
 
 import random
 import re
@@ -124,7 +124,7 @@ _next_order_without_boss_roster_reprobe = next_order
 def _reprobe_stalled_season_boss_roster(mem) -> bool:
     if mem.get('chapter') != 4:
         return False
-    states = mem.get('orders') or {}
+    states = _plan_region(mem).get('orders') or {}
     sorties = _world(mem).get('sorties') or {}
     sites = set(chart.boss_sites(4))
     stalled = [order for order in chart.orders(4)

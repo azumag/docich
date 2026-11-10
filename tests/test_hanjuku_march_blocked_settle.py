@@ -6,7 +6,7 @@ behind ベンゴディ; every attempt stopped inside the blocking castle and exp
 as overdue.
 """
 from docich import hanjuku_chart as chart
-from docich.hanjuku.state.regions import world as _world
+from docich.hanjuku.state.regions import world as _world, plan as _plan_region
 from docich.hanjuku.strategy import orders
 
 # Owned exactly as measured at 2026-11-09 17:08 in chapter 7: レオナール and
@@ -27,7 +27,7 @@ def memory(source='アルマムーン', target='ロキュータ', status='en_rou
 def test_a_blocked_march_is_closed_instead_of_reissued():
     mem = memory()
     orders._relaunch_overdue_march(mem)
-    assert mem['orders']['A:x:M1'] == 'failed'
+    assert _plan_region(mem)['orders']['A:x:M1'] == 'failed'
     # The world region owns sorties after the first access.
     assert (_world(mem).get('sorties') or {})['A:x:M1']['status'] == 'overdue'
     assert any(r['decision'] == 'sortie_march_blocked_settled' for r in mem['_records'])
@@ -37,5 +37,5 @@ def test_a_blocked_march_is_closed_instead_of_reissued():
 def test_a_clear_march_still_relaunches():
     mem = memory(target='リデンブロック')
     orders._relaunch_overdue_march(mem)
-    assert mem['orders']['A:x:M1'] == 'pending'
+    assert _plan_region(mem)['orders']['A:x:M1'] == 'pending'
     assert any(r['decision'] == 'sortie_march_overdue' for r in mem['_records'])

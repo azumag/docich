@@ -22,7 +22,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
 from docich import hanjuku_chart_adjust as chart_adjust
 from docich import hanjuku_chart as chart
 from docich.hanjuku.strategy import orders, replan
-from docich.hanjuku.state.regions import world as _world
+from docich.hanjuku.state.regions import world as _world, plan as _plan_region
 
 
 @pytest.fixture(autouse=True)
@@ -92,7 +92,7 @@ def test_a_failed_relay_move_is_retried_after_the_failure_window():
     mem = memory()
     rid = chart_adjust.request_id(mem)
     step, local = relay_step(mem)
-    mem['orders'][step] = 'failed'
+    _plan_region(mem)['orders'][step] = 'failed'
     mem['failed_local_step'] = {local: mem['tick'] - replan.PLAN_STALE_TICKS - 1}
     # A stale actor chosen by the failed attempt must not steer the retry
     # (live g1153: ココット was recorded for a move out of コラダイン while he
@@ -101,7 +101,7 @@ def test_a_failed_relay_move_is_retried_after_the_failure_window():
     mem['launched_orders'] = {step: {'general': 'ココット', 'source': 'コラダイン',
                                      'target': 'イーピヨル'}}
     advance(mem, rid)
-    assert mem['orders'][step] == 'pending', mem['orders']
+    assert _plan_region(mem)['orders'][step] == 'pending', _plan_region(mem)['orders']
     assert step not in mem['general_override'], mem['general_override']
     assert step not in (_world(mem).get('launched_orders') or {})
     order = orders.next_order(mem)
@@ -114,10 +114,10 @@ def test_a_failure_inside_the_suppression_window_is_not_retried():
     mem = memory()
     rid = chart_adjust.request_id(mem)
     step, local = relay_step(mem)
-    mem['orders'][step] = 'failed'
+    _plan_region(mem)['orders'][step] = 'failed'
     mem['failed_local_step'] = {local: mem['tick'] - 10}
     advance(mem, rid)
-    assert mem['orders'][step] == 'failed'
+    assert _plan_region(mem)['orders'][step] == 'failed'
     assert orders.next_order(mem) is None
 
 
@@ -125,16 +125,16 @@ def test_the_retry_is_capped_per_month_and_step():
     mem = memory()
     rid = chart_adjust.request_id(mem)
     step, local = relay_step(mem)
-    mem['orders'][step] = 'failed'
+    _plan_region(mem)['orders'][step] = 'failed'
     mem['failed_local_step'] = {local: mem['tick'] - replan.PLAN_STALE_TICKS - 1}
     mem['plan_step_rearm'] = {step: {'month': mem['month'],
                                      'count': replan.NONBOSS_STEP_REARM_LIMIT}}
     advance(mem, rid)
-    assert mem['orders'][step] == 'failed'
+    assert _plan_region(mem)['orders'][step] == 'failed'
     # A new month gives the order its bounded retries again.
     mem['month'] = '8-1'
     advance(mem, rid)
-    assert mem['orders'][step] == 'pending'
+    assert _plan_region(mem)['orders'][step] == 'pending'
 
 
 def test_a_failed_boss_step_is_rearmed_even_when_the_plan_is_unchanged():
@@ -154,7 +154,7 @@ def test_a_failed_boss_step_is_rearmed_even_when_the_plan_is_unchanged():
     assert boss, mem['chart_plan']
     mem.setdefault('failed_local_step', {})
     for order in boss:
-        mem['orders'][order['step']] = 'failed'
+        _plan_region(mem)['orders'][order['step']] = 'failed'
         mem['failed_local_step'][order['local_step']] = (
             mem['tick'] - replan.PLAN_STALE_TICKS - 1)
     mem['boss_step_rearm'] = {}
@@ -162,5 +162,5 @@ def test_a_failed_boss_step_is_rearmed_even_when_the_plan_is_unchanged():
     advance(mem, rid)
     # The rebuilt plan was identical (otherwise this would prove nothing).
     assert [r for r in mem['_records'] if r['decision'] == 'chart_adjust_applied'] == applied
-    assert all(mem['orders'][order['step']] == 'pending' for order in boss)
+    assert all(_plan_region(mem)['orders'][order['step']] == 'pending' for order in boss)
 

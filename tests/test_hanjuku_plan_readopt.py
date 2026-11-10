@@ -54,7 +54,7 @@ def test_a_different_candidate_list_still_replaces_the_plan():
     first = [o['step'] for o in mem['chart_plan']['orders']]
     # The stored plan can no longer start (_plan_pending False) and the
     # situation changed: an owned castle is now empty.
-    mem['orders'] = {step: 'failed' for step in first}
+    _plan_region(mem)['orders'] = {step: 'failed' for step in first}
     mem["captured"].remove("トウトウ")      # a normal castle becomes a target again
     adopt(mem, 1001)
     assert [o['step'] for o in mem['chart_plan']['orders']] != first
@@ -117,9 +117,9 @@ def test_a_stale_launched_step_is_released_when_the_plan_is_kept(monkeypatch):
     mem = stuck_memory(monkeypatch)
     rebuild(mem, 1000)
     step = mem['chart_plan']['orders'][0]['step']
-    mem['orders'][step] = 'launched'      # no sortie record: not marching
+    _plan_region(mem)['orders'][step] = 'launched'      # no sortie record: not marching
     rebuild(mem, 1001)
-    assert mem['orders'][step] == 'pending'
+    assert _plan_region(mem)['orders'][step] == 'pending'
 
 
 def test_a_stored_plan_without_local_step_is_rebuilt(monkeypatch):

@@ -168,7 +168,7 @@ def cancel_mem(**extra):
 def cancel_once(mem):
     frame = read_png(ENCLOSURE)
     screen = parse(frame, phase=classify(frame))
-    mem['active'] = '3-B1'
+    _plan_region(mem)['active'] = '3-B1'
     for _ in range(TARGET_MISS_LIMIT):
         actions = _unverified_target(screen, mem, BOSS)
     assert actions and actions[0]['buttons'] == ['b']
@@ -191,14 +191,14 @@ def test_the_first_cancel_at_the_new_cell_counts_from_one():
     cancel_once(mem)
     assert mem['target_cancel']['3-B1'] == 1
     assert mem['boss_cancel_cell']['3-B1'] == list(chart.castles(3)['ボス'])
-    assert mem['orders']['3-B1'] == 'pending'
+    assert _plan_region(mem)['orders']['3-B1'] == 'pending'
 
 
 def test_the_cancel_limit_at_the_current_cell_still_fails_the_boss_order():
     mem = cancel_mem()
     for _ in range(BOSS_TARGET_CANCEL_LIMIT):
         cancel_once(mem)
-    assert mem['orders']['3-B1'] == 'failed'
+    assert _plan_region(mem)['orders']['3-B1'] == 'failed'
     assert mem['target_cancel']['3-B1'] == BOSS_TARGET_CANCEL_LIMIT
     assert not _boss_retry_due(BOSS, mem)
 

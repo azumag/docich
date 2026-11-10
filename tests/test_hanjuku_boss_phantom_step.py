@@ -28,7 +28,7 @@ def decisions(mem, name):
 def test_a_launch_without_a_march_record_reopens():
     mem = memory()
     O._rearm_phantom_boss_steps(mem)
-    assert mem['orders']['A:x:M1'] == 'pending'
+    assert _plan_region(mem)['orders']['A:x:M1'] == 'pending'
     assert decisions(mem, 'boss_step_rearmed')
     assert mem['boss_step_rearm']['A:x:M1'] == 20000
 
@@ -46,16 +46,16 @@ def test_a_live_march_or_fresh_step_is_left_alone():
 def test_the_rearm_is_rate_limited_per_step():
     mem = memory()
     O._rearm_phantom_boss_steps(mem)
-    mem['orders']['A:x:M1'] = 'launched'          # a stale plan re-marked it
+    _plan_region(mem)['orders']['A:x:M1'] = 'launched'          # a stale plan re-marked it
     O._rearm_phantom_boss_steps(mem)
-    assert mem['orders']['A:x:M1'] == 'launched'  # inside the cooldown
+    assert _plan_region(mem)['orders']['A:x:M1'] == 'launched'  # inside the cooldown
     mem['tick'] += O.BOSS_STEP_REARM_COOLDOWN + 1
     O._rearm_phantom_boss_steps(mem)
-    assert mem['orders']['A:x:M1'] == 'pending'
+    assert _plan_region(mem)['orders']['A:x:M1'] == 'pending'
 
 
 def test_a_normal_castle_step_is_not_touched():
     mem = memory(plan=[{'step': 'A:x:M1', 'general': 'エピィ', 'source': 'オケアナ',
                         'target': 'セレーネ'}])
     O._rearm_phantom_boss_steps(mem)
-    assert mem['orders']['A:x:M1'] == 'launched'
+    assert _plan_region(mem)['orders']['A:x:M1'] == 'launched'

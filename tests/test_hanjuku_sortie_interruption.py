@@ -8,7 +8,7 @@ import pytest
 from docich import hanjuku_policy as p
 from docich.hanjuku_screen import Screen
 from docich.hanjuku_font import TextLine, UNKNOWN
-from docich.hanjuku.state.regions import world as _world, sorties as _sorties, flow as _flow, journal as _journal
+from docich.hanjuku.state.regions import world as _world, plan as _plan_region, sorties as _sorties, flow as _flow, journal as _journal
 
 
 def memory():
@@ -29,15 +29,15 @@ def screen(kind, words=()):
 def test_interrupt_records_unknown_destination_once_and_blocks_same_general(kind):
     mem = memory()
     p.observe_sortie_transition(screen(kind), mem, 'map_target')
-    assert mem['orders']['1-A2'] == 'launched_unconfirmed'
-    assert mem['active'] is None
+    assert _plan_region(mem)['orders']['1-A2'] == 'launched_unconfirmed'
+    assert _plan_region(mem)['active'] is None
     assert _sorties(mem)['1-A2']['target'] is None
     assert p._en_route(mem) == ({'ゼウス'}, set())
     next_order = p.next_order(mem)
     # No other departure is required to exist; the interrupted actor stays busy.
     assert next_order is None or next_order['step'] != '1-A2'
     first = deepcopy(_sorties(mem))
-    mem['active'] = '1-A2'  # later source verification must not count as a new interruption
+    _plan_region(mem)['active'] = '1-A2'  # later source verification must not count as a new interruption
     p.observe_sortie_transition(screen('general_list'), mem, 'castle_menu')
     assert _sorties(mem) == first
     assert len([r for r in mem['_records'] if r['decision']=='order_launched_unconfirmed']) == 1
@@ -46,16 +46,16 @@ def test_interrupt_records_unknown_destination_once_and_blocks_same_general(kind
 def test_hotload_migrates_verified_old_target_without_attempt():
     mem = memory(); _flow(mem).pop('sortie_attempt')
     p.observe_sortie_transition(screen('unknown'), mem, 'map_target')
-    assert mem['orders']['1-A2'] == 'launched_unconfirmed'
+    assert _plan_region(mem)['orders']['1-A2'] == 'launched_unconfirmed'
 
 
 @pytest.mark.parametrize('active', [None, '1-A2'])
 def test_marker_return_resumes_same_target(active):
     mem = memory()
     p.observe_sortie_transition(screen('unknown'), mem, 'map_target')
-    mem['active'] = active
+    _plan_region(mem)['active'] = active
     p.observe_sortie_transition(screen('map_target'), mem, 'unknown')
-    assert mem['active'] == '1-A2' and mem['orders']['1-A2'] == 'pending'
+    assert _plan_region(mem)['active'] == '1-A2' and _plan_region(mem)['orders']['1-A2'] == 'pending'
     assert not _sorties(mem)
     assert not _flow(mem)['sortie_attempt'].get('interrupted')
 
@@ -72,7 +72,7 @@ def test_real_entry_confirms_actual_not_planned_destination():
     assert _sorties(mem)['1-A2']['target'] == 'ジョンリギ'
     assert _sorties(mem)['1-A2']['status'] == 'arrived'
     assert mem['attack']['step'] == '1-A2'
-    assert mem['orders']['1-A2'] == 'launched'
+    assert _plan_region(mem)['orders']['1-A2'] == 'launched'
     assert _world(mem)['garrison']['アルマムーン'] == ['どうし']
     assert not _flow(mem).get('sortie_attempt')
 
@@ -110,7 +110,7 @@ def test_a_general_listed_in_an_intervening_own_castle_continues_his_order():
     assert sortie['status'] == 'arrived' and sortie['target'] == 'ジョンリギ'
     assert sortie['transit_to'] == 'けっかい'
     assert mem['source_override']['A:1:J1'] == 'ジョンリギ'
-    assert mem['orders']['A:1:J1'] == 'pending'
+    assert _plan_region(mem)['orders']['A:1:J1'] == 'pending'
     assert _world(mem)['garrison']['ジョンリギ'] == ['ゼウス']
     assert any(r['decision'] == 'sortie_transit_continue' for r in mem['_records'])
     # The actual list still holds only the transit actor. Even after the
@@ -149,39 +149,39 @@ def test_an_unlisted_general_is_not_a_transit_arrival():
                                           (['しょうぐんはおりません'], 'launched')])
 def test_source_evidence_allows_retry_only_when_general_is_still_there(words, expected):
     mem = memory(); p.observe_sortie_transition(screen('unknown'), mem, 'map_target')
-    mem['active'] = '1-A2'
+    _plan_region(mem)['active'] = '1-A2'
     actions = p.deploy_step(screen('general_list', words), mem)
     assert actions == [p.pad('b'), p.pad('b')]
-    assert mem['orders']['1-A2'] == expected
+    assert _plan_region(mem)['orders']['1-A2'] == expected
     assert _sorties(mem)['1-A2']['target'] is None
-    assert mem['active'] is None
+    assert _plan_region(mem)['active'] is None
 
 
 @pytest.mark.parametrize('words', [['どうし'], ['ゼウス'+UNKNOWN], [UNKNOWN]])
 def test_partial_list_does_not_prove_absence_or_select_replacement(words):
     mem = memory(); p.observe_sortie_transition(screen('unknown'), mem, 'map_target')
-    mem['active'] = '1-A2'
+    _plan_region(mem)['active'] = '1-A2'
     assert p.deploy_step(screen('general_list', words), mem) == []
-    assert mem['orders']['1-A2'] == 'launched_unconfirmed'
+    assert _plan_region(mem)['orders']['1-A2'] == 'launched_unconfirmed'
     assert mem['source_override'] == {'1-A2': 'アルマムーン'}
 
 
 def test_unreachable_verification_does_not_fail_or_resend_sortie():
     mem = memory(); p.observe_sortie_transition(screen('unknown'), mem, 'map_target')
-    mem['active'] = '1-A2'
+    _plan_region(mem)['active'] = '1-A2'
     p._give_up_source(mem, p._order(mem))
-    assert mem['orders']['1-A2'] == 'launched_unconfirmed'
+    assert _plan_region(mem)['orders']['1-A2'] == 'launched_unconfirmed'
     assert _sorties(mem)['1-A2']['verification_unavailable']
-    assert mem['active'] is None
+    assert _plan_region(mem)['active'] is None
 
 
 def test_unknown_source_list_does_not_freeze_forever_or_retry():
     mem = memory(); p.observe_sortie_transition(screen('unknown'), mem, 'map_target')
-    mem['active'] = '1-A2'
+    _plan_region(mem)['active'] = '1-A2'
     for _ in range(2):
         assert p.deploy_step(screen('general_list', ['どうし']), mem) == []
     assert p.deploy_step(screen('general_list', ['どうし']), mem) == [p.pad('b'),p.pad('b')]
-    assert mem['active'] is None and mem['orders']['1-A2'] == 'launched_unconfirmed'
+    assert _plan_region(mem)['active'] is None and _plan_region(mem)['orders']['1-A2'] == 'launched_unconfirmed'
 
 
 def test_goal_anchor_survives_cursor_occluding_the_roof(monkeypatch):

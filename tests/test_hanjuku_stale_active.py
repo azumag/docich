@@ -22,14 +22,14 @@ def records(mem):
 def test_an_abandoned_active_order_is_released():
     mem = memory('A:x:OLD')
     assert M._release_stale_active(mem) is True
-    assert mem['active'] is None
+    assert _plan_region(mem)['active'] is None
     assert records(mem) == ['stale_active_released']
 
 
 def test_an_order_in_the_plan_is_kept():
     mem = memory('A:x:M1')
     assert M._release_stale_active(mem) is False
-    assert mem['active'] == 'A:x:M1'
+    assert _plan_region(mem)['active'] == 'A:x:M1'
 
 
 def test_a_launched_retry_is_kept():

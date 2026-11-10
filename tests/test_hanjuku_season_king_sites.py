@@ -88,7 +88,7 @@ def test_the_four_sites_go_nearest_march_first_from_the_closest_castle():
 def test_g1075_after_the_seventh_castle_has_a_site_sortie_ready():
     mem = all_captured()
     assert orders._ready(site_order(), mem)
-    mem['orders'] = {o['step']: 'launched' for o in chart.orders(4) if o['target'] not in SITES}
+    _plan_region(mem)['orders'] = {o['step']: 'launched' for o in chart.orders(4) if o['target'] not in SITES}
     assert policy.next_order(mem)['step'] == '4-B1'
 
 

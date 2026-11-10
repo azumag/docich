@@ -17,7 +17,7 @@ def memory(tick=1000):
 def test_a_recent_failure_suppresses_the_same_content():
     mem = memory()
     replan._suppress_recent_failures(mem, [{'step': 'M1'}])
-    assert mem['orders']['M1'] == 'failed'
+    assert _plan_region(mem)['orders']['M1'] == 'failed'
     assert (mem.get('tally') or {}).get('retry_suppressed') == 1
 
 
@@ -25,13 +25,13 @@ def test_an_old_failure_no_longer_suppresses():
     mem = memory(tick=1000)
     mem['failed_local_step'] = {'M1': 1000 - replan.PLAN_STALE_TICKS}
     replan._suppress_recent_failures(mem, [{'step': 'M1'}])
-    assert 'M1' not in mem['orders']
+    assert 'M1' not in _plan_region(mem)['orders']
 
 
 def test_another_order_is_untouched():
     mem = memory()
     replan._suppress_recent_failures(mem, [{'step': 'M2'}])
-    assert mem['orders'] == {}
+    assert _plan_region(mem)['orders'] == {}
 
 
 def test_a_failure_records_the_content_name():

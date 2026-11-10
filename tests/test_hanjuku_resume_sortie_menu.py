@@ -40,7 +40,7 @@ def test_general_and_castle_menu_backout_has_no_new_sortie_or_actor_binding():
     mem=cold_state()['policy']
     assert p.resume_sortie_step(Screen([],None,'',kind='general_list'),mem)==[p.pad('b')]
     assert p.resume_sortie_step(Screen([],None,'',kind='castle_menu'),mem)==[]
-    assert not mem.get('orders') and not mem.get('active')
+    assert not _plan_region(mem).get('orders') and not _plan_region(mem).get('active')
 
 
 def test_only_freshly_resolved_chapter_releases_cold_owner_and_requires_new_map_survey():

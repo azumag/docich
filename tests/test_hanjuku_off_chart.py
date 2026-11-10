@@ -16,7 +16,7 @@ from docich import hanjuku_commentary, hanjuku_interim
 from docich import hanjuku_policy as policy
 from docich.hanjuku_pixels import Frame
 from docich.hanjuku_screen import Screen
-from docich.hanjuku.state.regions import world as _world, sorties as _sorties, flow as _flow, journal as _journal
+from docich.hanjuku.state.regions import world as _world, plan as _plan_region, sorties as _sorties, flow as _flow, journal as _journal
 
 FRAME = Frame(256, 224, bytes(256 * 224 * 3))
 CASTLES = chart.castles(1)
@@ -103,13 +103,13 @@ def test_a_source_that_never_opens_its_menu_falls_back_home_then_fails(monkeypat
     assert decisions(mem, 'order_source_changed') == []
     assert mem['tally']['source_fallback'] == 1
     assert mem['source_override'][order['step']] == 'アルマムーン'
-    assert mem['active'] == order['step']
+    assert _plan_region(mem)['active'] == order['step']
     for _ in range(policy.SOURCE_MISS_LIMIT + 1):
         policy.map_step(map_screen(190, 200), mem, FRAME)
     [failed] = decisions(mem, 'order_failed')
     assert failed['chart_step'] == order['step']
-    assert mem['orders'][order['step']] == 'failed'
-    assert mem['active'] != order['step']
+    assert _plan_region(mem)['orders'][order['step']] == 'failed'
+    assert _plan_region(mem)['active'] != order['step']
 
 
 def test_castle_menu_clears_the_source_miss_count():
@@ -393,7 +393,7 @@ def test_map_step_abandons_a_step_that_keeps_needing_select(monkeypatch):
         assert policy.map_step(map_screen(8, 180), mem, FRAME) == [policy.pad('select')]
     mem['tick'] += policy.SELECT_EVERY + 1
     assert policy.map_step(map_screen(8, 180), mem, FRAME) == []
-    assert mem['orders'][step] == 'failed' and mem['active'] is None
+    assert _plan_region(mem)['orders'][step] == 'failed' and _plan_region(mem)['active'] is None
     assert decisions(mem, 'order_failed')
     [record] = decisions(mem, 'nav_infeasible')
     assert record['chart_step'] == step
@@ -550,7 +550,7 @@ def test_sorties_without_a_recent_tick_no_longer_block_their_generals():
 
 def test_a_plan_of_orders_that_can_never_run_does_not_block_off_chart_sorties():
     mem = _stuck_plan_memory()
-    mem['orders'].update({'A:p:K1': 'failed', 'A:p:K3': 'failed'})
+    _plan_region(mem)['orders'].update({'A:p:K1': 'failed', 'A:p:K3': 'failed'})
     # K4 waits on キカンドン, which no marching unit is taking.
     assert policy._plan_pending(mem) is False
     mem['tick'] = 10
@@ -602,7 +602,7 @@ def test_a_move_never_leaves_the_hero_with_fewer_than_two_others():
     mem = _move_memory()
     assert policy.deploy_step(_move_list([chart.HERO, 'キャラウェイ', 'ココット']), mem) == [
         policy.pad('b'), policy.pad('b')]
-    assert mem['orders']['I:m:1'] == 'failed'
+    assert _plan_region(mem)['orders']['I:m:1'] == 'failed'
     assert decisions(mem, 'sortie_held_hero_guard')
     assert not mem.get('general_override', {}).get('I:m:1')
 
@@ -611,7 +611,7 @@ def test_a_move_from_a_castle_with_one_general_is_cancelled_and_remembered():
     """g407: ジョンリギ held only ココット; the move must not empty it."""
     mem = _move_memory()
     assert policy.deploy_step(_move_list(['ココット']), mem) == [policy.pad('b'), policy.pad('b')]
-    assert mem['orders']['I:m:1'] == 'failed' and _world(mem)['garrison']['ジョンリギ'] == ['ココット']
+    assert _plan_region(mem)['orders']['I:m:1'] == 'failed' and _world(mem)['garrison']['ジョンリギ'] == ['ココット']
     assert not [c for c in policy.interim_candidates(mem).values()
                 if c['purpose'] == 'move' and c['source'] == 'ジョンリギ']
 
@@ -859,9 +859,9 @@ def test_a_target_is_confirmed_only_on_a_roof_of_the_expected_owner(monkeypatch)
     for _ in range(policy.TARGET_MISS_LIMIT - 1):
         assert policy.target_step(marker, mem, FRAME) == []
     assert policy.target_step(marker, mem, FRAME) == [policy.pad('b')]    # cancelled, not sent
-    assert mem['orders']['X'] == 'pending' and not decisions(mem, 'order_launched')
+    assert _plan_region(mem)['orders']['X'] == 'pending' and not decisions(mem, 'order_launched')
     # On the enemy roof it launches.
-    mem['active'] = 'X'
+    _plan_region(mem)['active'] = 'X'
     monkeypatch.setattr(policy, 'castle_roofs',
                         lambda *_a, **_k: [{'kind': 'enemy', 'target': (10, 57), 'clipped': False}])
     assert policy.target_step(marker, mem, FRAME) == [policy.pad('a')]
@@ -1356,7 +1356,7 @@ def test_the_last_general_never_leaves_our_last_castle(monkeypatch):
     alone = Screen(lines=[], hand=(150, 40), text='しゅつげきステータスどうし', kind='general_list')
     monkeypatch.setattr(policy, '_present_generals', lambda _screen: ['どうし'])
     assert policy.deploy_step(alone, mem) == [policy.pad('b'), {'type': 'wait', 'ms': 300}, policy.pad('b')]
-    assert mem['orders']['2-C1'] == 'pending' and mem['active'] is None
+    assert _plan_region(mem)['orders']['2-C1'] == 'pending' and _plan_region(mem)['active'] is None
     assert decisions(mem, 'sortie_held_last_castle')
     assert policy._last_castle_held(mem, order)
     mem['tick'] = 100 + policy.LAST_CASTLE_HOLD_TICKS
@@ -1402,11 +1402,11 @@ def test_chapter_1_home_is_verified_by_its_real_name_and_wrongly_failed_orders_r
     mem = {'chapter': 1, '_records': [], 'orders': {'1-A1': 'failed', '1-V1': 'failed', '1-C1': 'launched'},
            'launched_orders': {'1-C1': {}}, 'source_miss': {'1-V1': 2}}
     policy._repair_home_alias_failures(mem)
-    assert mem['orders'] == {'1-C1': 'launched'} and mem['source_miss'] == {}
+    assert _plan_region(mem)['orders'] == {'1-C1': 'launched'} and mem['source_miss'] == {}
     assert decisions(mem, 'orders_restored')[0]['observed_metric'] == ['1-A1', '1-V1']
-    mem['orders']['1-A1'] = 'failed'
+    _plan_region(mem)['orders']['1-A1'] = 'failed'
     policy._repair_home_alias_failures(mem)                 # once only
-    assert mem['orders']['1-A1'] == 'failed'
+    assert _plan_region(mem)['orders']['1-A1'] == 'failed'
 
 
 def test_a_stray_camp_menu_is_recognized_for_closing():

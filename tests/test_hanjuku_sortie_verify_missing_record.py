@@ -16,7 +16,7 @@ def test_verify_sortie_source_holds_missing_or_invalid_record(record):
           patch.object(deploy, 'pad', side_effect=lambda button: button)):
         commands = deploy._verify_sortie_source(None, mem, order)
     assert commands == ['b', 'b']
-    assert mem['active'] is None
+    assert _plan_region(mem)['active'] is None
     assert mem['world']['sorties'] == ({} if record is None else {'step-1': record})
     log.assert_called_once()
     assert log.call_args.args[1] == 'sortie_verification_held'

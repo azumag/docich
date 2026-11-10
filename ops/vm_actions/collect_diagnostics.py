@@ -156,6 +156,7 @@ sys.path.insert(0, str(PROD_ROOT / "src"))
 from docich.runtime_backend import _pid_is_active, _process_is_zombie  # noqa: E402
 from docich.stream_identity import is_docich_runner_args as _is_docich_stream_runner  # noqa: E402
 from docich.semantic_decision.diagnostics import describe as _describe_semantic_decision  # noqa: E402
+from docich.hanjuku.state.regions import plan as _plan_region  # noqa: E402
 
 import importlib.util as _importlib_util  # noqa: E402
 
@@ -12231,7 +12232,7 @@ def _compact_hanjuku_policy(mem, state=None):
                 if isinstance(value, list) else None)
     def count(value, maximum=1_000_000):
         return value if type(value) is int and 0 <= value <= maximum else None
-    orders = mem.get('orders') if isinstance(mem.get('orders'), dict) else {}
+    orders = _plan_region(mem).get('orders') if isinstance(_plan_region(mem).get('orders'), dict) else {}
     world = mem.get('world') if isinstance(mem.get('world'), dict) else {}
     garrison = mem.get('garrison') if isinstance(mem.get('garrison'), dict) else world.get('garrison', {})
     sorties = mem.get('sorties') if isinstance(mem.get('sorties'), dict) else world.get('sorties', {})
@@ -12267,7 +12268,7 @@ def _compact_hanjuku_policy(mem, state=None):
     exhausted = [step for step, row in rows
                  if row['status'] == 'overdue'
                  and (row['relaunch'] or 0) >= HANJUKU_MARCH_RELAUNCH_LIMIT]
-    active = text(mem.get('active'), 32)
+    active = text(_plan_region(mem).get('active'), 32)
     if active:
         march_state = 'active'
     elif not rows and not orders:
@@ -12290,7 +12291,7 @@ def _compact_hanjuku_policy(mem, state=None):
         'no_input_streak': (state.get('no_input_streak')
                             if type(state.get('no_input_streak')) is int else None),
         'variant': text(mem.get('variant'), 32),
-        'active': text(mem.get('active'), 32),
+        'active': text(_plan_region(mem).get('active'), 32),
         'tick': tick if type(tick) is int and tick >= 0 else None,
         'month': text(mem.get('month'), 16),
         'orders': {text(step, 32) or '?': text(status, 32) or '?'

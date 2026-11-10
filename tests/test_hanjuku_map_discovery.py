@@ -17,7 +17,7 @@ from docich.hanjuku_pixels import read_png
 from docich.hanjuku_screen import Screen, parse, castle_roofs
 from test_hanjuku_chart_bot import Canvas, HAND, UNKNOWN
 from test_hanjuku_sortie_evidence import actor_panel, measured_loaded_sortie
-from docich.hanjuku.state.regions import world as _world
+from docich.hanjuku.state.regions import world as _world, plan as _plan_region
 
 @pytest.fixture(autouse=True)
 def unmeasured_chapter_three(monkeypatch):
@@ -123,10 +123,10 @@ def caller_adopted_interim():
     positions.update(アルマムーン=HOME, グリン=GRIN)
     mem['map_registration']['castles'] = {
         n: {**proof, 'name': n, 'position': list(p)} for n, p in positions.items()}
-    mem['orders'] = {o['step']: 'failed' for o in chart.all_orders(3)}
+    _plan_region(mem)['orders'] = {o['step']: 'failed' for o in chart.all_orders(3)}
     # Owner 2026-11-06: the hero's castle keeps two others beside him.
     _world(mem)['garrison'] = {'アルマムーン': ['ゼウス', 'どうし', 'アルテミス', 'クミン']}
-    assert not mem.get('active') and not mem.get('chart_plan') and not mem.get('chart_adjust')
+    assert not _plan_region(mem).get('active') and not mem.get('chart_plan') and not mem.get('chart_adjust')
     _, state = decide(field(), {'policy': mem}, run_identity=IDENTITY)
     active = state['policy']['active']
     assert isinstance(active, str) and (active.startswith('I:') or ':M' in active)
@@ -163,8 +163,8 @@ def test_adopted_interim_target_never_indexes_an_identity_invalidated_map():
     screen = Screen([], None, '', kind='map_target', marker=GRIN)
     with chart.map_context(mem):
         assert policy.target_step(screen, mem, field()) == []
-    assert mem['active'] is None and mem['_map_registration_hold'] is True
-    assert mem['orders'].get(active) in (None, 'pending')
+    assert _plan_region(mem)['active'] is None and mem['_map_registration_hold'] is True
+    assert _plan_region(mem)['orders'].get(active) in (None, 'pending')
     assert mem['_records'][-1]['decision'] == 'map_coordinates_unavailable'
 
 
@@ -288,7 +288,7 @@ def test_centered_single_roof_bootstrap_reaches_two_roof_calibration_and_chapter
         if first_calibrated_frame is None:
             assert not mem.get('map_registration')
             assert not (mem.get('map_discovery') or {}).get('origin_frame')
-        if mem.get('active') == '3-Z1':
+        if _plan_region(mem).get('active') == '3-Z1':
             break
     else:
         pytest.fail('single-roof bootstrap never reached a valid chapter-3 order')
@@ -651,7 +651,7 @@ def test_complete_synthetic_registration_returns_exhausted_orders_to_the_existin
     mem['map_registration']['castles'] = {
         n: {**proof, 'name': n, 'position': [60+32*i, 28+48*i]}
         for i, n in enumerate(SOURCE_CASTLES[3])}
-    mem['orders'] = {o['step']: 'launched' for o in chart.all_orders(3)}
+    _plan_region(mem)['orders'] = {o['step']: 'launched' for o in chart.all_orders(3)}
     assert len(survey.verified_castles(mem, 3)) == 9
     assert feed(mem, field()) is None
 
@@ -780,8 +780,8 @@ def test_deploy_screens_recheck_endpoints_per_observation(kind):
     screen = Screen(lines=[], hand=None, text='')
     screen.kind = kind
     assert policy.deploy_step(screen, mem) == []
-    assert mem['active'] is None
-    assert mem['orders'].get(active) in (None, 'pending')
+    assert _plan_region(mem)['active'] is None
+    assert _plan_region(mem)['orders'].get(active) in (None, 'pending')
     assert mem.get('_map_registration_hold') is True
     assert any(r['decision'] == 'order_precondition_lost' for r in mem['_records'])
 
@@ -817,7 +817,7 @@ def test_discovery_yields_the_field_to_a_startable_interim_retake():
     mem = initial_route_receipt()
     assert set(survey.verified_castles(mem, 3)) == {'アルマムーン', 'グリン'}
     mem['lost'] = ['グリン']
-    mem['orders'] = {o['step']: 'failed' for o in chart.all_orders(3)}
+    _plan_region(mem)['orders'] = {o['step']: 'failed' for o in chart.all_orders(3)}
     # Owner 2026-11-06: the hero's castle keeps two others beside him.
     _world(mem)['garrison'] = {'アルマムーン': ['ゼウス', 'どうし', 'アルテミス', 'クミン']}
     with chart.map_context(mem):

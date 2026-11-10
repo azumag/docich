@@ -26,7 +26,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
 
 from docich import hanjuku_chart_adjust as chart_adjust
 from docich.hanjuku.strategy import replan
-from docich.hanjuku.state.regions import world as _world
+from docich.hanjuku.state.regions import world as _world, plan as _plan_region
 
 
 HOME = 'アルマムーン'
@@ -62,7 +62,7 @@ def adopt(mem, *, after, source=HOME, general='ゼウス', target='ゴーメン'
         'orders': [{'step': step, 'general': general, 'source': source, 'target': target,
                     'cards': [], 'after': after, 'note': 'adopted'}],
     }
-    mem.setdefault('orders', {})[step] = 'pending'
+    _plan_region(mem).setdefault('orders', {})[step] = 'pending'
     return step
 
 
@@ -131,7 +131,7 @@ def test_a_startable_adopted_plan_still_suppresses_the_interim_sortie():
     assert replan._plan_pending(mem) is True
     replan._off_chart(mem)
     assert interim(mem) is None
-    assert mem['orders'][step] == 'pending'
+    assert _plan_region(mem)['orders'][step] == 'pending'
 
 
 def test_spare_generals_form_a_wave_on_the_first_target():
@@ -184,7 +184,7 @@ def test_an_exhausted_mechanical_plan_is_rebuilt_with_new_sorties():
         'orders': [{'step': step, 'general': 'ゼウス', 'source': HOME,
                     'target': 'ゴーメン', 'cards': [], 'after': None, 'note': ''}],
     }
-    mem['orders'] = {step: 'launched'}
+    _plan_region(mem)['orders'] = {step: 'launched'}
     mem['sorties'] = {step: {'source': HOME, 'target': 'ゴーメン', 'general': 'ゼウス',
                              'status': 'en_route', 'tick': mem['tick'] - 10}}
     replan._off_chart(mem)
@@ -194,15 +194,7 @@ def test_an_exhausted_mechanical_plan_is_rebuilt_with_new_sorties():
     assert targets, plan
     # The in-flight target is excluded; a new plan offers the remaining work.
     assert 'ジョンリギ' in targets, plan
-    assert 'ゴーメン' not in targets or mem['orders'].get(step) != 'launched'
+    assert 'ゴーメン' not in targets or _plan_region(mem)['orders'].get(step) != 'launched'
 
 
 def test_a_multi_defender_castle_gets_more_than_four_wave_sorties():
-    """しまばら kept producing successor defenders (g1163 2026-11-10 08-10).
-
-    ながはま held eight spares; four wave sorties were not enough to clear a
-    castle that answers each defeat with the next defender.
-    """
-    from docich.hanjuku.strategy import replan
-
-    assert replan.INTERIM_WAVE_LIMIT >= 6

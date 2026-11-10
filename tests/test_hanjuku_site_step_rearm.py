@@ -39,7 +39,7 @@ def test_a_site_step_without_a_march_record_is_rearmed_and_runs():
     result = orders.next_order(mem)
     assert result is not None and result['step'] == order['step']
     assert result['target'] == SOUTH_EAST
-    assert mem['orders'][order['step']] == 'pending'
+    assert _plan_region(mem)['orders'][order['step']] == 'pending'
     assert mem['site_step_rearm'][order['step']] == mem['tick']
     assert 'site_step_rearmed' in [r['decision'] for r in (mem.get('_records') or [])]
 
@@ -50,7 +50,7 @@ def test_a_live_march_record_keeps_the_step_launched():
     mem['sorties'] = {order['step']: {'status': 'en_route', 'tick': mem['tick'] - 5,
                                       'target': SOUTH_EAST, 'general': 'ジェラート'}}
     orders.next_order(mem)
-    assert mem['orders'][order['step']] == 'launched'
+    assert _plan_region(mem)['orders'][order['step']] == 'launched'
     assert not [r for r in (mem.get('_records') or []) if r['decision'] == 'site_step_rearmed']
 
 
@@ -59,7 +59,7 @@ def test_a_fresh_step_is_not_rearmed():
     order = site_order()
     mem['order_start_tick'] = {order['step']: mem['tick'] - 5}
     orders.next_order(mem)
-    assert mem['orders'][order['step']] == 'launched'
+    assert _plan_region(mem)['orders'][order['step']] == 'launched'
     assert not [r for r in (mem.get('_records') or []) if r['decision'] == 'site_step_rearmed']
 
 
@@ -68,7 +68,7 @@ def test_a_site_the_y_view_measured_cleared_is_left_blocked():
     order = site_order()
     mem['season_sites'] = {SOUTH_EAST: {'state': 'closed', 'chapter': 4, 'tick': 10}}
     result = orders.next_order(mem)
-    assert mem['orders'][order['step']] == 'launched'
+    assert _plan_region(mem)['orders'][order['step']] == 'launched'
     assert not result or result['target'] != SOUTH_EAST
 
 
@@ -77,18 +77,18 @@ def test_a_live_fight_is_not_rearmed():
     order = site_order()
     mem['attack'] = {'step': order['step'], 'castle': SOUTH_EAST}
     orders.next_order(mem)
-    assert mem['orders'][order['step']] == 'launched'
+    assert _plan_region(mem)['orders'][order['step']] == 'launched'
 
 
 def test_the_cooldown_bounds_repeated_rearms():
     mem = memory()
     order = site_order()
     orders.next_order(mem)
-    assert mem['orders'][order['step']] == 'pending'
-    mem['orders'][order['step']] = 'launched'
+    assert _plan_region(mem)['orders'][order['step']] == 'pending'
+    _plan_region(mem)['orders'][order['step']] = 'launched'
     mem['tick'] += 10
     orders.next_order(mem)
-    assert mem['orders'][order['step']] == 'launched'      # inside the cooldown
+    assert _plan_region(mem)['orders'][order['step']] == 'launched'      # inside the cooldown
     mem['tick'] += orders.SITE_STEP_REARM_COOLDOWN
     orders.next_order(mem)
-    assert mem['orders'][order['step']] == 'pending'
+    assert _plan_region(mem)['orders'][order['step']] == 'pending'

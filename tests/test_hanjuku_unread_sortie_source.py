@@ -74,7 +74,7 @@ def test_probe_never_leaves_the_hero_with_fewer_than_two_others(names):
     mem.update(active=order['step'], orders={}, launched_orders={order['step']: order})
     assert p.deploy_step(generals(names), mem) == [p.pad('b'), p.pad('b')]
     assert mem['_records'][-1]['decision'] == 'sortie_held_hero_guard'
-    assert mem['orders'][order['step']] == 'failed'
+    assert _plan_region(mem)['orders'][order['step']] == 'failed'
     assert _world(mem)['garrison']['ジョンリギ'] == names
     assert all(o['source'] != 'ジョンリギ' for o in p.interim_candidates(mem).values())
 
@@ -165,7 +165,7 @@ def test_probe_selection_must_match_the_actual_departure_panel(kind):
     screen = (measured_card_select() if kind == 'card_select'
               else measured_loaded_sortie(('クースカン', 'ノリウツール')))
     assert p.deploy_step(actor_panel(screen, 'どうし'), mem) == [p.pad('b'), p.pad('b')]
-    assert mem['active'] is None and not mem.get('sorties')
+    assert _plan_region(mem)['active'] is None and not mem.get('sorties')
     assert mem['_records'][-1]['decision'] == 'sortie_actor_unconfirmed'
 
 
@@ -190,6 +190,6 @@ def test_partial_list_reobservation_invalidates_probe_actor_evidence(kind, actor
               else measured_loaded_sortie(('クースカン', 'ノリウツール')))
     actions = p.deploy_step(actor_panel(screen, actor), mem)
     assert actions == [p.pad('b'), p.pad('b')]
-    assert not mem.get('sorties') and mem['active'] is None
+    assert not mem.get('sorties') and _plan_region(mem)['active'] is None
     assert not _plan_region(mem).get('order_context') and not mem.get('general_override')
     assert mem['_records'][-1]['decision'] == 'sortie_actor_unconfirmed'

@@ -4,7 +4,7 @@ Detects chapter changes from observed castles and generals, resets
 chapter-scoped state and repairs legacy home-castle labels.
 """
 from __future__ import annotations
-from ..state.regions import world as _world
+from ..state.regions import world as _world, plan as _plan_region
 
 from ... import hanjuku_chart as chart
 from ...hanjuku_egg_reference import general_debut_chapter
@@ -217,7 +217,7 @@ def _repair_home_alias_failures(mem):
     if mem.get('home_alias_repaired') or (mem.get('chapter') or 0) != 1:
         return
     mem['home_alias_repaired'] = True
-    status = mem.get('orders') or {}
+    status = _plan_region(mem).get('orders') or {}
     launched = _world(mem).get('launched_orders') or {}
     home = chart.home_castle(1)
     restored = []
@@ -229,6 +229,6 @@ def _repair_home_alias_failures(mem):
                 (mem.get(key) or {}).pop(step, None)
             restored.append(step)
     if restored:
-        mem['active'] = None
+        _plan_region(mem)['active'] = None
         _record(mem, 'orders_restored', observed_metric=restored,
                 reason='本城の城名確認の誤判定（旧チャートラベルと画面実名の不一致）で失敗扱いになった指示を未実行に戻す')

@@ -22,10 +22,10 @@ def boss_memory(chapter=2):
 
 @pytest.mark.parametrize('names', [[p.NAME]])
 def test_readable_boss_list_without_any_companion_never_selects_hero(names):
-    order, mem = boss_memory(); mem['orders'][order['step']] = 'pending'
+    order, mem = boss_memory(); _plan_region(mem)['orders'][order['step']] = 'pending'
     actions = p.deploy_step(selected_list(names), mem)
     assert actions == [p.pad('b'), p.pad('b')]
-    assert mem['active'] is None and mem['orders'][order['step']] == 'pending'
+    assert _plan_region(mem)['active'] is None and _plan_region(mem)['orders'][order['step']] == 'pending'
     assert not _plan_region(mem).get('sortie_general') and not _plan_region(mem).get('order_context')
     assert mem['_records'][-1]['decision'] == 'boss_companion_required'
 
@@ -37,7 +37,7 @@ def test_weak_but_fit_companion_is_sent_and_the_hero_never_is(names):
     Waiting for a comparable general left the boss castle unattacked for a
     whole run. The hero is still never the actor (主人公boss禁止).
     """
-    order, mem = boss_memory(); mem['orders'][order['step']] = 'pending'
+    order, mem = boss_memory(); _plan_region(mem)['orders'][order['step']] = 'pending'
     actions = p.deploy_step(selected_list(names), mem)
     assert p.pad('b') not in actions
     assert mem['general_override'][order['step']] == 'シェーブル'
@@ -47,14 +47,14 @@ def test_weak_but_fit_companion_is_sent_and_the_hero_never_is(names):
 @pytest.mark.parametrize('kind', ['card_select', 'sortie_confirm'])
 def test_hotloaded_hero_selection_backs_out_before_departure(kind):
     order, mem = boss_memory(); _plan_region(mem)['sortie_general'] = {order['step']: p.NAME}
-    mem['orders'][order['step']] = 'pending'
+    _plan_region(mem)['orders'][order['step']] = 'pending'
     screen = measured_card_select() if kind == 'card_select' else measured_loaded_sortie()
     assert p.deploy_step(actor_panel(screen, p.NAME), mem) == [p.pad('b'), p.pad('b')]
     assert not _plan_region(mem).get('order_context') and not mem.get('sorties')
 
 
 def test_adequate_companion_elsewhere_redirects_source_without_inventing_departure():
-    order, mem = boss_memory(); mem['orders'][order['step']] = 'pending'
+    order, mem = boss_memory(); _plan_region(mem)['orders'][order['step']] = 'pending'
     _world(mem)['garrison'] = {order['source']: [p.NAME], chart.home_castle(2): ['ゼウス', p.NAME]}
     mem['house_eggs'] = {p.NAME: {'broken': True}}
     assert p.next_order(mem) == order
@@ -66,7 +66,7 @@ def test_adequate_companion_elsewhere_redirects_source_without_inventing_departu
 
 @pytest.mark.parametrize('status', [{'broken': True}, {'uses': 0}, {'hp': 10, 'max_hp': 85}])
 def test_companion_preparation_waits_for_known_injury_or_egg_failure(status):
-    order, mem = boss_memory(); mem['orders'][order['step']] = 'pending'
+    order, mem = boss_memory(); _plan_region(mem)['orders'][order['step']] = 'pending'
     _world(mem)['garrison'] = {order['source']: [p.NAME, 'ゼウス']}
     mem['house_eggs'] = {'ゼウス': status}
     assert p.next_order(mem) is None
@@ -85,7 +85,7 @@ def test_busy_unknown_location_and_duplicate_names_cannot_license_substitute():
 
 def test_unconfirmed_existing_departure_keeps_source_reconciliation(monkeypatch):
     order, mem = boss_memory(); step = order['step']
-    mem['orders'][step] = 'launched_unconfirmed'
+    _plan_region(mem)['orders'][step] = 'launched_unconfirmed'
     _plan_region(mem)['order_context'] = {step: {'actual_general': p.NAME}}
     monkeypatch.setattr(p, '_verify_sortie_source', lambda *args: [])
     before = deepcopy(_plan_region(mem)['order_context'])
@@ -95,7 +95,7 @@ def test_unconfirmed_existing_departure_keeps_source_reconciliation(monkeypatch)
 
 def test_hotloaded_unsubmitted_hero_target_never_sends_departure(monkeypatch):
     order, mem = boss_memory(); step = order['step']
-    mem['orders'][step] = 'pending'
+    _plan_region(mem)['orders'][step] = 'pending'
     _plan_region(mem)['sortie_general'] = {step: p.NAME}
     _plan_region(mem)['order_context'] = {step: {'actual_general': p.NAME,
         'observed_metric': {'cards': sorted(order['cards'])}}}
@@ -103,14 +103,14 @@ def test_hotloaded_unsubmitted_hero_target_never_sends_departure(monkeypatch):
     monkeypatch.setattr(p, 'nav_step', lambda *args: pytest.fail('hero target navigation'))
     assert p.target_step(Screen([], None, '', kind='map_target'), mem, None) == [p.pad('b'), p.pad('b')]
     assert not _flow(mem).get('sortie_attempt') and not mem.get('sorties')
-    assert mem['orders'][step] == 'pending'
+    assert _plan_region(mem)['orders'][step] == 'pending'
 
 
 def test_explicit_companion_boss_plan_cannot_confirm_an_actual_hero_panel():
     order, mem = boss_memory(); step = order['step']
     mem['chart_plan'] = {'orders': [{**order, 'general': 'ゼウス'}]}
     _plan_region(mem)['sortie_general'] = {step: 'ゼウス'}
-    mem['orders'][step] = 'pending'
+    _plan_region(mem)['orders'][step] = 'pending'
     assert p.deploy_step(actor_panel(measured_loaded_sortie(), p.NAME), mem) == [p.pad('b'), p.pad('b')]
     assert not _plan_region(mem).get('order_context')
 

@@ -47,7 +47,7 @@ def test_a_plan_with_a_started_order_is_kept():
     replan._adopt_plan(mem, plan(), 'abcd1234abcd1234')
     mem['tick'] = 1000 + replan.PLAN_STALE_TICKS
     step = mem['chart_plan']['orders'][0]['step']
-    mem['orders'] = {step: 'launched'}
+    _plan_region(mem)['orders'] = {step: 'launched'}
     replan._drop_stale_plan(mem)
     assert mem['chart_plan'] is not None
     assert stale_tally(mem) == 0

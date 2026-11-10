@@ -12,6 +12,7 @@ from ..decision_log import _record, _tally
 from .commands import pad
 from .readers import UNDER_CURSOR_PX, _cursor, world_cursor, world_flags
 from .world import _apply_world_flags, _hero_castle, update_world
+from ..state.regions import plan as _plan_region
 
 
 MAX_HOLD_FRAMES = 28          # 1 px/frame below 30 frames; beyond it accelerates
@@ -237,7 +238,7 @@ def observe_jump_foreground(screen, mem):
     """
     if not screen.kind or screen.kind in ('map', 'map_target', 'world_map', 'unknown'):
         return
-    active = mem.get('active')
+    active = _plan_region(mem).get('active')
     jump = mem.get('y_jump') or {}
     if active and jump.get('step') == active:
         jump['foreground_interrupted'] = True
@@ -354,7 +355,7 @@ def _want_y_jump(mem, order, name, mode) -> bool:
     if chapter not in Y_JUMP_OFFSET or mem.get('y_jump'):
         return False
     plan_steps = {o.get('step') for o in (mem.get('chart_plan') or {}).get('orders') or ()}
-    active = mem.get('active')
+    active = _plan_region(mem).get('active')
     if active and order['step'] != active and order['step'] not in plan_steps:
         # An order no plan and no active selection owns keeps its jump state
         # forever: g1133 2026-11-05 opened the Y view for the abandoned step

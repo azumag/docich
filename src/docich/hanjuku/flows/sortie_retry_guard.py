@@ -13,7 +13,7 @@ carries its result across equivalent A:/I: execution ids while the material
 world state is unchanged, and releases it as soon as that state changes.
 """
 from __future__ import annotations
-from ..state.regions import world as _world, sorties as _sorties
+from ..state.regions import world as _world, sorties as _sorties, plan as _plan_region
 
 from ... import hanjuku_chart_adjust as chart_adjust
 from ..decision_log import _record
@@ -236,7 +236,7 @@ def install() -> None:
             if step in remaining:
                 continue
             sortie = _sorties(mem).get(step)
-            status = (mem.get('orders') or {}).get(step)
+            status = (_plan_region(mem).get('orders') or {}).get(step)
             if (isinstance(sortie, dict)
                     and sortie.get('status') in ('en_route', 'launched_unconfirmed', 'arrived')
                     and status in ('launched', 'launched_unconfirmed')):

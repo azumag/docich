@@ -13,7 +13,7 @@ from docich import hanjuku_chart as chart, hanjuku_policy as p
 from docich.hanjuku.os_layer.screen import Screen
 from test_hanjuku_execution_binding import confirm, memory
 from docich.hanjuku.state.regions import flow as _flow, journal as _journal
-from docich.hanjuku.state.regions import world as _world, sorties as _sorties
+from docich.hanjuku.state.regions import world as _world, plan as _plan_region, sorties as _sorties
 
 TRACE = {'game': 'hanjuku-hero', 'runtime_id': 'test-runtime', 'generation': 741,
          'lease_id': 'test-lease', 'decision_id': 'test-runtime:741:20',
@@ -41,7 +41,7 @@ def sent(mem, a_inputs, trace=None):
 
 
 def assert_reserved(mem):
-    assert mem['orders']['1-A3'] == 'pending'
+    assert _plan_region(mem)['orders']['1-A3'] == 'pending'
     assert _world(mem)['garrison']['カストーラ'] == ['ゼウス', 'ヴィーナス']
     assert not mem.get('sorties') and not _world(mem).get('launched_orders')
 
@@ -58,7 +58,7 @@ def test_unsent_departure_request_never_commits_world_state():
 def test_picker_closed_without_a_send_is_an_unconfirmed_departure():
     mem = memory(); confirm(mem); request(mem)
     p.observe_sortie_transition(FIELD, mem, 'map_target')
-    assert mem['orders']['1-A3'] == 'launched_unconfirmed'
+    assert _plan_region(mem)['orders']['1-A3'] == 'launched_unconfirmed'
     assert _sorties(mem)['1-A3']['status'] == 'launched_unconfirmed'
     assert 'departure_request' not in _flow(mem)
     assert _world(mem)['garrison']['カストーラ'] == ['ゼウス', 'ヴィーナス']
@@ -69,7 +69,7 @@ def test_journaled_send_and_closed_picker_commit_the_fixed_departure():
     req['request_trace'] = dict(TRACE)
     sent(mem, 1)
     p.observe_sortie_transition(FIELD, mem, 'map_target')
-    assert mem['orders']['1-A3'] == 'launched'
+    assert _plan_region(mem)['orders']['1-A3'] == 'launched'
     assert _sorties(mem)['1-A3']['status'] == 'en_route'
     assert _sorties(mem)['1-A3']['target'] == 'スペンソニア'
     assert _world(mem)['launched_orders']['1-A3']['general'] == 'ゼウス'
@@ -130,7 +130,7 @@ def test_released_request_cycles_are_bounded_then_fail():
             _flow(mem)['departure_request']['request_trace'] = dict(TRACE)
         sent(mem, 0)
         assert p.target_step(TARGET, mem, None) in ([], [p.pad('b')])
-    assert mem['orders']['1-A3'] == 'failed'
+    assert _plan_region(mem)['orders']['1-A3'] == 'failed'
     assert _world(mem)['garrison']['カストーラ'] == ['ゼウス', 'ヴィーナス']
 
 
@@ -144,7 +144,7 @@ def commit(mem):
     req['request_trace'] = dict(TRACE)
     sent(mem, 1)
     p.observe_sortie_transition(FIELD, mem, 'map_target')
-    assert mem['orders']['1-A3'] == 'launched'
+    assert _plan_region(mem)['orders']['1-A3'] == 'launched'
     probe = (_flow(mem).get('launch_probe') or {}).get('1-A3')
     assert isinstance(probe, dict) and probe.get('source') == 'カストーラ'
     return probe
@@ -173,7 +173,7 @@ def test_new_marker_near_source_confirms_launch(monkeypatch):
     mem = memory(); confirm(mem); commit(mem)
     survey(monkeypatch, mem, [marker_at('カストーラ', dx=8)])
     assert '1-A3' not in (_flow(mem).get('launch_probe') or {})
-    assert mem['orders']['1-A3'] == 'launched'
+    assert _plan_region(mem)['orders']['1-A3'] == 'launched'
     assert _sorties(mem)['1-A3']['status'] == 'en_route'
     assert _world(mem)['garrison']['カストーラ'] == ['ヴィーナス']
     assert any(r['decision'] == 'sortie_launch_confirmed' for r in mem['_records'])
@@ -187,7 +187,7 @@ def test_unseen_unit_waits_for_the_source_roster(monkeypatch):
     # No marker is not proof: the probe stays and the launch is not undone.
     probe = (_flow(mem).get('launch_probe') or {}).get('1-A3')
     assert isinstance(probe, dict) and probe.get('blind') is True
-    assert mem['orders']['1-A3'] == 'launched'
+    assert _plan_region(mem)['orders']['1-A3'] == 'launched'
     assert _sorties(mem)['1-A3']['status'] == 'en_route'
     assert _world(mem)['garrison']['カストーラ'] == ['ヴィーナス']
     assert not _flow(mem).get('launch_miss')
@@ -196,7 +196,7 @@ def test_unseen_unit_waits_for_the_source_roster(monkeypatch):
     # The next completed roster of the source castle is the evidence: gone.
     p.settle_launch_probes_from_roster(mem, 'カストーラ', ['ヴィーナス'])
     assert '1-A3' not in (_flow(mem).get('launch_probe') or {})
-    assert mem['orders']['1-A3'] == 'launched'
+    assert _plan_region(mem)['orders']['1-A3'] == 'launched'
     assert _world(mem)['garrison']['カストーラ'] == ['ヴィーナス']
     assert not _flow(mem).get('launch_miss')
     assert any(r['decision'] == 'sortie_launch_confirmed' for r in mem['_records'])
@@ -208,7 +208,7 @@ def test_roster_still_listing_the_general_rolls_the_launch_back(monkeypatch):
         survey(monkeypatch, mem, [])
     p.settle_launch_probes_from_roster(mem, 'カストーラ', ['ゼウス', 'ヴィーナス'])
     assert '1-A3' not in (_flow(mem).get('launch_probe') or {})
-    assert mem['orders']['1-A3'] == 'pending'
+    assert _plan_region(mem)['orders']['1-A3'] == 'pending'
     assert '1-A3' not in (mem.get('sorties') or {})
     assert '1-A3' not in (_world(mem).get('launched_orders') or {})
     assert _world(mem)['garrison']['カストーラ'] == ['ヴィーナス', 'ゼウス']
@@ -224,14 +224,14 @@ def test_repeatedly_listed_launches_fail_the_order(monkeypatch):
             _flow(mem).setdefault('launch_probe', {})['1-A3'] = {
                 'general': 'ゼウス', 'source': 'カストーラ', 'target': 'スペンソニア',
                 'reads': 0, 'baseline': [], 'tick': mem['tick'], 'blind': True}
-            mem['orders']['1-A3'] = 'launched'
+            _plan_region(mem)['orders']['1-A3'] = 'launched'
             mem.setdefault('sorties', {})['1-A3'] = {'status': 'en_route'}
         else:
             commit(mem)
         for _ in range(p.LAUNCH_PROBE_READS):
             survey(monkeypatch, mem, [])
         p.settle_launch_probes_from_roster(mem, 'カストーラ', ['ゼウス'])
-    assert mem['orders']['1-A3'] == 'failed'
+    assert _plan_region(mem)['orders']['1-A3'] == 'failed'
     assert any(r['decision'] == 'sortie_launch_failed' for r in mem['_records'])
 
 
@@ -242,7 +242,7 @@ def test_a_blind_probe_still_rolls_back_when_the_roster_wait_expires(monkeypatch
     mem['tick'] += p.LAUNCH_PROBE_ROSTER_TICKS
     survey(monkeypatch, mem, [])
     assert '1-A3' not in (_flow(mem).get('launch_probe') or {})
-    assert mem['orders']['1-A3'] == 'pending'
+    assert _plan_region(mem)['orders']['1-A3'] == 'pending'
     assert _world(mem)['garrison']['カストーラ'] == ['ヴィーナス', 'ゼウス']
     assert _flow(mem)['launch_miss']['1-A3'] == 1
 
@@ -267,7 +267,7 @@ def test_a_boss_launch_is_kept_when_the_marker_survey_and_roster_wait_expire(mon
     assert isinstance(probe, dict) and probe.get('kept') is True
     assert _sorties(mem)['1-A3'].get('launch_kept') is True
     assert 'カストーラ' in (mem.get('roster_read_due') or {})
-    assert mem['orders']['1-A3'] == 'launched'
+    assert _plan_region(mem)['orders']['1-A3'] == 'launched'
     assert _sorties(mem)['1-A3']['status'] == 'en_route'
     assert not _flow(mem).get('launch_miss')
     kept = [r for r in mem['_records'] if r['decision'] == 'sortie_launch_unconfirmed_kept']
@@ -290,7 +290,7 @@ def test_a_kept_boss_launch_settles_on_still_listed_roster(monkeypatch):
     assert '1-A3' in (_flow(mem).get('launch_probe') or {})
     p.settle_launch_probes_from_roster(mem, 'カストーラ', ['ゼウス', 'ヴィーナス'])
     assert '1-A3' not in (_flow(mem).get('launch_probe') or {})
-    assert mem['orders']['1-A3'] == 'pending'
+    assert _plan_region(mem)['orders']['1-A3'] == 'pending'
     assert '1-A3' not in (mem.get('sorties') or {})
     assert _flow(mem)['launch_miss']['1-A3'] == 1
 
@@ -306,7 +306,7 @@ def test_a_kept_boss_launch_confirms_on_gone_roster(monkeypatch):
     survey(monkeypatch, mem, [])
     p.settle_launch_probes_from_roster(mem, 'カストーラ', ['ヴィーナス'])
     assert '1-A3' not in (_flow(mem).get('launch_probe') or {})
-    assert mem['orders']['1-A3'] == 'launched'
+    assert _plan_region(mem)['orders']['1-A3'] == 'launched'
     assert _sorties(mem)['1-A3'].get('launch_confirmed') is True
     assert not _flow(mem).get('launch_miss')
 
@@ -316,7 +316,7 @@ def test_sortie_settled_elsewhere_drops_the_probe_without_rollback(monkeypatch):
     _sorties(mem)['1-A3']['status'] = 'arrived'
     survey(monkeypatch, mem, [])
     assert '1-A3' not in (_flow(mem).get('launch_probe') or {})
-    assert mem['orders']['1-A3'] == 'launched'
+    assert _plan_region(mem)['orders']['1-A3'] == 'launched'
     assert not _flow(mem).get('launch_miss')
     assert not any(r['decision'] == 'sortie_launch_unverified' for r in mem['_records'])
 
@@ -333,7 +333,7 @@ def test_stale_baseline_marker_alone_does_not_confirm(monkeypatch):
     # Blind, so the source roster decides: the general is gone, he left.
     p.settle_launch_probes_from_roster(mem, 'カストーラ', ['ヴィーナス'])
     assert '1-A3' not in (_flow(mem).get('launch_probe') or {})
-    assert mem['orders']['1-A3'] == 'launched'
+    assert _plan_region(mem)['orders']['1-A3'] == 'launched'
     assert not _flow(mem).get('launch_miss')
 
 
@@ -345,7 +345,7 @@ def test_fresh_marker_anywhere_confirms_once_a_baseline_exists(monkeypatch):
     # once an older survey established what was already out.
     survey(monkeypatch, mem, [marker_at('アルマムーン'), marker_at('カストーラ', dx=40, dy=40)])
     assert '1-A3' not in (_flow(mem).get('launch_probe') or {})
-    assert mem['orders']['1-A3'] == 'launched'
+    assert _plan_region(mem)['orders']['1-A3'] == 'launched'
 
 def test_defense_interruption_releases_reservation_without_committing():
     # A defense battle closing the picker is not a departure observation,
@@ -356,7 +356,7 @@ def test_defense_interruption_releases_reservation_without_committing():
     sent(mem, 1)
     battle = Screen([], None, '', kind='defense_started')
     p.observe_sortie_transition(battle, mem, 'map_target')
-    assert mem['orders']['1-A3'] == 'launched_unconfirmed'
+    assert _plan_region(mem)['orders']['1-A3'] == 'launched_unconfirmed'
     assert _sorties(mem)['1-A3']['status'] == 'launched_unconfirmed'
     assert 'departure_request' not in _flow(mem)
     assert _world(mem)['garrison']['カストーラ'] == ['ゼウス', 'ヴィーナス']
@@ -367,7 +367,7 @@ def test_finished_order_releases_stale_reservation():
     # was cancelled): the reservation owns nothing and must not shadow the
     # foreign-marker cancel of the next target screen.
     mem = memory(); confirm(mem); request(mem)
-    mem['orders'].pop('1-A3')
+    _plan_region(mem)['orders'].pop('1-A3')
     mem.pop('active', None)
     assert p.target_step(TARGET, mem, None) == [p.pad('b')]
     assert 'departure_request' not in _flow(mem)
@@ -411,7 +411,7 @@ def test_recall_transition_neither_commits_nor_steals_the_reservation():
     assert_reserved(mem)
     assert _flow(mem).get('departure_request', {}).get('step') == '1-A3'
     _flow(mem).pop('recall', None)
-    mem['orders'].pop('1-A3')
+    _plan_region(mem)['orders'].pop('1-A3')
     mem.pop('active', None)
     assert p.target_step(TARGET, mem, None) == [p.pad('b')]
     assert 'departure_request' not in _flow(mem)

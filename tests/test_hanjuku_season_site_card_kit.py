@@ -51,4 +51,4 @@ def test_g1075_site_sortie_leaves_the_missing_cards_and_goes_on():
     # Then a card the list does hold is picked; the sortie is still this one.
     assert records[-1]['decision'] == 'sortie_input' and records[-1]['card'] in BOTTOM
     assert actions == [policy.pad('up')]
-    assert mem['orders']['4-B1'] == 'pending' and mem['active'] == '4-B1'
+    assert _plan_region(mem)['orders']['4-B1'] == 'pending' and _plan_region(mem)['active'] == '4-B1'

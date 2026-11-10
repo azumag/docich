@@ -38,7 +38,7 @@ def test_g825_missing_boss_card_is_dropped_and_the_sortie_continues():
                           'cards': ('クースカン', 'ノリウツール')}, mem) == ['ノリウツール']
     # The next observation leaves the list for the carried-card confirmation.
     assert policy.deploy_step(panel(), mem) == [policy.pad('b')]
-    assert mem['orders']['1-B1'] == 'pending' and mem['active'] == '1-B1'
+    assert _plan_region(mem)['orders']['1-B1'] == 'pending' and _plan_region(mem)['active'] == '1-B1'
 
 
 def test_exhausted_scroll_budget_from_the_live_stall_also_drops():
@@ -73,7 +73,7 @@ def test_card_that_may_be_scrolled_off_is_dropped_without_cancelling_the_boss_ki
         actions = policy.deploy_step(panel(names), mem)
         assert actions == [] or actions == [policy.pad('b')]
     assert mem.get('card_drop', {}).get('1-B1')
-    assert mem['active'] == '1-B1' and mem['orders']['1-B1'] == 'pending'
+    assert _plan_region(mem)['active'] == '1-B1' and _plan_region(mem)['orders']['1-B1'] == 'pending'
     assert not mem.get('boss_stock_cancelled')
 
 
@@ -84,7 +84,7 @@ def test_unreadable_boss_panel_cancels_without_dropping_any_card():
     for _ in range(policy.CARD_UNREADABLE_LIMIT - 1):
         assert policy.deploy_step(screen, mem) == []
     assert policy.deploy_step(screen, mem) == [policy.pad('b'), policy.pad('b')]
-    assert not mem.get('card_drop') and mem['orders']['1-B1'] == 'pending'
+    assert not mem.get('card_drop') and _plan_region(mem)['orders']['1-B1'] == 'pending'
 
 
 def test_top_boundary_requires_two_delivered_ups_and_unchanged_panel():
@@ -117,4 +117,4 @@ def test_an_unselectable_required_card_is_dropped_not_cancelled():
     for _ in range(policy.CARD_SCROLL_LIMIT + policy.CARD_UNREADABLE_LIMIT):
         policy.deploy_step(screen, mem)
     assert mem.get('card_drop', {}).get('1-B1')
-    assert mem['active'] == '1-B1' and not mem.get('boss_stock_cancelled')
+    assert _plan_region(mem)['active'] == '1-B1' and not mem.get('boss_stock_cancelled')

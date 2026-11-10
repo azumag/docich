@@ -5,7 +5,7 @@ the next monthly named-status scan rechecks their actual whereabouts.
 """
 from docich.hanjuku.strategy import orders as O
 from docich.hanjuku.flows import post_month_status as post
-from docich.hanjuku.state.regions import world as _world, sorties as _sorties
+from docich.hanjuku.state.regions import world as _world, plan as _plan_region, sorties as _sorties
 
 
 def memory(age, status='overdue', garrison=None):
@@ -212,14 +212,14 @@ def test_a_kept_boss_camp_reopens_the_order_same_month():
     # while camped at home. The observed camp must not strand the order
     # launched with no sortie; it reopens it at once.
     mem = observed(age=200, location='camp', delta=50)
-    mem['orders'] = {'A:x:M1': 'launched'}
+    _plan_region(mem)['orders'] = {'A:x:M1': 'launched'}
     _world(mem)['sorties']['A:x:M1']['launch_kept'] = True
     from docich.hanjuku.state.regions import flow as _flow
     _flow(mem)['launch_probe'] = {'A:x:M1': {'general': 'ヘルメス', 'source': 'アルマムーン',
                    'target': 'ボス', 'reads': 3, 'blind': True, 'kept': True, 'tick': 49900}}
     O._expire_spent_sorties(mem)
     assert 'A:x:M1' not in _world(mem)['sorties']
-    assert mem['orders']['A:x:M1'] == 'pending'
+    assert _plan_region(mem)['orders']['A:x:M1'] == 'pending'
     assert 'ヘルメス' in _world(mem)['garrison']['アルマムーン']
     assert any(r['decision'] == 'sortie_launch_unverified' for r in mem['_records'])
 
@@ -228,9 +228,9 @@ def test_a_confirmed_boss_camp_does_not_reopen():
     # #3500 retreat: a confirmed launch that camped after an encounter
     # discards only; reopening it would double-send the wave.
     mem = observed(age=200, location='camp', delta=50)
-    mem['orders'] = {'A:x:M1': 'launched'}
+    _plan_region(mem)['orders'] = {'A:x:M1': 'launched'}
     _world(mem)['sorties']['A:x:M1']['launch_confirmed'] = True
     O._expire_spent_sorties(mem)
     assert 'A:x:M1' not in _world(mem)['sorties']
-    assert mem['orders']['A:x:M1'] == 'launched'
+    assert _plan_region(mem)['orders']['A:x:M1'] == 'launched'
     assert not any(r['decision'] == 'sortie_launch_unverified' for r in mem['_records'])

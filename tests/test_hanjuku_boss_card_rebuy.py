@@ -230,9 +230,9 @@ def test_no_rebuy_without_a_measured_shortage_for_a_boss_still_to_sortie(change)
     elif change == 'enough':
         mem['card_stock']['クースカン'] = 1
     elif change == 'launched':
-        mem['orders']['1-B1'] = 'launched'  # the sortie carries its kit
+        _plan_region(mem)['orders']['1-B1'] = 'launched'  # the sortie carries its kit
     elif change == 'failed':
-        mem['orders']['1-B1'] = 'failed'
+        _plan_region(mem)['orders']['1-B1'] = 'failed'
     elif change == 'defeated':
         mem['boss_defeated'] = 1
     else:

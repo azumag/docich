@@ -66,9 +66,9 @@ def observe_sortie_transition(screen, mem, previous_kind=None):
     if screen.kind == 'map_target':
         if not order or order['step'] == attempt['step']:
             step = attempt['step']
-            if (mem.get('orders') or {}).get(step) == 'launched_unconfirmed':
-                mem['active'] = step
-                mem['orders'][step] = 'pending'
+            if (_plan_region(mem).get('orders') or {}).get(step) == 'launched_unconfirmed':
+                _plan_region(mem)['active'] = step
+                _plan_region(mem)['orders'][step] = 'pending'
                 _sorties(mem).pop(step, None)
                 # The interruption moved the camera: the resumed selection gets
                 # fresh target jumps (g421 18:24: six were spent before a defense
@@ -177,7 +177,7 @@ def boss_stall_escape_step(mem, kind, phase):
     cooldown, only with no active order/battle and only on menu/text screens.
     """
     parked = parked_boss_steps(mem)
-    if (not parked or mem.get('active') or mem.get('battle') or mem.get('attack')
+    if (not parked or _plan_region(mem).get('active') or mem.get('battle') or mem.get('attack')
             or _flow(mem).get('recall')):
         return None
     if kind == 'text':
@@ -212,7 +212,7 @@ def boss_sortie_menu_escape_step(mem, kind, actions):
     same step/screen, press B once and let the order be retried. Normal
     castle orders and screens with an action are untouched.
     """
-    active = mem.get('active')
+    active = _plan_region(mem).get('active')
     if (not active or kind not in BOSS_SORTIE_MENU_KINDS or actions != []
             or mem.get('battle') or mem.get('attack') or _flow(mem).get('recall')):
         mem.pop('boss_sortie_menu_hold', None)
@@ -496,7 +496,7 @@ def _measured_goal(mem, order, castle):
     """Last coordinate boundary, including already-issued reconciliation."""
     goal = chart.castles(mem.get('chapter') or 0).get(castle)
     if goal is None:
-        mem['active'] = None
+        _plan_region(mem)['active'] = None
         mem['picked'] = []
         mem['_map_registration_hold'] = True
         _record(mem, 'map_coordinates_unavailable', chart_step=order['step'], castle=castle,
@@ -584,16 +584,16 @@ def _release_stale_active(mem):
     status was abandoned by the plan; releasing it lets ``next_order`` pick the
     current plan.
     """
-    step = mem.get('active')
+    step = _plan_region(mem).get('active')
     if not step:
         return False
     plan = mem.get('chart_plan') or {}
     plan_steps = {o.get('step') for o in plan.get('orders') or ()}
     launched = (mem.get('world') or {}).get('launched_orders') or mem.get('launched_orders') or {}
-    status = (mem.get('orders') or {}).get(step)
+    status = (_plan_region(mem).get('orders') or {}).get(step)
     if not plan_steps or step in plan_steps or step in launched or status is not None:
         return False
-    mem['active'] = None
+    _plan_region(mem)['active'] = None
     mem['picked'] = []
     _drop_jump_state(mem, step)
     _record(mem, 'stale_active_released', chart_step=step,
@@ -652,7 +652,7 @@ def _watch_cursor_still(mem):
     # With no order the map deliberately waits for armies/events. A missing
     # roof anchor during that wait is not evidence of failed navigation.
     # Clear old counts as well, including those left by a hotloaded policy.
-    if not mem.get('active'):
+    if not _plan_region(mem).get('active'):
         mem.pop('cursor_still', None)
         return False
     cursor = mem.get('cursor')
@@ -764,10 +764,10 @@ def _start_reanchor_jump(mem, *, owner=None):
     # The navigator repairs coordinates without taking ownership of the work.
     # Save the foreground flow and stage before SELECT moves the camera home.
     if owner is None:
-        owner = 'sortie_plan' if mem.get('active') else 'map_navigation'
+        owner = 'sortie_plan' if _plan_region(mem).get('active') else 'map_navigation'
     monthly = mem.get('post_month_status') if owner == 'post_month_status' else None
     return_to = {'owner': owner, 'chapter': chapter, 'month': mem.get('month'),
-                 'active_step': mem.get('active'),
+                 'active_step': _plan_region(mem).get('active'),
                  'stage': monthly.get('stage') if isinstance(monthly, dict) else None,
                  'scope': list(monthly.get('scope') or []) if isinstance(monthly, dict) else None}
     mem['castle_jump'] = {'mode': 'reanchor', 'step': None, 'source': home,
@@ -788,7 +788,7 @@ def _want_castle_jump(mem, order, source, goal):
         return False
     if chapter not in sources.SOURCE_CASTLES or source not in sources.SOURCE_CASTLES[chapter]:
         return False
-    if mem.get('active') != order['step']:
+    if _plan_region(mem).get('active') != order['step']:
         return False
     if mem.get('y_jump') or mem.get('castle_jump') or _source(order, mem) != source:
         return False
@@ -885,27 +885,8 @@ def castle_jump_step(screen, mem, frame):
     reanchor = jump.get('mode') == 'reanchor'
     if not reanchor:
         order = _order_for_step(mem, jump['step'])
-        if order is None or mem.get('active') != jump['step']:
-            # The chart worker may re-plan while the jump is in flight, which
-            # renumbers every step (g1163 2026-11-10 05:38-05:50: five jumps
-            # aborted at age 1 with order_changed, so the sortie never left).
-            # The physical trip is still valid when the same general leaves
-            # the same castle for the same target, so carry the jump over.
-            if (not mem.get('active')
-                    or _order_for_step(mem, mem.get('active')) is None):
-                # Between plans the active order can be empty, or name a step
-                # the replaced plan no longer holds; that is not a change of
-                # intent (g1163 2026-11-10 07:01: the jump still died at age 1
-                # one second after order_start).
-                jump['orphan'] = int(jump.get('orphan') or 0) + 1
-                if jump['orphan'] <= CASTLE_JUMP_ORPHAN_HOLD:
-                    return []
-            adopted = _jump_successor(mem, order, jump)
-            if adopted is None:
-                return _end_castle_jump(screen, mem, 'order_changed')
-            jump['step'] = adopted['step']
-            jump['source'] = _source(adopted, mem) or jump.get('source')
-            order = adopted
+        if order is None or _plan_region(mem).get('active') != jump['step']:
+            return _end_castle_jump(screen, mem, 'order_changed')
 
     phase = jump.get('phase')
     if phase == 'menu':
@@ -1013,7 +994,7 @@ def castle_jump_step(screen, mem, frame):
                 mem['reanchor_resume'] = {
                     'source': jump['source'], 'tick': tick,
                     'active_before': (jump.get('return_to') or {}).get('active_step',
-                                                                         mem.get('active')),
+                                                                         _plan_region(mem).get('active')),
                     **(jump.get('return_to') or {}),
                 }
                 _record(mem, 'cursor_reanchor_confirm', target=jump['source'],
@@ -1086,12 +1067,12 @@ def resume_reanchored_owner(screen, mem, frame):
             resume['resumed_owner'] = owner
         return actions
     if owner in {'sortie_plan', 'map_navigation'}:
-        if owner == 'sortie_plan' and mem.get('active') != resume.get('active_before'):
+        if owner == 'sortie_plan' and _plan_region(mem).get('active') != resume.get('active_before'):
             mem.pop('reanchor_resume', None)
             _record(mem, 'cursor_reanchor_owner_expired',
                     observed_metric={'owner': owner,
                                      'active_before': resume.get('active_before'),
-                                     'active_now': mem.get('active')},
+                                     'active_now': _plan_region(mem).get('active')},
                     reason='復旧中に出撃指示が変わったため古い指示を再生しない')
             return None
         actions = map_step(screen, mem, frame)
@@ -1123,7 +1104,7 @@ def note_reanchor_followup(screen, mem, actions):
                                  'stage_before': resume.get('stage'),
                                  'stage_after': (mem.get('post_month_status') or {}).get('stage'),
                                  'active_before': resume.get('active_before'),
-                                 'active_after': mem.get('active'),
+                                 'active_after': _plan_region(mem).get('active'),
                                  'actions': actions[:3]},
                 reason='位置復旧後、中断元の処理に制御を戻した')
         return
@@ -1141,10 +1122,10 @@ def note_reanchor_followup(screen, mem, actions):
     elif mem.get('_map_registration_hold'):
         blocked_by = 'map_registration'
         why = '地図登録・座標確認が操作を保留している'
-    elif mem.get('map_idle_tick') == tick and mem.get('active') is None:
+    elif mem.get('map_idle_tick') == tick and _plan_region(mem).get('active') is None:
         blocked_by = 'no_ready_order'
         why = '中断前の指示と次の計画を再評価したが実行可能な出撃・移動がない'
-    elif mem.get('active'):
+    elif _plan_region(mem).get('active'):
         blocked_by = 'active_order_wait'
         why = '中断中の指示を再評価したが出撃元の確認などで入力を保留している'
     elif isinstance(status, dict) and status:
@@ -1154,13 +1135,13 @@ def note_reanchor_followup(screen, mem, actions):
         blocked_by = 'other_flow_hold'
         why = '通常処理を再評価したがこの観測では安全な入力が決まらない'
     _record(mem, 'cursor_reanchor_wait', screen=screen.kind,
-            observed_metric={'blocked_by': blocked_by, 'active': mem.get('active'),
+            observed_metric={'blocked_by': blocked_by, 'active': _plan_region(mem).get('active'),
                              'return_owner': resume.get('owner'),
                              'return_stage': resume.get('stage'),
                              'active_before': resume.get('active_before'),
                              'plan_steps': [o.get('step') for o in
                                             (mem.get('chart_plan') or {}).get('orders', [])[:8]],
-                             'orders': {k: v for k, v in list((mem.get('orders') or {}).items())[:8]},
+                             'orders': {k: v for k, v in list((_plan_region(mem).get('orders') or {}).items())[:8]},
                              'wait_ticks': tick - int(resume.get('tick') or tick)},
             reason=why)
 
@@ -1181,7 +1162,7 @@ def map_step(screen: Screen, mem, frame):
     # Idle maps deliberately wait for armies/events. Keep any interrupted
     # search for the next order instead of repeatedly jumping home before
     # plan selection and ownership surveys can run.
-    if mem.get('active') and screen.cursor and not screen.marker:
+    if _plan_region(mem).get('active') and screen.cursor and not screen.marker:
         reanchor = _start_reanchor_jump(mem)
         if reanchor is not None:
             return reanchor
@@ -1248,7 +1229,7 @@ def map_step(screen: Screen, mem, frame):
         # home_garrison [] while source_miss stayed at 5 for an hour), so the
         # fallback could never launch and giving up only blocked the walk to
         # the chart's own source. Keep walking instead (issue #3417).
-    verifying = order is not None and (mem.get('orders') or {}).get(order['step']) == 'launched_unconfirmed'
+    verifying = order is not None and (_plan_region(mem).get('orders') or {}).get(order['step']) == 'launched_unconfirmed'
     if order is not None and ((not verifying and not _ready(order, mem)) or _source(order, mem) not in _owned(mem)):
         # A defense loss revokes the capture an order was picked on. Holding
         # ``active`` past that keeps steering the cursor at the now-foreign
@@ -1260,7 +1241,7 @@ def map_step(screen: Screen, mem, frame):
                                  'after': list(order.get('after') or ()),
                                  'source': _source(order, mem)},
                 reason='実行中の指示の前提が失われたため指示を選び直す')
-        mem['active'] = None
+        _plan_region(mem)['active'] = None
         mem['picked'] = []
         order = None
     if isinstance(order, dict) and (str(order.get('step', '')).startswith(chart_adjust.INTERIM_PREFIX)
@@ -1292,7 +1273,7 @@ def map_step(screen: Screen, mem, frame):
             return []           # nothing charted: let real time advance
         if not _order_start_due(mem, order['step']):
             return []
-        mem['active'] = order['step']
+        _plan_region(mem)['active'] = order['step']
         mem['picked'] = []
         # The bounded inventory search belongs to this attempt, not the
         # order forever. A cancelled attempt must not exhaust every retry.
@@ -1356,7 +1337,7 @@ def map_step(screen: Screen, mem, frame):
                 order_step = (order or {}).get('step')
                 mem['approx_fallback'] = True
                 mem.pop('approx_localize_miss', None)
-                mem['active'] = None
+                _plan_region(mem)['active'] = None
                 mem['picked'] = []
                 mem['uncertain'] = True
                 mem.pop('cursor', None)
@@ -1427,7 +1408,7 @@ def target_step(screen: Screen, mem, frame):
     if locked is not None:
         return locked
     if (_is_boss_order(order, mem) and _sortie_general(order, mem) == NAME
-            and (mem.get('orders') or {}).get(order['step']) not in {'launched', 'launched_unconfirmed'}):
+            and (_plan_region(mem).get('orders') or {}).get(order['step']) not in {'launched', 'launched_unconfirmed'}):
         _flow(mem).pop('sortie_attempt', None)
         return _hold_guarded_sortie(mem, order, 'boss_companion_required',
             '未送信の主人公のボス目標を取り消し、十分な戦力の代役を待つ',
@@ -1800,14 +1781,14 @@ def _rollback_unverified_launch(mem, step, probe, markers, reason=None):
                 'markers': [list(b) for b in markers], 'reads': probe.get('reads'),
                 'misses': misses[step]}
     if misses[step] >= LAUNCH_MISS_LIMIT:
-        mem.setdefault('orders', {})[step] = 'failed'
+        _plan_region(mem).setdefault('orders', {})[step] = 'failed'
         _record(mem, 'sortie_launch_failed', chart_step=step, general=general,
                 deviation_reason='出撃確定後に部隊が現れない',
                 observed_metric=observed,
                 reason=reason or '出撃確定の入力後も部隊▲が現れず再試行の上限に達したため指示を失敗にする')
         return
-    if mem.setdefault('orders', {}).get(step) == 'launched':
-        mem['orders'][step] = 'pending'
+    if _plan_region(mem).setdefault('orders', {}).get(step) == 'launched':
+        _plan_region(mem)['orders'][step] = 'pending'
     _record(mem, 'sortie_launch_unverified', chart_step=step, general=general,
             observed_metric=observed, resulting_event='order_reopened',
             reason=reason or '出撃確定の入力後に全体マップへ部隊▲が現れないため、出撃を未発射に戻す')

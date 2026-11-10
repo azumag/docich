@@ -4,7 +4,7 @@ import json
 from docich import hanjuku_policy as p
 from docich.hanjuku_font import UNKNOWN
 from test_hanjuku_retake_guard import generals, memory
-from docich.hanjuku.state.regions import world as _world
+from docich.hanjuku.state.regions import world as _world, plan as _plan_region
 
 
 def after_loss():
@@ -15,7 +15,7 @@ def after_loss():
     p.battle_end(mem, 'map')
     assert _world(mem)['general_location_unknown'] == ['ゼウス']
     assert _world(mem)['garrison']['アルマムーン'] == ['アルテミス']
-    mem['active'] = 'I:retake:1'
+    _plan_region(mem)['active'] = 'I:retake:1'
     return mem
 
 
@@ -26,9 +26,9 @@ def source_retake(mem):
 
 def select(mem, order):
     order = dict(order, step=order.get('step', 'I:retake:probe'), after=None)
-    mem['active'] = order['step']
+    _plan_region(mem)['active'] = order['step']
     _world(mem).setdefault('launched_orders', {})[order['step']] = order
-    mem.setdefault('orders', {})[order['step']] = 'pending'
+    _plan_region(mem).setdefault('orders', {})[order['step']] = 'pending'
 
 
 def test_unknown_name_after_loss_can_be_reobserved_after_json_then_select_a_real_spare():

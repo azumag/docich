@@ -8,7 +8,7 @@ fights as a summoned monster from the first turn with no きりふだ row
 """
 from docich import hanjuku_chart as chart
 from docich.hanjuku.strategy import orders
-from docich.hanjuku.state.regions import world as _world
+from docich.hanjuku.state.regions import world as _world, plan as _plan_region
 
 NORMAL = [c for c in chart.CASTLE_NAMES[4] if c not in ('アルマムーン', 'ボス')]
 HOME = chart.home_castle(4)
@@ -188,16 +188,16 @@ def test_an_exhausted_site_step_rearms_after_a_long_stale_wait():
     order = site_order()
     step = order['step']
     mem = memory()
-    mem['orders'][step] = 'launched'
+    _plan_region(mem)['orders'][step] = 'launched'
     _world(mem)['sorties'] = {step: {'general': 'カペリーニ', 'source': 'ミヒラギアン',
                              'target': order['target'], 'status': 'overdue', 'tick': 100}}
     mem['boss_relaunch'] = {step: 2}
     mem['tick'] = 100 + orders.BOSS_STALE_COOLDOWN - 1
     orders._relaunch_overdue_boss(mem)
-    assert mem['orders'][step] == 'launched'              # still cooling down
+    assert _plan_region(mem)['orders'][step] == 'launched'              # still cooling down
     mem['tick'] = 100 + orders.BOSS_STALE_COOLDOWN
     orders._relaunch_overdue_boss(mem)
-    assert mem['orders'][step] == 'pending' and mem['boss_relaunch'][step] == 1
+    assert _plan_region(mem)['orders'][step] == 'pending' and mem['boss_relaunch'][step] == 1
 
 
 def test_a_measured_boss_entry_rearms_the_relaunch_budget():
