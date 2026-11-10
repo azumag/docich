@@ -45,3 +45,17 @@ docich: エラー: Hanjuku terminal evidence holds input
   （終了した試合を誤って再開しないよう、オーナー操作を必須にする）。
 - `docich switch` の `round_boundary` タイムアウト時に canonical 状態が `failed` へ落ち、
   `recover` も `quiesce` で失敗する経路の改善（今回は `game_switch.json` のバックアップから復元）。
+
+## 恒久策（v632）: `docich hanjuku-clear-terminal`
+
+オーナー操作で終了判定だけを解除する CLI を追加しました。
+
+```
+docich --config config/docich.soren-live.toml hanjuku-clear-terminal [--runtime <id>]
+```
+
+- active runtime（または `--runtime` 指定）の `hanjuku_run.json` を**バイトコピーでバックアップ**し、
+  `terminal_reason` / `terminal_candidate` / `terminal_evidence` だけを解除します。
+- `hanjuku_events.jsonl` に `terminal_cleared_by_operator`（理由・バックアップ名）を記録。
+- 終了判定が無い場合は何も変更せず成功終了。
+- **自動解除はしません**（終了した試合を再開しないため、オーナー操作を必須にします）。
