@@ -1242,12 +1242,19 @@ def test_a_different_general_may_depart_for_an_ordinary_castle():
     row = type('Row', (), {'y': 31,
                            'span': lambda self, a, b: ('アテナ' if (a, b) == (16, 80) else '')})()
     screen = type('Screen', (), {'lines': [row], 'kind': 'card_select'})()
+    # Multi-step mem in the migrated layout: the other steps' cached actors
+    # must survive the substitute write (#3918: a flat write used to replace
+    # the whole plan sortie_general dict on the next _plan_region call).
     mem = {'_records': [], '_run_identity': None,
-           'sortie_general': {'A:x:M1': 'ゼウス'}}
+           'plan': {'sortie_general': {'A:x:M1': 'ゼウス',
+                                       'A:x:M2': 'キッシュ',
+                                       'A:x:M3': 'ポセイドン'}}}
     order = {'step': 'A:x:M1', 'general': 'ゼウス', 'source': 'あるまむーん',
              'target': 'ゴーメン', 'source_probe': True}
     assert deploy._selected_actor_guard(screen, mem, order) is None
-    assert _plan_region(mem)['sortie_general']['A:x:M1'] == 'アテナ'
+    assert _plan_region(mem)['sortie_general'] == {'A:x:M1': 'アテナ',
+                                                  'A:x:M2': 'キッシュ',
+                                                  'A:x:M3': 'ポセイドン'}
     assert any(r['decision'] == 'sortie_actor_substituted' for r in mem['_records'])
 
 
