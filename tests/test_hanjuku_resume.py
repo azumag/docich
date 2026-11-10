@@ -466,9 +466,16 @@ def test_unknown_resume_chapter_resolves_only_fresh_unique_castle():
     observe_chapter_castle(mem,'フーリック')
     assert mem['chapter']==2 and mem['chapter_evidence']=='フーリック'
     assert 'resume_chapter_pending' not in mem and 'garrison' not in _world(mem)
-    untouched={'_records':[]}
-    observe_chapter_castle(untouched,'フーリック')
-    assert untouched.get('chapter') is None
+    # A unique observed castle now establishes the chapter even without a
+    # resume flag (fresh-state restart, v641).
+    fresh={'_records':[]}
+    observe_chapter_castle(fresh,'フーリック')
+    assert fresh['chapter']==2 and fresh['chapter_evidence']=='フーリック'
+    assert 'resume_chapter_pending' not in fresh
+    # Generic castle labels cannot identify a chapter.
+    ambiguous={'_records':[]}
+    observe_chapter_castle(ambiguous,'アルマムーン')
+    assert ambiguous.get('chapter') is None
 
 
 @pytest.fixture
