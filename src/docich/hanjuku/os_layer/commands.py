@@ -91,14 +91,14 @@ def menu_navigation_reading(screen):
 
 
 def menu_navigation_feedback(state, actions):
-    """One short directional press on this observation can reobserve sooner."""
+    """Reobserve a short menu move or an existing sortie-card tap batch sooner."""
     reading = state.get('menu_navigation_reading')
     if (not isinstance(reading, dict) or type(state.get('step')) is not int
             or type(reading.get('step')) is not int or reading.get('step') != state['step']
             or (reading.get('kind') not in _FEEDBACK_MENU_KINDS
                 and not menu_feedback.valid_context(reading.get('kind'), reading.get('menu')))
             or reading.get('kind') != state.get('screen_kind')
-            or not isinstance(actions, list) or len(actions) != 1):
+            or not isinstance(actions, list) or not 1 <= len(actions) <= 4):
         return False
     directions = reading.get('directions')
     cursor = reading.get('cursor')
@@ -107,13 +107,26 @@ def menu_navigation_feedback(state, actions):
             or not isinstance(cursor, list) or len(cursor) != 2
             or any(type(n) is not int or not 0 <= n < bound for n, bound in zip(cursor, (256, 224)))):
         return False
-    action = actions[0]
-    if not isinstance(action, dict):
+    batch = len(actions) > 1
+    # Only the measured sortie-card list already sends up to four distinct
+    # 100ms taps (scroll/discovery/rewind). Other menus remain single-step.
+    # This changes neither those plans nor their required landing observation.
+    if batch and (reading.get('kind') != 'card_select' or reading.get('menu') != 'sortie_cards'):
         return False
-    buttons, hold = action.get('buttons'), action.get('hold_ms')
-    return (action.get('type') == 'pad' and isinstance(buttons, list) and len(buttons) == 1
-            and buttons[0] in ('up', 'down', 'left', 'right') and buttons[0] in directions
-            and type(hold) is int and 16 <= hold <= 100)
+    direction = None
+    for action in actions:
+        if not isinstance(action, dict):
+            return False
+        buttons, hold = action.get('buttons'), action.get('hold_ms')
+        if not (action.get('type') == 'pad' and isinstance(buttons, list) and len(buttons) == 1
+                and buttons[0] in ('up', 'down', 'left', 'right') and buttons[0] in directions
+                and type(hold) is int and 16 <= hold <= 100):
+            return False
+        if batch and (buttons[0] not in ('up', 'down') or hold != 100
+                      or (direction is not None and buttons[0] != direction)):
+            return False
+        direction = buttons[0]
+    return True
 
 
 def status_panel_feedback(state, actions):
