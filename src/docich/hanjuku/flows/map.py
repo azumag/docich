@@ -1355,7 +1355,7 @@ def map_step(screen: Screen, mem, frame):
         # The bounded inventory search belongs to this attempt, not the
         # order forever. A cancelled attempt must not exhaust every retry.
         (mem.get('card_scroll') or {}).pop(order['step'], None)
-        if (mem.get('orders') or {}).get(order['step']) != 'launched_unconfirmed':
+        if (_plan_region(mem).get('orders') or {}).get(order['step']) != 'launched_unconfirmed':
             # The unreadable-panel fallback also belongs to this attempt.
             # Keeping its spent B/A budget makes a later sortie with the same
             # step cancel immediately, before it can recover its own panel.
