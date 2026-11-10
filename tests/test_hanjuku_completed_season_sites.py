@@ -6,6 +6,7 @@ from docich import hanjuku_chart as chart
 from docich.hanjuku.flows import battle, deploy
 from docich.hanjuku.strategy import orders
 from docich.hanjuku_map_sources import SEASON_KINGS
+from docich.hanjuku.state.regions import plan as _plan_region
 
 
 def memory():

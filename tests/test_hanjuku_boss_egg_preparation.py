@@ -2,6 +2,7 @@
 from test_hanjuku_chart_bot import policy, sortie_canvas, month_canvas
 from docich import hanjuku_chart as chart
 from docich.hanjuku_screen import Screen, parse
+from docich.hanjuku.state.regions import plan as _plan_region
 import pytest
 
 

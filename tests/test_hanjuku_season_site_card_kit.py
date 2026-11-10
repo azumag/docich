@@ -10,6 +10,7 @@ four site orders had nothing that could ever supply the missing cards.
 from docich import hanjuku_chart as chart, hanjuku_policy as policy
 from docich.hanjuku.strategy.kit import _deploy_cards, _strict_boss_cards
 from test_hanjuku_sortie_evidence import actor_panel, measured_card_select
+from docich.hanjuku.state.regions import plan as _plan_region
 
 # g1075 08:15:14-19 の一覧 (クースカン, バルムンク, ミックミー, バグストーム)。バルムンク(ボス250)の
 # 実在庫がある一覧は専用キットになる (test_hanjuku_boss_balmung_generic) ため、ここでは

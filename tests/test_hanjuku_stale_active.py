@@ -6,6 +6,7 @@ abandoned step that is neither in the plan nor in the launched-order records
 and never got a status keeps the map loop busy while nothing can start it.
 """
 from docich.hanjuku.flows import map as M
+from docich.hanjuku.state.regions import plan as _plan_region
 
 
 def memory(active, plan_steps=('A:x:M1',), launched=None, status=None):

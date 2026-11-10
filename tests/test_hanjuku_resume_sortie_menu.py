@@ -8,6 +8,7 @@ from docich.hanjuku_bot import decide
 from docich.hanjuku_pixels import read_png
 from docich.hanjuku_screen import parse,Screen,resume_sortie_panel
 from test_hanjuku_owned_sortie_backout import confirmation
+from docich.hanjuku.state.regions import plan as _plan_region
 
 
 def cold_state():

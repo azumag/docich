@@ -7,6 +7,7 @@ it again - needless work and a log nobody could read.
 """
 from docich import hanjuku_chart as chart
 from docich.hanjuku.strategy import replan
+from docich.hanjuku.state.regions import plan as _plan_region
 
 CELLS = chart.castles(6)
 NORMAL = [c for c in CELLS if c != 'ボス']

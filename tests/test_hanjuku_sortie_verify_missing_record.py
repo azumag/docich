@@ -4,6 +4,7 @@ from unittest.mock import patch
 import pytest
 
 from docich.hanjuku.flows import deploy
+from docich.hanjuku.state.regions import plan as _plan_region
 
 
 @pytest.mark.parametrize('record', [None, [], 'invalid', {}, {'general': None}, {'general': ''}])

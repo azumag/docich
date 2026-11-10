@@ -15,6 +15,7 @@ from docich.hanjuku.os_layer.pixels import read_png
 from docich.hanjuku.os_layer.readers import world_flags
 from docich.hanjuku.strategy import orders
 from docich.hanjuku_screen import Screen, classify_text
+from docich.hanjuku.state.regions import plan as _plan_region
 
 FIXTURES = Path(__file__).resolve().parent / 'fixtures' / 'hanjuku'
 # 2026-10-30 07:44:16 JST world_map_owners: every ordinary castle ours.

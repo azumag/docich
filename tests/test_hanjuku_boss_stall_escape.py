@@ -9,7 +9,7 @@ from docich import hanjuku_policy as policy
 from docich.hanjuku.flows import map as map_flow
 from docich.hanjuku.strategy import orders as O
 from docich.hanjuku_screen import Screen
-from docich.hanjuku.state.regions import flow as _flow, journal as _journal
+from docich.hanjuku.state.regions import flow as _flow, journal as _journal, plan as _plan_region
 
 SITE = '四季王城(南西)'
 

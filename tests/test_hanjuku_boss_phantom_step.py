@@ -7,6 +7,7 @@ re-open the step.
 """
 from docich import hanjuku_chart as chart
 from docich.hanjuku.strategy import orders as O
+from docich.hanjuku.state.regions import plan as _plan_region
 
 BOSS = chart.boss_castle(6)
 

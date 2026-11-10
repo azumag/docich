@@ -19,6 +19,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
 from docich import hanjuku_chart as chart
 from docich import hanjuku_chart_adjust as chart_adjust
 from docich.hanjuku.strategy import replan
+from docich.hanjuku.state.regions import plan as _plan_region
 
 
 @pytest.fixture(autouse=True)

@@ -6,6 +6,7 @@ a new execution id (the situation digest changed), so the failure looked new
 and the order was retried at once, each retry paying a full navigation.
 """
 from docich.hanjuku.strategy import orders as O, replan
+from docich.hanjuku.state.regions import plan as _plan_region
 
 
 def memory(tick=1000):

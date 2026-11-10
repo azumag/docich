@@ -11,6 +11,7 @@ from docich import hanjuku_chart as chart
 from docich.hanjuku.os_layer import navigation as N
 from docich.hanjuku.strategy import orders as O
 from docich.hanjuku.strategy import replan
+from docich.hanjuku.state.regions import plan as _plan_region
 
 
 def plan(*steps):

@@ -11,6 +11,7 @@ The measured list is the right-hand panel of the main menu: names at x=168 on
 from docich.hanjuku.flows import map as M
 from docich.hanjuku.os_layer.font import TextLine
 from docich.hanjuku.os_layer.screen import Screen
+from docich.hanjuku.state.regions import plan as _plan_region
 
 
 def _line(y, x, text):

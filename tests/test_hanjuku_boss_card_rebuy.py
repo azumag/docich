@@ -20,6 +20,7 @@ from test_hanjuku_boss_card_proven_absent import G825, panel
 from test_hanjuku_chart_bot import Canvas, _short_recruit_memory, month_canvas
 from test_hanjuku_low_army_refill_first import editor
 from test_hanjuku_merchant_reserve import quote
+from docich.hanjuku.state.regions import plan as _plan_region
 
 BOSS = next(o for o in p.chart.orders(1) if o['step'] == '1-B1')
 CART = (('イッテツーン', 1), ('ノリウツール', 18), ('クースカン', 24))

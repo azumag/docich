@@ -7,6 +7,7 @@ base chart's remaining orders are looked at after the retries.
 """
 from docich import hanjuku_chart as chart
 from docich.hanjuku.strategy.orders import next_order
+from docich.hanjuku.state.regions import plan as _plan_region
 
 RETRY = 'I:b59ab6:3'
 

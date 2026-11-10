@@ -8,6 +8,7 @@ the last king.
 """
 from docich import hanjuku_chart as chart
 from docich.hanjuku.strategy import orders
+from docich.hanjuku.state.regions import plan as _plan_region
 
 SITES = chart.boss_sites(4)
 SOUTH_EAST = '四季王城(南東)'

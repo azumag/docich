@@ -9,6 +9,7 @@ number.
 from docich.hanjuku.flows import starter
 from docich.hanjuku.strategy import campaign
 from docich.hanjuku_screen import Screen
+from docich.hanjuku.state.regions import plan as _plan_region
 
 
 def memory():

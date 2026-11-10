@@ -18,7 +18,7 @@ from docich.hanjuku.os_layer.pixels import Frame, read_png
 from docich.hanjuku.os_layer.screen import Screen, parse
 from docich.hanjuku.os_layer.commands import pad
 from test_hanjuku_sortie_evidence import memory, actor_panel, measured_loaded_sortie
-from docich.hanjuku.state.regions import sorties as _sorties
+from docich.hanjuku.state.regions import sorties as _sorties, plan as _plan_region
 from docich.hanjuku.state.regions import flow as _flow, journal as _journal
 
 FIXTURE = Path(__file__).parent / 'fixtures/hanjuku/g700-balmung-kit-confirm.png'

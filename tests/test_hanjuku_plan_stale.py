@@ -7,6 +7,7 @@ change none of those, so the same plan sat there. The drop is counted, not
 recorded: the planner also runs on copies where no state signature survives.
 """
 from docich.hanjuku.strategy import replan
+from docich.hanjuku.state.regions import plan as _plan_region
 
 
 def plan(steps=('M1',)):

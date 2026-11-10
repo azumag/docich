@@ -7,7 +7,7 @@ import pytest
 from docich import hanjuku_chart as chart, hanjuku_policy as p
 from docich.hanjuku_screen import Screen
 from test_hanjuku_sortie_evidence import actor_panel, measured_loaded_sortie
-from docich.hanjuku.state.regions import flow as _flow, journal as _journal, world as _world
+from docich.hanjuku.state.regions import flow as _flow, journal as _journal, world as _world, plan as _plan_region
 
 
 def memory(chapter=1, after=None):

@@ -5,6 +5,7 @@ g1163 chapter 8 2026-11-09: `A:046e819d:M5f4f03` stayed pending while
 broadcast showed a sortie plan for a general who had already left.
 """
 from docich.hanjuku.strategy import replan
+from docich.hanjuku.state.regions import plan as _plan_region
 
 NEW_ORDERS = [{'step': 'A:new:M1', 'source': 'あるまむーん', 'general': '乙',
                'target': 'おかざき', 'cards': [], 'after': None}]

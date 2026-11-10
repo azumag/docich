@@ -31,7 +31,7 @@ from docich.hanjuku.os_layer.readers import (WORLD_FLAG_ENEMY, WORLD_FLAG_OWN, W
                                              _near_colour, world_cursor, world_flags)
 from docich.hanjuku.os_layer.screen import _target_marker, own_camps, parse
 from docich.hanjuku.strategy.orders import BOSS_TARGET_CANCEL_LIMIT, _boss_retry_due
-from docich.hanjuku.state.regions import flow as _flow, journal as _journal
+from docich.hanjuku.state.regions import flow as _flow, journal as _journal, plan as _plan_region
 
 FIXTURES = Path(__file__).resolve().parents[1] / 'tests' / 'fixtures' / 'hanjuku'
 SKULL_VIEW = FIXTURES / 'g1075-ch3-y-view-boss-skull.png'

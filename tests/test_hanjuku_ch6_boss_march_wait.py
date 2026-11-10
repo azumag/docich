@@ -10,7 +10,7 @@ whole window in which its battle can still bind to the order.
 """
 from docich.hanjuku.strategy import orders as O
 from docich.hanjuku.strategy import replan
-from docich.hanjuku.state.regions import sorties as _sorties
+from docich.hanjuku.state.regions import sorties as _sorties, plan as _plan_region
 
 
 def boss_sortie(tick=39917, target='ボス'):
