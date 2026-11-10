@@ -195,3 +195,14 @@ def test_an_exhausted_mechanical_plan_is_rebuilt_with_new_sorties():
     # The in-flight target is excluded; a new plan offers the remaining work.
     assert 'ジョンリギ' in targets, plan
     assert 'ゴーメン' not in targets or mem['orders'].get(step) != 'launched'
+
+
+def test_a_multi_defender_castle_gets_more_than_four_wave_sorties():
+    """しまばら kept producing successor defenders (g1163 2026-11-10 08-10).
+
+    ながはま held eight spares; four wave sorties were not enough to clear a
+    castle that answers each defeat with the next defender.
+    """
+    from docich.hanjuku.strategy import replan
+
+    assert replan.INTERIM_WAVE_LIMIT >= 6
