@@ -128,7 +128,7 @@ def caller_adopted_interim():
     _world(mem)['garrison'] = {'アルマムーン': ['ゼウス', 'どうし', 'アルテミス', 'クミン']}
     assert not _plan_region(mem).get('active') and not mem.get('chart_plan') and not mem.get('chart_adjust')
     _, state = decide(field(), {'policy': mem}, run_identity=IDENTITY)
-    active = state['policy']['active']
+    active = _plan_region(state['policy']).get('active')
     assert isinstance(active, str) and (active.startswith('I:') or ':M' in active)
     assert state['policy']['chart_plan']['orders'][0]['step'] == active
     assert any(r['decision'] == 'chart_adjust_applied' for r in state['_records'])
@@ -141,9 +141,9 @@ def test_real_interim_caller_stops_active_when_identity_is_missing_or_invalid(id
     state, active = caller_adopted_interim()
     actions, updated = decide(field(), state, run_identity=identity)
     assert actions == []
-    assert updated['policy'].get('active') is None
-    assert updated['policy']['orders'].get(active) in (None, 'pending')
-    assert not updated['policy'].get('sorties')
+    assert _plan_region(updated['policy']).get('active') is None
+    assert (_plan_region(updated['policy']).get('orders') or {}).get(active) in (None, 'pending')
+    assert not _world(updated['policy']).get('sorties')
     with chart.map_context(updated['policy']):
         assert not chart.castles(3)
 
@@ -151,7 +151,7 @@ def test_real_interim_caller_stops_active_when_identity_is_missing_or_invalid(id
 def test_real_interim_caller_keeps_registered_order_with_the_same_valid_identity():
     state, active = caller_adopted_interim()
     _, updated = decide(field(), state, run_identity=IDENTITY)
-    assert updated['policy']['active'] == active
+    assert _plan_region(updated['policy']).get('active') == active
     with chart.map_context(updated['policy']):
         assert len(chart.castles(3)) == 9
 
@@ -238,9 +238,9 @@ def test_orchestrator_uses_the_run_map_to_start_the_existing_chapter_three_sorti
     for frame in (status('グリン'), status('グリン'), field(GRIN)):
         _, state = decide(frame, state, run_identity=IDENTITY)
     _, state = decide(field(GRIN), state, run_identity=IDENTITY)
-    assert state['policy']['active'] == '3-Z1'
+    assert _plan_region(state['policy']).get('active') == '3-Z1'
     assert state['policy']['variant'] == 'chart'
-    assert not state['policy'].get('sorties')
+    assert not _world(state['policy']).get('sorties')
     assert chart.castles(3) == {}
 
 
@@ -749,9 +749,9 @@ def test_deploy_continuation_stops_unsent_order_when_identity_fails(identity):
     state, active, frame = adopted_interim_confirm_frame()
     actions, updated = decide(frame, state, run_identity=identity)
     assert actions == []
-    assert updated['policy']['active'] is None
-    assert updated['policy']['orders'].get(active) in (None, 'pending')
-    assert not updated['policy'].get('sorties')
+    assert _plan_region(updated['policy']).get('active') is None
+    assert (_plan_region(updated['policy']).get('orders') or {}).get(active) in (None, 'pending')
+    assert not _world(updated['policy']).get('sorties')
     assert any(r['decision'] == 'order_precondition_lost' for r in updated['_records'])
     with chart.map_context(updated['policy']):
         assert not chart.castles(3)
@@ -759,7 +759,7 @@ def test_deploy_continuation_stops_unsent_order_when_identity_fails(identity):
     # order-less path, so the hold cannot wedge the screen forever.
     follow, followup = decide(frame, updated, run_identity=identity)
     assert follow == [policy.pad('b')]
-    assert followup['policy']['active'] is None
+    assert _plan_region(followup['policy']).get('active') is None
 
 
 def test_deploy_continuation_confirms_with_valid_identity_control():
@@ -767,7 +767,7 @@ def test_deploy_continuation_confirms_with_valid_identity_control():
     state, active, frame = adopted_interim_confirm_frame()
     actions, updated = decide(frame, state, run_identity=IDENTITY)
     assert actions == [policy.pad('a')]
-    assert updated['policy']['active'] == active
+    assert _plan_region(updated['policy']).get('active') == active
 
 
 @pytest.mark.parametrize('kind', ['castle_menu', 'general_list', 'card_select',
@@ -823,6 +823,6 @@ def test_discovery_yields_the_field_to_a_startable_interim_retake():
     with chart.map_context(mem):
         assert survey.step(parse(field()), mem, field()) is None
     _, state = decide(field(), {'policy': mem}, run_identity=IDENTITY)
-    active = state['policy']['active']
+    active = _plan_region(state['policy']).get('active')
     assert isinstance(active, str) and (active.startswith('I:') or ':M' in active)
     assert state['policy']['chart_plan']['orders'][0]['target'] == 'グリン'

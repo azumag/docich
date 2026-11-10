@@ -126,7 +126,7 @@ def test_unreadable_card_select_departs_without_the_planned_cards():
         assert _plan_region(mem)['orders']['1-A2'] == 'pending'
     assert policy.deploy_step(screen, mem) == [policy.pad('b')]
     assert _plan_region(mem)['orders']['1-A2'] == 'pending'          # not failed
-    assert mem.get('card_skip_departure', {}).get('1-A2') is True
+    assert mem.get('card_skip_departure', {}).get('1-A2') == 1  # v624: skip count, not a flag (P2 changed this to `is True` by mistake)
     # B did not leave the list: take the highlighted card instead of looping.
     for _ in range(policy.NORMAL_CARD_UNREADABLE_LIMIT - 1):
         assert policy.deploy_step(screen, mem) == []
@@ -1124,7 +1124,7 @@ def test_broken_or_depleted_hero_may_open_list_but_only_companion_can_commit():
     other.update(egg_uses={'どうし': 0}, house_eggs={'どうし': {'broken': True}},
                  garrison={'スペンソニア': ['どうし', 'ゼウス']})
     assert policy.deploy_step(selected_list(['どうし']), other) == [policy.pad('b'), policy.pad('b')]
-    assert other['active'] is None and not _plan_region(other).get('sortie_general')
+    assert _plan_region(other).get('active') is None and not _plan_region(other).get('sortie_general')
 
 
 def test_priority_keeps_single_defender_and_explicit_nonhero_chart_role():

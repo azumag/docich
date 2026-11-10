@@ -115,7 +115,7 @@ def test_boss_retry_is_bounded_and_unknown_location_does_not_repair_orders():
     assert not any(r['decision']=='order_retry' for r in mem['_records'])
     old = boss_loss(side=None, castle=None, measured=False)
     policy.battle_end(old, 'map'); policy.battle_end(old, 'map')
-    assert old['orders']['1-B1'] == 'launched'
+    assert _plan_region(old)['orders']['1-B1'] == 'launched'
     assert old['retries']['1-B1'] == 0
 
 

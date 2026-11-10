@@ -16,6 +16,7 @@ from docich.hanjuku.os_layer.navigation import (Y_JUMP_LIMIT, _forget_failed_jum
 from docich.hanjuku.os_layer.phase import classify
 from docich.hanjuku.os_layer.pixels import read_png
 from docich.hanjuku.os_layer.screen import parse
+from docich.hanjuku.state.regions import plan as _plan_region
 
 ROOT = Path(__file__).resolve().parents[1]
 ENCLOSURE = ROOT / 'tests' / 'fixtures' / 'hanjuku' / 'g1075-boss-target-enclosure.png'
@@ -81,7 +82,7 @@ def test_a_cancelled_boss_attempt_starts_the_next_one_with_jumps_allowed():
     for _ in range(TARGET_MISS_LIMIT):
         actions = _unverified_target(screen, m, BOSS)
     assert actions and actions[0]['buttons'] == ['b']          # cancelled, general stays
-    assert m['orders']['3-B1'] == 'pending'
+    assert _plan_region(m)['orders']['3-B1'] == 'pending'
     assert 'y_jump_last' not in m
     assert not any(k.startswith('3-B1:') for k in m['y_jumps'])
     assert _want_y_jump(m, BOSS, 'ボス', 'target')

@@ -4,7 +4,7 @@ import pytest
 from docich import hanjuku_policy as p
 from docich.hanjuku_font import TextLine
 from docich.hanjuku_screen import Screen
-from docich.hanjuku.state.regions import world as _world
+from docich.hanjuku.state.regions import world as _world, plan as _plan_region
 
 
 def memory():
@@ -30,7 +30,7 @@ def test_recent_retake_reserves_target_in_candidates_and_current_order(status):
     assert not any(o['target']=='ジョンリギ' for o in p.interim_candidates(m).values())
     o=p._order(m);assert p._retake_reserved(o,m)
     assert p.deploy_step(Screen(kind='sortie_confirm',lines=[],hand=None,text=''),m)==[p.pad('b'),p.pad('b')]
-    assert m['active'] is None and m['orders'][o['step']]=='failed'
+    assert _plan_region(m).get('active') is None and (_plan_region(m).get('orders') or {})[o['step']]=='failed'
     assert m['_records'][-1]['decision']=='sortie_held_target_reserved'
 
 
@@ -62,7 +62,7 @@ def test_own_sortie_receipt_is_not_a_duplicate():
 def test_live_retake_list_cannot_send_the_last_defender(names):
     m=memory();assert p.deploy_step(generals(names),m)==[p.pad('b'),p.pad('b')]
     assert m['_records'][-1]['decision']=='sortie_held_source_defender'
-    assert m['orders']['I:retake:1']=='failed'
+    assert _plan_region(m)['orders']['I:retake:1']=='failed'
 
 
 def test_live_spare_can_leave_and_then_no_further_attack_drains_source():
@@ -81,7 +81,7 @@ def test_busy_or_unclassified_general_is_not_a_remaining_defender():
 def test_unread_list_does_not_confirm_a_sortie():
     m=memory();actions=p.deploy_step(Screen(kind='general_list',lines=[],hand=None,text=''),m)
     assert not any('a' in a.get('buttons',()) for a in actions)
-    assert m['active']=='I:retake:1'
+    assert _plan_region(m).get('active')=='I:retake:1'
 
 
 def test_old_active_card_menu_is_rechecked_after_hotload():
@@ -98,7 +98,7 @@ def test_chart_recapture_stays_pending_and_does_not_block_staffing(monkeypatch):
     assert not p._plan_pending(m)
     assert p.next_order(m) is None
     assert p.deploy_step(generals(['ゼウス']),m)==[p.pad('b'),p.pad('b')]
-    assert m['orders']['1-A1']=='pending'
+    assert _plan_region(m)['orders']['1-A1']=='pending'
     _world(m)['garrison']['アルマムーン'].append('どうし')
     assert p.next_order(m) is o
 

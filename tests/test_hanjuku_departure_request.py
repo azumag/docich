@@ -368,7 +368,7 @@ def test_finished_order_releases_stale_reservation():
     # foreign-marker cancel of the next target screen.
     mem = memory(); confirm(mem); request(mem)
     _plan_region(mem)['orders'].pop('1-A3')
-    mem.pop('active', None)
+    _plan_region(mem).pop('active', None)  # P2: active lives in plan; the flat pop is a no-op now.
     assert p.target_step(TARGET, mem, None) == [p.pad('b')]
     assert 'departure_request' not in _flow(mem)
 
@@ -412,7 +412,7 @@ def test_recall_transition_neither_commits_nor_steals_the_reservation():
     assert _flow(mem).get('departure_request', {}).get('step') == '1-A3'
     _flow(mem).pop('recall', None)
     _plan_region(mem)['orders'].pop('1-A3')
-    mem.pop('active', None)
+    _plan_region(mem).pop('active', None)  # P2: active lives in plan; the flat pop is a no-op now.
     assert p.target_step(TARGET, mem, None) == [p.pad('b')]
     assert 'departure_request' not in _flow(mem)
 

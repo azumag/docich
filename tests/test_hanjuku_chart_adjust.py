@@ -317,7 +317,7 @@ def test_decide_offers_adjusted_chart_without_persisting_it(monkeypatch):
     assert [r['decision'] for r in state['_records']][:2] == ['chart_adjust_request', 'chart_adjust_applied']
     finish_interim(state['policy'])
     actions, state = hanjuku_bot.decide(FRAME, state, adjusted=adjust.validate(adjusted_doc(rid)))
-    assert state['policy']['active'] == adjust.execution_step(rid, 'J1')
+    assert _plan_region(state['policy']).get('active') == adjust.execution_step(rid, 'J1')
     assert '_adjusted' not in state['policy']
 
 

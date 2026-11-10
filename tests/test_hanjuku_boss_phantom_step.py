@@ -38,10 +38,10 @@ def test_a_live_march_or_fresh_step_is_left_alone():
     live = memory(sorties={'A:x:M1': {'general': 'エピィ', 'target': BOSS,
                                       'status': 'en_route', 'tick': 19900}})
     O._rearm_phantom_boss_steps(live)
-    assert live['orders']['A:x:M1'] == 'launched'
+    assert _plan_region(live)['orders']['A:x:M1'] == 'launched'
     fresh = memory(started=19999)
     O._rearm_phantom_boss_steps(fresh)
-    assert fresh['orders']['A:x:M1'] == 'launched'
+    assert _plan_region(fresh)['orders']['A:x:M1'] == 'launched'
 
 
 def test_the_rearm_is_rate_limited_per_step():

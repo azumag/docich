@@ -234,7 +234,7 @@ def test_decide_hooks_interruption_before_dispatch(monkeypatch):
     monkeypatch.setattr(hanjuku_screen,'parse',lambda f,**k:screen('unknown'))
     _,state=hanjuku_bot.decide(Frame(256,224,bytes(256*224*3)),
                              {'policy':memory(),'screen_kind':'map_target'})
-    assert state['policy']['orders']['1-A2']=='launched_unconfirmed'
+    assert _plan_region(state['policy'])['orders']['1-A2']=='launched_unconfirmed'
 
 
 def test_real_general_row_geometry_ignores_hand_and_distant_border():

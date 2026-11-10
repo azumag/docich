@@ -6,6 +6,7 @@ from docich import hanjuku_policy as p
 from docich.hanjuku_bot import decide
 from docich.hanjuku_pixels import Frame,read_png
 from docich.hanjuku_screen import parse,Screen
+from docich.hanjuku.state.regions import plan as _plan_region
 from test_hanjuku_chapter_two_stock_kit import memory
 
 
@@ -46,7 +47,7 @@ def test_partial_panel_retains_deadline_through_json_roundtrips_and_never_approv
             assert s['policy']['boss_stock_restart']['readings']==reading
         elif reading==12:
             assert actions==[p.pad('b'),p.pad('b')]
-            assert not s['policy'].get('boss_stock_restart') and s['policy']['active'] is None
+            assert not s['policy'].get('boss_stock_restart') and _plan_region(s['policy']).get('active') is None
         else:assert actions==[] and s['policy']['boss_stock_cancelled']
 
 

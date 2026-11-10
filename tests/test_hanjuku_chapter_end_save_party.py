@@ -8,6 +8,7 @@ g1153 (2026-11-07): クイーン撃破後に「セーブをしゅうりょうし
 import pytest
 
 from docich.hanjuku_bot import decide
+from docich.hanjuku.state.regions import plan as _plan_region
 from test_hanjuku_starter import Canvas, keys, picture, state
 
 
@@ -104,4 +105,4 @@ def test_the_save_prompt_itself_never_advances_even_with_the_boss_beaten():
     # starts at the party screen, so the prompt alone resets nothing.
     _, got = decide(save_prompt(), boss_memory(boss_defeated=1))
     assert got['policy']['chapter'] == 1
-    assert got['policy']['orders'] == {'1-A1': 'launched'}
+    assert _plan_region(got['policy']).get('orders') == {'1-A1': 'launched'}

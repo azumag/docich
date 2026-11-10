@@ -139,6 +139,7 @@ def test_only_full_measured_layout_may_decline_under_a_generic_kind(kind):
 @pytest.mark.parametrize('kind', ['battle', 'battle_menu', 'month_menu', 'shop_quantity_prompt', 'yes_no'])
 def test_unrelated_payment_and_battle_keep_their_own_receipts(kind):
     mem = cancelled(); mem['month_sub'] = {'kind': 'recruit', 'paid': True, 'receipt': {'amount': 50}}
+    _plan_region(mem)  # P2: snapshot in region form; the restart step migrates flat keys.
     before = deepcopy(mem)
     screen = Screen([], None, '50Gうむッ!いかんッ!', kind=kind)
     assert deploy.boss_stock_restart_step(screen, mem) is None

@@ -68,6 +68,7 @@ def test_existing_or_committed_attempts_are_not_rekitted(state):
     elif state == 'dropped': mem['card_drop'] = {'2-B1': ['イッテツーン']}
     elif state == 'existing': mem['rare_card_kit'] = {'2-B1': ['キャトルミュー']}
     else: _plan_region(mem)['orders'] = {'2-B1': 'launched' if state == 'launched' else 'launched_unconfirmed'}
+    _plan_region(mem)  # P2: snapshot in region form; the inventory read migrates flat keys.
     before = deepcopy(mem)
     assert p._chapter_two_balmung_inventory(mem, order(), inventory()) is None
     assert mem == before
