@@ -842,7 +842,7 @@ def _jump_successor(mem, order, jump=None):
     the plan itself picked) mean the walk to the castle is still the right
     physical action; only the step id changed.
     """
-    active = _order_for_step(mem, mem.get('active'))
+    active = _order_for_step(mem, _plan_region(mem).get('active'))
     if not isinstance(active, dict):
         return None
     if isinstance(order, dict):

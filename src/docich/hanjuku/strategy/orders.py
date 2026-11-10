@@ -1323,7 +1323,7 @@ def _rearm_phantom_site_steps(mem):
     if (mem.get('chapter') or 0) != 4:
         return
     status = _plan_region(mem).get('orders') or {}
-    sorties = mem.get('sorties') or {}
+    sorties = _world(mem).get('sorties') or {}
     now = int(mem.get('tick') or 0)
     started = mem.get('order_start_tick') or {}
     rearmed = mem.setdefault('site_step_rearm', {})
@@ -1366,7 +1366,7 @@ def _rearm_phantom_boss_steps(mem):
     if (mem.get('chapter') or 0) == 4:
         return          # chapter 4's sites have their own re-arm and king rules
     status = _plan_region(mem).get('orders') or {}
-    sorties = mem.get('sorties') or {}
+    sorties = _world(mem).get('sorties') or {}
     now = int(mem.get('tick') or 0)
     started = mem.get('order_start_tick') or {}
     rearmed = mem.setdefault('boss_step_rearm', {})

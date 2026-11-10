@@ -7,11 +7,9 @@ the screen nor plans input.
 """
 from __future__ import annotations
 
-from .state.regions import plan as _plan_region
-
 
 def _record(mem, kind, **fields):
-    rec = {'decision': kind, 'chart_step': fields.pop('chart_step', _plan_region(mem).get('active')),
+    rec = {'decision': kind, 'chart_step': fields.pop('chart_step', mem.get('plan', {}).get('active')),
            'strategy_variant': fields.pop('strategy_variant', mem.get('variant', 'chart')),
            'chapter': mem.get('chapter'), 'deviation_reason': None,
            'expected_metric': None, 'observed_metric': None,
