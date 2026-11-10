@@ -47,6 +47,9 @@ def test_live_registration_is_enabled_but_keeps_vm_prerequisites_separate(manage
         "audio_enabled": True, "audio_sink": "soren_null",
         "audio_latency_ms": 289,
         "audio_volume_percent": 80,
+        # Native 256x224 pixels: the 4:3 window stretched the glyph cells and
+        # the card/confirm panels stopped reading (2026-11-10).
+        "force_aspect": False,
     }
     assert manager._rotation_interval_seconds() == 86400 / 6
 
