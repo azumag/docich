@@ -16,7 +16,7 @@ from .deploy import (_cancel_broken_hero_sortie, _deploy_context, _deploy_input,
                             _hold_guarded_sortie, _hold_locked_boss, _hold_unrouted_sortie)
 from .recall import (MENU_HOLD_LIMIT, RECALL_LIMIT, _hold_after_picker, _recall_dispatch_step, _request_recall,
                             camp_recall_step)
-from ..os_layer.commands import menu_to, pad
+from ..os_layer.commands import castle_list_batch, menu_to, pad
 from ..os_layer.navigation import (Y_JUMP_LIMIT, Y_JUMP_OFFSET, _align_on_roof, _drop_stale_y_jump, _start_y_jump,
                                    _forget_failed_jump, _want_y_jump, _y_jump_step, nav_step)
 from ..os_layer.readers import (UNDER_CURSOR_PX, WORLD_MAP_OFFSET, _cursor, _roof_under_cursor, season_sites,
@@ -707,6 +707,8 @@ CASTLE_JUMP_CURSOR_BLIND = 4    # consecutive cursor-less frames before giving u
 # mis-pressed panel still ends the trip on the same bound.
 CASTLE_JUMP_FADE_BLIND = 2      # consecutive unreadable frames after the X
 CASTLE_JUMP_ORPHAN_HOLD = 4     # frames an empty active order may interrupt the trip
+HERO_SELECT_SETTLE_AGE = 2      # observations after a field SELECT before a map frame counts
+HERO_SELECT_WAIT_LIMIT = 6      # observations without the field return before the しろ list
 
 
 def _castle_key(name):
@@ -803,7 +805,48 @@ def _want_castle_jump(mem, order, source, goal):
     return True
 
 
+def _hero_select_jump_allowed(mem, order, source):
+    """SELECT alone reaches the source when the hero is verified inside it.
+
+    SELECT centres the field cursor on the hero (owner rule 2026-09-28,
+    _apply_select_centered), so a source castle whose read general list holds
+    the hero needs no X -> しろ -> row walk. g1163 2026-11-10 23:20: every
+    sortie from あるまむーん spent X, three Downs, A and SELECT (about 11 s)
+    to reach the castle the hero already stood in. The deploy layer still
+    reads the opened castle's status name before しゅつげき, so a stale
+    garrison reading cannot send from the wrong castle; any mismatch on this
+    step falls back to the named list.
+    """
+    if _hero_castle(mem) != source:
+        return False
+    if order['step'] in (mem.get('hero_select_miss') or {}):
+        return False
+    return not (mem.get('source_miss') or {}).get(order['step'])
+
+
+HERO_SELECT_MISS_KEEP = 16       # recent steps whose field SELECT failed
+
+
+def _mark_hero_select_miss(mem, step):
+    """Remember a step whose field SELECT failed; bounded, newest kept."""
+    misses = mem.get('hero_select_miss') if isinstance(mem.get('hero_select_miss'), dict) else {}
+    misses[step] = int(mem.get('tick') or 0)
+    mem['hero_select_miss'] = dict(sorted(misses.items(), key=lambda kv: kv[1])[-HERO_SELECT_MISS_KEEP:])
+
+
 def _start_castle_jump(mem, order, source):
+    if _hero_select_jump_allowed(mem, order, source):
+        mem['castle_jump'] = {'step': order['step'], 'source': source,
+                              'target': order.get('target'), 'phase': 'confirm',
+                              'mode': 'hero_select', 'age': 0, 'total': 0,
+                              'tick': int(mem.get('tick') or 0),
+                              'menu_presses': 0, 'selects': 1, 'scrolls': 0, 'waits': 0}
+        _record(mem, 'castle_jump_open', chart_step=order['step'], target=source,
+                strategy_variant='hero_select',
+                observed_metric={'cursor': mem.get('cursor'), 'source': source,
+                                 'hero_castle': source},
+                reason='出撃元は将軍一覧で主人公が居ると確認した城なので、Xメニューを経由せずSELECTで主人公の城へ飛ぶ')
+        return [pad('select')]
     mem['castle_jump'] = {'step': order['step'], 'source': source,
                           'target': order.get('target'), 'phase': 'menu',
                           'age': 0, 'total': 0, 'tick': int(mem.get('tick') or 0),
@@ -955,7 +998,7 @@ def castle_jump_step(screen, mem, frame):
             jump['age'] = 0
             return [pad('select')]
         if move:
-            return [move]
+            return castle_list_batch(screen, target) or [move]
         return _end_castle_jump(screen, mem, 'castle_unreachable')
 
     if phase == 'confirm':
@@ -1001,6 +1044,12 @@ def castle_jump_step(screen, mem, frame):
                         observed_metric={'cell': list(cell), 'screen_cursor': list(cursor)},
                         reason='アルマムーンのSELECTで座標を復旧し中断した処理を再評価する')
                 return None
+            hero_select = jump.get('mode') == 'hero_select'
+            if hero_select and jump['age'] < HERO_SELECT_SETTLE_AGE:
+                # The field SELECT starts from a map frame, so the first map
+                # reading may still be the pre-SELECT camera (live: SELECT,
+                # one fade frame, then the centred map one observation later).
+                return []
             # The named own-castle row was selected before SELECT. Its field
             # return is the navigation evidence; the cursor sprite can cover
             # every roof pixel, so an absent detected roof is not a refusal.
@@ -1010,12 +1059,32 @@ def castle_jump_step(screen, mem, frame):
             mem['expect_menu'] = True
             mem.pop('castle_jump', None)
             mem.pop('castle_jump_skip', None)
+            # SELECT from the named row (or onto the hero's castle) put the
+            # cursor on the source. Keep the estimate there; the deploy layer
+            # still corrects it from the castle status if it was not.
+            cell = chart.castles(mem.get('chapter') or 0).get(jump['source'])
+            if cell:
+                mem['cursor'], mem['uncertain'] = list(cell), False
             _record(mem, 'castle_jump_confirm', chart_step=jump['step'], target=jump['source'],
+                    **({'strategy_variant': 'hero_select'} if hero_select else {}),
                     observed_metric={'cursor': mem.get('cursor'),
                                      'screen_cursor': list(_cursor(screen) or ()),
                                      'roof_under_cursor': roof_visible},
-                    reason='しろ一覧で城名を確認したSELECT後のフィールドなので、屋根が隠れてもAで城メニューを開き実ステータスで出撃元を照合する')
+                    reason=('主人公の城へのSELECT後のフィールドなので、Aで城メニューを開き実ステータスで出撃元を照合する'
+                            if hero_select else
+                            'しろ一覧で城名を確認したSELECT後のフィールドなので、屋根が隠れてもAで城メニューを開き実ステータスで出撃元を照合する'))
             return [pad('a')]
+        if jump.get('mode') == 'hero_select' and screen.kind in ('main_menu', 'castle_info',
+                                                                 'castle_menu', 'general_list'):
+            # Not the field return SELECT should give: leave this panel and
+            # let the next attempt for the step walk the named しろ list.
+            _mark_hero_select_miss(mem, jump['step'])
+            mem.pop('castle_jump', None)
+            _record(mem, 'castle_jump_failed', chart_step=jump['step'], target=jump['source'],
+                    screen=screen.kind, strategy_variant='hero_select',
+                    observed_metric={'why': 'hero_select_panel', 'age': jump.get('age')},
+                    reason='主人公の城へのSELECTでフィールドに戻らなかったため、パネルを閉じてXメニューのしろ一覧で飛び直す')
+            return [pad('b')]
         if _castle_list_rows(screen):
             if int(jump.get('selects') or 0) < 2:
                 jump['selects'] = int(jump.get('selects') or 0) + 1
@@ -1033,6 +1102,14 @@ def castle_jump_step(screen, mem, frame):
             if jump['status_retries'] <= 1:
                 return [pad('b')]
             return _end_castle_jump(screen, mem, 'select_opens_status')
+        if jump.get('mode') == 'hero_select' and jump['age'] >= HERO_SELECT_WAIT_LIMIT:
+            _mark_hero_select_miss(mem, jump['step'])
+            mem.pop('castle_jump', None)
+            _record(mem, 'castle_jump_failed', chart_step=jump['step'], target=jump['source'],
+                    screen=screen.kind, strategy_variant='hero_select',
+                    observed_metric={'why': 'hero_select_no_field', 'age': jump.get('age')},
+                    reason='主人公の城へのSELECT後にフィールドを確認できないため、Xメニューのしろ一覧で飛び直す')
+            return []
         return []
     return _end_castle_jump(screen, mem, 'unknown_phase:' + str(phase))
 
@@ -1278,6 +1355,15 @@ def map_step(screen: Screen, mem, frame):
         # The bounded inventory search belongs to this attempt, not the
         # order forever. A cancelled attempt must not exhaust every retry.
         (mem.get('card_scroll') or {}).pop(order['step'], None)
+        if (mem.get('orders') or {}).get(order['step']) != 'launched_unconfirmed':
+            # The unreadable-panel fallback also belongs to this attempt.
+            # Keeping its spent B/A budget makes a later sortie with the same
+            # step cancel immediately, before it can recover its own panel.
+            # A source-roster check of an unconfirmed launch is reconciliation,
+            # not permission to rearm the previous departure's blind A.
+            for key in ('card_unreadable', 'card_skip_departure',
+                        'sortie_confirm_miss', 'sortie_confirm_blind'):
+                (mem.get(key) or {}).pop(order['step'], None)
         mem.pop('card_upper_boundary', None)
         mem.pop('card_scroll_last', None)
         stock = mem.get('card_stock') if isinstance(mem.get('card_stock'), dict) else {}

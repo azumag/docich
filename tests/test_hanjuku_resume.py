@@ -452,7 +452,9 @@ def test_starter_resume_seed_uses_live_selected_row_and_never_issues_sortie(setu
     assert not any(r['decision']=='order_launched' for r in updated['_records'])
 
 
-@pytest.mark.parametrize('castle', ['アルマムーン','あるまむーん','ボス','フー�リック','しゅじんこう'])
+# あるまむーん (chapter 8's own home label) is proof since v646; see
+# test_hanjuku_chapterless_status_probe.py. The katakana label is every other chapter's.
+@pytest.mark.parametrize('castle', ['アルマムーン','ボス','フー�リック','しゅじんこう'])
 def test_unknown_resume_chapter_never_resolves_common_or_unread_names(castle):
     from docich.hanjuku_policy import observe_chapter_castle
     mem={'resume_chapter_pending':True,'_records':[]}

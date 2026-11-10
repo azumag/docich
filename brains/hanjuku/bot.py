@@ -26,6 +26,7 @@ from docich.hanjuku_pixels import read_png
 from docich.hanjuku.decision_log import _record
 from docich.hanjuku.os_layer.phase import classify
 from docich.hanjuku_run import append_log
+from docich import hanjuku_run
 from docich.hanjuku.os_layer.commands import menu_navigation_feedback, status_panel_feedback
 from docich.retroarch_boundary import read_record
 
@@ -612,6 +613,44 @@ def _sortable(name, obj):
         return _json_safe(obj)
 
 
+def _decode_frame(path):
+    """Decode a capture, falling back to a center-sampled 256x224 resample.
+
+    ``Frame.resized`` uses a contrast-preserving cluster filter that keeps HP
+    digits readable, but on some panels (the shop prompt, 2026-11-10 22:35) it
+    leaves every glyph unmatched while a plain center-sampled nearest resample
+    reads the line. Try the tuned one first and only pay for the second decode
+    when it produced almost no text.
+    """
+    from docich.hanjuku_pixels import Frame
+    from docich.hanjuku_screen import parse
+    raw = read_png(path)          # module-level binding (tests patch it)
+    primary = raw.resized()
+    try:
+        if len((parse(primary).text or '')) >= 40:
+            return primary
+    except Exception:
+        return primary
+    if raw.width == primary.width:
+        return primary
+    width, height, source = primary.width, primary.height, raw
+    out = bytearray(width * height * 3)
+    for y in range(height):
+        base_src = y * source.width
+        base_dst = y * width
+        for x in range(width):
+            sx = min(source.width - 1, int(x * source.width / width + 0.5))
+            si = (base_src + sx) * 3
+            di = (base_dst + x) * 3
+            out[di:di + 3] = source.rgb[si:si + 3]
+    alternate = Frame(width, height, bytes(out))
+    try:
+        better = len((parse(alternate).text or '')) > len((parse(primary).text or ''))
+    except Exception:
+        return primary
+    return alternate if better else primary
+
+
 def main():
     actions=[]
     interval_ms=1500
@@ -626,7 +665,11 @@ def main():
         if len(relative.parts)!=3 or relative.parts[1]!='runtimes' or runtime.is_symlink():
             raise ValueError('invalid runtime')
         if not meta.get('terminal_reason') and not meta.get('terminal_candidate'):
-            frame=read_png(Path(obs['screenshot'])).resized()
+            try:
+                hanjuku_run.request_autosave(runtime)
+            except Exception as exc:            # never block a decision
+                print(f'hanjuku-bot: autosave_request_failed {exc}', file=sys.stderr)
+            frame=_decode_frame(Path(obs['screenshot']))
             # g438 04:18: the policy memory passed 16 KiB after a long game and
             # every observation failed to load it (no input, screen_stalled).
             state=read_record(runtime/'hanjuku_bot.json',limit=BOT_STATE_LIMIT)

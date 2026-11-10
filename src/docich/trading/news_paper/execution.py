@@ -638,12 +638,17 @@ def _market_rejection(
         return "LIQUIDITY_UNKNOWN"
     if spread_bps(observation) > constraints.spread_limit_bps:
         return "SPREAD_TOO_WIDE"
-    if (
-        constraints.volatility_limit_bps is not None
-        and observation.volatility_bps is not None
-        and observation.volatility_bps > constraints.volatility_limit_bps
-    ):
-        return "VOLATILITY_LIMIT"
+    if constraints.volatility_limit_bps is not None:
+        # docich#2644 acceptance item 3 (P2-4 residual risk): when an instrument
+        # configures a volatility limit, an observation that carries no
+        # volatility figure cannot be proven to satisfy it. Unknown volatility
+        # is not "below the limit", so the observation is ineligible instead of
+        # passing through fail-open. Instruments without a configured limit
+        # keep no volatility gate at all.
+        if observation.volatility_bps is None:
+            return "VOLATILITY_UNKNOWN"
+        if observation.volatility_bps > constraints.volatility_limit_bps:
+            return "VOLATILITY_LIMIT"
     age = D((now - observation.market_available_at).total_seconds())
     if age < 0 or age > constraints.max_quote_age_seconds:
         return "QUOTE_STALE"

@@ -748,8 +748,10 @@ def observe_events(screen: Screen, mem):
             _record(mem, 'month_seen', month=key, gold=header['gold'], reason='月の表示')
         mem['gold'] = header['gold']
     castle = CASTLE_STATUS.search(screen.text)
-    if castle and mem.get('resume_chapter_pending') is True:
+    if castle and (mem.get('resume_chapter_pending') is True or not mem.get('chapter')):
         observe_chapter_castle(mem, castle[1])
+    if mem.get('chapter'):
+        mem.pop('chapter_probe', None)
     if mem.get('resume_chapter_pending') is True and type(mem.get('chapter')) is int and 1 <= mem['chapter'] <= 12:
         mem.pop('resume_chapter_pending', None)
     income = re.search(r'しゅうにゅう(\d{1,3})Gレベル\d+しょうぐん', screen.text)

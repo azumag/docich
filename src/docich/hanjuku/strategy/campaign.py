@@ -20,7 +20,7 @@ MONTH_SCAN_RESUME_PHASES = frozenset({
     'month_open', 'open_roster', 'level_status', 'leave_status', 'leave_roster'})
 
 
-CHAPTER_SCOPE_KEYS = ('map_registration', 'map_discovery', 'boss_victories', 'approx_fallback', 'approx_localize_miss',
+CHAPTER_SCOPE_KEYS = ('map_registration', 'hero_select_miss', 'map_discovery', 'boss_victories', 'approx_fallback', 'approx_localize_miss',
                 'season_sites', 'season_site_streak',
                 'moving_boss', 'moving_boss_streak', 'boss_cell', 'boss_cell_streak',
                 # Per-step and per-boss records belong to the chapter that made
@@ -126,8 +126,16 @@ def observe_chapter_castle(mem, castle):
     A name absent from this chapter and present in the next one is proof.
     """
     chapter = mem.get('chapter') or 0
-    if (not chapter and mem.get('resume_chapter_pending') is True and castle
-            and castle not in {'アルマムーン', 'あるまむーん', 'ほんじょう', 'ボス'}):
+    # A running memory with no chapter yet (a restart that cleared the state,
+    # a fresh start) still needs its chapter: a unique castle name is proof on
+    # its own. A bare scratch dict (tests, one-off calls) keeps the old rule.
+    running = (mem.get('resume_chapter_pending') is True
+               or type(mem.get('tick')) is int or isinstance(mem.get('journal'), dict))
+    # あるまむーん (hiragana) is chapter 8's own home castle label in the chart
+    # and exists in no other chapter, so it is proof; the katakana アルマムーン
+    # is every other chapter's home castle and stays excluded.
+    if (not chapter and running and castle
+            and castle not in {'アルマムーン', 'ほんじょう', 'ボス'}):
         # A restored party picker has no chapter label. Resolve from a fresh
         # full castle name unique across all chapters, never from the old bot.
         matches = [n for n, names in chart.CASTLE_NAMES.items()

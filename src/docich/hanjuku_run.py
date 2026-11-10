@@ -27,6 +27,9 @@ LOGIC_GENERATION = _logic_generation()
 
 RUN_FILE='hanjuku_run.json'
 TERMINAL_REASONS=frozenset({'game_over','screen_stalled','input_stalled'})
+# A released game_over cannot re-latch for this long (the title stays up while
+# the first inputs are delivered).
+GAME_OVER_CLEAR_GRACE_S = 120
 STALL_SECONDS=300
 # #1369: the merchant confirm screen held ~16 min with no input sent while the
 # screen kept animating, so screen_stalled never fired and the corner had no
@@ -148,6 +151,34 @@ def _checkpoint_start_request(runtime_dir: Path, identity: dict, wall: float):
     return request
 
 
+AUTOSAVE_REQUEST = 'hanjuku_autosave.json'
+AUTOSAVE_INTERVAL_S = 900
+
+
+def request_autosave(runtime_dir: Path, *, now=None, interval=AUTOSAVE_INTERVAL_S):
+    """Ask the adapter to save the emulator state at most once per interval.
+
+    The agent loop's own periodic save never reached the emulator in production
+    (g1163 2026-11-10: the state file stayed at 10:58 for nine hours, so a
+    hung battle cost the whole run). The brain already runs inside the runtime,
+    so it drops a request beside the run file and the adapter — the only place
+    with the RetroArch command port — performs it.
+    """
+    now=time.time() if now is None else now
+    if not isinstance(interval, int) or interval <= 0:
+        return None
+    path=runtime_dir/AUTOSAVE_REQUEST
+    try:
+        prior=read_record(path)
+    except Exception:
+        prior={}
+    last=prior.get('requested_at') if isinstance(prior, dict) else None
+    if isinstance(last, (int, float)) and 0 <= now-last < interval:
+        return None
+    atomic_write_json(path, {'requested_at': now})
+    return path
+
+
 def terminal(runtime_dir: Path, identity: dict):
     state=load(runtime_dir,identity)
     reason=state.get('terminal_reason')
@@ -257,6 +288,15 @@ def observe(runtime_dir: Path, identity: dict, frame: Frame, *,
     title_since=old.get('title_since',now) if candidate and consecutive and old.get('terminal_candidate') else now
     title_count=int(old.get('title_count',0))+1 if candidate and consecutive and old.get('terminal_candidate') else int(candidate)
     reason='game_over' if candidate and title_count>=3 and now-title_since>=2 else None
+    # A manual "this was not a game over" release earns a grace window: the
+    # game sits on its title while the first inputs land, and without it the
+    # same observation latched game_over again immediately (g1163 2026-11-10
+    # 21:4x: clear -> re-latch -> every input refused, for hours).
+    cleared_at = old.get('terminal_cleared_at')
+    if (reason == 'game_over' and type(cleared_at) in (int, float)
+            and math.isfinite(cleared_at) and 0 <= wall - cleared_at < GAME_OVER_CLEAR_GRACE_S):
+        reason = None
+        candidate = False
     if not reason and duration>=STALL_SECONDS:
         reason='screen_stalled'
     # #1369: observations kept arriving while no input was sent (an animated
@@ -336,6 +376,13 @@ def observe(runtime_dir: Path, identity: dict, frame: Frame, *,
            'phase':phase,'frame_sha256':digest,'recent_frame_sha256':recent,'observed_monotonic':now,
            'observed_at':wall,'unchanged_since':since,'unchanged_seconds':duration,
            'playing':playing,'terminal_reason':reason,
+           # Keep the manual release stamp: this dict is rebuilt every
+           # observation, and dropping it re-armed game_over immediately
+           # (g1163 2026-11-10 22:0x).
+           'terminal_cleared_at': (old.get('terminal_cleared_at')
+                                   if isinstance(old.get('terminal_cleared_at'), (int, float))
+                                   else None),
+           'terminal_cleared_reason': old.get('terminal_cleared_reason'),
            'frame_unchanged_since':frame_since,'frame_unchanged_seconds':frame_duration,
            'repetition':repetition,'repetition_input':{},
            'repetition_evidence':loop_proof,

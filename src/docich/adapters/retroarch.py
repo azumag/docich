@@ -357,6 +357,10 @@ class RetroArchAdapter(Adapter):
         scripted = hanjuku_hotload.enabled(self.ctx.game) and runtime_dir is not None
         if scripted:
             out_path = runtime_dir / 'screenshots' / 'latest.png'
+            # Honour the brain's autosave request here too: a held screen sends
+            # no action, so act() alone would never perform the save (g1163
+            # 2026-11-10 20:38: the request sat unread for minutes).
+            self._honor_autosave(runtime_dir)
         meta = {}
         # Both the agent and the corner monitor observe. Serialize capture,
         # decode and terminal evidence with actual pad input for this runtime.
@@ -409,12 +413,35 @@ class RetroArchAdapter(Adapter):
             return
         self.ctx.xkit.focus(self._window_id)
 
+    def _honor_autosave(self, runtime_dir) -> None:
+        """Perform a save the brain asked for (see hanjuku_run.request_autosave)."""
+        from ..hanjuku_run import AUTOSAVE_REQUEST
+        request = runtime_dir / AUTOSAVE_REQUEST
+        try:
+            if not request.exists():
+                return
+        except OSError:
+            return
+        try:
+            # The live adapter is the legacy adapter: it has no _network_port,
+            # so derive the port from the generation exactly like observe().
+            port = retroarch_network_port(self.ctx.fence.generation)
+            send_ra_cmd('SAVE_STATE', port=port, wait_reply_s=.2)
+        except Exception as exc:
+            print(f"docich: 警告: autosave に失敗しました: {exc}", file=sys.stderr)
+            return
+        try:
+            request.unlink()
+        except OSError:
+            pass
+
     def act(self, action: Action) -> None:
         self._check_fence()
         runtime_dir = self._runtime_dir()
         from .. import hanjuku_hotload
         with (input_gate(runtime_dir, time.monotonic() + 5) if runtime_dir else nullcontext()):
             if runtime_dir:
+                self._honor_autosave(runtime_dir)
                 require_input_open(runtime_dir)
                 if hanjuku_hotload.enabled(self.ctx.game):
                     run = hanjuku_hotload.load(runtime_dir, hanjuku_hotload.runtime_identity(self.ctx.fence))

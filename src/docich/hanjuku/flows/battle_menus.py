@@ -290,7 +290,17 @@ def _survival_menu(screen, mem, cur):
         rescue.update(critical_menu_recheck=True, exhausted=False, menu_ticks=1)
     if rescue['menu_ticks'] > 12 or rescue.get('exhausted'):
         rescue['exhausted'] = True
-        return [pad('b')]
+        # One B hands the spent rescue back; repeating it every observation
+        # left the battle box open forever (g1163 2026-11-10 19:3x-20:0x: 414
+        # identical [b] plans with no recorded reason).
+        if not rescue.get('exhausted_closed'):
+            rescue['exhausted_closed'] = True
+            _record(mem, 'battle_menu_rescue_exhausted', **_battle_labels(cur),
+                    observed_metric={'menu_ticks': rescue.get('menu_ticks'),
+                                     'labels': sorted(labels)},
+                    reason='救済メニューの観測予算を使い切ったため一度だけ戻り、以後は通常のコマンド判定に委ねる')
+            return [pad('b')]
+        return None
     # A visible list is authoritative. Do not infer carried cards from the
     # chart, a different general's sortie, or a planned inventory.
     # Cards first, then the egg (owner: 切り札が先 - the chart's order).
@@ -940,6 +950,22 @@ def okunote_step(screen, mem):
         summon = None
         if screen.egg_rows or cur.get('egg_battle') or mem.get('egg_battle'):
             summon = okunote.summon_reading(screen, mem, cur)
+            if cur.get('okunote_summon_exhausted'):
+                # The bounded attempts for this battle are spent. B does not
+                # close this menu (g1097), so hand the screen back once with a
+                # single confirm on the highlighted row instead of pressing B
+                # forever (g1163 2026-11-10 19:1x: no decision records for
+                # minutes while the おくのて menu stayed open).
+                if not cur.get('okunote_summon_exhausted_confirm'):
+                    cur['okunote_summon_exhausted_confirm'] = True
+                    _record(mem, 'battle_okunote_exhausted_confirm',
+                            **_battle_labels(cur),
+                            observed_metric={'cursor_y': screen.menu_cursor},
+                            reason='照合不能のまま残った奥の手メニューを、先頭行（たまご）へ戻して確定し戦闘を進める')
+                    # Two ups put the cursor on the first row (たまごをつかう);
+                    # a blind A on the last row would pick たいきゃく (retreat).
+                    return [pad('up'), pad('up'), pad('a')]
+                return None
             if summon is None:
                 # g1097 22:09: この将軍コマンドは「たいきゃく」の下に隠れた
                 # おくのて行を持つ (hidden_battle_commands)。B は効かず、同じ
@@ -957,6 +983,7 @@ def okunote_step(screen, mem):
                     if screen.hidden_battle_commands:
                         return [pad('down')]
                     return [pad('b')]
+                cur['okunote_summon_exhausted'] = True
                 _record(mem, 'battle_okunote_summon_unconfirmed_exhausted',
                         **_battle_labels(cur),
                         observed_metric={'attempts': unconfirmed + 1},
@@ -1945,7 +1972,24 @@ def egg_battle_step(screen: Screen, mem):
             visible = {w for _, _, w in _options(screen)}
             if screen.menu_cursor is None:
                 if empty_egg:
-                    return [pad('b')]  # never confirm the empty egg at an unread cursor
+                    # Never confirm the empty egg at an unread cursor, but B
+                    # does not close this battle box either (g1097): the corner
+                    # looped B forever on one summon menu (g1163 2026-11-10
+                    # 19:3x-19:4x, 414 identical [b] plans). After two Bs, step
+                    # once to the next row (きりふだ) and confirm it instead.
+                    closes = int(battle.get('empty_egg_b_presses') or 0)
+                    if closes < 2:
+                        battle['empty_egg_b_presses'] = closes + 1
+                        return [pad('b')]
+                    if not battle.get('empty_egg_card_fallback'):
+                        battle['empty_egg_card_fallback'] = True
+                        _record(mem, 'battle_empty_egg_card_fallback',
+                                **_battle_labels(battle),
+                                observed_metric={'visible': sorted(w for _, _, w in _options(screen)),
+                                                 'b_presses': closes},
+                                reason='卵が使えずBでも閉じない戦闘メニューのため、次の行（きりふだ）へ進めて戦闘を動かす')
+                        return [pad('down'), pad('a')]
+                    return [pad('b')]
                 # g1107 2026-11-03: おくのて探索が尽きた後にカーソルが灰色の
                 # たまごをつかう行 (未読) に残り、未確認カーソルへの blind A が
                 # 2,000 回以上拒否され続けた。カーソルが読めないときは確定せず、

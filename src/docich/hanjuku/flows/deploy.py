@@ -1089,6 +1089,14 @@ def _check_source_castle(screen, mem, order):
     name = m.group(1)
     if name == source or STATUS_NAMES.get(source) == name:
         mem['castle_verified'] = step
+        # The open castle menu belongs to the castle under the cursor, and its
+        # status just named it: that is the cursor's position. g1163
+        # 2026-11-11 00:07: after the jump to ながはま the estimate stayed on
+        # あるまむーん, so the next home order pressed A on ながはま
+        # (source_castle_mismatch) and lost ~20 s plus the hero-select jump.
+        cell = chart.castles(mem.get('chapter') or 0).get(source)
+        if cell:
+            mem['cursor'], mem['uncertain'] = list(cell), False
         # Verification does not prove the status panel has closed. Its hand
         # is hidden while open, so attempting a sortie here can wait forever.
         # Keep closing only the positively identified panel until it is gone.
@@ -1299,6 +1307,47 @@ def resume_sortie_step(screen: Screen, mem):
             observed_metric={'readings': pending['readings'], 'chapter': None},
             reason='章表示のない復元済み出撃メニューを承認せず閉じて再観測する')
     return [pad('b')]
+
+
+CHAPTER_PROBE_OPEN_LIMIT = 3   # status openings per month while the chapter is unknown
+
+
+def chapterless_status_step(screen: Screen, mem):
+    """Open the castle status to learn the chapter when none is known.
+
+    g1163 restarted chapter 8 after a game over with no chapter and every
+    dispatch branch waiting for one, so the castle menu looped on B/A forever.
+    The status panel names the castle; observe_events turns a name unique to
+    one chapter into the chapter. A name still unresolved here is ambiguous.
+    """
+    if mem.get('chapter'):
+        mem.pop('chapter_probe', None)
+        return None
+    probe = mem.get('chapter_probe')
+    if not isinstance(probe, dict) or probe.get('month') != mem.get('month'):
+        probe = {'month': mem.get('month'), 'opens': 0, 'seen': []}
+        mem['chapter_probe'] = probe
+    panel = CASTLE_STATUS.search(screen.text)
+    if panel:
+        name = panel[1]
+        if name not in probe['seen']:
+            probe['seen'].append(name)
+        _record(mem, 'chapter_probe_ambiguous', screen=screen.kind,
+                observed_metric={'castle': name, 'opens': probe['opens']},
+                reason='城名が複数の章に存在するため章を確定できない')
+        return [pad('b')]
+    if int(probe.get('opens') or 0) >= CHAPTER_PROBE_OPEN_LIMIT:
+        return []
+    move = menu_to(screen, 'ステータス')
+    if move is None:
+        return []
+    if move != 'here':
+        return [move]
+    probe['opens'] = int(probe.get('opens') or 0) + 1
+    _record(mem, 'chapter_probe_status', screen=screen.kind,
+            observed_metric={'opens': probe['opens'], 'month': probe.get('month')},
+            reason='章が未確定のため城のステータスを開いて城名から章を確認する')
+    return [pad('a')]
 
 
 SORTIE_CANCEL_READ_LIMIT = 12  # one bounded, identity-owned refusal episode

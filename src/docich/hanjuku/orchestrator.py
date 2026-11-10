@@ -787,6 +787,8 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
         actions=month_flow.month_step(screen,mem)
     elif kind in {'shop_list','shop_quantity_prompt','shop_quantity','shop_exit_confirm'}:
         actions=shop_flow.shop_step(screen,mem)
+    elif kind=='castle_menu' and not mem.get('chapter'):
+        actions=deploy_flow.chapterless_status_step(screen,mem)
     elif kind in {'castle_menu','general_list','card_select','sortie_confirm'} and mem.get('chapter'):
         actions=deploy_flow.deploy_step(screen,mem)
     elif kind=='map_target' and mem.get('chapter'):
