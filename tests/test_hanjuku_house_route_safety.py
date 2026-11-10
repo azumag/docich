@@ -18,7 +18,7 @@ def route(monkeypatch):
     monkeypatch.setattr(house, 'HOUSE_TARGET', {1: (140, 140)})
     monkeypatch.setattr(world, '_owned', lambda mem: set(mem['owned']))
     monkeypatch.setattr(commands, 'menu_to', lambda *args, **kwargs: 'here')
-    monkeypatch.setattr(readers, '_empty_sortie_inventory', lambda screen: True)
+    monkeypatch.setattr(readers, '_empty_sortie_inventory', lambda screen, **_: True)
     monkeypatch.setattr(house, 'general_status', lambda screen: {
         'general': 'ゼウス', 'broken': True, 'hp': 85, 'max_hp': 85})
     monkeypatch.setattr(house, '_record', lambda mem, event, **fields:
