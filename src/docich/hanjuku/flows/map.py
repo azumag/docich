@@ -929,7 +929,26 @@ def castle_jump_step(screen, mem, frame):
     if not reanchor:
         order = _order_for_step(mem, jump['step'])
         if order is None or _plan_region(mem).get('active') != jump['step']:
-            return _end_castle_jump(screen, mem, 'order_changed')
+            # The chart worker may re-plan while the jump is in flight, which
+            # renumbers every step (g1163 2026-11-10 05:38-05:50: five jumps
+            # aborted at age 1 with order_changed, so the sortie never left).
+            # The physical trip is still valid when the same general leaves
+            # the same castle for the same target, so carry the jump over.
+            if (not _plan_region(mem).get('active')
+                    or _order_for_step(mem, _plan_region(mem).get('active')) is None):
+                # Between plans the active order can be empty, or name a step
+                # the replaced plan no longer holds; that is not a change of
+                # intent (g1163 2026-11-10 07:01: the jump still died at age 1
+                # one second after order_start).
+                jump['orphan'] = int(jump.get('orphan') or 0) + 1
+                if jump['orphan'] <= CASTLE_JUMP_ORPHAN_HOLD:
+                    return []
+            adopted = _jump_successor(mem, order, jump)
+            if adopted is None:
+                return _end_castle_jump(screen, mem, 'order_changed')
+            jump['step'] = adopted['step']
+            jump['source'] = _source(adopted, mem) or jump.get('source')
+            order = adopted
 
     phase = jump.get('phase')
     if phase == 'menu':
