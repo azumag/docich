@@ -171,6 +171,7 @@ CARRY_SLOTS = 3               # card_select「あとNこ」の携行枠(実測 h
 CARD_SCROLL_LIMIT = len(reference.ALL_CARD_IDS)
 CARD_MISS_LIMIT = 5           # card_select readings before a missing card is left behind
 CARD_UNREADABLE_LIMIT = 6     # unreadable card_select readings before cancelling the sortie
+NORMAL_CARD_UNREADABLE_LIMIT = 3  # an ordinary sortie escapes the list sooner (owner: depart anyway)
 SORTIE_CONFIRM_LIMIT = 8      # readings before a readable but mismatched kit is approved
 CARD_STOCK_LIMIT = 24         # observed card names kept for the adjusted-chart request
 
