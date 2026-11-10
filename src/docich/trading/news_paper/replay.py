@@ -113,7 +113,7 @@ def load_manifest(data: dict, chunk_loader: Callable[[str], bytes] | None = None
         fn = cm.get("filename")
         if not isinstance(fn, str) or len(fn) > MAX_FILENAME_LEN or len(fn) == 0:
             raise ReplayError("bad filename")
-        if fn in (".", "..") or ".." in fn or "/" in fn or "\\\\" in fn or "\\x00" in fn:
+        if fn in (".", "..") or ".." in fn or "/" in fn or "\\" in fn or "\x00" in fn:
             raise ReplayError("unsafe chunk filename")
         if fn in filenames:
             raise ReplayError("duplicate filename")
