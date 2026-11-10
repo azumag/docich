@@ -7,7 +7,7 @@ the screen nor plans input.
 """
 from __future__ import annotations
 
-from ..state.regions import plan as _plan_region
+from .state.regions import plan as _plan_region
 
 
 def _record(mem, kind, **fields):

@@ -5,7 +5,7 @@ Read-only over ``mem``: no screen, no input, no decisions.
 from __future__ import annotations
 
 from .os_layer.world import NAME
-from ..state.regions import plan as _plan_region
+from .state.regions import plan as _plan_region
 
 
 def summary(mem: dict | None) -> dict:
