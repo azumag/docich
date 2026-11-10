@@ -951,8 +951,10 @@ def okunote_step(screen, mem):
                     _record(mem, 'battle_okunote_exhausted_confirm',
                             **_battle_labels(cur),
                             observed_metric={'cursor_y': screen.menu_cursor},
-                            reason='照合不能のまま残った奥の手メニューを、ハイライト行の確定1回で閉じて戦闘を進める')
-                    return [pad('a')]
+                            reason='照合不能のまま残った奥の手メニューを、先頭行（たまご）へ戻して確定し戦闘を進める')
+                    # Two ups put the cursor on the first row (たまごをつかう);
+                    # a blind A on the last row would pick たいきゃく (retreat).
+                    return [pad('up'), pad('up'), pad('a')]
                 return None
             if summon is None:
                 # g1097 22:09: この将軍コマンドは「たいきゃく」の下に隠れた
