@@ -940,6 +940,11 @@ def okunote_step(screen, mem):
         summon = None
         if screen.egg_rows or cur.get('egg_battle') or mem.get('egg_battle'):
             summon = okunote.summon_reading(screen, mem, cur)
+            if cur.get('okunote_summon_exhausted'):
+                # The bounded attempts for this battle are spent: stop
+                # re-entering the path (g1163 2026-11-10 18:5x-19:0x looped
+                # 887 unconfirmed/exhausted pairs in 20 minutes on one battle).
+                return None
             if summon is None:
                 # g1097 22:09: この将軍コマンドは「たいきゃく」の下に隠れた
                 # おくのて行を持つ (hidden_battle_commands)。B は効かず、同じ
@@ -957,6 +962,7 @@ def okunote_step(screen, mem):
                     if screen.hidden_battle_commands:
                         return [pad('down')]
                     return [pad('b')]
+                cur['okunote_summon_exhausted'] = True
                 _record(mem, 'battle_okunote_summon_unconfirmed_exhausted',
                         **_battle_labels(cur),
                         observed_metric={'attempts': unconfirmed + 1},
