@@ -271,6 +271,34 @@ def y_jump_target_settle_step(screen, mem, generic):
     return []
 
 
+def y_jump_close_settle_step(screen, mem, generic):
+    """Withhold the generic confirm on the fade after a target jump we closed.
+
+    The failed jump's Y returns to the target picker with the marker wherever
+    the world cursor stopped; an A there decides that spot (g1163 2026-11-11
+    07:59:47, see ``navigation._close_target_jump``). The picker itself is
+    readable and the sortie flow walks the marker from there.
+    """
+    closed = mem.get('y_jump_target_closed')
+    if not isinstance(closed, dict):
+        return None
+    tick, at = mem.get('tick'), closed.get('tick')
+    if (screen.kind != 'unknown' or type(tick) is not int or type(at) is not int
+            or not 0 < tick - at <= Y_JUMP_TARGET_SETTLE_TICKS):
+        mem.pop('y_jump_target_closed', None)
+        return None
+    confirms = (isinstance(generic, list) and len(generic) == 1
+                and isinstance(generic[0], dict) and generic[0].get('type') == 'pad'
+                and generic[0].get('buttons') == ['a'])
+    if not confirms:
+        return None
+    decision_log._record(mem, 'y_jump_close_settle_hold', chart_step=closed.get('step'),
+                         screen=screen.kind,
+                         observed_metric={'after_close': tick - at, 'limit': Y_JUMP_TARGET_SETTLE_TICKS},
+                         reason='出撃先ジャンプを決定せず閉じた直後の読めない画面で既定のAを押すと、止まった位置を出撃先に決定するため保留する')
+    return []
+
+
 def battle_draw_hold_step(screen, mem, previous_kind, generic):
     """Withhold a generic confirm on an unreadable battle draw, boundedly.
 
@@ -856,6 +884,9 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
         settle_hold = y_jump_target_settle_step(screen, mem, actions)
         if settle_hold is not None:
             actions = settle_hold
+        close_hold = y_jump_close_settle_step(screen, mem, actions)
+        if close_hold is not None:
+            actions = close_hold
         if (kind in {'unknown'} and mem.get('chapter')
                 and (phase not in {'transition', 'title', 'title_or_intro'} or mem.get('battle'))):
             if mem.get('held_phase')!=phase:

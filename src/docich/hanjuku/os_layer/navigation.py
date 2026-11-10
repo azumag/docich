@@ -263,6 +263,21 @@ def _note_failed_jump(mem, jump, why):
     mem['y_jump_last'] = last
 
 
+def _close_target_jump(mem, jump):
+    """Mark a target jump closed by our own Y so its fade keeps the default A.
+
+    Closing the view returns to the sortie target picker with the field marker
+    wherever the world cursor stopped. g1163 2026-11-11 07:59:47: the generic A
+    on that unreadable fade decided the target there, ビシソワーズ left for an
+    unplanned spot and the launched_unconfirmed order held the chapter-9 plan
+    (``chart_interim_hold``) with no input.
+    """
+    if jump.get('mode') == 'target':
+        mem['y_jump_target_closed'] = {'step': jump.get('step'), 'tick': mem.get('tick')}
+    return [pad('y')]
+
+
+
 def _forget_failed_jump(mem, step, mode=None):
     """A new attempt of ``step`` may open the view again.
 
@@ -443,7 +458,7 @@ def _y_jump_step(mem, frame):
         _note_failed_jump(mem, jump, 'cursor_unreadable')
         _record(mem, 'y_jump_failed', chart_step=jump['step'], target=jump['goal'],
                 reason='全体マップのカーソルを読めないため閉じて通常の移動に戻る')
-        return [pad('y')]
+        return _close_target_jump(mem, jump)
     gx, gy = boss_probe_cell(mem, jump['goal'], jump.get('step'))
     ox, oy = Y_JUMP_OFFSET[chapter]
     dx, dy = gx / 8 + ox - cursor[0], gy / 8 + oy - cursor[1]
@@ -463,7 +478,7 @@ def _y_jump_step(mem, frame):
         _record(mem, 'y_jump_failed', chart_step=jump['step'], target=jump['goal'],
                 observed_metric={'moves': jump['moves'], 'stationary_reads': jump['still']},
                 reason='移動入力後も検出カーソルが動かないため決定せず閉じて通常の移動に戻る')
-        return [pad('y')]
+        return _close_target_jump(mem, jump)
     if jump['moves'] >= Y_JUMP_MOVES and not (abs(dx) <= Y_JUMP_FINAL_TOL and abs(dy) <= Y_JUMP_FINAL_TOL):
         # Never confirm far from the goal (g419 10:49: 50 px off after a misread).
         mem.pop('y_jump', None)
@@ -472,7 +487,7 @@ def _y_jump_step(mem, frame):
                 observed_metric={'world_cursor': list(cursor), 'residual': [round(dx, 1), round(dy, 1)],
                                  'moves': jump['moves']},
                 reason='全体マップのカーソルが目的の城に合わないため決定せず閉じる')
-        return [pad('y')]
+        return _close_target_jump(mem, jump)
     if (abs(dx) <= Y_JUMP_TOL and abs(dy) <= Y_JUMP_TOL) or jump['moves'] >= Y_JUMP_MOVES:
         mem.pop('y_jump', None)
         mem['y_jump_return'] = jump['mode']
