@@ -551,14 +551,37 @@ def world_cursor(frame):
     """Centre of the Y view's cursor.
 
     Detection order:
-      1. chapter-3 whole map: 3x3 blue centre dot inside a black dashed ring
+      1. gold G corners (chapter 1/2 sortie cursor, chapter 9);
+      2. chapter-3 whole map: 3x3 blue centre dot inside a black dashed ring
          (radius 8-9 px) (g1075);
-      2. gold G corners (chapter 1/2 sortie cursor);
       3. white dashed ring (chapter 2 boss / snowy maps).
     """
     if frame is None:
         return None
-    # 1. Blue-dotted black dashed ring. The white ring vote cannot see this
+    # 1. gold G corners, before the blue-dot ring. Chapter 9's Y view has a
+    # blinking blue icon inside a black-outlined lake at (169, 116) that the
+    # ring test accepts; while it blinked on, the real G at (65.5, 142.5) was
+    # never returned and the target jump to ハヤク bounced between the two
+    # until its move limit (g1163 2026-11-11 07:59 and 08:22). On every saved
+    # Y view the gold test either finds the same cursor or finds none.
+    gold = [(x, y) for x in range(40, 220) for y in range(40, 200)
+            if _near_colour(frame.pixel(x, y), (255, 182, 0))]
+    # Only the compact G corners (~15 px box): the map's gold edge arrows are
+    # far apart and their joint box read as a cursor (g419 10:49), and chapter
+    # 2's gold camp triangle beside フーリック widened the box so no target
+    # jump there could read the G (isolated probe, g421 state). Take the
+    # G-sized window holding the most gold instead of the whole box.
+    best = None
+    for x0 in sorted({x for x, _ in gold}):
+        for y0 in sorted({y for _, y in gold}):
+            inside = [(x, y) for x, y in gold if x0 <= x <= x0 + 18 and y0 <= y <= y0 + 18]
+            if best is None or len(inside) > len(best):
+                best = inside
+    if best and len(best) >= 12:
+        xs = [x for x, _ in best]; ys = [y for _, y in best]
+        if max(xs) - min(xs) >= 10 and max(ys) - min(ys) >= 10:
+            return ((min(xs) + max(xs)) / 2, (min(ys) + max(ys)) / 2)
+    # 2. Blue-dotted black dashed ring. The white ring vote cannot see this
     # cursor, and the gold map frame would otherwise be misread as a G.
     blue_pixels = [(x, y) for x in range(40, 220) for y in range(40, 200)
                    if _is_blue_pixel(frame.pixel(x, y))]
@@ -616,24 +639,6 @@ def world_cursor(frame):
     if best_center is not None:
         return best_center
 
-    # 2. gold G corners
-    gold = [(x, y) for x in range(40, 220) for y in range(40, 200)
-            if _near_colour(frame.pixel(x, y), (255, 182, 0))]
-    # Only the compact G corners (~15 px box): the map's gold edge arrows are
-    # far apart and their joint box read as a cursor (g419 10:49), and chapter
-    # 2's gold camp triangle beside フーリック widened the box so no target
-    # jump there could read the G (isolated probe, g421 state). Take the
-    # G-sized window holding the most gold instead of the whole box.
-    best = None
-    for x0 in sorted({x for x, _ in gold}):
-        for y0 in sorted({y for _, y in gold}):
-            inside = [(x, y) for x, y in gold if x0 <= x <= x0 + 18 and y0 <= y <= y0 + 18]
-            if best is None or len(inside) > len(best):
-                best = inside
-    if best and len(best) >= 12:
-        xs = [x for x, _ in best]; ys = [y for _, y in best]
-        if max(xs) - min(xs) >= 10 and max(ys) - min(ys) >= 10:
-            return ((min(xs) + max(xs)) / 2, (min(ys) + max(ys)) / 2)
     # 3. white dashed ring
     votes = {}
     for x in range(40, 220):
