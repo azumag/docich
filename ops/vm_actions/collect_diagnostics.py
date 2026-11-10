@@ -7092,6 +7092,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v645-dual-decode",
             "hanjuku-chart-v646-chapterless-status-probe",
             "hanjuku-chart-v647-card-batch-feedback",
+            "hanjuku-chart-v648-hero-castle-select-jump",
             "hanjuku-chart-v560-castle-list-scroll",
             "hanjuku-chart-v561-post-month-repair-status",
             "hanjuku-chart-v501-idle-reanchor",

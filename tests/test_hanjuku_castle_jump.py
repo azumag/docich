@@ -620,3 +620,117 @@ def test_an_unresolvable_active_step_holds_the_trip():
     screen = type('Screen', (), {'kind': 'unknown', 'hand': None, 'lines': [], 'text': ''})()
     assert map_flow.castle_jump_step(screen, mem, None) == []
     assert mem['castle_jump']['orphan'] == 1
+
+
+# ---------------------------------------------------------------- v648
+# A source castle whose read general list holds the hero is reached with a
+# field SELECT alone (g1163 2026-11-10 23:20: X, three Downs, A and SELECT
+# every sortie from あるまむーん, about 11 s, to reach the hero's castle).
+
+def _hero_home_memory(monkeypatch, order=None):
+    mem = _memory(order)
+    monkeypatch.setattr(M, '_hero_castle', lambda _mem: 'アルマムーン')
+    return mem
+
+
+def test_hero_castle_source_jumps_with_select_only(monkeypatch):
+    mem = _hero_home_memory(monkeypatch)
+    order = mem['chart_plan']['orders'][0]
+    assert M._start_castle_jump(mem, order, order['source']) == [M.pad('select')]
+    jump = mem['castle_jump']
+    assert jump['mode'] == 'hero_select' and jump['phase'] == 'confirm'
+    record = mem['_records'][-1]
+    assert record['decision'] == 'castle_jump_open'
+    assert record['strategy_variant'] == 'hero_select'
+
+
+def test_other_source_keeps_the_named_shiro_list(monkeypatch):
+    mem = _hero_home_memory(monkeypatch, _order(source='ナキューメラ'))
+    order = mem['chart_plan']['orders'][0]
+    assert M._start_castle_jump(mem, order, 'ナキューメラ') == [M.pad('x')]
+    assert mem['castle_jump']['phase'] == 'menu'
+    assert 'mode' not in mem['castle_jump']
+
+
+def test_hero_away_keeps_the_named_shiro_list(monkeypatch):
+    mem = _memory()
+    monkeypatch.setattr(M, '_hero_castle', lambda _mem: None)
+    order = mem['chart_plan']['orders'][0]
+    assert M._start_castle_jump(mem, order, order['source']) == [M.pad('x')]
+
+
+def test_source_mismatch_on_the_step_falls_back_to_the_list(monkeypatch):
+    mem = _hero_home_memory(monkeypatch)
+    mem['source_miss'] = {'J1': 1}
+    order = mem['chart_plan']['orders'][0]
+    assert M._start_castle_jump(mem, order, order['source']) == [M.pad('x')]
+
+
+def test_first_map_frame_after_field_select_is_not_trusted(monkeypatch):
+    mem = _hero_home_memory(monkeypatch)
+    order = mem['chart_plan']['orders'][0]
+    M._start_castle_jump(mem, order, order['source'])
+    screen = _screen('map', [], cursor=(80, 90))
+    # The first reading may still be the camera before SELECT moved it.
+    assert M.castle_jump_step(screen, mem, None) == []
+    assert 'expect_menu' not in mem
+    # The settled field return opens the castle; deploy checks its name.
+    assert M.castle_jump_step(screen, mem, None) == [M.pad('a')]
+    assert 'castle_jump' not in mem and mem['expect_menu'] is True
+    confirm = mem['_records'][-1]
+    assert confirm['decision'] == 'castle_jump_confirm'
+    assert confirm['strategy_variant'] == 'hero_select'
+
+
+def test_fade_frame_then_map_opens_the_castle(monkeypatch):
+    mem = _hero_home_memory(monkeypatch)
+    order = mem['chart_plan']['orders'][0]
+    M._start_castle_jump(mem, order, order['source'])
+    assert M.castle_jump_step(_screen('unknown', []), mem, None) == []
+    assert M.castle_jump_step(_screen('map', [], cursor=(80, 90)), mem, None) == [M.pad('a')]
+
+
+def test_panel_after_field_select_backs_out_and_uses_the_list_next(monkeypatch):
+    mem = _hero_home_memory(monkeypatch)
+    order = mem['chart_plan']['orders'][0]
+    M._start_castle_jump(mem, order, order['source'])
+    assert M.castle_jump_step(_screen('main_menu', []), mem, None) == [M.pad('b')]
+    assert 'castle_jump' not in mem
+    assert 'J1' in mem['hero_select_miss']
+    # No cooldown: the next attempt walks the named list at once.
+    assert 'castle_jump_skip' not in mem
+    assert M._start_castle_jump(mem, order, order['source']) == [M.pad('x')]
+
+
+def test_no_field_return_gives_up_the_select_within_bound(monkeypatch):
+    mem = _hero_home_memory(monkeypatch)
+    order = mem['chart_plan']['orders'][0]
+    M._start_castle_jump(mem, order, order['source'])
+    unknown = _screen('unknown', [])
+    for _ in range(M.HERO_SELECT_WAIT_LIMIT - 1):
+        assert M.castle_jump_step(unknown, mem, None) == []
+        assert 'castle_jump' in mem
+    assert M.castle_jump_step(unknown, mem, None) == []
+    assert 'castle_jump' not in mem
+    assert mem['_records'][-1]['observed_metric']['why'] == 'hero_select_no_field'
+    assert M._start_castle_jump(mem, order, order['source']) == [M.pad('x')]
+
+
+def test_hero_select_miss_is_bounded(monkeypatch):
+    mem = _memory()
+    for i in range(M.HERO_SELECT_MISS_KEEP + 5):
+        mem['tick'] = i
+        M._mark_hero_select_miss(mem, f'S{i}')
+    assert len(mem['hero_select_miss']) == M.HERO_SELECT_MISS_KEEP
+    assert f'S{M.HERO_SELECT_MISS_KEEP + 4}' in mem['hero_select_miss']
+    assert 'S0' not in mem['hero_select_miss']
+
+
+def test_real_garrison_with_the_hero_selects_the_home_castle():
+    from docich.hanjuku.state.regions import world
+    mem = _memory()
+    world(mem)['garrison'] = {'アルマムーン': [M.NAME, 'ゼウス']}
+    mem['castle_owners'] = {'アルマムーン': 'own'}
+    order = mem['chart_plan']['orders'][0]
+    assert M._hero_castle(mem) == 'アルマムーン'
+    assert M._start_castle_jump(mem, order, order['source']) == [M.pad('select')]
