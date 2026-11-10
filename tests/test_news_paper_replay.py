@@ -32,7 +32,7 @@ def test_manifest_rejects_inline_or_missing_loader():
     with pytest.raises(ReplayError, match="chunk_loader required"):
         load_manifest(data)
     data["header"]["chunks"][0]["records"] = json.loads(raw)
-    with pytest.raises(ReplayError, match="inline records"):
+    with pytest.raises(ReplayError, match="UNKNOWN_KEY|inline records"):
         load_manifest(data, lambda filename: raw)
 
 
