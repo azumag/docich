@@ -27,6 +27,9 @@ LOGIC_GENERATION = _logic_generation()
 
 RUN_FILE='hanjuku_run.json'
 TERMINAL_REASONS=frozenset({'game_over','screen_stalled','input_stalled'})
+# A released game_over cannot re-latch for this long (the title stays up while
+# the first inputs are delivered).
+GAME_OVER_CLEAR_GRACE_S = 120
 STALL_SECONDS=300
 # #1369: the merchant confirm screen held ~16 min with no input sent while the
 # screen kept animating, so screen_stalled never fired and the corner had no
@@ -285,6 +288,15 @@ def observe(runtime_dir: Path, identity: dict, frame: Frame, *,
     title_since=old.get('title_since',now) if candidate and consecutive and old.get('terminal_candidate') else now
     title_count=int(old.get('title_count',0))+1 if candidate and consecutive and old.get('terminal_candidate') else int(candidate)
     reason='game_over' if candidate and title_count>=3 and now-title_since>=2 else None
+    # A manual "this was not a game over" release earns a grace window: the
+    # game sits on its title while the first inputs land, and without it the
+    # same observation latched game_over again immediately (g1163 2026-11-10
+    # 21:4x: clear -> re-latch -> every input refused, for hours).
+    cleared_at = old.get('terminal_cleared_at')
+    if (reason == 'game_over' and type(cleared_at) in (int, float)
+            and math.isfinite(cleared_at) and 0 <= wall - cleared_at < GAME_OVER_CLEAR_GRACE_S):
+        reason = None
+        candidate = False
     if not reason and duration>=STALL_SECONDS:
         reason='screen_stalled'
     # #1369: observations kept arriving while no input was sent (an animated
