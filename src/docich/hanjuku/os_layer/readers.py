@@ -308,6 +308,8 @@ GENERAL_MARKER_WHITE = (255, 254, 255)
 GENERAL_MARKER_GRAY = (90, 88, 90)
 GENERAL_MARKER_BLACK = (32, 32, 32)
 GENERAL_MARKER_TOLERANCE = 3
+MARKER_EDGE_CHROMA = 16        # gray/black edge pixels blended with the ground under them
+MAP_PANEL_RIGHT = 154          # roster map panel's right edge (flag search bound below)
 
 # Castle flag icons on the same small island map: red = own, blue = enemy.
 # Their colour matches world_flags; the roster map is the same island at
@@ -351,7 +353,12 @@ def _marker_shade_matches(pixel, colour):
     """
     if _near_rgb(pixel, colour):
         return True
-    if max(pixel) - min(pixel) > 12:
+    # The sprite's gray/black edge is blended with the ground under it: g1163
+    # 2026-11-11 00:26 drew (86,96,83) over grass (chroma 13), so the real map
+    # marker failed by one level and the scan fell through to the list's
+    # scroll arrow. White stays strict; the 7x7 shape is still required.
+    chroma = max(pixel) - min(pixel)
+    if chroma > (12 if colour == GENERAL_MARKER_WHITE else MARKER_EDGE_CHROMA):
         return False
     value = sum(pixel) / 3
     if colour == GENERAL_MARKER_WHITE:
@@ -369,13 +376,22 @@ def selection_marker(frame):
     # starts at x=168 (house._names_at), so the sprite can begin past the old
     # x=154 edge. g1163 2026-11-09: 20 of 25 monthly markers were unbound with
     # no reason, and the live 299x224 frame is wider than the 256-wide design.
+    # The same white/gray triangle is also the list's 「more names」 scroll
+    # arrow under the name column (g1163 2026-11-11: box (192,161) for every
+    # general, out_of_tolerance, a status panel each). A match inside the map
+    # panel is the general's position and wins over one outside it.
+    outside = None
     for y in range(8, min(frame.height - 7, 216)):
         for x in range(8, min(frame.width - 7, 200)):
             if all(_marker_shade_matches(frame.pixel(x + dx, y + dy), colour)
                    for dx, dy, colour in _GENERAL_MARKER_PATTERN):
-                return {'box': (x, y, x + 6, y + 6), 'center': (x + 3, y + 3),
-                        'tip': (x + 3, y + 6)}
-    return None
+                found = {'box': (x, y, x + 6, y + 6), 'center': (x + 3, y + 3),
+                         'tip': (x + 3, y + 6)}
+                if x + 6 < MAP_PANEL_RIGHT:
+                    return found
+                if outside is None:
+                    outside = found
+    return outside
 
 
 def _map_icon_centres(frame):

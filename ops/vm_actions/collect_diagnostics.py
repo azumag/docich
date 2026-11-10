@@ -7094,7 +7094,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v647-card-batch-feedback",
             "hanjuku-chart-v648-hero-castle-select-jump",
             "hanjuku-chart-v649-road-defeat-settles",
-            "hanjuku-chart-v650-castle-verified-cursor",
+            "hanjuku-chart-v651-roster-marker-over-scroll-arrow",
             "hanjuku-chart-v560-castle-list-scroll",
             "hanjuku-chart-v561-post-month-repair-status",
             "hanjuku-chart-v501-idle-reanchor",
