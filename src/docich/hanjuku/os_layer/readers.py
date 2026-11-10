@@ -696,12 +696,19 @@ def fort_list_open(screen) -> bool:
     return is_fort_menu(screen) and bool(screen.hand) and screen.hand[0] > 100
 
 
-def _empty_sortie_inventory(screen):
+def _empty_sortie_inventory(screen, *, occluded=0):
     """Measured g328 empty inventory, using exact text cells in its panels.
 
     Only these text baselines establish the receipt. Left-side stats, mark
     rows above glyphs and the hand left of the choices are outside them.
     No quantity or nonempty-inventory format is inferred here.
+
+    ``occluded`` lets up to that many expected cells be unreadable. The
+    source castle's sprite is drawn over the right panel for some castles
+    (g1163 2026-11-11 いちじょうだに: は of きりふだは and four cells after
+    きりふだ read as unknown on every frame), and the exact match then held a
+    repair trip for its whole step limit each month. Every readable cell must
+    still be the expected character, so a card name can never pass.
     """
     if screen.kind != 'sortie_confirm':
         return False
@@ -711,11 +718,21 @@ def _empty_sortie_inventory(screen):
             (95, 136, ((136, 'ーしゅつげき'), (192, 'しますか?ー'))),
             (111, 160, ((160, 'うむッ!'),)),
             (127, 160, ((160, 'いかんッ!'),)))
+    lost = 0
     for y, left, spans in rows:
         expected = tuple((x + 8 * index, ch) for x, text in spans for index, ch in enumerate(text))
         observed = tuple((x, ch) for line in screen.lines if line.y == y
                          for x, ch in line.cells if left <= x < 240)
-        if observed != expected:
+        if observed == expected:
+            continue
+        if not occluded:
+            return False
+        want = dict(expected)
+        seen = {x: ch for x, ch in observed if ch != UNKNOWN}
+        if any(want.get(x) != ch for x, ch in seen.items()):
+            return False
+        lost += sum(1 for x in want if x not in seen)
+        if lost > occluded:
             return False
     return not any(card in word for _, _, word in _options(screen) for card in ALL_CARD_NAMES)
 

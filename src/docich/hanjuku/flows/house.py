@@ -79,6 +79,9 @@ def _entry_delta(mem):
 GIFTS = (('スカーフ', 200), ('みずぎ', 100), ('ピアス', 50))
 ROSTER_LIMIT = receipts.MAX_GENERALS
 STEP_LIMIT = 24
+# Expected cells of the empty-inventory receipt that may be hidden under the
+# source castle's sprite (g1163 2026-11-11 いちじょうだに needs 1).
+SORTIE_PANEL_OCCLUDED = 2
 TRAVEL_LIMIT = 240
 SESSION_LIMIT = 1200
 SCAN_INTERVAL = 200
@@ -2165,7 +2168,7 @@ def _repair_step(screen, mem, frame):
         if info is not None:
             _tally_open_once(mem, state, 'dispatch', info)
         if (not info or info['general'] != name or not info['broken']
-                or not _empty_sortie_inventory(screen)):
+                or not _empty_sortie_inventory(screen, occluded=SORTIE_PANEL_OCCLUDED)):
             return []
         if not _repair_hp_ready(info):
             return _exit(mem, '派遣確定前に全快HPを確認できないため出撃を取り消す')
