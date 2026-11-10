@@ -19,7 +19,7 @@ from ..os_layer.font import UNKNOWN
 from ..os_layer.readers import CASTLE_STATUS, STATUS_NAMES
 from ..os_layer.roster import run_identity
 from ..os_layer.screen import castle_roofs
-from ..state.regions import world as _world, flow as _flow
+from ..state.regions import world as _world, flow as _flow, plan as _plan
 
 SCHEMA = chart.MAP_SCHEMA
 verified_castles = chart.verified_castles
@@ -257,8 +257,13 @@ def step(screen, mem, frame):
                     'reanchor_stationary'):
             state.pop(key, None)
     state['last_tick'] = tick
-    if (any(mem.get(k) for k in ('battle', 'month_sub', 'house', 'active',
+    # 'active' is a migrated key owned by the plan region (#3921 P2): a flat
+    # mem read would always observe None after migration, so it must go
+    # through the plan accessor.  Found by the AST guard in #3923 (the old
+    # regex missed this multi-line tuple).
+    if (any(mem.get(k) for k in ('battle', 'month_sub', 'house',
                                 'y_jump', 'resume_egg_ritual'))
+            or _plan(mem).get('active')
             or any(_flow(mem).get(k) for k in ('recall', 'sortie_attempt'))):
         state.pop('probe', None)
         state.pop('roof_world', None)
