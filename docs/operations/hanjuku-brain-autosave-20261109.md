@@ -28,3 +28,8 @@ v623 で `[lifecycle] periodic_savestate_s = 900` を入れてエージェント
 - `tests/test_hanjuku_autosave_request.py`（2件: 間隔・無効時）。
 - 脳・スクリプト・アダプタ・診断 140件 passed。
 - 本番反映後: `states/hanjuku-hero.state` の mtime が15分ごとに更新されることを実測する。
+
+## 追加（v639）: 観測時にも要求を実行する
+
+`act()` だけで要求を処理していたため、保留（0アクション）が続くと保存されませんでした
+（実測 20:38: 要求ファイルが数分未処理）。`observe()` の冒頭でも要求を処理するようにしました。

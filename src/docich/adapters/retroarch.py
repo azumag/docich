@@ -357,6 +357,10 @@ class RetroArchAdapter(Adapter):
         scripted = hanjuku_hotload.enabled(self.ctx.game) and runtime_dir is not None
         if scripted:
             out_path = runtime_dir / 'screenshots' / 'latest.png'
+            # Honour the brain's autosave request here too: a held screen sends
+            # no action, so act() alone would never perform the save (g1163
+            # 2026-11-10 20:38: the request sat unread for minutes).
+            self._honor_autosave(runtime_dir)
         meta = {}
         # Both the agent and the corner monitor observe. Serialize capture,
         # decode and terminal evidence with actual pad input for this runtime.
