@@ -5,6 +5,10 @@ adapter = "retroarch"
 
 [retroarch]
 rom = "games/roms/hanjuku-hero.sfc"   # 著作権物のためGit追跡外。自己吸い出しROMはVMのこの相対位置にのみ配置
+# 生ピクセル(256x224)で描画する。4:3(299x224)の横ストレッチだと8pxグリフの
+# テンプレート照合が外れ、切り札一覧・出撃確認の文字が読めない
+# （2026-11-10: 出撃の3%しか成立しない主因）。有効化は再起動から。
+force_aspect = false
 core = "auto"                          # or コア .so の絶対パス
 audio_enabled = true
 audio_sink = "soren_null"               # 既存の配信busへゲームBGM・効果音を出す
