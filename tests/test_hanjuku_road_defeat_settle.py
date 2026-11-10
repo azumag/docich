@@ -7,7 +7,7 @@ to おかざき for 23 minutes. A 0-HP defeat removes the general from the roste
 (g1097 2026-11-02), so the march is over the moment the battle ends.
 """
 from docich.hanjuku.flows import battle
-from docich.hanjuku.state.regions import world as _world
+from docich.hanjuku.state.regions import world as _world, plan as _plan_region
 from docich.hanjuku.strategy import orders
 
 STEP = 'A:x:M1'
@@ -83,7 +83,7 @@ def test_road_defeat_settles_before_the_deadline_and_reopens_the_order():
     battle.battle_end(mem, 'field')
     mem['tick'] = TICK + 1
     orders._relaunch_overdue_march(mem)
-    assert mem['orders'][STEP] == 'pending'
+    assert _plan_region(mem)['orders'][STEP] == 'pending'
     assert _world(mem)['sorties'][STEP]['status'] == 'overdue'
     overdue = decisions(mem, 'sortie_march_overdue')[-1]
     assert overdue['observed_metric']['road_defeat'] is True
@@ -98,7 +98,7 @@ def test_without_a_defeat_the_deadline_still_applies():
     battle.battle_end(mem, 'field')
     mem['tick'] = TICK + 1
     orders._relaunch_overdue_march(mem)
-    assert mem['orders'][STEP] == 'launched'
+    assert _plan_region(mem)['orders'][STEP] == 'launched'
     assert _world(mem)['sorties'][STEP]['status'] == 'en_route'
     assert not decisions(mem, 'sortie_march_overdue')
 
@@ -118,7 +118,7 @@ def test_an_attack_side_road_loss_is_marked_and_closed_without_relaunch():
     mem['tick'] = TICK + 1
     orders._relaunch_overdue_march(mem)
     assert _world(mem)['sorties'][STEP]['status'] == 'overdue'
-    assert mem['orders'][STEP] == 'pending'
+    assert _plan_region(mem)['orders'][STEP] == 'pending'
 
 
 def test_road_defeat_is_marked_once():
