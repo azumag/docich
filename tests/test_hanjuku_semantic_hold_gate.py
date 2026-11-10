@@ -14,7 +14,7 @@ from docich.hanjuku_bot import NO_INPUT_HOLD_MAX, decide
 from docich.hanjuku_pixels import Frame
 
 
-def test_an_animated_castle_menu_is_counted_by_its_semantic_key():
+def test_an_animated_castle_menu_is_counted_by_its_semantic_key(monkeypatch):
     # #3599: a castle_menu over the animated map got a fresh frame digest on
     # every observation (water cycles), so the digest-keyed streak never
     # passed 2 and the corner ended input_stalled after ~100 s of no input.
@@ -41,6 +41,11 @@ def test_an_animated_castle_menu_is_counted_by_its_semantic_key():
         assert parse(variant).text == parse(base).text
         frames.append(variant)
     assert len({f.digest() for f in frames}) == 3
+    # v646 answers a chapterless castle menu itself (status probe, or B on an
+    # ambiguous name such as this fixture's アルマムーン). This test is about
+    # the hold key of a menu nobody acts on, so keep that owner silent here.
+    from docich.hanjuku.flows import deploy
+    monkeypatch.setattr(deploy, 'chapterless_status_step', lambda screen, mem: [])
     state = {}
     for i in range(NO_INPUT_HOLD_MAX + 3):
         actions, state = decide(frames[i % 3], copy.deepcopy(state))
