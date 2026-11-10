@@ -20,7 +20,7 @@ MONTH_SCAN_RESUME_PHASES = frozenset({
     'month_open', 'open_roster', 'level_status', 'leave_status', 'leave_roster'})
 
 
-CHAPTER_SCOPE_KEYS = ('map_registration', 'map_discovery', 'boss_victories', 'approx_fallback', 'approx_localize_miss',
+CHAPTER_SCOPE_KEYS = ('map_registration', 'hero_select_miss', 'map_discovery', 'boss_victories', 'approx_fallback', 'approx_localize_miss',
                 'season_sites', 'season_site_streak',
                 'moving_boss', 'moving_boss_streak', 'boss_cell', 'boss_cell_streak',
                 # Per-step and per-boss records belong to the chapter that made
