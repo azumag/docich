@@ -41,7 +41,9 @@ def test_an_animated_castle_menu_is_counted_by_its_semantic_key():
         assert parse(variant).text == parse(base).text
         frames.append(variant)
     assert len({f.digest() for f in frames}) == 3
-    state = {}
+    # Exhaust the chapterless status probe first: its deliberate A input is
+    # not a no-input fallback and must not mask the semantic hold gate.
+    state = {'chapter_probe': {'month': None, 'opens': 3, 'seen': []}}
     for i in range(NO_INPUT_HOLD_MAX + 3):
         actions, state = decide(frames[i % 3], copy.deepcopy(state))
         if actions:
