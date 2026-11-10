@@ -717,7 +717,10 @@ def _selected_actor_guard(screen, mem, order):
         # Owner 2026-11-10: for an ordinary castle a different general may
         # depart in place of the planned one. Boss sorties keep the strict
         # check (their card kit and cancellation budget belong to the plan).
-        mem.setdefault('sortie_general', {})[order['step']] = name
+        # P1 (#3864) migrated sortie_general into the plan region; writing to
+        # the legacy flat key here would let migrate_legacy_state replace the
+        # whole plan dict and drop other steps' cached actors (#3918).
+        _plan_region(mem).setdefault('sortie_general', {})[order['step']] = name
         (mem.get('general_override') or {}).pop(order['step'], None)
         (mem.get('sortie_actor_miss') or {}).pop(order['step'], None)
         _record(mem, 'sortie_actor_substituted', **_deploy_context(order, mem),
