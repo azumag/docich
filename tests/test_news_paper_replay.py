@@ -43,7 +43,7 @@ def test_manifest_rejects_digest_mismatch():
 
 
 @pytest.mark.parametrize("filename", ["../secret", "../../x", "/etc/passwd",
-                                       "nested/chunk.json", r"..\\secret", ".."])
+                                       "nested/chunk.json", r"..\\secret", "single\\backslash", "chunk\x00name", ".."])
 def test_manifest_rejects_unsafe_filename_before_loading(filename):
     data, raw = _fixture()
     data["header"]["chunks"][0]["filename"] = filename
