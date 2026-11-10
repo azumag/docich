@@ -1078,8 +1078,14 @@ def castle_jump_step(screen, mem, frame):
             mem['expect_menu'] = True
             mem.pop('castle_jump', None)
             mem.pop('castle_jump_skip', None)
+            # SELECT from the named row (or onto the hero's castle) put the
+            # cursor on the source. Keep the estimate there; the deploy layer
+            # still corrects it from the castle status if it was not.
+            cell = chart.castles(mem.get('chapter') or 0).get(jump['source'])
+            if cell:
+                mem['cursor'], mem['uncertain'] = list(cell), False
             _record(mem, 'castle_jump_confirm', chart_step=jump['step'], target=jump['source'],
-                    strategy_variant='hero_select' if hero_select else None,
+                    **({'strategy_variant': 'hero_select'} if hero_select else {}),
                     observed_metric={'cursor': mem.get('cursor'),
                                      'screen_cursor': list(_cursor(screen) or ()),
                                      'roof_under_cursor': roof_visible},
