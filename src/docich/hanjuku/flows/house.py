@@ -14,7 +14,8 @@ from ..os_layer import roster as receipts
 # World facts shared with the economy strategy live in the OS layer.
 from ..os_layer.world import HOUSE_VIEW, _castle_status_after_sortie, _repair_hp_ready
 from ..strategy import goals
-from ..state.regions import world as _world, flow as _flow, journal as _journal, sorties as _sorties
+from ..state.regions import (world as _world, flow as _flow, journal as _journal,
+                              sorties as _sorties, plan as _plan_region)
 
 # The heart's centre and the selectable cell differ by half a view pixel
 # (four field pixels). Chapter 2's successful isolated trip used (128, 94).
@@ -997,7 +998,8 @@ def _resume_completed_survey(screen, mem, frame, scope, field_count, field_tick)
     if survey is None:
         return False, None
     if (screen.kind != 'map' or mem.get('chapter') not in HOUSE_VIEW
-            or any(mem.get(k) for k in ('active', 'y_jump', 'month_sub', 'battle')) or any(_flow(mem).get(k) for k in ('recall', 'sortie_attempt'))):
+            or _plan_region(mem).get('active')
+            or any(mem.get(k) for k in ('y_jump', 'month_sub', 'battle')) or any(_flow(mem).get(k) for k in ('recall', 'sortie_attempt'))):
         return True, None
     dirty = receipts.recheck_targets(mem)
     pending = [name for name, info in survey['statuses'].items()
@@ -1341,7 +1343,8 @@ def _step_once(screen, mem, frame):
                 # every observation and the bot sent no input.
                 or mem.get('chapter') is None
                 or (not monthly and mem.get('chapter') not in HOUSE_VIEW)
-                or (not monthly and (any(mem.get(k) for k in ('active', 'y_jump', 'month_sub', 'battle')) or any(_flow(mem).get(k) for k in ('recall', 'sortie_attempt'))))
+                or (not monthly and (_plan_region(mem).get('active')
+                                    or any(mem.get(k) for k in ('y_jump', 'month_sub', 'battle')) or any(_flow(mem).get(k) for k in ('recall', 'sortie_attempt'))))
                 or (not monthly and not goal_due and recent)
                 or (not monthly and field_count >= field_cap)
                 or (not monthly and field_month == mem.get('month') and not mem.get('recruit_roster_recheck')

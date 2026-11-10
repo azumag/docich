@@ -204,3 +204,58 @@ def test_plan_region_dies_with_the_chapter_but_journal_survives():
     assert 'plan' not in mem
     assert 'order_context' not in mem and 'sortie_general' not in mem
     assert mem['journal']['_departure_input']['request_trace'] == {'d': 2}
+
+
+def test_src_has_no_flat_access_to_migrated_keys():
+    # #3921 (follow-up #3918): migrate_legacy_state replaces the whole region
+    # value with any leftover flat value, so a single missed conversion that
+    # writes ``mem['sortie_general']`` flat silently drops every other step's
+    # data.  Flat *reads* are the same class of bug in reverse: after
+    # migration they always observe ``None`` and ignore the region copy.
+    # This scan forbids direct ``mem`` access to any migrated key in src/ so
+    # the replace semantics can be kept safely: producers must go through the
+    # region accessors (``world/plan/flow/journal``), which is also what makes
+    # whole-value replacement correct for legacy snapshots.
+    # Known blind spot: ``mem.get(var)`` where ``var`` is a computed key name
+    # cannot be matched statically; the tuple-literal form ``mem.get(k) for k
+    # in (...)`` is covered separately below.
+    import re
+    from pathlib import Path
+
+    migrated = {k for k, spec in KEY_OWNERSHIP.items() if spec['migrated']}
+    alt = '|'.join(sorted(map(re.escape, migrated)))
+    direct = [
+        re.compile(r"\bmem\[(['\"])(?:%s)\1\]" % alt),                      # mem['k'] (read/write/del)
+        re.compile(r"\bmem\.(?:get|pop|setdefault|update)\((['\"])(?:%s)\1" % alt),
+        re.compile(r"(['\"])(?:%s)\1\s+(?:not\s+)?in\s+mem\b" % alt),       # 'k' in mem
+    ]
+    # ``mem.get(var) for var in (<literal tuple>)`` where the literal contains
+    # migrated keys (the form used by hanjuku_policy/house pre-#3921).  The
+    # access and its generator are matched as one unit so that a second,
+    # accessor-routed comprehension reusing the same variable name on the
+    # same line does not produce false positives.
+    indirect = [
+        re.compile(r"\bmem\.(?:get|pop)\((\w+)\)\s+for\s+\1\s+in\s*[\(\[]([^\)\]]+)[\)\]]"),
+        re.compile(r"\bmem\[(\w+)\]\s+for\s+\1\s+in\s*[\(\[]([^\)\]]+)[\)\]]"),
+    ]
+    str_lit = re.compile(r"(['\"])(%s)\1" % alt)
+
+    src_root = Path(__file__).resolve().parents[1] / 'src' / 'docich'
+    violations = []
+    for path in sorted(src_root.rglob('*.py')):
+        if path.name == 'regions.py' and path.parent.name == 'state':
+            continue  # migrate_legacy_state itself owns the flat->region move
+        lines = path.read_text(encoding='utf-8').splitlines()
+        for lineno, line in enumerate(lines, 1):
+            code = line.split('#', 1)[0]
+            if any(p.search(code) for p in direct):
+                violations.append(f"{path}:{lineno}: {line.strip()}")
+                continue
+            for pat in indirect:
+                for m in pat.finditer(code):
+                    if str_lit.search(m.group(2)):
+                        violations.append(f"{path}:{lineno}: {line.strip()}")
+                        break
+    assert not violations, (
+        "flat access to migrated keys must go through the region accessors:\n"
+        + '\n'.join(violations))

@@ -137,7 +137,7 @@ def _equivalent_cancel_suppressed(order, mem) -> bool:
 
 
 def _launch_order(mem, step, probe):
-    order = (mem.get('launched_orders') or {}).get(step)
+    order = (_world(mem).get('launched_orders') or {}).get(step)
     if isinstance(order, dict):
         return order
     return {
