@@ -16,16 +16,15 @@ docich: エラー: Hanjuku terminal evidence holds input
 `hanjuku_run.observe()` は端末判定（`TERMINAL_REASONS`）が入ると**以後その run を終了扱い**にし、
 新しいフレームが来ても判定を解きません。ランタイムが復活する経路がありませんでした。
 
-## 修正（v631 `hanjuku-chart-v631-terminal-revival`）
+## 自動解除は行わない（設計判断）
 
-`observe()` で、端末判定が `game_over` のときに限り、
+`game_over` は「タイトルへ戻った」＝試合終了の証拠で、**別フレームが来ても解除しない**のが
+既存の契約です（`tests/test_hanjuku_script.py::test_title_return_requires_a_started_game_and_multiple_timed_observations`:
+"Terminal evidence is latched even if a later screen is different"）。
 
-- エミュレータが **playing** を報告し、
-- 端末判定時と**異なるフレーム**で、
-- そのフレームが **title ではない**（＝ゲームプレイに戻っている）
-
-なら、端末判定を**解除**して観測を継続します（`terminal_cleared` イベントを記録）。
-`screen_stalled` / `input_stalled` は従来どおり解除しません。
+今回の事象は、**エミュレータが落ちて復旧した**ことが原因で、ゲーム内容のゲームオーバーでは
+ありません。自動解除は「終了した試合を再開する」危険があるため行わず、
+**運用手順（下記）で解除**します。
 
 ## 復旧（実測）
 
@@ -33,7 +32,16 @@ docich: エラー: Hanjuku terminal evidence holds input
 - 直後に入力が通り、`docich: 1 件のアクションを送信しました (hanjuku-hero)` を確認。
 - ゲームは召喚戦→卵バトルメニューへ進行し、ボットの意思決定も再開（18:09 の記録）。
 
-## 確認
+## 復旧手順（今回の実施内容）
 
-- `tests/test_hanjuku_terminal_revival.py` を追加（復活する／同一フレームでは解除しない）。
-- 端末・損失・出撃系 96件 passed。
+1. `run-soren-live/runtimes/<rt>/hanjuku_run.json` をバックアップ。
+2. `terminal_reason` と `terminal_candidate` を `null` に更新。
+3. `docich send - '{"actions":[...]}'` で入力が通ることを確認。
+4. 画面が進むことを確認（召喚戦 → 卵バトルメニュー）。
+
+## フォローアップ（恒久策の候補）
+
+- エミュレータ停止→復帰を検知して**端末判定を明示的に解除する運用手順**を CLI に用意する
+  （終了した試合を誤って再開しないよう、オーナー操作を必須にする）。
+- `docich switch` の `round_boundary` タイムアウト時に canonical 状態が `failed` へ落ち、
+  `recover` も `quiesce` で失敗する経路の改善（今回は `game_switch.json` のバックアップから復元）。
