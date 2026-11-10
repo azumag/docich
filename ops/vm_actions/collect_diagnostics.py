@@ -7086,6 +7086,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v638-brain-autosave",
             "hanjuku-chart-v639-autosave-on-observe",
             "hanjuku-chart-v640-autosave-port",
+            "hanjuku-chart-v641-chapter-from-castle",
             "hanjuku-chart-v560-castle-list-scroll",
             "hanjuku-chart-v561-post-month-repair-status",
             "hanjuku-chart-v501-idle-reanchor",

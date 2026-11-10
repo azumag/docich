@@ -126,7 +126,11 @@ def observe_chapter_castle(mem, castle):
     A name absent from this chapter and present in the next one is proof.
     """
     chapter = mem.get('chapter') or 0
-    if (not chapter and mem.get('resume_chapter_pending') is True and castle
+    # A unique castle name identifies its chapter even when the bot has no
+    # measurement at all (a restart with cleared state left chapter=None, and
+    # the run then only did monthly chores: g1163 2026-11-10 21:1x). The
+    # resume flag is one such case, not the only one.
+    if (not chapter and castle
             and castle not in {'アルマムーン', 'あるまむーん', 'ほんじょう', 'ボス'}):
         # A restored party picker has no chapter label. Resolve from a fresh
         # full castle name unique across all chapters, never from the old bot.
