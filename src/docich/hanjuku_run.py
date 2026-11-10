@@ -148,6 +148,34 @@ def _checkpoint_start_request(runtime_dir: Path, identity: dict, wall: float):
     return request
 
 
+AUTOSAVE_REQUEST = 'hanjuku_autosave.json'
+AUTOSAVE_INTERVAL_S = 900
+
+
+def request_autosave(runtime_dir: Path, *, now=None, interval=AUTOSAVE_INTERVAL_S):
+    """Ask the adapter to save the emulator state at most once per interval.
+
+    The agent loop's own periodic save never reached the emulator in production
+    (g1163 2026-11-10: the state file stayed at 10:58 for nine hours, so a
+    hung battle cost the whole run). The brain already runs inside the runtime,
+    so it drops a request beside the run file and the adapter — the only place
+    with the RetroArch command port — performs it.
+    """
+    now=time.time() if now is None else now
+    if not isinstance(interval, int) or interval <= 0:
+        return None
+    path=runtime_dir/AUTOSAVE_REQUEST
+    try:
+        prior=read_record(path)
+    except Exception:
+        prior={}
+    last=prior.get('requested_at') if isinstance(prior, dict) else None
+    if isinstance(last, (int, float)) and 0 <= now-last < interval:
+        return None
+    atomic_write_json(path, {'requested_at': now})
+    return path
+
+
 def terminal(runtime_dir: Path, identity: dict):
     state=load(runtime_dir,identity)
     reason=state.get('terminal_reason')

@@ -26,6 +26,7 @@ from docich.hanjuku_pixels import read_png
 from docich.hanjuku.decision_log import _record
 from docich.hanjuku.os_layer.phase import classify
 from docich.hanjuku_run import append_log
+from docich import hanjuku_run
 from docich.hanjuku.os_layer.commands import menu_navigation_feedback, status_panel_feedback
 from docich.retroarch_boundary import read_record
 
@@ -626,6 +627,10 @@ def main():
         if len(relative.parts)!=3 or relative.parts[1]!='runtimes' or runtime.is_symlink():
             raise ValueError('invalid runtime')
         if not meta.get('terminal_reason') and not meta.get('terminal_candidate'):
+            try:
+                hanjuku_run.request_autosave(runtime)
+            except Exception as exc:            # never block a decision
+                print(f'hanjuku-bot: autosave_request_failed {exc}', file=sys.stderr)
             frame=read_png(Path(obs['screenshot'])).resized()
             # g438 04:18: the policy memory passed 16 KiB after a long game and
             # every observation failed to load it (no input, screen_stalled).

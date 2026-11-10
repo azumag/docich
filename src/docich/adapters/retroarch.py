@@ -409,12 +409,32 @@ class RetroArchAdapter(Adapter):
             return
         self.ctx.xkit.focus(self._window_id)
 
+    def _honor_autosave(self, runtime_dir) -> None:
+        """Perform a save the brain asked for (see hanjuku_run.request_autosave)."""
+        from ..hanjuku_run import AUTOSAVE_REQUEST
+        request = runtime_dir / AUTOSAVE_REQUEST
+        try:
+            if not request.exists():
+                return
+        except OSError:
+            return
+        try:
+            send_ra_cmd('SAVE_STATE', port=self._network_port(), wait_reply_s=.2)
+        except Exception as exc:
+            print(f"docich: 警告: autosave に失敗しました: {exc}", file=sys.stderr)
+            return
+        try:
+            request.unlink()
+        except OSError:
+            pass
+
     def act(self, action: Action) -> None:
         self._check_fence()
         runtime_dir = self._runtime_dir()
         from .. import hanjuku_hotload
         with (input_gate(runtime_dir, time.monotonic() + 5) if runtime_dir else nullcontext()):
             if runtime_dir:
+                self._honor_autosave(runtime_dir)
                 require_input_open(runtime_dir)
                 if hanjuku_hotload.enabled(self.ctx.game):
                     run = hanjuku_hotload.load(runtime_dir, hanjuku_hotload.runtime_identity(self.ctx.fence))
