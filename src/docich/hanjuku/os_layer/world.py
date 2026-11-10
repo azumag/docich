@@ -6,7 +6,7 @@ castles, marching generals, the hero's castle). These are observations, not
 plans: the strategy layer reads them to choose orders.
 """
 from __future__ import annotations
-from ..state.regions import world as _world
+from ..state.regions import world as _world, sorties as _sorties
 
 from .screen import Screen, castle_roofs
 from .pixels import Frame
@@ -280,7 +280,22 @@ def observe_owners(mem, roofs, cam):
 SORTIE_BUSY_TICKS = 400       # legacy observation window (~10 min), NOT proof of arrival
 BOSS_ARRIVAL_LIMIT = 2 * SORTIE_BUSY_TICKS
 # g1133 chapter 6: 603 chart cells took 23-32 min and 740 cells took 34 min.
-MARCH_TICKS_PER_CELL = {6: 2.4}
+# The rate must cover the slow end (32 min / 603 cells = 3.18 ticks/cell): at
+# 2.4 the limit was 1447 and a march measured at 1701 ticks was declared
+# overdue while it could still arrive, re-sending the same order.
+# Measured on chapter 6 (g1163 2026-11-05): a march takes ~3.2 observations per
+# chart cell. The rate is the game's walking speed, not a chapter property, so
+# it applies to every chapter that has no measured override. Chapters without an
+# entry used the fixed 800-observation default and declared long marches overdue
+# while they were still walking (g1163 chapter 8 2026-11-09 23:22: three
+# あるまむーん marches to おだわら/まつやま were abandoned at 1675-1813).
+MARCH_TICKS_PER_CELL = {6: 3.2}
+DEFAULT_MARCH_TICKS_PER_CELL = 3.2
+# Chapters whose short-map marches keep the fixed window: chapter 3's sites and
+# chapter 4's four kings are reached across a road map whose walking time was
+# never measured in cells, and their relaunch budgets are calibrated to the
+# 800-observation bound (tests/test_hanjuku_boss_sortie_overdue.py).
+FIXED_LIMIT_CHAPTERS = frozenset({3, 4})
 LONG_MARCH_TICKS = 6 * SORTIE_BUSY_TICKS   # window for late arrival binding
 MARCH_ARRIVAL_CAP = LONG_MARCH_TICKS
 
@@ -292,9 +307,12 @@ def march_arrival_limit(mem, sortie):
     busy-general bookkeeping use the same bound without an upwards import.
     An exceeded bound is not evidence that a general has arrived.
     """
-    rate = MARCH_TICKS_PER_CELL.get(mem.get('chapter') or 0)
-    if not rate:
-        return BOSS_ARRIVAL_LIMIT
+    chapter_now = mem.get('chapter') or 0
+    rate = MARCH_TICKS_PER_CELL.get(chapter_now)
+    if rate is None:
+        if chapter_now in FIXED_LIMIT_CHAPTERS:
+            return BOSS_ARRIVAL_LIMIT
+        rate = DEFAULT_MARCH_TICKS_PER_CELL
     cells = chart.castles(mem.get('chapter'))
     source = cells.get(sortie.get('source'))
     target_name = sortie.get('target') or sortie.get('planned_target')
@@ -320,7 +338,7 @@ def _en_route(mem):
     """
     now = int(mem.get('tick') or 0)
     sorties = [
-        s for s in (mem.get('sorties') or {}).values()
+        s for s in _sorties(mem).values()
         if isinstance(s, dict)
         and s.get('status') in ('en_route', 'launched_unconfirmed')
         and type(s.get('tick')) is int
@@ -414,6 +432,113 @@ def _apply_world_flags(mem, flags):
                         if kind == 'lost' else '全体マップで城の旗が自軍の色のため占領として扱う'))
         if kind == 'lost':
             _tally(mem, 'castle_losses')
+
+
+SEASON_SITE_CONFIRM = 2        # consecutive Y-view readings before a site state changes
+
+
+def _apply_season_sites(mem, sites):
+    """Keep chapter 4's cleared 四季王 sites closed from the Y view's markers.
+
+    g1163 2026-11-09: 北西/北東/南西 had been cleared (owner report; the live
+    Y view drew their pennants) but the bot kept sortieing to them, because a
+    king fight that ends on the closing dialogue leaves no measured 0 HP and
+    so never reached ``boss_victories``. The marker is direct evidence, so it
+    also stops the next sortie there. Two consecutive readings are required,
+    an unreadable marker keeps the previous state, and the impossible
+    "all four closed while the chapter is not over" reading is refused so a
+    misread can never park the whole chapter.
+    """
+    chapter = mem.get('chapter') or 0
+    if chapter != 4 or not sites:
+        return
+    sites_all = set(chart.boss_sites(4))
+    if (set(sites) >= sites_all and all(kind == 'closed' for kind in sites.values())
+            and (mem.get('boss_defeated') or 0) != 4):
+        # The chapter cannot still be running with every site cleared: this is
+        # a misread (gold frame/cursor pixels), never a reason to park the
+        # whole chapter. One record per reading signature.
+        digest = [list(item) for item in sorted(sites.items())]
+        if mem.get('season_sites_refused') != digest:
+            mem['season_sites_refused'] = digest
+            _record(mem, 'season_sites_all_closed_refused',
+                    observed_metric={'sites': sorted(sites), 'marker': 'closed'},
+                    reason='全4地点が撃破済みの印でも章が終わっていないため、読み違いとして記録しない')
+        return
+    seen = mem.setdefault('season_sites', {})
+    streak = mem.setdefault('season_site_streak', {})
+    for name, kind in sorted(sites.items()):
+        previous = streak.get(name) or {}
+        count = previous.get('count', 0) + 1 if previous.get('kind') == kind else 1
+        streak[name] = {'kind': kind, 'count': count, 'chapter': chapter}
+        if count < SEASON_SITE_CONFIRM:
+            continue
+        row = seen.get(name) or {}
+        if row.get('state') == kind and row.get('chapter') == chapter:
+            continue
+        if kind == 'closed' and (mem.get('boss_defeated') or 0) != 4:
+            closed = {other for other, value in seen.items()
+                      if isinstance(value, dict) and value.get('state') == 'closed'
+                      and value.get('chapter') == chapter}
+            closed.add(name)
+            if len(closed) >= len(chart.boss_sites(4)):
+                _record(mem, 'season_sites_all_closed_refused', castle=name,
+                        observed_metric={'closed': sorted(closed),
+                                         'readings': count, 'marker': kind},
+                        reason='全4地点が撃破済みの印でも章が終わっていないため、読み違いとして記録しない')
+                continue
+        seen[name] = {'state': kind, 'chapter': chapter, 'tick': int(mem.get('tick') or 0),
+                      'readings': count}
+        _record(mem, 'season_site_closed' if kind == 'closed' else 'season_site_open',
+                castle=name,
+                observed_metric={'site': name, 'marker': kind, 'readings': count},
+                resulting_event=f'{kind}:{name}',
+                reason=('全体マップの四季王の印が旗に変わったため、この地点は撃破済みとして出撃しない'
+                        if kind == 'closed' else
+                        '全体マップの四季王の印がドクロのため、撃破済みの記録を取り消して出撃対象へ戻す'))
+
+
+BOSS_SKULL_READINGS = 2      # equal Y-view skull readings before the cell is used
+
+
+def _apply_skull_boss(mem, frame):
+    """Locate a boss from the Y view's boss skull.
+
+    Chapter 3's boss skull is the same sprite for chapter 4's sites and for a
+    moving boss, so a single skull on the whole-island view is the boss's
+    current cell. Two equal readings are required, an unreadable view keeps
+    the previous value, and the orchestrator decides how long it stays valid
+    (a moving boss ages out, a static one keeps its measured cell).
+    Chapter 4's four sites are read by ``_apply_season_sites`` instead.
+    """
+    chapter = mem.get('chapter') or 0
+    if chapter in (0, 4) or frame is None:
+        return
+    from .readers import skull_cell_at, y_view_skulls
+    skulls = y_view_skulls(frame)
+    if len(skulls) != 1:
+        mem.pop('boss_cell_streak', None)
+        return
+    cell = skull_cell_at(skulls[0], chapter)
+    if cell is None:
+        return
+    streak = mem.get('boss_cell_streak') or {}
+    count = (streak.get('count', 0) + 1) if streak.get('cell') == list(cell) else 1
+    mem['boss_cell_streak'] = {'cell': list(cell), 'count': count}
+    if count < BOSS_SKULL_READINGS:
+        return
+    previous = mem.get('boss_cell') or {}
+    mem['boss_cell'] = {'chapter': chapter, 'cell': list(cell),
+                        'tick': int(mem.get('tick') or 0), 'readings': count}
+    if previous.get('chapter') != chapter or previous.get('cell') != list(cell):
+        _record(mem, 'boss_cell_measured',
+                observed_metric={'chapter': chapter, 'cell': list(cell), 'readings': count},
+                resulting_event=f'boss_cell:{cell[0]},{cell[1]}',
+                reason='全体マップのボスのドクロ位置からボスセルを実測した')
+
+
+# Backwards-compatible name used by the chapter-9 moving-boss call sites.
+_apply_moving_boss = _apply_skull_boss
 
 
 def _owned(mem):

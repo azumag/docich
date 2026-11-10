@@ -154,8 +154,7 @@ Discordでは `DOCICH_DISCORD_LLM_PROVIDER` を `compatible`（従来の既定�
 `openrouter`/`vercel`/`cloudflare` から明示する。named profileは固定HTTPS base、
 単一model、既存の明示API keyが必要。modelは具体IDの固定allowlistで、
 OpenRouter/Vercelは`openai/gpt-4.1-nano`/`openai/gpt-6-luna`、
-Cloudflareは`@cf/qwen/qwen3-30b-a3b-fp8`/
-`@cf/meta/llama-3.1-8b-instruct-fp8-fast`だけを受理する。
+Cloudflareは`@cf/meta/llama-3.1-8b-instruct-fp8-fast`だけを受理する。
 `:online`等のvariant、`vmc/...` virtual model、自動router、未知IDはPOST前拒否。
 OpenRouterのonline variantはweb pluginを有効化し、Vercel virtual modelはrequestの
 provider/fallback制限を上書きし得るため、safe alphabetだけには依存しない。
@@ -197,7 +196,7 @@ routing有効時のAPI-onlyも分類からの残り45秒をbounded callbackへ�
   既存`AI_GATEWAY_API_KEY`またはその`_FILE`、
   `DOCICH_CHAT_VERCEL_UPSTREAM=openai`、
   `DOCICH_CHAT_VERCEL_BILLING_MODE=credits_only`
-- `cloudflare-api:cf/qwen/qwen3-30b-a3b-fp8`:
+- `cloudflare-api:cf/meta/llama-3.1-8b-instruct-fp8-fast`:
   既存`CLOUDFLARE_API_TOKEN`またはその`_FILE`、
   `DOCICH_CHAT_CLOUDFLARE_ACCOUNT_ID=<32hex>`。
   safe agent alphabet上の`cf/...`を固定HTTP modelの`@cf/...`へ投影する。
@@ -253,7 +252,6 @@ Qwen3約$0.000186。これは追加reasoning・fees・plan料金を含まない�
 [Vercel Luna](https://vercel.com/ai-gateway/models/gpt-6-luna)、
 [Vercel BYOK](https://vercel.com/docs/ai-gateway/authentication-and-byok/byok)、
 [Workers AI OpenAI compatibility](https://developers.cloudflare.com/workers-ai/configuration/open-ai-compatibility/)、
-[Workers AI Qwen3](https://developers.cloudflare.com/workers-ai/models/qwen3-30b-a3b-fp8/)、
 [Workers AI pricing](https://developers.cloudflare.com/workers-ai/platform/pricing/)、
 [Workers plan pricing](https://developers.cloudflare.com/workers/platform/pricing/)。
 

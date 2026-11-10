@@ -14,7 +14,7 @@ from docich.hanjuku.strategy import orders as _orders_mod
 from docich.hanjuku_pixels import Frame
 from docich.hanjuku_screen import Screen
 from docich.hanjuku.state.regions import flow as _flow, journal as _journal
-from docich.hanjuku.state.regions import world as _world
+from docich.hanjuku.state.regions import world as _world, sorties as _sorties, plan as _plan_region
 
 FRAME = Frame(256, 224, bytes(256 * 224 * 3))
 BASE_ORDERS = copy.deepcopy(chart.CHAPTER_1_ORDERS)
@@ -238,13 +238,27 @@ def test_chapter_change_drops_adjusted_chart():
                  'after': ['whenever']}]},
     {'orders': [{'step': 'J1', 'general': 'x', 'source': 'ゴーメン', 'target': 'けっかい'}] * 2},
     {'request_digest': 'nothex'},
-    {'purchases': {'month': [1, 13]}},
-    {'purchases': {'month': [1, 8], 'cards': [['ハッキング', 1]]}},
-    {'purchases': {'month': [1, 8], 'soldiers': -1}},
 ])
 def test_invalid_adjusted_charts_are_rejected(patch):
     with pytest.raises(ValueError):
         adjust.validate(adjusted_doc('a' * 16, **patch))
+
+
+@pytest.mark.parametrize('patch', [
+    {'purchases': {'month': [1, 13]}},
+    {'purchases': {'month': [1, 8], 'cards': [['ハッキング', 1]]}},
+    {'purchases': {'month': [1, 8], 'soldiers': -1}},
+])
+def test_a_malformed_purchase_part_keeps_the_orders(patch):
+    """The orders are the plan; a broken optional part must not discard them.
+
+    History: adjust_worker generate_failed invalid_output 'invalid purchases'
+    five times, each one costing another LLM cycle.
+    """
+    validated = adjust.validate(adjusted_doc('a' * 16, **patch))
+    assert validated['orders']
+    assert validated['purchases'] is None
+    assert validated['dropped_parts'] == ['purchases']
 
 
 def test_save_load_and_request_files_are_atomic_runtime_records(tmp_path):
@@ -831,9 +845,9 @@ def test_adjusted_boss_order_reaches_boss_entry_and_battle_tactics(monkeypatch):
     assert mem['active'] == j2
     # Boss guard still applies: no companion/cards evidence, no target confirmation.
     assert _launch(monkeypatch, mem) == []
-    mem['order_context'] = {j2: {'actual_general': 'ゼウス',
+    _plan_region(mem)['order_context'] = {j2: {'actual_general': 'ゼウス',
                                  'observed_metric': {'cards': sorted(['クースカン', 'ノリウツール'])}}}
-    mem['sortie_general'] = {j2: 'ゼウス'}
+    _plan_region(mem)['sortie_general'] = {j2: 'ゼウス'}
     assert _launch(monkeypatch, mem) == [policy.pad('a')]
     assert _world(mem)['launched']['けっかい'] == {'general': 'ゼウス', 'step': j2}
     # Unknown general on the measured boss entry text is still refused.
@@ -1040,19 +1054,19 @@ def test_ambiguous_sorties_are_not_guessed(monkeypatch):
         'A:dddddddd:J9': {'general': chart.HERO, 'target': 'けっかい', 'status': 'en_route'}}
     _world(mem)['launched_orders'] = {k: {'step': k, 'general': v['general'], 'target': v['target'],
                                   'source': 'ゴーメン', 'cards': [], 'after': None}
-                              for k, v in mem['sorties'].items()}
+                              for k, v in _sorties(mem).items()}
     assert policy.message_step(
         _text_screen('ココットしょうぐんがスペンソニアじょうにのりこんだ'), mem) == [policy.pad('a')]
     assert mem['attack']['step'] is None
     assert decisions(mem, 'attack_observed')[-1]['deviation_reason'] == 'ambiguous_sortie'
-    assert all(v['status'] == 'en_route' for v in mem['sorties'].values())
+    assert all(v['status'] == 'en_route' for v in _sorties(mem).values())
     # An ambiguous boss entry advances the screen without binding either sortie.
     mem['attack'] = None
     entry = f'{chart.HERO}しょうぐんがボスじょうにせめこんだ!!'
     assert policy.message_step(_text_screen(entry), mem) == [policy.pad('a')]
     assert mem['attack']['step'] is None
     assert decisions(mem, 'attack_observed')[-1]['deviation_reason'] == 'ambiguous_sortie'
-    assert all(v['status'] == 'en_route' for v in mem['sorties'].values())
+    assert all(v['status'] == 'en_route' for v in _sorties(mem).values())
 
 
 def test_ambiguous_boss_entry_fights_with_the_marching_sorties_kit():
@@ -1090,7 +1104,7 @@ def test_ambiguous_boss_entry_fights_with_the_marching_sorties_kit():
     # A battle at a castle we hold is a defence and keeps its own step.
     context = policy._battle_context({'attack': {'general': chart.HERO, 'castle': 'スペンソニア',
                                                  'side': 'attack', 'step': None},
-                                      'captured': ['スペンソニア'], 'sorties': mem['sorties']},
+                                      'captured': ['スペンソニア'], 'sorties': _sorties(mem)},
                                      chart.HERO)
     assert (context['side'], context['step']) == ('defense', None)
 
@@ -1194,13 +1208,15 @@ def test_worker_prompts_with_garrisons_and_drops_orders_whose_general_is_elsewhe
         return json.dumps(body, ensure_ascii=False), 'codex'
     assert worker.consider(None, Game(), tmp_path, generate=generate, background=False)
     assert '"garrison"' in prompts[0] and 'カストーラ' in prompts[0] and '"en_route"' in prompts[0]
-    saved = adjust.load(tmp_path)
-    assert [o['step'] for o in saved['orders']] == ['F1']
+    # Owner 2026-11-08: the hero is never the actor of an adopted plan, so the
+    # prompt says so and no answer that names him is saved.
+    assert '主人公（どうし）は出撃させない' in prompts[0]
+    assert adjust.load(tmp_path) is None
     events = [json.loads(line) for line in
               (tmp_path / f'{adjust.HISTORY_LOG}.jsonl').read_text(encoding='utf-8').splitlines()]
     [dropped] = [e for e in events if e['event'] == 'adjusted_orders_dropped']
     assert {d['step']: d['why'] for d in dropped['dropped']} == {
-        'F2': 'general_elsewhere', 'F3': 'general_marching',
+        'F1': 'hero_not_dispatchable', 'F2': 'general_elsewhere', 'F3': 'general_marching',
         'F4': 'general_unconfirmed_at_source', 'F5': 'source_lost'}
 
 
@@ -1448,6 +1464,35 @@ def test_g514_live_plan_and_recent_target_reservation_still_suppress_retake():
     policy._off_chart(mem)
     assert not mem['chart_adjust'].get('interim_order')
     _, mem = g514_locked_plan()
-    mem['sorties']['recent'] = {'general': 'ヴィーナス', 'target': 'ナキューメラ',
+    _world(mem).setdefault('sorties', {})['recent'] = {'general': 'ヴィーナス', 'target': 'ナキューメラ',
                                'status': 'en_route', 'tick': mem['tick'] - 1}
     assert not any(o['target'] == 'ナキューメラ' for o in policy.interim_candidates(mem).values())
+
+
+def test_roster_probe_is_read_only_and_requires_a_source_probe():
+    # Owner 2026-11-08: a one-general castle may only be inspected, never
+    # dispatched. The read-only marker is valid only on a source probe.
+    doc = adjusted_doc('0123456789abcdef')
+    doc['orders'] = [{'step': 'J1', 'general': 'しょうぐん', 'source': 'ゴーメン',
+                      'target': 'スペンソニア', 'cards': [], 'after': None,
+                      'source_probe': True, 'roster_probe': True}]
+    validated = adjust.validate(doc)
+    assert validated['orders'][0]['roster_probe'] is True
+    doc['orders'][0].pop('source_probe')
+    with pytest.raises(ValueError):
+        adjust.validate(doc)
+
+
+def test_save_records_a_dropped_optional_part_and_keeps_the_plan(tmp_path):
+    doc = adjusted_doc('c' * 16, purchases={'month': [1, 13]})
+    saved = adjust.save(tmp_path, doc)
+    assert saved['purchases'] is None
+    assert saved['orders']
+    assert saved['dropped_parts'] == ['purchases']
+    stored = json.loads((tmp_path / adjust.ADJUSTED_FILE).read_text(encoding='utf-8'))
+    assert stored['orders'] == json.loads(json.dumps(saved['orders']))
+    history = [json.loads(line) for line in
+               (tmp_path / f'{adjust.HISTORY_LOG}.jsonl').read_text(encoding='utf-8').splitlines()]
+    assert history[0]['event'] == 'adjusted_parts_dropped'
+    assert history[0]['parts'] == ['purchases']
+    assert history[-1]['event'] == 'adjusted_chart_saved'

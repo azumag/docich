@@ -502,3 +502,121 @@ def test_fade_frames_end_the_trip_when_the_menu_never_appears():
     assert mem['castle_jump_skip']['step'] == 'J1'
     failed = [r for r in mem['_records'] if r['decision'] == 'castle_jump_failed']
     assert failed and failed[-1]['observed_metric']['why'] == 'unexpected_menu'
+
+
+# --- long castle rosters (g1133 ユージア, g1163 アブダレ) -------------------
+CHAPTER_6_LONG = [
+    'アルマムーン', 'アルブラーカ', 'イカリア', 'カバルッサ', 'オケアナ',
+    'バビラリー', 'ダーラント', 'セレーネ', 'グルーポフ', 'ユージア',
+    'アブダレ', 'トウトウ',
+]
+
+
+def _castle_list_window(names, offset, selected):
+    """An eight-row page of the しろ list with the hand on the selected row."""
+    hand_y = 39 + 16 * (selected - offset)
+    return _castle_list(names[offset:offset + 8], hand_y=hand_y)
+
+
+def test_last_page_source_is_reached_past_the_old_eight_row_bound():
+    """g1163 2026-11-09: the list stopped at row 8, so アブダレ (row 10) failed.
+
+    The list opens on the home castle at row 0 and shows eight rows. Reaching
+    row 10 needs ten Downs and one page shift; the old bound of eight ended
+    every trip with ``castle_missing`` before the row could appear.
+    """
+    mem = _memory()
+    mem['castle_jump'] = _jump('list', menu_presses=2, source='アブダレ')
+    selected = offset = downs = 0
+    for _ in range(20):
+        screen = _castle_list_window(CHAPTER_6_LONG, offset, selected)
+        actions = M.castle_jump_step(screen, mem, None)
+        if actions == [M.pad('select')]:
+            break
+        assert actions == [M.pad('down')]
+        downs += 1
+        selected = min(selected + 1, len(CHAPTER_6_LONG) - 1)
+        if selected - offset >= 8:
+            offset = selected - 7   # native eight-row window scrolls at the bottom
+    else:
+        raise AssertionError('the source row was never reached')
+    assert downs == 10
+    assert mem['castle_jump']['phase'] == 'confirm'
+    assert not [r for r in mem['_records'] if r['decision'] == 'castle_jump_failed']
+
+
+def test_scroll_bound_covers_the_longest_chapter_roster():
+    longest = max(len(names) for names in M.chart.CASTLE_NAMES.values())
+    assert M.CASTLE_JUMP_SCROLL_LIMIT >= longest - 1
+
+
+def test_a_replan_does_not_abort_the_trip_to_the_source_castle():
+    """Five jumps died at age 1 with order_changed (g1163 2026-11-10 05:38).
+
+    The chart worker renumbers every step when it re-plans, but the walk to the
+    same departure castle for the same target by the same general is still the
+    right physical action.
+    """
+    from docich.hanjuku.flows import map as map_flow
+
+    old = {'step': 'A:old:M1', 'general': 'シュゼット', 'source': 'あるまむーん',
+           'target': 'しまばら'}
+    new = {'step': 'A:new:M1', 'general': 'シュゼット', 'source': 'あるまむーん',
+           'target': 'しまばら'}
+    mem = {'chapter': 8, 'active': 'A:new:M1', 'orders': {'A:new:M1': 'pending'},
+           'chart_plan': {'orders': [new]}, 'sorties': {}, 'world': {}}
+    assert map_flow._jump_successor(mem, old) is new
+    other_target = dict(new, target='ひめじ')
+    mem2 = dict(mem, chart_plan={'orders': [other_target]})
+    assert map_flow._jump_successor(mem2, old) is None
+    other_general = dict(new, general='アテナ')
+    mem3 = dict(mem, chart_plan={'orders': [other_general]})
+    # A re-plan may pick another actor for the same castle trip; the walk is
+    # still the right action (a substitute may depart from there).
+    assert map_flow._jump_successor(mem3, old) is other_general
+
+
+def test_a_jump_survives_its_step_disappearing_from_the_plan():
+    """The jump died at age 1 whenever a re-plan dropped its step (2026-11-10).
+
+    The jump itself keeps the departure castle and target, so the trip can
+    continue to the new active order for the same castle.
+    """
+    from docich.hanjuku.flows import map as map_flow
+
+    active = {'step': 'A:new:M1', 'general': 'マンゴスチン', 'source': 'あるまむーん',
+              'target': 'しまばら'}
+    mem = {'chapter': 8, 'active': 'A:new:M1', 'orders': {'A:new:M1': 'pending'},
+           'chart_plan': {'orders': [active]}, 'sorties': {}, 'world': {}}
+    jump = {'step': 'A:old:M1', 'source': 'あるまむーん', 'target': 'しまばら'}
+    assert map_flow._jump_successor(mem, None, jump) is active
+    jump_other = dict(jump, target='ひめじ')
+    assert map_flow._jump_successor(mem, None, jump_other) is None
+
+
+def test_an_empty_active_order_does_not_end_the_trip():
+    """Between plans the active order is briefly empty (g1163 2026-11-10 06:40)."""
+    from docich.hanjuku.flows import map as map_flow
+
+    mem = {'chapter': 8, 'active': None, 'orders': {}, 'chart_plan': {'orders': []},
+           'sorties': {}, 'world': {},
+           'castle_jump': {'step': 'A:old:M1', 'source': 'あるまむーん',
+                           'target': 'しまばら', 'phase': 'menu', 'age': 0, 'total': 0,
+                           'menu_presses': 1}}
+    screen = type('Screen', (), {'kind': 'unknown', 'hand': None, 'lines': [], 'text': ''})()
+    out = map_flow.castle_jump_step(screen, mem, None)
+    assert out == [] and mem['castle_jump']['orphan'] == 1
+
+
+def test_an_unresolvable_active_step_holds_the_trip():
+    """The active step survived a re-plan as a bare id (g1163 07:01)."""
+    from docich.hanjuku.flows import map as map_flow
+
+    mem = {'chapter': 8, 'active': 'A:ghost:M1', 'orders': {}, 'chart_plan': {'orders': []},
+           'sorties': {}, 'world': {},
+           'castle_jump': {'step': 'A:old:M1', 'source': 'あるまむーん',
+                           'target': 'しまばら', 'phase': 'menu', 'age': 0, 'total': 0,
+                           'menu_presses': 1}}
+    screen = type('Screen', (), {'kind': 'unknown', 'hand': None, 'lines': [], 'text': ''})()
+    assert map_flow.castle_jump_step(screen, mem, None) == []
+    assert mem['castle_jump']['orphan'] == 1

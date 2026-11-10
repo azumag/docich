@@ -6,7 +6,7 @@ current battle state and returns a judgment or bookkeeping update; none of
 them reads the screen or produces pad input (see ``flows.battle``).
 """
 from __future__ import annotations
-from ..state.regions import world as _world
+from ..state.regions import world as _world, sorties as _sorties, plan as _plan_region
 
 from dataclasses import asdict
 
@@ -39,7 +39,7 @@ def _battle_context(mem, ally):
         return {'castle': attack.get('castle'), 'side': side, 'step': step,
                 'entry_evidence': attack.get('entry_evidence')}
     captured = set(mem.get('captured', []))
-    en_route = [step for step, sortie in (mem.get('sorties') or {}).items()
+    en_route = [step for step, sortie in _sorties(mem).items()
                 if sortie.get('general') == ally
                 and sortie.get('status') in ('en_route', 'arrived', 'launched_unconfirmed')
                 and sortie.get('target') not in captured]
@@ -81,7 +81,7 @@ def _bind_battle_strategy(mem, cur):
         return
     step = cur.get('step')
     retry = (mem.get('retry_context') or {}).get(step)
-    sortie = (mem.get('order_context') or {}).get(step) or {}
+    sortie = (_plan_region(mem).get('order_context') or {}).get(step) or {}
     if sortie.get('actual_general') != cur.get('ally'):
         sortie = {}
     if retry or (mem.get('card_override') or {}).get(step):
@@ -216,7 +216,7 @@ def _strong_cards_carried(mem, cur):
     kit = (mem.get('strong_card_kit') or {}).get(step)
     if not kit or not step:
         return []
-    context = (mem.get('order_context') or {}).get(step) or {}
+    context = (_plan_region(mem).get('order_context') or {}).get(step) or {}
     observed = (context.get('observed_metric') or {}).get('cards')
     if not isinstance(observed, list):
         return []
@@ -478,7 +478,7 @@ def _card_damage_gate(mem, cur, card, *, listed_cards=None):
     # Owner 2026-11-06: バルムンクはボス専用。チャート札にも使用直前の制限を適用。
     measured_boss = bool(boss or cur.get('enemy') in chart.BOSSES.values()
                          or cur.get('entry_evidence') == 'measured_boss_entry')
-    if card == 'バルムンク' and not measured_boss:
+    if card in reference.BOSS_ONLY_CARDS and not measured_boss:
         result['role'] = 'boss_only_balmung'
     elif (not finished and cur.get('card_context_unclassified') and not summoned
             and not cur.get('card_combatants_changed') and drop and drop.get('drops')):
@@ -2248,7 +2248,7 @@ def _rescue_rearm(mem, cur, context):
 
 def _hero_marching(mem):
     now = int(mem.get('tick') or 0)
-    return [step for step, s in (mem.get('sorties') or {}).items()
+    return [step for step, s in _sorties(mem).items()
             if s.get('general') == NAME and s.get('status') in ('en_route', 'launched_unconfirmed')
             and s.get('tick') is not None and now - int(s['tick']) < SORTIE_BUSY_TICKS]
 

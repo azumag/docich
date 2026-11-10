@@ -8,6 +8,7 @@ from docich.hanjuku.os_layer import commands, world
 from docich.hanjuku_pixels import Frame
 from docich.hanjuku_screen import Screen
 from test_hanjuku_house_route_safety import route, make_crossing_friendly
+from docich.hanjuku.state.regions import sorties as _sorties
 
 FRAME = Frame(256, 224, bytes(256 * 224 * 3))
 
@@ -130,7 +131,7 @@ def test_failed_entry_count_survives_json_and_stops_same_candidate(route, monkey
         'general': 'ゼウス', 'purpose': 'house', 'status': 'en_route'}}
     house._finish(mem)
     assert mem['house_entry_failures'] == {'1:12,-8': 1}
-    assert mem['sorties']['HOUSE_OUT:1']['status'] == 'closed'
+    assert _sorties(mem)['HOUSE_OUT:1']['status'] == 'closed'
     mem = json.loads(json.dumps(mem))
     assert house._entry_failures(mem, (12, -8)) == 1
 
@@ -150,7 +151,7 @@ def test_gift_list_marks_arrival_before_purchase_or_return(route, monkeypatch):
     screen = SimpleNamespace(kind='text', text='', header={'gold': 250})
     assert house._repair_step(screen, mem, FRAME) == []
     assert mem['house']['phase'] == 'buy'
-    assert mem['sorties']['HOUSE_OUT:1']['status'] == 'arrived_house'
+    assert _sorties(mem)['HOUSE_OUT:1']['status'] == 'arrived_house'
     assert mem['house_entry_failures'] == {}
     mem['house']['phase'] = 'close'
     house._finish(mem)

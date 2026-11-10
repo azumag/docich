@@ -13,7 +13,7 @@ from docich import hanjuku_chart as chart, hanjuku_policy as p
 from docich.hanjuku.os_layer.screen import Screen
 from test_hanjuku_execution_binding import confirm, memory
 from docich.hanjuku.state.regions import flow as _flow, journal as _journal
-from docich.hanjuku.state.regions import world as _world
+from docich.hanjuku.state.regions import world as _world, sorties as _sorties
 
 TRACE = {'game': 'hanjuku-hero', 'runtime_id': 'test-runtime', 'generation': 741,
          'lease_id': 'test-lease', 'decision_id': 'test-runtime:741:20',
@@ -59,7 +59,7 @@ def test_picker_closed_without_a_send_is_an_unconfirmed_departure():
     mem = memory(); confirm(mem); request(mem)
     p.observe_sortie_transition(FIELD, mem, 'map_target')
     assert mem['orders']['1-A3'] == 'launched_unconfirmed'
-    assert mem['sorties']['1-A3']['status'] == 'launched_unconfirmed'
+    assert _sorties(mem)['1-A3']['status'] == 'launched_unconfirmed'
     assert 'departure_request' not in _flow(mem)
     assert _world(mem)['garrison']['カストーラ'] == ['ゼウス', 'ヴィーナス']
 
@@ -70,8 +70,8 @@ def test_journaled_send_and_closed_picker_commit_the_fixed_departure():
     sent(mem, 1)
     p.observe_sortie_transition(FIELD, mem, 'map_target')
     assert mem['orders']['1-A3'] == 'launched'
-    assert mem['sorties']['1-A3']['status'] == 'en_route'
-    assert mem['sorties']['1-A3']['target'] == 'スペンソニア'
+    assert _sorties(mem)['1-A3']['status'] == 'en_route'
+    assert _sorties(mem)['1-A3']['target'] == 'スペンソニア'
     assert _world(mem)['launched_orders']['1-A3']['general'] == 'ゼウス'
     assert _world(mem)['garrison']['カストーラ'] == ['ヴィーナス']
     assert 'departure_request' not in _flow(mem)
@@ -174,7 +174,7 @@ def test_new_marker_near_source_confirms_launch(monkeypatch):
     survey(monkeypatch, mem, [marker_at('カストーラ', dx=8)])
     assert '1-A3' not in (_flow(mem).get('launch_probe') or {})
     assert mem['orders']['1-A3'] == 'launched'
-    assert mem['sorties']['1-A3']['status'] == 'en_route'
+    assert _sorties(mem)['1-A3']['status'] == 'en_route'
     assert _world(mem)['garrison']['カストーラ'] == ['ヴィーナス']
     assert any(r['decision'] == 'sortie_launch_confirmed' for r in mem['_records'])
 
@@ -188,7 +188,7 @@ def test_unseen_unit_waits_for_the_source_roster(monkeypatch):
     probe = (_flow(mem).get('launch_probe') or {}).get('1-A3')
     assert isinstance(probe, dict) and probe.get('blind') is True
     assert mem['orders']['1-A3'] == 'launched'
-    assert mem['sorties']['1-A3']['status'] == 'en_route'
+    assert _sorties(mem)['1-A3']['status'] == 'en_route'
     assert _world(mem)['garrison']['カストーラ'] == ['ヴィーナス']
     assert not _flow(mem).get('launch_miss')
     records = [r for r in mem['_records'] if r['decision'] == 'sortie_launch_unverified']
@@ -265,10 +265,10 @@ def test_a_boss_launch_is_kept_when_the_marker_survey_and_roster_wait_expire(mon
     survey(monkeypatch, mem, [])
     probe = (_flow(mem).get('launch_probe') or {}).get('1-A3')
     assert isinstance(probe, dict) and probe.get('kept') is True
-    assert mem['sorties']['1-A3'].get('launch_kept') is True
+    assert _sorties(mem)['1-A3'].get('launch_kept') is True
     assert 'カストーラ' in (mem.get('roster_read_due') or {})
     assert mem['orders']['1-A3'] == 'launched'
-    assert mem['sorties']['1-A3']['status'] == 'en_route'
+    assert _sorties(mem)['1-A3']['status'] == 'en_route'
     assert not _flow(mem).get('launch_miss')
     kept = [r for r in mem['_records'] if r['decision'] == 'sortie_launch_unconfirmed_kept']
     assert len(kept) == 1
@@ -307,13 +307,13 @@ def test_a_kept_boss_launch_confirms_on_gone_roster(monkeypatch):
     p.settle_launch_probes_from_roster(mem, 'カストーラ', ['ヴィーナス'])
     assert '1-A3' not in (_flow(mem).get('launch_probe') or {})
     assert mem['orders']['1-A3'] == 'launched'
-    assert mem['sorties']['1-A3'].get('launch_confirmed') is True
+    assert _sorties(mem)['1-A3'].get('launch_confirmed') is True
     assert not _flow(mem).get('launch_miss')
 
 
 def test_sortie_settled_elsewhere_drops_the_probe_without_rollback(monkeypatch):
     mem = memory(); confirm(mem); commit(mem)
-    mem['sorties']['1-A3']['status'] = 'arrived'
+    _sorties(mem)['1-A3']['status'] = 'arrived'
     survey(monkeypatch, mem, [])
     assert '1-A3' not in (_flow(mem).get('launch_probe') or {})
     assert mem['orders']['1-A3'] == 'launched'
@@ -357,7 +357,7 @@ def test_defense_interruption_releases_reservation_without_committing():
     battle = Screen([], None, '', kind='defense_started')
     p.observe_sortie_transition(battle, mem, 'map_target')
     assert mem['orders']['1-A3'] == 'launched_unconfirmed'
-    assert mem['sorties']['1-A3']['status'] == 'launched_unconfirmed'
+    assert _sorties(mem)['1-A3']['status'] == 'launched_unconfirmed'
     assert 'departure_request' not in _flow(mem)
     assert _world(mem)['garrison']['カストーラ'] == ['ゼウス', 'ヴィーナス']
 
@@ -415,3 +415,52 @@ def test_recall_transition_neither_commits_nor_steals_the_reservation():
     mem.pop('active', None)
     assert p.target_step(TARGET, mem, None) == [p.pad('b')]
     assert 'departure_request' not in _flow(mem)
+
+
+def tiny_at(castle, dx=0, dy=0):
+    """A 3x3 red decoration, not a marching unit."""
+    cx, cy = marker_at(castle, dx, dy)[0] + 3, marker_at(castle, dx, dy)[1] + 3
+    return (cx - 1, cy - 1, cx + 1, cy + 1)
+
+
+def test_a_tiny_red_decoration_never_confirms_a_launch(monkeypatch):
+    """g1163 2026-11-09 05:28: a 3x3 blob confirmed three launches at once."""
+    mem = memory(); confirm(mem); commit(mem)
+    probe = _flow(mem)['launch_probe']['1-A3']
+    probe['baseline'] = [marker_at('アルマムーン', dx=0)]
+    for _ in range(p.LAUNCH_PROBE_READS):
+        survey(monkeypatch, mem, [marker_at('アルマムーン'), tiny_at('スペンソニア')])
+    assert not any(r['decision'] == 'sortie_launch_confirmed' for r in mem['_records'])
+    assert _flow(mem).get('launch_probe', {}).get('1-A3', {}).get('blind') is True
+
+
+def test_a_full_size_unit_marker_far_from_both_flags_still_confirms(monkeypatch):
+    mem = memory(); confirm(mem); commit(mem)
+    probe = _flow(mem)['launch_probe']['1-A3']
+    probe['baseline'] = [marker_at('アルマムーン')]
+    far = marker_at('カストーラ', dx=60, dy=60)
+    survey(monkeypatch, mem, [marker_at('アルマムーン'), far])
+    assert any(r['decision'] == 'sortie_launch_confirmed' for r in mem['_records'])
+
+
+def test_a_held_card_scroll_crosses_only_measured_rows():
+    """The card list is ID-sorted; held stock between edge and target = rows."""
+    from docich.hanjuku_reference import CARD_IDS
+    from docich.hanjuku.flows import deploy as d
+    names = sorted(CARD_IDS, key=lambda c: CARD_IDS[c])
+    deep = names[-1]
+    rows = [{'card': c, 'stock': 1, 'y': 40 + 16 * i} for i, c in enumerate(names[:4])]
+    inventory = {'rows': rows, 'remaining': 3}
+    mem = {'card_stock': {c: 1 for c in names}}
+    frames = d._card_scroll_frames(mem, deep, inventory)
+    assert 1 < frames <= d.CARD_SCROLL_HOLD_MAX
+    # The list does not auto-repeat, so the jump is a burst of taps, never a hold.
+    from docich.hanjuku.os_layer.commands import pad as _pad
+    assert [_pad('down') for _ in range(frames)] == [{'type': 'pad', 'buttons': ['down'], 'hold_ms': 100}
+                                                     for _ in range(frames)]
+    # Without measured stock the jump is not taken (a single measured down).
+    assert d._card_scroll_frames({}, deep, inventory) == 1
+    # A three-row panel or an unreadable row keeps the single down.
+    assert d._card_scroll_frames(mem, deep, {'rows': rows[:3], 'remaining': 3}) == 1
+    assert d._card_scroll_frames(mem, deep, {'rows': [{**rows[0], 'card': 'x'}, *rows[1:]],
+                                             'remaining': 3}) == 1

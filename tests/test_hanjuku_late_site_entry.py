@@ -28,7 +28,7 @@ def entry(general):
 
 def memory(tick, *, current=None, retired=None):
     return {'chapter': 4, 'tick': tick, 'orders': {'4-B1': 'launched'},
-            'sorties': {'4-B1': dict(current or NEW)},
+            'world': {'sorties': {'4-B1': dict(current or NEW)}},
             'retired_sorties': {'4-B1': [dict(item) for item in (retired or [OLD])]},
             'boss_relaunch': {'4-B1': 1}}
 
@@ -38,9 +38,9 @@ def test_a_late_entry_binds_the_retired_attempt_and_keeps_the_new_one():
     assert policy.message_step(entry('アルテミス'), mem) == [policy.pad('a')]
     assert mem['attack'] == {'general': 'アルテミス', 'castle': SITE, 'side': 'attack',
                              'step': '4-B1', 'entry_evidence': 'measured_boss_entry'}
-    assert mem['sorties']['4-B1']['general'] == 'アルテミス'
-    assert mem['sorties']['4-B1']['status'] == 'arrived'
-    assert mem['sorties']['4-B1']['target'] == SITE
+    assert _world(mem)['sorties']['4-B1']['general'] == 'アルテミス'
+    assert _world(mem)['sorties']['4-B1']['status'] == 'arrived'
+    assert _world(mem)['sorties']['4-B1']['target'] == SITE
     assert [row['general'] for row in _world(mem)['retired_sorties']['4-B1']] == ['ブカティーニ']
     assert not mem.get('boss_relaunch')
     assert any(record.get('decision') == 'attack_observed'
@@ -51,7 +51,7 @@ def test_the_current_attempt_still_binds_without_touching_the_retired_one():
     mem = memory(1500)
     assert policy.message_step(entry('ブカティーニ'), mem) == [policy.pad('a')]
     assert mem['attack']['general'] == 'ブカティーニ'
-    assert mem['sorties']['4-B1']['general'] == 'ブカティーニ'
+    assert _world(mem)['sorties']['4-B1']['general'] == 'ブカティーニ'
     assert [row['general'] for row in _world(mem)['retired_sorties']['4-B1']] == ['アルテミス']
 
 
@@ -59,7 +59,7 @@ def test_an_entry_outside_the_site_window_is_not_bound():
     mem = memory(100 + O.SITE_LATE_ENTRY_TICKS + 1)
     assert policy.message_step(entry('アルテミス'), mem) == []
     assert mem.get('attack') is None
-    assert mem['sorties']['4-B1']['general'] == 'ブカティーニ'
+    assert _world(mem)['sorties']['4-B1']['general'] == 'ブカティーニ'
     assert _world(mem)['retired_sorties']['4-B1'][0]['general'] == 'アルテミス'
     assert _world(mem)['retired_sorties']['4-B1'][0]['status'] == 'overdue'
 

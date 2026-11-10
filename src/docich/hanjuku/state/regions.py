@@ -56,10 +56,11 @@ KEY_OWNERSHIP = {
     # --- 出撃/帰還が読む PlanState ---
     'orders':           {'region': PLAN, 'lifetime': 'chapter', 'migrated': False},
     'active':           {'region': PLAN, 'lifetime': 'chapter', 'migrated': False},
-    'order_context':    {'region': PLAN, 'lifetime': 'chapter', 'migrated': False},
-    'sortie_general':   {'region': PLAN, 'lifetime': 'chapter', 'migrated': False},
+    'order_context':    {'region': PLAN, 'lifetime': 'chapter', 'migrated': True},
+    'sortie_general':   {'region': PLAN, 'lifetime': 'chapter', 'migrated': True},
     'chart_plan':       {'region': PLAN, 'lifetime': 'chapter', 'migrated': False},
     'general_override': {'region': PLAN, 'lifetime': 'chapter', 'migrated': False},
+    'plan_step_rearm':  {'region': PLAN, 'lifetime': 'chapter', 'migrated': False},
     'source_override':  {'region': PLAN, 'lifetime': 'chapter', 'migrated': False},
     'card_override':    {'region': PLAN, 'lifetime': 'chapter', 'migrated': False},
     'attack':           {'region': PLAN, 'lifetime': 'chapter', 'migrated': False},
@@ -67,7 +68,7 @@ KEY_OWNERSHIP = {
     'garrison':        {'region': WORLD, 'lifetime': 'chapter', 'migrated': True},
     'garrison_observed_at': {'region': WORLD, 'lifetime': 'chapter', 'migrated': True},
     'general_location_unknown': {'region': WORLD, 'lifetime': 'chapter', 'migrated': True},
-    'sorties':         {'region': WORLD, 'lifetime': 'chapter', 'migrated': False},
+    'sorties':         {'region': WORLD, 'lifetime': 'chapter', 'migrated': True},
     'launched_orders': {'region': WORLD, 'lifetime': 'chapter', 'migrated': True},
     'retired_sorties': {'region': WORLD, 'lifetime': 'chapter', 'migrated': True},
     'launched':        {'region': WORLD, 'lifetime': 'chapter', 'migrated': True},
@@ -75,7 +76,7 @@ KEY_OWNERSHIP = {
     '_run_identity':   {'region': JOURNAL, 'lifetime': 'run', 'migrated': False},
 }
 
-_REGION_KEY = {WORLD: 'world', FLOW: 'flow', JOURNAL: 'journal'}
+_REGION_KEY = {WORLD: 'world', PLAN: 'plan', FLOW: 'flow', JOURNAL: 'journal'}
 
 # 実移行したキー → 収容領域 (migrate_legacy_state の対象表)。
 _MIGRATED = {key: spec['region'] for key, spec in KEY_OWNERSHIP.items()
@@ -141,6 +142,28 @@ def world(mem):
     """WorldState: 観測層が書き、手順は読むのみの観測事実。"""
     migrate_legacy_state(mem)
     return region(mem, WORLD)
+
+
+def sorties(mem):
+    """sorties 読み取りアクセサ (docich#3193 W4 accessor 化)。
+
+    未存在時は空 dict を返し、``mem`` を汚さない。手順側は読み取り専用。
+    書き込みは ``_world(mem).setdefault('sorties', {})`` 経由で行う。
+    """
+    return world(mem).get('sorties') or {}
+
+
+def plan(mem):
+    """PlanState: 戦略層の計画 (order_context・sortie_general 等)。
+
+    P1 (docich#3193): order_context + sortie_general を mem['plan'] へ位置移行。
+    未存在時は空 dict を返し、``mem`` を汚さない。書き込みは
+    ``_plan_region(mem).setdefault(...)`` 経由で行う（``_plan`` は
+    ``strategy.economy._plan`` と衝突するため、層モジュール側の別名は
+    ``_plan_region`` を使う）。
+    """
+    migrate_legacy_state(mem)
+    return region(mem, PLAN)
 
 
 def flow(mem):

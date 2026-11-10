@@ -26,7 +26,7 @@ from docich.hanjuku_pixels import read_png
 from docich.hanjuku.decision_log import _record
 from docich.hanjuku.os_layer.phase import classify
 from docich.hanjuku_run import append_log
-from docich.hanjuku.os_layer.commands import menu_navigation_feedback
+from docich.hanjuku.os_layer.commands import menu_navigation_feedback, status_panel_feedback
 from docich.retroarch_boundary import read_record
 
 BOT_STATE_LIMIT = 256 * 1024   # the bot's own memory file, not a boundary record
@@ -181,7 +181,7 @@ def persist(runtime: Path, state: dict, records: list, obs_meta: dict, *, action
     # battle_result is recorded after leaving combat and may already show
     # the map. Keep combat pixels in the same bounded ring, including holds
     # and enemy-owned menus, without claiming an input or a battle outcome.
-    capture=(menu_navigation_feedback(state, actions) or bool(card_flow)
+    capture=(menu_navigation_feedback(state, actions) or status_panel_feedback(state, actions) or bool(card_flow)
              or bool((policy.get('map_discovery') or {}).get('probe'))
              or any(r.get('decision') in {'map_bootstrap_started', 'map_bootstrap_exhausted',
                                          'map_search_candidate', 'map_castle_confirmed',
@@ -217,6 +217,7 @@ def persist(runtime: Path, state: dict, records: list, obs_meta: dict, *, action
         'screen_kind':state.get('screen_kind'),'chart_step':chart_step,
         'observation_interval_ms':observation_interval_ms(state, actions),
         'menu_navigation_feedback': state.get('menu_navigation_reading') if menu_navigation_feedback(state, actions) else None,
+        'status_panel_feedback': state.get('status_panel_feedback') if status_panel_feedback(state, actions) else None,
         'strategy_variant':strategy_variant,'deviation_reason':deviation_reason,
         'expected_metric':input_context.get('expected_metric') if input_context is not None else battle.get('strategy_expected'),
         'planned_actions':actions,
@@ -322,7 +323,7 @@ def observation_interval_ms(state, actions=None):
     summon between the chained B and its next readable command menu.
     Keep the existing allowed 500 ms cycle across card-menu fades too.
     """
-    if menu_navigation_feedback(state, actions):
+    if menu_navigation_feedback(state, actions) or status_panel_feedback(state, actions):
         return 500
     policy=state.get('policy') or {}
     battle=policy.get('battle') or {}
@@ -564,24 +565,51 @@ def _unsortable_path(obj, path=''):
     return None
 
 
-def _str_keys(obj):
+def _non_json_path(obj, path=''):
+    """Path of the first value the JSON writer cannot encode (never the value)."""
+    if isinstance(obj, (set, frozenset, bytes, bytearray, Path)):
+        return f'{path or "/"}[{type(obj).__name__}]'
     if isinstance(obj, dict):
-        return {str(k): _str_keys(v) for k, v in obj.items()}
+        for k, v in obj.items():
+            found = _non_json_path(v, f'{path}/{k}')
+            if found:
+                return found
+    elif isinstance(obj, (list, tuple)):
+        for i, v in enumerate(obj):
+            found = _non_json_path(v, f'{path}[{i}]')
+            if found:
+                return found
+    return None
+
+
+def _json_safe(obj):
+    """JSON types only. Sets become sorted lists so a write never sees them."""
+    if isinstance(obj, dict):
+        return {str(k): _json_safe(v) for k, v in obj.items()}
+    if isinstance(obj, (set, frozenset)):
+        return [_json_safe(v) for v in sorted(obj, key=repr)]
     if isinstance(obj, (list, tuple)):
-        return [_str_keys(v) for v in obj]
+        return [_json_safe(v) for v in obj]
     return obj
 
 
 def _sortable(name, obj):
     """g1133 11-05: a dict holding both int and str keys made every state write raise
     TypeError, so the already-decided input was dropped for hours. JSON turns every
-    key into a string anyway, so normalise here instead of losing the observation."""
+    key into a string anyway, so normalise here instead of losing the observation.
+    g1153 11-08: a `set` (the carry manifest) did the same through a value, so
+    values are normalised too and the offending path is named."""
     try:
         json.dumps(obj, sort_keys=True)
         return obj
     except TypeError:
-        print(f'hanjuku-bot: mixed_keys {name} {_unsortable_path(obj)}', file=sys.stderr)
-        return _str_keys(obj)
+        mixed = _unsortable_path(obj)
+        if mixed:
+            print(f'hanjuku-bot: mixed_keys {name} {mixed}', file=sys.stderr)
+        non_json = _non_json_path(obj)
+        if non_json:
+            print(f'hanjuku-bot: non_json {name} {non_json}', file=sys.stderr)
+        return _json_safe(obj)
 
 
 def main():
@@ -633,10 +661,24 @@ def main():
             records=_sortable('records',records)
             if isinstance(updated_experience,dict):
                 updated_experience=_sortable('experience',updated_experience)
-            persist(runtime,state,records,meta,actions=actions,frame_sha256=frame.digest(),frame=frame)
-            publish_adjust_request(runtime,records,meta)
-            ask_interim(runtime,state,meta)
-            atomic_write_json(runtime/'hanjuku_bot.json',state)
+            # The decision is final from here on. Evidence writes and side
+            # channels must never change it: the agent drops the printed
+            # actions when this process exits nonzero, so one failed write
+            # silently held every input until the run ended as input_stalled
+            # (g1153 2026-11-08 19:26: the v519 carry-manifest set made the
+            # bot-state write raise TypeError on every observation).
+            for label, effect in (
+                    ('persist_failed', lambda: persist(
+                        runtime, state, records, meta, actions=actions,
+                        frame_sha256=frame.digest(), frame=frame)),
+                    ('adjust_request_failed', lambda: publish_adjust_request(runtime, records, meta)),
+                    ('interim_failed', lambda: ask_interim(runtime, state, meta)),
+                    ('state_write_failed', lambda: atomic_write_json(
+                        runtime/'hanjuku_bot.json', state))):
+                try:
+                    effect()
+                except Exception as exc:
+                    print(f'hanjuku-bot: {label} {_where(exc)}', file=sys.stderr)
             if isinstance(updated_experience,dict):
                 try:
                     hanjuku_experience.save(experience_path,updated_experience)

@@ -458,3 +458,28 @@ class TestCheckActiveReasonLabel(unittest.TestCase):
         with self.assertRaises(retroarch.DeadlineExceededError) as ctx:
             adapter._check_active(float("inf"), cancel, "readiness")
         self.assertEqual(str(ctx.exception), "adapter call はcancelされました")
+
+
+def test_force_aspect_override_is_honoured_for_glyph_pixels():
+    """[retroarch] force_aspect = false asks for the core's raw 256x224 pixels.
+
+    The deterministic screen signatures match 8-pixel glyph cells, so a 299-wide
+    stretched capture reads as zero text (g1163 2026-11-10 04:39).
+    """
+    from docich.adapters import retroarch
+
+    display = mock.Mock(width=960, height=540, viewport_width=0, viewport_height=0)
+    g = mock.Mock(display=display)
+    with mock.patch.object(retroarch, 'retroarch_audio', return_value=(False, None)), \
+            mock.patch.object(retroarch, 'resolved_buttons', return_value={}), \
+            mock.patch.object(retroarch, 'retroarch_audio_volume', return_value=None):
+        game = mock.Mock(raw={'retroarch': {'force_aspect': False}})
+        lines = retroarch.retroarch_cfg_lines(g, game, Path('/tmp/r.cfg'), 55435)
+        assert 'video_force_aspect = "false"' in lines
+        bad = mock.Mock(raw={'retroarch': {'force_aspect': 'no'}})
+        try:
+            retroarch.retroarch_cfg_lines(g, bad, Path('/tmp/r.cfg'), 55435)
+        except retroarch.AdapterError:
+            pass
+        else:
+            raise AssertionError('a non-bool force_aspect must be rejected')

@@ -123,6 +123,13 @@ JEVは自動有効化されていない手動のplayer-policy試験であり、�
   `hold` 付きのときは出さない。
 - 投影・読み上げはbest-effortで、書けない・届かないことは rotation の選択・実行・
   復帰を止めない。
+- 反映の注意: 共有サイドバーの state (`/__soren_overlay/broadcast/state`) を組み立てる
+  のは共有オーバーレイサービス (`/home/ubuntu/soren/lib/shared_overlay.mjs`) で、
+  docich の state builder を import 時に読む。`overlays/direct_broadcast_overlay.html` を
+  変える deploy は workflow が `reload_shared_overlay.sh` を自動実行するが、
+  **gitlink 同期だけの deploy（soviet 側の配線変更）は自動では再起動されない**ので、
+  正規の `ops/vm_actions/reload_shared_overlay.sh` で再起動して
+  `/__soren_overlay/broadcast/state` に `nextCorner` が出ることを確認する。
 
 ## 永続化、キュー、所有権
 
@@ -772,8 +779,8 @@ game = "yosou-view", enabled = true, audio_enabled = true }` を登録してい�
 詳細は `docs/features/yosou-oh-corner.md` と `AGENTS.md` の全画面例外を参照。
 記録・集計は `prediction_leaderboard.py`、view は `yoso_view.py`、lifecycle は
 `yoso_corner.py`、program adapter は `adapters/yoso_program.py`。台帳は read-only で、
-view は Twitch・ゲーム・encoder に触れない。表示は既定 2 分（catalog の `duration_minutes` で
-1〜14 分）が**上限**で、読み上げを入れた run は発話が共有 queue から消えた時点で
+view は Twitch・ゲーム・encoder に触れない。表示は既定 2 分（本番 catalog は部門ごとの読み上げのため
+`duration_minutes = 4`、設定可能範囲 1〜14 分）が**上限**で、読み上げを入れた run は発話が共有 queue から消えた時点で
 `end_reason = "audio-complete"` として早期に終了する（天気予報 corner の音声完了と同じ考え方）。
 queue が混んで発話が上限まで残る場合は従来どおり `end_reason = "duration"` で終わる。
 common slot の停止・復帰は既存 GameSwitch 経路を通る。
@@ -870,14 +877,17 @@ row を再観測した時に `hanjuku_predictions._record_canceled` で記録す
 
 予想王 corner は view を表示するだけでなく、active になった直後に1回だけ
 `yoso_narration.announcement()` を呼ぶ。共通 eventOverlay の既存 `prediction` category へ
-**コーナー紹介と ranking の2件**を bounded（本文 `OVERLAY_BODY_LIMIT` 以内、`source_id =
+**コーナー紹介と ranking の2件**（overlay は的中率ランキングのみ）を bounded（本文 `OVERLAY_BODY_LIMIT` 以内、`source_id =
 yosou:intro:<request_id>` / `yosou:ranking:<request_id>`。共有 queue は `source_id` ごとに
 最新1件だけを残すため分ける）に積む。catalog の `audio_enabled = true` を明示したときだけ、
-同じ2件を発話として enqueue する（紹介 `context="yosou:intro"` → ranking
-`context="yosou:ranking"` の順、各上限300字、共有 audio worker の既定音声）。
+発話は紹介 `context="yosou:intro"` の後に**部門ごとに1件**（的中率 → 賭けたpt → 得たpt → 失ったpt →
+賭けた回数、`context="yosou:board:<metric>"`、各部門の上位3名、各上限300字、共有 audio worker の既定音声）を
+enqueue する。画面（view）は共有 queue の `.playing` マーカーを読み取りだけで観測して
+読み上げ中の部門を出す（`/api/yosou` の `voice`、adapter が `--queue-dir` で渡す。詳細は
+`docs/features/yosou-oh-corner.md` §3.1）。
 
 読み上げを入れた run は、`yoso_narration.voice_items_in_flight()` が自分の
-`yosou:intro` / `yosou:ranking` の queue マーカー（`.txt` / `.playing`）を数え、
+`yosou:intro` / `yosou:board:<metric>` の queue マーカー（`.txt` / `.playing`）を数え、
 0 になった時点で `audio-complete` として早期終了する。共有 audio worker は再生前に
 `.playing` へ rename し、再生試行が終わってから削除するため、マーカーの不在が
 この queue で得られる唯一の完了証拠である（他 source のコメントや他 corner は数えない）。

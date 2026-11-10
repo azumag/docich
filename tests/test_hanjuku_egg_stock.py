@@ -12,7 +12,7 @@ from test_hanjuku_chart_bot import sortie_canvas
 from test_hanjuku_defense_read_model import project, receipts, CONTEXT
 from test_hanjuku_retreat_egg_status import open_status
 from test_hanjuku_retreat_recheck import memory as camp_memory, FRAME
-from docich.hanjuku.state.regions import world as _world
+from docich.hanjuku.state.regions import world as _world, sorties as _sorties
 
 
 @pytest.mark.parametrize('uses', range(6))
@@ -83,7 +83,7 @@ def test_named_camp_five_replaces_zero_without_claiming_return(mode, actor):
     mem = camp_memory()
     mem['egg_uses'] = {'ゼウス': 0, 'ヴィーナス': 0}
     mem['egg_recheck'] = [actor]
-    before_sorties = deepcopy(mem['sorties'])
+    before_sorties = deepcopy(_sorties(mem))
     open_status(mem, mode)
     screen = parse(status(actor, 'エラベルエッグ5', main=False, hp=6))
     assert p.camp_recall_step(screen, mem, FRAME) == [p.pad('b')]
@@ -92,7 +92,7 @@ def test_named_camp_five_replaces_zero_without_claiming_return(mode, actor):
     assert mem['egg_uses'][other] == 0
     assert actor not in mem['egg_recheck']
     assert not p._own_egg_empty(mem, {'ally': actor})
-    assert mem['sorties'] == before_sorties
+    assert _sorties(mem) == before_sorties
     assert not _world(mem).get('garrison') and not mem.get('house_eggs')
     assert not any(r.get('decision') == 'egg_recover' for r in mem.get('_records', []))
 

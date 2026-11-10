@@ -17,7 +17,7 @@ HOME = chart.home_castle(6)
 
 def memory(captured=None, garrison=None):
     return {'chapter': 6, 'tick': 1000, 'month': '50-11', 'gold': 500, '_records': [],
-            'orders': {}, 'sorties': {}, 'lost': [],
+            'orders': {}, 'world': {'sorties': {}},
             'captured': list(NORMAL if captured is None else captured),
             'garrison': dict(garrison if garrison is not None else
                              {c: ['ゼウス'] for c in NORMAL})}
@@ -80,3 +80,98 @@ def test_before_every_normal_castle_is_held_the_reserve_still_applies():
     mem = memory(captured=[c for c in NORMAL if c != missing],
                  garrison={c: ['ゼウス'] for c in NORMAL if c != missing})
     assert boss_attacks(mem) == []
+
+
+def test_a_live_egg_outranks_a_nearer_eggless_castle():
+    """g1163 2026-11-09 13:36: an eggless ヘーゼル was sent and lost for nothing.
+
+    The wave picker used to rank the march distance before the egg, so the
+    nearest castle's spent-egg general went first even when another castle held
+    a live egg.
+    """
+    garrison = {c: ['ゼウス'] for c in NORMAL}
+    cells = CELLS
+    boss = cells['ボス']
+    near, far = sorted((c for c in NORMAL if c != HOME),
+                       key=lambda c: sum((cells[c][i] - boss[i]) ** 2 for i in (0, 1)))[:2]
+    garrison[near] = ['ヘーゼル', 'ゼウス']
+    garrison[far] = ['ポセイドン', 'アマンディーヌ']
+    mem = memory(garrison=garrison)
+    mem['general_statuses'] = {'statuses': {
+        'ヘーゼル': {'broken': True, 'egg': None, 'uses': 0},
+        'ゼウス': {'broken': True, 'egg': None, 'uses': 0},
+        'ポセイドン': {'broken': False, 'egg': 'ベビーエッグ', 'uses': 3},
+        'アマンディーヌ': {'broken': True, 'egg': None, 'uses': 0}}}
+    attacks = boss_attacks(mem)
+    assert attacks
+    assert attacks[0]['source'] == far
+    assert attacks[0]['general'] == 'ポセイドン'
+
+
+def test_a_zero_hp_general_is_ranked_last_for_a_boss_wave():
+    """g1163 chapter 7 2026-11-09: five waves ended at ally 0 with no egg used."""
+    garrison = {c: ['ゼウス'] for c in NORMAL}
+    garrison['オケアナ'] = ['アルテミス', 'ポセイドン']
+    mem = memory(garrison=garrison)
+    mem['general_statuses'] = {'statuses': {
+        'アルテミス': {'hp': 0, 'max_hp': 49, 'egg': 'カラフルエッグ', 'uses': 2},
+        'ポセイドン': {'hp': 40, 'max_hp': 85, 'egg': 'ベビーエッグ', 'uses': 3}}}
+    attacks = boss_attacks(mem)
+    assert attacks
+    assert attacks[0]['general'] == 'ポセイドン'
+
+
+def test_a_general_whose_boss_wave_dealt_nothing_is_ranked_behind():
+    """g1163 chapter 7 2026-11-09: the boss stayed at 426 after an arrival."""
+    garrison = {c: ['ゼウス'] for c in NORMAL}
+    garrison['オケアナ'] = ['アマンディーヌ', 'ゼウス']
+    mem = memory(garrison=garrison)
+    mem['boss_no_damage'] = ['アマンディーヌ']
+    attacks = boss_attacks(mem)
+    assert attacks
+    assert attacks[0]['general'] == 'ゼウス'
+
+
+def test_a_wave_leaves_from_the_nearest_castle_with_a_spare():
+    """あるまむーん→しまばら is ~753 cells; まつやま is 336 (g1163 2026-11-10).
+
+    The wave picker preferred the home castle regardless of distance, so every
+    sortie paid a ~40-minute march.
+    """
+    from docich import hanjuku_chart as chart
+    from docich.hanjuku.strategy import replan
+
+    chapter = 8
+    cells = chart.castles(chapter)
+    home = chart.home_castle(chapter)
+    target = 'しまばら'
+    far = ((cells[home][0] - cells[target][0]) ** 2
+           + (cells[home][1] - cells[target][1]) ** 2) ** 0.5
+    near = min((c for c in cells if c not in (target, 'ボス')),
+               key=lambda c: ((cells[c][0] - cells[target][0]) ** 2
+                              + (cells[c][1] - cells[target][1]) ** 2) ** 0.5)
+    assert (cells[near][0] - cells[target][0]) ** 2 + (cells[near][1] - cells[target][1]) ** 2 < far ** 2
+    mem = {'chapter': chapter,
+           'world': {'garrison': {home: ['どうし', 'アテナ', 'ゼウス'],
+                                  near: ['アテナ', 'ゼウス']}},
+           'sorties': {}, 'orders': {}}
+    picked = replan._wave_pick(mem, target, {home, near}, set(), False)
+    assert picked is not None
+    assert picked[0] == near
+
+
+def test_a_wave_sends_the_strongest_spare_first():
+    """しまばら's successor defender (85 HP) beat the weakest spare (v627).
+
+    g1163 2026-11-10 09:38: the first defender fell at ally 18 HP, then a
+    85-HP successor appeared and the sortie ended.
+    """
+    from docich.hanjuku.strategy import replan
+
+    mem = {'chapter': 8,
+           'world': {'garrison': {'ながはま': ['どうし', 'よわい', 'つよい', 'ふつう']}},
+           'general_statuses': {'statuses': {'よわい': {'hp': 12}, 'つよい': {'hp': 88},
+                                             'ふつう': {'hp': 50}}},
+           'sorties': {}, 'orders': {}}
+    picked = replan._wave_pick(mem, 'しまばら', {'ながはま'}, set(), False)
+    assert picked is not None and picked[1] == 'つよい'

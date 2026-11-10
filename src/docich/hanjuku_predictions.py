@@ -25,6 +25,11 @@ from .hanjuku_prediction_api import APIError, configured_client
 from .naming import runtime_directory
 from .retroarch_boundary import read_record
 
+#: The Hanjuku logic generation this module loaded (#1469); see hanjuku_bot.
+#: The corner resolves this module through the hot-load trampoline (#3838), so a
+#: predictions deploy reaches the running corner worker without a restart.
+LOGIC_GENERATION = hanjuku_hotload.logic_generation()
+
 FILE = 'hanjuku_predictions.json'
 RESULT_FILE = 'hanjuku_prediction_result.json'
 #: Consecutive failing ticks, kept in a separate bounded record so that a ledger
@@ -53,7 +58,13 @@ STALLED_OUTCOME_TITLE = '画面停滞で一時終了（同じ状態から再開�
 STALLED_REASON = 'screen_stalled'
 #: デプロイ前に作られた予想の選択肢数（受理だけ legacy として許す）。
 LEGACY_OUTCOME_COUNT = 3
+#: A resumed challenge starts with a wager for the chapter it resumed into.
 RESUME_PREDICTION_KIND = 'resume-chapter'
+#: After a goal is reached mid-run, the next wager asks for the next chapter.
+#: Owner decision 2026-11-09: settle at achievement, then carry the same
+#: challenge forward to the next goal instead of waiting for the run to end.
+NEXT_PREDICTION_KIND = 'next-chapter'
+CHAPTER_PREDICTION_KINDS = frozenset({RESUME_PREDICTION_KIND, NEXT_PREDICTION_KIND})
 RESUME_STALLED_OUTCOME_TITLE = '停滞で一時停止'
 
 
@@ -100,8 +111,11 @@ def resolve_index(row, result):
     （画面は観測できているが操作AIが無入力）は4択目に含めない（owner 決定
     2026-10-15 / Issue #2238）。legacy 3択の row は作成時の選択肢を変えられない
     ため、停滞終了でも従来の判定のままにする。
+
+    ``resume-chapter`` と ``next-chapter`` は「この章を突破できるか」の3択なので、
+    突破数の到達・ゲームオーバー・停滞を同じ規則で判定する。
     """
-    if row.get('kind') == RESUME_PREDICTION_KIND:
+    if row.get('kind') in CHAPTER_PREDICTION_KINDS:
         cleared = result.get('cleared')
         if cleared is not None:
             progress.count(cleared)
@@ -155,6 +169,18 @@ def _stamp(value):
     return value
 
 
+def _checked_achieved(row):
+    """An early-settled chapter total, when the row carries one.
+
+    Only a verified clear (0..12) is a valid total; a malformed value is
+    refused instead of being read as "not achieved yet".
+    """
+    value = row.get('achieved')
+    if value is None:
+        return
+    progress.count(value)
+
+
 def _checked_result(value, identity):
     # The accepted reasons must be exactly the terminals hanjuku_run can report:
     # _result() writes evidence['terminal_reason'] verbatim into the durable
@@ -189,16 +215,17 @@ def _load(root, seed):
     row = state.get('round')
     if row is not None:
         progress.checked_identity(row)
+        _checked_achieved(row)
         kind = row.get('kind')
         if kind is None:
             winner(0, row.get('target'), row.get('middle'))
             expected_titles = accepted_outcome_titles(row['target'], row['middle'])
             expected_title = _title(row.get('nonce'))
-        elif kind == RESUME_PREDICTION_KIND:
+        elif kind in CHAPTER_PREDICTION_KINDS:
             if row.get('middle') is not None:
-                raise ValueError('resume prediction cannot carry range middle')
+                raise ValueError('chapter prediction cannot carry range middle')
             expected_titles = (resume_outcome_titles(row.get('target')),)
-            expected_title = _resume_title(row['target'], row.get('nonce'))
+            expected_title = _chapter_title(row['target'], row.get('nonce'))
         else:
             raise ValueError('invalid prediction kind')
         if (not isinstance(row.get('nonce'), str) or len(row['nonce']) != 12
@@ -251,16 +278,17 @@ def _load_recoverable(root, seed):
     row = state.get('round')
     if row is not None:
         progress.checked_identity(row)
+        _checked_achieved(row)
         kind = row.get('kind')
         if kind is None:
             winner(0, row.get('target'), row.get('middle'))
             expected_titles = accepted_outcome_titles(row['target'], row['middle'])
             expected_title = _title(row.get('nonce'))
-        elif kind == RESUME_PREDICTION_KIND:
+        elif kind in CHAPTER_PREDICTION_KINDS:
             if row.get('middle') is not None:
-                raise ValueError('resume prediction cannot carry range middle')
+                raise ValueError('chapter prediction cannot carry range middle')
             expected_titles = (resume_outcome_titles(row.get('target')),)
-            expected_title = _resume_title(row['target'], row.get('nonce'))
+            expected_title = _chapter_title(row['target'], row.get('nonce'))
         else:
             raise ValueError('invalid prediction kind')
         if (not isinstance(row.get('nonce'), str) or len(row['nonce']) != 12
@@ -288,7 +316,7 @@ def _title(nonce):
     return f'半熟英雄：どこまでゲーム到達できるか？ #{nonce}'
 
 
-def _resume_title(target, nonce):
+def _chapter_title(target, nonce):
     return f'半熟英雄：{target}話を突破できる？ #{nonce}'
 
 
@@ -326,12 +354,50 @@ def _resume_prediction_context(root, identity):
     return {'chapter': chapter}
 
 
-def _resume_target_reached(root, row):
-    if row.get('kind') != RESUME_PREDICTION_KIND:
-        return False
+def _row_target_cleared(root, row):
+    """The verified clear total when this row's own goal is achieved.
+
+    ``None`` means the goal is not provably achieved yet. The same verified
+    count settles a chapter wager and a normal "new record" wager, so both
+    resolve at the moment of achievement (owner decision 2026-11-09) rather
+    than at the end of the attempt.
+    """
     cleared = progress.completed_count(runtime_directory(root, row['runtime_id']),
                                        {k: row[k] for k in progress.KEYS})
-    return cleared is not None and cleared >= row['target']
+    if cleared is None or cleared < row['target']:
+        return None
+    return cleared
+
+
+def _chain_target(root, row, state):
+    """The next goal target for a live run that already reached the wager's goal.
+
+    The wager may have settled as a win at achievement (``RESOLVED``) or been
+    refunded as a no-contest at the same moment (``CANCELED``); builds before
+    2026-11-09 recorded only the refund and no ``achieved`` marker. Both are
+    mid-run settlements of the same challenge, so the series continues to the
+    next chapter (owner decisions 2026-11-09). ``None`` means the attempt is
+    over (a durable terminal result or terminal evidence exists), the goal is
+    not proven yet, the row did not settle mid-run, or the record already
+    reached the final chapter. The cleared total carries forward into
+    ``best_cleared``, so a prediction that settles after the next chapter is
+    already clear never opens a wager for a known result.
+    """
+    if row.get('status') not in DONE or row.get('result') is not None:
+        return None
+    runtime = runtime_directory(root, row['runtime_id'])
+    identity = {k: row[k] for k in progress.KEYS}
+    if hanjuku_hotload.terminal(runtime, identity) is not None:
+        return None
+    achieved = row.get('achieved')
+    if achieved is not None:
+        progress.count(achieved)
+    cleared = progress.completed_count(runtime, identity)
+    best = max((value for value in (achieved, cleared) if value is not None), default=None)
+    if best is None or best < row.get('target', 0):
+        return None
+    state['best_cleared'] = max(state['best_cleared'], best)
+    return None if best >= progress.MAX_CHAPTER else best + 1
 
 
 def _result(root, identity):
@@ -573,7 +639,10 @@ def summary(state):
     return {'mode': state.get('mode'), 'error': state.get('error'),
             'best_cleared': state.get('best_cleared'), 'target': row.get('target'),
             'middle': row.get('middle'), 'status': row.get('status'),
-            'cleared': (row.get('result') or {}).get('cleared'),
+            # A goal settled mid-run has no terminal result; its verified
+            # count is `achieved` (2026-11-09). Diagnostics read only counts.
+            'cleared': ((row.get('result') or {}).get('cleared')
+                        if row.get('result') is not None else row.get('achieved')),
             'next_poll_at': state.get('next_poll_at')}
 
 
@@ -649,9 +718,18 @@ def _advance(g, root, state, identity, now, enabled, ending_window, client_facto
     for result in (completed, owned_completed):
         if result and result['cleared'] is not None:
             state['best_cleared'] = max(state['best_cleared'], result['cleared'])
-    resume_reached = bool(row and row['status'] not in DONE
-                          and _resume_target_reached(root, row))
-    new_settlement = bool(owned_completed and not row.get('result')) or resume_reached
+    achieved_count = (_row_target_cleared(root, row)
+                      if row and row['status'] not in DONE else None)
+    target_reached = achieved_count is not None
+    # Bypass the normal poll cooldown only the first time the achievement is
+    # seen. The marker is persisted before any API call, so an outage (even in
+    # the remote read) falls back to the 300 s error backoff instead of turning
+    # every observation tick into a retry.
+    fresh_reached = target_reached and row.get('achieved') is None
+    if fresh_reached:
+        row['achieved'] = achieved_count
+        state['best_cleared'] = max(state['best_cleared'], achieved_count)
+    new_settlement = bool(owned_completed and not row.get('result')) or fresh_reached
     if owned_completed:
         row['result'] = owned_completed
     atomic_write_json(root / FILE, state)
@@ -718,14 +796,24 @@ def _advance(g, root, state, identity, now, enabled, ending_window, client_facto
             result = owned_completed
             # 4択の row では画面停滞/ループ終了を4択目で確定する。突破数の証拠が
             # 無い停滞終了（従来は CANCELED）も、この選択肢がある run は記帳する。
-            index = 0 if resume_reached else resolve_index(row, result) if result else None
+            # 目標達成の証拠がある row は、挑戦終了を待たずその時点で精算する
+            # （2026-11-09 オーナー判断）。突破数は減らないので後から覆らない。
+            index = 0 if target_reached else resolve_index(row, result) if result else None
             cancel = bool(result) and index is None
             # An explicit ready different runtime is an interruption, not a loss.
-            cancel = cancel or (ready and not same(row) and result is None)
+            cancel = cancel or (ready and not same(row) and result is None
+                                and not target_reached)
             if not ready and result is None:
+                # The goal is already proven while the seat changes hands.
+                # Close betting so nobody can bet on a known result, and
+                # settle on the first tick that can read the confirmed seat.
+                if target_reached and remote['status'] == 'ACTIVE':
+                    client.end(row['id'], 'LOCKED')
                 state['mode'] = 'pending'
                 return
-            if result or resume_reached or cancel:
+            if target_reached:
+                state['best_cleared'] = max(state['best_cleared'], achieved_count)
+            if result or target_reached or cancel:
                 state['mode'] = 'settling'
                 atomic_write_json(root / FILE, state)
                 cancel_reason = None
@@ -777,12 +865,6 @@ def _advance(g, root, state, identity, now, enabled, ending_window, client_facto
                 state['mode'] = desired.lower()
                 return
             state['mode'] = 'active'
-            # End voting when the top outcome is already provable; do not resolve
-            # early (the final record still belongs to the entire attempt).
-            cleared = progress.completed_count(runtime_directory(root, row['runtime_id']),
-                                               {k: row[k] for k in progress.KEYS})
-            if remote['status'] == 'ACTIVE' and cleared is not None and cleared >= row['target']:
-                client.end(row['id'], 'LOCKED')
             return
         if row.get('id'):
             raise APIError('remote_missing')
@@ -797,39 +879,62 @@ def _advance(g, root, state, identity, now, enabled, ending_window, client_facto
     else:
         if not live_owner:
             return
-        if row and same(row) and row['status'] in DONE:
+        chain = _chain_target(root, row, state) if (row and same(row)) else None
+        if row and same(row) and row['status'] in DONE and chain is None:
             # A remotely ended prediction belongs to this attempt even when it
             # was canceled/refunded. Respect that terminal state and do not
-            # silently open a second wager in the same run.
+            # silently open a second wager in the same run. The one exception
+            # is a goal settled at achievement: the same challenge carries on
+            # to the next goal (2026-11-09 owner decision).
             return
         if paused:
             state['mode'] = 'paused'
             return
-        resume = _resume_prediction_context(root, identity)
-        if resume is not None:
-            target = resume['chapter']
-            if target is None:
-                # The game may continue, but do not invent the resumed chapter just to open a wager.
-                state['mode'] = 'pending'
-                return
-            bounds = {'target': target}
+        resume = None
+        if chain is not None:
+            bounds = {'target': chain}
         else:
-            bounds = thresholds(state['best_cleared'])
-            if bounds is None:
-                state['mode'] = 'complete_record'
-                return
+            resume = _resume_prediction_context(root, identity)
+            if resume is not None:
+                target = resume['chapter']
+                if target is None:
+                    # The game may continue, but do not invent the resumed chapter just to open a wager.
+                    state['mode'] = 'pending'
+                    return
+                bounds = {'target': target}
+            else:
+                bounds = thresholds(state['best_cleared'])
+                if bounds is None:
+                    state['mode'] = 'complete_record'
+                    return
         cleared = progress.completed_count(runtime_directory(root, identity['runtime_id']), identity)
         if cleared is not None and cleared >= bounds['target']:
-            state['mode'] = 'known_result'
-            return
+            if chain is None:
+                state['mode'] = 'known_result'
+                return
+            # The next chapter cleared between settling the last wager and
+            # opening this one: carry the goal forward instead of betting on
+            # a known result.
+            state['best_cleared'] = max(state['best_cleared'], cleared)
+            if state['best_cleared'] >= progress.MAX_CHAPTER:
+                state['mode'] = 'complete_record'
+                return
+            bounds = {'target': state['best_cleared'] + 1}
+            chain = bounds['target']
         remote_rows = client.list()
         if any(r['status'] in LIVE for r in remote_rows):
             state['mode'] = 'blocked'
             return
         nonce = secrets.token_hex(6)
-        if resume is not None:
+        if chain is not None:
+            row = {**identity, **bounds, 'kind': NEXT_PREDICTION_KIND, 'nonce': nonce,
+                   'title': _chapter_title(bounds['target'], nonce),
+                   'outcome_titles': resume_outcome_titles(bounds['target']),
+                   'window': voting_window(bounds['target'], ending_window),
+                   'attempted': False, 'status': 'INTENT'}
+        elif resume is not None:
             row = {**identity, **bounds, 'kind': RESUME_PREDICTION_KIND, 'nonce': nonce,
-                   'title': _resume_title(bounds['target'], nonce),
+                   'title': _chapter_title(bounds['target'], nonce),
                    'outcome_titles': resume_outcome_titles(bounds['target']),
                    'window': voting_window(bounds['target'], ending_window),
                    'attempted': False, 'status': 'INTENT'}

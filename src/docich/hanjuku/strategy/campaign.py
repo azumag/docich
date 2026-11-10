@@ -12,28 +12,44 @@ from ..decision_log import _record
 from ..os_layer.readers import STATUS_NAMES
 
 
-def _enter_chapter(mem, chapter, *, reason, evidence=None):
-    previous = mem.get('chapter')
-    from ..os_layer.roster import fresh
-    previous_roster = fresh(mem)
-    if previous_roster and previous_roster.get('complete') is True:
-        mem['recruit_payroll_pending'] = list(previous_roster['names'])
-    # Route state belongs to the measured map of one chapter. Keep
-    # run-wide counters/name evidence, never carry coordinates/orders.
-    # country_income / country_wages are last observations (owner 2026-11-04):
-    # keep them until the next country-status read rewrites them, instead of
-    # blanking 現在収入 / 総賃金.
-    for key in ('map_registration', 'map_discovery', 'boss_victories', 'approx_fallback', 'approx_localize_miss',
+# Phases of the free monthly country-status visit (house.step level_only).
+# A chapter change can land while this visit is opening the main menu; the
+# visit belongs to the *new* chapter's month, so it is kept instead of being
+# dropped and restarted (v511: the monthly status menu opened twice).
+MONTH_SCAN_RESUME_PHASES = frozenset({
+    'month_open', 'open_roster', 'level_status', 'leave_status', 'leave_roster'})
+
+
+CHAPTER_SCOPE_KEYS = ('map_registration', 'map_discovery', 'boss_victories', 'approx_fallback', 'approx_localize_miss',
+                'season_sites', 'season_site_streak',
+                'moving_boss', 'moving_boss_streak', 'boss_cell', 'boss_cell_streak',
+                # Per-step and per-boss records belong to the chapter that made
+                # them. Left behind they outlive their step ids (g1163: the
+                # chapter-4 boss HP was still shown in chapter 5) and grow the
+                # policy for eleven more chapters.
+                'boss_hp_seen', 'order_start_tick', 'site_step_rearm',
+                # Boss probe assignments are per-step ids of the chapter that
+                # made them (g1163 chapter 7 kept forty chapter-6 steps, and the
+                # diagnostics showed them as the current chapter's probes).
+                'boss_step_rearm', 'boss_step_probe', 'boss_probe_rotation',
+                'season_sites_refused', 'cards_capped', 'equivalent_launch_miss',
+                'kit_spent', 'sortie_relaunch', 'source_mismatch_castle',
+                'y_jumps_total', 'sortie_held_source_defender_counts',
+                'sortie_held_source_defender_gates', 'source_defender_cancel_counts',
+                'sortie_held_source_defender_cancel_counts',
+                'sortie_source_defender_cancel_counts', 'sortie_source_defender_cancel_gates',
+                'source_defender_cancel_gates',
                 'active', 'anchor', 'goal_anchor_lock', 'attack', 'battle', 'battle_seen',
                 'captured', 'card_override', 'rare_card_kit', 'strong_card_kit', 'dropper_card_kit', 'castle_defenders', 'boss_stock_restart', 'boss_stock_cancelled', 'rare_scan', 'rare_scan_month', 'cursor', 'egg_battle',
                 'expect_menu', 'general_override', 'launched', 'menu_miss', 'month_exit', 'month_sub',
-                'month_nav', 'house_nav', 'starter_party',
+                'month_nav', 'house_nav', 'starter_party', 'chapter_end_save',
                 'nav_last', 'nav_search', 'nav_search_leg', 'orders', 'picked', 'retries', 'retry_context', 'shop',
                 'source_override', 'uncertain', 'month', 'soldiers_seen', 'soldiers_seen_key',
                 'soldiers_seen_basis', 'soldiers_seen_scope', 'army_count_check',
-                'order_context', 'sortie_general', 'sortie_actor_miss',
+                'order_context', 'sortie_general', 'sortie_actor_miss', 'plan',
                 'boss_defeated', 'boss_entry_hold',
                 'chart_adjust', 'chart_plan', 'launched_orders', 'sorties', 'retired_sorties', 'sortie_attempt',
+                'plan_step_rearm',
                 'departure_request', 'departure_miss', 'flow', 'world',
                 'garrison', 'unplaced_refuted', 'unplaced_refuted_castles', 'general_location_unknown', 'source_location_rechecks', 'recruit_verification', 'lost', 'owner_streak', 'source_miss', 'card_drop', 'card_miss',
                 'nav_prev', 'nav_still', 'nav_pressed', 'unverified', 'off_castle',
@@ -50,15 +66,54 @@ def _enter_chapter(mem, chapter, *, reason, evidence=None):
                 'egg_action', 'egg_key', 'egg_menu_stage', 'indep_menu',
                 'indep_menu_key', 'indep_menu_action',
                 'monster_menu_key', 'monster_menu_cursor', 'monster_menu_hold',
-                'monster_menu_choice', 'monster_menu_choice_key', 'monster_menu_choice_scope', 'monster_menu_cursor_recheck', 'monster_panel', 'lampkin_cycle'):
+                'monster_menu_choice', 'monster_menu_choice_key', 'monster_menu_choice_scope', 'monster_menu_cursor_recheck', 'monster_panel', 'lampkin_cycle')
+
+
+def _reset_chapter_scope(mem):
+    """Drop the route/plan state that belongs to one measured chapter."""
+    for key in CHAPTER_SCOPE_KEYS:
         mem.pop(key, None)
+
+
+def _enter_chapter(mem, chapter, *, reason, evidence=None):
+    previous = mem.get('chapter')
+    house = mem.get('house')
+    month_scan = (dict(house) if isinstance(house, dict) and house.get('level_only')
+                  and house.get('phase') in MONTH_SCAN_RESUME_PHASES else None)
+    from ..os_layer.roster import fresh
+    previous_roster = fresh(mem)
+    if previous_roster and previous_roster.get('complete') is True:
+        mem['recruit_payroll_pending'] = list(previous_roster['names'])
+    # Route state belongs to the measured map of one chapter. Keep
+    # run-wide counters/name evidence, never carry coordinates/orders.
+    # country_income / country_wages are last observations (owner 2026-11-04):
+    # keep them until the next country-status read rewrites them, instead of
+    # blanking 現在収入 / 総賃金.
+    _reset_chapter_scope(mem)
     mem['chapter'] = chapter
+    if month_scan is not None:
+        month_scan['chapter'] = chapter
+        mem['house'] = month_scan
     mem['chapter_evidence'] = evidence or 'header'
     mem['variant'] = 'chart' if chart.orders(chapter) else 'chart_unavailable'
     _record(mem, 'chapter_seen', previous_stage=previous,
             observed_metric={'chapter': chapter, **({'evidence': evidence} if evidence else {})},
             resulting_stage=chapter,
             reason=reason)
+
+
+def finish_chapter(mem, *, reason='starter party departed for the next chapter'):
+    """Clear the finished chapter's execution state before the next is measured.
+
+    The starter party appears only between chapters. Keeping the old orders let
+    a chapter-4 site sortie start after the chapter-end save (g1163 2026-11-09
+    04:04, two minutes before the chapter was observed). The new chapter number
+    is still measured later; this only drops what cannot run any more.
+    """
+    _reset_chapter_scope(mem)
+    mem['chapter_transition_pending'] = True
+    _record(mem, 'chapter_scope_cleared',
+            observed_metric={'chapter': mem.get('chapter')}, reason=reason)
 
 
 def observe_chapter_castle(mem, castle):

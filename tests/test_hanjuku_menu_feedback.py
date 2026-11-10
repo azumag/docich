@@ -157,3 +157,36 @@ def test_colour_tolerance_is_inclusive_on_all_three_channels(channel):
     for delta,wanted in [(-11,False),(-10,True),(0,True),(10,True),(11,False)]:
         pixel=[100,110,120];pixel[channel]+=delta
         assert view._near(pixel,(100,110,120),10) is wanted
+
+
+@pytest.mark.parametrize('kind', ['month_menu', 'yes_no', 'card_select', 'name_entry'])
+@pytest.mark.parametrize('button,current_x,target_x', [('right', 48, 128), ('left', 128, 48)])
+def test_observed_horizontal_menu_and_name_moves_use_fast_feedback(kind, button, current_x, target_x):
+    # Distinct words at one y, just as the hand menus and kana cells expose.
+    screen = view.Screen(lines=[TextLine(95, ((48, 'あ'), (128, 'い')))],
+                         hand=(current_x - 22, 89, current_x - 4, 102), text='', kind=kind)
+    reading = menu_navigation_reading(screen)
+    assert button in reading['directions']
+    state = {'step': 1, 'screen_kind': kind, 'menu_navigation_reading': {**reading, 'step': 1}}
+    assert entry.observation_interval_ms(state, [pad(button)]) == 500
+    assert entry.observation_interval_ms(state, [pad('a')]) == 1500
+    assert entry.observation_interval_ms(state, [pad(button), pad('a')]) == 1500
+
+
+def test_a_diagonal_option_is_not_horizontal_feedback():
+    screen = view.Screen(lines=[TextLine(95, ((48, 'あ'),)), TextLine(111, ((128, 'い'),))],
+                         hand=(26, 89, 44, 102), text='', kind='yes_no')
+    assert menu_navigation_reading(screen) is None
+
+
+@pytest.mark.parametrize('typed,cell,button,interval', [
+    ('', 'あ', 'down', 500), ('', 'だ', 'right', 500),
+    ('ど', 'え', 'left', 500), ('', 'ど', 'a', 1500),
+    ('どうし', 'し', 'start', 1500),
+])
+def test_name_grid_pixels_keep_confirm_gate_and_shorten_only_movement(typed, cell, button, interval):
+    from test_hanjuku_chart_bot import name_screen
+    actions, state = bot.decide(name_screen(typed, cell=cell), {})
+    assert actions == [pad(button)]
+    assert state['screen_kind'] == 'name_entry'
+    assert entry.observation_interval_ms(state, actions) == interval

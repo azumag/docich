@@ -421,6 +421,52 @@ def test_a_completed_trade_releases_its_guard():
     assert 'trade_guard' not in state['policy']
 
 
+def _trade_result_frame(gap=True):
+    """The measured closing page (g1139 00:48, g1146 19:50): 3 rows, the last one
+    "これにて トレードしゅうりょう!" on y=183, inside the 176-208 choice band."""
+    from test_hanjuku_chart_bot import Canvas, GREEN
+    canvas = Canvas((0, 0, 0))
+    canvas.rgb[144 * 256 * 3:] = bytes(GREEN) * (256 * 80)
+    canvas.text(24, 151, 'ということでアマンディーヌは')
+    canvas.text(24, 167, 'わがぐんのシャルドネとこうかんだ!')
+    if gap:
+        canvas.text(24, 183, 'これにて')
+        canvas.text(24 + 8 * 5, 183, 'トレードしゅうりょう!')
+    else:
+        canvas.text(24, 183, 'これにてトレードしゅうりょう!')
+    return canvas.frame()
+
+
+@pytest.mark.parametrize('gap', [True, False])
+def test_the_trade_result_page_is_advanced_not_held_after_a_seen_choice(gap):
+    import json
+    # The offer's choice was seen but never confirmed through this guard (the
+    # hand was lost), so choice_seen is set: the state that froze the run.
+    _, state = decide_trade(trade_pixels(rows=('そうする', 'やめる'), hand=False))
+    assert state['policy']['trade_guard']['choice_seen'] is True
+    frame = _trade_result_frame(gap)
+    for _ in range(4):
+        actions, state = decide_trade(frame, json.loads(json.dumps(state)))
+        assert actions == [policy.pad('a')]
+        assert 'trade_guard' not in state['policy']
+        assert not any(r['decision'] in ('trade_offer_seen', 'situation_held')
+                       for r in state['policy'].get('_records', []))
+
+
+def test_the_trade_result_page_does_not_arm_the_guard_on_its_own():
+    state = {'policy': {'tick': 10, 'chapter': 1}}
+    actions, state = decide_trade(_trade_result_frame(), state)
+    assert actions == [policy.pad('a')]
+    assert 'trade_guard' not in state['policy']
+    assert not any(r['decision'] == 'trade_offer_seen' for r in state['policy'].get('_records', []))
+
+
+def test_a_lead_in_that_only_mentions_the_trade_still_arms_the_guard():
+    mem = {'tick': 3}
+    assert policy.trade_guard_step(text('ここでしょうぐんどうしのトレードをしようじゃないか'), mem) is None
+    assert 'trade_guard' in mem
+
+
 def test_trade_hold_releases_ownership_when_a_measured_confirmation_returns():
     import json
     from docich.hanjuku_bot import NO_INPUT_HOLD_MAX, decide

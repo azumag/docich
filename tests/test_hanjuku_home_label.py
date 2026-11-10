@@ -66,12 +66,26 @@ def test_no_chapter_encodes_the_retired_home_alias():
 
 
 def test_sortie_commentary_names_the_home_castle_as_the_game_does():
-    rec = {'decision': 'order_start', 'chart_step': '1-A1', 'general': 'どうし',
+    rec = {'decision': 'order_start', 'chart_step': '1-V1', 'general': 'ヴィーナス',
            'source': chart.home_castle(1), 'target': 'キカンドン', 'cards': []}
     _, text = hanjuku_commentary.compose(rec)
-    assert text == ('出撃準備の予定です。どうし将軍をアルマムーンからキカンドン城へ'
+    assert text == ('出撃準備の予定です。ヴィーナス将軍をアルマムーンからキカンドン城へ'
                     '向かわせる計画です。持たせる切り札は切り札なしです。')
     assert RETIRED not in text
+
+
+def test_a_hero_led_order_is_not_announced_as_a_hero_sortie():
+    """Owner 2026-11-08: 主人公はアルマムーンから実質動かない.
+
+    Deploy answers a hero-led order with a companion from the live list, so the
+    spoken plan must not promise the hero (or his castle) as the actor.
+    """
+    rec = {'decision': 'order_start', 'chart_step': '1-A1', 'general': chart.HERO,
+           'source': chart.home_castle(1), 'target': 'キカンドン', 'cards': ['フットバース']}
+    _, text = hanjuku_commentary.compose(rec)
+    assert text == ('主人公は動かさず、キカンドン城へは代わりの将軍を向かわせる計画です。'
+                    '持たせる切り札はフットバースです。')
+    assert chart.HERO not in text and RETIRED not in text
 
 
 def test_migrate_legacy_labels_renames_keys_values_and_notes():

@@ -8,6 +8,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
 from docich import hanjuku_policy as policy, hanjuku_chart as chart, hanjuku_chart_adjust as adjust
 from docich.hanjuku_font import TextLine
 from docich.hanjuku_screen import Screen, Battle
+from docich.hanjuku.state.regions import plan as _plan_region
 
 RARE = 'キャトルミュー'
 
@@ -59,13 +60,28 @@ def test_no_kit_change_after_pick_or_without_measured_available_stock(picked,sto
     assert not mem.get('rare_card_kit')
 
 
+def _down_presses(actions):
+    """Rows a sweep observation moves: up to four downs (v601)."""
+    assert isinstance(actions, list) and actions
+    assert all(a == policy.pad('down') for a in actions), actions
+    assert 1 <= len(actions) <= 4
+    return len(actions)
+
+
 def test_four_row_inventory_is_scanned_boundedly_and_rewound():
     order,mem=memory();mem.pop('rare_card_kit')
     rows=inventory([('イッテツーン',3),('ブラッキー',2),('ノリウツール',1),('クースカン',1)])
+    presses=0
+    while presses < policy.RARE_SCAN_LIMIT:
+        out=policy._rare_card_inventory(None,mem,order,rows)
+        if not out:
+            break
+        presses+=_down_presses(out)
     for _ in range(policy.RARE_SCAN_LIMIT):
-        assert policy._rare_card_inventory(None,mem,order,rows) == [policy.pad('down')]
-    for _ in range(policy.RARE_SCAN_LIMIT):
-        assert policy._rare_card_inventory(None,mem,order,rows) == [policy.pad('up')]
+        out=policy._rare_card_inventory(None,mem,order,rows)
+        if not out:
+            break
+        assert all(a == policy.pad('up') for a in out) and 1 <= len(out) <= 4
     assert policy._rare_card_inventory(None,mem,order,rows) is None
     assert policy._deploy_cards(order,mem) == list(order['cards'])
 
@@ -73,8 +89,8 @@ def test_four_row_inventory_is_scanned_boundedly_and_rewound():
 @pytest.mark.parametrize('month', ['1-10', None])
 def test_hidden_rare_row_becomes_usable_during_inventory_sweep(month):
     order,mem=memory();mem.pop('rare_card_kit');mem['month']=month
-    assert policy._rare_card_inventory(None,mem,order,inventory([
-        ('イッテツーン',3),('ブラッキー',2),('ノリウツール',1),('クースカン',1)])) == [policy.pad('down')]
+    assert _down_presses(policy._rare_card_inventory(None,mem,order,inventory([
+        ('イッテツーン',3),('ブラッキー',2),('ノリウツール',1),('クースカン',1)]))) >= 1
     assert policy._rare_card_inventory(None,mem,order,inventory([(RARE,5)])) == []
     assert mem['rare_card_kit'][order['step']] == [RARE]
 
@@ -82,7 +98,7 @@ def test_hidden_rare_row_becomes_usable_during_inventory_sweep(month):
 def test_no_rare_tactic_without_actual_carry_or_after_selected_use():
     order,mem=memory(confirmed=False)
     assert not any(t['card']==RARE for t in policy._tactics(mem,order['step']))
-    mem['order_context'][order['step']]['observed_metric']['cards']=[RARE]
+    _plan_region(mem)['order_context'][order['step']]['observed_metric']['cards']=[RARE]
     assert policy._tactics(mem,order['step'])[0]['card']==RARE
     mem['kit_spent']={order['step']:[RARE]}
     assert not any(t['card']==RARE for t in policy._tactics(mem,order['step']))
@@ -137,7 +153,7 @@ def test_survival_prefers_visible_rare_and_event_card_cannot_be_purchased():
 def test_deploy_discovers_hidden_rare_then_plans_only_measured_selection():
     from test_hanjuku_sortie_evidence import memory, measured_card_select
     mem=memory();mem.pop('rare_scan_month')
-    assert policy.deploy_step(measured_card_select(),mem)==[policy.pad('down')]
+    assert _down_presses(policy.deploy_step(measured_card_select(),mem)) >= 1
     assert mem['_records'][-1]['decision']=='sortie_input'
     assert mem['picked']==[]
     screen=measured_card_select((RARE,),stock='5')

@@ -2761,8 +2761,11 @@ class RetroCornerManager:
             # the input gate. It re-verifies durable terminal evidence itself.
             from .record_clips import consider_hanjuku
             consider_hanjuku(self.g, owned_identity)
-            from .hanjuku_predictions import tick as prediction_tick
-            prediction = prediction_tick(self.g, owned_identity)
+            # Resolved through the hot-load trampoline (#3838): the long-lived
+            # corner worker must pick up a deployed predictions change without
+            # a process restart.
+            prediction = hanjuku_hotload.module('hanjuku_predictions').tick(
+                self.g, owned_identity)
             with self._locked():
                 latest = self._read_state()
                 if latest.get('status') != 'active':
@@ -3832,8 +3835,9 @@ class RetroCornerManager:
 
     def tick(self) -> CornerResult:
         # Retry our durable result after a network failure, even after teardown.
-        from .hanjuku_predictions import tick as prediction_tick
-        prediction_tick(self.g)
+        # Through the trampoline (#3838) so a deploy reaches this worker live.
+        from . import hanjuku_hotload
+        hanjuku_hotload.module('hanjuku_predictions').tick(self.g)
         from .corner_catalog import rotation_enabled
         if rotation_enabled(self.g):
             from .corner_rotation import CornerRotationManager

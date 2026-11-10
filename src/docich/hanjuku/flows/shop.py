@@ -189,6 +189,19 @@ def shop_step(screen: Screen, mem):
     had_items = bool(shop['items'])
     while shop['items']:
         name, qty = shop['items'][0]
+        if held_estimate(mem, name) >= HOLD_CAP:
+            # The hand already holds the per-kind cap, so no quantity can be
+            # sold. Asking anyway costs a full refusal round-trip per card
+            # (g1163 2026-11-09 08:53-08:57: fifteen capped bargain cards, 3.5
+            # minutes of the month spent pressing A on refused quotes).
+            _record(mem, 'buy_skip', card=name, qty=qty, gold=gold,
+                    deviation_reason='holding_cap',
+                    observed_metric={'held': held_estimate(mem, name), 'cap': HOLD_CAP,
+                                     'card_stock': (mem.get('card_stock') or {}).get(name),
+                                     'held_floor': (mem.get(HELD_FLOOR) or {}).get(name)},
+                    reason='所持上限(種類ごと99)に達しているため商人に聞かずにこの札をやめる')
+            shop['items'].pop(0)
+            continue
         price = listed.get(name)
         available = merchant_card_spendable(mem, shop, screen.header, name, price)
         if (type(qty) is not int or qty <= 0 or price is None or price <= 0

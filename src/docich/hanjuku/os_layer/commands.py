@@ -8,6 +8,7 @@ layers want.
 from __future__ import annotations
 
 from .screen import Screen, month_confirmation_positions
+from . import menu_feedback
 from ..decision_log import _record
 from .readers import _current, _options
 
@@ -47,7 +48,7 @@ MENU_NAV_PROGRESS_PX = 4
 _FEEDBACK_MENU_KINDS = frozenset({'month_menu', 'main_menu', 'castle_menu', 'general_list',
                                 'yes_no', 'shop_list', 'card_select', 'sortie_confirm',
                                 'battle_menu', 'monster_menu', 'egg_battle_menu',
-                                'okunote_menu', 'egg_choice_menu'})
+                                'okunote_menu', 'egg_choice_menu', 'name_entry'})
 
 
 def menu_navigation_reading(screen):
@@ -56,6 +57,9 @@ def menu_navigation_reading(screen):
     This never creates an input, a target selection, or an arrival receipt.
     Unknown cursors/rows and clipped/fading menus keep normal cadence.
     """
+    semantic = menu_feedback.reading(screen)
+    if semantic is not None:
+        return semantic
     if screen.kind not in _FEEDBACK_MENU_KINDS:
         return None
     options = _options(screen)
@@ -78,6 +82,11 @@ def menu_navigation_reading(screen):
     for button, sign in (('up', -1), ('down', 1)):
         if any(abs(tx - x) <= 8 and (ty - y) * sign > 2 for tx, ty, word in options if word):
             directions.append(button)
+    # menu_to/name_step also move horizontally, one observed press at a
+    # time. Reading the next frame sooner never authorizes a confirm.
+    for button, sign in (('left', -1), ('right', 1)):
+        if any(abs(ty - y) <= 2 and (tx - x) * sign > 2 for tx, ty, word in options if word):
+            directions.append(button)
     return {'kind': screen.kind, 'cursor': [x, y], 'directions': directions} if directions else None
 
 
@@ -86,14 +95,15 @@ def menu_navigation_feedback(state, actions):
     reading = state.get('menu_navigation_reading')
     if (not isinstance(reading, dict) or type(state.get('step')) is not int
             or type(reading.get('step')) is not int or reading.get('step') != state['step']
-            or reading.get('kind') not in _FEEDBACK_MENU_KINDS
+            or (reading.get('kind') not in _FEEDBACK_MENU_KINDS
+                and not menu_feedback.valid_context(reading.get('kind'), reading.get('menu')))
             or reading.get('kind') != state.get('screen_kind')
             or not isinstance(actions, list) or len(actions) != 1):
         return False
     directions = reading.get('directions')
     cursor = reading.get('cursor')
-    if (not isinstance(directions, list) or not 1 <= len(directions) <= 2
-            or any(d not in ('up', 'down') for d in directions)
+    if (not isinstance(directions, list) or not 1 <= len(directions) <= 4
+            or any(d not in ('up', 'down', 'left', 'right') for d in directions)
             or not isinstance(cursor, list) or len(cursor) != 2
             or any(type(n) is not int or not 0 <= n < bound for n, bound in zip(cursor, (256, 224)))):
         return False
@@ -102,8 +112,28 @@ def menu_navigation_feedback(state, actions):
         return False
     buttons, hold = action.get('buttons'), action.get('hold_ms')
     return (action.get('type') == 'pad' and isinstance(buttons, list) and len(buttons) == 1
-            and buttons[0] in ('up', 'down') and buttons[0] in directions
+            and buttons[0] in ('up', 'down', 'left', 'right') and buttons[0] in directions
             and type(hold) is int and 16 <= hold <= 100)
+
+
+def status_panel_feedback(state, actions):
+    """One early look after the monthly owner opens a read-only status.
+
+    The orchestrator replaces this annotation on every observation. It says
+    nothing about delivery, the panel opening, or the general's actual state.
+    """
+    reading = state.get('status_panel_feedback')
+    if (not isinstance(reading, dict) or set(reading) != {'step', 'kind', 'transition'}
+            or type(state.get('step')) is not int or type(reading.get('step')) is not int
+            or reading['step'] != state['step']
+            or reading.get('kind') != 'text' or state.get('screen_kind') != 'text'
+            or reading.get('transition') != 'general_status_open'
+            or not isinstance(actions, list) or len(actions) != 1
+            or not isinstance(actions[0], dict)):
+        return False
+    action = actions[0]
+    return (action.get('type') == 'pad' and action.get('buttons') == ['a']
+            and type(action.get('hold_ms')) is int and action['hold_ms'] == 100)
 
 
 def _menu_distance(screen: Screen, label: str):

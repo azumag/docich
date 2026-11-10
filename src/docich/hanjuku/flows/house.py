@@ -14,7 +14,7 @@ from ..os_layer import roster as receipts
 # World facts shared with the economy strategy live in the OS layer.
 from ..os_layer.world import HOUSE_VIEW, _castle_status_after_sortie, _repair_hp_ready
 from ..strategy import goals
-from ..state.regions import world as _world, flow as _flow, journal as _journal
+from ..state.regions import world as _world, flow as _flow, journal as _journal, sorties as _sorties
 
 # The heart's centre and the selectable cell differ by half a view pixel
 # (four field pixels). Chapter 2's successful isolated trip used (128, 94).
@@ -91,6 +91,9 @@ CAMP_LOCATIONS = frozenset({'キャンプしています', 'キャンプのな�
 # しんぐんちゅうです is what the game prints for a marching general (probe of
 # g1097, 2026-11-01); いどうしています was never seen on a real status panel.
 MARCH_LOCATIONS = frozenset({'いどうしています', 'しんぐんちゅうです', 'いまこちらにむかっています'})
+# 章またぎの引き継ぎ待ち。フィールド行軍ではないが、所在は「城ではない」
+# 既知の待ち状態として扱う（実画面 g1153 2026-11-08）。
+CARRY_LOCATIONS = frozenset({'いまこちらにむかっております'})
 LEVEL_STATUS_WAIT = 12   # observations allowed for the two country-status pages
 LEVEL_REPRESS_EVERY = 3  # observations between A presses on the unopened ステータス row
 LEVEL_UNREAD_LIMIT = 2   # unread months in a chapter before the page is left alone
@@ -150,13 +153,17 @@ def general_status(screen):
         if hp is not None and not 0 <= hp <= max_hp:
             hp, max_hp = None, None
         wage_value = receipts.fixed_wage(name)  # stable salary; no extra individual screen
-        camp = location_row(screen) in CAMP_LOCATIONS if (x, y) == (24, 39) else False
+        location_text = location_row(screen)
+        camp = location_text in CAMP_LOCATIONS if (x, y) == (24, 39) else False
+        carry = any(phrase in screen.text for phrase in CARRY_LOCATIONS)
         return {'general': name, 'broken': broken, 'hp': hp, 'max_hp': max_hp, 'wage': wage_value,
                 'egg': uses[1] if uses else None, 'uses': int(uses[2]) if uses else None,
                 **({'camp_observed': True} if camp else {}),
+                'carry_waiting': carry,
                 'location': 'castle' if 'しろのなかにいます' in screen.text else 'field',
-                'location_observed': camp or any(phrase in screen.text for phrase in
-                                         ('しろのなかにいます', *MARCH_LOCATIONS))}
+                'location_observed': camp or carry
+                                    or any(phrase in screen.text for phrase in
+                                           ('しろのなかにいます', *MARCH_LOCATIONS))}
     return None
 
 
@@ -491,11 +498,11 @@ def _finish(mem):
     # _bind_sortie, which claimed キカンドン as this sortie's arrival at
     # 2026-10-01 07:08 and could turn later arrivals ambiguous. Close them
     # here; a successful trip already recorded them as 'recalled'.
-    stale = [key for key, sortie in (mem.get('sorties') or {}).items()
+    stale = [key for key, sortie in _sorties(mem).items()
              if sortie.get('purpose') == 'house'
              and sortie.get('status') in ('en_route', 'launched_unconfirmed')]
     for key in stale:
-        mem['sorties'][key]['status'] = 'closed'
+        _world(mem).setdefault('sorties', {})[key]['status'] = 'closed'
     if stale:
         # The registered entry cell can sit on a neighbouring impassable
         # tile in some chapters (g1097 ch5: the general stopped beside the
@@ -858,7 +865,7 @@ def _next_general(mem):
     # instead charged キカンドン at 07:08 instead of the house. Wait for her
     # arrival instead of spending the session on a destination the game
     # ignores; the next scan retries her.
-    marching = next((s for s in (mem.get('sorties') or {}).values()
+    marching = next((s for s in _sorties(mem).values()
                      if s.get('general') == name
                      and s.get('status') in ('en_route', 'launched_unconfirmed')
                      and not _castle_status_after_sortie(info, s, mem)), None)
@@ -1074,16 +1081,56 @@ def _level_due(mem):
             and not _level_given_up(mem))
 
 
-def _status_row_value(screen, label):
-    """Digits printed after ``label`` on the same status-page row."""
+def _status_row_value(screen, label, *, unit=False):
+    """Digits printed after ``label`` on the same status-page row.
+
+    ``unit`` keeps a generic label ("しょうぐん"/"へいし") from matching a
+    price or menu row: the digit must be followed by a counter (めい/にん/人).
+    """
     for line in screen.lines:
         joined = line.known.replace(' ', '')
         idx = joined.find(label)
-        if idx >= 0:
-            m = re.search(r'(\d+)', joined[idx + len(label):])
-            if m:
-                return int(m.group(1))
+        if idx < 0:
+            continue
+        rest = joined[idx + len(label):]
+        m = re.search(r'(\d+)', rest)
+        if not m:
+            continue
+        if unit and rest[m.end():m.end() + 1] not in ('め', 'に', '人'):
+            continue
+        return int(m.group(1))
     return None
+
+
+# The country-status headcount rows were measured on the 1st page as
+# 「しょうぐん Nにん」/「へいし Nにん」 (v511, live frame 22:57:08). The long
+# forms below are kept for older/newer wordings, and the generic fallbacks
+# require a counter so a 商人 price or a menu row is never a headcount.
+GENERAL_COUNT_LABELS = ('しょうぐんにんすう', 'しょうぐんにんずう', 'しょうぐんすう',
+                        'しょうぐんのかず', 'しょうぐんのすう', 'そうしょうぐんすう')
+SOLDIER_COUNT_LABELS = ('へいしにんすう', 'へいしにんずう', 'へいしすう', 'へいしのかず',
+                        'へいしのにんずう', 'そうへいしすう')
+
+
+def _country_status_counts(screen):
+    """This page's general/soldier totals, or (None, None) when unread.
+
+    Only a page that shows the page-1 economy rows is a count source; the
+    second page (半熟レベル) and the menu help line are never used.
+    """
+    text = screen.text.replace(' ', '')
+    # そうちんぎん is the country page-1 marker. The castle status page also
+    # prints しゅうにゅう and 「しょうぐん Nめい」, so income alone must never
+    # authorize a headcount read (a misrouted castle page would write 0).
+    if 'そうちんぎん' not in text:
+        return None, None
+    def first(labels, generic):
+        for label in labels:
+            value = _status_row_value(screen, label)
+            if value is not None:
+                return value
+        return _status_row_value(screen, generic, unit=True)
+    return first(GENERAL_COUNT_LABELS, 'しょうぐん'), first(SOLDIER_COUNT_LABELS, 'へいし')
 
 
 def _country_status_level(screen):
@@ -1213,6 +1260,9 @@ def _step_once(screen, mem, frame):
                 # check and an unsettled refill finish first (both bounded).
                 return None
             # 国のステータスで当月の人数を読めるため、月一の将軍一覧は巡回しない。
+            # One visit reads page 1 (income/wages/counts) and page 2 (level);
+            # the bounded retry stays only for a visit that could not read
+            # the page, never for a successful page-1 read (v511).
             counts_current = all(receipts.country_count(mem, kind) is not None
                                  for kind in ('generals', 'soldiers'))
             if counts_current and not _level_due(mem):
@@ -1271,7 +1321,7 @@ def _step_once(screen, mem, frame):
                     # records it, so mirroring would count one need twice.
                     _tally(mem, 'reopened_rows')
                 _record(mem, 'survey_carried', observed_metric=carry,
-                        reason='前月に健康で城に居た将軍の行を引き継ぎ、残りの本人だけ開き直す(月境界の持ち越し)')
+                        reason='前月に健康で城に居た将軍と章またぎ待ちの行を引き継ぎ、残りの本人だけ開き直す(月境界の持ち越し)')
             reused, actions = _resume_completed_survey(screen, mem, frame, scope, field_count, field_tick)
             if reused:
                 return actions
@@ -1491,11 +1541,15 @@ def _step_once(screen, mem, frame):
             return actions
         return []
     if phase == 'level_status':
-        # Each count must come from a visible row; missing text is unknown.
-        if 'わがくにのじょうたい' in screen.text.replace(' ', ''):
+        # The first country-status page carries しゅうにゅう/そうちんぎん and
+        # the national headcounts. Only that visible page is a count source;
+        # the menu help line ("わがくにのじょうたいを…") and the level page are
+        # not. Missing rows stay unknown and never fall back to old totals.
+        page1 = 'そうちんぎん' in screen.text.replace(' ', '')
+        if page1:
             from ..os_layer.roster import run_identity
             scope = [mem.get('chapter'), mem.get('month')]
-            generals = _status_row_value(screen, 'しょうぐんにんすう')
+            generals, soldiers = _country_status_counts(screen)
             if type(generals) is int and 0 <= generals <= 32:
                 mem['country_general_count'] = {
                     'scope': scope, 'identity': run_identity(mem.get('_run_identity')),
@@ -1505,12 +1559,6 @@ def _step_once(screen, mem, frame):
                         reason='国ステータスで観測した実人数を募集判断に使用')
                 from ..strategy.economy import _reset_unstarted_recruit_plan
                 _reset_unstarted_recruit_plan(mem)
-            soldiers = None
-            for label in ('へいしにんすう', 'へいしすう', 'へいしのかず',
-                          'へいしのにんずう', 'そうへいしすう'):
-                soldiers = _status_row_value(screen, label)
-                if soldiers is not None:
-                    break
             if type(soldiers) is int and 0 <= soldiers <= 99999:
                 mem['country_soldier_count'] = {
                     'scope': scope, 'identity': run_identity(mem.get('_run_identity')),
@@ -1524,15 +1572,24 @@ def _step_once(screen, mem, frame):
                 _record(mem, 'country_soldier_count_observed',
                         observed_metric={'soldiers': soldiers},
                         reason='国ステータスで兵士数を確認し当月の補充判断に使用')
+            if (generals is None or soldiers is None) and not state.get('counts_unread_logged'):
+                # Evidence for the next policy step: the exact page-1 rows,
+                # bounded and text-only, recorded once per visit.
+                state['counts_unread_logged'] = True
+                _record(mem, 'country_status_counts_unread',
+                        observed_metric={'rows': [line.text[:40] for line in screen.lines][:12],
+                                         'generals': generals, 'soldiers': soldiers},
+                        reason='国ステータス1頁目は読めたが人数行を特定できないため、次回の行文言確認用に記録する')
         # Page 1 of the country status carries しゅうにゅう / そうちんぎん;
         # page 2 carries the hanjuku level/value. Keep the total income and
         # total wages as last observations for the status card; only a
-        # readable page rewrites them (owner 2026-11-04).
-        income = _status_row_value(screen, 'しゅうにゅう')
+        # readable country page rewrites them (owner 2026-11-04). A castle
+        # status page has しゅうにゅう but no そうちんぎん and is not this page.
+        income = _status_row_value(screen, 'しゅうにゅう') if page1 else None
         if type(income) is int and 0 <= income <= 99999:
             mem['country_income'] = {'scope': [mem.get('chapter'), mem.get('month')],
                                      'tick': int(mem.get('tick') or 0), 'income': income}
-        wages = _status_row_value(screen, 'そうちんぎん')
+        wages = _status_row_value(screen, 'そうちんぎん') if page1 else None
         if type(wages) is int and 0 <= wages <= 99999:
             mem['country_wages'] = {'scope': [mem.get('chapter'), mem.get('month')],
                                     'tick': int(mem.get('tick') or 0), 'wages': wages}
@@ -2215,11 +2272,11 @@ def _repair_step(screen, mem, frame):
                 # observation below: leaving the map only proves the unit
                 # started moving, not that it reached the house (W4
                 # reroute, issuecomment-6645962702).
-                for sortie in (mem.get('sorties') or {}).values():
+                for sortie in _sorties(mem).values():
                     if sortie.get('general') == name and sortie.get('status') in ('en_route', 'launched_unconfirmed'):
                         sortie['status'] = 'redirected_house'
                 tick = int(mem.get('tick') or 0)
-                mem.setdefault('sorties', {})[f'HOUSE_OUT:{tick}'] = {
+                _world(mem).setdefault('sorties', {})[f'HOUSE_OUT:{tick}'] = {
                     'general': name, 'source': state.get('source'),
                     'target': None, 'status': 'en_route', 'purpose': 'house', 'tick': tick}
                 _record(mem, 'departed', reason='移動先選択からフィールドへ戻ったことを確認')
@@ -2231,7 +2288,7 @@ def _repair_step(screen, mem, frame):
         if prices:
             # The gift list proves actual arrival, even if a later purchase or
             # return step aborts. Never miscount such a visit as a bad entry.
-            for sortie in (mem.get('sorties') or {}).values():
+            for sortie in _sorties(mem).values():
                 if (sortie.get('general') == name and sortie.get('purpose') == 'house'
                         and sortie.get('status') in ('en_route', 'launched_unconfirmed')):
                     sortie['status'] = 'arrived_house'
@@ -2355,10 +2412,10 @@ def _repair_step(screen, mem, frame):
         if screen.kind == 'map':
             receipts.dirty_status(mem, [name], fields=('hp', 'location'))
             tick = int(mem.get('tick') or 0)
-            for sortie in (mem.get('sorties') or {}).values():
+            for sortie in _sorties(mem).values():
                 if sortie.get('general') == name and sortie.get('purpose') == 'house':
                     sortie['status'] = 'recalled'
-            mem.setdefault('sorties', {})[f'HOUSE:{tick}'] = {
+            _world(mem).setdefault('sorties', {})[f'HOUSE:{tick}'] = {
                 'general': name, 'target': state['return_goal'], 'status': 'en_route',
                 'purpose': 'move', 'tick': tick}
             _next_general(mem)

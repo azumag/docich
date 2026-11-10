@@ -483,6 +483,12 @@ html, body { color: #deedf7; font-family: "Noto Sans JP", "Segoe UI", sans-serif
 }
 .toast.paper-pnl .toast-time { flex: 0 0 auto; padding-top: 2px; }
 .toast.paper-pnl .toast-body { -webkit-line-clamp: 2; }
+/* Card background tells the venue: PAPER (sandbox) is cool teal, LIVE (real money) is warm amber. */
+.toast.paper-trade { background: #062329; border-color: #2d7f8c; }
+.toast.paper-trade .toast-head { border-bottom-color: #1f5a64; color: #7be0ec; }
+.toast.live-trade { background: #2b1706; border-color: #d28a2c; }
+.toast.live-trade .toast-head { border-bottom-color: #7a4a14; color: #fbbf24; }
+.toast.live-trade .toast-body { color: #f1d9b5; }
 /* Live cards also carry troop/garrison/order observations absent from the mock.
    Let the card claim its measured height rather than crop it at 390px. */
 html[data-hanjuku-active="1"] .feed-panel.panel-g { flex: 0 0 auto; }
@@ -1054,17 +1060,20 @@ html[data-soren-monitor="1"]:not([data-improve-active="1"])[data-monitor-view="o
   grid-template-rows: 210px 64px minmax(0, 1fr); gap: 6px; overflow: hidden; }
 .hanjuku-gap-news { height: 210px; min-height: 0; overflow: hidden;
   display: flex; flex-direction: column; gap: 4px; }
+/* Owner 2026-11-08: the notification strip carries no colored edge band.
+   Entries are told apart by background and text alone; tone-specific
+   border-colors below stay inert until a band is reintroduced. */
 .hanjuku-gap-decisions { display: flex; flex: 1 1 auto; min-height: 0; overflow: hidden;
   flex-direction: column; gap: 4px; margin: 0;
-  padding: 4px; border-left: 3px solid #f0b84d; background: #101f2d; border-radius: 4px; }
+  padding: 4px; background: #101f2d; border-radius: 4px; }
 .hanjuku-gap-decisions:empty { display: none; }
 .hanjuku-gap-decision { flex: 0 0 auto; padding: 5px 6px; background: #091925;
   font-size: 11px; line-height: 1.4; white-space: pre-wrap; overflow-wrap: anywhere;
-  border-left: 2px solid #f0b84d; color: #e6f2f8; }
+  color: #e6f2f8; }
 .hanjuku-gap-toasts { display: flex; flex: 0 0 auto; flex-direction: column; gap: 5px;
   max-height: 72px; overflow: hidden; margin: 0; }
 .hanjuku-gap-toast { display: flex; flex: 0 0 auto; align-items: baseline; gap: 8px; padding: 6px 9px;
-  border-left: 3px solid #4b6b80; border-radius: 4px; background: #081b26;
+  border-radius: 4px; background: #081b26;
   color: #e6f2f8; font-size: 15px; line-height: 1.3; overflow-wrap: anywhere;
   animation: gapToastIn .22s ease-out; }
 .hanjuku-gap-toast-text { min-width: 0; white-space: pre-wrap; }
@@ -2894,8 +2903,13 @@ html[data-prediction-active="1"][data-next-corner="1"] #feed { height: 570px; }
       const card = document.createElement('article');
       card.className = `toast ${category}${!item.liveStatus && now - Number(item.ts || 0) <= 3 ? ' fresh' : ''}`;
       // PAPER P/L titles wrap; other workers and live cards retain their layout.
-      if (category === 'worker' && /^(?:売|買|裁定)｜/.test(String(item.title || ''))) {
+      // Real-money (LIVE) fills must be told apart from PAPER at a glance, so they
+      // get their own card colour: title prefix `実売｜` / `実買｜` (Issue #3623 §2.2).
+      const toastTitle = String(item.title || '');
+      const liveTrade = category === 'worker' && /^実(?:売|買)｜/.test(toastTitle);
+      if (liveTrade || (category === 'worker' && /^(?:売|買|裁定)｜/.test(toastTitle))) {
         card.classList.add('paper-pnl');
+        card.classList.add(liveTrade ? 'live-trade' : 'paper-trade');
       }
       if (item.liveStatus) card.dataset.liveStatus = '1';
       const bar = document.createElement('div');

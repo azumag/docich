@@ -10,6 +10,7 @@ whole window in which its battle can still bind to the order.
 """
 from docich.hanjuku.strategy import orders as O
 from docich.hanjuku.strategy import replan
+from docich.hanjuku.state.regions import sorties as _sorties
 
 
 def boss_sortie(tick=39917, target='ボス'):
@@ -42,7 +43,7 @@ def test_the_live_boss_march_is_not_declared_lost_at_819_observations():
     mem = memory(39917 + 819)
     O._relaunch_overdue_boss(mem)
     assert mem['orders']['6-B1'] == 'launched'
-    assert mem['sorties']['6-B1']['status'] == 'en_route'
+    assert _sorties(mem)['6-B1']['status'] == 'en_route'
     assert not decisions(mem, 'boss_sortie_overdue')
 
 
@@ -50,7 +51,7 @@ def test_the_same_march_is_sent_again_after_the_full_window():
     mem = memory(39917 + O.MARCH_ARRIVAL_CAP)
     O._relaunch_overdue_boss(mem)
     assert mem['orders']['6-B1'] == 'pending'
-    assert mem['sorties']['6-B1']['status'] == 'overdue'
+    assert _sorties(mem)['6-B1']['status'] == 'overdue'
     assert mem['boss_relaunch'] == {'6-B1': 1}
     (record,) = decisions(mem, 'boss_sortie_overdue')
     assert record['observed_metric']['marching'] == O.MARCH_ARRIVAL_CAP

@@ -77,3 +77,30 @@ def test_mechanical_chart_preserves_actor_probe_through_adoption(monkeypatch):
     assert adopted['general'] == 'しょうぐん'
     assert adopted['source_probe'] is True
     assert adjust.startable(adopted, {'garrison': {}, 'en_route': []}) is None
+
+
+def test_the_hero_is_never_a_plannable_actor():
+    """Owner 2026-11-08: 主人公はアルマムーンから実質動かない.
+
+    Deploy answers every hero-led order with a companion, so a plan naming him
+    would stand as a sortie nobody carries out — even with a recorded garrison
+    and enough companions to satisfy the castle guard.
+    """
+    assert adjust.startable(order(chart.HERO), {
+        'garrison': {HOME: [chart.HERO, 'ゼウス', 'ココット', 'ヴィーナス']},
+        'en_route': []}) == 'hero_not_dispatchable'
+
+
+def test_an_interim_of_a_hero_order_plans_a_measured_spare(monkeypatch):
+    monkeypatch.setattr(replan.routes, 'probe_due', lambda *args, **kwargs: False)
+    monkeypatch.setattr(replan.routes, 'arrival_probe_due', lambda *args, **kwargs: False)
+    # The hero's castle keeps two others beside him (HERO_CASTLE_GUARD), so a
+    # spare can leave only when a third companion stays.
+    mem = {'chapter': 1, 'garrison': {HOME: [chart.HERO, 'ゼウス', 'ココット', 'ヴィーナス']},
+           'orders': {}, 'captured': [], '_records': []}
+    picked = replan._interim_source(mem, 'キカンドン',
+                                    {'general': chart.HERO, 'source': HOME},
+                                    {HOME}, set())
+    source, general = picked
+    assert source == HOME
+    assert general != chart.HERO and general in {'ゼウス', 'ココット'}

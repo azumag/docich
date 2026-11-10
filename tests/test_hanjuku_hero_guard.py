@@ -8,7 +8,7 @@ from docich.hanjuku_pixels import read_png
 from docich.hanjuku_screen import Screen, parse
 from test_hanjuku_sortie_evidence import selected_list, actor_panel, measured_card_select, measured_loaded_sortie
 from test_hanjuku_survival import menu
-from docich.hanjuku.state.regions import world as _world, flow as _flow, journal as _journal
+from docich.hanjuku.state.regions import world as _world, flow as _flow, journal as _journal, plan as _plan_region
 
 F = Path(__file__).parent / 'fixtures' / 'hanjuku'
 
@@ -26,7 +26,7 @@ def test_readable_boss_list_without_any_companion_never_selects_hero(names):
     actions = p.deploy_step(selected_list(names), mem)
     assert actions == [p.pad('b'), p.pad('b')]
     assert mem['active'] is None and mem['orders'][order['step']] == 'pending'
-    assert not mem.get('sortie_general') and not mem.get('order_context')
+    assert not _plan_region(mem).get('sortie_general') and not _plan_region(mem).get('order_context')
     assert mem['_records'][-1]['decision'] == 'boss_companion_required'
 
 
@@ -46,11 +46,11 @@ def test_weak_but_fit_companion_is_sent_and_the_hero_never_is(names):
 
 @pytest.mark.parametrize('kind', ['card_select', 'sortie_confirm'])
 def test_hotloaded_hero_selection_backs_out_before_departure(kind):
-    order, mem = boss_memory(); mem['sortie_general'] = {order['step']: p.NAME}
+    order, mem = boss_memory(); _plan_region(mem)['sortie_general'] = {order['step']: p.NAME}
     mem['orders'][order['step']] = 'pending'
     screen = measured_card_select() if kind == 'card_select' else measured_loaded_sortie()
     assert p.deploy_step(actor_panel(screen, p.NAME), mem) == [p.pad('b'), p.pad('b')]
-    assert not mem.get('order_context') and not mem.get('sorties')
+    assert not _plan_region(mem).get('order_context') and not mem.get('sorties')
 
 
 def test_adequate_companion_elsewhere_redirects_source_without_inventing_departure():
@@ -59,9 +59,9 @@ def test_adequate_companion_elsewhere_redirects_source_without_inventing_departu
     mem['house_eggs'] = {p.NAME: {'broken': True}}
     assert p.next_order(mem) == order
     assert mem['source_override'][order['step']] == chart.home_castle(2)
-    assert not mem.get('sortie_general') and not mem.get('sorties')
+    assert not _plan_region(mem).get('sortie_general') and not mem.get('sorties')
     assert p.deploy_step(selected_list(['ゼウス', p.NAME]), mem) == [p.pad('a')]
-    assert mem['sortie_general'][order['step']] == 'ゼウス'
+    assert _plan_region(mem)['sortie_general'][order['step']] == 'ゼウス'
 
 
 @pytest.mark.parametrize('status', [{'broken': True}, {'uses': 0}, {'hp': 10, 'max_hp': 85}])
@@ -70,14 +70,14 @@ def test_companion_preparation_waits_for_known_injury_or_egg_failure(status):
     _world(mem)['garrison'] = {order['source']: [p.NAME, 'ゼウス']}
     mem['house_eggs'] = {'ゼウス': status}
     assert p.next_order(mem) is None
-    assert not mem.get('sortie_general')
+    assert not _plan_region(mem).get('sortie_general')
 
 
 def test_busy_unknown_location_and_duplicate_names_cannot_license_substitute():
     order, mem = boss_memory()
-    mem['sorties'] = {'old': {'general': 'ゼウス', 'tick': 99, 'status': 'en_route'}}
+    _world(mem)['sorties'] = {'old': {'general': 'ゼウス', 'tick': 99, 'status': 'en_route'}}
     assert p._order_hero_alternatives(order, mem, [p.NAME, 'ゼウス']) == []
-    mem.pop('sorties'); _world(mem)['general_location_unknown'] = ['ゼウス']
+    _world(mem).pop('sorties'); _world(mem)['general_location_unknown'] = ['ゼウス']
     assert p._order_hero_alternatives(order, mem, ['ゼウス']) == []
     _world(mem).pop('general_location_unknown')
     assert p._order_hero_alternatives(order, mem, ['ゼウス', 'ゼウス']) == []
@@ -86,18 +86,18 @@ def test_busy_unknown_location_and_duplicate_names_cannot_license_substitute():
 def test_unconfirmed_existing_departure_keeps_source_reconciliation(monkeypatch):
     order, mem = boss_memory(); step = order['step']
     mem['orders'][step] = 'launched_unconfirmed'
-    mem['order_context'] = {step: {'actual_general': p.NAME}}
+    _plan_region(mem)['order_context'] = {step: {'actual_general': p.NAME}}
     monkeypatch.setattr(p, '_verify_sortie_source', lambda *args: [])
-    before = deepcopy(mem['order_context'])
+    before = deepcopy(_plan_region(mem)['order_context'])
     assert p.deploy_step(selected_list([p.NAME]), mem) == []
-    assert mem['order_context'] == before
+    assert _plan_region(mem)['order_context'] == before
 
 
 def test_hotloaded_unsubmitted_hero_target_never_sends_departure(monkeypatch):
     order, mem = boss_memory(); step = order['step']
     mem['orders'][step] = 'pending'
-    mem['sortie_general'] = {step: p.NAME}
-    mem['order_context'] = {step: {'actual_general': p.NAME,
+    _plan_region(mem)['sortie_general'] = {step: p.NAME}
+    _plan_region(mem)['order_context'] = {step: {'actual_general': p.NAME,
         'observed_metric': {'cards': sorted(order['cards'])}}}
     _flow(mem)['sortie_attempt'] = {'step': step, 'target_seen': True}
     monkeypatch.setattr(p, 'nav_step', lambda *args: pytest.fail('hero target navigation'))
@@ -109,10 +109,10 @@ def test_hotloaded_unsubmitted_hero_target_never_sends_departure(monkeypatch):
 def test_explicit_companion_boss_plan_cannot_confirm_an_actual_hero_panel():
     order, mem = boss_memory(); step = order['step']
     mem['chart_plan'] = {'orders': [{**order, 'general': 'ゼウス'}]}
-    mem['sortie_general'] = {step: 'ゼウス'}
+    _plan_region(mem)['sortie_general'] = {step: 'ゼウス'}
     mem['orders'][step] = 'pending'
     assert p.deploy_step(actor_panel(measured_loaded_sortie(), p.NAME), mem) == [p.pad('b'), p.pad('b')]
-    assert not mem.get('order_context')
+    assert not _plan_region(mem).get('order_context')
 
 
 @pytest.mark.parametrize('file,digest', [

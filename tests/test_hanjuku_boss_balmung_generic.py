@@ -7,6 +7,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
 from docich import hanjuku_chart as chart
 from docich import hanjuku_policy as p
 from docich import hanjuku_reference as reference
+from docich.hanjuku.state.regions import plan as _plan_region
 
 
 def inventory(rows, remaining=3):
@@ -101,7 +102,7 @@ def test_balmung_tactics_open_only_in_a_measured_boss_entry_per_copy():
     mem = memory(5); order = boss_order(5, mem); step = order['step']
     inv = inventory([('バルムンク', 2), ('ブラッキー', 2)])
     p._chapter_two_balmung_inventory(mem, order, inv)
-    mem['order_context'] = {step: {'observed_metric': {'cards': list(mem['rare_card_kit'][step])}}}
+    _plan_region(mem)['order_context'] = {step: {'observed_metric': {'cards': list(mem['rare_card_kit'][step])}}}
     tactics = [t for t in p._tactics(mem, step) if t['card'] == 'バルムンク']
     assert len(tactics) == 2 and len({t['tactic_id'] for t in tactics}) == 2
     assert all(t['boss_only'] and t['enemy'] == 'だいまおう' for t in tactics)
@@ -114,7 +115,7 @@ def _wave_memory(general):
     order = {'step': '5-W9', 'general': general, 'source': chart.castles(5) and next(iter(chart.castles(5))),
              'cards': ('イッテツーン',), 'target': chart.boss_castle(5), 'after': None, 'note': 'wave'}
     mem['active'] = order['step']
-    mem['sortie_general'] = {order['step']: general}
+    _plan_region(mem)['sortie_general'] = {order['step']: general}
     return order, mem
 
 
@@ -174,6 +175,6 @@ def test_g1075_season_site_panel_with_balmung_now_takes_the_balmung_kit():
     assert kit[:2] == ['バルムンク', 'バルムンク']
     assert sum(p.CARD_IDS[c] for c in kit) < p.ENEMY_EGG_CARD_ID_SUM
     # 四季王は敵名が季節で変わるため、戦術は敵名を問わずボス突入の実測でだけ開く。
-    mem['order_context'] = {'4-B1': {'observed_metric': {'cards': list(kit)}}}
+    _plan_region(mem)['order_context'] = {'4-B1': {'observed_metric': {'cards': list(kit)}}}
     tactics = [t for t in p._tactics(mem, '4-B1') if t['card'] == 'バルムンク']
     assert len(tactics) == 2 and all(t['enemy'] is None and t['boss_only'] for t in tactics)

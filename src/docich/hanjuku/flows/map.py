@@ -19,13 +19,14 @@ from .recall import (MENU_HOLD_LIMIT, RECALL_LIMIT, _hold_after_picker, _recall_
 from ..os_layer.commands import menu_to, pad
 from ..os_layer.navigation import (Y_JUMP_LIMIT, Y_JUMP_OFFSET, _align_on_roof, _drop_stale_y_jump, _start_y_jump,
                                    _forget_failed_jump, _want_y_jump, _y_jump_step, nav_step)
-from ..os_layer.readers import (UNDER_CURSOR_PX, WORLD_MAP_OFFSET, _cursor, _roof_under_cursor, world_cursor,
-                                world_flags, world_markers)
-from ..os_layer.world import NAME, _apply_world_flags, _hero_castle, _owned, update_world
+from ..os_layer.readers import (UNDER_CURSOR_PX, WORLD_MAP_OFFSET, _cursor, _roof_under_cursor, season_sites,
+                                world_cursor, world_flags, world_markers)
+from ..os_layer.world import (NAME, _apply_season_sites, _apply_skull_boss, _apply_world_flags,
+                              _hero_castle, _owned, update_world)
 from ..strategy import goals
 from ..strategy.kit import _deploy_cards, _is_boss_order
 from ..strategy.execution import departure_snapshot
-from ..state.regions import world as _world, flow, journal, flow as _flow, journal as _journal
+from ..state.regions import world as _world, flow, journal, flow as _flow, journal as _journal, sorties as _sorties, plan as _plan_region
 from ..strategy.orders import (BOSS_TARGET_CANCEL_LIMIT, SOURCE_MISS_LIMIT, _broken_hero_order, _finish_order,
                                _garrison_move, _give_up_source, _near_goal, _order, _order_for_step, _ready,
                                _recall_goal, _retire_unentered_sortie, _sortie_general, _source,
@@ -49,7 +50,7 @@ def observe_sortie_transition(screen, mem, previous_kind=None):
     order = _order(mem)
     attempt = _flow(mem).get('sortie_attempt')
     if not attempt and order and previous_kind == 'map_target':
-        context = (mem.get('order_context') or {}).get(order['step']) or {}
+        context = (_plan_region(mem).get('order_context') or {}).get(order['step']) or {}
         if context.get('actual_general'):
             attempt = {'step': order['step'], 'target_seen': True}
             _flow(mem)['sortie_attempt'] = attempt
@@ -68,7 +69,7 @@ def observe_sortie_transition(screen, mem, previous_kind=None):
             if (mem.get('orders') or {}).get(step) == 'launched_unconfirmed':
                 mem['active'] = step
                 mem['orders'][step] = 'pending'
-                (mem.get('sorties') or {}).pop(step, None)
+                _sorties(mem).pop(step, None)
                 # The interruption moved the camera: the resumed selection gets
                 # fresh target jumps (g421 18:24: six were spent before a defense
                 # battle, the marker came back unplaced and the bot idled).
@@ -111,7 +112,7 @@ def observe_sortie_transition(screen, mem, previous_kind=None):
         # The picker closed without a recorded send, or into a screen that
         # is not the field: fall through to the unconfirmed-departure
         # record. The observed garrison fact stays.
-    context = (mem.get('order_context') or {}).get(step) or {}
+    context = (_plan_region(mem).get('order_context') or {}).get(step) or {}
     general = context.get('actual_general')
     if not general:
         return
@@ -120,10 +121,10 @@ def observe_sortie_transition(screen, mem, previous_kind=None):
         return  # a foreign confirmation never becomes departure ownership
     general = snapshot['general']
     _world(mem).setdefault('launched_orders', {})[step] = snapshot
-    previous = (mem.get('sorties') or {}).get(step)
+    previous = _sorties(mem).get(step)
     if previous:
         _retire_unentered_sortie(mem, step, previous)
-    mem.setdefault('sorties', {})[step] = {
+    _world(mem).setdefault('sorties', {})[step] = {
         'general': general, 'source': snapshot['source'], 'target': None,
         'planned_target': order['target'], 'status': 'launched_unconfirmed',
         'evidence': deepcopy({k: v for k, v in context.items() if k != 'departure_order'}),
@@ -269,6 +270,13 @@ def world_map_step(screen, mem, frame):
     recall = _flow(mem).get('recall')
     if recall and recall.get('stage') == 'await_dispatch':
         return _recall_dispatch_step(screen, mem, recall)
+    if recall and recall.get('boss') and recall.get('stage') == 'dest':
+        # いどう opened a whole-island picker, whose confirmation below sends
+        # the unit to an own castle. A boss redirect must never do that: close
+        # it and keep the camp where it is. Unmeasured: the event names the screen.
+        from .recall import _abort_boss_redirect
+        return _abort_boss_redirect(mem, recall, 'boss_picker_is_world_map',
+                                    'いどうが全島ピッカーを開いたため、自軍城へ帰還させず取り消す')
     if recall and recall.get('stage') == 'dest':
         # きかん opens a whole-island picker (chapter 1 and 2, isolated probe
         # 2026-09-29): the R ring starts on the home castle, A selects it and a
@@ -382,6 +390,14 @@ def world_map_step(screen, mem, frame):
         return [] if waited < WORLD_MAP_WAIT else _close_world_map(mem)
     mem.pop('world_map_wait', None)
     _apply_world_flags(mem, flags)
+    # The same view draws chapter 4's 四季王 sites: a cleared one keeps a
+    # pennant, a live king keeps the skull.
+    if (mem.get('chapter') or 0) == 4 and hasattr(frame, 'pixel'):
+        _apply_season_sites(mem, season_sites(frame, 4, world_cursor(frame)))
+    if (mem.get('chapter') or 0) != 4 and hasattr(frame, 'pixel'):
+        # A single boss skull on the Y view is the boss's measured cell (the
+        # moving boss included; chapter 4's four sites use the scan above).
+        _apply_skull_boss(mem, frame)
     markers = world_markers(frame)
     _probe_launch_markers(mem, markers)
     mem['_world_units_prev'] = [list(b) for b in markers]
@@ -666,8 +682,16 @@ def _watch_cursor_still(mem):
 # rows from y=39, with the orange hand left of the selected row. SELECT flies
 # the cursor to that castle (manual p.15: 将軍と同じく、セレクトボタンでその城へ飛べる).
 CASTLE_JUMP_HINT = 'Aボタンでステータスひょうじ'
-CASTLE_JUMP_LIMIT = 32          # observations across the whole menu trip
-CASTLE_JUMP_SCROLL_LIMIT = 8    # list scrolls while looking for the source
+CASTLE_JUMP_LIMIT = 48          # observations across the whole menu trip
+# The しろ list is an eight-row window (y=39..151). In the observed failures
+# it opened on the home castle at row 0, so reaching the last row of a
+# 12-castle chapter needs 11 Downs. The old bound of 8 stopped at row 8 and
+# left every source from ユージア onward (chapter 6 indices 9+) unreachable:
+# g1133 recorded five ユージア castle_missing failures on 2026-11-06 and
+# g1163 seven アブダレ failures on 2026-11-09, each with the eight-scroll
+# bound exhausted. Keep the bound above the longest chapter roster; the loop
+# still stops as soon as the source is visible.
+CASTLE_JUMP_SCROLL_LIMIT = 16   # list scrolls while looking for the source
 CASTLE_JUMP_COOLDOWN = 40       # observations before retrying a failed source
 CASTLE_JUMP_FAR = 48            # same distance gate as the Y jump (map px)
 # The orange hand of the main menu and of the しろ list blinks, so whole frames
@@ -682,6 +706,7 @@ CASTLE_JUMP_CURSOR_BLIND = 4    # consecutive cursor-less frames before giving u
 # observation, then a readable main menu). Re-observe briefly; a real
 # mis-pressed panel still ends the trip on the same bound.
 CASTLE_JUMP_FADE_BLIND = 2      # consecutive unreadable frames after the X
+CASTLE_JUMP_ORPHAN_HOLD = 4     # frames an empty active order may interrupt the trip
 
 
 def _castle_key(name):
@@ -779,7 +804,8 @@ def _want_castle_jump(mem, order, source, goal):
 
 
 def _start_castle_jump(mem, order, source):
-    mem['castle_jump'] = {'step': order['step'], 'source': source, 'phase': 'menu',
+    mem['castle_jump'] = {'step': order['step'], 'source': source,
+                          'target': order.get('target'), 'phase': 'menu',
                           'age': 0, 'total': 0, 'tick': int(mem.get('tick') or 0),
                           'menu_presses': 1, 'selects': 0, 'scrolls': 0, 'waits': 0}
     _record(mem, 'castle_jump_open', chart_step=order['step'], target=source,
@@ -809,6 +835,39 @@ def _end_castle_jump(screen, mem, why):
     return []
 
 
+def _jump_successor(mem, order, jump=None):
+    """The live order that continues a re-planned jump, or None.
+
+    Same departure castle, same target and the same general (or a substitute
+    the plan itself picked) mean the walk to the castle is still the right
+    physical action; only the step id changed.
+    """
+    active = _order_for_step(mem, mem.get('active'))
+    if not isinstance(active, dict):
+        return None
+    if isinstance(order, dict):
+        if active.get('step') == (order.get('step') or ''):
+            return None
+        target, source = order.get('target'), _source(order, mem)
+    else:
+        # The old step disappeared with the replaced plan; the jump itself
+        # still remembers where it was going (g1163 2026-11-10 06:22: the
+        # jump died at age 1 every time a re-plan dropped its step).
+        jump = jump if isinstance(jump, dict) else {}
+        target, source = jump.get('target'), jump.get('source')
+        if not target:
+            return None
+    if (target or None) != (active.get('target') or None):
+        return None
+    if source != _source(active, mem):
+        return None
+    # The general may change with the re-plan (the chart worker re-picks the
+    # actor each time: シュゼット's jump was replaced by マンゴスチン's at
+    # 05:38). The castle trip is still the same physical action, and a
+    # different general may depart from there (owner 2026-11-10 fallback).
+    return active
+
+
 def castle_jump_step(screen, mem, frame):
     """Drive X -> しろ -> castle name -> SELECT for the order's source.
 
@@ -827,7 +886,26 @@ def castle_jump_step(screen, mem, frame):
     if not reanchor:
         order = _order_for_step(mem, jump['step'])
         if order is None or mem.get('active') != jump['step']:
-            return _end_castle_jump(screen, mem, 'order_changed')
+            # The chart worker may re-plan while the jump is in flight, which
+            # renumbers every step (g1163 2026-11-10 05:38-05:50: five jumps
+            # aborted at age 1 with order_changed, so the sortie never left).
+            # The physical trip is still valid when the same general leaves
+            # the same castle for the same target, so carry the jump over.
+            if (not mem.get('active')
+                    or _order_for_step(mem, mem.get('active')) is None):
+                # Between plans the active order can be empty, or name a step
+                # the replaced plan no longer holds; that is not a change of
+                # intent (g1163 2026-11-10 07:01: the jump still died at age 1
+                # one second after order_start).
+                jump['orphan'] = int(jump.get('orphan') or 0) + 1
+                if jump['orphan'] <= CASTLE_JUMP_ORPHAN_HOLD:
+                    return []
+            adopted = _jump_successor(mem, order, jump)
+            if adopted is None:
+                return _end_castle_jump(screen, mem, 'order_changed')
+            jump['step'] = adopted['step']
+            jump['source'] = _source(adopted, mem) or jump.get('source')
+            order = adopted
 
     phase = jump.get('phase')
     if phase == 'menu':
@@ -1198,7 +1276,7 @@ def map_step(screen: Screen, mem, frame):
                 reason='全城の所有を全体マップで確認するためYを押す')
         return [pad('y')]
     if order is None:
-        order = next((_order_for_step(mem, step) for step, sortie in (mem.get('sorties') or {}).items()
+        order = next((_order_for_step(mem, step) for step, sortie in _sorties(mem).items()
                       if sortie.get('status') == 'launched_unconfirmed'
                       and not sortie.get('verification_unavailable')
                       and sortie.get('source') in _owned(mem)), None)
@@ -1238,6 +1316,7 @@ def map_step(screen: Screen, mem, frame):
         _record(mem, 'order_start', chart_step=order['step'], **_deploy_context(order, mem),
                 source=order['source'], target=order['target'], purpose=order.get('purpose'),
                 cards=list(order['cards']),
+                **({'roster_probe': True} if order.get('roster_probe') is True else {}),
                 reason=order['note'])
     source = _source(order, mem)
     goal = _measured_goal(mem, order, source)
@@ -1356,10 +1435,10 @@ def target_step(screen: Screen, mem, frame):
     if _broken_hero_order(order, mem):
         return _cancel_broken_hero_sortie(mem, order)
     if _is_boss_order(order, mem):
-        context = (mem.get('order_context') or {}).get(order['step']) or {}
+        context = (_plan_region(mem).get('order_context') or {}).get(order['step']) or {}
         if (not context.get('actual_general')
                 or context.get('actual_general') != _sortie_general(order, mem)
-                or (mem.get('sortie_general') or {}).get(order['step']) != context.get('actual_general')
+                or (_plan_region(mem).get('sortie_general') or {}).get(order['step']) != context.get('actual_general')
                 or (context.get('observed_metric') or {}).get('cards') != sorted(_deploy_cards(order, mem))):
             return _hold_deploy(screen, mem, order, 'ボス出撃の選択本人と携行品の確認証拠がないため目標確定を保留')
     request = flow(mem).get('departure_request')
@@ -1468,20 +1547,20 @@ def _commit_departure(mem, order, context, snapshot):
     _world(mem).setdefault('launched_orders', {})[order['step']] = snapshot
     # Per execution id: ``launched`` keeps one sortie per castle, so a later
     # sortie to the same castle must not unbind an earlier unit en route.
-    previous = (mem.get('sorties') or {}).get(order['step'])
+    previous = _sorties(mem).get(order['step'])
     if previous:
         _retire_unentered_sortie(mem, order['step'], previous)
-    mem.setdefault('sorties', {})[order['step']] = {
+    _world(mem).setdefault('sorties', {})[order['step']] = {
         'general': general, 'source': snapshot['source'],
         'target': order['target'], 'status': 'en_route',
         'purpose': snapshot.get('purpose'),
         'evidence': deepcopy({k: v for k, v in
-            ((mem.get('order_context') or {}).get(order['step']) or {}).items()
+            ((_plan_region(mem).get('order_context') or {}).get(order['step']) or {}).items()
             if k != 'departure_order'}),
         'tick': int(mem.get('tick') or 0),
         **({'confirmation_tick': snapshot['departure_binding']['confirm_tick']}
            if 'departure_binding' in snapshot else {})}
-    ((mem.get('order_context') or {}).get(order['step']) or {}).pop('departure_order', None)
+    ((_plan_region(mem).get('order_context') or {}).get(order['step']) or {}).pop('departure_order', None)
     chapter = mem.get('chapter') or 0
     castles = chart.castles(chapter)
     if (WORLD_MAP_OFFSET.get(chapter) and order['target'] in castles
@@ -1505,9 +1584,18 @@ DEPARTURE_SENT_HOLD_LIMIT = 4     # sent picker readings before treating the A a
 DEPARTURE_RESEND_LIMIT = 2        # journal-proven unsent resends inside one request
 DEPARTURE_REQUEST_LIMIT = 2       # released request cycles per order before failing it
 DEPARTURE_UNKNOWN_HOLD_LIMIT = 3  # unverifiable receipt readings; never a blind resend
-LAUNCH_PROBE_READS = 3            # world-map surveys without the new unit before the roster check
+# g1163 2026-11-09 19:00-19:40: 12 of 15 unverified launches were marker misses that
+# fell through to a source-roster trip (a castle jump plus a general list, ~20-30 s
+# each) even though the army had left. The departure cutscene can render the new
+# triangle after the third survey, so allow two more reads before the expensive
+# roster check: an absent marker costs 2 extra frames, a false miss costs a trip.
+LAUNCH_PROBE_READS = 5            # world-map surveys without the new unit before the roster check
 LAUNCH_PROBE_RADIUS = 10        # world-map px from source/target flag counting as that unit
 LAUNCH_PROBE_NEW_MARKER_PX = 4  # centre distance that still counts as the same marker
+# A marching unit's triangle is ~7x6; a 3x3 red decoration must not confirm a
+# launch (g1163 2026-11-09 05:28: [[149,63,152,66]] confirmed three launches
+# while only the hero's own marker was on the view).
+LAUNCH_PROBE_MIN_BOX = 20      # bounding-box pixels for a plausible unit marker
 LAUNCH_PROBE_ROSTER_TICKS = 200  # blind probe ticks to wait for the source roster before rollback
 LAUNCH_MISS_LIMIT = 2           # unverified launches an order may retry before failing
 
@@ -1563,7 +1651,7 @@ def _probe_launch_markers(mem, markers):
         return
     now = int(mem.get('tick') or 0)
     for step, probe in list(probes.items()):
-        sortie = (mem.get('sorties') or {}).get(step)
+        sortie = _sorties(mem).get(step)
         if not sortie or sortie.get('status') not in ('en_route', 'launched_unconfirmed'):
             probes.pop(step, None)
             continue
@@ -1612,9 +1700,10 @@ def _probe_launch_markers(mem, markers):
             continue
         baseline = probe.get('baseline') or []
         fresh = [b for b in markers
-                 if not any(abs((b[0] + b[2]) / 2 - (o[0] + o[2]) / 2) <= LAUNCH_PROBE_NEW_MARKER_PX
-                            and abs((b[1] + b[3]) / 2 - (o[1] + o[3]) / 2) <= LAUNCH_PROBE_NEW_MARKER_PX
-                            for o in baseline)]
+                 if (b[2] - b[0] + 1) * (b[3] - b[1] + 1) >= LAUNCH_PROBE_MIN_BOX
+                 and not any(abs((b[0] + b[2]) / 2 - (o[0] + o[2]) / 2) <= LAUNCH_PROBE_NEW_MARKER_PX
+                             and abs((b[1] + b[3]) / 2 - (o[1] + o[3]) / 2) <= LAUNCH_PROBE_NEW_MARKER_PX
+                             for o in baseline)]
         near = [b for b in fresh
                 if _marker_near_castle(mem, b, probe.get('source'))
                 or _marker_near_castle(mem, b, probe.get('target'))]
@@ -1668,7 +1757,7 @@ def settle_launch_probes_from_roster(mem, castle, generals):
                                         reason='出撃元の将軍一覧にまだ出撃した将軍がいるため、出撃を未発射に戻す')
             continue
         probes.pop(step, None)
-        sortie = (mem.get('sorties') or {}).get(step)
+        sortie = _sorties(mem).get(step)
         if isinstance(sortie, dict):
             sortie['launch_confirmed'] = True
             sortie.pop('launch_kept', None)
@@ -1694,11 +1783,12 @@ def _rollback_unverified_launch(mem, step, probe, markers, reason=None):
     misses = _flow(mem).setdefault('launch_miss', {})
     misses[step] = misses.get(step, 0) + 1
     for key in ('general_override', 'source_override', 'card_override', 'rare_card_kit',
-                'strong_card_kit', 'dropper_card_kit', 'order_context', 'sortie_general',
-                'sortie_actor_miss'):
+                'strong_card_kit', 'dropper_card_kit', 'sortie_actor_miss'):
         (mem.get(key) or {}).pop(step, None)
+    _plan_region(mem).setdefault('order_context', {}).pop(step, None)
+    _plan_region(mem).setdefault('sortie_general', {}).pop(step, None)
     (_world(mem).get('launched_orders') or {}).pop(step, None)
-    (mem.get('sorties') or {}).pop(step, None)
+    _sorties(mem).pop(step, None)
     for target, entry in list((_world(mem).get('launched') or {}).items()):
         if entry.get('step') == step:
             _world(mem)['launched'].pop(target, None)

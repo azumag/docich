@@ -19,7 +19,7 @@ HOME = chart.home_castle(3)
 def starved_memory(month='8-1', garrison=None):
     return {'chapter': 3, 'month': month, 'tick': 1000, 'captured': [], 'home_lost': False,
             'garrison': garrison if garrison is not None else {HOME: ['アルテミス']},
-            'sorties': {}, 'lost': [], 'general_location_unknown': [], 'house_eggs': {},
+            'world': {'sorties': {}},
             'orders': {}, '_records': []}
 
 

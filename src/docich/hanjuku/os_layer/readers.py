@@ -31,7 +31,13 @@ CARD_NAMES = frozenset({
     'ハリケーン', 'キャトルミュー'})
 # Every real card name (the 32-card gcgx table). The panel reader accepts
 # these as rows; only CARD_NAMES can be planned or selected.
-ALL_CARD_NAMES = frozenset(reference.ALL_CARD_IDS)
+# Cards the reference ID table does not price yet. They still occupy rows in
+# the real きりふだ panel, and rejecting the panel for them made every sortie
+# unreadable while one was visible (g1163 2026-11-10 04:52: ゲンゴナイト and
+# ライチスイム on screen, five holds then a cancel). Read them, never select
+# them by name: selection comes from CARD_IDS, which stays the priced subset.
+EXTRA_CARD_NAMES = frozenset({'ゲンゴナイト', 'ライチスイム'})
+ALL_CARD_NAMES = frozenset(reference.ALL_CARD_IDS) | EXTRA_CARD_NAMES
 
 
 # ---------------------------------------------------------------- menus
@@ -143,6 +149,119 @@ def world_flags(frame, chapter, cursor=None):
     return out
 
 
+# Chapter 4's four 四季王 sites draw chapter 3's boss skull while the king
+# holds the site and plain terrain once it is cleared. The skull is chapter 3's
+# boss skull sprite, top-left (101, 63) in the chapter 3 view; a site's sprite
+# sits at that anchor plus the site cell's view offset
+# (tests/test_hanjuku_season_king_sites.py pins the same anchor).
+# g1163 2026-11-09: a cleared site has no marker left at all — 北西/南西 read
+# as plain terrain while the owner reported them cleared, and 南東 kept the
+# skull as the remaining king. An orange pennant seen earlier at three sites
+# was a marching army standing on them, not a cleared marker, so the cleared
+# test is "no skull and nothing but terrain": any unit portrait, army marker
+# or cloud leaves the site unreadable instead of guessing.
+SEASON_SITE_ANCHOR = (101, 63)          # chapter 3 skull top-left on the Y view
+SEASON_SKULL_LIGHT = ((164, 165, 164), (255, 254, 255))
+# The island's own palette inside a site box (grass, water, sand, forest).
+SEASON_TERRAIN = ((24, 141, 24), (90, 214, 8), (84, 208, 9), (0, 72, 24),
+                  (106, 165, 205), (57, 88, 123), (172, 157, 65), (197, 133, 49))
+SEASON_TERRAIN_RATIO = 0.95
+
+
+def season_sites(frame, chapter, cursor=None):
+    """{site: 'closed'|'open'} from the Y view's four corner markers.
+
+    Skull light is a live king. A box that is nothing but island terrain has
+    no marker: the site is cleared. Anything else (a general's portrait, an
+    army marker, a cloud, the cursor's gold) is unreadable and left out so the
+    caller keeps its previous state.
+    """
+    if chapter != 4 or frame is None or not hasattr(frame, 'pixel'):
+        return {}
+    anchor = chart.CASTLES[3].get(chart.boss_castle(3))
+    if anchor is None:
+        return {}
+    out = {}
+    for name in chart.boss_sites(4):
+        cell = chart.castles(4).get(name)
+        if cell is None:
+            continue
+        x = SEASON_SITE_ANCHOR[0] + (cell[0] - anchor[0]) // 8
+        y = SEASON_SITE_ANCHOR[1] + (cell[1] - anchor[1]) // 8
+        if cursor and abs(x + 5 - cursor[0]) <= 10 and abs(y + 5 - cursor[1]) <= 10:
+            continue
+        pixels = [frame.pixel(px, py) for px in range(x - 2, x + 12)
+                  for py in range(y - 2, y + 13)
+                  if 0 <= px < frame.width and 0 <= py < frame.height]
+        if len(pixels) < 100:
+            continue
+        light = sum(1 for px in pixels
+                    if any(_near_colour(px, colour) for colour in SEASON_SKULL_LIGHT))
+        terrain = sum(1 for px in pixels
+                      if any(_near_colour(px, colour) for colour in SEASON_TERRAIN))
+        if light >= 6:
+            out[name] = 'open'
+        elif terrain >= len(pixels) * SEASON_TERRAIN_RATIO:
+            out[name] = 'closed'
+    return out
+
+
+# Chapter 3's boss skull, measured on the Y view (top-left (101, 63) for the
+# cell (306, 141)). The same sprite marks the chapter-4 sites, and a moving
+# boss draws it too. A boss on the Y view is therefore locatable by its skull
+# alone, without knowing a fixed cell in advance.
+Y_VIEW_SKULL_TEMPLATE = (
+    (1, 0, (32, 32, 32)), (2, 0, (32, 32, 32)), (3, 0, (32, 32, 32)),
+    (4, 0, (32, 32, 32)), (5, 0, (32, 32, 32)),
+    (0, 1, (32, 32, 32)), (1, 1, (164, 165, 164)), (2, 1, (164, 165, 164)),
+    (3, 1, (164, 165, 164)), (4, 1, (164, 165, 164)), (5, 1, (164, 165, 164)),
+    (6, 1, (32, 32, 32)),
+    (0, 2, (164, 165, 164)), (1, 2, (164, 165, 164)), (2, 2, (255, 254, 255)),
+    (3, 2, (255, 254, 255)), (4, 2, (255, 254, 255)), (5, 2, (164, 165, 164)),
+    (6, 2, (164, 165, 164)), (7, 2, (32, 32, 32)),
+    (0, 3, (164, 165, 164)), (1, 3, (32, 32, 32)), (2, 3, (32, 32, 32)),
+    (3, 3, (255, 254, 255)), (4, 3, (32, 32, 32)), (5, 3, (32, 32, 32)),
+    (6, 3, (164, 165, 164)), (7, 3, (32, 32, 32)),
+    (0, 4, (164, 165, 164)), (1, 4, (32, 32, 32)), (2, 4, (32, 32, 32)),
+    (3, 4, (255, 254, 255)), (4, 4, (32, 32, 32)), (5, 4, (32, 32, 32)),
+    (6, 4, (164, 165, 164)), (7, 4, (32, 32, 32)),
+)
+Y_VIEW_SKULL_FIRST = (1, 1)          # the template's first gray pixel (anchor)
+# The sprite's top-left sits 0.25/2.125 px above-left of the cell's view point
+# (chapter 3 measured: skull (101, 63) = cell (306, 141)).
+SKULL_CELL_DX = 0.25
+SKULL_CELL_DY = 2.125
+
+
+def y_view_skulls(frame):
+    """Top-left positions of the boss skull sprite on the whole-island view."""
+    if frame is None or not hasattr(frame, 'pixel'):
+        return []
+    gray = Y_VIEW_SKULL_TEMPLATE[[i for i, item in enumerate(Y_VIEW_SKULL_TEMPLATE)
+                                  if item[2] == (164, 165, 164)][0]][2]
+    first_x, first_y = Y_VIEW_SKULL_FIRST
+    out = []
+    for y in range(20, min(180, frame.height)):
+        for x in range(20, min(236, frame.width)):
+            if frame.pixel(x, y) != gray:
+                continue
+            ox, oy = x - first_x, y - first_y
+            if all(frame.pixel(ox + dx, oy + dy) == colour
+                   for dx, dy, colour in Y_VIEW_SKULL_TEMPLATE):
+                out.append((ox, oy))
+    return out
+
+
+def skull_cell_at(skull_xy, chapter):
+    """The chart cell under a Y-view skull sprite (chapter 3's measured anchor)."""
+    offset = chart.Y_JUMP_OFFSET.get(chapter)
+    if not offset or not skull_xy:
+        return None
+    x, y = skull_xy
+    return (round((x + SKULL_CELL_DX - offset[0]) * 8),
+            round((y + SKULL_CELL_DY - offset[1]) * 8))
+
+
 def world_markers(frame) -> list:
     """▲ army markers on the whole-island view, as (x0, y0, x1, y1) boxes.
 
@@ -246,8 +365,12 @@ def selection_marker(frame):
     """The inverted white/gray triangle over the selected general, or None."""
     if frame is None:
         return None
-    for y in range(16, min(frame.height - 7, 178)):
-        for x in range(16, min(frame.width - 7, 154)):
+    # The roster draws the triangle immediately left of the name column, which
+    # starts at x=168 (house._names_at), so the sprite can begin past the old
+    # x=154 edge. g1163 2026-11-09: 20 of 25 monthly markers were unbound with
+    # no reason, and the live 299x224 frame is wider than the 256-wide design.
+    for y in range(8, min(frame.height - 7, 216)):
+        for x in range(8, min(frame.width - 7, 200)):
             if all(_marker_shade_matches(frame.pixel(x + dx, y + dy), colour)
                    for dx, dy, colour in _GENERAL_MARKER_PATTERN):
                 return {'box': (x, y, x + 6, y + 6), 'center': (x + 3, y + 3),
@@ -316,7 +439,7 @@ def _map_view_offset(icons, castles):
     return best
 
 
-def marker_castle(frame, chapter):
+def marker_castle(frame, chapter, hint=None, evidence=None):
     """Bind the selected-general triangle to a chart castle, or None.
 
     Returns the castle cell under the marker together with the evidence used.
@@ -324,13 +447,27 @@ def marker_castle(frame, chapter):
     しろのなかにいます; a tent or marching unit must not be turned into a
     castle. No inference is made when the view cannot be calibrated or the
     nearest cell is beyond MAP_CASTLE_TOLERANCE.
+
+    ``hint`` is the castle this general was last recorded in. When two castles
+    sit nearly equidistant under the marker the reading is ambiguous, and the
+    recorded castle settles it as long as it is itself inside the tolerance
+    (g1163 2026-11-09: 29 unverified markers in 40 minutes each cost a full
+    status panel).
     """
-    if frame is None or type(chapter) is not int:
+    def _why(reason):
+        # Why a marker did not bind: the monthly walk pays a status panel for
+        # every one of these, so the reason is worth recording (g1163
+        # 2026-11-09: 53 unverified markers in 40 minutes, no reason logged).
+        if isinstance(evidence, dict):
+            evidence['reason'] = reason
         return None
+
+    if frame is None or type(chapter) is not int:
+        return _why('no_frame')
     castles = chart.castles(chapter)
     marker = selection_marker(frame)
     if not marker or not castles:
-        return None
+        return _why('no_marker')
     icons = _map_icon_centres(frame)
     offset = _map_view_offset(icons, castles)
     tip = marker['tip']
@@ -346,12 +483,35 @@ def marker_castle(frame, chapter):
     name, cell = ordered[0]
     distance = ((cell[0] - field[0]) ** 2 + (cell[1] - field[1]) ** 2) ** 0.5
     if distance > MAP_CASTLE_TOLERANCE:
-        return None
+        # Chapter cells 7-12 are source-map estimates, so the whole map can sit
+        # a little off and every marker lands outside the tolerance (g1163
+        # 2026-11-10 00:35: 6 of 9 monthly markers). The recorded castle is
+        # prior knowledge about this general, so accept it inside a wider bound
+        # instead of paying a status panel for each one.
+        if isinstance(hint, str) and hint in castles:
+            cell = castles[hint]
+            hinted = ((cell[0] - field[0]) ** 2 + (cell[1] - field[1]) ** 2) ** 0.5
+            if hinted <= MAP_CASTLE_TOLERANCE * 1.5:
+                if isinstance(evidence, dict):
+                    evidence['reason'] = 'out_of_tolerance_hint'
+                return {'castle': hint, 'field': [round(field[0]), round(field[1])],
+                        'distance': round(hinted, 1), 'marker': list(marker['box']),
+                        'offset': list(offset), 'icons': len(icons), 'point': list(point)}
+        return _why('out_of_tolerance')
     if len(ordered) > 1:
         runner = ((ordered[1][1][0] - field[0]) ** 2
                   + (ordered[1][1][1] - field[1]) ** 2) ** 0.5
         if runner < distance * 1.5:
-            return None
+            settled = False
+            if isinstance(hint, str) and hint in castles:
+                cell = castles[hint]
+                hinted = ((cell[0] - field[0]) ** 2 + (cell[1] - field[1]) ** 2) ** 0.5
+                if hinted <= MAP_CASTLE_TOLERANCE:
+                    name, distance, settled = hint, hinted, True
+            if not settled:
+                return _why('ambiguous')
+    if isinstance(evidence, dict):
+        evidence['reason'] = 'mapped'
     return {'castle': name, 'field': [round(field[0]), round(field[1])],
             'distance': round(distance, 1), 'marker': list(marker['box']),
             'offset': list(offset), 'icons': len(icons), 'point': list(point)}
@@ -623,7 +783,12 @@ def _measured_card_select(screen):
         return None
     if header != text_cells(136, 'きりふだセレクト') + text_cells(208, f'あと{remaining}こ'):
         return None
-    if cells(127, 136) != text_cells(136, 'バトルようのきりふだです'):
+    # The description line is a static label, not data: an OCR dropout of one
+    # glyph ('バトルよ' + 'のきりふだです' with う missing) rejected the whole
+    # panel and cost the sortie (g1163 2026-11-10 07:4x: 15 holds an hour).
+    note = cells(127, 136)
+    note_text = ''.join(ch for _, ch in note)
+    if not note_text.startswith('バトル') or len(note_text) < 10 or UNKNOWN in note_text:
         return None
     rows = []
     empty_tail = False

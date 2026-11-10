@@ -837,10 +837,15 @@ def _partial_monster_menu(frame, screen):
 
 
 def egg_choice_names(screen):
-    """The measured Elabel summon picker, not monster skills or HP panels."""
+    """Complete Elabel candidates or slot reels, not skills or HP panels.
+
+    A slot reel can show ハズレ. A single frame does not establish that these
+    three rows are selectable; the flow uses the actor's egg type or this
+    slot-only label to distinguish stopping a reel from choosing a summon.
+    """
     from ...hanjuku_reference import MONSTER_SKILLS
     digit_fold = str.maketrans('０１２３４５６７８９', '0123456789')
-    known = {name.translate(digit_fold) for name in MONSTER_SKILLS}
+    known = {name.translate(digit_fold) for name in MONSTER_SKILLS} | {'ハズレ'}
     rows = {line.y: line.spans() for line in screen.menu_rows}
     choices = []
     for y in (176, 192, 208):

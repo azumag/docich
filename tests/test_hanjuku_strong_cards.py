@@ -15,6 +15,7 @@ from docich import hanjuku_chart as chart, hanjuku_policy as policy, hanjuku_ref
 from docich.hanjuku_egg_reference import GENERAL_EGGS, general_max_hp
 from docich.hanjuku_screen import Battle, Screen
 from test_hanjuku_sortie_evidence import foot_order_memory, measured_card_select, memory
+from docich.hanjuku.state.regions import plan as _plan_region
 
 
 def test_shogun_table_cross_checks_char_csv_and_egg_reference():
@@ -248,7 +249,7 @@ def test_adjusted_strong_card_does_not_enter_ungated_derived_tactics(card):
     step = 'A:abcdef123456:J1'
     mem = battle_memory(step, 'キャラウェイ', 'ヴィーナス')
     mem['strong_card_kit'] = {step: card}
-    mem['order_context'] = {step: {'observed_metric': {'cards': [card]}}}
+    _plan_region(mem)['order_context'] = {step: {'observed_metric': {'cards': [card]}}}
     mem['chart_plan'] = {'orders': [{'step': step, 'general': 'ヴィーナス',
                                     'source': 'アルマムーン', 'cards': [],
                                     'target': 'ジョンリギ', 'after': None}]}
@@ -266,7 +267,7 @@ def test_adjusted_strong_card_does_not_enter_ungated_derived_tactics(card):
 
 def adjusted_order_memory(step, enemy, ally, cards):
     mem = battle_memory(step, enemy, ally)
-    mem['order_context'] = {step: {'observed_metric': {'cards': list(cards)}}}
+    _plan_region(mem)['order_context'] = {step: {'observed_metric': {'cards': list(cards)}}}
     mem['chart_plan'] = {'orders': [{'step': step, 'general': ally, 'source': 'アルマムーン',
                                     'cards': list(cards), 'target': 'クロチェット', 'after': None}]}
     return mem
@@ -300,7 +301,7 @@ def test_a_weak_general_opens_with_the_strong_card_before_the_unverified_one():
 def test_strong_card_requires_measured_carry_even_when_the_plan_includes_it():
     mem = battle_memory('1-A1', 'バタール', 'ココット')
     mem['strong_card_kit'] = {'1-A1': 'ミックミー'}
-    mem['order_context']['1-A1']['observed_metric']['cards'] = []
+    _plan_region(mem)['order_context']['1-A1']['observed_metric']['cards'] = []
 
     # The plan still contains the strong-card addition; the readable sortie
     # panel is authoritative and shows that no card was actually carried.

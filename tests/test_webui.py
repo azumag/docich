@@ -1548,10 +1548,14 @@ class TestHttpHandlers(unittest.TestCase):
 
     def test_workers_snapshot_tolerates_now_second_boundary(self):
         """回帰 (#1225): 秒境界をまたいでも snapshot 比較が成立すること。"""
-        status_a, data_a = self._request("GET", "/api/workers")
+        # #3737: 1回目を実時刻で取ると、CI 負荷で処理が 1 秒を超えて秒境界を
+        # またいだ場合に now_a が base の 1 秒前になり、差が 3 になって flake
+        # する。両方を mock し、差がちょうど 2 の決定論的な回帰テストにする。
+        base = int(time.time())
+        with mock.patch.object(webui.time, "time", return_value=base):
+            status_a, data_a = self._request("GET", "/api/workers")
         self.assertEqual(status_a, 200)
-        base = time.time()
-        with mock.patch.object(webui.time, "time", return_value=int(base) + 2):
+        with mock.patch.object(webui.time, "time", return_value=base + 2):
             status_b, data_b = self._request("GET", "/api/workers")
         self.assertEqual(status_b, 200)
         now_a = data_a.pop("now", None)
@@ -3199,6 +3203,65 @@ class TestAccessLogSynchronization(unittest.TestCase):
             [row["status"] for row in records if row["event"] == "access" and row["path"] == "/api/health"],
         )
 
+    def test_authz_check_waits_for_post_response_audit_logs(self):
+        case = TestMutationGuard("test_authz_audit_event_logged_without_secret_or_body")
+        case.setUp()
+        self.addCleanup(case.tearDown)
+        _assert_no_stuck_handlers(self, case.server.wait_for_handlers())
+        log_file = case.soren / "tmp/debug/webui.log"
+
+        release_logs = threading.Event()
+        log_held = threading.Event()
+        checkpoint = threading.Event()
+        finished = threading.Event()
+        errors = []
+        log_timeouts = []
+        original_log = webui._log_authz_event
+        original_wait = case.server.wait_for_handlers
+
+        def delayed_log(soren_root, method, path, identity, decision, reason=""):
+            if decision == "deny" and reason == "invalid_origin":
+                log_held.set()
+                if not release_logs.wait(timeout=10):
+                    log_timeouts.append(path)
+            original_log(soren_root, method, path, identity, decision, reason)
+
+        def wait_for_handlers(*args, **kwargs):
+            checkpoint.set()
+            return original_wait(*args, **kwargs)
+
+        def check_authz():
+            try:
+                case.test_authz_audit_event_logged_without_secret_or_body()
+            except Exception as exc:
+                errors.append(exc)
+            finally:
+                finished.set()
+                checkpoint.set()
+
+        checker = threading.Thread(target=check_authz, daemon=True)
+        with mock.patch.object(webui, "_log_authz_event", side_effect=delayed_log), \
+                mock.patch.object(case.server, "wait_for_handlers", side_effect=wait_for_handlers):
+            checker.start()
+            try:
+                # invalid_origin は応答送信後に audit event を書く。検証が handler
+                # 完了の同期点へ到達するまでは終わらないことを決定的に確認する。
+                self.assertTrue(checkpoint.wait(timeout=5), "authz check did not reach its checkpoint")
+                self.assertTrue(log_held.wait(timeout=5), "invalid_origin audit log was not held after the response")
+                self.assertFalse(finished.is_set(), "authz check finished before the audit log was written")
+            finally:
+                release_logs.set()
+                checker.join(timeout=5)
+
+        self.assertFalse(checker.is_alive(), "authz check thread did not finish")
+        self.assertEqual([], log_timeouts, "authz log hold timed out before release")
+        self.assertEqual([], errors, "authz check failed after releasing the audit logs")
+        records = [json.loads(line) for line in log_file.read_text(encoding="utf-8").splitlines()]
+        self.assertTrue(
+            any(r.get("event") == "authz" and r.get("decision") == "deny" and r.get("reason") == "invalid_origin"
+                for r in records)
+        )
+
 
 class _PostResponseWriterHandler(webui._Handler):
     """応答を返した後に書く handler (``_guard_mutation`` の audit event 相当)。
@@ -3550,6 +3613,10 @@ class TestMutationGuard(TestHttpHandlers):
                 )
         finally:
             self.g.webui.token = ""
+        # invalid_origin は拒否応答を送った後に authz event を書く。HTTP 応答の
+        # 受信完了だけでは書込み完了を意味しないため、ログを読む前に fixture が
+        # 追跡する in-flight handler を有限時間だけ待つ。
+        _assert_no_stuck_handlers(self, self.server.wait_for_handlers())
         log_file = self.soren / "tmp/debug/webui.log"
         lines = [json.loads(ln) for ln in log_file.read_text(encoding="utf-8").splitlines() if ln.strip()]
         authz = [r for r in lines if r.get("event") == "authz"]

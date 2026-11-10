@@ -8,7 +8,7 @@ from docich import hanjuku_chart as chart
 from docich.hanjuku.strategy import replan
 from docich.hanjuku.state.regions import world as _world
 
-ANY = 'しょうぐん'
+ANY = replan.MOVE_ANY_GENERAL   # 余剰将軍（旧: しょうぐん も後方互換で受理）
 
 
 def memory(garrison=None):
@@ -17,7 +17,7 @@ def memory(garrison=None):
         'chapter': 6, 'month': '55-6', 'tick': 83000,
         'captured': list(owned), 'lost': [], 'orders': {},
         'garrison': {c: None for c in owned},
-        'sorties': {}, 'launched_orders': {}, '_records': [],
+        'world': {'sorties': {}},
         'house_eggs': {}, 'general_location_unknown': [],
     }
     if garrison:
@@ -61,7 +61,7 @@ def test_a_blind_boss_launch_mints_one_read_only_roster_probe():
     _flow(mem)['launch_probe'] = {'old-step': {'general': 'リーキ', 'source': 'カバルッサ',
                         'target': 'ボス', 'reads': 3, 'blind': True, 'kept': True, 'tick': 82900}}
     mem['roster_read_due'] = {'カバルッサ': 82900}
-    mem['sorties'] = {'old-step': {'general': 'リーキ', 'source': 'カバルッサ', 'target': 'ボス',
+    _world(mem)['sorties'] = {'old-step': {'general': 'リーキ', 'source': 'カバルッサ', 'target': 'ボス',
                    'status': 'en_route', 'tick': 82900, 'launch_kept': True}}
     waves = boss_waves(mem)
     probes = [o for o in waves if o.get('roster_probe')]
