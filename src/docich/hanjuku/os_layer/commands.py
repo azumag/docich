@@ -14,6 +14,8 @@ from .readers import _current, _options
 
 
 FPS = 60
+CASTLE_LIST_BATCH_MAX = 4
+CASTLE_LIST_RELEASE_MS = 50
 
 
 def pad(button, frames=6):
@@ -90,15 +92,47 @@ def menu_navigation_reading(screen):
     return {'kind': screen.kind, 'cursor': [x, y], 'directions': directions} if directions else None
 
 
+def castle_list_batch(screen: Screen, label: str):
+    """Tap along a fully visible castle-list path, or keep the caller's one step.
+
+    This never scrolls beyond a visible row, wraps, or confirms a destination.
+    Each tap has an explicit released interval so it is a distinct input.
+    """
+    reading = menu_feedback.reading(screen)
+    if not reading or reading.get('kind') != 'text' or reading.get('menu') != 'castle_list':
+        return None
+    rows = [(y, word) for x, y, word in _options(screen)
+            if x == 168 and y in range(39, 152, 16)]
+    target = [y for y, word in rows if word == label]
+    if len(target) != 1:
+        return None
+    current = reading['cursor'][1]
+    delta = target[0] - current
+    distance = abs(delta) // 16
+    if delta % 16 or distance < 2:
+        return None
+    sign = 1 if delta > 0 else -1
+    # The full path to the requested row must be present, even when the
+    # four-tap cap means this observation only traverses its first part.
+    if any(sum(y == current + sign * 16 * step for y, _ in rows) != 1
+           for step in range(distance + 1)):
+        return None
+    button = 'down' if sign > 0 else 'up'
+    actions = [pad(button)]
+    for _ in range(min(distance, CASTLE_LIST_BATCH_MAX) - 1):
+        actions.extend([{'type': 'wait', 'ms': CASTLE_LIST_RELEASE_MS}, pad(button)])
+    return actions
+
+
 def menu_navigation_feedback(state, actions):
-    """Reobserve a short menu move or an existing sortie-card tap batch sooner."""
+    """Reobserve a short move or a bounded card/castle-list batch sooner."""
     reading = state.get('menu_navigation_reading')
     if (not isinstance(reading, dict) or type(state.get('step')) is not int
             or type(reading.get('step')) is not int or reading.get('step') != state['step']
             or (reading.get('kind') not in _FEEDBACK_MENU_KINDS
                 and not menu_feedback.valid_context(reading.get('kind'), reading.get('menu')))
             or reading.get('kind') != state.get('screen_kind')
-            or not isinstance(actions, list) or not 1 <= len(actions) <= 4):
+            or not isinstance(actions, list) or not 1 <= len(actions) <= 7):
         return False
     directions = reading.get('directions')
     cursor = reading.get('cursor')
@@ -107,11 +141,24 @@ def menu_navigation_feedback(state, actions):
             or not isinstance(cursor, list) or len(cursor) != 2
             or any(type(n) is not int or not 0 <= n < bound for n, bound in zip(cursor, (256, 224)))):
         return False
+    castle_batch = (len(actions) > 1 and reading.get('kind') == 'text'
+                    and reading.get('menu') == 'castle_list')
+    if castle_batch:
+        if len(actions) not in (3, 5, 7):
+            return False
+        for release in actions[1::2]:
+            if (not isinstance(release, dict) or set(release) != {'type', 'ms'}
+                    or release.get('type') != 'wait' or type(release.get('ms')) is not int
+                    or release['ms'] != CASTLE_LIST_RELEASE_MS):
+                return False
+        actions = actions[::2]  # local view only; preserve the complete plan
+    if len(actions) > 4:
+        return False
     batch = len(actions) > 1
-    # Only the measured sortie-card list already sends up to four distinct
-    # 100ms taps (scroll/discovery/rewind). Other menus remain single-step.
-    # This changes neither those plans nor their required landing observation.
-    if batch and (reading.get('kind') != 'card_select' or reading.get('menu') != 'sortie_cards'):
+    # Card batches retain their existing adjacent taps. Castle batches have
+    # explicit releases. Neither path authorizes a confirmation or a receipt.
+    if batch and not (castle_batch or (reading.get('kind') == 'card_select'
+                                      and reading.get('menu') == 'sortie_cards')):
         return False
     direction = None
     for action in actions:
