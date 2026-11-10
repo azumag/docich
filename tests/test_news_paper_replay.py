@@ -76,3 +76,27 @@ def test_clock_pit_fail_closed_and_advances():
     c.advance(12)
     assert v.visible({"available_at": 11})
     assert not v.visible({"available_at": "not a timestamp"})
+
+
+@pytest.mark.parametrize("mutation", [
+    lambda d: d.update({"extra": 1}),
+    lambda d: d["header"].update({"unexpected": 1}),
+    lambda d: d["header"].update({"schema_version": "future"}),
+    lambda d: d["header"].update({"arm": "live"}),
+    lambda d: d["header"].update({"clock": {}}),
+    lambda d: d["header"].update({"clock": {"fence_at": True}}),
+    lambda d: d["header"]["chunks"][0].update({"unknown": 1}),
+    lambda d: d["header"]["chunks"][0].update({"seq": True}),
+    lambda d: d["header"]["chunks"][0].update({"record_count": True}),
+    lambda d: d["header"].update({"chunks": "not a list"}),
+])
+def test_manifest_rejects_invalid_metadata_before_loading(mutation):
+    data, raw = _fixture()
+    mutation(data)
+    loaded = []
+    def loader(filename):
+        loaded.append(filename)
+        return raw
+    with pytest.raises(ReplayError):
+        load_manifest(data, loader)
+    assert not loaded
