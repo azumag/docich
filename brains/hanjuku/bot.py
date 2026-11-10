@@ -622,9 +622,9 @@ def _decode_frame(path):
     reads the line. Try the tuned one first and only pay for the second decode
     when it produced almost no text.
     """
-    from docich.hanjuku_pixels import Frame, read_png
+    from docich.hanjuku_pixels import Frame
     from docich.hanjuku_screen import parse
-    raw = read_png(path)
+    raw = read_png(path)          # module-level binding (tests patch it)
     primary = raw.resized()
     try:
         if len((parse(primary).text or '')) >= 40:

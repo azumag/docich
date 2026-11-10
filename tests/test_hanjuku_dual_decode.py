@@ -33,7 +33,7 @@ class DualDecodeTest(unittest.TestCase):
         brain = _brain()
         from docich.hanjuku_pixels import Frame
         source = Frame(299, 224, bytes((i * 7) % 256 for i in range(299 * 224 * 3)))
-        with mock.patch("docich.hanjuku_pixels.read_png", return_value=source), \
+        with mock.patch.object(brain, "read_png", return_value=source), \
                 mock.patch("docich.hanjuku_screen.parse",
                            side_effect=lambda f: type("S", (), {"text": ""})()):
             frame = brain._decode_frame(Path("/tmp/x.png"))
