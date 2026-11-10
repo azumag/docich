@@ -1511,6 +1511,29 @@ def battle_end(mem, next_kind, *, defense_continues=False, actor_continues=False
                     observed_metric={'outcome': result, 'ally_hp': ally_hp,
                                      'enemy_hp': enemy_hp},
                     reason='戦闘結果で出撃の終了を差分記録し、行軍中の表示から外す')
+    # g1163 2026-11-10 23:24: キール fell to 0 HP in a field encounter on the
+    # way to おかざき (side None, castle None: a road battle bound to his
+    # step); the order stayed 'launched' until the march deadline at 23:47
+    # and nobody was sent there for 23 minutes. A general at 0 HP leaves the
+    # roster (g1097 2026-11-02) and a retreating one turns back, so the march
+    # is over: mark it and let the overdue settlement run now. It keeps the
+    # location recheck, the relaunch budget and the blocked-path rule instead
+    # of a second settlement. Defense battles and the target's own battle
+    # (closed above) are not road battles.
+    sortie = (_sorties(mem).get(step)) if step else None
+    if isinstance(sortie, dict) and cur.get('side') in (None, 'attack'):
+        target = sortie.get('target') or sortie.get('planned_target')
+        retreat = bool((cur.get('hero_retreat') or {}).get('selected'))
+        if (target and castle != target and cur.get('ally') == sortie.get('general')
+                and (retreat or (outcome == 'loss' and ally_hp == 0))
+                and sortie.get('status') in ('en_route', 'launched_unconfirmed')
+                and type(sortie.get('road_defeat')) is not int):
+            sortie['road_defeat'] = int(mem.get('tick') or 0)
+            _record(mem, 'sortie_road_defeat', chart_step=step, general=sortie.get('general'),
+                    castle=castle,
+                    observed_metric={'target': target, 'retreat': retreat,
+                                     'ally_hp': ally_hp, 'enemy_hp': enemy_hp},
+                    reason='目的地に着く前の戦闘で出撃した将軍が敗北・退却したため、行軍の期限を待たずに出撃を決着させる')
     # One judged battle per started battle, whatever the verdict. The gap
     # against battles_started is the set the status panel must disclose.
     _tally(mem, 'battles_judged')

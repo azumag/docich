@@ -1062,9 +1062,12 @@ def _relaunch_overdue_march(mem):
             # step, or a re-picked pending order cancels in the menu forever.
             _drop_spent_sortie_attempt(mem, step)
             continue
+        # A measured defeat or retreat on the road (battle_end's
+        # sortie_road_defeat) ends the march as surely as the deadline does.
+        road_defeat = type(sortie.get('road_defeat')) is int
         if (chart.is_boss_castle(target) or type(sortie.get('tick')) is not int
                 or sortie.get('status') not in ('en_route', 'launched_unconfirmed')
-                or now - sortie['tick'] < _arrival_limit(mem, sortie)):
+                or (now - sortie['tick'] < _arrival_limit(mem, sortie) and not road_defeat)):
             continue
         en_route = sortie.get('status') == 'en_route'
         sortie['status'] = 'overdue'
@@ -1072,7 +1075,8 @@ def _relaunch_overdue_march(mem):
         _drop_spent_sortie_attempt(mem, step)
         observed = {'general': sortie.get('general'), 'source': sortie.get('source'),
                     'target': target, 'marching': now - sortie['tick'],
-                    'relaunches': relaunches.get(step, 0)}
+                    'relaunches': relaunches.get(step, 0),
+                    **({'road_defeat': True} if road_defeat else {})}
         if status.get(step) != 'launched':
             _record(mem, 'sortie_march_overdue_settled', chart_step=step,
                     observed_metric=observed,
@@ -1128,7 +1132,9 @@ def _relaunch_overdue_march(mem):
         status[step] = 'pending'
         _record(mem, 'sortie_march_overdue', chart_step=step, general=sortie.get('general'),
                 observed_metric=observed, resulting_event=f'relaunch:{relaunches[step]}',
-                reason='敵城への出撃が上限の観測内に入城も経由も観測されないため、オーダーを未発射に戻す')
+                reason=('出撃した将軍が目的地に着く前の戦闘で敗北・退却したため、オーダーを未発射に戻す'
+                        if road_defeat else
+                        '敵城への出撃が上限の観測内に入城も経由も観測されないため、オーダーを未発射に戻す'))
 
 
 SPENT_SORTIE_TICKS = SITE_LATE_ENTRY_TICKS   # keep an attempt bindable as long as a late site entry
