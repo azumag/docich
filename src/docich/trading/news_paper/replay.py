@@ -8,7 +8,7 @@ from __future__ import annotations
 import hashlib
 import json
 from dataclasses import dataclass, field
-from typing import Any, Callable, Iterable
+from typing import Any, Callable
 
 MODE = "paper"
 LIVE_ELIGIBLE = False
@@ -72,6 +72,8 @@ def _depth(obj, d=0):
 
 
 def load_manifest(data: dict, chunk_loader: Callable[[str], bytes] | None = None) -> Manifest:
+    if chunk_loader is None:
+        raise ReplayError("chunk_loader required: inline records are not supported")
     # header size check
     header_bytes = json.dumps(data.get("header", {})).encode()
     if len(header_bytes) > MAX_HEADER_BYTES:
@@ -97,6 +99,8 @@ def load_manifest(data: dict, chunk_loader: Callable[[str], bytes] | None = None
         fn = cm.get("filename")
         if not isinstance(fn, str) or len(fn) > MAX_FILENAME_LEN or len(fn) == 0:
             raise ReplayError("bad filename")
+        if fn in (".", "..") or ".." in fn or "/" in fn or "\\\\" in fn or "\\x00" in fn:
+            raise ReplayError("unsafe chunk filename")
         if fn in filenames:
             raise ReplayError("duplicate filename")
         filenames.add(fn)
@@ -114,26 +118,30 @@ def load_manifest(data: dict, chunk_loader: Callable[[str], bytes] | None = None
     seen_io = set()
     prev_seq_db: dict[str, int] = {}
     for cm in sorted(chunks_meta, key=lambda x: x["seq"]):
-        raw = chunk_loader(cm["filename"]) if chunk_loader else None
-        if raw is None:
-            recs = cm.get("records", [])
-            raw_bytes = json.dumps(recs).encode()
-        else:
-            if len(raw) > MAX_CHUNK_BYTES or len(raw) == 0:
-                raise ReplayError("chunk size")
+        if "records" in cm:
+            raise ReplayError("inline records not supported")
+        raw = chunk_loader(cm["filename"])
+        if not isinstance(raw, bytes) or not (0 < len(raw) <= MAX_CHUNK_BYTES):
+            raise ReplayError("chunk size")
+        if hashlib.sha256(raw).hexdigest() != cm["sha256"].lower():
+            raise ReplayError("sha mismatch")
+        try:
             recs = json.loads(raw)
-            if not isinstance(recs, list):
-                raise ReplayError("chunk not list")
+        except (ValueError, UnicodeDecodeError) as exc:
+            raise ReplayError("invalid chunk JSON") from exc
+        if not isinstance(recs, list):
+            raise ReplayError("chunk not list")
         if not (1 <= len(recs) <= MAX_RECORDS_PER_CHUNK):
             raise ReplayError("chunk record count")
         if len(recs) != cm["record_count"]:
             raise ReplayError("record_count mismatch")
         # sha check
-        if raw is not None:
-            if hashlib.sha256(raw).hexdigest() != cm["sha256"].lower():
-                raise ReplayError("sha mismatch")
         # record size/depth
         for r in recs:
+            if not isinstance(r, dict):
+                raise ReplayError("record not object")
+            if not isinstance(r.get("db"), str) or not r["db"] or r.get("observation_id") is None or type(r.get("ingest_sequence")) is not int:
+                raise ReplayError("invalid ingest record")
             rb = json.dumps(r).encode()
             if len(rb) > MAX_RECORD_BYTES:
                 raise ReplayError("record too large")
@@ -191,7 +199,9 @@ class PitInputView:
         self.clock = clock
 
     def visible(self, obs, cutoff=None):
-        cutoff = cutoff if cutoff is not None else self.clock.fence_at
+        cutoff = cutoff if cutoff is not None else self.clock.now()
+        if not isinstance(obs, dict) or obs.get("confirmed") is False or obs.get("forming") is True:
+            return False
         # obs must have timestamp/available_at
         ts = None
         for k in ("available_at", "timestamp", "observed_at", "bar_close"):
@@ -199,8 +209,11 @@ class PitInputView:
                 ts = obs[k]
                 break
         if ts is None:
-            return True
-        return ts <= cutoff
+            return False
+        try:
+            return ts <= cutoff
+        except TypeError:
+            return False
 
     def filter(self, items, cutoff=None):
         return [x for x in items if self.visible(x, cutoff)]
@@ -274,7 +287,6 @@ LEAKAGE_FIXTURES = {
 
 # aliases
 ManifestLoader = load_manifest
-load_manifest_file = None
 
 
 def load_manifest_from_file(path, chunk_loader=None):
