@@ -7079,6 +7079,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v630-aspect-restored",
             "hanjuku-chart-v632-clear-terminal-cli",
             "hanjuku-chart-v633-okunote-exhausted-latch",
+            "hanjuku-chart-v634-okunote-exhausted-confirm",
             "hanjuku-chart-v560-castle-list-scroll",
             "hanjuku-chart-v561-post-month-repair-status",
             "hanjuku-chart-v501-idle-reanchor",

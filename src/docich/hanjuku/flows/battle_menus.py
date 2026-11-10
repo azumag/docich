@@ -941,9 +941,18 @@ def okunote_step(screen, mem):
         if screen.egg_rows or cur.get('egg_battle') or mem.get('egg_battle'):
             summon = okunote.summon_reading(screen, mem, cur)
             if cur.get('okunote_summon_exhausted'):
-                # The bounded attempts for this battle are spent: stop
-                # re-entering the path (g1163 2026-11-10 18:5x-19:0x looped
-                # 887 unconfirmed/exhausted pairs in 20 minutes on one battle).
+                # The bounded attempts for this battle are spent. B does not
+                # close this menu (g1097), so hand the screen back once with a
+                # single confirm on the highlighted row instead of pressing B
+                # forever (g1163 2026-11-10 19:1x: no decision records for
+                # minutes while the おくのて menu stayed open).
+                if not cur.get('okunote_summon_exhausted_confirm'):
+                    cur['okunote_summon_exhausted_confirm'] = True
+                    _record(mem, 'battle_okunote_exhausted_confirm',
+                            **_battle_labels(cur),
+                            observed_metric={'cursor_y': screen.menu_cursor},
+                            reason='照合不能のまま残った奥の手メニューを、ハイライト行の確定1回で閉じて戦闘を進める')
+                    return [pad('a')]
                 return None
             if summon is None:
                 # g1097 22:09: この将軍コマンドは「たいきゃく」の下に隠れた
