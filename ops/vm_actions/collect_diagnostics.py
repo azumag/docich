@@ -7075,6 +7075,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v626-confirm-unreadable-short",
             "hanjuku-chart-v627-wave-strongest",
             "hanjuku-chart-v628-wave-six",
+            "hanjuku-chart-v629-native-pixels",
             "hanjuku-chart-v560-castle-list-scroll",
             "hanjuku-chart-v561-post-month-repair-status",
             "hanjuku-chart-v501-idle-reanchor",
