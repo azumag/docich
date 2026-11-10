@@ -235,7 +235,10 @@ def _flat_migrated_accesses(source, filename='<test>'):
                               and isinstance(node.value, str)) else None
 
     def is_mem(node):
-        return isinstance(node, ast.Name) and node.id == 'mem'
+        # ``mem`` itself or an attribute spelling such as ``self.mem`` — the
+        # regex guard's ``\bmem`` covered both (#3923).
+        return (isinstance(node, ast.Name) and node.id == 'mem') or \
+            (isinstance(node, ast.Attribute) and node.attr == 'mem')
 
     def name_arg(node):
         return node.id if isinstance(node, ast.Name) else None
@@ -292,7 +295,10 @@ def _flat_migrated_accesses(source, filename='<test>'):
                     hits.append((node.lineno, f"mem.{attr}({key!r})"))
             elif attr == 'update':
                 for arg in node.args:
-                    if isinstance(arg, ast.Dict):
+                    if lit(arg) in migrated:
+                        hits.append((node.lineno,
+                                     f"mem.update({lit(arg)!r})"))
+                    elif isinstance(arg, ast.Dict):
                         for k in arg.keys:
                             if lit(k) in migrated:
                                 hits.append((node.lineno, f"mem.update({{{lit(k)!r}: ...}})"))
@@ -353,6 +359,9 @@ import pytest
     # key literal reached through a literal-iterable loop variable
     "any(mem.get(k) for k in ('active', 'y_jump'))",
     "for k in ('recall', 'other'):\n    mem[k] = 1",
+    # attribute spelling (self.mem) was covered by the regex guard's \bmem
+    "self.mem['sorties'] = {}",
+    "mem.update('sortie_general')",
 ])
 def test_flat_access_guard_detects_forbidden_shapes(snippet):
     # Each shape is pinned so a future refactor of the scanner cannot
@@ -368,6 +377,7 @@ def test_flat_access_guard_detects_forbidden_shapes(snippet):
     "x = mem['chapter']",
     "any(mem.get(k) for k in ('y_jump', 'battle'))",
     "state.get('recall')",
+    "x = memo.get('recall')",                    # different variable name
 ])
 def test_flat_access_guard_ignores_accessor_and_unmigrated_forms(snippet):
     assert not _flat_migrated_accesses(snippet), snippet
