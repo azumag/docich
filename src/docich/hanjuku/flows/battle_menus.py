@@ -1962,7 +1962,24 @@ def egg_battle_step(screen: Screen, mem):
             visible = {w for _, _, w in _options(screen)}
             if screen.menu_cursor is None:
                 if empty_egg:
-                    return [pad('b')]  # never confirm the empty egg at an unread cursor
+                    # Never confirm the empty egg at an unread cursor, but B
+                    # does not close this battle box either (g1097): the corner
+                    # looped B forever on one summon menu (g1163 2026-11-10
+                    # 19:3x-19:4x, 414 identical [b] plans). After two Bs, step
+                    # once to the next row (きりふだ) and confirm it instead.
+                    closes = int(battle.get('empty_egg_b_presses') or 0)
+                    if closes < 2:
+                        battle['empty_egg_b_presses'] = closes + 1
+                        return [pad('b')]
+                    if not battle.get('empty_egg_card_fallback'):
+                        battle['empty_egg_card_fallback'] = True
+                        _record(mem, 'battle_empty_egg_card_fallback',
+                                **_battle_labels(battle),
+                                observed_metric={'visible': sorted(w for _, _, w in _options(screen)),
+                                                 'b_presses': closes},
+                                reason='卵が使えずBでも閉じない戦闘メニューのため、次の行（きりふだ）へ進めて戦闘を動かす')
+                        return [pad('down'), pad('a')]
+                    return [pad('b')]
                 # g1107 2026-11-03: おくのて探索が尽きた後にカーソルが灰色の
                 # たまごをつかう行 (未読) に残り、未確認カーソルへの blind A が
                 # 2,000 回以上拒否され続けた。カーソルが読めないときは確定せず、
