@@ -175,7 +175,10 @@ def _interim_source(mem, target, chart_order, owned, busy, allow_sole=False):
 
 
 MOVE_ANY_GENERAL = chart_adjust.PROBE_GENERAL   # move from an unread list: the spare is picked there
-INTERIM_WAVE_LIMIT = 4         # extra sorties to the first target when spares allow
+# Extra sorties to the first target when spares allow. A castle with several
+# defenders needs more than four (g1163 2026-11-10 08:00-10:00: しまばら kept
+# producing successor defenders while ながはま held eight spares).
+INTERIM_WAVE_LIMIT = 6
 # Owner 2026-11-05: the boss dies to volume, not strength. Half-ripe eggs are
 # so weak that a strong general and a weak one remove about the same HP, so
 # every spare goes at the boss, from as many castles as possible (each keeps
