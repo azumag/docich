@@ -1215,6 +1215,18 @@ HOUSE_IDLE_LIMIT = 10
 HOUSE_IDLE_PHASES = frozenset({'roster', 'roster_next', 'roster_advance', 'status'})
 
 
+def _corridor_march(mem) -> bool:
+    """Chapter 9 before its boss: no egg survey, castle check or repair trip.
+
+    Owner 2026-11-11: 月次の将軍チェックもとばしていいんじゃないか. g1163
+    16:18-16:43 and 17:09-17:31: the roster survey, castle checks and repair
+    dispatch owned the map for ~45 minutes while no sortie left. The monthly
+    country status stays: the month menu's recruit decision reads its counts.
+    """
+    from ..strategy import corridor
+    return corridor.mechanical(mem)
+
+
 def step(screen, mem, frame):
     """Run one observation; follow input-free phase hops on the same frame.
 
@@ -1293,6 +1305,8 @@ def _step_once(screen, mem, frame):
         scope = [mem.get('chapter'), mem.get('month')]
         field_count, legacy_monthly = _field_budget(mem, scope)
         monthly = month_menu_ready(screen) and not mem.get('month_sub')
+        if not monthly and _corridor_march(mem):
+            return None
         # An explicit month-end inspection now owns returns and repairs.
         # Once it finishes, field surveys must not steal the next map plan.
         if (not monthly and (mem.get('post_month_status_last') or {}).get('scope') == scope):
@@ -1419,6 +1433,10 @@ def _step_once(screen, mem, frame):
     if state.get('chapter') != mem.get('chapter'):
         _finish(mem)
         return None
+    if (not state.get('month_scan') and _corridor_march(mem)
+            and state.get('phase') not in ('close', 'leave_roster')):
+        return _exit(mem, '第9話の機械出撃中は卵修理・将軍の巡回をしないため、開いている画面を閉じる',
+                     diagnostic_code='corridor_march')
     # A month rollover ends the previous month's roster visit. Keeping its
     # close step on the new month's menu owned the screen with no input until
     # the run hit screen_stalled (g1107 46-8->46-9, 2026-11-04 01:11).
