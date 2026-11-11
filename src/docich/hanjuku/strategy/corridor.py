@@ -328,7 +328,13 @@ def _drained_probe(mem, routes_by, target, lost):
     if not all(_drained(mem, source, 'move') or _drained(mem, source, 'attack')
                for source in routable):
         return None                       # only the all-drained deadlock
-    _, source = min((len(route), source) for source, route in routable.items())
+    # Rotate: always probing the front castle left the rear ones unread forever
+    # (g1163 2026-11-12 08:0x: アルマムーン held どうし+3 and the plan never looked,
+    # because タオ is the nearest routable castle every time). The oldest mark is
+    # read next, so every drained castle comes round again.
+    marks = mem.get(DRAINED) or {}
+    _, source = min((int((marks.get(source) or {}).get('tick') or 0), source)
+                    for source in routable)
     route = routable[source]
     if len(route) == 2:
         purpose = 'retake' if target in lost else 'attack'

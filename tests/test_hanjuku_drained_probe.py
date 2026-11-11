@@ -42,8 +42,18 @@ def test_every_castle_drained_still_produces_one_visit():
     mem = memory([A, B, C], [A, B, C])
     out = orders(mem)
     assert len(out) == 1
-    # the front-most castle is visited so its live list can be read
-    assert out[0]['source'] == C
+    # v698: the oldest drained mark is read next, not always the front castle
+    assert out[0]['source'] == A
+
+
+def test_the_visit_rotates_to_the_oldest_mark():
+    mem = memory([A, B, C], [A, B, C])
+    marks = mem['corridor_drained']
+    marks[A]['tick'] = 3000
+    marks[B]['tick'] = 1000          # the oldest: visited next
+    marks[C]['tick'] = 2000
+    out = orders(mem)
+    assert len(out) == 1 and out[0]['source'] == B
 
 
 def test_one_live_castle_keeps_the_probe_away():
