@@ -1694,6 +1694,12 @@ def _retake_reserved(order, mem):
     # A plain retake at the same chapter-9 target must remain serialized.
     if order.get('corridor') is True and _corridor_wave_open(mem, order.get('target')):
         return False
+    if order.get('corridor') is True:
+        # Chapter 9's mechanical march caps its own vanguard at six marching
+        # (corridor.SQUAD, v671). This gate's cap of three held the 4th-6th:
+        # g1163 2026-11-11 20:16-20:37, サヌト>オシロガ was started and
+        # cancelled every three seconds (167 holds, step ids up to :215).
+        return False
     now = int(mem.get('tick') or 0)
     return any(step != order['step'] and _sortie_reserved_target(mem, step, s) == order.get('target')
                and s.get('status') in ('en_route', 'launched_unconfirmed')

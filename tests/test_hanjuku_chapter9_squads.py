@@ -138,3 +138,14 @@ def test_an_open_survey_is_closed_through_its_own_exit():
         house.step(screen, mem, None)
     assert mem.get('house') is None or mem['house']['phase'] == 'close'
     assert [r for r in mem['_records'] if r.get('decision') == 'house_deferred']
+
+
+def test_the_fourth_to_sixth_attacker_is_not_held_as_a_duplicate_retake():
+    """g1163 20:16-20:37: three retakes marching held every further one (167 holds)."""
+    mem = _mem()
+    _send(mem, FRONT, NEXT, 3, purpose='retake')
+    attack = _by(mem, 'retake')[0]                 # the squad still has room
+    with chart.map_context(mem):
+        assert O._retake_reserved(attack, mem) is False
+        plain = {k: v for k, v in attack.items() if k != 'corridor'}
+        assert O._retake_reserved(plain, mem) is True   # other chapters keep the gate

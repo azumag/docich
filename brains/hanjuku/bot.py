@@ -24,11 +24,11 @@ from docich import hanjuku_resume
 from docich.hanjuku_bot import BOT_VERSION, decide
 from docich.hanjuku_pixels import read_png
 from docich.hanjuku.decision_log import _record
+from docich.hanjuku import state_budget
 from docich.hanjuku.os_layer.phase import classify
 from docich.hanjuku_run import append_log
 from docich import hanjuku_run
 from docich.hanjuku.os_layer.commands import menu_navigation_feedback, status_panel_feedback
-from docich.retroarch_boundary import read_record
 
 BOT_STATE_LIMIT = 256 * 1024   # the bot's own memory file, not a boundary record
 
@@ -672,7 +672,12 @@ def main():
             frame=_decode_frame(Path(obs['screenshot']))
             # g438 04:18: the policy memory passed 16 KiB after a long game and
             # every observation failed to load it (no input, screen_stalled).
-            state=read_record(runtime/'hanjuku_bot.json',limit=BOT_STATE_LIMIT)
+            # g1163 2026-11-11 20:19: it passed the 256 KiB read limit, and
+            # because the brain writes only after a successful read the record
+            # could never shrink itself again. load_state still reads one
+            # oversized record so the run can recover, compact_state keeps it
+            # under the limit.
+            state=state_budget.load_state(runtime/'hanjuku_bot.json',BOT_STATE_LIMIT)
             hanjuku_resume.inherit_running_chapter(runtime,state)
             experience_path=ROOT/'run'/hanjuku_experience.EXPERIENCE_FILE
             experience=hanjuku_experience.load(experience_path)
@@ -717,7 +722,8 @@ def main():
                     ('adjust_request_failed', lambda: publish_adjust_request(runtime, records, meta)),
                     ('interim_failed', lambda: ask_interim(runtime, state, meta)),
                     ('state_write_failed', lambda: atomic_write_json(
-                        runtime/'hanjuku_bot.json', state))):
+                        runtime/'hanjuku_bot.json',
+                        state_budget.compact_state(state, BOT_STATE_LIMIT)))):
                 try:
                     effect()
                 except Exception as exc:
