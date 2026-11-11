@@ -22,7 +22,12 @@ Squads (owner 2026-11-11, v671): ３２人全員移動させると大変だか�
 
 * at most ``SQUAD`` attackers march at the next castle at once;
 * each capture opens a wave: every road hop may move at most ``SQUAD``
-  generals, plus the hero (「将軍」 read as the hero) one hop forward;
+  generals (the 「増援として数人」 of docich#3957) toward the front;
+* on each capture the hero is sent to the castle that just fell
+  (docich#3957, owner 2026-11-12: 城が取れたタイミングで主人公をその城に送る).
+  While he sits anywhere behind the front his order is the next leg toward
+  it — a march already on the road is the only pause, so he converges on
+  the front instead of advancing a single hop per wave;
 * a wave whose front castle showed an empty list with no attacker marching
   opens a fresh budget, so a wiped vanguard never deadlocks the road;
 * an attack never takes the hero's last companion from his castle.
@@ -155,9 +160,20 @@ def _moved(mem, wave, hop, source=None):
                and sortie.get('general') != NAME)
 
 
-def _hero_moved(mem, wave) -> bool:
-    return wave.get('hero_absent') is True or any(
-        sortie['tick'] >= wave['tick'] and sortie.get('general') == NAME for _, sortie, _, _ in _march(mem))
+def _hero_marching(mem) -> bool:
+    """Whether a corridor march carrying the hero is still on the road.
+
+    docich#3957 (owner 2026-11-12): on each capture the hero is sent to the
+    castle that just fell, so he keeps walking toward the front instead of
+    moving a single hop per capture. A march already in flight is the only
+    reason to hold his next leg; a sortie past its arrival window is treated
+    as unknown, exactly like ``_attackers_marching`` treats stale marches.
+    """
+    from .orders import _arrival_limit
+    now = int(mem.get('tick') or 0)
+    return any(sortie.get('general') == NAME and sortie.get('status') in MARCHING
+               and 0 <= now - sortie['tick'] < max(SORTIE_BUSY_TICKS, _arrival_limit(mem, sortie))
+               for _, sortie, _, _ in _march(mem))
 
 
 def orders(mem) -> list[dict]:
@@ -186,7 +202,8 @@ def orders(mem) -> list[dict]:
                 continue                   # the vanguard is full; nobody waits for six
         else:
             purpose, hop = 'move', route[1]
-        if source == hero_at and purpose == 'move' and not _hero_moved(mem, wave):
+        if (source == hero_at and purpose == 'move' and not wave.get('hero_absent')
+                and not _hero_marching(mem)):
             hero.append((len(route), _order(mem, source, hop, target, 'move', hero=True)))
         if purpose == 'move' and _moved(mem, wave, hop, source) >= SQUAD:
             continue                       # this capture's six already left
@@ -196,7 +213,8 @@ def orders(mem) -> list[dict]:
         (moves if purpose == 'move' else attacks).append((len(route), order))
     attacks.sort(key=lambda item: item[0])
     moves.sort(key=lambda item: item[0])      # nearest the front first
-    return [order for _, order in (*attacks, *moves, *hero)]
+    # docich#3957: the hero goes to the fallen castle before its reinforcements.
+    return [order for _, order in (*attacks, *hero, *moves)]
 
 
 def _order(mem, source, hop, target, purpose, hero=False):
