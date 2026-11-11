@@ -7117,6 +7117,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v671-ch9-squads",
             "hanjuku-chart-v672-okunote-candidate-close",
             "hanjuku-chart-v673-hold-and-chapter",
+            "hanjuku-chart-v674-ch9-squad-not-reserved",
             "hanjuku-chart-v560-castle-list-scroll",
             "hanjuku-chart-v561-post-month-repair-status",
             "hanjuku-chart-v501-idle-reanchor",
