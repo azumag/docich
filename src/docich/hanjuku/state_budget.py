@@ -206,6 +206,22 @@ def _prune_settled_marches(state, goal: int) -> None:
         return
     orders = ((policy.get('plan') or {}).get('orders') or {})
     now = int(policy.get('tick') or 0)
+    marches = world.get('sorties') if isinstance(world.get('sorties'), dict) else {}
+    # A 'launched' order whose march ended long ago never retires: chapter 9
+    # carried 68 of them (g1163 2026-11-12 02:5x) and together with its launch
+    # context each one is ~1 KB. Nothing waits on an order that old, so it is
+    # retired to 'failed' (the state docich itself uses for a settled order)
+    # and its records go with it.
+    for step, status in list(orders.items()):
+        if status not in ('launched', 'launched_unconfirmed'):
+            continue
+        march = marches.get(step) if isinstance(marches.get(step), dict) else {}
+        if march.get('status') in ('en_route', 'launched_unconfirmed'):
+            continue
+        tick = _entry_tick(world.get('launched_orders', {}).get(step) if isinstance(world.get('launched_orders'), dict) else None)
+        tick = tick if tick is not None else _entry_tick(march)
+        if tick is not None and now - tick > SETTLED_MARCH_TICKS:
+            orders[step] = 'failed'
     live = {step for step, status in orders.items()
             if status in ('pending', 'launched', 'launched_unconfirmed')}
     for key in ('launched_orders', 'sorties'):

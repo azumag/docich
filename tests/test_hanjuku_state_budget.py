@@ -160,7 +160,8 @@ def test_settled_marches_are_dropped_before_the_record_grows_too_wide():
                                     'I:c9:サヌト>オシロガ:2': 'launched'}},
                    world={'launched_orders': {
                        'I:c9:タオ>サヌト:1': {'cards': ['クースカン'] * 200, 'tick': old},
-                       'I:c9:サヌト>オシロガ:2': {'cards': ['クースカン'] * 200, 'tick': old},
+                       # a live launch is recent, otherwise the retirement below drops it
+                       'I:c9:サヌト>オシロガ:2': {'cards': ['クースカン'] * 40, 'tick': 4500},
                    },
                        'sorties': {'I:c9:タオ>サヌト:1': {'tick': old, 'status': 'arrived'}}})
     limit = 4096
@@ -180,3 +181,33 @@ def test_a_recent_settled_march_is_kept():
                    world={'launched_orders': {'I:x': {'tick': 5000 - SETTLED_MARCH_TICKS + 10}}})
     out = state_budget.compact_state(state, 1024)
     assert 'I:x' in out['policy']['world']['launched_orders']
+
+
+def test_an_ancient_launched_order_is_retired_and_its_records_dropped():
+    """Chapter 9 carried 68 'launched' orders that never retired (~1 KB each)."""
+    from docich.hanjuku.state_budget import SETTLED_MARCH_TICKS
+    old = 1000
+    orders = {f'I:c9:タオ>サヌト:{i}': 'launched' for i in range(40)}
+    launched = {step: {'cards': ['クースカン'] * 30, 'tick': old} for step in orders}
+    sorties = {step: {'tick': old, 'status': 'arrived'} for step in orders}
+    state = _state(tick=old + SETTLED_MARCH_TICKS + 500,
+                   plan={'orders': dict(orders)},
+                   world={'launched_orders': launched, 'sorties': sorties})
+    limit = 8192
+    out = state_budget.compact_state(state, limit)
+    assert state_budget.size(out) <= limit
+    assert out['policy']['plan']['orders'] == {step: 'failed' for step in orders}
+    assert out['policy']['world']['launched_orders'] == {}
+
+
+def test_an_order_whose_march_is_still_walking_is_not_retired():
+    from docich.hanjuku.state_budget import SETTLED_MARCH_TICKS
+    old = 1000
+    state = _state(tick=old + SETTLED_MARCH_TICKS + 500,
+                   plan={'orders': {'I:c9:タオ>サヌト:1': 'launched'}},
+                   world={'launched_orders': {'I:c9:タオ>サヌト:1': {
+                              'cards': ['クースカン'] * 60, 'tick': old}},
+                          'sorties': {'I:c9:タオ>サヌト:1': {
+                              'tick': old, 'status': 'en_route'}}})
+    out = state_budget.compact_state(state, 8192)
+    assert out['policy']['plan']['orders']['I:c9:タオ>サヌト:1'] == 'launched'

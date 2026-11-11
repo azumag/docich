@@ -7132,6 +7132,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v686-present-generals-kinds",
             "hanjuku-chart-v687-attack-company",
             "hanjuku-chart-v688-settled-marches-pruned",
+            "hanjuku-chart-v689-stale-orders-retired",
             "hanjuku-chart-v560-castle-list-scroll",
             "hanjuku-chart-v561-post-month-repair-status",
             "hanjuku-chart-v501-idle-reanchor",
