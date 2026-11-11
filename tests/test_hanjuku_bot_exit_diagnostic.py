@@ -45,7 +45,7 @@ def _decided(actions, state, *, persist=None, atomic_write_json=None):
     frame.resized.return_value = frame
     frame.digest.return_value = "d"
     with mock.patch.object(bot, "read_png", return_value=frame), \
-            mock.patch.object(bot, "read_record", return_value={}), \
+            mock.patch.object(bot.state_budget, "load_state", return_value={}), \
             mock.patch.object(bot.hanjuku_resume, "inherit_running_chapter"), \
             mock.patch.object(bot.hanjuku_experience, "load", return_value={}), \
             mock.patch.object(bot.hanjuku_chart_adjust, "load", return_value=None), \
@@ -93,7 +93,7 @@ class BotExitDiagnosticTest(unittest.TestCase):
         frame.resized.return_value = frame
         frame.digest.return_value = "d"
         with mock.patch.object(bot, "read_png", return_value=frame), \
-                mock.patch.object(bot, "read_record", return_value={}), \
+                mock.patch.object(bot.state_budget, "load_state", return_value={}), \
                 mock.patch.object(bot.hanjuku_resume, "inherit_running_chapter"), \
                 mock.patch.object(bot.hanjuku_experience, "load", return_value={}), \
                 mock.patch.object(bot.hanjuku_chart_adjust, "load", return_value=None), \
