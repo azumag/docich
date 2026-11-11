@@ -992,13 +992,18 @@ def _corridor_list_end(screen, mem, order):
     if present is None:
         return _hold_general_list_bounded(screen, mem, order,
             '第9話の出撃一覧を読めないため保留', 'cursor_unreadable')
-    usable = list(present)               # listed here means here (see _cursor_order_pick)
-    kind = 'empty' if not [g for g in usable if g != NAME] and NAME not in usable else 'hero'
+    others = [g for g in present if g != NAME]   # listed here means here (see _cursor_order_pick)
+    if others and not _keeps_hero_company(order, present):
+        # Generals are listed but the hand/cursor could not be read: never
+        # record the castle as drained from an unread frame.
+        return _hold_general_list_bounded(screen, mem, order,
+            '第9話の出撃一覧のカーソルを読めないため保留', 'cursor_unreadable')
+    kind = 'empty' if not others and NAME not in present else 'hero'
     corridor.mark_drained(mem, _source(order, mem), kind)
     _observe_garrison(screen, mem, order, complete=len(present) < GENERAL_LIST_FULL)
     _finish_order(mem, 'done', observed_metric=present[:8], source=_source(order, mem),
                   reason=('第9話: 出撃元に出せる将軍がいないため、この城を一時的に対象から外す' if kind == 'empty'
-                          else '第9話: 出撃元に主人公しかいないため攻撃せず、この城を一時的に対象から外す'))
+                          else '第9話: 主人公と最後の1人を残すため攻撃せず、この城を一時的に対象から外す'))
     return [pad('b'), pad('b')]
 
 
@@ -1036,6 +1041,11 @@ def _cursor_order_pick(screen, mem, order):
         busy = set()
     name, step = cur[2], order['step']
     downs = mem.setdefault('cursor_pick_downs', {})
+    if order.get('corridor_hero') is True:
+        return _corridor_hero_pick(screen, mem, order, present, cur)
+    if _keeps_hero_company(order, present):
+        downs.pop(step, None)
+        return None                     # see _corridor_list_end
     if name == NAME or name in busy:
         others = [g for g in present if g != NAME and g not in busy]
         whole = len(present) < GENERAL_LIST_FULL
@@ -1047,6 +1057,49 @@ def _cursor_order_pick(screen, mem, order):
             downs.pop(step, None)
             return None
     downs.pop(step, None)
+    return _cursor_take(screen, mem, order, name, present)
+
+
+def _keeps_hero_company(order, present) -> bool:
+    """A chapter 9 attack never takes the hero's last companion (v671).
+
+    Squads leave the hero with whoever is not in the vanguard; sending the
+    last one would leave him alone in the castle the enemy retakes first.
+    Only a whole list (every general visible) can prove "the last one".
+    """
+    others = [g for g in present if g != NAME]
+    return (order.get('corridor') is True and order.get('purpose') != 'move' and NAME in present
+            and len(present) < GENERAL_LIST_FULL and len(others) <= 1)
+
+
+def _corridor_hero_pick(screen, mem, order, present, cur):
+    """Chapter 9 hero order: move the hero himself one hop forward (v671).
+
+    Owner 2026-11-11: しろがとれたら将軍とプラス６人をいかせる. The cursor is
+    steered to the hero's row (bounded); a list without him ends the hero's
+    move for this capture.
+    """
+    from ..strategy import corridor
+    step = order['step']
+    downs = mem.setdefault('cursor_pick_downs', {})
+    if cur[2] == NAME:
+        downs.pop(step, None)
+        return _cursor_take(screen, mem, order, NAME, present)
+    whole = len(present) < GENERAL_LIST_FULL
+    if (NAME in present or not whole) and int(downs.get(step) or 0) < CURSOR_PICK_DOWNS:
+        downs[step] = int(downs.get(step) or 0) + 1
+        up = NAME in present and present.index(NAME) < present.index(cur[2])
+        return _deploy_input(screen, mem, order, [pad('up' if up else 'down')],
+                             '第9話の主人公の移動のため、カーソルを主人公へ合わせる')
+    downs.pop(step, None)
+    corridor.hero_absent(mem)
+    _finish_order(mem, 'done', observed_metric=present[:8], source=_source(order, mem),
+                  reason='第9話: 主人公がこの城の一覧にいないため、この回の主人公の移動をやめる')
+    return [pad('b'), pad('b')]
+
+
+def _cursor_take(screen, mem, order, name, present):
+    step = order['step']
     _observe_garrison(screen, mem, order, complete=len(present) < GENERAL_LIST_FULL)
     mem.setdefault('general_override', {})[step] = name
     _plan_region(mem).setdefault('sortie_general', {})[step] = name
