@@ -280,6 +280,38 @@ def _boss_wave_open(mem, target):
     return chart.is_boss_castle(target)
 
 
+# Owner 2026-11-11 (chapter 9): 早く倒さないと敵城のレベルがどんどん上がる
+# ステージなので、ひとりずつ出撃していたら間に合わない. The one-expedition rule
+# kept exactly one general marching at the road's next castle: every launch was
+# followed by ``chart_interim_hold`` until that battle ended (g1163 09:40-10:14,
+# seven launches, seven holds). The road's next castle now keeps taking waves
+# until this many sorties to it are in flight.
+CORRIDOR_WAVE_INFLIGHT = 3
+
+
+def _corridor_wave_open(mem, target) -> bool:
+    """A single-road chapter keeps several sorties marching at its next castle."""
+    from .orders import _arrival_limit, _sortie_reserved_target
+    chapter = mem.get('chapter') or 0
+    if not chart.corridor(chapter):
+        return False
+    owned = _owned(mem) & set(chart.castles(chapter))
+    if target != chart.corridor_next(chapter, owned):
+        return False
+    now = int(mem.get('tick') or 0)
+    marching = 0
+    for step, sortie in _sorties(mem).items():
+        if (not isinstance(sortie, dict)
+                or sortie.get('status') not in ('en_route', 'launched_unconfirmed', 'launched', 'pending')
+                or type(sortie.get('tick')) is not int):
+            continue
+        if _sortie_reserved_target(mem, step, sortie) != target:
+            continue
+        if 0 <= now - sortie['tick'] < max(SORTIE_BUSY_TICKS, _arrival_limit(mem, sortie)):
+            marching += 1
+    return marching < CORRIDOR_WAVE_INFLIGHT
+
+
 def _wave_pick(mem, target, owned, busy, allow_sole):
     """(source, general) of a measured spare for a same-target wave.
 
@@ -670,10 +702,14 @@ def interim_candidates(mem, allow_sole=False) -> dict:
     # Owner 2026-11-04: the boss is the one target that keeps taking waves
     # while a sortie to it is still in flight (the 2026-11-02 design above).
     # Every other target keeps the one-expedition rule.
-    targets = [c for c in targets if c not in inflight or _boss_wave_open(mem, c)]
+    # Chapter 9's road castle likewise (owner 2026-11-11), up to
+    # CORRIDOR_WAVE_INFLIGHT sorties at once.
+    targets = [c for c in targets if c not in inflight or _boss_wave_open(mem, c)
+               or _corridor_wave_open(mem, c)]
     # One recent expedition per target. Unobserved old arrivals stop reserving
     # after SORTIE_BUSY_TICKS; they must not empty every castle in the meantime.
-    targets = [c for c in targets if c not in heading or _boss_wave_open(mem, c)]
+    targets = [c for c in targets if c not in heading or _boss_wave_open(mem, c)
+               or _corridor_wave_open(mem, c)]
     sorties = {'retake': [], 'attack': []}
     # #3266: a concrete general chosen for one target is already unavailable
     # to later targets in the same plan; otherwise every retake names the first spare.
