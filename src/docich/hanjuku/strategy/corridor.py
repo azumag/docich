@@ -163,6 +163,10 @@ def _hero_moved(mem, wave) -> bool:
 def orders(mem) -> list[dict]:
     if not mechanical(mem):
         return []
+    # A stale location mark must not keep the whole army out of the road for
+    # good; the sortie itself re-reads the castle's live list.
+    from ..os_layer.world import expire_unknown_locations
+    expire_unknown_locations(mem)
     chapter = mem.get('chapter')
     owned = _owned(mem) & set(chart.castles(chapter))
     target = chart.corridor_next(chapter, owned)
