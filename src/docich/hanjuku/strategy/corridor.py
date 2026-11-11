@@ -41,6 +41,9 @@ PREFIX = 'I:c9:'
 DRAINED = 'corridor_drained'
 WAVE = 'corridor_wave'
 SQUAD = 6
+# Ticks a march may take before a dispatched general is treated as unknown
+# rather than still on the road (a march is observed at ~1 tick/second).
+ARRIVAL_RECHECK_TICKS = 120
 MARCHING = ('en_route', 'launched_unconfirmed', 'launched', 'pending')
 
 
@@ -61,10 +64,23 @@ def _drained(mem, castle, purpose) -> bool:
     since = entry.get('tick')
     if type(since) is not int:
         return False
+    now = int(mem.get('tick') or 0)
     for sortie in _sorties(mem).values():
-        if (isinstance(sortie, dict) and sortie.get('target') == castle
-                and type(sortie.get('tick')) is int and sortie['tick'] > since):
-            return False                   # somebody was sent in afterwards
+        if not isinstance(sortie, dict) or sortie.get('target') != castle:
+            continue
+        tick = sortie.get('tick')
+        if type(tick) is not int or tick <= since:
+            continue
+        # Only a confirmed arrival puts somebody back in this castle. A march
+        # that was merely *sent* clears the mark while the general is still on
+        # the road, so the plan opens this castle's list immediately, finds
+        # nobody and spends a whole sortie cycle doing it: g1163 2026-11-11
+        # 20:3x-21:4x ended 21 order starts as
+        # 「出撃元に出せる将軍がいないため、この城を一時的に対象から外す」.
+        # Past the arrival window the general's whereabouts are unknown, so let
+        # the plan read the live list once more and mark the castle again.
+        if sortie.get('status') == 'arrived' or now - tick >= ARRIVAL_RECHECK_TICKS:
+            return False
     return True
 
 
