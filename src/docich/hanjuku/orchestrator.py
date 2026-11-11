@@ -38,6 +38,21 @@ NO_INPUT_HOLD_MAX = 100
 # the fallback presses A there anyway (g1067 11:13: a castle-progress notice).
 FIELD_TEXT_HOLD_MAX = 4
 
+def _chapter9_field_recall(mem):
+    """docich#3958: let chapter 9's mechanical march see field camps again.
+
+    The monthly pass is off in mechanical mode, so the only live mechanism
+    for a general left camping on the field is the map-observed camp recall
+    in flows/recall.py. It is not chapter-gated itself: before the boss phase
+    ``camp_stays`` is False, so a visible camp is recalled home as in other
+    chapters; in the boss phase the same call already re-sends the camp at
+    the moving boss. This predicate only decides whether the orchestrator
+    hands an idle map frame to that existing flow.
+    """
+    from .strategy import corridor
+    return corridor.mechanical(mem)
+
+
 # Owner evidence #2076 (g713 UID16229): between a complete battle panel and the
 # command box the game draws the menu over several frames. The panel reads
 # 'unknown' while the coarse phase can still be 'event', so the generic
@@ -687,6 +702,16 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
         # Between a 砦's screens the default A would pick the list's top row or
         # confirm the marker on the 砦 itself, which cancels the sortie.
         (kind == 'unknown' and (recall.get('fort') or recall_flow.in_fort_route(recall))))))
+    # docich#3958: chapter 9's mechanical march disables the monthly pass
+    # (corridor.mechanical: v665/v668), so no recall task is ever queued, no
+    # status panel is opened and nothing seeds the recall state — a camp left
+    # on the field stays forever. Reopen the existing camp recall's entry
+    # point on idle map frames: ``camp_recall_step`` starts a recall from a
+    # visible camp when no recall is in flight, and its own gates
+    # (``boss_phase``/``camp_stays`` redirect, skip cooldowns, the named
+    # recheck queue of #3008) still apply inside.
+    ch9_field_recall = (not recall_dialog and phase != 'concert' and kind == 'map'
+                        and frame is not None and _chapter9_field_recall(mem))
     # Cancel an outstanding repair before an emergency recall can move its
     # general; the old house route must not resume afterwards.
     if mem.get('house') and _flow(mem).get('recall'):
@@ -741,7 +766,8 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
         month_flow.interrupt_month_payment(mem)
         actions = prompts_flow.yes_no_step(screen, mem)
     if actions is None:
-        actions = (recall_flow.camp_recall_step(screen, mem, frame) if recall_dialog
+        actions = (recall_flow.camp_recall_step(screen, mem, frame)
+                   if recall_dialog or ch9_field_recall
                    else month_flow.month_sub_step(screen, mem) if mem.get('month_sub') and (kind != 'month_menu' or month_dialog)
                    else None)
     # No house phase expects a red-curtain screen (concert/merchant backdrop):
