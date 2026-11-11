@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 
 from docich import hanjuku_policy as p
+from docich.hanjuku.flows import okunote
 from docich.hanjuku_bot import decide
 from docich.hanjuku_pixels import read_png
 from docich.hanjuku_screen import Battle, Screen, parse
@@ -80,7 +81,9 @@ def test_unchanged_parent_resends_bounded_a_then_stops_and_candidate_never_resen
         assert p.battle_menu_step(menu(), mem) == [p.pad('a')]
     assert p.battle_menu_step(menu(), mem) != [p.pad('a')]
     assert p.okunote_step(choices(), mem) == [p.pad('a')]
-    for _ in range(20):
+    # The candidate A is not re-sent while B can still close a list that did
+    # not take it (g1163 2026-11-11 19:10 stalled five minutes waiting).
+    for _ in range(okunote.CANDIDATE_MENU_WAITS + okunote.CANDIDATE_CLOSES * okunote.CANDIDATE_CLOSE_GAP):
         mem = json.loads(json.dumps(mem))
         assert p.okunote_step(choices(), mem) != [p.pad('a')]
     assert p.battle_menu_step(menu(), mem) != [p.pad('a')]
