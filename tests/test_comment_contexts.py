@@ -221,3 +221,62 @@ def test_special_corner_note_follows_webui_settings(tmp_path):
     assert 'ゲームA(特別コーナー)' in text
     assert 'コーナーの説明: ゲームAの映像です。 目標はクリア。' in text
     assert 'Fly Me' not in text and '50面' not in text
+
+
+def _hanjuku_ops(tmp_path, *, config=None, max_chars="1200", host_mode="main", game="hanjuku-hero"):
+    root = _input_root(tmp_path)
+    (root / 'canonical.json').write_text(json.dumps({
+        'phase': 'ready', 'game': 'sorengame', 'active': {'game': game}}))
+    env = _provider_env(root)
+    env['COMMENT_OPS_CONTEXT_MAX_CHARS'] = max_chars
+    if config is not None:
+        (root / 'hanjuku-hero.toml').write_text(config, encoding='utf-8')
+        env['DOCICH_HANJUKU_CONFIG_FILE'] = str(root / 'hanjuku-hero.toml')
+    else:
+        env['DOCICH_HANJUKU_CONFIG_FILE'] = str(root / 'missing.toml')
+    return SorenGameContextProvider(root, env).build(host_mode=host_mode).comment_ops_context
+
+
+ENABLED_TOML = '[hanjuku.chart_adjust]\nenabled = true\nagents = "a:b"\n'
+
+
+def test_hanjuku_screen_explains_how_the_bot_works(tmp_path):
+    text = _hanjuku_ops(tmp_path, config=ENABLED_TOML)
+    for needle in ('半熟英雄BOTの仕組み', 'ヒューリスティック', '動作ログを見て定期的に改善', '保守的',
+                   'ハイブリッド', 'アルゴリズムへ置き換えられる', 'レイテンシ',
+                   'ソ連ゲームの戦略改善・メリケンAIの行は半熟BOTの話ではない'):
+        assert needle in text, needle
+    lines = text.split('\n')
+    assert '画面が違ってもソレンゲームの話として答える' in lines[1]
+    assert '半熟英雄BOTの仕組み' in lines[2]
+
+
+@pytest.mark.parametrize('config, expected, forbidden', [
+    (ENABLED_TOML, 'LLMの動的判断は有効', '止めていて'),
+    ('[hanjuku.chart_adjust]\nenabled = false\nagents = "a:b"\n', '一時的に止めていて', '動的判断は有効'),
+    ('[hanjuku.chart_adjust]\nenabled = true\nagents = ""\n', '一時的に止めていて', '動的判断は有効'),
+    ('[hanjuku.chart_adjust]\nenabled = true\nagents = "a:b"\ndirect_enabled = true\ndirect_agents = ""\n',
+     '一時的に止めていて', '動的判断は有効'),
+])
+def test_hanjuku_llm_state_follows_measured_config(tmp_path, config, expected, forbidden):
+    text = _hanjuku_ops(tmp_path, config=config)
+    assert expected in text
+    assert forbidden not in text
+
+
+@pytest.mark.parametrize('config', [None, 'enabled = [broken', '[hanjuku.chart_adjust]\nenabled = "yes"\n'])
+def test_hanjuku_llm_state_is_omitted_when_config_is_unreadable(tmp_path, config):
+    text = _hanjuku_ops(tmp_path, config=config)
+    assert 'ハイブリッド' in text
+    assert 'いまの状態' not in text
+
+
+def test_hanjuku_explanation_survives_the_ops_character_limit(tmp_path):
+    text = _hanjuku_ops(tmp_path, config=ENABLED_TOML, max_chars='200')
+    assert 'レイテンシ' in text and 'LLMの動的判断は有効' in text
+
+
+@pytest.mark.parametrize('game, host_mode', [('robots', 'main'), ('sorengame', 'main'), ('hanjuku-hero', 'soren91')])
+def test_hanjuku_explanation_is_only_for_the_hanjuku_screen(tmp_path, game, host_mode):
+    text = _hanjuku_ops(tmp_path, config=ENABLED_TOML, game=game, host_mode=host_mode)
+    assert '半熟英雄BOTの仕組み' not in text
