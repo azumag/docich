@@ -55,13 +55,18 @@ def test_a_launched_step_gives_the_castle_a_fresh_step():
     assert _orders(mem)[0]['step'] != first and _orders(mem)[0]['source'] == FRONT
 
 
-def test_a_drained_castle_is_skipped_until_someone_is_sent_in_or_the_month_changes():
+def test_a_drained_castle_is_skipped_until_someone_arrives_or_the_month_changes():
+    # v677: a march that was only *sent* still has the general on the road, so
+    # the plan would open this castle's list, find nobody and lose a whole
+    # sortie cycle. Only a confirmed arrival refills it.
     mem = _mem()
     corridor.mark_drained(mem, FRONT, 'empty')
     assert [o['source'] for o in _orders(mem)] == [HOME]
     from docich.hanjuku.state.regions import sorties as _sorties
     _sorties(mem)['I:in'] = {'general': 'ミント', 'source': HOME, 'target': FRONT,
                              'status': 'en_route', 'tick': 5001}
+    assert [o['source'] for o in _orders(mem)] == [HOME]
+    _sorties(mem)['I:in']['status'] = 'arrived'
     assert FRONT in [o['source'] for o in _orders(mem)]
     mem = _mem()
     corridor.mark_drained(mem, FRONT, 'empty')
