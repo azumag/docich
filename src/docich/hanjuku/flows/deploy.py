@@ -857,7 +857,10 @@ def _move_general_pick(screen, mem, order):
         return _hold_deploy(screen, mem, order, '移動元の将軍一覧を読めないため保留')
     busy = _en_route(mem)[0]
     spare = sorted((g for g in present if g not in busy), key=lambda g: g == NAME)
-    if len(present) < 2 or not spare:
+    # Chapter 9 may empty a rear castle and walks the hero forward too
+    # (owner 2026-11-09 / 2026-11-11).
+    road_walk = chart.guard_free(mem.get('chapter'))
+    if (len(present) < 2 and not road_walk) or not spare:
         _finish_order(mem, 'failed', deviation_reason='移動元に残す将軍がいない',
                       observed_metric=present[:8], source=_source(order, mem),
                       reason='移動元の将軍が1人以下のため移動を取り消す（一覧は駐留として記録）')
@@ -865,7 +868,7 @@ def _move_general_pick(screen, mem, order):
     general = mem.get('general_override', {}).get(order['step'])
     if general not in spare:
         planned = order.get('general')
-        if planned in spare and planned != NAME:
+        if planned in spare and (planned != NAME or road_walk):
             general = planned
             reason = '計画が名指しした将軍をそのまま移動させる'
         else:
