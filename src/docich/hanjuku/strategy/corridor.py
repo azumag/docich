@@ -36,7 +36,7 @@ The boss phase (every road castle ours) keeps the normal flows.
 from __future__ import annotations
 
 from ... import hanjuku_chart as chart, hanjuku_chart_adjust as chart_adjust
-from ..os_layer.world import _owned
+from ..os_layer.world import _owned, _world
 from ..os_layer.world import NAME, SORTIE_BUSY_TICKS, _hero_castle
 from ..state.regions import plan as _plan_region, sorties as _sorties
 from . import routes
@@ -217,11 +217,64 @@ def orders(mem) -> list[dict]:
     attacks.sort(key=lambda item: item[0])
     moves.sort(key=lambda item: item[0])      # nearest the front first
     out = [order for _, order in (*attacks, *moves, *hero)]
-    if not out:
+    probe = _roster_probe(mem, routes_by, target, lost)
+    if probe is not None:
+        out.insert(0, probe)            # the re-read goes first: the tour is priority
+    elif not out:
         probe = _drained_probe(mem, routes_by, target, lost)
         if probe is not None:
             out = [probe]
     return out
+
+
+def _unaccounted(mem):
+    """Employed generals whose location nobody can name.
+
+    docich#3963 (g1163 2026-11-12 01:2x): the country held 32 generals while
+    ``world.garrison`` listed 0 and ``general_location_unknown`` held 5, so
+    27 were nowhere the plan could see. Accounting covers the three places a
+    location can be recorded: the live list of a castle, the unknown list,
+    and an in-flight march. A stale or unscoped count proves nothing.
+    """
+    count = mem.get('country_general_count')
+    if not isinstance(count, dict) or type(count.get('count')) is not int:
+        return 0
+    if count.get('scope') != [mem.get('chapter'), mem.get('month')]:
+        return 0
+    world = _world(mem)
+    known = {name for members in (world.get('garrison') or {}).values()
+             if isinstance(members, list) for name in members}
+    known.update(world.get('general_location_unknown') or ())
+    for _, sortie, _, _ in _march(mem):
+        if sortie.get('status') in MARCHING and sortie.get('general'):
+            known.add(sortie['general'])
+    return count['count'] - len(known)
+
+
+def _roster_probe(mem, routes_by, target, lost):
+    """Re-read a drained castle list while generals are unaccounted.
+
+    When the country's general count exceeds ``in garrison + unknown +
+    marching``, somebody is standing in a castle the plan stopped visiting.
+    A drained mark is what stops the visit, so the oldest mark gets one
+    re-read order ahead of the regular sorties; the visit either launches
+    whoever is found or re-marks the castle, and the next cycle picks the
+    next-oldest mark, rotating the tour through the castles (docich#3963).
+    ``_drained`` already yields to a march that may still be on the road,
+    so a castle expecting an arrival is not probed.
+    """
+    if _unaccounted(mem) <= 0:
+        return None
+    drained = {source: (mem.get(DRAINED) or {}).get(source)
+               for source, route in routes_by.items()
+               if route and len(route) >= 2
+               and _drained(mem, source, 'move')}
+    if not drained:
+        return None
+    source = min(drained, key=lambda c: drained[c].get('tick') or 0)
+    route = routes_by[source]
+    purpose = ('retake' if target in lost else 'attack') if len(route) == 2 else 'move'
+    return _order(mem, source, route[1], target, purpose)
 
 
 def _drained_probe(mem, routes_by, target, lost):

@@ -1275,6 +1275,7 @@ def _check_source_castle(screen, mem, order):
     name = m.group(1)
     if name == source or STATUS_NAMES.get(source) == name:
         mem['castle_verified'] = step
+        _observe_status_garrison(screen, mem, name=source)
         # The open castle menu belongs to the castle under the cursor, and its
         # status just named it: that is the cursor's position. g1163
         # 2026-11-11 00:07: after the jump to ながはま the estimate stayed on
@@ -1297,6 +1298,34 @@ def _check_source_castle(screen, mem, order):
             observed_metric={'castle': name, 'misses': misses},
             reason=f'出撃元{source}のつもりで開いた城が{name}だったため出撃せず現在地を直して向かい直す')
     return [pad('b'), {'type': 'wait', 'ms': 500}, pad('b')]
+
+
+def _observe_status_garrison(screen, mem, name):
+    """Record the verified castle status panel's residents as its garrison.
+
+    The sortie path records ``world.garrison`` only from the general list
+    (``_observe_garrison``); the status panel this check opens shows the same
+    residents but was read for the castle name alone, so a castle whose list
+    never opened stayed "empty" while its panel was read on every order
+    (docich#3963: ハヤク's panel read ラズベリー while ``world.garrison``
+    held 0 generals). Reuse the house check's exact contract: the
+    「しょうぐんNめい」 count must match the cleanly read names and no label
+    may bleed into the name column (v678), else nothing is written.
+    """
+    from .house import _general_names, _names_at
+    count = re.search(r'しょうぐん(\d+)めい', screen.text or '')
+    names = _general_names(_names_at(screen, 144, 95, 159))
+    if not count or len(names) != int(count[1]) or any(UNKNOWN in g for g in names):
+        return
+    world = _world(mem)
+    if world.setdefault('garrison', {}).get(name) != names:
+        world['garrison'][name] = names
+        _record(mem, 'garrison_seen', castle=name,
+                observed_metric=names[:8],
+                reason='城ステータスの在城人数と氏名欄が一致したため在城一覧を記録')
+    unknown = world.get('general_location_unknown')
+    if isinstance(unknown, list):
+        world['general_location_unknown'] = [g for g in unknown if g not in names]
 
 
 def _count_source_mismatch(mem, step, label):

@@ -37,7 +37,7 @@ from ..judgment.battle import (EGG_WALL_DAMAGE, DEFENDER_SUMMON_OPEN_LIMIT, CARD
                                HERO_SURVIVAL_REOPEN_LIMIT)
 from ..os_layer.commands import _human_menu_open, pad
 from ..os_layer.readers import STATUS_NAMES
-from ..os_layer.world import NAME
+from ..os_layer.world import NAME, garrison_lost
 from ..strategy.campaign import _castle_label, observe_chapter_castle, observe_chapter_general
 from ..strategy.kit import _is_boss_order
 from ..strategy.execution import bound_fields
@@ -1293,7 +1293,7 @@ def battle_end(mem, next_kind, *, defense_continues=False, actor_continues=False
         # record at all), and the garrison is what a later fix needs.
         _garrison_row = (_world(mem).get('garrison') or {}).get(castle)
         _garrison_before = list(_garrison_row or ())
-        (_world(mem).get('garrison') or {}).pop(castle, None)
+        garrison_lost(mem, castle)
         lost = mem.setdefault('lost', [])
         if castle not in lost:
             lost.append(castle)

@@ -245,7 +245,7 @@ def observe_owners(mem, roofs, cam):
             lost = mem.setdefault('lost', [])
             if castle not in lost:
                 lost.append(castle)
-            (_world(mem).get('garrison') or {}).pop(castle, None)
+            garrison_lost(mem, castle)
             # Ownership changed hands: the remembered defender is stale.
             (mem.get('castle_defenders') or {}).pop(castle, None)
             _record(mem, 'castle_lost_observed', castle=castle,
@@ -318,7 +318,28 @@ def mark_location_unknown(mem, name, tick=None):
         unknown.append(name)
     since = _world(mem).setdefault('general_location_unknown_at', {})
     if name not in since:
-        since[name] = int(mem.get('tick') if tick is None else tick)
+        since[name] = int((mem.get('tick') or 0) if tick is None else tick)
+
+
+def garrison_lost(mem, castle):
+    """Drop a lost castle's remembered residents as location-unknown.
+
+    Every loss path pops ``world.garrison[castle]`` so the fallen castle no
+    longer claims residents. Until docich#3963 the members were discarded
+    with the row: the country's general count then exceeded
+    ``in garrison + location unknown`` and nobody was scheduled to be
+    re-read (g1163 2026-11-12 01:2x: 32 generals, 0 in garrison, only 5
+    unknown after the two castles fell). Marking each member unknown
+    keeps the deficit visible to the plan; the mark expires or is
+    corrected by the next live list read, exactly like an unconfirmed
+    march's mark.
+    Returns the dropped member list.
+    """
+    garrison = _world(mem).get('garrison')
+    members = list((garrison or {}).pop(castle, None) or ())
+    for name in members:
+        mark_location_unknown(mem, name)
+    return members
 
 
 def expire_unknown_locations(mem, now=None, ttl=None):
@@ -436,7 +457,7 @@ def _apply_world_flags(mem, flags):
         lost = mem.setdefault('lost', [])
         if home not in lost:
             lost.insert(0, home)
-        (_world(mem).get('garrison') or {}).pop(home, None)
+        garrison_lost(mem, home)
     elif home_owner == 'own' and (mem.get('home_lost') or home in (mem.get('lost') or [])):
         # A defense loss lists home in lost without home_lost; the own flag
         # clears that too (g1075 14:24: アルマムーン own, still lost).
@@ -451,7 +472,7 @@ def _apply_world_flags(mem, flags):
             lost = mem.setdefault('lost', [])
             if castle not in lost:
                 lost.append(castle)
-            (_world(mem).get('garrison') or {}).pop(castle, None)
+            garrison_lost(mem, castle)
             # Ownership changed hands: the remembered defender is stale.
             (mem.get('castle_defenders') or {}).pop(castle, None)
             changed.append(('lost', castle))

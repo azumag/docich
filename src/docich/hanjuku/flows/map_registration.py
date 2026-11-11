@@ -151,7 +151,8 @@ def _ownership(mem, name, kind):
         if (name == home or was_owned) and name not in lost:
             lost.append(name)
         if was_owned:
-            (_world(mem).get('garrison') or {}).pop(name, None)
+            from ..os_layer.world import garrison_lost
+            garrison_lost(mem, name)
             (mem.get('castle_defenders') or {}).pop(name, None)
 
 
