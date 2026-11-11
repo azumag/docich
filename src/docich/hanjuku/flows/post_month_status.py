@@ -128,7 +128,13 @@ def _tasks(statuses, names, boss_camp_months=None, camp_stays=False):
                 queue.append({'kind': 'locate', 'name': name})
             if info.get('broken'):
                 queue.append({'kind': 'repair', 'name': name})
-    return queue
+    # Owner 2026-11-11 (間違った座標にむかったしょうぐんがずっと崖でキャンプしてる):
+    # a camped general is an army out of play, and a camp recall is short. In
+    # name order g1163 queued ジェラート's repair ahead of シュゼット's recall;
+    # the repair ran ~3 minutes, the month rolled over and the recall never
+    # started (12:32, 12:38, 12:44 — three months). Recalls go first.
+    return ([job for job in queue if job['kind'] == 'recall']
+            + [job for job in queue if job['kind'] != 'recall'])
 
 
 def _house_freshly_read(mem):
