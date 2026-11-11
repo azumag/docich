@@ -21,8 +21,12 @@ Squads (owner 2026-11-11, v671): ３２人全員移動させると大変だか�
 意味ではなく、６人がMAX）. Both limits are maxima; nothing waits for six.
 
 * at most ``SQUAD`` attackers march at the next castle at once;
-* each capture opens a wave: every road hop may move at most ``SQUAD``
-  generals, plus the hero (「将軍」 read as the hero) one hop forward;
+* each capture opens a wave: every owned road castle may move at most
+  ``SQUAD`` generals, plus the hero (「将軍」 read as the hero), straight to
+  the castle beside the target — docich#3952 measured one-hop relays feeding
+  the front at ~1 general per 5 minutes, so オオキク's defender recovered
+  between attacks (18 -> 34 -> 44); a direct leg keeps the front stocked and
+  the squad cap real; any enemy castle on the way falls back to one hop;
 * a wave whose front castle showed an empty list with no attacker marching
   opens a fresh budget, so a wiped vanguard never deadlocks the road;
 * an attack never takes the hero's last companion from his castle.
@@ -181,7 +185,12 @@ def orders(mem) -> list[dict]:
             if _attackers_marching(mem, target) >= SQUAD:
                 continue                   # the vanguard is full; nobody waits for six
         else:
-            purpose, hop = 'move', route[1]
+            purpose = 'move'
+            # Send the general to the castle beside the target, not one hop
+            # (docich#3952): hop-by-hop relays starved the front. An enemy
+            # castle between here and the front breaks the owned-road leg, so
+            # fall back to the first hop of the measured route.
+            hop = route[-2] if front and routes.move_leg(mem, source, front, owned) else route[1]
         if source == hero_at and purpose == 'move' and not _hero_moved(mem, wave):
             hero.append((len(route), _order(mem, source, hop, target, 'move', hero=True)))
         if purpose == 'move' and _moved(mem, wave, hop, source) >= SQUAD:
@@ -200,7 +209,7 @@ def _order(mem, source, hop, target, purpose, hero=False):
              'source': source, 'target': hop, 'cards': [], 'after': None,
              'purpose': purpose, 'source_probe': True, 'corridor': True,
              'note': (f'第9話: {source}から{target}へ最大{SQUAD}人' if hop == target
-                      else f'第9話: {target}へ向けて{source}から{hop}へ最大{SQUAD}人移動')}
+                      else f'第9話: {target}の手前{hop}へ{source}から最大{SQUAD}人移動')}
     if hero:
         order.update(corridor_hero=True, note=f'第9話: 城を取ったため主人公を{source}から{hop}へ進める')
     return order
