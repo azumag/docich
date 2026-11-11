@@ -21,7 +21,8 @@ from ..os_layer.readers import (RECRUIT_GOODBYE, RECRUIT_INTRO, STATUS_NAMES, _c
                                 _month_dialog_unread, _month_menu_quiet, _options, month_menu_ready)
 from ..os_layer.world import NAME
 from ..strategy import goals
-from ..strategy.economy import (EGG_RECOVER_COST, EGG_RITUAL_LIMIT, MONTH_SUB_ABORT_B_LIMIT, MONTH_SUB_LIMIT,
+from ..strategy.economy import (EGG_RECOVER_COST, EGG_RITUAL_LIMIT, MONTH_SUB_ABANDON_BACKS,
+                                   MONTH_SUB_ABORT_B_LIMIT, MONTH_SUB_LIMIT,
                                 MONTH_SUB_MENU_WAIT, RECRUIT_CANDIDATE_LIMIT, RECRUIT_COST, SOLDIER_ENOUGH,
                                 WAGE_SPEND_HOLD, _army_count_increment, _batch_active, _chikujou_affordable, _chikujou_candidates, _chikujou_reserve,
                                 _defer_recruit_cash, _defer_recruit_for_egg, _depleted_eggs, _egg_before_soldiers,
@@ -1401,7 +1402,9 @@ def month_sub_step(screen: Screen, mem):
     rule) and うむッ! on confirmations, at most MONTH_SUB_LIMIT presses; then
     B out and record. A map or battle means the month is over: drop it.
     """
-    sub = mem['month_sub']
+    sub = mem.get('month_sub')
+    if not isinstance(sub, dict):
+        return None                  # abandoned for this month (MONTH_SUB_ABANDON_BACKS)
     kind = screen.kind
     if kind != 'month_menu':
         sub['left_menu'] = True     # the flow really left the month menu
@@ -1533,6 +1536,20 @@ def month_sub_step(screen: Screen, mem):
                     reason='月一の未測定画面が上限回数で終わらないためBで離脱')
         backs = int(sub.get('abort_backs') or 0) + 1
         sub['abort_backs'] = backs
+        if backs >= MONTH_SUB_ABANDON_BACKS:
+            # The menu keeps offering the same sub-action while B cannot close
+            # it, so the abort path has to end somewhere: g1163 2026-11-11
+            # 23:08-23:25 flipped month menu and shop list every 1.5 s and the
+            # repetition detector latched screen_stalled. Drop the sub for this
+            # month, mark its menu entry done and let the month plan move on.
+            shop = mem.get('shop')
+            if isinstance(shop, dict) and sub.get('kind') in shop:
+                shop[sub['kind']] = 'skipped'
+            mem.pop('month_sub', None)
+            _record(mem, 'month_sub_abandoned', screen=kind,
+                    observed_metric={'backs': backs, 'kind': sub.get('kind')},
+                    reason='離脱のBで閉じない月一画面を上限回数で諦め、今月は実行しない')
+            return [pad('b')]
         # B cannot close a plain message box (g662: 109 B, 300 s, corner
         # ended). After a bounded number of ignored Bs, a dialogue with no
         # menu cursor and no yes/no is advanced with A - A on plain text

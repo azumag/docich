@@ -7124,6 +7124,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v678-status-labels-not-generals",
             "hanjuku-chart-v679-garrison-sanitized",
             "hanjuku-chart-v680-location-unknown-ttl",
+            "hanjuku-chart-v681-month-sub-abandon",
             "hanjuku-chart-v560-castle-list-scroll",
             "hanjuku-chart-v561-post-month-repair-status",
             "hanjuku-chart-v501-idle-reanchor",
