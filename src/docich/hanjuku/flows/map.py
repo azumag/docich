@@ -18,7 +18,7 @@ from .recall import (MENU_HOLD_LIMIT, RECALL_LIMIT, _hold_after_picker, _recall_
                             camp_recall_step)
 from ..os_layer.commands import castle_list_batch, menu_to, pad
 from ..os_layer.navigation import (Y_JUMP_LIMIT, Y_JUMP_OFFSET, _align_on_roof, _drop_stale_y_jump, _start_y_jump,
-                                   _forget_failed_jump, _want_y_jump, _y_jump_step, nav_step)
+                                   _forget_failed_jump, _want_y_jump, _y_jump_step, nav_step, y_jump_unreachable)
 from ..os_layer.readers import (UNDER_CURSOR_PX, WORLD_MAP_OFFSET, _cursor, _roof_under_cursor, season_sites,
                                 world_cursor, world_flags, world_markers)
 from ..os_layer.world import (NAME, _apply_season_sites, _apply_skull_boss, _apply_world_flags,
@@ -1596,7 +1596,8 @@ def target_step(screen: Screen, mem, frame):
             mem.pop('cursor', None)
             _record(mem, 'align_failed', chart_step=order['step'], target=order['target'],
                     screen=screen.kind, reason='全体マップで選んだ出撃先の近くに屋根が無いため全体マップを開き直す')
-    if result is None and screen.marker and _want_y_jump(mem, order, order['target'], 'target'):
+    if (result is None and screen.marker and not y_jump_unreachable(mem, order['target'])
+            and _want_y_jump(mem, order, order['target'], 'target')):
         return _start_y_jump(mem, order, order['target'], 'target')
     if result is None:
         result = nav_step(screen, mem, frame, goal)
