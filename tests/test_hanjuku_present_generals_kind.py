@@ -65,3 +65,15 @@ def test_a_general_list_still_yields_its_residents():
     from docich.hanjuku.os_layer.readers import _present_generals
     screen = _list_screen('general_list', [(120, 'どうし'), (120, 'マスカット')])
     assert _present_generals(screen) == ['どうし', 'マスカット']
+
+def test_castle_menu_still_yields_residents():
+    # castle_menu is intentionally accepted alongside general_list.
+    from docich.hanjuku.os_layer.readers import _present_generals
+    screen = _list_screen('castle_menu', [(120, 'どうし'), (120, 'マスカット')])
+    assert _present_generals(screen) == ['どうし', 'マスカット']
+
+
+def test_empty_general_list_remains_empty_not_unreadable():
+    from docich.hanjuku.os_layer.readers import _present_generals
+    screen = _list_screen('general_list', [(120, 'しょうぐんはおりません')])
+    assert _present_generals(screen) == []
