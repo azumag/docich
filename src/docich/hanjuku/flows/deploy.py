@@ -992,8 +992,7 @@ def _corridor_list_end(screen, mem, order):
     if present is None:
         return _hold_general_list_bounded(screen, mem, order,
             '第9話の出撃一覧を読めないため保留', 'cursor_unreadable')
-    busy = _en_route(mem)[0]
-    usable = [g for g in present if g not in busy]
+    usable = list(present)               # listed here means here (see _cursor_order_pick)
     kind = 'empty' if not [g for g in usable if g != NAME] and NAME not in usable else 'hero'
     corridor.mark_drained(mem, _source(order, mem), kind)
     _observe_garrison(screen, mem, order, complete=len(present) < GENERAL_LIST_FULL)
@@ -1029,6 +1028,12 @@ def _cursor_order_pick(screen, mem, order):
     if not present or not screen.hand or not cur or cur[2] not in present:
         return None
     busy = _en_route(mem)[0] | set(_world(mem).get('general_location_unknown') or ())
+    if order.get('corridor') is True:
+        # Chapter 9's march trusts the live list: a general listed here is in
+        # this castle, whatever an unsettled march record says (g1163
+        # 2026-11-11 14:59-15:04: タオ listed アルファルファ, still recorded as
+        # marching, and five orders closed the list as "nobody to send").
+        busy = set()
     name, step = cur[2], order['step']
     downs = mem.setdefault('cursor_pick_downs', {})
     if name == NAME or name in busy:
