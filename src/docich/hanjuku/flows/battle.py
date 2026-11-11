@@ -52,7 +52,7 @@ def observe_entry_return(screen, mem):
     active battles and their pending first panel until battle_end finishes.
     Never manufacture a loss, death, or castle owner from a skipped entry.
     """
-    entry = mem.get('attack')
+    entry = _plan_region(mem).get('attack')
     if not isinstance(entry, dict) or not entry or mem.get('battle'):
         return
     if screen.kind not in ENTRY_RETURN_KINDS:
@@ -61,7 +61,7 @@ def observe_entry_return(screen, mem):
             side=entry.get('side'), general=entry.get('general'), screen=screen.kind,
             resulting_event='unclassified_entry_closed',
             reason='戦闘未開始のまま管理画面へ戻ったため古い城情報を解除')
-    mem['attack'] = None
+    _plan_region(mem)['attack'] = None
     mem.pop('battle_seen', None)
 
 
@@ -112,7 +112,7 @@ def observe_season_king_panel(screen, mem):
                 if ally.name == cur['ally']:
                     cur['ally_hp'] = ally.hp
         return
-    attack = mem.get('attack') or {}
+    attack = _plan_region(mem).get('attack') or {}
     rows = _season_king_rows(screen) if not cur and mem.get('chapter') == 4 else None
     if (not rows or attack.get('side') != 'attack' or attack.get('entry_evidence') != 'measured_boss_entry'
             or rows[0].name != attack.get('general')):
@@ -163,7 +163,7 @@ def _defender_successor(mem, cur, b):
     predecessor = cur['ally']
     battle_end(mem, 'defender_successor', defense_continues=True)
     reset_battle_controls(mem)
-    mem['attack'] = context
+    _plan_region(mem)['attack'] = context
     mem['battle_seen'] = reading
     _record(mem, 'defender_successor', ally=b.ally, enemy=b.enemy,
             castle=context['castle'], previous_ally=predecessor,
@@ -200,7 +200,7 @@ def _attack_defender_successor(mem, cur, b):
     beaten = cur['enemy']
     battle_end(mem, 'attack_defender_successor', attack_continues=True)
     reset_battle_controls(mem)
-    mem['attack'] = context
+    _plan_region(mem)['attack'] = context
     mem['battle_seen'] = reading
     _record(mem, 'attack_defender_successor', ally=b.ally, enemy=b.enemy,
             castle=context['castle'], previous_enemy=beaten,
@@ -274,7 +274,7 @@ def _unlocated_successor(mem, cur, b):
     battle_end(mem, 'unlocated_successor', actor_continues=True)
     reset_battle_controls(mem)
     # Match only the new actor and deliberately carry no location or route.
-    mem['attack'] = {'general': b.ally, 'side': None, 'castle': None, 'step': None}
+    _plan_region(mem)['attack'] = {'general': b.ally, 'side': None, 'castle': None, 'step': None}
     mem['battle_seen'] = [b.enemy, b.ally]
     mem['melee_opening_candidate'] = [scope[0], b.ally, b.enemy]
     _record(mem, 'unlocated_successor', ally=b.ally, enemy=b.enemy,
@@ -291,7 +291,7 @@ def _entered_battle_successor(mem, cur, b):
     the hero/Venus. The old zero-enemy-HP record then blocked every input.
     Never infer a transition from changed names alone or from a living enemy.
     """
-    entry = mem.get('attack')
+    entry = _plan_region(mem).get('attack')
     maximum = general_max_hp('しゅじんこう' if b.ally == NAME else b.ally)
     eligible = (isinstance(entry, dict) and entry.get('side') == 'attack'
                 and entry.get('general') == b.ally and b.ally != cur.get('ally')
@@ -311,7 +311,7 @@ def _entered_battle_successor(mem, cur, b):
     previous_ally, previous_enemy = cur['ally'], cur['enemy']
     battle_end(mem, 'confirmed_new_entry')
     reset_battle_controls(mem)
-    mem['attack'] = context
+    _plan_region(mem)['attack'] = context
     mem['battle_seen'] = reading
     _record(mem, 'battle_entry_successor', ally=b.ally, enemy=b.enemy,
             castle=context['castle'], previous_ally=previous_ally, previous_enemy=previous_enemy,
@@ -579,7 +579,7 @@ def _planned_battle_cards(mem, cur, enemy):
                if _tactic_enemy_ok(t, enemy, cur) and t.get('step') in (None, cur.get('step'))
                and not (t.get('boss_only')
                         and not _boss_tactics_allowed(mem, cur))]
-    planned += list((mem.get('card_override') or {}).get(cur.get('step')) or ())
+    planned += list((_plan_region(mem).get('card_override') or {}).get(cur.get('step')) or ())
     bound = bound_fields(_order_for_step(mem, cur.get('step')), mem)
     if (isinstance(bound, dict) and isinstance(bound.get('cards'), list)
             and bound.get('general') in (None, cur.get('ally'))):
@@ -664,7 +664,7 @@ def battle_step(screen: Screen, mem):
             mem['hero_max_hp'] = max(int(mem.get('hero_max_hp') or 0), b.ally_hp)
             cur['ref_ally_hp'] = mem['hero_max_hp']
         _bind_battle_strategy(mem, cur)
-        if cur.get('step') and not (mem.get('attack') or {}).get('step'):
+        if cur.get('step') and not (_plan_region(mem).get('attack') or {}).get('step'):
             # The order id stayed unknown (ambiguous entry): only the marching
             # sortie's kit is bound, and the record says so.
             _record(mem, 'battle_step_resolved', **_battle_labels(cur), enemy=b.enemy, ally=b.ally,
@@ -841,7 +841,7 @@ def battle_step(screen: Screen, mem):
     extra = [{'enemy': b.enemy, 'card': card, 'open': True, 'step': cur.get('step'),
               'note': '再攻撃の開幕切り札(チャート逸脱)'}
              for card in ([] if (mem.get('rare_card_kit') or {}).get(cur.get('step')) is not None
-                          else mem.get('card_override', {}).get(cur.get('step')) or [])]
+                          else _plan_region(mem).get('card_override', {}).get(cur.get('step')) or [])]
     # 元の並びはtactic ID用に保ち、実行順は成立する開幕卵落→
     # 再攻撃extra→チャート/強敵札（2026-11-06オーナー指定）。
     egg_plan = _egg_plan(mem, cur)
@@ -1236,7 +1236,7 @@ def battle_end(mem, next_kind, *, defense_continues=False, actor_continues=False
         _card_use_unclassified(mem, cur, '実使用告知がないまま戦闘が終了')
     mem['battle_seen'] = None
     mem.pop('battle', None)
-    mem['attack'] = None
+    _plan_region(mem)['attack'] = None
     enemy_hp, ally_hp = cur.get('enemy_hp'), cur.get('ally_hp')
     if ally_hp == 0:
         from ..os_layer.roster import defeated
@@ -1368,8 +1368,10 @@ def battle_end(mem, next_kind, *, defense_continues=False, actor_continues=False
     if outcome in ('loss', 'unclassified') and boss_attempt:
         retries = mem.setdefault('retries', {})
         retries[step] = retries.get(step, 0) + 1
-        for key in ('general_override', 'card_override', 'rare_card_kit', 'strong_card_kit', 'dropper_card_kit', 'sortie_actor_miss'):
+        for key in ('rare_card_kit', 'strong_card_kit', 'dropper_card_kit', 'sortie_actor_miss'):
             mem.setdefault(key, {}).pop(step, None)
+        for key in ('general_override', 'card_override'):
+            (_plan_region(mem).get(key) or {}).pop(step, None)
         _plan_region(mem).setdefault('order_context', {}).pop(step, None)
         _plan_region(mem).setdefault('sortie_general', {}).pop(step, None)
         if retries[step] <= 3:
@@ -1412,13 +1414,13 @@ def battle_end(mem, next_kind, *, defense_continues=False, actor_continues=False
             copies = min(2, max(0, int(stock.get('イッテツーン', 0) or 0)))
             opening = ['イッテツーン'] * copies
             if opening:
-                mem.setdefault('card_override', {})[step] = opening
+                _plan_region(mem).setdefault('card_override', {})[step] = opening
                 reason = f'チャートの白兵で敗北したため、開幕イッテツーン{len(opening)}枚で再攻撃'
                 expected = {'enemy_hp_after_open': max(0, (enemy_hp or 0) - 10 * len(opening))}
             else:
                 # A stale override would keep planning cards the stock cannot
                 # carry; the next sortie starts from the chart kit again.
-                mem.get('card_override', {}).pop(step, None)
+                _plan_region(mem).get('card_override', {}).pop(step, None)
                 reason = 'チャートの白兵で敗北したため、実在庫の切り札なしでチャート装備のまま再攻撃'
                 expected = {'enemy_hp_after_open': None}
             mem.setdefault('retry_context', {})[step] = {
@@ -1582,7 +1584,7 @@ def _boss_entry_cell(mem, general):
     """The boss castle an entry text names: chapter 4's 「ボスじょう」 is one of
     four 四季王 sites, the one this general is marching on (no site, no guess)."""
     chapter = mem.get('chapter') or 0
-    current = mem.get('attack') or {}
+    current = _plan_region(mem).get('attack') or {}
     if (chapter == 4 and current.get('general') == general and current.get('castle') in chart.boss_sites(4)
             and current.get('entry_evidence') == 'measured_boss_entry'):
         # The same entry text on the next frame: its march is arrived by now
@@ -1664,7 +1666,7 @@ def message_step(screen: Screen, mem):
     if boss_entry:
         general = boss_entry.group(1)
         boss_cell = _boss_entry_cell(mem, general)
-        current = mem.get('attack') or {}
+        current = _plan_region(mem).get('attack') or {}
         step, match = _match_sortie(mem, boss_cell, general)
         if (match != 'matched' and current.get('castle') == boss_cell
                 and current.get('general') == general
@@ -1683,7 +1685,7 @@ def message_step(screen: Screen, mem):
                         observed_metric={'general': general, 'message': text, 'sortie_match': match},
                         deviation_reason='ambiguous_sortie',
                         reason='ボス城への出撃が複数在途のため注文は特定せず、実測文のみで進行')
-                mem['attack'] = {'general': general, 'castle': boss_cell, 'side': 'attack',
+                _plan_region(mem)['attack'] = {'general': general, 'castle': boss_cell, 'side': 'attack',
                                  'step': None, 'entry_evidence': 'measured_boss_entry'}
                 return [pad('a')]
             held = mem.get('boss_entry_hold') or {}
@@ -1704,11 +1706,11 @@ def message_step(screen: Screen, mem):
                     observed_metric={'general': general, 'message': text, 'sortie_match': match},
                     deviation_reason='boss_entry_hold_released',
                     reason=f'出撃注文と一致しない突入文を{BOSS_ENTRY_HOLD_LIMIT}回保留したため表示を閉じる')
-            mem['attack'] = {'general': general, 'castle': boss_cell, 'side': 'attack',
+            _plan_region(mem)['attack'] = {'general': general, 'castle': boss_cell, 'side': 'attack',
                              'step': step, 'entry_evidence': 'measured_boss_entry'}
             return [pad('a')]
         _bind_sortie(mem, step, boss_cell, general)
-        mem['attack'] = {'general': general, 'castle': boss_cell, 'side': 'attack', 'step': step,
+        _plan_region(mem)['attack'] = {'general': general, 'castle': boss_cell, 'side': 'attack', 'step': step,
                          'entry_evidence': 'measured_boss_entry'}
         _record(mem, 'attack_observed', chart_step=step, general=general, castle=boss_cell,
                 expected_metric={'general': general}, observed_metric={'general': general, 'message': text},
@@ -1720,7 +1722,7 @@ def message_step(screen: Screen, mem):
         observe_chapter_castle(mem, castle)
         castle = _castle_label(mem, castle)
         launched = (_world(mem).get('launched') or {}).get(castle) or {}
-        current = mem.get('attack') or {}
+        current = _plan_region(mem).get('attack') or {}
         step, match = _match_sortie(mem, castle, general)
         if match != 'matched' and current.get('castle') == castle and current.get('general') == general:
             return [pad('a')]              # same entry text still on screen
@@ -1740,16 +1742,16 @@ def message_step(screen: Screen, mem):
                 deviation_reason=(None if step or not ours
                                   else 'ambiguous_sortie' if match == 'ambiguous' else 'unplanned_attack'),
                 reason='のりこんだ表示')
-        mem['attack'] = {'general': general, 'castle': castle, 'side': side, 'step': step}
+        _plan_region(mem)['attack'] = {'general': general, 'castle': castle, 'side': side, 'step': step}
         return [pad('a')]
     m = DEFENSE.search(text)
     if m:
         castle = m.group(1)
         observe_chapter_castle(mem, castle)
         castle = _castle_label(mem, castle)
-        if (mem.get('attack') or {}).get('castle') != castle or (mem.get('attack') or {}).get('side') != 'defense':
+        if (_plan_region(mem).get('attack') or {}).get('castle') != castle or (_plan_region(mem).get('attack') or {}).get('side') != 'defense':
             _record(mem, 'defense_observed', castle=castle, reason='せめこまれました表示')
             mem['world_map_due'] = True      # the castle may have fallen without a battle
-        mem['attack'] = {'general': None, 'castle': castle, 'side': 'defense', 'step': None}
+        _plan_region(mem)['attack'] = {'general': None, 'castle': castle, 'side': 'defense', 'step': None}
         return [pad('a')]
     return None

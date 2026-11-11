@@ -41,11 +41,11 @@ def interrupt(mem):
 
 def mutate_plan(mem):
     old = next(o for o in chart.orders(1) if o['step'] == '1-A3')
-    mem['chart_plan'] = {'orders': [{**old, 'general': 'どうし', 'source': 'アルマムーン',
+    _plan_region(mem)['chart_plan'] = {'orders': [{**old, 'general': 'どうし', 'source': 'アルマムーン',
                                    'target': 'けっかい', 'cards': ['イッテツーン']}]}
-    mem['general_override']['1-A3'] = 'ヴィーナス'
-    mem['source_override']['1-A3'] = 'ゴーメン'
-    mem['card_override'] = {'1-A3': ['イッテツーン']}
+    _plan_region(mem)['general_override']['1-A3'] = 'ヴィーナス'
+    _plan_region(mem)['source_override']['1-A3'] = 'ゴーメン'
+    _plan_region(mem)['card_override'] = {'1-A3': ['イッテツーン']}
     mem['rare_card_kit'] = {'1-A3': ['キャトルミュー']}
 
 

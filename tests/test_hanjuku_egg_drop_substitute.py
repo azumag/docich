@@ -12,6 +12,7 @@ from docich import hanjuku_policy as policy
 from docich.hanjuku.flows.deploy import _egg_drop_substitutes
 from docich.hanjuku_screen import parse
 from test_hanjuku_chart_bot import Canvas
+from docich.hanjuku.state.regions import plan as _plan_region
 
 STOCK = {'グリンボー': 59, 'バルムンク': 12, 'ミックミー': 16}
 ORDER = {'step': '1-C1', 'general': 'ココット', 'source': 'アルマムーン', 'target': 'ジョンリギ'}
@@ -46,7 +47,7 @@ def test_the_deploy_step_selects_that_substitute_and_says_why():
     mem = mem_for()
     actions = policy.deploy_step(general_list('デーメーテール', 'リースリング'), mem)
     assert actions[0]['buttons'] == ['down']
-    assert mem['general_override']['1-C1'] == 'リースリング'
+    assert _plan_region(mem)['general_override']['1-C1'] == 'リースリング'
     record = [r for r in mem['_records'] if r['decision'] == 'order_substitute'][-1]
     assert record['reason'] == '守備将軍の卵を落とせる最大HPの将軍を代役にする'
 
@@ -59,7 +60,7 @@ def test_the_deploy_step_selects_that_substitute_and_says_why():
 ], ids=['unknown', 'eggless', 'no_dropper', 'other_chapter'])
 def test_otherwise_the_first_listed_general_stays_the_substitute(mem):
     actions = policy.deploy_step(general_list('デーメーテール', 'リースリング'), mem)
-    assert mem['general_override']['1-C1'] == 'デーメーテール'
+    assert _plan_region(mem)['general_override']['1-C1'] == 'デーメーテール'
     assert actions == [policy.pad('a')]
     record = [r for r in mem['_records'] if r['decision'] == 'order_substitute'][-1]
     assert record['reason'] == '後続手順とボス条件を満たすため'

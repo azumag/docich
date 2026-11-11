@@ -10,7 +10,7 @@ dispatch the last defender, so that plan contradicted the leave-one rule.
 An arrival check may still open the list, but only as a read-only probe.
 """
 from docich import hanjuku_chart as chart, hanjuku_chart_adjust as adjust
-from docich.hanjuku.state.regions import world as _world
+from docich.hanjuku.state.regions import world as _world, plan as _plan_region
 from docich.hanjuku.strategy import orders, replan, routes
 
 
@@ -132,7 +132,7 @@ def test_the_mechanical_plan_marks_the_singleton_arrival_probe_read_only():
     mem = chapter3_memory(transfer=('ヴィーナス', 'overdue', 900))
     replan._mechanical_chart(mem, mem.setdefault('chart_adjust', {}),
                              '0123456789abcdef', 'digest')
-    plan = (mem.get('chart_plan') or {}).get('orders') or []
+    plan = (_plan_region(mem).get('chart_plan') or {}).get('orders') or []
     probes = [o for o in plan if o['source'] == 'メガパタ']
     assert probes
     assert all(o.get('roster_probe') is True and o.get('source_probe') is True

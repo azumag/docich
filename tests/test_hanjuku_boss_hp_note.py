@@ -7,6 +7,7 @@ readable and fell 1041 -> 1005 -> 860 -> 754 across entries.
 from types import SimpleNamespace
 
 from docich.hanjuku.flows import battle_menus as B
+from docich.hanjuku.state.regions import plan as _plan_region
 
 
 def memory(castle='ボス'):
@@ -31,7 +32,7 @@ def test_an_unreadable_hp_is_not_invented():
     mem = memory()
     B.note_boss_monster_hp(mem, {}, [SimpleNamespace(name='ハードロボ', hp=None)])
     B.note_boss_monster_hp(mem, {}, [])
-    mem['attack'] = {'castle': 'ボス'}
+    _plan_region(mem)['attack'] = {'castle': 'ボス'}
     B.note_boss_monster_hp(mem, {}, [SimpleNamespace(name=None, hp=100)])
     assert 'boss_hp_seen' not in mem
 
@@ -42,7 +43,7 @@ def test_the_boss_panel_readings_keep_a_bounded_history():
            'attack': {'general': 'ミモザ', 'castle': 'ボス', 'side': 'attack', 'step': 'A:x:M1'}}
     B.note_boss_monster_hp(mem, {'ally': 'ミモザ'}, [SimpleNamespace(name='ランパイア', hp=426)])
     mem['tick'] = 200
-    mem['attack']['general'] = 'ココット'
+    _plan_region(mem)['attack']['general'] = 'ココット'
     B.note_boss_monster_hp(mem, {'ally': 'ココット'},
                            [SimpleNamespace(name='ランパイア', hp=298)])
     assert [row['hp'] for row in mem['boss_hp_history']] == [426, 298]
@@ -55,7 +56,7 @@ def test_a_wave_that_left_the_hp_unchanged_is_remembered():
            'attack': {'general': 'ココット', 'castle': 'ボス', 'side': 'attack', 'step': 'A:x:M1'}}
     B.note_boss_monster_hp(mem, {'ally': 'ココット'}, [SimpleNamespace(name='ランパイア', hp=426)])
     mem['tick'] = 200
-    mem['attack']['general'] = 'ミモザ'
+    _plan_region(mem)['attack']['general'] = 'ミモザ'
     B.note_boss_monster_hp(mem, {'ally': 'ミモザ'}, [SimpleNamespace(name='ランパイア', hp=426)])
     assert mem['boss_no_damage'] == ['ココット']
     assert [row['hp'] for row in mem['boss_hp_history']] == [426, 426]

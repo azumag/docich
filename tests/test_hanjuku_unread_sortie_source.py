@@ -58,7 +58,7 @@ def test_two_observed_generals_choose_spare_and_keep_hero_at_castle():
                                 'names': ['ゼウス', 'どうし', 'クミン', 'タルタル'], 'tick': mem.get('tick') or 0}
     assert p.deploy_step(screen, mem) == [p.pad('a')]
     assert _world(mem)['garrison']['ジョンリギ'] == ['ゼウス', 'どうし', 'クミン', 'タルタル']
-    assert mem['general_override'][order['step']] == 'ゼウス'
+    assert _plan_region(mem)['general_override'][order['step']] == 'ゼウス'
     assert _plan_region(mem)['sortie_general'][order['step']] == 'ゼウス'
     assert not mem.get('sorties')  # selecting is not a dispatch/arrival receipt
     p._garrison_move(mem, 'ゼウス', source='ジョンリギ')
@@ -184,12 +184,12 @@ def test_partial_list_reobservation_invalidates_probe_actor_evidence(kind, actor
     # override remains a plan, even if the next panel happens to match it.
     p.deploy_step(generals(['ゼウス', 'クミン' + UNKNOWN]), mem)
     assert order['step'] not in _plan_region(mem).get('sortie_general', {})
-    assert mem['general_override'][order['step']] == 'ゼウス'
+    assert _plan_region(mem)['general_override'][order['step']] == 'ゼウス'
     mem = json.loads(json.dumps(mem))
     screen = (measured_card_select() if kind == 'card_select'
               else measured_loaded_sortie(('クースカン', 'ノリウツール')))
     actions = p.deploy_step(actor_panel(screen, actor), mem)
     assert actions == [p.pad('b'), p.pad('b')]
     assert not mem.get('sorties') and _plan_region(mem)['active'] is None
-    assert not _plan_region(mem).get('order_context') and not mem.get('general_override')
+    assert not _plan_region(mem).get('order_context') and not _plan_region(mem).get('general_override')
     assert mem['_records'][-1]['decision'] == 'sortie_actor_unconfirmed'

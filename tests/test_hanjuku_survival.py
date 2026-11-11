@@ -9,6 +9,7 @@ from docich.hanjuku_screen import Battle, Screen, parse
 from docich.hanjuku_font import TextLine
 from docich.hanjuku_bot import decide
 from test_hanjuku_chart_bot import Canvas
+from docich.hanjuku.state.regions import plan as _plan_region
 
 
 def memory(hp=30, enemy=50):
@@ -942,7 +943,7 @@ def g514_hero_egg_memory():
     mem['battle'].update(ally=p.NAME, enemy='クイーン', side='attack', castle='けっかい',
                         step=step, away=0, egg_battle=True,
                         planned_cards=['クースカン', 'ノリウツール'], ref_ally_hp=90)
-    mem['attack'] = {'general': p.NAME, 'side': 'attack', 'castle': 'けっかい', 'step': step}
+    _plan_region(mem)['attack'] = {'general': p.NAME, 'side': 'attack', 'castle': 'けっかい', 'step': step}
     return mem
 
 
@@ -986,7 +987,7 @@ def test_hero_egg_probe_never_uses_another_general_or_old_unknown_hp(change):
     elif change == 'no_current_panel':
         screen.egg_rows = []
     elif change == 'other_attack':
-        mem['attack']['step'] = 'new-battle'
+        _plan_region(mem)['attack']['step'] = 'new-battle'
     elif change == 'away':
         mem['battle']['away'] = 1
     elif change == 'no_start':
@@ -994,7 +995,7 @@ def test_hero_egg_probe_never_uses_another_general_or_old_unknown_hp(change):
     elif change == 'bad_start':
         mem['battle']['start_ally_hp'] = 100
     elif change == 'defense':
-        mem['battle']['side'] = mem['attack']['side'] = 'defense'
+        mem['battle']['side'] = _plan_region(mem)['attack']['side'] = 'defense'
     else:
         screen = hero_egg_screen(90 if change == 'healthy' else 0)
     assert p.egg_battle_step(screen, mem) != [p.pad('b')]

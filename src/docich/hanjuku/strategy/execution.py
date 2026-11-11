@@ -85,7 +85,7 @@ def confirm_departure_order(order, mem, general, source, cards):
         'step': order['step'], 'confirm_tick': mem.get('tick'),
         'general': general, 'source': source, 'cards': list(cards),
         'roles': {'rare': rare, 'strong': strong,
-                  'override': (_role_cards((mem.get('card_override') or {}).get(order['step'], []), list(cards))
+                  'override': (_role_cards((_plan_region(mem).get('card_override') or {}).get(order['step'], []), list(cards))
                                if rare is None else [])},
     }
     return snapshot if _valid_departure(snapshot, mem) else None

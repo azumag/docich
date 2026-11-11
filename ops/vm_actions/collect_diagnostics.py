@@ -12402,7 +12402,7 @@ def _compact_hanjuku_policy(mem, state=None):
         'map_registration_castles': (len(registration.get('castles'))
                                      if isinstance(registration.get('castles'), dict) else None),
         'chart_adjust': ({'interim_wanted': chart_adjust.get('interim_wanted') is True,
-                          'has_plan': isinstance(mem.get('chart_plan'), dict)}
+                          'has_plan': isinstance(_plan_region(mem).get('chart_plan'), dict)}
                          if chart_adjust else None),
         # A visible tent nobody acts on had no projection at all. Project the
         # flow's own bounded recall state beside it so the reason (no

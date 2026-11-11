@@ -250,7 +250,7 @@ def test_adjusted_strong_card_does_not_enter_ungated_derived_tactics(card):
     mem = battle_memory(step, 'キャラウェイ', 'ヴィーナス')
     mem['strong_card_kit'] = {step: card}
     _plan_region(mem)['order_context'] = {step: {'observed_metric': {'cards': [card]}}}
-    mem['chart_plan'] = {'orders': [{'step': step, 'general': 'ヴィーナス',
+    _plan_region(mem)['chart_plan'] = {'orders': [{'step': step, 'general': 'ヴィーナス',
                                     'source': 'アルマムーン', 'cards': [],
                                     'target': 'ジョンリギ', 'after': None}]}
 
@@ -268,7 +268,7 @@ def test_adjusted_strong_card_does_not_enter_ungated_derived_tactics(card):
 def adjusted_order_memory(step, enemy, ally, cards):
     mem = battle_memory(step, enemy, ally)
     _plan_region(mem)['order_context'] = {step: {'observed_metric': {'cards': list(cards)}}}
-    mem['chart_plan'] = {'orders': [{'step': step, 'general': ally, 'source': 'アルマムーン',
+    _plan_region(mem)['chart_plan'] = {'orders': [{'step': step, 'general': ally, 'source': 'アルマムーン',
                                     'cards': list(cards), 'target': 'クロチェット', 'after': None}]}
     return mem
 

@@ -69,7 +69,7 @@ def test_a_planned_zombie_expires_past_twice_the_window():
     # g1133 2026-11-05: グレナデン stayed launched_unconfirmed for 9689
     # observations while every plan kept the step.
     mem = memory(age=2 * O.SPENT_SORTIE_TICKS + 1, status='launched_unconfirmed')
-    mem['chart_plan'] = {'orders': [{'step': 'A:x:M1', 'general': 'ヘルメス',
+    _plan_region(mem)['chart_plan'] = {'orders': [{'step': 'A:x:M1', 'general': 'ヘルメス',
                                      'source': 'アルマムーン', 'target': 'ボス'}]}
     O._expire_spent_sorties(mem)
     assert 'A:x:M1' not in _world(mem)['sorties']
@@ -77,7 +77,7 @@ def test_a_planned_zombie_expires_past_twice_the_window():
 
 def test_a_planned_record_inside_twice_the_window_is_kept():
     mem = memory(age=O.SPENT_SORTIE_TICKS + 1, status='launched_unconfirmed')
-    mem['chart_plan'] = {'orders': [{'step': 'A:x:M1', 'general': 'ヘルメス',
+    _plan_region(mem)['chart_plan'] = {'orders': [{'step': 'A:x:M1', 'general': 'ヘルメス',
                                      'source': 'アルマムーン', 'target': 'ボス'}]}
     O._expire_spent_sorties(mem)
     assert 'A:x:M1' in _world(mem)['sorties']

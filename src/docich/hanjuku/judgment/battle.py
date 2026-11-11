@@ -27,7 +27,7 @@ ENTRY_RETURN_KINDS = frozenset({'main_menu', 'castle_info', 'castle_menu',
 
 def _battle_context(mem, ally):
     """Only a matching attack message establishes a battle location and side."""
-    attack = mem.get('attack') or {}
+    attack = _plan_region(mem).get('attack') or {}
     captured = set(mem.get('captured', []))
     if attack.get('side') == 'defense' or (attack.get('general') and attack.get('general') == ally):
         side = attack.get('side')
@@ -84,7 +84,7 @@ def _bind_battle_strategy(mem, cur):
     sortie = (_plan_region(mem).get('order_context') or {}).get(step) or {}
     if sortie.get('actual_general') != cur.get('ally'):
         sortie = {}
-    if retry or (mem.get('card_override') or {}).get(step):
+    if retry or (_plan_region(mem).get('card_override') or {}).get(step):
         cur['strategy_variant'] = (retry or {}).get('strategy_variant', 'retry_with_opening_cards')
         cur['deviation_reason'] = (retry or {}).get('deviation_reason') or '保存済みの再攻撃用切り札計画を適用（元の敗北詳細は未分類）'
         cur['strategy_expected'] = (retry or {}).get('expected_metric') or {'goal': '敵HP減少と戦闘勝利'}

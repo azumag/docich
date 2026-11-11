@@ -64,7 +64,7 @@ def test_list_is_not_a_general_roster():
 
 def test_source_far_away_starts_the_x_menu():
     mem = _memory()
-    order = mem['chart_plan']['orders'][0]
+    order = _plan_region(mem)['chart_plan']['orders'][0]
     goal = M.chart.castles(1)[order['source']]
     assert M._want_castle_jump(mem, order, order['source'], goal)
     actions = M._start_castle_jump(mem, order, order['source'])
@@ -215,7 +215,7 @@ def test_reanchor_without_active_order_picks_next_ready_plan(monkeypatch):
     _allow_interrupted_order(monkeypatch)
     # A real executable order contains the planned general; the lightweight
     # castle-jump-only fixture intentionally omits it.
-    order = {**mem['chart_plan']['orders'][0], 'general': 'どうし'}
+    order = {**_plan_region(mem)['chart_plan']['orders'][0], 'general': 'どうし'}
     monkeypatch.setattr(M, '_world_map_wanted', lambda _mem: False)
     monkeypatch.setattr(M, 'next_order', lambda _mem: order)
     monkeypatch.setattr(M, 'nav_step', lambda *_args, **_kwargs: [M.pad('right')])
@@ -296,7 +296,7 @@ def test_idle_map_with_stale_search_does_not_repeat_reanchor(monkeypatch):
 
     # Recovery is deferred until there is real work, rather than discarded.
     _allow_interrupted_order(monkeypatch)
-    order = {**mem['chart_plan']['orders'][0], 'general': 'どうし'}
+    order = {**_plan_region(mem)['chart_plan']['orders'][0], 'general': 'どうし'}
     monkeypatch.setattr(M, 'next_order', lambda _mem: order)
     monkeypatch.setattr(M, 'nav_step', lambda *_args, **_kwargs: None)
     assert M.map_step(screen, mem, None) == []
@@ -636,7 +636,7 @@ def _hero_home_memory(monkeypatch, order=None):
 
 def test_hero_castle_source_jumps_with_select_only(monkeypatch):
     mem = _hero_home_memory(monkeypatch)
-    order = mem['chart_plan']['orders'][0]
+    order = _plan_region(mem)['chart_plan']['orders'][0]
     assert M._start_castle_jump(mem, order, order['source']) == [M.pad('select')]
     jump = mem['castle_jump']
     assert jump['mode'] == 'hero_select' and jump['phase'] == 'confirm'
@@ -647,7 +647,7 @@ def test_hero_castle_source_jumps_with_select_only(monkeypatch):
 
 def test_other_source_keeps_the_named_shiro_list(monkeypatch):
     mem = _hero_home_memory(monkeypatch, _order(source='ナキューメラ'))
-    order = mem['chart_plan']['orders'][0]
+    order = _plan_region(mem)['chart_plan']['orders'][0]
     assert M._start_castle_jump(mem, order, 'ナキューメラ') == [M.pad('x')]
     assert mem['castle_jump']['phase'] == 'menu'
     assert 'mode' not in mem['castle_jump']
@@ -656,20 +656,20 @@ def test_other_source_keeps_the_named_shiro_list(monkeypatch):
 def test_hero_away_keeps_the_named_shiro_list(monkeypatch):
     mem = _memory()
     monkeypatch.setattr(M, '_hero_castle', lambda _mem: None)
-    order = mem['chart_plan']['orders'][0]
+    order = _plan_region(mem)['chart_plan']['orders'][0]
     assert M._start_castle_jump(mem, order, order['source']) == [M.pad('x')]
 
 
 def test_source_mismatch_on_the_step_falls_back_to_the_list(monkeypatch):
     mem = _hero_home_memory(monkeypatch)
     mem['source_miss'] = {'J1': 1}
-    order = mem['chart_plan']['orders'][0]
+    order = _plan_region(mem)['chart_plan']['orders'][0]
     assert M._start_castle_jump(mem, order, order['source']) == [M.pad('x')]
 
 
 def test_first_map_frame_after_field_select_is_not_trusted(monkeypatch):
     mem = _hero_home_memory(monkeypatch)
-    order = mem['chart_plan']['orders'][0]
+    order = _plan_region(mem)['chart_plan']['orders'][0]
     M._start_castle_jump(mem, order, order['source'])
     screen = _screen('map', [], cursor=(80, 90))
     # The first reading may still be the camera before SELECT moved it.
@@ -685,7 +685,7 @@ def test_first_map_frame_after_field_select_is_not_trusted(monkeypatch):
 
 def test_fade_frame_then_map_opens_the_castle(monkeypatch):
     mem = _hero_home_memory(monkeypatch)
-    order = mem['chart_plan']['orders'][0]
+    order = _plan_region(mem)['chart_plan']['orders'][0]
     M._start_castle_jump(mem, order, order['source'])
     assert M.castle_jump_step(_screen('unknown', []), mem, None) == []
     assert M.castle_jump_step(_screen('map', [], cursor=(80, 90)), mem, None) == [M.pad('a')]
@@ -693,7 +693,7 @@ def test_fade_frame_then_map_opens_the_castle(monkeypatch):
 
 def test_panel_after_field_select_backs_out_and_uses_the_list_next(monkeypatch):
     mem = _hero_home_memory(monkeypatch)
-    order = mem['chart_plan']['orders'][0]
+    order = _plan_region(mem)['chart_plan']['orders'][0]
     M._start_castle_jump(mem, order, order['source'])
     assert M.castle_jump_step(_screen('main_menu', []), mem, None) == [M.pad('b')]
     assert 'castle_jump' not in mem
@@ -705,7 +705,7 @@ def test_panel_after_field_select_backs_out_and_uses_the_list_next(monkeypatch):
 
 def test_no_field_return_gives_up_the_select_within_bound(monkeypatch):
     mem = _hero_home_memory(monkeypatch)
-    order = mem['chart_plan']['orders'][0]
+    order = _plan_region(mem)['chart_plan']['orders'][0]
     M._start_castle_jump(mem, order, order['source'])
     unknown = _screen('unknown', [])
     for _ in range(M.HERO_SELECT_WAIT_LIMIT - 1):
@@ -732,7 +732,7 @@ def test_real_garrison_with_the_hero_selects_the_home_castle():
     mem = _memory()
     world(mem)['garrison'] = {'アルマムーン': [M.NAME, 'ゼウス']}
     mem['castle_owners'] = {'アルマムーン': 'own'}
-    order = mem['chart_plan']['orders'][0]
+    order = _plan_region(mem)['chart_plan']['orders'][0]
     assert M._hero_castle(mem) == 'アルマムーン'
     assert M._start_castle_jump(mem, order, order['source']) == [M.pad('select')]
 

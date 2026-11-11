@@ -18,7 +18,7 @@ def test_measured_boss_entry_establishes_matching_launched_context():
     mem = {'chapter': 1, 'launched': {'けっかい': {'general': 'ゼウス', 'step': '1-B1'}}}
     assert entry().kind == 'boss_attack_started'
     assert policy.message_step(entry(), mem) == [policy.pad('a')]
-    assert mem['attack'] == {'general': 'ゼウス', 'castle': 'けっかい', 'side': 'attack', 'step': '1-B1',
+    assert _plan_region(mem)['attack'] == {'general': 'ゼウス', 'castle': 'けっかい', 'side': 'attack', 'step': '1-B1',
                              'entry_evidence': 'measured_boss_entry'}
     assert mem['_records'][-1]['observed_metric']['message'] == MESSAGE
 
@@ -26,7 +26,7 @@ def test_measured_boss_entry_establishes_matching_launched_context():
 def test_boss_message_without_matching_chapter_and_order_holds(chapter, general):
     mem = {'chapter': chapter, 'launched': {'けっかい': {'general': general, 'step': '1-B1'}}}
     assert policy.message_step(entry(), mem) == []
-    assert 'attack' not in mem
+    assert 'attack' not in _plan_region(mem)
     assert mem['_records'][-1]['decision'] == 'situation_held'
 
 
@@ -36,11 +36,11 @@ def test_unmatched_boss_entry_is_closed_after_the_hold_limit():
     mem = {'chapter': 1, 'launched': {'けっかい': {'general': 'ゼウス', 'step': '1-B1'}}}
     for _ in range(policy.BOSS_ENTRY_HOLD_LIMIT - 1):
         assert policy.message_step(entry(text), mem) == []
-    assert 'attack' not in mem
+    assert 'attack' not in _plan_region(mem)
     assert sum(1 for r in mem['_records'] if r['decision'] == 'situation_held') \
         == policy.BOSS_ENTRY_HOLD_LIMIT - 1
     assert policy.message_step(entry(text), mem) == [policy.pad('a')]
-    assert mem['attack'] == {'general': 'どうし', 'castle': 'けっかい', 'side': 'attack',
+    assert _plan_region(mem)['attack'] == {'general': 'どうし', 'castle': 'けっかい', 'side': 'attack',
                              'step': None, 'entry_evidence': 'measured_boss_entry'}
     assert mem['_records'][-1]['decision'] == 'attack_observed'
     assert mem['_records'][-1]['deviation_reason'] == 'boss_entry_hold_released'
@@ -81,7 +81,7 @@ def boss_loss(retries=0, side='attack', castle='けっかい', measured=True):
     if measured:
         assert policy.message_step(entry(), mem) == [policy.pad('a')]
     else:
-        mem['attack'] = {'general': 'ゼウス', 'castle': castle, 'side': side, 'step': '1-B1'}
+        _plan_region(mem)['attack'] = {'general': 'ゼウス', 'castle': castle, 'side': side, 'step': '1-B1'}
     panel = Screen([], None, '', battle=Battle('クイーン', 70, 'ゼウス', 74), kind='battle')
     policy.battle_step(panel, mem)
     policy.battle_step(panel, mem)
@@ -98,7 +98,7 @@ def test_confirmed_boss_defeat_retries_the_chart_kit_without_guessing_general_lo
     assert _plan_region(mem)['orders']['1-B1'] == 'pending'
     assert mem['retries']['1-B1'] == 1
     for key in ('general_override', 'card_override'):
-        assert '1-B1' not in mem[key]
+        assert '1-B1' not in (_plan_region(mem).get(key) or {})
     assert '1-B1' not in _plan_region(mem).get('order_context', {})
     assert '1-B1' not in _plan_region(mem).get('sortie_general', {})
     context = mem['retry_context']['1-B1']
@@ -175,11 +175,11 @@ def test_boss_retry_commentary_preserves_chart_kit_description():
                                           ('attack', '誤城'), (None, None)])
 def test_legacy_or_unclassified_boss_loss_never_falls_back_to_generic_retry(side, castle):
     mem = boss_loss(side=side, castle=castle, measured=False)
-    before = dict(mem['card_override'])
+    before = dict(_plan_region(mem)['card_override'])
     policy.battle_end(mem, 'map'); policy.battle_end(mem, 'map')
     assert _plan_region(mem)['orders']['1-B1'] == 'launched'
     assert mem['retries']['1-B1'] == 0
-    assert mem['card_override'] == before
+    assert _plan_region(mem)['card_override'] == before
     assert not any(r['decision'] == 'order_retry' for r in mem['_records'])
     assert any(r['decision'] == 'situation_held' and r['strategy_variant'] == 'boss_entry_unclassified'
                for r in mem['_records'])
@@ -256,6 +256,6 @@ def test_unconfirmed_sortie_binding_stays_unclassified_when_no_unique_march(kind
 
 def test_measured_defense_context_wins_over_unconfirmed_march():
     mem = unconfirmed_boss_memory()
-    mem['attack'] = {'general': 'どうし', 'side': 'defense', 'castle': 'ゴーメン'}
+    _plan_region(mem)['attack'] = {'general': 'どうし', 'side': 'defense', 'castle': 'ゴーメン'}
     cur = policy._battle_context(mem, 'どうし')
     assert cur['side'] == 'defense' and cur['castle'] == 'ゴーメン' and cur['step'] is None

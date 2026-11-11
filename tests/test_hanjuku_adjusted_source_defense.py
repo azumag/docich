@@ -71,7 +71,7 @@ def test_validated_and_adopted_real_plan_is_guarded():
         'orders': [raw_order],
     })
     p._adopt_plan(mem, doc, rid)
-    order = mem['chart_plan']['orders'][0]
+    order = _plan_region(mem)['chart_plan']['orders'][0]
     assert 'purpose' not in order
     assert order['step'] == p.chart_adjust.execution_step(rid, 'J1')
     _plan_region(mem)['active'] = order['step']
@@ -168,7 +168,7 @@ def test_second_adjusted_attack_cannot_drain_source_after_departure(monkeypatch)
 def test_guard_uses_observed_source_override():
     mem = memory()
     order = p._order(mem)
-    mem['source_override'] = {order['step']: 'カストーラ'}
+    _plan_region(mem)['source_override'] = {order['step']: 'カストーラ'}
     assert p._source_spare_missing(order, mem)
     _world(mem)['garrison']['カストーラ'].append('ココット')
     assert not p._source_spare_missing(order, mem)

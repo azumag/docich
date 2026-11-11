@@ -5,7 +5,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
 from docich import hanjuku_policy as p, hanjuku_house as house, hanjuku_roster as r
 from docich.hanjuku_screen import Screen
 import pytest
-from docich.hanjuku.state.regions import world as _world, flow as _flow, journal as _journal
+from docich.hanjuku.state.regions import world as _world, plan as _plan_region, flow as _flow, journal as _journal
 
 NAMES = ['どうし', 'ゼウス', 'ヴィーナス', 'ココット', 'バジル', 'ミント',
          'クミン', 'チコリ', 'ビーツ', 'ヘーゼル', 'ラズベリー', 'カシュー',
@@ -79,9 +79,9 @@ def test_roles_can_be_overridden_by_chapter_and_adopted_chart(monkeypatch):
     mem=memory(castles=6)
     monkeypatch.setitem(p.chart.RECRUITMENT_BY_CHAPTER,1,{'per_castle':1,'attack':2})
     assert p._recruit_target(mem)==8
-    mem['chart_plan']={'recruitment':{'per_castle':2,'attack':4}}
+    _plan_region(mem)['chart_plan']={'recruitment':{'per_castle':2,'attack':4}}
     assert p._recruit_target(mem)==16
-    mem['chart_plan']['recruitment']={'per_castle':True,'attack':3}
+    _plan_region(mem)['chart_plan']['recruitment']={'per_castle':True,'attack':3}
     assert p._recruit_target(mem) is None
     mem['captured'].append('unknown castle')
     assert p._recruit_target(mem) is None

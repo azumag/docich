@@ -5,7 +5,7 @@ from docich import hanjuku_policy as policy, hanjuku_screen
 from docich.hanjuku_bot import decide
 from docich.hanjuku_pixels import Frame
 from docich.hanjuku_screen import Screen
-from docich.hanjuku.state.regions import world as _world
+from docich.hanjuku.state.regions import world as _world, plan as _plan_region, migrate_legacy_state
 
 
 def memory(side='defense'):
@@ -21,7 +21,7 @@ def memory(side='defense'):
 def test_return_to_management_expires_unstarted_entry_without_inventing_loss(side, kind):
     mem = memory(side); captured = deepcopy(mem['captured']); garrison = deepcopy(_world(mem)['garrison'])
     policy.observe_entry_return(Screen(lines=[], hand=None, text="", kind=kind), mem)
-    assert mem['attack'] is None and 'battle_seen' not in mem
+    assert _plan_region(mem)['attack'] is None and 'battle_seen' not in mem
     assert mem['captured'] == captured and _world(mem)['garrison'] == garrison
     assert not mem.get('lost') and not mem.get('stats')
     assert mem['_records'][0]['decision'] == 'battle_entry_expired'
@@ -34,6 +34,8 @@ def test_return_to_management_expires_unstarted_entry_without_inventing_loss(sid
 def test_transient_field_or_combat_screen_does_not_expire_entry(kind):
     mem = memory(); expected = deepcopy(mem)
     policy.observe_entry_return(Screen(lines=[], hand=None, text="", kind=kind), mem)
+    # 移行済みキーは領域へ実体化されるだけなので、比較前に expected 側も同じ正規形へ寄せる。
+    migrate_legacy_state(expected)
     assert mem == expected
 
 
@@ -42,7 +44,7 @@ def test_first_away_management_observation_preserves_active_battle_result():
         'ally_hp': 0, 'enemy_hp': 39, 'castle': 'ジョンリギ', 'side': 'defense'}
     policy.battle_end(mem, 'castle_menu')
     policy.observe_entry_return(Screen(lines=[], hand=None, text="", kind='castle_menu'), mem)
-    assert mem['attack']['castle'] == 'ジョンリギ' and mem['battle']['away'] == 1
+    assert _plan_region(mem)['attack']['castle'] == 'ジョンリギ' and mem['battle']['away'] == 1
     policy.battle_end(mem, 'castle_menu')
     policy.observe_entry_return(Screen(lines=[], hand=None, text="", kind='castle_menu'), mem)
     assert any(r['decision'] == 'battle_result' and r['outcome'] == 'loss' for r in mem['_records'])
@@ -55,7 +57,7 @@ def test_g510_main_menu_return_is_wired_into_decide(monkeypatch):
     monkeypatch.setattr(hanjuku_screen, 'parse', lambda *a, **k:
                         Screen(lines=[], hand=None, text="", kind='main_menu'))
     _, state = decide(Frame(256, 224, bytes(256 * 224 * 3)), {'policy': memory()})
-    assert state['policy']['attack'] is None
+    assert _plan_region(state['policy']).get('attack') is None
     assert policy._battle_context(state['policy'], 'ヴィーナス')['castle'] is None
     assert any(r['decision'] == 'battle_entry_expired' for r in state['_records'])
 
@@ -77,8 +79,8 @@ def test_g510_new_entry_releases_finished_battle_after_two_panels():
     assert not policy._entered_battle_successor(mem, mem['battle'], panel)
     assert mem['battle']['ally'] == 'ガスパチョ'
     assert policy._entered_battle_successor(mem, mem['battle'], panel)
-    assert 'battle' not in mem and mem['attack']['general'] == policy.NAME
-    assert mem['attack']['castle'] == 'ゴーメン'
+    assert 'battle' not in mem and _plan_region(mem)['attack']['general'] == policy.NAME
+    assert _plan_region(mem)['attack']['castle'] == 'ゴーメン'
     results = [r for r in mem['_records'] if r['decision'] == 'battle_result']
     assert len(results) == 1 and results[0]['outcome'] == 'win'
     assert results[0]['ally'] == 'ガスパチョ'
@@ -103,7 +105,7 @@ def test_new_names_do_not_release_unfinished_or_unseparated_battle(change):
     {'general':policy.NAME,'castle':'未知の城','side':'attack'},
     {'general':policy.NAME,'castle':'ゴーメン','side':'defense'}])
 def test_successor_requires_matching_measured_attack_context(entry):
-    mem = successor_memory(); mem['attack'] = entry
+    mem = successor_memory(); _plan_region(mem)['attack'] = entry
     for _ in range(3):
         assert not policy._entered_battle_successor(mem, mem['battle'], successor_panel())
     assert mem['battle']['ally'] == 'ガスパチョ'

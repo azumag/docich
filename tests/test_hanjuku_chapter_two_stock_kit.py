@@ -117,7 +117,7 @@ def test_boss_tactics_require_actual_carriage_and_keep_each_copy_distinct():
 
 def test_road_enemy_does_not_receive_the_boss_opening_tactic():
     mem = confirmed()
-    mem['attack'] = {'general': p.NAME, 'castle': None, 'side': 'attack', 'step': '2-B1'}
+    _plan_region(mem)['attack'] = {'general': p.NAME, 'castle': None, 'side': 'attack', 'step': '2-B1'}
     screen = Screen([], None, '', kind='battle', battle=Battle('クミン', 27, p.NAME, 90))
     p.battle_step(screen, mem); p.battle_step(screen, mem)
     assert not any(r['decision'] == 'battle_card' and r.get('card') == 'バルムンク'
@@ -136,7 +136,7 @@ def test_native_before_after_and_next_chapter_cue_prove_isolated_boss_defeat():
 
 def test_zero_boss_panel_never_spends_the_spare_event_card():
     mem = confirmed()
-    mem['attack'] = {'general': p.NAME, 'castle': 'ボス', 'side': 'attack',
+    _plan_region(mem)['attack'] = {'general': p.NAME, 'castle': 'ボス', 'side': 'attack',
                      'step': '2-B1', 'entry_evidence': 'measured_boss_entry'}
     live = parse(read_png(F / 'g700-fake-hero-before-balmung.png'))
     p.battle_step(live, mem); p.battle_step(live, mem)

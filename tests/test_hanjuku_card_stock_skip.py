@@ -6,6 +6,7 @@ readings for each before leaving it behind.
 """
 from docich import hanjuku_policy as policy
 from test_hanjuku_sortie_evidence import _c2_memory, measured_card_select
+from docich.hanjuku.state.regions import plan as _plan_region
 
 BOTTOM = ('ノリウツール', 'クースカン', 'バルムンク', 'ミックミー')
 
@@ -13,7 +14,7 @@ BOTTOM = ('ノリウツール', 'クースカン', 'バルムンク', 'ミック
 def fabado_memory():
     mem = _c2_memory()
     mem['rare_scan_month'] = 'chapter-1:unknown'    # this month's rare scan is done
-    mem['card_override'] = {'1-C2': ['ファバード']}
+    _plan_region(mem)['card_override'] = {'1-C2': ['ファバード']}
     return mem
 
 
@@ -38,7 +39,7 @@ def test_a_cursor_still_moving_down_the_panel_is_not_the_bottom():
 
 def test_a_card_out_of_stock_before_the_attempt_is_not_planned():
     mem = _c2_memory()
-    mem['card_override'] = {'1-C2': ['エンジェリン', 'ブラッキー']}
+    _plan_region(mem)['card_override'] = {'1-C2': ['エンジェリン', 'ブラッキー']}
     mem['card_zero_at_start'] = {'step': '1-C2', 'cards': ['エンジェリン']}
     assert policy._deploy_cards(policy._order(mem), mem) == ['ブラッキー']
     mem['card_zero_at_start'] = {'step': '1-A1', 'cards': ['エンジェリン']}   # another order's attempt

@@ -8,6 +8,7 @@ from __future__ import annotations
 from ... import hanjuku_chart as chart, hanjuku_reference as reference
 from ...hanjuku_egg_reference import general_max_hp
 from ..decision_log import _record
+from ..state.regions import plan as _plan_region
 
 
 def _is_boss_order(order, mem) -> bool:
@@ -69,7 +70,7 @@ def _deploy_cards(order, mem):
                 cards.remove(card)
         return _with_strong_card(cards, strong, mem, order['step'])
     cards = list(rare_kit if rare_kit is not None else
-                 mem.get('card_override', {}).get(order['step'], order['cards']))
+                 _plan_region(mem).get('card_override', {}).get(order['step'], order['cards']))
     # One planned copy leaves the kit per drop entry. g454 12:22: a planned
     # イッテツーン x2 had one copy already picked and the second recorded as
     # dropped; removing every copy of the card shrank the plan below what the

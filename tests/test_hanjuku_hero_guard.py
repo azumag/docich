@@ -40,8 +40,8 @@ def test_weak_but_fit_companion_is_sent_and_the_hero_never_is(names):
     order, mem = boss_memory(); _plan_region(mem)['orders'][order['step']] = 'pending'
     actions = p.deploy_step(selected_list(names), mem)
     assert p.pad('b') not in actions
-    assert mem['general_override'][order['step']] == 'シェーブル'
-    assert p.NAME not in mem['general_override'].values()
+    assert _plan_region(mem)['general_override'][order['step']] == 'シェーブル'
+    assert p.NAME not in _plan_region(mem)['general_override'].values()
 
 
 @pytest.mark.parametrize('kind', ['card_select', 'sortie_confirm'])
@@ -58,7 +58,7 @@ def test_adequate_companion_elsewhere_redirects_source_without_inventing_departu
     _world(mem)['garrison'] = {order['source']: [p.NAME], chart.home_castle(2): ['ゼウス', p.NAME]}
     mem['house_eggs'] = {p.NAME: {'broken': True}}
     assert p.next_order(mem) == order
-    assert mem['source_override'][order['step']] == chart.home_castle(2)
+    assert _plan_region(mem)['source_override'][order['step']] == chart.home_castle(2)
     assert not _plan_region(mem).get('sortie_general') and not mem.get('sorties')
     assert p.deploy_step(selected_list(['ゼウス', p.NAME]), mem) == [p.pad('a')]
     assert _plan_region(mem)['sortie_general'][order['step']] == 'ゼウス'
@@ -108,7 +108,7 @@ def test_hotloaded_unsubmitted_hero_target_never_sends_departure(monkeypatch):
 
 def test_explicit_companion_boss_plan_cannot_confirm_an_actual_hero_panel():
     order, mem = boss_memory(); step = order['step']
-    mem['chart_plan'] = {'orders': [{**order, 'general': 'ゼウス'}]}
+    _plan_region(mem)['chart_plan'] = {'orders': [{**order, 'general': 'ゼウス'}]}
     _plan_region(mem)['sortie_general'] = {step: 'ゼウス'}
     _plan_region(mem)['orders'][step] = 'pending'
     assert p.deploy_step(actor_panel(measured_loaded_sortie(), p.NAME), mem) == [p.pad('b'), p.pad('b')]

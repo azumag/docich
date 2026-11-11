@@ -117,7 +117,7 @@ def test_the_hero_order_steers_the_cursor_to_him():
     mem = _hero_forward(_mem(garrison={HOME: [HERO, 'バトウラ'], FRONT: ['リーキ']}))
     hero = next(o for o in _orders(mem) if o.get('corridor_hero'))
     assert _deploy(mem, hero, [HERO, 'バトウラ']) == [policy.pad('a')]
-    assert mem['general_override'][hero['step']] == HERO
+    assert _plan_region(mem)['general_override'][hero['step']] == HERO
 
 
 def test_a_hero_order_without_the_hero_ends_for_this_capture():

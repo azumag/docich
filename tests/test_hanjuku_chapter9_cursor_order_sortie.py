@@ -7,6 +7,7 @@ from docich import hanjuku_chart as chart
 from docich import hanjuku_policy as policy
 
 from test_hanjuku_off_chart import _move_list, _move_memory
+from docich.hanjuku.state.regions import plan as _plan_region
 
 HOME = chart.home_castle(9)
 ROAD = chart.corridor(9)
@@ -45,7 +46,7 @@ def test_an_attack_sends_the_cursor_general_without_walking_the_list():
     mem = _memory('attack')
     actions = _step(mem, ['ミント', 'ジェラート', 'シナモン', 'マフィン'])
     assert actions == [policy.pad('a')]
-    assert mem['general_override'][mem['_test_step']] == 'ミント'
+    assert _plan_region(mem)['general_override'][mem['_test_step']] == 'ミント'
     assert picks(mem)
     assert not mem.get('general_list_scan')
 
@@ -59,14 +60,14 @@ def test_the_cursor_steps_past_the_hero():
 def test_the_hero_moves_only_when_he_is_the_last():
     mem = _memory('move', general=chart.HERO)
     assert _step(mem, [chart.HERO]) == [policy.pad('a')]
-    assert mem['general_override'][mem['_test_step']] == chart.HERO
+    assert _plan_region(mem)['general_override'][mem['_test_step']] == chart.HERO
 
 
 def test_an_attack_never_takes_the_hero_by_cursor():
     mem = _memory('attack')
     _step(mem, [chart.HERO])
     assert not picks(mem)
-    assert chart.HERO not in (mem.get('general_override') or {}).values()
+    assert chart.HERO not in (_plan_region(mem).get('general_override') or {}).values()
 
 
 def test_other_chapters_keep_choosing_the_planned_general():

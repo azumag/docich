@@ -100,7 +100,7 @@ def test_a_move_takes_the_hero_when_he_is_the_last():
     mem = _mem()
     move = _orders(mem)[1]
     assert _deploy(mem, move, [chart.HERO]) == [policy.pad('a')]
-    assert mem['general_override'][move['step']] == chart.HERO
+    assert _plan_region(mem)['general_override'][move['step']] == chart.HERO
 
 
 def test_no_monthly_status_pass_is_armed():
@@ -130,5 +130,5 @@ def test_a_listed_general_goes_even_if_a_march_record_says_he_is_away():
                                 'status': 'en_route', 'tick': 4990}
     attack = _orders(mem)[0]
     assert _deploy(mem, attack, ['アルファルファ']) == [policy.pad('a')]
-    assert mem['general_override'][attack['step']] == 'アルファルファ'
+    assert _plan_region(mem)['general_override'][attack['step']] == 'アルファルファ'
     assert corridor.DRAINED not in mem

@@ -99,7 +99,7 @@ def test_an_unconfirmed_site_launch_binds_its_entry_after_a_long_march():
            'world': {'sorties': {'4-B2': {'general': 'カペリーニ', 'source': 'ネクスドリア', 'status': 'en_route',
                                 'target': None, 'planned_target': '四季王城(南東)', 'tick': 131676}}}}
     assert policy.message_step(screen, mem) == [policy.pad('a')]
-    assert mem['attack'] == {'general': 'カペリーニ', 'castle': '四季王城(南東)', 'side': 'attack',
+    assert _plan_region(mem)['attack'] == {'general': 'カペリーニ', 'castle': '四季王城(南東)', 'side': 'attack',
                              'step': '4-B2', 'entry_evidence': 'measured_boss_entry'}
 
 
@@ -118,10 +118,10 @@ def test_the_same_site_entry_on_the_next_frame_keeps_its_site_and_step():
     bound = {'general': 'ヴィーナス', 'castle': '四季王城(北西)', 'side': 'attack',
              'step': '4-B4', 'entry_evidence': 'measured_boss_entry'}
     assert policy.message_step(entry(), mem) == [policy.pad('a')]
-    assert mem['attack'] == bound and _world(mem)['sorties']['4-B4']['status'] == 'arrived'
+    assert _plan_region(mem)['attack'] == bound and _world(mem)['sorties']['4-B4']['status'] == 'arrived'
     for _ in range(policy.BOSS_ENTRY_HOLD_LIMIT + 1):
         assert policy.message_step(entry(), mem) == [policy.pad('a')]
-    assert mem['attack'] == bound
+    assert _plan_region(mem)['attack'] == bound
     assert 'situation_held' not in [r['decision'] for r in mem['_records']]
 
 
@@ -153,7 +153,7 @@ def test_an_overdue_site_march_still_binds_its_late_entry():
            'world': {'sorties': {'4-B3': {'general': 'ソーピニヨン', 'source': 'アルマムーン',
                                 'target': '四季王城(北東)', 'status': 'overdue', 'tick': 155587}}}}
     assert policy.message_step(screen, mem) == [policy.pad('a')]
-    assert mem['attack'] == {'general': 'ソーピニヨン', 'castle': '四季王城(北東)', 'side': 'attack',
+    assert _plan_region(mem)['attack'] == {'general': 'ソーピニヨン', 'castle': '四季王城(北東)', 'side': 'attack',
                              'step': '4-B3', 'entry_evidence': 'measured_boss_entry'}
     assert _world(mem)['sorties']['4-B3']['status'] == 'arrived'
 

@@ -102,7 +102,7 @@ def test_a_source_that_never_opens_its_menu_falls_back_home_then_fails(monkeypat
     # of the persisted state, so a record repeated on every observation.
     assert decisions(mem, 'order_source_changed') == []
     assert mem['tally']['source_fallback'] == 1
-    assert mem['source_override'][order['step']] == 'アルマムーン'
+    assert _plan_region(mem)['source_override'][order['step']] == 'アルマムーン'
     assert _plan_region(mem)['active'] == order['step']
     for _ in range(policy.SOURCE_MISS_LIMIT + 1):
         policy.map_step(map_screen(190, 200), mem, FRAME)
@@ -591,7 +591,7 @@ def test_a_move_from_an_unread_castle_sends_a_non_hero_and_keeps_one_behind():
     mem['general_list_scan'] = {'step': 'I:m:1', 'castle': 'ジョンリギ', 'end': 'wrapped',
                                 'names': names, 'tick': mem.get('tick') or 0}
     actions = policy.deploy_step(_move_list(names), mem)
-    assert mem['general_override']['I:m:1'] == 'キャラウェイ'
+    assert _plan_region(mem)['general_override']['I:m:1'] == 'キャラウェイ'
     assert _world(mem)['garrison']['ジョンリギ'] == names
     assert decisions(mem, 'move_general_picked')
     assert actions and actions[0]['buttons'] in (['down'], ['a'])
@@ -604,7 +604,7 @@ def test_a_move_never_leaves_the_hero_with_fewer_than_two_others():
         policy.pad('b'), policy.pad('b')]
     assert _plan_region(mem)['orders']['I:m:1'] == 'failed'
     assert decisions(mem, 'sortie_held_hero_guard')
-    assert not mem.get('general_override', {}).get('I:m:1')
+    assert not _plan_region(mem).get('general_override', {}).get('I:m:1')
 
 
 def test_a_move_from_a_castle_with_one_general_is_cancelled_and_remembered():
@@ -634,7 +634,7 @@ def test_a_move_sends_the_general_the_plan_named():
     move into ジュメルズ and the list head セルリアク (HP 32) went instead."""
     mem = _move_memory_naming('ゼウス')
     actions = _scanned_move(mem, [chart.HERO, 'セルリアク', 'ゼウス', 'エピィ'])
-    assert mem['general_override']['I:m:1'] == 'ゼウス'
+    assert _plan_region(mem)['general_override']['I:m:1'] == 'ゼウス'
     picked = decisions(mem, 'move_general_picked')
     assert picked and picked[-1]['general'] == 'ゼウス'
     assert '計画' in picked[-1]['reason']
@@ -647,7 +647,7 @@ def test_a_move_stops_the_scan_when_the_planned_general_is_on_the_page():
     mem = _move_memory_naming('ゼウス')
     actions = policy.deploy_step(_move_list(['ゼウス', chart.HERO, 'キャラウェイ', 'ココット']), mem)
     assert actions == [policy.pad('a')]
-    assert mem['general_override']['I:m:1'] == 'ゼウス'
+    assert _plan_region(mem)['general_override']['I:m:1'] == 'ゼウス'
     scan = mem['general_list_scan']
     assert (scan['end'], scan['general'], scan['presses']) == ('named', 'ゼウス', 0)
     # The page says who is here, not who else is: it is not a garrison.
@@ -657,14 +657,14 @@ def test_a_move_stops_the_scan_when_the_planned_general_is_on_the_page():
 def test_a_named_move_general_who_is_not_here_falls_back_to_the_head():
     mem = _move_memory_naming('ゼウス')
     _scanned_move(mem, [chart.HERO, 'キャラウェイ', 'ココット', 'クミン'])
-    assert mem['general_override']['I:m:1'] == 'キャラウェイ'
+    assert _plan_region(mem)['general_override']['I:m:1'] == 'キャラウェイ'
     assert decisions(mem, 'move_general_picked')[-1]['general'] == 'キャラウェイ'
 
 
 def test_a_move_never_sends_the_hero_even_when_the_plan_names_him():
     mem = _move_memory_naming(chart.HERO)
     _scanned_move(mem, [chart.HERO, 'キャラウェイ', 'ココット', 'クミン'])
-    assert mem['general_override']['I:m:1'] == 'キャラウェイ'
+    assert _plan_region(mem)['general_override']['I:m:1'] == 'キャラウェイ'
 
 
 def _world_map_frame(owners):
@@ -1028,8 +1028,8 @@ def test_a_boss_sortie_without_its_general_continues_with_the_listed_substitute(
     screen = Screen(lines=rows, hand=(122, 33, 139, 45), kind='general_list',
                     text='しゅつげきどうしリーキステータス')
     assert policy.deploy_step(screen, mem) != [policy.pad('b'), policy.pad('b')]
-    assert mem['general_override']['F2'] == 'リーキ'
-    assert policy.NAME not in mem['general_override'].values()
+    assert _plan_region(mem)['general_override']['F2'] == 'リーキ'
+    assert policy.NAME not in _plan_region(mem)['general_override'].values()
     assert policy._order_hero_alternatives(order, mem, [policy.NAME]) == []
 
 
@@ -1055,8 +1055,8 @@ def test_an_absent_boss_general_retries_with_the_listed_fit_substitute():
     assert following is not None and following['step'] == 'F1'
     assert policy.deploy_step(screen, mem) == [policy.pad('a')]
     # The absent ココット is replaced, never re-tried, and the hero is not sent.
-    assert mem['general_override']['F1'] == 'リーキ'
-    assert policy.NAME not in mem['general_override'].values()
+    assert _plan_region(mem)['general_override']['F1'] == 'リーキ'
+    assert policy.NAME not in _plan_region(mem)['general_override'].values()
     assert policy._order_hero_alternatives(order, mem, [policy.NAME]) == []
 
 
@@ -1580,10 +1580,10 @@ def test_unusable_plan_falls_back_to_boss_companion_before_following_hero(compan
     if companion:
         assert order['target'] == policy.chart.boss_castle(1) and order['general'] == policy.NAME
         assert policy._source(order, mem) == 'スペンソニア'
-        assert not mem.get('source_override')
+        assert not _plan_region(mem).get('source_override')
     else:
         assert order is None  # No hero fallback: wait for adequate companion.
-        assert not mem.get('source_override')
+        assert not _plan_region(mem).get('source_override')
 
 
 def test_an_adjusted_boss_order_leaves_an_unowned_card_behind_but_the_base_boss_order_does_not():

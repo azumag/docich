@@ -11,7 +11,7 @@ from docich import hanjuku_chart as chart
 from docich.hanjuku.flows.battle import message_step
 from docich.hanjuku.os_layer.world import SORTIE_BUSY_TICKS
 from docich.hanjuku.strategy.orders import LONG_MARCH_TICKS, _match_sortie
-from docich.hanjuku.state.regions import world as _world
+from docich.hanjuku.state.regions import world as _world, plan as _plan_region
 
 ENTRY = 'ポセイドンしょうぐんがリグアじょうにのりこんだ!!'
 
@@ -47,7 +47,7 @@ def test_the_entry_message_becomes_our_attack_with_its_step():
     mem = live()
     with chart.map_context(mem):
         assert message_step(SimpleNamespace(text=ENTRY), mem) is not None
-    assert mem['attack'] == {'general': 'ポセイドン', 'castle': 'リグア', 'side': 'attack',
+    assert _plan_region(mem)['attack'] == {'general': 'ポセイドン', 'castle': 'リグア', 'side': 'attack',
                              'step': 'I:b59ab6:3'}
     assert _world(mem)['sorties']['I:b59ab6:3']['status'] == 'arrived'
 
@@ -119,7 +119,7 @@ def test_the_1651_march_entry_is_our_attack_with_its_step():
     mem = g1133()
     with chart.map_context(mem):
         message_step(SimpleNamespace(text=PISTACHIO_ENTRY), mem)
-    assert mem['attack'] == {'general': 'ピスタチオ', 'castle': 'ユージア',
+    assert _plan_region(mem)['attack'] == {'general': 'ピスタチオ', 'castle': 'ユージア',
                              'side': 'attack', 'step': 'A:510711f6:Mc01022'}
 
 
@@ -128,15 +128,15 @@ def test_a_known_general_beyond_the_bound_still_attacks():
     assert _match_sortie(mem, 'ユージア', 'ピスタチオ') == (None, 'none')
     with chart.map_context(mem):
         message_step(SimpleNamespace(text=PISTACHIO_ENTRY), mem)
-    assert mem['attack']['side'] == 'attack'
-    assert mem['attack']['step'] is None
+    assert _plan_region(mem)['attack']['side'] == 'attack'
+    assert _plan_region(mem)['attack']['step'] is None
 
 
 def test_an_unknown_general_is_still_side_enemy():
     mem = g1133()
     with chart.map_context(mem):
         message_step(SimpleNamespace(text='ドリアンしょうぐんがユージアじょうにのりこんだ!!'), mem)
-    assert mem['attack']['side'] == 'enemy'
+    assert _plan_region(mem)['attack']['side'] == 'enemy'
 
 
 def test_a_garrison_row_marks_the_general_as_ours():
@@ -144,4 +144,4 @@ def test_a_garrison_row_marks_the_general_as_ours():
            'garrison': {'アルマムーン': ['どうし', 'ピスタチオ']}}
     with chart.map_context(mem):
         message_step(SimpleNamespace(text=PISTACHIO_ENTRY), mem)
-    assert mem['attack']['side'] == 'attack'
+    assert _plan_region(mem)['attack']['side'] == 'attack'

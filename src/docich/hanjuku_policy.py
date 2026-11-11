@@ -105,7 +105,8 @@ def _rearm_exhausted_camp_rechecks(mem):
 def _camp_recheck_step_with_stale_rearm(screen, mem, frame, existing):
     if (screen.kind == 'map' and frame is not None
             and not _flow(mem).get('recall') and not _flow(mem).get('sortie_attempt')
-            and not any(mem.get(key) for key in ('battle', 'month_sub', 'house', 'y_jump', 'attack'))):
+            and not any(mem.get(key) for key in ('battle', 'month_sub', 'house', 'y_jump'))
+            and not _plan_region(mem).get('attack')):
         _rearm_exhausted_camp_rechecks(mem)
     return _camp_recheck_step_without_stale_rearm(screen, mem, frame, existing)
 

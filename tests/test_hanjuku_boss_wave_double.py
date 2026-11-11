@@ -117,7 +117,7 @@ def test_an_exhausted_boss_plan_rebuilds_a_wave_with_a_new_step():
     mem = memory()
     step = 'Mdeadbeef'
     rid = chart_adjust.request_id(mem)
-    mem['chart_plan'] = {
+    _plan_region(mem)['chart_plan'] = {
         'schema': chart_adjust.SCHEMA, 'chapter': 5, 'request_id': rid,
         'source': 'mechanical',
         'orders': [{'step': step, 'general': 'ゼウス', 'source': STAFFED5,
@@ -126,7 +126,7 @@ def test_an_exhausted_boss_plan_rebuilds_a_wave_with_a_new_step():
     _plan_region(mem)['orders'] = {step: 'launched'}
     mem['sorties'] = boss_sortie('ゼウス', step=step)
     replan._off_chart(mem)
-    plan = mem.get('chart_plan') or {}
+    plan = _plan_region(mem).get('chart_plan') or {}
     assert plan.get('source') == 'mechanical', plan
     targets = [order['target'] for order in plan.get('orders') or ()]
     assert BOSS5 in targets, plan
@@ -141,7 +141,7 @@ def _failed_boss_step(mem):
     local = replan._mechanical_step(boss, set(), mem)
     rid = chart_adjust.request_id(mem)
     step = chart_adjust.execution_step(rid, local)
-    mem['chart_plan'] = {
+    _plan_region(mem)['chart_plan'] = {
         'schema': chart_adjust.SCHEMA, 'chapter': 5, 'request_id': rid,
         'source': 'mechanical',
         'orders': [dict(boss, step=local, cards=[], after=None, note='')],
@@ -201,7 +201,7 @@ def _plan_with_failed_retakes(mem, castle, count):
         orders.append({'step': step, 'general': f'ココット{i}', 'source': HOME5,
                        'target': castle, 'cards': [], 'after': None, 'note': ''})
         status[step] = 'failed'
-    mem['chart_plan'] = {'schema': chart_adjust.SCHEMA, 'chapter': 5, 'request_id': rid,
+    _plan_region(mem)['chart_plan'] = {'schema': chart_adjust.SCHEMA, 'chapter': 5, 'request_id': rid,
                          'source': 'mechanical', 'orders': orders}
     _plan_region(mem)['orders'] = status
     return [order['step'] for order in orders]
@@ -239,7 +239,7 @@ def test_the_stall_survives_the_plan_dropping_its_failed_steps():
     mem = lost_memory()
     _plan_with_failed_retakes(mem, LOST5, replan.RETAKE_STALL_FAILS)
     replan._failed_retakes(mem, record=True)
-    mem['chart_plan'] = None            # the rebuilt plan no longer lists them
+    _plan_region(mem)['chart_plan'] = None            # the rebuilt plan no longer lists them
     assert boss_attacks(replan.interim_candidates(mem))
 
 
@@ -287,7 +287,7 @@ def test_the_mechanical_rebuild_records_the_failures_before_clearing_the_plan():
     replan._off_chart(mem)
     book = mem['retake_failures']['castles']
     assert len(book[LOST5]) == replan.RETAKE_STALL_FAILS
-    targets = [order['target'] for order in (mem.get('chart_plan') or {}).get('orders') or ()]
+    targets = [order['target'] for order in (_plan_region(mem).get('chart_plan') or {}).get('orders') or ()]
     assert BOSS5 in targets, targets
 
 
