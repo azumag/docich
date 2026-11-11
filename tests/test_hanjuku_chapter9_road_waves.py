@@ -10,6 +10,7 @@ import pytest
 from docich import hanjuku_chart as chart
 from docich.hanjuku import orchestrator  # noqa: F401  (package import side effects)
 from docich.hanjuku.state.regions import sorties as _sorties
+from docich.hanjuku.strategy import corridor
 from docich.hanjuku.strategy import replan
 
 HOME = chart.home_castle(9)
@@ -39,7 +40,8 @@ def attacks(mem):
                 if o['purpose'] in ('attack', 'retake')]
 
 
-@pytest.mark.parametrize('marching', [['リーキ'], ['リーキ', 'ラズベリー']])
+@pytest.mark.parametrize('marching', [['リーキ'], ['リーキ', 'ラズベリー'],
+                                       ['リーキ', 'ラズベリー', 'タルタル', 'ロックフォール', 'ヘルメス']])
 def test_another_wave_goes_while_fewer_than_the_bound_are_marching(marching):
     got = attacks(memory(marching))
     assert got, 'the road castle must keep taking waves'
@@ -48,8 +50,9 @@ def test_another_wave_goes_while_fewer_than_the_bound_are_marching(marching):
 
 
 def test_the_bound_stops_further_waves():
-    marching = ['リーキ', 'ラズベリー', 'タルタル'][:replan.CORRIDOR_WAVE_INFLIGHT]
-    assert len(marching) == replan.CORRIDOR_WAVE_INFLIGHT
+    # #3944: the bound is SQUAD (v671, six), shared with the planner.
+    marching = ['リーキ', 'ラズベリー', 'タルタル', 'ロックフォール', 'ヘルメス', 'アマンディーヌ'][:corridor.SQUAD]
+    assert len(marching) == corridor.SQUAD
     assert attacks(memory(marching)) == []
 
 

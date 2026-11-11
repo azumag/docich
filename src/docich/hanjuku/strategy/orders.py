@@ -1684,7 +1684,8 @@ def _retake_reserved(order, mem):
         return False
     # Chapter 9's next road castle takes waves (v660, owner 2026-11-11: ひとり
     # づつ出撃していたら間に合わない). The planner already keeps up to
-    # CORRIDOR_WAVE_INFLIGHT expeditions at it; this gate held every one of
+    # SQUAD expeditions at it (#3944: the wave cap is the planner's budget,
+    # counted the same way on both sides); this gate held every one of
     # them behind the first marching retake. g1163 14:12:19-14:14:41 sat on
     # the map with seven retakes of タオ planned and none started while
     # シナモン's retake was still walking.

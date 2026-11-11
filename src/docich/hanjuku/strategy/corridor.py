@@ -106,12 +106,29 @@ def _march(mem):
 
 
 def _attackers_marching(mem, target) -> int:
-    from .orders import _arrival_limit
+    """In-flight attackers at ``target``: the single budget both sides see.
+
+    #3944: the planner counted corridor step ids while the deploy gate counted
+    reserved targets, with caps 6 vs 3, so in-flight 3-5 kept minting retakes
+    the gate then held every observation. Both now count the same sorties
+    once: a corridor step whose hop is the target, or any sortie whose
+    reserved target is the target (a ``launched_unconfirmed`` sortie reserves
+    its intended target through ``launched_orders``). Non-corridor retakes
+    (e.g. ``I:old``) count too; ``purpose == 'move'`` and settled/expired
+    sorties do not.
+    """
+    from .orders import _arrival_limit, _sortie_reserved_target
     now = int(mem.get('tick') or 0)
-    return sum(1 for _, sortie, _, hop in _march(mem)
-               if hop == target and sortie.get('purpose') != 'move'
-               and sortie.get('status') in MARCHING
-               and 0 <= now - sortie['tick'] < max(SORTIE_BUSY_TICKS, _arrival_limit(mem, sortie)))
+    count = 0
+    for step, sortie in _sorties(mem).items():
+        if (not isinstance(sortie, dict) or type(sortie.get('tick')) is not int
+                or sortie.get('purpose') == 'move' or sortie.get('status') not in MARCHING
+                or not 0 <= now - sortie['tick'] < max(SORTIE_BUSY_TICKS, _arrival_limit(mem, sortie))):
+            continue
+        pair = _pair(step)
+        if (pair and pair[1] == target) or _sortie_reserved_target(mem, step, sortie) == target:
+            count += 1
+    return count
 
 
 def _wave(mem, target, front):
