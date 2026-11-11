@@ -42,7 +42,10 @@ def test_a_recall_before_dispatch_yields_the_scene(stage):
     assert 'camp_recall_interrupted' in decisions(state)
     record = next(r for r in state['_records'] if r.get('decision') == 'camp_recall_interrupted')
     assert record['observed_metric'] == {'stage': stage, 'steps': 7}
-    assert 'recall' not in state['policy']
+    # v693: the intent survives the scene (it walks back to the camp once the
+    # scene is over) instead of being dropped and re-found from scratch.
+    kept = state['policy']['flow']['recall']
+    assert kept['stage'] == 'to_camp' and kept['scene_pending'] is True
     assert state['policy']['uncertain'] is True
 
 
@@ -53,7 +56,6 @@ def test_the_dropped_recall_leaves_no_interruption_marker():
     state['policy']['flow'] = {'recall_interrupted': 70400}
     _, state = decide(read_png(SCENE), state)
     assert 'camp_recall_interrupted' in decisions(state)
-    assert 'recall' not in state['policy']
     assert 'recall_interrupted' not in (state['policy'].get('flow') or {})
 
 
