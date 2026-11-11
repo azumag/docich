@@ -979,6 +979,53 @@ def _general_list_scan(screen, mem, order):
     return [pad('down')]
 
 
+CURSOR_PICK_DOWNS = 2 * GENERAL_LIST_FULL   # presses past the hero before the normal path takes over
+
+
+def _cursor_order_pick(screen, mem, order):
+    """Chapter 9: send whoever the list cursor is on; the hero goes last.
+
+    Owner 2026-11-11: 9話にかぎり、出撃の時に将軍を選ぶ必要ないので、カーソルが
+    あった順に出撃させれば短縮になる。ただし主人公だけはゲームオーバーにならない
+    ために最後とする. Chapter 9 lifts every keep-a-defender rule
+    (``chart.guard_free``), so walking the whole list and steering to a named
+    general only costs time. The cursor's general goes at once. On the hero
+    the cursor steps down; he leaves only by a move, and only when nobody else
+    is left. An attack with nobody but the hero falls back to the normal path,
+    which never sends him. Boss orders, read-only roster probes and launch
+    verifications keep the full list.
+    """
+    if not chart.guard_free(mem.get('chapter')) or _is_boss_order(order, mem):
+        return None
+    if (order.get('roster_probe') is True
+            or (_plan_region(mem).get('orders') or {}).get(order['step']) == 'launched_unconfirmed'):
+        return None
+    present, cur = _present_generals(screen), _current(screen)
+    if not present or not screen.hand or not cur or cur[2] not in present:
+        return None
+    busy = _en_route(mem)[0] | set(_world(mem).get('general_location_unknown') or ())
+    name, step = cur[2], order['step']
+    downs = mem.setdefault('cursor_pick_downs', {})
+    if name == NAME or name in busy:
+        others = [g for g in present if g != NAME and g not in busy]
+        whole = len(present) < GENERAL_LIST_FULL
+        if others or (not whole and int(downs.get(step) or 0) < CURSOR_PICK_DOWNS):
+            downs[step] = int(downs.get(step) or 0) + 1
+            return _deploy_input(screen, mem, order, [pad('down')],
+                                 '第9話は主人公を最後にするため、カーソルを次の将軍へ送る')
+        if name != NAME or order.get('purpose') != 'move':
+            downs.pop(step, None)
+            return None
+    downs.pop(step, None)
+    _observe_garrison(screen, mem, order, complete=len(present) < GENERAL_LIST_FULL)
+    mem.setdefault('general_override', {})[step] = name
+    _plan_region(mem).setdefault('sortie_general', {})[step] = name
+    _record(mem, 'cursor_order_pick', **_deploy_context(order, mem), castle=_source(order, mem),
+            observed_metric={'general': name, 'planned': order.get('general'), 'visible': present[:8]},
+            reason='第9話は出撃将軍を選ばず、一覧のカーソル位置の将軍をそのまま出す（主人公は最後）')
+    return _deploy_input(screen, mem, order, [pad('a')], '一覧のカーソル位置の将軍を出撃させる')
+
+
 def _listed_generals(screen, mem, order):
     """The walked list when this screen belongs to it, else the visible rows."""
     present = _present_generals(screen)
@@ -1615,6 +1662,9 @@ def deploy_step(screen: Screen, mem):
         return _deploy_input(screen, mem, order, [pad('a')] if move == 'here' else [move],
                              '出撃メニューを選択')
     if kind == 'general_list':
+        picked = _cursor_order_pick(screen, mem, order)
+        if picked is not None:
+            return picked
         walk = _general_list_scan(screen, mem, order)
         if walk is not None:
             return _deploy_input(screen, mem, order, walk, '出撃元の将軍一覧を下へ送って画面外の将軍を読む')

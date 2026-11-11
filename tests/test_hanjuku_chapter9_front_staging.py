@@ -110,11 +110,14 @@ def _scan(mem, names):
         return policy.deploy_step(_move_list(names), mem)
 
 
-def test_deploy_moves_the_hero_when_chapter_nine_names_him():
+def test_deploy_moves_the_hero_last_even_when_named():
+    # Owner 2026-11-11 (v665): the cursor's general goes first, the hero last.
     mem = _ch9_move(chart.HERO)
-    actions = _scan(mem, ['ミント', chart.HERO, 'ジェラート'])
+    assert _scan(mem, ['ミント', chart.HERO, 'ジェラート']) == [{'type': 'pad', 'buttons': ['a'], 'hold_ms': 100}]
+    assert mem['general_override']['I:m:1'] == 'ミント'
+    mem = _ch9_move(chart.HERO)
+    _scan(mem, [chart.HERO])
     assert mem['general_override']['I:m:1'] == chart.HERO
-    assert actions and actions[0]['buttons'] in (['down'], ['a'])
 
 
 def test_deploy_lets_the_last_general_leave_a_chapter_nine_rear_castle():
