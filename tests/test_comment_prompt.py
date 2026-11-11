@@ -116,7 +116,8 @@ def test_gacha_list_file_default_matches_the_legacy_resolution():
 
 LEGACY_ASSETS = [p.name for p in prompt.PROMPTS_DIR.glob("*.md")
                  if p.name.startswith(("comment_template", "comment_response_", "comment_persona_",
-                                       "comment_ui_memo_", "comment_channel_intro_", "speech_vocabulary_rule"))]
+                                       "comment_ui_memo_", "comment_channel_intro_", "comment_game_rules",
+                                       "speech_vocabulary_rule"))]
 
 
 @pytest.mark.parametrize("name", sorted(LEGACY_ASSETS))

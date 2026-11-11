@@ -31,7 +31,8 @@ MIXED_TEMPLATE_VARS = (
     "past_topics", "self_chat_context", "celebration_history_context", "comment_thumbnail_ocr_context",
     "PAST_RADIO_TOPICS", "RUSSIA_CREATION_HISTORY_FILE", "SOVIET_CREATION_HISTORY_FILE",
     "ROLLING_SCORES_FILE", "game_state_context", "comment_ops_context", "_comment_ui_memo",
-    "_comment_channel_intro", "_comment_length_policy", "sing_reference", "_prediction_cycle_games",
+    "_comment_channel_intro", "_comment_game_rules", "_comment_game_rules_ja", "_comment_length_policy",
+    "sing_reference", "_prediction_cycle_games",
 )
 CATEGORY_TEMPLATE_VARS = (
     "CATEGORY_COMMENTS", "COMMENT_CLASSIFICATIONS", "twitch_comments_for_prompt", "_comment_persona",
@@ -41,8 +42,8 @@ CATEGORY_TEMPLATE_VARS = (
     "comment_followup_hints", "past_topics", "self_chat_context", "celebration_history_context",
     "comment_thumbnail_ocr_context", "PAST_RADIO_TOPICS", "RUSSIA_CREATION_HISTORY_FILE",
     "SOVIET_CREATION_HISTORY_FILE", "ROLLING_SCORES_FILE", "game_state_context", "comment_ops_context",
-    "_comment_ui_memo", "_comment_channel_intro", "_comment_length_policy", "sing_reference",
-    "_prediction_cycle_games", "gacha_completion_note",
+    "_comment_ui_memo", "_comment_channel_intro", "_comment_game_rules", "_comment_game_rules_ja",
+    "_comment_length_policy", "sing_reference", "_prediction_cycle_games", "gacha_completion_note",
 )
 MODES = ("main", "soren91")
 NONE = "（なし）"
@@ -81,6 +82,9 @@ def mode_assets(mode: str) -> dict[str, str]:
         "_comment_persona": asset(f"comment_persona_{mode}.md").rstrip("\n"),
         "_comment_ui_memo": asset(f"comment_ui_memo_{mode}.md").rstrip("\n"),
         "_comment_channel_intro": asset(f"comment_channel_intro_{mode}.md").rstrip("\n"),
+        # Mode-independent default (the Soviet game's rules); a game profile may replace them.
+        "_comment_game_rules": asset("comment_game_rules.md").rstrip("\n"),
+        "_comment_game_rules_ja": asset("comment_game_rules_ja.md").rstrip("\n"),
         "_comment_length_policy": asset("comment_length_policy_soren91.md") if mode == "soren91" else "",
     }
 

@@ -114,3 +114,28 @@ def test_launcher_reads_the_config_override_for_the_state_line(tmp_path):
 
 def test_launcher_is_executable():
     assert os.access(LAUNCHER, os.X_OK)
+
+
+def test_hanjuku_rules_slot_does_not_invent_rules_or_reuse_the_soviet_ones():
+    profile = game_profile.build("hanjuku-hero")
+    en, ja = profile["game_rules"], profile["game_rules_ja"]
+    assert "no rules memo" in en and "Never explain it with the Soviet game's rules" in en
+    assert "基本ルールのメモはありません" in ja and "ソ連ゲームの国・併合・得点のルールで説明しない" in ja
+    for text in (en, ja):
+        assert len(text) <= 1500  # the shell keeps at most 1500 characters per field
+        assert not any(ch in text for ch in "$`\\<>\x7f")
+        assert "16" not in text and "アルメニア" not in text and "Armenia" not in text
+    assert all(line.startswith("\t") for line in ja.split("\n"))  # same indentation as the template block
+
+
+def test_default_rules_slots_are_the_template_blocks_the_slots_replaced():
+    from docich.comment import prompt
+    assets = prompt.mode_assets("main")
+    assert assets["_comment_game_rules"].startswith("【Main Game Basic Rules (not current Soren91 scores)】")
+    assert assets["_comment_game_rules_ja"].startswith("\t【本編ゲームの基本ルール（盤面・併合・物理）】")
+    assert prompt.mode_assets("soren91")["_comment_game_rules"] == assets["_comment_game_rules"]
+    for name in ("comment_response_game.md", "comment_template.md"):
+        text = prompt.asset(name)
+        assert "16 countries" not in text and "16種類の国" not in text
+    assert prompt.asset("comment_response_game.md").count("${_comment_game_rules}") == 1
+    assert prompt.asset("comment_template.md").count("${_comment_game_rules_ja}") == 1

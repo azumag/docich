@@ -39,6 +39,20 @@ NON_SOVIET_STATE_SUFFIX = (
     "現在の戦闘・勝敗・操作の情報はこのメモにはありません。推測して補わないでください。"
 )
 
+# The prompt templates carry the Soviet game's rules in this slot by default. No Hanjuku rules text has been
+# measured, so the replacement only says that and forbids explaining it with the Soviet rules.
+HANJUKU_RULES_EN = (
+    "【Current Game Rules (半熟英雄)】\n"
+    "There is no rules memo for the current game. Never explain it with the Soviet game's rules "
+    "(countries, merging, score). If a viewer asks about its rules and the memo has none, "
+    "say you do not have that information instead of guessing."
+)
+HANJUKU_RULES_JA = (
+    "\t【現在のゲームの基本ルール（半熟英雄）】\n"
+    "\t※ 現在のゲームの基本ルールのメモはありません。ソ連ゲームの国・併合・得点のルールで説明しないこと。\n"
+    "\t※ ルールを聞かれても、メモにないことは推測で答えず、分からないと伝えること。"
+)
+
 HANJUKU_HOW_IT_WORKS = (
     "- 【半熟英雄BOTの仕組み】視聴者が半熟のBOTの動き方・AIの使い方（どう動いてるの、AIが操作してるの等）を聞いたときだけ、"
     "次の要点を噛み砕いて答える。このあとに並ぶソ連ゲームの戦略改善・メリケンAIの行は半熟BOTの話ではない",
@@ -106,6 +120,8 @@ def build(game: str, *, config: Path | None = None) -> dict | None:
         "game_state": non_soviet_game_state(game, HANJUKU_BLURB),
         # The Soviet UI memo (graph/status windows, Meriken AI) is not this screen.
         "ui_memo": "",
+        "game_rules": HANJUKU_RULES_EN,
+        "game_rules_ja": HANJUKU_RULES_JA,
         "ops_lines": hanjuku_how_it_works(config),
     }
 
