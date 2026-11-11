@@ -923,6 +923,98 @@ def test_sortie_pair_rearms_on_consecutive_cancel_and_splits_by_outcome():
     assert 'pairs' not in mem['obs_cost']['sortie_retry']['by_key']['砦D|attack']
 
 
+# ---- Issue #3326 (34 stage 4): deferral of same_sig short-cycle retries ----
+def test_sortie_retry_hold_defers_same_sig_short_cycle_once():
+    mem = {'tick': 100, 'gold': 250,
+           'garrison': {'城A': ['ゼウス', 'どうし']},
+           'house_eggs': {'ゼウス': {'hp': 80, 'location': 'castle'}}}
+    sig = house._sortie_state_sig(mem, '城A', 'ゼウス')
+    house._tally_sortie_attempt(mem, '砦B', 'attack', 'cancelled_unsent', sig)
+    # Same signature, inside the gap_le_100 band: the blind retry is held.
+    mem['tick'] = 150
+    pending, first = house._sortie_retry_hold(mem, '砦B', 'attack', sig)
+    assert pending is not None and pending['deferred'] is True
+    assert first is True
+    # Re-evaluating the same pending cancel does not recount the deferral.
+    held, first = house._sortie_retry_hold(mem, '砦B', 'attack', sig)
+    assert held is not None and first is False
+    row = mem['obs_cost']['sortie_retry']['by_key']['砦B|attack']
+    assert row['deferred'] == 1
+
+
+def test_sortie_retry_hold_passes_diff_sig_long_gap_and_new_run():
+    mem = {'tick': 10}
+    sig = [50, 'castle', 0, 1]
+    house._tally_sortie_attempt(mem, '砦B', 'attack', 'cancelled_unsent', sig)
+    # diff_sig: a legitimate re-check with new evidence is never held.
+    mem['tick'] = 40
+    assert house._sortie_retry_hold(mem, '砦B', 'attack', [60, 'field', 0, 1]) is None
+    # gap past the band: a spaced re-try is not the short-cycle loop.
+    mem['tick'] = 200
+    assert house._sortie_retry_hold(mem, '砦B', 'attack', sig) is None
+    # A different (target, purpose) key has no pending cancel.
+    assert house._sortie_retry_hold(mem, '砦C', 'attack', sig) is None
+    # A departed terminal leaves no pending cancel to match.
+    house._tally_sortie_attempt(mem, '砦D', 'attack', 'departed', sig)
+    assert house._sortie_retry_hold(mem, '砦D', 'attack', sig) is None
+    # obs_cost dies at a run switch: a fresh mem cannot hold anything.
+    assert house._sortie_retry_hold({'tick': 5}, '砦B', 'attack', sig) is None
+    row = mem['obs_cost']['sortie_retry']['by_key']['砦B|attack']
+    assert 'deferred' not in row
+
+
+def test_sortie_retry_hold_never_defers_on_a_negative_gap():
+    # A rewound tick (run state carried across a reset) puts the recorded
+    # cancel in the future: it is not evidence for the measured loop, so a
+    # stale cancel_pending must not suppress the retry.
+    mem = {'tick': 100}
+    sig = [50, 'castle', 0, 1]
+    house._tally_sortie_attempt(mem, '砦B', 'attack', 'cancelled_unsent', sig)
+    mem['tick'] = 50  # rewind below the cancel tick
+    assert house._sortie_retry_hold(mem, '砦B', 'attack', sig) is None
+    assert 'deferred' not in         mem['obs_cost']['sortie_retry']['by_key']['砦B|attack']
+
+
+def test_map_step_defers_then_starts_same_sig_retry():
+    # Issue #3326 (34 stage 4): the detector sits on the order-start path.
+    # A pending cancel with an unchanged signature inside the gap_le_100
+    # band keeps the order pending ([] instead of order_start); once the
+    # gap outgrows the band the same pick starts the order.
+    from docich.hanjuku.flows import map as M
+    from docich import hanjuku_chart as chart
+    from docich.hanjuku_screen import Screen
+    home = chart.home_castle(1)
+    target = next(c for c in chart.castles(1) if c != home)
+    mem = {'chapter': 1, 'tick': 200, 'gold': 250, '_records': [],
+           'captured': [home], 'select_centered': 199,
+           'garrison': {home: ['ゼウス', 'どうし']},
+           'house_eggs': {'ゼウス': {'hp': 80, 'location': 'castle'}},
+           'chart_plan': {'source': 'jev', 'orders': [
+               {'step': 'A:test:M1', 'general': 'ゼウス', 'source': home,
+                'target': target, 'cards': [], 'after': None, 'note': 'n'}]},
+           'plan': {'orders': {'A:test:M1': 'pending'}}}
+    sig = house._sortie_state_sig(mem, home, 'ゼウス')
+    # The order carries no explicit purpose: the key is 'target|None'.
+    house._tally_sortie_attempt(mem, target, None, 'cancelled_unsent', sig)
+    screen = Screen(lines=[], hand=None, text='', kind='map', cursor=None)
+    # 40 ticks after the cancel: inside the band, signature unchanged.
+    mem['tick'] = 240
+    assert M.map_step(screen, mem, None) == []
+    assert mem['plan']['orders']['A:test:M1'] == 'pending'
+    assert mem['plan'].get('active') is None
+    assert 'sortie_retry_deferred' in [r['decision'] for r in mem['_records']]
+    assert 'order_start' not in [r['decision'] for r in mem['_records']]
+    # Re-evaluation while held defers again but emits no second record.
+    mem['tick'] = 280
+    assert M.map_step(screen, mem, None) == []
+    assert [r['decision'] for r in mem['_records']].count(
+        'sortie_retry_deferred') == 1
+    # Past the band the same pick is allowed to start the order.
+    mem['tick'] = 500
+    M.map_step(screen, mem, None)
+    assert 'order_start' in [r['decision'] for r in mem['_records']]
+
+
 def test_month_carry_has_no_fixed_maximum_after_observed_unchanged_months():
     from docich.hanjuku.os_layer import roster as records
     row = {'general': 'ゼウス', 'location': 'castle',

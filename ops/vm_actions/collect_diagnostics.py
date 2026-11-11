@@ -7105,6 +7105,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v659-manifest-wait-release",
             "hanjuku-chart-v660-ch9-road-waves",
             "hanjuku-chart-v661-ch9-front-staging",
+            "hanjuku-chart-v662-sortie-retry-deferral",
             "hanjuku-chart-v560-castle-list-scroll",
             "hanjuku-chart-v561-post-month-repair-status",
             "hanjuku-chart-v501-idle-reanchor",

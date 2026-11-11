@@ -322,6 +322,10 @@ SORTIE_CANCEL_OUTCOMES = frozenset({'cancelled_unsent', 'cancelled_observed'})
 # labels keep the histogram bounded; the boundaries are wide enough to
 # separate an immediate loop (same menu re-walk) from a spaced re-try.
 SORTIE_PAIR_GAPS = (10, 100, 1000)
+# Issue #3326 (34 stage 4): a retry whose gap to the pending cancel falls in
+# the gap_le_100 band is the measured pathology (3-day window: same_sig x
+# gap_le_100 = 13, gap_le_10 = 0). The bound is the band edge itself.
+SORTIE_RETRY_DEFER_GAP = SORTIE_PAIR_GAPS[1]
 
 
 def _tally_dropped(mem, key):
@@ -429,6 +433,48 @@ def _tally_sortie_attempt(mem, target, purpose, outcome, sig):
         row['cancel_pending'] = {'tick': tick, 'sig': list(sig)}
     else:
         row.pop('cancel_pending', None)
+
+
+def _sortie_retry_hold(mem, target, purpose, sig):
+    """Issue #3326 (34 stage 4): a pending blind cancel→retry round trip.
+
+    Returns ``(pending, first)`` — the ``cancel_pending`` dict and whether
+    this is its first deferral — when a retry of the same
+    (target, purpose) would start while its last terminal outcome was a
+    cancel within SORTIE_RETRY_DEFER_GAP ticks AND the state signature is
+    unchanged: no new evidence arrived, so the retry is the same blind
+    round trip the stage-3 measurement observed. ``None`` otherwise —
+    including a changed signature (diff_sig: a legitimate re-check the
+    gate forbids suppressing) and a gap past the band (a spaced re-try
+    the measurement showed as rare, not the loop).
+
+    Only reads and marks measurement state: on the first deferral per
+    pending cancel it stamps ``cancel_pending['deferred']`` and bumps
+    ``row['deferred']`` so the obs_cost rows show how often the detector
+    fired per (target, purpose). The ``first`` flag lets the caller
+    record one decision per pending cancel instead of one per held
+    observation. Both live inside the by_key-capped row and die with
+    obs_cost at a run switch; nothing here issues input.
+    """
+    rows = ((mem.get('obs_cost') or {}).get('sortie_retry') or {}).get('by_key') or {}
+    row = rows.get(f'{target}|{purpose}') or {}
+    pending = row.get('cancel_pending')
+    if not isinstance(pending, dict):
+        return None
+    tick = int(mem.get('tick') or 0)
+    gap = tick - int(pending.get('tick') or 0)
+    if gap < 0 or gap > SORTIE_RETRY_DEFER_GAP:
+        # A negative gap means the clock rewound (run state carried across a
+        # reset): a cancel recorded "in the future" is not evidence this
+        # retry is the blind round trip, so it must not suppress the start.
+        return None
+    if list(sig) != pending.get('sig'):
+        return None
+    if not pending.get('deferred'):
+        pending['deferred'] = True
+        row['deferred'] = row.get('deferred', 0) + 1
+        return pending, True
+    return pending, False
 
 
 def _tally_open_once(mem, state, purpose, info):
