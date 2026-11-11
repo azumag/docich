@@ -1685,12 +1685,15 @@ def _retake_reserved(order, mem):
         return False
     # Chapter 9's next road castle takes waves (v660, owner 2026-11-11: ひとり
     # づつ出撃していたら間に合わない). The planner already keeps up to
-    # CORRIDOR_WAVE_INFLIGHT expeditions at it; this gate held every one of
+    # SQUAD expeditions at it (#3944: the wave cap is the planner's budget,
+    # counted the same way on both sides); this gate held every one of
     # them behind the first marching retake. g1163 14:12:19-14:14:41 sat on
     # the map with seven retakes of タオ planned and none started while
     # シナモン's retake was still walking.
     from .replan import _corridor_wave_open
-    if _corridor_wave_open(mem, order.get('target')):
+    # Only corridor-issued orders may bypass the ordinary one-retake gate.
+    # A plain retake at the same chapter-9 target must remain serialized.
+    if order.get('corridor') is True and _corridor_wave_open(mem, order.get('target')):
         return False
     if order.get('corridor') is True:
         # Chapter 9's mechanical march caps its own vanguard at six marching

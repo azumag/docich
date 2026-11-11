@@ -73,6 +73,9 @@ def test_a_wiped_vanguard_opens_a_new_budget():
     mem = _mem()
     _orders(mem)
     _send(mem, HOME, FRONT, 6, status='arrived')
+    # #3944: the old retake (``I:old``) now counts as marching at NEXT, so
+    # settle it for the wiped premise (nobody marching at the target).
+    _sorties(mem)['I:old']['status'] = 'arrived'
     assert not _by(mem, 'move')
     mem['tick'] += 30
     corridor.mark_drained(mem, FRONT, 'empty')   # the front's list was empty

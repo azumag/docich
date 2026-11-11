@@ -285,31 +285,20 @@ def _boss_wave_open(mem, target):
 # kept exactly one general marching at the road's next castle: every launch was
 # followed by ``chart_interim_hold`` until that battle ended (g1163 09:40-10:14,
 # seven launches, seven holds). The road's next castle now keeps taking waves
-# until this many sorties to it are in flight.
-CORRIDOR_WAVE_INFLIGHT = 3
-
-
+# until this many sorties to it are in flight. v660 capped the wave at 3;
+# v671 (owner 2026-11-11 17:55, 「攻撃中の先発隊は最大6人」) supersedes it, so
+# the wave shares the planner's ``SQUAD`` budget (#3944: separate caps 6 vs 3
+# minted retakes the gate then held every observation).
 def _corridor_wave_open(mem, target) -> bool:
     """A single-road chapter keeps several sorties marching at its next castle."""
-    from .orders import _arrival_limit, _sortie_reserved_target
+    from . import corridor
     chapter = mem.get('chapter') or 0
     if not chart.corridor(chapter):
         return False
     owned = _owned(mem) & set(chart.castles(chapter))
     if target != chart.corridor_next(chapter, owned):
         return False
-    now = int(mem.get('tick') or 0)
-    marching = 0
-    for step, sortie in _sorties(mem).items():
-        if (not isinstance(sortie, dict)
-                or sortie.get('status') not in ('en_route', 'launched_unconfirmed', 'launched', 'pending')
-                or type(sortie.get('tick')) is not int):
-            continue
-        if _sortie_reserved_target(mem, step, sortie) != target:
-            continue
-        if 0 <= now - sortie['tick'] < max(SORTIE_BUSY_TICKS, _arrival_limit(mem, sortie)):
-            marching += 1
-    return marching < CORRIDOR_WAVE_INFLIGHT
+    return corridor._attackers_marching(mem, target) < corridor.SQUAD
 
 
 # Owner 2026-11-11: 三人づつとかじゃなくて全員移動するようにしないとだし、主人公も
@@ -750,7 +739,7 @@ def interim_candidates(mem, allow_sole=False) -> dict:
     # while a sortie to it is still in flight (the 2026-11-02 design above).
     # Every other target keeps the one-expedition rule.
     # Chapter 9's road castle likewise (owner 2026-11-11), up to
-    # CORRIDOR_WAVE_INFLIGHT sorties at once.
+    # SQUAD sorties at once (#3944).
     targets = [c for c in targets if c not in inflight or _boss_wave_open(mem, c)
                or _corridor_wave_open(mem, c)]
     # One recent expedition per target. Unobserved old arrivals stop reserving
