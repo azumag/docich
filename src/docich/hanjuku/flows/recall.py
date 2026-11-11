@@ -242,8 +242,15 @@ def _walk(move, screen, choice):
     distance = target - here
     if distance == 0 or abs(distance) > RECALL_WALK_BATCH:
         return [move]
-    # A contiguous block of rows: the same number of presses lands exactly on it.
-    if rows[target][0] - rows[here][0] != distance * (rows[1][0] - rows[0][0]):
+    # Verify every intervening row, not only the endpoints: an irregular
+    # intermediate gap can otherwise cancel out and cause an unsafe batch.
+    if len(rows) < 2:
+        return [move]
+    spacing = rows[1][0] - rows[0][0]
+    if spacing <= 0 or any(
+        rows[i + 1][0] - rows[i][0] != spacing
+        for i in range(min(here, target), max(here, target))
+    ):
         return [move]
     if (distance > 0) != (buttons == ['down']):
         return [move]
