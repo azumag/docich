@@ -71,7 +71,8 @@ def test_a_drained_castle_is_skipped_until_someone_arrives_or_the_month_changes(
     mem = _mem()
     corridor.mark_drained(mem, FRONT, 'empty')
     mem['month'] = '19-5'
-    assert FRONT in [o['source'] for o in _orders(mem)]
+    # v697: a month change alone does not re-open a castle nobody was sent into.
+    assert [o['source'] for o in _orders(mem)] == [HOME]
 
 
 def test_the_boss_phase_leaves_mechanical_mode():

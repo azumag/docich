@@ -48,8 +48,17 @@ def test_a_march_sent_before_the_empty_read_does_not_refill():
     assert corridor._drained(mem, 'サヌト', 'attack') is True
 
 
-def test_the_mark_expires_with_the_month():
+def test_the_mark_survives_a_month_change_when_nobody_was_sent():
+    """A new month is not news about this castle (v697)."""
     mem = memory(drained(month='21-12'), {}, tick=1000, month='22-1')
+    assert corridor._drained(mem, 'サヌト', 'attack') is True
+
+
+def test_a_month_change_rechecks_a_castle_someone_was_sent_into():
+    """A dispatch into the castle keeps the old re-read behaviour."""
+    mem = memory(drained(tick=100, month='21-12'), {'I:c9:タオ>サヌト:7': {
+        'target': 'サヌト', 'tick': 200, 'status': 'en_route', 'general': 'リーキ'}},
+        tick=1000, month='22-1')
     assert corridor._drained(mem, 'サヌト', 'attack') is False
 
 

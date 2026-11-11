@@ -61,8 +61,23 @@ def mechanical(mem) -> bool:
 
 def _drained(mem, castle, purpose) -> bool:
     entry = (mem.get(DRAINED) or {}).get(castle)
-    if not isinstance(entry, dict) or entry.get('month') != mem.get('month'):
+    if not isinstance(entry, dict):
         return False
+    if entry.get('month') != mem.get('month'):
+        # A new month alone is not news about this castle. Re-probing every
+        # drained castle at each month change cost about a fifth of the run's
+        # navigation (g1163 2026-11-12 07:0x-07:3x: twelve タオ>サヌト orders in
+        # an hour, each ending in 「出撃元に出せる将軍がいない」) while nobody had
+        # been sent there. Only a castle somebody was dispatched into can have
+        # gained a general, so only that one is re-read in the new month.
+        since = entry.get('tick')
+        if type(since) is not int:
+            return False
+        dispatched = any(isinstance(sortie, dict) and sortie.get('target') == castle
+                         and type(sortie.get('tick')) is int and sortie['tick'] > since
+                         for sortie in _sorties(mem).values())
+        if not dispatched:
+            return True
     if entry.get('kind') == 'hero' and purpose == 'move':
         return False                       # the hero alone still walks forward
     since = entry.get('tick')
