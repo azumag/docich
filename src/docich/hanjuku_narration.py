@@ -23,6 +23,7 @@ import time
 
 from .game_switch import atomic_write_json
 from .hanjuku_run import append_log
+from .adapters.base import AdapterError
 from .retroarch_boundary import read_record
 
 STATE = 'hanjuku_narration.json'
@@ -166,7 +167,10 @@ def _deliver(g, runtime_dir: Path, item: dict, speaker: str, enqueue, max_age, *
                        and not item.get('terminal_recap')):
             return 'skipped:terminal'
         if item.get('evidence_kind') == 'plan':
-            bot = read_record(runtime_dir / 'hanjuku_bot.json', limit=256 * 1024)
+            try:
+                bot = read_record(runtime_dir / 'hanjuku_bot.json', limit=256 * 1024)
+            except AdapterError:
+                return 'skipped:bot_state_unreadable'
             trace = bot.get('decision_trace') or {}
             if (not isinstance(item.get('decision_id'), str) or not item['decision_id']
                     or trace.get('decision_id') != item['decision_id']
