@@ -299,6 +299,54 @@ FIXED_LIMIT_CHAPTERS = frozenset({3, 4})
 LONG_MARCH_TICKS = 6 * SORTIE_BUSY_TICKS   # window for late arrival binding
 MARCH_ARRIVAL_CAP = LONG_MARCH_TICKS
 
+# A general whose march outlived its window is not proven anywhere, so he is
+# marked location-unknown and kept out of new sorties until his castle is read.
+# Nothing walks the road castles to clear that mark in chapter 9's mechanical
+# mode, and the marks only accumulate: g1163 2026-11-11 23:0x had 29 of the 32
+# living generals unknown, which left about three usable and starved the front
+# while captured castles flipped back and forth. The mark therefore expires;
+# the next sortie's live list read settles where he actually stands.
+LOCATION_UNKNOWN_TTL = 2 * SORTIE_BUSY_TICKS
+
+
+def mark_location_unknown(mem, name, tick=None):
+    """Keep a general out of new sorties until his location is measured."""
+    if not isinstance(name, str) or not name:
+        return
+    unknown = _world(mem).setdefault('general_location_unknown', [])
+    if name not in unknown:
+        unknown.append(name)
+    since = _world(mem).setdefault('general_location_unknown_at', {})
+    if name not in since:
+        since[name] = int(mem.get('tick') if tick is None else tick)
+
+
+def expire_unknown_locations(mem, now=None, ttl=None):
+    """Let a stale location mark go so the army is not permanently crippled."""
+    world = _world(mem)
+    unknown = world.get('general_location_unknown')
+    if not isinstance(unknown, list) or not unknown:
+        return []
+    now = int(mem.get('tick') or 0) if now is None else int(now)
+    ttl = LOCATION_UNKNOWN_TTL if ttl is None else int(ttl)
+    since = world.get('general_location_unknown_at')
+    if not isinstance(since, dict):
+        since = world['general_location_unknown_at'] = {}
+    released, kept = [], []
+    for name in unknown:
+        at = since.get(name)
+        if type(at) is not int:
+            since[name] = now                 # start the clock, never expire blind
+            kept.append(name)
+        elif now - at >= ttl:
+            released.append(name)
+            since.pop(name, None)
+        else:
+            kept.append(name)
+    if released:
+        world['general_location_unknown'] = kept
+    return released
+
 
 def march_arrival_limit(mem, sortie):
     """Bound an unconfirmed march by the chapter's measured chart distance.

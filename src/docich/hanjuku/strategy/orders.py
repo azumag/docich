@@ -900,7 +900,8 @@ def _queue_overdue_location_recheck(mem, sortie):
     unknown = _world(mem).setdefault('general_location_unknown', [])
     new = general not in unknown
     if new:
-        unknown.append(general)
+        from ..os_layer.world import mark_location_unknown
+        mark_location_unknown(mem, general)
     for residents in (_world(mem).get('garrison') or {}).values():
         if isinstance(residents, list) and general in residents:
             residents.remove(general)
