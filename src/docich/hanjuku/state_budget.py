@@ -25,6 +25,7 @@ from ..retroarch_boundary import read_record
 OVERSIZED_READ_LIMIT = 4 * 1024 * 1024   # one recovery read, never a habit
 TARGET_FRACTION = 3                      # compact down to 3/4 of the read limit
 HISTORY_KEEP = 20                        # newest entries of an append-only list
+SETTLED_MARCH_TICKS = 3000                # a launch record older than this cannot matter
 
 # Observation caches: every one of these is rebuilt by the next observation.
 CACHE_KEYS = ('obs_cost', 'post_month_status_last', 'general_statuses')
@@ -171,4 +172,49 @@ def compact_state(state, limit: int) -> dict:
         if size(out) <= goal:
             return out
         policy.pop(key, None)
+    if size(out) > goal:
+        _prune_settled_marches(out, goal)
     return out
+
+
+def _entry_tick(entry):
+    """When this launch/sortie record was written, or None."""
+    if not isinstance(entry, dict):
+        return None
+    for key in ('tick', 'confirm_tick'):
+        if type(entry.get(key)) is int:
+            return entry[key]
+    binding = entry.get('departure_binding')
+    if isinstance(binding, dict) and type(binding.get('confirm_tick')) is int:
+        return binding['confirm_tick']
+    return None
+
+
+def _prune_settled_marches(state, goal: int) -> None:
+    """Drop launch bookkeeping for marches that ended long ago.
+
+    `world.launched_orders` and `world.sorties` keep one record per launch with
+    its confirmation context. Nothing settles them, so they grew to 120 KB and
+    50 KB by chapter 9 month 23-12 (g1163 2026-11-12 02:2x: 270 051 bytes, over
+    the 256 KiB read limit — the agent failed every observation on it). A record
+    whose step is no longer a live order and whose tick is older than
+    SETTLED_MARCH_TICKS cannot affect the current plan.
+    """
+    policy = state.get('policy') or {}
+    world = policy.get('world') if isinstance(policy, dict) else None
+    if not isinstance(world, dict):
+        return
+    orders = ((policy.get('plan') or {}).get('orders') or {})
+    now = int(policy.get('tick') or 0)
+    live = {step for step, status in orders.items()
+            if status in ('pending', 'launched', 'launched_unconfirmed')}
+    for key in ('launched_orders', 'sorties'):
+        section = world.get(key)
+        if not isinstance(section, dict):
+            continue
+        for step in list(section):
+            if step in live:
+                continue
+            tick = _entry_tick(section[step])
+            if tick is None or now - tick > SETTLED_MARCH_TICKS:
+                section.pop(step, None)
