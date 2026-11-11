@@ -76,6 +76,15 @@ def observe_sortie_transition(screen, mem, previous_kind=None):
                 (mem.get('y_jumps') or {}).pop(f'{step}:target', None)
                 _forget_failed_jump(mem, step, 'target')
                 (mem.get('y_jumped') or {}).pop(step, None)
+                # The remembered marker cell is from before the interruption
+                # too. g1163 2026-11-11 12:24:03 kept オシロガ's cell after
+                # the month menu, read the resumed marker as arrived, aligned
+                # it on a roof nearby and sent シュゼット to a cliff where she
+                # camped. Forget it so the target is found again by a jump.
+                mem.pop('cursor', None)
+                if (mem.get('near_goal') or {}).get('step') == step:
+                    mem.pop('near_goal', None)
+                mem['uncertain'] = True
                 _record(mem, 'sortie_target_resumed', chart_step=step,
                         reason='割り込み後に同じ出撃先マーカーが戻ったため目標選択を再開')
         attempt['target_seen'] = True
