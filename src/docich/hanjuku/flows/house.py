@@ -221,6 +221,16 @@ def _roster_scroll_end(screen, frame):
                     for x in range(192, 199)))
 
 
+def _general_names(names):
+    """Drop the castle-status panel's labels from a name column read.
+
+    The stored garrison must only name people: the plan spends a whole sortie
+    cycle per phantom general (v678).
+    """
+    from ..os_layer.roster import known_generals
+    return known_generals(names)
+
+
 def _names_at(screen, x, y0, y1):
     from ..os_layer.readers import _name_read_cleanly
     names = []
@@ -1983,7 +1993,7 @@ def _castle_check_step(screen, mem, frame):
             return []
         castle = match[1]
         count = re.search(r'しょうぐん(\d+)めい', screen.text)
-        names = _names_at(screen, 144, 95, 159)
+        names = _general_names(_names_at(screen, 144, 95, 159))
         if not count or len(names) != int(count[1]) or any(UNKNOWN in g for g in names):
             _record(mem, 'castle_check_unread', general=name, castle=castle,
                     observed_metric={'count': count[1] if count else None, 'names': names},
@@ -2144,7 +2154,7 @@ def _repair_step(screen, mem, frame):
                 _phase(state, 'find_castle')
                 return [pad('b')]
             count = re.search(r'しょうぐん(\d+)めい', screen.text)
-            names = _names_at(screen, 144, 95, 159)
+            names = _general_names(_names_at(screen, 144, 95, 159))
             if not count or len(names) != int(count[1]) or any(UNKNOWN in g for g in names):
                 return _exit(mem, '出撃元の在城人数を完全に読めないため派遣しない')
             _world(mem).setdefault('garrison', {})[source] = names
