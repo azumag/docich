@@ -592,3 +592,19 @@ def test_exchange_word_alone_does_not_release_pending_choice():
     mem = {'tick': 30, 'trade_guard': {'tick': 10, 'choice_seen': True}}
     assert policy.trade_guard_step(text('ゼウスとこうかんする?'), mem, phase='dialogue') == []
     assert mem['trade_guard']['held'] is True
+
+
+def test_the_song_with_tilde_marks_arms_the_guard():
+    """花いちもんめ prints its song as は〜ない〜ちも〜んめ; the 〜 must not hide it.
+
+    g1139 2026-11-07 00:47: the OCR kept the marks, 'いちもんめ' never matched,
+    the guard never armed and ゼウス was traded for カシス on the generic A.
+    """
+    from docich.hanjuku.flows.prompts import _trade_flat
+    assert 'いちもんめ' in _trade_flat('「ふるさともとめ〜ては〜ない〜ちも〜んめッ♪')
+
+
+def test_tilde_flattening_leaves_other_words_alone():
+    from docich.hanjuku.flows.prompts import _trade_flat
+    assert _trade_flat('トレード する') == 'トレードする'
+    assert _trade_flat('〜〜') == ''
