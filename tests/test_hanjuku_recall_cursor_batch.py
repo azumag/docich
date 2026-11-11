@@ -61,3 +61,17 @@ def test_a_horizontal_move_is_not_batched():
     screen = _Screen(ROWS, 31)
     assert recall._walk({'type': 'pad', 'buttons': ['right']}, screen, 'きかん') == [
         {'type': 'pad', 'buttons': ['right']}]
+
+
+def test_irregular_intermediate_spacing_does_not_batch():
+    # Endpoints are 48px apart, but the intervening rows are not evenly spaced.
+    rows = [(31, 'いどう'), (43, 'ステータス'), (67, 'キャンプ'), (79, 'きかん')]
+    screen = _Screen(rows, 31)
+    out = recall._walk({'type': 'pad', 'buttons': ['down']}, screen, 'きかん')
+    assert [a['buttons'] for a in out] == [['down']]
+
+
+def test_single_row_menu_does_not_crash():
+    screen = _Screen([(31, 'きかん')], 31)
+    out = recall._walk({'type': 'pad', 'buttons': ['down']}, screen, 'きかん')
+    assert [a['buttons'] for a in out] == [['down']]
