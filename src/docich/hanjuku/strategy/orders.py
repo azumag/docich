@@ -1670,6 +1670,15 @@ def _retake_reserved(order, mem):
     if (not _retake_order(order, mem)
             or (_plan_region(mem).get('orders') or {}).get(order['step']) == 'launched_unconfirmed'):
         return False
+    # Chapter 9's next road castle takes waves (v660, owner 2026-11-11: ひとり
+    # づつ出撃していたら間に合わない). The planner already keeps up to
+    # CORRIDOR_WAVE_INFLIGHT expeditions at it; this gate held every one of
+    # them behind the first marching retake. g1163 14:12:19-14:14:41 sat on
+    # the map with seven retakes of タオ planned and none started while
+    # シナモン's retake was still walking.
+    from .replan import _corridor_wave_open
+    if _corridor_wave_open(mem, order.get('target')):
+        return False
     now = int(mem.get('tick') or 0)
     return any(step != order['step'] and _sortie_reserved_target(mem, step, s) == order.get('target')
                and s.get('status') in ('en_route', 'launched_unconfirmed')
