@@ -312,30 +312,51 @@ def _corridor_wave_open(mem, target) -> bool:
     return marching < CORRIDOR_WAVE_INFLIGHT
 
 
-# Owner 2026-11-11: 前線への中継移動も. Chapter 9 sorties only leave the road
-# castle beside the target, but the rear relay sent one general at a time: a
-# move already heading to the front blocked the next one, and one leg carried
-# one move per plan. g1163 11:20 held 17 generals at アルマムーン and one
-# (ビーツ) at ハヤク, so the waves above had nobody to send. The front castle
-# is now filled toward this many sendable generals (present + incoming).
-CORRIDOR_FRONT_STAGE = CORRIDOR_WAVE_INFLIGHT + 1
+# Owner 2026-11-11: 三人づつとかじゃなくて全員移動するようにしないとだし、主人公も
+# 移動しないと新しく雇った将軍は後方からしか出れない. Chapter 9 sorties only
+# leave the road castle beside the target and recruits join at the hero's
+# castle, so every general behind the front walks one hop toward it each plan,
+# the hero included. Superseded v661's four-general front.
+def _corridor_forward_moves(mem, owned, garrison, busy, road_next):
+    """(lead, rest) moves that walk every rear general one hop toward the front.
+
+    The first move keeps the lead slot the staging move always had; the rest
+    queue behind the front's attacks. The hero moves right after the first
+    general of his castle, while others are still there to be listed with
+    him; he is never an attacker (``_spares``/``_wave_pick`` keep excluding him).
+    """
+    chapter = mem.get('chapter') or 0
+    unknown = set(_world(mem).get('general_location_unknown') or ())
+    lead, rest = [], []
+    staged = set()
+    for donor in sorted(owned, key=lambda c: (-routes_len(mem, c, road_next, owned), c)):
+        route = routes.path(mem, donor, road_next, owned)
+        if not route or len(route) <= 2:
+            continue                       # the front itself, or no road to it
+        names = garrison.get(donor)
+        if names is None:
+            # An unread rear list: open it with one probe move, as before.
+            (rest if lead else lead).append({
+                'general': MOVE_ANY_GENERAL, 'source': donor, 'target': route[1], 'cards': [],
+                'after': None, 'purpose': 'move', 'source_probe': True,
+                'note': f'暫定: {road_next}への中継として{route[1]}へ移動'})
+            continue
+        free = [g for g in names if g not in busy and g not in unknown and g not in staged]
+        others = _strongest_first(mem, [g for g in free if g != NAME])
+        order = others[:1] + ([NAME] if NAME in free else []) + others[1:]
+        for general in order:
+            staged.add(general)
+            label = '主人公' if general == NAME else general
+            (rest if lead else lead).append({
+                'general': general, 'source': donor, 'target': route[1], 'cards': [],
+                'after': None, 'purpose': 'move',
+                'note': f'暫定: {road_next}への中継として{route[1]}へ{label}を移動'})
+    return lead, rest, staged
 
 
-def _corridor_front_need(mem, castle, busy) -> int:
-    """How many more generals chapter 9's front castle should receive."""
-    from .orders import _arrival_limit, _sortie_reserved_target
-    garrison = _world(mem).get('garrison') or {}
-    present = {g for g in garrison.get(castle) or () if g not in busy and g != NAME}
-    now = int(mem.get('tick') or 0)
-    incoming = 0
-    for step, sortie in _sorties(mem).items():
-        if (isinstance(sortie, dict)
-                and sortie.get('status') in ('en_route', 'launched_unconfirmed')
-                and type(sortie.get('tick')) is int
-                and _sortie_reserved_target(mem, step, sortie) == castle
-                and 0 <= now - sortie['tick'] < max(SORTIE_BUSY_TICKS, _arrival_limit(mem, sortie))):
-            incoming += 1
-    return max(0, CORRIDOR_FRONT_STAGE - len(present) - incoming)
+def routes_len(mem, donor, target, owned):
+    route = routes.path(mem, donor, target, owned)
+    return len(route) if route else 0
 
 
 def _wave_pick(mem, target, owned, busy, allow_sole):
@@ -941,7 +962,12 @@ def interim_candidates(mem, allow_sole=False) -> dict:
     garrison = _world(mem).get('garrison') or {}
     moves = []
     stage_more = []
-    if routes.is_road(chapter):
+    road_next = chart.corridor_next(chapter, owned) if chart.corridor(chapter) else None
+    if road_next is not None:
+        lead_moves, stage_more, staged = _corridor_forward_moves(mem, owned, garrison, busy, road_next)
+        moves.extend(lead_moves)
+        busy = busy | staged
+    elif routes.is_road(chapter):
         # Stage spare generals along chart legs rather than aiming a distant
         # enemy straight across a cliff. Every stage ends at an owned castle.
         seen_legs = set()
@@ -963,9 +989,7 @@ def interim_candidates(mem, allow_sole=False) -> dict:
                 if len(free) >= stage_min and not [g for g in _spares(free) if g != NAME]:
                     continue
                 route = routes.path(mem, donor, target, owned)
-                if route and len(route) > 2 and (
-                        route[1] not in heading
-                        or (chart.corridor(chapter) and _corridor_front_need(mem, route[1], busy))):
+                if route and len(route) > 2 and route[1] not in heading:
                     options.append((len(route), donor, route, free, probe))
             if not options:
                 continue
@@ -981,21 +1005,6 @@ def interim_candidates(mem, allow_sole=False) -> dict:
                           'cards': [], 'after': None, 'purpose': 'move',
                           'note': f'暫定: {target}への中継として{route[1]}へ移動',
                           **({'source_probe': True} if general == MOVE_ANY_GENERAL else {})})
-            if chart.corridor(chapter) and general != MOVE_ANY_GENERAL:
-                # Fill the front in one plan instead of one move per arrival.
-                need = _corridor_front_need(mem, route[1], busy) - 1
-                staged = {general}
-                for extra in _strongest_first(mem, [g for g in _spares(free) if g != general]):
-                    if need <= 0:
-                        break
-                    if len([g for g in free if g not in staged]) <= chart.sender_min(chapter) - 1:
-                        break
-                    staged.add(extra)
-                    need -= 1
-                    stage_more.append({'general': extra, 'source': donor, 'target': route[1],
-                                       'cards': [], 'after': None, 'purpose': 'move',
-                                       'note': f'暫定: {target}への中継として{route[1]}へ{extra}を追加で移動'})
-                busy = busy | staged
     # A castle that was sent a move after its list was last read is not known
     # to be empty: past the busy window it was picked again and again (#3037).
     # Owner 2026-11-05: while the boss is open the spare generals are the

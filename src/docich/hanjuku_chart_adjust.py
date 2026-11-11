@@ -204,7 +204,10 @@ def startable(order, request) -> str | None:
     lost = set(request.get('lost') or ())
     if source in lost:
         return 'source_lost'
-    if general == chart.HERO:
+    if general == chart.HERO and not (order.get('purpose') == 'move'
+                                      and chart.guard_free(request.get('chapter'))):
+        # Chapter 9 walks the hero toward the front so recruits join there
+        # (owner 2026-11-11); he still never attacks.
         return 'hero_not_dispatchable'
     marching = {item.get('general') for item in request.get('en_route') or () if isinstance(item, dict)}
     if general in marching:
