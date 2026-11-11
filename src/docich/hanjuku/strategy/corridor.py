@@ -208,7 +208,40 @@ def orders(mem) -> list[dict]:
         hero.append((2, hero_order))
     attacks.sort(key=lambda item: item[0])
     moves.sort(key=lambda item: item[0])      # nearest the front first
-    return [order for _, order in (*attacks, *moves, *hero)]
+    out = [order for _, order in (*attacks, *moves, *hero)]
+    if not out:
+        probe = _drained_probe(mem, routes_by, target, lost)
+        if probe is not None:
+            out = [probe]
+    return out
+
+
+def _drained_probe(mem, routes_by, target, lost):
+    """Visit the front castle when every owned castle is marked empty.
+
+    A drained mark is cleared only by observing a general inside that castle,
+    and the plan never visits a drained castle, so nothing can ever clear it:
+    g1163 2026-11-12 01:2x had all three road castles drained while the country
+    held 32 generals, and the plan produced no order at all. One visit per cycle
+    reads the live list and either launches the mover or marks the castle empty
+    again, so the position recovers by itself.
+    """
+    if not routes_by:
+        return None
+    routable = {source: route for source, route in routes_by.items()
+                if route and len(route) >= 2}
+    if not routable:
+        return None
+    if not all(_drained(mem, source, 'move') or _drained(mem, source, 'attack')
+               for source in routable):
+        return None                       # only the all-drained deadlock
+    _, source = min((len(route), source) for source, route in routable.items())
+    route = routable[source]
+    if len(route) == 2:
+        purpose = 'retake' if target in lost else 'attack'
+    else:
+        purpose = 'move'
+    return _order(mem, source, route[1], target, purpose)
 
 
 HERO_POST_HOPS = 3          # the hero stands this many castles from the target
