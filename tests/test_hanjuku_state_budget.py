@@ -125,3 +125,27 @@ def test_a_wide_record_over_the_limit_is_compacted_by_its_bytes():
     assert state_budget.size(state) > limit
     out = state_budget.compact_state(state, limit)
     assert state_budget.size(out) <= state_budget.target(limit)
+
+
+def test_stale_panel_labels_are_dropped_from_the_garrison(tmp_path):
+    """A record written before v678 still names the status panel's labels.
+
+    The castle-status read only runs when the whole name column matches the
+    member count, so a polluted castle can stay polluted; the load repairs it.
+    """
+    state = _state(world={'garrison': {
+        'ハヤク': ['ハヤク', 'じょう', 'しゅうにゅう', 'G', 'レベル',
+                  'しょうぐん', 'めい', 'ラズベリー', 'セルリアク', 'セミヨン'],
+        'タオ': ['バトウラ'],
+    }})
+    path = _dump(state, 65536, tmp_path / 'b.json')
+    loaded = state_budget.load_state(path, 65536)
+    assert loaded['policy']['world']['garrison'] == {
+        'ハヤク': ['ラズベリー', 'セルリアク', 'セミヨン'], 'タオ': ['バトウラ']}
+    # The caller's record is untouched.
+    assert len(state['policy']['world']['garrison']['ハヤク']) == 10
+
+
+def test_a_clean_garrison_is_returned_unchanged():
+    state = _state(world={'garrison': {'タオ': ['バトウラ', 'リーキ']}})
+    assert state_budget.sanitize_state(state) is state
