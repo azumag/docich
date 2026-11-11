@@ -424,6 +424,46 @@ def _want_y_jump(mem, order, name, mode) -> bool:
     return not world or abs(world[0] - goal[0]) + abs(world[1] - goal[1]) > Y_JUMP_FAR
 
 
+Y_JUMP_UNREACHABLE_TICKS = 1800   # a goal the view cannot align is skipped this long
+Y_JUMP_UNREACHABLE_PX = 6         # a residual this size repeats exactly
+
+
+def _note_unreachable_goal(mem, goal, residual):
+    """Remember a goal the Y view cannot put the cursor on.
+
+    g1163 2026-11-12 08:29-08:31: every attempt for the same castle ended with
+    the identical residual [0.0, -11.5] after eight moves, once a minute, each
+    costing a Y open, eight moves and a close. A new order step resets the
+    per-step budget, so only the goal itself can carry the memory.
+
+    Two failures at (or inside) the same small residual is a property of the
+    view, not bad luck: more moves cannot fix it, so the normal navigation gets
+    the target back until the mark ages out.
+    """
+    if residual is None:
+        return
+    dx, dy = residual
+    if abs(dx) > Y_JUMP_UNREACHABLE_PX and abs(dy) > Y_JUMP_UNREACHABLE_PX:
+        return
+    seen = mem.setdefault('y_jump_unreachable', {})
+    entry = seen.get(goal) if isinstance(seen.get(goal), dict) else {}
+    same = (entry and abs(entry.get('residual', [999, 999])[0] - dx) <= 1
+            and abs(entry.get('residual', [999, 999])[1] - dy) <= 1)
+    count = (int(entry.get('count') or 0) + 1) if same else 1
+    seen[goal] = {'count': count, 'residual': [round(dx, 1), round(dy, 1)],
+                  'tick': int(mem.get('tick') or 0)}
+
+
+def y_jump_unreachable(mem, goal):
+    """True while this goal is marked as unreachable by the Y view."""
+    entry = (mem.get('y_jump_unreachable') or {}).get(goal)
+    if not isinstance(entry, dict) or int(entry.get('count') or 0) < 2:
+        return False
+    now = int(mem.get('tick') or 0)
+    tick = entry.get('tick')
+    return type(tick) is not int or now - tick < Y_JUMP_UNREACHABLE_TICKS
+
+
 def _start_y_jump(mem, order, name, mode):
     key = f"{order['step']}:{mode}"
     jumps = mem.setdefault('y_jumps', {})
@@ -487,6 +527,7 @@ def _y_jump_step(mem, frame):
                 observed_metric={'world_cursor': list(cursor), 'residual': [round(dx, 1), round(dy, 1)],
                                  'moves': jump['moves']},
                 reason='全体マップのカーソルが目的の城に合わないため決定せず閉じる')
+        _note_unreachable_goal(mem, jump['goal'], (dx, dy))
         return _close_target_jump(mem, jump)
     if (abs(dx) <= Y_JUMP_TOL and abs(dy) <= Y_JUMP_TOL) or jump['moves'] >= Y_JUMP_MOVES:
         mem.pop('y_jump', None)
