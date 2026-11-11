@@ -1195,6 +1195,16 @@ def step(screen, mem, frame):
             and state['stage'] not in {'status', 'wait_repair', 'wait_recall'}
             and house.roster(screen) is None):
         return None
+    # The sortie target picker belongs to the sortie that opened it: no stage
+    # here reads it, and every stage answered [] on it. g1163 2026-11-11
+    # 08:50:57: a battle ended while シャルドネ's target picker was open, the
+    # resumed 'manifest' stage held map_target with no input, and the month
+    # rolled over before the target was ever decided — four times in twenty
+    # minutes. Only the wait_* stages hand the frame to a repair/recall that
+    # may own the picker.
+    if (screen.kind == 'map_target'
+            and state['stage'] not in {'wait_repair', 'wait_recall'}):
+        return None
     # The monthly workflow owns this map.  A lost cursor is a temporary
     # navigation interrupt, not a reason to let the sortie planner take over.
     if (screen.kind == 'map' and screen.cursor and not screen.marker
