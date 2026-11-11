@@ -195,6 +195,14 @@ def orders(mem) -> list[dict]:
             hop = target
             if _attackers_marching(mem, target) >= SQUAD:
                 continue                   # the vanguard is full; nobody waits for six
+            if (_repelled_alone(mem, target)
+                    and _attackers_marching(mem, target) < ATTACK_COMPANY):
+                if not mem.get('attack_company_hold'):
+                    mem['attack_company_hold'] = {'target': target,
+                                                  'tick': int(mem.get('tick') or 0)}
+                    _record_only(mem, 'attack_company_required', target=target,
+                                 reason='単独で返り討ちにあった城へは、味方が2人そろうまで突撃しない')
+                continue
         else:
             purpose, hop = 'move', route[1]
         if purpose == 'move' and _moved(mem, wave, hop, source) >= SQUAD:
@@ -244,6 +252,26 @@ def _drained_probe(mem, routes_by, target, lost):
     return _order(mem, source, route[1], target, purpose)
 
 
+# A lone attacker that lost to a nearly untouched defender cannot win alone:
+# g1163 2026-11-12 sent single generals at オオキク and watched the defender read
+# 18, 34 and 44 HP in a row (each fresh attacker died without denting it). Two
+# marching attackers are the least that changes that outcome.
+REPELLED_FLOOR_HP = 30
+ATTACK_COMPANY = 2
+
+
+def _repelled_alone(mem, target) -> bool:
+    """The last attack on this castle lost against a barely-damaged defender."""
+    history = [h for h in (mem.get('sortie_history') or [])
+               if isinstance(h, dict) and h.get('target') == target]
+    if not history:
+        return False
+    last = history[-1]
+    enemy_hp = last.get('enemy_hp')
+    return (last.get('outcome') == 'lost' and type(enemy_hp) is int
+            and enemy_hp >= REPELLED_FLOOR_HP)
+
+
 HERO_POST_HOPS = 3          # the hero stands this many castles from the target
 
 
@@ -274,6 +302,12 @@ def _hero_post_order(mem, routes_by, hero_at, wave):
             return None
         return _order(mem, hero_at, behind, routes_by[hero_at][-1], 'move', hero=True)
     return None                           # already posted
+
+
+def _record_only(mem, decision, **fields):
+    """Record a decision without touching the plan (corridor holds)."""
+    from ..decision_log import _record
+    _record(mem, decision, **fields)
 
 
 def _order(mem, source, hop, target, purpose, hero=False):
