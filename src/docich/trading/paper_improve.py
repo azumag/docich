@@ -25,7 +25,6 @@ from .corner_script import build_facts
 from .dashboard import load_snapshot
 from .models import TradingValidationError
 from .experiment_control import (
-    EARLY_STOP_CLOSED_SELLS, EARLY_STOP_PROFIT_FACTOR,
     MIN_EXPERIMENT_AGE_S, MIN_EXPERIMENT_CLOSED_SELLS,
     assess_experiment, experiment_key, experiment_lock,
     rotation_reason, same_experiment, stage_candidate, usable_pending_experiment,

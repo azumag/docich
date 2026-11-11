@@ -1,8 +1,8 @@
 """Bounded PAPER experiment assessment, draining and pending activation.
 
 The trading worker owns the cheap periodic check. Candidate generation is a
-separate operation: neither an unavailable LLM nor a missing corner can keep
-a proven losing experiment opening positions. All callers hold the same short
+separate operation: an unavailable LLM or a missing corner only delays the
+next rotation; it never changes the rules a drain exits with. All callers hold the same short
 file lock through observation and their local fill/state writes, never through
 network or AI work. No live execution or generated Python is involved.
 """
@@ -28,8 +28,11 @@ from .strategy_metrics import evaluate_strategy_experiment
 CONTROL_FILENAME = "paper_experiment_control.json"
 MIN_EXPERIMENT_CLOSED_SELLS = 20
 MIN_EXPERIMENT_AGE_S = 48 * 3600
-EARLY_STOP_CLOSED_SELLS = 8
-EARLY_STOP_PROFIT_FACTOR = Decimal("0.75")
+# "early-stop" is no longer produced. PAPER money is simulated and a new
+# candidate arrives at most once a day, so stopping a losing experiment after
+# a handful of exits only paused data collection. It stays a readable drain
+# reason so a latch already written to control keeps draining to the next
+# candidate instead of becoming an invalid control file.
 DRAIN_REASONS = frozenset({"early-stop", "sample-complete", "max-age", "initial-experiment"})
 CONTROL_STATUSES = frozenset({"active", "draining", "waiting-candidate", "blocked", "legacy"})
 CONTROL_REASONS = DRAIN_REASONS | {
@@ -76,7 +79,7 @@ def usable_pending_experiment(trading_dir, active) -> StrategyExperiment | None:
 
 
 def rotation_reason(active, evaluation: Mapping[str, object] | None, *, now: float) -> str | None:
-    """Preserve the reviewed sample/age gates, requiring usable observations."""
+    """Sample/age gates, requiring usable observations; losses alone never rotate."""
     if active is None:
         return "initial-experiment"
     if not evaluation or evaluation.get("status") != "ok":
@@ -97,8 +100,6 @@ def rotation_reason(active, evaluation: Mapping[str, object] | None, *, now: flo
             return None
     except (ValueError, TypeError, InvalidOperation):
         return None
-    if count >= EARLY_STOP_CLOSED_SELLS and pnl < 0 and pf is not None and pf < EARLY_STOP_PROFIT_FACTOR:
-        return "early-stop"
     if count >= MIN_EXPERIMENT_CLOSED_SELLS:
         return "sample-complete"
     if age >= MIN_EXPERIMENT_AGE_S:
@@ -176,9 +177,8 @@ def _publish(target, active, evaluation, *, now, status, reason, entries, pendin
 def assess_experiment(trading_dir, *, capital_jpy: object, now: float) -> ExperimentStep:
     """Evaluate/drain/advance once; the caller must hold ``experiment_lock``.
 
-    A failed strategy remains paused when no next candidate exists. Completed
-    non-losing samples can continue gathering evidence until there is a next
-    candidate. A latched drain continues exits under the old strategy; changing
+    An experiment keeps trading, losing or not, until a next candidate exists
+    and the sample/age gate is met. A latched drain continues exits under the old strategy; changing
     its rules while it still owns inventory is forbidden.
     """
     target = Path(trading_dir)
@@ -220,7 +220,7 @@ def assess_experiment(trading_dir, *, capital_jpy: object, now: float) -> Experi
         if reason not in DRAIN_REASONS:
             return _publish(target, active, evaluation, now=now, status="blocked", reason="control-invalid",
                             entries=False, pending=pending)
-    must_drain = draining or reason == "early-stop" or (reason is not None and pending is not None)
+    must_drain = draining or (reason is not None and pending is not None)
     if not must_drain:
         return _publish(target, active, evaluation, now=now, status="active", reason=reason or "collecting",
                         entries=True, pending=pending)
