@@ -312,6 +312,32 @@ def _corridor_wave_open(mem, target) -> bool:
     return marching < CORRIDOR_WAVE_INFLIGHT
 
 
+# Owner 2026-11-11: 前線への中継移動も. Chapter 9 sorties only leave the road
+# castle beside the target, but the rear relay sent one general at a time: a
+# move already heading to the front blocked the next one, and one leg carried
+# one move per plan. g1163 11:20 held 17 generals at アルマムーン and one
+# (ビーツ) at ハヤク, so the waves above had nobody to send. The front castle
+# is now filled toward this many sendable generals (present + incoming).
+CORRIDOR_FRONT_STAGE = CORRIDOR_WAVE_INFLIGHT + 1
+
+
+def _corridor_front_need(mem, castle, busy) -> int:
+    """How many more generals chapter 9's front castle should receive."""
+    from .orders import _arrival_limit, _sortie_reserved_target
+    garrison = _world(mem).get('garrison') or {}
+    present = {g for g in garrison.get(castle) or () if g not in busy and g != NAME}
+    now = int(mem.get('tick') or 0)
+    incoming = 0
+    for step, sortie in _sorties(mem).items():
+        if (isinstance(sortie, dict)
+                and sortie.get('status') in ('en_route', 'launched_unconfirmed')
+                and type(sortie.get('tick')) is int
+                and _sortie_reserved_target(mem, step, sortie) == castle
+                and 0 <= now - sortie['tick'] < max(SORTIE_BUSY_TICKS, _arrival_limit(mem, sortie))):
+            incoming += 1
+    return max(0, CORRIDOR_FRONT_STAGE - len(present) - incoming)
+
+
 def _wave_pick(mem, target, owned, busy, allow_sole):
     """(source, general) of a measured spare for a same-target wave.
 
@@ -914,6 +940,7 @@ def interim_candidates(mem, allow_sole=False) -> dict:
     busy = busy | planned_busy
     garrison = _world(mem).get('garrison') or {}
     moves = []
+    stage_more = []
     if routes.is_road(chapter):
         # Stage spare generals along chart legs rather than aiming a distant
         # enemy straight across a cliff. Every stage ends at an owned castle.
@@ -936,7 +963,9 @@ def interim_candidates(mem, allow_sole=False) -> dict:
                 if len(free) >= stage_min and not [g for g in _spares(free) if g != NAME]:
                     continue
                 route = routes.path(mem, donor, target, owned)
-                if route and len(route) > 2 and route[1] not in heading:
+                if route and len(route) > 2 and (
+                        route[1] not in heading
+                        or (chart.corridor(chapter) and _corridor_front_need(mem, route[1], busy))):
                     options.append((len(route), donor, route, free, probe))
             if not options:
                 continue
@@ -952,6 +981,21 @@ def interim_candidates(mem, allow_sole=False) -> dict:
                           'cards': [], 'after': None, 'purpose': 'move',
                           'note': f'暫定: {target}への中継として{route[1]}へ移動',
                           **({'source_probe': True} if general == MOVE_ANY_GENERAL else {})})
+            if chart.corridor(chapter) and general != MOVE_ANY_GENERAL:
+                # Fill the front in one plan instead of one move per arrival.
+                need = _corridor_front_need(mem, route[1], busy) - 1
+                staged = {general}
+                for extra in _strongest_first(mem, [g for g in _spares(free) if g != general]):
+                    if need <= 0:
+                        break
+                    if len([g for g in free if g not in staged]) <= chart.sender_min(chapter) - 1:
+                        break
+                    staged.add(extra)
+                    need -= 1
+                    stage_more.append({'general': extra, 'source': donor, 'target': route[1],
+                                       'cards': [], 'after': None, 'purpose': 'move',
+                                       'note': f'暫定: {target}への中継として{route[1]}へ{extra}を追加で移動'})
+                busy = busy | staged
     # A castle that was sent a move after its list was last read is not known
     # to be empty: past the busy window it was picked again and again (#3037).
     # Owner 2026-11-05: while the boss is open the spare generals are the
@@ -1126,7 +1170,7 @@ def interim_candidates(mem, allow_sole=False) -> dict:
     front = [] if retakes_stalled else lead[:1]
     for order in (*front, *staffing, *waves, *boss_wave_orders,
                   *(lead if retakes_stalled else lead[1:]),
-                  *attacks, *rotation, *wave_orders):
+                  *attacks, *stage_more, *rotation, *wave_orders):
         # A generic source-list probe at a measured one-general castle is
         # not a feasible sortie. Only an arrival or a new joiner expected at
         # the hero's castle justifies opening that singleton, and even then
