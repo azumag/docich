@@ -979,6 +979,7 @@ def _general_list_scan(screen, mem, order):
     return [pad('down')]
 
 
+CASTLE_STATUS_AS_LIST_LIMIT = 3   # B presses on a ステータス panel read as the list before cancelling
 CURSOR_PICK_DOWNS = 2 * GENERAL_LIST_FULL   # presses past the hero before the normal path takes over
 
 
@@ -1711,6 +1712,22 @@ def deploy_step(screen: Screen, mem):
             return _hold_deploy(screen, mem, order, '出撃メニューのしゅつげきをカーソルで判定できないため保留')
         return _deploy_input(screen, mem, order, [pad('a')] if move == 'here' else [move],
                              '出撃メニューを選択')
+    if kind == 'general_list' and CASTLE_STATUS.search(screen.text or ''):
+        # The castle's ステータス panel opened instead of the sortie list (a
+        # stray sprite read as the hand). g1163 2026-11-11 14:28:44 pressed up
+        # toward a "general" named ハヤク for over five minutes. Back out to the
+        # castle menu; a repeat cancels the order so the plan moves on.
+        misses = mem.setdefault('castle_status_as_list', {})
+        misses[order['step']] = int(misses.get(order['step']) or 0) + 1
+        _record(mem, 'castle_status_not_list', **_deploy_context(order, mem), castle=_source(order, mem),
+                observed_metric={'count': misses[order['step']]},
+                reason='将軍一覧ではなく城のステータス表示が開いているためBで城メニューへ戻る')
+        if misses[order['step']] > CASTLE_STATUS_AS_LIST_LIMIT:
+            misses.pop(order['step'], None)
+            _finish_order(mem, 'failed', deviation_reason='出撃一覧の代わりに城のステータス表示が開き続けた',
+                          reason='城のステータス表示から出撃一覧へ進めないため指示を取り消す')
+            return [pad('b'), pad('b')]
+        return _deploy_input(screen, mem, order, [pad('b')], '城のステータス表示を閉じて城メニューへ戻る')
     if kind == 'general_list':
         picked = _cursor_order_pick(screen, mem, order)
         if picked is not None:

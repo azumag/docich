@@ -897,6 +897,12 @@ def _present_generals(screen):
         return []
     if not screen.hand:
         return None
+    if CASTLE_STATUS.search(screen.text or ''):
+        # The castle's ステータス panel (castle name, しゅうにゅう, レベル, しょうぐん
+        # and four resident names), not the sortie list (g1163 2026-11-11
+        # 14:12/14:28: its words were recorded as ハヤク's garrison and ハヤク
+        # itself was picked as a substitute general).
+        return None
     names = [w for x, y, w in _options(screen) if x > 100 and w not in GENERAL_LIST_UI
              and not re.search(r'\d', w) and 'おりません' not in w]
     if not names or any(UNKNOWN in w for w in names):
