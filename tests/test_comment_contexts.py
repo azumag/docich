@@ -280,3 +280,28 @@ def test_hanjuku_explanation_survives_the_ops_character_limit(tmp_path):
 def test_hanjuku_explanation_is_only_for_the_hanjuku_screen(tmp_path, game, host_mode):
     text = _hanjuku_ops(tmp_path, config=ENABLED_TOML, game=game, host_mode=host_mode)
     assert '半熟英雄BOTの仕組み' not in text
+
+
+def test_provider_uses_the_game_profile_as_its_single_source(tmp_path):
+    from docich.comment import game_profile
+    text = _hanjuku_ops(tmp_path, config=ENABLED_TOML)
+    lines = text.split('\n')
+    assert lines[2:2 + len(game_profile.HANJUKU_HOW_IT_WORKS)] == list(game_profile.HANJUKU_HOW_IT_WORKS)
+    assert lines[2 + len(game_profile.HANJUKU_HOW_IT_WORKS)] == game_profile.HANJUKU_LLM_ON
+
+
+def test_provider_reads_its_allowlisted_env_not_os_environ(tmp_path, monkeypatch):
+    other = tmp_path / 'process-env.toml'
+    other.write_text('[hanjuku.chart_adjust]\nenabled = false\nagents = "a:b"\n', encoding='utf-8')
+    monkeypatch.setenv('DOCICH_HANJUKU_CONFIG_FILE', str(other))
+    text = _hanjuku_ops(tmp_path, config=ENABLED_TOML)  # the provider env says: enabled
+    assert 'LLMの動的判断は有効' in text and '止めていて' not in text
+
+
+def test_provider_non_soviet_game_state_comes_from_the_profile_module(tmp_path):
+    from docich.comment import game_profile
+    root = _input_root(tmp_path)
+    (root / 'canonical.json').write_text(json.dumps({
+        'phase': 'ready', 'game': 'sorengame', 'active': {'game': 'hanjuku-hero'}}))
+    state = SorenGameContextProvider(root, _provider_env(root)).build(host_mode='main').game_state_context
+    assert state == game_profile.build('hanjuku-hero')['game_state']

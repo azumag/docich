@@ -52,11 +52,14 @@ HANJUKU_LLM_ON = "  ・いまの状態: LLMの動的判断は有効"
 HANJUKU_LLM_OFF = "  ・いまの状態: LLMの動的判断は一時的に止めていて、ルールだけで動いている"
 
 
+REPO_HANJUKU_CONFIG = Path(__file__).resolve().parents[3] / "config" / "games" / "hanjuku-hero.toml"
+
+
 def default_hanjuku_config() -> Path:
+    """CLI default: the env override (tests), else this checkout's config. Callers that must not
+    read ``os.environ`` (e.g. a provider with an allowlisted env) pass ``config=`` explicitly."""
     override = os.environ.get("DOCICH_HANJUKU_CONFIG_FILE")
-    if override:
-        return Path(override)
-    return Path(__file__).resolve().parents[3] / "config" / "games" / "hanjuku-hero.toml"
+    return Path(override) if override else REPO_HANJUKU_CONFIG
 
 
 def hanjuku_llm_enabled(path: Path | None = None) -> bool | None:

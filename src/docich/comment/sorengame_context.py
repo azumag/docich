@@ -13,6 +13,7 @@ from pathlib import Path
 import re
 from typing import Mapping
 
+from . import game_profile
 from .contexts import GameContext, normalize_host_mode
 
 
@@ -26,7 +27,7 @@ GAME_BLURBS = {
     "sorengame": "ソ連ゲーム(Unity WebGL)。AIが戦略を改善しながらプレイし、ロシア建国・ソ連建国を目指す",
     "robots": "Robots(bsdgames)。ロボットの追跡を避けるターン制パズル(いまは手動操作)",
     "nethack": "NetHack(CLIローグライク)",
-    "hanjuku-hero": "半熟英雄(SFCエミュレータ)",
+    "hanjuku-hero": game_profile.HANJUKU_BLURB,
     "external-video-view": (
         "特別コーナー。配信者のPCで遊んでいるゲームの映像をOBSから受けて映している。"
         "コメントには応援・プレイの様子・ゲームの印象で答え、画面から分からない仕掛けや数値は創作しない"
@@ -36,19 +37,6 @@ ROUTING_NOTE = (
     "- 返答の話題はメイン画面のゲームに合わせる。コメントがソ連ゲームの話"
     "(ソ連建国・スコア・戦略改善)なら、画面が違ってもソレンゲームの話として答える"
 )
-# 半熟英雄がメイン画面のとき、BOTの仕組みを聞かれたら答える要点。文面は Soren 側
-# broadcast/comment.sh の _build_comment_ops_context と同一に保つ（本番で組み立てるのはそちら）。
-HANJUKU_HOW_IT_WORKS = (
-    "- 【半熟英雄BOTの仕組み】視聴者が半熟のBOTの動き方・AIの使い方（どう動いてるの、AIが操作してるの等）を聞いたときだけ、"
-    "次の要点を噛み砕いて答える。このあとに並ぶソ連ゲームの戦略改善・メリケンAIの行は半熟BOTの話ではない",
-    "  ・基本は人が決めたルール(ヒューリスティック)で動くBOT。画面を読み取り、決まった手順でボタンを押す",
-    "  ・AIはBOTの動作ログを見て定期的に改善するために使う。いきなり大きく変えず、少しずつ直す保守的なやり方",
-    "  ・難しい場面ではLLMがその場で判断する仕組みも組み込んだハイブリッド構成。ただしLLMが必要な場面は少ない",
-    "  ・判断の理由は最終的にアルゴリズムへ置き換えられるので、この方針にしている",
-    "  ・LLMがリアルタイムに判断するとレイテンシ(待ち時間)が問題になるため、いまはこの方式がベター",
-)
-HANJUKU_LLM_ON = "  ・いまの状態: LLMの動的判断は有効"
-HANJUKU_LLM_OFF = "  ・いまの状態: LLMの動的判断は一時的に止めていて、ルールだけで動いている"
 STATE_LABELS = {
     "MOVE": "プレイ中",
     "WAITING": "待機中",
@@ -111,9 +99,7 @@ class SorenGameContextProvider:
         elif game == "external-video-view":
             game_state = self._flyhome_state_context(canonical)
         elif isinstance(game, str) and game != "sorengame":
-            game_state = (f"現在のメイン画面: {game} — {GAME_BLURBS.get(game, '')}。"
-                          "ソ連ゲームのスコア・盤面・ピース・建国統計はこのゲームの状況ではありません。"
-                          "現在の戦闘・勝敗・操作の情報はこのメモにはありません。推測して補わないでください。")
+            game_state = game_profile.non_soviet_game_state(game, GAME_BLURBS.get(game, ""))
         else:
             game_state = self._game_state_context()
         return GameContext(
@@ -460,39 +446,18 @@ class SorenGameContextProvider:
         output = "\n".join(lines).strip() or "(運用状況メモなし)"
         if len(output) > max_chars:
             output = output[:max_chars].rstrip() + "…"
-        if host_mode != "soren91" and current_game == "hanjuku-hero":
+        profile = None if host_mode == "soren91" or not current_game else self._game_profile(current_game)
+        if profile and profile.get("ops_lines"):
             # 文字数上限は既存の行にだけ掛け、説明は切らない（メイン画面行・ルーティング行の直後へ入れる）。
             head = output.split("\n")
-            output = "\n".join(head[:2] + self._hanjuku_how_it_works() + head[2:])
+            output = "\n".join(head[:2] + profile["ops_lines"] + head[2:])
         return output
 
-    def _hanjuku_llm_enabled(self) -> bool | None:
-        """Measured from [hanjuku.chart_adjust]; None when unreadable (never guess)."""
-        import tomllib
-
-        path = self._path("DOCICH_HANJUKU_CONFIG_FILE", "/home/ubuntu/docich/config/games/hanjuku-hero.toml")
-        try:
-            with path.open("rb") as stream:
-                doc = tomllib.load(stream)
-            cfg = (doc.get("hanjuku") or {}).get("chart_adjust") or {}
-            enabled = cfg.get("enabled", False)
-            agents = cfg.get("agents", "")
-            if cfg.get("direct_enabled", False) is True:
-                agents = cfg.get("direct_agents", "")
-            if not isinstance(enabled, bool) or not isinstance(agents, str):
-                return None
-            return enabled and bool(agents.strip())
-        except Exception:
-            return None
-
-    def _hanjuku_how_it_works(self) -> list[str]:
-        block = list(HANJUKU_HOW_IT_WORKS)
-        llm = self._hanjuku_llm_enabled()
-        if llm is True:
-            block.append(HANJUKU_LLM_ON)
-        elif llm is False:
-            block.append(HANJUKU_LLM_OFF)
-        return block
+    def _game_profile(self, game: str) -> dict | None:
+        """The docich-owned replacement profile for ``game`` (``None`` when it has none)."""
+        # The provider's env is an allowlist: pass the config path explicitly, never via os.environ.
+        config = self._path("DOCICH_HANJUKU_CONFIG_FILE", str(game_profile.REPO_HANJUKU_CONFIG))
+        return game_profile.build(game, config=config)
 
     def _celebration_history_context(self) -> str:
         history_dir = self.env.get("TMP_HISTORY_DIR") or "tmp/history"
