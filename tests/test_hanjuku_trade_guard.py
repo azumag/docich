@@ -572,3 +572,23 @@ def test_trade_guard_is_released_before_a_real_pending_command_owner(phase):
         assert actions == control_actions == expected
         assert 'trade_guard' not in state['policy']
     assert 'command_open_pending' not in state['policy']['battle']
+
+
+@pytest.mark.parametrize('phase', [None, 'dialogue', 'concert', 'event'])
+def test_completed_trade_dialogue_releases_held_guard(phase):
+    # g1139/g1145: this final dialogue must not be held until screen_stalled.
+    mem = {'tick': 30, 'trade_guard': {
+        'tick': 10, 'choice_seen': True, 'chosen': False,
+        'held': True, 'unread_choice_recorded': True}}
+    done = text('ということでゼウスはわがぐんのカシスとこうかんだ!これにてトレードしゅうりょう!')
+    assert policy.trade_guard_step(done, mem, phase=phase) is None
+    assert 'trade_guard' not in mem
+    # Re-observing the same completed frame must not arm another trade.
+    assert policy.trade_guard_step(done, mem, phase=phase) is None
+    assert 'trade_guard' not in mem
+
+
+def test_exchange_word_alone_does_not_release_pending_choice():
+    mem = {'tick': 30, 'trade_guard': {'tick': 10, 'choice_seen': True}}
+    assert policy.trade_guard_step(text('ゼウスとこうかんする?'), mem, phase='dialogue') == []
+    assert mem['trade_guard']['held'] is True

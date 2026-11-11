@@ -153,6 +153,12 @@ def trade_guard_step(screen: Screen, mem, *, phase=None):
         mem.pop('trade_guard', None)
         return None
     trade_seen = any(tok in flat for tok in TRADE_GUARD_TOKENS)
+    # g1139/g1145: the completed exchange still says トレード, but is
+    # no longer a choice. Release ownership before re-arming the guard.
+    # Require an explicit completion phrase; こうかん alone also occurs in offers.
+    if 'トレードしゅうりょう' in flat or 'トレード終了' in flat:
+        mem.pop('trade_guard', None)
+        return None
     # The measured monthly event is drawn on the red-curtain scene: classify()
     # returns 'concert' for the frame (g1067/g1107/g1139), never 'dialogue', so
     # the old phase boundary skipped this guard there and the generic A pressed
