@@ -31,6 +31,18 @@ TRADE_GUARD_TOKENS = ('トレード', 'いちもんめ', 'イキのいいの', '
 # tail keeps the release working when OCR garbles the トレード half. Not an offer
 # word, so it never arms the guard; it releases it (same token as PR #3637).
 TRADE_COMPLETED_TOKENS = ('しゅうりょう',)
+# The 花いちもんめ event draws its song line as "は〜ない〜ちも〜んめ"; the OCR
+# keeps those 〜 marks, so 'いちもんめ' never matched the raw text and the guard
+# never armed (g1139 2026-11-07 00:47: ゼウス was traded for カシス while every
+# frame got the generic A). Only the marks are stripped, never other glyphs.
+TRADE_MATCH_TILDES = ('〜', '~')
+
+
+def _trade_flat(text: str) -> str:
+    flat = ''.join((text or '').split())
+    for mark in TRADE_MATCH_TILDES:
+        flat = flat.replace(mark, '')
+    return flat
 
 
 TRADE_CHOICE_PAIRS = (('OK', 'NO'), ('そうする', 'やめる'))
@@ -140,7 +152,7 @@ def trade_guard_step(screen: Screen, mem, *, phase=None):
     if isinstance(guard, dict):
         guard.pop('held', None)  # ownership is recomputed for this observation
     tick = int(mem.get('tick') or 0)
-    flat = ''.join(screen.text.split())
+    flat = _trade_flat(screen.text)
     # The result line "これにて トレードしゅうりょう!" is the end of the event, not a
     # pending choice. It sits on the bottom row of the message box (y=183, inside
     # the 176-208 choice band) and its first word has no trade token, so the
