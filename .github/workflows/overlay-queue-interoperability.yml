@@ -1,6 +1,8 @@
 name: Overlay queue interoperability
 
 on:
+  schedule:
+    - cron: '43 2 * * 1'
   pull_request:
     paths:
       - '.github/workflows/overlay-queue-interoperability.yml'
@@ -112,7 +114,7 @@ jobs:
 
   overlay-queue-interoperability:
     needs: soren-gitlink-gate
-    if: needs.soren-gitlink-gate.outputs.run == 'true'
+    if: github.event_name == 'schedule' || needs.soren-gitlink-gate.outputs.run == 'true'
     runs-on: macos-15
     timeout-minutes: 10
     steps:
