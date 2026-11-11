@@ -92,36 +92,5 @@ def test_a_hero_move_is_startable_only_on_chapter_nine():
     assert chart_adjust.startable(attack, {'chapter': 9, 'garrison': garrison}) == 'hero_not_dispatchable'
 
 
-def _ch9_move(general):
-    from test_hanjuku_off_chart import _move_memory
-    mem = _move_memory()
-    order = mem['chart_adjust']['interim_order']
-    order.update(general=general, source=HOME, target=FRONT)
-    mem.update(chapter=9, captured=[FRONT])
-    return mem
-
-
-def _scan(mem, names):
-    from docich import hanjuku_policy as policy
-    from test_hanjuku_off_chart import _move_list
-    mem['general_list_scan'] = {'step': 'I:m:1', 'castle': HOME, 'end': 'wrapped',
-                                'names': names, 'tick': mem.get('tick') or 0}
-    with chart.map_context(mem):          # production decides inside the chapter's map context
-        return policy.deploy_step(_move_list(names), mem)
-
-
-def test_deploy_moves_the_hero_last_even_when_named():
-    # Owner 2026-11-11 (v665): the cursor's general goes first, the hero last.
-    mem = _ch9_move(chart.HERO)
-    assert _scan(mem, ['ミント', chart.HERO, 'ジェラート']) == [{'type': 'pad', 'buttons': ['a'], 'hold_ms': 100}]
-    assert mem['general_override']['I:m:1'] == 'ミント'
-    mem = _ch9_move(chart.HERO)
-    _scan(mem, [chart.HERO])
-    assert mem['general_override']['I:m:1'] == chart.HERO
-
-
-def test_deploy_lets_the_last_general_leave_a_chapter_nine_rear_castle():
-    mem = _ch9_move('ミント')
-    actions = _scan(mem, ['ミント'])
-    assert mem['general_override']['I:m:1'] == 'ミント'
-    assert actions != [{'type': 'pad', 'buttons': ['b'], 'hold_ms': 100}] * 2
+# v663's deploy tests (named hero / last general) are superseded by v668's
+# mechanical march: see test_hanjuku_chapter9_mechanical_march.py.

@@ -7111,6 +7111,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v665-ch9-cursor-order-sortie",
             "hanjuku-chart-v666-ch9-retake-waves",
             "hanjuku-chart-v667-castle-status-not-list",
+            "hanjuku-chart-v668-ch9-mechanical-march",
             "hanjuku-chart-v560-castle-list-scroll",
             "hanjuku-chart-v561-post-month-repair-status",
             "hanjuku-chart-v501-idle-reanchor",

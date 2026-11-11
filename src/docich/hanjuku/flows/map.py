@@ -1362,7 +1362,12 @@ def map_step(screen: Screen, mem, frame):
                 reason='全城の所有を全体マップで確認するためYを押す')
         return [pad('y')]
     if order is None:
-        order = next((_order_for_step(mem, step) for step, sortie in _sorties(mem).items()
+        from ..strategy import corridor
+        # Chapter 9's march does not reopen a source list to settle an
+        # unconfirmed launch (owner 2026-11-11: それ以外の操作はdisable); the
+        # march deadline settles it.
+        order = None if corridor.mechanical(mem) else next(
+                     (_order_for_step(mem, step) for step, sortie in _sorties(mem).items()
                       if sortie.get('status') == 'launched_unconfirmed'
                       and not sortie.get('verification_unavailable')
                       and sortie.get('source') in _owned(mem)), None)
@@ -1385,7 +1390,10 @@ def map_step(screen: Screen, mem, frame):
         # once the gap outgrows the band or the state signature changes —
         # instead of walking the same menus again with no new evidence.
         from .house import _sortie_retry_hold, _sortie_state_sig
-        held = _sortie_retry_hold(mem, order['target'], order.get('purpose'),
+        # Chapter 9's march orders are never deferred: each one sends whoever
+        # the list cursor is on (owner 2026-11-11: 機械的に次の城にすべての将軍を).
+        held = None if order.get('corridor') is True else _sortie_retry_hold(
+                mem, order['target'], order.get('purpose'),
                 _sortie_state_sig(mem, _source(order, mem), _sortie_general(order, mem)))
         if held is not None:
             pending, first = held

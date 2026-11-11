@@ -195,6 +195,12 @@ def arm(mem):
     scope = [mem.get('chapter'), mem.get('month')]
     if not scope[0] or not scope[1]:
         return
+    from ..strategy import corridor
+    if corridor.mechanical(mem):
+        # Owner 2026-11-11: chapter 9 before its boss phase does nothing but
+        # march; no monthly status reads, repairs, recalls or locates.
+        mem.pop('post_month_status', None)
+        return
     old = mem.get('post_month_status') or {}
     if old.get('scope') == scope:
         return
