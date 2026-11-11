@@ -437,7 +437,17 @@ def action_sent(runtime_dir: Path, identity: dict, action, *, now=None):
     state=load(runtime_dir,identity)
     if now is None:
         now=time.monotonic()
-    trace=(read_record(runtime_dir/'hanjuku_bot.json', limit=256 * 1024).get('decision_trace') or {})
+    # The bot's own memory can outgrow the bounded-record limit (g1163
+    # 2026-11-12 02:2x: 270 051 bytes). Raising here fails the whole
+    # observation, the brain never gets to run, and therefore never compacts
+    # the record that broke it: the run latched input_stalled and every
+    # following observation died the same way. The trace is decoration, so a
+    # record we cannot read bounded is simply no trace.
+    try:
+        trace = (read_record(runtime_dir/'hanjuku_bot.json', limit=256 * 1024)
+                 .get('decision_trace') or {})
+    except AdapterError:
+        trace = {}
     if not isinstance(trace,dict) or any(trace.get(k)!=v for k,v in identity.items()):
         trace={}
     event(runtime_dir,{'event':'input_sent','at':time.time(),'type':action.type,

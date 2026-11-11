@@ -149,3 +149,34 @@ def test_stale_panel_labels_are_dropped_from_the_garrison(tmp_path):
 def test_a_clean_garrison_is_returned_unchanged():
     state = _state(world={'garrison': {'タオ': ['バトウラ', 'リーキ']}})
     assert state_budget.sanitize_state(state) is state
+
+
+def test_settled_marches_are_dropped_before_the_record_grows_too_wide():
+    """120 KB of launch bookkeeping had built up by chapter 9 month 23-12."""
+    from docich.hanjuku.state_budget import SETTLED_MARCH_TICKS
+    old = 1000
+    state = _state(tick=old + SETTLED_MARCH_TICKS + 500,
+                   plan={'orders': {'I:c9:タオ>サヌト:1': 'failed',
+                                    'I:c9:サヌト>オシロガ:2': 'launched'}},
+                   world={'launched_orders': {
+                       'I:c9:タオ>サヌト:1': {'cards': ['クースカン'] * 200, 'tick': old},
+                       'I:c9:サヌト>オシロガ:2': {'cards': ['クースカン'] * 200, 'tick': old},
+                   },
+                       'sorties': {'I:c9:タオ>サヌト:1': {'tick': old, 'status': 'arrived'}}})
+    limit = 4096
+    out = state_budget.compact_state(state, limit)
+    assert state_budget.size(out) < state_budget.size(state)
+    assert state_budget.size(out) <= limit
+    world = out['policy']['world']
+    # the settled march is gone; the live launched one is kept
+    assert 'I:c9:タオ>サヌト:1' not in world['launched_orders']
+    assert 'I:c9:サヌト>オシロガ:2' in world['launched_orders']
+
+
+def test_a_recent_settled_march_is_kept():
+    from docich.hanjuku.state_budget import SETTLED_MARCH_TICKS
+    state = _state(tick=5000,
+                   plan={'orders': {'I:x': 'failed'}},
+                   world={'launched_orders': {'I:x': {'tick': 5000 - SETTLED_MARCH_TICKS + 10}}})
+    out = state_budget.compact_state(state, 1024)
+    assert 'I:x' in out['policy']['world']['launched_orders']
