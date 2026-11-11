@@ -394,6 +394,12 @@ def decide(frame: Frame, state: dict, *, adjusted: dict | None = None,
     hanjuku_chart.migrate_legacy_labels(state)
     memory = dict(state.get('policy') or {})
     memory['approx_map'] = bool(approx_map)
+    # A location mark from an overdue march expires here rather than in the
+    # corridor planner: g1163 2026-11-11 23:15-00:05 spent an hour in battles
+    # and the month menu without ever planning a sortie, so the planner-only
+    # call never ran and 29 of 32 living generals stayed unusable.
+    from .os_layer.world import expire_unknown_locations
+    expire_unknown_locations(memory)
     # Chapter 9's boss moves: only a fresh Y-view measurement may stand in
     # for its missing static cell (see chart.MOVING_BOSS_CHAPTER).
     reading = memory.get('boss_cell')
