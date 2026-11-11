@@ -210,6 +210,46 @@ def camp_recall_step(screen: Screen, mem, frame):
     return hanjuku_camp_recheck.step(screen, mem, frame, _camp_recall_step)
 
 
+RECALL_WALK_BATCH = 3
+
+
+def _walk(move, screen, choice):
+    """Press the whole vertical run in one action when the rows are contiguous.
+
+    The camp menu is four stacked rows (いどう/ステータス/キャンプ/きかん) drawn at
+    even spacing, so one button per observation only spends the month's action
+    budget: g1163 2026-11-12 03:5x logged four `camp_recall_cursor` observations
+    per recall and every recall was interrupted by the month scene before it
+    reached the destination. A straight run of at most RECALL_WALK_BATCH rows is
+    sent as one action; anything else (different direction, unknown rows, a
+    wrapped list) keeps the single measured press.
+    """
+    from ..os_layer.commands import _current, _options
+    from ..os_layer.commands import pad
+    if not isinstance(move, dict) or move.get('type') != 'pad':
+        return [move]
+    buttons = list(move.get('buttons') or ())
+    if buttons not in (['down'], ['up']):
+        return [move]
+    cur = _current(screen)
+    rows = sorted({(y, w) for _x, y, w in _options(screen)})
+    if cur is None or not rows:
+        return [move]
+    target = next((i for i, (_y, w) in enumerate(rows) if w == choice), None)
+    here = next((i for i, (y, _w) in enumerate(rows) if y == cur[1]), None)
+    if target is None or here is None:
+        return [move]
+    distance = target - here
+    if distance == 0 or abs(distance) > RECALL_WALK_BATCH:
+        return [move]
+    # A contiguous block of rows: the same number of presses lands exactly on it.
+    if rows[target][0] - rows[here][0] != distance * (rows[1][0] - rows[0][0]):
+        return [move]
+    if (distance > 0) != (buttons == ['down']):
+        return [move]
+    return [pad(buttons[0]) for _ in range(abs(distance))]
+
+
 def _mark_recall_interrupted(mem):
     """Remember that a battle/event scene took the foreground from a recall.
 
@@ -452,7 +492,7 @@ def _camp_recall_step(screen: Screen, mem, frame, *, observed_camps=None):
                 reason=('野営の実手カーソルをいどう項目へ合わせる（ボスへ再出撃）' if state.get('boss')
                         else '野営の実手カーソルを帰還項目へ合わせる'))
         if move != 'here':
-            return [move]
+            return _walk(move, screen, choice)
         state['stage'] = 'dest'
         state['steps'] = 0            # each stage gets the full observation budget
         return [pad('a')]
