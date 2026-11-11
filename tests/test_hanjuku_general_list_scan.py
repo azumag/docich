@@ -76,7 +76,7 @@ def test_the_planned_general_below_the_window_ends_the_walk_at_his_page():
     assert mem['general_list_scan']['general'] == 'ココット'
     assert not [r for r in mem['_records'] if r['decision'] == 'order_substitute']
     assert _plan_region(mem)['orders']['1-C1'] != 'failed'
-    assert not (mem.get('general_override') or {}).get('1-C1')
+    assert not (_plan_region(mem).get('general_override') or {}).get('1-C1')
 
 
 def test_a_short_list_is_read_as_before():
@@ -141,7 +141,7 @@ def test_g1075_a_hidden_recruit_goes_to_the_season_king_site():
     assert _world(mem)['garrison']['アルマムーン'] == home
     # アポロン (74/14, egg) is the strongest egg holder and leaves the hero four.
     assert actions == [policy.pad('down')]
-    assert mem['general_override']['4-B2'] == 'アポロン'
+    assert _plan_region(mem)['general_override']['4-B2'] == 'アポロン'
 
 
 def test_a_dropped_dakuten_in_the_walk_is_folded_back_to_the_roster():
@@ -300,7 +300,7 @@ def test_a_roster_probe_reads_and_backs_out_without_sending():
     probe_order = {'step': 'Mprobe', 'general': 'しょうぐん', 'source': 'アルマムーン',
                    'target': 'ボス', 'cards': [], 'after': None, 'purpose': 'attack',
                    'note': 'probe', 'source_probe': True, 'roster_probe': True}
-    mem['chart_plan'] = {'orders': [probe_order]}
+    _plan_region(mem)['chart_plan'] = {'orders': [probe_order]}
     _plan_region(mem)['active'] = 'Mprobe'
     _plan_region(mem)['orders']['Mprobe'] = 'pending'
     mem['garrison'] = {'アルマムーン': []}

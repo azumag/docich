@@ -10,6 +10,7 @@ from docich import hanjuku_chart as chart
 from docich.hanjuku import orchestrator  # noqa: F401  (import side effects of the package)
 from docich.hanjuku.strategy import replan, routes
 from docich.hanjuku.strategy.orders import _distance
+from docich.hanjuku.state.regions import plan as _plan_region
 
 
 @pytest.fixture(autouse=True)
@@ -88,7 +89,7 @@ def test_off_chart_runs_without_requesting_or_adopting_a_model_chart():
     replan._off_chart(mem)
     kinds = [r['decision'] for r in mem['_records']]
     assert 'chart_adjust_request' not in kinds and 'chart_adjust_applied' in kinds
-    plan = mem['chart_plan']
+    plan = _plan_region(mem)['chart_plan']
     assert plan['source'] == 'mechanical' and plan['orders']
     assert plan['orders'][0]['target'] in attack_targets(memory(captured=('キカンドン',))) + ['ゴーメン']
 

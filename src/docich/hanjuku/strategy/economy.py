@@ -5,7 +5,7 @@ priority and the chikujou reserve. These functions decide amounts and
 priorities; the month/shop flows carry them out through the menus.
 """
 from __future__ import annotations
-from ..state.regions import world as _world, sorties as _sorties
+from ..state.regions import world as _world, sorties as _sorties, plan as _plan_region
 
 from ... import hanjuku_chart as chart
 from ...hanjuku_egg_reference import general_max_hp
@@ -722,7 +722,7 @@ def _recruit_target(mem):
     expected = {STATUS_NAMES.get(c, c) for c in expected}
     if not owned or not owned <= expected or type(chapter) is not int:
         return None
-    raw = (mem.get('chart_plan') or {}).get('recruitment')
+    raw = (_plan_region(mem).get('chart_plan') or {}).get('recruitment')
     if raw is None:
         raw = chart.RECRUITMENT_BY_CHAPTER.get(chapter, {'per_castle': 2, 'attack': 3})
     try:
@@ -1144,7 +1144,7 @@ def _adjusted_plan(mem, header, key):
     (``_recalc_soldiers``) before opening the refill. General recruitment has
     no measured menu yet, so it is recorded as a deviation and not attempted.
     """
-    spec = (mem.get('chart_plan') or {}).get('purchases')
+    spec = (_plan_region(mem).get('chart_plan') or {}).get('purchases')
     if not spec or key != f'{spec["month"][0]}-{spec["month"][1]}':
         return None
     gold = header['gold']
@@ -1180,7 +1180,7 @@ def _charted_purchase_ahead(mem, header):
         return False
     here = (header['year'], header['month'])
     planned = [tuple(p.get('month') or ()) for p in chart.purchases(mem.get('chapter') or 0)]
-    adjusted = ((mem.get('chart_plan') or {}).get('purchases') or {}).get('month')
+    adjusted = ((_plan_region(mem).get('chart_plan') or {}).get('purchases') or {}).get('month')
     if adjusted:
         planned.append(tuple(adjusted))
     return any(plan > here for plan in planned)

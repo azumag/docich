@@ -677,7 +677,7 @@ def _selected_actor_guard(screen, mem, order):
                 (_plan_region(mem).get('sortie_general') or {}).get(order['step']))
     if (order.get('source_probe') is True and (not selected or selected == NAME)
             and not (selected == NAME and order.get('corridor') is True and order.get('purpose') == 'move')):
-        (mem.get('general_override') or {}).pop(order['step'], None)
+        (_plan_region(mem).get('general_override') or {}).pop(order['step'], None)
         (mem.get('sortie_actor_miss') or {}).pop(order['step'], None)
         return _hold_guarded_sortie(mem, order, 'sortie_actor_unconfirmed',
             '実一覧で選んだ将軍の証拠がないため配置確認の出撃を取り消す',
@@ -722,7 +722,7 @@ def _selected_actor_guard(screen, mem, order):
         # the legacy flat key here would let migrate_legacy_state replace the
         # whole plan dict and drop other steps' cached actors (#3918).
         _plan_region(mem).setdefault('sortie_general', {})[order['step']] = name
-        (mem.get('general_override') or {}).pop(order['step'], None)
+        (_plan_region(mem).get('general_override') or {}).pop(order['step'], None)
         (mem.get('sortie_actor_miss') or {}).pop(order['step'], None)
         _record(mem, 'sortie_actor_substituted', **_deploy_context(order, mem),
                 observed=name, screen=screen.kind,
@@ -733,7 +733,7 @@ def _selected_actor_guard(screen, mem, order):
         # must never be relabelled onto whoever the panel shows (the hero
         # included). Only an *unreadable* name earns the three holds above.
         reason = f'選択予定の{selected}と実画面の{name}が違うため出撃を取り消す'
-    (mem.get('general_override') or {}).pop(order['step'], None)
+    (_plan_region(mem).get('general_override') or {}).pop(order['step'], None)
     (mem.get('sortie_actor_miss') or {}).pop(order['step'], None)
     return _hold_guarded_sortie(mem, order, 'sortie_actor_unconfirmed', reason,
                                {'selected': selected, 'observed': name, 'screen': screen.kind})
@@ -866,7 +866,7 @@ def _move_general_pick(screen, mem, order):
                       observed_metric=present[:8], source=_source(order, mem),
                       reason='移動元の将軍が1人以下のため移動を取り消す（一覧は駐留として記録）')
         return [pad('b'), pad('b')]
-    general = mem.get('general_override', {}).get(order['step'])
+    general = _plan_region(mem).get('general_override', {}).get(order['step'])
     if general not in spare:
         planned = order.get('general')
         if planned in spare and (planned != NAME or road_walk):
@@ -876,7 +876,7 @@ def _move_general_pick(screen, mem, order):
             general = (_defense_move_pick(mem, _source(order, mem), order['target'], spare)
                        or spare[0])
             reason = '移動元に1人以上残して主人公以外の将軍を空の城へ送る'
-        mem.setdefault('general_override', {})[order['step']] = general
+        _plan_region(mem).setdefault('general_override', {})[order['step']] = general
         _record(mem, 'move_general_picked', chart_step=order['step'], general=general,
                 source=_source(order, mem), target=order['target'], observed_metric=present[:8],
                 reason=reason)
@@ -1101,7 +1101,7 @@ def _corridor_hero_pick(screen, mem, order, present, cur):
 def _cursor_take(screen, mem, order, name, present):
     step = order['step']
     _observe_garrison(screen, mem, order, complete=len(present) < GENERAL_LIST_FULL)
-    mem.setdefault('general_override', {})[step] = name
+    _plan_region(mem).setdefault('general_override', {})[step] = name
     _plan_region(mem).setdefault('sortie_general', {})[step] = name
     _record(mem, 'cursor_order_pick', **_deploy_context(order, mem), castle=_source(order, mem),
             observed_metric={'general': name, 'planned': order.get('general'), 'visible': present[:8]},
@@ -1134,7 +1134,7 @@ def _cursor_card_step(screen, mem, order, inventory, picked):
     step = order['step']
     for key in ('strong_card_kit', 'dropper_card_kit', 'rare_card_kit'):
         (mem.get(key) or {}).pop(step, None)
-    mem.setdefault('card_override', {})[step] = list(picked)
+    _plan_region(mem).setdefault('card_override', {})[step] = list(picked)
     downs = mem.setdefault('cursor_card_downs', {})
     row = next((r for r in inventory['rows'] if r['y'] == inventory['selected_y']), None)
     total = sum(CARD_IDS.get(card, 0) for card in picked)
@@ -1142,7 +1142,7 @@ def _cursor_card_step(screen, mem, order, inventory, picked):
         card_id = CARD_IDS.get(row['card'])
         if row['stock'] > 0 and card_id is not None and total + card_id < ENEMY_EGG_CARD_ID_SUM:
             picked.append(row['card'])
-            mem['card_override'][step] = list(picked)
+            _plan_region(mem)['card_override'][step] = list(picked)
             _record(mem, 'card_pick', **_deploy_context(order, mem), card=row['card'],
                     observed_metric={'stock': row['stock'], 'remaining': inventory['remaining'],
                                      'id_sum': total + card_id, 'cursor_order': True,
@@ -1885,9 +1885,9 @@ def deploy_step(screen: Screen, mem):
             general = candidates[0] if candidates else order['general']
             # A stale override is not a receipt, and a companion selected in
             # this list must not inherit the hero's depleted-egg guard.
-            mem.setdefault('general_override', {}).pop(order['step'], None)
+            _plan_region(mem).setdefault('general_override', {}).pop(order['step'], None)
             if general != order['general']:
-                mem['general_override'][order['step']] = general
+                _plan_region(mem)['general_override'][order['step']] = general
             if general not in present or general in _en_route(mem)[0]:
                 holds = mem.setdefault('boss_absent', {})
                 holds[order['step']] = holds.get(order['step'], 0) + 1
@@ -1922,7 +1922,7 @@ def deploy_step(screen: Screen, mem):
         if not screen.hand and not empty_list:
             return _hold_general_list_bounded(screen, mem, order,
                 '将軍選択カーソルを判定できないため入力を保留', 'cursor_unreadable')
-        general = mem.get('general_override', {}).get(order['step'], order['general'])
+        general = _plan_region(mem).get('general_override', {}).get(order['step'], order['general'])
         move = _list_menu_to(screen, mem, order, general) if screen.hand else None
         if move is None:
             # The chart's general is not at this castle (routed or lost).
@@ -1943,10 +1943,10 @@ def deploy_step(screen: Screen, mem):
                         strategy_variant='hero_substitute_refused',
                         observed_metric={'present': [NAME, *present][:8]},
                         reason='計画の将軍がいないため、主人公を代役にせず他の将軍か出撃元の変更を待つ')
-            if present and not mem.get('general_override', {}).get(order['step']):
+            if present and not _plan_region(mem).get('general_override', {}).get(order['step']):
                 droppers = _egg_drop_substitutes(mem, order, present)
                 chosen = droppers[0] if droppers else present[0]
-                mem.setdefault('general_override', {})[order['step']] = chosen
+                _plan_region(mem).setdefault('general_override', {})[order['step']] = chosen
                 _record(mem, 'order_substitute', strategy_variant='substitute_general',
                         deviation_reason=f"{order['general']}が出撃元にいないため{chosen}が代わりに出撃",
                         observed_metric=present[:8], expected_metric=f"{order['target']}の占領",
@@ -1954,11 +1954,11 @@ def deploy_step(screen: Screen, mem):
                                 else '後続手順とボス条件を満たすため'))
                 move = menu_to(screen, chosen)
                 return [pad('a')] if move == 'here' else [move] if move else []
-            if (not mem.get('source_override', {}).get(order['step'])
+            if (not _plan_region(mem).get('source_override', {}).get(order['step'])
                     and chart.home_castle(mem.get('chapter') or 1) in _owned(mem)):
-                mem.setdefault('source_override', {})[order['step']] = chart.home_castle(
+                _plan_region(mem).setdefault('source_override', {})[order['step']] = chart.home_castle(
                     mem.get('chapter') or 1)
-                mem.setdefault('general_override', {}).pop(order['step'], None)
+                _plan_region(mem).setdefault('general_override', {}).pop(order['step'], None)
                 _plan_region(mem)['orders'][order['step']] = 'pending'
                 _record(mem, 'order_source_changed', strategy_variant='source_fallback',
                         deviation_reason=f"{order['source']}に出撃できる将軍がいない",

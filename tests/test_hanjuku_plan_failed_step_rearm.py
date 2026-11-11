@@ -97,12 +97,12 @@ def test_a_failed_relay_move_is_retried_after_the_failure_window():
     # A stale actor chosen by the failed attempt must not steer the retry
     # (live g1153: ココット was recorded for a move out of コラダイン while he
     # stood at イーピヨル).
-    mem['general_override'] = {step: 'ココット'}
+    _plan_region(mem)['general_override'] = {step: 'ココット'}
     mem['launched_orders'] = {step: {'general': 'ココット', 'source': 'コラダイン',
                                      'target': 'イーピヨル'}}
     advance(mem, rid)
     assert _plan_region(mem)['orders'][step] == 'pending', _plan_region(mem)['orders']
-    assert step not in mem['general_override'], mem['general_override']
+    assert step not in _plan_region(mem)['general_override'], _plan_region(mem)['general_override']
     assert step not in (_world(mem).get('launched_orders') or {})
     order = orders.next_order(mem)
     assert order is not None and order['step'] == step, order
@@ -127,7 +127,7 @@ def test_the_retry_is_capped_per_month_and_step():
     step, local = relay_step(mem)
     _plan_region(mem)['orders'][step] = 'failed'
     mem['failed_local_step'] = {local: mem['tick'] - replan.PLAN_STALE_TICKS - 1}
-    mem['plan_step_rearm'] = {step: {'month': mem['month'],
+    _plan_region(mem)['plan_step_rearm'] = {step: {'month': mem['month'],
                                      'count': replan.NONBOSS_STEP_REARM_LIMIT}}
     advance(mem, rid)
     assert _plan_region(mem)['orders'][step] == 'failed'
@@ -150,8 +150,8 @@ def test_a_failed_boss_step_is_rearmed_even_when_the_plan_is_unchanged():
     mem['lost'] = []
     rid = chart_adjust.request_id(mem)
     advance(mem, rid)
-    boss = [o for o in mem['chart_plan']['orders'] if chart.is_boss_castle(o['target'])]
-    assert boss, mem['chart_plan']
+    boss = [o for o in _plan_region(mem)['chart_plan']['orders'] if chart.is_boss_castle(o['target'])]
+    assert boss, _plan_region(mem)['chart_plan']
     mem.setdefault('failed_local_step', {})
     for order in boss:
         _plan_region(mem)['orders'][order['step']] = 'failed'

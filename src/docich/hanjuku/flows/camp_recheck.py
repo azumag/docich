@@ -5,7 +5,7 @@ No game/provider I/O lives here. Only the existing recall sender owns dispatch.
 """
 from ..os_layer import roster as roster_receipts
 from ...hanjuku_egg_stock import observed_uses
-from ..state.regions import flow as _flow, journal as _journal
+from ..state.regions import flow as _flow, journal as _journal, plan as _plan_region
 
 RETRY_TICKS = 30
 ATTEMPT_LIMIT = 3
@@ -743,7 +743,7 @@ def recall_ready(mem, frame):
     # The same condition that starts a named search in ``_step_flow``: a row it
     # would not start must not hold a survey back.
     if not any(_flow(mem).get(key) for key in PROBE_FLOW_KEYS) and not any(
-            mem.get(key) for key in PROBE_BUSY_KEYS) and any(
+            mem.get(key) for key in PROBE_BUSY_KEYS) and not _plan_region(mem).get('attack') and any(
             row['attempts'] < ATTEMPT_LIMIT and mem['tick'] >= row['retry_after']
             and _arrival_request(mem, name, row) is None for name, row in queue.items()):
         return True
@@ -820,7 +820,8 @@ def _step_flow(screen, mem, frame, existing):
         _flow(mem).pop('recall', None)
         return [pad('b')] if (is_camp_menu(screen) or screen.kind in ('world_map', 'map_target')) else None
     if (not state and screen.kind == 'map' and frame is not None
-            and not any(mem.get(key) for key in ('battle', 'month_sub', 'house', 'y_jump', 'attack'))
+            and not any(mem.get(key) for key in ('battle', 'month_sub', 'house', 'y_jump'))
+            and not _plan_region(mem).get('attack')
             and not _flow(mem).get('sortie_attempt')):
         arrival_actor = next((name for name, row in queue.items()
             if _arrival_request(mem, name, row) is not None
@@ -940,7 +941,7 @@ CAMP_HP_PROBE_ENABLED = True
 CAMP_HP_PROBE_LIMIT = 2  # per retreat: one baseline read plus one change check
 # 'sortie_attempt' lives in the flow region (state/regions.py); checks
 # that use PROBE_BUSY_KEYS must also consult _flow(mem) via PROBE_FLOW_KEYS.
-PROBE_BUSY_KEYS = ('battle', 'month_sub', 'house', 'y_jump', 'attack')
+PROBE_BUSY_KEYS = ('battle', 'month_sub', 'house', 'y_jump')
 PROBE_FLOW_KEYS = ('sortie_attempt',)
 
 
@@ -985,6 +986,7 @@ def camp_hp_probe_step(screen, mem, frame):
     probe = mem.get('camp_hp_probe')
     if probe is None:
         if (_flow(mem).get('recall') or screen.kind != 'map' or frame is None
+            or _plan_region(mem).get('attack')
             or any(mem.get(k) for k in PROBE_BUSY_KEYS) or any(_flow(mem).get(k) for k in PROBE_FLOW_KEYS)):
             return None
         if _flow(mem).get('recall_skip') or _flow(mem).get('recall_skip_target'):
@@ -1004,7 +1006,8 @@ def camp_hp_probe_step(screen, mem, frame):
         mem['camp_hp_probe'] = {'stage': 'menu', 'general': actor, 'key': key, 'steps': 0}
         return [pad('a')]
     # Yield mid-probe as well: a recall or a due retreat recheck that appears now takes the frame.
-    if (_flow(mem).get('recall') or _recheck_due(mem) or any(mem.get(k) for k in PROBE_BUSY_KEYS)
+    if (_flow(mem).get('recall') or _recheck_due(mem) or _plan_region(mem).get('attack')
+            or any(mem.get(k) for k in PROBE_BUSY_KEYS)
             or any(_flow(mem).get(k) for k in PROBE_FLOW_KEYS)):
         return _probe_abort(mem)
     probe['steps'] = probe.get('steps', 0) + 1

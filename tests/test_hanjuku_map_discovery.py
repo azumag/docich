@@ -126,11 +126,11 @@ def caller_adopted_interim():
     _plan_region(mem)['orders'] = {o['step']: 'failed' for o in chart.all_orders(3)}
     # Owner 2026-11-06: the hero's castle keeps two others beside him.
     _world(mem)['garrison'] = {'アルマムーン': ['ゼウス', 'どうし', 'アルテミス', 'クミン']}
-    assert not _plan_region(mem).get('active') and not mem.get('chart_plan') and not mem.get('chart_adjust')
+    assert not _plan_region(mem).get('active') and not _plan_region(mem).get('chart_plan') and not mem.get('chart_adjust')
     _, state = decide(field(), {'policy': mem}, run_identity=IDENTITY)
     active = _plan_region(state['policy']).get('active')
     assert isinstance(active, str) and (active.startswith('I:') or ':M' in active)
-    assert state['policy']['chart_plan']['orders'][0]['step'] == active
+    assert _plan_region(state['policy'])['chart_plan']['orders'][0]['step'] == active
     assert any(r['decision'] == 'chart_adjust_applied' for r in state['_records'])
     return state, active
 
@@ -173,14 +173,14 @@ def test_follow_general_never_overrides_to_an_unregistered_observed_castle():
     mem.update(captured=['メガパタ'], garrison={'メガパタ': ['ゼウス']})
     with chart.map_context(mem):
         order = policy.next_order(mem)
-        assert mem.get('source_override', {}).get('3-Z1') != 'メガパタ'
+        assert _plan_region(mem).get('source_override', {}).get('3-Z1') != 'メガパタ'
         assert order is None or policy._source(order, mem) in chart.castles(3)
         policy.map_step(parse(field()), mem, field())  # never KeyError
 
 
 def test_runtime_ready_checks_the_effective_source_override():
     mem = initial_route_receipt()
-    mem['source_override'] = {'3-Z1': 'メガパタ'}
+    _plan_region(mem)['source_override'] = {'3-Z1': 'メガパタ'}
     with chart.map_context(mem):
         assert not policy._ready(chart.CHAPTER_3_ORDERS[0], mem)
 
@@ -633,7 +633,7 @@ def test_new_run_discards_the_old_native_map_and_adopted_active_order():
     mem.update(chart_plan={'orders': [order]}, active=order['step'])
     _, updated = decide(field(), {'policy': mem}, run_identity={**IDENTITY, 'lease_id': 'new-lease'})
     assert not updated['policy'].get('map_registration')
-    assert not updated['policy'].get('chart_plan') and not updated['policy'].get('active')
+    assert not _plan_region(updated['policy']).get('chart_plan') and not _plan_region(updated['policy']).get('active')
     assert not chart.castles(3)
 
 
@@ -720,7 +720,7 @@ def adopted_interim_confirm_frame():
     and actor plus the measured hand block; no order is planted by hand.
     """
     state, active = caller_adopted_interim()
-    order = state['policy']['chart_plan']['orders'][0]
+    order = _plan_region(state['policy'])['chart_plan']['orders'][0]
     panel = actor_panel(measured_loaded_sortie(tuple(order['cards'])), order['general'])
     canvas = Canvas()
     for line in panel.lines:
@@ -825,4 +825,4 @@ def test_discovery_yields_the_field_to_a_startable_interim_retake():
     _, state = decide(field(), {'policy': mem}, run_identity=IDENTITY)
     active = _plan_region(state['policy']).get('active')
     assert isinstance(active, str) and (active.startswith('I:') or ':M' in active)
-    assert state['policy']['chart_plan']['orders'][0]['target'] == 'グリン'
+    assert _plan_region(state['policy'])['chart_plan']['orders'][0]['target'] == 'グリン'

@@ -2,7 +2,7 @@
 import pytest
 from docich import hanjuku_policy as policy
 from docich.hanjuku_screen import Battle, Screen
-from docich.hanjuku.state.regions import world as _world
+from docich.hanjuku.state.regions import world as _world, plan as _plan_region
 
 
 def memory():
@@ -95,7 +95,7 @@ def test_ownership_receipt_is_not_carried_into_the_next_defender_battle():
     mem = memory()
     policy._apply_world_flags(mem, {'スペンソニア': 'own'})
     finish(mem)
-    mem['attack'] = {'side': 'defense', 'castle': 'スペンソニア', 'step': None}
+    _plan_region(mem)['attack'] = {'side': 'defense', 'castle': 'スペンソニア', 'step': None}
     screen = Screen(lines=[], hand=None, text='', kind='battle',
                     battle=Battle('クミン', 3, 'ヴィーナス', 82))
     policy.battle_step(screen, mem);policy.battle_step(screen, mem)

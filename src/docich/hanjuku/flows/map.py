@@ -186,7 +186,7 @@ def boss_stall_escape_step(mem, kind, phase):
     cooldown, only with no active order/battle and only on menu/text screens.
     """
     parked = parked_boss_steps(mem)
-    if (not parked or _plan_region(mem).get('active') or mem.get('battle') or mem.get('attack')
+    if (not parked or _plan_region(mem).get('active') or mem.get('battle') or _plan_region(mem).get('attack')
             or _flow(mem).get('recall')):
         return None
     if kind == 'text':
@@ -223,7 +223,7 @@ def boss_sortie_menu_escape_step(mem, kind, actions):
     """
     active = _plan_region(mem).get('active')
     if (not active or kind not in BOSS_SORTIE_MENU_KINDS or actions != []
-            or mem.get('battle') or mem.get('attack') or _flow(mem).get('recall')):
+            or mem.get('battle') or _plan_region(mem).get('attack') or _flow(mem).get('recall')):
         mem.pop('boss_sortie_menu_hold', None)
         return None
     order = _order_for_step(mem, active)
@@ -596,7 +596,7 @@ def _release_stale_active(mem):
     step = _plan_region(mem).get('active')
     if not step:
         return False
-    plan = mem.get('chart_plan') or {}
+    plan = _plan_region(mem).get('chart_plan') or {}
     plan_steps = {o.get('step') for o in plan.get('orders') or ()}
     launched = _world(mem).get('launched_orders') or {}
     status = (_plan_region(mem).get('orders') or {}).get(step)
@@ -1245,7 +1245,7 @@ def note_reanchor_followup(screen, mem, actions):
                              'return_stage': resume.get('stage'),
                              'active_before': resume.get('active_before'),
                              'plan_steps': [o.get('step') for o in
-                                            (mem.get('chart_plan') or {}).get('orders', [])[:8]],
+                                            (_plan_region(mem).get('chart_plan') or {}).get('orders', [])[:8]],
                              'orders': {k: v for k, v in list((_plan_region(mem).get('orders') or {}).items())[:8]},
                              'wait_ticks': tick - int(resume.get('tick') or tick)},
             reason=why)
@@ -1350,7 +1350,7 @@ def map_step(screen: Screen, mem, frame):
         mem['picked'] = []
         order = None
     if isinstance(order, dict) and (str(order.get('step', '')).startswith(chart_adjust.INTERIM_PREFIX)
-                                    or (mem.get('chart_plan') or {}).get('source') == 'mechanical'):
+                                    or (_plan_region(mem).get('chart_plan') or {}).get('source') == 'mechanical'):
         if (mem.get('chart_adjust') or {}).get('request_id') == chart_adjust.request_id(mem):
             _off_chart(mem)
             order = _order(mem) or next_order(mem) or order
@@ -1374,7 +1374,7 @@ def map_step(screen: Screen, mem, frame):
         order = order or next_order(mem)
         if (order is None or (isinstance(order, dict)
                               and (str(order.get('step', '')).startswith(chart_adjust.INTERIM_PREFIX)
-                                   or (mem.get('chart_plan') or {}).get('source') == 'mechanical'))):
+                                   or (_plan_region(mem).get('chart_plan') or {}).get('source') == 'mechanical'))):
             _off_chart(mem)
             order = next_order(mem) or order
         if order is None:
@@ -1907,9 +1907,10 @@ def _rollback_unverified_launch(mem, step, probe, markers, reason=None):
     """
     misses = _flow(mem).setdefault('launch_miss', {})
     misses[step] = misses.get(step, 0) + 1
-    for key in ('general_override', 'source_override', 'card_override', 'rare_card_kit',
-                'strong_card_kit', 'dropper_card_kit', 'sortie_actor_miss'):
+    for key in ('rare_card_kit', 'strong_card_kit', 'dropper_card_kit', 'sortie_actor_miss'):
         (mem.get(key) or {}).pop(step, None)
+    for key in ('general_override', 'source_override', 'card_override'):
+        (_plan_region(mem).get(key) or {}).pop(step, None)
     _plan_region(mem).setdefault('order_context', {}).pop(step, None)
     _plan_region(mem).setdefault('sortie_general', {}).pop(step, None)
     (_world(mem).get('launched_orders') or {}).pop(step, None)

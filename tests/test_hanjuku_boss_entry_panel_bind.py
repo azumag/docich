@@ -8,7 +8,7 @@ from types import SimpleNamespace
 
 from docich import hanjuku_chart as chart
 from docich.hanjuku.flows import battle_menus as B
-from docich.hanjuku.state.regions import world as _world
+from docich.hanjuku.state.regions import world as _world, plan as _plan_region
 
 BOSS = chart.boss_castle(6)
 
@@ -28,7 +28,7 @@ def test_the_panel_binds_the_in_flight_boss_sortie():
     # The world region owns sorties after the first access (the top-level key
     # is migrated away), so read them through the same accessor.
     assert (_world(mem).get('sorties') or {})['A:x:M1']['status'] == 'arrived'
-    assert mem['attack']['step'] == 'A:x:M1'
+    assert _plan_region(mem)['attack']['step'] == 'A:x:M1'
     assert any(r['decision'] == 'boss_entry_bound_by_panel' for r in mem['_records'])
     assert mem['boss_hp_seen']['hp'] == 152
 
@@ -42,8 +42,8 @@ def test_an_already_bound_attack_is_untouched():
 
 def test_a_non_boss_panel_never_binds():
     mem = memory()
-    mem['attack'] = {'general': 'ヘイゼル', 'castle': 'セレーネ', 'side': 'attack', 'step': None}
+    _plan_region(mem)['attack'] = {'general': 'ヘイゼル', 'castle': 'セレーネ', 'side': 'attack', 'step': None}
     B.note_boss_monster_hp(mem, {'ally': 'ヘイゼル'},
                            [SimpleNamespace(name='ハードロボ', hp=152)])
-    assert mem['sorties']['A:x:M1']['status'] == 'en_route'
+    assert (_world(mem).get('sorties') or {})['A:x:M1']['status'] == 'en_route'
     assert 'boss_hp_seen' not in mem

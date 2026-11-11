@@ -34,7 +34,7 @@ def _sortie_general(order, mem):
         selected = context.get('actual_general') or (_plan_region(mem).get('sortie_general') or {}).get(step)
         if selected:
             return selected
-    return (mem.get('general_override') or {}).get(step, order.get('general'))
+    return (_plan_region(mem).get('general_override') or {}).get(step, order.get('general'))
 
 
 def _hero_alternatives(mem, names):
@@ -680,7 +680,7 @@ def _orders(mem):
     from . import corridor
     if corridor.mechanical(mem):
         return tuple(corridor.orders(mem))   # chapter 9: nothing but the march
-    plan = mem.get('chart_plan') or {}
+    plan = _plan_region(mem).get('chart_plan') or {}
     interim = (mem.get('chart_adjust') or {}).get('interim_order')
     # An interim order only exists when no plan order is waiting (see
     # ``_off_chart``), so it may follow an exhausted plan as well as the base.
@@ -716,7 +716,7 @@ def _plan_pending(mem) -> bool:
     status = _plan_region(mem).get('orders') or {}
     owned = _owned(mem)
     sorties = _world(mem).get('sorties') or {}
-    plan = (mem.get('chart_plan') or {}).get('orders') or ()
+    plan = (_plan_region(mem).get('chart_plan') or {}).get('orders') or ()
     # A recent sortie, or a launched plan order with no sortie record to age.
     heading = _en_route(mem)[1] | {o['target'] for o in plan
                                    if status.get(o['step']) == 'launched' and o['step'] not in sorties}
@@ -830,7 +830,7 @@ def _site_king_down(mem, target):
 def _boss_fight_live(mem, step):
     """The boss order's entry still has an attack or battle record running."""
     return any(isinstance(record, dict) and record.get('step') == step
-               for record in (mem.get('attack'), mem.get('battle')))
+               for record in (_plan_region(mem).get('attack'), mem.get('battle')))
 
 
 def parked_boss_steps(mem):
@@ -989,9 +989,11 @@ def _relaunch_overdue_boss(mem):
             _record(mem, 'boss_relaunch_stale_retry', chart_step=step, observed_metric=observed,
                     reason='ボス出撃の出し直しが上限後も長期間進まないため、間隔を置いて出し直す')
         relaunches[step] = relaunches.get(step, 0) + 1
-        for key in ('general_override', 'source_override', 'card_override', 'rare_card_kit', 'strong_card_kit',
+        for key in ('rare_card_kit', 'strong_card_kit',
                     'dropper_card_kit', 'sortie_actor_miss'):
             (mem.get(key) or {}).pop(step, None)
+        for key in ('general_override', 'source_override', 'card_override'):
+            (_plan_region(mem).get(key) or {}).pop(step, None)
         _plan_region(mem).setdefault('order_context', {}).pop(step, None)
         _plan_region(mem).setdefault('sortie_general', {}).pop(step, None)
         (_world(mem).get('launched_orders') or {}).pop(step, None)
@@ -1022,7 +1024,7 @@ def _redirect_blocked_sources(mem):
     if routes.is_road(chapter):
         return
     owned = _owned(mem) & set(chart.castles(chapter))
-    overrides = mem.setdefault('source_override', {})
+    overrides = _plan_region(mem).setdefault('source_override', {})
     status = _plan_region(mem).get('orders') or {}
     seen = set()
     for order in [*_orders(mem), *(_world(mem).get('launched_orders') or {}).values()]:
@@ -1127,9 +1129,11 @@ def _relaunch_overdue_march(mem):
                     reason='出撃の出し直しが上限に達したため、以後の行軍は行先の喪失確認に委ねる')
             continue
         relaunches[step] = relaunches.get(step, 0) + 1
-        for key in ('general_override', 'source_override', 'card_override', 'rare_card_kit',
+        for key in ('rare_card_kit',
                     'strong_card_kit', 'dropper_card_kit', 'sortie_actor_miss'):
             (mem.get(key) or {}).pop(step, None)
+        for key in ('general_override', 'source_override', 'card_override'):
+            (_plan_region(mem).get(key) or {}).pop(step, None)
         _plan_region(mem).setdefault('order_context', {}).pop(step, None)
         _plan_region(mem).setdefault('sortie_general', {}).pop(step, None)
         (_world(mem).get('launched_orders') or {}).pop(step, None)
@@ -1271,9 +1275,11 @@ def _expire_spent_sorties(mem):
                 _MISS_LIMIT = 2
                 misses = _flow(mem).setdefault('launch_miss', {})
                 misses[step] = int(misses.get(step) or 0) + 1
-                for key in ('general_override', 'source_override', 'card_override', 'rare_card_kit',
+                for key in ('rare_card_kit',
                             'strong_card_kit', 'dropper_card_kit', 'sortie_actor_miss'):
                     (mem.get(key) or {}).pop(step, None)
+                for key in ('general_override', 'source_override', 'card_override'):
+                    (_plan_region(mem).get(key) or {}).pop(step, None)
                 _plan_region(mem).setdefault('order_context', {}).pop(step, None)
                 _plan_region(mem).setdefault('sortie_general', {}).pop(step, None)
                 (_world(mem).get('launched_orders') or {}).pop(step, None)
@@ -1448,7 +1454,7 @@ def next_order(mem):
     # ジョンリギ, so the bot idled with every castle but the boss's taken while
     # the base 1-B1 boss sortie was never looked at).
     base = [o for o in chart.orders(mem.get('chapter') or 0)
-            if o['step'] not in steps and o['target'] not in owned] if mem.get('chart_plan') else []
+            if o['step'] not in steps and o['target'] not in owned] if _plan_region(mem).get('chart_plan') else []
     chart_steps = {o['step'] for o in chart.orders(mem.get('chapter') or 0)}
     for order in (*current, *retries, *base):
         if ((order['step'] in chart_steps or _is_boss_order(order, mem))
@@ -1465,7 +1471,7 @@ def next_order(mem):
                 and not _last_castle_held(mem, order)      # its castle must keep its last general
                 and not _retake_reserved(order, mem)
                 and not _source_spare_missing(order, mem, allow_probe=True)
-                and (mem.get('general_override', {}).get(order['step'], order['general']) not in _en_route(mem)[0]
+                and (_plan_region(mem).get('general_override', {}).get(order['step'], order['general']) not in _en_route(mem)[0]
                      or _hero_source_alternative(order, mem))):
             return order
     return None
@@ -1480,7 +1486,7 @@ def _follow_general(mem, order, garrison, owned):
     if _is_boss_order(order, mem) and order.get('purpose') != 'move':
         where = _boss_companion_source(order, mem)
         if where in owned and where != source:
-            mem.setdefault('source_override', {})[order['step']] = where
+            _plan_region(mem).setdefault('source_override', {})[order['step']] = where
             _record(mem, 'boss_companion_source', chart_step=order['step'],
                     observed_metric={'source': source, 'companion_at': where},
                     reason='主人公を出撃させず、十分な能力の代役が記録された城の実一覧を確認する')
@@ -1490,8 +1496,8 @@ def _follow_general(mem, order, garrison, owned):
     if not general or general in (garrison.get(source) or ()):
         return
     where = next((c for c, names in garrison.items() if general in (names or ()) and c in owned), None)
-    if where and where != source and not mem.get('source_override', {}).get(order['step']):
-        mem.setdefault('source_override', {})[order['step']] = where
+    if where and where != source and not _plan_region(mem).get('source_override', {}).get(order['step']):
+        _plan_region(mem).setdefault('source_override', {})[order['step']] = where
         _record(mem, 'order_source_changed', chart_step=order['step'], strategy_variant='follow_general',
                 observed_metric={'source': source, 'general_at': where},
                 reason=f'{general}は{where}にいると記録されているため、そこから出撃させる')
@@ -1501,12 +1507,12 @@ def _order(mem):
     # A mechanical chart is a stand-in while the LLM answer is pending; once a
     # normal chart order becomes ready, discard it so the base chart resumes.
     if _plan_region(mem).get('active') is None:
-        plan = mem.get('chart_plan') or {}
+        plan = _plan_region(mem).get('chart_plan') or {}
         if plan.get('source') == 'mechanical':
             chapter = mem.get('chapter') or 0
             try:
                 if any(_ready(o, mem) for o in chart.orders(chapter)):
-                    mem['chart_plan'] = None
+                    _plan_region(mem)['chart_plan'] = None
             except Exception:
                 pass
     return _order_for_step(mem, _plan_region(mem).get('active'))
@@ -1566,7 +1572,7 @@ def _tactics(mem, step):
     if order is None or any(o['step'] == step for o in chart.orders(mem.get('chapter') or 0)):
         return (*rare, *base)
     override = (set(roles['override']) if roles is not None else
-                set() if rare_kit is not None else set((mem.get('card_override') or {}).get(step) or ()))
+                set() if rare_kit is not None else set((_plan_region(mem).get('card_override') or {}).get(step) or ()))
     if carried is None:
         carried = _deploy_cards(order, mem)
     carried = [card for card in carried
@@ -1846,7 +1852,7 @@ def _source(order, mem):
     bound = bound_fields(order, mem)
     if order.get('_execution_bound') is True:
         return bound['source'] if bound is not None else None
-    override = mem.get('source_override') or {}
+    override = _plan_region(mem).get('source_override') or {}
     step = order.get('step')
     if step in override:
         return override[step]
@@ -1894,9 +1900,9 @@ def _give_up_source(mem, order):
                           observed_metric={'source': source, 'menu_miss': misses, 'home': home},
                           reason='出撃元の城を選べず、本城も将軍1人のため出撃できないので指示を諦める')
             return
-    if source != home and home in _owned(mem) and not mem.get('source_override', {}).get(step):
-        mem.setdefault('source_override', {})[step] = home
-        mem['source_override'].setdefault(step.rsplit(':', 1)[-1], home)
+    if source != home and home in _owned(mem) and not _plan_region(mem).get('source_override', {}).get(step):
+        _plan_region(mem).setdefault('source_override', {})[step] = home
+        _plan_region(mem)['source_override'].setdefault(step.rsplit(':', 1)[-1], home)
         garrison.pop(source, None)
         # A counter, not a decision record: the caller that logs this keeps
         # source_miss and the override out of the persisted state (g1133
@@ -2227,7 +2233,7 @@ def _continue_transit_sorties(mem, castle, names):
         planned = sortie.get('target')
         _garrison_move(mem, sortie['general'], source=sortie.get('source'), target=castle)
         sortie.update(status='arrived', target=castle, transit_to=planned)
-        mem.setdefault('source_override', {})[step] = castle
+        _plan_region(mem).setdefault('source_override', {})[step] = castle
         _plan_region(mem).setdefault('orders', {})[step] = 'pending'
         if _plan_region(mem).get('active') == step:
             _plan_region(mem)['active'] = None

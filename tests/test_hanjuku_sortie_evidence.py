@@ -172,7 +172,7 @@ def test_sortie_card_stock_is_recorded_for_the_adjusted_chart():
 def test_general_cursor_failure_does_not_install_a_substitute():
     mem = memory()
     assert policy.deploy_step(menu('general_list', ['どうし', 'ゼウス'], hand=False), mem) == []
-    assert not mem.get('general_override') and not mem.get('source_override')
+    assert not _plan_region(mem).get('general_override') and not _plan_region(mem).get('source_override')
     assert _plan_region(mem)['active'] == '1-B1' and mem['_records'][-1]['decision'] == 'situation_held'
 
 
@@ -259,23 +259,23 @@ def test_sortie_capture_keeps_exact_read_frame_even_without_records(tmp_path, ki
                                        (['どうし' + UNKNOWN], True)])
 def test_boss_never_substitutes_from_an_unreadable_list(words, hand):
     mem = memory()
-    mem['general_override'] = {'1-B1': 'ゼウス'}
+    _plan_region(mem)['general_override'] = {'1-B1': 'ゼウス'}
     assert policy.deploy_step(menu('general_list', words, hand), mem) == []
     assert '1-B1' not in _plan_region(mem).get('sortie_general', {})
-    assert not mem.get('source_override')
+    assert not _plan_region(mem).get('source_override')
     assert _plan_region(mem)['orders']['1-B1'] == 'pending' and _plan_region(mem)['active'] == '1-B1'
     assert mem['_records'][-1]['decision'] == 'situation_held'
 
 
 def test_boss_visible_hero_does_not_authorize_an_uncalibrated_kit(monkeypatch):
     mem = memory()
-    mem['general_override'] = {'1-B1': 'ゼウス'}
-    mem['card_override'] = {'1-B1': ['イッテツーン', 'イッテツーン']}
+    _plan_region(mem)['general_override'] = {'1-B1': 'ゼウス'}
+    _plan_region(mem)['card_override'] = {'1-B1': ['イッテツーン', 'イッテツーン']}
     assert policy.deploy_step(menu('general_list', ['どうし', 'ゼウス']), mem) == [policy.pad('down')]
     picked = menu('general_list', ['どうし', 'ゼウス'])
     picked.hand = (122, 57, 139, 69)
     assert policy.deploy_step(picked, mem) == [policy.pad('a')]
-    assert _plan_region(mem)['sortie_general']['1-B1'] == mem['general_override']['1-B1'] == 'ゼウス'
+    assert _plan_region(mem)['sortie_general']['1-B1'] == _plan_region(mem)['general_override']['1-B1'] == 'ゼウス'
     for cards in (['イッテツーン', 'イッテツーン'], ['クースカン', 'ノリウツール']):
         screen = menu('sortie_confirm', ['うむッ!'] + cards)
         screen.lines.insert(0, TextLine(31, tuple((16 + 8*i, ch) for i, ch in enumerate('ゼウス'))
@@ -292,7 +292,7 @@ def test_boss_target_uses_existing_context_without_relabeling_companion(monkeypa
     _plan_region(mem)['sortie_general']['1-B1'] = 'ゼウス'
     _plan_region(mem)['order_context'] = {'1-B1': {'actual_general': 'ゼウス',
                                    'observed_metric': {'cards': ['クースカン', 'ノリウツール']}}}
-    mem['general_override'] = {'1-B1': 'どうし'}
+    _plan_region(mem)['general_override'] = {'1-B1': 'どうし'}
     monkeypatch.setattr(policy, 'nav_step', lambda *args: 'arrived')
     assert policy.target_step(menu('map_target', []), mem, None) == [policy.pad('a')]
     commit_departure(mem)
@@ -303,7 +303,7 @@ def test_boss_target_uses_existing_context_without_relabeling_companion(monkeypa
 def test_legacy_boss_flow_without_hero_evidence_is_held(kind, monkeypatch):
     mem = memory()
     _plan_region(mem).pop('sortie_general', None)
-    mem['general_override'] = {'1-B1': 'ゼウス'}
+    _plan_region(mem)['general_override'] = {'1-B1': 'ゼウス'}
     _plan_region(mem)['order_context'] = {'1-B1': {'actual_general': 'ゼウス',
                                    'observed_metric': {'cards': ['クースカン', 'ノリウツール']}}}
     monkeypatch.setattr(policy, 'nav_step', lambda *args: pytest.fail('unverified boss navigation'))
@@ -865,15 +865,15 @@ def test_empty_general_list_falls_back_to_home_source_instead_of_silent_hold():
     # With source already アルマムーン the first empty observation still installs
     # the override and closes the menus (same as any missing general).
     assert policy.deploy_step(screen, mem) == [policy.pad('b'), policy.pad('b')]
-    assert mem['source_override']['1-C1'] == 'アルマムーン'
+    assert _plan_region(mem)['source_override']['1-C1'] == 'アルマムーン'
     assert _plan_region(mem)['active'] is None and _plan_region(mem)['orders']['1-C1'] == 'pending'
     assert mem['_records'][-1]['decision'] == 'order_source_changed'
-    assert not mem.get('general_override')
+    assert not _plan_region(mem).get('general_override')
 
 
 def test_empty_general_list_after_home_fallback_fails_the_order_with_evidence():
     mem = empty_list_memory()
-    mem['source_override'] = {'1-C1': 'アルマムーン'}
+    _plan_region(mem)['source_override'] = {'1-C1': 'アルマムーン'}
     screen = empty_general_list_screen()
     assert policy.deploy_step(screen, mem) == [policy.pad('b')]
     assert _plan_region(mem)['orders']['1-C1'] == 'failed' and _plan_region(mem)['active'] is None
@@ -1054,7 +1054,7 @@ def test_hero_priority_full_boss_departure_keeps_real_actor_through_battle(monke
     assert context['observed_metric']['cards'] == list(cards)
     # Hot-load/adopted-plan bookkeeping cannot relabel the already confirmed
     # unit. Even a changed override must keep the selected companion.
-    mem['general_override']['1-B1'] = 'どうし'
+    _plan_region(mem)['general_override']['1-B1'] = 'どうし'
     monkeypatch.setattr(policy, 'nav_step', lambda *args: 'arrived')
     assert policy.target_step(menu('map_target', []), mem, None) == [policy.pad('a')]
     commit_departure(mem)
@@ -1063,7 +1063,7 @@ def test_hero_priority_full_boss_departure_keeps_real_actor_through_battle(monke
     assert launch['general'] == 'ゼウス' and launch['planned_general'] == 'どうし'
     message = Screen([], None, 'ゼウスしょうぐんがボスじょうにせめこんだ!!', kind='boss_attack_started')
     assert policy.message_step(message, mem) == [policy.pad('a')]
-    assert mem['attack']['general'] == 'ゼウス' and mem['attack']['step'] == '1-B1'
+    assert _plan_region(mem)['attack']['general'] == 'ゼウス' and _plan_region(mem)['attack']['step'] == '1-B1'
     panel = Screen([], None, '', battle=Battle('クイーン', 70, 'ゼウス', 85), kind='battle')
     policy.battle_step(panel, mem); policy.battle_step(panel, mem)
     assert mem['battle']['ally'] == 'ゼウス' and mem['battle']['step'] == '1-B1'
@@ -1137,7 +1137,7 @@ def test_priority_keeps_single_defender_and_explicit_nonhero_chart_role():
     mem = memory()
     mem.update(active='1-C1', orders={'1-C1': 'pending'})
     assert policy.deploy_step(selected_list(['ココット', 'ゼウス']), mem) == [policy.pad('a')]
-    assert not mem.get('general_override')
+    assert not _plan_region(mem).get('general_override')
 
 
 def test_chart_source_companion_is_inspected_before_following_a_busy_hero():
@@ -1150,7 +1150,7 @@ def test_chart_source_companion_is_inspected_before_following_a_busy_hero():
     _plan_region(mem)['orders'] = {o['step']: 'launched' for o in chart.orders(1)}
     _plan_region(mem)['orders']['1-B1'] = 'pending'
     assert policy.next_order(mem) == boss
-    assert not mem.get('source_override')
+    assert not _plan_region(mem).get('source_override')
     assert policy.deploy_step(selected_list(['ゼウス', 'ココット']), mem) == [policy.pad('a')]
     assert _plan_region(mem)['sortie_general']['1-B1'] == 'ゼウス'
 

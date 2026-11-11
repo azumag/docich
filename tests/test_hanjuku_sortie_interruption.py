@@ -71,7 +71,7 @@ def test_real_entry_confirms_actual_not_planned_destination():
     p.message_step(screen('attack_started', ['ゼウスしょうぐんがジョンリギじょうにのりこんだ']), mem)
     assert _sorties(mem)['1-A2']['target'] == 'ジョンリギ'
     assert _sorties(mem)['1-A2']['status'] == 'arrived'
-    assert mem['attack']['step'] == '1-A2'
+    assert _plan_region(mem)['attack']['step'] == '1-A2'
     assert _plan_region(mem)['orders']['1-A2'] == 'launched'
     assert _world(mem)['garrison']['アルマムーン'] == ['どうし']
     assert not _flow(mem).get('sortie_attempt')
@@ -104,12 +104,12 @@ def test_a_general_listed_in_an_intervening_own_castle_continues_his_order():
                                  'source': 'スペンソニア', 'tick': mem['tick'] - 10}}
     order = {'step': 'A:1:J1', 'general': 'ゼウス', 'source': 'スペンソニア', 'target': 'けっかい',
              'cards': [], 'after': None, 'note': 't'}
-    mem['chart_plan'] = {'request_id': 'x', 'orders': [order]}
+    _plan_region(mem)['chart_plan'] = {'request_id': 'x', 'orders': [order]}
     assert p._continue_transit_sorties(mem, 'ジョンリギ', ['ゼウス', 'リーキ']) == ['A:1:J1']
     sortie = _sorties(mem)['A:1:J1']
     assert sortie['status'] == 'arrived' and sortie['target'] == 'ジョンリギ'
     assert sortie['transit_to'] == 'けっかい'
-    assert mem['source_override']['A:1:J1'] == 'ジョンリギ'
+    assert _plan_region(mem)['source_override']['A:1:J1'] == 'ジョンリギ'
     assert _plan_region(mem)['orders']['A:1:J1'] == 'pending'
     assert _world(mem)['garrison']['ジョンリギ'] == ['ゼウス']
     assert any(r['decision'] == 'sortie_transit_continue' for r in mem['_records'])
@@ -163,7 +163,7 @@ def test_partial_list_does_not_prove_absence_or_select_replacement(words):
     _plan_region(mem)['active'] = '1-A2'
     assert p.deploy_step(screen('general_list', words), mem) == []
     assert _plan_region(mem)['orders']['1-A2'] == 'launched_unconfirmed'
-    assert mem['source_override'] == {'1-A2': 'アルマムーン'}
+    assert _plan_region(mem)['source_override'] == {'1-A2': 'アルマムーン'}
 
 
 def test_unreachable_verification_does_not_fail_or_resend_sortie():

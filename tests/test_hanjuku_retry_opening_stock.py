@@ -38,20 +38,20 @@ def loss(stock):
 def test_two_copies_in_stock_keep_the_two_opening_cards():
     mem = loss({'イッテツーン': 2})
     assert _plan_region(mem)['orders'][STEP] == 'pending' and mem['retries'][STEP] == 1
-    assert mem['card_override'][STEP] == ['イッテツーン', 'イッテツーン']
+    assert _plan_region(mem)['card_override'][STEP] == ['イッテツーン', 'イッテツーン']
     assert mem['retry_context'][STEP]['expected_metric'] == {'enemy_hp_after_open': 10}
 
 
 def test_one_copy_in_stock_plans_one_card():
     mem = loss({'イッテツーン': 1})
-    assert mem['card_override'][STEP] == ['イッテツーン']
+    assert _plan_region(mem)['card_override'][STEP] == ['イッテツーン']
     assert mem['retry_context'][STEP]['expected_metric'] == {'enemy_hp_after_open': 20}
     assert '1枚' in mem['retry_context'][STEP]['deviation_reason']
 
 
 def test_no_stock_clears_the_plan_and_keeps_the_chart_kit():
     mem = loss({'イッテツーン': 0})
-    assert STEP not in (mem.get('card_override') or {})
+    assert STEP not in (_plan_region(mem).get('card_override') or {})
     assert mem['retry_context'][STEP]['expected_metric'] == {'enemy_hp_after_open': None}
     assert '実在庫の切り札なし' in mem['retry_context'][STEP]['deviation_reason']
     assert _plan_region(mem)['orders'][STEP] == 'pending'          # 再攻撃自体は続ける
@@ -61,5 +61,5 @@ def test_no_stock_clears_the_plan_and_keeps_the_chart_kit():
 
 def test_an_unread_stock_does_not_invent_cards():
     mem = loss({})
-    assert STEP not in (mem.get('card_override') or {})
+    assert STEP not in (_plan_region(mem).get('card_override') or {})
     assert mem['retry_context'][STEP]['expected_metric'] == {'enemy_hp_after_open': None}

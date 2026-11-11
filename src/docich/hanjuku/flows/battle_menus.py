@@ -11,6 +11,7 @@ from ..os_layer.screen import OKUNOTE_CHOICES, Screen
 from ... import hanjuku_chart as chart, hanjuku_experience as experience, hanjuku_reference as reference
 from ...hanjuku_egg_reference import general_max_hp
 from ..decision_log import _record
+from ..state.regions import plan as _plan_region
 from . import egg_bait
 from .battle import _card_battle_reading, _card_gate_close, _hero_retreat_open, _remember_general_for_summon
 from ..judgment.battle import (BEHIND_EGG_RATIO_TENTHS, CARD_ANNOUNCE_LIMIT, CARD_LIST_CURSOR_LIMIT,
@@ -1533,7 +1534,7 @@ def note_boss_monster_hp(mem, battle, enemy_rows):
     the last value lets the status and diagnostics show boss progress, and a
     later policy can react to a low boss without inventing a battle result.
     """
-    attack = mem.get('attack') or {}
+    attack = _plan_region(mem).get('attack') or {}
     if not chart.is_boss_castle(attack.get('castle')):
         return
     if not enemy_rows or len(enemy_rows) != 1:
@@ -1578,7 +1579,7 @@ def note_boss_monster_hp(mem, battle, enemy_rows):
         if step is not None and match == 'matched':
             _bind_sortie(mem, step, attack.get('castle'), general)
             attack['step'] = step
-            mem['attack'] = attack
+            _plan_region(mem)['attack'] = attack
             from ..decision_log import _record
             _record(mem, 'boss_entry_bound_by_panel', chart_step=step, general=general,
                     castle=attack.get('castle'),
@@ -1588,7 +1589,7 @@ def note_boss_monster_hp(mem, battle, enemy_rows):
 
 def _egg_retreat_return(screen, mem, battle):
     """Reuse the finite return-to-human-command route; B is not a receipt."""
-    attack = mem.get('attack') or {}
+    attack = _plan_region(mem).get('attack') or {}
     if chart.is_boss_castle(attack.get('castle')):
         # g1133 2026-11-06: three measured boss entries (ヘラ 04:39,
         # アマンディーヌ 04:43, パプリカ 04:48) reached the boss battle menu,
@@ -1850,7 +1851,7 @@ def egg_battle_step(screen: Screen, mem):
                         '自軍が健在でHP・兵士数・戦闘力から白兵を続けられそうならたまごを温存）'
                         if not wants_egg else
                         'チャートに召喚戦の指示がないための独自判断（原典戦術⑥、既定はたまご）'))
-    attack = mem.get('attack') or {}
+    attack = _plan_region(mem).get('attack') or {}
     # g514: the hero was 34/90 against the boss's Hydra, with both planned
     # cards unused. Available eggs/cards must not bypass his retreat check.
     # A current named general panel and the same attack receipt are required;
@@ -1909,13 +1910,13 @@ def egg_battle_step(screen: Screen, mem):
         # went 152 -> 70 in the same fight. v562 wrote egg_uses=0 from this row
         # and would have benched the wave that was actually working, so the
         # evidence stays a log only.
-        if not empty_egg and chart.is_boss_castle((mem.get('attack') or {}).get('castle')):
-            general = ((mem.get('attack') or {}).get('general')
+        if not empty_egg and chart.is_boss_castle((_plan_region(mem).get('attack') or {}).get('castle')):
+            general = ((_plan_region(mem).get('attack') or {}).get('general')
                        or (battle or {}).get('ally'))
             if isinstance(general, str) and general and not mem.get('egg_row_unavailable_logged'):
                 mem['egg_row_unavailable_logged'] = general
                 _record(mem, 'egg_row_unavailable', general=general,
-                        observed_metric={'castle': (mem.get('attack') or {}).get('castle'),
+                        observed_metric={'castle': (_plan_region(mem).get('attack') or {}).get('castle'),
                                          'egg_row': 'unavailable'},
                         reason='ボス戦で卵の行が灰色だったことを記録する（召喚不能とは断定しない）')
         action = 'attack'

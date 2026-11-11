@@ -233,8 +233,9 @@ def _repair_home_alias_failures(mem):
         step = order['step']
         if status.get(step) == 'failed' and order['source'] == home and step not in launched:
             status.pop(step, None)
-            for key in ('source_miss', 'source_override', 'general_override'):
-                (mem.get(key) or {}).pop(step, None)
+            (mem.get('source_miss') or {}).pop(step, None)
+            for key in ('source_override', 'general_override'):
+                (_plan_region(mem).get(key) or {}).pop(step, None)
             restored.append(step)
     if restored:
         _plan_region(mem)['active'] = None

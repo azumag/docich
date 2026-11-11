@@ -30,7 +30,7 @@ def test_a_long_pending_plan_is_dropped():
     replan._adopt_plan(mem, plan(), 'abcd1234abcd1234')
     mem['tick'] = 1000 + replan.PLAN_STALE_TICKS
     replan._drop_stale_plan(mem)
-    assert mem['chart_plan'] is None
+    assert _plan_region(mem)['chart_plan'] is None
     assert stale_tally(mem) == 1
 
 
@@ -39,7 +39,7 @@ def test_a_fresh_plan_is_kept():
     replan._adopt_plan(mem, plan(), 'abcd1234abcd1234')
     mem['tick'] = 1000 + replan.PLAN_STALE_TICKS - 1
     replan._drop_stale_plan(mem)
-    assert mem['chart_plan'] is not None
+    assert _plan_region(mem)['chart_plan'] is not None
     assert stale_tally(mem) == 0
 
 
@@ -47,10 +47,10 @@ def test_a_plan_with_a_started_order_is_kept():
     mem = memory(1000)
     replan._adopt_plan(mem, plan(), 'abcd1234abcd1234')
     mem['tick'] = 1000 + replan.PLAN_STALE_TICKS
-    step = mem['chart_plan']['orders'][0]['step']
+    step = _plan_region(mem)['chart_plan']['orders'][0]['step']
     _plan_region(mem)['orders'] = {step: 'launched'}
     replan._drop_stale_plan(mem)
-    assert mem['chart_plan'] is not None
+    assert _plan_region(mem)['chart_plan'] is not None
     assert stale_tally(mem) == 0
 
 
@@ -59,7 +59,7 @@ def test_a_plan_without_an_adoption_tick_is_left_alone():
     replan._adopt_plan(mem, plan(), 'abcd1234abcd1234')
     mem.pop('chart_plan_tick', None)
     replan._drop_stale_plan(mem)
-    assert mem['chart_plan'] is not None
+    assert _plan_region(mem)['chart_plan'] is not None
     assert stale_tally(mem) == 0
 
 

@@ -57,7 +57,7 @@ def adopt(mem, *, after, source=HOME, general='ゼウス', target='ゴーメン'
     """Adopt one plan order for exactly this situation, as a worker answer."""
     rid = chart_adjust.request_id(mem)
     step = chart_adjust.execution_step(rid, 'Mblocked')
-    mem['chart_plan'] = {
+    _plan_region(mem)['chart_plan'] = {
         'request_id': rid, 'source': 'jev',
         'orders': [{'step': step, 'general': general, 'source': source, 'target': target,
                     'cards': [], 'after': after, 'note': 'adopted'}],
@@ -79,7 +79,7 @@ def test_a_blocked_adopted_plan_is_replaced_by_full_mechanical_chart():
 
     replan._off_chart(mem)
 
-    plan = mem['chart_plan']
+    plan = _plan_region(mem)['chart_plan']
     assert plan['source'] == 'mechanical', plan
     assert len(plan['orders']) == len(expected), plan
     assert step not in [o['step'] for o in plan['orders']]
@@ -95,7 +95,7 @@ def test_an_exhausted_adopted_plan_regenerates_only_after_it_becomes_unstartable
     step = adopt(mem, after=None)
     assert replan._plan_pending(mem) is True
     replan._off_chart(mem)
-    assert mem['chart_plan']['source'] == 'jev'
+    assert _plan_region(mem)['chart_plan']['source'] == 'jev'
     assert interim(mem) is None
 
     # The source castle was vacated, while the army is available elsewhere.
@@ -104,8 +104,8 @@ def test_an_exhausted_adopted_plan_regenerates_only_after_it_becomes_unstartable
     _world(mem)['garrison']['カストーラ'] = list(IDLE)
     assert replan._plan_pending(mem) is False
     replan._off_chart(mem)
-    assert mem['chart_plan']['source'] == 'mechanical'
-    assert step not in [o['step'] for o in mem['chart_plan']['orders']]
+    assert _plan_region(mem)['chart_plan']['source'] == 'mechanical'
+    assert step not in [o['step'] for o in _plan_region(mem)['chart_plan']['orders']]
     assert interim(mem) is None
 
 
@@ -120,7 +120,7 @@ def test_a_chart_with_no_safe_candidates_records_hold_instead_of_fake_orders():
 
     replan._off_chart(mem)
 
-    assert mem['chart_plan']['source'] == 'jev'  # no replacement to adopt yet
+    assert _plan_region(mem)['chart_plan']['source'] == 'jev'  # no replacement to adopt yet
     assert interim(mem) is None
     assert any(r['decision'] == 'chart_interim_hold' for r in mem['_records'])
 
@@ -178,7 +178,7 @@ def test_an_exhausted_mechanical_plan_is_rebuilt_with_new_sorties():
     mem = memory()
     rid = chart_adjust.request_id(mem)
     step = 'Mdeadbeef'
-    mem['chart_plan'] = {
+    _plan_region(mem)['chart_plan'] = {
         'schema': chart_adjust.SCHEMA, 'chapter': 1, 'request_id': rid,
         'source': 'mechanical',
         'orders': [{'step': step, 'general': 'ゼウス', 'source': HOME,
@@ -188,7 +188,7 @@ def test_an_exhausted_mechanical_plan_is_rebuilt_with_new_sorties():
     mem['sorties'] = {step: {'source': HOME, 'target': 'ゴーメン', 'general': 'ゼウス',
                              'status': 'en_route', 'tick': mem['tick'] - 10}}
     replan._off_chart(mem)
-    plan = mem.get('chart_plan') or {}
+    plan = _plan_region(mem).get('chart_plan') or {}
     assert plan.get('source') == 'mechanical', plan
     targets = [o['target'] for o in plan.get('orders') or []]
     assert targets, plan

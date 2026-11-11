@@ -109,7 +109,7 @@ def test_normal_general_uses_carried_rare_before_clash():
     mem['battle']={'enemy':'ミント','ally':chart.HERO,'enemy_hp':70,'ally_hp':80,
         'start_enemy_hp':70,'start_ally_hp':80,'step':order['step'],'cards_used':[],
         'side':'attack','castle':'キカンドン','clashed':False,'planned_cards':[RARE]}
-    mem['card_override']={order['step']:['イッテツーン']}
+    _plan_region(mem)['card_override']={order['step']:['イッテツーン']}
     screen=Screen(lines=[],hand=None,text='');screen.kind='battle'
     screen.battle=Battle(enemy='ミント',ally=chart.HERO,enemy_hp=70,ally_hp=80)
     assert policy.battle_step(screen,mem)==[policy.pad('b')]

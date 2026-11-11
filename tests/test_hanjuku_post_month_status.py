@@ -8,7 +8,7 @@ from docich.hanjuku.os_layer.commands import pad
 from docich.hanjuku.os_layer.screen import Screen, parse
 
 from test_hanjuku_house import Canvas, roster, status
-from docich.hanjuku.state.regions import world as _world
+from docich.hanjuku.state.regions import world as _world, plan as _plan_region
 
 
 def memory(**fields):
@@ -923,7 +923,7 @@ def test_battle_result_reopens_interrupted_monthly_roster_instead_of_planning():
     assert post.step(Screen([], None, '', kind='map'), mem, None) == [pad('x')]
     assert state['stage'] == 'open_menu'
     assert 'post_month_status' in mem
-    assert not mem.get('chart_plan')
+    assert not _plan_region(mem).get('chart_plan')
     assert any(r['decision'] == 'post_month_battle_resume'
                and r['observed_metric']['previous_stage'] == 'status'
                for r in mem['_records'])

@@ -143,10 +143,13 @@ def test_migrated_departure_and_recall_keys_live_in_their_regions():
         assert KEY_OWNERSHIP[key]['region'] == PLAN
         assert KEY_OWNERSHIP[key]['lifetime'] == 'chapter'
         assert KEY_OWNERSHIP[key]['migrated'] is True
-    # P3 は未移行のまま（chart_plan 等は宣言のみ）。
-    for key in ('chart_plan', 'general_override',
+    # P3: chart_plan・override系・attack も plan 領域へ実移行（位置移行のみ）。
+    # attack は手順の作業ポインタでもある（将来精緻化候補・W4 の active と同型）。
+    for key in ('chart_plan', 'general_override', 'plan_step_rearm',
                 'source_override', 'card_override', 'attack'):
-        assert KEY_OWNERSHIP[key]['migrated'] is False
+        assert KEY_OWNERSHIP[key]['region'] == PLAN
+        assert KEY_OWNERSHIP[key]['lifetime'] == 'chapter'
+        assert KEY_OWNERSHIP[key]['migrated'] is True
 
 
 def test_sorties_flat_migration_prefers_latest_observation_and_is_idempotent():
@@ -363,7 +366,6 @@ def test_flat_access_guard_detects_forbidden_shapes(snippet):
 @pytest.mark.parametrize('snippet', [
     "x = _world(mem).get('launched_orders')",
     "_flow(mem)['recall'] = {'stage': 'x'}",
-    "mem.get('chart_plan')",                       # declared but unmigrated
     "mem.get('_run_identity')",                    # journal, unmigrated
     "x = mem['chapter']",
     "any(mem.get(k) for k in ('y_jump', 'battle'))",

@@ -219,7 +219,7 @@ def _failed_retakes(mem, record=False):
     # A castle retaken (or a chapter change) clears its failures.
     found = {c: list(steps) for c, steps in (stored or {}).items()
              if c in lost and isinstance(steps, list)}
-    plan = mem.get('chart_plan') or {}
+    plan = _plan_region(mem).get('chart_plan') or {}
     status = _plan_region(mem).get('orders') or {}
     if plan.get('chapter') in (None, chapter):
         for order in plan.get('orders') or ():
@@ -263,7 +263,7 @@ def _boss_wave_in_flight(mem, boss):
             continue
         steps.add(step)
     status = _plan_region(mem).get('orders') or {}
-    for order in (mem.get('chart_plan') or {}).get('orders') or ():
+    for order in (_plan_region(mem).get('chart_plan') or {}).get('orders') or ():
         if (isinstance(order, dict) and order.get('target') == boss
                 and status.get(order.get('step')) == 'launched'
                 and order.get('step') not in sorties):
@@ -1388,7 +1388,7 @@ def _release_stale_failures(mem, orders, rid):
     recent = mem.get('failed_local_step') or {}
     month = mem.get('month')
     status = _plan_region(mem).setdefault('orders', {})
-    book = mem.setdefault('plan_step_rearm', {})
+    book = _plan_region(mem).setdefault('plan_step_rearm', {})
     for order in orders:
         if chart.is_boss_castle(order.get('target')):
             continue          # the boss keeps its own bounded re-arm below
@@ -1412,6 +1412,8 @@ def _release_stale_failures(mem, orders, rid):
         # an overdue move is still the only arrival evidence for its target.
         for key in RELEASE_KEYS:
             (mem.get(key) or {}).pop(step, None)
+        for key in ('general_override', 'source_override', 'card_override'):
+            (_plan_region(mem).get(key) or {}).pop(step, None)
         _plan_region(mem).setdefault('order_context', {}).pop(step, None)
         _plan_region(mem).setdefault('sortie_general', {}).pop(step, None)
         # ``launched_orders`` lives in the world region, not at the top level.
@@ -1431,11 +1433,11 @@ def _mechanical_chart(mem, state, rid, digest):
     if _plan_pending(mem):
         return
     allow_sole = False   # no castle is ever emptied (owner 2026-11-06)
-    stored = mem.get('chart_plan') or {}
+    stored = _plan_region(mem).get('chart_plan') or {}
     if stored.get('request_id') == rid and stored.get('source') == 'mechanical':
         # Even within the same month, rebuild an exhausted mechanical chart
         # against the current garrison and in-flight sorties (keep defenders).
-        mem['chart_plan'] = None
+        _plan_region(mem)['chart_plan'] = None
     # A previously adopted LLM chart with no startable orders must also be
     # replaced by a new full mechanical plan, not just one interim sortie.
     # Keep it until a valid replacement exists; the fallback can still act
@@ -1482,7 +1484,7 @@ def _mechanical_chart(mem, state, rid, digest):
     if (stored.get('source') == 'mechanical' and previous_local
             and None not in previous_local
             and [o['step'] for o in orders] == previous_local):
-        mem['chart_plan'] = stored
+        _plan_region(mem)['chart_plan'] = stored
         mem.setdefault('chart_plan_tick', int(mem.get('tick') or 0))
         state.pop('interim_order', None)
         return
@@ -1569,6 +1571,8 @@ def _release_stale_steps(mem, steps):
             continue
         for key in RELEASE_KEYS:
             (mem.get(key) or {}).pop(step, None)
+        for key in ('general_override', 'source_override', 'card_override'):
+            (_plan_region(mem).get(key) or {}).pop(step, None)
         _plan_region(mem).setdefault('order_context', {}).pop(step, None)
         _plan_region(mem).setdefault('sortie_general', {}).pop(step, None)
         _drop_spent_sortie_attempt(mem, step)
@@ -1678,7 +1682,7 @@ def _supersede_unstarted_steps(mem, new_orders):
     A:8e54a3af:M5f4f03 was already launched). Only a step with no sortie of its
     own is superseded; anything launched keeps its own lifecycle.
     """
-    previous = (mem.get('chart_plan') or {}).get('orders') or []
+    previous = (_plan_region(mem).get('chart_plan') or {}).get('orders') or []
     statuses = _plan_region(mem).setdefault('orders', {})
     sorties_now = _sorties(mem)
     keep = {o.get('step') for o in new_orders if isinstance(o, dict)}
@@ -1713,7 +1717,7 @@ def _adopt_plan(mem, doc, rid):
             order['roster_probe'] = True
     purchases = doc.get('purchases')
     _supersede_unstarted_steps(mem, orders)
-    mem['chart_plan'] = {
+    _plan_region(mem)['chart_plan'] = {
         'request_id': rid, 'source': doc.get('source'), 'orders': orders,
         'recruitment': doc.get('recruitment'),
         'purchases': ({**purchases, 'month': list(purchases['month']),
@@ -1780,7 +1784,7 @@ def _drop_stale_plan(mem):
     chart worker) where no state signature survives, so a decision record
     repeated on every call (35 identical records a minute under v411).
     """
-    plan = mem.get('chart_plan') or {}
+    plan = _plan_region(mem).get('chart_plan') or {}
     adopted = mem.get('chart_plan_tick')
     if not plan.get('orders') or type(adopted) is not int:
         return
@@ -1790,7 +1794,7 @@ def _drop_stale_plan(mem):
     status = _plan_region(mem).get('orders') or {}
     if any(status.get(o.get('step')) not in (None, 'pending') for o in plan['orders']):
         return
-    mem['chart_plan'] = None
+    _plan_region(mem)['chart_plan'] = None
     mem.pop('chart_plan_tick', None)
     mem.pop('plan_stale_signature', None)
     _tally(mem, 'plan_stale_rebuild')
@@ -1814,8 +1818,8 @@ def _off_chart_mechanical(mem, state, rid, gate):
         state['request_id'] = rid
     if state.get('request_digest') != digest:
         state['request_digest'] = digest
-        if (mem.get('chart_plan') or {}).get('source') == 'mechanical':
-            mem['chart_plan'] = None     # built for an older situation
+        if (_plan_region(mem).get('chart_plan') or {}).get('source') == 'mechanical':
+            _plan_region(mem)['chart_plan'] = None     # built for an older situation
     if _plan_pending(mem):
         return
     if gate == 'break':
@@ -1888,16 +1892,16 @@ def _off_chart(mem):
         state['request_digest'] = digest
         # A mechanical chart was built for the previous revision; discard it so
         # the normal chart / a fresh mechanical chart can take over.
-        if (mem.get('chart_plan') or {}).get('source') == 'mechanical':
-            mem['chart_plan'] = None
+        if (_plan_region(mem).get('chart_plan') or {}).get('source') == 'mechanical':
+            _plan_region(mem)['chart_plan'] = None
         _record(mem, 'chart_adjust_request', chart_step=None, strategy_variant='chart_adjust_pending',
                 **fields,
                 reason='チャート外: 状況が更新されたため同じ要求を最新の在庫・配置で再要求')
     doc = mem.get('_adjusted')
-    plan = mem.get('chart_plan') or {}
+    plan = _plan_region(mem).get('chart_plan') or {}
     doc_digest = doc.get('request_digest') if doc else None
     if (doc and doc.get('request_id') == rid and doc.get('chapter') == mem.get('chapter')
-            and (plan.get('request_id') != rid or (mem.get('chart_plan') or {}).get('source') == 'mechanical')
+            and (plan.get('request_id') != rid or (_plan_region(mem).get('chart_plan') or {}).get('source') == 'mechanical')
             and ((doc_digest == state.get('request_digest'))
                  # A digestless answer predates the revision field (old worker
                  # during a hot-load): accepted until a revision actually
@@ -1913,7 +1917,7 @@ def _off_chart(mem):
         return
     # Never overwrite an adopted (non-mechanical) chart with a mechanical one:
     # the mechanical chart is only a stand-in while the LLM answer is pending.
-    if (mem.get('chart_plan') or {}).get('source') not in (None, 'mechanical'):
+    if (_plan_region(mem).get('chart_plan') or {}).get('source') not in (None, 'mechanical'):
         # Fall back to the single interim sortie for exhausted adopted plans.
         _mechanical_interim(mem, state, rid, digest, allow_sole=(gate == 'break'))
         return

@@ -7,6 +7,7 @@ from docich import hanjuku_policy as p
 from docich.hanjuku_bot import decide
 from docich.hanjuku_pixels import read_png
 from docich.hanjuku_screen import parse, Screen, classify_text
+from docich.hanjuku.state.regions import plan as _plan_region
 
 F = Path(__file__).parent / 'fixtures' / 'hanjuku' / 'g706-field-encounter.png'
 
@@ -20,7 +21,7 @@ def test_native_encounter_is_acknowledged_with_no_castle_or_actor_binding():
     record = state['_records'][-1]
     assert record['decision'] == 'field_encounter_observed'
     assert record['general'] == p.NAME and record['castle'] is None
-    assert not state['policy'].get('attack') and not state['policy'].get('captured')
+    assert not _plan_region(state['policy']).get('attack') and not state['policy'].get('captured')
 
 
 @pytest.mark.parametrize('general', ['どうし', 'シェーブル', 'ゼウス'])
@@ -30,7 +31,7 @@ def test_complete_known_general_encounter_is_safe_to_advance(general):
     assert classify_text(screen) == 'field_encounter_started'
     mem = {'chapter': 2}
     assert p.message_step(screen, mem) == [p.pad('a')]
-    assert not mem.get('attack')
+    assert not _plan_region(mem).get('attack')
 
 
 @pytest.mark.parametrize('text', ['どうししょうぐんがてきとそうぐうしました!',

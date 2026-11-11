@@ -498,7 +498,7 @@ def test_goninja_uses_cash_not_the_old_monthly_spare_budget():
     assert policy._goninja_budget(mem, dict(header, gold=300)) == {
         'gold': 300, 'minimum_gold': 300}
     # An unpriced adjusted chart cannot veto the explicit readable cash floor.
-    mem['chart_plan'] = {'purchases': {'month': (1, 5),
+    _plan_region(mem)['chart_plan'] = {'purchases': {'month': (1, 5),
                                       'cards': (('デッドガン', 1),)}}
     assert policy._goninja_budget(mem, dict(header, gold=300)) == {
         'gold': 300, 'minimum_gold': 300}
@@ -1121,7 +1121,7 @@ def test_missing_chart_general_is_replaced_by_a_non_hero_present_at_the_source()
     assert s.kind == 'general_list'
     assert policy.deploy_step(s, mem)[0]['buttons'] == ['down']
     rec = mem['_records'][-1]
-    assert rec['strategy_variant'] == 'substitute_general' and mem['general_override']['1-C1'] == 'ゼウス'
+    assert rec['strategy_variant'] == 'substitute_general' and _plan_region(mem)['general_override']['1-C1'] == 'ゼウス'
 
 
 def test_missing_chart_general_is_never_replaced_by_the_hero():
@@ -1137,14 +1137,14 @@ def test_missing_chart_general_is_never_replaced_by_the_hero():
     assert s.kind == 'general_list'
     actions = policy.deploy_step(s, mem)
     assert actions == [policy.pad('b'), policy.pad('b')]
-    assert not (mem.get('general_override') or {}).get('1-C1')
-    assert mem['source_override']['1-C1'] == 'アルマムーン'
+    assert not (_plan_region(mem).get('general_override') or {}).get('1-C1')
+    assert _plan_region(mem)['source_override']['1-C1'] == 'アルマムーン'
     decisions = [r['decision'] for r in mem['_records']]
     assert 'hero_substitute_refused' in decisions and 'order_substitute' not in decisions
     # Second visit with only the hero again: the order fails, the hero stays.
     _plan_region(mem)['active'] = '1-C1'
     actions = policy.deploy_step(parse(c.frame()), mem)
-    assert not (mem.get('general_override') or {}).get('1-C1')
+    assert not (_plan_region(mem).get('general_override') or {}).get('1-C1')
     assert _plan_region(mem)['orders']['1-C1'] == 'failed'
 
 
@@ -1160,7 +1160,7 @@ def test_empty_general_list_canvas_parses_as_general_list_without_hand():
     mem = {'chapter': 1, 'active': '1-C1', 'orders': {'1-C1': 'pending'}}
     actions = policy.deploy_step(s, mem)
     assert actions == [policy.pad('b'), policy.pad('b')]
-    assert mem['source_override']['1-C1'] == 'アルマムーン'
+    assert _plan_region(mem)['source_override']['1-C1'] == 'アルマムーン'
     assert mem['_records'][-1]['decision'] == 'order_source_changed'
 
 
@@ -1228,7 +1228,7 @@ def _card_evidence_battle(*, retry=False):
     mem = {'chapter': 1, 'attack': {'general': 'どうし', 'castle': 'けっかい',
                                    'side': 'attack', 'step': '1-B1'}}
     if retry:
-        mem['card_override'] = {'1-B1': ['イッテツーン', 'イッテツーン']}
+        _plan_region(mem)['card_override'] = {'1-B1': ['イッテツーン', 'イッテツーン']}
     screen = Screen(lines=[], hand=None, text='', battle=Battle('クイーン', 60, 'どうし', 90), kind='battle')
     policy.battle_step(screen, mem); policy.battle_step(screen, mem)
     if not retry:
@@ -1400,7 +1400,7 @@ def test_hp_defeat_followed_by_living_hero_does_not_count_a_general_loss():
     _world(mem)['launched'] = {'キカンドン': {'general': 'どうし', 'step': '1-A1'}}
     policy.message_step(Screen(lines=[], hand=None, text='どうししょうぐんがキカンドンじょうにのりこんだ',
                                kind='attack_started'), mem)
-    assert mem['attack']['general'] == 'どうし'
+    assert _plan_region(mem)['attack']['general'] == 'どうし'
     assert policy.summary(mem)['losses'] == 1
     assert policy.summary(mem)['generals_lost'] is None
 

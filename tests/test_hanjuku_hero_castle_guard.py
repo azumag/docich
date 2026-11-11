@@ -9,7 +9,7 @@ import pytest
 
 from docich import hanjuku_chart as chart, hanjuku_chart_adjust as chart_adjust
 from docich import hanjuku_policy as policy
-from docich.hanjuku.state.regions import world as _world
+from docich.hanjuku.state.regions import world as _world, plan as _plan_region
 
 HERO = chart.HERO
 
@@ -122,7 +122,7 @@ def test_the_planner_does_not_start_a_sortie_the_hero_guard_would_cancel(
         present, general, short):
     from docich.hanjuku.strategy.orders import _source_spare_missing
     mem = _plan_memory(present, general)
-    assert _source_spare_missing(mem['chart_plan']['orders'][0], mem, allow_probe=True) is short
+    assert _source_spare_missing(_plan_region(mem)['chart_plan']['orders'][0], mem, allow_probe=True) is short
 
 
 def test_another_castle_keeps_its_own_spare_rule():

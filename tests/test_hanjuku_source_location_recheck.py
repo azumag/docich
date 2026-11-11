@@ -126,7 +126,7 @@ def test_chapter_entry_discards_prior_location_probe_budget():
 def test_adjusted_pending_retake_keeps_next_order_reobservation_path():
     mem = after_loss()
     order = dict(_world(mem)['launched_orders']['I:retake:1'], step='A:recheck:J1')
-    mem['chart_plan'] = {'orders': [order]}
+    _plan_region(mem)['chart_plan'] = {'orders': [order]}
     select(mem, order)
     assert p.deploy_step(generals(['ゼウス' + UNKNOWN, 'アルテミス']), mem) == [p.pad('b'), p.pad('b')]
     mem = json.loads(json.dumps(mem))

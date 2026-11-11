@@ -9,6 +9,7 @@ import pytest
 from docich import hanjuku_chart as chart
 from docich import hanjuku_chart_adjust as adjust
 from docich.hanjuku.strategy import replan
+from docich.hanjuku.state.regions import plan as _plan_region
 
 
 HOME = chart.home_castle(1)
@@ -73,7 +74,7 @@ def test_mechanical_chart_preserves_actor_probe_through_adoption(monkeypatch):
     mem = {'chapter': 1, 'tick': 10, 'orders': {}, 'captured': [],
            '_records': [], 'garrison': {}}
     replan._mechanical_chart(mem, {}, 'a' * 16, 'b' * 64)
-    adopted = mem['chart_plan']['orders'][0]
+    adopted = _plan_region(mem)['chart_plan']['orders'][0]
     assert adopted['general'] == 'しょうぐん'
     assert adopted['source_probe'] is True
     assert adjust.startable(adopted, {'garrison': {}, 'en_route': []}) is None

@@ -76,7 +76,7 @@ def test_a_site_the_y_view_measured_cleared_is_left_blocked():
 def test_a_live_fight_is_not_rearmed():
     mem = memory()
     order = site_order()
-    mem['attack'] = {'step': order['step'], 'castle': SOUTH_EAST}
+    _plan_region(mem)['attack'] = {'step': order['step'], 'castle': SOUTH_EAST}
     orders.next_order(mem)
     assert _plan_region(mem)['orders'][order['step']] == 'launched'
 

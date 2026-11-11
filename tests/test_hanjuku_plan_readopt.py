@@ -42,23 +42,23 @@ def test_the_plan_is_adopted_once_while_the_situation_is_unchanged():
 def test_the_kept_plan_is_the_same_object_and_keeps_its_tick():
     mem = memory()
     adopt(mem, 1000)
-    plan = mem['chart_plan']
+    plan = _plan_region(mem)['chart_plan']
     tick = mem['chart_plan_tick']
     adopt(mem, 1001)
-    assert mem['chart_plan'] is plan
+    assert _plan_region(mem)['chart_plan'] is plan
     assert mem['chart_plan_tick'] == tick
 
 
 def test_a_different_candidate_list_still_replaces_the_plan():
     mem = memory()
     adopt(mem, 1000)
-    first = [o['step'] for o in mem['chart_plan']['orders']]
+    first = [o['step'] for o in _plan_region(mem)['chart_plan']['orders']]
     # The stored plan can no longer start (_plan_pending False) and the
     # situation changed: an owned castle is now empty.
     _plan_region(mem)['orders'] = {step: 'failed' for step in first}
     mem["captured"].remove("トウトウ")      # a normal castle becomes a target again
     adopt(mem, 1001)
-    assert [o['step'] for o in mem['chart_plan']['orders']] != first
+    assert [o['step'] for o in _plan_region(mem)['chart_plan']['orders']] != first
     assert len(records(mem)) >= 2
 
 
@@ -95,21 +95,21 @@ def rebuild(mem, tick):
 def test_the_identical_rebuild_keeps_the_stored_plan(monkeypatch):
     mem = stuck_memory(monkeypatch)
     rebuild(mem, 1000)
-    plan = mem['chart_plan']
+    plan = _plan_region(mem)['chart_plan']
     tick = mem['chart_plan_tick']
     rebuild(mem, 1001)
-    assert mem['chart_plan'] is plan
+    assert _plan_region(mem)['chart_plan'] is plan
     assert mem['chart_plan_tick'] == tick
 
 
 def test_a_changed_candidate_list_replaces_the_kept_plan(monkeypatch):
     mem = stuck_memory(monkeypatch)
     rebuild(mem, 1000)
-    first = mem['chart_plan']
+    first = _plan_region(mem)['chart_plan']
     monkeypatch.setattr(replan, 'interim_candidates',
                         lambda *a, **k: candidates('トウトウ'))
     rebuild(mem, 1001)
-    assert mem['chart_plan'] is not first
+    assert _plan_region(mem)['chart_plan'] is not first
     assert mem['chart_plan_tick'] == 1001
 
 
@@ -117,7 +117,7 @@ def test_a_stale_launched_step_is_released_when_the_plan_is_kept(monkeypatch):
     """A kept plan must not make its 'launched' marker permanent."""
     mem = stuck_memory(monkeypatch)
     rebuild(mem, 1000)
-    step = mem['chart_plan']['orders'][0]['step']
+    step = _plan_region(mem)['chart_plan']['orders'][0]['step']
     _plan_region(mem)['orders'][step] = 'launched'      # no sortie record: not marching
     rebuild(mem, 1001)
     assert _plan_region(mem)['orders'][step] == 'pending'
@@ -127,10 +127,10 @@ def test_a_stored_plan_without_local_step_is_rebuilt(monkeypatch):
     """A plan from before the field existed cannot prove identity: rebuild."""
     mem = stuck_memory(monkeypatch)
     rebuild(mem, 1000)
-    first = mem['chart_plan']
-    for order in mem['chart_plan']['orders']:
+    first = _plan_region(mem)['chart_plan']
+    for order in _plan_region(mem)['chart_plan']['orders']:
         order.pop('local_step', None)
     rebuild(mem, 1001)
-    assert mem['chart_plan'] is not first
+    assert _plan_region(mem)['chart_plan'] is not first
     assert mem['chart_plan_tick'] == 1001
 

@@ -62,7 +62,7 @@ def bound_execution(cards=('バルムンク', 'ミックミー')):
 
 def test_planned_cards_keep_only_the_measured_departure_kit():
     mem, step = bound_execution()
-    mem['card_override'] = {step: ['イッテツーン', 'イッテツーン']}
+    _plan_region(mem)['card_override'] = {step: ['イッテツーン', 'イッテツーン']}
     cur = {'step': step, 'ally': 'ゼウス', 'enemy': 'ガルバンゾー',
            'entry_evidence': None}
     planned = p._planned_battle_cards(mem, cur, 'ガルバンゾー')

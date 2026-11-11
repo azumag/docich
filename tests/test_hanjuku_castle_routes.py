@@ -50,7 +50,7 @@ def test_adjusted_order_and_source_override_cannot_bypass_the_route():
     assert not orders._ready(order, mem)
     order['source'] = 'イーピヨル'
     assert orders._ready(order, mem)
-    mem['source_override'] = {order['step']: 'アルマムーン'}
+    _plan_region(mem)['source_override'] = {order['step']: 'アルマムーン'}
     assert not orders._ready(order, mem)
 
 
@@ -485,7 +485,7 @@ def test_pending_order_behind_an_own_castle_is_redirected_to_the_blocker():
                         'テラビル': ['ラビオリ']},
            'sorties': {}, '_records': [], 'house_eggs': {}, 'general_location_unknown': []}
     orders.next_order(mem)
-    assert mem['source_override']['A:x:J1'] == 'オトラント'
+    assert _plan_region(mem)['source_override']['A:x:J1'] == 'オトラント'
     rec = next(r for r in mem['_records'] if r['decision'] == 'sortie_source_march_block')
     assert rec['expected_metric']['source'] == 'アルマムーン'
     assert rec['observed_metric']['blocker'] == 'オトラント'
@@ -501,7 +501,7 @@ def test_a_clear_pending_order_keeps_its_baked_source():
            'garrison': {'アルマムーン': ['どうし'], 'オトラント': ['グレナデン']},
            'sorties': {}, '_records': [], 'house_eggs': {}, 'general_location_unknown': []}
     orders.next_order(mem)
-    assert 'source_override' not in mem or 'A:x:J1' not in mem['source_override']
+    assert 'source_override' not in _plan_region(mem) or 'A:x:J1' not in _plan_region(mem)['source_override']
 
 
 def test_boss_order_unlocks_when_its_chain_is_held_despite_a_side_loss():
@@ -619,12 +619,12 @@ def test_a_transfer_still_marching_is_waited_for_before_the_list_is_opened():
 # Positional ids M1..Mn named a different order each time, so a stale 'launched'
 # kept カルーン (M1, 6.5 h) and クロチェット (M3) from ever starting.
 def plan_steps(mem):
-    return {o['target']: o['step'] for o in (mem.get('chart_plan') or {}).get('orders') or []}
+    return {o['target']: o['step'] for o in (_plan_region(mem).get('chart_plan') or {}).get('orders') or []}
 
 
 def rebuild(mem):
     mem['route_probe_read_tick']['アイアイエー'] = mem['tick']      # its list was read: no probe order
-    mem['chart_plan'] = None
+    _plan_region(mem)['chart_plan'] = None
     replan._mechanical_chart(mem, mem.setdefault('chart_adjust', {}), '0123456789abcdef', 'digest')
     return plan_steps(mem)
 
@@ -646,11 +646,11 @@ def test_an_old_launched_flag_does_not_block_an_order_the_plan_offers_again():
     _plan_region(mem)['orders'][karun] = 'launched'
     _world(mem)['sorties'][karun] = {'source': 'アルマムーン', 'target': 'カルーン', 'general': 'キッシュ',
                              'status': 'arrived', 'tick': mem['tick'] - 17000}
-    mem['general_override'] = {karun: 'キッシュ'}
+    _plan_region(mem)['general_override'] = {karun: 'キッシュ'}
     _plan_region(mem)['order_context'] = {karun: {'actual_general': 'キッシュ'}}
     rebuild(mem)
     assert _plan_region(mem)['orders'][karun] == 'pending'
-    assert karun not in mem['general_override'] and karun not in _plan_region(mem).get('order_context', {})
+    assert karun not in _plan_region(mem)['general_override'] and karun not in _plan_region(mem).get('order_context', {})
     assert mem['_records'][-1]['decision'] in ('plan_step_released', 'chart_adjust_applied')
     assert any(r['decision'] == 'plan_step_released' and r['chart_step'] == karun for r in mem['_records'])
 
