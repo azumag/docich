@@ -325,6 +325,11 @@ MONTH_SUB_MENU_WAIT = 4
 RECRUIT_CANDIDATE_LIMIT = 32     # paid candidate introductions outlast the generic 8 observations
 EGG_RITUAL_LIMIT = 64            # measured paid recovery includes a long chant
 MONTH_SUB_ABORT_B_LIMIT = 12     # ignored Bs (~18 s) before plain text is advanced with A (g662)
+# After this many abort Bs the sub-action is abandoned for the month: the menu
+# keeps offering it, so an endless B is an endless loop (g1163 2026-11-11
+# 23:08-23:25: month menu and shop list flipped every 1.5 s until the repetition
+# detector latched screen_stalled).
+MONTH_SUB_ABANDON_BACKS = 20
 
 
 def _eligible_recovery_actors(mem, actors):
