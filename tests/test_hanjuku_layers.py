@@ -24,7 +24,7 @@ PACKAGE = ROOT / 'src' / 'docich' / 'hanjuku'
 # (flows vs reporting) may not import each other either.
 LAYER_RANK = {
     '_compat': 0, 'decision_log': 0, 'version': 0, 'identity': 0,
-    'state': 0,
+    'state': 0, 'state_budget': 1,
     'os_layer': 1,
     'strategy': 2,
     'judgment': 3,
