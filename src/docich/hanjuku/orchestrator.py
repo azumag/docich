@@ -357,6 +357,51 @@ def y_jump_close_settle_step(screen, mem, generic):
     return []
 
 
+BATTLE_MENU_HOLD_ADVANCE = 5   # identical readable command frames before one A
+
+
+def battle_menu_hold_advance(screen, mem, actions, digest):
+    """Break a battle menu that answers the same no-op press forever.
+
+    g1163 2026-11-12 04:44-05:40: a battle command menu stayed on screen while
+    the plan kept pressing B, which that box ignores, so the digest never
+    changed, `unchanged_seconds` reached 300 s and screen_stalled ended the
+    corner — five times in one hour. Repeating the same pad on an unchanged
+    battle menu is not progress: after BATTLE_MENU_HOLD_ADVANCE identical
+    frames the opposite confirm (A) is sent once, and the count restarts.
+
+    An empty plan keeps its meaning (an orphan parent menu deliberately holds;
+    see test_hanjuku_orphan_battle_menu), so only a single repeated pad is
+    escalated here.
+    """
+    if screen.kind != 'battle_menu':
+        return None
+    if (not isinstance(actions, list) or len(actions) != 1
+            or not isinstance(actions[0], dict) or actions[0].get('type') != 'pad'):
+        mem.pop('battle_menu_hold', None)
+        return None
+    buttons = tuple(actions[0].get('buttons') or ())
+    if buttons not in (('b',), ('a',)):
+        mem.pop('battle_menu_hold', None)
+        return None
+    watch = mem.get('battle_menu_hold') or {}
+    same = watch.get('digest') == digest and watch.get('buttons') == list(buttons)
+    watch['n'] = (int(watch.get('n') or 0) + 1) if same else 1
+    watch['digest'] = digest
+    watch['buttons'] = list(buttons)
+    mem['battle_menu_hold'] = watch
+    if watch['n'] < BATTLE_MENU_HOLD_ADVANCE:
+        return None
+    watch['n'] = 0
+    other = 'a' if buttons == ('b',) else 'b'
+    decision_log._record(mem, 'battle_menu_hold_advance', screen=screen.kind,
+                         observed_metric={'digest': digest[:16],
+                                          'held': BATTLE_MENU_HOLD_ADVANCE,
+                                          'from': list(buttons), 'to': other},
+                         reason='同じボタンが効かないまま戦闘メニューが変わらないため、逆のボタンを1回だけ送る')
+    return [pad(other)]
+
+
 def battle_draw_hold_step(screen, mem, previous_kind, generic):
     """Withhold a generic confirm on an unreadable battle draw, boundedly.
 
@@ -977,6 +1022,9 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
             mem['held_phase']=None
             mem.pop('unknown_hold_watch', None)
     actions=battle_menus_flow.summon_dialogue_pace(screen,mem,phase,kind,actions,frame.digest())
+    hold_escape = battle_menu_hold_advance(screen, mem, actions, frame.digest())
+    if hold_escape is not None:
+        actions = hold_escape
     # The reanchor FSM only repairs coordinates; dispatch may now resume a
     # previously active order or explain why no safe action is available.
     map_flow.note_reanchor_followup(screen, mem, actions)
