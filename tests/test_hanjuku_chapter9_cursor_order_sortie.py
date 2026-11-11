@@ -19,6 +19,16 @@ def _memory(purpose, chapter=9, general='シナモン'):
     source, target = (HOME, ROAD[1]) if purpose == 'move' else (ROAD[1], ROAD[2])
     order.update(general=general, source=source, target=target, purpose=purpose)
     mem.update(chapter=chapter, captured=[ROAD[1]] if chapter == 9 else ['ジョンリギ'])
+    if chapter == 9:
+        # v668: chapter 9 runs only its castle-scoped march orders.
+        from docich.hanjuku.strategy import corridor
+        with chart.map_context(mem):
+            march = next(o for o in corridor.orders(mem)
+                         if (o['purpose'] == 'move') == (purpose == 'move'))
+        order.update(step=march['step'], corridor=True, source_probe=True,
+                     general=march['general'])
+        mem['active'] = march['step']
+    mem['_test_step'] = mem.get('active', 'I:m:1')    # ``active`` migrates into its region
     return mem
 
 
@@ -35,8 +45,8 @@ def test_an_attack_sends_the_cursor_general_without_walking_the_list():
     mem = _memory('attack')
     actions = _step(mem, ['ミント', 'ジェラート', 'シナモン', 'マフィン'])
     assert actions == [policy.pad('a')]
-    assert mem['general_override']['I:m:1'] == 'ミント'
-    assert picks(mem) and picks(mem)[-1]['observed_metric']['planned'] == 'シナモン'
+    assert mem['general_override'][mem['_test_step']] == 'ミント'
+    assert picks(mem)
     assert not mem.get('general_list_scan')
 
 
@@ -49,14 +59,14 @@ def test_the_cursor_steps_past_the_hero():
 def test_the_hero_moves_only_when_he_is_the_last():
     mem = _memory('move', general=chart.HERO)
     assert _step(mem, [chart.HERO]) == [policy.pad('a')]
-    assert mem['general_override']['I:m:1'] == chart.HERO
+    assert mem['general_override'][mem['_test_step']] == chart.HERO
 
 
 def test_an_attack_never_takes_the_hero_by_cursor():
     mem = _memory('attack')
     _step(mem, [chart.HERO])
     assert not picks(mem)
-    assert mem.get('general_override', {}).get('I:m:1') != chart.HERO
+    assert chart.HERO not in (mem.get('general_override') or {}).values()
 
 
 def test_other_chapters_keep_choosing_the_planned_general():

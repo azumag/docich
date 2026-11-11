@@ -15,7 +15,8 @@ from docich.hanjuku.os_layer.screen import Screen
 
 
 def _mem(stage):
-    mem = {'chapter': 9, 'month': '16-9', 'tick': 27700, 'gold': 2600, '_records': []}
+    # Chapter 8: chapter 9's mechanical mode arms no monthly pass (v668).
+    mem = {'chapter': 8, 'month': '16-9', 'tick': 27700, 'gold': 2600, '_records': []}
     post.arm(mem)
     mem['post_month_status']['stage'] = stage
     return mem

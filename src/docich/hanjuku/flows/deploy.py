@@ -675,7 +675,8 @@ def _selected_actor_guard(screen, mem, order):
     scoped = run_identity(mem.get('_run_identity')) is not None
     selected = (_sortie_general(order, mem) if scoped else
                 (_plan_region(mem).get('sortie_general') or {}).get(order['step']))
-    if order.get('source_probe') is True and (not selected or selected == NAME):
+    if (order.get('source_probe') is True and (not selected or selected == NAME)
+            and not (selected == NAME and order.get('corridor') is True and order.get('purpose') == 'move')):
         (mem.get('general_override') or {}).pop(order['step'], None)
         (mem.get('sortie_actor_miss') or {}).pop(order['step'], None)
         return _hold_guarded_sortie(mem, order, 'sortie_actor_unconfirmed',
@@ -977,6 +978,29 @@ def _general_list_scan(screen, mem, order):
         return None
     scan['presses'] += 1
     return [pad('down')]
+
+
+def _corridor_list_end(screen, mem, order):
+    """Chapter 9 march order whose list offers nobody: close it, skip the castle.
+
+    The general list is terminal in mechanical mode (owner 2026-11-11: それ以外
+    の操作はdisable): no walk, substitute or source fallback. An unreadable
+    list holds within the existing bound.
+    """
+    from ..strategy import corridor
+    present = _present_generals(screen)
+    if present is None:
+        return _hold_general_list_bounded(screen, mem, order,
+            '第9話の出撃一覧を読めないため保留', 'cursor_unreadable')
+    busy = _en_route(mem)[0]
+    usable = [g for g in present if g not in busy]
+    kind = 'empty' if not [g for g in usable if g != NAME] and NAME not in usable else 'hero'
+    corridor.mark_drained(mem, _source(order, mem), kind)
+    _observe_garrison(screen, mem, order, complete=len(present) < GENERAL_LIST_FULL)
+    _finish_order(mem, 'done', observed_metric=present[:8], source=_source(order, mem),
+                  reason=('第9話: 出撃元に出せる将軍がいないため、この城を一時的に対象から外す' if kind == 'empty'
+                          else '第9話: 出撃元に主人公しかいないため攻撃せず、この城を一時的に対象から外す'))
+    return [pad('b'), pad('b')]
 
 
 CASTLE_STATUS_AS_LIST_LIMIT = 3   # B presses on a ステータス panel read as the list before cancelling
@@ -1732,6 +1756,8 @@ def deploy_step(screen: Screen, mem):
         picked = _cursor_order_pick(screen, mem, order)
         if picked is not None:
             return picked
+        if order.get('corridor') is True:
+            return _corridor_list_end(screen, mem, order)
         walk = _general_list_scan(screen, mem, order)
         if walk is not None:
             return _deploy_input(screen, mem, order, walk, '出撃元の将軍一覧を下へ送って画面外の将軍を読む')

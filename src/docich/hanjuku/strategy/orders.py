@@ -677,6 +677,9 @@ def _orders(mem):
     still waiting on a capture; only adopting a newer validated plan does.
     While no plan is waiting, one JEV-chosen interim order may run.
     """
+    from . import corridor
+    if corridor.mechanical(mem):
+        return tuple(corridor.orders(mem))   # chapter 9: nothing but the march
     plan = mem.get('chart_plan') or {}
     interim = (mem.get('chart_adjust') or {}).get('interim_order')
     # An interim order only exists when no plan order is waiting (see
@@ -1407,6 +1410,15 @@ def next_order(mem):
     _expire_spent_sorties(mem)
     _redirect_blocked_sources(mem)
     status = _plan_region(mem).setdefault('orders', {})
+    from . import corridor
+    if corridor.mechanical(mem):
+        # Chapter 9 (owner 2026-11-11): every castle-scoped march order is
+        # startable as soon as its castle is ours; no reservation, in-flight
+        # cap, garrison or spare check applies.
+        owned = _owned(mem) & set(chart.castles(mem.get('chapter') or 0))
+        return next((o for o in corridor.orders(mem)
+                     if status.get(o['step']) in (None, 'pending') and _source(o, mem) in owned
+                     and _ready(o, mem)), None)
     current = list(_orders(mem))
     steps = {o['step'] for o in current}
     # A launched order put back to pending by a lost battle keeps its retry
