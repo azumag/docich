@@ -1690,7 +1690,9 @@ def _retake_reserved(order, mem):
     # the map with seven retakes of タオ planned and none started while
     # シナモン's retake was still walking.
     from .replan import _corridor_wave_open
-    if _corridor_wave_open(mem, order.get('target')):
+    # Only corridor-issued orders may bypass the ordinary one-retake gate.
+    # A plain retake at the same chapter-9 target must remain serialized.
+    if order.get('corridor') is True and _corridor_wave_open(mem, order.get('target')):
         return False
     now = int(mem.get('tick') or 0)
     return any(step != order['step'] and _sortie_reserved_target(mem, step, s) == order.get('target')
