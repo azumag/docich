@@ -171,6 +171,19 @@ def fixed_wage(name):
     return GENERAL_WAGES.get('しゅじんこう' if name == 'どうし' else name)
 
 
+def known_generals(names):
+    """The tokens that are actual generals, in order.
+
+    A castle-status panel prints 城名/じょう/しゅうにゅう/レベル/しょうぐん/めい beside
+    the name column, so a wide read can return them as if they were people:
+    g1163 2026-11-11 22:2x stored ハヤク's garrison as
+    ['ハヤク', 'じょう', 'しゅうにゅう', 'G', 'レベル', 'しょうぐん', 'めい',
+    'ラズベリー', 'セルリアク', 'セミヨン']. The plan then believed ten generals
+    stood in a castle holding three and spent sortie cycles finding nobody.
+    """
+    return [n for n in names if isinstance(n, str) and fixed_wage(n) is not None]
+
+
 def country_count(mem, kind):
     """A national-status count from this run/chapter/month, else unknown."""
     key, maximum = {'generals': ('country_general_count', MAX_GENERALS),
