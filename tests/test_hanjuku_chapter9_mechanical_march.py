@@ -114,3 +114,15 @@ def test_the_live_g1163_memory_starts_a_march_order():
         assert corridor.mechanical(mem)
         order = O.next_order(copy.deepcopy(mem))
     assert order and order['corridor'] and order['source'] in ('ハヤク', 'アルマムーン')
+
+
+def test_a_listed_general_goes_even_if_a_march_record_says_he_is_away():
+    """g1163 14:59-15:04: タオ listed アルファルファ, still recorded as marching."""
+    from docich.hanjuku.state.regions import sorties as _sorties
+    mem = _mem()
+    _sorties(mem)['I:stale'] = {'general': 'アルファルファ', 'source': FRONT, 'target': NEXT,
+                                'status': 'en_route', 'tick': 4990}
+    attack = _orders(mem)[0]
+    assert _deploy(mem, attack, ['アルファルファ']) == [policy.pad('a')]
+    assert mem['general_override'][attack['step']] == 'アルファルファ'
+    assert corridor.DRAINED not in mem
