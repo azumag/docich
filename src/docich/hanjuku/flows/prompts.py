@@ -748,8 +748,20 @@ def observe_events(screen: Screen, mem):
             _record(mem, 'month_seen', month=key, gold=header['gold'], reason='月の表示')
         mem['gold'] = header['gold']
     castle = CASTLE_STATUS.search(screen.text)
-    if castle and (mem.get('resume_chapter_pending') is True or not mem.get('chapter')):
+    chapter_open = mem.get('resume_chapter_pending') is True or not mem.get('chapter')
+    if castle and chapter_open:
         observe_chapter_castle(mem, castle[1])
+    elif chapter_open and screen.text:
+        # CASTLE_STATUS needs the full 「<城> … LvN しょうぐん」 row, so a screen
+        # that only names a castle (the castle menu) never resolved the chapter
+        # and the chart stayed unavailable. A known castle name standing alone
+        # on its own line is the same evidence. Two or more names are ambiguous,
+        # so nothing is confirmed rather than guessing the first one.
+        from ... import hanjuku_chart as _chart
+        known = {n for names in _chart.CASTLE_NAMES.values() for n in names if n}
+        named = {line.strip() for line in screen.text.splitlines() if line.strip() in known}
+        if len(named) == 1:
+            observe_chapter_castle(mem, next(iter(named)))
     if mem.get('chapter'):
         mem.pop('chapter_probe', None)
     if mem.get('resume_chapter_pending') is True and type(mem.get('chapter')) is int and 1 <= mem['chapter'] <= 12:

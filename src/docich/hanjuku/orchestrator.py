@@ -160,10 +160,20 @@ def unknown_hold_advance(screen, mem, actions, digest):
     reached: g1163 2026-11-09 13:12-13:16 held on the chapter-6 boss entry for
     six minutes and the fight expired without a single input. Count consecutive
     unreadable battle frames instead and send the same bounded A.
+
+    A blinking cursor alternates two images forever, which the run's stasis
+    clock already reads as one unchanged screen (`recent_frame_sha256`). This
+    counter must agree: g1163 2026-11-11 19:09-19:15 froze an unreadable
+    'event' frame that flipped between exactly two digests, so every
+    observation looked new, no A was ever sent, and the 5-minute stasis latched
+    screen_stalled. Keep the last two distinct digests and treat a repeat in
+    that pair as the same screen; a genuinely changing screen still misses it.
     """
     watch = mem.get('unknown_hold_watch') or {}
-    same = watch.get('digest') == digest
+    recent = [d for d in (watch.get('recent') or []) if isinstance(d, str)][:2]
+    same = digest in recent
     watch['n'] = (int(watch.get('n') or 0) + 1) if same else 1
+    watch['recent'] = ([digest] + [d for d in recent if d != digest])[:2]
     watch['digest'] = digest
     watch['total'] = int(watch.get('total') or 0) + 1
     mem['unknown_hold_watch'] = watch
