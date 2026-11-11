@@ -388,8 +388,14 @@ def battle_menu_hold_advance(screen, mem, actions, digest):
         mem.pop('battle_menu_hold', None)
         return None
     watch = mem.get('battle_menu_hold') or {}
-    same = watch.get('digest') == digest and watch.get('buttons') == list(buttons)
+    # A blinking cursor alternates two frames, exactly like the unreadable-screen
+    # escape learned in v673: comparing one digest would reset the bound on every
+    # frame and the menu would never be escaped. The last two distinct digests
+    # are one unchanged screen.
+    recent = [d for d in (watch.get('recent') or []) if isinstance(d, str)][:2]
+    same = (digest in recent) and watch.get('buttons') == list(buttons)
     watch['n'] = (int(watch.get('n') or 0) + 1) if same else 1
+    watch['recent'] = ([digest] + [d for d in recent if d != digest])[:2]
     watch['digest'] = digest
     watch['buttons'] = list(buttons)
     mem['battle_menu_hold'] = watch

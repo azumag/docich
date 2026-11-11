@@ -58,3 +58,11 @@ def test_another_screen_kind_is_not_escaped_here():
     mem = {}
     for _ in range(O.BATTLE_MENU_HOLD_ADVANCE * 2):
         assert O.battle_menu_hold_advance(screen('unknown'), mem, [O.pad('b')], 'same') is None
+
+
+def test_a_two_frame_blink_on_the_command_box_is_still_escaped():
+    """A blinking cursor must not reset the bound (same lesson as v673)."""
+    mem = {}
+    frames = ['blink-a', 'blink-b'] * O.BATTLE_MENU_HOLD_ADVANCE
+    results = [O.battle_menu_hold_advance(screen(), mem, [O.pad('b')], d) for d in frames]
+    assert results.count([O.pad('a')]) == 1
