@@ -357,6 +357,9 @@ def y_jump_close_settle_step(screen, mem, generic):
     return []
 
 
+# The same freeze reaches the egg and monster command boxes, which ignore one
+# button exactly like the ordinary たまごをつかう／きりふだ／たいきゃく box.
+BATTLE_COMMAND_MENU_KINDS = frozenset({'battle_menu', 'egg_battle_menu', 'monster_menu'})
 BATTLE_MENU_HOLD_ADVANCE = 5   # identical readable command frames before one A
 
 
@@ -374,7 +377,7 @@ def battle_menu_hold_advance(screen, mem, actions, digest):
     see test_hanjuku_orphan_battle_menu), so only a single repeated pad is
     escalated here.
     """
-    if screen.kind != 'battle_menu':
+    if screen.kind not in BATTLE_COMMAND_MENU_KINDS:
         return None
     if (not isinstance(actions, list) or len(actions) != 1
             or not isinstance(actions[0], dict) or actions[0].get('type') != 'pad'):

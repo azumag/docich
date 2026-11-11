@@ -46,6 +46,14 @@ def test_a_multi_action_plan_is_not_escalated():
             screen(), mem, [O.pad('b'), O.pad('b')], 'same') is None
 
 
+def test_the_egg_and_monster_command_boxes_are_escaped_too():
+    for kind in ('egg_battle_menu', 'monster_menu'):
+        mem = {}
+        for _ in range(O.BATTLE_MENU_HOLD_ADVANCE - 1):
+            assert O.battle_menu_hold_advance(screen(kind), mem, [O.pad('b')], 'same') is None
+        assert O.battle_menu_hold_advance(screen(kind), mem, [O.pad('b')], 'same') == [O.pad('a')]
+
+
 def test_another_screen_kind_is_not_escaped_here():
     mem = {}
     for _ in range(O.BATTLE_MENU_HOLD_ADVANCE * 2):

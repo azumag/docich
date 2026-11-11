@@ -7137,6 +7137,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v691-tolerable-display-reads",
             "hanjuku-chart-v693-recall-resume-after-scene",
             "hanjuku-chart-v694-battle-menu-hold-escape",
+            "hanjuku-chart-v695-menu-hold-escape-kinds",
             "hanjuku-chart-v560-castle-list-scroll",
             "hanjuku-chart-v561-post-month-repair-status",
             "hanjuku-chart-v501-idle-reanchor",
