@@ -10,6 +10,15 @@ def _scope(mem, cur):
                                       'side', 'castle', 'step')]]
 
 
+# A chosen candidate whose list stays on screen (its A did not land): waits
+# before the first close, B presses to close it, observations between
+# them, and the total budget for a stale attempt from another battle.
+CANDIDATE_MENU_WAITS = 6
+CANDIDATE_CLOSES = 2
+CANDIDATE_CLOSE_GAP = 2
+STALE_ATTEMPT_WAITS = 8
+
+
 def menu_pending(screen, mem, cur):
     attempt = cur.get('okunote_attempt')
     if attempt is None:
@@ -17,7 +26,15 @@ def menu_pending(screen, mem, cur):
     from ..os_layer.commands import pad
     if (not isinstance(attempt, dict) or attempt.get('scope') != _scope(mem, cur)
             or attempt.get('phase') not in ('parent_selected', 'candidate_selected')):
-        return [pad('b')] if screen.kind == 'battle_menu' else [{'type': 'wait', 'ms': 50}]
+        if screen.kind == 'battle_menu':
+            return [pad('b')]
+        waits = int(cur.get('okunote_stale_waits') or 0) + 1
+        cur['okunote_stale_waits'] = waits
+        if waits <= STALE_ATTEMPT_WAITS:
+            return [{'type': 'wait', 'ms': 50}]
+        cur.pop('okunote_attempt', None)
+        cur.pop('okunote_stale_waits', None)
+        return None                      # bounded: the ordinary menu logic decides
     if screen.kind == 'battle_menu':
         # g1097 23:06: 親メニュー (きりふだ/たいきゃく/おくのて) が残ったまま —
         # 前の A は届かず B はこの箱では無効 (~200回の無記録ループ)。おくのて
@@ -39,8 +56,49 @@ def menu_pending(screen, mem, cur):
             return None
         return [pad('b')]  # no observed completion, including a repeated parent
     if attempt['phase'] == 'candidate_selected':
+        if screen.kind == 'okunote_menu':
+            return _candidate_list_still_open(mem, cur, attempt)
         return [{'type': 'wait', 'ms': 50}]  # selection is not an effect/return receipt
     return None
+
+
+def _candidate_list_still_open(mem, cur, attempt):
+    """The candidate list is still open after its A: close it, never stall.
+
+    g1163 2026-11-11 19:10:00: A on ハダカでぶつかる left the same three-row list
+    on screen (the A was not taken); every later observation waited for the
+    effect, 200 waits in five minutes, until the run ended ``screen_stalled``.
+    A landed choice replaces the list with its effect text within about two
+    seconds (19:09:17 -> 19:09:19), so a list still unchanged after
+    ``CANDIDATE_MENU_WAITS`` observations means the A did not land.
+
+    The candidate A stays irreversible and is not re-sent while B can still
+    close the list. Only when the bounded closes leave it open is one last A
+    sent (the earlier one evidently never landed); after that B is pressed
+    every few observations, so input never stops.
+    """
+    from ..decision_log import _record
+    from ..os_layer.commands import pad
+    waits = int(attempt.get('menu_waits') or 0) + 1
+    attempt['menu_waits'] = waits
+    closes = int(attempt.get('closes') or 0)
+    if waits <= CANDIDATE_MENU_WAITS + closes * CANDIDATE_CLOSE_GAP:
+        return [{'type': 'wait', 'ms': 50}]
+    if closes < CANDIDATE_CLOSES:
+        attempt['closes'] = closes + 1
+        _record(mem, 'battle_okunote_candidate_close', general=cur.get('ally'),
+                observed_metric={'close': closes + 1, 'limit': CANDIDATE_CLOSES, 'waits': waits},
+                reason='奥の手の候補を選んだ後も候補一覧が変わらず残るため、Aが届かなかったとしてBで一覧を閉じる')
+        return [pad('b')]
+    if not attempt.get('last_confirm'):
+        attempt['last_confirm'] = True
+        _record(mem, 'battle_okunote_candidate_last_confirm', general=cur.get('ally'),
+                observed_metric={'closes': closes, 'waits': waits},
+                reason='Bでも奥の手の候補一覧が閉じないため、届かなかった選択のAを1回だけ送り直す')
+        return [pad('a')]
+    if waits % (CANDIDATE_CLOSE_GAP + 1) == 0:
+        return [pad('b')]
+    return [{'type': 'wait', 'ms': 50}]
 
 
 def selected(mem, cur, *, candidate):
