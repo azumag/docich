@@ -40,12 +40,41 @@ def allowed(mem, source, target):
             or (target in _owned(mem) and (target, source) in legs(3)))
 
 
+def move_leg(mem, source, target, owned=None):
+    """A chapter 9 transfer may ride the owned road past relay castles.
+
+    docich#3952 (measured 2026-11-11 22:2x-23:0x): relaying every rear general
+    one hop at a time delivered ~1 general per 5 minutes to the front, so the
+    front never held a squad and オオキク's defender recovered between attacks
+    (18 -> 34 -> 44). A direct march along owned road castles is a legal move
+    leg on this chapter (the road is the only traversable path anyway), so a
+    transfer's leg is the adjacent hop ``allowed`` already permits *or* any
+    route whose intermediate castles are all ours (``path`` proves that); one
+    enemy castle on the way falls back to the plain one-hop leg.
+    """
+    if allowed(mem, source, target):
+        return True
+    if mem.get('chapter') != 9:
+        return False
+    if owned is None:
+        owned = _owned(mem) & set(chart.castles(mem.get('chapter') or 0))
+    if source not in owned or target not in owned:
+        return False
+    return path(mem, source, target, owned) is not None
+
+
 def order_allowed(mem, order, source):
     if not is_road(mem.get('chapter')) or chart.is_boss_castle(order.get('target')):
         return True
     owned = _owned(mem)
-    return (source in owned and allowed(mem, source, order.get('target'))
-            and (order.get('purpose') != 'move' or order.get('target') in owned))
+    if source not in owned:
+        return False
+    if order.get('purpose') == 'move':
+        # Chapter 9 sends transfers straight to the front castle (docich#3952):
+        # any owned destination the owned road reaches is a legal move leg.
+        return (order.get('target') in owned
+                and move_leg(mem, source, order['target'], owned))
+    return allowed(mem, source, order.get('target'))
 
 
 def path(mem, source, target, owned):
@@ -93,7 +122,7 @@ def _moves_into(mem, castle):
                      or all(order.get(k) == sortie.get(k)
                             for k in ('source', 'target', 'general')))
                 and sortie.get('target') == castle and sortie.get('source') != castle
-                and allowed(mem, sortie.get('source'), castle)
+                and move_leg(mem, sortie.get('source'), castle)
                 and type(tick) is int and 0 <= now - tick):
             yield step, sortie
 
