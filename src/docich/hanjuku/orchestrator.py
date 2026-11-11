@@ -158,8 +158,41 @@ Y_JUMP_UNKNOWN_HOLD_MAX = 6
 Y_JUMP_VIEW_KINDS = frozenset({'map', 'map_target', 'world_map'})
 
 
+CAMP_RECALL_SCENE_RESUMES = 2   # scenes may cut a recall twice before the camp is skipped
 UNKNOWN_HOLD_ADVANCE = 6      # identical unreadable frames before one A is sent
 UNKNOWN_BATTLE_ADVANCE = 10   # any unreadable frames inside a battle before one A
+
+
+def _recall_after_scene(mem, recall, kind, phase):
+    """Keep a scene-cut recall pending instead of starting it over.
+
+    The scene closes the destination picker but not the intent: the camped
+    general still stands where he was. Dropping the recall made every attempt
+    begin from finding the camp again, and the retry landed near the next
+    month's end just as often (g1163 2026-11-12 03:5x-04:1x: six attempts an
+    hour, none completed). The destination is chosen again, so a picker that
+    really closed cannot be confirmed by a stale marker.
+    """
+    from .state.regions import flow as _flow
+    _flow(mem).pop('recall_interrupted', None)
+    for key in ('dest', 'dest_target', 'marker', 'picker_closed', 'input_sent',
+                'request_trace', 'a_inputs', 'requested_tick'):
+        recall.pop(key, None)
+    resumes = int(recall.get('scene_resumes') or 0) + 1
+    if resumes > CAMP_RECALL_SCENE_RESUMES:
+        # A recall that keeps being cut by scenes is not transient: give the
+        # camp the usual failed skip instead of spending every month on it.
+        _flow(mem).pop('recall', None)
+        from .flows.recall import _arm_recall_skip as _arm_skip
+        _arm_skip(mem, recall)
+        decision_log._record(mem, 'camp_recall_scene_abandoned', screen=kind, phase=phase,
+                             observed_metric={'resumes': resumes},
+                             reason='場面の割り込みで帰還が繰り返し中断されるため、この野営を一定期間見送る')
+        return None
+    recall.update(stage='to_camp', steps=0, resumed_after_scene=True,
+                  scene_pending=True, scene_resumes=resumes)
+    _flow(mem)['recall'] = recall
+    return recall
 
 
 def unknown_hold_advance(screen, mem, actions, digest):
@@ -678,7 +711,8 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
                     or (bool(sub) and bool(month_confirmation_positions(screen))))
     recall = _flow(mem).get('recall') or {}
     if (recall and phase == 'concert' and recall.get('stage') != 'await_dispatch'
-            and not recall.get('retreat_recheck') and not recall.get('anonymous_recheck')):
+            and not recall.get('retreat_recheck') and not recall.get('anonymous_recheck')
+            and not recall.get('scene_pending')):
         # g1075 2026-10-29 13:02: the month rolled over while the camp recall
         # was choosing its destination. The month-start scene (「こんげつは……」,
         # phase 'concert') was handed to the recall, which waits on text, so
@@ -688,13 +722,16 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
         # scene advance. The camp is found again on the map afterwards.
         # #3544: the interruption marker belongs to this recall; sweep it too
         # so a later unrelated recall cannot inherit the short retry hold.
-        _flow(mem).pop('recall', None)
-        _flow(mem).pop('recall_interrupted', None)
+        stages = {'stage': recall.get('stage'), 'steps': recall.get('steps')}
+        recall = _recall_after_scene(mem, recall, kind, phase) or {}
         mem['uncertain'] = True
         decision_log._record(mem, 'camp_recall_interrupted', screen=kind, phase=phase,
-                             observed_metric={'stage': recall.get('stage'), 'steps': recall.get('steps')},
+                             observed_metric=stages,
                              reason='舞台の場面（月初など）が始まり帰還先の選択が閉じたため、帰還指示を中断して場面を進める')
-        recall = {}
+    if isinstance(recall, dict) and recall.get('scene_pending') and phase != 'concert':
+        # One interruption per scene: the scene can stay on screen for many
+        # frames, and counting each of them would abandon the camp at once.
+        recall.pop('scene_pending', None)
     recall_dialog = recall and phase != 'concert' and (hanjuku_camp_recheck.owns_dialog(screen, mem) or (
         not recall.get('retreat_recheck') and not recall.get('anonymous_recheck')
         and not mem.get('month_sub') and (kind in ('map', 'map_target', 'text') or
