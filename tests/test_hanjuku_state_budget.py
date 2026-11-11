@@ -103,3 +103,25 @@ def test_a_symlinked_record_is_refused(tmp_path):
     link.symlink_to(target)
     with pytest.raises(AdapterError):
         state_budget.load_state(link, 512)
+
+
+def test_the_size_is_the_utf8_bytes_the_reader_counts(tmp_path):
+    """The read limit is a file size, not a character count.
+
+    The live record measured 165 814 characters while occupying 202 953 bytes
+    (castle names are three bytes each), so a character-counted budget would
+    have let it pass the 256 KiB read limit again.
+    """
+    state = _state(castle_names=['サヌト', 'オシロガ', 'ドンドン', 'オオキク'] * 20)
+    path = _dump(state, 512, tmp_path / 'b.json')
+    assert state_budget.size(state) == path.stat().st_size
+    assert state_budget.size(state) > len(json.dumps(state, ensure_ascii=False))
+
+
+def test_a_wide_record_over_the_limit_is_compacted_by_its_bytes():
+    state = _state(obs_cost={f'サヌト{i}': i for i in range(300)},
+                   plan={'orders': {f'I:c9:サヌト>オシロガ:{i}': 'failed' for i in range(200)}})
+    limit = 8192
+    assert state_budget.size(state) > limit
+    out = state_budget.compact_state(state, limit)
+    assert state_budget.size(out) <= state_budget.target(limit)

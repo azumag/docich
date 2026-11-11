@@ -30,6 +30,9 @@ HISTORY_KEEP = 20                        # newest entries of an append-only list
 CACHE_KEYS = ('obs_cost', 'post_month_status_last', 'general_statuses')
 # Append-only history that only needs its recent tail.
 HISTORY_KEYS = ('sortie_history',)
+# Counters and per-cell tallies: they only inform the plan, never the safety
+# rules, so a record that is still too wide may lose them entirely.
+COUNTER_KEYS = ('tally', 'y_jumps', 'y_jumped', 'y_jumps_total', 'house_eggs')
 # Retirement bookkeeping; the live statuses are kept.
 RETIRED = ('failed', 'done')
 # Every place a step id is still referenced after the order map forgets it.
@@ -37,8 +40,16 @@ REFERENCE_KEYS = ('order_context', 'sortie_general')
 
 
 def size(state) -> int:
+    """Bytes the record occupies on disk, which is what the read limit counts.
+
+    Japanese castle and general names are three bytes each in UTF-8, so counting
+    characters under-reports the file by about a fifth once the memory is full
+    of them: the live record measured 165 814 characters while it occupied
+    202 953 bytes, and a character-counted budget would let it pass the limit
+    again.
+    """
     import json
-    return len(json.dumps(state, ensure_ascii=False))
+    return len(json.dumps(state, ensure_ascii=False).encode('utf-8'))
 
 
 def target(limit: int) -> int:
@@ -123,4 +134,8 @@ def compact_state(state, limit: int) -> dict:
         history = policy.get(key)
         if isinstance(history, list) and len(history) > HISTORY_KEEP:
             policy[key] = history[-HISTORY_KEEP:]
+    for key in COUNTER_KEYS:
+        if size(out) <= goal:
+            return out
+        policy.pop(key, None)
     return out
