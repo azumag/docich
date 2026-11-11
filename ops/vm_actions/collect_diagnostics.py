@@ -7127,6 +7127,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v681-month-sub-abandon",
             "hanjuku-chart-v682-expire-on-observe",
             "hanjuku-chart-v683-drained-recheck-inflight",
+            "hanjuku-chart-v684-hero-post-behind-front",
             "hanjuku-chart-v560-castle-list-scroll",
             "hanjuku-chart-v561-post-month-repair-status",
             "hanjuku-chart-v501-idle-reanchor",

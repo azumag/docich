@@ -22,7 +22,11 @@ Squads (owner 2026-11-11, v671): ３２人全員移動させると大変だか�
 
 * at most ``SQUAD`` attackers march at the next castle at once;
 * each capture opens a wave: every road hop may move at most ``SQUAD``
-  generals, plus the hero (「将軍」 read as the hero) one hop forward;
+  generals;
+* the hero is posted one road castle behind the front (owner 2026-11-12:
+  主人公は前線の自城一つ前の自城に常駐 — 新しく雇った将軍は主人公のいる後方から
+  送ることになるため). He walks forward only up to that post and steps back to it
+  when he is already at the front;
 * a wave whose front castle showed an empty list with no attacker marching
   opens a fresh budget, so a wiped vanguard never deadlocks the road;
 * an attack never takes the hero's last companion from his castle.
@@ -193,17 +197,50 @@ def orders(mem) -> list[dict]:
                 continue                   # the vanguard is full; nobody waits for six
         else:
             purpose, hop = 'move', route[1]
-        if source == hero_at and purpose == 'move' and not _hero_moved(mem, wave):
-            hero.append((len(route), _order(mem, source, hop, target, 'move', hero=True)))
         if purpose == 'move' and _moved(mem, wave, hop, source) >= SQUAD:
             continue                       # this capture's six already left
         if _drained(mem, source, purpose):
             continue
         order = _order(mem, source, hop, target, purpose)
         (moves if purpose == 'move' else attacks).append((len(route), order))
+    hero_order = _hero_post_order(mem, routes_by, hero_at, wave)
+    if hero_order is not None:
+        hero.append((2, hero_order))
     attacks.sort(key=lambda item: item[0])
     moves.sort(key=lambda item: item[0])      # nearest the front first
     return [order for _, order in (*attacks, *moves, *hero)]
+
+
+HERO_POST_HOPS = 3          # the hero stands this many castles from the target
+
+
+def _hero_post_order(mem, routes_by, hero_at, wave):
+    """Move the hero to one road castle behind the front, never past it.
+
+    Owner 2026-11-12: 主人公は前線の自城一つ前の自城に常駐したほうが良い。
+    新しく将軍をやとったときに常に主人公のいる後方から送ることになる。
+    The hero therefore walks forward only while he is behind that post, stays
+    when he is on it, and steps back one hop when a previous wave left him in
+    the front castle itself (where a recruit would arrive under the enemy).
+    """
+    if not hero_at or hero_at not in routes_by or _hero_moved(mem, wave):
+        return None
+    dists = {source: len(route) for source, route in routes_by.items() if route}
+    here = dists.get(hero_at)
+    if here is None:
+        return None
+    post = next((d for d in sorted(set(dists.values())) if d >= HERO_POST_HOPS), None)
+    if post is None:
+        return None                       # only the front and the target: stay
+    if here > post:
+        return _order(mem, hero_at, routes_by[hero_at][1], routes_by[hero_at][-1],
+                      'move', hero=True)
+    if here < post:
+        behind = next((source for source, d in dists.items() if d == here + 1), None)
+        if behind is None:
+            return None
+        return _order(mem, hero_at, behind, routes_by[hero_at][-1], 'move', hero=True)
+    return None                           # already posted
 
 
 def _order(mem, source, hop, target, purpose, hero=False):
