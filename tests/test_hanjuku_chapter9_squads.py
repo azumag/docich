@@ -80,8 +80,18 @@ def test_a_wiped_vanguard_opens_a_new_budget():
     assert mem[corridor.WAVE]['refill'] == 1
 
 
-def test_the_hero_moves_once_per_capture():
+def test_the_hero_walks_forward_only_up_to_one_castle_behind_the_front():
+    """Owner 2026-11-12: 主人公は前線の自城一つ前の自城に常駐する.
+
+    With HOME and FRONT ours, the post is HOME itself, so the hero stays there.
+    A third capture moves the post to FRONT and only then does he step forward.
+    """
     mem = _mem(garrison={HOME: [HERO, 'バトウラ'], FRONT: []})
+    assert not [o for o in _orders(mem) if o.get('corridor_hero')]
+    mem = _mem(garrison={HOME: [HERO, 'バトウラ'], FRONT: ['リーキ']})
+    mem['captured'] = [FRONT, NEXT]          # NEXT taken: the post becomes FRONT
+    mem['lost'] = []
+    mem['tick'] += 50
     hero = [o for o in _orders(mem) if o.get('corridor_hero')]
     assert len(hero) == 1 and (hero[0]['source'], hero[0]['target']) == (HOME, FRONT)
     assert hero[0]['step'].endswith(':h0')
@@ -89,18 +99,26 @@ def test_the_hero_moves_once_per_capture():
     assert not [o for o in _orders(mem) if o.get('corridor_hero')]
 
 
+def _hero_forward(mem):
+    """Three castles ours: the post is FRONT, so the hero in HOME must walk."""
+    mem['captured'] = [FRONT, NEXT]
+    mem['lost'] = []
+    mem['tick'] += 50
+    return mem
+
+
 def test_the_hero_order_steers_the_cursor_to_him():
-    mem = _mem(garrison={HOME: ['バトウラ', HERO], FRONT: []})
+    mem = _hero_forward(_mem(garrison={HOME: ['バトウラ', HERO], FRONT: ['リーキ']}))
     hero = next(o for o in _orders(mem) if o.get('corridor_hero'))
     assert _deploy(mem, hero, ['バトウラ', HERO]) == [policy.pad('down')]
-    mem = _mem(garrison={HOME: [HERO, 'バトウラ'], FRONT: []})
+    mem = _hero_forward(_mem(garrison={HOME: [HERO, 'バトウラ'], FRONT: ['リーキ']}))
     hero = next(o for o in _orders(mem) if o.get('corridor_hero'))
     assert _deploy(mem, hero, [HERO, 'バトウラ']) == [policy.pad('a')]
     assert mem['general_override'][hero['step']] == HERO
 
 
 def test_a_hero_order_without_the_hero_ends_for_this_capture():
-    mem = _mem(garrison={HOME: [HERO], FRONT: []})
+    mem = _hero_forward(_mem(garrison={HOME: [HERO], FRONT: ['リーキ']}))
     hero = next(o for o in _orders(mem) if o.get('corridor_hero'))
     assert _deploy(mem, hero, ['バトウラ']) == [policy.pad('b'), policy.pad('b')]
     assert not [o for o in _orders(mem) if o.get('corridor_hero')]
