@@ -47,3 +47,16 @@ def test_recall_wait_keeps_the_picker_for_the_recall_flow():
 def test_manifest_still_opens_x_on_the_field_map():
     mem = _mem('manifest')
     assert post.step(Screen([], None, '', kind='map'), mem, None) is not None
+
+
+@pytest.mark.parametrize('kind', ['shop_quantity_prompt', 'shop_quantity', 'shop_list', 'unknown', 'yes_no'])
+def test_manifest_wait_releases_foreign_screens(kind):
+    """g1163 09:20: a 行商人 prompt was held 150 s by the waiting manifest stage."""
+    mem = _mem('manifest')
+    assert post.step(Screen([], None, '', kind=kind), mem, None) is None
+    assert mem['post_month_status']['stage'] == 'manifest'
+
+
+def test_manifest_still_backs_out_of_a_stray_castle_menu():
+    mem = _mem('manifest')
+    assert post.step(Screen([], None, '', kind='castle_menu'), mem, None) == [post.pad('b')]

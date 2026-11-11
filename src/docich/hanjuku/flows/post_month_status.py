@@ -534,7 +534,12 @@ def _manifest_step(screen, mem, state):
             return [pad('x')]
         if screen.kind in STRAY_MENU_KINDS or house.roster(screen):
             return [pad('b')]
-        return []
+        # Waiting for the field map, like 'await_map': any other foreground
+        # (a merchant visit, an event, a target picker) belongs to its own
+        # handler. g1163 2026-11-11 09:20: a 行商人 quantity prompt was held
+        # here with no input for 150 s until the frozen-screen fallback B,
+        # then its quantity screen the same way (manifest at 275 steps).
+        return None
     if stage == 'manifest_list':
         return _manifest_list_step(screen, mem, state)
     if stage == 'manifest_close':
