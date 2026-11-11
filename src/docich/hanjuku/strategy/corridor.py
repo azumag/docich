@@ -77,9 +77,16 @@ def _drained(mem, castle, purpose) -> bool:
         # nobody and spends a whole sortie cycle doing it: g1163 2026-11-11
         # 20:3x-21:4x ended 21 order starts as
         # 「出撃元に出せる将軍がいないため、この城を一時的に対象から外す」.
-        # Past the arrival window the general's whereabouts are unknown, so let
-        # the plan read the live list once more and mark the castle again.
-        if sortie.get('status') == 'arrived' or now - tick >= ARRIVAL_RECHECK_TICKS:
+        # A march that already ended without arriving (overdue, closed) never
+        # puts anybody in this castle, so re-checking it just repeats the same
+        # empty list: g1163 2026-11-12 00:2x-00:3x re-ordered サヌト>オシロガ
+        # every couple of minutes and closed it with
+        # 「出撃元に出せる将軍がいない」 each time. Only a march that may still be
+        # on the road gets the one recheck.
+        status = sortie.get('status')
+        if status == 'arrived':
+            return False
+        if status in ('en_route', 'launched_unconfirmed') and now - tick >= ARRIVAL_RECHECK_TICKS:
             return False
     return True
 

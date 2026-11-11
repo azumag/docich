@@ -56,3 +56,23 @@ def test_the_mark_expires_with_the_month():
 def test_the_hero_alone_still_walks_forward():
     mem = memory(drained(kind='hero'), {})
     assert corridor._drained(mem, 'サヌト', 'move') is False
+
+
+def test_a_march_that_ended_without_arriving_keeps_the_castle_drained():
+    """An overdue/closed march never puts anybody in the castle.
+
+    g1163 2026-11-12 00:2x-00:3x re-ordered サヌト>オシロガ every couple of
+    minutes and closed it with 「出撃元に出せる将軍がいない」 each time.
+    """
+    for status in ('overdue', 'closed'):
+        mem = memory(drained(), {'I:c9:タオ>サヌト:7': {
+            'target': 'サヌト', 'tick': 950, 'status': status, 'general': 'リーキ'}},
+            tick=950 + corridor.ARRIVAL_RECHECK_TICKS)
+        assert corridor._drained(mem, 'サヌト', 'attack') is True
+
+
+def test_an_in_flight_march_is_rechecked_after_the_window():
+    mem = memory(drained(), {'I:c9:タオ>サヌト:7': {
+        'target': 'サヌト', 'tick': 950, 'status': 'en_route', 'general': 'リーキ'}},
+        tick=950 + corridor.ARRIVAL_RECHECK_TICKS)
+    assert corridor._drained(mem, 'サヌト', 'attack') is False
