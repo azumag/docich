@@ -57,3 +57,25 @@ def test_outside_a_battle_a_changing_screen_never_presses():
     mem = {}
     for i in range(O.UNKNOWN_BATTLE_ADVANCE * 3):
         assert O.unknown_hold_advance(screen(), mem, [], f'd{i}') == []
+
+
+def test_a_two_frame_blink_still_gets_the_bounded_press():
+    """g1163 2026-11-11 19:09-19:15: an unreadable 'event' frame blinked
+    between exactly two digests, so a single-digest comparison looked new every
+    observation, no input was sent for 186 observations, and the 5-minute
+    stasis latched screen_stalled (the run then ignored every input until an
+    operator cleared it). The pair must count as one unchanged screen.
+    """
+    mem = {}
+    frames = ['blink-a', 'blink-b'] * O.UNKNOWN_HOLD_ADVANCE
+    presses = [O.unknown_hold_advance(screen(), mem, [], d) for d in frames]
+    # Exactly one press, at the bound, and the counter restarts afterwards.
+    assert presses.count([O.pad('a')]) == 1
+    first = presses.index([O.pad('a')])
+    assert O.UNKNOWN_HOLD_ADVANCE - 1 <= first <= O.UNKNOWN_HOLD_ADVANCE + 1
+
+
+def test_a_three_frame_cycle_is_not_an_unchanged_screen():
+    mem = {}
+    for i in range(O.UNKNOWN_HOLD_ADVANCE * 3):
+        assert O.unknown_hold_advance(screen(), mem, [], f'cycle{i % 3}') == []
