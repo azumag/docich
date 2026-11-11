@@ -891,8 +891,19 @@ def _measured_card_select(screen):
 GENERAL_LIST_UI = frozenset({'しゅつげき', 'ステータス', 'しょうぐんは', 'おりません', 'おりません……'})
 
 
+GENERAL_LIST_KINDS = frozenset({'general_list', 'castle_menu'})
+
+
 def _present_generals(screen):
     """Names on a general list, [] for the empty-list message, None if unreadable."""
+    if screen.kind not in GENERAL_LIST_KINDS:
+        # Only a general list carries residents. The main menu answers with its
+        # own items (しょうぐん/しろ/きりふだ/…) and a sortie confirmation with
+        # へいし/にん/P, both of which read as "generals" when the frame is
+        # asked anyway (g1163 2026-11-12 01:4x frames 101/108). Callers guard
+        # the kind, so this is the second line that keeps menu labels out of a
+        # castle's garrison.
+        return None
     if 'おりません' in screen.text:
         return []
     if not screen.hand:
