@@ -95,13 +95,33 @@ def _boss_camp_holds_siege(info):
             and info.get('broken') is not True)
 
 
-def _tasks(statuses, names, boss_camp_months=None, camp_stays=False):
+def _road_skips_checks(mem):
+    """Chapter 9 before its boss phase: no monthly locate or camp recall.
+
+    Owner 2026-11-11: 月次の位置チェックも必要がないので省略できる。キャンプに
+    なった将軍は仕方ないのでこの章は放置。ただし、ボスフェーズになったときは、
+    規定の動き、ボスを追いかけるためにチェックが必要. g1163 spent ~9 minutes
+    a month on ~11 locates (13:04-13:13) while no sortie was planned; v665
+    sends whoever the list cursor is on, so a general's castle is not needed.
+    """
+    from ... import hanjuku_chart as chart
+    from .recall import boss_phase
+    chapter = mem.get('chapter')
+    return chart.guard_free(chapter) and bool(chart.corridor(chapter)) and not boss_phase(mem)
+
+
+def _tasks(statuses, names, boss_camp_months=None, camp_stays=False, road=False):
     """``camp_stays``: a moving-boss chapter never recalls a camp home (owner
-    2026-11-09); the camp is re-sent at the boss by the camp flow instead."""
+    2026-11-09); the camp is re-sent at the boss by the camp flow instead.
+    ``road``: chapter 9 before the boss phase keeps only repairs."""
     months = boss_camp_months or {}
     queue = []
     for name in names:
         info = statuses[name]
+        if road:
+            if info.get('location') == 'castle' and info.get('broken'):
+                queue.append({'kind': 'repair', 'name': name})
+            continue
         if info.get('location') == 'camp' and camp_stays:
             continue
         if info.get('location') == 'camp':
@@ -289,7 +309,7 @@ def arm(mem):
         else:
             mem.pop('boss_camp_exempt', None)
     tasks = _tasks(statuses, list(statuses), mem.get('boss_camp_exempt'),
-                   camp_stays=_camp_stays(mem))
+                   camp_stays=_camp_stays(mem), road=_road_skips_checks(mem))
     if not scan and not manifest_due and not tasks:
         # Common case: zero input and zero roster navigation this month.
         mem['post_month_status_last'] = {
@@ -933,7 +953,8 @@ def _complete_scan(mem, state):
     else:
         mem.pop('carry_tracking', None)
     state['tasks'] = _tasks(state['statuses'], state['names'],
-                            mem.get('boss_camp_exempt'), camp_stays=_camp_stays(mem))
+                            mem.get('boss_camp_exempt'), camp_stays=_camp_stays(mem),
+                            road=_road_skips_checks(mem))
     mem['general_statuses'] = {
         'scope': list(state['scope']), 'identity': state['identity'],
         'statuses': state['statuses'], 'dirty': {}, 'pending_joins': [],

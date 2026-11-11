@@ -979,6 +979,103 @@ def _general_list_scan(screen, mem, order):
     return [pad('down')]
 
 
+CURSOR_PICK_DOWNS = 2 * GENERAL_LIST_FULL   # presses past the hero before the normal path takes over
+
+
+def _cursor_order_pick(screen, mem, order):
+    """Chapter 9: send whoever the list cursor is on; the hero goes last.
+
+    Owner 2026-11-11: 9話にかぎり、出撃の時に将軍を選ぶ必要ないので、カーソルが
+    あった順に出撃させれば短縮になる。ただし主人公だけはゲームオーバーにならない
+    ために最後とする. Chapter 9 lifts every keep-a-defender rule
+    (``chart.guard_free``), so walking the whole list and steering to a named
+    general only costs time. The cursor's general goes at once. On the hero
+    the cursor steps down; he leaves only by a move, and only when nobody else
+    is left. An attack with nobody but the hero falls back to the normal path,
+    which never sends him. Boss orders, read-only roster probes and launch
+    verifications keep the full list.
+    """
+    if not chart.guard_free(mem.get('chapter')) or _is_boss_order(order, mem):
+        return None
+    if (order.get('roster_probe') is True
+            or (_plan_region(mem).get('orders') or {}).get(order['step']) == 'launched_unconfirmed'):
+        return None
+    present, cur = _present_generals(screen), _current(screen)
+    if not present or not screen.hand or not cur or cur[2] not in present:
+        return None
+    busy = _en_route(mem)[0] | set(_world(mem).get('general_location_unknown') or ())
+    name, step = cur[2], order['step']
+    downs = mem.setdefault('cursor_pick_downs', {})
+    if name == NAME or name in busy:
+        others = [g for g in present if g != NAME and g not in busy]
+        whole = len(present) < GENERAL_LIST_FULL
+        if others or (not whole and int(downs.get(step) or 0) < CURSOR_PICK_DOWNS):
+            downs[step] = int(downs.get(step) or 0) + 1
+            return _deploy_input(screen, mem, order, [pad('down')],
+                                 '第9話は主人公を最後にするため、カーソルを次の将軍へ送る')
+        if name != NAME or order.get('purpose') != 'move':
+            downs.pop(step, None)
+            return None
+    downs.pop(step, None)
+    _observe_garrison(screen, mem, order, complete=len(present) < GENERAL_LIST_FULL)
+    mem.setdefault('general_override', {})[step] = name
+    _plan_region(mem).setdefault('sortie_general', {})[step] = name
+    _record(mem, 'cursor_order_pick', **_deploy_context(order, mem), castle=_source(order, mem),
+            observed_metric={'general': name, 'planned': order.get('general'), 'visible': present[:8]},
+            reason='第9話は出撃将軍を選ばず、一覧のカーソル位置の将軍をそのまま出す（主人公は最後）')
+    return _deploy_input(screen, mem, order, [pad('a')], '一覧のカーソル位置の将軍を出撃させる')
+
+
+CURSOR_CARD_DOWNS = 12          # rows walked past empty or over-cap cards before the list is closed
+
+
+def _cursor_order_cards(order, mem) -> bool:
+    """Chapter 9 picks cards from the top of the list (owner 2026-11-11)."""
+    return (chart.guard_free(mem.get('chapter')) and not _is_boss_order(order, mem)
+            and not _strict_boss_cards(order, mem)
+            and (_plan_region(mem).get('orders') or {}).get(order['step']) != 'launched_unconfirmed')
+
+
+def _cursor_card_step(screen, mem, order, inventory, picked):
+    """Take the highlighted card, else step down; close the list when full.
+
+    Owner 2026-11-11: 9話限定で切り札も上から順に適当に選ぶようにして良い. The
+    plan's cards were searched for by scrolling (g1163 12:15: four scrolls for
+    クースカン on every sortie). The highlighted row is taken while it has
+    stock and keeps the carried ID total under the enemy-egg threshold
+    (``ENEMY_EGG_CARD_ID_SUM``); otherwise the cursor steps down. The picks
+    become the order's kit (``card_override``) so the departure confirmation
+    compares against what was actually taken.
+    """
+    from ..strategy.kit import ENEMY_EGG_CARD_ID_SUM
+    step = order['step']
+    for key in ('strong_card_kit', 'dropper_card_kit', 'rare_card_kit'):
+        (mem.get(key) or {}).pop(step, None)
+    mem.setdefault('card_override', {})[step] = list(picked)
+    downs = mem.setdefault('cursor_card_downs', {})
+    row = next((r for r in inventory['rows'] if r['y'] == inventory['selected_y']), None)
+    total = sum(CARD_IDS.get(card, 0) for card in picked)
+    if inventory['remaining'] > 0 and row is not None:
+        card_id = CARD_IDS.get(row['card'])
+        if row['stock'] > 0 and card_id is not None and total + card_id < ENEMY_EGG_CARD_ID_SUM:
+            picked.append(row['card'])
+            mem['card_override'][step] = list(picked)
+            _record(mem, 'card_pick', **_deploy_context(order, mem), card=row['card'],
+                    observed_metric={'stock': row['stock'], 'remaining': inventory['remaining'],
+                                     'id_sum': total + card_id, 'cursor_order': True,
+                                     'inventory_evidence': inventory['inventory_evidence'],
+                                     'observed_rows': inventory['observed_rows']},
+                    resulting_event='selection_planned_not_yet_confirmed',
+                    reason='第9話は切り札を選ばず、一覧のカーソル位置の札を上から順に携行する')
+            return [pad('a')]
+        if int(downs.get(step) or 0) < CURSOR_CARD_DOWNS:
+            downs[step] = int(downs.get(step) or 0) + 1
+            return _deploy_input(screen, mem, order, [pad('down')],
+                                 '第9話はカーソル位置の札が使えないため次の札へ送る')
+    downs.pop(step, None)
+    return _deploy_input(screen, mem, order, [pad('b')], '第9話の上から順の切り札選択を終えて携行確認へ進む')
+
+
 def _listed_generals(screen, mem, order):
     """The walked list when this screen belongs to it, else the visible rows."""
     present = _present_generals(screen)
@@ -1615,6 +1712,9 @@ def deploy_step(screen: Screen, mem):
         return _deploy_input(screen, mem, order, [pad('a')] if move == 'here' else [move],
                              '出撃メニューを選択')
     if kind == 'general_list':
+        picked = _cursor_order_pick(screen, mem, order)
+        if picked is not None:
+            return picked
         walk = _general_list_scan(screen, mem, order)
         if walk is not None:
             return _deploy_input(screen, mem, order, walk, '出撃元の将軍一覧を下へ送って画面外の将軍を読む')
@@ -1848,6 +1948,8 @@ def deploy_step(screen: Screen, mem):
                                 '切り札一覧の名前・数量・配置またはカーソルが実測構造と一致しないため保留', card=card)
         mem.get('card_unreadable', {}).pop(order['step'], None)
         _observe_card_stock(mem, inventory)
+        if _cursor_order_cards(order, mem):
+            return _cursor_card_step(screen, mem, order, inventory, picked)
         boss_actions = _chapter_two_balmung_inventory(mem, order, inventory)
         if boss_actions is not None:
             return boss_actions
