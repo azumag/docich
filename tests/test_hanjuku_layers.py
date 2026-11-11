@@ -24,7 +24,11 @@ PACKAGE = ROOT / 'src' / 'docich' / 'hanjuku'
 # (flows vs reporting) may not import each other either.
 LAYER_RANK = {
     '_compat': 0, 'decision_log': 0, 'version': 0, 'identity': 0,
-    'state': 0, 'state_budget': 1,
+    'state': 0,
+    # Reads/writes the whole memory record and repairs it with the roster's
+    # own name table, so it sits above os_layer; nothing in the package
+    # imports it (the brain, outside the layers, does).
+    'state_budget': 2,
     'os_layer': 1,
     'strategy': 2,
     'judgment': 3,

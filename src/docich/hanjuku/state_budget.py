@@ -59,9 +59,42 @@ def target(limit: int) -> int:
 def load_state(path, limit: int) -> dict:
     """Read the record, tolerating one oversized file so it can be compacted."""
     try:
-        return read_record(path, limit=limit)
+        state = read_record(path, limit=limit)
     except AdapterError:
-        return _read_oversized(path)
+        state = _read_oversized(path)
+    return sanitize_state(state)
+
+
+def sanitize_state(state: dict) -> dict:
+    """Drop castle-status labels an older read stored as garrison members.
+
+    v678 stops new reads from keeping 城名/じょう/しゅうにゅう/レベル/しょうぐん/めい, but a
+    record written before it still carries them and the plan believes that castle
+    holds spares. The read only runs when the whole name column matches the
+    member count, so a polluted castle can stay polluted; cleaning it here
+    repairs the run instead of waiting for a perfect re-read.
+    """
+    from copy import deepcopy
+    from .os_layer.roster import known_generals
+    policy = state.get('policy') if isinstance(state, dict) else None
+    world = policy.get('world') if isinstance(policy, dict) else None
+    garrison = world.get('garrison') if isinstance(world, dict) else None
+    if not isinstance(garrison, dict):
+        return state
+    cleaned, changed = {}, False
+    for castle, names in garrison.items():
+        if isinstance(names, list):
+            kept = known_generals(names)
+            if len(kept) != len(names):
+                changed = True
+            cleaned[castle] = kept
+        else:
+            cleaned[castle] = names
+    if not changed:
+        return state
+    out = deepcopy(state)
+    out['policy']['world']['garrison'] = cleaned
+    return out
 
 
 def _read_oversized(path) -> dict:

@@ -7122,6 +7122,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v676-state-budget-bytes",
             "hanjuku-chart-v677-drained-on-arrival",
             "hanjuku-chart-v678-status-labels-not-generals",
+            "hanjuku-chart-v679-garrison-sanitized",
             "hanjuku-chart-v560-castle-list-scroll",
             "hanjuku-chart-v561-post-month-repair-status",
             "hanjuku-chart-v501-idle-reanchor",
