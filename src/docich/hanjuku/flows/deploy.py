@@ -1742,21 +1742,25 @@ def deploy_step(screen: Screen, mem):
         return _deploy_input(screen, mem, order, [pad('a')] if move == 'here' else [move],
                              '出撃メニューを選択')
     if kind == 'general_list' and CASTLE_STATUS.search(screen.text or ''):
-        # The castle's ステータス panel opened instead of the sortie list (a
-        # stray sprite read as the hand). g1163 2026-11-11 14:28:44 pressed up
-        # toward a "general" named ハヤク for over five minutes. Back out to the
-        # castle menu; a repeat cancels the order so the plan moves on.
+        # The ステータス panel the source check opens (its hand is hidden, so a
+        # stray sprite can make it read as the general list). It is that
+        # check's screen: let it read the castle name and close the panel.
+        # v667 pressed B here without verifying, so the check reopened the
+        # panel forever (g1163 2026-11-11 15:28-15:30 at オシロガ, ten orders).
+        # A panel that keeps coming back after the name was verified still
+        # cancels the order within a bound.
         misses = mem.setdefault('castle_status_as_list', {})
-        misses[order['step']] = int(misses.get(order['step']) or 0) + 1
+        if mem.get('castle_verified') == order['step']:
+            misses[order['step']] = int(misses.get(order['step']) or 0) + 1
         _record(mem, 'castle_status_not_list', **_deploy_context(order, mem), castle=_source(order, mem),
-                observed_metric={'count': misses[order['step']]},
-                reason='将軍一覧ではなく城のステータス表示が開いているためBで城メニューへ戻る')
-        if misses[order['step']] > CASTLE_STATUS_AS_LIST_LIMIT:
+                observed_metric={'count': int(misses.get(order['step']) or 0)},
+                reason='将軍一覧ではなく城のステータス表示のため、出撃元の城名確認として読んで閉じる')
+        if int(misses.get(order['step']) or 0) > CASTLE_STATUS_AS_LIST_LIMIT:
             misses.pop(order['step'], None)
             _finish_order(mem, 'failed', deviation_reason='出撃一覧の代わりに城のステータス表示が開き続けた',
                           reason='城のステータス表示から出撃一覧へ進めないため指示を取り消す')
             return [pad('b'), pad('b')]
-        return _deploy_input(screen, mem, order, [pad('b')], '城のステータス表示を閉じて城メニューへ戻る')
+        return _check_source_castle(screen, mem, order)
     if kind == 'general_list':
         picked = _cursor_order_pick(screen, mem, order)
         if picked is not None:

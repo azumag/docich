@@ -32,11 +32,39 @@ def test_the_live_frame_is_classified_as_a_list_but_yields_no_names():
     assert _present_generals(screen) is None
 
 
-def test_deploy_backs_out_and_finally_cancels():
-    mem = _memory('attack')
+OSHIROGA = Path(__file__).parent / 'fixtures' / 'hanjuku' / 'g1163-source-check-status-panel-oshiroga.png'
+
+
+def _frame(path):
+    im = Image.open(path).convert('RGB')
+    return parse(Frame(im.width, im.height, im.tobytes()))
+
+
+def test_the_source_check_panel_verifies_the_castle_instead_of_looping():
+    """g1163 15:28-15:30: v667 pressed B on オシロガ's source-check panel without
+    verifying it, so the check reopened it and ten orders were cancelled."""
+    from docich.hanjuku.strategy import corridor
+    from test_hanjuku_off_chart import _move_memory
+    road = chart.corridor(9)
+    mem = _move_memory()
+    mem.update(chapter=9, captured=list(road[1:5]))       # ハヤク..オシロガ: オシロガ attacks
     with chart.map_context(mem):
-        for _ in range(3):
-            assert policy.deploy_step(_screen(), mem) == [policy.pad('b')]
+        order = corridor.orders(mem)[0]
+        assert order['source'] == 'オシロガ'
+        mem.update(active=order['step'], chart_adjust={'request_id': 'm', 'interim_order': order})
+        screen = _frame(OSHIROGA)
+        assert screen.kind == 'general_list'
+        assert policy.deploy_step(screen, mem) == [policy.pad('b')]
+    assert mem['castle_verified'] == order['step']
+    assert not [r for r in mem['_records'] if r.get('decision') == 'order_failed']
+
+
+def test_a_panel_returning_after_verification_still_cancels():
+    mem = _memory('attack')
+    step = mem['_test_step']
+    with chart.map_context(mem):
+        for _ in range(policy.CASTLE_STATUS_AS_LIST_LIMIT):
+            mem['castle_verified'] = step
+            policy.deploy_step(_screen(), mem)
+        mem['castle_verified'] = step
         assert policy.deploy_step(_screen(), mem) == [policy.pad('b'), policy.pad('b')]
-    assert 'じょう' not in str(mem.get('garrison') or mem.get('world', {}).get('garrison'))
-    assert [r for r in mem['_records'] if r.get('decision') == 'castle_status_not_list']
