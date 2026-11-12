@@ -367,16 +367,31 @@ def _sortie_in_flight(mem) -> bool:
     return 0 <= now - since <= SORTIE_ATTEMPT_TTL
 
 
+IDLE_PROBE_STALE_TICKS = 180    # an unstarted idle probe older than this is dropped
+
+
 def _idle_probe_pending(mem) -> bool:
-    """An earlier idle probe is still waiting to be executed."""
+    """An earlier idle probe is still waiting to be executed.
+
+    It only counts while the plan really holds it as a pending order and the
+    mint is recent. g1163 2026-11-12 21:1x: the idle step stayed in the plan as
+    a ``launched`` leftover, so every observation returned an empty plan and
+    the field map stood still (122 no-input frames in seven minutes).
+    """
     state = mem.get(PROBE)
     if not isinstance(state, dict):
         return False
     step = state.get('idle_step')
     if not isinstance(step, str):
         return False
-    if step not in ((_plan_region(mem).get('orders') or {}) if isinstance(
-            _plan_region(mem).get('orders'), dict) else {}):
+    orders = _plan_region(mem).get('orders') or {}
+    if orders.get(step) != 'pending':
+        state.pop('idle_step', None)
+        return False
+    tick = state.get('idle_tick')
+    now = int(mem.get('tick') or 0)
+    if type(tick) is not int or now - tick > IDLE_PROBE_STALE_TICKS:
+        state.pop('idle_step', None)
         return False
     if _plan_region(mem).get('active') == step:
         return False                     # it is running: a fresh one may wait

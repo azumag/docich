@@ -731,3 +731,29 @@ v730 は「空いた時の確認」だけを止めており、予算付きの割
 - `tests/test_hanjuku_capture_guard.py`: 期限前は待ち、期限後は攻撃できることを追加。
 - corridor・chapter9・capture・drained・squads・state_regions・key_inventory で
   241 passed。
+
+# 実行に移った idle probe で計画を止めない（v736、2026-11-12）
+
+## 事象
+
+21:1x、フィールドの `map` かつ入力ゼロのプランが7分で **122件**（全体の59%）。
+live の `policy` を読み込んで `corridor.orders()` を呼ぶと **空** を返し、
+`corridor_probe.idle_step = 'I:c9:オシロガ>ドンドン:79'` が plan 上は `launched` の
+まま残っていた。v731 の「作った idle probe を使い回す」が、**実行済み（launched）の
+step** でも毎回そのまま返し、新しい指示も probe も出ない状態を作っていた。
+
+## 変更
+
+`src/docich/hanjuku/strategy/corridor.py`
+
+- `_idle_probe_pending()`: 使い回すのは「plan 上の状態が `pending`」かつ
+  「作成から `IDLE_PROBE_STALE_TICKS`（180 tick）以内」のときだけ。外れたら
+  `idle_step` を捨てて新規作成に戻る。
+
+## 検証
+
+- `tests/test_hanjuku_corridor_probe_budget.py`: 実行に移った step で計画が止まらない／
+  古い idle probe は作り直す、を追加。
+- live の state を入力に `orders()` が `('オシロガ','ドンドン','retake')` を返すことを
+  ローカルで確認。
+- corridor・drained・chapter9・state_regions・key_inventory で 91 passed。

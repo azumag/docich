@@ -10,6 +10,7 @@ import pytest
 
 from docich import hanjuku_chart as chart
 from docich.hanjuku import orchestrator  # noqa: F401
+from docich.hanjuku.state.regions import plan as _plan_region
 from docich.hanjuku.strategy import corridor
 
 ROAD = chart.corridor(9)
@@ -157,3 +158,23 @@ def test_a_running_wave_also_keeps_the_budgeted_probe_away():
     orders(mem)
     assert not (decided(mem, 'roster_probe') + decided(mem, 'drained_probe')), \
         'the wave preempts the budgeted probe too'
+
+
+def test_a_started_idle_step_never_blocks_the_plan():
+    """g1163 2026-11-12 21:1x: 122 no-input map frames from a stale idle step."""
+    mem = memory([A, B, C], [A, B, C])
+    first = orders(mem)
+    step = first[0]['step']
+    _plan_region(mem)['orders'][step] = 'launched'
+    later = orders(mem)
+    assert later, 'a started idle probe must not freeze the plan'
+
+
+def test_a_stale_idle_probe_is_replaced():
+    mem = memory([A, B, C], [A, B, C])
+    orders(mem)
+    minted = len(decided(mem, 'roster_probe_idle') + decided(mem, 'drained_probe_idle'))
+    mem['tick'] += corridor.IDLE_PROBE_STALE_TICKS + 1
+    later = orders(mem)
+    assert later
+    assert len(decided(mem, 'roster_probe_idle') + decided(mem, 'drained_probe_idle')) > minted
