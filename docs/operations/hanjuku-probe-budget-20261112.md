@@ -1058,3 +1058,23 @@ v744 の「瀕死の将軍では攻撃しない」と v734 の前線ガードが
 
 - `tests/test_hanjuku_capture_guard.py`: 「取った直後でも2人目は攻撃に出せる」を追加、
   1人だけのケースは維持（14件）。corridor 系 212 passed。
+
+# 守備将軍のHPも記録する（v750、2026-11-13）
+
+## 背景
+
+`castle_defenders[城]` は「その城の守備将軍」を名前だけで持っていた。戦闘パネルは
+守備将軍のHPも読めており、`sortie_history` には 74 / 74 / 3 のように記録されていたが、
+城の記録には残っていなかった。
+
+## 変更
+
+`src/docich/hanjuku/flows/battle.py`
+
+- `_observe_defender()` の記録に `hp`（パネルで読んだ守備将軍のHP）を追加。
+  次の攻撃で「削れている守備将軍が残っている城」を判断できる材料になる。
+
+## 検証
+
+- `tests/test_hanjuku_road_defeat_settle.py`: 記録に `hp` が入ることを追加。
+- battle・sortie・road・defender・kit・boss 系で 1079 passed。

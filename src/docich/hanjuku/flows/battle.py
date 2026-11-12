@@ -479,7 +479,11 @@ def _observe_defender(mem, cur):
             or cur.get('castle') not in chart.castles(mem.get('chapter') or 0)):
         return
     record = {'general': cur['enemy'], 'chapter': mem.get('chapter') or 0,
-              'evidence': 'battle_panel', 'step': cur.get('step')}
+              'evidence': 'battle_panel', 'step': cur.get('step'),
+              # The panel also reads the defender's HP: keeping it lets the
+              # march see which castle has a defender already worn down
+              # (g1163 2026-11-13 01:1x オオキク read 74/74/3 across the wave).
+              'hp': cur.get('enemy_hp')}
     defenders = mem.setdefault('castle_defenders', {})
     if defenders.get(cur['castle']) != record:
         defenders[cur['castle']] = record
