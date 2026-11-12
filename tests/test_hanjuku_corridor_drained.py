@@ -39,7 +39,10 @@ def test_an_overdue_march_is_rechecked_once_the_window_passes():
         'target': 'サヌト', 'tick': 950, 'status': 'en_route', 'general': 'リーキ'}}
     assert corridor._drained(memory(drained(), sorties, tick=1000), 'サヌト', 'attack') is True
     late = 950 + corridor.ARRIVAL_RECHECK_TICKS
-    assert corridor._drained(memory(drained(), sorties, tick=late), 'サヌト', 'attack') is False
+    # v704: the mark protects its own reading for DRAINED_MIN_HOLD ticks first.
+    assert corridor._drained(memory(drained(), sorties, tick=late), 'サヌト', 'attack') is True
+    older = 900 + corridor.DRAINED_MIN_HOLD + corridor.ARRIVAL_RECHECK_TICKS
+    assert corridor._drained(memory(drained(), sorties, tick=older), 'サヌト', 'attack') is False
 
 
 def test_a_march_sent_before_the_empty_read_does_not_refill():
@@ -83,5 +86,13 @@ def test_a_march_that_ended_without_arriving_keeps_the_castle_drained():
 def test_an_in_flight_march_is_rechecked_after_the_window():
     mem = memory(drained(), {'I:c9:タオ>サヌト:7': {
         'target': 'サヌト', 'tick': 950, 'status': 'en_route', 'general': 'リーキ'}},
-        tick=950 + corridor.ARRIVAL_RECHECK_TICKS)
+        tick=900 + corridor.DRAINED_MIN_HOLD + corridor.ARRIVAL_RECHECK_TICKS)
     assert corridor._drained(mem, 'サヌト', 'attack') is False
+
+
+def test_a_fresh_empty_reading_is_not_re_probed():
+    """g1163 11:0x: 47 order starts an hour against 8 launches into empty castles."""
+    mem = memory(drained(tick=1000), {'I:c9:タオ>サヌト:7': {
+        'target': 'サヌト', 'tick': 1010, 'status': 'en_route', 'general': 'リーキ'}},
+        tick=1000 + corridor.DRAINED_MIN_HOLD - 1)
+    assert corridor._drained(mem, 'サヌト', 'attack') is True
