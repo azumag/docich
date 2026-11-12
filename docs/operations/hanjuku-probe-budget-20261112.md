@@ -492,3 +492,27 @@ disable」。築城は行軍の速度に寄与しない。
 - `tests/test_hanjuku_attack_underpowered.py`（5件: 弱い将軍は出さない／元気なら
   出撃／HP未測定は止めない／守備HP読みなしは止めない／記録は窓に1回）
 - 攻撃・corridor・front・state_regions・key_inventory・chapter9 で 253 passed。
+
+# 卵メニューの選択を1回で諦めない（v726、2026-11-12）
+
+## 指摘と実測
+
+オーナー指摘（2026-11-12）「卵持ってるのに使わずに死んだりしている」。
+実測: `battle_egg_before_retreat`（退却より先に卵を確認）は発火しているが、
+`monster_menu_drawing` / `monster_turn_unchosen`（技メニューが出る前にAが届く）や
+`battle_egg_drop_unconfirmed`（効果を白兵ダメージと区別できない）が残り、
+**メニューを1回選んだだけで召喚が成立しなかった場合、その戦闘では二度と卵を試さない**
+実装だった（`egg_attempted` が恒久フラグ）。
+
+## 変更
+
+- `judgment/battle.py`: `EGG_ATTEMPT_LIMIT = 2` を追加し、`_egg_before_retreat()` は
+  選択回数（`egg_attempts`）が上限未満なら再試行を許す。旧来の `egg_attempted` のみ
+  （カウンタ無し）は従来どおり1回で打ち切り。
+- `flows/battle_menus.py`: 卵メニューを選ぶたび `egg_attempts` を加算。
+
+## 検証
+
+- `tests/test_hanjuku_combat_strength.py`: 1回失敗後の再試行が許され、2回で打ち切られる
+  ことを追加。
+- egg・survival・retreat・battle_menu・combat のテスト **1476 passed, 1 skipped**。
