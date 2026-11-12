@@ -154,6 +154,7 @@ KEY_OWNERSHIP = {
     'world_flags': {'region': WORLD, 'lifetime': 'chapter', 'migrated': False},  # 観測世界フラグ(os_layer/world)
     'world_map_flags': {'region': WORLD, 'lifetime': 'chapter', 'migrated': False},  # 全体マップで観測した城別所有フラグ累積 (v700 #3992)
     'world_map_signature': {'region': WORLD, 'lifetime': 'chapter', 'migrated': False},  # 全体マップ観測署名
+    'previous_stats': {'region': WORLD, 'lifetime': 'run', 'migrated': False},  # new_game時に退避される前ランstats (mem.update経由)
     # --- PLAN: 戦略層の計画・ホールド ---
     'attack_company_hold': {'region': PLAN, 'lifetime': 'chapter', 'migrated': False},  # chapter9 corridor専用の突撃保留(戦略層)
     'boss_cell_probe': {'region': PLAN, 'lifetime': 'chapter', 'migrated': False},  # ボスセルプローブ割当(リセット登録のみ・兄弟のboss_step_probeに同じ)
@@ -205,6 +206,7 @@ KEY_OWNERSHIP = {
     'unplaced_refuted': {'region': PLAN, 'lifetime': 'chapter', 'migrated': False},  # 配置否認の戦略記録
     'unplaced_refuted_castles': {'region': PLAN, 'lifetime': 'chapter', 'migrated': False},  # 同上城集合
     'variant': {'region': PLAN, 'lifetime': 'run', 'migrated': False},  # チャート有無バリアント・ラン全域の戦略変数
+    'plan_stale_signature': {'region': PLAN, 'lifetime': 'chapter', 'migrated': False},  # 陳腐計画署名の防御的pop対象
     # --- FLOW: 手順セッション状態 ---
     '_map_registration_hold': {'region': FLOW, 'lifetime': 'procedure', 'migrated': False},  # decide冒頭で毎回popされる一時ホールド
     'align_offset': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # ナビゲーションのアライン補正セッション状態
@@ -382,6 +384,9 @@ KEY_OWNERSHIP = {
     'y_jumped': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 同上完了
     'y_jumps': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 同上回数
     'y_jumps_total': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 同上累計
+    'boss_stock_cancelled_identity': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # ボス在庫キャンセル同一性マーカー
+    'enemy_general_menu': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 敵将軍メニュー手順の保留状態
+    'enemy_general_menu_pending': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 同上pending待機
     # --- JOURNAL: 注入入力・ラン同一性・集計 ---
     '_adjusted': {'region': JOURNAL, 'lifetime': 'run', 'migrated': False},  # 決定ごとに注入される入力バッファで宣言済み _departure_input/_recall_inputs と同列
     '_card_scroll_input': {'region': JOURNAL, 'lifetime': 'run', 'migrated': False},  # 同上・注入入力バッファ
@@ -394,6 +399,10 @@ KEY_OWNERSHIP = {
     'survey_run_identity': {'region': JOURNAL, 'lifetime': 'run', 'migrated': False},  # 調査済みラン同一性
     'tally': {'region': JOURNAL, 'lifetime': 'run', 'migrated': False},  # decision_log集計
     'tick': {'region': JOURNAL, 'lifetime': 'run', 'migrated': False},  # ラン内観測時計(ラン本体が注入する実行メタ)
+    'resume_battle_menu': {'region': JOURNAL, 'lifetime': 'run', 'migrated': False},  # 復元注入の戦闘メニュー再開フラグ
+    'resume_chapter_pending': {'region': JOURNAL, 'lifetime': 'run', 'migrated': False},  # 復元注入の章未確定フラグ
+    'resume_egg_ritual': {'region': JOURNAL, 'lifetime': 'run', 'migrated': False},  # 復元注入の卵儀式再開フラグ
+    'resume_sortie_cancel': {'region': JOURNAL, 'lifetime': 'run', 'migrated': False},  # 復元注入の出撃キャンセル再開フラグ
 }
 
 _REGION_KEY = {WORLD: 'world', PLAN: 'plan', FLOW: 'flow', JOURNAL: 'journal'}
