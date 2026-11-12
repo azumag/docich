@@ -487,9 +487,19 @@ def _apply_world_flags(mem, flags):
     # reloaded as a list, so a tuple never compares equal again and the same
     # flag set was recorded on every observation anyway (measured 2026-11-05:
     # 147 owners records an hour over nine distinct flag sets).
-    signature = [[k, v] for k, v in sorted(flags.items())]
-    if mem.get('world_map_signature') != signature:
-        mem['world_map_signature'] = signature
+    # A partial read is not a change. The view drops a flag whenever a roof is
+    # hidden or misread, so the same map arrived as 10, 11 or 12 entries and
+    # every set counted as news (g1163 2026-11-12 08:5x: 56 owners records an
+    # hour, none of them an actual ownership change). Only a value that
+    # disagrees with what we already knew is recorded.
+    known = mem.get('world_map_flags')
+    if not isinstance(known, dict):
+        known = {}
+    differences = {castle: owner for castle, owner in flags.items()
+                   if known.get(castle) != owner}
+    if differences:
+        mem['world_map_flags'] = {**known, **flags}
+        mem['world_map_signature'] = [[k, v] for k, v in sorted(mem['world_map_flags'].items())]
         _record(mem, 'world_map_owners', observed_metric=flags,
                 resulting_event=[f'{k}:{c}' for k, c in changed] or None,
                 reason='全体マップの旗の色で全城の所有を確認')
