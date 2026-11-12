@@ -2201,6 +2201,20 @@ def deploy_step(screen: Screen, mem):
         ambiguous = carried is None
         want = sorted(_deploy_cards(order, mem))
         got = sorted(carried) if carried is not None else None
+        if (order.get('corridor') and not want and carried is not None
+                and (_plan_region(mem).get('orders') or {}).get(order['step'])
+                not in {'launched', 'launched_unconfirmed'}):
+            # Chapter 9's mechanical order names no cards on purpose (owner
+            # 2026-11-11: 切り札を選ばず、一覧のカーソル位置の札を上から順に携行する),
+            # so a readable kit can never match the empty plan. Holding for the
+            # mismatch budget every sortie only slowed the road: g1163
+            # 2026-11-12 09:2x-09:3x held 42 card picks for 15 sorties.
+            _record(mem, 'sortie_kit_corridor_approve',
+                    **_deploy_context(order, mem, expected_metric=want),
+                    carried=carried,
+                    observed_metric={'carried': carried, 'planned': want},
+                    reason='第9話は切り札を選ばないため、読み取れた携行札をそのまま承認する')
+            return [pad('a')]
         if ambiguous or got != want:
             misses = mem.setdefault('sortie_confirm_miss', {})
             misses[order['step']] = misses.get(order['step'], 0) + 1
