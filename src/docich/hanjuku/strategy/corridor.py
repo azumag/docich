@@ -237,14 +237,28 @@ def orders(mem) -> list[dict]:
                 continue                   # the vanguard is full; nobody waits for six
             if ((_repelled_alone(mem, target) or _flip_prone(mem, target))
                     and _attackers_marching(mem, target) < ATTACK_COMPANY):
-                if not mem.get('attack_company_hold'):
-                    mem['attack_company_hold'] = {'target': target,
-                                                  'tick': int(mem.get('tick') or 0)}
-                    _record_only(mem, 'attack_company_required', target=target,
-                                 observed_metric={'flip_prone': _flip_prone(mem, target),
-                                                  'repelled': _repelled_alone(mem, target)},
-                                 reason='単独で返り討ちにあった／取ってすぐ失った城へは、味方が2人そろうまで突撃しない')
-                continue
+                hold = mem.get('attack_company_hold')
+                waiting = (isinstance(hold, dict) and hold.get('target') == target
+                           and type(hold.get('tick')) is int)
+                waited = (int(mem.get('tick') or 0) - hold['tick']) if waiting else 0
+                if waiting and waited >= ATTACK_COMPANY_WAIT:
+                    # Waiting for company cannot be unbounded: with nobody left
+                    # to join, the attack never starts and the road stops.
+                    # g1163 2026-11-12 12:1x: an hour of サヌト>オシロガ moves and
+                    # not one オシロガ>ドンドン attack.
+                    mem.pop('attack_company_hold', None)
+                    _record_only(mem, 'attack_company_timeout', target=target,
+                                 observed_metric={'waited': waited},
+                                 reason='味方を待つ上限に達したため、単独でも突撃する')
+                else:
+                    if not waiting:
+                        mem['attack_company_hold'] = {'target': target,
+                                                      'tick': int(mem.get('tick') or 0)}
+                        _record_only(mem, 'attack_company_required', target=target,
+                                     observed_metric={'flip_prone': _flip_prone(mem, target),
+                                                      'repelled': _repelled_alone(mem, target)},
+                                     reason='単独で返り討ちにあった／取ってすぐ失った城へは、味方が2人そろうまで突撃しない')
+                    continue
         else:
             purpose, hop = 'move', route[1]
         if purpose == 'move' and _moved(mem, wave, hop, source) >= SQUAD:
@@ -359,6 +373,7 @@ def _drained_probe(mem, routes_by, target, lost):
 # marching attackers are the least that changes that outcome.
 REPELLED_FLOOR_HP = 30
 ATTACK_COMPANY = 2
+ATTACK_COMPANY_WAIT = 600   # ticks to wait for company before attacking alone
 
 
 def _repelled_alone(mem, target) -> bool:
