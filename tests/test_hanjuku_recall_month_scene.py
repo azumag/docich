@@ -102,7 +102,7 @@ def test_the_interrupted_recall_resumes_and_reaches_a_destination(monkeypatch):
     月初場面（concert）→ 通常画面（map）→ 野営再到達（to_camp → menu）→
     帰還先決定（dest → await_dispatch）をひと続きで検証する。v693 では中断
     直後の状態保持だけを見ていた; g1163 の障害（1時間6回試行・0回成功）は
-    「中断後に帰還が成立しない」ことが問題だったため、成立までを通す。
+    「中断後に帰還が成立しない」ことが問題だったため、帰還先決定（await_dispatch 到達）までを通す。
     """
     # 1. 月初場面が帰還先選択中（dest 段）の帰還を切る: 入力せず場面をAで進め、
     #    帰還意図は to_camp + scene_pending として保持される（v693 の既存検証）。
