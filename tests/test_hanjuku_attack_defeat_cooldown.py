@@ -20,7 +20,7 @@ def mechanical(monkeypatch):
 
 
 def memory(history, **extra):
-    garrison = {B: ['リーキ']}
+    garrison = {B: ['リーキ', 'ベーグル']}   # the front keeps one at home (v724)
     mem = {'chapter': 9, 'tick': 5000, 'month': '23-5', 'captured': [B],
            'lost': [], 'orders': {}, 'garrison': garrison,
            'world': {'garrison': garrison, 'launched_orders': {},

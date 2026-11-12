@@ -250,6 +250,14 @@ def orders(mem) -> list[dict]:
                 continue                   # the vanguard is full; nobody waits for six
             if _defeat_cooldown_active(mem, target):
                 continue
+            if (not chart.is_boss_castle(target)
+                    and (_repelled_alone(mem, target) or _flip_prone(mem, target))
+                    and _front_guard_short(mem, source)):
+                # Guard-free chapters may empty a castle, but the castle facing
+                # the enemy is the road's only foothold: g1163 2026-11-12 17:4x
+                # sent ドンドン's last generals at オオキク and lost ドンドン to a
+                # defense battle, which costs a whole retake cycle.
+                continue
             if ((_repelled_alone(mem, target) or _flip_prone(mem, target))
                     and _attackers_marching(mem, target) < ATTACK_COMPANY):
                 hold = mem.get('attack_company_hold')
@@ -575,6 +583,32 @@ def _defeat_cooldown_active(mem, target) -> bool:
                  observed_metric={'defeats': defeats, 'window': DEFEAT_COOLDOWN_WINDOW,
                                   'pause': DEFEAT_COOLDOWN_TICKS},
                  reason='同じ城への攻撃が短期間に何度も敗北しているため、いったん攻撃を休んで増援の移動に回す')
+    return True
+
+
+FRONT_GUARD = 1                 # generals kept at the castle facing the enemy
+
+
+def _front_guard_short(mem, castle) -> bool:
+    """This castle holds no more than the front guard, so nobody may leave.
+
+    Only a measured list is evidence: an unread castle is not empty. The
+    names a page proved (``garrison_partial``) count the same way as a full
+    roster read.
+    """
+    world = _world(mem)
+    garrison = world.get('garrison') or {}
+    names = garrison.get(castle) if isinstance(garrison, dict) else None
+    if not isinstance(names, list):
+        partial = world.get('garrison_partial') or {}
+        names = partial.get(castle) if isinstance(partial, dict) else None
+    if not isinstance(names, list):
+        return False                       # unread: no evidence either way
+    if len(names) > FRONT_GUARD:
+        return False
+    _record_only(mem, 'front_guard_held', target=castle,
+                 observed_metric={'residents': list(names)[:8], 'keep': FRONT_GUARD},
+                 reason='前線の城に残る将軍が下限に達するため、この城から出撃させない（失城の取り直しを避ける）')
     return True
 
 
