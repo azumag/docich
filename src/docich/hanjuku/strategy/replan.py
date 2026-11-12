@@ -1698,8 +1698,9 @@ def _adjust_situation(mem):
     situation_garrison = {}
     for castle in sorted(set(recorded) | set(partial)):
         names = _known_residents(mem, recorded, castle)
-        if names is not None:
-            situation_garrison[castle] = sorted(names)
+        # An unread castle still serialises as [] (see the comment above);
+        # only its confirmed lower bound is ever added, never a roster claim.
+        situation_garrison[castle] = sorted(names or ())
     return {'garrison': situation_garrison,
             'owned': sorted(_owned(mem)),
             'lost': sorted(mem.get('lost') or []), 'home_lost': bool(mem.get('home_lost')),
