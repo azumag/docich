@@ -52,7 +52,8 @@ def _interim_source(mem, target, chart_order, owned, busy, allow_sole=False):
     busy = busy | set(_world(mem).get('general_location_unknown') or ())
     unavailable_for_attack = {NAME} if _hero_egg_broken(mem) else set()
     sole = len(owned) == 1          # owner: a single castle may leave the hero alone
-    free = {c: [g for g in garrison.get(c) or () if g not in busy] for c in owned}
+    free = {c: [g for g in _known_residents(mem, garrison, c) or () if g not in busy]
+            for c in owned}
     if routes.is_road(chapter):
         owned = {c for c in owned if routes.allowed(mem, c, target)}
     # Emptying a castle is how the undefended ジョンリギ fell (g401), so a
@@ -301,6 +302,41 @@ def _corridor_wave_open(mem, target) -> bool:
     return corridor._attackers_marching(mem, target) < corridor.SQUAD
 
 
+def _partial_residents(mem, castle):
+    """Names a full page proved stand in ``castle``, as a lower bound.
+
+    A full page of the general list is never the roster, so deploy's
+    ``_observe_garrison`` keeps its names in ``garrison_partial`` and leaves
+    ``garrison`` untouched (docich#3996). The names on the page are still
+    confirmed residents: candidate selection may name them instead of
+    treating the castle as unread. A name a complete read has since placed
+    in another castle is stale evidence and is dropped; nobody else's
+    absence is inferred, and no completeness stamp is implied (docich#3997).
+    """
+    world = _world(mem)
+    partial = (world.get('garrison_partial') or {}).get(castle)
+    if not isinstance(partial, list) or not partial:
+        return None
+    elsewhere = {name for other, members in (world.get('garrison') or {}).items()
+                 if other != castle and isinstance(members, list)
+                 for name in members}
+    names = [g for g in partial if g not in elsewhere]
+    return names or None
+
+
+def _known_residents(mem, garrison, castle):
+    """Residents candidate selection may name for ``castle``.
+
+    The measured roster when a complete read is recorded; otherwise the
+    full page's lower bound (``_partial_residents``); None only when the
+    castle's list was never read at all.
+    """
+    names = garrison.get(castle)
+    if names is not None:
+        return names
+    return _partial_residents(mem, castle)
+
+
 # Owner 2026-11-11: 三人づつとかじゃなくて全員移動するようにしないとだし、主人公も
 # 移動しないと新しく雇った将軍は後方からしか出れない. Chapter 9 sorties only
 # leave the road castle beside the target and recruits join at the hero's
@@ -322,7 +358,7 @@ def _corridor_forward_moves(mem, owned, garrison, busy, road_next):
         route = routes.path(mem, donor, road_next, owned)
         if not route or len(route) <= 2:
             continue                       # the front itself, or no road to it
-        names = garrison.get(donor)
+        names = _known_residents(mem, garrison, donor)
         if names is None:
             # An unread rear list: open it with one probe move, as before.
             (rest if lead else lead).append({
@@ -381,7 +417,7 @@ def _wave_pick(mem, target, owned, busy, allow_sole):
     for source in sorted(owned, key=lambda c: (round(_reach(c), 1), c != home, c)):
         if not routes.allowed(mem, source, target):
             continue
-        names = garrison.get(source)
+        names = _known_residents(mem, garrison, source)
         if not names:
             continue
         free = [g for g in names if g not in busy and g not in unavailable]
@@ -1654,8 +1690,18 @@ def _adjust_situation(mem):
                       key=str)
     # An unread castle may be stored as None; the situation digest still has
     # to serialise (owner 2026-11-05: probing unread lists must not crash it).
-    return {'garrison': {castle: sorted(names or ())
-                         for castle, names in sorted((_world(mem).get('garrison') or {}).items())},
+    # A castle read only as a full page contributes its confirmed lower
+    # bound, so ``startable`` can confirm the page's own generals at their
+    # castle without the page ever claiming the roster (docich#3997).
+    recorded = _world(mem).get('garrison') or {}
+    partial = _world(mem).get('garrison_partial') or {}
+    situation_garrison = {}
+    for castle in sorted(set(recorded) | set(partial)):
+        names = _known_residents(mem, recorded, castle)
+        # An unread castle still serialises as [] (see the comment above);
+        # only its confirmed lower bound is ever added, never a roster claim.
+        situation_garrison[castle] = sorted(names or ())
+    return {'garrison': situation_garrison,
             'owned': sorted(_owned(mem)),
             'lost': sorted(mem.get('lost') or []), 'home_lost': bool(mem.get('home_lost')),
             'en_route': [{'general': g, 'target': t} for g, t in marching],
