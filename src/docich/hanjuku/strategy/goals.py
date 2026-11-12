@@ -120,8 +120,13 @@ def _wanted(mem):
     # never-attempted ``move`` goals (g1163 2026-11-12 13:4x, queued 86867-92397
     # while all four rear castles read ``[]``), which the normal planner then
     # tried to serve as name-less moves. Other chapters keep the refill want.
-    march = bool(chart.guard_free(chapter) and chart.corridor(chapter)
-                 and chart.corridor_next(chapter, owned) is not None)
+    try:
+        march = bool(chart.guard_free(chapter) and chart.corridor(chapter)
+                     and chart.corridor_next(chapter, owned) is not None)
+    except AttributeError:
+        # A rebound chart without the road tables (the layer contract allows a
+        # minimal namespace) is not a mechanical march.
+        march = False
     if not march:
         for castle in sorted(owned - lost - heading):
             if garrison.get(castle) == []:
