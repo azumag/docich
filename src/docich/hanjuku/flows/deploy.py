@@ -1058,6 +1058,17 @@ def _cursor_order_pick(screen, mem, order):
                         reason='前線へ送る将軍は、傷ついた将軍より元気な将軍を先に出す')
                 return _deploy_input(screen, mem, order, [move],
                                      '増援は元気な将軍へカーソルを送る')
+    if order.get('purpose') != 'move' and order.get('corridor') is True:
+        leader = _full_hp_leader(mem, present, name)
+        if leader is not None:
+            move = menu_to(screen, leader)
+            if move and move != 'here' and int(downs.get(step) or 0) < CURSOR_PICK_DOWNS:
+                downs[step] = int(downs.get(step) or 0) + 1
+                _record(mem, 'full_hp_leader', chart_step=step,
+                        observed_metric={'present': present[:8], 'cursor': name, 'chosen': leader},
+                        reason='カーソルの将軍が半減以下のため、満タンの将軍を先頭にして攻撃する')
+                return _deploy_input(screen, mem, order, [move],
+                                     '攻撃は満タンの将軍へカーソルを送る')
     if name == NAME or name in busy:
         others = [g for g in present if g != NAME and g not in busy]
         whole = len(present) < GENERAL_LIST_FULL
@@ -1128,6 +1139,40 @@ def _healthier_mover(mem, present, current):
         if got is not None and got - best_hp >= MOVE_HP_MARGIN:
             best, best_hp = general, got
     return best
+
+
+FULL_HP_LEADER = 80            # percentage of max HP a wave leader needs
+
+
+def _full_hp_leader(mem, present, current):
+    """A whole general when the cursor one is badly hurt.
+
+    Owner 2026-11-12: 将軍のステータスによらず、どんどん上から順に将軍を送る.
+    A battle here is an HP duel and generals never heal (three hours of
+    readings show no rise), so a half-dead leader simply loses. The wave keeps
+    going; only the body that leads it changes, and only when a whole general
+    is right there.
+    """
+    hp = _world(mem).get('general_hp') or {}
+    if not isinstance(hp, dict):
+        return None
+
+    def row(name):
+        return hp.get(name) if isinstance(hp.get(name), dict) else {}
+
+    current_row = row(current)
+    current_hp, maximum = current_row.get('hp'), current_row.get('max')
+    if (type(current_hp) is not int or type(maximum) is not int or maximum <= 0
+            or current_hp * 2 >= maximum):
+        return None
+    for general in present:
+        if general == NAME:
+            continue
+        got = row(general)
+        if (type(got.get('hp')) is int and type(got.get('max')) is int
+                and got['max'] > 0 and got['hp'] * 100 >= got['max'] * FULL_HP_LEADER):
+            return general
+    return None
 
 
 def _keeps_hero_company(order, present) -> bool:
