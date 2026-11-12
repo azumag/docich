@@ -236,3 +236,24 @@ live の `flow.sortie_attempt` は `confirmation_tick: 95774` のまま tick 963
 
 - `tests/test_hanjuku_corridor_probe_budget.py`: 古い attempt では idle probe が
   出ることを追加（40 passed、state_regions と合わせて）。
+
+# 空いた時の確認の間隔を空けず、出撃中だけ抑える（v715、2026-11-12）
+
+## 事象
+
+v713 で idle probe を60 tickに1件へ間引いたところ、15:0x の5分間で
+`map` かつ入力ゼロのプランが **79 / 162 件**に戻った（v710 で消した
+「フィールドで立ち尽くす」状態）。間引いた分だけ `orders()` が空になる時間が増えた。
+
+## 変更
+
+`src/docich/hanjuku/strategy/corridor.py`
+
+- `IDLE_PROBE_SPACING = 0`（何も無いときは毎観測1件。v710 の性質を維持）。
+-  churn の原因だった「出撃進行中でも作ってしまう」は `_sortie_in_flight()`
+  （v713）と `SORTIE_ATTEMPT_TTL`（v714）で抑える。
+
+## 検証
+
+- `tests/test_hanjuku_corridor_probe_budget.py`: 何も無いときは毎回1件出ること、
+  出撃進行中は出さないこと、古い attempt は無視すること（44 passed）。

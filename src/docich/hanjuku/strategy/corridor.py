@@ -53,8 +53,10 @@ DRAINED_MIN_HOLD = 300      # ticks a fresh empty reading is trusted before a re
 PROBE_BUDGET = 6
 # Ticks after which one more look is allowed even when nothing was found.
 PROBE_REARM_TICKS = 3600
-# Idle probes (nothing else to plan) are minted at most this often.
-IDLE_PROBE_SPACING = 60
+# Idle probes (nothing else to plan) are minted at most this often. Zero
+# keeps one minted per observation, which is what stops the empty plan from
+# standing still; the in-flight suppression is what removes the churn.
+IDLE_PROBE_SPACING = 0
 # A sortie attempt older than this is stale evidence, not a launch in flight.
 SORTIE_ATTEMPT_TTL = 120
 # Ticks a march may take before a dispatched general is treated as unknown
@@ -299,6 +301,11 @@ def orders(mem) -> list[dict]:
         # were never executed.
         return out
     if not out and not _idle_probe_due(mem):
+        # Spacing the idle tour left the bot standing on the field map again
+        # (g1163 2026-11-12 15:0x: 79 of 162 plans in five minutes were
+        # no-input map frames). The tour is what keeps it moving; only the
+        # launch-time churn needed the tighter rule, and that is handled by
+        # ``_sortie_in_flight``.
         return out
     probe = _roster_probe(mem, routes_by, target, lost)
     decision = 'roster_probe'

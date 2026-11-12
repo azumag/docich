@@ -74,19 +74,12 @@ def test_an_idle_probe_keeps_the_plan_alive_without_spending_the_budget():
     assert not decided(mem, 'corridor_probe_exhausted')
 
 
-def test_idle_probes_are_spaced_instead_of_one_per_observation():
-    """g1163 2026-11-12 14:2x: 19 idle probes in ten minutes, none executed."""
+def test_an_idle_plan_never_stands_still():
+    """g1163 2026-11-12 15:0x: spacing the tour left 79 no-input map frames."""
     mem = memory([A, B, C], [A, B, C])
-    orders(mem)
-    minted = len(decided(mem, 'roster_probe_idle') + decided(mem, 'drained_probe_idle'))
-    assert minted == 1
-    before = len(mem.get('_records') or [])
-    for _ in range(5):
-        assert orders(mem) == []
-        mem['tick'] += 5
-    assert len(mem.get('_records') or []) == before, 'no probe may be minted inside the spacing'
-    mem['tick'] += corridor.IDLE_PROBE_SPACING
-    assert len(orders(mem)) == 1, 'the next window mints one again'
+    for _ in range(4):
+        assert len(orders(mem)) == 1, 'the idle tour has to keep the bot moving'
+        mem['tick'] += 2
 
 
 def test_a_sortie_in_flight_is_not_replaced_by_an_idle_probe():
