@@ -757,3 +757,27 @@ step** でも毎回そのまま返し、新しい指示も probe も出ない状
 - live の state を入力に `orders()` が `('オシロガ','ドンドン','retake')` を返すことを
   ローカルで確認。
 - corridor・drained・chapter9・state_regions・key_inventory で 91 passed。
+
+# 将軍が戻った城の枯渇マークを解除する（v737、2026-11-12）
+
+## 事象
+
+21:1x、live の `policy` を入力に `corridor.orders()` を呼ぶと **空**。原因は
+`corridor_drained['オシロガ'] = {'kind': 'hero', 'month': '30-5'}` が古い月のまま残り、
+`_drained()` の月跨ぎ判定で `True`（枯渇）を返して **ドンドン奪還の指示が出ない**こと。
+同じ オシロガ の在城者ページは `どうし+3`（4人）を写していた。
+
+## 変更
+
+`src/docich/hanjuku/strategy/corridor.py`
+
+- `_drained()` の先頭で、実測在城者が2人以上（`garrison` と `garrison_partial` の
+  長い方）なら枯渇マークを消して「枯渇していない」と返す。月跨ぎ・hero種別より前。
+- `_front_names()` は2つの記録の**長い方**を返す（1ページの方が新しいcompanyを含む）。
+
+## 検証
+
+- `tests/test_hanjuku_drained_probe.py`: hero マーク＋在城3人で解除されることを追加。
+- live state で `orders()` が `('ハヤク','タオ','move'), ('オシロガ','ドンドン','retake'),
+  ('サヌト','オシロガ','move')` を返すことを確認。
+- corridor・chapter9・drained・capture・squads・state_regions・key_inventory で 199 passed。

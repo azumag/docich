@@ -68,3 +68,14 @@ def test_no_probe_when_nothing_is_drained():
     mem = memory([A, B, C], [])
     out = orders(mem)
     assert out and all(order['source'] != 'probe' for order in out)
+
+
+def test_a_hero_only_mark_yields_when_the_castle_has_company():
+    """g1163 2026-11-12 21:1x: オシロガ stayed 'hero' while its page listed どうし+3."""
+    mem = memory([A, B, C], [])
+    mem['corridor_drained'][B] = {'kind': 'hero', 'tick': 4000, 'month': '23-5'}
+    mem['world']['garrison'][B] = ['どうし', 'ポワソン', 'キャラウェイ']
+    mem['garrison'][B] = ['どうし', 'ポワソン', 'キャラウェイ']
+    with chart.map_context(mem):
+        assert corridor._drained(mem, B, 'retake') is False
+    assert B not in (mem.get('corridor_drained') or {})

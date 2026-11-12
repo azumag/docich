@@ -77,6 +77,14 @@ def _drained(mem, castle, purpose) -> bool:
     entry = (mem.get(DRAINED) or {}).get(castle)
     if not isinstance(entry, dict):
         return False
+    names = _front_names(mem, castle)
+    if isinstance(names, list) and len(names) > 1:
+        # The castle has company again: whatever the mark says, it is not
+        # drained. g1163 2026-11-12 21:1x: オシロガ kept a 'hero' mark from an
+        # older month while its page listed どうし+3, and the ドンドン retake
+        # was skipped on every observation.
+        (mem.get(DRAINED) or {}).pop(castle, None)
+        return False
     if entry.get('month') != mem.get('month'):
         # A new month alone is not news about this castle. Re-probing every
         # drained castle at each month change cost about a fifth of the run's
@@ -617,14 +625,22 @@ def _front_guard_expired(mem, castle) -> bool:
 
 
 def _front_names(mem, castle):
+    """The longest measured resident list for ``castle`` (roster or page).
+
+    The page can show company the last complete read did not: g1163 2026-11-12
+    21:1x had ``garrison`` at ['どうし'] while the page listed どうし+3, and the
+    shorter list kept the castle looking hero-only.
+    """
     world = _world(mem)
-    garrison = world.get('garrison') or {}
-    names = garrison.get(castle) if isinstance(garrison, dict) else None
-    if isinstance(names, list):
-        return names
-    partial = world.get('garrison_partial') or {}
-    names = partial.get(castle) if isinstance(partial, dict) else None
-    return names if isinstance(names, list) else None
+    listed = []
+    for key in ('garrison', 'garrison_partial'):
+        rows = world.get(key) or {}
+        names = rows.get(castle) if isinstance(rows, dict) else None
+        if isinstance(names, list):
+            listed.append(names)
+    if not listed:
+        return None
+    return max(listed, key=len)
 
 
 def _front_thin(mem, castle) -> bool:
