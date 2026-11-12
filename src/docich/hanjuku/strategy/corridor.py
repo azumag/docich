@@ -45,6 +45,7 @@ PREFIX = 'I:c9:'
 DRAINED = 'corridor_drained'
 WAVE = 'corridor_wave'
 SQUAD = 6
+DRAINED_MIN_HOLD = 300      # ticks a fresh empty reading is trusted before a re-probe
 # Ticks a march may take before a dispatched general is treated as unknown
 # rather than still on the road (a march is observed at ~1 tick/second).
 ARRIVAL_RECHECK_TICKS = 120
@@ -106,6 +107,13 @@ def _drained(mem, castle, purpose) -> bool:
         if status == 'arrived':
             return False
         if status in ('en_route', 'launched_unconfirmed') and now - tick >= ARRIVAL_RECHECK_TICKS:
+            # A castle just read empty is not re-opened a moment later unless
+            # the mark itself is old. g1163 2026-11-12 11:0x-11:1x: 47 order
+            # starts an hour against 8 launches, mostly アルマムーン>ハヤク /
+            # ハヤク>タオ / タオ>サヌト into castles that had just been recorded
+            # empty — each a jump, a status panel and a close.
+            if now - since < DRAINED_MIN_HOLD:
+                continue
             return False
     return True
 
