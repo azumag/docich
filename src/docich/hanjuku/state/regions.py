@@ -152,6 +152,7 @@ KEY_OWNERSHIP = {
     'stats': {'region': WORLD, 'lifetime': 'run', 'migrated': False},  # 最終ステータス観測・new_game時previous_statsへ保持
     'world': {'region': WORLD, 'lifetime': 'chapter', 'migrated': False},  # 領域dict自体の防御的pop
     'world_flags': {'region': WORLD, 'lifetime': 'chapter', 'migrated': False},  # 観測世界フラグ(os_layer/world)
+    'world_map_flags': {'region': WORLD, 'lifetime': 'chapter', 'migrated': False},  # 全体マップで観測した城別所有フラグ累積 (v700 #3992)
     'world_map_signature': {'region': WORLD, 'lifetime': 'chapter', 'migrated': False},  # 全体マップ観測署名
     # --- PLAN: 戦略層の計画・ホールド ---
     'attack_company_hold': {'region': PLAN, 'lifetime': 'chapter', 'migrated': False},  # chapter9 corridor専用の突撃保留(戦略層)
