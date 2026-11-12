@@ -1544,7 +1544,7 @@ def battle_end(mem, next_kind, *, defense_continues=False, actor_continues=False
                 and type(sortie.get('road_defeat')) is not int):
             sortie['road_defeat'] = int(mem.get('tick') or 0)
             # The outcome ledger is what the march and the attack rules read
-            # (``_repelled_alone``, ``_defeat_cooldown_active``). A road defeat
+            # (``sortie_history`` consumers). A road defeat
             # that only lived on the sortie record was invisible to them:
             # g1163 2026-11-12 15:1x-15:5x lost :11-:15 on the road to オオキク
             # and ``sortie_history`` still ended at :11, so nothing could see

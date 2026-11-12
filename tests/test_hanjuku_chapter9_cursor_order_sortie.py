@@ -7,7 +7,7 @@ from docich import hanjuku_chart as chart
 from docich import hanjuku_policy as policy
 
 from test_hanjuku_off_chart import _move_list, _move_memory
-from docich.hanjuku.state.regions import plan as _plan_region, world as _world
+from docich.hanjuku.state.regions import plan as _plan_region
 
 HOME = chart.home_castle(9)
 ROAD = chart.corridor(9)
@@ -42,25 +42,6 @@ def picks(mem):
     return [r for r in mem['_records'] if r.get('decision') == 'cursor_order_pick']
 
 
-def test_an_attack_takes_the_cursor_general_when_nobody_is_stronger():
-    """ミント 32 / シナモン 39: within the margin, so the cursor still goes."""
-    mem = _memory('attack')
-    actions = _step(mem, ['ミント', 'シナモン'])
-    assert actions == [policy.pad('a')]
-    assert _plan_region(mem)['general_override'][mem['_test_step']] == 'ミント'
-    assert picks(mem)
-    assert not mem.get('general_list_scan')
-
-
-def test_an_attack_steers_to_a_clearly_stronger_general():
-    """g1163 2026-11-12: cursor generals lost on the road to オオキク every time."""
-    mem = _memory('attack')
-    actions = _step(mem, ['ミント', 'ジェラート'])       # 32 against 49
-    assert actions == [policy.pad('down')]
-    assert not picks(mem)
-    assert any(r.get('decision') == 'attack_strongest_pick' for r in mem['_records'])
-
-
 def test_the_cursor_steps_past_the_hero():
     mem = _memory('move')
     assert _step(mem, [chart.HERO, 'ミント', 'ジェラート']) == [policy.pad('down')]
@@ -93,25 +74,10 @@ def test_other_chapters_keep_choosing_the_planned_general():
     assert not picks(mem)
 
 
-def test_an_attack_steers_away_from_the_hero_row():
-    """g1163 2026-11-12 16:3x: the hero row was first, so no attack used anyone."""
+
+def test_an_attack_sends_the_cursor_general_top_down():
+    """Owner 2026-11-12: 将軍のステータスによらず、どんどん上から順に将軍を送る."""
     mem = _memory('attack')
-    actions = _step(mem, [chart.HERO, 'ミント', 'ジェラート'])
-    assert actions == [policy.pad('down')], 'steer off the hero before anything else'
-    assert not picks(mem)
-    assert chart.HERO not in (_plan_region(mem).get('general_override') or {}).values()
-
-
-def test_an_attack_avoids_a_wounded_but_stronger_general():
-    """g1163 2026-11-12 16:4x: 18/22/27-HP attackers lost fourteen times."""
-    mem = _memory('attack')
-    _world(mem)['general_hp'] = {'ジェラート': {'hp': 5, 'max': 49, 'tick': 4900}}
-    actions = _step(mem, ['ミント', 'ジェラート'])
-    assert actions == [policy.pad('a')], 'a wounded ジェラート is not worth steering to'
-
-
-def test_an_attack_steers_to_a_healthy_stronger_general():
-    mem = _memory('attack')
-    _world(mem)['general_hp'] = {'ジェラート': {'hp': 48, 'max': 49, 'tick': 4900}}
-    actions = _step(mem, ['ミント', 'ジェラート'])
-    assert actions == [policy.pad('down')]
+    actions = _step(mem, ['ミント', 'ジェラート', 'シナモン', 'マフィン'])
+    assert actions == [policy.pad('a')]
+    assert _plan_region(mem)['general_override'][mem['_test_step']] == 'ミント'
