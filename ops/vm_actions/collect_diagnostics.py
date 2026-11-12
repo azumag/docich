@@ -7182,6 +7182,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v735-front-guard-timeout",
             "hanjuku-chart-v736-idle-step-stale",
             "hanjuku-chart-v737-hero-mark-yield",
+            "hanjuku-chart-v738-plain-text-hold",
             "hanjuku-chart-v560-castle-list-scroll",
             "hanjuku-chart-v561-post-month-repair-status",
             "hanjuku-chart-v501-idle-reanchor",

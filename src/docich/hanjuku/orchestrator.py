@@ -195,6 +195,16 @@ def _recall_after_scene(mem, recall, kind, phase):
     return recall
 
 
+def plain_text_hold(screen) -> bool:
+    """A text screen with no hand cursor has nothing to choose.
+
+    Only an A can move such a screen on, so it gets the same bounded press an
+    unreadable screen does (g1163 2026-11-12 21:3x: 101 no-input `text`
+    frames in half an hour).
+    """
+    return getattr(screen, 'kind', None) == 'text' and getattr(screen, 'hand', None) is None
+
+
 def unknown_hold_advance(screen, mem, actions, digest):
     """Break a frozen unreadable screen with one A press.
 
@@ -1025,8 +1035,9 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
         close_hold = y_jump_close_settle_step(screen, mem, actions)
         if close_hold is not None:
             actions = close_hold
-        if (kind in {'unknown'} and mem.get('chapter')
-                and (phase not in {'transition', 'title', 'title_or_intro'} or mem.get('battle'))):
+        plain_text = plain_text_hold(screen)
+        if (kind in {'unknown'} or plain_text) and mem.get('chapter') \
+                and (phase not in {'transition', 'title', 'title_or_intro'} or mem.get('battle')):
             if mem.get('held_phase')!=phase:
                 mem['held_phase']=phase
                 decision_log._record(mem,'situation_held',screen=kind,phase=phase,
