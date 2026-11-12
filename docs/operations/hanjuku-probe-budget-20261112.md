@@ -643,3 +643,25 @@ v713 の計測では idle probe（何も無いときの城一覧確認）が10�
 - `tests/test_hanjuku_corridor_probe_budget.py`: 2回目の呼び出しが同じ step を
   返すことを追加（9件）。
 - corridor・chapter9・squads・state_regions・key_inventory・capture で 100 passed。
+
+# 波状攻撃中は予算付きの確認も割り込ませない（v732、2026-11-12）
+
+## 事象
+
+20:0x の30分で `roster_probe`（所在不明の将軍を探す城一覧確認）が **20件**。
+同時刻は オオキク への波状攻撃中で、確認が攻撃・増援の移動を追い越していた。
+v730 は「空いた時の確認」だけを止めており、予算付きの割り込みは残っていた。
+
+## 変更
+
+`src/docich/hanjuku/strategy/corridor.py`
+
+- `orders()`: 次の城へ向かう攻撃行軍がある間は、実指示がある場合に probe で
+  追い越さない（`if out and _attackers_marching(mem, target) > 0: return out`）。
+  波が終われば従来どおり予算内で確認を出す。
+
+## 検証
+
+- `tests/test_hanjuku_corridor_probe_budget.py` に「波は予算付き確認も追い越させない」を追加。
+- corridor・chapter9・squads・state_regions・key_inventory・capture・drained で
+  112 passed。

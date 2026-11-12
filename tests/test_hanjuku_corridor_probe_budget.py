@@ -141,3 +141,15 @@ def test_a_minted_idle_probe_is_reused_instead_of_minted_again():
     assert later, 'the plan still moves'
     assert [o['step'] for o in later] == [o['step'] for o in first], \
         'the pending idle probe is reused, not replaced'
+
+
+def test_a_running_wave_also_keeps_the_budgeted_probe_away():
+    """g1163 2026-11-12 20:0x: 20 probes in half an hour during the wave."""
+    mem = memory([A, B, C], [A, B, C])
+    nxt = chart.corridor_next(9, {A, B, C})
+    mem['world']['sorties'] = {'I:c9:C>N:9': {'general': '味方', 'source': C, 'target': nxt,
+                                              'purpose': 'attack', 'status': 'en_route',
+                                              'tick': mem['tick'] - 10}}
+    orders(mem)
+    assert not (decided(mem, 'roster_probe') + decided(mem, 'drained_probe')), \
+        'the wave preempts the budgeted probe too'
