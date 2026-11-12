@@ -92,3 +92,36 @@ def test_the_wait_still_holds_before_its_deadline():
     mem = memory(history)
     mem['attack_company_hold'] = {'target': C, 'tick': 5000 - ATTACK_COMPANY_WAIT + 100}
     assert attacks(mem) == []
+
+
+def test_the_wait_extends_while_help_marches_to_the_source():
+    """g1163 2026-11-12 15:1x: the timeout sent シュゼット alone and he lost.
+
+    Reinforcements were still on the road into ドンドン, so the company rule
+    had something to wait for.
+    """
+    from docich.hanjuku.strategy.corridor import ATTACK_COMPANY_WAIT
+    history = [{'target': C, 'outcome': 'lost', 'enemy_hp': 44, 'tick': 1000}]
+    mem = memory(history)
+    mem['attack_company_hold'] = {'target': C, 'tick': 5000 - ATTACK_COMPANY_WAIT}
+    _world = mem['world']
+    _world['sorties'] = {'I:c9:A>B:7': {'general': '味方7', 'source': A, 'target': B,
+                                        'purpose': 'move', 'status': 'en_route', 'tick': 4900}}
+    assert attacks(mem) == [], 'help is inbound: do not attack alone'
+    assert any(r.get('decision') == 'attack_company_reinforced' for r in mem['_records'])
+    hold = mem.get('attack_company_hold')
+    assert isinstance(hold, dict) and hold.get('target') == C
+    assert hold.get('reinforced') is True
+
+
+def test_the_extension_is_recorded_once_per_wait():
+    from docich.hanjuku.strategy.corridor import ATTACK_COMPANY_WAIT
+    history = [{'target': C, 'outcome': 'lost', 'enemy_hp': 44, 'tick': 1000}]
+    mem = memory(history)
+    mem['attack_company_hold'] = {'target': C, 'tick': 5000 - ATTACK_COMPANY_WAIT}
+    mem['world']['sorties'] = {'I:c9:A>B:7': {'general': '味方7', 'source': A, 'target': B,
+                                              'purpose': 'move', 'status': 'en_route', 'tick': 4900}}
+    attacks(mem)
+    attacks(mem)
+    reinforced = [r for r in mem['_records'] if r.get('decision') == 'attack_company_reinforced']
+    assert len(reinforced) == 1
