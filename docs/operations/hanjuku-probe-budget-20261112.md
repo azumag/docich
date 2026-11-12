@@ -1016,3 +1016,24 @@ Xメニューの「しろ」一覧からSELECTで飛ぶ経路は、**飛ぶ前�
 
 - `tests/test_hanjuku_chapter9_cursor_order_sortie.py`: 半減の先頭は満タンに譲る／
   8割以上なら先頭のまま、を追加（10件）。cursor 系 418 passed。
+
+# 守備将軍が瀕死なら誰でも止めを刺しに行く（v748、2026-11-13）
+
+## 事象
+
+01:0x、オオキク の守備将軍が **3 HP** まで減った（`sortie_history`）。ところが
+v744 の「瀕死の将軍では攻撃しない」と v734 の前線ガードが、次の攻撃を差し止めて
+いた。止めを刺す機会を逃すのは本末転倒。
+
+## 変更
+
+`src/docich/hanjuku/strategy/corridor.py`
+
+- `FINISHING_HP = 10` / `_defender_nearly_dead()` を追加。対象の**直近の守備将軍HPが
+  10以下**なら、`_wounded_attack`（v744）と前線ガード（v734/v742/v743）を適用せず
+  攻撃を許可する（止めが最優先）。
+
+## 検証
+
+- `tests/test_hanjuku_capture_guard.py`: 3 HP の守備将軍には瀕死の将軍でも攻撃する、
+  を追加（13件）。corridor 系 210 passed。

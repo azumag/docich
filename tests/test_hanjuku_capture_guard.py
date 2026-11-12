@@ -154,3 +154,14 @@ def test_an_unobserved_front_resident_does_not_block_attack():
     mem['world']['general_hp'] = {'リーキ': {'hp': 15, 'max': 60}}
     assert [o for o in attacks(mem) if o['source'] == B]
     assert not decisions(mem, 'front_wounded')
+
+
+def test_a_three_hp_defender_may_be_finished_by_a_wounded_general():
+    """g1163 2026-11-13 01:0x: オオキク read 3 HP and the wound guard held back."""
+    mem = memory(['リーキ'])
+    mem['captured'] = [A, B]
+    mem['lost'] = [C]
+    mem['world']['general_hp'] = {'リーキ': {'hp': 5, 'max': 60}}
+    mem['sortie_history'] = [{'target': C, 'outcome': 'lost', 'enemy_hp': 3, 'tick': 4900}]
+    assert [o for o in attacks(mem) if o['source'] == B]
+    assert not [r for r in mem['_records'] if r.get('decision') == 'front_wounded']
