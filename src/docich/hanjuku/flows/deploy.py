@@ -1046,6 +1046,25 @@ def _cursor_order_pick(screen, mem, order):
     if _keeps_hero_company(order, present):
         downs.pop(step, None)
         return None                     # see _corridor_list_end
+    if order.get('corridor') is True and order.get('purpose') != 'move':
+        strongest = _strongest_listed(mem, present, name)
+        if strongest is not None:
+            move = menu_to(screen, strongest)
+            if (move and move != 'here'
+                    and int(downs.get(step) or 0) < CURSOR_PICK_DOWNS):
+                downs[step] = int(downs.get(step) or 0) + 1
+                _record(mem, 'attack_strongest_pick', chart_step=step,
+                        strategy_variant='strongest_attacker',
+                        observed_metric={'present': present[:8], 'cursor': name,
+                                         'chosen': strongest, 'move': move},
+                        reason='攻撃は一覧で最も体力のある将軍を選ぶ（カーソルの将軍では毎回敗北していた）')
+                return _deploy_input(screen, mem, order, [move],
+                                     '攻撃は最も体力のある将軍へカーソルを送る')
+            if move is None:
+                _record(mem, 'attack_strongest_offscreen', chart_step=step,
+                        observed_metric={'present': present[:8], 'cursor': name,
+                                         'chosen': strongest},
+                        reason='より強い将軍が一覧の外にいるためカーソルを送れない')
     if name == NAME or name in busy:
         others = [g for g in present if g != NAME and g not in busy]
         whole = len(present) < GENERAL_LIST_FULL
@@ -1053,11 +1072,68 @@ def _cursor_order_pick(screen, mem, order):
             downs[step] = int(downs.get(step) or 0) + 1
             return _deploy_input(screen, mem, order, [pad('down')],
                                  '第9話は主人公を最後にするため、カーソルを次の将軍へ送る')
-        if name != NAME or order.get('purpose') != 'move':
+        if name == NAME:
+            # Owner 2026-11-12: the hero is posted one road castle behind the
+            # front (``corridor._hero_post_order``). Letting a regular march
+            # send him took him to the front: g1163 2026-11-12 12:4x recorded
+            # I:c9:サヌト>オシロガ:328 with どうし as the mover, left サヌト
+            # empty and walked the hero straight back next cycle.
             downs.pop(step, None)
+            _record(mem, 'hero_move_refused', chart_step=step,
+                    strategy_variant='hero_move_refused',
+                    observed_metric={'present': present[:8]},
+                    deviation_reason='主人公を前線へ出す代わりに、移動の指示を閉じる',
+                    reason='主人公は前線の一つ後ろの自城に常駐させるため、行軍の代役にしない')
             return None
     downs.pop(step, None)
     return _cursor_take(screen, mem, order, name, present)
+
+
+STRONG_ATTACK_MARGIN = 10       # max-HP gain that justifies steering the cursor
+
+
+def _strongest_listed(mem, present, current):
+    """The healthiest listed general, when the cursor one is clearly weaker.
+
+    g1163 2026-11-12 14:5x-15:5x: the march sent whoever the cursor was on
+    (ポワソン, バゲット, モモ...) at オオキク and every one lost on the road
+    (ally HP 0 against 54-77). Chapter 9's cursor order exists for speed
+    (owner 2026-11-11), and a lost sortie is slower than two cursor presses.
+    Moves keep the cursor rule; only attacks prefer the stronger general.
+    The hero is never offered here.
+    """
+    from ...hanjuku_egg_reference import general_max_hp
+
+    known = (_world(mem).get('general_hp') or {}) if isinstance(_world(mem).get('general_hp'), dict) else {}
+
+    def strength(name):
+        """The HP this general brought to the last fight, else its maximum.
+
+        A wounded general looks strong on paper: g1163 2026-11-12 16:4x sent
+        18/22/27-HP attackers at a 50-68-HP defender fourteen times.
+        """
+        row = known.get(name) if isinstance(known.get(name), dict) else {}
+        if type(row.get('hp')) is int:
+            return row['hp']
+        return general_max_hp('しゅじんこう' if name == NAME else name)
+
+    current_hp = strength(current)
+    if type(current_hp) is not int:
+        if current != NAME:
+            return None
+        # The hero is on the cursor: a chapter-9 attack must not send him, and
+        # the list-end fallback is not the only way out — any other general is
+        # the better mover (g1163 2026-11-12 16:3x: the hero row came first on
+        # every attack list, so the strongest row was never considered).
+        current_hp = -STRONG_ATTACK_MARGIN
+    best, best_hp = None, current_hp
+    for general in present:
+        if general == NAME:
+            continue
+        value = strength(general)
+        if type(value) is int and value - best_hp >= STRONG_ATTACK_MARGIN:
+            best, best_hp = general, value
+    return best
 
 
 def _keeps_hero_company(order, present) -> bool:
@@ -1213,6 +1289,33 @@ def _observe_garrison(screen, mem, order, *, complete=True):
                                        if g not in present
                                        or (g in visible and not _general_visible(screen, g))]
     if not complete:
+        # A full page still proves who is standing here: GENERAL_LIST_FULL rows
+        # means the list scrolls, not that the names are unknown. Refusing to
+        # record them left the castle "drained" while sorties were launched out
+        # of it (g1163 2026-11-12 10:3x: タオ／ハヤク／アルマムーン all read 0
+        # generals while リーキ and コリアンダー marched from one of them). Only
+        # the completeness stamp below is withheld, so the listing stays a lower
+        # bound rather than a full roster.
+        partial = _world(mem).setdefault('garrison_partial', {})
+        if present and partial.get(castle) != present:
+            # A page is not the roster: `garrison` stays untouched (that rule is
+            # deliberate — a page proves those names are here, never who else
+            # is). The lower bound is still worth keeping so a castle read this
+            # way is not mistaken for an empty one.
+            partial[castle] = present
+            _record(mem, 'garrison_partial_seen', **_deploy_context(order, mem), castle=castle,
+                    observed_metric=present[:8],
+                    reason='将軍一覧の1ページ分を確認したため在城者の下限として記録')
+        # A blind world-map probe waits 200 ticks for this castle's roster and
+        # then rolls the launch back. On a full page that roster never arrives
+        # (GENERAL_LIST_FULL rows means "the list scrolls", not "complete"), so
+        # real launches were rolled back and the same move re-sent: g1163
+        # 2026-11-12 14:0x failed I:c9:オシロガ>ドンドン:41-44 at once while
+        # ブカティーニ and バーミセリ were already marching, and タオ>サヌト
+        # carried 13-15 launch misses. A page still proves presence (rollback),
+        # and, once the marker survey is blind, its absence confirms.
+        from .map import settle_launch_probes_from_roster
+        settle_launch_probes_from_roster(mem, castle, present, complete=False)
         return
     # Display-only evidence: decisions never consult this wall-clock field.
     _world(mem).setdefault('garrison_observed_at', {})[castle] = time.time()
@@ -2201,6 +2304,20 @@ def deploy_step(screen: Screen, mem):
         ambiguous = carried is None
         want = sorted(_deploy_cards(order, mem))
         got = sorted(carried) if carried is not None else None
+        if (order.get('corridor') and not want and carried is not None
+                and (_plan_region(mem).get('orders') or {}).get(order['step'])
+                not in {'launched', 'launched_unconfirmed'}):
+            # Chapter 9's mechanical order names no cards on purpose (owner
+            # 2026-11-11: 切り札を選ばず、一覧のカーソル位置の札を上から順に携行する),
+            # so a readable kit can never match the empty plan. Holding for the
+            # mismatch budget every sortie only slowed the road: g1163
+            # 2026-11-12 09:2x-09:3x held 42 card picks for 15 sorties.
+            _record(mem, 'sortie_kit_corridor_approve',
+                    **_deploy_context(order, mem, expected_metric=want),
+                    carried=carried,
+                    observed_metric={'carried': carried, 'planned': want},
+                    reason='第9話は切り札を選ばないため、読み取れた携行札をそのまま承認する')
+            return [pad('a')]
         if ambiguous or got != want:
             misses = mem.setdefault('sortie_confirm_miss', {})
             misses[order['step']] = misses.get(order['step'], 0) + 1

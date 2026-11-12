@@ -38,13 +38,27 @@ from __future__ import annotations
 from ... import hanjuku_chart as chart, hanjuku_chart_adjust as chart_adjust
 from ..os_layer.world import _owned, _world
 from ..os_layer.world import NAME, SORTIE_BUSY_TICKS, _hero_castle
-from ..state.regions import plan as _plan_region, sorties as _sorties
+from ..state.regions import flow as _flow_region, plan as _plan_region, sorties as _sorties
 from . import routes
 
 PREFIX = 'I:c9:'
 DRAINED = 'corridor_drained'
 WAVE = 'corridor_wave'
+PROBE = 'corridor_probe'
 SQUAD = 6
+DRAINED_MIN_HOLD = 300      # ticks a fresh empty reading is trusted before a re-probe
+# Probe orders a month may spend looking for unaccounted generals. A castle
+# list cannot show a general who is camped on the field, so the probe tour
+# never finds them and must not run forever (see ``_probe_spend``).
+PROBE_BUDGET = 6
+# Ticks after which one more look is allowed even when nothing was found.
+PROBE_REARM_TICKS = 3600
+# Idle probes (nothing else to plan) are minted at most this often. Zero
+# keeps one minted per observation, which is what stops the empty plan from
+# standing still; the in-flight suppression is what removes the churn.
+IDLE_PROBE_SPACING = 0
+# A sortie attempt older than this is stale evidence, not a launch in flight.
+SORTIE_ATTEMPT_TTL = 120
 # Ticks a march may take before a dispatched general is treated as unknown
 # rather than still on the road (a march is observed at ~1 tick/second).
 ARRIVAL_RECHECK_TICKS = 120
@@ -106,6 +120,13 @@ def _drained(mem, castle, purpose) -> bool:
         if status == 'arrived':
             return False
         if status in ('en_route', 'launched_unconfirmed') and now - tick >= ARRIVAL_RECHECK_TICKS:
+            # A castle just read empty is not re-opened a moment later unless
+            # the mark itself is old. g1163 2026-11-12 11:0x-11:1x: 47 order
+            # starts an hour against 8 launches, mostly アルマムーン>ハヤク /
+            # ハヤク>タオ / タオ>サヌト into castles that had just been recorded
+            # empty — each a jump, a status panel and a close.
+            if now - since < DRAINED_MIN_HOLD:
+                continue
             return False
     return True
 
@@ -227,14 +248,55 @@ def orders(mem) -> list[dict]:
             hop = target
             if _attackers_marching(mem, target) >= SQUAD:
                 continue                   # the vanguard is full; nobody waits for six
-            if (_repelled_alone(mem, target)
-                    and _attackers_marching(mem, target) < ATTACK_COMPANY):
-                if not mem.get('attack_company_hold'):
-                    mem['attack_company_hold'] = {'target': target,
-                                                  'tick': int(mem.get('tick') or 0)}
-                    _record_only(mem, 'attack_company_required', target=target,
-                                 reason='単独で返り討ちにあった城へは、味方が2人そろうまで突撃しない')
+            if _defeat_cooldown_active(mem, target):
                 continue
+            if (not chart.is_boss_castle(target)
+                    and (_repelled_alone(mem, target) or _flip_prone(mem, target))
+                    and _front_guard_short(mem, source)):
+                # Guard-free chapters may empty a castle, but the castle facing
+                # the enemy is the road's only foothold: g1163 2026-11-12 17:4x
+                # sent ドンドン's last generals at オオキク and lost ドンドン to a
+                # defense battle, which costs a whole retake cycle.
+                continue
+            if ((_repelled_alone(mem, target) or _flip_prone(mem, target))
+                    and _attackers_marching(mem, target) < ATTACK_COMPANY):
+                hold = mem.get('attack_company_hold')
+                waiting = (isinstance(hold, dict) and hold.get('target') == target
+                           and type(hold.get('tick')) is int)
+                waited = (int(mem.get('tick') or 0) - hold['tick']) if waiting else 0
+                inbound = _reinforcements_inbound(mem, source)
+                if waiting and waited >= ATTACK_COMPANY_WAIT and not inbound:
+                    # Waiting for company cannot be unbounded: with nobody left
+                    # to join, the attack never starts and the road stops.
+                    # g1163 2026-11-12 12:1x: an hour of サヌト>オシロガ moves and
+                    # not one オシロガ>ドンドン attack.
+                    mem.pop('attack_company_hold', None)
+                    _record_only(mem, 'attack_company_timeout', target=target,
+                                 observed_metric={'waited': waited},
+                                 reason='味方を待つ上限に達したため、単独でも突撃する')
+                elif waiting and waited >= ATTACK_COMPANY_WAIT and inbound:
+                    # Help is on the road to this castle: a lone attacker that
+                    # the timeout just sent at オオキク lost the road battle and
+                    # the next one started alone again (g1163 2026-11-12 15:1x).
+                    # Keep the company rule while a march into the source
+                    # exists, bounded by the same window.
+                    waited = waited % ATTACK_COMPANY_WAIT
+                    hold['tick'] = int(mem.get('tick') or 0) - waited
+                    if not hold.get('reinforced'):
+                        hold['reinforced'] = True
+                        _record_only(mem, 'attack_company_reinforced', target=target,
+                                     observed_metric={'inbound': inbound, 'waited': waited},
+                                     reason='出撃元へ味方が向かっているため、単独突撃せず合流を待つ')
+                    continue
+                else:
+                    if not waiting:
+                        mem['attack_company_hold'] = {'target': target,
+                                                      'tick': int(mem.get('tick') or 0)}
+                        _record_only(mem, 'attack_company_required', target=target,
+                                     observed_metric={'flip_prone': _flip_prone(mem, target),
+                                                      'repelled': _repelled_alone(mem, target)},
+                                     reason='単独で返り討ちにあった／取ってすぐ失った城へは、味方が2人そろうまで突撃しない')
+                    continue
         else:
             purpose, hop = 'move', route[1]
         if purpose == 'move' and _moved(mem, wave, hop, source) >= SQUAD:
@@ -249,14 +311,139 @@ def orders(mem) -> list[dict]:
     attacks.sort(key=lambda item: item[0])
     moves.sort(key=lambda item: item[0])      # nearest the front first
     out = [order for _, order in (*attacks, *moves, *hero)]
+    # The budget bounds only the preemption: a probe may jump the queue while
+    # real orders wait, not forever. With nothing else to do the tour is the
+    # only thing that can find anybody, and an empty plan leaves the bot
+    # standing on the field map (g1163 2026-11-12 13:1x: 169 consecutive
+    # no-input map plans, five minutes without a single press).
+    if out and not _probe_budget_left(mem):
+        return out
+    if not out and _sortie_in_flight(mem):
+        # The active order is being launched right now (a selection or a
+        # departure is open). Minting an idle probe here replaced that order on
+        # the next observation: g1163 2026-11-12 14:2x minted 19 idle probes in
+        # ten minutes while the march started only 12 orders, and the probes
+        # were never executed.
+        return out
+    if not out and not _idle_probe_due(mem):
+        # Spacing the idle tour left the bot standing on the field map again
+        # (g1163 2026-11-12 15:0x: 79 of 162 plans in five minutes were
+        # no-input map frames). The tour is what keeps it moving; only the
+        # launch-time churn needed the tighter rule, and that is handled by
+        # ``_sortie_in_flight``.
+        return out
     probe = _roster_probe(mem, routes_by, target, lost)
-    if probe is not None:
-        out.insert(0, probe)            # the re-read goes first: the tour is priority
-    elif not out:
+    decision = 'roster_probe'
+    if probe is None and not out:
         probe = _drained_probe(mem, routes_by, target, lost)
-        if probe is not None:
-            out = [probe]
+        decision = 'drained_probe'
+    if probe is None:
+        if not out:
+            _probe_exhausted_once(mem)
+        return out
+    idle = not out
+    _probe_spend(mem, f'{decision}_idle' if idle else decision, idle=idle)
+    out.insert(0, probe)                # the re-read goes first: the tour is priority
     return out
+
+
+def _sortie_in_flight(mem) -> bool:
+    """A selection or a requested departure is open for the active order.
+
+    Only a fresh attempt counts. A ``sortie_attempt`` that was never cleared
+    (g1163 2026-11-12 14:4x: confirmation_tick 95774 still present at tick
+    96376, ten minutes later) would otherwise suppress every idle probe for
+    good, and with every road castle drained the plan went empty.
+    """
+    flow = _flow_region(mem)
+    if flow.get('departure_request'):
+        return True
+    attempt = flow.get('sortie_attempt')
+    if not isinstance(attempt, dict):
+        return False
+    since = attempt.get('confirmation_tick')
+    if type(since) is not int:
+        return False
+    now = int(mem.get('tick') or 0)
+    return 0 <= now - since <= SORTIE_ATTEMPT_TTL
+
+
+def _idle_probe_due(mem) -> bool:
+    """One idle probe per ``IDLE_PROBE_SPACING`` ticks, not one per observation."""
+    state = mem.get(PROBE)
+    if not isinstance(state, dict) or state.get('month') != mem.get('month'):
+        return True
+    last = state.get('idle_tick')
+    if type(last) is not int:
+        return True
+    return int(mem.get('tick') or 0) - last >= IDLE_PROBE_SPACING
+
+
+def _garrison_seen(mem) -> int:
+    """Generals the castle lists actually showed (the probe's yield)."""
+    world = _world(mem)
+    return sum(len(members) for members in (world.get('garrison') or {}).values()
+               if isinstance(members, list))
+
+
+def _probe_budget_left(mem) -> bool:
+    """Whether one more castle-list probe may be spent this month.
+
+    A probe exists to find generals the accounting cannot place. Generals who
+    are camped on the field are in no castle list at all, so the tour that
+    used to run forever never found them and took every cycle: g1163
+    2026-11-12 12:4x spent a quarter of an hour opening drained castles, read
+    「しょうぐんはおりません」 each time and never reached a sortie. The tour is
+    bounded per month, re-armed as soon as any castle list shows a general
+    again (a recall or an arrival) or after ``PROBE_REARM_TICKS``.
+    """
+    state = mem.get(PROBE)
+    if not isinstance(state, dict) or state.get('month') != mem.get('month'):
+        return True
+    if _garrison_seen(mem) > int(state.get('seen') or 0):
+        return True
+    if int(mem.get('tick') or 0) - int(state.get('tick') or 0) >= PROBE_REARM_TICKS:
+        return True
+    return int(state.get('count') or 0) < PROBE_BUDGET
+
+
+def _probe_spend(mem, decision, idle=False):
+    """Count one probe. An idle probe (nothing else to plan) is not budgeted."""
+    state = mem.setdefault(PROBE, {})
+    if state.get('month') != mem.get('month'):
+        state.clear()
+        state.update(month=mem.get('month'), count=0, seen=_garrison_seen(mem))
+    if idle:
+        state['idle_tick'] = int(mem.get('tick') or 0)
+    else:
+        state['count'] = int(state.get('count') or 0) + 1
+    state['tick'] = int(mem.get('tick') or 0)
+    state['seen'] = _garrison_seen(mem)
+    state.pop('exhausted', None)
+    _record_only(mem, decision,
+                 observed_metric={'probe_count': state['count'],
+                                  'probe_budget': PROBE_BUDGET,
+                                  'idle': idle,
+                                  'unaccounted': _unaccounted(mem)},
+                 reason=('ほかに出す指示がないため、所在不明の将軍を城一覧で確認する'
+                         if idle else
+                         '所在不明の将軍を城一覧で確認する（月ごとの上限つき）'))
+
+
+def _probe_exhausted_once(mem):
+    state = mem.setdefault(PROBE, {})
+    if state.get('exhausted'):
+        return
+    state['exhausted'] = True
+    state.setdefault('month', mem.get('month'))
+    _record_only(mem, 'corridor_probe_exhausted',
+                 observed_metric={'probe_count': int(state.get('count') or 0),
+                                  'probe_budget': PROBE_BUDGET,
+                                  'unaccounted': _unaccounted(mem),
+                                  'garrison_seen': _garrison_seen(mem)},
+                 reason=('城一覧の確認を使い切ったため打ち切る。所在不明の将軍は'
+                         '野営中の可能性が高く、城一覧では見つからない。帰還や入城で'
+                         '城一覧に将軍が現れるか、月が変われば再開する'))
 
 
 def _unaccounted(mem):
@@ -349,6 +536,91 @@ def _drained_probe(mem, routes_by, target, lost):
 # marching attackers are the least that changes that outcome.
 REPELLED_FLOOR_HP = 30
 ATTACK_COMPANY = 2
+ATTACK_COMPANY_WAIT = 600   # ticks to wait for company before attacking alone
+
+
+DEFEAT_COOLDOWN_WINDOW = 1500   # ticks that count as "this exchange keeps losing"
+DEFEAT_COOLDOWN_LIMIT = 3       # defeats on one target inside the window
+DEFEAT_COOLDOWN_TICKS = 900     # how long the attack on that castle is paused
+
+
+def _recent_defeats(mem, target) -> int:
+    now = int(mem.get('tick') or 0)
+    count = 0
+    for row in mem.get('sortie_history') or ():
+        if not isinstance(row, dict) or row.get('target') != target:
+            continue
+        if row.get('outcome') != 'lost':
+            continue
+        tick = row.get('tick')
+        if type(tick) is int and 0 <= now - tick <= DEFEAT_COOLDOWN_WINDOW:
+            count += 1
+    return count
+
+
+def _defeat_cooldown_active(mem, target) -> bool:
+    """Stop attacking a castle whose exchange keeps ending in a defeat.
+
+    g1163 2026-11-12 14:5x-15:3x: オオキク was attacked every minute and each
+    march ended in a road defeat (``sortie_road_defeat``), enemy HP readings
+    moving 44 -> 54 -> 55 -> 77 while no castle changed hands. A defence that
+    keeps winning needs a pause, not another lone march. Bounded: the pause
+    expires on its own, so the road never stops for good. Boss castles keep
+    their own rules.
+    """
+    if chart.is_boss_castle(target):
+        return False
+    holds = mem.setdefault('attack_defeat_hold', {})
+    now = int(mem.get('tick') or 0)
+    entry = holds.get(target) if isinstance(holds.get(target), dict) else {}
+    if now < int(entry.get('until') or 0):
+        return True
+    defeats = _recent_defeats(mem, target)
+    if defeats < DEFEAT_COOLDOWN_LIMIT or defeats <= int(entry.get('counted') or 0):
+        return False
+    holds[target] = {'until': now + DEFEAT_COOLDOWN_TICKS, 'counted': defeats}
+    _record_only(mem, 'attack_defeat_cooldown', target=target,
+                 observed_metric={'defeats': defeats, 'window': DEFEAT_COOLDOWN_WINDOW,
+                                  'pause': DEFEAT_COOLDOWN_TICKS},
+                 reason='同じ城への攻撃が短期間に何度も敗北しているため、いったん攻撃を休んで増援の移動に回す')
+    return True
+
+
+FRONT_GUARD = 1                 # generals kept at the castle facing the enemy
+
+
+def _front_guard_short(mem, castle) -> bool:
+    """This castle holds no more than the front guard, so nobody may leave.
+
+    Only a measured list is evidence: an unread castle is not empty. The
+    names a page proved (``garrison_partial``) count the same way as a full
+    roster read.
+    """
+    world = _world(mem)
+    garrison = world.get('garrison') or {}
+    names = garrison.get(castle) if isinstance(garrison, dict) else None
+    if not isinstance(names, list):
+        partial = world.get('garrison_partial') or {}
+        names = partial.get(castle) if isinstance(partial, dict) else None
+    if not isinstance(names, list):
+        return False                       # unread: no evidence either way
+    if len(names) > FRONT_GUARD:
+        return False
+    _record_only(mem, 'front_guard_held', target=castle,
+                 observed_metric={'residents': list(names)[:8], 'keep': FRONT_GUARD},
+                 reason='前線の城に残る将軍が下限に達するため、この城から出撃させない（失城の取り直しを避ける）')
+    return True
+
+
+def _reinforcements_inbound(mem, castle) -> int:
+    """Marches still on the road into ``castle`` (a reason to wait for company)."""
+    count = 0
+    for sortie in _sorties(mem).values():
+        if not isinstance(sortie, dict) or sortie.get('target') != castle:
+            continue
+        if sortie.get('status') in ('en_route', 'launched_unconfirmed', 'pending'):
+            count += 1
+    return count
 
 
 def _repelled_alone(mem, target) -> bool:
@@ -361,6 +633,29 @@ def _repelled_alone(mem, target) -> bool:
     enemy_hp = last.get('enemy_hp')
     return (last.get('outcome') == 'lost' and type(enemy_hp) is int
             and enemy_hp >= REPELLED_FLOOR_HP)
+
+
+FLIP_WINDOW_TICKS = 900    # a capture lost again inside this window is a flip
+
+
+def _flip_prone(mem, target) -> bool:
+    """This castle was captured and lost again almost at once.
+
+    g1163 2026-11-12 09:54/09:56: ドンドン was taken and lost again two minutes
+    later, twice in the same afternoon. A lone attacker captures, moves on (or
+    falls), and the enemy walks straight back in — the castle changes hands
+    without the road advancing. Waiting for a second marching attacker costs a
+    little time; losing the general and the castle costs both.
+    """
+    history = [h for h in (mem.get('sortie_history') or [])
+               if isinstance(h, dict) and h.get('target') == target
+               and type(h.get('tick')) is int]
+    if len(history) < 2:
+        return False
+    last, before = history[-1], history[-2]
+    if last.get('outcome') != 'lost' or before.get('outcome') != 'won':
+        return False
+    return 0 <= last['tick'] - before['tick'] <= FLIP_WINDOW_TICKS
 
 
 HERO_POST_HOPS = 3          # the hero stands this many castles from the target

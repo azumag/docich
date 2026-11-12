@@ -675,6 +675,18 @@ def battle_step(screen: Screen, mem):
         _bind_event_duel(mem, cur)
         planned = _planned_battle_cards(mem, cur, b.enemy)
         cur['planned_cards'] = list(planned)
+        if isinstance(b.ally, str) and type(b.ally_hp) is int:
+            # The HP this general brought into the fight is the only measured
+            # strength the plan can see: g1163 2026-11-12 16:4x attacked オオキク
+            # with 18/22/27-HP generals against a 50-68-HP defender fourteen
+            # times and lost every one. Keeping the reading lets the attack
+            # pick a healthy general instead of the highest maximum.
+            name = 'しゅじんこう' if b.ally == NAME else b.ally
+            known = _world(mem).setdefault('general_hp', {})
+            row = known.get(b.ally) if isinstance(known.get(b.ally), dict) else {}
+            maximum = row.get('max') or general_max_hp(name) or b.ally_hp
+            known[b.ally] = {'hp': int(b.ally_hp), 'max': int(maximum),
+                             'tick': int(mem.get('tick') or 0)}
         _record(mem, 'battle_start', **_battle_labels(cur), enemy=b.enemy, ally=b.ally,
                 expected_metric=cur['strategy_expected'],
                 observed_metric={'enemy_hp': b.enemy_hp, 'ally_hp': b.ally_hp},
@@ -1531,6 +1543,19 @@ def battle_end(mem, next_kind, *, defense_continues=False, actor_continues=False
                 and sortie.get('status') in ('en_route', 'launched_unconfirmed')
                 and type(sortie.get('road_defeat')) is not int):
             sortie['road_defeat'] = int(mem.get('tick') or 0)
+            # The outcome ledger is what the march and the attack rules read
+            # (``_repelled_alone``, ``_defeat_cooldown_active``). A road defeat
+            # that only lived on the sortie record was invisible to them:
+            # g1163 2026-11-12 15:1x-15:5x lost :11-:15 on the road to オオキク
+            # and ``sortie_history`` still ended at :11, so nothing could see
+            # that the exchange kept losing.
+            history = mem.setdefault('sortie_history', [])
+            history.append({'step': step, 'general': sortie.get('general'),
+                            'source': sortie.get('source'), 'target': target,
+                            'outcome': 'lost', 'tick': int(mem.get('tick') or 0),
+                            'castle': castle, 'ally_hp': ally_hp, 'enemy_hp': enemy_hp,
+                            'road': True})
+            del history[:-40]
             _record(mem, 'sortie_road_defeat', chart_step=step, general=sortie.get('general'),
                     castle=castle,
                     observed_metric={'target': target, 'retreat': retreat,

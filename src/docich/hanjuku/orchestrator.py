@@ -884,6 +884,11 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
                 and navigation and navigation.get('menu') == 'global_roster'):
             updated['status_panel_feedback'] = {
                 'step': step, 'kind': kind, 'transition': 'general_status_open'}
+        elif (kind == 'text' and actions == [pad('b')]
+                and monthly.get('stage') == 'roster_next' and monthly.get('phase_reads') == 0
+                and monthly.get('close_probe_pending') is True):
+            updated['status_panel_feedback'] = {
+                'step': step, 'kind': kind, 'transition': 'general_status_close'}
     if actions is None:
         from .flows import arrival_status
         actions = arrival_status.step(screen, mem)

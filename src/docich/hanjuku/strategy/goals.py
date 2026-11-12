@@ -113,9 +113,24 @@ def _wanted(mem):
                and s.get('tick') is not None
                and 0 <= now - int(s['tick']) < SORTIE_BUSY_TICKS} - {None}
     garrison = _world(mem).get('garrison') or {}
-    for castle in sorted(owned - lost - heading):
-        if garrison.get(castle) == []:
-            wanted[('move', None, castle)] = {'kind': 'move', 'target': castle}
+    # Chapter 9 empties its castles on purpose: every general marches down the
+    # road and the corridor planner owns every movement (owner 2026-11-11:
+    # ９話は機械的に次の城にすべての将軍を送る、それ以外はdisable). Refilling an
+    # empty road castle is not a want there — the ledger filled up with six
+    # never-attempted ``move`` goals (g1163 2026-11-12 13:4x, queued 86867-92397
+    # while all four rear castles read ``[]``), which the normal planner then
+    # tried to serve as name-less moves. Other chapters keep the refill want.
+    try:
+        march = bool(chart.guard_free(chapter) and chart.corridor(chapter)
+                     and chart.corridor_next(chapter, owned) is not None)
+    except AttributeError:
+        # A rebound chart without the road tables (the layer contract allows a
+        # minimal namespace) is not a mechanical march.
+        march = False
+    if not march:
+        for castle in sorted(owned - lost - heading):
+            if garrison.get(castle) == []:
+                wanted[('move', None, castle)] = {'kind': 'move', 'target': castle}
     return wanted
 
 

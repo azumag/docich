@@ -129,3 +129,26 @@ def test_road_defeat_is_marked_once():
     battle.battle_end(mem, 'field')
     assert _world(mem)['sorties'][STEP]['road_defeat'] == TICK
     assert len(decisions(mem, 'sortie_road_defeat')) == 1
+
+
+def test_a_road_defeat_reaches_the_outcome_ledger():
+    """The march and attack rules read ``sortie_history``, not the sortie.
+
+    g1163 2026-11-12 15:1x-15:5x: :11-:15 were lost on the road to オオキク and
+    the ledger still ended at :11, so no rule could see the repeated defeats.
+    """
+    mem = battle_memory(0, 8)
+    battle.battle_end(mem, 'field')
+    rows = [row for row in mem.get('sortie_history') or [] if row.get('step') == STEP]
+    assert len(rows) == 1
+    assert rows[0]['outcome'] == 'lost'
+    assert rows[0]['road'] is True
+    assert rows[0]['enemy_hp'] == 8
+
+
+def test_a_road_defeat_is_ledgered_once():
+    mem = battle_memory(0, 8)
+    battle.battle_end(mem, 'field')
+    battle.battle_end(mem, 'field')
+    rows = [row for row in mem.get('sortie_history') or [] if row.get('step') == STEP]
+    assert len(rows) == 1, 'the road_defeat guard keeps one row per defeat'

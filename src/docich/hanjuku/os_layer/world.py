@@ -420,6 +420,43 @@ def _en_route(mem):
 WORLD_FLAG_TRUST = 200   # observations a world-map (Y) flag outranks a roof reading
 
 
+def _confirmed_flags(mem, flags):
+    """Keep only flag values that were read twice in a row.
+
+    g1163 2026-11-12 09:54-11:19: ドンドン and サヌト changed hands at the same
+    minute they were captured (two ownership records each), and オシロガ did it
+    twice. A roof that is hidden, clipped or the wrong colour reads as the other
+    owner, and the plan then chased a castle that had never changed hands. A
+    disagreeing value has to survive two consecutive reads before it counts;
+    the agreeing ones pass straight through.
+    """
+    known = mem.get('world_map_flags')
+    if not isinstance(known, dict):
+        known = {}
+    pending = mem.get('world_map_pending')
+    if not isinstance(pending, dict):
+        pending = {}
+    chapter = mem.get('chapter') or 0
+    home = chart.home_castle(chapter)
+    confirmed, still_pending = {}, {}
+    for castle, owner in flags.items():
+        previous = known.get(castle)
+        # The home castle has its own loss/recovery rules below; it is never
+        # held back here.
+        if castle == home or chart.is_boss_castle(castle):
+            confirmed[castle] = owner
+            continue
+        if previous is None or previous == owner:
+            confirmed[castle] = owner
+            continue
+        if pending.get(castle) == owner:
+            confirmed[castle] = owner            # the same disagreement again
+        else:
+            still_pending[castle] = owner
+    mem['world_map_pending'] = still_pending
+    return confirmed
+
+
 def _apply_world_flags(mem, flags):
     chapter = mem.get('chapter') or 0
     from .roster import owner
@@ -464,6 +501,7 @@ def _apply_world_flags(mem, flags):
         mem['home_lost'] = False
         mem['lost'] = [c for c in mem.get('lost') or [] if c != home]
         changed.append(('captured', home))
+    flags = _confirmed_flags(mem, flags)
     for castle, owner in flags.items():
         if castle == home or chart.is_boss_castle(castle):
             continue
@@ -487,9 +525,19 @@ def _apply_world_flags(mem, flags):
     # reloaded as a list, so a tuple never compares equal again and the same
     # flag set was recorded on every observation anyway (measured 2026-11-05:
     # 147 owners records an hour over nine distinct flag sets).
-    signature = [[k, v] for k, v in sorted(flags.items())]
-    if mem.get('world_map_signature') != signature:
-        mem['world_map_signature'] = signature
+    # A partial read is not a change. The view drops a flag whenever a roof is
+    # hidden or misread, so the same map arrived as 10, 11 or 12 entries and
+    # every set counted as news (g1163 2026-11-12 08:5x: 56 owners records an
+    # hour, none of them an actual ownership change). Only a value that
+    # disagrees with what we already knew is recorded.
+    known = mem.get('world_map_flags')
+    if not isinstance(known, dict):
+        known = {}
+    differences = {castle: owner for castle, owner in flags.items()
+                   if known.get(castle) != owner}
+    if differences:
+        mem['world_map_flags'] = {**known, **flags}
+        mem['world_map_signature'] = [[k, v] for k, v in sorted(mem['world_map_flags'].items())]
         _record(mem, 'world_map_owners', observed_metric=flags,
                 resulting_event=[f'{k}:{c}' for k, c in changed] or None,
                 reason='全体マップの旗の色で全城の所有を確認')

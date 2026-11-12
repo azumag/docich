@@ -1858,7 +1858,7 @@ def _probe_launch_markers(mem, markers):
                     reason='全体マップに部隊▲が現れないため、出撃元の将軍一覧で出撃の成立を確認する')
 
 
-def settle_launch_probes_from_roster(mem, castle, generals):
+def settle_launch_probes_from_roster(mem, castle, generals, *, complete=True):
     """Settle a launch probe with the source castle's own roster.
 
     A completed roster read is direct evidence about the general the ledger
@@ -1882,6 +1882,10 @@ def settle_launch_probes_from_roster(mem, castle, generals):
             _rollback_unverified_launch(mem, step, probe, [],
                                         reason='出撃元の将軍一覧にまだ出撃した将軍がいるため、出撃を未発射に戻す')
             continue
+        if not complete and not probe.get('blind'):
+            # One page is not the roster: while the marker survey may still
+            # find the unit, a name that merely scrolled off proves nothing.
+            continue
         probes.pop(step, None)
         sortie = _sorties(mem).get(step)
         if isinstance(sortie, dict):
@@ -1893,8 +1897,10 @@ def settle_launch_probes_from_roster(mem, castle, generals):
             if isinstance(row, dict) and row.get('step') == step:
                 (mem.get('equivalent_launch_miss') or {}).pop(key, None)
         _record(mem, 'sortie_launch_confirmed', chart_step=step, general=general,
-                observed_metric={'castle': castle, 'general': general, 'roster': roster[:12]},
-                reason='出撃元の将軍一覧に出撃した将軍がいないため出撃成立を確認')
+                observed_metric={'castle': castle, 'general': general, 'roster': roster[:12],
+                                 'complete': bool(complete)},
+                reason=('出撃元の将軍一覧に出撃した将軍がいないため出撃成立を確認' if complete
+                        else '出撃元の将軍一覧の1ページに出撃した将軍がいないため出撃成立とみなす'))
 
 
 def _rollback_unverified_launch(mem, step, probe, markers, reason=None):
