@@ -925,3 +925,25 @@ Xメニューの「しろ」一覧からSELECTで飛ぶ経路は、**飛ぶ前�
 
 - `tests/test_hanjuku_capture_guard.py`: 取った直後の前線から最後の1人を出さない、を追加
   （9件）。corridor 系 202 passed。
+
+# 瀕死の将軍では攻撃に出ない（v744、2026-11-12）
+
+## 事象
+
+23:4x、オオキク への攻撃で味方HP 15・22 のような瀕死の将軍を送って敗北。
+`sortie_history`（直近20件）は `オオキク lost 7 / ドンドン lost 9 / ドンドン won 4` で、
+オオキク では一度も勝てていなかった。将軍のHPを回復する経路が現状の計画に無く、
+傷ついた将軍をそのまま送り続けている。
+
+## 変更
+
+`src/docich/hanjuku/strategy/corridor.py`
+
+- `WOUNDED_ATTACK_HP = 20` と `_wounded_attack()` を追加。出撃元の**実測HPが最も高い
+  将軍**でも 20 以下なら攻撃に出さず `front_wounded` を記録する。待ちは既存の
+  `_front_guard_expired`（`FRONT_GUARD_WAIT` = 600 tick）で有界。
+
+## 検証
+
+- `tests/test_hanjuku_capture_guard.py`: 瀕死の前線は攻撃しない／元気なら攻撃する、を追加。
+- corridor 系 202 passed。
