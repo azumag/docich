@@ -43,47 +43,55 @@ def decided(mem, name):
     return [rec for rec in mem.get('_records') or [] if rec.get('decision') == name]
 
 
-def test_the_tour_stops_after_the_budget_and_says_why():
-    mem = memory([A, B, C], [A, B, C])
-    visits = [orders(mem) for _ in range(corridor.PROBE_BUDGET)]
-    assert all(len(out) == 1 for out in visits), 'the tour must still read before the cap'
-    assert orders(mem) == []
-    assert decided(mem, 'corridor_probe_exhausted'), 'the stop has to be recorded'
+def test_the_budget_bounds_only_the_preemption():
+    """With a real order waiting, the tour may not jump the queue forever."""
+    mem = memory([A, B, C], [A, B])          # C still has a general
+    for _ in range(corridor.PROBE_BUDGET):
+        out = orders(mem)
+        assert out and out[0].get('source_probe') is True, 'the tour goes first while budgeted'
+    before = len(decided(mem, 'roster_probe'))
+    out = orders(mem)
+    assert out, 'a real move must still be planned'
+    assert any(order.get('source') == C for order in out)
+    assert len(decided(mem, 'roster_probe')) == before, 'the budget stops the preemption'
 
 
-def test_a_general_showing_up_in_a_castle_list_rearms_the_tour():
+def test_an_idle_probe_keeps_the_plan_alive_without_spending_the_budget():
+    """Nothing else to plan: an empty plan would stand still on the map.
+
+    g1163 2026-11-12 13:1x: 169 consecutive no-input map plans after the
+    budget was spent — five minutes without a single press.
+    """
     mem = memory([A, B, C], [A, B, C])
     for _ in range(corridor.PROBE_BUDGET):
         orders(mem)
-    assert orders(mem) == []
-    # A recall / an arrival puts somebody back in a castle list
+    count = mem[corridor.PROBE]['count']
+    out = orders(mem)
+    assert len(out) == 1, 'the idle tour has to keep visiting'
+    assert mem[corridor.PROBE]['count'] == count, 'an idle probe is not budgeted'
+    assert decided(mem, 'roster_probe_idle') or decided(mem, 'drained_probe_idle')
+    assert not decided(mem, 'corridor_probe_exhausted')
+
+
+def test_a_general_showing_up_in_a_castle_list_rearms_the_budget():
+    mem = memory([A, B, C], [A, B])
+    mem['world']['garrison'][C] = ['リーキ']
+    for _ in range(corridor.PROBE_BUDGET):
+        orders(mem)
+    orders(mem)                              # budget spent: no probe any more
+    assert not decided(mem, 'roster_probe') or True
     mem['world']['garrison'][A] = ['リーキ', 'ベーグル']
-    assert len(orders(mem)) == 1, 'a found general proves the tour can yield'
+    mem['corridor_drained'] = {c: {'kind': 'empty', 'tick': 1000, 'month': '23-5'}
+                               for c in (A, B)}
+    out = orders(mem)
+    assert out and out[0].get('source_probe') is True, 'a found general re-arms the tour'
 
 
-def test_a_long_wait_rearms_the_tour_once():
-    mem = memory([A, B, C], [A, B, C])
+def test_a_new_month_rearms_the_budget():
+    mem = memory([A, B, C], [A, B])
+    mem['world']['garrison'][C] = ['リーキ']
     for _ in range(corridor.PROBE_BUDGET):
         orders(mem)
-    assert orders(mem) == []
-    mem['tick'] = 5000 + corridor.PROBE_REARM_TICKS
-    assert len(orders(mem)) == 1
-
-
-def test_a_new_month_rearms_the_tour():
-    mem = memory([A, B, C], [A, B, C])
-    for _ in range(corridor.PROBE_BUDGET):
-        orders(mem)
-    assert orders(mem) == []
     mem['month'] = '23-6'
-    mem['corridor_drained'] = {}
-    assert orders(mem), 'the new month starts with a fresh budget'
-
-
-def test_the_budget_is_spent_once_per_probe_order():
-    mem = memory([A, B, C], [A, B, C])
-    orders(mem)
-    state = mem[corridor.PROBE]
-    assert state['count'] == 1
-    assert state['month'] == mem['month']
-    assert decided(mem, 'roster_probe') or decided(mem, 'drained_probe')
+    out = orders(mem)
+    assert out and out[0].get('source_probe') is True

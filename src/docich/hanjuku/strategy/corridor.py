@@ -280,20 +280,25 @@ def orders(mem) -> list[dict]:
     attacks.sort(key=lambda item: item[0])
     moves.sort(key=lambda item: item[0])      # nearest the front first
     out = [order for _, order in (*attacks, *moves, *hero)]
-    if _probe_budget_left(mem):
-        probe = _roster_probe(mem, routes_by, target, lost)
-        if probe is not None:
-            _probe_spend(mem, 'roster_probe')
-            out.insert(0, probe)        # the re-read goes first: the tour is priority
-        elif not out:
-            probe = _drained_probe(mem, routes_by, target, lost)
-            if probe is not None:
-                _probe_spend(mem, 'drained_probe')
-                out = [probe]
-            else:
-                _probe_exhausted_once(mem)
-    elif not out:
-        _probe_exhausted_once(mem)
+    # The budget bounds only the preemption: a probe may jump the queue while
+    # real orders wait, not forever. With nothing else to do the tour is the
+    # only thing that can find anybody, and an empty plan leaves the bot
+    # standing on the field map (g1163 2026-11-12 13:1x: 169 consecutive
+    # no-input map plans, five minutes without a single press).
+    if out and not _probe_budget_left(mem):
+        return out
+    probe = _roster_probe(mem, routes_by, target, lost)
+    decision = 'roster_probe'
+    if probe is None and not out:
+        probe = _drained_probe(mem, routes_by, target, lost)
+        decision = 'drained_probe'
+    if probe is None:
+        if not out:
+            _probe_exhausted_once(mem)
+        return out
+    idle = not out
+    _probe_spend(mem, f'{decision}_idle' if idle else decision, idle=idle)
+    out.insert(0, probe)                # the re-read goes first: the tour is priority
     return out
 
 
@@ -325,20 +330,25 @@ def _probe_budget_left(mem) -> bool:
     return int(state.get('count') or 0) < PROBE_BUDGET
 
 
-def _probe_spend(mem, decision):
+def _probe_spend(mem, decision, idle=False):
+    """Count one probe. An idle probe (nothing else to plan) is not budgeted."""
     state = mem.setdefault(PROBE, {})
     if state.get('month') != mem.get('month'):
         state.clear()
         state.update(month=mem.get('month'), count=0, seen=_garrison_seen(mem))
-    state['count'] = int(state.get('count') or 0) + 1
+    if not idle:
+        state['count'] = int(state.get('count') or 0) + 1
     state['tick'] = int(mem.get('tick') or 0)
     state['seen'] = _garrison_seen(mem)
     state.pop('exhausted', None)
     _record_only(mem, decision,
                  observed_metric={'probe_count': state['count'],
                                   'probe_budget': PROBE_BUDGET,
+                                  'idle': idle,
                                   'unaccounted': _unaccounted(mem)},
-                 reason='所在不明の将軍を城一覧で確認する（月ごとの上限つき）')
+                 reason=('ほかに出す指示がないため、所在不明の将軍を城一覧で確認する'
+                         if idle else
+                         '所在不明の将軍を城一覧で確認する（月ごとの上限つき）'))
 
 
 def _probe_exhausted_once(mem):
