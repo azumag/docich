@@ -213,3 +213,26 @@ v707 の上限（`PROBE_BUDGET = 6`）だけで打ち切ったところ、13:1x 
 - `tests/test_hanjuku_corridor_probe_budget.py`（6件）: 間隔内は追加しない／
   次の窓で1件／出撃進行中は作らない／上限中は先頭・上限後は実移動、など。
 - 第9話・目標まわり既存テストと合わせて 83 passed。
+
+# 古い出撃試行を「出撃中」と数えない（v714、2026-11-12）
+
+## 事象
+
+v713 の反映後、14:4x の6分間で `order_start` も idle probe も **0 件**になった。
+live の `flow.sortie_attempt` は `confirmation_tick: 95774` のまま tick 96376
+（約600 tick＝10分）残っており、`_sortie_in_flight()` が永久に真になっていた。
+全城が `corridor_drained` のため `orders()` も空で、指示が出ない状態。
+
+## 変更
+
+`src/docich/hanjuku/strategy/corridor.py`
+
+- `SORTIE_ATTEMPT_TTL = 120` を追加。
+- `_sortie_in_flight()`: `sortie_attempt.confirmation_tick` が TTL 以内のときだけ
+  「出撃中」とみなす。古い試行は証拠として無効。
+- `departure_request` は従来どおり即時に「出撃中」。
+
+## 検証
+
+- `tests/test_hanjuku_corridor_probe_budget.py`: 古い attempt では idle probe が
+  出ることを追加（40 passed、state_regions と合わせて）。

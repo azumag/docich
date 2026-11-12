@@ -95,6 +95,14 @@ def test_a_sortie_in_flight_is_not_replaced_by_an_idle_probe():
     assert orders(mem) == [], 'the launch in progress owns the next observation'
 
 
+def test_a_stale_sortie_attempt_does_not_block_the_idle_probe():
+    """g1163 2026-11-12 14:4x: a 600-tick-old attempt emptied the plan."""
+    mem = memory([A, B, C], [A, B, C])
+    mem['flow'] = {'sortie_attempt': {'step': 'I:c9:A>B:1', 'confirmation_tick': 5000}}
+    mem['tick'] = 5000 + corridor.SORTIE_ATTEMPT_TTL + 1
+    assert len(orders(mem)) == 1, 'a stale attempt is not a launch in flight'
+
+
 def test_a_general_showing_up_in_a_castle_list_rearms_the_budget():
     mem = memory([A, B, C], [A, B])
     mem['world']['garrison'][C] = ['リーキ']
