@@ -132,7 +132,8 @@ def test_a_nearly_dead_front_does_not_attack():
     mem['captured'] = [A, B]
     mem['lost'] = []
     mem['world']['general_hp'] = {'リーキ': {'hp': 15, 'max': 60},
-                                  'ベーグル': {'hp': 18, 'max': 60}}
+                                  'ベーグル': {'hp': 18, 'max': 60},
+                                  'シナモン': {'hp': 19, 'max': 60}}
     assert not [o for o in attacks(mem) if o['source'] == B]
     assert [r for r in mem['_records'] if r.get('decision') == 'front_wounded']
 
@@ -143,3 +144,13 @@ def test_a_healthy_front_still_attacks():
     mem['lost'] = []
     mem['world']['general_hp'] = {'リーキ': {'hp': 55, 'max': 60}}
     assert [o for o in attacks(mem) if o['source'] == B]
+
+
+def test_an_unobserved_front_resident_does_not_block_attack():
+    """A low reading for one general cannot establish that everyone is wounded."""
+    mem = memory(['リーキ', 'ベーグル', 'シナモン'])
+    mem['captured'] = [A, B]
+    mem['lost'] = []
+    mem['world']['general_hp'] = {'リーキ': {'hp': 15, 'max': 60}}
+    assert [o for o in attacks(mem) if o['source'] == B]
+    assert not decisions(mem, 'front_wounded')
