@@ -91,3 +91,12 @@ def test_other_chapters_keep_choosing_the_planned_general():
     mem = _memory('attack', chapter=8)
     _step(mem, ['ミント', 'ジェラート', 'シナモン'])
     assert not picks(mem)
+
+
+def test_an_attack_steers_away_from_the_hero_row():
+    """g1163 2026-11-12 16:3x: the hero row was first, so no attack used anyone."""
+    mem = _memory('attack')
+    actions = _step(mem, [chart.HERO, 'ミント', 'ジェラート'])
+    assert actions == [policy.pad('down')], 'steer off the hero before anything else'
+    assert not picks(mem)
+    assert chart.HERO not in (_plan_region(mem).get('general_override') or {}).values()
