@@ -1240,6 +1240,16 @@ def _observe_garrison(screen, mem, order, *, complete=True):
             _record(mem, 'garrison_partial_seen', **_deploy_context(order, mem), castle=castle,
                     observed_metric=present[:8],
                     reason='将軍一覧の1ページ分を確認したため在城者の下限として記録')
+        # A blind world-map probe waits 200 ticks for this castle's roster and
+        # then rolls the launch back. On a full page that roster never arrives
+        # (GENERAL_LIST_FULL rows means "the list scrolls", not "complete"), so
+        # real launches were rolled back and the same move re-sent: g1163
+        # 2026-11-12 14:0x failed I:c9:オシロガ>ドンドン:41-44 at once while
+        # ブカティーニ and バーミセリ were already marching, and タオ>サヌト
+        # carried 13-15 launch misses. A page still proves presence (rollback),
+        # and, once the marker survey is blind, its absence confirms.
+        from .map import settle_launch_probes_from_roster
+        settle_launch_probes_from_roster(mem, castle, present, complete=False)
         return
     # Display-only evidence: decisions never consult this wall-clock field.
     _world(mem).setdefault('garrison_observed_at', {})[castle] = time.time()

@@ -151,3 +151,36 @@ v707 の上限（`PROBE_BUDGET = 6`）だけで打ち切ったところ、13:1x 
   - 第8話では従来どおり move 目標が出る
   - 街道を取り切った後（ボスフェーズ）は move 目標が戻る
 - 目標台帳・第9話まわり既存テストと合わせて 133 passed。
+
+# 出撃の成立確認を城一覧の1ページでも行う（v712、2026-11-12）
+
+## 事象
+
+14:0x、`I:c9:オシロガ>ドンドン:41`〜`44` の4件が**同じ観測で一斉に**
+`sortie_launch_failed`（「出撃確定の入力後も部隊▲が現れず再試行の上限に達した」）
+になった。しかし同時刻の `world.sorties` には ブカティーニ・バーミセリ が
+`en_route` で残っており、実際には出撃していた。`launch_miss` は
+`I:c9:タオ>サヌト:86/87/88` で 13/14/15 まで積み上がっていた。
+
+## 原因
+
+`world.units`（全体マップの部隊▲）が空のままで、出撃検証は毎回
+`blind` に落ちる。blind の probe は出撃元の城一覧を待つが、その確定は
+`settle_launch_probes_from_roster()` が**完全な名簿**を読んだときだけ。
+4行（`GENERAL_LIST_FULL`）のページは「一覧がスクロールする」という意味なので
+`complete` にはならず、待ち時間 `LAUNCH_PROBE_ROSTER_TICKS` が尽きて巻き戻る。
+巻き戻すと指示は `pending` に戻り、同じ移動が再送され、miss が積み上がる。
+
+## 変更
+
+- `flows/map.py`: `settle_launch_probes_from_roster(..., complete=False)` を追加。
+  - 一覧に将軍が**いる** → 出撃は成立していないので巻き戻す（1ページでも確実）。
+  - いない かつ probe が blind → 出撃成立とみなす（記録に `complete: false`）。
+  - いない かつ marker 読み取りの余地が残る → 何もしない。
+- `flows/deploy.py`: 部分ページを記録した直後に上記を呼ぶ。
+
+## 検証
+
+- `tests/test_hanjuku_launch_settle_partial_page.py`（4件）: 在籍→巻き戻し／
+  blind＋不在→成立／未blindは保留／完全名簿は従来どおり不在で成立。
+- 出撃・boss probe まわり既存テストと合わせて 44 passed。
