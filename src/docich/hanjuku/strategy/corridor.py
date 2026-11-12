@@ -265,7 +265,11 @@ def orders(mem) -> list[dict]:
             if _attackers_marching(mem, target) >= SQUAD:
                 continue                   # the vanguard is full; nobody waits for six
             _front_names_now = _front_names(mem, source)
-            _keep = 2 if _flip_prone(mem, target) else 1
+            # A castle we took moments ago must not be emptied by the attack
+            # either: the winning general left, the enemy walked back in
+            # (g1163 2026-11-12 23:3x: ドンドン won with 66 HP, then lost to a
+            # 39-HP attacker while its general was marching at オオキク).
+            _keep = 2 if (_flip_prone(mem, target) or _captured_recently(mem, source)) else 1
             if (isinstance(_front_names_now, list)
                     and 0 < len(_front_names_now) <= _keep
                     and not _front_guard_expired(mem, source)):
@@ -650,6 +654,23 @@ def _front_thin(mem, castle) -> bool:
     if not isinstance(names, list):
         return False                       # unread is not thin
     return len(names) < FRONT_REFILL_MIN
+
+
+def _captured_recently(mem, castle) -> bool:
+    """This castle changed hands to us inside the flip window."""
+    now = int(mem.get('tick') or 0)
+    captured_at = None
+    for row in mem.get('sortie_history') or ():
+        if not isinstance(row, dict) or row.get('target') != castle:
+            continue
+        tick = row.get('tick')
+        if type(tick) is not int:
+            continue
+        if row.get('outcome') == 'won':
+            captured_at = tick
+        elif captured_at is not None and tick > captured_at:
+            captured_at = None
+    return captured_at is not None and now - captured_at <= FLIP_WINDOW_TICKS
 
 
 def _capture_guard_short(mem, castle) -> bool:

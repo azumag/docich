@@ -903,3 +903,25 @@ Xメニューの「しろ」一覧からSELECTで飛ぶ経路は、**飛ぶ前�
   3人いれば攻める、を追加。
 - corridor・chapter9・capture・drained・squads・state_regions・key_inventory で
   201 passed。
+
+# 取った直後の城からは最後の将軍を出さない（v743、2026-11-12）
+
+## 事象
+
+23:3x、`ドンドン` を **won（味方HP 66）** で取った直後、その将軍が `オオキク` へ
+攻撃に出て城内が1人になり、**敵HP 39 の攻撃で落とされた**。
+
+## 変更
+
+`src/docich/hanjuku/strategy/corridor.py`
+
+- `_captured_recently(mem, castle)`: `sortie_history` で直近 `FLIP_WINDOW_TICKS` 以内に
+  取った（その後失っていない）城を判定。
+- 攻撃分岐の前線ガードの `_keep` を「`_flip_prone(target)` または
+  `_captured_recently(source)` なら2、それ以外は1」に。取った直後の城は2人そろうまで
+  攻撃に出さない（待ちは `FRONT_GUARD_WAIT` で有界）。
+
+## 検証
+
+- `tests/test_hanjuku_capture_guard.py`: 取った直後の前線から最後の1人を出さない、を追加
+  （9件）。corridor 系 202 passed。
