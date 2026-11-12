@@ -31,6 +31,9 @@ def test_the_same_world_flag_set_is_recorded_once():
     p._apply_world_flags(mem, dict(flags))
     p._apply_world_flags(mem, dict(flags))
     assert len(records(mem, 'world_map_owners')) == 1
+    # v705: a disagreeing value is held until the same reading repeats.
+    p._apply_world_flags(mem, {'アルマムーン': 'own', 'アブダレ': 'own'})
+    assert len(records(mem, 'world_map_owners')) == 1
     p._apply_world_flags(mem, {'アルマムーン': 'own', 'アブダレ': 'own'})
     assert len(records(mem, 'world_map_owners')) == 2
 
