@@ -947,3 +947,28 @@ Xメニューの「しろ」一覧からSELECTで飛ぶ経路は、**飛ぶ前�
 
 - `tests/test_hanjuku_capture_guard.py`: 瀕死の前線は攻撃しない／元気なら攻撃する、を追加。
 - corridor 系 202 passed。
+
+# 前線へ送る増援は元気な将軍を優先する（v745、2026-11-13）
+
+## 事象
+
+オオキク の守備将軍は HP 74 前後で横ばい、こちらは戦闘開始時 15〜66 HP の
+傷ついた将軍ばかり。将軍HPの回復経路が無いため、**後方から元気な将軍を前線へ
+送る**必要がある。しかし移動の将軍選びはカーソル順のままで、傷ついた将軍を
+前線へ送ってしまうことがあった。
+
+## 変更
+
+`src/docich/hanjuku/flows/deploy.py`
+
+- `MOVE_HP_MARGIN = 20` と `_healthier_mover()` を追加。第9話の**移動**（増援）で、
+  カーソルの将軍の実測HPより20以上高い将軍が一覧にいれば、その行へカーソルを送る
+  （`healthy_mover_pick` を記録、捜索は `CURSOR_PICK_DOWNS` で有界）。
+- 攻撃の将軍選びは従来どおり（オーナー指示「上から順」）で、変更しない。
+
+## 検証
+
+- `tests/test_hanjuku_chapter9_cursor_order_sortie.py`: 傷ついた将軍より元気な将軍を
+  選ぶ／差が小さいときはカーソルのまま、を追加。
+- cursor・chapter9・corridor・capture・off_chart・state_regions・key_inventory で
+  415 passed。

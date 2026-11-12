@@ -1046,6 +1046,18 @@ def _cursor_order_pick(screen, mem, order):
     if _keeps_hero_company(order, present):
         downs.pop(step, None)
         return None                     # see _corridor_list_end
+    if order.get('purpose') == 'move' and order.get('corridor') is True:
+        healthy = _healthier_mover(mem, present, name)
+        if healthy is not None:
+            move = menu_to(screen, healthy)
+            if move and move != 'here' and int(downs.get(step) or 0) < CURSOR_PICK_DOWNS:
+                downs[step] = int(downs.get(step) or 0) + 1
+                _record(mem, 'healthy_mover_pick', chart_step=step,
+                        observed_metric={'present': present[:8], 'cursor': name,
+                                         'chosen': healthy},
+                        reason='前線へ送る将軍は、傷ついた将軍より元気な将軍を先に出す')
+                return _deploy_input(screen, mem, order, [move],
+                                     '増援は元気な将軍へカーソルを送る')
     if name == NAME or name in busy:
         others = [g for g in present if g != NAME and g not in busy]
         whole = len(present) < GENERAL_LIST_FULL
@@ -1068,6 +1080,37 @@ def _cursor_order_pick(screen, mem, order):
             return None
     downs.pop(step, None)
     return _cursor_take(screen, mem, order, name, present)
+
+
+MOVE_HP_MARGIN = 20            # HP a staged mover gains over the cursor one
+
+
+def _healthier_mover(mem, present, current):
+    """The healthiest listed general, when the cursor one is clearly wounded.
+
+    Reinforcements are what the front fights with: moving a 15-HP general
+    forward spends a march and delivers nothing. Only measured HP counts, and
+    the hero is never offered.
+    """
+    hp = (_world(mem).get('general_hp') or {}) if isinstance(_world(mem), dict) else {}
+    if not isinstance(hp, dict):
+        return None
+
+    def value(name):
+        row = hp.get(name) if isinstance(hp.get(name), dict) else {}
+        return row.get('hp') if type(row.get('hp')) is int else None
+
+    current_hp = value(current)
+    if current_hp is None:
+        return None
+    best, best_hp = None, current_hp
+    for general in present:
+        if general == NAME:
+            continue
+        got = value(general)
+        if got is not None and got - best_hp >= MOVE_HP_MARGIN:
+            best, best_hp = general, got
+    return best
 
 
 def _keeps_hero_company(order, present) -> bool:

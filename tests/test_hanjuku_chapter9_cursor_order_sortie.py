@@ -7,7 +7,7 @@ from docich import hanjuku_chart as chart
 from docich import hanjuku_policy as policy
 
 from test_hanjuku_off_chart import _move_list, _move_memory
-from docich.hanjuku.state.regions import plan as _plan_region
+from docich.hanjuku.state.regions import plan as _plan_region, world as _world
 
 HOME = chart.home_castle(9)
 ROAD = chart.corridor(9)
@@ -81,3 +81,21 @@ def test_an_attack_sends_the_cursor_general_top_down():
     actions = _step(mem, ['ミント', 'ジェラート', 'シナモン', 'マフィン'])
     assert actions == [policy.pad('a')]
     assert _plan_region(mem)['general_override'][mem['_test_step']] == 'ミント'
+
+
+def test_a_move_prefers_a_healthier_general_when_the_cursor_one_is_wounded():
+    """Reinforcements are what the front fights with (v745)."""
+    mem = _memory('move')
+    _world(mem)['general_hp'] = {'ミント': {'hp': 8, 'max': 32},
+                                 'ジェラート': {'hp': 48, 'max': 49}}
+    actions = _step(mem, ['ミント', 'ジェラート'])
+    assert actions == [policy.pad('down')]
+    assert any(r.get('decision') == 'healthy_mover_pick' for r in mem['_records'])
+
+
+def test_a_move_keeps_the_cursor_when_nobody_is_healthier():
+    mem = _memory('move')
+    _world(mem)['general_hp'] = {'ミント': {'hp': 30, 'max': 32},
+                                 'ジェラート': {'hp': 40, 'max': 49}}
+    actions = _step(mem, ['ミント', 'ジェラート'])
+    assert policy.pad('a') in actions
