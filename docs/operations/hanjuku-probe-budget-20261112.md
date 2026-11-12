@@ -306,3 +306,30 @@ v713 で idle probe を60 tickに1件へ間引いたところ、15:0x の5分間
 - `tests/test_hanjuku_attack_defeat_cooldown.py`（5件）: 3回で休止／明けたら再開／
   2回では休止しない／窓外の敗北は数えない／ボス城は対象外。
 - 第9話・攻撃まわり既存テストと合わせて 92 passed。
+
+# 路上敗北を結果台帳にも残す（v718、2026-11-12）
+
+## 事象
+
+v717 の冷却（`attack_defeat_cooldown`）が 15:4x に一度も発火しなかった。
+live の `sortie_history` は `I:c9:ドンドン>オオキク:11`（tick 97670）で終わっており、
+`:12`〜`:15` の路上敗北が台帳に載っていなかった。`_recent_defeats()` は
+`sortie_history` を数えるので、敗北は1件しか見えていなかった。
+
+## 原因
+
+`sortie_road_defeat`（目的地前の敗北）は `world.sorties[step]['road_defeat']` と
+決定ログにしか残らず、`sortie_history` へは追記していなかった。`_repelled_alone()`
+など「結果台帳を読む」ルールから路上敗北が見えていなかった。
+
+## 変更
+
+`src/docich/hanjuku/flows/battle.py`
+
+- 路上敗北・路上退却を `sortie_history` にも1件追記（`outcome: lost`, `road: true`,
+  `ally_hp` / `enemy_hp` / `tick`）。既存の `road_defeat` ガードにより1敗北1件。
+
+## 検証
+
+- `tests/test_hanjuku_road_defeat_settle.py`: 台帳に1件載ること／2回呼んでも1件、
+  を追加。battle・sortie・attack・corridor まわり 605 passed。
