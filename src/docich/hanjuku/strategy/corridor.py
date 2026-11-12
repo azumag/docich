@@ -312,12 +312,6 @@ def orders(mem) -> list[dict]:
         return out
     if out and not _probe_budget_left(mem):
         return out
-    if not out and _attackers_marching(mem, target) > 0:
-        # The wave is the work: while attackers are still marching at the next
-        # castle an idle castle-list probe only spends a visit (g1163
-        # 2026-11-12 19:1x-19:3x: 12 idle probes in half an hour during the
-        # ドンドン wave). Let the wave run first.
-        return out
     if not out and _sortie_in_flight(mem):
         # The active order is being launched right now (a selection or a
         # departure is open). Minting an idle probe here replaced that order on
