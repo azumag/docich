@@ -281,3 +281,28 @@ v713 で idle probe を60 tickに1件へ間引いたところ、15:0x の5分間
 
 - `tests/test_hanjuku_attack_company.py`: 味方が向かっている間は攻撃しない／
   延長の記録は待ち1回につき1件、を追加（第9話・state_regions と合わせて 97 passed）。
+
+# 同じ城への連続敗北に冷却時間を置く（v717、2026-11-12）
+
+## 事象
+
+14:5x〜15:3x、`I:c9:ドンドン>オオキク` を毎分のように攻撃し、`sortie_road_defeat`
+（目的地前の戦闘で敗北）を繰り返した。オオキクの守備将軍の HP は 44 → 54 → 55 → 77 と
+動くだけで、城は落ちず、攻撃のたびに1出撃（約1〜2分）を消費していた。
+
+## 変更
+
+`src/docich/hanjuku/strategy/corridor.py`
+
+- `_recent_defeats()`: `sortie_history` の同じ城への敗北を `DEFEAT_COOLDOWN_WINDOW`
+  （1500 tick）で数える。
+- `_defeat_cooldown_active()`: 窓内に `DEFEAT_COOLDOWN_LIMIT`（3）回以上の敗北が
+  あれば `DEFEAT_COOLDOWN_TICKS`（900 tick）だけその城への攻撃を休む
+  （`attack_defeat_cooldown` を記録）。休止明けは一度攻撃を許し、また負けたら数え直す。
+- ボス城（`chart.is_boss_castle`）はこの休止の対象外。
+
+## 検証
+
+- `tests/test_hanjuku_attack_defeat_cooldown.py`（5件）: 3回で休止／明けたら再開／
+  2回では休止しない／窓外の敗北は数えない／ボス城は対象外。
+- 第9話・攻撃まわり既存テストと合わせて 92 passed。

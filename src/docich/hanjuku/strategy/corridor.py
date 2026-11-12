@@ -248,6 +248,8 @@ def orders(mem) -> list[dict]:
             hop = target
             if _attackers_marching(mem, target) >= SQUAD:
                 continue                   # the vanguard is full; nobody waits for six
+            if _defeat_cooldown_active(mem, target):
+                continue
             if ((_repelled_alone(mem, target) or _flip_prone(mem, target))
                     and _attackers_marching(mem, target) < ATTACK_COMPANY):
                 hold = mem.get('attack_company_hold')
@@ -527,6 +529,53 @@ def _drained_probe(mem, routes_by, target, lost):
 REPELLED_FLOOR_HP = 30
 ATTACK_COMPANY = 2
 ATTACK_COMPANY_WAIT = 600   # ticks to wait for company before attacking alone
+
+
+DEFEAT_COOLDOWN_WINDOW = 1500   # ticks that count as "this exchange keeps losing"
+DEFEAT_COOLDOWN_LIMIT = 3       # defeats on one target inside the window
+DEFEAT_COOLDOWN_TICKS = 900     # how long the attack on that castle is paused
+
+
+def _recent_defeats(mem, target) -> int:
+    now = int(mem.get('tick') or 0)
+    count = 0
+    for row in mem.get('sortie_history') or ():
+        if not isinstance(row, dict) or row.get('target') != target:
+            continue
+        if row.get('outcome') != 'lost':
+            continue
+        tick = row.get('tick')
+        if type(tick) is int and 0 <= now - tick <= DEFEAT_COOLDOWN_WINDOW:
+            count += 1
+    return count
+
+
+def _defeat_cooldown_active(mem, target) -> bool:
+    """Stop attacking a castle whose exchange keeps ending in a defeat.
+
+    g1163 2026-11-12 14:5x-15:3x: オオキク was attacked every minute and each
+    march ended in a road defeat (``sortie_road_defeat``), enemy HP readings
+    moving 44 -> 54 -> 55 -> 77 while no castle changed hands. A defence that
+    keeps winning needs a pause, not another lone march. Bounded: the pause
+    expires on its own, so the road never stops for good. Boss castles keep
+    their own rules.
+    """
+    if chart.is_boss_castle(target):
+        return False
+    holds = mem.setdefault('attack_defeat_hold', {})
+    now = int(mem.get('tick') or 0)
+    entry = holds.get(target) if isinstance(holds.get(target), dict) else {}
+    if now < int(entry.get('until') or 0):
+        return True
+    defeats = _recent_defeats(mem, target)
+    if defeats < DEFEAT_COOLDOWN_LIMIT or defeats <= int(entry.get('counted') or 0):
+        return False
+    holds[target] = {'until': now + DEFEAT_COOLDOWN_TICKS, 'counted': defeats}
+    _record_only(mem, 'attack_defeat_cooldown', target=target,
+                 observed_metric={'defeats': defeats, 'window': DEFEAT_COOLDOWN_WINDOW,
+                                  'pause': DEFEAT_COOLDOWN_TICKS},
+                 reason='同じ城への攻撃が短期間に何度も敗北しているため、いったん攻撃を休んで増援の移動に回す')
+    return True
 
 
 def _reinforcements_inbound(mem, castle) -> int:

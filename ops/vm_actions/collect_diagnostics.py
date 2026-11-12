@@ -7161,6 +7161,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v714-stale-attempt-ttl",
             "hanjuku-chart-v715-idle-tour-kept",
             "hanjuku-chart-v716-wait-for-company",
+            "hanjuku-chart-v717-attack-defeat-cooldown",
             "hanjuku-chart-v560-castle-list-scroll",
             "hanjuku-chart-v561-post-month-repair-status",
             "hanjuku-chart-v501-idle-reanchor",
