@@ -48,3 +48,19 @@ def test_the_boss_phase_stops_being_a_march():
     mem = _memory(9, list(ROAD))
     got = wanted(mem)
     assert ('move', None, ROAD[0]) in got, 'once the road is taken, refilling is a want again'
+
+
+def test_existing_refill_goals_are_removed_during_march():
+    """Previously queued no-op goals must not survive the next refresh."""
+    mem = _memory(9, [ROAD[0], ROAD[1], ROAD[2]])
+    mem['goals'] = [
+        {'kind': 'move', 'actor': None, 'target': ROAD[0],
+         'queued': 86867, 'attempts': 0},
+        {'kind': 'move', 'actor': None, 'target': ROAD[1],
+         'queued': 86868, 'attempts': 2, 'outcome': 'deferred'},
+    ]
+    with chart.map_context(mem):
+        goals.refresh(mem)
+    assert not [g for g in mem['goals'] if g.get('kind') == 'move']
+    assert not [r for r in mem['_records'] if r.get('decision') == 'goal_queued']
+    assert len([r for r in mem['_records'] if r.get('decision') == 'goal_resolved']) == 1
