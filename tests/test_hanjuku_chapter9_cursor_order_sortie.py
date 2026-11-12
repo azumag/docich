@@ -57,10 +57,17 @@ def test_the_cursor_steps_past_the_hero():
     assert not picks(mem)
 
 
-def test_the_hero_moves_only_when_he_is_the_last():
+def test_a_march_never_sends_the_hero_even_when_he_is_the_only_one():
+    """Owner 2026-11-12: the hero stays one road castle behind the front.
+
+    g1163 2026-11-12 12:4x: I:c9:サヌト>オシロガ:328 marched どうし to the front,
+    which emptied his castle and walked him back on the next cycle.
+    """
     mem = _memory('move', general=chart.HERO)
-    assert _step(mem, [chart.HERO]) == [policy.pad('a')]
-    assert _plan_region(mem)['general_override'][mem['_test_step']] == chart.HERO
+    actions = _step(mem, [chart.HERO])
+    assert policy.pad('a') not in actions
+    assert chart.HERO not in (_plan_region(mem).get('general_override') or {}).values()
+    assert any(r.get('decision') == 'hero_move_refused' for r in mem['_records'])
 
 
 def test_an_attack_never_takes_the_hero_by_cursor():

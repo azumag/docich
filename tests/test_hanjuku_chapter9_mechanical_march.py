@@ -96,11 +96,16 @@ def test_an_attack_with_only_the_hero_closes_the_list_and_drains_the_castle():
     assert not [r for r in mem['_records'] if r.get('decision') in ('order_substitute', 'general_list_scanned')]
 
 
-def test_a_move_takes_the_hero_when_he_is_the_last():
+def test_a_move_never_takes_the_hero_even_when_he_is_the_last():
+    """Owner 2026-11-12: the hero stays one road castle behind the front.
+
+    v708: a march that sent どうし to the front (I:c9:サヌト>オシロガ:328)
+    emptied his castle and walked him back the next cycle.
+    """
     mem = _mem()
     move = _orders(mem)[1]
-    assert _deploy(mem, move, [chart.HERO]) == [policy.pad('a')]
-    assert _plan_region(mem)['general_override'][move['step']] == chart.HERO
+    assert policy.pad('a') not in _deploy(mem, move, [chart.HERO])
+    assert chart.HERO not in (_plan_region(mem).get('general_override') or {}).values()
 
 
 def test_no_monthly_status_pass_is_armed():
