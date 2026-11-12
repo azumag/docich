@@ -153,6 +153,7 @@ KEY_OWNERSHIP = {
     'world': {'region': WORLD, 'lifetime': 'chapter', 'migrated': False},  # 領域dict自体の防御的pop
     'world_flags': {'region': WORLD, 'lifetime': 'chapter', 'migrated': False},  # 観測世界フラグ(os_layer/world)
     'world_map_flags': {'region': WORLD, 'lifetime': 'chapter', 'migrated': False},  # 全体マップで観測した城別所有フラグ累積 (v700 #3992)
+    'world_map_pending': {'region': WORLD, 'lifetime': 'chapter', 'migrated': False},  # 全体マップ所有フラグの二回確認用pending (v712+)
     'world_map_signature': {'region': WORLD, 'lifetime': 'chapter', 'migrated': False},  # 全体マップ観測署名
     'previous_stats': {'region': WORLD, 'lifetime': 'run', 'migrated': False},  # new_game時に退避される前ランstats (mem.update経由)
     # --- PLAN: 戦略層の計画・ホールド ---
@@ -170,7 +171,9 @@ KEY_OWNERSHIP = {
     'chart_edition': {'region': PLAN, 'lifetime': 'run', 'migrated': False},  # 新規ゲーム開始時にピンされるチャート版
     'chart_plan_tick': {'region': PLAN, 'lifetime': 'chapter', 'migrated': False},  # チャート計画の策定tick
     'corridor_drained': {'region': PLAN, 'lifetime': 'chapter', 'migrated': False},  # chapter9 corridorの枯渇管理(定数DRAINED経由)
-    'corridor_wave': {'region': PLAN, 'lifetime': 'chapter', 'migrated': False},  # chapter9 corridorのwave管理(定数WAVE経由)
+    'corridor_wave': {'region': PLAN, 'lifetime': 'chapter', 'migrated': False},
+    'attack_defeat_hold': {'region': PLAN, 'lifetime': 'chapter', 'migrated': False},  # corridor返り討ちホールド (v724追加)
+    'corridor_probe': {'region': PLAN, 'lifetime': 'chapter', 'migrated': False},  # corridor所在不明将軍プローブ月次予算 (v724追加)  # chapter9 corridorのwave管理(定数WAVE経由)
     'defense_break_blocked': {'region': PLAN, 'lifetime': 'chapter', 'migrated': False},  # 防衛突破阻止の戦略ガード
     'defense_wait': {'region': PLAN, 'lifetime': 'chapter', 'migrated': False},  # 防衛待ち計画
     'failed_local_step': {'region': PLAN, 'lifetime': 'chapter', 'migrated': False},  # 失敗したローカルstepの戦略記録
