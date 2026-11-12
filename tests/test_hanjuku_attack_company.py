@@ -56,3 +56,21 @@ def test_a_win_does_not_block_the_next_attack():
 def test_a_barely_damaged_defender_from_a_previous_loss_blocks():
     mem = memory([{'target': C, 'outcome': 'lost', 'enemy_hp': 5}])
     assert attacks(mem)          # nearly dead: one more swing is worth it
+
+
+def test_a_castle_captured_and_lost_again_waits_for_company():
+    """ドンドン 09:54 capture, 09:56 loss: the road gained nothing."""
+    mem = memory([{'target': C, 'outcome': 'won', 'enemy_hp': 0, 'tick': 1000},
+                  {'target': C, 'outcome': 'lost', 'enemy_hp': 40, 'tick': 1100}])
+    assert attacks(mem) == []
+    assert any(r.get('decision') == 'attack_company_required' for r in mem['_records'])
+
+
+def test_a_flip_long_ago_does_not_block():
+    from docich.hanjuku.strategy.corridor import FLIP_WINDOW_TICKS
+    mem = memory([{'target': C, 'outcome': 'won', 'enemy_hp': 0, 'tick': 1000},
+                  {'target': C, 'outcome': 'lost', 'enemy_hp': 40,
+                   'tick': 1000 + FLIP_WINDOW_TICKS + 50},
+                  {'target': C, 'outcome': 'won', 'enemy_hp': 0,
+                   'tick': 1000 + FLIP_WINDOW_TICKS + 200}])
+    assert attacks(mem)
