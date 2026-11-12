@@ -257,3 +257,27 @@ v713 で idle probe を60 tickに1件へ間引いたところ、15:0x の5分間
 
 - `tests/test_hanjuku_corridor_probe_budget.py`: 何も無いときは毎回1件出ること、
   出撃進行中は出さないこと、古い attempt は無視すること（44 passed）。
+
+# 味方が出撃元へ向かっている間は単独突撃しない（v716、2026-11-12）
+
+## 事象
+
+15:1x、`I:c9:ドンドン>オオキク:10` で シュゼット が単独出撃し、目的地前の戦闘で
+敗北・退却（`sortie_road_defeat`）。直後に `:11` が始まり、`attack_company_timeout`
+（味方を待つ上限切れ）でまた単独突撃になっていた。オオキクの守備将軍は HP 18/34/44
+と減らず、単独攻撃は毎回同じ結果になる。
+
+## 変更
+
+`src/docich/hanjuku/strategy/corridor.py`
+
+- `_reinforcements_inbound(mem, castle)`: その城へ向かっている行軍
+  （`en_route` / `launched_unconfirmed` / `pending`）を数える。
+- `ATTACK_COMPANY_WAIT` の期限が来ても、出撃元へ向かう味方がいる間は待ちを延長する
+  （`attack_company_reinforced` を1回だけ記録）。合流する味方がいなければ従来どおり
+  期限で単独突撃する（v706 の有界性は維持）。
+
+## 検証
+
+- `tests/test_hanjuku_attack_company.py`: 味方が向かっている間は攻撃しない／
+  延長の記録は待ち1回につき1件、を追加（第9話・state_regions と合わせて 97 passed）。

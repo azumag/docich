@@ -254,7 +254,8 @@ def orders(mem) -> list[dict]:
                 waiting = (isinstance(hold, dict) and hold.get('target') == target
                            and type(hold.get('tick')) is int)
                 waited = (int(mem.get('tick') or 0) - hold['tick']) if waiting else 0
-                if waiting and waited >= ATTACK_COMPANY_WAIT:
+                inbound = _reinforcements_inbound(mem, source)
+                if waiting and waited >= ATTACK_COMPANY_WAIT and not inbound:
                     # Waiting for company cannot be unbounded: with nobody left
                     # to join, the attack never starts and the road stops.
                     # g1163 2026-11-12 12:1x: an hour of サヌト>オシロガ moves and
@@ -263,6 +264,20 @@ def orders(mem) -> list[dict]:
                     _record_only(mem, 'attack_company_timeout', target=target,
                                  observed_metric={'waited': waited},
                                  reason='味方を待つ上限に達したため、単独でも突撃する')
+                elif waiting and waited >= ATTACK_COMPANY_WAIT and inbound:
+                    # Help is on the road to this castle: a lone attacker that
+                    # the timeout just sent at オオキク lost the road battle and
+                    # the next one started alone again (g1163 2026-11-12 15:1x).
+                    # Keep the company rule while a march into the source
+                    # exists, bounded by the same window.
+                    waited = waited % ATTACK_COMPANY_WAIT
+                    hold['tick'] = int(mem.get('tick') or 0) - waited
+                    if not hold.get('reinforced'):
+                        hold['reinforced'] = True
+                        _record_only(mem, 'attack_company_reinforced', target=target,
+                                     observed_metric={'inbound': inbound, 'waited': waited},
+                                     reason='出撃元へ味方が向かっているため、単独突撃せず合流を待つ')
+                    continue
                 else:
                     if not waiting:
                         mem['attack_company_hold'] = {'target': target,
@@ -512,6 +527,17 @@ def _drained_probe(mem, routes_by, target, lost):
 REPELLED_FLOOR_HP = 30
 ATTACK_COMPANY = 2
 ATTACK_COMPANY_WAIT = 600   # ticks to wait for company before attacking alone
+
+
+def _reinforcements_inbound(mem, castle) -> int:
+    """Marches still on the road into ``castle`` (a reason to wait for company)."""
+    count = 0
+    for sortie in _sorties(mem).values():
+        if not isinstance(sortie, dict) or sortie.get('target') != castle:
+            continue
+        if sortie.get('status') in ('en_route', 'launched_unconfirmed', 'pending'):
+            count += 1
+    return count
 
 
 def _repelled_alone(mem, target) -> bool:
