@@ -53,6 +53,8 @@ DRAINED_MIN_HOLD = 300      # ticks a fresh empty reading is trusted before a re
 PROBE_BUDGET = 6
 # Ticks after which one more look is allowed even when nothing was found.
 PROBE_REARM_TICKS = 3600
+# Idle probes (nothing else to plan) are minted at most this often.
+IDLE_PROBE_SPACING = 60
 # Ticks a march may take before a dispatched general is treated as unknown
 # rather than still on the road (a march is observed at ~1 tick/second).
 ARRIVAL_RECHECK_TICKS = 120
@@ -287,6 +289,15 @@ def orders(mem) -> list[dict]:
     # no-input map plans, five minutes without a single press).
     if out and not _probe_budget_left(mem):
         return out
+    if not out and _sortie_in_flight(mem):
+        # The active order is being launched right now (a selection or a
+        # departure is open). Minting an idle probe here replaced that order on
+        # the next observation: g1163 2026-11-12 14:2x minted 19 idle probes in
+        # ten minutes while the march started only 12 orders, and the probes
+        # were never executed.
+        return out
+    if not out and not _idle_probe_due(mem):
+        return out
     probe = _roster_probe(mem, routes_by, target, lost)
     decision = 'roster_probe'
     if probe is None and not out:
@@ -300,6 +311,25 @@ def orders(mem) -> list[dict]:
     _probe_spend(mem, f'{decision}_idle' if idle else decision, idle=idle)
     out.insert(0, probe)                # the re-read goes first: the tour is priority
     return out
+
+
+def _sortie_in_flight(mem) -> bool:
+    """A selection or a requested departure is open for the active order."""
+    flow = mem.get('flow') if isinstance(mem.get('flow'), dict) else {}
+    if flow.get('sortie_attempt') or flow.get('departure_request'):
+        return True
+    return bool((mem.get('departure_request') or {}))
+
+
+def _idle_probe_due(mem) -> bool:
+    """One idle probe per ``IDLE_PROBE_SPACING`` ticks, not one per observation."""
+    state = mem.get(PROBE)
+    if not isinstance(state, dict) or state.get('month') != mem.get('month'):
+        return True
+    last = state.get('idle_tick')
+    if type(last) is not int:
+        return True
+    return int(mem.get('tick') or 0) - last >= IDLE_PROBE_SPACING
 
 
 def _garrison_seen(mem) -> int:
@@ -336,7 +366,9 @@ def _probe_spend(mem, decision, idle=False):
     if state.get('month') != mem.get('month'):
         state.clear()
         state.update(month=mem.get('month'), count=0, seen=_garrison_seen(mem))
-    if not idle:
+    if idle:
+        state['idle_tick'] = int(mem.get('tick') or 0)
+    else:
         state['count'] = int(state.get('count') or 0) + 1
     state['tick'] = int(mem.get('tick') or 0)
     state['seen'] = _garrison_seen(mem)

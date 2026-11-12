@@ -65,12 +65,34 @@ def test_an_idle_probe_keeps_the_plan_alive_without_spending_the_budget():
     mem = memory([A, B, C], [A, B, C])
     for _ in range(corridor.PROBE_BUDGET):
         orders(mem)
+        mem['tick'] += corridor.IDLE_PROBE_SPACING
     count = mem[corridor.PROBE]['count']
     out = orders(mem)
     assert len(out) == 1, 'the idle tour has to keep visiting'
     assert mem[corridor.PROBE]['count'] == count, 'an idle probe is not budgeted'
     assert decided(mem, 'roster_probe_idle') or decided(mem, 'drained_probe_idle')
     assert not decided(mem, 'corridor_probe_exhausted')
+
+
+def test_idle_probes_are_spaced_instead_of_one_per_observation():
+    """g1163 2026-11-12 14:2x: 19 idle probes in ten minutes, none executed."""
+    mem = memory([A, B, C], [A, B, C])
+    orders(mem)
+    minted = len(decided(mem, 'roster_probe_idle') + decided(mem, 'drained_probe_idle'))
+    assert minted == 1
+    before = len(mem.get('_records') or [])
+    for _ in range(5):
+        assert orders(mem) == []
+        mem['tick'] += 5
+    assert len(mem.get('_records') or []) == before, 'no probe may be minted inside the spacing'
+    mem['tick'] += corridor.IDLE_PROBE_SPACING
+    assert len(orders(mem)) == 1, 'the next window mints one again'
+
+
+def test_a_sortie_in_flight_is_not_replaced_by_an_idle_probe():
+    mem = memory([A, B, C], [A, B, C])
+    mem['flow'] = {'sortie_attempt': {'step': 'I:c9:A>B:1', 'confirmation_tick': 5000}}
+    assert orders(mem) == [], 'the launch in progress owns the next observation'
 
 
 def test_a_general_showing_up_in_a_castle_list_rearms_the_budget():
