@@ -42,13 +42,23 @@ def picks(mem):
     return [r for r in mem['_records'] if r.get('decision') == 'cursor_order_pick']
 
 
-def test_an_attack_sends_the_cursor_general_without_walking_the_list():
+def test_an_attack_takes_the_cursor_general_when_nobody_is_stronger():
+    """ミント 32 / シナモン 39: within the margin, so the cursor still goes."""
     mem = _memory('attack')
-    actions = _step(mem, ['ミント', 'ジェラート', 'シナモン', 'マフィン'])
+    actions = _step(mem, ['ミント', 'シナモン'])
     assert actions == [policy.pad('a')]
     assert _plan_region(mem)['general_override'][mem['_test_step']] == 'ミント'
     assert picks(mem)
     assert not mem.get('general_list_scan')
+
+
+def test_an_attack_steers_to_a_clearly_stronger_general():
+    """g1163 2026-11-12: cursor generals lost on the road to オオキク every time."""
+    mem = _memory('attack')
+    actions = _step(mem, ['ミント', 'ジェラート'])       # 32 against 49
+    assert actions == [policy.pad('down')]
+    assert not picks(mem)
+    assert any(r.get('decision') == 'attack_strongest_pick' for r in mem['_records'])
 
 
 def test_the_cursor_steps_past_the_hero():

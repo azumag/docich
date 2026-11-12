@@ -333,3 +333,29 @@ live の `sortie_history` は `I:c9:ドンドン>オオキク:11`（tick 97670�
 
 - `tests/test_hanjuku_road_defeat_settle.py`: 台帳に1件載ること／2回呼んでも1件、
   を追加。battle・sortie・attack・corridor まわり 605 passed。
+
+# 攻撃は一覧で最も体力のある将軍を選ぶ（v719、2026-11-12）
+
+## 事象
+
+14:5x〜15:5x、`I:c9:ドンドン>オオキク` の攻撃はカーソルがあった将軍
+（ポワソン・バゲット・モモ…）をそのまま送り、**10件連続で路上敗北**
+（`ally_hp 0` 対 `enemy_hp 54〜77`）していた。第9話のカーソル順ルール
+（オーナー 2026-11-11「カーソルがあった順に出撃させれば短縮」）は速度のためのもの
+だが、負ける出撃はカーソル2回より遅い。
+
+## 変更
+
+`src/docich/hanjuku/flows/deploy.py`
+
+- `_strongest_listed()`: 一覧の将軍の最大HP（`hanjuku_egg_reference.general_max_hp`）を
+  比べ、カーソルの将軍より `STRONG_ATTACK_MARGIN`（10）以上強い将軍がいれば、
+  その行へカーソルを送る（`CURSOR_PICK_DOWNS` の範囲内、`attack_strongest_pick` を記録）。
+- 対象は第9話の**攻撃・再攻撃**のみ。**移動は従来どおりカーソル順**（速度ルールを維持）。
+  主人公は候補にしない。
+
+## 検証
+
+- `tests/test_hanjuku_chapter9_cursor_order_sortie.py`: 同格ならカーソルのまま／
+  10以上強い将軍がいればカーソルを送る、を追加。
+- 第9話・corridor・state_regions まわり 76 passed。
