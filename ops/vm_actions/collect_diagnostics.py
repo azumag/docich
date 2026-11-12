@@ -7185,6 +7185,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v738-plain-text-hold",
             "hanjuku-chart-v739-repeat-hold-shorter",
             "hanjuku-chart-v740-idle-tour-back",
+            "hanjuku-chart-v741-jump-verifies-source",
             "hanjuku-chart-v560-castle-list-scroll",
             "hanjuku-chart-v561-post-month-repair-status",
             "hanjuku-chart-v501-idle-reanchor",

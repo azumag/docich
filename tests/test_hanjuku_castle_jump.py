@@ -754,3 +754,18 @@ def test_named_list_confirm_keeps_the_policy_variant_in_the_log():
                           'age': 0, 'total': 0, 'tick': 0}
     M.castle_jump_step(_screen('map', [], cursor=(80, 90)), mem, None)
     assert mem['_records'][-1]['strategy_variant'] == 'chart_adjusted'
+
+
+def test_a_named_row_select_marks_the_source_verified():
+    """g1163 2026-11-12 23:1x: every sortie re-read ステータス for the same name."""
+    from docich.hanjuku.flows import deploy
+    from docich.hanjuku.os_layer.screen import Screen
+
+    mem = {'chapter': 9, 'tick': 5000, '_records': [], 'orders': {},
+           'castle_jump': {'step': 'I:c9:A>B:1', 'source': 'A', 'phase': 'field',
+                           'selects': 1, 'age': 1}}
+    mem['castle_verified'] = 'I:c9:A>B:1'
+    order = {'step': 'I:c9:A>B:1', 'source': 'A', 'target': 'B', 'cards': [],
+             'general': '—', 'purpose': 'move', 'corridor': True}
+    screen = Screen([], None, '', kind='castle_menu')     # no status text yet
+    assert deploy._check_source_castle(screen, mem, order) is None

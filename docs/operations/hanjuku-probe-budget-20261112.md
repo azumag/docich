@@ -851,3 +851,31 @@ step** でも毎回そのまま返し、新しい指示も probe も出ない状
   1件出る」に更新。
 - corridor・chapter9・capture・drained・state_regions・key_inventory・probe で
   300 passed。
+
+# しろ一覧で城名を読んだジャンプはステータス再確認を省く（v741、2026-11-12）
+
+## 事象
+
+出撃1回の内訳を計測すると、`order_start` → `order_launched` まで約45秒。
+内訳は `main_menu` 4、`text` 3、`castle_menu` 4、`card_select` 3、`text`/`sortie_confirm` 2 など。
+`text` と `castle_menu` の一部は **出撃前に城名をステータスで確認する**処理
+（`_check_source_castle`）でした。
+
+## 根拠
+
+Xメニューの「しろ」一覧からSELECTで飛ぶ経路は、**飛ぶ前に城名の行を読んで一致を確認**
+しています（`castle_jump_confirm`）。同じ城名をステータスでもう一度読むのは重複確認。
+
+## 変更
+
+`src/docich/hanjuku/flows/map.py`
+
+- しろ一覧の名前付き行からSELECTした時点で `castle_verified = step` を立てる
+  （`hero_select` 経路は従来どおり確認する）。
+- `deploy._check_source_castle()` は検証済みの step ではステータスを開かない
+  （既存の分岐がそのまま効く）。
+
+## 検証
+
+- `tests/test_hanjuku_castle_jump.py`: 名前付き行のSELECT後はステータス確認を省略する、
+  を追加。castle・jump・deploy・sortie・chapter9・corridor で 745 passed。
