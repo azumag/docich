@@ -74,3 +74,14 @@ def test_an_unread_castle_keeps_its_moves():
     mem['garrison'] = {}
     with chart.map_context(mem):
         assert corridor._capture_guard_short(mem, B) is False
+
+
+def test_a_one_general_front_does_not_hold_the_wave_for_ever():
+    """g1163 2026-11-12 21:0x: 166 no-input map frames while the front sat at one."""
+    mem = memory(['リーキ'])
+    with chart.map_context(mem):
+        assert corridor._front_guard_expired(mem, B) is False   # clock starts
+    mem['tick'] += corridor.FRONT_GUARD_WAIT + 1
+    with chart.map_context(mem):
+        assert corridor._front_guard_expired(mem, B) is True
+    assert [r for r in mem['_records'] if r.get('decision') == 'front_guard_timeout']

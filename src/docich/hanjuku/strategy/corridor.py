@@ -257,7 +257,8 @@ def orders(mem) -> list[dict]:
             if _attackers_marching(mem, target) >= SQUAD:
                 continue                   # the vanguard is full; nobody waits for six
             _front_names_now = _front_names(mem, source)
-            if isinstance(_front_names_now, list) and len(_front_names_now) == 1:
+            if (isinstance(_front_names_now, list) and len(_front_names_now) == 1
+                    and not _front_guard_expired(mem, source)):
                 # The last measured resident does not leave: an empty front is
                 # retaken at once (g1163 2026-11-12 20:2x ドンドン went 6→5 and
                 # back four times). The wave continues as soon as the refill
@@ -573,6 +574,31 @@ CAPTURE_GUARD = 1               # generals kept in a castle captured moments ago
 
 
 FRONT_REFILL_MIN = 2            # residents the attacking castle needs to hold itself
+
+
+FRONT_GUARD_WAIT = 600          # ticks a one-general front may keep the wave home
+
+
+def _front_guard_expired(mem, castle) -> bool:
+    """The front stayed at one general: the hold must not freeze the road.
+
+    A hold without an end is the same stall v706 removed from the company rule
+    (g1163 2026-11-12 21:0x: 166 no-input map frames in half an hour while the
+    front sat at one). Waiting is useful only while reinforcements exist.
+    """
+    holds = mem.setdefault('front_guard_hold', {})
+    now = int(mem.get('tick') or 0)
+    since = holds.get(castle)
+    if type(since) is not int:
+        holds[castle] = now
+        return False
+    if now - since < FRONT_GUARD_WAIT:
+        return False
+    holds.pop(castle, None)
+    _record_only(mem, 'front_guard_timeout', target=castle,
+                 observed_metric={'waited': now - since},
+                 reason='前線が1人のまま待ち時間の上限に達したため、単独でも攻撃に出る')
+    return True
 
 
 def _front_names(mem, castle):
