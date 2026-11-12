@@ -250,6 +250,12 @@ def orders(mem) -> list[dict]:
                 continue                   # the vanguard is full; nobody waits for six
             if _defeat_cooldown_active(mem, target):
                 continue
+            if not chart.is_boss_castle(target) and _attack_underpowered(mem, source, target):
+                # One general per sortie: a 20-HP general against a 60-HP
+                # defender is a lost sortie, not an attempt. Owner 2026-11-12:
+                # 敵城にひとりずつ派遣してるから効率悪い. Wait for somebody who
+                # can actually win, and let the march build that garrison.
+                continue
             if (not chart.is_boss_castle(target)
                     and (_repelled_alone(mem, target) or _flip_prone(mem, target))
                     and _front_guard_short(mem, source)):
@@ -587,6 +593,56 @@ def _defeat_cooldown_active(mem, target) -> bool:
 
 
 FRONT_GUARD = 1                 # generals kept at the castle facing the enemy
+ATTACK_POWER_RATIO = 0.9        # attacker HP the defender's last HP must not exceed
+
+
+def _residents(mem, castle):
+    world = _world(mem)
+    garrison = world.get('garrison') or {}
+    names = garrison.get(castle) if isinstance(garrison, dict) else None
+    if isinstance(names, list) and names:
+        return list(names)
+    partial = world.get('garrison_partial') or {}
+    names = partial.get(castle) if isinstance(partial, dict) else None
+    return list(names) if isinstance(names, list) else []
+
+
+def _attack_underpowered(mem, source, target) -> bool:
+    """Nobody at the source can beat the defender's last measured HP.
+
+    Sending a weaker general one at a time is exactly what the owner called
+    inefficient (g1163 2026-11-12 18:0x: 19 losses at オオキク, ally HP 18-60
+    against a defender reading 50-74). Unknown numbers never block an attack.
+    """
+    hp = _world(mem).get('general_hp') or {}
+    if not isinstance(hp, dict):
+        return False
+    strongest = 0
+    for name in _residents(mem, source):
+        row = hp.get(name) if isinstance(hp.get(name), dict) else {}
+        value = row.get('hp')
+        if type(value) is int and value > strongest:
+            strongest = value
+    if strongest <= 0:
+        return False                       # nobody measured: no evidence
+    defender = 0
+    for row in mem.get('sortie_history') or ():
+        if isinstance(row, dict) and row.get('target') == target:
+            value = row.get('enemy_hp')
+            if type(value) is int and value > 0:
+                defender = value
+    if defender <= 0:
+        return False
+    if strongest >= defender * ATTACK_POWER_RATIO:
+        return False
+    holds = mem.setdefault('attack_underpowered', {})
+    if int(mem.get('tick') or 0) - int(holds.get(target) or -10 ** 9) > 300:
+        holds[target] = int(mem.get('tick') or 0)
+        _record_only(mem, 'attack_underpowered', target=target,
+                     observed_metric={'source': source, 'strongest_hp': strongest,
+                                      'defender_hp': defender, 'ratio': ATTACK_POWER_RATIO},
+                     reason='出撃元で最も元気な将軍でも守備将軍のHPに届かないため、出撃せず増援を待つ')
+    return True
 
 
 def _front_guard_short(mem, castle) -> bool:
