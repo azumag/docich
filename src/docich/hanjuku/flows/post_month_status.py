@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from .. import decision_log
 from ..os_layer import roster as receipts
+from ..os_layer import status_return
 from ..os_layer.commands import menu_to, pad
 from ..os_layer.readers import world_markers
 from ..os_layer.screen import castle_roofs, own_camps
@@ -356,7 +357,22 @@ def arm(mem):
 
 
 def _stage(state, name, **fields):
+    if name != 'roster_next':
+        state.pop('close_probe_pending', None)
+    if name not in {'status', 'roster_next'}:
+        state.pop('status_return', None)
     state.update(stage=name, phase_reads=0, **fields)
+
+
+def _open_status(screen, state, frame):
+    state['selected'] = screen.selected
+    proof = status_return.capture(screen, frame)
+    if proof:
+        state['status_return'] = proof
+    else:
+        state.pop('status_return', None)
+    _stage(state, 'status')
+    return [pad('a')]
 
 
 def _location(screen):
@@ -1223,6 +1239,8 @@ def step(screen, mem, frame):
             # a map/text frame is released immediately instead.
             return [pad('b')]
         return None
+    close_probe = (state.get('stage') == 'roster_next'
+                   and state.get('close_probe_pending') is True)
     # A scripted dialogue/event is not this owner's screen. The menu stages
     # below would answer [] and starve the ordinary A handler: g1133 stalled on
     # the new-partner ceremony at 2026-11-06 02:56 right after the status scan,
@@ -1231,7 +1249,7 @@ def step(screen, mem, frame):
     # hand the frame to recall/house; everything else releases it.
     if (screen.kind == 'text'
             and state['stage'] not in {'status', 'wait_repair', 'wait_recall'}
-            and house.roster(screen) is None):
+            and house.roster(screen) is None and not close_probe):
         return None
     # The sortie target picker belongs to the sortie that opened it: no stage
     # here reads it, and every stage answered [] on it. g1163 2026-11-11
@@ -1247,7 +1265,8 @@ def step(screen, mem, frame):
     # navigation interrupt, not a reason to let the sortie planner take over.
     if (screen.kind == 'map' and screen.cursor and not screen.marker
             and mem.get('nav_search')
-            and state.get('stage') not in {'blocked', 'wait_repair', 'wait_recall'}):
+            and state.get('stage') not in {'blocked', 'wait_repair', 'wait_recall'}
+            and not close_probe):
         from . import map as map_flow
         recovery = map_flow._start_reanchor_jump(mem, owner='post_month_status')
         if recovery is not None:
@@ -1275,6 +1294,22 @@ def step(screen, mem, frame):
         _stage(state, 'blocked')
         return []
     state['phase_reads'] += 1
+    if close_probe:
+        state.pop('close_probe_pending', None)
+        proof = state.pop('status_return', None)
+        matched = status_return.matches(screen, frame, proof)
+        tick = mem.get('tick')
+        _log(mem, 'post_month_status_close_probe', general=state.get('selected'),
+             observed_metric={'map_matched': matched, 'screen_kind': screen.kind,
+                              'observation_tick': tick if type(tick) is int and tick >= 0 else 0},
+             reason=('本人行と開く前の左地図が一致したため一覧への復帰を観測'
+                     if matched else
+                     '早い観測では一覧への復帰を確認できず入力せず通常周期へ戻る'))
+        if not matched:
+            # Exactly one early look: do not act on the surviving background
+            # list or resend B. The next observation uses normal cadence and
+            # the existing owner. Battles above retain immediate priority.
+            return []
     if stage in {'manifest', 'manifest_list', 'manifest_close'}:
         return _manifest_step(screen, mem, state)
     if stage == 'await_map':
@@ -1401,9 +1436,7 @@ def step(screen, mem, frame):
             state.setdefault('markers', {})[selected] = {
                 'castle_candidate': (state.get('manifest') or {}).get('castle'),
                 'source': 'hero_castle_manifest'}
-            state['selected'] = selected
-            _stage(state, 'status')
-            return [pad('a')]
+            return _open_status(screen, state, frame)
         # The white selection triangle can be absent in one rendered frame.
         # The old path sampled it once then unconditionally entered the status
         # panel, so every failed sample became an expensive SELECT visit.
@@ -1431,9 +1464,7 @@ def step(screen, mem, frame):
                  observed_metric={'reads': reads, 'source': marker.get('source'),
                                   'marker_reason': marker.get('marker_reason')},
                  reason='一覧の選択三角マークから在城候補を観測した')
-        state['selected'] = selected
-        _stage(state, 'status')
-        return [pad('a')]
+        return _open_status(screen, state, frame)
     if stage == 'status':
         info = house._observe_status(screen, mem)
         if not info or info.get('general') != state.get('selected'):
@@ -1478,6 +1509,11 @@ def step(screen, mem, frame):
                 if old[0] in _owned(mem):
                     row.update(castle=old[0], castle_evidence='previous_named_roster')
                     _forget_pending(mem, name)
+        proof = state.get('status_return')
+        if isinstance(proof, dict) and proof.get('general') == name:
+            state['close_probe_pending'] = True
+        else:
+            state.pop('status_return', None)
         _stage(state, 'roster_next')
         return [pad('b')]
     if stage == 'roster_next':
