@@ -354,10 +354,17 @@ def _card_battle_reading(screen, cur, mem=None):
         counts = getattr(screen, 'field_soldiers', None)
         if (screen.kind == 'battle_menu'
                 and isinstance(counts, (tuple, list)) and len(counts) == 2):
+            measured = False
             for key, value in zip(('ally_soldiers', 'enemy_soldiers'), counts):
                 if type(value) is int and 0 <= value <= 6:
                     cur[key] = value
-            cur['card_soldiers_current'] = True
+                    measured = True
+            # 「現在値として証明済み」の印は、実際にどちらかの側を計測
+            # できたときだけ立てる。両側とも未読 (None, None) のフレームで
+            # 立てると、未読前提の保護 (奥の手の温存など、#3358) が実測
+            # ありと誤認して崩れる (g482 の回帰で検出)。
+            if measured:
+                cur['card_soldiers_current'] = True
         return
     if (b is None or b.enemy != cur.get('enemy') or b.ally != cur.get('ally')
             or any(type(hp) is not int or hp < 0 for hp in (b.enemy_hp, b.ally_hp))):

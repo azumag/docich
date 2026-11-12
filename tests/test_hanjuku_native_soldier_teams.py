@@ -127,6 +127,25 @@ def test_battle_menu_frame_refreshes_only_the_measured_sides():
     assert (cur['ally_soldiers'], cur['enemy_soldiers']) == (6, 4)
 
 
+def test_unread_battle_menu_frame_does_not_claim_soldiers_current():
+    """docich#4048: a menu frame measuring neither side proves nothing.
+
+    Stamping card_soldiers_current on a (None, None) frame would make the
+    unread-army protections (e.g. the okunote conservation of #3358, see
+    the g482 real-frame regression) believe the counts were measured.
+    """
+    mem = memory()
+    cur = mem['battle']
+    cur['ally_soldiers'] = 3
+    cur['enemy_soldiers'] = 2
+    cur['card_soldiers_current'] = False
+    menu = native(24401)
+    menu.field_soldiers = (None, None)
+    p._card_battle_reading(menu, cur, mem)
+    assert (cur['ally_soldiers'], cur['enemy_soldiers']) == (3, 2)
+    assert cur['card_soldiers_current'] is False
+
+
 def test_egg_battle_menu_frames_carry_no_soldier_count():
     """Summon menus show monsters, not armies: nothing may be counted."""
     frame = read_png(ROOT / 'g747-enemy-command-1310.png')
