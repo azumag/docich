@@ -118,3 +118,15 @@ def test_a_new_month_rearms_the_budget():
     mem['month'] = '23-6'
     out = orders(mem)
     assert out and out[0].get('source_probe') is True
+
+
+def test_a_running_wave_keeps_the_idle_probe_away():
+    """g1163 2026-11-12 19:1x-19:3x: 12 idle probes during the ドンドン wave."""
+    mem = memory([A, B, C], [A, B, C])
+    nxt = chart.corridor_next(9, {A, B, C})
+    mem['world']['sorties'] = {'I:c9:C>N:9': {'general': '味方', 'source': C, 'target': nxt,
+                                              'purpose': 'attack', 'status': 'en_route',
+                                              'tick': mem['tick'] - 10}}
+    orders(mem)
+    assert not (decided(mem, 'roster_probe_idle') + decided(mem, 'drained_probe_idle')), \
+        'the wave is the work: no idle probe during it'
