@@ -802,3 +802,28 @@ step** でも毎回そのまま返し、新しい指示も probe も出ない状
 
 - `tests/test_hanjuku_text_hold_advance.py`（3件）
 - unknown_hold・no_input_gate・state_regions・key_inventory・corridor と合わせて 71 passed。
+
+# 2回目以降の読めない画面は1フレーム早く押す（v739、2026-11-12）
+
+## 事象
+
+22:1x の10分で `unknown` かつ入力ゼロのプランが **66件**（全体の23%）。
+`unknown_hold_advance` は同一（または2枚点滅）フレームが6回続くとAを1回送るが、
+一度押して**まだ読めないまま**の画面でも毎回6フレーム待っており、3フレーム程度の
+短いエピソードが積み上がっていた。
+
+## 変更
+
+`src/docich/hanjuku/orchestrator.py`
+
+- `unknown_hold_advance`: 一度押した画面（`unknown_hold_watch.pressed`）では待ちを
+  `UNKNOWN_HOLD_ADVANCE - 1`（5フレーム）に短縮。読める画面に変わると watch ごと
+  破棄されるので、次の新しい画面は従来どおり6フレーム。
+
+## 検証
+
+- `tests/test_hanjuku_unknown_hold.py`: 2回目以降のエピソードが1フレーム早く押される、
+  を追加／点滅ケースの期待値を更新。
+- hold・terminal・no_input・state_regions・key_inventory・text で 287 passed
+  （`test_hanjuku_terminal_previous_recovery.py` の13 errors は main でも出る
+  xunit `setup()` 衝突）。

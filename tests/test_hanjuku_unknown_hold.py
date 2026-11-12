@@ -70,7 +70,7 @@ def test_a_two_frame_blink_still_gets_the_bounded_press():
     frames = ['blink-a', 'blink-b'] * O.UNKNOWN_HOLD_ADVANCE
     presses = [O.unknown_hold_advance(screen(), mem, [], d) for d in frames]
     # Exactly one press, at the bound, and the counter restarts afterwards.
-    assert presses.count([O.pad('a')]) == 1
+    assert presses.count([O.pad('a')]) >= 1   # v739: repeats may press one frame earlier
     first = presses.index([O.pad('a')])
     assert O.UNKNOWN_HOLD_ADVANCE - 1 <= first <= O.UNKNOWN_HOLD_ADVANCE + 1
 
@@ -79,3 +79,17 @@ def test_a_three_frame_cycle_is_not_an_unchanged_screen():
     mem = {}
     for i in range(O.UNKNOWN_HOLD_ADVANCE * 3):
         assert O.unknown_hold_advance(screen(), mem, [], f'cycle{i % 3}') == []
+
+
+def test_a_second_episode_presses_one_frame_earlier():
+    """g1163 2026-11-12 22:1x: 66 no-input `unknown` frames, mostly 3-frame episodes."""
+    mem = {}
+    for _ in range(O.UNKNOWN_HOLD_ADVANCE - 1):
+        O.unknown_hold_advance(screen(), mem, [], 'same')
+    assert O.unknown_hold_advance(screen(), mem, [], 'same') == [O.pad('a')]
+    # The screen stayed unknown: the next episode waits one frame less.
+    waits = 0
+    while O.unknown_hold_advance(screen(), mem, [], 'same') == []:
+        waits += 1
+        assert waits <= O.UNKNOWN_HOLD_ADVANCE
+    assert waits <= O.UNKNOWN_HOLD_ADVANCE - 1
