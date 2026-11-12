@@ -7143,6 +7143,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v698-drained-probe-rotates",
             "hanjuku-chart-v699-yjump-unreachable-goal",
             "hanjuku-chart-v700-owner-change-values",
+            "hanjuku-chart-v701-corridor-kit-approve",
             "hanjuku-chart-v560-castle-list-scroll",
             "hanjuku-chart-v561-post-month-repair-status",
             "hanjuku-chart-v501-idle-reanchor",
