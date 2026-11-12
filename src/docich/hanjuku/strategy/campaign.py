@@ -4,7 +4,8 @@ Detects chapter changes from observed castles and generals, resets
 chapter-scoped state and repairs legacy home-castle labels.
 """
 from __future__ import annotations
-from ..state.regions import world as _world, plan as _plan_region
+from ..state.regions import (world as _world, plan as _plan_region,
+                             chapter_scoped_keys)
 
 from ... import hanjuku_chart as chart
 from ...hanjuku_egg_reference import general_debut_chapter
@@ -20,53 +21,19 @@ MONTH_SCAN_RESUME_PHASES = frozenset({
     'month_open', 'open_roster', 'level_status', 'leave_status', 'leave_roster'})
 
 
-CHAPTER_SCOPE_KEYS = ('map_registration', 'hero_select_miss', 'map_discovery', 'boss_victories', 'approx_fallback', 'approx_localize_miss',
-                'season_sites', 'season_site_streak',
-                'moving_boss', 'moving_boss_streak', 'boss_cell', 'boss_cell_streak',
-                # Per-step and per-boss records belong to the chapter that made
-                # them. Left behind they outlive their step ids (g1163: the
-                # chapter-4 boss HP was still shown in chapter 5) and grow the
-                # policy for eleven more chapters.
-                'boss_hp_seen', 'order_start_tick', 'site_step_rearm',
-                # Boss probe assignments are per-step ids of the chapter that
-                # made them (g1163 chapter 7 kept forty chapter-6 steps, and the
-                # diagnostics showed them as the current chapter's probes).
-                'boss_step_rearm', 'boss_step_probe', 'boss_probe_rotation',
-                'season_sites_refused', 'cards_capped', 'equivalent_launch_miss',
-                'kit_spent', 'sortie_relaunch', 'source_mismatch_castle',
-                'y_jumps_total', 'sortie_held_source_defender_counts',
-                'sortie_held_source_defender_gates', 'source_defender_cancel_counts',
-                'sortie_held_source_defender_cancel_counts',
-                'sortie_source_defender_cancel_counts', 'sortie_source_defender_cancel_gates',
-                'source_defender_cancel_gates',
-                'active', 'anchor', 'goal_anchor_lock', 'attack', 'battle', 'battle_seen',
-                'captured', 'card_override', 'rare_card_kit', 'strong_card_kit', 'dropper_card_kit', 'castle_defenders', 'boss_stock_restart', 'boss_stock_cancelled', 'rare_scan', 'rare_scan_month', 'cursor', 'egg_battle',
-                'expect_menu', 'general_override', 'launched', 'menu_miss', 'month_exit', 'month_sub',
-                'month_nav', 'house_nav', 'starter_party', 'chapter_end_save',
-                'nav_last', 'nav_search', 'nav_search_leg', 'orders', 'picked', 'retries', 'retry_context', 'shop',
-                'source_override', 'uncertain', 'month', 'soldiers_seen', 'soldiers_seen_key',
-                'soldiers_seen_basis', 'soldiers_seen_scope', 'army_count_check',
-                'order_context', 'sortie_general', 'sortie_actor_miss', 'plan',
-                'boss_defeated', 'boss_entry_hold',
-                'chart_adjust', 'chart_plan', 'launched_orders', 'sorties', 'retired_sorties', 'sortie_attempt',
-                'plan_step_rearm',
-                'departure_request', 'departure_miss', 'flow', 'world',
-                'garrison', 'unplaced_refuted', 'unplaced_refuted_castles', 'general_location_unknown', 'source_location_rechecks', 'recruit_verification', 'lost', 'owner_streak', 'source_miss', 'card_drop', 'card_miss',
-                'nav_prev', 'nav_still', 'nav_pressed', 'unverified', 'off_castle',
-                'target_miss', 'target_cancel', 'boss_cancel_cell', 'boss_relaunch', 'boss_cell_probe', 'menu_hold', 'card_scroll', 'card_scroll_last', 'card_zero_at_start', 'card_unreadable',
-                'sortie_confirm_miss',
-                'world_map_tick', 'world_map_due', 'world_map_wait', 'world_map_close', 'home_lost',
-                'y_jump', 'y_jumps', 'y_jump_return', 'y_jump_target_confirmed', 'y_jump_target_closed', 'y_jumped', 'boss_absent', 'recall', 'recall_skip', 'recall_verification', 'retreat_rechecks', 'retreat_anonymous_budget',
-                'near_goal', 'align_steps', 'unanchored', 'select_tick',
-                'house', 'house_scan_tick', 'house_scan_month', 'house_field_scan', 'house_eggs', 'hero_repair_deferral',
-                'goals', 'goals_overflow', 'goal_departed', 'map_idle_tick',
-                'roster_survey', 'roster_status_walk', 'roster_survey_scope', 'house_status_recheck', 'egg_zero_owners',
-                'recruit_roster', 'recruit_roster_floor', 'recruit_roster_recheck', 'recruit_roster_attempts', 'recruit_field_scan_attempts', 'recruit_month_scan_attempts', 'roster_last_complete', 'roster_pending_joins', 'month_roster_scan', 'castle_income', 'castle_ownership',
-                'select_used', 'castle_verified', 'last_castle_hold',
-                'egg_action', 'egg_key', 'egg_menu_stage', 'indep_menu',
-                'indep_menu_key', 'indep_menu_action',
-                'monster_menu_key', 'monster_menu_cursor', 'monster_menu_hold',
-                'monster_menu_choice', 'monster_menu_choice_key', 'monster_menu_choice_scope', 'monster_menu_cursor_recheck', 'monster_panel', 'lampkin_cycle')
+# Chapter-lifetime region dicts physically live under these flat names
+# (the journal region is run lifetime and is never reset here).
+_CHAPTER_REGION_DICTS = ('world', 'plan', 'flow')
+
+
+# Schema-driven reset set (docich#3991): 章遷移で消えるキーの正本は
+# state/regions.py の KEY_OWNERSHIP (lifetime='chapter'/'procedure') に一元化した。
+# ここへ手でキーを足すのではなく、寿命を regions.py で宣言する。
+# 'world'/'plan'/'flow' は領域 dict が章寿命で物理的にこのフラット名に実体化する
+# ため対象に含める ('journal' はラン寿命で消さない)。
+CHAPTER_SCOPE_KEYS = tuple(sorted(
+    set(_CHAPTER_REGION_DICTS) | chapter_scoped_keys()))
+
 
 
 def _reset_chapter_scope(mem):
