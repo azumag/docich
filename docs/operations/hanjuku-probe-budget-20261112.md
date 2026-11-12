@@ -552,3 +552,27 @@ v719〜v725 で入れた攻撃側の抑制（最強将軍の選択・傷つい�
   「攻撃はカーソル順（上から）」を戻した。
 - corridor・chapter9・cursor・attack・state_regions・key_inventory・road_defeat で
   **352 passed**。
+
+# 決着済みの行軍記録を保持期限後に片付ける（v728、2026-11-12）
+
+## 事象
+
+19:0x、`world.sorties` に `オシロガ>ドンドン` の `overdue` が8件（うち1件は
+target が None）残っていた。すでに決着した波の記録で、状態の圧縮
+（`SETTLED_MARCH_TICKS`）まで残り続ける。
+
+## 変更
+
+`src/docich/hanjuku/strategy/orders.py`
+
+- `OVERDUE_RETENTION_TICKS = 900` と `_overdue_retired()` を追加。
+  `overdue` の行軍記録を、保持期限を過ぎたら片付ける（`sortie_overdue_retired` を記録）。
+  ただし次の場合は残す: 行先確認（`flow.location_recheck`）が指している／
+  同じ step の指示がまだ `launched`／ボス城への行軍。
+- 走査を `list(...)` にコピーして、ループ中の削除で破綻しないようにした。
+
+## 検証
+
+- `tests/test_hanjuku_overdue_retention.py`（3件: 期限超過は片付く／新しいものは残る／
+  行先確認が指すものは残る）
+- sortie・march・overdue・spent・road・corridor・chapter9 で **565 passed**。

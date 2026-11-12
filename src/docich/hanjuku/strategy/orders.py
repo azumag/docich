@@ -1061,12 +1061,14 @@ def _relaunch_overdue_march(mem):
     now = int(mem.get('tick') or 0)
     status = _plan_region(mem).setdefault('orders', {})
     relaunches = mem.setdefault('sortie_relaunch', {})
-    for step, sortie in _sorties(mem).items():
+    for step, sortie in list(_sorties(mem).items()):
         target = sortie.get('target') or sortie.get('planned_target')
         if sortie.get('status') == 'overdue':
             # Already settled: still drop a spent attempt that claims the
             # step, or a re-picked pending order cancels in the menu forever.
             _drop_spent_sortie_attempt(mem, step)
+            if _overdue_retired(mem, step, sortie, now):
+                continue
             continue
         # A measured defeat or retreat on the road (battle_end's
         # sortie_road_defeat) ends the march as surely as the deadline does.
@@ -1147,6 +1149,34 @@ def _relaunch_overdue_march(mem):
 
 SPENT_SORTIE_TICKS = SITE_LATE_ENTRY_TICKS   # keep an attempt bindable as long as a late site entry
 SPENT_SORTIE_EXPIRE_LIMIT = 8                 # records forgotten per observation
+
+
+OVERDUE_RETENTION_TICKS = 900     # a settled march stays this long for rechecks
+
+
+def _overdue_retired(mem, step, sortie, now) -> bool:
+    """Forget an overdue sortie once nothing can still use its record.
+
+    A settled march kept its entry forever: g1163 2026-11-12 19:0x held eight
+    ``オシロガ>ドンドン`` overdue records from a wave that had long since been
+    decided, one of them with no target at all. The location recheck and the
+    launch audit read the first few minutes only, so the record is dropped
+    after ``OVERDUE_RETENTION_TICKS`` unless a recheck still points at it.
+    """
+    tick = sortie.get('tick')
+    if type(tick) is not int or now - tick < OVERDUE_RETENTION_TICKS:
+        return False
+    if ((_plan_region(mem).get('orders') or {}).get(step) == 'launched'
+            or chart.is_boss_castle(sortie.get('target'))):
+        return False                       # the order may still settle this step
+    if (_flow(mem).get('location_recheck') or {}).get(step):
+        return False
+    _sorties(mem).pop(step, None)
+    _record(mem, 'sortie_overdue_retired', chart_step=step,
+            general=sortie.get('general'), observed_metric={'target': sortie.get('target'),
+                                                            'marching': now - tick},
+            reason='決着済みの行軍記録を保持期限後に片付ける（行先確認の対象でないもの）')
+    return True
 
 
 def _observed_march_end(mem, sortie, tick):
