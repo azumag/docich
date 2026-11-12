@@ -274,7 +274,10 @@ def orders(mem) -> list[dict]:
             # keeping two there blocked every オオキク attack for the whole flip
             # window (g1163 2026-11-13 01:1x: `order_start` fell to 8 in half an
             # hour while ドンドン sat at two generals).
-            _keep = 2 if _flip_prone(mem, target) else 1
+            # A retake of our own castle is worth more than holding: the flip
+            # rule only protects castles we are trying to keep (g1163 2026-11-13
+            # 02:1x: ドンドン retakes stalled while the front held two).
+            _keep = 2 if (_flip_prone(mem, target) and purpose != 'retake') else 1
             _finish = _defender_nearly_dead(mem, target)
             if (not _finish and _wounded_attack(mem, source)
                     and not _front_guard_expired(mem, source)):

@@ -1098,3 +1098,23 @@ v748 の「守備が瀕死なら止め」は `sortie_history` の直近記録だ
 
 - `tests/test_hanjuku_capture_guard.py`: パネル読み3HPで止めが許可されることを追加
   （15件）。corridor 系 213 passed。
+
+# 自城の奪還はフリップ規則で止めない（v752、2026-11-13）
+
+## 事象
+
+ドンドン の奪還（`オシロガ>ドンドン:115`）が長引き、オオキク への攻撃機会が減っていた。
+v742 のフリップ規則（取ってすぐ失った城へは2人残す）が、**自城の奪還**にも適用され、
+出撃元に2人しかいないと奪還に出られなかった。
+
+## 変更
+
+`src/docich/hanjuku/strategy/corridor.py`
+
+- `_keep = 2 if (_flip_prone(mem, target) and purpose != 'retake') else 1`。
+  自城の奪還（`purpose == 'retake'`）は、フリップ規則の対象外にして必ず出せるようにする。
+
+## 検証
+
+- `tests/test_hanjuku_capture_guard.py`: フリップ中の城でも奪還は止めない、を追加。
+  corridor 系 214 passed。
