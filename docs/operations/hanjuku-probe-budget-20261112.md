@@ -441,3 +441,28 @@ disable」。築城は行軍の速度に寄与しない。
 - `tests/test_hanjuku_chapter9_cursor_order_sortie.py`: 傷ついた強将軍には送らない／
   元気な強将軍には送る、を追加（9件）。
 - 第9話・state_regions・layers と合わせて 92 passed。
+
+# 前線の城に将軍を1人残す（v724、2026-11-12）
+
+## 事象
+
+17:4x、前線 ドンドン の将軍を オオキク 攻撃へ出し続けた結果、ドンドン が守備戦で
+落ちた（`castle_lost_observed`）。自城 6 → 5。奪還には丸1サイクルかかる。
+第9話は `guard_free`（城を空にしてよい章）だが、**前線の城は道の足場**なので
+空にすると取り直しのコストになる。
+
+## 変更
+
+`src/docich/hanjuku/strategy/corridor.py`
+
+- `FRONT_GUARD = 1` と `_front_guard_short()` を追加。出撃元の在城者が実測できて
+  いる（`world.garrison` か `world.garrison_partial` の氏名）ときに限り、残りが
+  `FRONT_GUARD` 以下なら出撃させない（`front_guard_held` を記録）。
+- 適用は「返り討ちにあった／取ってすぐ失った城」への攻撃・再攻撃のときだけ
+  （`_repelled_alone` または `_flip_prone`）。ボス城は対象外。
+
+## 検証
+
+- `tests/test_hanjuku_front_guard.py`（5件: 最後の1人は出さない／2人なら出せる／
+  1ページの氏名も数える／未読は根拠なし／ボス城は対象外）
+- 第9話・攻撃・corridor・state_regions と合わせて 118 passed。
