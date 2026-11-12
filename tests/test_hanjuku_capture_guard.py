@@ -174,3 +174,16 @@ def test_a_three_hp_defender_may_be_finished_by_a_wounded_general():
     mem['sortie_history'] = [{'target': C, 'outcome': 'lost', 'enemy_hp': 3, 'tick': 4900}]
     assert [o for o in attacks(mem) if o['source'] == B]
     assert not [r for r in mem['_records'] if r.get('decision') == 'front_wounded']
+
+
+def test_a_panel_reading_of_three_hp_licenses_the_finish():
+    """v750 keeps the panel HP; a finish does not need a fresh battle log."""
+    mem = memory(['リーキ'])
+    mem['captured'] = [A, B]
+    mem['lost'] = [C]
+    mem['world']['general_hp'] = {'リーキ': {'hp': 5, 'max': 60}}
+    mem['castle_defenders'] = {C: {'general': 'グリッシーニ', 'chapter': 9,
+                                   'evidence': 'battle_panel', 'step': 'x', 'hp': 3}}
+    mem['sortie_history'] = []
+    assert [o for o in attacks(mem) if o['source'] == B]
+    assert not [r for r in mem['_records'] if r.get('decision') == 'front_wounded']

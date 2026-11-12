@@ -1078,3 +1078,23 @@ v744 の「瀕死の将軍では攻撃しない」と v734 の前線ガードが
 
 - `tests/test_hanjuku_road_defeat_settle.py`: 記録に `hp` が入ることを追加。
 - battle・sortie・road・defender・kit・boss 系で 1079 passed。
+
+# パネルが読んだ守備将軍HPでも止めを許可する（v751、2026-11-13）
+
+## 背景
+
+v750 で `castle_defenders[城]['hp']` に戦闘パネルの守備将軍HPを残すようにした。
+v748 の「守備が瀕死なら止め」は `sortie_history` の直近記録だけを見ていたため、
+履歴が入れ替わると止めの判断に届かないことがあった。
+
+## 変更
+
+`src/docich/hanjuku/strategy/corridor.py`
+
+- `_defender_nearly_dead()`: `castle_defenders[target]['hp']` が 1〜`FINISHING_HP`（10）
+  なら、`sortie_history` を見るまでもなく止めを許可。
+
+## 検証
+
+- `tests/test_hanjuku_capture_guard.py`: パネル読み3HPで止めが許可されることを追加
+  （15件）。corridor 系 213 passed。

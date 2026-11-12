@@ -7195,6 +7195,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v748-finish-the-defender",
             "hanjuku-chart-v749-front-two-can-attack",
             "hanjuku-chart-v750-defender-hp",
+            "hanjuku-chart-v751-panel-finish",
             "hanjuku-chart-v560-castle-list-scroll",
             "hanjuku-chart-v561-post-month-repair-status",
             "hanjuku-chart-v501-idle-reanchor",

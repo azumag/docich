@@ -678,6 +678,10 @@ def _defender_nearly_dead(mem, target) -> bool:
     g1163 2026-11-13 01:0x: オオキク's defender read 3 HP; the wound guard then
     held the next attack at home. A finish beats every keep-home rule.
     """
+    record = (mem.get('castle_defenders') or {}).get(target) or {}
+    panel_hp = record.get('hp') if isinstance(record, dict) else None
+    if type(panel_hp) is int and 0 < panel_hp <= FINISHING_HP:
+        return True                        # the panel itself reads a finish
     for row in reversed(mem.get('sortie_history') or []):
         if not isinstance(row, dict) or row.get('target') != target:
             continue
