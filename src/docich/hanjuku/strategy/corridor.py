@@ -55,6 +55,8 @@ PROBE_BUDGET = 6
 PROBE_REARM_TICKS = 3600
 # Idle probes (nothing else to plan) are minted at most this often.
 IDLE_PROBE_SPACING = 60
+# A sortie attempt older than this is stale evidence, not a launch in flight.
+SORTIE_ATTEMPT_TTL = 120
 # Ticks a march may take before a dispatched general is treated as unknown
 # rather than still on the road (a march is observed at ~1 tick/second).
 ARRIVAL_RECHECK_TICKS = 120
@@ -314,9 +316,24 @@ def orders(mem) -> list[dict]:
 
 
 def _sortie_in_flight(mem) -> bool:
-    """A selection or a requested departure is open for the active order."""
+    """A selection or a requested departure is open for the active order.
+
+    Only a fresh attempt counts. A ``sortie_attempt`` that was never cleared
+    (g1163 2026-11-12 14:4x: confirmation_tick 95774 still present at tick
+    96376, ten minutes later) would otherwise suppress every idle probe for
+    good, and with every road castle drained the plan went empty.
+    """
     flow = _flow_region(mem)
-    return bool(flow.get('sortie_attempt') or flow.get('departure_request'))
+    if flow.get('departure_request'):
+        return True
+    attempt = flow.get('sortie_attempt')
+    if not isinstance(attempt, dict):
+        return False
+    since = attempt.get('confirmation_tick')
+    if type(since) is not int:
+        return False
+    now = int(mem.get('tick') or 0)
+    return 0 <= now - since <= SORTIE_ATTEMPT_TTL
 
 
 def _idle_probe_due(mem) -> bool:
