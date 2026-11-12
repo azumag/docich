@@ -256,6 +256,13 @@ def orders(mem) -> list[dict]:
             purpose, hop = 'move', route[1]
         if purpose == 'move' and _moved(mem, wave, hop, source) >= SQUAD:
             continue                       # this capture's six already left
+        if purpose == 'move' and _capture_guard_short(mem, source):
+            # A castle we just took is retaken the moment we empty it: g1163
+            # 2026-11-12 19:0x took ドンドン twice (wave wins) and lost it twice
+            # inside the same window because the next wave left it empty.
+            # Attacks still leave (the wave the owner asked for); only the
+            # move out of a freshly taken castle waits for a second general.
+            continue
         if _drained(mem, source, purpose):
             continue
         order = _order(mem, source, hop, target, purpose)
@@ -508,6 +515,43 @@ def _residents(mem, castle):
     return list(names) if isinstance(names, list) else []
 
 
+
+
+CAPTURE_GUARD = 1               # generals kept in a castle captured moments ago
+
+
+def _capture_guard_short(mem, castle) -> bool:
+    """This castle was captured just now and holds only the guard.
+
+    Emptying it lets the enemy walk back in (the flip the road kept paying
+    for). A measured list is the only evidence; an unread castle is not empty.
+    """
+    now = int(mem.get('tick') or 0)
+    captured_at = None
+    for row in mem.get('sortie_history') or ():
+        if not isinstance(row, dict) or row.get('target') != castle:
+            continue
+        tick = row.get('tick')
+        if type(tick) is not int:
+            continue
+        if row.get('outcome') == 'won':
+            captured_at = tick
+        elif captured_at is not None and tick > captured_at:
+            captured_at = None             # lost again: not a fresh capture
+    if captured_at is None or now - captured_at > FLIP_WINDOW_TICKS:
+        return False
+    world = _world(mem)
+    garrison = world.get('garrison') or {}
+    names = garrison.get(castle) if isinstance(garrison, dict) else None
+    if not isinstance(names, list):
+        partial = world.get('garrison_partial') or {}
+        names = partial.get(castle) if isinstance(partial, dict) else None
+    if not isinstance(names, list) or len(names) > CAPTURE_GUARD:
+        return False
+    _record_only(mem, 'capture_guard_held', target=castle,
+                 observed_metric={'residents': list(names)[:8], 'keep': CAPTURE_GUARD},
+                 reason='取ったばかりの城を空にすると奪い返されるため、この城からの移動は控える')
+    return True
 
 
 def _repelled_alone(mem, target) -> bool:

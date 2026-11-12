@@ -576,3 +576,28 @@ target が None）残っていた。すでに決着した波の記録で、状�
 - `tests/test_hanjuku_overdue_retention.py`（3件: 期限超過は片付く／新しいものは残る／
   行先確認が指すものは残る）
 - sortie・march・overdue・spent・road・corridor・chapter9 で **565 passed**。
+
+# 取ったばかりの城を空にしない（v729、2026-11-12）
+
+## 事象
+
+19:0x、波状攻撃（v727）で ドンドン を**2回奪取**（`sortie_history`: won 2件）したが、
+同じ時間帯に**2回失った**（lost 2件）。取った直後に全員を次へ出して空にしたため、
+敵に奪い返されていた（フリップ）。
+
+## 変更
+
+`src/docich/hanjuku/strategy/corridor.py`
+
+- `CAPTURE_GUARD = 1` と `_capture_guard_short()` を追加。`sortie_history` で
+  **直近 `FLIP_WINDOW_TICKS` 以内に取った城**（その後まだ失っていない）について、
+  実測できている在城者が1人以下なら、その城からの**移動**を見送る
+  （`capture_guard_held` を記録）。
+- 攻撃（波状攻撃）は止めない。空にするのは「取りたての城からの移動」だけ。
+
+## 検証
+
+- `tests/test_hanjuku_capture_guard.py`（5件: 1人なら保持／2人なら移動可／
+  古い奪取は保持しない／失った城は対象外／未読は根拠なし）
+- corridor・chapter9・capture・overdue・state_regions・key_inventory・sortie で
+  **563 passed**。
