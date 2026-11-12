@@ -1053,8 +1053,18 @@ def _cursor_order_pick(screen, mem, order):
             downs[step] = int(downs.get(step) or 0) + 1
             return _deploy_input(screen, mem, order, [pad('down')],
                                  '第9話は主人公を最後にするため、カーソルを次の将軍へ送る')
-        if name != NAME or order.get('purpose') != 'move':
+        if name == NAME:
+            # Owner 2026-11-12: the hero is posted one road castle behind the
+            # front (``corridor._hero_post_order``). Letting a regular march
+            # send him took him to the front: g1163 2026-11-12 12:4x recorded
+            # I:c9:サヌト>オシロガ:328 with どうし as the mover, left サヌト
+            # empty and walked the hero straight back next cycle.
             downs.pop(step, None)
+            _record(mem, 'hero_move_refused', chart_step=step,
+                    strategy_variant='hero_move_refused',
+                    observed_metric={'present': present[:8]},
+                    deviation_reason='主人公を前線へ出す代わりに、移動の指示を閉じる',
+                    reason='主人公は前線の一つ後ろの自城に常駐させるため、行軍の代役にしない')
             return None
     downs.pop(step, None)
     return _cursor_take(screen, mem, order, name, present)

@@ -44,8 +44,15 @@ from . import routes
 PREFIX = 'I:c9:'
 DRAINED = 'corridor_drained'
 WAVE = 'corridor_wave'
+PROBE = 'corridor_probe'
 SQUAD = 6
 DRAINED_MIN_HOLD = 300      # ticks a fresh empty reading is trusted before a re-probe
+# Probe orders a month may spend looking for unaccounted generals. A castle
+# list cannot show a general who is camped on the field, so the probe tour
+# never finds them and must not run forever (see ``_probe_spend``).
+PROBE_BUDGET = 6
+# Ticks after which one more look is allowed even when nothing was found.
+PROBE_REARM_TICKS = 3600
 # Ticks a march may take before a dispatched general is treated as unknown
 # rather than still on the road (a march is observed at ~1 tick/second).
 ARRIVAL_RECHECK_TICKS = 120
@@ -273,14 +280,81 @@ def orders(mem) -> list[dict]:
     attacks.sort(key=lambda item: item[0])
     moves.sort(key=lambda item: item[0])      # nearest the front first
     out = [order for _, order in (*attacks, *moves, *hero)]
-    probe = _roster_probe(mem, routes_by, target, lost)
-    if probe is not None:
-        out.insert(0, probe)            # the re-read goes first: the tour is priority
-    elif not out:
-        probe = _drained_probe(mem, routes_by, target, lost)
+    if _probe_budget_left(mem):
+        probe = _roster_probe(mem, routes_by, target, lost)
         if probe is not None:
-            out = [probe]
+            _probe_spend(mem, 'roster_probe')
+            out.insert(0, probe)        # the re-read goes first: the tour is priority
+        elif not out:
+            probe = _drained_probe(mem, routes_by, target, lost)
+            if probe is not None:
+                _probe_spend(mem, 'drained_probe')
+                out = [probe]
+            else:
+                _probe_exhausted_once(mem)
+    elif not out:
+        _probe_exhausted_once(mem)
     return out
+
+
+def _garrison_seen(mem) -> int:
+    """Generals the castle lists actually showed (the probe's yield)."""
+    world = _world(mem)
+    return sum(len(members) for members in (world.get('garrison') or {}).values()
+               if isinstance(members, list))
+
+
+def _probe_budget_left(mem) -> bool:
+    """Whether one more castle-list probe may be spent this month.
+
+    A probe exists to find generals the accounting cannot place. Generals who
+    are camped on the field are in no castle list at all, so the tour that
+    used to run forever never found them and took every cycle: g1163
+    2026-11-12 12:4x spent a quarter of an hour opening drained castles, read
+    「しょうぐんはおりません」 each time and never reached a sortie. The tour is
+    bounded per month, re-armed as soon as any castle list shows a general
+    again (a recall or an arrival) or after ``PROBE_REARM_TICKS``.
+    """
+    state = mem.get(PROBE)
+    if not isinstance(state, dict) or state.get('month') != mem.get('month'):
+        return True
+    if _garrison_seen(mem) > int(state.get('seen') or 0):
+        return True
+    if int(mem.get('tick') or 0) - int(state.get('tick') or 0) >= PROBE_REARM_TICKS:
+        return True
+    return int(state.get('count') or 0) < PROBE_BUDGET
+
+
+def _probe_spend(mem, decision):
+    state = mem.setdefault(PROBE, {})
+    if state.get('month') != mem.get('month'):
+        state.clear()
+        state.update(month=mem.get('month'), count=0, seen=_garrison_seen(mem))
+    state['count'] = int(state.get('count') or 0) + 1
+    state['tick'] = int(mem.get('tick') or 0)
+    state['seen'] = _garrison_seen(mem)
+    state.pop('exhausted', None)
+    _record_only(mem, decision,
+                 observed_metric={'probe_count': state['count'],
+                                  'probe_budget': PROBE_BUDGET,
+                                  'unaccounted': _unaccounted(mem)},
+                 reason='所在不明の将軍を城一覧で確認する（月ごとの上限つき）')
+
+
+def _probe_exhausted_once(mem):
+    state = mem.setdefault(PROBE, {})
+    if state.get('exhausted'):
+        return
+    state['exhausted'] = True
+    state.setdefault('month', mem.get('month'))
+    _record_only(mem, 'corridor_probe_exhausted',
+                 observed_metric={'probe_count': int(state.get('count') or 0),
+                                  'probe_budget': PROBE_BUDGET,
+                                  'unaccounted': _unaccounted(mem),
+                                  'garrison_seen': _garrison_seen(mem)},
+                 reason=('城一覧の確認を使い切ったため打ち切る。所在不明の将軍は'
+                         '野営中の可能性が高く、城一覧では見つからない。帰還や入城で'
+                         '城一覧に将軍が現れるか、月が変われば再開する'))
 
 
 def _unaccounted(mem):
