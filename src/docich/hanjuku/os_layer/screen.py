@@ -1024,6 +1024,16 @@ def parse(frame: Frame, *, phase: str | None = None) -> Screen:
         # target screen and the next Y closed it (g1075 2026-10-29 14:28:16).
         screen.kind = 'world_map'
         screen.marker = None
+    if screen.field_soldiers is None and screen.kind == 'battle_menu':
+        # 通常戦闘のコマンドメニューでは HP パネルが隠れて _battle() が None
+        # になるが、兵士スプライトはフィールドに残る (g713-24401/24407 の
+        # たまごをつかうメニューで (6,5)/(6,4)、g749-30774 で (1,4) を実測)。
+        # メニュー中の卵・退却判断が最新の兵士数を見られるよう、通常戦闘
+        # メニューのフレームでも計測する。卵戦・召喚獣メニューは兵士不在の
+        # ため対象外 (egg_battle_menu では _field_soldiers が (None,None) を
+        # 返すのも実測で確認済み)。メニュー箱に半分隠れた兵士は fragment/
+        # edge 規則でその側が None になり、誤読は採用しない契約を維持する。
+        screen.field_soldiers = _field_soldiers(frame)
     return screen
 
 

@@ -346,6 +346,18 @@ def _card_battle_reading(screen, cur, mem=None):
     """
     b = screen.battle
     if b is None and screen.kind != 'battle':
+        # 通常戦闘メニューでは HP パネルが隠れるが兵士はフィールドに残る。
+        # パネル保持契約 (HP・文脈は直近の読みを保持) と同じく、実測できた
+        # 側の兵士数だけを更新し、未読の側は前回の読みを保持する
+        # (docich#4048)。部分読みで既存の計測を消すと、g745-1436 のように
+        # (6,None) が直前の (4,1) を上書きして卵温存を壊す。誤読は採らない。
+        counts = getattr(screen, 'field_soldiers', None)
+        if (screen.kind == 'battle_menu'
+                and isinstance(counts, (tuple, list)) and len(counts) == 2):
+            for key, value in zip(('ally_soldiers', 'enemy_soldiers'), counts):
+                if type(value) is int and 0 <= value <= 6:
+                    cur[key] = value
+            cur['card_soldiers_current'] = True
         return
     if (b is None or b.enemy != cur.get('enemy') or b.ally != cur.get('ally')
             or any(type(hp) is not int or hp < 0 for hp in (b.enemy_hp, b.ally_hp))):
@@ -691,11 +703,18 @@ def battle_step(screen: Screen, mem):
             maximum = row.get('max') or general_max_hp(name) or b.ally_hp
             known[b.ally] = {'hp': int(b.ally_hp), 'max': int(maximum),
                              'tick': int(mem.get('tick') or 0)}
+        # 開戦時の兵士数も記録する (docich#4048)。フィールド計測が未読の
+        # 側は None のまま残し、誤読を戦闘判断へ流さない。
+        army = screen.field_soldiers
+        if not isinstance(army, (tuple, list)) or len(army) != 2:
+            army = (None, None)
         _record(mem, 'battle_start', **_battle_labels(cur), enemy=b.enemy, ally=b.ally,
                 expected_metric=cur['strategy_expected'],
-                observed_metric={'enemy_hp': b.enemy_hp, 'ally_hp': b.ally_hp},
+                observed_metric={'enemy_hp': b.enemy_hp, 'ally_hp': b.ally_hp,
+                                 'ally_soldiers': army[0], 'enemy_soldiers': army[1]},
                 planned_cards=planned, context=cur.get('context', 'message'),
                 enemy_hp=b.enemy_hp, ally_hp=b.ally_hp, castle=cur['castle'],
+                ally_soldiers=army[0], enemy_soldiers=army[1],
                 reason='戦闘パネルの将軍名とHPを確認')
         _tally(mem, 'battles_started')
         # 将軍 (最大HP) と携行切り札 (卵落・ID合計) の組み合わせで、この戦闘の
