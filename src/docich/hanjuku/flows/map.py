@@ -1093,6 +1093,12 @@ def castle_jump_step(screen, mem, frame):
             cell = chart.castles(mem.get('chapter') or 0).get(jump['source'])
             if cell:
                 mem['cursor'], mem['uncertain'] = list(cell), False
+            if not hero_select:
+                # The しろ list row was read and named the castle before
+                # SELECT, so the deploy step does not have to open ステータス
+                # to prove the same name again (g1163 2026-11-12 23:1x: every
+                # sortie spent three more frames there).
+                mem['castle_verified'] = jump['step']
             _record(mem, 'castle_jump_confirm', chart_step=jump['step'], target=jump['source'],
                     **({'strategy_variant': 'hero_select'} if hero_select else {}),
                     observed_metric={'cursor': mem.get('cursor'),
