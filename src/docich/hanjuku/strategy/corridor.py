@@ -38,7 +38,7 @@ from __future__ import annotations
 from ... import hanjuku_chart as chart, hanjuku_chart_adjust as chart_adjust
 from ..os_layer.world import _owned, _world
 from ..os_layer.world import NAME, SORTIE_BUSY_TICKS, _hero_castle
-from ..state.regions import plan as _plan_region, sorties as _sorties
+from ..state.regions import flow as _flow_region, plan as _plan_region, sorties as _sorties
 from . import routes
 
 PREFIX = 'I:c9:'
@@ -315,10 +315,8 @@ def orders(mem) -> list[dict]:
 
 def _sortie_in_flight(mem) -> bool:
     """A selection or a requested departure is open for the active order."""
-    flow = mem.get('flow') if isinstance(mem.get('flow'), dict) else {}
-    if flow.get('sortie_attempt') or flow.get('departure_request'):
-        return True
-    return bool((mem.get('departure_request') or {}))
+    flow = _flow_region(mem)
+    return bool(flow.get('sortie_attempt') or flow.get('departure_request'))
 
 
 def _idle_probe_due(mem) -> bool:
