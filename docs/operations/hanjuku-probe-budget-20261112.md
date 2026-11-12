@@ -89,3 +89,33 @@ live の `world.sorties` に `I:c9:サヌト>オシロガ:328` が `general: ど
 - `tests/test_hanjuku_chapter9_mechanical_march.py`:
   `test_a_move_never_takes_the_hero_even_when_he_is_the_last`
 - 第9話まわりの既存テスト 136 + 122 件と合わせて green。
+
+# 出す指示が無いときだけ城一覧の確認を続ける（v710、2026-11-12）
+
+## 事象
+
+v707 の上限（`PROBE_BUDGET = 6`）だけで打ち切ったところ、13:1x に
+**`map` かつ入力ゼロの action_plan が 169 回連続**した。約5分間、一度も
+ボタンを押さずにフィールドマップ上で止まっていた。出撃できる城が全部
+`corridor_drained` で埋まり、確認も上限で止まると、`orders()` が空になり
+オーケストレータに出す指示が無くなるため。
+
+## 変更
+
+`src/docich/hanjuku/strategy/corridor.py`
+
+- `orders()`: 上限に達していても、**ほかに出す指示がある場合だけ**確認を止める
+  （`if out and not _probe_budget_left(mem): return out`）。
+- ほかに指示が無いときは確認を 1 件出し続ける。この「空いた時の確認」は
+  `_probe_spend(..., idle=True)` として `roster_probe_idle` /
+  `drained_probe_idle` に記録し、**月ごとの上限を消費しない**。
+- これで「確認が通常の攻撃・移動を追い越し続ける」問題（v707）と
+  「確認を止めたら何も出さずに立ち尽くす」問題（今回）を両方避ける。
+
+## 検証
+
+- `tests/test_hanjuku_corridor_probe_budget.py`（4件）
+  - 上限中は確認が先頭、上限後は実移動が出て確認は出ない
+  - 何も無いときは確認が 1 件出て、上限を消費しない
+  - 城一覧に将軍が現れた／月が変わったら再武装
+- 第9話まわり既存テストと合わせて 66 passed。
