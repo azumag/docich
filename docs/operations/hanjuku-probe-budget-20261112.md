@@ -466,3 +466,29 @@ disable」。築城は行軍の速度に寄与しない。
 - `tests/test_hanjuku_front_guard.py`（5件: 最後の1人は出さない／2人なら出せる／
   1ページの氏名も数える／未読は根拠なし／ボス城は対象外）
 - 第9話・攻撃・corridor・state_regions と合わせて 118 passed。
+
+# 弱い将軍を1人ずつ敵城へ出さない（v725、2026-11-12）
+
+## 指摘と実測
+
+オーナー指摘（2026-11-12）「敵城にひとりずつ派遣してるから効率悪い」。
+実測: オオキクへの攻撃は **20件中19件が敗北**（`ally_hp 18〜60` 対 `enemy_hp 50〜74`）。
+守備将軍は回復して同じHP帯に戻り、出撃だけが消費されていた。
+
+## 変更
+
+`src/docich/hanjuku/strategy/corridor.py`
+
+- `ATTACK_POWER_RATIO = 0.9` / `_attack_underpowered()` を追加。
+  出撃元の在城者のうち **実測HPが最も高い将軍** が、その城の守備将軍の
+  **直近実測HP × 0.9** に届かないときは出撃しない（`attack_underpowered` を
+  300 tick に1回だけ記録）。HPが未測定のときは従来どおり出撃する。
+- 併せて `state/regions.py` の `KEY_OWNERSHIP` に、未宣言だった
+  `attack_defeat_hold` / `attack_underpowered` / `corridor_probe` /
+  `world_map_pending` を宣言（#3993 の静的検査が検出）。
+
+## 検証
+
+- `tests/test_hanjuku_attack_underpowered.py`（5件: 弱い将軍は出さない／元気なら
+  出撃／HP未測定は止めない／守備HP読みなしは止めない／記録は窓に1回）
+- 攻撃・corridor・front・state_regions・key_inventory・chapter9 で 253 passed。

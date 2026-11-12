@@ -154,9 +154,12 @@ KEY_OWNERSHIP = {
     'world_flags': {'region': WORLD, 'lifetime': 'chapter', 'migrated': False},  # 観測世界フラグ(os_layer/world)
     'world_map_flags': {'region': WORLD, 'lifetime': 'chapter', 'migrated': False},  # 全体マップで観測した城別所有フラグ累積 (v700 #3992)
     'world_map_signature': {'region': WORLD, 'lifetime': 'chapter', 'migrated': False},  # 全体マップ観測署名
+    'world_map_pending': {'region': WORLD, 'lifetime': 'chapter', 'migrated': False},  # 所有フラグの2回一致待ち(v705)
     'previous_stats': {'region': WORLD, 'lifetime': 'run', 'migrated': False},  # new_game時に退避される前ランstats (mem.update経由)
     # --- PLAN: 戦略層の計画・ホールド ---
     'attack_company_hold': {'region': PLAN, 'lifetime': 'chapter', 'migrated': False},  # chapter9 corridor専用の突撃保留(戦略層)
+    'attack_defeat_hold': {'region': PLAN, 'lifetime': 'chapter', 'migrated': False},  # chapter9 corridorの連続敗北クールダウン(v717)
+    'attack_underpowered': {'region': PLAN, 'lifetime': 'chapter', 'migrated': False},  # chapter9 corridorの攻撃見送り記録(v725)
     'boss_cell_probe': {'region': PLAN, 'lifetime': 'chapter', 'migrated': False},  # ボスセルプローブ割当(リセット登録のみ・兄弟のboss_step_probeに同じ)
     'boss_egg_wait': {'region': PLAN, 'lifetime': 'chapter', 'migrated': False},  # replan戦略層のボス卵待ち計画
     'boss_probe_rotation': {'region': PLAN, 'lifetime': 'chapter', 'migrated': False},  # ボスプローブ割当の戦略管理
@@ -170,6 +173,7 @@ KEY_OWNERSHIP = {
     'chart_edition': {'region': PLAN, 'lifetime': 'run', 'migrated': False},  # 新規ゲーム開始時にピンされるチャート版
     'chart_plan_tick': {'region': PLAN, 'lifetime': 'chapter', 'migrated': False},  # チャート計画の策定tick
     'corridor_drained': {'region': PLAN, 'lifetime': 'chapter', 'migrated': False},  # chapter9 corridorの枯渇管理(定数DRAINED経由)
+    'corridor_probe': {'region': PLAN, 'lifetime': 'chapter', 'migrated': False},  # chapter9 corridorの城一覧確認予算(v707)
     'corridor_wave': {'region': PLAN, 'lifetime': 'chapter', 'migrated': False},  # chapter9 corridorのwave管理(定数WAVE経由)
     'defense_break_blocked': {'region': PLAN, 'lifetime': 'chapter', 'migrated': False},  # 防衛突破阻止の戦略ガード
     'defense_wait': {'region': PLAN, 'lifetime': 'chapter', 'migrated': False},  # 防衛待ち計画
