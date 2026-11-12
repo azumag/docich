@@ -415,3 +415,29 @@ disable」。築城は行軍の速度に寄与しない。
 
 - `tests/test_hanjuku_chapter9_skip_chikujou.py`（3件）
 - 築城・月次まわり既存テストと合わせて 114 passed。
+
+# 攻撃は「傷ついた将軍」を選ばない（v722、2026-11-12）
+
+## 事象
+
+16:4x〜17:0x、オオキクへの攻撃は **14連敗**。戦闘開始時の味方HPは 18・22・27・53
+なのに、守備将軍は 49〜68。`sortie_history` は オオキク lost 14 / オシロガ won 4。
+
+## 原因
+
+攻撃の将軍選びが**最大HP**だけを見ていたため、傷ついた将軍（例: 最大49だが現在5）を
+「強い将軍」として選んでしまう可能性があった。戦闘開始時のHPは読めているのに、
+その値を状態に残していなかった。
+
+## 変更
+
+- `flows/battle.py`: 戦闘開始時に読めた味方HPを
+  `world.general_hp[将軍] = {hp, max, tick}` として保存（主人公は `しゅじんこう` 名）。
+- `flows/deploy.py`: `_strongest_listed()` は `world.general_hp` の現在HPを優先し、
+  無い場合だけ最大HPを使う。傷ついた将軍へカーソルを送らない。
+
+## 検証
+
+- `tests/test_hanjuku_chapter9_cursor_order_sortie.py`: 傷ついた強将軍には送らない／
+  元気な強将軍には送る、を追加（9件）。
+- 第9話・state_regions・layers と合わせて 92 passed。

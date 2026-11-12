@@ -7,7 +7,7 @@ from docich import hanjuku_chart as chart
 from docich import hanjuku_policy as policy
 
 from test_hanjuku_off_chart import _move_list, _move_memory
-from docich.hanjuku.state.regions import plan as _plan_region
+from docich.hanjuku.state.regions import plan as _plan_region, world as _world
 
 HOME = chart.home_castle(9)
 ROAD = chart.corridor(9)
@@ -100,3 +100,18 @@ def test_an_attack_steers_away_from_the_hero_row():
     assert actions == [policy.pad('down')], 'steer off the hero before anything else'
     assert not picks(mem)
     assert chart.HERO not in (_plan_region(mem).get('general_override') or {}).values()
+
+
+def test_an_attack_avoids_a_wounded_but_stronger_general():
+    """g1163 2026-11-12 16:4x: 18/22/27-HP attackers lost fourteen times."""
+    mem = _memory('attack')
+    _world(mem)['general_hp'] = {'ジェラート': {'hp': 5, 'max': 49, 'tick': 4900}}
+    actions = _step(mem, ['ミント', 'ジェラート'])
+    assert actions == [policy.pad('a')], 'a wounded ジェラート is not worth steering to'
+
+
+def test_an_attack_steers_to_a_healthy_stronger_general():
+    mem = _memory('attack')
+    _world(mem)['general_hp'] = {'ジェラート': {'hp': 48, 'max': 49, 'tick': 4900}}
+    actions = _step(mem, ['ミント', 'ジェラート'])
+    assert actions == [policy.pad('down')]

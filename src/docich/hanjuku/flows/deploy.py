@@ -1047,7 +1047,7 @@ def _cursor_order_pick(screen, mem, order):
         downs.pop(step, None)
         return None                     # see _corridor_list_end
     if order.get('corridor') is True and order.get('purpose') != 'move':
-        strongest = _strongest_listed(present, name)
+        strongest = _strongest_listed(mem, present, name)
         if strongest is not None:
             move = menu_to(screen, strongest)
             if (move and move != 'here'
@@ -1092,7 +1092,7 @@ def _cursor_order_pick(screen, mem, order):
 STRONG_ATTACK_MARGIN = 10       # max-HP gain that justifies steering the cursor
 
 
-def _strongest_listed(present, current):
+def _strongest_listed(mem, present, current):
     """The healthiest listed general, when the cursor one is clearly weaker.
 
     g1163 2026-11-12 14:5x-15:5x: the march sent whoever the cursor was on
@@ -1104,10 +1104,20 @@ def _strongest_listed(present, current):
     """
     from ...hanjuku_egg_reference import general_max_hp
 
-    def max_hp(name):
+    known = (_world(mem).get('general_hp') or {}) if isinstance(_world(mem).get('general_hp'), dict) else {}
+
+    def strength(name):
+        """The HP this general brought to the last fight, else its maximum.
+
+        A wounded general looks strong on paper: g1163 2026-11-12 16:4x sent
+        18/22/27-HP attackers at a 50-68-HP defender fourteen times.
+        """
+        row = known.get(name) if isinstance(known.get(name), dict) else {}
+        if type(row.get('hp')) is int:
+            return row['hp']
         return general_max_hp('しゅじんこう' if name == NAME else name)
 
-    current_hp = max_hp(current)
+    current_hp = strength(current)
     if type(current_hp) is not int:
         if current != NAME:
             return None
@@ -1120,7 +1130,7 @@ def _strongest_listed(present, current):
     for general in present:
         if general == NAME:
             continue
-        value = max_hp(general)
+        value = strength(general)
         if type(value) is int and value - best_hp >= STRONG_ATTACK_MARGIN:
             best, best_hp = general, value
     return best
