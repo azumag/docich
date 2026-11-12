@@ -125,16 +125,20 @@ def test_a_new_month_rearms_the_budget():
     assert out and out[0].get('source_probe') is True
 
 
-def test_a_running_wave_keeps_the_idle_probe_away():
-    """g1163 2026-11-12 19:1x-19:3x: 12 idle probes during the ドンドン wave."""
+def test_a_wave_with_no_order_still_gets_one_idle_probe():
+    """g1163 2026-11-12 22:5x: the field map stood still for 23 frames.
+
+    Attackers were marching, so no wave order was ready; without the idle tour
+    the plan was empty and the bot sent nothing.
+    """
     mem = memory([A, B, C], [A, B, C])
     nxt = chart.corridor_next(9, {A, B, C})
     mem['world']['sorties'] = {'I:c9:C>N:9': {'general': '味方', 'source': C, 'target': nxt,
                                               'purpose': 'attack', 'status': 'en_route',
                                               'tick': mem['tick'] - 10}}
-    orders(mem)
-    assert not (decided(mem, 'roster_probe_idle') + decided(mem, 'drained_probe_idle')), \
-        'the wave is the work: no idle probe during it'
+    out = orders(mem)
+    assert out, 'the idle tour keeps the field moving'
+    assert decided(mem, 'roster_probe_idle') or decided(mem, 'drained_probe_idle')
 
 
 def test_a_minted_idle_probe_is_reused_instead_of_minted_again():

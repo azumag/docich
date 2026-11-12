@@ -827,3 +827,27 @@ step** でも毎回そのまま返し、新しい指示も probe も出ない状
 - hold・terminal・no_input・state_regions・key_inventory・text で 287 passed
   （`test_hanjuku_terminal_previous_recovery.py` の13 errors は main でも出る
   xunit `setup()` 衝突）。
+
+# 波に出す指示が無いときは城一覧の確認で動き続ける（v740、2026-11-12）
+
+## 事象
+
+22:5x、`map` かつ入力ゼロのプランが5分で **23件**（17%）。live の state を入力に
+`corridor.orders()` を呼ぶと、その瞬間は 4件（`ドンドン>オオキク` attack ほか）を
+返すのに、実際の観測では空のフレームが挟まっていた。v730 の「波の間は idle probe を
+出さない」が、**波に出す指示が無い瞬間**にも効いて計画が空になっていた。
+
+## 変更
+
+`src/docich/hanjuku/strategy/corridor.py`
+
+- v730 の「攻撃行軍がある間は idle probe を出さない」を撤去。v732（実指示があるときは
+  probe で追い越さない）と v731/v736（作った probe の使い回し・期限）で churn は
+  抑えられているため、空のときは従来どおり確認で動き続ける。
+
+## 検証
+
+- `tests/test_hanjuku_corridor_probe_budget.py`: 「波に指示が無いときも idle probe が
+  1件出る」に更新。
+- corridor・chapter9・capture・drained・state_regions・key_inventory・probe で
+  300 passed。
