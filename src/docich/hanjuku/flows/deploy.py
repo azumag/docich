@@ -1213,6 +1213,23 @@ def _observe_garrison(screen, mem, order, *, complete=True):
                                        if g not in present
                                        or (g in visible and not _general_visible(screen, g))]
     if not complete:
+        # A full page still proves who is standing here: GENERAL_LIST_FULL rows
+        # means the list scrolls, not that the names are unknown. Refusing to
+        # record them left the castle "drained" while sorties were launched out
+        # of it (g1163 2026-11-12 10:3x: タオ／ハヤク／アルマムーン all read 0
+        # generals while リーキ and コリアンダー marched from one of them). Only
+        # the completeness stamp below is withheld, so the listing stays a lower
+        # bound rather than a full roster.
+        partial = _world(mem).setdefault('garrison_partial', {})
+        if present and partial.get(castle) != present:
+            # A page is not the roster: `garrison` stays untouched (that rule is
+            # deliberate — a page proves those names are here, never who else
+            # is). The lower bound is still worth keeping so a castle read this
+            # way is not mistaken for an empty one.
+            partial[castle] = present
+            _record(mem, 'garrison_partial_seen', **_deploy_context(order, mem), castle=castle,
+                    observed_metric=present[:8],
+                    reason='将軍一覧の1ページ分を確認したため在城者の下限として記録')
         return
     # Display-only evidence: decisions never consult this wall-clock field.
     _world(mem).setdefault('garrison_observed_at', {})[castle] = time.time()
