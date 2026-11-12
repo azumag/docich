@@ -1531,6 +1531,19 @@ def battle_end(mem, next_kind, *, defense_continues=False, actor_continues=False
                 and sortie.get('status') in ('en_route', 'launched_unconfirmed')
                 and type(sortie.get('road_defeat')) is not int):
             sortie['road_defeat'] = int(mem.get('tick') or 0)
+            # The outcome ledger is what the march and the attack rules read
+            # (``_repelled_alone``, ``_defeat_cooldown_active``). A road defeat
+            # that only lived on the sortie record was invisible to them:
+            # g1163 2026-11-12 15:1x-15:5x lost :11-:15 on the road to オオキク
+            # and ``sortie_history`` still ended at :11, so nothing could see
+            # that the exchange kept losing.
+            history = mem.setdefault('sortie_history', [])
+            history.append({'step': step, 'general': sortie.get('general'),
+                            'source': sortie.get('source'), 'target': target,
+                            'outcome': 'lost', 'tick': int(mem.get('tick') or 0),
+                            'castle': castle, 'ally_hp': ally_hp, 'enemy_hp': enemy_hp,
+                            'road': True})
+            del history[:-40]
             _record(mem, 'sortie_road_defeat', chart_step=step, general=sortie.get('general'),
                     castle=castle,
                     observed_metric={'target': target, 'retreat': retreat,
