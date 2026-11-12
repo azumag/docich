@@ -601,3 +601,23 @@ target が None）残っていた。すでに決着した波の記録で、状�
   古い奪取は保持しない／失った城は対象外／未読は根拠なし）
 - corridor・chapter9・capture・overdue・state_regions・key_inventory・sortie で
   **563 passed**。
+
+# 波状攻撃中は城一覧の確認を挟まない（v730、2026-11-12）
+
+## 事象
+
+19:1x〜19:3x の30分で `roster_probe_idle` / `drained_probe_idle`（出す指示が無いときの
+城一覧確認）が12件。同時刻は ドンドン への波状攻撃が進行中で、確認は波の合間の
+空振り訪問になっていた。
+
+## 変更
+
+`src/docich/hanjuku/strategy/corridor.py`
+
+- `orders()`: 次の城へ向かう攻撃行軍（`_attackers_marching(mem, target) > 0`）が
+  ある間は idle probe を出さない。波が終われば従来どおり確認を再開する。
+
+## 検証
+
+- `tests/test_hanjuku_corridor_probe_budget.py` に「波の間は idle probe を出さない」を追加。
+- corridor・drained・capture・chapter9・state_regions・key_inventory で 192 passed。
