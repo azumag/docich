@@ -1103,6 +1103,18 @@ def month_chart_step(mem) -> str:
     return f'{chapter}-month' if type(chapter) is int and chapter > 0 else 'month'
 
 
+def _mechanical_march(mem) -> bool:
+    """Chapter 9's castle-scoped march still owns the next road castle."""
+    chapter = mem.get('chapter')
+    try:
+        castles = set(chart.castles(chapter))
+        owned = _owned(mem) & castles
+        return bool(chart.guard_free(chapter) and chart.corridor(chapter)
+                    and chart.corridor_next(chapter, owned) is not None)
+    except (AttributeError, TypeError):
+        return False
+
+
 def _plan_extras(mem, shop, reserve, recruit):
     shop['reserve'] = reserve
     egg_cost = _egg_measured_cost(mem)
@@ -1110,7 +1122,19 @@ def _plan_extras(mem, shop, reserve, recruit):
     shop['egg_cost'] = egg_cost
     shop['egg_priority'] = bool(_egg_recovery_targets(mem))
     shop['recruit'] = 'check' if recruit else None
-    shop['chikujou'] = 'check'
+    if _mechanical_march(mem):
+        # Owner 2026-11-11: ９話は機械的に次の城にすべての将軍を送る、それ以外は
+        # disable. 築城 cost a real share of the march (g1163 2026-11-12 16:1x-16:4x:
+        # 74 month steps and 5-8 castle-list scrolls per half hour). The month
+        # keeps egg recovery, repairs, recruits and soldiers; only the castle
+        # upgrade is dropped while the road is still being taken.
+        if shop.get('chikujou') != 'skipped':
+            _record(mem, 'month_chikujou_skipped', chart_step=month_chart_step(mem),
+                    month=shop.get('key'),
+                    reason='第9話の機械行軍中は築城を行わず、行軍と卵回復・募集に時間を使う')
+        shop['chikujou'] = 'skipped'
+    else:
+        shop['chikujou'] = 'check'
     _reserve_hero_repair(mem, shop, shop.get('gold_start'))
     _reserve_general_repair(mem, shop, shop.get('gold_start'))
     # A short base boss card is bought before the hiring fee and soldiers are sized.

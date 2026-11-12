@@ -387,3 +387,31 @@ v719（攻撃は最も体力のある将軍を選ぶ）を反映しても `attac
 
 - `tests/test_hanjuku_chapter9_cursor_order_sortie.py`: 主人公が先頭でも下へ送る、を追加。
 - 第9話・corridor・state_regions まわり 81 passed。
+
+# 第9話の行軍中は築城をしない（v721、2026-11-12）
+
+## 事象
+
+16:1x〜16:4x の30分で `month_sub_step` が 74 件、`chikujou_scroll` が
+5〜8 件/10分。街道を進めている最中に、月次の築城で城一覧をスクロールしていた。
+
+## 根拠
+
+オーナー指示 2026-11-11「９話は機械的に次の城にすべての将軍を送る、それ以外は
+disable」。築城は行軍の速度に寄与しない。
+
+## 変更
+
+`src/docich/hanjuku/strategy/economy.py`
+
+- `_mechanical_march()`: `chart.guard_free` かつ `chart.corridor` かつ
+  `corridor_next()` がある（＝第9話の行軍中）を判定。最小 chart 名前空間では False。
+- `_plan_extras()`: 行軍中は `shop['chikujou'] = 'skipped'` とし、
+  `month_chikujou_skipped` を1回だけ記録。ボスフェーズ・他章は従来どおり。
+
+卵回復・修理・募集・兵士補充は従来どおり実施する。
+
+## 検証
+
+- `tests/test_hanjuku_chapter9_skip_chikujou.py`（3件）
+- 築城・月次まわり既存テストと合わせて 114 passed。
