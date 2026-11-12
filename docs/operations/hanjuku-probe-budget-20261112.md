@@ -972,3 +972,24 @@ Xメニューの「しろ」一覧からSELECTで飛ぶ経路は、**飛ぶ前�
   選ぶ／差が小さいときはカーソルのまま、を追加。
 - cursor・chapter9・corridor・capture・off_chart・state_regions・key_inventory で
   415 passed。
+
+# 将軍は回復しない前提で、新規募集の将軍を前線へ送る（v746、2026-11-13）
+
+## 実測
+
+`battle_start` の味方HPを将軍別に時系列で集計（約3.3時間・26将軍）。**HPが上がった例は
+0件**（主人公だけ 66 → 90 の回復あり）。傷ついた将軍はそのまま、HP0 は退場し、軍隊数は
+29/32 まで減少。
+
+## 変更
+
+`src/docich/hanjuku/flows/deploy.py`
+
+- `_healthier_mover()`: カーソルの将軍が最大HPの8割未満のとき、**HP記録の無い将軍**
+  （＝まだ戦っていない新規募集）を優先してカーソルを送る。記録がある将軍同士では
+  従来どおりHP差20以上で選ぶ。
+
+## 検証
+
+- `tests/test_hanjuku_chapter9_cursor_order_sortie.py`: 傷ついた将軍より新規募集を優先、
+  を追加（8件）。cursor 系 416 passed。

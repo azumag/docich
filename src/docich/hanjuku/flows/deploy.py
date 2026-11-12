@@ -1100,9 +1100,26 @@ def _healthier_mover(mem, present, current):
         row = hp.get(name) if isinstance(hp.get(name), dict) else {}
         return row.get('hp') if type(row.get('hp')) is int else None
 
-    current_hp = value(current)
+    def row(name):
+        return hp.get(name) if isinstance(hp.get(name), dict) else {}
+
+    current_row = row(current)
+    current_hp = current_row.get('hp') if type(current_row.get('hp')) is int else None
     if current_hp is None:
         return None
+    # A general with no HP record has never been measured in battle: a fresh
+    # recruit (generals never heal in this run — 12k ticks of readings show no
+    # rise, while new ones arrive whole). Send those forward first when the
+    # cursor general is hurt.
+    maximum = current_row.get('max')
+    hurt = type(maximum) is int and maximum > 0 and current_hp < maximum * 8 // 10
+    if hurt:
+        for general in present:
+            if general == NAME or general == current:
+                continue
+            if (row(general).get('hp') is None
+                    and general_max_hp('しゅじんこう' if general == NAME else general) is not None):
+                return general
     best, best_hp = None, current_hp
     for general in present:
         if general == NAME:
