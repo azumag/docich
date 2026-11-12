@@ -184,3 +184,32 @@ v707 の上限（`PROBE_BUDGET = 6`）だけで打ち切ったところ、13:1x 
 - `tests/test_hanjuku_launch_settle_partial_page.py`（4件）: 在籍→巻き戻し／
   blind＋不在→成立／未blindは保留／完全名簿は従来どおり不在で成立。
 - 出撃・boss probe まわり既存テストと合わせて 44 passed。
+
+# 空いた時の城一覧確認を作りすぎない（v713、2026-11-12）
+
+## 事象
+
+14:2x の10分間で `roster_probe_idle`（出す指示が無いときの城一覧確認）が **19 件**、
+`order_start` は 12 件。idle probe の `order_start` は無く、**作られただけで実行されない**
+指示が毎観測のように追加されていた（`_order()` は毎回新しい step id を振る）。
+
+## 原因
+
+`corridor.orders()` は「ほかに指示が無い」たびに idle probe を1件作る。
+ところが実際には、選択中・出撃要求中の指示（`sortie_attempt` / `departure_request`）が
+進行中でも `out` が空に見えるため、その観測のたびに probe を鋳造していた。
+
+## 変更
+
+`src/docich/hanjuku/strategy/corridor.py`
+
+- `_sortie_in_flight()`: 選択・出撃要求が開いている間は idle probe を作らない
+  （進行中の出撃を次の観測で置き換えない）。
+- `_idle_probe_due()` と `IDLE_PROBE_SPACING = 60`: idle probe は60 tickに1件まで。
+  何も無いときに立ち尽くさない性質（v710）はそのまま。
+
+## 検証
+
+- `tests/test_hanjuku_corridor_probe_budget.py`（6件）: 間隔内は追加しない／
+  次の窓で1件／出撃進行中は作らない／上限中は先頭・上限後は実移動、など。
+- 第9話・目標まわり既存テストと合わせて 83 passed。
