@@ -993,3 +993,26 @@ Xメニューの「しろ」一覧からSELECTで飛ぶ経路は、**飛ぶ前�
 
 - `tests/test_hanjuku_chapter9_cursor_order_sortie.py`: 傷ついた将軍より新規募集を優先、
   を追加（8件）。cursor 系 416 passed。
+
+# 攻撃の先頭は満タンの将軍にする（v747、2026-11-13）
+
+## 根拠
+
+- 戦闘はHPの殴り合いで、**将軍は回復しない**（3.3時間の実測でHP上昇0件）。
+- オオキク の守備将軍は HP 74 前後で横ばい、こちらは 15〜40 HP の傷ついた将軍で
+  `オオキク lost` が続いていた（1勝もなし）。
+
+## 変更
+
+`src/docich/hanjuku/flows/deploy.py`
+
+- `FULL_HP_LEADER = 80` と `_full_hp_leader()` を追加。第9話の**攻撃**で、カーソルの
+  将軍の実測HPが最大の半分未満のとき、**最大HPの80%以上ある将軍**がいればその行へ
+  カーソルを送る（`full_hp_leader` を記録）。
+- オーナー指示「どんどん上から順に送る」は維持（**攻撃は止めない**。半減以下の将軍が
+  先頭のときだけ、満タンの将軍と交代）。捜索は `CURSOR_PICK_DOWNS` で有界。
+
+## 検証
+
+- `tests/test_hanjuku_chapter9_cursor_order_sortie.py`: 半減の先頭は満タンに譲る／
+  8割以上なら先頭のまま、を追加（10件）。cursor 系 418 passed。

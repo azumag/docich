@@ -108,3 +108,20 @@ def test_a_move_prefers_a_fresh_recruit_over_a_wounded_general():
     actions = _step(mem, ['ミント', 'ジェラート'])      # ジェラート has no record
     assert actions == [policy.pad('down')]
     assert any(r.get('decision') == 'healthy_mover_pick' for r in mem['_records'])
+
+
+def test_a_half_dead_leader_gives_way_to_a_whole_general():
+    """A battle is an HP duel and generals never heal (v747)."""
+    mem = _memory('attack')
+    _world(mem)['general_hp'] = {'ミント': {'hp': 10, 'max': 32},
+                                 'ジェラート': {'hp': 48, 'max': 49}}
+    actions = _step(mem, ['ミント', 'ジェラート'])
+    assert actions == [policy.pad('down')]
+    assert any(r.get('decision') == 'full_hp_leader' for r in mem['_records'])
+
+
+def test_a_mostly_whole_leader_stays_at_the_cursor():
+    mem = _memory('attack')
+    _world(mem)['general_hp'] = {'ミント': {'hp': 24, 'max': 32},
+                                 'ジェラート': {'hp': 49, 'max': 49}}
+    assert policy.pad('a') in _step(mem, ['ミント', 'ジェラート'])
