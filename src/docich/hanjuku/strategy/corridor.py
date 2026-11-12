@@ -270,12 +270,14 @@ def orders(mem) -> list[dict]:
             # (g1163 2026-11-12 23:3x: ドンドン won with 66 HP, then lost to a
             # 39-HP attacker while its general was marching at オオキク).
             _keep = 2 if (_flip_prone(mem, target) or _captured_recently(mem, source)) else 1
-            if _wounded_attack(mem, source) and not _front_guard_expired(mem, source):
+            _finish = _defender_nearly_dead(mem, target)
+            if (not _finish and _wounded_attack(mem, source)
+                    and not _front_guard_expired(mem, source)):
                 # A nearly dead general is a lost sortie, not a wave: g1163
                 # 2026-11-12 23:4x sent 15/22-HP generals at オオキク and lost
                 # every one. Bounded by the same wait as the front guard.
                 continue
-            if (isinstance(_front_names_now, list)
+            if (not _finish and isinstance(_front_names_now, list)
                     and 0 < len(_front_names_now) <= _keep
                     and not _front_guard_expired(mem, source)):
                 # The last measured resident does not leave: an empty front is
@@ -662,6 +664,22 @@ def _front_thin(mem, castle) -> bool:
 
 
 WOUNDED_ATTACK_HP = 20          # a general this spent is not worth a sortie
+FINISHING_HP = 10               # a defender this low may be finished by anyone
+
+
+def _defender_nearly_dead(mem, target) -> bool:
+    """The target's last measured defender is one hit from falling.
+
+    g1163 2026-11-13 01:0x: オオキク's defender read 3 HP; the wound guard then
+    held the next attack at home. A finish beats every keep-home rule.
+    """
+    for row in reversed(mem.get('sortie_history') or []):
+        if not isinstance(row, dict) or row.get('target') != target:
+            continue
+        value = row.get('enemy_hp')
+        if type(value) is int:
+            return 0 < value <= FINISHING_HP
+    return False
 
 
 def _wounded_attack(mem, castle) -> bool:
