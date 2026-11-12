@@ -7156,6 +7156,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v709-partial-page-candidates",
             "hanjuku-chart-v710-idle-probe",
             "hanjuku-chart-v711-march-no-refill",
+            "hanjuku-chart-v712-partial-launch-settle",
             "hanjuku-chart-v560-castle-list-scroll",
             "hanjuku-chart-v561-post-month-repair-status",
             "hanjuku-chart-v501-idle-reanchor",
