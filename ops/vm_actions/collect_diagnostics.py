@@ -7146,6 +7146,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v701-corridor-kit-approve",
             "hanjuku-chart-v702-flip-prone-company",
             "hanjuku-chart-v703-partial-page-residents",
+            "hanjuku-chart-v704-drained-min-hold",
             "hanjuku-chart-v560-castle-list-scroll",
             "hanjuku-chart-v561-post-month-repair-status",
             "hanjuku-chart-v501-idle-reanchor",
