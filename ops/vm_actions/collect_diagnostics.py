@@ -7197,6 +7197,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v750-defender-hp",
             "hanjuku-chart-v751-panel-finish",
             "hanjuku-chart-v752-retake-not-held",
+            "hanjuku-chart-v753-battle-menu-soldiers",
             "hanjuku-chart-v560-castle-list-scroll",
             "hanjuku-chart-v561-post-month-repair-status",
             "hanjuku-chart-v501-idle-reanchor",
