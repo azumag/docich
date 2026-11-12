@@ -1046,6 +1046,25 @@ def _cursor_order_pick(screen, mem, order):
     if _keeps_hero_company(order, present):
         downs.pop(step, None)
         return None                     # see _corridor_list_end
+    if order.get('corridor') is True and order.get('purpose') != 'move':
+        strongest = _strongest_listed(present, name)
+        if strongest is not None:
+            move = menu_to(screen, strongest)
+            if (move and move != 'here'
+                    and int(downs.get(step) or 0) < CURSOR_PICK_DOWNS):
+                downs[step] = int(downs.get(step) or 0) + 1
+                _record(mem, 'attack_strongest_pick', chart_step=step,
+                        strategy_variant='strongest_attacker',
+                        observed_metric={'present': present[:8], 'cursor': name,
+                                         'chosen': strongest, 'move': move},
+                        reason='攻撃は一覧で最も体力のある将軍を選ぶ（カーソルの将軍では毎回敗北していた）')
+                return _deploy_input(screen, mem, order, [move],
+                                     '攻撃は最も体力のある将軍へカーソルを送る')
+            if move is None:
+                _record(mem, 'attack_strongest_offscreen', chart_step=step,
+                        observed_metric={'present': present[:8], 'cursor': name,
+                                         'chosen': strongest},
+                        reason='より強い将軍が一覧の外にいるためカーソルを送れない')
     if name == NAME or name in busy:
         others = [g for g in present if g != NAME and g not in busy]
         whole = len(present) < GENERAL_LIST_FULL
@@ -1066,20 +1085,6 @@ def _cursor_order_pick(screen, mem, order):
                     deviation_reason='主人公を前線へ出す代わりに、移動の指示を閉じる',
                     reason='主人公は前線の一つ後ろの自城に常駐させるため、行軍の代役にしない')
             return None
-    if order.get('corridor') is True and order.get('purpose') != 'move':
-        strongest = _strongest_listed(present, name)
-        if strongest is not None:
-            move = menu_to(screen, strongest)
-            if (move and move != 'here'
-                    and int(downs.get(step) or 0) < CURSOR_PICK_DOWNS):
-                downs[step] = int(downs.get(step) or 0) + 1
-                _record(mem, 'attack_strongest_pick', chart_step=step,
-                        strategy_variant='strongest_attacker',
-                        observed_metric={'present': present[:8], 'cursor': name,
-                                         'chosen': strongest},
-                        reason='攻撃は一覧で最も体力のある将軍を選ぶ（カーソルの将軍では毎回敗北していた）')
-                return _deploy_input(screen, mem, order, [move],
-                                     '攻撃は最も体力のある将軍へカーソルを送る')
     downs.pop(step, None)
     return _cursor_take(screen, mem, order, name, present)
 
@@ -1104,7 +1109,13 @@ def _strongest_listed(present, current):
 
     current_hp = max_hp(current)
     if type(current_hp) is not int:
-        return None
+        if current != NAME:
+            return None
+        # The hero is on the cursor: a chapter-9 attack must not send him, and
+        # the list-end fallback is not the only way out — any other general is
+        # the better mover (g1163 2026-11-12 16:3x: the hero row came first on
+        # every attack list, so the strongest row was never considered).
+        current_hp = -STRONG_ATTACK_MARGIN
     best, best_hp = None, current_hp
     for general in present:
         if general == NAME:

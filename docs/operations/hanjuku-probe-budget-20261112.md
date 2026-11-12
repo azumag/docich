@@ -359,3 +359,31 @@ live の `sortie_history` は `I:c9:ドンドン>オオキク:11`（tick 97670�
 - `tests/test_hanjuku_chapter9_cursor_order_sortie.py`: 同格ならカーソルのまま／
   10以上強い将軍がいればカーソルを送る、を追加。
 - 第9話・corridor・state_regions まわり 76 passed。
+
+# 攻撃で主人公の行から外れる（v720、2026-11-12）
+
+## 事象
+
+v719（攻撃は最も体力のある将軍を選ぶ）を反映しても `attack_strongest_pick` が
+一度も記録されなかった。`cursor_order_pick` 自体は動いていた。
+
+## 原因
+
+主人公（どうし）が一覧の先頭にいることが多く、`_cursor_order_pick()` の
+「カーソルが主人公なら下へ送る」分岐が先に走って `None` を返していた。私が追加した
+「最も体力のある将軍」判定はその後ろにあり、**主人公が先頭のときは到達しなかった**。
+
+## 変更
+
+`src/docich/hanjuku/flows/deploy.py`
+
+- 攻撃（`purpose != 'move'`）の最強将軍判定を、主人公・busy 判定より**前**へ移動。
+- `_strongest_listed()`: カーソルが主人公のときは「主人公のHPなし」を下限として
+  扱い、他の将軍がいれば必ず候補にする（主人公は候補にしない）。
+- 一覧外の行にいる場合は `attack_strongest_offscreen` を記録して、次回の観測で
+  分かるようにした。
+
+## 検証
+
+- `tests/test_hanjuku_chapter9_cursor_order_sortie.py`: 主人公が先頭でも下へ送る、を追加。
+- 第9話・corridor・state_regions まわり 81 passed。

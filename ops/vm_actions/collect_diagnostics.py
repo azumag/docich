@@ -7164,6 +7164,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v717-attack-defeat-cooldown",
             "hanjuku-chart-v718-road-defeat-ledger",
             "hanjuku-chart-v719-strongest-attacker",
+            "hanjuku-chart-v720-attack-hero-row",
             "hanjuku-chart-v560-castle-list-scroll",
             "hanjuku-chart-v561-post-month-repair-status",
             "hanjuku-chart-v501-idle-reanchor",
