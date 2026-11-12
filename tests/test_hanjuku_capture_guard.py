@@ -124,3 +124,22 @@ def test_a_just_captured_front_does_not_send_its_last_general():
     mem['sortie_history'] = [{'target': B, 'outcome': 'won', 'enemy_hp': 0, 'tick': 4900}]
     assert not [o for o in attacks(mem) if o['source'] == B]
     assert [r for r in mem['_records'] if r.get('decision') == 'front_guard_held']
+
+
+def test_a_nearly_dead_front_does_not_attack():
+    """g1163 2026-11-12 23:4x: 15/22-HP generals were sent at オオキク and lost."""
+    mem = memory(['リーキ', 'ベーグル', 'シナモン'])
+    mem['captured'] = [A, B]
+    mem['lost'] = []
+    mem['world']['general_hp'] = {'リーキ': {'hp': 15, 'max': 60},
+                                  'ベーグル': {'hp': 18, 'max': 60}}
+    assert not [o for o in attacks(mem) if o['source'] == B]
+    assert [r for r in mem['_records'] if r.get('decision') == 'front_wounded']
+
+
+def test_a_healthy_front_still_attacks():
+    mem = memory(['リーキ', 'ベーグル', 'シナモン'])
+    mem['captured'] = [A, B]
+    mem['lost'] = []
+    mem['world']['general_hp'] = {'リーキ': {'hp': 55, 'max': 60}}
+    assert [o for o in attacks(mem) if o['source'] == B]

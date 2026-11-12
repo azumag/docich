@@ -270,6 +270,11 @@ def orders(mem) -> list[dict]:
             # (g1163 2026-11-12 23:3x: ドンドン won with 66 HP, then lost to a
             # 39-HP attacker while its general was marching at オオキク).
             _keep = 2 if (_flip_prone(mem, target) or _captured_recently(mem, source)) else 1
+            if _wounded_attack(mem, source) and not _front_guard_expired(mem, source):
+                # A nearly dead general is a lost sortie, not a wave: g1163
+                # 2026-11-12 23:4x sent 15/22-HP generals at オオキク and lost
+                # every one. Bounded by the same wait as the front guard.
+                continue
             if (isinstance(_front_names_now, list)
                     and 0 < len(_front_names_now) <= _keep
                     and not _front_guard_expired(mem, source)):
@@ -654,6 +659,30 @@ def _front_thin(mem, castle) -> bool:
     if not isinstance(names, list):
         return False                       # unread is not thin
     return len(names) < FRONT_REFILL_MIN
+
+
+WOUNDED_ATTACK_HP = 20          # a general this spent is not worth a sortie
+
+
+def _wounded_attack(mem, castle) -> bool:
+    """Nobody at the front is healthy enough to attack."""
+    hp = _world(mem).get('general_hp') or {}
+    if not isinstance(hp, dict):
+        return False
+    names = _front_names(mem, castle) or []
+    best = 0
+    for name in names:
+        row = hp.get(name) if isinstance(hp.get(name), dict) else {}
+        value = row.get('hp')
+        if type(value) is int and value > best:
+            best = value
+    if best <= 0 or best > WOUNDED_ATTACK_HP:
+        return False
+    _record_only(mem, 'front_wounded', target=castle,
+                 observed_metric={'best_hp': best, 'threshold': WOUNDED_ATTACK_HP,
+                                  'residents': list(names)[:8]},
+                 reason='前線で最も元気な将軍でも攻撃に足るHPがないため、装復・交代を待つ')
+    return True
 
 
 def _captured_recently(mem, castle) -> bool:
