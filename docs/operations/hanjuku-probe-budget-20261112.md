@@ -709,3 +709,25 @@ v730 は「空いた時の確認」だけを止めており、予算付きの割
 
 - corridor・chapter9・capture・drained・squads・state_regions・key_inventory・attack・front
   で 241 passed（前線が1人の前提だったテストは2人在城へ更新）。
+
+# 前線1人の待ちに期限を付ける（v735、2026-11-12）
+
+## 事象
+
+21:0x、`map` かつ入力ゼロのプランが30分で **166件**（全体の19%）。フィールドで
+立ち尽くす時間が戻っていた。v734 の「前線が1人なら攻撃しない」に期限が無く、
+増援が来ないと攻撃も移動も出ない状態が続くため。
+
+## 変更
+
+`src/docich/hanjuku/strategy/corridor.py`
+
+- `FRONT_GUARD_WAIT = 600` と `_front_guard_expired()` を追加。前線が1人のまま
+  待ち時間の上限に達したら、単独でも攻撃に出る（`front_guard_timeout` を記録）。
+  待ち時計は `policy.front_guard_hold`（章スコープ、v735 で宣言）に持つ。
+
+## 検証
+
+- `tests/test_hanjuku_capture_guard.py`: 期限前は待ち、期限後は攻撃できることを追加。
+- corridor・chapter9・capture・drained・squads・state_regions・key_inventory で
+  241 passed。
