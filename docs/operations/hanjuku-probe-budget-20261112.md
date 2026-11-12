@@ -665,3 +665,26 @@ v730 は「空いた時の確認」だけを止めており、予算付きの割
 - `tests/test_hanjuku_corridor_probe_budget.py` に「波は予算付き確認も追い越させない」を追加。
 - corridor・chapter9・squads・state_regions・key_inventory・capture・drained で
   112 passed。
+
+# 手薄になった前線には増援の予算を開く（v733、2026-11-12）
+
+## 事象
+
+20:2x、波状攻撃で ドンドン を取ったあと、攻撃で前線が1人になり、そのまま
+守備戦で失った。波の「6人まで」の移動予算はすでに使い切っており、補充の移動が
+出ないまま攻撃だけが続いていた。
+
+## 変更
+
+`src/docich/hanjuku/strategy/corridor.py`
+
+- `FRONT_REFILL_MIN = 2` と `_front_thin()` を追加。出撃元（前線）の**実測在城者が
+  2人未満**なら、`_wave()` の refill（新しい移動予算）を開く。従来の
+  「空一覧を読んだとき」に加えて、手薄でも同じ扱いにする。
+- 攻撃は止めない（波状攻撃は維持）。前線への補充だけを別予算で再開する。
+
+## 検証
+
+- `tests/test_hanjuku_chapter9_squads.py`: 「薄い前線は空一覧なしでも予算を開く」を
+  追加し、既存の「空一覧で予算を開く」は在城2人の前提に更新（12件）。
+- corridor・chapter9・capture・drained・state_regions・key_inventory で 116 passed。

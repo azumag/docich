@@ -71,6 +71,7 @@ def test_each_capture_moves_at_most_six_per_hop():
 
 def test_a_wiped_vanguard_opens_a_new_budget():
     mem = _mem()
+    mem['garrison'][FRONT] = ['リーキ', 'ベーグル']   # staffed: not thin
     _orders(mem)
     _send(mem, HOME, FRONT, 6, status='arrived')
     # #3944: the old retake (``I:old``) now counts as marching at NEXT, so
@@ -79,6 +80,18 @@ def test_a_wiped_vanguard_opens_a_new_budget():
     assert not _by(mem, 'move')
     mem['tick'] += 30
     corridor.mark_drained(mem, FRONT, 'empty')   # the front's list was empty
+    assert [o['source'] for o in _by(mem, 'move')] == [HOME]
+    assert mem[corridor.WAVE]['refill'] == 1
+
+
+def test_a_thin_front_opens_a_new_budget_without_an_empty_reading():
+    """g1163 2026-11-12 20:2x: ドンドン was taken and lost while it sat at one."""
+    mem = _mem()
+    mem['garrison'][FRONT] = ['リーキ']      # measured down to one
+    _orders(mem)
+    _send(mem, HOME, FRONT, 6, status='arrived')
+    _sorties(mem)['I:old']['status'] = 'arrived'
+    mem['tick'] += 30
     assert [o['source'] for o in _by(mem, 'move')] == [HOME]
     assert mem[corridor.WAVE]['refill'] == 1
 
