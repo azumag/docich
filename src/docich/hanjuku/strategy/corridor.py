@@ -670,12 +670,17 @@ def _wounded_attack(mem, castle) -> bool:
     if not isinstance(hp, dict):
         return False
     names = _front_names(mem, castle) or []
+    if not names:
+        return False
     best = 0
     for name in names:
         row = hp.get(name) if isinstance(hp.get(name), dict) else {}
         value = row.get('hp')
-        if type(value) is int and value > best:
-            best = value
+        # An unobserved resident might be healthy: do not block the entire
+        # front based on a low reading from only some of its generals.
+        if type(value) is not int or value <= 0:
+            return False
+        best = max(best, value)
     if best <= 0 or best > WOUNDED_ATTACK_HP:
         return False
     _record_only(mem, 'front_wounded', target=castle,
