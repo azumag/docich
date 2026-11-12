@@ -151,8 +151,10 @@ def test_the_battle_panel_records_the_defender_for_the_next_sortie():
     mem = {'chapter': 1, '_records': []}
     cur = {'side': 'attack', 'castle': 'ゴーメン', 'enemy': 'ガルバンゾー', 'step': '1-A2'}
     policy._observe_defender(mem, cur)
-    assert mem['castle_defenders'] == {'ゴーメン': {'general': 'ガルバンゾー', 'chapter': 1,
-                                                   'evidence': 'battle_panel', 'step': '1-A2'}}
+    record = mem['castle_defenders']['ゴーメン']
+    assert {k: record[k] for k in ('general', 'chapter', 'evidence', 'step')} == {
+        'general': 'ガルバンゾー', 'chapter': 1, 'evidence': 'battle_panel', 'step': '1-A2'}
+    assert 'hp' in record          # v750: the panel HP is kept too
     assert records(mem, 'castle_defender_seen')[0]['castle'] == 'ゴーメン'
     # 防衛側の戦闘 (相手は城にいない) と、章に無い城は記録しない。
     mem = {'chapter': 1, '_records': []}

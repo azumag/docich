@@ -152,3 +152,12 @@ def test_a_road_defeat_is_ledgered_once():
     battle.battle_end(mem, 'field')
     rows = [row for row in mem.get('sortie_history') or [] if row.get('step') == STEP]
     assert len(rows) == 1, 'the road_defeat guard keeps one row per defeat'
+
+
+def test_the_castle_defender_record_keeps_the_panel_hp():
+    """The march needs to see a defender already worn down (v750)."""
+    mem = battle_memory(40, 12, castle='おかざき', target='おかざき', side='attack')
+    battle._observe_defender(mem, mem['battle'])
+    record = (mem.get('castle_defenders') or {}).get('おかざき') or {}
+    assert record.get('general') == 'ヘーゼル'
+    assert record.get('hp') == 12
