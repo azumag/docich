@@ -236,9 +236,15 @@ def unknown_hold_advance(screen, mem, actions, digest):
     watch['total'] = int(watch.get('total') or 0) + 1
     mem['unknown_hold_watch'] = watch
     in_battle = bool(mem.get('battle'))
-    if watch['n'] < UNKNOWN_HOLD_ADVANCE and not (
+    # After one press this screen already proved it does not clear itself:
+    # waiting the full six frames again just costs frames (g1163 2026-11-12
+    # 22:1x: 66 no-input `unknown` frames in ten minutes, mostly three-frame
+    # episodes). The first episode is unchanged.
+    limit = UNKNOWN_HOLD_ADVANCE - 1 if watch.get('pressed') else UNKNOWN_HOLD_ADVANCE
+    if watch['n'] < limit and not (
             in_battle and watch['total'] >= UNKNOWN_BATTLE_ADVANCE):
         return actions
+    watch['pressed'] = True
     watch['n'] = 0
     watch['total'] = 0
     decision_log._record(mem, 'unknown_hold_advance', screen=screen.kind,
