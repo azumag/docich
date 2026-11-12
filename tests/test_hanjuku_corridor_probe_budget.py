@@ -45,7 +45,9 @@ def decided(mem, name):
 
 def test_the_budget_bounds_only_the_preemption():
     """With a real order waiting, the tour may not jump the queue forever."""
-    mem = memory([A, B, C], [A, B])          # C still has a general
+    mem = memory([A, B, C], [A, B])          # C still has generals
+    mem['garrison'][C] = ['リーキ', 'ベーグル']   # two: v734 keeps one at home
+    mem['world']['garrison'][C] = ['リーキ', 'ベーグル']
     for _ in range(corridor.PROBE_BUDGET):
         out = orders(mem)
         assert out and out[0].get('source_probe') is True, 'the tour goes first while budgeted'
@@ -98,7 +100,8 @@ def test_a_stale_sortie_attempt_does_not_block_the_idle_probe():
 
 def test_a_general_showing_up_in_a_castle_list_rearms_the_budget():
     mem = memory([A, B, C], [A, B])
-    mem['world']['garrison'][C] = ['リーキ']
+    mem['garrison'][C] = ['リーキ', 'ベーグル']
+    mem['world']['garrison'][C] = ['リーキ', 'ベーグル']
     for _ in range(corridor.PROBE_BUDGET):
         orders(mem)
     orders(mem)                              # budget spent: no probe any more
@@ -112,7 +115,8 @@ def test_a_general_showing_up_in_a_castle_list_rearms_the_budget():
 
 def test_a_new_month_rearms_the_budget():
     mem = memory([A, B, C], [A, B])
-    mem['world']['garrison'][C] = ['リーキ']
+    mem['garrison'][C] = ['リーキ', 'ベーグル']
+    mem['world']['garrison'][C] = ['リーキ', 'ベーグル']
     for _ in range(corridor.PROBE_BUDGET):
         orders(mem)
     mem['month'] = '23-6'
