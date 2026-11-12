@@ -879,3 +879,27 @@ Xメニューの「しろ」一覧からSELECTで飛ぶ経路は、**飛ぶ前�
 
 - `tests/test_hanjuku_castle_jump.py`: 名前付き行のSELECT後はステータス確認を省略する、
   を追加。castle・jump・deploy・sortie・chapter9・corridor で 745 passed。
+
+# 取ってすぐ失う城へは2人そろうまで攻めない（v742、2026-11-12）
+
+## 事象
+
+21:0x〜23:2x で ドンドン を取っては失う往復が続いた（`sortie_history` に
+`ドンドン won` と `lost` が交互に並ぶ）。前線が1人で攻撃に出ると、取った直後に
+守備戦で落ちる。
+
+## 変更
+
+`src/docich/hanjuku/strategy/corridor.py`
+
+- 攻撃分岐の前線ガードを `_keep = 2 if _flip_prone(mem, target) else 1` に。
+  「取ってすぐ失った城」（`_flip_prone`）への攻撃は、出撃元の実測在城者が
+  `_keep` 以下なら見送る（`front_guard_held`）。待ちは既存の `FRONT_GUARD_WAIT`
+  （600 tick）で有界。3人以上いれば従来どおり波状攻撃を続ける。
+
+## 検証
+
+- `tests/test_hanjuku_capture_guard.py`: フリップ中の城へは1人では攻めない／
+  3人いれば攻める、を追加。
+- corridor・chapter9・capture・drained・squads・state_regions・key_inventory で
+  201 passed。
