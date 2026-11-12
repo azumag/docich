@@ -74,3 +74,21 @@ def test_a_flip_long_ago_does_not_block():
                   {'target': C, 'outcome': 'won', 'enemy_hp': 0,
                    'tick': 1000 + FLIP_WINDOW_TICKS + 200}])
     assert attacks(mem)
+
+
+def test_waiting_for_company_is_bounded():
+    """With nobody left to join, the attack must start anyway."""
+    from docich.hanjuku.strategy.corridor import ATTACK_COMPANY_WAIT
+    history = [{'target': C, 'outcome': 'lost', 'enemy_hp': 44, 'tick': 1000}]
+    mem = memory(history)
+    mem['attack_company_hold'] = {'target': C, 'tick': 5000 - ATTACK_COMPANY_WAIT}
+    assert attacks(mem)                       # the wait expired: attack alone
+    assert mem.get('attack_company_hold') is None
+
+
+def test_the_wait_still_holds_before_its_deadline():
+    from docich.hanjuku.strategy.corridor import ATTACK_COMPANY_WAIT
+    history = [{'target': C, 'outcome': 'lost', 'enemy_hp': 44, 'tick': 1000}]
+    mem = memory(history)
+    mem['attack_company_hold'] = {'target': C, 'tick': 5000 - ATTACK_COMPANY_WAIT + 100}
+    assert attacks(mem) == []
