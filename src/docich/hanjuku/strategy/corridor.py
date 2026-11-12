@@ -269,7 +269,12 @@ def orders(mem) -> list[dict]:
             # either: the winning general left, the enemy walked back in
             # (g1163 2026-11-12 23:3x: ドンドン won with 66 HP, then lost to a
             # 39-HP attacker while its general was marching at オオキク).
-            _keep = 2 if (_flip_prone(mem, target) or _captured_recently(mem, source)) else 1
+            # Only a castle that keeps flipping needs two at home. A freshly
+            # captured front must still send its second general at the target:
+            # keeping two there blocked every オオキク attack for the whole flip
+            # window (g1163 2026-11-13 01:1x: `order_start` fell to 8 in half an
+            # hour while ドンドン sat at two generals).
+            _keep = 2 if _flip_prone(mem, target) else 1
             _finish = _defender_nearly_dead(mem, target)
             if (not _finish and _wounded_attack(mem, source)
                     and not _front_guard_expired(mem, source)):
