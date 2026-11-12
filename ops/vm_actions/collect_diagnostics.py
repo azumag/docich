@@ -7171,6 +7171,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v724-front-guard",
             "hanjuku-chart-v725-attack-underpowered",
             "hanjuku-chart-v726-egg-retry",
+            "hanjuku-chart-v727-wave-attacks",
             "hanjuku-chart-v560-castle-list-scroll",
             "hanjuku-chart-v561-post-month-repair-status",
             "hanjuku-chart-v501-idle-reanchor",

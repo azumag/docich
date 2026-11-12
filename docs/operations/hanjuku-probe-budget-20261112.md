@@ -516,3 +516,39 @@ disable」。築城は行軍の速度に寄与しない。
 - `tests/test_hanjuku_combat_strength.py`: 1回失敗後の再試行が許され、2回で打ち切られる
   ことを追加。
 - egg・survival・retreat・battle_menu・combat のテスト **1476 passed, 1 skipped**。
+
+# 敵城へは波状攻撃にする（v727、2026-11-12）
+
+## オーナー指示
+
+「問題は、将軍自体のHPや戦闘力でなく、波状攻撃していないこと。各個撃破されているから
+意味がない。将軍のステータスによらず、どんどん上から順に将軍を送るべき」。
+
+v719〜v725 で入れた攻撃側の抑制（最強将軍の選択・傷ついた将軍の回避・
+`ATTACK_COMPANY` の待ち合わせ・連続敗北の冷却・`attack_underpowered` の見送り）は、
+いずれも**攻撃を止める**方向で、オーナーの意図と逆でした。
+
+## 変更
+
+`src/docich/hanjuku/strategy/corridor.py`
+
+- 攻撃分岐から、待ち合わせ（`ATTACK_COMPANY`）・冷却（`_defeat_cooldown_active`）・
+  強さ判定（`_attack_underpowered`）・前線ガード（`_front_guard_short`）を撤去。
+  残る上限は「同時行軍 `SQUAD`（6人）」のみ。攻撃は上から順に、途切れず出す。
+- 未使用になった定数とヘルパー（`FRONT_GUARD` / `ATTACK_POWER_RATIO` /
+  `DEFEAT_COOLDOWN_*` / `ATTACK_COMPANY*` / `_attack_underpowered` /
+  `_defeat_cooldown_active` / `_recent_defeats` / `_reinforcements_inbound` /
+  `_front_guard_short`）を削除。
+
+`src/docich/hanjuku/flows/deploy.py`
+
+- 攻撃将軍の「最強／元気な将軍を選ぶ」処理を削除し、カーソル順（上から順）に戻した。
+  主人公を出さない規則は維持。
+
+## 検証
+
+- 不要になったテスト（attack_company / attack_defeat_cooldown / attack_underpowered /
+  front_guard）を削除し、`test_hanjuku_chapter9_cursor_order_sortie.py` に
+  「攻撃はカーソル順（上から）」を戻した。
+- corridor・chapter9・cursor・attack・state_regions・key_inventory・road_defeat で
+  **352 passed**。

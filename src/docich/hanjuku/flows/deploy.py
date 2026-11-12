@@ -1046,25 +1046,6 @@ def _cursor_order_pick(screen, mem, order):
     if _keeps_hero_company(order, present):
         downs.pop(step, None)
         return None                     # see _corridor_list_end
-    if order.get('corridor') is True and order.get('purpose') != 'move':
-        strongest = _strongest_listed(mem, present, name)
-        if strongest is not None:
-            move = menu_to(screen, strongest)
-            if (move and move != 'here'
-                    and int(downs.get(step) or 0) < CURSOR_PICK_DOWNS):
-                downs[step] = int(downs.get(step) or 0) + 1
-                _record(mem, 'attack_strongest_pick', chart_step=step,
-                        strategy_variant='strongest_attacker',
-                        observed_metric={'present': present[:8], 'cursor': name,
-                                         'chosen': strongest, 'move': move},
-                        reason='攻撃は一覧で最も体力のある将軍を選ぶ（カーソルの将軍では毎回敗北していた）')
-                return _deploy_input(screen, mem, order, [move],
-                                     '攻撃は最も体力のある将軍へカーソルを送る')
-            if move is None:
-                _record(mem, 'attack_strongest_offscreen', chart_step=step,
-                        observed_metric={'present': present[:8], 'cursor': name,
-                                         'chosen': strongest},
-                        reason='より強い将軍が一覧の外にいるためカーソルを送れない')
     if name == NAME or name in busy:
         others = [g for g in present if g != NAME and g not in busy]
         whole = len(present) < GENERAL_LIST_FULL
@@ -1087,53 +1068,6 @@ def _cursor_order_pick(screen, mem, order):
             return None
     downs.pop(step, None)
     return _cursor_take(screen, mem, order, name, present)
-
-
-STRONG_ATTACK_MARGIN = 10       # max-HP gain that justifies steering the cursor
-
-
-def _strongest_listed(mem, present, current):
-    """The healthiest listed general, when the cursor one is clearly weaker.
-
-    g1163 2026-11-12 14:5x-15:5x: the march sent whoever the cursor was on
-    (ポワソン, バゲット, モモ...) at オオキク and every one lost on the road
-    (ally HP 0 against 54-77). Chapter 9's cursor order exists for speed
-    (owner 2026-11-11), and a lost sortie is slower than two cursor presses.
-    Moves keep the cursor rule; only attacks prefer the stronger general.
-    The hero is never offered here.
-    """
-    from ...hanjuku_egg_reference import general_max_hp
-
-    known = (_world(mem).get('general_hp') or {}) if isinstance(_world(mem).get('general_hp'), dict) else {}
-
-    def strength(name):
-        """The HP this general brought to the last fight, else its maximum.
-
-        A wounded general looks strong on paper: g1163 2026-11-12 16:4x sent
-        18/22/27-HP attackers at a 50-68-HP defender fourteen times.
-        """
-        row = known.get(name) if isinstance(known.get(name), dict) else {}
-        if type(row.get('hp')) is int:
-            return row['hp']
-        return general_max_hp('しゅじんこう' if name == NAME else name)
-
-    current_hp = strength(current)
-    if type(current_hp) is not int:
-        if current != NAME:
-            return None
-        # The hero is on the cursor: a chapter-9 attack must not send him, and
-        # the list-end fallback is not the only way out — any other general is
-        # the better mover (g1163 2026-11-12 16:3x: the hero row came first on
-        # every attack list, so the strongest row was never considered).
-        current_hp = -STRONG_ATTACK_MARGIN
-    best, best_hp = None, current_hp
-    for general in present:
-        if general == NAME:
-            continue
-        value = strength(general)
-        if type(value) is int and value - best_hp >= STRONG_ATTACK_MARGIN:
-            best, best_hp = general, value
-    return best
 
 
 def _keeps_hero_company(order, present) -> bool:

@@ -248,61 +248,10 @@ def orders(mem) -> list[dict]:
             hop = target
             if _attackers_marching(mem, target) >= SQUAD:
                 continue                   # the vanguard is full; nobody waits for six
-            if _defeat_cooldown_active(mem, target):
-                continue
-            if not chart.is_boss_castle(target) and _attack_underpowered(mem, source, target):
-                # One general per sortie: a 20-HP general against a 60-HP
-                # defender is a lost sortie, not an attempt. Owner 2026-11-12:
-                # 敵城にひとりずつ派遣してるから効率悪い. Wait for somebody who
-                # can actually win, and let the march build that garrison.
-                continue
-            if (not chart.is_boss_castle(target)
-                    and (_repelled_alone(mem, target) or _flip_prone(mem, target))
-                    and _front_guard_short(mem, source)):
-                # Guard-free chapters may empty a castle, but the castle facing
-                # the enemy is the road's only foothold: g1163 2026-11-12 17:4x
-                # sent ドンドン's last generals at オオキク and lost ドンドン to a
-                # defense battle, which costs a whole retake cycle.
-                continue
-            if ((_repelled_alone(mem, target) or _flip_prone(mem, target))
-                    and _attackers_marching(mem, target) < ATTACK_COMPANY):
-                hold = mem.get('attack_company_hold')
-                waiting = (isinstance(hold, dict) and hold.get('target') == target
-                           and type(hold.get('tick')) is int)
-                waited = (int(mem.get('tick') or 0) - hold['tick']) if waiting else 0
-                inbound = _reinforcements_inbound(mem, source)
-                if waiting and waited >= ATTACK_COMPANY_WAIT and not inbound:
-                    # Waiting for company cannot be unbounded: with nobody left
-                    # to join, the attack never starts and the road stops.
-                    # g1163 2026-11-12 12:1x: an hour of サヌト>オシロガ moves and
-                    # not one オシロガ>ドンドン attack.
-                    mem.pop('attack_company_hold', None)
-                    _record_only(mem, 'attack_company_timeout', target=target,
-                                 observed_metric={'waited': waited},
-                                 reason='味方を待つ上限に達したため、単独でも突撃する')
-                elif waiting and waited >= ATTACK_COMPANY_WAIT and inbound:
-                    # Help is on the road to this castle: a lone attacker that
-                    # the timeout just sent at オオキク lost the road battle and
-                    # the next one started alone again (g1163 2026-11-12 15:1x).
-                    # Keep the company rule while a march into the source
-                    # exists, bounded by the same window.
-                    waited = waited % ATTACK_COMPANY_WAIT
-                    hold['tick'] = int(mem.get('tick') or 0) - waited
-                    if not hold.get('reinforced'):
-                        hold['reinforced'] = True
-                        _record_only(mem, 'attack_company_reinforced', target=target,
-                                     observed_metric={'inbound': inbound, 'waited': waited},
-                                     reason='出撃元へ味方が向かっているため、単独突撃せず合流を待つ')
-                    continue
-                else:
-                    if not waiting:
-                        mem['attack_company_hold'] = {'target': target,
-                                                      'tick': int(mem.get('tick') or 0)}
-                        _record_only(mem, 'attack_company_required', target=target,
-                                     observed_metric={'flip_prone': _flip_prone(mem, target),
-                                                      'repelled': _repelled_alone(mem, target)},
-                                     reason='単独で返り討ちにあった／取ってすぐ失った城へは、味方が2人そろうまで突撃しない')
-                    continue
+            # Owner 2026-11-12: 将軍のステータスによらず、どんどん上から順に将軍を
+            # 送る（波状攻撃）。HPや戦闘力で出撃を見送ると、守備将軍に1人ずつ
+            # 各個撃破されるだけで城は落ちない。待ち合わせ・冷却・強さ判定は
+            # 攻撃側では行わない。
         else:
             purpose, hop = 'move', route[1]
         if purpose == 'move' and _moved(mem, wave, hop, source) >= SQUAD:
@@ -541,59 +490,11 @@ def _drained_probe(mem, routes_by, target, lost):
 # 18, 34 and 44 HP in a row (each fresh attacker died without denting it). Two
 # marching attackers are the least that changes that outcome.
 REPELLED_FLOOR_HP = 30
-ATTACK_COMPANY = 2
-ATTACK_COMPANY_WAIT = 600   # ticks to wait for company before attacking alone
 
 
-DEFEAT_COOLDOWN_WINDOW = 1500   # ticks that count as "this exchange keeps losing"
-DEFEAT_COOLDOWN_LIMIT = 3       # defeats on one target inside the window
-DEFEAT_COOLDOWN_TICKS = 900     # how long the attack on that castle is paused
 
 
-def _recent_defeats(mem, target) -> int:
-    now = int(mem.get('tick') or 0)
-    count = 0
-    for row in mem.get('sortie_history') or ():
-        if not isinstance(row, dict) or row.get('target') != target:
-            continue
-        if row.get('outcome') != 'lost':
-            continue
-        tick = row.get('tick')
-        if type(tick) is int and 0 <= now - tick <= DEFEAT_COOLDOWN_WINDOW:
-            count += 1
-    return count
 
-
-def _defeat_cooldown_active(mem, target) -> bool:
-    """Stop attacking a castle whose exchange keeps ending in a defeat.
-
-    g1163 2026-11-12 14:5x-15:3x: オオキク was attacked every minute and each
-    march ended in a road defeat (``sortie_road_defeat``), enemy HP readings
-    moving 44 -> 54 -> 55 -> 77 while no castle changed hands. A defence that
-    keeps winning needs a pause, not another lone march. Bounded: the pause
-    expires on its own, so the road never stops for good. Boss castles keep
-    their own rules.
-    """
-    if chart.is_boss_castle(target):
-        return False
-    holds = mem.setdefault('attack_defeat_hold', {})
-    now = int(mem.get('tick') or 0)
-    entry = holds.get(target) if isinstance(holds.get(target), dict) else {}
-    if now < int(entry.get('until') or 0):
-        return True
-    defeats = _recent_defeats(mem, target)
-    if defeats < DEFEAT_COOLDOWN_LIMIT or defeats <= int(entry.get('counted') or 0):
-        return False
-    holds[target] = {'until': now + DEFEAT_COOLDOWN_TICKS, 'counted': defeats}
-    _record_only(mem, 'attack_defeat_cooldown', target=target,
-                 observed_metric={'defeats': defeats, 'window': DEFEAT_COOLDOWN_WINDOW,
-                                  'pause': DEFEAT_COOLDOWN_TICKS},
-                 reason='同じ城への攻撃が短期間に何度も敗北しているため、いったん攻撃を休んで増援の移動に回す')
-    return True
-
-
-FRONT_GUARD = 1                 # generals kept at the castle facing the enemy
-ATTACK_POWER_RATIO = 0.9        # attacker HP the defender's last HP must not exceed
 
 
 def _residents(mem, castle):
@@ -607,76 +508,6 @@ def _residents(mem, castle):
     return list(names) if isinstance(names, list) else []
 
 
-def _attack_underpowered(mem, source, target) -> bool:
-    """Nobody at the source can beat the defender's last measured HP.
-
-    Sending a weaker general one at a time is exactly what the owner called
-    inefficient (g1163 2026-11-12 18:0x: 19 losses at オオキク, ally HP 18-60
-    against a defender reading 50-74). Unknown numbers never block an attack.
-    """
-    hp = _world(mem).get('general_hp') or {}
-    if not isinstance(hp, dict):
-        return False
-    strongest = 0
-    for name in _residents(mem, source):
-        row = hp.get(name) if isinstance(hp.get(name), dict) else {}
-        value = row.get('hp')
-        if type(value) is int and value > strongest:
-            strongest = value
-    if strongest <= 0:
-        return False                       # nobody measured: no evidence
-    defender = 0
-    for row in mem.get('sortie_history') or ():
-        if isinstance(row, dict) and row.get('target') == target:
-            value = row.get('enemy_hp')
-            if type(value) is int and value > 0:
-                defender = value
-    if defender <= 0:
-        return False
-    if strongest >= defender * ATTACK_POWER_RATIO:
-        return False
-    holds = mem.setdefault('attack_underpowered', {})
-    if int(mem.get('tick') or 0) - int(holds.get(target) or -10 ** 9) > 300:
-        holds[target] = int(mem.get('tick') or 0)
-        _record_only(mem, 'attack_underpowered', target=target,
-                     observed_metric={'source': source, 'strongest_hp': strongest,
-                                      'defender_hp': defender, 'ratio': ATTACK_POWER_RATIO},
-                     reason='出撃元で最も元気な将軍でも守備将軍のHPに届かないため、出撃せず増援を待つ')
-    return True
-
-
-def _front_guard_short(mem, castle) -> bool:
-    """This castle holds no more than the front guard, so nobody may leave.
-
-    Only a measured list is evidence: an unread castle is not empty. The
-    names a page proved (``garrison_partial``) count the same way as a full
-    roster read.
-    """
-    world = _world(mem)
-    garrison = world.get('garrison') or {}
-    names = garrison.get(castle) if isinstance(garrison, dict) else None
-    if not isinstance(names, list):
-        partial = world.get('garrison_partial') or {}
-        names = partial.get(castle) if isinstance(partial, dict) else None
-    if not isinstance(names, list):
-        return False                       # unread: no evidence either way
-    if len(names) > FRONT_GUARD:
-        return False
-    _record_only(mem, 'front_guard_held', target=castle,
-                 observed_metric={'residents': list(names)[:8], 'keep': FRONT_GUARD},
-                 reason='前線の城に残る将軍が下限に達するため、この城から出撃させない（失城の取り直しを避ける）')
-    return True
-
-
-def _reinforcements_inbound(mem, castle) -> int:
-    """Marches still on the road into ``castle`` (a reason to wait for company)."""
-    count = 0
-    for sortie in _sorties(mem).values():
-        if not isinstance(sortie, dict) or sortie.get('target') != castle:
-            continue
-        if sortie.get('status') in ('en_route', 'launched_unconfirmed', 'pending'):
-            count += 1
-    return count
 
 
 def _repelled_alone(mem, target) -> bool:
