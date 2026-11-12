@@ -781,3 +781,24 @@ step** でも毎回そのまま返し、新しい指示も probe も出ない状
 - live state で `orders()` が `('ハヤク','タオ','move'), ('オシロガ','ドンドン','retake'),
   ('サヌト','オシロガ','move')` を返すことを確認。
 - corridor・chapter9・drained・capture・squads・state_regions・key_inventory で 199 passed。
+
+# カーソルの無い文字画面にも有限回のAを送る（v738、2026-11-12）
+
+## 事象
+
+21:3x の30分で `text` かつ入力ゼロのプランが **101件**。手カーソル（`screen.hand`）が
+無い＝選ぶものが無い文字画面で、`unknown_hold_advance` の対象が `kind == 'unknown'`
+だけだったため、Aを送らずに待ち続けていた。
+
+## 変更
+
+`src/docich/hanjuku/orchestrator.py`
+
+- `plain_text_hold(screen)`: `kind == 'text'` かつ `hand is None` を判定。
+- その画面も `unknown_hold_advance`（同一フレームが続いたらAを1回）の対象にする。
+  選ぶものが無いので、Aは「進める」以外の意味を持たない。
+
+## 検証
+
+- `tests/test_hanjuku_text_hold_advance.py`（3件）
+- unknown_hold・no_input_gate・state_regions・key_inventory・corridor と合わせて 71 passed。
