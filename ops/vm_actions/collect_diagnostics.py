@@ -7189,6 +7189,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v742-flip-keep-two",
             "hanjuku-chart-v743-capture-keep-two",
             "hanjuku-chart-v744-wounded-front",
+            "hanjuku-chart-v745-healthy-mover",
             "hanjuku-chart-v560-castle-list-scroll",
             "hanjuku-chart-v561-post-month-repair-status",
             "hanjuku-chart-v501-idle-reanchor",
