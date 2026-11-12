@@ -1037,3 +1037,24 @@ v744 の「瀕死の将軍では攻撃しない」と v734 の前線ガードが
 
 - `tests/test_hanjuku_capture_guard.py`: 3 HP の守備将軍には瀕死の将軍でも攻撃する、
   を追加（13件）。corridor 系 210 passed。
+
+# 取った直後の前線でも2人目は攻撃に出せる（v749、2026-11-13）
+
+## 事象
+
+01:1x、`order_start` が30分で **8件** まで低下。ドンドン は2人在城なのに オオキク への
+攻撃が出ない時間が続いた。v743 の「取った直後の城は2人残す」規則が、**2人在城でも
+攻撃を差し止め**、3人目が来るか `FLIP_WINDOW_TICKS`（15分）が過ぎるまで待たせていた。
+
+## 変更
+
+`src/docich/hanjuku/strategy/corridor.py`
+
+- 前線ガードの `_keep` を `2 if _flip_prone(mem, target) else 1` に戻す（v743 の
+  `_captured_recently` 条件を撤去）。**1人だけのときは従来どおり出さない**（v734）が、
+  2人いれば2人目を攻撃に出す。
+
+## 検証
+
+- `tests/test_hanjuku_capture_guard.py`: 「取った直後でも2人目は攻撃に出せる」を追加、
+  1人だけのケースは維持（14件）。corridor 系 212 passed。

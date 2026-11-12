@@ -116,7 +116,7 @@ def test_a_flip_prone_target_still_attacks_with_three_residents():
     assert [o for o in attacks(mem) if o['source'] == B]
 
 
-def test_a_just_captured_front_does_not_send_its_last_general():
+def test_a_just_captured_front_keeps_its_last_general():
     """g1163 2026-11-12 23:3x: ドンドン won with 66 HP, then lost to a 39-HP attacker."""
     mem = memory(['リーキ'])
     mem['captured'] = [A, B]
@@ -124,6 +124,15 @@ def test_a_just_captured_front_does_not_send_its_last_general():
     mem['sortie_history'] = [{'target': B, 'outcome': 'won', 'enemy_hp': 0, 'tick': 4900}]
     assert not [o for o in attacks(mem) if o['source'] == B]
     assert [r for r in mem['_records'] if r.get('decision') == 'front_guard_held']
+
+
+def test_a_just_captured_front_still_sends_its_second_general():
+    """g1163 2026-11-13 01:1x: ドンドン sat at two generals and オオキク went un-attacked."""
+    mem = memory(['リーキ', 'ベーグル'])
+    mem['captured'] = [A, B]
+    mem['lost'] = []
+    mem['sortie_history'] = [{'target': B, 'outcome': 'won', 'enemy_hp': 0, 'tick': 4900}]
+    assert [o for o in attacks(mem) if o['source'] == B]
 
 
 def test_a_nearly_dead_front_does_not_attack():
