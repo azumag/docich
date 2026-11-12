@@ -1066,8 +1066,53 @@ def _cursor_order_pick(screen, mem, order):
                     deviation_reason='主人公を前線へ出す代わりに、移動の指示を閉じる',
                     reason='主人公は前線の一つ後ろの自城に常駐させるため、行軍の代役にしない')
             return None
+    if order.get('corridor') is True and order.get('purpose') != 'move':
+        strongest = _strongest_listed(present, name)
+        if strongest is not None:
+            move = menu_to(screen, strongest)
+            if (move and move != 'here'
+                    and int(downs.get(step) or 0) < CURSOR_PICK_DOWNS):
+                downs[step] = int(downs.get(step) or 0) + 1
+                _record(mem, 'attack_strongest_pick', chart_step=step,
+                        strategy_variant='strongest_attacker',
+                        observed_metric={'present': present[:8], 'cursor': name,
+                                         'chosen': strongest},
+                        reason='攻撃は一覧で最も体力のある将軍を選ぶ（カーソルの将軍では毎回敗北していた）')
+                return _deploy_input(screen, mem, order, [move],
+                                     '攻撃は最も体力のある将軍へカーソルを送る')
     downs.pop(step, None)
     return _cursor_take(screen, mem, order, name, present)
+
+
+STRONG_ATTACK_MARGIN = 10       # max-HP gain that justifies steering the cursor
+
+
+def _strongest_listed(present, current):
+    """The healthiest listed general, when the cursor one is clearly weaker.
+
+    g1163 2026-11-12 14:5x-15:5x: the march sent whoever the cursor was on
+    (ポワソン, バゲット, モモ...) at オオキク and every one lost on the road
+    (ally HP 0 against 54-77). Chapter 9's cursor order exists for speed
+    (owner 2026-11-11), and a lost sortie is slower than two cursor presses.
+    Moves keep the cursor rule; only attacks prefer the stronger general.
+    The hero is never offered here.
+    """
+    from ...hanjuku_egg_reference import general_max_hp
+
+    def max_hp(name):
+        return general_max_hp('しゅじんこう' if name == NAME else name)
+
+    current_hp = max_hp(current)
+    if type(current_hp) is not int:
+        return None
+    best, best_hp = None, current_hp
+    for general in present:
+        if general == NAME:
+            continue
+        value = max_hp(general)
+        if type(value) is int and value - best_hp >= STRONG_ATTACK_MARGIN:
+            best, best_hp = general, value
+    return best
 
 
 def _keeps_hero_company(order, present) -> bool:
