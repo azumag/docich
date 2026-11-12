@@ -187,3 +187,15 @@ def test_a_panel_reading_of_three_hp_licenses_the_finish():
     mem['sortie_history'] = []
     assert [o for o in attacks(mem) if o['source'] == B]
     assert not [r for r in mem['_records'] if r.get('decision') == 'front_wounded']
+
+
+def test_a_retake_is_not_held_back_by_the_flip_rule():
+    """g1163 2026-11-13 02:1x: ドンドン retakes stalled with two at the front."""
+    mem = memory(['リーキ', 'ベーグル'])
+    mem['captured'] = [A, B]
+    mem['lost'] = [C]
+    mem['sortie_history'] = [
+        {'target': C, 'outcome': 'won', 'enemy_hp': 0, 'tick': 4800},
+        {'target': C, 'outcome': 'lost', 'enemy_hp': 40, 'tick': 4900},
+    ]
+    assert [o for o in attacks(mem) if o['source'] == B and o['purpose'] == 'retake']
