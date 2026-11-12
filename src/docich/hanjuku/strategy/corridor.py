@@ -278,6 +278,11 @@ def orders(mem) -> list[dict]:
     # only thing that can find anybody, and an empty plan leaves the bot
     # standing on the field map (g1163 2026-11-12 13:1x: 169 consecutive
     # no-input map plans, five minutes without a single press).
+    if out and _attackers_marching(mem, target) > 0:
+        # The wave owns the observation: a castle-list probe that jumps the
+        # queue during an attack wave only spends a visit (g1163 2026-11-12
+        # 20:0x: 20 probes in half an hour while オオキク was being attacked).
+        return out
     if out and not _probe_budget_left(mem):
         return out
     if not out and _attackers_marching(mem, target) > 0:
