@@ -227,13 +227,15 @@ def orders(mem) -> list[dict]:
             hop = target
             if _attackers_marching(mem, target) >= SQUAD:
                 continue                   # the vanguard is full; nobody waits for six
-            if (_repelled_alone(mem, target)
+            if ((_repelled_alone(mem, target) or _flip_prone(mem, target))
                     and _attackers_marching(mem, target) < ATTACK_COMPANY):
                 if not mem.get('attack_company_hold'):
                     mem['attack_company_hold'] = {'target': target,
                                                   'tick': int(mem.get('tick') or 0)}
                     _record_only(mem, 'attack_company_required', target=target,
-                                 reason='単独で返り討ちにあった城へは、味方が2人そろうまで突撃しない')
+                                 observed_metric={'flip_prone': _flip_prone(mem, target),
+                                                  'repelled': _repelled_alone(mem, target)},
+                                 reason='単独で返り討ちにあった／取ってすぐ失った城へは、味方が2人そろうまで突撃しない')
                 continue
         else:
             purpose, hop = 'move', route[1]
@@ -361,6 +363,29 @@ def _repelled_alone(mem, target) -> bool:
     enemy_hp = last.get('enemy_hp')
     return (last.get('outcome') == 'lost' and type(enemy_hp) is int
             and enemy_hp >= REPELLED_FLOOR_HP)
+
+
+FLIP_WINDOW_TICKS = 900    # a capture lost again inside this window is a flip
+
+
+def _flip_prone(mem, target) -> bool:
+    """This castle was captured and lost again almost at once.
+
+    g1163 2026-11-12 09:54/09:56: ドンドン was taken and lost again two minutes
+    later, twice in the same afternoon. A lone attacker captures, moves on (or
+    falls), and the enemy walks straight back in — the castle changes hands
+    without the road advancing. Waiting for a second marching attacker costs a
+    little time; losing the general and the castle costs both.
+    """
+    history = [h for h in (mem.get('sortie_history') or [])
+               if isinstance(h, dict) and h.get('target') == target
+               and type(h.get('tick')) is int]
+    if len(history) < 2:
+        return False
+    last, before = history[-1], history[-2]
+    if last.get('outcome') != 'lost' or before.get('outcome') != 'won':
+        return False
+    return 0 <= last['tick'] - before['tick'] <= FLIP_WINDOW_TICKS
 
 
 HERO_POST_HOPS = 3          # the hero stands this many castles from the target
