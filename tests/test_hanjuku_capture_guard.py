@@ -85,3 +85,32 @@ def test_a_one_general_front_does_not_hold_the_wave_for_ever():
     with chart.map_context(mem):
         assert corridor._front_guard_expired(mem, B) is True
     assert [r for r in mem['_records'] if r.get('decision') == 'front_guard_timeout']
+
+
+def attacks(mem):
+    with chart.map_context(mem):
+        return [o for o in corridor.orders(mem) if o['purpose'] in ('attack', 'retake')]
+
+
+def test_a_flip_prone_target_waits_for_a_second_attacker():
+    """g1163 2026-11-12 21:0x-23:2x: ドンドン was taken and lost repeatedly."""
+    mem = memory(['リーキ'])
+    mem['captured'] = [A, B]
+    mem['lost'] = [C]
+    mem['sortie_history'] = [
+        {'target': C, 'outcome': 'won', 'enemy_hp': 0, 'tick': 4800},
+        {'target': C, 'outcome': 'lost', 'enemy_hp': 40, 'tick': 4900},
+    ]
+    assert not [o for o in attacks(mem) if o['source'] == B]
+    assert [r for r in mem['_records'] if r.get('decision') == 'front_guard_held']
+
+
+def test_a_flip_prone_target_still_attacks_with_three_residents():
+    mem = memory(['リーキ', 'ベーグル', 'シナモン'])
+    mem['captured'] = [A, B]
+    mem['lost'] = [C]
+    mem['sortie_history'] = [
+        {'target': C, 'outcome': 'won', 'enemy_hp': 0, 'tick': 4800},
+        {'target': C, 'outcome': 'lost', 'enemy_hp': 40, 'tick': 4900},
+    ]
+    assert [o for o in attacks(mem) if o['source'] == B]

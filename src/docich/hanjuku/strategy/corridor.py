@@ -265,7 +265,9 @@ def orders(mem) -> list[dict]:
             if _attackers_marching(mem, target) >= SQUAD:
                 continue                   # the vanguard is full; nobody waits for six
             _front_names_now = _front_names(mem, source)
-            if (isinstance(_front_names_now, list) and len(_front_names_now) == 1
+            _keep = 2 if _flip_prone(mem, target) else 1
+            if (isinstance(_front_names_now, list)
+                    and 0 < len(_front_names_now) <= _keep
                     and not _front_guard_expired(mem, source)):
                 # The last measured resident does not leave: an empty front is
                 # retaken at once (g1163 2026-11-12 20:2x ドンドン went 6→5 and
