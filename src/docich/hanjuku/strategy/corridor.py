@@ -204,8 +204,16 @@ def _wave(mem, target, front):
     # A wiped vanguard: the front's live list was empty, nobody is marching at
     # the target and this wave's movers into the front have all been sent.
     drained = (mem.get(DRAINED) or {}).get(front) or {}
-    if (front and drained.get('kind') == 'empty' and type(drained.get('tick')) is int
-            and drained['tick'] >= wave['tick'] and _moved(mem, wave, front) >= SQUAD
+    # A front read down to one general is as wiped as an empty one: the wave
+    # cannot keep attacking without a body to send, and emptying it loses the
+    # castle (g1163 2026-11-12 20:2x took ドンドン and lost it again). Only a
+    # measured list counts, and the list has to be thin after this wave's
+    # movers left.
+    thin = _front_thin(mem, front) if front else False
+    if (front and (thin or (drained.get('kind') == 'empty'
+                            and type(drained.get('tick')) is int
+                            and drained['tick'] >= wave['tick']))
+            and _moved(mem, wave, front) >= SQUAD
             and not _attackers_marching(mem, target)):
         wave = mem[WAVE] = {'target': target, 'tick': now, 'refill': int(wave.get('refill') or 0) + 1}
     return wave
@@ -552,6 +560,22 @@ def _residents(mem, castle):
 
 
 CAPTURE_GUARD = 1               # generals kept in a castle captured moments ago
+
+
+FRONT_REFILL_MIN = 2            # residents the attacking castle needs to hold itself
+
+
+def _front_thin(mem, castle) -> bool:
+    """The castle the wave leaves from holds fewer than two measured residents."""
+    world = _world(mem)
+    garrison = world.get('garrison') or {}
+    names = garrison.get(castle) if isinstance(garrison, dict) else None
+    if not isinstance(names, list):
+        partial = world.get('garrison_partial') or {}
+        names = partial.get(castle) if isinstance(partial, dict) else None
+    if not isinstance(names, list):
+        return False                       # unread is not thin
+    return len(names) < FRONT_REFILL_MIN
 
 
 def _capture_guard_short(mem, castle) -> bool:
