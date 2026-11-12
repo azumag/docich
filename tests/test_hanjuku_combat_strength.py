@@ -271,3 +271,16 @@ def test_unknown_combat_overrides_learned_or_saved_pass_without_unlocking_zero(c
     assert mem['egg_uses']['未確認'] == uses
     if cached:
         assert cur['independent']['action'] == expected
+
+
+def test_the_egg_menu_gets_one_bounded_retry():
+    """g1163 2026-11-12 18:0x: the menu opened, the box never became readable."""
+    cur = duel()
+    mem = {'chapter': 1, 'battle': cur, 'egg_uses': {'カシュー': 2}}
+    assert p.battle_menu_step(menu(('たまごをつかう',)), mem) == [p.pad('a')]
+    assert cur['survival']['egg_attempts'] == 1
+    mem['egg_recheck'] = []                 # the count was re-read after the selection
+    cur['survival']['egg_pending'] = False
+    assert p._egg_before_retreat(mem, cur) is True, 'one failed selection may retry'
+    cur['survival']['egg_attempts'] = 2
+    assert p._egg_before_retreat(mem, cur) is False, 'the retry is bounded'

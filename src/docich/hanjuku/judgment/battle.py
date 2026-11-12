@@ -1760,6 +1760,9 @@ def _bind_substitute_defender(mem, cur, b):
             reason='チャート想定と別の将軍が守るが、HPが自軍の1.5倍以上のため同じ手順の開幕切り札を使う')
 
 
+EGG_ATTEMPT_LIMIT = 2      # summon-menu selections per battle before melee resumes
+
+
 def _egg_before_retreat(mem, cur, *, menu=False):
     """Inspect this actor's untried positive egg before fleeing ordinary melee.
 
@@ -1772,10 +1775,14 @@ def _egg_before_retreat(mem, cur, *, menu=False):
     if (rescue.get('conserving_melee') is True
             and _hold_melee_egg(mem, cur, set(rescue.get('conserved_labels') or ()))):
         return False
+    attempts = int(rescue.get('egg_attempts') or 0)
+    # A legacy flag without the counter means the menu was already used: only
+    # the counted attempts (v726) may retry once.
+    spent = attempts >= EGG_ATTEMPT_LIMIT or (rescue.get('egg_attempted') and not attempts)
     return (not cur.get('egg_battle') and _survival_needed(cur)
             and (_critical_survival_needed(cur) or not cur.get('planned_cards'))
             and _own_egg_positive(mem, cur) and not _own_egg_empty(mem, cur)
-            and not rescue.get('egg_attempted') and not rescue.get('exhausted')
+            and not spent and not rescue.get('exhausted')
             and (menu or (int(rescue.get('opens') or 0) < 12
                           and int(rescue.get('pending_opens') or 0) < 3))
             and not (cur.get('hero_retreat') or {}).get('selected'))

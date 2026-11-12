@@ -356,6 +356,11 @@ def _survival_menu(screen, mem, cur):
     else:
         _egg_recheck(mem)
         rescue['egg_attempted'] = True
+        # One selection is not a used summon: the box can fade before the row
+        # is taken (g1163 2026-11-12 18:0x: the egg menu opened, the skill box
+        # never became readable, and the general fell with the egg unused).
+        # A bounded second selection gives that attempt a retry.
+        rescue['egg_attempts'] = int(rescue.get('egg_attempts') or 0) + 1
         rescue['egg_pending'] = True
     _record(mem, 'battle_survival_select', **_battle_labels(cur),
             observed_metric={'label': label, 'melee_balance': _melee_balance(cur)},
