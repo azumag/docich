@@ -99,3 +99,12 @@ def test_a_move_keeps_the_cursor_when_nobody_is_healthier():
                                  'ジェラート': {'hp': 40, 'max': 49}}
     actions = _step(mem, ['ミント', 'ジェラート'])
     assert policy.pad('a') in actions
+
+
+def test_a_move_prefers_a_fresh_recruit_over_a_wounded_general():
+    """Generals never heal in a run; a fresh recruit arrives whole (v746)."""
+    mem = _memory('move')
+    _world(mem)['general_hp'] = {'ミント': {'hp': 8, 'max': 32}}
+    actions = _step(mem, ['ミント', 'ジェラート'])      # ジェラート has no record
+    assert actions == [policy.pad('down')]
+    assert any(r.get('decision') == 'healthy_mover_pick' for r in mem['_records'])
