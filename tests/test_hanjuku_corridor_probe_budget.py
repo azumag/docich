@@ -130,3 +130,14 @@ def test_a_running_wave_keeps_the_idle_probe_away():
     orders(mem)
     assert not (decided(mem, 'roster_probe_idle') + decided(mem, 'drained_probe_idle')), \
         'the wave is the work: no idle probe during it'
+
+
+def test_a_minted_idle_probe_is_reused_instead_of_minted_again():
+    """g1163 2026-11-12 14:2x: 19 idle probes in ten minutes, none executed."""
+    mem = memory([A, B, C], [A, B, C])
+    first = orders(mem)
+    assert len(first) == 1
+    later = orders(mem)
+    assert later, 'the plan still moves'
+    assert [o['step'] for o in later] == [o['step'] for o in first], \
+        'the pending idle probe is reused, not replaced'
