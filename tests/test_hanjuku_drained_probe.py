@@ -58,6 +58,8 @@ def test_the_visit_rotates_to_the_oldest_mark():
 
 def test_one_live_castle_keeps_the_probe_away():
     mem = memory([A, B, C], [A, B])
+    mem['world']['garrison'][C] = ['リーキ', 'ベーグル']   # v734 keeps one at home
+    mem['garrison'][C] = ['リーキ', 'ベーグル']
     out = orders(mem)
     assert out and all(order['source'] == C for order in out)
 

@@ -256,6 +256,16 @@ def orders(mem) -> list[dict]:
             hop = target
             if _attackers_marching(mem, target) >= SQUAD:
                 continue                   # the vanguard is full; nobody waits for six
+            _front_names_now = _front_names(mem, source)
+            if isinstance(_front_names_now, list) and len(_front_names_now) == 1:
+                # The last measured resident does not leave: an empty front is
+                # retaken at once (g1163 2026-11-12 20:2x ドンドン went 6→5 and
+                # back four times). The wave continues as soon as the refill
+                # brings a second general.
+                _record_only(mem, 'front_guard_held', target=source,
+                             observed_metric={'residents': list(_front_names_now)[:8]},
+                             reason='前線の城に残る将軍が下限に達するため、この城から攻撃に出さない')
+                continue
             # Owner 2026-11-12: 将軍のステータスによらず、どんどん上から順に将軍を
             # 送る（波状攻撃）。HPや戦闘力で出撃を見送ると、守備将軍に1人ずつ
             # 各個撃破されるだけで城は落ちない。待ち合わせ・冷却・強さ判定は
@@ -563,6 +573,17 @@ CAPTURE_GUARD = 1               # generals kept in a castle captured moments ago
 
 
 FRONT_REFILL_MIN = 2            # residents the attacking castle needs to hold itself
+
+
+def _front_names(mem, castle):
+    world = _world(mem)
+    garrison = world.get('garrison') or {}
+    names = garrison.get(castle) if isinstance(garrison, dict) else None
+    if isinstance(names, list):
+        return names
+    partial = world.get('garrison_partial') or {}
+    names = partial.get(castle) if isinstance(partial, dict) else None
+    return names if isinstance(names, list) else None
 
 
 def _front_thin(mem, castle) -> bool:

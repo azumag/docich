@@ -688,3 +688,24 @@ v730 は「空いた時の確認」だけを止めており、予算付きの割
 - `tests/test_hanjuku_chapter9_squads.py`: 「薄い前線は空一覧なしでも予算を開く」を
   追加し、既存の「空一覧で予算を開く」は在城2人の前提に更新（12件）。
 - corridor・chapter9・capture・drained・state_regions・key_inventory で 116 passed。
+
+# 前線の最後の1人では攻撃に出ない（v734、2026-11-12）
+
+## 事象
+
+20:2x〜20:4x、ドンドン を取っては前線が1人になり、守備戦で失う往復が4回。
+自城 6 ⇄ 5 を繰り返し、そのたびに奪還の出撃（1回あたり約1分）を消費していた。
+
+## 変更
+
+`src/docich/hanjuku/strategy/corridor.py`
+
+- 攻撃分岐: 出撃元（前線）の**実測在城者がちょうど1人**なら攻撃に出さず
+  `front_guard_held` を記録する。0人（空読み）は従来どおり（出せる将軍がいない
+  ことは deploy 側が判定する）。
+- v733 の thin-front refill と組み合わせ、増援が来れば波状攻撃が自動で再開する。
+
+## 検証
+
+- corridor・chapter9・capture・drained・squads・state_regions・key_inventory・attack・front
+  で 241 passed（前線が1人の前提だったテストは2人在城へ更新）。

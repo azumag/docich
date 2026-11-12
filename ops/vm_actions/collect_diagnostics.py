@@ -7178,6 +7178,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v731-idle-probe-reuse",
             "hanjuku-chart-v732-wave-first",
             "hanjuku-chart-v733-thin-front-refill",
+            "hanjuku-chart-v734-front-guard",
             "hanjuku-chart-v560-castle-list-scroll",
             "hanjuku-chart-v561-post-month-repair-status",
             "hanjuku-chart-v501-idle-reanchor",
