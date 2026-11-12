@@ -621,3 +621,25 @@ target が None）残っていた。すでに決着した波の記録で、状�
 
 - `tests/test_hanjuku_corridor_probe_budget.py` に「波の間は idle probe を出さない」を追加。
 - corridor・drained・capture・chapter9・state_regions・key_inventory で 192 passed。
+
+# 作った idle probe は作り直さず使い回す（v731、2026-11-12）
+
+## 事象
+
+v713 の計測では idle probe（何も無いときの城一覧確認）が10分で19件作られ、
+実行されないまま毎観測ごとに新しい step が増えていた。v730 で「波の間は出さない」に
+したが、波が無いときは同じ増殖が残る。
+
+## 変更
+
+`src/docich/hanjuku/strategy/corridor.py`
+
+- 直前に作った idle probe（`corridor_probe.idle_step`）がまだ指示として残り、
+  実行もされていないなら、新しい probe を作らずにその指示を返す。
+- 実行が始まった（`plan.active` がその step）か、指示が消えたら新規作成に戻る。
+
+## 検証
+
+- `tests/test_hanjuku_corridor_probe_budget.py`: 2回目の呼び出しが同じ step を
+  返すことを追加（9件）。
+- corridor・chapter9・squads・state_regions・key_inventory・capture で 100 passed。

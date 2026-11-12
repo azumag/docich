@@ -293,6 +293,11 @@ def orders(mem) -> list[dict]:
         # ten minutes while the march started only 12 orders, and the probes
         # were never executed.
         return out
+    if not out and _idle_probe_pending(mem):
+        # An idle probe that was already minted and not started yet is this
+        # observation's work. Minting another one every frame was the churn
+        # v713 measured (19 probes in ten minutes, none executed).
+        return out
     if not out and not _idle_probe_due(mem):
         # Spacing the idle tour left the bot standing on the field map again
         # (g1163 2026-11-12 15:0x: 79 of 162 plans in five minutes were
@@ -311,6 +316,8 @@ def orders(mem) -> list[dict]:
         return out
     idle = not out
     _probe_spend(mem, f'{decision}_idle' if idle else decision, idle=idle)
+    if idle:
+        mem[PROBE]['idle_step'] = probe['step']
     out.insert(0, probe)                # the re-read goes first: the tour is priority
     return out
 
@@ -334,6 +341,22 @@ def _sortie_in_flight(mem) -> bool:
         return False
     now = int(mem.get('tick') or 0)
     return 0 <= now - since <= SORTIE_ATTEMPT_TTL
+
+
+def _idle_probe_pending(mem) -> bool:
+    """An earlier idle probe is still waiting to be executed."""
+    state = mem.get(PROBE)
+    if not isinstance(state, dict):
+        return False
+    step = state.get('idle_step')
+    if not isinstance(step, str):
+        return False
+    if step not in ((_plan_region(mem).get('orders') or {}) if isinstance(
+            _plan_region(mem).get('orders'), dict) else {}):
+        return False
+    if _plan_region(mem).get('active') == step:
+        return False                     # it is running: a fresh one may wait
+    return True
 
 
 def _idle_probe_due(mem) -> bool:
