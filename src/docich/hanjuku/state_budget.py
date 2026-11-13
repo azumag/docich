@@ -38,6 +38,11 @@ COUNTER_KEYS = ('tally', 'y_jumps', 'y_jumped', 'y_jumps_total', 'house_eggs')
 RETIRED = ('failed', 'done')
 # Every place a step id is still referenced after the order map forgets it.
 REFERENCE_KEYS = ('order_context', 'sortie_general')
+# plan 内の「step id → その場の文脈/上書き」マップ。step が決着した後は
+# 誰も引かない (execution.py / orders.py は必ず order['step'] で引く)。
+PLAN_STEP_MAPS = ('order_context', 'card_override', 'general_override',
+                  'sortie_general', 'source_override')
+LIVE_ORDER_STATES = ('pending', 'launched', 'launched_unconfirmed')
 
 
 def size(state) -> int:
@@ -174,7 +179,66 @@ def compact_state(state, limit: int) -> dict:
         policy.pop(key, None)
     if size(out) > goal:
         _prune_settled_marches(out, goal)
+    if size(out) > goal:
+        _prune_retired_step_maps(out, goal)
     return out
+
+
+def _prune_retired_step_maps(state, goal: int) -> None:
+    """Drop per-step plan context that no live order or march can read again.
+
+    g1163 2026-11-13 09:5x: the record reached 356 274 bytes against the
+    262 144-byte read limit although every cache, history and settled-march
+    trim had already run. All of the remaining growth was inside ``plan``:
+    ``order_context`` 185 KB / 228 entries, ``card_override`` 30 KB,
+    ``general_override`` 16 KB, ``sortie_general`` 15 KB. Only 49/61 of those
+    steps were pending or launched; the rest belonged to 226 ``failed`` orders.
+    Because of that the shared status card read the policy as unavailable
+    ("状態: 未確認") and the left observation card disappeared from the
+    broadcast.
+
+    A step is kept when it is still a live order, or when a march/flow region
+    can still resolve it (``world.sorties`` / ``world.launched_orders`` /
+    ``flow``). Everything else is unreachable: the readers
+    (``strategy.execution`` / ``strategy.orders`` / ``flows.deploy``) always
+    look up ``order['step']``.
+    """
+    policy = state.get('policy') or {}
+    plan = policy.get('plan') if isinstance(policy, dict) else None
+    if not isinstance(plan, dict):
+        return
+    orders = plan.get('orders') if isinstance(plan.get('orders'), dict) else {}
+    referenced = {step for step, status in orders.items() if status in LIVE_ORDER_STATES}
+    world = policy.get('world') if isinstance(policy.get('world'), dict) else {}
+    for key in ('sorties', 'launched_orders'):
+        section = world.get(key)
+        if isinstance(section, dict):
+            referenced.update(section)
+    flow = policy.get('flow')
+    if isinstance(flow, dict):
+        referenced.update(key for key in flow if isinstance(key, str))
+    # 現在動いている step と再武装の待ちは、orders が一時的に欠けていても残す。
+    for key in ('active', 'attack'):
+        step = plan.get(key)
+        if isinstance(step, str) and step:
+            referenced.add(step)
+    rearm = plan.get('plan_step_rearm')
+    if isinstance(rearm, dict):
+        referenced.update(rearm)
+    retry = policy.get('retry_context')
+    if isinstance(retry, dict):
+        referenced.update(key for key in retry if isinstance(key, str))
+    for key in PLAN_STEP_MAPS:
+        section = plan.get(key)
+        if not isinstance(section, dict):
+            continue
+        for step in list(section):
+            if size(state) <= goal:
+                return
+            if step not in referenced:
+                section.pop(step, None)
+        if not section:
+            plan.pop(key, None)
 
 
 def _entry_tick(entry):
