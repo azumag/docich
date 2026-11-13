@@ -84,3 +84,18 @@ def test_a_healthy_win_does_not_wait():
     mem = memory(['ローズマリー', 'ベーグル'], enemy_hp=0)
     mem['sortie_history'][-1]['outcome'] = 'won'
     assert attacks(mem), 'no repelled defender means no pair wait'
+
+
+def test_a_just_defended_front_keeps_two_home():
+    """g1163 2026-11-13: オオキク was counter-attacked right after capture.
+
+    The attack on ナッテ left one defender and the castle was lost again. A
+    front with a measured せめこまれました keeps two residents.
+    """
+    mem = memory(['ローズマリー', 'ベーグル'], enemy_hp=0)
+    mem['sortie_history'][-1]['outcome'] = 'won'
+    assert attacks(mem), 'without a defence the second general still leaves'
+    mem['_records'] = []
+    mem['defense_seen'] = {C: mem['tick'] - 10}
+    assert attacks(mem) == []
+    assert decided(mem, 'front_guard_held')
