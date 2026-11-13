@@ -109,3 +109,17 @@ def test_a_confirmed_enemy_flag_moves_ownership_too():
         W._apply_world_flags(mem, {B: 'enemy', C: 'enemy'})
     assert mem['castle_ownership'][B]['owner'] == 'enemy'
     assert B not in mem['captured'] and B in mem['lost']
+
+
+def test_a_captured_castle_is_due_for_its_own_roster_read():
+    """g1163 2026-11-13 17:3x: retaking オオキク left four generals unknown.
+
+    The castle's own list is the receipt for who stands there after the
+    capture; the due time gives the winner a moment to enter.
+    """
+    mem = memory({B: 'own', C: 'enemy'})
+    with chart.map_context(mem):
+        W._apply_world_flags(mem, {B: 'own', C: 'own'})
+        W._apply_world_flags(mem, {B: 'own', C: 'own'})
+    assert C in mem['captured']
+    assert mem['roster_read_due'][C] == mem['tick'] + W.CAPTURE_READ_DELAY

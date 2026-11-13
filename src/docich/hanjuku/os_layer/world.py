@@ -206,6 +206,7 @@ def _goal_anchor(roofs, castles, cam, anchored, goal_name):
 
 
 OWNER_CONFIRM = 2             # consecutive anchored map readings before a change
+CAPTURE_READ_DELAY = 30       # ticks after a capture before its roster is read
 
 
 def observe_owners(mem, roofs, cam):
@@ -541,6 +542,13 @@ def _apply_world_flags(mem, flags):
         elif owner_kind == 'own' and castle not in captured:
             captured.append(castle)
             mem['lost'] = [c for c in mem.get('lost') or [] if c != castle]
+            # The castle's own list is the receipt for who stands there now:
+            # the winner occupied it, and residents that retreated come back.
+            # Without this read they stay in general_location_unknown
+            # (g1163 2026-11-13 17:3x: オオキク was retaken and バゲット /
+            # ジェラート / チコリ / ビーツ stayed unknown).
+            mem.setdefault('roster_read_due', {})[castle] = (
+                int(mem.get('tick') or 0) + CAPTURE_READ_DELAY)
             changed.append(('captured', castle))
     # The Y view is read once per picker step and once per survey; recording
     # the same flag set again (g1133 2026-11-05: 204 owners records an hour,
