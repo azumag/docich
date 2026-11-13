@@ -1508,7 +1508,8 @@ def test_hanjuku_hotload_versions_are_fixed_values_not_an_arbitrary_prefix():
                  "hanjuku-chart-v343-defender-okunote-melee-behind",
                  "hanjuku-chart-v344-sortie-list-walk",
                  "hanjuku-chart-v345-roster-unplaced",
-                 "hanjuku-chart-v526-completed-season-sites",)
+                 "hanjuku-chart-v526-completed-season-sites",
+                 "hanjuku-chart-v754-okunote-only-box",)
     for version in versions:
         assert module._project_corner_state({'bot_version': version})['bot_version'] == version
     for version in (None, 'SECRET', 'hanjuku-chart-v130-SECRET',

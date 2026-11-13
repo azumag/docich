@@ -477,6 +477,10 @@ class Screen:
     hidden_battle_commands: bool = False
     # The two-row item box with every row disabled (measured g534 07:51).
     disabled_item_box: bool = False
+    # きりふだ/たいきゃく が灰色で おくのて だけが選べる召喚中の戦闘メニュー。
+    # この箱は B で閉じない (g1097)。g1163 2026-11-13 は同じ画面のまま B を
+    # 5時間送り続けて戦闘が進まなかったため、専用の有界操作対象として持つ。
+    okunote_only_box: bool = False
     mixed_item_box: bool = False
     monster_menu_drawing: bool = False
     priest_ritual_scene: bool = False
@@ -785,6 +789,32 @@ def _boss_command_rows(screen):
     return _box_rows(screen.menu_rows)
 
 
+def _okunote_only_box(frame, screen):
+    """きりふだ/たいきゃく が灰色で おくのて だけが生きた召喚中の箱か。
+
+    g1163 2026-11-13 09:1x: 城防衛の召喚戦で きりふだ y176 / たいきゃく y192 が
+    灰色、おくのて y208 だけが白で、カーソルは灰色の きりふだ 行にあった。
+    光る行が おくのて だけなので ``hidden_battle_commands`` (3行すべて灰色) にも
+    ``disabled_item_box`` (たまご+きりふだ の2行) にも当たらず、通常の戦闘メニュー
+    として B を送り続けた。B はこの箱を閉じない (g1097) ため、同じ画面のまま
+    5時間 戦闘が進まなかった。実測の灰色2行 + 白い おくのて 1行だけを根拠にする。
+    """
+    if screen.kind != 'battle_menu':
+        return False
+    lit = [(line.y, label) for line in screen.menu_rows
+           for x, label in line.spans() if x >= 176]
+    if lit != [(208, 'おくのて')]:
+        return False
+    grey = read_lines(frame, predicate=lambda r, g, b: 95 <= min(r, g, b)
+                      and max(r, g, b) <= 120 and max(r, g, b) - min(r, g, b) <= 5,
+                      rect=(176, 176, 256, 216))
+    grey_rows = {(line.y, label) for line in grey
+                 for x, label in line.spans() if x >= 176}
+    # たまごをつかう が見える3行箱は既存の hidden_battle_commands が持つ。
+    return (grey_rows == {(176, 'きりふだ'), (192, 'たいきゃく')}
+            and screen.menu_cursor in (176, 192, 208))
+
+
 def _human_commands(screen):
     return bool(_boss_command_rows(screen)) or any((line.y == y and line.spans() == [(176, label)])
                or (line.y in (176, 192, 208) and line.spans() == [(176, 'おくのて')])
@@ -976,6 +1006,7 @@ def parse(frame: Frame, *, phase: str | None = None) -> Screen:
         screen.marker = _target_marker(frame)
         screen.cursor = _free_cursor(row_masks(frame, white), frame)
     screen.kind = classify_text(screen)
+    screen.okunote_only_box = _okunote_only_box(frame, screen)
     if screen.kind == 'text':
         screen.prose_attached_marks = attached_mark_cells(
             frame, screen.lines, rect=(24, 135, 232, 176), masks=masks)
