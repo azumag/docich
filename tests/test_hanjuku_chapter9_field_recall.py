@@ -266,3 +266,12 @@ def test_a_hunt_sample_records_the_own_castle_cells(monkeypatch):
     assert expected
     assert own == expected
     assert all(isinstance(cell, list) and len(cell) == 2 for cell in own.values())
+
+
+def test_a_hunt_sample_records_all_chart_cells(monkeypatch):
+    """The second roof's world cell must be comparable with every castle, enemy too."""
+    monkeypatch.setattr(recall_flow, 'own_camps', lambda frame: [])
+    mem = _mem(tick=400, month_start_tick=0, month_durations=[1000])
+    recall_flow.camp_recall_step(MAP, mem, FRAME)
+    record = next(r for r in mem['_records'] if r['decision'] == 'camp_hunt')
+    assert len(record['observed_metric']['chart_all']) == 12

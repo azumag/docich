@@ -324,6 +324,8 @@ def _camp_recall_step(screen: Screen, mem, frame, *, observed_camps=None):
                                              'camera': list(support[1])}
                                             if support else {}),
                                          **({'chart_own': chart_own} if chart_own else {}),
+                                         'chart_all': {name: list(cell) for name, cell in
+                                                       chart.castles(mem.get('chapter') or 0).items()},
                                          **({'month_elapsed': elapsed}
                                             if elapsed is not None else {})},
                         reason='野営が見えないまま地図フレームが続いているため、カメラと屋根の状況を記録する')
