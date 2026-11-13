@@ -262,3 +262,16 @@ def test_a_just_defended_front_keeps_its_last_resident():
     mem['tick'] += corridor.FRONT_GUARD_WAIT + 1
     assert not [o for o in attacks(mem) if o['source'] == B]
     assert [r for r in mem['_records'] if r.get('decision') == 'front_guard_held']
+
+
+def test_a_current_high_panel_beats_a_stale_three_hp_history():
+    """g1163 2026-11-13 21:0x: left at 3 HP, the next attack faced 60.
+
+    The defender heals or is replaced between battles, so the current panel is
+    authoritative even when it reads high.
+    """
+    mem = memory(['リーキ'])
+    mem['captured'], mem['lost'] = [A, B], [C]
+    mem['castle_defenders'] = {C: {'hp': 60, 'general': 'マサラ', 'evidence': 'battle_panel'}}
+    mem['sortie_history'] = [{'target': C, 'outcome': 'lost', 'enemy_hp': 3, 'tick': 4900}]
+    assert corridor._defender_nearly_dead(mem, C) is False
