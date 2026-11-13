@@ -472,11 +472,19 @@ def _idle_probe_due(mem) -> bool:
     return int(mem.get('tick') or 0) - last >= IDLE_PROBE_SPACING
 
 
+def _garrison_names(mem) -> set:
+    """Names the complete castle lists have actually shown."""
+    world = _world(mem)
+    names = set()
+    for members in (world.get('garrison') or {}).values():
+        if isinstance(members, list):
+            names.update(members)
+    return names
+
+
 def _garrison_seen(mem) -> int:
     """Generals the castle lists actually showed (the probe's yield)."""
-    world = _world(mem)
-    return sum(len(members) for members in (world.get('garrison') or {}).values()
-               if isinstance(members, list))
+    return len(_garrison_names(mem))
 
 
 def _probe_budget_left(mem) -> bool:
@@ -487,13 +495,18 @@ def _probe_budget_left(mem) -> bool:
     used to run forever never found them and took every cycle: g1163
     2026-11-12 12:4x spent a quarter of an hour opening drained castles, read
     「しょうぐんはおりません」 each time and never reached a sortie. The tour is
-    bounded per month, re-armed as soon as any castle list shows a general
-    again (a recall or an arrival) or after ``PROBE_REARM_TICKS``.
+    bounded per month, re-armed when a castle list shows a *new* general
+    (a recall, an arrival or a recruit) or after ``PROBE_REARM_TICKS``.
+
+    The re-arm compares names, not the total headcount: g1163 2026-11-13
+    11:0x-11:4x read the same オシロガ/ドンドン rosters on every sortie and the
+    growing total re-armed the budget each time, so 27 probes were minted in
+    thirty minutes while every drained castle was already empty.
     """
     state = mem.get(PROBE)
     if not isinstance(state, dict) or state.get('month') != mem.get('month'):
         return True
-    if _garrison_seen(mem) > int(state.get('seen') or 0):
+    if _garrison_names(mem) - set(state.get('seen_names') or ()):
         return True
     if int(mem.get('tick') or 0) - int(state.get('tick') or 0) >= PROBE_REARM_TICKS:
         return True
@@ -503,15 +516,18 @@ def _probe_budget_left(mem) -> bool:
 def _probe_spend(mem, decision, idle=False):
     """Count one probe. An idle probe (nothing else to plan) is not budgeted."""
     state = mem.setdefault(PROBE, {})
+    names = _garrison_names(mem)
     if state.get('month') != mem.get('month'):
         state.clear()
-        state.update(month=mem.get('month'), count=0, seen=_garrison_seen(mem))
+        state.update(month=mem.get('month'), count=0, seen=len(names),
+                     seen_names=sorted(names))
     if idle:
         state['idle_tick'] = int(mem.get('tick') or 0)
     else:
         state['count'] = int(state.get('count') or 0) + 1
     state['tick'] = int(mem.get('tick') or 0)
-    state['seen'] = _garrison_seen(mem)
+    state['seen'] = len(names)
+    state['seen_names'] = sorted(names)
     state.pop('exhausted', None)
     _record_only(mem, decision,
                  observed_metric={'probe_count': state['count'],

@@ -232,3 +232,43 @@ def test_a_stale_idle_probe_is_replaced():
     assert len(decided(mem, 'roster_probe_idle') + decided(mem, 'drained_probe_idle')) > minted
 
 
+def _spend_budget(mem):
+    """Run one plan, then mark this month's probe budget as spent."""
+    with chart.map_context(mem):
+        orders(mem)
+    state = mem[corridor.PROBE]
+    state['count'] = corridor.PROBE_BUDGET
+    state['seen_names'] = sorted(corridor._garrison_names(mem))
+    state['mint_tick'] = -10 ** 9        # no pending-probe reuse
+    return state
+
+
+def test_the_same_roster_read_does_not_rearm_the_budget():
+    """g1163 2026-11-13 11:0x-11:4x: 27 probes in 30 minutes.
+
+    Every sortie re-read the same オシロガ/ドンドン rosters. Comparing the total
+    headcount re-armed the monthly budget on each read, so the tour visited
+    drained castles that were already empty again and again.
+    """
+    mem = memory([A, B, C], [A, B])          # C staffed: a real attack is planned
+    mem['garrison'][C] = ['リーキ', 'ベーグル']
+    mem['world']['garrison'][C] = ['リーキ', 'ベーグル']
+    mem['country_general_count'] = {'count': 32, 'scope': [9, '23-5']}
+    _spend_budget(mem)
+    before = len(decided(mem, 'roster_probe'))
+    # The same names are read again: it is not news about anybody.
+    mem['world']['garrison'][C] = ['リーキ', 'ベーグル']
+    orders(mem)
+    assert len(decided(mem, 'roster_probe')) == before
+
+
+def test_a_new_name_in_a_roster_rearms_the_budget():
+    mem = memory([A, B, C], [A, B])
+    mem['garrison'][C] = ['リーキ', 'ベーグル']
+    mem['world']['garrison'][C] = ['リーキ', 'ベーグル']
+    mem['country_general_count'] = {'count': 32, 'scope': [9, '23-5']}
+    _spend_budget(mem)
+    before = len(decided(mem, 'roster_probe'))
+    mem['world']['garrison'][C] = ['リーキ', 'ベーグル', 'キャロット']
+    orders(mem)
+    assert len(decided(mem, 'roster_probe')) > before, 'a new general re-arms the tour'
