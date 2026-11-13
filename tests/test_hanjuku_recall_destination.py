@@ -370,3 +370,15 @@ def test_the_picker_progress_records_the_own_castles(monkeypatch):
         p.world_map_step(VIEW, mem, picker())
     record = next(r for r in mem['_records'] if r['decision'] == 'camp_recall_picker_progress')
     assert 'アルマムーン' in record['observed_metric']['own']
+
+
+def test_the_picker_fallback_records_every_nearby_castle(monkeypatch):
+    """The fallback's destination choice needs the whole nearby list."""
+    mem = memory(list(p.chart.castles(1)['キカンドン']))
+    at(monkeypatch, 'アルマムーン')
+    monkeypatch.setattr(p, 'world_cursor', lambda _: None)
+    for _ in range(p.RECALL_LIMIT - 1):
+        p.world_map_step(VIEW, mem, picker())
+    p.world_map_step(VIEW, mem, picker())
+    record = next(r for r in mem['_records'] if r['decision'] == 'camp_recall_picker_fallback')
+    assert 'nearby' in record['observed_metric']

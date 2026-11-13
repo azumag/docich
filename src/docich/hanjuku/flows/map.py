@@ -448,7 +448,8 @@ def _picker_fallback(mem, recall, nearby, cursor, reason):
             observed_metric={'goal': recall.get('goal'), 'castle': castle,
                              'cursor': list(cursor) if cursor else None,
                              'still': recall.get('picker_still'),
-                             'observations': recall.get('picker_observations')},
+                             'observations': recall.get('picker_observations'),
+                             'nearby': list(nearby)},
             reason=reason)
     return _request_recall(mem, recall, castle or recall.get('goal'),
                            [pad('a'), {'type': 'wait', 'ms': 700}, pad('a')])
