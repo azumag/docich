@@ -648,15 +648,22 @@ def _unaccounted(mem):
 
 
 def _due_probe(mem, routes_by, target, lost):
-    """A castle a transfer was sent into: its list is the arrival receipt.
+    """A castle a transfer/recall was sent into: its list is the receipt.
 
     g1163 2026-11-13 12:3x sent ten generals from オシロガ into ドンドン, the
     source list confirmed each launch, but no sortie opened ドンドン's own
     list, so ``garrison`` stayed at one and the retake never reached three.
     ``routes.probe_due`` rate-limits the read by ``PROBE_INTERVAL``.
+
+    ``roster_read_due`` is the recall flow's request: a recalled camp's
+    generals land in a castle whose list nobody would otherwise open
+    (g1163 2026-11-13 15:5x-16:3x recalled camps four times and never read
+    where they landed).
     """
+    asked = mem.get('roster_read_due') or {}
     due = {source for source, route in routes_by.items()
-           if route and len(route) >= 2 and routes.probe_due(mem, source)}
+           if route and len(route) >= 2
+           and (routes.probe_due(mem, source) or source in asked)}
     if not due:
         return None
     source = min(due, key=lambda c: (mem.get('route_probe_read_tick') or {}).get(c, 0))
