@@ -286,6 +286,16 @@ def orders(mem) -> list[dict]:
             for castle in list(marks):
                 if castle not in owned:
                     marks.pop(castle, None)
+    # The page bound lives in world state. A page for a castle we no longer
+    # hold is the enemy's roster (g1163 2026-11-13 22:3x: ドンドン's page
+    # still listed キャロット after it fell); drop it with the ownership.
+    world = _world(mem)
+    for key in ('garrison_partial', 'garrison_partial_tick'):
+        pages = world.get(key)
+        if isinstance(pages, dict):
+            for castle in list(pages):
+                if castle not in owned:
+                    pages.pop(castle, None)
     target = chart.corridor_next(chapter, owned)
     lost = set(mem.get('lost') or ())
     routes_by = {source: routes.path(mem, source, target, owned) for source in sorted(owned)}
