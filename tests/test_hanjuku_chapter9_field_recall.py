@@ -251,3 +251,18 @@ def test_a_hunt_sample_records_the_roof_support(monkeypatch):
     record = next(r for r in mem['_records'] if r['decision'] == 'camp_hunt')
     assert record['observed_metric']['camera_support'] >= 1
     assert len(record['observed_metric']['camera']) == 2
+
+
+def test_a_hunt_sample_records_the_own_castle_cells(monkeypatch):
+    """Compare the roof cells with the chart's own cells (the 07:47 support=1)."""
+    monkeypatch.setattr(recall_flow, 'own_camps', lambda frame: [])
+    mem = _mem(tick=400, month_start_tick=0, month_durations=[1000])
+    recall_flow.camp_recall_step(MAP, mem, FRAME)
+    record = next(r for r in mem['_records'] if r['decision'] == 'camp_hunt')
+    own = record['observed_metric']['chart_own']
+    from docich.hanjuku.strategy.orders import _owned
+    expected = {name: list(cell) for name, cell in chart.castles(9).items()
+                if name in _owned(mem)}
+    assert expected
+    assert own == expected
+    assert all(isinstance(cell, list) and len(cell) == 2 for cell in own.values())

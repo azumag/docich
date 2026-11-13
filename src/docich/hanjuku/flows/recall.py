@@ -307,6 +307,10 @@ def _camp_recall_step(screen: Screen, mem, frame, *, observed_camps=None):
                 origin = (observed_cursor_cell(screen, mem, frame)
                           if isinstance(frame, Frame) else None)
                 support = roof_camera_support(mem, frame) if isinstance(frame, Frame) else None
+                from ..strategy.orders import _owned as _owned_castles
+                chart_own = {name: list(cell) for name, cell in
+                             chart.castles(mem.get('chapter') or 0).items()
+                             if name in _owned_castles(mem)}
                 roofs_seen = ([{'kind': r.get('kind'), 'target': list(r['target'])}
                                for r in castle_roofs(frame)]
                               if isinstance(frame, Frame) else [])
@@ -319,6 +323,7 @@ def _camp_recall_step(screen: Screen, mem, frame, *, observed_camps=None):
                                          **({'camera_support': support[0],
                                              'camera': list(support[1])}
                                             if support else {}),
+                                         **({'chart_own': chart_own} if chart_own else {}),
                                          **({'month_elapsed': elapsed}
                                             if elapsed is not None else {})},
                         reason='野営が見えないまま地図フレームが続いているため、カメラと屋根の状況を記録する')
