@@ -137,3 +137,18 @@ def test_a_camp_found_records_where_it_sits_in_the_month(monkeypatch):
     record = next(r for r in mem['_records'] if r['decision'] == 'camp_found')
     assert record['observed_metric']['month_elapsed'] == 50
     assert record['observed_metric']['month_estimate'] == 299
+
+
+def test_a_roof_destination_is_named_so_the_arrival_is_read(monkeypatch):
+    """g1163 2026-11-13 15:5x: recalls never read where they landed."""
+    monkeypatch.setattr(recall_flow, 'castle_roofs',
+                        lambda frame, exclude=None: [{'kind': 'own', 'target': (90, 80),
+                                                      'clipped': False}])
+    monkeypatch.setattr(recall_flow, '_recall_goal', lambda mem: 'タオ')
+    mem = _mem(tick=100)
+    mem['flow'] = {'recall': {'stage': 'dest', 'steps': 0, 'target': [84, 73]}}
+    screen = Screen([], None, '', kind='map_target', marker=(90, 80))
+    recall_flow.camp_recall_step(screen, mem, FRAME)
+    record = next(r for r in mem['_records'] if r['decision'] == 'camp_recall_requested')
+    assert record['observed_metric']['castle'] == 'タオ'
+    assert mem['roster_read_due']['タオ'] == 100 + recall_flow.RECALL_READ_DELAY

@@ -561,7 +561,11 @@ def _camp_recall_step(screen: Screen, mem, frame, *, observed_camps=None):
         if abs(dx) <= RECALL_CONFIRM_PX and abs(dy) <= RECALL_CONFIRM_PX:
             if state.get('hero') or state.get('fort'):
                 return _finish_hero_recall(mem, state, state.get('goal'))
-            return _request_recall(mem, state, None, [pad('a')],
+            # Name the destination so the arrival roster read is scheduled
+            # (the roof only carries pixels; without a goal the recalled
+            # generals stayed unaccounted, g1163 2026-11-13 15:5x-16:3x).
+            goal = state.get('goal') or _recall_goal(mem)
+            return _request_recall(mem, state, goal, [pad('a')],
                                    target_cell=list(roof['target']))
         if abs(dx) >= abs(dy):
             return [pad('right' if dx > 0 else 'left', min(6, abs(dx)))]
