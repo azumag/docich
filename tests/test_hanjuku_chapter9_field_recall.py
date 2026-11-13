@@ -64,3 +64,17 @@ def test_the_camp_world_cell_survives_a_camera_shift():
     assert recall_flow._camp_world_cell((10, 10), (100, 50), (40, 40)) == [130, 80]
     assert recall_flow._camp_world_cell(None, (100, 50), (40, 40)) is None
     assert recall_flow._camp_world_cell((10, 10), None, (40, 40)) is None
+
+
+def test_a_lost_tent_records_where_it_was_looked_for(monkeypatch):
+    """The unconfirmed record keeps the cursor, the miss count and the world cell."""
+    monkeypatch.setattr(recall_flow, 'own_camps', lambda frame: [])
+    mem = _mem()
+    state = _flow(mem)['recall'] = {'stage': 'to_camp', 'target': [40, 40],
+                                    'last_seen': [40, 40], 'steps': 0,
+                                    'camp_world': [130, 80]}
+    recall_flow.camp_recall_step(MAP, mem, FRAME)
+    record = next(r for r in mem['_records'] if r['decision'] == 'camp_position_unconfirmed')
+    assert record['observed_metric']['cursor'] == [10, 10]
+    assert record['observed_metric']['missing'] == 1
+    assert record['observed_metric']['camp_world'] == [130, 80]
