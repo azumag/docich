@@ -157,3 +157,18 @@ def test_new_enemy_flag_repairs_a_hotloaded_home_receipt_without_counting_loss_t
         assert mem['captured'] == ['ジョンリギ']
         assert home not in policy._owned(mem) and home not in _world(mem)['garrison']
         assert mem['lost'] == [home] and mem['tally']['castle_losses'] == 1
+
+
+def test_a_defense_battle_start_marks_the_castle_defended():
+    """g1163 2026-11-13 21:2x: the enemy attacked ドンドン while a sortie was out.
+
+    Only the せめこまれました toast set defense_seen; the battle start must too.
+    """
+    from docich.hanjuku.flows.battle import _mark_defense_seen
+    mem = memory()
+    mem['tick'] = 100
+    mem['defense_seen'] = {}
+    _mark_defense_seen(mem, {'side': 'defense', 'castle': 'スペンソニア'})
+    assert mem['defense_seen']['スペンソニア'] == 100
+    _mark_defense_seen(mem, {'side': 'attack', 'castle': 'スペンソニア'})
+    assert mem['defense_seen']['スペンソニア'] == 100
