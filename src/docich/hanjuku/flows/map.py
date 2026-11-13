@@ -28,7 +28,8 @@ from ..strategy import goals
 from ..strategy.kit import _deploy_cards, _is_boss_order
 from ..strategy.execution import departure_snapshot
 from ..state.regions import world as _world, flow, journal, flow as _flow, journal as _journal, sorties as _sorties, plan as _plan_region
-from ..strategy.orders import (BOSS_TARGET_CANCEL_LIMIT, SOURCE_MISS_LIMIT, _broken_hero_order, _finish_order,
+from ..strategy.orders import (BOSS_TARGET_CANCEL_LIMIT, SOURCE_MISS_LIMIT, _broken_hero_order,
+                               drop_retired_step_context, _finish_order,
                                _garrison_move, _give_up_source, _near_goal, _order, _order_for_step, _ready,
                                _recall_goal, _retire_unentered_sortie, _sortie_general, _source,
                                next_order, parked_boss_steps)
@@ -2035,6 +2036,7 @@ def _rollback_unverified_launch(mem, step, probe, markers, reason=None):
                 'misses': misses[step]}
     if misses[step] >= LAUNCH_MISS_LIMIT:
         _plan_region(mem).setdefault('orders', {})[step] = 'failed'
+        drop_retired_step_context(mem)
         _record(mem, 'sortie_launch_failed', chart_step=step, general=general,
                 deviation_reason='出撃確定後に部隊が現れない',
                 observed_metric=observed,

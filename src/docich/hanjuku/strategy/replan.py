@@ -15,6 +15,7 @@ from ..decision_log import _record, _tally
 from ..os_layer.world import NAME, SORTIE_BUSY_TICKS, _en_route, _owned
 from . import routes
 from .orders import (_arrival_castle, _boss_companion_source, _boss_egg_depleted,
+                               drop_retired_step_context,
                                _distance, _hero_egg_broken, _holds_egg,
                                _hero_source_alternative, _orders, _plan_pending, _ready, _reserved_targets, _source,
                                _defense_move_pick, _defense_priority_castles, _defense_score,
@@ -1387,6 +1388,8 @@ def _suppress_recent_failures(mem, orders):
             continue
         status[order['step']] = 'failed'
         _tally(mem, 'retry_suppressed')
+    # Suppression settles the step: drop its plan context with it (#4054).
+    drop_retired_step_context(mem)
 
 
 NONBOSS_STEP_REARM_LIMIT = 3     # failed non-boss attempts re-armed per step per month
