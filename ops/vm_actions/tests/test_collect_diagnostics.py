@@ -1524,7 +1524,8 @@ def test_hanjuku_hotload_versions_are_fixed_values_not_an_arbitrary_prefix():
                  "hanjuku-chart-v766-partial-tick-order",
                  "hanjuku-chart-v767-finish-20",
                  "hanjuku-chart-v768-own-target-marker",
-                 "hanjuku-chart-v769-guard-expiry-sticky",)
+                 "hanjuku-chart-v769-guard-expiry-sticky",
+                 "hanjuku-chart-v770-flag-owner-confirm",)
     for version in versions:
         assert module._project_corner_state({'bot_version': version})['bot_version'] == version
     for version in (None, 'SECRET', 'hanjuku-chart-v130-SECRET',

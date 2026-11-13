@@ -71,3 +71,41 @@ def test_an_agreeing_read_clears_a_pending_disagreement():
         W._apply_world_flags(mem, {C: 'enemy'})     # back to the known value
     assert C not in mem['captured']
     assert mem['world_map_pending'] == {}
+
+
+def test_a_single_disagreeing_read_does_not_write_ownership():
+    """g1163 2026-11-13 16:0x: castle_ownership said ドンドン enemy while
+    captured still held it and lost did not list it. The flag write happened
+    before _confirmed_flags; only the captured/lost update was held back.
+    """
+    mem = memory({B: 'own', C: 'enemy'})
+    with chart.map_context(mem):
+        W._apply_world_flags(mem, {B: 'own', C: 'own'})     # one misread
+    assert (mem.get('castle_ownership') or {}).get(C, {}).get('owner') != 'own'
+    assert mem['world_map_pending'] == {C: 'own'}
+
+
+def test_a_confirmed_read_moves_ownership_with_captured_and_lost():
+    mem = memory({B: 'own', C: 'enemy'})
+    with chart.map_context(mem):
+        W._apply_world_flags(mem, {B: 'own', C: 'own'})
+        W._apply_world_flags(mem, {B: 'own', C: 'own'})
+    assert mem['castle_ownership'][C]['owner'] == 'own'
+    assert C in mem['captured']
+
+
+def test_a_single_enemy_flag_keeps_ownership_and_capture():
+    mem = memory({B: 'own', C: 'enemy'})
+    with chart.map_context(mem):
+        W._apply_world_flags(mem, {B: 'enemy', C: 'enemy'})   # one misread
+    assert (mem.get('castle_ownership') or {}).get(B, {}).get('owner') != 'enemy'
+    assert B in mem['captured']
+
+
+def test_a_confirmed_enemy_flag_moves_ownership_too():
+    mem = memory({B: 'own', C: 'enemy'})
+    with chart.map_context(mem):
+        W._apply_world_flags(mem, {B: 'enemy', C: 'enemy'})
+        W._apply_world_flags(mem, {B: 'enemy', C: 'enemy'})
+    assert mem['castle_ownership'][B]['owner'] == 'enemy'
+    assert B not in mem['captured'] and B in mem['lost']
