@@ -1089,8 +1089,10 @@ def castle_jump_step(screen, mem, frame):
             # must not be spent on the castle menu (g1163 2026-11-14 05:28:
             # camps=1 but the jump's A took the frame). Keep the jump state so
             # the sortie resumes after the recall.
+            camp_skipped = False
             if isinstance(frame, Frame) and own_camps(frame):
                 from . import recall as recall_flow
+                camp_skipped = not recall_flow._filter_recall_skip(mem, own_camps(frame))
                 actions = recall_flow.camp_recall_step(screen, mem, frame)
                 if actions:
                     return actions
@@ -1119,7 +1121,8 @@ def castle_jump_step(screen, mem, frame):
                                      # it showed explains why a recall never
                                      # started from these frames (g1163
                                      # 2026-11-14 04:46-05:12).
-                                     'camps': len(own_camps(frame)) if isinstance(frame, Frame) else 0},
+                                     'camps': len(own_camps(frame)) if isinstance(frame, Frame) else 0,
+                                     **({'camp_skipped': True} if camp_skipped else {})},
                     reason=('主人公の城へのSELECT後のフィールドなので、Aで城メニューを開き実ステータスで出撃元を照合する'
                             if hero_select else
                             'しろ一覧で城名を確認したSELECT後のフィールドなので、屋根が隠れてもAで城メニューを開き実ステータスで出撃元を照合する'))
