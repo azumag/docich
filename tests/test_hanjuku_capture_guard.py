@@ -190,8 +190,12 @@ def test_a_panel_reading_of_three_hp_licenses_the_finish():
 
 
 def test_a_retake_is_not_held_back_by_the_flip_rule():
-    """g1163 2026-11-13 02:1x: ドンドン retakes stalled with two at the front."""
-    mem = memory(['リーキ', 'ベーグル'])
+    """g1163 2026-11-13 02:1x: ドンドン retakes stalled with two at the front.
+
+    v759 added the pair wait for retakes, so this pins the flip rule with
+    three residents: the retake still needs only ``_keep = 1`` at home.
+    """
+    mem = memory(['リーキ', 'ベーグル', 'シナモン'])
     mem['captured'] = [A, B]
     mem['lost'] = [C]
     mem['sortie_history'] = [

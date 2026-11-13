@@ -312,15 +312,19 @@ def orders(mem) -> list[dict]:
             # A defender that just repelled an attack is still healthy; one
             # general at a time only feeds it. Wait for ``_keep + 2`` residents
             # so two are left to march together (g1163 2026-11-13: ナッテ
-            # repelled 32/39/46-HP defenders while reinforcements walked).
+            # repelled 32/39/46-HP defenders, and the オオキク retakes
+            # マフィン/カシス lost alone to a 30/48-HP defender). A retake is
+            # included: the flip rule already exempts it from ``_keep = 2``,
+            # but the pair wait is about not feeding the defender, not about
+            # protecting the castle.
             _mass = _keep + 2
-            if (not _finish and purpose != 'retake' and _repelled_alone(mem, target)
+            if (not _finish and _repelled_alone(mem, target)
                     and isinstance(_front_names_now, list)
                     and len(_front_names_now) < _mass
                     and not _front_mass_expired(mem, source)):
                 _record_only(mem, 'front_wait_mass', target=source,
                              observed_metric={'residents': list(_front_names_now)[:8],
-                                              'need': _mass},
+                                              'need': _mass, 'purpose': purpose},
                              reason='前回の攻撃を元気な守備将軍に退けられたため、2人同時に出せるまで前線に集める')
                 continue
             if isinstance(_front_names_now, list) and len(_front_names_now) >= _mass:

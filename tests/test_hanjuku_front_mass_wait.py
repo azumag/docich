@@ -66,11 +66,18 @@ def test_a_nearly_dead_defender_is_attacked_alone():
     assert attacks(mem), 'a finish beats the pair wait'
 
 
-def test_a_retake_is_not_held_for_a_pair():
+def test_a_retake_also_waits_for_a_pair():
+    """Solo retakes lost (マフィン/カシス vs a 30/48-HP defender)."""
     mem = memory(['ローズマリー', 'ベーグル'], lost=[D])
     with chart.map_context(mem):
-        retakes = [o for o in corridor.orders(mem) if o.get('purpose') == 'retake']
-    assert retakes, 'taking our castle back beats waiting for a pair'
+        assert [o for o in corridor.orders(mem) if o.get('purpose') == 'retake'] == []
+    assert decided(mem, 'front_wait_mass')
+
+
+def test_three_residents_retake_together():
+    mem = memory(['ローズマリー', 'ベーグル', 'キャロット'], lost=[D])
+    with chart.map_context(mem):
+        assert any(o.get('purpose') == 'retake' for o in corridor.orders(mem))
 
 
 def test_a_healthy_win_does_not_wait():
