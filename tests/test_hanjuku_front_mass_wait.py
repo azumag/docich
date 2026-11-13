@@ -197,3 +197,12 @@ def test_a_pair_ready_front_drops_the_mass_clocks():
     attacks(mem)
     assert C not in mem['front_mass_hold']
     assert C not in mem['front_mass_count']
+
+
+def test_defense_seen_for_a_castle_no_longer_ours_is_dropped():
+    """A retaken castle must not inherit its old defence window."""
+    mem = memory(['ローズマリー', 'ベーグル'])
+    mem['defense_seen'] = {'イソ': 100, C: 4000}
+    attacks(mem)
+    assert 'イソ' not in mem['defense_seen']
+    assert mem['defense_seen'].get(C) == 4000

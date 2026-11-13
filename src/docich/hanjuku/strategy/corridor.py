@@ -280,7 +280,7 @@ def orders(mem) -> list[dict]:
     # state it would suppress the first attack after the castle is retaken
     # (the same name reuses the old hold): drop it with the ownership.
     for key in ('front_guard_hold', 'front_guard_expired_tick', 'front_mass_hold',
-                'front_mass_expired_tick', 'front_mass_count'):
+                'front_mass_expired_tick', 'front_mass_count', 'defense_seen'):
         marks = mem.get(key)
         if isinstance(marks, dict):
             for castle in list(marks):
