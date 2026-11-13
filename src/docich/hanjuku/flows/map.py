@@ -1849,7 +1849,12 @@ def _probe_launch_markers(mem, markers):
                     reason='出撃コミット後の全体マップに基準に無い部隊▲を確認')
             continue
         probe['reads'] = int(probe.get('reads') or 0) + 1
-        if probe['reads'] >= LAUNCH_PROBE_READS:
+        # A move into our own castle draws no 部隊▲ (the target is friendly);
+        # g1163 2026-11-13 12:3x-14:2x spent five surveys per オシロガ>ドンドン
+        # move before the source roster receipt. One survey is enough there.
+        own_target = probe.get('target') in _owned(mem)
+        limit = 1 if own_target else LAUNCH_PROBE_READS
+        if probe['reads'] >= limit:
             probe['blind'] = True
             probe['tick'] = now
             _read_source_roster(mem, probe.get('source'))
