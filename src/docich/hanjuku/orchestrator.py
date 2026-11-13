@@ -163,6 +163,32 @@ UNKNOWN_HOLD_ADVANCE = 6      # identical unreadable frames before one A is sent
 UNKNOWN_BATTLE_ADVANCE = 10   # any unreadable frames inside a battle before one A
 
 
+def _recall_dialog_wanted(recall, screen, phase, mem) -> bool:
+    """Whether the in-flight camp recall owns this screen.
+
+    The month routine owns the menu screens, not the field picker: a recall
+    that already opened the destination must not idle for the routine's whole
+    length (g1163 2026-11-14 02:49-02:55: the dest sat at steps 0 for five
+    minutes and the month scene closed it).
+    """
+    if not (recall and phase != 'concert'):
+        return False
+    from .flows import camp_recheck as hanjuku_camp_recheck
+    if hanjuku_camp_recheck.owns_dialog(screen, mem):
+        return True
+    kind = screen.kind
+    return (not recall.get('retreat_recheck') and not recall.get('anonymous_recheck')
+            and (not mem.get('month_sub')
+                 or (recall.get('stage') == 'dest' and kind == 'map_target'))
+            and (kind in ('map', 'map_target', 'text')
+                 or (recall.get('stage') == 'await_dispatch' and kind in ('unknown', 'yes_no'))
+                 # Between a 砦's screens the default A would pick the list's
+                 # top row or confirm the marker on the 砦 itself, which
+                 # cancels the sortie.
+                 or (kind == 'unknown'
+                     and (recall.get('fort') or recall_flow.in_fort_route(recall)))))
+
+
 def _recall_after_scene(mem, recall, kind, phase):
     """Keep a scene-cut recall pending instead of starting it over.
 
@@ -807,13 +833,7 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
         # One interruption per scene: the scene can stay on screen for many
         # frames, and counting each of them would abandon the camp at once.
         recall.pop('scene_pending', None)
-    recall_dialog = recall and phase != 'concert' and (hanjuku_camp_recheck.owns_dialog(screen, mem) or (
-        not recall.get('retreat_recheck') and not recall.get('anonymous_recheck')
-        and not mem.get('month_sub') and (kind in ('map', 'map_target', 'text') or
-        (recall.get('stage') == 'await_dispatch' and kind in ('unknown', 'yes_no')) or
-        # Between a 砦's screens the default A would pick the list's top row or
-        # confirm the marker on the 砦 itself, which cancels the sortie.
-        (kind == 'unknown' and (recall.get('fort') or recall_flow.in_fort_route(recall))))))
+    recall_dialog = _recall_dialog_wanted(recall, screen, phase, mem)
     # docich#3958: chapter 9's mechanical march disables the monthly pass
     # (corridor.mechanical: v665/v668), so no recall task is ever queued, no
     # status panel is opened and nothing seeds the recall state — a camp left
