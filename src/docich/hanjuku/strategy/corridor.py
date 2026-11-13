@@ -310,6 +310,16 @@ def orders(mem) -> list[dict]:
             # it only applies after a measured せめこまれました.
             _keep = 2 if ((_flip_prone(mem, target) or _defended_recently(mem, source))
                           and purpose != 'retake') else 1
+            # An empty front has no wait to keep: the next resident must start
+            # a fresh clock. Left over, the old tick makes the first refill
+            # look overdue and marches it out at once, emptying the castle
+            # again (g1163 2026-11-13 20:3x: ドンドン stood empty with
+            # front_guard_hold 143007).
+            if isinstance(_front_names_now, list) and not _front_names_now:
+                for key in ('front_guard_hold', 'front_guard_expired_tick',
+                            'front_mass_hold', 'front_mass_expired_tick',
+                            'front_mass_count'):
+                    (mem.get(key) or {}).pop(source, None)
             _finish = _defender_nearly_dead(mem, target)
             if (not _finish and _wounded_attack(mem, source)
                     and not _front_guard_expired(mem, source)):
@@ -348,7 +358,7 @@ def orders(mem) -> list[dict]:
             _mass = _keep + 2
             if (not _finish and _repelled_alone(mem, target)
                     and isinstance(_front_names_now, list)
-                    and len(_front_names_now) < _mass
+                    and 0 < len(_front_names_now) < _mass
                     and not _front_mass_expired(mem, source, len(_front_names_now))):
                 # A sortie already opened from this front keeps executing even
                 # though the corridor now holds the next one (g1163 2026-11-13

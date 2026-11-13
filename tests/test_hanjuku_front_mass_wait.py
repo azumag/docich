@@ -167,3 +167,15 @@ def test_front_marks_for_a_castle_no_longer_ours_are_dropped():
     assert 'イソ' not in mem['front_guard_hold']
     assert 'イソ' not in mem['front_mass_hold']
     assert 'イソ' not in mem['front_mass_count']
+
+
+def test_an_empty_front_drops_its_old_wait_clocks():
+    """A refill must start a fresh wait, not inherit the empty castle's old tick."""
+    mem = memory([])
+    mem['front_guard_hold'] = {C: 100}
+    mem['front_mass_hold'] = {C: 100}
+    mem['front_mass_count'] = {C: 1}
+    attacks(mem)
+    assert C not in mem['front_guard_hold']
+    assert C not in mem['front_mass_hold']
+    assert C not in mem['front_mass_count']
