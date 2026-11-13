@@ -245,3 +245,20 @@ def test_a_front_without_reinforcements_still_marches_after_the_timeout():
     assert attacks(mem) == []                   # the hold clock starts here
     mem['tick'] += corridor.FRONT_GUARD_WAIT + 1
     assert [o for o in attacks(mem) if o['source'] == B]
+
+
+def test_a_just_defended_front_keeps_its_last_resident():
+    """defense_seen ドンドン 141585 (19:3x): marching the last one out hands it over.
+
+    The v735 timeout may send a front with no known reinforcements, but not a
+    castle the enemy has just attacked.
+    """
+    mem = memory(['リーキ'])
+    mem['captured'], mem['lost'] = [A, B], [C]
+    mem['world']['garrison'][A] = []
+    mem['garrison'][A] = []
+    mem['defense_seen'] = {B: mem['tick'] - 10}
+    assert attacks(mem) == []                   # the hold clock starts here
+    mem['tick'] += corridor.FRONT_GUARD_WAIT + 1
+    assert not [o for o in attacks(mem) if o['source'] == B]
+    assert [r for r in mem['_records'] if r.get('decision') == 'front_guard_held']

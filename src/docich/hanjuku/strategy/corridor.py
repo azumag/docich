@@ -310,7 +310,8 @@ def orders(mem) -> list[dict]:
             if (not _finish and isinstance(_front_names_now, list)
                     and 0 < len(_front_names_now) <= _keep
                     and not (_front_guard_expired(mem, source)
-                             and not _reinforcements_known(mem, source))):
+                             and not _reinforcements_known(mem, source)
+                             and not _defended_recently(mem, source))):
                 # The last measured resident does not leave: an empty front is
                 # retaken at once (g1163 2026-11-12 20:2x ドンドン went 6→5 and
                 # back four times). The wave continues as soon as the refill
@@ -319,6 +320,9 @@ def orders(mem) -> list[dict]:
                 # holds generals the last resident waits for them: g1163
                 # 2026-11-13 18:5x sent ドンドン's only general at a 65-HP
                 # defender, the castle emptied and nine generals went unknown.
+                # A castle the enemy just attacked keeps its last defender even
+                # with no known reinforcements: marching him out hands the
+                # castle over (defense_seen ドンドン 141585, 19:3x).
                 _record_only(mem, 'front_guard_held', target=source,
                              observed_metric={'residents': list(_front_names_now)[:8]},
                              reason='前線の城に残る将軍が下限に達するため、この城から攻撃に出さない')
