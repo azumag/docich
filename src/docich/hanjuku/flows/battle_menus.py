@@ -40,6 +40,31 @@ from ..os_layer.world import NAME
 from ..strategy.economy import _egg_recheck
 
 
+LAST_RESORT_STALL_TICKS = 60   # a full turn apart with the summon HP unmoved
+
+
+def _okunote_last_resort_gate(cur, last_resort, now=None):
+    """A last resort that did not dent the summon for a whole turn is not repeated.
+
+    g1163 2026-11-13 19:28-19:41: five ``battle_okunote_last_resort`` records
+    in one defence with the enemy summon stuck at 27 HP and the ally 32 -> 0.
+    Each draw only cost our own general. A same-tick reuse (the menu just
+    reopened) is still allowed; the owner's reuse rule stays.
+    """
+    if not last_resort:
+        return False
+    previous, enemy = cur.get('okunote_last_resort_enemy_hp'), cur.get('enemy_hp')
+    since = cur.get('okunote_last_resort_tick')
+    if (type(previous) is int and type(enemy) is int and enemy >= previous
+            and type(now) is int and type(since) is int
+            and now - since >= LAST_RESORT_STALL_TICKS):
+        cur['okunote_last_resort_failed'] = True
+        return False
+    cur['okunote_last_resort_enemy_hp'] = enemy
+    cur['okunote_last_resort_tick'] = now
+    return True
+
+
 def orphan_battle_menu_step(screen, mem):
     """Close an unbound parent menu finitely, then require new native context.
 
@@ -1169,8 +1194,15 @@ def okunote_step(screen, mem):
                                 '前の奥の手で敵将軍が残ったため、召喚より先に奥の手を引き直す。自傷リスクは残る'
                                 if egg_window['reason'] == 'okunote_redraw' else
                                 '敵卵あり・味方卵と札は実メニューで使用不能・召喚危険が目前の城防衛で奥の手を選ぶ。主人公も対象だが自傷リスクは残る'))
-        last_resort = (_defender_summon_last_resort(mem, cur, summon) if summon
-                       else _defender_last_resort(mem, cur))
+        last_resort = _okunote_last_resort_gate(
+            cur, _defender_summon_last_resort(mem, cur, summon) if summon
+            else _defender_last_resort(mem, cur), int(mem.get('tick') or 0))
+        if cur.get('okunote_last_resort_failed') and not cur.get('okunote_last_resort_failed_recorded'):
+            cur['okunote_last_resort_failed_recorded'] = True
+            _record(mem, 'battle_okunote_last_resort_failed', **_battle_labels(cur),
+                    observed_metric={'ally_hp': hp, 'enemy_hp': cur.get('enemy_hp'),
+                                     'previous_enemy_hp': cur.get('okunote_last_resort_enemy_hp')},
+                    reason='奥の手で敵召喚獣のHPが減らなかったため、繰り返さず救済メニューへ切り替える')
         if last_resort and not cur.get('okunote_last_resort_recorded'):
             cur['okunote_last_resort_recorded'] = True
             _record(mem, 'battle_okunote_last_resort', **_battle_labels(cur),
