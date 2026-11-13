@@ -349,6 +349,16 @@ def garrison_lost(mem, castle):
     """
     garrison = _world(mem).get('garrison')
     members = list((garrison or {}).pop(castle, None) or ())
+    # The page was a snapshot of the castle while it was ours. Left behind it
+    # would outlive the ownership and mislead the first read after a retake
+    # (g1163 2026-11-13 22:3x: garrison_partial['ドンドン'] still listed
+    # キャロット while the castle flew the enemy flag).
+    partial = _world(mem).get('garrison_partial')
+    if isinstance(partial, dict):
+        partial.pop(castle, None)
+    partial_tick = _world(mem).get('garrison_partial_tick')
+    if isinstance(partial_tick, dict):
+        partial_tick.pop(castle, None)
     for name in members:
         mark_location_unknown(mem, name)
     return members
