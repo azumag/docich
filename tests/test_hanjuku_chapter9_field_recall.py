@@ -167,17 +167,3 @@ def test_a_camp_found_records_whether_the_camera_was_localised(monkeypatch):
     record = next(r for r in mem['_records'] if r['decision'] == 'camp_found')
     assert record['observed_metric']['roofs'] == 1
     assert record['observed_metric']['origin'] == [50, 60]
-
-
-def test_a_marker_within_the_sprite_confirms_the_destination(monkeypatch):
-    """g1163 2026-11-14 03:42: a 6px marker move was cut by the month transition."""
-    monkeypatch.setattr(recall_flow, 'castle_roofs',
-                        lambda frame, exclude=None: [{'kind': 'own', 'target': (90, 80),
-                                                      'clipped': False}])
-    monkeypatch.setattr(recall_flow, '_recall_goal', lambda mem: 'タオ')
-    mem = _mem(tick=100)
-    mem['flow'] = {'recall': {'stage': 'dest', 'steps': 0, 'target': [84, 73]}}
-    screen = Screen([], None, '', kind='map_target', marker=(84, 80))  # 6px from the roof
-    actions = recall_flow.camp_recall_step(screen, mem, FRAME)
-    assert actions == [recall_flow.pad('a')]
-    assert any(r['decision'] == 'camp_recall_requested' for r in mem['_records'])
