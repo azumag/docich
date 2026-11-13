@@ -219,3 +219,20 @@ def test_a_camp_found_records_the_integrated_cursor_cell(monkeypatch):
     recall_flow.camp_recall_step(MAP, mem, FRAME)
     record = next(r for r in mem['_records'] if r['decision'] == 'camp_found')
     assert record['observed_metric']['cursor_cell'] == [70, 20]
+
+
+def test_a_hunt_sample_records_the_roof_cells(monkeypatch):
+    """Two roofs can still fail the constellation: the cells are the evidence."""
+    from docich.hanjuku.os_layer import world
+    monkeypatch.setattr(recall_flow, 'own_camps', lambda frame: [])
+    monkeypatch.setattr(recall_flow, 'castle_roofs',
+                        lambda frame, exclude=None: [
+                            {'kind': 'own', 'target': (10, 20), 'clipped': False},
+                            {'kind': 'enemy', 'target': (30, 40), 'clipped': False}])
+    monkeypatch.setattr(world, 'observed_cursor_cell', lambda *a, **k: None)
+    mem = _mem(tick=400, month_start_tick=0, month_durations=[1000])
+    recall_flow.camp_recall_step(MAP, mem, FRAME)
+    record = next(r for r in mem['_records'] if r['decision'] == 'camp_hunt')
+    assert record['observed_metric']['roofs'] == 2
+    assert record['observed_metric']['roofs_detail'] == [
+        {'kind': 'own', 'target': [10, 20]}, {'kind': 'enemy', 'target': [30, 40]}]

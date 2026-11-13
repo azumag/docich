@@ -306,11 +306,14 @@ def _camp_recall_step(screen: Screen, mem, frame, *, observed_camps=None):
                 from ..os_layer.world import observed_cursor_cell
                 origin = (observed_cursor_cell(screen, mem, frame)
                           if isinstance(frame, Frame) else None)
+                roofs_seen = ([{'kind': r.get('kind'), 'target': list(r['target'])}
+                               for r in castle_roofs(frame)]
+                              if isinstance(frame, Frame) else [])
                 _record(mem, 'camp_hunt',
                         observed_metric={'cursor': list(_cursor(screen) or ()),
-                                         'roofs': len(castle_roofs(frame))
-                                         if isinstance(frame, Frame) else 0,
+                                         'roofs': len(roofs_seen),
                                          'kind': screen.kind,
+                                         **({'roofs_detail': roofs_seen} if roofs_seen else {}),
                                          **({'origin': list(origin)} if origin else {}),
                                          **({'month_elapsed': elapsed}
                                             if elapsed is not None else {})},
