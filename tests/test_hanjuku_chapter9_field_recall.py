@@ -185,3 +185,16 @@ def test_an_empty_field_records_a_throttled_hunt_sample(monkeypatch):
     mem['tick'] = 520
     recall_flow.camp_recall_step(MAP, mem, FRAME)
     assert len([r for r in mem['_records'] if r['decision'] == 'camp_hunt']) == before + 1
+
+
+def test_a_battle_during_the_destination_records_the_pause(monkeypatch):
+    """g1163 2026-11-14 05:57-06:01: the dest sat at steps 1 for four minutes."""
+    mem = _mem(tick=400)
+    mem['flow'] = {'recall': {'stage': 'dest', 'steps': 1, 'target': [84, 73]}}
+    battle = Screen([], None, '', kind='battle')
+    assert recall_flow.camp_recall_step(battle, mem, FRAME) is None
+    record = next(r for r in mem['_records'] if r['decision'] == 'camp_recall_battle')
+    assert record['observed_metric'] == {'stage': 'dest', 'kind': 'battle'}
+    mem['tick'] = 430
+    recall_flow.camp_recall_step(battle, mem, FRAME)
+    assert len([r for r in mem['_records'] if r['decision'] == 'camp_recall_battle']) == 1
