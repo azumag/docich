@@ -210,3 +210,12 @@ def test_a_hunt_sample_records_whether_the_camera_was_localised(monkeypatch):
     recall_flow.camp_recall_step(MAP, mem, FRAME)
     record = next(r for r in mem['_records'] if r['decision'] == 'camp_hunt')
     assert record['observed_metric']['origin'] == [70, 20]
+
+
+def test_a_camp_found_records_the_integrated_cursor_cell(monkeypatch):
+    """The roof origin and the integrated cursor are the two camera sources."""
+    monkeypatch.setattr(recall_flow, 'own_camps', lambda frame: [dict(CAMP)])
+    mem = _mem(tick=100, month_start_tick=0, month_durations=[1000], cursor=[70, 20])
+    recall_flow.camp_recall_step(MAP, mem, FRAME)
+    record = next(r for r in mem['_records'] if r['decision'] == 'camp_found')
+    assert record['observed_metric']['cursor_cell'] == [70, 20]
