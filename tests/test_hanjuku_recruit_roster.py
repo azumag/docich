@@ -991,3 +991,17 @@ def test_month_country_status_count_is_retained_for_this_month_only():
     after = len([row for row in mem.get('_records') or []
                  if row.get('decision') == 'house_scan_started'])
     assert after == before
+
+
+def test_a_full_country_at_the_cap_needs_no_recruit_even_with_blank_garrisons(monkeypatch):
+    """g1163 2026-11-14 00:0x: country 32 = MAX, month still logged roster_unknown."""
+    from docich.hanjuku.os_layer.roster import MAX_GENERALS, run_identity
+    # The production month could not derive the target at all; the cap alone
+    # makes a recruit pointless.
+    monkeypatch.setattr(p, '_recruit_target', lambda mem: None)
+    mem = memory(NAMES[:2], False, 1)
+    identity = {'game': 'hanjuku-hero', 'runtime_id': 'r', 'generation': 1, 'lease_id': 'x'}
+    mem['_run_identity'] = identity
+    mem['country_general_count'] = {'count': MAX_GENERALS, 'scope': [1, '1-7'],
+                                    'identity': run_identity(identity)}
+    assert p._recruit_sufficient(mem)

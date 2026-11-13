@@ -748,6 +748,13 @@ def _recruit_target(mem):
 def _recruit_sufficient(mem):
     count, complete, names = _recruit_headcount(mem)
     target = _recruit_target(mem)
+    from ..os_layer.roster import MAX_GENERALS
+    # At the cap no recruit can be placed: the missing visible names are not a
+    # shortage. g1163 2026-11-14 00:0x: the country held 32 = MAX and the
+    # month still logged recruit_roster_unknown because the visible garrison
+    # lists were empty.
+    if type(count) is int and count >= MAX_GENERALS:
+        return True
     # A carried national count can establish a possible shortage, not prove
     # that the same number still serve after a month of battles.
     return (count is not None and target is not None and count >= target
