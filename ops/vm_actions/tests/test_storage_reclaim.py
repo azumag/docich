@@ -100,6 +100,48 @@ class StorageReclaimTests(unittest.TestCase):
         self.assertFalse(old.exists())
         self.assertTrue(recent.exists())
 
+    # ---- new: verify/ sweep (#4127, AGENTS.md §14) ----------------------
+
+    def test_verify_sweep_removes_only_entries_older_than_verify_gate(self):
+        # Verify leftovers use their own short gate (default 3d), independent
+        # of the 21d stale-pattern gate: a 4d-old entry goes, a 1d-old stays,
+        # and the verify directory itself is kept.
+        four_days = time.time() - 4 * 86400
+        old = self.make("verify/1234-old-run", four_days)
+        recent = self.make("verify/1235-active-run", RECENT)
+
+        result = self.run_helper(apply=True)
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse(old.exists(), result.stdout)
+        self.assertTrue(recent.exists(), result.stdout)
+        self.assertTrue((self.tmp / "verify").is_dir())
+
+    def test_verify_sweep_dry_run_deletes_nothing(self):
+        four_days = time.time() - 4 * 86400
+        old = self.make("verify/1234-old-run", four_days)
+
+        result = self.run_helper()
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(any(l.startswith("DEL") and str(old) in l
+                            for l in result.stdout.splitlines()), result.stdout)
+        self.assertTrue(old.exists())
+
+    def test_verify_sweep_respects_custom_gate(self):
+        four_days = time.time() - 4 * 86400
+        entry = self.make("verify/1234-old-run", four_days)
+
+        result = self.run_helper("--verify-min-age-days", "30", apply=True)
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(entry.exists(), result.stdout)
+        self.assertIn("KEEP", result.stdout)
+
+    def test_verify_sweep_rejects_non_numeric_gate(self):
+        result = self.run_helper("--verify-min-age-days", "soon")
+        self.assertEqual(result.returncode, 2)
+
     def test_voicevox_archive_requires_opt_in_and_engine(self):
         voicevox = self.base / "voicevox"
         (voicevox / "current").mkdir(parents=True)
@@ -509,6 +551,7 @@ class ControlPlaneWiringTests(unittest.TestCase):
         self.assertNotIn('"$home_root/build"', text)
         # The control plane must not forward these test-only path flags.
         workflow = (ROOT / ".github" / "workflows" / "vm-operations.yml").read_text()
+        self.assertNotIn("--verify-min-age-days", workflow)
         self.assertNotIn("--stale-clone", workflow)
         self.assertNotIn("--snap-cache-root", workflow)
         self.assertNotIn("--home-root", workflow)
@@ -527,6 +570,15 @@ class ControlPlaneWiringTests(unittest.TestCase):
         self.assertIn("aivis_engine", workflow)
         self.assertIn("AIVIS_ENGINE=%s", workflow)
         self.assertIn("AIVIS_ENGINE: ${{ inputs.aivis_engine }}", workflow)
+
+    def test_verify_sweep_uses_its_own_age_gate(self):
+        # #4127: $root/tmp/verify children are swept on a dedicated short
+        # gate (default 3d), not the 21d stale-pattern gate.
+        text = HELPER.read_text()
+        self.assertIn("verify_min_age_days=3", text)
+        self.assertIn("--verify-min-age-days", text)
+        self.assertIn('verify_dir="$tmp/verify"', text)
+        self.assertIn('is_older_than "$path" "$verify_min_age_days"', text)
 
     def test_stale_paths_entries_are_absolute_allowlisted_and_live_encoder_excluded(self):
         text = HELPER.read_text()
