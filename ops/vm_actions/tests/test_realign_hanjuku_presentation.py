@@ -148,6 +148,110 @@ class HanjukuPresentationRealignTests(unittest.TestCase):
         self.assertIn("steps.deploy_initial.outcome == 'success'", block)
         self.assertIn("steps.deploy_retry.outcome == 'success'", block)
 
+    def test_decorated_window_undecorated_once_then_proceeds(self):
+        # The incident in #4051: after the :99 recreation the WM decorated
+        # the ffplay window, so the client area sat at X=5/Y=119 (frame
+        # extents 5,5,29,5) instead of the expected X=0/Y=90. Stripping the
+        # decoration once must let the realign proceed.
+        geometries = [
+            {"X": 5, "Y": 119, "WIDTH": 721, "HEIGHT": 540},
+            {"X": 0, "Y": 90, "WIDTH": 721, "HEIGHT": 540},
+            {"X": 239, "Y": 90, "WIDTH": 721, "HEIGHT": 540},
+        ]
+        with patch.object(mod, "_window_ids", return_value=["555"]), \
+             patch.object(mod, "_geometry", side_effect=geometries), \
+             patch.object(mod, "_frame_extents", return_value=(5, 5, 29, 5)), \
+             patch.object(mod, "_undecorate") as undecorate, \
+             patch.object(mod, "_move") as move:
+            result = mod.realign(self.root)
+        self.assertEqual(result["status"], "realigned")
+        undecorate.assert_called_once_with(":99", "555", 0, 90)
+        move.assert_called_once_with(":99", "555", 239, 90)
+
+    def test_mismatch_without_frame_extents_stays_fail_closed(self):
+        for extents in ((0, 0, 0, 0), None):
+            with self.subTest(extents=extents):
+                with patch.object(mod, "_window_ids", return_value=["555"]), \
+                     patch.object(mod, "_geometry",
+                                  return_value={"X": 1, "Y": 90, "WIDTH": 721, "HEIGHT": 540}), \
+                     patch.object(mod, "_frame_extents", return_value=extents), \
+                     patch.object(mod, "_undecorate") as undecorate, \
+                     patch.object(mod, "_move") as move:
+                    with self.assertRaises(mod.RealignError) as raised:
+                        mod.realign(self.root)
+                self.assertEqual(raised.exception.code, mod.EXIT_GEOMETRY_MISMATCH)
+                undecorate.assert_not_called()
+                move.assert_not_called()
+
+    def test_undecorate_failure_stays_fail_closed(self):
+        with patch.object(mod, "_window_ids", return_value=["555"]), \
+             patch.object(mod, "_geometry",
+                          return_value={"X": 5, "Y": 119, "WIDTH": 721, "HEIGHT": 540}), \
+             patch.object(mod, "_frame_extents", return_value=(5, 5, 29, 5)), \
+             patch.object(mod, "_undecorate",
+                          side_effect=mod.RealignError(mod.EXIT_GEOMETRY_MISMATCH)), \
+             patch.object(mod, "_move") as move:
+            with self.assertRaises(mod.RealignError) as raised:
+                mod.realign(self.root)
+        self.assertEqual(raised.exception.code, mod.EXIT_GEOMETRY_MISMATCH)
+        move.assert_not_called()
+
+    def test_still_mismatched_after_undecorate_stays_fail_closed(self):
+        geometries = [
+            {"X": 5, "Y": 119, "WIDTH": 721, "HEIGHT": 540},
+            {"X": 5, "Y": 119, "WIDTH": 721, "HEIGHT": 540},
+        ]
+        with patch.object(mod, "_window_ids", return_value=["555"]), \
+             patch.object(mod, "_geometry", side_effect=geometries), \
+             patch.object(mod, "_frame_extents", return_value=(5, 5, 29, 5)), \
+             patch.object(mod, "_undecorate") as undecorate, \
+             patch.object(mod, "_move") as move:
+            with self.assertRaises(mod.RealignError) as raised:
+                mod.realign(self.root)
+        self.assertEqual(raised.exception.code, mod.EXIT_GEOMETRY_MISMATCH)
+        undecorate.assert_called_once_with(":99", "555", 0, 90)
+        move.assert_not_called()
+
+    def test_frame_extents_parses_xprop_output(self):
+        import subprocess
+        with patch("subprocess.check_output",
+                   return_value="_NET_FRAME_EXTENTS(CARDINAL) = 5, 5, 29, 5\n"):
+            self.assertEqual(mod._frame_extents(":99", "555"), (5, 5, 29, 5))
+        with patch("subprocess.check_output",
+                   side_effect=subprocess.CalledProcessError(1, "xprop")):
+            self.assertIsNone(mod._frame_extents(":99", "555"))
+        with patch("subprocess.check_output", return_value="no extents here"):
+            self.assertIsNone(mod._frame_extents(":99", "555"))
+
+    def test_undecorate_runs_hint_unmap_map_move_in_order(self):
+        import subprocess
+        calls = []
+
+        def fake_run(argv, **kwargs):
+            calls.append(argv)
+            return subprocess.CompletedProcess(argv, 0)
+
+        with patch("subprocess.run", side_effect=fake_run), \
+             patch("time.sleep") as sleep:
+            mod._undecorate(":99", "555", 0, 90)
+        self.assertEqual(len(calls), 4)
+        self.assertEqual(calls[0][:6],
+                         ["xprop", "-id", "555", "-f", "_MOTIF_WM_HINTS", "32c"])
+        self.assertIn("2, 0, 0, 0, 0", calls[0])
+        self.assertEqual(calls[1], ["xdotool", "windowunmap", "555"])
+        self.assertEqual(calls[2], ["xdotool", "windowmap", "555"])
+        self.assertEqual(calls[3],
+                         ["xdotool", "windowmove", "--sync", "555", "0", "90"])
+        sleep.assert_called_once_with(0.2)
+
+    def test_undecorate_failure_is_geometry_mismatch(self):
+        import subprocess
+        with patch("subprocess.run",
+                   side_effect=subprocess.CalledProcessError(1, "xprop")):
+            with self.assertRaises(mod.RealignError) as raised:
+                mod._undecorate(":99", "555", 0, 90)
+        self.assertEqual(raised.exception.code, mod.EXIT_GEOMETRY_MISMATCH)
+
     def test_runtime_change_after_move_rolls_window_back_and_keeps_state(self):
         original = self.presentation.read_bytes()
         geometry = [

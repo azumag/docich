@@ -204,6 +204,99 @@ REPROJECT_ATTEMPT_LIMIT = 30
 # fresh budget instead of inheriting the exhausted one.
 REPROJECT_RESET_AFTER_S = 10.0
 
+# A window manager may decorate the projection ffplay (title bar + border)
+# even though ffplay is started with -noborder: -noborder only asks SDL to
+# set the Motif hint, and a recreated output display (Xvfb :99, 2026-11-13)
+# made Xfwm4 ignore the request. A decorated window is shifted by its frame
+# extents, so the projection no longer matches the broadcast rectangle and
+# the post-deploy realign fails closed with exit 24 (docich#4051). Force the
+# decoration off after launch instead of trusting the launch-time request.
+MOTIF_HINTS_DECORATIONS_OFF = "2, 0, 0, 0, 0"
+UNDECORATE_WAIT_S = 2.0
+UNDECORATE_POLL_S = 0.1
+
+
+def _projection_window_id(title, env, *, wait_s=UNDECORATE_WAIT_S):
+    """Return the visible projection window id, or '' when it never appears."""
+    deadline = time.monotonic() + wait_s
+    while True:
+        try:
+            found = subprocess.run(
+                ['xdotool', 'search', '--onlyvisible', '--name',
+                 f'^{re.escape(title)}$'],
+                env=env, capture_output=True, text=True, timeout=2)
+        except (OSError, subprocess.TimeoutExpired):
+            return ''
+        ids = [line.strip() for line in found.stdout.splitlines()
+               if re.fullmatch(r'[1-9][0-9]*', line.strip())]
+        if len(ids) == 1:
+            return ids[0]
+        if time.monotonic() >= deadline:
+            return ''
+        time.sleep(UNDECORATE_POLL_S)
+
+
+def _frame_extents(window_id, env):
+    """Return the (left, right, top, bottom) frame extents, or None if unknown."""
+    try:
+        output = subprocess.check_output(
+            ['xprop', '-id', window_id, '_NET_FRAME_EXTENTS'],
+            env=env, text=True, timeout=3)
+    except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
+        return None
+    match = re.search(
+        r'_NET_FRAME_EXTENTS\(CARDINAL\) = ([0-9]+), ([0-9]+), ([0-9]+), ([0-9]+)',
+        output)
+    if match is None:
+        return None
+    return tuple(int(match.group(i)) for i in range(1, 5))
+
+
+def _undecorate_window(window_id, env, x, y):
+    """Force decorations off and move the window to (x, y). Best effort."""
+    try:
+        subprocess.run(
+            ['xprop', '-id', window_id, '-f', '_MOTIF_WM_HINTS', '32c',
+             '-set', '_MOTIF_WM_HINTS', MOTIF_HINTS_DECORATIONS_OFF],
+            env=env, check=True, stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL, timeout=3)
+        subprocess.run(['xdotool', 'windowunmap', window_id],
+                       env=env, check=True, stdout=subprocess.DEVNULL,
+                       stderr=subprocess.DEVNULL, timeout=3)
+        subprocess.run(['xdotool', 'windowmap', window_id],
+                       env=env, check=True, stdout=subprocess.DEVNULL,
+                       stderr=subprocess.DEVNULL, timeout=3)
+        # Give the window manager a moment to re-read the hint on remap
+        # before placing the now undecorated client area.
+        time.sleep(0.2)
+        subprocess.run(
+            ['xdotool', 'windowmove', '--sync', window_id, str(x), str(y)],
+            env=env, check=True, stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL, timeout=3)
+    except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
+        print(f'undecorate projection window failed: {type(exc).__name__}',
+              file=sys.stderr, flush=True)
+
+
+def _ensure_projection_undecorated(title, env, x, y):
+    """Remove WM decoration from the just-started projection window (#4051).
+
+    Best effort: a missing window, missing tools, or a failed hint change
+    must never stop the projection itself; the post-deploy realign still
+    fails closed on a real geometry mismatch.
+    """
+    try:
+        window_id = _projection_window_id(title, env)
+        if not window_id:
+            return
+        extents = _frame_extents(window_id, env)
+        if not extents or not any(extents):
+            return
+        _undecorate_window(window_id, env, x, y)
+    except Exception as exc:  # noqa: BLE001 - never break the projection
+        print(f'undecorate projection window failed: {type(exc).__name__}',
+              file=sys.stderr, flush=True)
+
 
 class ReprojectPolicy:
     """One bounded restart budget for the owned projection player.
@@ -499,6 +592,10 @@ def main(argv=None) -> int:
                 '-left', str(player_left), '-top', str(args.y),
                 '-x', str(player_width), '-y', str(args.height),
             ], env=output_env)
+            # -noborder alone does not stop the window manager decorating
+            # the projection after an output-display recreation (#4051).
+            _ensure_projection_undecorated(args.title, output_env,
+                                           player_left, args.y)
             return process, width, height
 
         player, width, height = start_projection(window)
