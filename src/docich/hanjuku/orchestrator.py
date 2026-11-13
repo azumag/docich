@@ -186,7 +186,10 @@ def _recall_after_scene(mem, recall, kind, phase):
         from .flows.recall import _arm_recall_skip as _arm_skip
         _arm_skip(mem, recall)
         decision_log._record(mem, 'camp_recall_scene_abandoned', screen=kind, phase=phase,
-                             observed_metric={'resumes': resumes},
+                             observed_metric={'resumes': resumes,
+                                              'stage': recall.get('stage'),
+                                              'goal': recall.get('goal'),
+                                              'target': recall.get('target')},
                              reason='場面の割り込みで帰還が繰り返し中断されるため、この野営を一定期間見送る')
         return None
     recall.update(stage='to_camp', steps=0, resumed_after_scene=True,

@@ -39,3 +39,7 @@ def test_a_recall_cut_three_times_is_skipped_instead_of_looping():
     mem = memory(resumes=2)
     assert interrupt(mem) is None
     assert 'recall' not in mem['flow']
+    abandoned = next(r for r in mem['_records'] if r['decision'] == 'camp_recall_scene_abandoned')
+    assert abandoned['observed_metric']['stage'] == 'dest'
+    assert abandoned['observed_metric']['goal'] == 'アルマムーン'
+    assert abandoned['observed_metric']['target'] == [175, 84]

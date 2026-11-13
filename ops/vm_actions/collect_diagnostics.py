@@ -7244,6 +7244,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v797-recruit-at-cap",
             "hanjuku-chart-v798-camp-occluded-tolerance",
             "hanjuku-chart-v799-camp-enter-record",
+            "hanjuku-chart-v800-scene-abandon-record",
             "hanjuku-chart-v560-castle-list-scroll",
             "hanjuku-chart-v561-post-month-repair-status",
             "hanjuku-chart-v501-idle-reanchor",
