@@ -140,3 +140,22 @@ def test_unticked_data_keeps_the_longest_rule():
     from docich.hanjuku.strategy import corridor
     mem = _front_memory(['キール'], PAGE)
     assert corridor._front_names(mem, 'オオキク') == PAGE
+
+
+def test_a_move_clears_the_page_for_both_castles():
+    """A page is a pre-move snapshot; it must not outlive the roster change.
+
+    g1163 2026-11-13 17:5x: a four-name page kept ドンドン looking full while
+    two stood there, so the pair wait was skipped and single generals fed a
+    71-HP defender.
+    """
+    from docich.hanjuku.strategy import orders as O
+    mem = {'chapter': 9, 'tick': 100, '_records': [], 'world': {
+        'garrison': {'ドンドン': ['アルテミス', 'ペコリーノ']},
+        'garrison_partial': {'ドンドン': ['ジェラート', 'ラビオリ', 'クランベリー', 'ペコリーノ'],
+                             'オシロガ': ['ガスパチョ']},
+        'garrison_partial_tick': {'ドンドン': 90, 'オシロガ': 90}}}
+    O._garrison_move(mem, 'アルテミス', source='ドンドン', target='オシロガ')
+    assert 'ドンドン' not in mem['world']['garrison_partial']
+    assert 'オシロガ' not in mem['world']['garrison_partial']
+    assert mem['world']['garrison']['オシロガ'] == ['アルテミス']
