@@ -88,4 +88,7 @@ def test_a_cursor_within_the_sprite_can_open_the_last_confirmed_tent(monkeypatch
                             'last_seen': [84, 73], 'steps': 0}
     screen = Screen([], None, '', kind='map', cursor=(90, 78))
     assert recall_flow.camp_recall_step(screen, mem, FRAME) == [recall_flow.pad('a')]
-    assert any(r['decision'] == 'camp_enter' for r in mem['_records'])
+    enter = next(r for r in mem['_records'] if r['decision'] == 'camp_enter')
+    assert enter['observed_metric'] == {'camp': [84, 73], 'occluded': True,
+                                        'cursor': [90, 78], 'last_seen': [84, 73],
+                                        'target': [84, 73]}
