@@ -19,6 +19,7 @@ RECALL_LIMIT = 90              # observations for one camp recall
 RECALL_ARRIVE_PX = 4           # cursor cell onto the tent
 RECALL_CONFIRM_PX = 4          # marker onto the own castle's selecting cell
 RECALL_SKIP_TICKS = 400        # observations before retrying the same failed camp
+RECALL_READ_DELAY = 180        # ticks before the destination roster is read (march time)
 RECALL_SKIP_RADIUS = 48        # screen pixels: cover the measured camera shift for the same camp
 RECALL_SKIP_HISTORY = 6        # other failed camps whose hold is still running
 LOST_CAMP_RETRY_TICKS = 60     # first wait after a tent only went out of sight, doubling up to the skip
@@ -700,8 +701,11 @@ def _request_recall(mem, state, goal, actions, **fields):
         # camp (the field shows no marker for it). Ask the corridor probe to
         # read that castle so the recalled generals become visible instead of
         # staying "unaccounted": g1163 2026-11-13 15:5x-16:3x recalled camps
-        # four times and never read where they landed.
-        mem.setdefault('roster_read_due', {})[goal] = int(mem.get('tick') or 0)
+        # four times and never read where they landed. The due time is the
+        # recall's walking time: reading at the request tick finds an empty
+        # castle.
+        mem.setdefault('roster_read_due', {})[goal] = (
+            int(mem.get('tick') or 0) + RECALL_READ_DELAY)
     _record(mem, 'camp_recall_requested', chart_step=None,
             observed_metric={'castle': goal, 'camp': state.get('target'),
                              'hero_intended': bool(state.get('hero')), **fields},

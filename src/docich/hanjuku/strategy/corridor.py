@@ -669,8 +669,12 @@ def _due_probe(mem, routes_by, target, lost):
     """
     now = int(mem.get('tick') or 0)
     raw = mem.get('roster_read_due') or {}
-    asked = {castle: tick for castle, tick in raw.items()
-             if type(tick) is int and 0 <= now - tick <= ROSTER_READ_DUE_TTL}
+    for castle, tick in list(raw.items()):
+        if type(tick) is not int or now - tick > ROSTER_READ_DUE_TTL:
+            raw.pop(castle, None)          # stale past due: drop, never re-read
+    # The recall stores a due *time*: its destination is read after the
+    # recalled general has had time to walk there, not at the request tick.
+    asked = {castle: tick for castle, tick in raw.items() if tick <= now}
     due = {source for source, route in routes_by.items()
            if route and len(route) >= 2
            and (routes.probe_due(mem, source) or source in asked)}

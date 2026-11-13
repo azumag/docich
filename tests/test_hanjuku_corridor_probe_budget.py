@@ -341,6 +341,7 @@ def test_a_stale_recall_due_is_ignored():
     mem['roster_read_due'] = {C: mem['tick'] - corridor.ROSTER_READ_DUE_TTL - 1}
     orders(mem)
     assert not decided(mem, 'roster_probe_due')
+    assert C not in (mem.get('roster_read_due') or {})
 
 
 def test_a_fresh_recall_due_is_consumed_by_its_probe():
@@ -352,3 +353,17 @@ def test_a_fresh_recall_due_is_consumed_by_its_probe():
     orders(mem)
     assert decided(mem, 'roster_probe_due')
     assert C not in (mem.get('roster_read_due') or {})
+
+
+def test_a_future_recall_due_waits_for_the_walk():
+    """The recall stores a due time: read after the general can arrive."""
+    mem = memory([A, B, C], [])
+    mem['garrison'][C] = ['リーキ', 'ベーグル']
+    mem['world']['garrison'][C] = ['リーキ', 'ベーグル']
+    mem['country_general_count'] = {'count': 32, 'scope': [9, '23-5']}
+    mem['roster_read_due'] = {C: mem['tick'] + 180}
+    orders(mem)
+    assert not decided(mem, 'roster_probe_due')
+    mem['tick'] += 180
+    orders(mem)
+    assert decided(mem, 'roster_probe_due')
