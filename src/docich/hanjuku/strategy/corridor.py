@@ -331,6 +331,22 @@ def orders(mem) -> list[dict]:
                     and isinstance(_front_names_now, list)
                     and len(_front_names_now) < _mass
                     and not _front_mass_expired(mem, source, len(_front_names_now))):
+                # A sortie already opened from this front keeps executing even
+                # though the corridor now holds the next one (g1163 2026-11-13
+                # 18:33: front_wait_mass with 1 resident, then マフィン and
+                # シェーブル marched solo). Stop that in-flight attack so the
+                # move orders refill the castle instead.
+                plan = _plan_region(mem)
+                active = plan.get('active')
+                parts = str(active).split(':') if active else []
+                if len(parts) >= 3 and parts[2] == f'{source}>{target}':
+                    plan['active'] = None
+                    plan.setdefault('orders', {})[active] = 'pending'
+                    _record_only(mem, 'front_mass_retracted', chart_step=active,
+                                 target=source,
+                                 observed_metric={'need': _mass, 'purpose': purpose,
+                                                  'residents': list(_front_names_now)[:8]},
+                                 reason='前線が2人待ちのため、実行中だった攻撃を止めて増援を待つ')
                 _record_only(mem, 'front_wait_mass', target=source,
                              observed_metric={'residents': list(_front_names_now)[:8],
                                               'need': _mass, 'purpose': purpose},

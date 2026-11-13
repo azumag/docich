@@ -11,6 +11,7 @@ import pytest
 
 from docich import hanjuku_chart as chart
 from docich.hanjuku import orchestrator  # noqa: F401
+from docich.hanjuku.state.regions import plan as _plan_region
 from docich.hanjuku.strategy import corridor
 
 ROAD = chart.corridor(9)
@@ -135,3 +136,21 @@ def test_an_unchanged_front_still_expires():
     mem['front_mass_hold'] = {C: mem['tick'] - corridor.FRONT_MASS_WAIT - 1}
     mem['front_mass_count'] = {C: 2}
     assert corridor._front_mass_expired(mem, C, 2) is True
+
+
+def test_a_queued_attack_is_stopped_when_the_pair_wait_rearms():
+    """g1163 2026-11-13 18:33: front_wait_mass, yet マフィン and シェーブル marched.
+
+    A sortie already opened from the front kept executing. The pair wait must
+    stop it so the move orders refill the castle.
+    """
+    mem = memory(['ローズマリー', 'ベーグル'])
+    step = f'I:c9:{C}>{D}:5'
+    plan = _plan_region(mem)
+    plan['active'] = step
+    plan['orders'] = {step: 'pending'}
+    assert attacks(mem) == []
+    plan = _plan_region(mem)
+    assert plan.get('active') is None
+    assert plan['orders'][step] == 'pending'
+    assert decided(mem, 'front_mass_retracted')
