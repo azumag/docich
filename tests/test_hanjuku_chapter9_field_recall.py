@@ -104,3 +104,13 @@ def test_a_recall_near_the_month_end_waits_for_the_scene(monkeypatch):
     mem['tick'] = 2400
     assert recall_flow._month_end_soon(mem) is False
     assert recall_flow.camp_recall_step(MAP, mem, FRAME) is not None
+
+
+def test_the_first_month_after_a_restart_uses_a_conservative_default(monkeypatch):
+    """g1163 2026-11-14 02:0x: month_durations is still empty at 42-10."""
+    monkeypatch.setattr(recall_flow, 'own_camps', lambda frame: [dict(CAMP)])
+    early = _mem(tick=100 + 100, month_start_tick=100)
+    assert recall_flow._month_end_soon(early) is False
+    late = _mem(tick=100 + 200, month_start_tick=100)
+    assert recall_flow._month_end_soon(late) is True
+    assert recall_flow.camp_recall_step(MAP, late, FRAME) is None
