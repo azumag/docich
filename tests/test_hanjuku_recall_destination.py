@@ -359,3 +359,14 @@ def test_the_picker_records_its_progress_every_ten_observations(monkeypatch):
     record = next(r for r in mem['_records'] if r['decision'] == 'camp_recall_picker_progress')
     assert record['observed_metric']['observations'] == 10
     assert record['observed_metric']['cursor'] is None
+
+
+def test_the_picker_progress_records_the_own_castles(monkeypatch):
+    """g1163 2026-11-14 08:05: goal null for 30+ observations; which own castles?"""
+    mem = memory(list(p.chart.castles(1)['キカンドン']))
+    at(monkeypatch, 'アルマムーン')
+    monkeypatch.setattr(p, 'world_cursor', lambda _: None)
+    for _ in range(10):
+        p.world_map_step(VIEW, mem, picker())
+    record = next(r for r in mem['_records'] if r['decision'] == 'camp_recall_picker_progress')
+    assert 'アルマムーン' in record['observed_metric']['own']
