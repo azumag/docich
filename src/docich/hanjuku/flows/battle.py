@@ -1806,6 +1806,11 @@ def message_step(screen: Screen, mem):
         castle = _castle_label(mem, castle)
         if (_plan_region(mem).get('attack') or {}).get('castle') != castle or (_plan_region(mem).get('attack') or {}).get('side') != 'defense':
             _record(mem, 'defense_observed', castle=castle, reason='せめこまれました表示')
+            # Keep the threat on the books: the corridor keeps two residents
+            # home at a front that has just been attacked (g1163 2026-11-13:
+            # オオキク was retaken at 14:05, counter-attacked from 14:15, and
+            # lost again while the attack on ナッテ held only one defender).
+            mem.setdefault('defense_seen', {})[castle] = int(mem.get('tick') or 0)
             mem['world_map_due'] = True      # the castle may have fallen without a battle
         _plan_region(mem)['attack'] = {'general': None, 'castle': castle, 'side': 'defense', 'step': None}
         return [pad('a')]

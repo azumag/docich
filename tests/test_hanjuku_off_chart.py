@@ -1141,6 +1141,13 @@ def test_a_castle_only_the_next_chapter_has_advances_the_chapter_and_drops_chapt
     assert decisions(mem, 'defense_observed')[-1]['castle'] == 'フーリック'
 
 
+def test_a_defense_message_marks_the_castle_for_the_corridor():
+    """A measured せめこまれました keeps two residents home (v765)."""
+    mem = {**g401_memory(), 'tick': 500}
+    assert policy.message_step(_message('アルマムーンじょうがてきにせめこまれました!'), mem) == [policy.pad('a')]
+    assert mem['defense_seen']['アルマムーン'] == 500
+
+
 def test_a_chapter_2_memory_without_evidence_returns_to_chapter_1_once():
     # g436: the v44-v60 check had switched a chapter 1 game to chapter 2 on アルマムーン.
     mem = {'chapter': 2, 'variant': 'chart', '_records': [], 'orders': {'2-Z1': 'pending'}, 'cursor': [522, 847]}

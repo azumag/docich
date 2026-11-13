@@ -290,7 +290,13 @@ def orders(mem) -> list[dict]:
             # A retake of our own castle is worth more than holding: the flip
             # rule only protects castles we are trying to keep (g1163 2026-11-13
             # 02:1x: ドンドン retakes stalled while the front held two).
-            _keep = 2 if (_flip_prone(mem, target) and purpose != 'retake') else 1
+            # A front the enemy has just attacked keeps two as well: g1163
+            # 2026-11-13 took オオキク at 14:05, the counter-attack began at
+            # 14:15, and the attack on ナッテ had already left one defender.
+            # This is not the just-captured rule that blocked attacks (v749):
+            # it only applies after a measured せめこまれました.
+            _keep = 2 if ((_flip_prone(mem, target) or _defended_recently(mem, source))
+                          and purpose != 'retake') else 1
             _finish = _defender_nearly_dead(mem, target)
             if (not _finish and _wounded_attack(mem, source)
                     and not _front_guard_expired(mem, source)):
@@ -954,6 +960,19 @@ def _repelled_alone(mem, target) -> bool:
 
 
 FLIP_WINDOW_TICKS = 900    # a capture lost again inside this window is a flip
+DEFENSE_WINDOW_TICKS = 900  # ticks a just-attacked front keeps two home
+
+
+def _defended_recently(mem, castle) -> bool:
+    """The enemy attacked this castle inside the defence window.
+
+    Set by the せめこまれました observation (battle.py). g1163 2026-11-13:
+    オオキク was retaken at 14:05 and counter-attacked from 14:15; the attack
+    on ナッテ left one defender and the castle was lost again.
+    """
+    tick = (mem.get('defense_seen') or {}).get(castle)
+    return (type(tick) is int
+            and 0 <= int(mem.get('tick') or 0) - tick <= DEFENSE_WINDOW_TICKS)
 
 
 def _flip_prone(mem, target) -> bool:

@@ -7209,6 +7209,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v762-strongest-full-hp-leader",
             "hanjuku-chart-v763-owner-veto-order",
             "hanjuku-chart-v764-owned-target-settle",
+            "hanjuku-chart-v765-defended-front-keep",
             "hanjuku-chart-v560-castle-list-scroll",
             "hanjuku-chart-v561-post-month-repair-status",
             "hanjuku-chart-v501-idle-reanchor",
