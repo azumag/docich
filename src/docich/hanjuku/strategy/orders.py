@@ -2066,18 +2066,17 @@ def _garrison_move(mem, general, source=None, target=None):
         _world(mem)['general_location_unknown'] = [g for g in _world(mem).get('general_location_unknown') or () if g != general]
         here = [g for g in garrison.get(target) or () if g != general]
         garrison[target] = [*here, general]
-    # A page is a snapshot of the roster before the move. Once the general
-    # leaves or arrives, that page over/under-states the castle and the
-    # revisit count trusts it (g1163 2026-11-13 17:5x: a four-name page kept
-    # ドンドン looking full while only two stood there, so the pair wait was
-    # skipped and single generals fed a 71-HP defender). The complete list is
-    # updated here; the page must not outlive it.
+    # A page is a snapshot of the roster from when it was read. The move is
+    # authoritative for the mover, so update the page instead of dropping it:
+    # the other names on the page are still there. Dropping it left the
+    # castle looking empty to the reinforcement check (g1163 2026-11-13
+    # 20:2x: オシロガ's four-name page vanished after one move, the front
+    # saw no reinforcements and marched its last resident out).
     partial = _world(mem).setdefault('garrison_partial', {})
-    partial_tick = _world(mem).setdefault('garrison_partial_tick', {})
-    for castle in (source, target):
-        if castle:
-            partial.pop(castle, None)
-            partial_tick.pop(castle, None)
+    if source and general and isinstance(partial.get(source), list):
+        partial[source] = [g for g in partial[source] if g != general]
+    if target and general and isinstance(partial.get(target), list) and general not in partial[target]:
+        partial[target] = [*partial[target], general]
 
 
 LAST_CASTLE_HOLD_TICKS = 300   # observations before the last castle's list is read again
