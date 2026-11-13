@@ -169,6 +169,13 @@ def summon_monster_panel(screen, cur):
             or type(ally_row.hp) is not int or type(enemy_row.hp) is not int
             or not 0 < ally_row.hp <= 9999 or not 0 < enemy_row.hp <= 9999):
         return None
+    # A current general-panel proof exists for this battle's generals: keep the
+    # old unread/validation path instead of treating the panel as a summon pair.
+    proof = cur.get('summon_general_reading')
+    if (isinstance(proof, dict)
+            and proof.get('ally') == cur.get('ally')
+            and proof.get('enemy') == cur.get('enemy')):
+        return None
     cur['summon_ally'] = ally_row.name
     cur['summon_ally_hp'] = ally_row.hp
     cur['summon_enemy'] = enemy_row.name
