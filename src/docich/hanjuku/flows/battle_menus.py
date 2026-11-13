@@ -941,6 +941,69 @@ OKUNOTE_SUMMON_UNCONFIRMED_LIMIT = 3
 OKUNOTE_COMMITTED_TICKS_LIMIT = 48
 
 
+OKUNOTE_ONLY_BOX_DOWNS = 4      # 有効行へカーソルを下げる上限 (実測は2回)
+OKUNOTE_ONLY_BOX_CONFIRMS = 2   # 同一画面が残るときの再確定上限
+
+
+def _okunote_only_box_step(screen, mem, cur):
+    """きりふだ・たいきゃくが灰色で おくのて だけが生きた箱を有界で確定する。
+
+    g1163 2026-11-13 09:1x の実測: カーソルは灰色の きりふだ 行 (y176) にあり、
+    下方向は受け付けるが B はこの箱を閉じない。この箱の形が
+    ``hidden_battle_commands`` (3行すべて灰色) にも ``disabled_item_box``
+    (たまご+きりふだ の2行) にも当たらないため、通常の戦闘メニューとして B を
+    送り続け、同じ画面のまま5時間 戦闘が進まなかった。
+
+    実画面で証明できるのは「きりふだ/たいきゃく は使用不能」「おくのて だけが
+    生きている」の2点だけなので、選ぶのは常に おくのて 行で、確定は1回ずつ
+    数える。下げられない・確定が効かない場合は推測で別の行を押さず None を返し、
+    呼び出し元の通常判定へ戻す。
+    """
+    sha = getattr(screen, 'frame_sha256', None)
+    flow = cur.get('okunote_only_box_step')
+    if (not isinstance(flow, dict) or type(flow.get('downs')) is not int
+            or type(flow.get('confirms')) is not int):
+        flow = cur['okunote_only_box_step'] = {'downs': 0, 'confirms': 0, 'sha': None,
+                                               'waits': 0}
+    elif sha is not None and flow.get('sha') == sha and flow.get('confirms'):
+        # 同じ画面が戻ってきた: 確定が届いていない可能性だけを数え、無記録の
+        # 連打はしない (Bの無限ループと同じ失敗を繰り返さない)。
+        waits = flow.get('waits') if type(flow.get('waits')) is int else 0
+        if waits < 2:
+            flow['waits'] = waits + 1
+            return []
+        flow['waits'] = 0
+        if flow['confirms'] < OKUNOTE_ONLY_BOX_CONFIRMS:
+            flow['confirms'] += 1
+            _record(mem, 'battle_okunote_only_box_reconfirm', **_battle_labels(cur),
+                    observed_metric={'confirms': flow['confirms'], 'cursor_y': screen.menu_cursor},
+                    reason='奥の手行の確定が画面に反映されないため、カーソル確認済みのAを有界で再送する')
+            return [pad('a')]
+        return None
+    if screen.menu_cursor == 208:
+        flow.update(confirms=flow['confirms'] + 1, sha=sha, waits=0)
+        _record(mem, 'battle_okunote_only_box_confirm', **_battle_labels(cur),
+                observed_metric={'cursor_y': screen.menu_cursor, 'downs': flow['downs'],
+                                 'self_damage_upper': OKUNOTE_MAX_SELF_DAMAGE},
+                resulting_event='irreversible_risk_accepted',
+                reason='カードも退却も使用不能で奥の手だけが有効な戦闘メニューを、カーソル確認済みで1回確定し戦闘を進める')
+        return [pad('a')]
+    if flow['downs'] >= OKUNOTE_ONLY_BOX_DOWNS:
+        _record(mem, 'battle_okunote_only_box_unread', **_battle_labels(cur),
+                observed_metric={'downs': flow['downs'], 'cursor_y': screen.menu_cursor},
+                reason='有効な奥の手行へカーソルを下げられないため確定せず通常のコマンド判定へ戻す')
+        flow['downs'] = 0
+        return None
+    flow['downs'] += 1
+    flow['sha'] = sha
+    if flow['downs'] == 1:
+        _record(mem, 'battle_okunote_only_box_down', **_battle_labels(cur),
+                observed_metric={'cursor_y': screen.menu_cursor,
+                                 'limit': OKUNOTE_ONLY_BOX_DOWNS},
+                reason='Bでは閉じない箱のため、実画面で唯一有効な奥の手行へカーソルを下げる')
+    return [pad('down')]
+
+
 def okunote_step(screen, mem):
     cur = mem.get('battle')
     if not cur:
@@ -962,6 +1025,12 @@ def okunote_step(screen, mem):
                 # single confirm on the highlighted row instead of pressing B
                 # forever (g1163 2026-11-10 19:1x: no decision records for
                 # minutes while the おくのて menu stayed open).
+                if getattr(screen, 'okunote_only_box', False):
+                    # g1163 2026-11-13 09:1x: きりふだ/たいきゃく が灰色で
+                    # おくのて だけが生きた箱。先頭行は たまごをつかう ではなく
+                    # 灰色の きりふだ なので、up/up/A は死んだ行を押すだけで
+                    # 何も起きない。唯一有効な行へカーソルを下げて1回だけ確定する。
+                    return _okunote_only_box_step(screen, mem, cur)
                 if not cur.get('okunote_summon_exhausted_confirm'):
                     cur['okunote_summon_exhausted_confirm'] = True
                     _record(mem, 'battle_okunote_exhausted_confirm',
@@ -973,6 +1042,10 @@ def okunote_step(screen, mem):
                     return [pad('up'), pad('up'), pad('a')]
                 return None
             if summon is None:
+                if getattr(screen, 'okunote_only_box', False):
+                    # 照合できないままBを有界回数送るより、実測した唯一の
+                    # 有効行へカーソルを下げて確定する方が戦闘を進められる。
+                    return _okunote_only_box_step(screen, mem, cur)
                 # g1097 22:09: この将軍コマンドは「たいきゃく」の下に隠れた
                 # おくのて行を持つ (hidden_battle_commands)。B は効かず、同じ
                 # 画面が40観測以上続いた。照合不能でもおくのて行へ向かうため、
