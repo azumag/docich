@@ -249,7 +249,24 @@ def test_a_castle_a_transfer_was_sent_into_is_read_first():
     orders(mem)
     minted = (mem.get(corridor.PROBE) or {}).get('mint_order') or {}
     assert minted.get('source') == C, 'the destination list is the arrival receipt'
-    assert decided(mem, 'roster_probe')
+    assert decided(mem, 'roster_probe_due')
+
+
+def test_a_due_destination_is_read_even_when_the_tour_budget_is_spent():
+    """The arrival receipt must not wait for the monthly tour."""
+    mem = memory([A, B, C], [])
+    mem['garrison'][C] = ['リーキ', 'ベーグル']
+    mem['world']['garrison'][C] = ['リーキ', 'ベーグル']
+    mem['country_general_count'] = {'count': 32, 'scope': [9, '23-5']}
+    mem['world']['sorties']['I:c9:B>C:1'] = {
+        'general': 'キャロット', 'source': B, 'target': C, 'purpose': 'move',
+        'status': 'en_route', 'tick': mem['tick'] - 10}
+    _spend_budget(mem)
+    count = mem[corridor.PROBE]['count']
+    before = len(decided(mem, 'roster_probe_due'))
+    orders(mem)
+    assert len(decided(mem, 'roster_probe_due')) > before
+    assert mem[corridor.PROBE]['count'] == count, 'a due read is not budgeted'
 
 
 def _spend_budget(mem):

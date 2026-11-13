@@ -374,6 +374,16 @@ def orders(mem) -> list[dict]:
         # step the executor sees and spends one visit per observation.
         out.insert(0, minted)
         return out
+    due = _due_probe(mem, routes_by, target, lost)
+    if due is not None:
+        # An arrival receipt is not the monthly tour: the destination list is
+        # the only evidence that a transfer landed (g1163 2026-11-13 12:3x:
+        # ten moves into ドンドン, garrison stayed at one because the tour
+        # budget was spent and the list was never opened).
+        _probe_spend(mem, 'roster_probe_due', budgeted=False)
+        _remember_probe(mem, due)
+        out.insert(0, due)
+        return out
     if out and not _probe_budget_left(mem):
         return out
     if not out and _sortie_in_flight(mem):
@@ -517,8 +527,12 @@ def _probe_budget_left(mem) -> bool:
     return int(state.get('count') or 0) < PROBE_BUDGET
 
 
-def _probe_spend(mem, decision, idle=False):
-    """Count one probe. An idle probe (nothing else to plan) is not budgeted."""
+def _probe_spend(mem, decision, idle=False, budgeted=True):
+    """Count one probe. An idle probe (nothing else to plan) is not budgeted.
+
+    A due destination read (``budgeted=False``) is an arrival receipt, not the
+    monthly tour, so it neither consumes nor is blocked by the tour budget.
+    """
     state = mem.setdefault(PROBE, {})
     names = _garrison_names(mem)
     if state.get('month') != mem.get('month'):
@@ -527,7 +541,7 @@ def _probe_spend(mem, decision, idle=False):
                      seen_names=sorted(names))
     if idle:
         state['idle_tick'] = int(mem.get('tick') or 0)
-    else:
+    elif budgeted:
         state['count'] = int(state.get('count') or 0) + 1
     state['tick'] = int(mem.get('tick') or 0)
     state['seen'] = len(names)
@@ -537,8 +551,11 @@ def _probe_spend(mem, decision, idle=False):
                  observed_metric={'probe_count': state['count'],
                                   'probe_budget': PROBE_BUDGET,
                                   'idle': idle,
+                                  'budgeted': budgeted,
                                   'unaccounted': _unaccounted(mem)},
-                 reason=('ほかに出す指示がないため、所在不明の将軍を城一覧で確認する'
+                 reason=('移動を受け入れた城の一覧で到着を確認する（月の巡回予算とは別）'
+                         if not budgeted else
+                         'ほかに出す指示がないため、所在不明の将軍を城一覧で確認する'
                          if idle else
                          '所在不明の将軍を城一覧で確認する（月ごとの上限つき）'))
 
@@ -624,8 +641,26 @@ def _unaccounted(mem):
     return count['count'] - len(known)
 
 
+def _due_probe(mem, routes_by, target, lost):
+    """A castle a transfer was sent into: its list is the arrival receipt.
+
+    g1163 2026-11-13 12:3x sent ten generals from オシロガ into ドンドン, the
+    source list confirmed each launch, but no sortie opened ドンドン's own
+    list, so ``garrison`` stayed at one and the retake never reached three.
+    ``routes.probe_due`` rate-limits the read by ``PROBE_INTERVAL``.
+    """
+    due = {source for source, route in routes_by.items()
+           if route and len(route) >= 2 and routes.probe_due(mem, source)}
+    if not due:
+        return None
+    source = min(due, key=lambda c: (mem.get('route_probe_read_tick') or {}).get(c, 0))
+    route = routes_by[source]
+    purpose = ('retake' if target in lost else 'attack') if len(route) == 2 else 'move'
+    return _order(mem, source, route[1], target, purpose)
+
+
 def _roster_probe(mem, routes_by, target, lost):
-    """Re-read a castle list while generals are unaccounted.
+    """Re-read a drained castle list while generals are unaccounted.
 
     When the country's general count exceeds ``in garrison + unknown +
     marching``, somebody is standing in a castle the plan stopped visiting.
@@ -635,28 +670,19 @@ def _roster_probe(mem, routes_by, target, lost):
     next-oldest mark, rotating the tour through the castles (docich#3963).
     ``_drained`` already yields to a march that may still be on the road,
     so a castle expecting an arrival is not probed.
-
-    A castle a transfer was sent into is different: its list is the only
-    arrival receipt (``routes.observed_roster``), and the pair wait holds
-    the front until residents show up. g1163 2026-11-13 12:3x sent ten
-    generals from オシロガ into ドンドン, the source list confirmed each
-    launch, but no sortie opened ドンドン's own list, so ``garrison`` stayed
-    at one and the retake never reached three. Read that castle first.
     """
     if _unaccounted(mem) <= 0:
         return None
-    due = {source for source, route in routes_by.items()
-           if route and len(route) >= 2 and routes.probe_due(mem, source)}
+    due = _due_probe(mem, routes_by, target, lost)
+    if due is not None:
+        return due
     drained = {source: (mem.get(DRAINED) or {}).get(source)
                for source, route in routes_by.items()
                if route and len(route) >= 2
                and _drained(mem, source, 'move')}
-    if due:
-        source = min(due, key=lambda c: (mem.get('route_probe_read_tick') or {}).get(c, 0))
-    elif drained:
-        source = min(drained, key=lambda c: drained[c].get('tick') or 0)
-    else:
+    if not drained:
         return None
+    source = min(drained, key=lambda c: drained[c].get('tick') or 0)
     route = routes_by[source]
     purpose = ('retake' if target in lost else 'attack') if len(route) == 2 else 'move'
     return _order(mem, source, route[1], target, purpose)
