@@ -176,17 +176,17 @@ def test_a_three_hp_defender_may_be_finished_by_a_wounded_general():
     assert not [r for r in mem['_records'] if r.get('decision') == 'front_wounded']
 
 
-def test_a_sixteen_hp_defender_is_a_finish():
-    """g1163 2026-11-13 14:5x: ナッテ's defender was left at 16 HP.
+def test_a_twenty_four_hp_defender_is_a_finish():
+    """g1163 2026-11-13 14:5x-15:1x: ナッテ's defender was left at 16/24 HP.
 
-    The 10-HP bound did not mark it a finish, the pair wait held the next
-    attacker, and the defender recovered. 20 HP is still one good hit.
+    The 10-HP bound did not mark either a finish, the pair wait held the next
+    attacker, and the defender recovered. 25 HP is still one good hit.
     """
     mem = memory(['リーキ'])
     mem['captured'] = [A, B]
     mem['lost'] = [C]
     mem['world']['general_hp'] = {'リーキ': {'hp': 40, 'max': 60}}
-    mem['sortie_history'] = [{'target': C, 'outcome': 'lost', 'enemy_hp': 16, 'tick': 4900}]
+    mem['sortie_history'] = [{'target': C, 'outcome': 'lost', 'enemy_hp': 24, 'tick': 4900}]
     assert [o for o in attacks(mem) if o['source'] == B]
     assert not [r for r in mem['_records'] if r.get('decision') == 'front_wounded']
 
