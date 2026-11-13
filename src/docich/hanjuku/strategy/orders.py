@@ -2066,6 +2066,18 @@ def _garrison_move(mem, general, source=None, target=None):
         _world(mem)['general_location_unknown'] = [g for g in _world(mem).get('general_location_unknown') or () if g != general]
         here = [g for g in garrison.get(target) or () if g != general]
         garrison[target] = [*here, general]
+    # A page is a snapshot of the roster before the move. Once the general
+    # leaves or arrives, that page over/under-states the castle and the
+    # revisit count trusts it (g1163 2026-11-13 17:5x: a four-name page kept
+    # ドンドン looking full while only two stood there, so the pair wait was
+    # skipped and single generals fed a 71-HP defender). The complete list is
+    # updated here; the page must not outlive it.
+    partial = _world(mem).setdefault('garrison_partial', {})
+    partial_tick = _world(mem).setdefault('garrison_partial_tick', {})
+    for castle in (source, target):
+        if castle:
+            partial.pop(castle, None)
+            partial_tick.pop(castle, None)
 
 
 LAST_CASTLE_HOLD_TICKS = 300   # observations before the last castle's list is read again
