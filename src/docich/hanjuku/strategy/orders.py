@@ -1063,6 +1063,22 @@ def _relaunch_overdue_march(mem):
     relaunches = mem.setdefault('sortie_relaunch', {})
     for step, sortie in list(_sorties(mem).items()):
         target = sortie.get('target') or sortie.get('planned_target')
+        purpose = sortie.get('purpose')
+        if purpose not in ('attack', 'retake'):
+            purpose = ((_world(mem).get('launched_orders') or {}).get(step) or {}).get('purpose')
+        if (target in _owned(mem) and purpose in ('attack', 'retake')
+                and status.get(step) != 'failed'):
+            # A castle captured while a retake/attack was already marching:
+            # g1163 2026-11-13 14:24 still settled an "enemy castle" sortie
+            # into オオキク, which had been ours since 14:11. The stale order
+            # only spent a launch and a destination read.
+            status[step] = 'failed'
+            _record(mem, 'sortie_target_owned_settled', chart_step=step,
+                    general=sortie.get('general'),
+                    observed_metric={'target': target, 'purpose': purpose,
+                                     'status': sortie.get('status')},
+                    reason='目標の城がすでに自軍のため、敵城への出撃を取り下げる')
+            continue
         if sortie.get('status') == 'overdue':
             # Already settled: still drop a spent attempt that claims the
             # step, or a re-picked pending order cancels in the menu forever.
