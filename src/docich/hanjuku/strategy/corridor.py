@@ -1003,6 +1003,21 @@ WOUNDED_ATTACK_HP = 20          # a general this spent is not worth a sortie
 FINISHING_HP = 25               # a defender this low may be finished by anyone
 
 
+def finish_pending(mem) -> bool:
+    """A measured near-dead defender is waiting for its finish sortie.
+
+    Used by the optional monthly shopping: an opportunity the defender's
+    heal/replacement can close must not wait behind the card planning
+    (g1163 2026-11-13 22:2x: オオキク's defender sat at 3 HP through the
+    month routine).
+    """
+    if not mechanical(mem):
+        return False
+    owned = _owned(mem) & set(chart.castles(mem.get('chapter') or 0))
+    target = chart.corridor_next(mem.get('chapter') or 0, owned)
+    return bool(target) and _defender_nearly_dead(mem, target)
+
+
 def _defender_nearly_dead(mem, target) -> bool:
     """The target's last measured defender is one hit from falling.
 

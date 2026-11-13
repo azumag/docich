@@ -206,3 +206,11 @@ def test_defense_seen_for_a_castle_no_longer_ours_is_dropped():
     attacks(mem)
     assert 'イソ' not in mem['defense_seen']
     assert mem['defense_seen'].get(C) == 4000
+
+
+def test_finish_pending_reads_the_current_panel():
+    mem = memory(['ローズマリー'])
+    mem['castle_defenders'] = {D: {'hp': 3, 'general': 'グリッシーニ'}}
+    assert corridor.finish_pending(mem) is True
+    mem['castle_defenders'] = {D: {'hp': 60, 'general': 'グリッシーニ'}}
+    assert corridor.finish_pending(mem) is False

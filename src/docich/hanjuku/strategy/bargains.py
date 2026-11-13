@@ -212,6 +212,14 @@ def plan_bargains(mem, shop, header, *, listed=None):
     earlier provisional candidate was unavailable. Neither pass is rearmed
     after a rejected quote, a purchase, or JSON save/hotload.
     """
+    # The optional card shopping must not hold the field while a measured
+    # near-dead defender is waiting for its finish sortie (g1163 2026-11-13
+    # 22:2x: オオキク's defender sat at 3 HP through the 40-11 month routine
+    # and its shopping). The finish is an opportunity the defender's heal/
+    # replacement can close; the cards can wait for next month.
+    from .corridor import finish_pending
+    if finish_pending(mem):
+        return shop
     if (isinstance(shop, dict) and isinstance(header, dict)
             and type(header.get('gold')) is int and header['gold'] >= RICH_MERCHANT_GOLD):
         shop['rich_merchant'] = True  # latched: the later quote may show less than 1000G

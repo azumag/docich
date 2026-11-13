@@ -404,3 +404,13 @@ def test_rare_card_scan_respects_remaining_press_budget(monkeypatch):
     actions = deploy._rare_card_inventory(None, mem, {'step': 1}, inventory)
     assert actions == [deploy.pad('down')]
     assert mem['rare_scan']['presses'] == deploy.RARE_SCAN_LIMIT
+
+
+def test_a_pending_finish_skips_the_optional_card_planning(ready, monkeypatch):
+    """g1163 2026-11-13 22:2x: a 3-HP defender waited through the shopping."""
+    from docich.hanjuku.strategy import corridor
+    monkeypatch.setattr(corridor, 'finish_pending', lambda mem: True)
+    shop = ready['shop']
+    b.plan_bargains(ready, shop, listing(999).header)
+    assert shop['items'] == []
+    assert not shop.get('bargain_listing_planned')
