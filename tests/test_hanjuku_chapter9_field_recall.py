@@ -236,3 +236,18 @@ def test_a_hunt_sample_records_the_roof_cells(monkeypatch):
     assert record['observed_metric']['roofs'] == 2
     assert record['observed_metric']['roofs_detail'] == [
         {'kind': 'own', 'target': [10, 20]}, {'kind': 'enemy', 'target': [30, 40]}]
+
+
+def test_a_hunt_sample_records_the_roof_support(monkeypatch):
+    """Two roofs disagreed (support 1) in the 07:32 sample: the support says so."""
+    from docich.hanjuku.os_layer import world
+    monkeypatch.setattr(recall_flow, 'own_camps', lambda frame: [])
+    monkeypatch.setattr(world, 'castle_roofs',
+                        lambda frame: [{'kind': 'own', 'target': (10, 20), 'clipped': False},
+                                       {'kind': 'enemy', 'target': (30, 40), 'clipped': False}])
+    monkeypatch.setattr(world, 'observed_cursor_cell', lambda *a, **k: None)
+    mem = _mem(tick=400, month_start_tick=0, month_durations=[1000])
+    recall_flow.camp_recall_step(MAP, mem, FRAME)
+    record = next(r for r in mem['_records'] if r['decision'] == 'camp_hunt')
+    assert record['observed_metric']['camera_support'] >= 1
+    assert len(record['observed_metric']['camera']) == 2

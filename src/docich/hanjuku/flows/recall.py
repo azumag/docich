@@ -303,9 +303,10 @@ def _camp_recall_step(screen: Screen, mem, frame, *, observed_camps=None):
                 mem['camp_hunt_tick'] = now
                 start = mem.get('month_start_tick')
                 elapsed = (now - start if type(start) is int else None)
-                from ..os_layer.world import observed_cursor_cell
+                from ..os_layer.world import observed_cursor_cell, roof_camera_support
                 origin = (observed_cursor_cell(screen, mem, frame)
                           if isinstance(frame, Frame) else None)
+                support = roof_camera_support(mem, frame) if isinstance(frame, Frame) else None
                 roofs_seen = ([{'kind': r.get('kind'), 'target': list(r['target'])}
                                for r in castle_roofs(frame)]
                               if isinstance(frame, Frame) else [])
@@ -315,6 +316,9 @@ def _camp_recall_step(screen: Screen, mem, frame, *, observed_camps=None):
                                          'kind': screen.kind,
                                          **({'roofs_detail': roofs_seen} if roofs_seen else {}),
                                          **({'origin': list(origin)} if origin else {}),
+                                         **({'camera_support': support[0],
+                                             'camera': list(support[1])}
+                                            if support else {}),
                                          **({'month_elapsed': elapsed}
                                             if elapsed is not None else {})},
                         reason='野営が見えないまま地図フレームが続いているため、カメラと屋根の状況を記録する')
