@@ -7234,6 +7234,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v787-panel-finish-precedence",
             "hanjuku-chart-v788-battle-start-defense-seen",
             "hanjuku-chart-v789-step-id-collision",
+            "hanjuku-chart-v790-defense-seen-clean",
             "hanjuku-chart-v560-castle-list-scroll",
             "hanjuku-chart-v561-post-month-repair-status",
             "hanjuku-chart-v501-idle-reanchor",
