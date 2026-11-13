@@ -269,6 +269,16 @@ def _camp_recall_step(screen: Screen, mem, frame, *, observed_camps=None):
     if screen.kind in {'battle', 'battle_menu', 'egg_battle_menu', 'monster_menu',
                        'egg_choice_menu', 'attack_started', 'defense_started', 'boss_attack_started'}:
         _mark_recall_interrupted(mem)
+        # A combat foreground explains a long dest pause (g1163 2026-11-14
+        # 05:57-06:01: the dest sat at steps 1 for four minutes and the
+        # month scene closed it). Throttled so a long battle logs once.
+        now = int(mem.get('tick') or 0)
+        if now - int(mem.get('camp_battle_tick') or 0) >= 60:
+            mem['camp_battle_tick'] = now
+            state = _flow(mem).get('recall') or {}
+            _record(mem, 'camp_recall_battle',
+                    observed_metric={'stage': state.get('stage'), 'kind': screen.kind},
+                    reason='戦闘が前面に出て帰還の操作が止まったことを記録する')
         return None  # combat owns this screen; keep the recall intention pending
     if mem.get('battle'):
         _mark_recall_interrupted(mem)
