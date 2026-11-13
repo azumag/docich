@@ -141,3 +141,30 @@ def test_the_leader_is_the_whole_general_with_the_most_hp():
     _step(mem, ['ミント', 'ジェラート', 'シナモン'])
     records = [r for r in mem['_records'] if r.get('decision') == 'full_hp_leader']
     assert records and records[-1]['observed_metric']['chosen'] == 'シナモン'
+
+
+def test_a_just_defended_front_keeps_its_strongest_general_home():
+    """g1163 2026-11-13 15:3x-16:1x: defences lost at enemy 1-8 HP.
+
+    The healthiest resident had marched out with the attack wave. When the
+    source was attacked inside the window, the next-best general leads.
+    """
+    mem = _memory('attack')
+    _world(mem)['general_hp'] = {'ミント': {'hp': 10, 'max': 32},
+                                 'ジェラート': {'hp': 48, 'max': 49},
+                                 'シナモン': {'hp': 60, 'max': 60}}
+    mem['tick'] = 100
+    mem['defense_seen'] = {ROAD[1]: 90}
+    _step(mem, ['ミント', 'ジェラート', 'シナモン'])
+    records = [r for r in mem['_records'] if r.get('decision') == 'full_hp_leader']
+    assert records and records[-1]['observed_metric']['chosen'] == 'ジェラート'
+
+
+def test_a_front_without_a_defence_still_leads_with_the_strongest():
+    mem = _memory('attack')
+    _world(mem)['general_hp'] = {'ミント': {'hp': 10, 'max': 32},
+                                 'ジェラート': {'hp': 48, 'max': 49},
+                                 'シナモン': {'hp': 60, 'max': 60}}
+    _step(mem, ['ミント', 'ジェラート', 'シナモン'])
+    records = [r for r in mem['_records'] if r.get('decision') == 'full_hp_leader']
+    assert records and records[-1]['observed_metric']['chosen'] == 'シナモン'
