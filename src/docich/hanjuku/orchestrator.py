@@ -821,9 +821,11 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
         # scene advance. The camp is found again on the map afterwards.
         # #3544: the interruption marker belongs to this recall; sweep it too
         # so a later unrelated recall cannot inherit the short retry hold.
+        usable = [int(d) for d in (mem.get('month_durations') or [])[-3:] if type(d) is int]
         stages = {'stage': recall.get('stage'), 'steps': recall.get('steps'),
                   'goal': recall.get('goal'), 'target': recall.get('target'),
-                  'dest_target': recall.get('dest_target')}
+                  'dest_target': recall.get('dest_target'),
+                  **({'month_estimate': max(usable)} if usable else {})}
         recall = _recall_after_scene(mem, recall, kind, phase) or {}
         mem['uncertain'] = True
         decision_log._record(mem, 'camp_recall_interrupted', screen=kind, phase=phase,

@@ -176,3 +176,14 @@ def test_a_recall_destination_is_not_frozen_by_the_month_sub():
     assert _recall_dialog_wanted({'stage': 'to_camp', 'steps': 0}, field, 'map', mem) is False
     mem.pop('month_sub')
     assert _recall_dialog_wanted({'stage': 'to_camp', 'steps': 0}, field, 'map', mem) is True
+
+
+def test_an_interruption_records_the_month_timing():
+    """The month scene cuts the recall; its position in the month is the evidence."""
+    state = recall_state(stage='dest')
+    state['policy']['month_start_tick'] = 70000
+    state['policy']['month_durations'] = [500]
+    actions, state = decide(read_png(SCENE), state)
+    record = next(r for r in state['_records'] if r.get('decision') == 'camp_recall_interrupted')
+    assert record['observed_metric']['month_estimate'] == 500
+    assert 'month_elapsed' not in record['observed_metric']

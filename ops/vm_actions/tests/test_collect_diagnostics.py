@@ -1563,7 +1563,8 @@ def test_hanjuku_hotload_versions_are_fixed_values_not_an_arbitrary_prefix():
                  "hanjuku-chart-v805-camp-timing-record",
                  "hanjuku-chart-v806-recall-month-priority",
                  "hanjuku-chart-v807-recall-roof-goal",
-                 "hanjuku-chart-v808-camp-origin-record",)
+                 "hanjuku-chart-v808-camp-origin-record",
+                 "hanjuku-chart-v809-interrupt-month-estimate",)
     for version in versions:
         assert module._project_corner_state({'bot_version': version})['bot_version'] == version
     for version in (None, 'SECRET', 'hanjuku-chart-v130-SECRET',
