@@ -232,6 +232,7 @@ def _mark_recall_interrupted(mem):
 
 
 MONTH_END_MARGIN = 150         # ticks before the estimated month end: no new recall
+MONTH_DEFAULT_TICKS = 320      # first month after a restart: no measured length yet
 
 
 def _month_end_soon(mem, margin=None):
@@ -243,13 +244,14 @@ def _month_end_soon(mem, margin=None):
     feeds the scene counter.
     """
     start = mem.get('month_start_tick')
+    if type(start) is not int:
+        return False
     durations = mem.get('month_durations')
-    if type(start) is not int or not isinstance(durations, list) or not durations:
-        return False
-    usable = [int(d) for d in durations[-3:] if type(d) is int]
-    if not usable:
-        return False
-    estimate = max(usable)
+    usable = [int(d) for d in (durations or [])[-3:] if type(d) is int]
+    # The first month after a restart has no measured length: a conservative
+    # default keeps the scene protection on instead of silently waiting for
+    # a second month boundary (g1163 2026-11-14 02:0x: durations None).
+    estimate = max(usable) if usable else MONTH_DEFAULT_TICKS
     limit = MONTH_END_MARGIN if margin is None else margin
     return int(mem.get('tick') or 0) - start >= estimate - limit
 
