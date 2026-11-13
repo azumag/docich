@@ -17,6 +17,7 @@ MENU_HOLD_LIMIT = 10           # arrived-but-unanchored holds after a failed cas
 
 RECALL_LIMIT = 90              # observations for one camp recall
 RECALL_ARRIVE_PX = 4           # cursor cell onto the tent
+RECALL_OCCLUDED_PX = 8         # cursor sprite covering the last confirmed tent
 RECALL_CONFIRM_PX = 4          # marker onto the own castle's selecting cell
 RECALL_SKIP_TICKS = 400        # observations before retrying the same failed camp
 RECALL_READ_DELAY = 180        # ticks before the destination roster is read (march time)
@@ -337,8 +338,8 @@ def _camp_recall_step(screen: Screen, mem, frame, *, observed_camps=None):
                     and _camp_target(last) and _camp_target(target)
                     and abs(last[0] - target[0]) <= RECALL_ARRIVE_PX
                     and abs(last[1] - target[1]) <= RECALL_ARRIVE_PX
-                    and abs(cursor[0] - target[0]) <= RECALL_ARRIVE_PX
-                    and abs(cursor[1] - target[1]) <= RECALL_ARRIVE_PX):
+                    and abs(cursor[0] - target[0]) <= RECALL_OCCLUDED_PX
+                    and abs(cursor[1] - target[1]) <= RECALL_OCCLUDED_PX):
                 state['occluded_enter'] = True
                 _observe_recall_origin(screen, mem, frame, state)
                 state['stage'], state['steps'] = 'menu', 0
