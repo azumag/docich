@@ -92,3 +92,15 @@ def test_a_cursor_within_the_sprite_can_open_the_last_confirmed_tent(monkeypatch
     assert enter['observed_metric'] == {'camp': [84, 73], 'occluded': True,
                                         'cursor': [90, 78], 'last_seen': [84, 73],
                                         'target': [84, 73]}
+
+
+def test_a_recall_near_the_month_end_waits_for_the_scene(monkeypatch):
+    """g1163 2026-11-14 01:35: the 42-8 scene cut the destination picker."""
+    monkeypatch.setattr(recall_flow, 'own_camps', lambda frame: [dict(CAMP)])
+    mem = _mem(tick=2950, month_start_tick=2000, month_durations=[950])
+    assert recall_flow._month_end_soon(mem) is True
+    assert recall_flow.camp_recall_step(MAP, mem, FRAME) is None
+    assert 'recall' not in _flow(mem)
+    mem['tick'] = 2400
+    assert recall_flow._month_end_soon(mem) is False
+    assert recall_flow.camp_recall_step(MAP, mem, FRAME) is not None
