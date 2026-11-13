@@ -7218,6 +7218,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v771-keep-defender",
             "hanjuku-chart-v772-recall-roster-due",
             "hanjuku-chart-v773-roster-due-ttl",
+            "hanjuku-chart-v774-recall-read-delay",
             "hanjuku-chart-v560-castle-list-scroll",
             "hanjuku-chart-v561-post-month-repair-status",
             "hanjuku-chart-v501-idle-reanchor",

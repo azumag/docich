@@ -172,6 +172,8 @@ def test_stationary_picker_cursor_tries_the_other_axis_then_confirms_where_it_st
     assert [r['observed_metric']['still'] for r in steps] == list(range(p.PICKER_STILL_LIMIT + 1))
     assert mem['_records'][-1]['decision'] == 'camp_recall_requested'
     assert mem['_records'][-2]['decision'] == 'camp_recall_picker_fallback'
+    # The destination is read after the recall's walking time (v774).
+    assert mem['roster_read_due'] == {'アルマムーン': 100 + p.RECALL_READ_DELAY}
 
 
 def test_moved_picker_cursor_returns_to_the_main_axis(monkeypatch):
