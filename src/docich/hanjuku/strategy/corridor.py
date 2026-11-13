@@ -309,11 +309,16 @@ def orders(mem) -> list[dict]:
                 continue
             if (not _finish and isinstance(_front_names_now, list)
                     and 0 < len(_front_names_now) <= _keep
-                    and not _front_guard_expired(mem, source)):
+                    and not (_front_guard_expired(mem, source)
+                             and not _reinforcements_known(mem, source))):
                 # The last measured resident does not leave: an empty front is
                 # retaken at once (g1163 2026-11-12 20:2x ドンドン went 6→5 and
                 # back four times). The wave continues as soon as the refill
-                # brings a second general.
+                # brings a second general. The v735 timeout still lets a front
+                # with *no* known reinforcements march, but when another castle
+                # holds generals the last resident waits for them: g1163
+                # 2026-11-13 18:5x sent ドンドン's only general at a 65-HP
+                # defender, the castle emptied and nine generals went unknown.
                 _record_only(mem, 'front_guard_held', target=source,
                              observed_metric={'residents': list(_front_names_now)[:8]},
                              reason='前線の城に残る将軍が下限に達するため、この城から攻撃に出さない')
@@ -772,6 +777,22 @@ def _drained_probe(mem, routes_by, target, lost):
 # 18, 34 and 44 HP in a row (each fresh attacker died without denting it). Two
 # marching attackers are the least that changes that outcome.
 REPELLED_FLOOR_HP = 30
+
+
+def _reinforcements_known(mem, source) -> bool:
+    """Another owned castle holds a movable general (the hero is not one).
+
+    With reinforcements on the map the front's last resident waits instead of
+    emptying the castle (g1163 2026-11-13 18:5x: ドンドン emptied, nine
+    generals went unknown, and the enemy stood next to an empty castle).
+    """
+    for castle in _owned(mem):
+        if castle == source:
+            continue
+        names = _front_names(mem, castle)
+        if isinstance(names, list) and any(g != NAME for g in names):
+            return True
+    return False
 
 
 
