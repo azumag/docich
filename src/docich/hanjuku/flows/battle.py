@@ -37,7 +37,7 @@ from ..judgment.battle import (EGG_WALL_DAMAGE, DEFENDER_SUMMON_OPEN_LIMIT, CARD
                                HERO_SURVIVAL_REOPEN_LIMIT)
 from ..os_layer.commands import _human_menu_open, pad
 from ..os_layer.readers import STATUS_NAMES
-from ..os_layer.world import NAME, garrison_lost
+from ..os_layer.world import NAME, CAPTURE_READ_DELAY, garrison_lost
 from ..strategy.campaign import _castle_label, observe_chapter_castle, observe_chapter_general
 from ..strategy.kit import _is_boss_order
 from ..strategy.execution import bound_fields
@@ -1318,6 +1318,10 @@ def battle_end(mem, next_kind, *, defense_continues=False, actor_continues=False
         _garrison_move(mem, cur.get('ally'), target=castle)
         # Our own general stands there now: the remembered defender is stale.
         _drop_defender_record(mem, [castle])
+        # Read the taken castle's own list: residents that retreated come
+        # back, and the capture is the receipt for who is really there.
+        mem.setdefault('roster_read_due', {})[castle] = (
+            int(mem.get('tick') or 0) + CAPTURE_READ_DELAY)
     if (outcome == 'win' and castle and cur.get('side') == 'defense' and not seasonal_boss
             # g1075 2026-10-29 23:58: a recruit had cleared アルマムーン's list
             # and the joiner's win made it [ビシソワーズ]; the hero's castle
