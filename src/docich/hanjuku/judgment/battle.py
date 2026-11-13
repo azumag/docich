@@ -761,6 +761,24 @@ def _combat_behind(cur):
             and ours * 10 <= theirs * BEHIND_EGG_RATIO_TENTHS)
 
 
+def _summon_pair_behind(cur: dict):
+    """Complete summon HP pair when general HPs cannot ground a comparison."""
+    if not (cur.get('egg_battle') or cur.get('card_summon_observed')):
+        return None
+    ally_hp, enemy_hp = cur.get('ally_hp'), cur.get('enemy_hp')
+    ally_unread = type(ally_hp) is not int or ally_hp <= 0
+    enemy_unread = type(enemy_hp) is not int or enemy_hp <= 0
+    if not (ally_unread or enemy_unread):
+        return None
+    summon_ally = cur.get('summon_ally_hp')
+    summon_enemy = cur.get('summon_enemy_hp')
+    if type(summon_ally) is not int or type(summon_enemy) is not int:
+        return None
+    if not (0 < summon_ally <= 9999 and 0 < summon_enemy <= 9999):
+        return None
+    return summon_ally < summon_enemy
+
+
 def _behind(cur: dict) -> bool:
     if not (cur.get('egg_battle') or cur.get('card_summon_observed')):
         balance = _melee_balance(cur)
@@ -772,8 +790,9 @@ def _behind(cur: dict) -> bool:
             return True  # unknown attack cannot license ordinary melee conservation
     # Monster-menu comparisons intentionally supply HP alone, not generals.
     enemy_hp, ally_hp = cur.get('enemy_hp'), cur.get('ally_hp')
-    if type(enemy_hp) is not int or type(ally_hp) is not int:
-        return False
+    if type(enemy_hp) is not int or type(ally_hp) is not int or ally_hp <= 0 or enemy_hp <= 0:
+        summon = _summon_pair_behind(cur)
+        return False if summon is None else summon
     return ally_hp < enemy_hp
 
 

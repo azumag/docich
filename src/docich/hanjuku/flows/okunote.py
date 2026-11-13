@@ -143,6 +143,40 @@ def summon_reading(screen, mem, cur):
             'enemy_monster_hp': enemy[0].hp}
 
 
+def _known_summon_monster_name(name):
+    return (isinstance(name, str)
+            and (name in MONSTER_SKILLS or general_max_hp(name) is not None))
+
+
+def summon_monster_panel(screen, cur):
+    """Read ally/enemy monster HP when both panel rows are known summons.
+
+    Some summon fights show the ally summon (a general's egg can be a general)
+    instead of the commanding general, so summon_reading cannot bind ally_hp.
+    Persist only the summons' names/HP and leave the generals' ally_hp/enemy_hp
+    unread (0 is not used for "unknown").
+    """
+    if not isinstance(cur, dict) or len(getattr(screen, 'egg_rows', None) or ()) != 2:
+        return None
+    ally = [r for r in screen.egg_rows if r.side == 'ally']
+    enemy = [r for r in screen.egg_rows if r.side == 'enemy']
+    if len(ally) != 1 or len(enemy) != 1:
+        return None
+    ally_row, enemy_row = ally[0], enemy[0]
+    if (not _known_summon_monster_name(ally_row.name)
+            or not _known_summon_monster_name(enemy_row.name)
+            or ally_row.name == cur.get('ally') or enemy_row.name == cur.get('enemy')
+            or type(ally_row.hp) is not int or type(enemy_row.hp) is not int
+            or not 0 < ally_row.hp <= 9999 or not 0 < enemy_row.hp <= 9999):
+        return None
+    cur['summon_ally'] = ally_row.name
+    cur['summon_ally_hp'] = ally_row.hp
+    cur['summon_enemy'] = enemy_row.name
+    cur['summon_enemy_hp'] = enemy_row.hp
+    return {'ally_hp': ally_row.hp, 'enemy_monster': enemy_row.name,
+            'enemy_monster_hp': enemy_row.hp}
+
+
 def combat_return(screen, mem, cur, *, summon=None):
     """A complete live panel ends the chosen attempt, without claiming an effect."""
     if not candidate_chosen(mem, cur):

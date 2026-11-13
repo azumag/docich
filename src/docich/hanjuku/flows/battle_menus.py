@@ -1019,6 +1019,7 @@ def okunote_step(screen, mem):
         summon = None
         if screen.egg_rows or cur.get('egg_battle') or mem.get('egg_battle'):
             summon = okunote.summon_reading(screen, mem, cur)
+            summon_panel = okunote.summon_monster_panel(screen, cur) if summon is None else None
             if cur.get('okunote_summon_exhausted'):
                 # The bounded attempts for this battle are spent. B does not
                 # close this menu (g1097), so hand the screen back once with a
@@ -1041,7 +1042,7 @@ def okunote_step(screen, mem):
                     # a blind A on the last row would pick たいきゃく (retreat).
                     return [pad('up'), pad('up'), pad('a')]
                 return None
-            if summon is None:
+            if summon is None and summon_panel is None:
                 if getattr(screen, 'okunote_only_box', False):
                     # 照合できないままBを有界回数送るより、実測した唯一の
                     # 有効行へカーソルを下げて確定する方が戦闘を進められる。
@@ -1068,10 +1069,12 @@ def okunote_step(screen, mem):
                         observed_metric={'attempts': unconfirmed + 1},
                         reason='照合不能な召喚戦メニューへの入力が有界回数を超えてもおくのて行を確認できないため、以後は通常のコマンド判定へ戻す')
                 return None
+            summon = summon or summon_panel
             cur.pop('okunote_summon_unconfirmed', None)
-            cur['summon_enemy_hp'] = summon['enemy_monster_hp']
+            if isinstance(summon, dict) and type(summon.get('enemy_monster_hp')) is int:
+                cur['summon_enemy_hp'] = summon['enemy_monster_hp']
             _egg_general_reading(screen, mem, cur)
-            hp = summon['ally_hp']
+            hp = summon['ally_hp'] if isinstance(summon, dict) else hp
             # Owner 2026-11-04: 相手のHPが一撃で倒せる残りなら奥の手は不要
             # （召喚獣戦でも同じ）。通常のこうげきへ戻す。
             if 0 < summon['enemy_monster_hp'] <= EGG_WALL_DAMAGE:
@@ -1853,6 +1856,8 @@ def egg_battle_step(screen: Screen, mem):
     battle = mem.get('battle') or {}
     from . import okunote
     summon = okunote.summon_reading(screen, mem, battle)
+    if summon is None:
+        summon = okunote.summon_monster_panel(screen, battle)
     okunote.combat_return(screen, mem, battle, summon=summon)
     if battle:
         if isinstance(summon, dict) and type(summon.get('enemy_monster_hp')) is int:
