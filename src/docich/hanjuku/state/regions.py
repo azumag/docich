@@ -68,6 +68,8 @@ KEY_OWNERSHIP = {
     # --- 出撃/帰還が観測する WorldState ---
     'garrison':        {'region': WORLD, 'lifetime': 'chapter', 'migrated': True},
     'garrison_observed_at': {'region': WORLD, 'lifetime': 'chapter', 'migrated': True},
+    'garrison_tick':    {'region': WORLD, 'lifetime': 'chapter', 'migrated': False},
+    'garrison_partial_tick': {'region': WORLD, 'lifetime': 'chapter', 'migrated': False},
     'general_location_unknown': {'region': WORLD, 'lifetime': 'chapter', 'migrated': True},
     'sorties':         {'region': WORLD, 'lifetime': 'chapter', 'migrated': True},
     'launched_orders': {'region': WORLD, 'lifetime': 'chapter', 'migrated': True},

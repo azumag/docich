@@ -105,3 +105,38 @@ def test_a_wave_spare_can_come_from_a_full_page():
     assert picked is not None
     source, general = picked
     assert source == 'タオ' and general in PAGE and general != chart.HERO
+
+
+def _front_memory(full, partial, full_tick=None, partial_tick=None):
+    world = {'garrison': {'オオキク': list(full)},
+             'garrison_partial': {'オオキク': list(partial)}}
+    if full_tick is not None:
+        world['garrison_tick'] = {'オオキク': full_tick}
+    if partial_tick is not None:
+        world['garrison_partial_tick'] = {'オオキク': partial_tick}
+    return {'chapter': 9, 'tick': 6000, 'world': world}
+
+
+def test_the_newer_complete_read_wins_over_an_older_page():
+    """g1163 2026-11-13 15:0x: a stale four-name page hid a two-name front.
+
+    ``_front_names`` reported four, so the pair wait let the attack leave one
+    defender and オオキク fell to the counter-attack.
+    """
+    from docich.hanjuku.strategy import corridor
+    mem = _front_memory(['キール', 'ロックフォール'], PAGE,
+                        full_tick=5000, partial_tick=4000)
+    assert corridor._front_names(mem, 'オオキク') == ['キール', 'ロックフォール']
+
+
+def test_a_newer_page_still_wins_over_an_older_complete_read():
+    from docich.hanjuku.strategy import corridor
+    mem = _front_memory(['キール'], PAGE, full_tick=4000, partial_tick=5000)
+    assert corridor._front_names(mem, 'オオキク') == PAGE
+
+
+def test_unticked_data_keeps_the_longest_rule():
+    """The v700 rule stays for state written before the ticks existed."""
+    from docich.hanjuku.strategy import corridor
+    mem = _front_memory(['キール'], PAGE)
+    assert corridor._front_names(mem, 'オオキク') == PAGE
