@@ -141,6 +141,19 @@ def _drained(mem, castle, purpose) -> bool:
 
 def mark_drained(mem, castle, kind):
     """``kind``: 'empty' (no general) or 'hero' (only the hero; no attack)."""
+    if kind == 'empty':
+        # A live list that showed nobody disproves an older page's lower bound
+        # for this castle: the names on that page have since left. Keeping the
+        # partial made ``_drained`` see company again on the very next plan and
+        # clear the mark, so the same empty sortie was re-minted every
+        # observation (g1163 2026-11-13 09:5x-10:2x: 27 「出撃元に出せる将軍が
+        # いない」 cycles, each a jump / status panel / close, while
+        # ``garrison['ドンドン']`` was [] and only the page bound still held
+        # four stale names). A 'hero' mark keeps the bound: there the page may
+        # show company the complete read did not (v700, 2026-11-12 21:1x).
+        partial = _world(mem).get('garrison_partial')
+        if isinstance(partial, dict):
+            partial.pop(castle, None)
     mem.setdefault(DRAINED, {})[castle] = {'kind': kind, 'tick': int(mem.get('tick') or 0),
                                           'month': mem.get('month')}
 
@@ -331,6 +344,16 @@ def orders(mem) -> list[dict]:
         # queue during an attack wave only spends a visit (g1163 2026-11-12
         # 20:0x: 20 probes in half an hour while オオキク was being attacked).
         return out
+    minted = _minted_probe(mem)
+    if minted is not None:
+        # One observation asks the plan several times (``_orders`` for the
+        # shape, ``_next_order`` for the step to run). Minting a probe on every
+        # call spent the whole month's budget in the first second and left
+        # nothing to execute (g1163 2026-11-13 10:24:30: probe counts 1-6 in
+        # one tick). Returning the order already minted at this tick keeps the
+        # step the executor sees and spends one visit per observation.
+        out.insert(0, minted)
+        return out
     if out and not _probe_budget_left(mem):
         return out
     if not out and _sortie_in_flight(mem):
@@ -365,6 +388,7 @@ def orders(mem) -> list[dict]:
     _probe_spend(mem, f'{decision}_idle' if idle else decision, idle=idle)
     if idle:
         mem[PROBE]['idle_step'] = probe['step']
+    _remember_probe(mem, probe)
     out.insert(0, probe)                # the re-read goes first: the tour is priority
     return out
 
@@ -481,6 +505,47 @@ def _probe_spend(mem, decision, idle=False):
                  reason=('ほかに出す指示がないため、所在不明の将軍を城一覧で確認する'
                          if idle else
                          '所在不明の将軍を城一覧で確認する（月ごとの上限つき）'))
+
+
+MINTED_ORDER_KEYS = ('step', 'general', 'source', 'target', 'cards', 'after',
+                     'purpose', 'source_probe', 'corridor', 'corridor_hero', 'note')
+# A minted probe that is still pending this long is reused instead of minting
+# (and budgeting) a second visit while the first is still being executed.
+PROBE_MINT_TTL = 120
+
+
+def _remember_probe(mem, order):
+    """Keep the probe minted for this observation so the next call reuses it."""
+    state = mem.setdefault(PROBE, {})
+    state['mint_tick'] = int(mem.get('tick') or 0)
+    state['mint_order'] = {key: order[key] for key in MINTED_ORDER_KEYS if key in order}
+
+
+def _minted_probe(mem):
+    """The probe order already minted and not yet finished, if it may still run.
+
+    ``orders`` is a read for several callers in one decision (the plan shape,
+    then the next step). It also mints and budgets a probe, so a second call
+    used to mint a different step and count a second visit. The executor then
+    saw a step the adopted plan did not have and the tour never ran (g1163
+    2026-11-13 10:24:30: six probe records in the same tick, none executed).
+    A started or settled step is not reused: that visit already happened. The
+    TTL keeps a probe that never settles from freezing the tour.
+    """
+    state = mem.get(PROBE)
+    if not isinstance(state, dict):
+        return None
+    minted_at = state.get('mint_tick')
+    now = int(mem.get('tick') or 0)
+    if type(minted_at) is not int or not 0 <= now - minted_at <= PROBE_MINT_TTL:
+        return None
+    order = state.get('mint_order')
+    if not isinstance(order, dict) or not isinstance(order.get('step'), str):
+        return None
+    status = (_plan_region(mem).get('orders') or {}).get(order['step'])
+    if status not in (None, 'pending'):
+        return None
+    return dict(order)
 
 
 def _probe_exhausted_once(mem):

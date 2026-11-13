@@ -96,3 +96,31 @@ def test_a_fresh_empty_reading_is_not_re_probed():
         'target': 'サヌト', 'tick': 1010, 'status': 'en_route', 'general': 'リーキ'}},
         tick=1000 + corridor.DRAINED_MIN_HOLD - 1)
     assert corridor._drained(mem, 'サヌト', 'attack') is True
+
+
+def test_a_live_empty_list_drops_the_stale_page_bound():
+    """g1163 2026-11-13 09:5x-10:2x: the same empty sortie was re-minted 27 times.
+
+    ``garrison['ドンドン']`` was ``[]`` (a complete read) while
+    ``garrison_partial`` still held the four names of an older page. ``_drained``
+    took the longer list as company, popped the fresh 'empty' mark, and the plan
+    re-ordered the same impossible sortie every observation.
+    """
+    mem = memory({}, {}, tick=1000)
+    mem['world']['garrison'] = {'ドンドン': []}
+    mem['world']['garrison_partial'] = {'ドンドン': ['マサラ', 'アンディーブ', 'ヘーゼル', 'トレビス']}
+    corridor.mark_drained(mem, 'ドンドン', 'empty')
+    assert mem['world']['garrison_partial'].get('ドンドン') is None
+    assert corridor._drained(mem, 'ドンドン', 'attack') is True
+
+
+def test_a_hero_only_mark_still_yields_to_a_page_that_shows_company():
+    """The v700 case is unchanged: a page can prove company a read missed."""
+    mem = memory({}, {}, tick=1000)
+    mem['world']['garrison'] = {'ドンドン': ['どうし']}
+    mem['world']['garrison_partial'] = {'ドンドン': ['どうし', 'キャロット', 'トレビス', 'ソーピニヨン']}
+    corridor.mark_drained(mem, 'ドンドン', 'hero')
+    assert mem['world']['garrison_partial']['ドンドン'] == [
+        'どうし', 'キャロット', 'トレビス', 'ソーピニヨン']
+    assert corridor._drained(mem, 'ドンドン', 'attack') is False
+

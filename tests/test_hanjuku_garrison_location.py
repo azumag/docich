@@ -12,6 +12,7 @@ from docich import hanjuku_chart as chart
 from docich import hanjuku_policy as policy
 from docich.hanjuku import orchestrator  # noqa: F401
 from docich.hanjuku.os_layer import world as os_world
+from docich.hanjuku.state.regions import plan as _plan_region
 from docich.hanjuku.strategy import corridor
 
 
@@ -81,7 +82,11 @@ def test_the_tour_rotates_as_marks_are_rewritten():
     mem = memory([A, B, C], {A: 4000, B: 1000})
     out = orders(mem)
     assert out and out[0]['source'] == B
-    # The visit re-marks B at the current tick; the next cycle moves on to A.
+    # The visit reads B's list (the step settles) and re-marks B at the current
+    # tick; the next observation moves on to A. A probe that is still pending
+    # is reused instead of budgeting a second visit.
+    _plan_region(mem)['orders'][out[0]['step']] = 'done'
+    mem['tick'] += 1
     corridor.mark_drained(mem, B, 'empty')
     out = orders(mem)
     assert out and out[0]['source'] == A

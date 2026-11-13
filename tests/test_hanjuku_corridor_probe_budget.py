@@ -174,6 +174,54 @@ def test_a_started_idle_step_never_blocks_the_plan():
     assert later, 'a started idle probe must not freeze the plan'
 
 
+def test_a_budgeted_probe_is_minted_once_per_observation():
+    """One decision asks for the plan several times; the visit is still one.
+
+    g1163 2026-11-13 10:24:30: six roster_probe records (count 1-6) in the
+    same tick. The budget was gone before the first probe could run.
+    """
+    mem = memory([A, B, C], [A, B])          # C staffed: a real attack is planned
+    mem['garrison'][C] = ['リーキ', 'ベーグル']
+    mem['world']['garrison'][C] = ['リーキ', 'ベーグル']
+    mem['country_general_count'] = {'count': 32, 'scope': [9, '23-5']}
+    first = orders(mem)
+    assert first and first[0].get('source_probe') is True
+    count = mem[corridor.PROBE]['count']
+    second = orders(mem)
+    assert second and second[0].get('step') == first[0]['step'], \
+        'the same observation must see the probe step it minted'
+    assert mem[corridor.PROBE]['count'] == count, 'the visit is counted once'
+
+
+def test_a_pending_probe_is_reused_on_the_next_observation():
+    """A visit in flight is not replaced (and budgeted) by a second probe."""
+    mem = memory([A, B, C], [A, B])
+    mem['garrison'][C] = ['リーキ', 'ベーグル']
+    mem['world']['garrison'][C] = ['リーキ', 'ベーグル']
+    mem['country_general_count'] = {'count': 32, 'scope': [9, '23-5']}
+    first = orders(mem)
+    plan_orders = _plan_region(mem)['orders']
+    plan_orders[first[0]['step']] = 'pending'
+    count = mem[corridor.PROBE]['count']
+    mem['tick'] += 1
+    later = orders(mem)
+    assert later and later[0].get('step') == first[0]['step']
+    assert mem[corridor.PROBE]['count'] == count
+
+
+def test_a_started_probe_is_not_reused():
+    """Once the probe ran, the next observation mints (and budgets) the next."""
+    mem = memory([A, B, C], [A, B])
+    mem['garrison'][C] = ['リーキ', 'ベーグル']
+    mem['world']['garrison'][C] = ['リーキ', 'ベーグル']
+    mem['country_general_count'] = {'count': 32, 'scope': [9, '23-5']}
+    first = orders(mem)
+    _plan_region(mem)['orders'][first[0]['step']] = 'launched'
+    second = orders(mem)
+    assert second and second[0].get('step') != first[0]['step']
+    assert mem[corridor.PROBE]['count'] == 2
+
+
 def test_a_stale_idle_probe_is_replaced():
     mem = memory([A, B, C], [A, B, C])
     orders(mem)
@@ -182,3 +230,5 @@ def test_a_stale_idle_probe_is_replaced():
     later = orders(mem)
     assert later
     assert len(decided(mem, 'roster_probe_idle') + decided(mem, 'drained_probe_idle')) > minted
+
+
