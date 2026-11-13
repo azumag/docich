@@ -859,7 +859,7 @@ def _front_thin(mem, castle) -> bool:
 
 
 WOUNDED_ATTACK_HP = 20          # a general this spent is not worth a sortie
-FINISHING_HP = 10               # a defender this low may be finished by anyone
+FINISHING_HP = 20               # a defender this low may be finished by anyone
 
 
 def _defender_nearly_dead(mem, target) -> bool:
@@ -867,6 +867,9 @@ def _defender_nearly_dead(mem, target) -> bool:
 
     g1163 2026-11-13 01:0x: オオキク's defender read 3 HP; the wound guard then
     held the next attack at home. A finish beats every keep-home rule.
+    g1163 2026-11-13 14:5x: ナッテ's defender was left at 16 HP by the last
+    attack; the 10-HP bound did not mark it a finish, the pair wait held the
+    next attacker, and the defender recovered. 20 HP is still one good hit.
     """
     record = (mem.get('castle_defenders') or {}).get(target) or {}
     panel_hp = record.get('hp') if isinstance(record, dict) else None
