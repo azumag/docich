@@ -1530,7 +1530,8 @@ def test_hanjuku_hotload_versions_are_fixed_values_not_an_arbitrary_prefix():
                  "hanjuku-chart-v772-recall-roster-due",
                  "hanjuku-chart-v773-roster-due-ttl",
                  "hanjuku-chart-v774-recall-read-delay",
-                 "hanjuku-chart-v775-capture-roster-read",)
+                 "hanjuku-chart-v775-capture-roster-read",
+                 "hanjuku-chart-v776-mass-hold-reset",)
     for version in versions:
         assert module._project_corner_state({'bot_version': version})['bot_version'] == version
     for version in (None, 'SECRET', 'hanjuku-chart-v130-SECRET',

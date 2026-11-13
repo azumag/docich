@@ -118,3 +118,20 @@ def test_an_expired_mass_wait_stays_expired_within_the_observation():
     mem['front_mass_hold'] = {C: mem['tick'] - corridor.FRONT_MASS_WAIT}
     assert corridor._front_mass_expired(mem, C) is True
     assert corridor._front_mass_expired(mem, C) is True
+
+
+def test_a_new_resident_restarts_the_mass_wait():
+    """g1163 2026-11-13 17:5x: four were walking in, the timer expired anyway."""
+    mem = memory(['ローズマリー', 'ベーグル'])
+    mem['front_mass_hold'] = {C: mem['tick'] - corridor.FRONT_MASS_WAIT - 1}
+    mem['front_mass_count'] = {C: 2}
+    assert corridor._front_mass_expired(mem, C, 3) is False
+    assert C not in (mem.get('front_mass_expired_tick') or {})
+    assert mem['front_mass_hold'][C] == mem['tick']
+
+
+def test_an_unchanged_front_still_expires():
+    mem = memory(['ローズマリー', 'ベーグル'])
+    mem['front_mass_hold'] = {C: mem['tick'] - corridor.FRONT_MASS_WAIT - 1}
+    mem['front_mass_count'] = {C: 2}
+    assert corridor._front_mass_expired(mem, C, 2) is True

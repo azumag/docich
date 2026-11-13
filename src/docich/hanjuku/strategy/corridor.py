@@ -330,7 +330,7 @@ def orders(mem) -> list[dict]:
             if (not _finish and _repelled_alone(mem, target)
                     and isinstance(_front_names_now, list)
                     and len(_front_names_now) < _mass
-                    and not _front_mass_expired(mem, source)):
+                    and not _front_mass_expired(mem, source, len(_front_names_now))):
                 _record_only(mem, 'front_wait_mass', target=source,
                              observed_metric={'residents': list(_front_names_now)[:8],
                                               'need': _mass, 'purpose': purpose},
@@ -822,7 +822,7 @@ def _front_guard_expired(mem, castle) -> bool:
     return True
 
 
-def _front_mass_expired(mem, castle) -> bool:
+def _front_mass_expired(mem, castle, count=None) -> bool:
     """The repelled front may stop waiting for its second attacker.
 
     g1163 2026-11-13 09:3x-10:5x: every attack on ナッテ went in alone and lost
@@ -831,10 +831,22 @@ def _front_mass_expired(mem, castle) -> bool:
     two residents *more than* the guard can march in consecutive observations
     and hit the defender together. Bounded like the one-general guard so a
     front that cannot refill still attacks.
+
+    A reinforcement arriving restarts the wait: g1163 2026-11-13 17:5x had two
+    residents and four more walking in from オシロガ; the old timer expired
+    while they marched, sent one general alone at a 71-HP defender and lost
+    him. The timer now measures how long the front has sat *unchanged*.
     """
     holds = mem.setdefault('front_mass_hold', {})
     now = int(mem.get('tick') or 0)
     expired = mem.setdefault('front_mass_expired_tick', {})
+    counts = mem.setdefault('front_mass_count', {})
+    if count is not None:
+        previous = counts.get(castle)
+        if previous is not None and previous != count:
+            holds.pop(castle, None)
+            expired.pop(castle, None)
+        counts[castle] = count
     if expired.get(castle) == now:
         return True
     since = holds.get(castle)
