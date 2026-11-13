@@ -761,8 +761,15 @@ def observe_events(screen: Screen, mem):
             _enter_chapter(mem, chapter, reason='画面の章表示を確認し、前章の座標・出撃・購入状態を初期化')
         key = _month_key(header)
         if mem.get('month') != key:
+            previous = mem.get('month_start_tick')
             mem['month'] = key
             mem['gold'] = header['gold']
+            now = int(mem.get('tick') or 0)
+            mem['month_start_tick'] = now
+            if type(previous) is int and now > previous:
+                durations = mem.setdefault('month_durations', [])
+                durations.append(now - previous)
+                del durations[:-6]
             _record(mem, 'month_seen', month=key, gold=header['gold'], reason='月の表示')
         mem['gold'] = header['gold']
     castle = CASTLE_STATUS.search(screen.text)

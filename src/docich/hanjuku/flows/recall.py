@@ -231,6 +231,29 @@ def _mark_recall_interrupted(mem):
     _flow(mem)['recall_interrupted'] = int(mem.get('tick') or 0)
 
 
+MONTH_END_MARGIN = 150         # ticks before the estimated month end: no new recall
+
+
+def _month_end_soon(mem, margin=None):
+    """The month's start scene is likely close: do not begin a recall now.
+
+    g1163 2026-11-14 01:35: the camp menu and the きかん selection completed,
+    then the destination picker was cut by the 42-8 month scene (steps 1).
+    The recall takes about two minutes; starting it inside that margin just
+    feeds the scene counter.
+    """
+    start = mem.get('month_start_tick')
+    durations = mem.get('month_durations')
+    if type(start) is not int or not isinstance(durations, list) or not durations:
+        return False
+    usable = [int(d) for d in durations[-3:] if type(d) is int]
+    if not usable:
+        return False
+    estimate = max(usable)
+    limit = MONTH_END_MARGIN if margin is None else margin
+    return int(mem.get('tick') or 0) - start >= estimate - limit
+
+
 def _camp_recall_step(screen: Screen, mem, frame, *, observed_camps=None):
     """Owner rule (2026-09-28): a camp (野営) seen on screen is recalled.
 
@@ -255,6 +278,8 @@ def _camp_recall_step(screen: Screen, mem, frame, *, observed_camps=None):
         boss_goal = boss_redirect_goal(mem)
         if camp_stays(mem) and boss_goal is None:
             return None     # moving boss unseen: the camp waits where it is, never goes home
+        if _month_end_soon(mem):
+            return None     # the month-start scene would cut the destination picker
         camps = own_camps(frame) if observed_camps is None else observed_camps
         camps = _filter_recall_skip(mem, camps)
         if not camps:
