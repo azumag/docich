@@ -309,6 +309,22 @@ def orders(mem) -> list[dict]:
                              observed_metric={'residents': list(_front_names_now)[:8]},
                              reason='前線の城に残る将軍が下限に達するため、この城から攻撃に出さない')
                 continue
+            # A defender that just repelled an attack is still healthy; one
+            # general at a time only feeds it. Wait for ``_keep + 2`` residents
+            # so two are left to march together (g1163 2026-11-13: ナッテ
+            # repelled 32/39/46-HP defenders while reinforcements walked).
+            _mass = _keep + 2
+            if (not _finish and purpose != 'retake' and _repelled_alone(mem, target)
+                    and isinstance(_front_names_now, list)
+                    and len(_front_names_now) < _mass
+                    and not _front_mass_expired(mem, source)):
+                _record_only(mem, 'front_wait_mass', target=source,
+                             observed_metric={'residents': list(_front_names_now)[:8],
+                                              'need': _mass},
+                             reason='前回の攻撃を元気な守備将軍に退けられたため、2人同時に出せるまで前線に集める')
+                continue
+            if isinstance(_front_names_now, list) and len(_front_names_now) >= _mass:
+                (mem.get('front_mass_hold') or {}).pop(source, None)
             # Owner 2026-11-12: 将軍のステータスによらず、どんどん上から順に将軍を
             # 送る（波状攻撃）。HPや戦闘力で出撃を見送ると、守備将軍に1人ずつ
             # 各個撃破されるだけで城は落ちない。待ち合わせ・冷却・強さ判定は
@@ -681,6 +697,11 @@ FRONT_REFILL_MIN = 2            # residents the attacking castle needs to hold i
 
 FRONT_GUARD_WAIT = 600          # ticks a one-general front may keep the wave home
 
+# A front repelled by a healthy defender waits for a second attacker so two
+# march together. This is not the "wait for six" the owner ruled out: six is
+# the wave maximum, two is the smallest wave that can finish a fresh defender.
+FRONT_MASS_WAIT = 900           # ticks the pair may wait for its second general
+
 
 def _front_guard_expired(mem, castle) -> bool:
     """The front stayed at one general: the hold must not freeze the road.
@@ -702,6 +723,32 @@ def _front_guard_expired(mem, castle) -> bool:
                  observed_metric={'waited': now - since},
                  reason='前線が1人のまま待ち時間の上限に達したため、単独でも攻撃に出る')
     return True
+
+
+def _front_mass_expired(mem, castle) -> bool:
+    """The repelled front may stop waiting for its second attacker.
+
+    g1163 2026-11-13 09:3x-10:5x: every attack on ナッテ went in alone and lost
+    to a 32-46 HP defender while the next general was still walking. The front
+    guard leaves one general home, so with two residents only one can march;
+    two residents *more than* the guard can march in consecutive observations
+    and hit the defender together. Bounded like the one-general guard so a
+    front that cannot refill still attacks.
+    """
+    holds = mem.setdefault('front_mass_hold', {})
+    now = int(mem.get('tick') or 0)
+    since = holds.get(castle)
+    if type(since) is not int:
+        holds[castle] = now
+        return False
+    if now - since < FRONT_MASS_WAIT:
+        return False
+    holds.pop(castle, None)
+    _record_only(mem, 'front_mass_timeout', target=castle,
+                 observed_metric={'waited': now - since},
+                 reason='2人同時出撃を待つ上限に達したため、集まった将軍で攻撃に出る')
+    return True
+
 
 
 def _front_names(mem, castle):
