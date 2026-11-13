@@ -625,7 +625,7 @@ def _unaccounted(mem):
 
 
 def _roster_probe(mem, routes_by, target, lost):
-    """Re-read a drained castle list while generals are unaccounted.
+    """Re-read a castle list while generals are unaccounted.
 
     When the country's general count exceeds ``in garrison + unknown +
     marching``, somebody is standing in a castle the plan stopped visiting.
@@ -635,16 +635,28 @@ def _roster_probe(mem, routes_by, target, lost):
     next-oldest mark, rotating the tour through the castles (docich#3963).
     ``_drained`` already yields to a march that may still be on the road,
     so a castle expecting an arrival is not probed.
+
+    A castle a transfer was sent into is different: its list is the only
+    arrival receipt (``routes.observed_roster``), and the pair wait holds
+    the front until residents show up. g1163 2026-11-13 12:3x sent ten
+    generals from オシロガ into ドンドン, the source list confirmed each
+    launch, but no sortie opened ドンドン's own list, so ``garrison`` stayed
+    at one and the retake never reached three. Read that castle first.
     """
     if _unaccounted(mem) <= 0:
         return None
+    due = {source for source, route in routes_by.items()
+           if route and len(route) >= 2 and routes.probe_due(mem, source)}
     drained = {source: (mem.get(DRAINED) or {}).get(source)
                for source, route in routes_by.items()
                if route and len(route) >= 2
                and _drained(mem, source, 'move')}
-    if not drained:
+    if due:
+        source = min(due, key=lambda c: (mem.get('route_probe_read_tick') or {}).get(c, 0))
+    elif drained:
+        source = min(drained, key=lambda c: drained[c].get('tick') or 0)
+    else:
         return None
-    source = min(drained, key=lambda c: drained[c].get('tick') or 0)
     route = routes_by[source]
     purpose = ('retake' if target in lost else 'attack') if len(route) == 2 else 'move'
     return _order(mem, source, route[1], target, purpose)

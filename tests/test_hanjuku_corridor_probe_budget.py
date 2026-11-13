@@ -232,6 +232,26 @@ def test_a_stale_idle_probe_is_replaced():
     assert len(decided(mem, 'roster_probe_idle') + decided(mem, 'drained_probe_idle')) > minted
 
 
+def test_a_castle_a_transfer_was_sent_into_is_read_first():
+    """g1163 2026-11-13 12:3x: ten moves into ドンドン never showed its list.
+
+    The source list confirmed each launch, but no order opened the
+    destination, so ``garrison`` stayed at one and the pair wait never saw
+    the reinforcements.
+    """
+    mem = memory([A, B, C], [])              # nothing drained
+    mem['garrison'][C] = ['リーキ', 'ベーグル']
+    mem['world']['garrison'][C] = ['リーキ', 'ベーグル']
+    mem['country_general_count'] = {'count': 32, 'scope': [9, '23-5']}
+    mem['world']['sorties']['I:c9:B>C:1'] = {
+        'general': 'キャロット', 'source': B, 'target': C, 'purpose': 'move',
+        'status': 'en_route', 'tick': mem['tick'] - 10}
+    orders(mem)
+    minted = (mem.get(corridor.PROBE) or {}).get('mint_order') or {}
+    assert minted.get('source') == C, 'the destination list is the arrival receipt'
+    assert decided(mem, 'roster_probe')
+
+
 def _spend_budget(mem):
     """Run one plan, then mark this month's probe budget as spent."""
     with chart.map_context(mem):
