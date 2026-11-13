@@ -797,3 +797,20 @@ def test_a_visible_camp_takes_the_castle_jump_field_frame(monkeypatch):
     frame = Frame(256, 224, b'\x00' * 256 * 224 * 3)
     assert M.castle_jump_step(screen, mem, frame) == [M.pad('select')]
     assert 'castle_jump' in mem
+
+
+def test_a_visible_camp_under_the_skip_is_recorded(monkeypatch):
+    """The camp is visible but the failure skip holds it back: say so."""
+    from docich.hanjuku.os_layer.pixels import Frame
+    from docich.hanjuku.flows import recall as recall_flow
+    mem = _memory()
+    mem['castle_jump'] = {'step': 'J1', 'source': 'アルマムーン', 'phase': 'confirm',
+                          'age': 0, 'total': 0, 'tick': 0}
+    screen = _screen('map', [], cursor=(80, 90))
+    monkeypatch.setattr(M, 'own_camps', lambda frame: [{'target': (10, 10)}])
+    monkeypatch.setattr(recall_flow, '_filter_recall_skip', lambda m, camps: [])
+    monkeypatch.setattr(recall_flow, 'camp_recall_step', lambda s, m, f: None)
+    frame = Frame(256, 224, b'\x00' * 256 * 224 * 3)
+    assert M.castle_jump_step(screen, mem, frame) == [M.pad('a')]
+    confirm = mem['_records'][-1]
+    assert confirm['observed_metric']['camp_skipped'] is True
