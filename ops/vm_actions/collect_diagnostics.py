@@ -7205,6 +7205,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v758-probe-rearm-names",
             "hanjuku-chart-v759-retake-pair-wait",
             "hanjuku-chart-v760-destination-roster-probe",
+            "hanjuku-chart-v761-due-probe-budget",
             "hanjuku-chart-v560-castle-list-scroll",
             "hanjuku-chart-v561-post-month-repair-status",
             "hanjuku-chart-v501-idle-reanchor",
