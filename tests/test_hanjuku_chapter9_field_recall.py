@@ -78,3 +78,14 @@ def test_a_lost_tent_records_where_it_was_looked_for(monkeypatch):
     assert record['observed_metric']['cursor'] == [10, 10]
     assert record['observed_metric']['missing'] == 1
     assert record['observed_metric']['camp_world'] == [130, 80]
+
+
+def test_a_cursor_within_the_sprite_can_open_the_last_confirmed_tent(monkeypatch):
+    """g1163 2026-11-14 00:22: camp [84,73], cursor [90,78], tent covered."""
+    monkeypatch.setattr(recall_flow, 'own_camps', lambda frame: [])
+    mem = _mem()
+    _flow(mem)['recall'] = {'stage': 'to_camp', 'target': [84, 73],
+                            'last_seen': [84, 73], 'steps': 0}
+    screen = Screen([], None, '', kind='map', cursor=(90, 78))
+    assert recall_flow.camp_recall_step(screen, mem, FRAME) == [recall_flow.pad('a')]
+    assert any(r['decision'] == 'camp_enter' for r in mem['_records'])
