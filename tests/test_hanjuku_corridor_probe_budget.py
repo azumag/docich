@@ -14,7 +14,7 @@ from docich.hanjuku.state.regions import plan as _plan_region
 from docich.hanjuku.strategy import corridor
 
 ROAD = chart.corridor(9)
-A, B, C = ROAD[0], ROAD[1], ROAD[2]
+A, B, C, D = ROAD[0], ROAD[1], ROAD[2], ROAD[3]
 
 
 @pytest.fixture(autouse=True)
@@ -366,4 +366,22 @@ def test_a_future_recall_due_waits_for_the_walk():
     assert not decided(mem, 'roster_probe_due')
     mem['tick'] += 180
     orders(mem)
+    assert decided(mem, 'roster_probe_due')
+
+
+def test_a_receipt_probe_is_available_during_a_wave():
+    """g1163 2026-11-13 19:1x: the オオキク capture receipt waited 300+ ticks.
+
+    The wave early return skipped every receipt. A captured castle's roster
+    does not depend on the wave, so its probe may jump the queue once.
+    """
+    mem = memory([A, B, C], [])
+    mem['garrison'][C] = ['リーキ', 'ベーグル']
+    mem['world']['garrison'][C] = ['リーキ', 'ベーグル']
+    mem['world']['sorties']['I:c9:%s>%s:1' % (C, D)] = {
+        'purpose': 'attack', 'target': D, 'status': 'en_route',
+        'source': C, 'general': 'リーキ', 'tick': mem['tick'] - 10}
+    mem['roster_read_due'] = {C: mem['tick']}
+    out = orders(mem)
+    assert out and out[0].get('source') == C and out[0].get('source_probe') is True
     assert decided(mem, 'roster_probe_due')
