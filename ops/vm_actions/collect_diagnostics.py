@@ -7214,6 +7214,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v767-finish-20",
             "hanjuku-chart-v768-own-target-marker",
             "hanjuku-chart-v769-guard-expiry-sticky",
+            "hanjuku-chart-v770-flag-owner-confirm",
             "hanjuku-chart-v560-castle-list-scroll",
             "hanjuku-chart-v561-post-month-repair-status",
             "hanjuku-chart-v501-idle-reanchor",

@@ -472,9 +472,19 @@ def _apply_world_flags(mem, flags):
     chapter = mem.get('chapter') or 0
     from .roster import owner
     seen = mem.setdefault('world_flags', {})
+    home = chart.home_castle(chapter)
     for name, kind in flags.items():
         if name in chart.castles(chapter):
-            owner(mem, STATUS_NAMES.get(name, name), kind)
+            # Home and boss keep their immediate record (home has its own
+            # loss/recovery rules, the boss is never a normal ownership cell).
+            # Every other castle's ownership is written with the confirmed
+            # captured/lost update below: g1163 2026-11-13 16:0x had
+            # castle_ownership['ドンドン']=enemy while captured still held it
+            # and lost did not list it, because the flag read was recorded
+            # before _confirmed_flags and the captured/lost update was
+            # skipped as unconfirmed.
+            if name == home or chart.is_boss_castle(name):
+                owner(mem, STATUS_NAMES.get(name, name), kind)
             seen[name] = {'kind': kind, 'tick': int(mem.get('tick') or 0), 'chapter': chapter}
     home = chart.home_castle(chapter)
     cur = mem.get('battle') or {}
@@ -513,10 +523,13 @@ def _apply_world_flags(mem, flags):
         mem['lost'] = [c for c in mem.get('lost') or [] if c != home]
         changed.append(('captured', home))
     flags = _confirmed_flags(mem, flags)
-    for castle, owner in flags.items():
+    for castle, owner_kind in flags.items():
         if castle == home or chart.is_boss_castle(castle):
             continue
-        if owner == 'enemy' and castle in captured:
+        # The ownership record moves with the confirmed captured/lost update,
+        # so a single misread flag cannot leave castle_ownership alone.
+        owner(mem, STATUS_NAMES.get(castle, castle), owner_kind)
+        if owner_kind == 'enemy' and castle in captured:
             mem['captured'] = captured = [c for c in captured if c != castle]
             lost = mem.setdefault('lost', [])
             if castle not in lost:
@@ -525,7 +538,7 @@ def _apply_world_flags(mem, flags):
             # Ownership changed hands: the remembered defender is stale.
             (mem.get('castle_defenders') or {}).pop(castle, None)
             changed.append(('lost', castle))
-        elif owner == 'own' and castle not in captured:
+        elif owner_kind == 'own' and castle not in captured:
             captured.append(castle)
             mem['lost'] = [c for c in mem.get('lost') or [] if c != castle]
             changed.append(('captured', castle))
