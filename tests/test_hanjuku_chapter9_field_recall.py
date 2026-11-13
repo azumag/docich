@@ -172,12 +172,16 @@ def test_a_camp_found_records_whether_the_camera_was_localised(monkeypatch):
 def test_an_empty_field_records_a_throttled_hunt_sample(monkeypatch):
     """54 minutes without a camp_found: the field frames themselves are the evidence."""
     monkeypatch.setattr(recall_flow, 'own_camps', lambda frame: [])
-    mem = _mem(tick=400)
+    mem = _mem(tick=400, month_start_tick=0, month_durations=[1000])
     assert recall_flow.camp_recall_step(MAP, mem, FRAME) is None
     record = next(r for r in mem['_records'] if r['decision'] == 'camp_hunt')
     assert record['observed_metric']['kind'] == 'map'
     assert record['observed_metric']['cursor'] == [10, 10]
-    mem['tick'] = 500
+    assert record['observed_metric']['month_elapsed'] == 400
+    mem['tick'] = 450
     before = len([r for r in mem['_records'] if r['decision'] == 'camp_hunt'])
     recall_flow.camp_recall_step(MAP, mem, FRAME)
     assert len([r for r in mem['_records'] if r['decision'] == 'camp_hunt']) == before
+    mem['tick'] = 520
+    recall_flow.camp_recall_step(MAP, mem, FRAME)
+    assert len([r for r in mem['_records'] if r['decision'] == 'camp_hunt']) == before + 1

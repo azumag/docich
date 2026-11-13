@@ -289,13 +289,17 @@ def _camp_recall_step(screen: Screen, mem, frame, *, observed_camps=None):
             # throttled sample so the camera/roof situation is measurable
             # (g1163 2026-11-14 03:42-04:36: 54 minutes without a camp_found).
             now = int(mem.get('tick') or 0)
-            if now - int(mem.get('camp_hunt_tick') or 0) >= 300:
+            if now - int(mem.get('camp_hunt_tick') or 0) >= 100:
                 mem['camp_hunt_tick'] = now
+                start = mem.get('month_start_tick')
+                elapsed = (now - start if type(start) is int else None)
                 _record(mem, 'camp_hunt',
                         observed_metric={'cursor': list(_cursor(screen) or ()),
                                          'roofs': len(castle_roofs(frame))
                                          if isinstance(frame, Frame) else 0,
-                                         'kind': screen.kind},
+                                         'kind': screen.kind,
+                                         **({'month_elapsed': elapsed}
+                                            if elapsed is not None else {})},
                         reason='野営が見えないまま地図フレームが続いているため、カメラと屋根の状況を記録する')
             return None
         cursor = _cursor(screen)
