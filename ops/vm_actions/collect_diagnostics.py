@@ -7201,6 +7201,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v754-okunote-only-box",
             "hanjuku-chart-v755-plan-step-map-budget",
             "hanjuku-chart-v756-ch9-empty-front-probe-reuse",
+            "hanjuku-chart-v757-front-mass-wait",
             "hanjuku-chart-v560-castle-list-scroll",
             "hanjuku-chart-v561-post-month-repair-status",
             "hanjuku-chart-v501-idle-reanchor",
