@@ -260,4 +260,9 @@ def test_a_hunt_sample_records_the_own_castle_cells(monkeypatch):
     recall_flow.camp_recall_step(MAP, mem, FRAME)
     record = next(r for r in mem['_records'] if r['decision'] == 'camp_hunt')
     own = record['observed_metric']['chart_own']
-    assert own and all(len(cell) == 2 for cell in own.values())
+    from docich.hanjuku.strategy.orders import _owned
+    expected = {name: list(cell) for name, cell in chart.castles(9).items()
+                if name in _owned(mem)}
+    assert expected
+    assert own == expected
+    assert all(isinstance(cell, list) and len(cell) == 2 for cell in own.values())
