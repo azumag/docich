@@ -342,6 +342,9 @@ def _camp_recall_step(screen: Screen, mem, frame, *, observed_camps=None):
                                                     **({'roofs': roofs_seen} if roofs_seen else {}),
                                                     **({'origin': list(state['origin'])}
                                                        if state.get('origin') else {}),
+                                                    **({'cursor_cell': list(mem['cursor'])}
+                                                       if isinstance(mem.get('cursor'), (list, tuple))
+                                                       and len(mem['cursor']) == 2 else {}),
                                                     **({'kind': camp['kind']} if camp.get('kind') else {}),
                                                     **({'boss_redirect': boss_goal} if boss_goal else {})},
                 reason=('画面に自軍の野営を見つけたため、帰還させずボスの現在位置へ再出撃させる'
