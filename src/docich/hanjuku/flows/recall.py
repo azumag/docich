@@ -303,11 +303,15 @@ def _camp_recall_step(screen: Screen, mem, frame, *, observed_camps=None):
         usable = [int(d) for d in (mem.get('month_durations') or [])[-3:] if type(d) is int]
         if usable:
             estimate = max(usable)
+        roofs_seen = len(castle_roofs(frame)) if isinstance(frame, Frame) else 0
         _record(mem, 'camp_found', observed_metric={'camp': list(camp['target']),
                                                     **({'month_elapsed': elapsed} if elapsed is not None else {}),
                                                     **({'month_estimate': estimate} if estimate else {}),
                                                     **({'camp_world': state['camp_world']}
                                                        if state.get('camp_world') else {}),
+                                                    **({'roofs': roofs_seen} if roofs_seen else {}),
+                                                    **({'origin': list(state['origin'])}
+                                                       if state.get('origin') else {}),
                                                     **({'kind': camp['kind']} if camp.get('kind') else {}),
                                                     **({'boss_redirect': boss_goal} if boss_goal else {})},
                 reason=('画面に自軍の野営を見つけたため、帰還させずボスの現在位置へ再出撃させる'
