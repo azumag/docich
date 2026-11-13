@@ -81,6 +81,30 @@ def observed_cursor_cell(screen, mem, frame, *, max_error=12, ambiguity=24):
     return [cursor[0] + best[0][0], cursor[1] + best[0][1]]
 
 
+def roof_camera_support(mem, frame, *, max_error=12):
+    """The best roof-constellation support and the camera it implies.
+
+    ``observed_cursor_cell`` needs two roofs to agree; when it returns None the
+    caller cannot tell whether there were too few roofs or the constellation
+    disagreed. This exposes the same measurement without the two-roof gate
+    (g1163 2026-11-14 07:32: two roofs, no origin).
+    """
+    if not isinstance(frame, Frame):
+        return None
+    cells = chart.castles(mem.get('chapter') or 0)
+    roofs = [r for r in castle_roofs(frame) if not r.get('clipped')]
+    best = None
+    for roof in roofs:
+        for x, y in cells.values():
+            cam = (x - roof['target'][0], y - roof['target'][1])
+            support = sum(any(abs(r['target'][0] + cam[0] - cx)
+                              + abs(r['target'][1] + cam[1] - cy) <= max_error
+                              for cx, cy in cells.values()) for r in roofs)
+            if best is None or support > best[0]:
+                best = (support, cam)
+    return best
+
+
 NAV_CONTINUITY_TICKS = 30      # ticks between map frames that still integrate
 
 
