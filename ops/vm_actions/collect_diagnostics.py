@@ -7249,6 +7249,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v802-month-defer-recall",
             "hanjuku-chart-v803-month-default-estimate",
             "hanjuku-chart-v804-month-margin",
+            "hanjuku-chart-v805-camp-timing-record",
             "hanjuku-chart-v560-castle-list-scroll",
             "hanjuku-chart-v561-post-month-repair-status",
             "hanjuku-chart-v501-idle-reanchor",
