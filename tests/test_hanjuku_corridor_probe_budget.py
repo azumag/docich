@@ -326,3 +326,29 @@ def test_a_recall_destination_is_read_without_an_incoming_move():
     minted = (mem.get(corridor.PROBE) or {}).get('mint_order') or {}
     assert minted.get('source') == C
     assert decided(mem, 'roster_probe_due')
+
+
+def test_a_stale_recall_due_is_ignored():
+    """g1163 2026-11-13 16:5x: roster_read_due still held オシロガ at 110273.
+
+    The read pops only a complete roster, so an old entry would otherwise
+    keep an unbudgeted probe in front of every plan.
+    """
+    mem = memory([A, B, C], [])
+    mem['garrison'][C] = ['リーキ', 'ベーグル']
+    mem['world']['garrison'][C] = ['リーキ', 'ベーグル']
+    mem['country_general_count'] = {'count': 32, 'scope': [9, '23-5']}
+    mem['roster_read_due'] = {C: mem['tick'] - corridor.ROSTER_READ_DUE_TTL - 1}
+    orders(mem)
+    assert not decided(mem, 'roster_probe_due')
+
+
+def test_a_fresh_recall_due_is_consumed_by_its_probe():
+    mem = memory([A, B, C], [])
+    mem['garrison'][C] = ['リーキ', 'ベーグル']
+    mem['world']['garrison'][C] = ['リーキ', 'ベーグル']
+    mem['country_general_count'] = {'count': 32, 'scope': [9, '23-5']}
+    mem['roster_read_due'] = {C: mem['tick']}
+    orders(mem)
+    assert decided(mem, 'roster_probe_due')
+    assert C not in (mem.get('roster_read_due') or {})

@@ -53,6 +53,9 @@ DRAINED_MIN_HOLD = 300      # ticks a fresh empty reading is trusted before a re
 PROBE_BUDGET = 6
 # Ticks after which one more look is allowed even when nothing was found.
 PROBE_REARM_TICKS = 3600
+# A recall's destination read is due only this long; an old entry must not
+# keep minting an unbudgeted probe (the read pops only a complete roster).
+ROSTER_READ_DUE_TTL = 900
 # Idle probes (nothing else to plan) are minted at most this often. Zero
 # keeps one minted per observation, which is what stops the empty plan from
 # standing still; the in-flight suppression is what removes the churn.
@@ -658,15 +661,24 @@ def _due_probe(mem, routes_by, target, lost):
     ``roster_read_due`` is the recall flow's request: a recalled camp's
     generals land in a castle whose list nobody would otherwise open
     (g1163 2026-11-13 15:5x-16:3x recalled camps four times and never read
-    where they landed).
+    where they landed). A due is consumed by the probe it mints and ignored
+    once stale: the read only pops it on a complete roster, so a full page
+    would otherwise keep an unbudgeted probe in front of every plan
+    (g1163 2026-11-13 16:5x: roster_read_due still held オシロガ at tick
+    110273).
     """
-    asked = mem.get('roster_read_due') or {}
+    now = int(mem.get('tick') or 0)
+    raw = mem.get('roster_read_due') or {}
+    asked = {castle: tick for castle, tick in raw.items()
+             if type(tick) is int and 0 <= now - tick <= ROSTER_READ_DUE_TTL}
     due = {source for source, route in routes_by.items()
            if route and len(route) >= 2
            and (routes.probe_due(mem, source) or source in asked)}
     if not due:
         return None
     source = min(due, key=lambda c: (mem.get('route_probe_read_tick') or {}).get(c, 0))
+    if source in asked:
+        raw.pop(source, None)              # one probe per recall request
     route = routes_by[source]
     purpose = ('retake' if target in lost else 'attack') if len(route) == 2 else 'move'
     return _order(mem, source, route[1], target, purpose)
