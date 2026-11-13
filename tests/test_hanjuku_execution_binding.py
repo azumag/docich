@@ -169,7 +169,7 @@ def test_scoped_ordinary_sortie_checks_actual_name_before_confirming(name):
     panel = actor_panel(measured_loaded_sortie(('クースカン',)), name)
     assert p.deploy_step(panel, mem) != [p.pad('a')]
     assert not _flow(mem).get('sortie_attempt')
-    assert not any(c.get('departure_order') for c in _plan_region(mem)['order_context'].values())
+    assert not any(c.get('departure_order') for c in _plan_region(mem).get('order_context', {}).values())
 
 
 def test_boolean_one_marker_is_not_the_integer_one_execution():
