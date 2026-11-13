@@ -52,7 +52,7 @@ def test_the_live_march_is_overdue_and_waits_for_the_boss_unlock():
                                          'marching': 79599 - LAUNCH, 'relaunches': 0,
                                          'cell': list(chart.castles(CHAPTER)['ボス']),
                                          'source_still_has_general': False}
-    assert '3-B1' not in _plan_region(mem)['general_override']
+    assert '3-B1' not in _plan_region(mem).get('general_override', {})
     assert '3-B1' not in _world(mem)['launched_orders']
 
 
@@ -100,7 +100,7 @@ def test_an_entry_whose_fight_left_no_result_is_sent_again():
     assert mem['boss_relaunch'] == {'3-B1': 1}
     (record,) = decisions(mem, 'boss_sortie_overdue')
     assert record['resulting_event'] == 'relaunch:1'
-    assert '3-B1' not in _plan_region(mem)['general_override']
+    assert '3-B1' not in _plan_region(mem).get('general_override', {})
     assert '3-B1' not in _world(mem)['launched_orders']
 
 
