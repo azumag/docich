@@ -303,11 +303,15 @@ def _camp_recall_step(screen: Screen, mem, frame, *, observed_camps=None):
                 mem['camp_hunt_tick'] = now
                 start = mem.get('month_start_tick')
                 elapsed = (now - start if type(start) is int else None)
+                from ..os_layer.world import observed_cursor_cell
+                origin = (observed_cursor_cell(screen, mem, frame)
+                          if isinstance(frame, Frame) else None)
                 _record(mem, 'camp_hunt',
                         observed_metric={'cursor': list(_cursor(screen) or ()),
                                          'roofs': len(castle_roofs(frame))
                                          if isinstance(frame, Frame) else 0,
                                          'kind': screen.kind,
+                                         **({'origin': list(origin)} if origin else {}),
                                          **({'month_elapsed': elapsed}
                                             if elapsed is not None else {})},
                         reason='野営が見えないまま地図フレームが続いているため、カメラと屋根の状況を記録する')

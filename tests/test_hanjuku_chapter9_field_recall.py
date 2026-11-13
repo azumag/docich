@@ -198,3 +198,15 @@ def test_a_battle_during_the_destination_records_the_pause(monkeypatch):
     mem['tick'] = 430
     recall_flow.camp_recall_step(battle, mem, FRAME)
     assert len([r for r in mem['_records'] if r['decision'] == 'camp_recall_battle']) == 1
+
+
+def test_a_hunt_sample_records_whether_the_camera_was_localised(monkeypatch):
+    """The hunt frames carried 0-1 roofs, so the world anchor never set."""
+    from docich.hanjuku.os_layer import world
+    monkeypatch.setattr(recall_flow, 'own_camps', lambda frame: [])
+    monkeypatch.setattr(world, 'observed_cursor_cell',
+                        lambda screen, mem, frame, **kw: [70, 20])
+    mem = _mem(tick=400, month_start_tick=0, month_durations=[1000])
+    recall_flow.camp_recall_step(MAP, mem, FRAME)
+    record = next(r for r in mem['_records'] if r['decision'] == 'camp_hunt')
+    assert record['observed_metric']['origin'] == [70, 20]
