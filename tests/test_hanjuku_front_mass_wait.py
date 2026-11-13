@@ -179,3 +179,21 @@ def test_an_empty_front_drops_its_old_wait_clocks():
     assert C not in mem['front_guard_hold']
     assert C not in mem['front_mass_hold']
     assert C not in mem['front_mass_count']
+
+
+def test_a_full_front_drops_the_one_general_hold():
+    """The old one-general tick must not fire when the front later drops to one."""
+    mem = memory(['ローズマリー', 'ベーグル', 'キャロット'])
+    mem['front_guard_hold'] = {C: 100}
+    attacks(mem)
+    assert C not in mem['front_guard_hold']
+
+
+def test_a_pair_ready_front_drops_the_mass_clocks():
+    mem = memory(['ローズマリー', 'ベーグル', 'キャロット'])
+    mem['front_mass_hold'] = {C: 100}
+    mem['front_mass_expired_tick'] = {C: 100}
+    mem['front_mass_count'] = {C: 2}
+    attacks(mem)
+    assert C not in mem['front_mass_hold']
+    assert C not in mem['front_mass_count']
