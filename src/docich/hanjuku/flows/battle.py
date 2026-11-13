@@ -612,6 +612,17 @@ def _planned_battle_cards(mem, cur, enemy):
     return planned
 
 
+def _mark_defense_seen(mem, cur):
+    """A defence battle is the threat itself: record it like せめこまれました.
+
+    g1163 2026-11-13 21:2x: the enemy attacked ドンドン while the finish
+    sortie was out; only the toast set defense_seen, so an attack started
+    without it kept the strongest general out front.
+    """
+    if isinstance(cur, dict) and cur.get('side') == 'defense' and cur.get('castle'):
+        mem.setdefault('defense_seen', {})[cur['castle']] = int(mem.get('tick') or 0)
+
+
 def battle_step(screen: Screen, mem):
     b = screen.battle
     if (b is None or not b.enemy or not b.ally or UNKNOWN in b.enemy or UNKNOWN in b.ally
@@ -723,6 +734,7 @@ def battle_step(screen: Screen, mem):
                 enemy_hp=b.enemy_hp, ally_hp=b.ally_hp, castle=cur['castle'],
                 ally_soldiers=army[0], enemy_soldiers=army[1],
                 reason='戦闘パネルの将軍名とHPを確認')
+        _mark_defense_seen(mem, cur)
         _tally(mem, 'battles_started')
         # 将軍 (最大HP) と携行切り札 (卵落・ID合計) の組み合わせで、この戦闘の
         # 「卵を使わせない／落とさせる」方針を先に決めて記録する。卵を使える能力が

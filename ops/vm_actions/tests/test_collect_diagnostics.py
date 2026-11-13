@@ -1542,7 +1542,8 @@ def test_hanjuku_hotload_versions_are_fixed_values_not_an_arbitrary_prefix():
                  "hanjuku-chart-v784-partial-move-update",
                  "hanjuku-chart-v785-empty-front-reset",
                  "hanjuku-chart-v786-hold-consistency",
-                 "hanjuku-chart-v787-panel-finish-precedence",)
+                 "hanjuku-chart-v787-panel-finish-precedence",
+                 "hanjuku-chart-v788-battle-start-defense-seen",)
     for version in versions:
         assert module._project_corner_state({'bot_version': version})['bot_version'] == version
     for version in (None, 'SECRET', 'hanjuku-chart-v130-SECRET',
