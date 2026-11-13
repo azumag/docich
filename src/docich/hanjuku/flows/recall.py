@@ -267,7 +267,11 @@ def _camp_recall_step(screen: Screen, mem, frame, *, observed_camps=None):
                                  **({'boss': True, 'goal': boss_goal} if boss_goal else {})}
         if boss_goal:
             _reset_boss_jump(mem)
+        _observe_recall_origin(screen, mem, frame, state)
+        state['camp_world'] = _camp_world_cell(cursor, state.get('origin'), camp['target'])
         _record(mem, 'camp_found', observed_metric={'camp': list(camp['target']),
+                                                    **({'camp_world': state['camp_world']}
+                                                       if state.get('camp_world') else {}),
                                                     **({'kind': camp['kind']} if camp.get('kind') else {}),
                                                     **({'boss_redirect': boss_goal} if boss_goal else {})},
                 reason=('画面に自軍の野営を見つけたため、帰還させずボスの現在位置へ再出撃させる'
@@ -322,6 +326,11 @@ def _camp_recall_step(screen: Screen, mem, frame, *, observed_camps=None):
             # targetなら、一度だけAでメニューを開く（メニュー段階が空振りを
             # 有界に処理する）。未観測の古い座標は従来どおり信頼しない。
             cursor = _cursor(screen)
+            # A fresh camera-bound origin corrects the tent's screen cell after
+            # a shift; it never licenses opening from an unconfirmed position.
+            if (state.get('camp_world') and state.get('origin') and cursor):
+                cell, origin = state['camp_world'], state['origin']
+                state['target'] = [cell[0] - origin[0] + cursor[0], cell[1] - origin[1] + cursor[1]]
             target = state.get('target')
             last = state.get('last_seen')
             if (not state.get('occluded_enter') and cursor
@@ -676,6 +685,20 @@ def _observe_recall_origin(screen, mem, frame, state):
         state.pop('origin_source', None)
     else:
         state.update(origin=origin, origin_source='roofs')
+
+
+def _camp_world_cell(cursor, origin, target):
+    """The tent's stable world cell from the camera-bound origin.
+
+    ``origin`` is the cursor's world cell (``observed_cursor_cell``); the tent
+    is ``target - cursor`` away from it in screen cells, so the world cell
+    survives a later camera shift. The owner rule against trusting a stale
+    *screen* coordinate stands: this is a fresh world anchor, not a replay.
+    """
+    if not (isinstance(cursor, (tuple, list)) and isinstance(origin, (tuple, list))
+            and isinstance(target, (tuple, list))):
+        return None
+    return [origin[0] + target[0] - cursor[0], origin[1] + target[1] - cursor[1]]
 
 
 def _finish_hero_recall(mem, state, goal):

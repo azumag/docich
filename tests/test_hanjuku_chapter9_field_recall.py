@@ -58,3 +58,9 @@ def test_an_empty_field_changes_nothing(monkeypatch):
     mem = _mem()
     assert recall_flow.camp_recall_step(MAP, mem, FRAME) is None
     assert 'recall' not in _flow(mem)
+
+
+def test_the_camp_world_cell_survives_a_camera_shift():
+    assert recall_flow._camp_world_cell((10, 10), (100, 50), (40, 40)) == [130, 80]
+    assert recall_flow._camp_world_cell(None, (100, 50), (40, 40)) is None
+    assert recall_flow._camp_world_cell((10, 10), None, (40, 40)) is None
