@@ -1059,7 +1059,8 @@ def _cursor_order_pick(screen, mem, order):
                 return _deploy_input(screen, mem, order, [move],
                                      '増援は元気な将軍へカーソルを送る')
     if order.get('purpose') != 'move' and order.get('corridor') is True:
-        leader = _full_hp_leader(mem, present, name)
+        leader = _full_hp_leader(mem, present, name,
+                                 keep_best=_source_defended(mem, order))
         if leader is not None:
             move = menu_to(screen, leader)
             if move and move != 'here' and int(downs.get(step) or 0) < CURSOR_PICK_DOWNS:
@@ -1144,7 +1145,18 @@ def _healthier_mover(mem, present, current):
 FULL_HP_LEADER = 80            # percentage of max HP a wave leader needs
 
 
-def _full_hp_leader(mem, present, current):
+DEFENSE_KEEP_TICKS = 900       # a just-attacked front keeps its strongest home
+
+
+def _source_defended(mem, order) -> bool:
+    """The sortie's source castle was attacked inside the defence window."""
+    source = _source(order, mem)
+    tick = (mem.get('defense_seen') or {}).get(source)
+    now = int(mem.get('tick') or 0)
+    return (type(tick) is int and 0 <= now - tick <= DEFENSE_KEEP_TICKS)
+
+
+def _full_hp_leader(mem, present, current, keep_best=False):
     """A whole general when the cursor one is badly hurt.
 
     Owner 2026-11-12: 将軍のステータスによらず、どんどん上から順に将軍を送る.
@@ -1154,6 +1166,11 @@ def _full_hp_leader(mem, present, current):
     is right there. Among whole generals the one with the most HP leads: the
     retake of オオキク (2026-11-13 13:4x) fought a gauntlet of 80/42-HP
     defenders with a 74-HP general and lost at 19 HP.
+
+    ``keep_best`` is for a front the enemy has just attacked: the strongest
+    general stays home as the defender and the next one leads the sortie.
+    g1163 2026-11-13 15:3x-16:1x lost several defences at enemy 1-8 HP while
+    the healthiest resident had already marched out.
     """
     hp = _world(mem).get('general_hp') or {}
     if not isinstance(hp, dict):
@@ -1167,18 +1184,20 @@ def _full_hp_leader(mem, present, current):
     if (type(current_hp) is not int or type(maximum) is not int or maximum <= 0
             or current_hp * 2 >= maximum):
         return None
-    best = None
-    best_key = None
+    whole = []
     for general in present:
         if general == NAME:
             continue
         got = row(general)
         if (type(got.get('hp')) is int and type(got.get('max')) is int
                 and got['max'] > 0 and got['hp'] * 100 >= got['max'] * FULL_HP_LEADER):
-            key = (got['hp'], got['max'])
-            if best_key is None or key > best_key:
-                best, best_key = general, key
-    return best
+            whole.append((general, (got['hp'], got['max'])))
+    if not whole:
+        return None
+    whole.sort(key=lambda item: item[1], reverse=True)
+    if keep_best and len(whole) >= 2:
+        return whole[1][0]
+    return whole[0][0]
 
 
 def _keeps_hero_company(order, present) -> bool:
