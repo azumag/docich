@@ -231,7 +231,7 @@ def _mark_recall_interrupted(mem):
     _flow(mem)['recall_interrupted'] = int(mem.get('tick') or 0)
 
 
-MONTH_END_MARGIN = 150         # ticks before the estimated month end: no new recall
+MONTH_END_MARGIN = 200         # ticks before the estimated month end: no new recall
 MONTH_DEFAULT_TICKS = 320      # first month after a restart: no measured length yet
 
 

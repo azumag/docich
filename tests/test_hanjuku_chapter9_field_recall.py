@@ -114,3 +114,16 @@ def test_the_first_month_after_a_restart_uses_a_conservative_default(monkeypatch
     late = _mem(tick=100 + 200, month_start_tick=100)
     assert recall_flow._month_end_soon(late) is True
     assert recall_flow.camp_recall_step(MAP, late, FRAME) is None
+
+
+def test_the_month_end_margin_covers_the_recall_and_the_transition():
+    """g1163 2026-11-14 01:56: camp at start+124; the dest was cut at the transition.
+
+    The recall took ~90 ticks (camp to dest) and the month-end transition about
+    150 more; the old 150-tick margin let that attempt start and be cut.
+    """
+    assert recall_flow.MONTH_END_MARGIN == 200
+    mem = _mem(tick=124, month_start_tick=0, month_durations=[299])
+    assert recall_flow._month_end_soon(mem) is True
+    mem['tick'] = 90
+    assert recall_flow._month_end_soon(mem) is False
