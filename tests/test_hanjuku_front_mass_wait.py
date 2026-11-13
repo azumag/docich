@@ -99,3 +99,22 @@ def test_a_just_defended_front_keeps_two_home():
     mem['defense_seen'] = {C: mem['tick'] - 10}
     assert attacks(mem) == []
     assert decided(mem, 'front_guard_held')
+
+
+def test_an_expired_front_guard_stays_expired_within_the_observation():
+    """g1163 2026-11-13 15:49: timeout then hold for ドンドン in one second.
+
+    ``orders`` runs several times per decision; the first expiry allowed the
+    attack and the next call re-armed the hold, so the minted order vanished.
+    """
+    mem = memory(['ローズマリー'])
+    mem['front_guard_hold'] = {C: mem['tick'] - corridor.FRONT_GUARD_WAIT}
+    assert corridor._front_guard_expired(mem, C) is True
+    assert corridor._front_guard_expired(mem, C) is True
+
+
+def test_an_expired_mass_wait_stays_expired_within_the_observation():
+    mem = memory(['ローズマリー', 'ベーグル'])
+    mem['front_mass_hold'] = {C: mem['tick'] - corridor.FRONT_MASS_WAIT}
+    assert corridor._front_mass_expired(mem, C) is True
+    assert corridor._front_mass_expired(mem, C) is True

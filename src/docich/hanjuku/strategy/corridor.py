@@ -773,9 +773,18 @@ def _front_guard_expired(mem, castle) -> bool:
     A hold without an end is the same stall v706 removed from the company rule
     (g1163 2026-11-12 21:0x: 166 no-input map frames in half an hour while the
     front sat at one). Waiting is useful only while reinforcements exist.
+
+    An expiry is sticky for the observation: ``orders`` is called several
+    times per decision, and the first call used to pop the hold (allow) while
+    the next re-armed it (block), so the order it had just minted vanished
+    from the executed plan (g1163 2026-11-13 15:49: front_guard_timeout and
+    front_guard_held for ドンドン in the same second).
     """
     holds = mem.setdefault('front_guard_hold', {})
     now = int(mem.get('tick') or 0)
+    expired = mem.setdefault('front_guard_expired_tick', {})
+    if expired.get(castle) == now:
+        return True
     since = holds.get(castle)
     if type(since) is not int:
         holds[castle] = now
@@ -783,6 +792,7 @@ def _front_guard_expired(mem, castle) -> bool:
     if now - since < FRONT_GUARD_WAIT:
         return False
     holds.pop(castle, None)
+    expired[castle] = now
     _record_only(mem, 'front_guard_timeout', target=castle,
                  observed_metric={'waited': now - since},
                  reason='前線が1人のまま待ち時間の上限に達したため、単独でも攻撃に出る')
@@ -801,6 +811,9 @@ def _front_mass_expired(mem, castle) -> bool:
     """
     holds = mem.setdefault('front_mass_hold', {})
     now = int(mem.get('tick') or 0)
+    expired = mem.setdefault('front_mass_expired_tick', {})
+    if expired.get(castle) == now:
+        return True
     since = holds.get(castle)
     if type(since) is not int:
         holds[castle] = now
@@ -808,6 +821,7 @@ def _front_mass_expired(mem, castle) -> bool:
     if now - since < FRONT_MASS_WAIT:
         return False
     holds.pop(castle, None)
+    expired[castle] = now
     _record_only(mem, 'front_mass_timeout', target=castle,
                  observed_metric={'waited': now - since},
                  reason='2人同時出撃を待つ上限に達したため、集まった将軍で攻撃に出る')
