@@ -33,7 +33,10 @@ def png(width=960, height=540) -> bytes:
 
 
 def metadata(image_path: Path, reason: str, session_id=SESSION) -> dict:
-    file_mtime = round(image_path.stat().st_mtime_ns / 1_000_000)
+    # ns -> ms はモジュール側 _parse_metadata() と同じ 0.5 切り上げで丸める。
+    # round() の偶数丸めだと .5 ちょうどの mtime で値が 1ms ずれ、
+    # frame_time_mismatch が duplicate_reason より先に上がって稀に失敗する (#4118)。
+    file_mtime = int(image_path.stat().st_mtime_ns / 1_000_000 + 0.5)
     return {
         "schema": 1,
         "game": 7,
