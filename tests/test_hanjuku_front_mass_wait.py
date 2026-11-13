@@ -154,3 +154,16 @@ def test_a_queued_attack_is_stopped_when_the_pair_wait_rearms():
     assert plan.get('active') is None
     assert plan['orders'][step] == 'pending'
     assert decided(mem, 'front_mass_retracted')
+
+
+def test_front_marks_for_a_castle_no_longer_ours_are_dropped():
+    """A retaken castle must not inherit its old hold timer."""
+    mem = memory(['ローズマリー', 'ベーグル'])
+    mem['front_guard_hold'] = {'イソ': 100}
+    mem['front_mass_hold'] = {'イソ': 100}
+    mem['front_mass_count'] = {'イソ': 1}
+    arms = attacks(mem)
+    assert arms is not None
+    assert 'イソ' not in mem['front_guard_hold']
+    assert 'イソ' not in mem['front_mass_hold']
+    assert 'イソ' not in mem['front_mass_count']

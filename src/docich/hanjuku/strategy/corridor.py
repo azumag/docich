@@ -265,6 +265,16 @@ def orders(mem) -> list[dict]:
     expire_unknown_locations(mem)
     chapter = mem.get('chapter')
     owned = _owned(mem) & set(chart.castles(chapter))
+    # A front timer for a castle we no longer hold is meaningless. Left in the
+    # state it would suppress the first attack after the castle is retaken
+    # (the same name reuses the old hold): drop it with the ownership.
+    for key in ('front_guard_hold', 'front_guard_expired_tick', 'front_mass_hold',
+                'front_mass_expired_tick', 'front_mass_count'):
+        marks = mem.get(key)
+        if isinstance(marks, dict):
+            for castle in list(marks):
+                if castle not in owned:
+                    marks.pop(castle, None)
     target = chart.corridor_next(chapter, owned)
     lost = set(mem.get('lost') or ())
     routes_by = {source: routes.path(mem, source, target, owned) for source in sorted(owned)}
