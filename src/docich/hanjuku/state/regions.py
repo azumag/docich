@@ -175,6 +175,7 @@ KEY_OWNERSHIP = {
     'corridor_drained': {'region': PLAN, 'lifetime': 'chapter', 'migrated': False},  # chapter9 corridorの枯渇管理(定数DRAINED経由)
     'corridor_probe': {'region': PLAN, 'lifetime': 'chapter', 'migrated': False},  # chapter9 corridorの城一覧確認予算(v707)
     'front_guard_hold': {'region': PLAN, 'lifetime': 'chapter', 'migrated': False},  # chapter9 前線1人の待ち時計(v735)
+    'front_mass_hold': {'region': PLAN, 'lifetime': 'chapter', 'migrated': False},  # chapter9 2人同時出撃の待ち時計(v757)
     'corridor_wave': {'region': PLAN, 'lifetime': 'chapter', 'migrated': False},  # chapter9 corridorのwave管理(定数WAVE経由)
     'defense_break_blocked': {'region': PLAN, 'lifetime': 'chapter', 'migrated': False},  # 防衛突破阻止の戦略ガード
     'defense_wait': {'region': PLAN, 'lifetime': 'chapter', 'migrated': False},  # 防衛待ち計画
