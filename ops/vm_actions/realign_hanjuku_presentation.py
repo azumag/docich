@@ -121,6 +121,57 @@ def _geometry(display: str, window_id: str) -> dict[str, int]:
     return values
 
 
+def _frame_extents(display: str, window_id: str) -> tuple[int, int, int, int] | None:
+    """Return the (left, right, top, bottom) frame extents, or None if unknown."""
+    env = dict(os.environ, DISPLAY=display)
+    try:
+        output = subprocess.check_output(
+            ["xprop", "-id", window_id, "_NET_FRAME_EXTENTS"],
+            env=env, text=True, timeout=3,
+        )
+    except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
+        return None
+    match = re.search(
+        r"_NET_FRAME_EXTENTS\(CARDINAL\) = ([0-9]+), ([0-9]+), ([0-9]+), ([0-9]+)",
+        output)
+    if match is None:
+        return None
+    return tuple(int(match.group(i)) for i in range(1, 5))
+
+
+def _undecorate(display: str, window_id: str, x: int, y: int) -> None:
+    """Force decorations off and move the window to (x, y).
+
+    A window-manager decoration shifts the client area by the frame extents
+    (#4051): stripping it is the only repair that keeps the broadcast
+    rectangle. Any failure stays fail-closed as a geometry mismatch.
+    """
+    env = dict(os.environ, DISPLAY=display)
+    try:
+        subprocess.run(
+            ["xprop", "-id", window_id, "-f", "_MOTIF_WM_HINTS", "32c",
+             "-set", "_MOTIF_WM_HINTS", "2, 0, 0, 0, 0"],
+            env=env, check=True, stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL, timeout=3,
+        )
+        subprocess.run(["xdotool", "windowunmap", window_id],
+                       env=env, check=True, stdout=subprocess.DEVNULL,
+                       stderr=subprocess.DEVNULL, timeout=3)
+        subprocess.run(["xdotool", "windowmap", window_id],
+                       env=env, check=True, stdout=subprocess.DEVNULL,
+                       stderr=subprocess.DEVNULL, timeout=3)
+        # Give the window manager a moment to re-read the hint on remap
+        # before placing the now undecorated client area.
+        time.sleep(0.2)
+        subprocess.run(
+            ["xdotool", "windowmove", "--sync", window_id, str(x), str(y)],
+            env=env, check=True, stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL, timeout=3,
+        )
+    except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
+        raise RealignError(EXIT_GEOMETRY_MISMATCH)
+
+
 def _move(display: str, window_id: str, x: int, y: int) -> None:
     env = dict(os.environ, DISPLAY=display)
     try:
@@ -195,8 +246,18 @@ def realign(root: Path = ROOT) -> dict[str, object]:
     window_id = windows[0]
     geometry = _geometry(output_display, window_id)
     expected_x = vx + cx
-    if geometry != {"X": expected_x, "Y": vy, "WIDTH": cw, "HEIGHT": vh}:
-        raise RealignError(EXIT_GEOMETRY_MISMATCH)
+    expected_geometry = {"X": expected_x, "Y": vy, "WIDTH": cw, "HEIGHT": vh}
+    if geometry != expected_geometry:
+        # A window-manager decoration shifts the client area by the frame
+        # extents (#4051): the frame, not the content, sits at the expected
+        # origin. Strip the decoration once and re-measure; anything else
+        # stays fail-closed.
+        extents = _frame_extents(output_display, window_id)
+        if not extents or not any(extents):
+            raise RealignError(EXIT_GEOMETRY_MISMATCH)
+        _undecorate(output_display, window_id, expected_x, vy)
+        if _geometry(output_display, window_id) != expected_geometry:
+            raise RealignError(EXIT_GEOMETRY_MISMATCH)
     if align == "right":
         return {"status": "already-right", "runtime_id": runtime_id, "gap_width": gap}
 
