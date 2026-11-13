@@ -7223,6 +7223,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v776-mass-hold-reset",
             "hanjuku-chart-v777-partial-on-move",
             "hanjuku-chart-v778-mass-retract-active",
+            "hanjuku-chart-v779-front-hold-reinforcements",
             "hanjuku-chart-v560-castle-list-scroll",
             "hanjuku-chart-v561-post-month-repair-status",
             "hanjuku-chart-v501-idle-reanchor",

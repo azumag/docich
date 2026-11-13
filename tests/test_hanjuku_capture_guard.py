@@ -218,3 +218,30 @@ def test_a_retake_is_not_held_back_by_the_flip_rule():
         {'target': C, 'outcome': 'lost', 'enemy_hp': 40, 'tick': 4900},
     ]
     assert [o for o in attacks(mem) if o['source'] == B and o['purpose'] == 'retake']
+
+
+def test_a_front_with_reinforcements_holds_its_last_resident():
+    """g1163 2026-11-13 18:5x: ドンドン emptied and nine generals went unknown.
+
+    Another castle held generals, so the last resident should have waited for
+    the refill instead of marching alone at a 65-HP defender.
+    """
+    mem = memory(['リーキ'])
+    mem['captured'], mem['lost'] = [A, B], [C]
+    mem['world']['garrison'][A] = ['ベーグル', 'シナモン']
+    mem['garrison'][A] = ['ベーグル', 'シナモン']
+    assert attacks(mem) == []                   # the hold clock starts here
+    mem['tick'] += corridor.FRONT_GUARD_WAIT + 1
+    assert not [o for o in attacks(mem) if o['source'] == B]
+    assert [r for r in mem['_records'] if r.get('decision') == 'front_guard_held']
+
+
+def test_a_front_without_reinforcements_still_marches_after_the_timeout():
+    """The v735 progress rule stays when no other castle holds a general."""
+    mem = memory(['リーキ'])
+    mem['captured'], mem['lost'] = [A, B], [C]
+    mem['world']['garrison'][A] = []
+    mem['garrison'][A] = []
+    assert attacks(mem) == []                   # the hold clock starts here
+    mem['tick'] += corridor.FRONT_GUARD_WAIT + 1
+    assert [o for o in attacks(mem) if o['source'] == B]
