@@ -211,3 +211,45 @@ def test_an_order_whose_march_is_still_walking_is_not_retired():
                               'tick': old, 'status': 'en_route'}}})
     out = state_budget.compact_state(state, 8192)
     assert out['policy']['plan']['orders']['I:c9:タオ>サヌト:1'] == 'launched'
+
+
+def test_retired_plan_step_maps_are_dropped_before_the_record_stays_unreadable():
+    """g1163 2026-11-13: ``plan`` held 250 KB of context for 226 failed orders.
+
+    The status card and the shared gap card refuse a record above 262 144 bytes,
+    so the broadcast showed "状態: 未確認" and the left observation card
+    disappeared while the game itself kept running.
+    """
+    dead = {f'A:dead{i:04d}:M{i:06x}': {'actual_general': 'リーキ',
+                                        'expected_metric': {'cards': ['イッテツーン'] * 12},
+                                        'observed_metric': {'cards': ['イッテツーン'] * 12}}
+            for i in range(120)}
+    live = {'A:live0001:M000001': {'actual_general': 'グレナデン',
+                                   'expected_metric': {'cards': ['クースカン'] * 12}}}
+    state = _state(tick=1,
+                   plan={'orders': {**{step: 'failed' for step in dead},
+                                    **{step: 'pending' for step in live}},
+                         'order_context': {**dead, **live},
+                         'card_override': {**{step: ['イッテツーン'] * 12 for step in dead}},
+                         'sortie_general': {**{step: 'ユイートル' for step in dead}}})
+    limit = 16384
+    assert state_budget.size(state) > limit
+    out = state_budget.compact_state(state, limit)
+    plan = out['policy']['plan']
+    assert state_budget.size(out) <= state_budget.target(limit)
+    assert set(plan['order_context']) == set(live)
+    # A budget stop can leave some dead entries behind; what must never happen
+    # is dropping the live context or stopping above the readable limit.
+    assert len(plan.get('card_override') or {}) < len(dead)
+
+
+def test_a_step_still_referenced_by_a_walking_march_keeps_its_context():
+    step = 'A:live0001:M000001'
+    state = _state(tick=1,
+                   plan={'orders': {step: 'failed'},
+                         'order_context': {step: {'actual_general': 'グレナデン'}},
+                         'card_override': {step: ['クースカン'] * 12}},
+                   world={'sorties': {step: {'status': 'en_route'}}})
+    limit = 1024
+    out = state_budget.compact_state(state, limit)
+    assert step in out['policy']['plan']['order_context']
