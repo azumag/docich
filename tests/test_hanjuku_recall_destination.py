@@ -347,3 +347,15 @@ def test_a_picker_ring_that_stops_at_each_castle_still_gives_up(monkeypatch):
     assert _flow(mem)['recall']['stage'] == 'await_dispatch'
     steps = [r for r in mem['_records'] if r['decision'] == 'camp_recall_picker_step']
     assert steps[-1]['observed_metric']['loops'] >= p.PICKER_LOOP_LIMIT
+
+
+def test_the_picker_records_its_progress_every_ten_observations(monkeypatch):
+    """g1163 2026-11-14 07:13: the dest picker ran 31 observations unseen."""
+    mem = memory(list(p.chart.castles(1)['キカンドン']))
+    at(monkeypatch, 'アルマムーン')
+    monkeypatch.setattr(p, 'world_cursor', lambda _: None)
+    for _ in range(10):
+        p.world_map_step(VIEW, mem, picker())
+    record = next(r for r in mem['_records'] if r['decision'] == 'camp_recall_picker_progress')
+    assert record['observed_metric']['observations'] == 10
+    assert record['observed_metric']['cursor'] is None

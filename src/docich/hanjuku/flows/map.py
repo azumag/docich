@@ -302,6 +302,13 @@ def world_map_step(screen, mem, frame):
                   if cursor and offset and abs(x / 8 + offset[0] - cursor[0]) <= 6
                   and abs(y / 8 + offset[1] - cursor[1]) <= 6]
         recall['picker_observations'] = int(recall.get('picker_observations', 0)) + 1
+        if recall['picker_observations'] % 10 == 0:
+            _record(mem, 'camp_recall_picker_progress',
+                    observed_metric={'observations': recall['picker_observations'],
+                                     'cursor': list(cursor) if cursor else None,
+                                     'goal': recall.get('goal'),
+                                     'nearby': nearby},
+                    reason='帰還先ピッカーの進捗を10回ごとに記録する')
         if recall['picker_observations'] >= RECALL_LIMIT:
             if not recall.get('picker_forced') and not _picker_on_enemy(nearby, flags):
                 return _picker_fallback(mem, recall, nearby, cursor,
