@@ -237,29 +237,39 @@ def observe_owners(mem, roofs, cam):
         if count < OWNER_CONFIRM or castle in fixed:
             continue
         from .roster import owner
-        owner(mem, STATUS_NAMES.get(castle, castle), kind)
         captured = mem.setdefault('captured', [])
-        if kind == 'enemy' and castle in captured:
-            (mem.get('castle_income') or {}).pop(STATUS_NAMES.get(castle, castle), None)
-            mem['captured'] = [c for c in captured if c != castle]
-            lost = mem.setdefault('lost', [])
-            if castle not in lost:
-                lost.append(castle)
-            garrison_lost(mem, castle)
-            # Ownership changed hands: the remembered defender is stale.
-            (mem.get('castle_defenders') or {}).pop(castle, None)
-            _record(mem, 'castle_lost_observed', castle=castle,
-                    observed_metric={'roof': kind, 'readings': count},
-                    resulting_event=f'lost:{castle}',
-                    reason='占領していた城の屋根が敵の色になったため失陥として奪還対象にする')
-            _tally(mem, 'castle_losses')
-        elif kind == 'own' and castle not in captured:
+        if kind == 'enemy':
+            # The enemy roof is ownership evidence on its own.
+            owner(mem, STATUS_NAMES.get(castle, castle), 'enemy')
+            if castle in captured:
+                (mem.get('castle_income') or {}).pop(STATUS_NAMES.get(castle, castle), None)
+                mem['captured'] = [c for c in captured if c != castle]
+                lost = mem.setdefault('lost', [])
+                if castle not in lost:
+                    lost.append(castle)
+                garrison_lost(mem, castle)
+                # Ownership changed hands: the remembered defender is stale.
+                (mem.get('castle_defenders') or {}).pop(castle, None)
+                _record(mem, 'castle_lost_observed', castle=castle,
+                        observed_metric={'roof': kind, 'readings': count},
+                        resulting_event=f'lost:{castle}',
+                        reason='占領していた城の屋根が敵の色になったため失陥として奪還対象にする')
+                _tally(mem, 'castle_losses')
+        elif kind == 'own' and castle in captured:
+            # Already ours: keep the ownership record from drifting.
+            owner(mem, STATUS_NAMES.get(castle, castle), 'own')
+        elif kind == 'own':
             flag = (mem.get('world_flags') or {}).get(castle) or {}
             if (flag.get('kind') == 'enemy' and flag.get('chapter') == chapter
                     and 0 <= int(mem.get('tick') or 0) - int(flag.get('tick') or 0) <= WORLD_FLAG_TRUST):
                 # g684 2-8 15:12:45: four roof reads called スペンソニア ours
                 # while every world map flew its enemy flag; the false capture
                 # met all_captured and sent the hero to the boss castle.
+                # Record the veto BEFORE the ownership update: g1163
+                # 2026-11-13 14:05 vetoed オオキク's own roof while the world
+                # flag was enemy, yet castle_ownership already said own, so
+                # the presentation thought it ours while the corridor kept
+                # targeting it as a retake.
                 if not streak[castle].get('world_flag_vetoed'):
                     streak[castle]['world_flag_vetoed'] = True
                     _record(mem, 'castle_owned_vetoed', castle=castle,
@@ -267,6 +277,7 @@ def observe_owners(mem, roofs, cam):
                                              'world_flag_tick': flag.get('tick')},
                             reason='屋根は自軍色だが直近の全体マップの旗が敵のため占領と扱わない')
                 continue
+            owner(mem, STATUS_NAMES.get(castle, castle), 'own')
             (mem.get('castle_income') or {}).pop(STATUS_NAMES.get(castle, castle), None)
             captured.append(castle)
             if castle in (mem.get('lost') or []):

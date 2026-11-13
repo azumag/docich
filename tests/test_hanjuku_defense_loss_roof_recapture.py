@@ -60,6 +60,10 @@ def test_the_lost_castle_keeps_its_loss_against_its_own_coloured_roof():
     assert CASTLE not in mem['captured'] and mem['lost'] == [CASTLE]
     assert not decisions(mem, 'castle_owned_observed')
     assert [r['castle'] for r in decisions(mem, 'castle_owned_vetoed')] == [CASTLE]
+    # The vetoed roof must not leave the ownership record claiming 'own':
+    # g1163 2026-11-13 14:05 did exactly that for オオキク, so the presentation
+    # called it ours while the corridor kept targeting it as a retake.
+    assert (mem.get('castle_ownership') or {}).get(CASTLE, {}).get('owner') != 'own'
 
 
 def test_a_defense_kept_by_its_own_flag_leaves_the_flag_and_streak():
