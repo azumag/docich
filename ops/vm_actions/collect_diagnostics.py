@@ -7257,6 +7257,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v810-camp-hunt-log",
             "hanjuku-chart-v811-hunt-timing",
             "hanjuku-chart-v812-jump-camps",
+            "hanjuku-chart-v813-jump-camp-priority",
             "hanjuku-chart-v560-castle-list-scroll",
             "hanjuku-chart-v561-post-month-repair-status",
             "hanjuku-chart-v501-idle-reanchor",

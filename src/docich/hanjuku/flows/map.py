@@ -1085,6 +1085,15 @@ def castle_jump_step(screen, mem, frame):
             # The deploy layer still reads the *actual* castle's status and
             # checks its name before allowing しゅつげき.
             roof_visible = _roof_under_cursor(screen, frame)
+            # This field frame is also the recall's entry: a visible own camp
+            # must not be spent on the castle menu (g1163 2026-11-14 05:28:
+            # camps=1 but the jump's A took the frame). Keep the jump state so
+            # the sortie resumes after the recall.
+            if isinstance(frame, Frame) and own_camps(frame):
+                from . import recall as recall_flow
+                actions = recall_flow.camp_recall_step(screen, mem, frame)
+                if actions:
+                    return actions
             mem['expect_menu'] = True
             mem.pop('castle_jump', None)
             mem.pop('castle_jump_skip', None)

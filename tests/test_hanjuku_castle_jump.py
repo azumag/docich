@@ -781,3 +781,19 @@ def test_a_castle_jump_field_frame_records_the_visible_camps(monkeypatch):
     assert M.castle_jump_step(screen, mem, None) == [M.pad('a')]
     confirm = mem['_records'][-1]
     assert confirm['observed_metric']['camps'] == 0
+
+
+def test_a_visible_camp_takes_the_castle_jump_field_frame(monkeypatch):
+    """g1163 2026-11-14 05:28: camps=1 but the jump's A took the field frame."""
+    from docich.hanjuku.os_layer.pixels import Frame
+    from docich.hanjuku.flows import recall as recall_flow
+    mem = _memory()
+    mem['castle_jump'] = {'step': 'J1', 'source': 'アルマムーン', 'phase': 'confirm',
+                          'age': 0, 'total': 0, 'tick': 0}
+    screen = _screen('map', [], cursor=(80, 90))
+    monkeypatch.setattr(M, 'own_camps', lambda frame: [{'target': (10, 10)}])
+    monkeypatch.setattr(recall_flow, 'camp_recall_step',
+                        lambda s, m, f: [M.pad('select')])
+    frame = Frame(256, 224, b'\x00' * 256 * 224 * 3)
+    assert M.castle_jump_step(screen, mem, frame) == [M.pad('select')]
+    assert 'castle_jump' in mem
