@@ -1151,7 +1151,9 @@ def _full_hp_leader(mem, present, current):
     A battle here is an HP duel and generals never heal (three hours of
     readings show no rise), so a half-dead leader simply loses. The wave keeps
     going; only the body that leads it changes, and only when a whole general
-    is right there.
+    is right there. Among whole generals the one with the most HP leads: the
+    retake of オオキク (2026-11-13 13:4x) fought a gauntlet of 80/42-HP
+    defenders with a 74-HP general and lost at 19 HP.
     """
     hp = _world(mem).get('general_hp') or {}
     if not isinstance(hp, dict):
@@ -1165,14 +1167,18 @@ def _full_hp_leader(mem, present, current):
     if (type(current_hp) is not int or type(maximum) is not int or maximum <= 0
             or current_hp * 2 >= maximum):
         return None
+    best = None
+    best_key = None
     for general in present:
         if general == NAME:
             continue
         got = row(general)
         if (type(got.get('hp')) is int and type(got.get('max')) is int
                 and got['max'] > 0 and got['hp'] * 100 >= got['max'] * FULL_HP_LEADER):
-            return general
-    return None
+            key = (got['hp'], got['max'])
+            if best_key is None or key > best_key:
+                best, best_key = general, key
+    return best
 
 
 def _keeps_hero_company(order, present) -> bool:

@@ -125,3 +125,19 @@ def test_a_mostly_whole_leader_stays_at_the_cursor():
     _world(mem)['general_hp'] = {'ミント': {'hp': 24, 'max': 32},
                                  'ジェラート': {'hp': 49, 'max': 49}}
     assert policy.pad('a') in _step(mem, ['ミント', 'ジェラート'])
+
+
+def test_the_leader_is_the_whole_general_with_the_most_hp():
+    """The オオキク retake lost a gauntlet at 19 HP; lead with the biggest.
+
+    g1163 2026-11-13 13:4x: the cursor was ミモザ, ユイートル was picked as
+    the first whole general, and the ally fought 80/42-HP defenders down to
+    19 HP. The whole general with the most HP should lead.
+    """
+    mem = _memory('attack')
+    _world(mem)['general_hp'] = {'ミント': {'hp': 10, 'max': 32},
+                                 'ジェラート': {'hp': 48, 'max': 49},
+                                 'シナモン': {'hp': 60, 'max': 60}}
+    _step(mem, ['ミント', 'ジェラート', 'シナモン'])
+    records = [r for r in mem['_records'] if r.get('decision') == 'full_hp_leader']
+    assert records and records[-1]['observed_metric']['chosen'] == 'シナモン'
