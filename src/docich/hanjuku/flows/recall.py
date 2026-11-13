@@ -343,7 +343,10 @@ def _camp_recall_step(screen: Screen, mem, frame, *, observed_camps=None):
                 state['occluded_enter'] = True
                 _observe_recall_origin(screen, mem, frame, state)
                 state['stage'], state['steps'] = 'menu', 0
-                _record(mem, 'camp_enter', observed_metric={'camp': list(target), 'occluded': True},
+                _record(mem, 'camp_enter',
+                        observed_metric={'camp': list(target), 'occluded': True,
+                                         'cursor': list(cursor), 'last_seen': list(last),
+                                         'target': list(target)},
                         reason='カーソルが野営画像を覆っているため、直前に実測したtargetを信頼してきかんメニューを開く')
                 return [pad('a')]
             missing = state['camp_missing_reads'] = int(state.get('camp_missing_reads') or 0) + 1
