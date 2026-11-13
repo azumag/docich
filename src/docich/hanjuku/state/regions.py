@@ -180,6 +180,7 @@ KEY_OWNERSHIP = {
     'front_guard_expired_tick': {'region': PLAN, 'lifetime': 'chapter', 'migrated': False},  # 同tick内の期限切れ固定(v769)
     'front_mass_hold': {'region': PLAN, 'lifetime': 'chapter', 'migrated': False},  # chapter9 2人同時出撃の待ち時計(v757)
     'front_mass_expired_tick': {'region': PLAN, 'lifetime': 'chapter', 'migrated': False},  # 同tick内の期限切れ固定(v769)
+    'front_mass_count': {'region': PLAN, 'lifetime': 'chapter', 'migrated': False},  # 前線の人数変化で待ち時計をリセット(v776)
     'defense_seen': {'region': PLAN, 'lifetime': 'chapter', 'migrated': False},  # 直近にせめこまれた城(v765)
     'corridor_wave': {'region': PLAN, 'lifetime': 'chapter', 'migrated': False},  # chapter9 corridorのwave管理(定数WAVE経由)
     'defense_break_blocked': {'region': PLAN, 'lifetime': 'chapter', 'migrated': False},  # 防衛突破阻止の戦略ガード
