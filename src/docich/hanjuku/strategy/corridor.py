@@ -1004,8 +1004,13 @@ def _defender_nearly_dead(mem, target) -> bool:
     """
     record = (mem.get('castle_defenders') or {}).get(target) or {}
     panel_hp = record.get('hp') if isinstance(record, dict) else None
-    if type(panel_hp) is int and 0 < panel_hp <= FINISHING_HP:
-        return True                        # the panel itself reads a finish
+    if type(panel_hp) is int and panel_hp > 0:
+        # A current panel reading is authoritative, even when it is *high*:
+        # the defender heals or is replaced between battles, and a stale
+        # 3-HP history then made the next attack a pointless finish.
+        # g1163 2026-11-13 21:0x: the last attack left オオキク at 3 HP, the
+        # next one (54 ticks later) faced 60 HP and lost.
+        return panel_hp <= FINISHING_HP
     for row in reversed(mem.get('sortie_history') or []):
         if not isinstance(row, dict) or row.get('target') != target:
             continue

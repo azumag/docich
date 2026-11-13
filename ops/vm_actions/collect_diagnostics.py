@@ -7231,6 +7231,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v784-partial-move-update",
             "hanjuku-chart-v785-empty-front-reset",
             "hanjuku-chart-v786-hold-consistency",
+            "hanjuku-chart-v787-panel-finish-precedence",
             "hanjuku-chart-v560-castle-list-scroll",
             "hanjuku-chart-v561-post-month-repair-status",
             "hanjuku-chart-v501-idle-reanchor",
