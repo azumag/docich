@@ -320,6 +320,15 @@ def orders(mem) -> list[dict]:
                             'front_mass_hold', 'front_mass_expired_tick',
                             'front_mass_count'):
                     (mem.get(key) or {}).pop(source, None)
+            # A clock only belongs to the count that armed it. With more
+            # residents than the keep, the one-general hold is not in force;
+            # left behind, its old tick would fire the moment the front drops
+            # back to one (g1163 2026-11-13 20:3x: guard hold 143007 still set
+            # while ドンドン held three).
+            if (isinstance(_front_names_now, list)
+                    and len(_front_names_now) > _keep):
+                (mem.get('front_guard_hold') or {}).pop(source, None)
+                (mem.get('front_guard_expired_tick') or {}).pop(source, None)
             _finish = _defender_nearly_dead(mem, target)
             if (not _finish and _wounded_attack(mem, source)
                     and not _front_guard_expired(mem, source)):
@@ -383,6 +392,8 @@ def orders(mem) -> list[dict]:
                 continue
             if isinstance(_front_names_now, list) and len(_front_names_now) >= _mass:
                 (mem.get('front_mass_hold') or {}).pop(source, None)
+                (mem.get('front_mass_expired_tick') or {}).pop(source, None)
+                (mem.get('front_mass_count') or {}).pop(source, None)
             # Owner 2026-11-12: 将軍のステータスによらず、どんどん上から順に将軍を
             # 送る（波状攻撃）。HPや戦闘力で出撃を見送ると、守備将軍に1人ずつ
             # 各個撃破されるだけで城は落ちない。待ち合わせ・冷却・強さ判定は
