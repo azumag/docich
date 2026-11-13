@@ -285,6 +285,18 @@ def _camp_recall_step(screen: Screen, mem, frame, *, observed_camps=None):
         camps = own_camps(frame) if observed_camps is None else observed_camps
         camps = _filter_recall_skip(mem, camps)
         if not camps:
+            # The field frames keep coming but no tent is visible: record a
+            # throttled sample so the camera/roof situation is measurable
+            # (g1163 2026-11-14 03:42-04:36: 54 minutes without a camp_found).
+            now = int(mem.get('tick') or 0)
+            if now - int(mem.get('camp_hunt_tick') or 0) >= 300:
+                mem['camp_hunt_tick'] = now
+                _record(mem, 'camp_hunt',
+                        observed_metric={'cursor': list(_cursor(screen) or ()),
+                                         'roofs': len(castle_roofs(frame))
+                                         if isinstance(frame, Frame) else 0,
+                                         'kind': screen.kind},
+                        reason='野営が見えないまま地図フレームが続いているため、カメラと屋根の状況を記録する')
             return None
         cursor = _cursor(screen)
         camp = min(camps, key=lambda c: (abs(c['target'][0] - cursor[0])
