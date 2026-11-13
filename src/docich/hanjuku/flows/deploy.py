@@ -1346,8 +1346,10 @@ def _observe_garrison(screen, mem, order, *, complete=True):
             # A page is not the roster: `garrison` stays untouched (that rule is
             # deliberate — a page proves those names are here, never who else
             # is). The lower bound is still worth keeping so a castle read this
-            # way is not mistaken for an empty one.
+            # way is not mistaken for an empty one. Its tick decides whether it
+            # is newer than the last complete read (corridor._front_names).
             partial[castle] = present
+            _world(mem).setdefault('garrison_partial_tick', {})[castle] = int(mem.get('tick') or 0)
             _record(mem, 'garrison_partial_seen', **_deploy_context(order, mem), castle=castle,
                     observed_metric=present[:8],
                     reason='将軍一覧の1ページ分を確認したため在城者の下限として記録')
@@ -1364,6 +1366,9 @@ def _observe_garrison(screen, mem, order, *, complete=True):
         return
     # Display-only evidence: decisions never consult this wall-clock field.
     _world(mem).setdefault('garrison_observed_at', {})[castle] = time.time()
+    # A complete read's tick: corridor._front_names prefers the newer of this
+    # roster and an earlier page lower bound.
+    _world(mem).setdefault('garrison_tick', {})[castle] = int(mem.get('tick') or 0)
     verification = mem.get('recruit_verification') or {}
     joined = (set(present) & set(verification.get('candidates') or ())) - set(
         verification.get('generals_before') or ())

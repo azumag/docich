@@ -816,22 +816,33 @@ def _front_mass_expired(mem, castle) -> bool:
 
 
 def _front_names(mem, castle):
-    """The longest measured resident list for ``castle`` (roster or page).
+    """The measured resident list for ``castle`` (roster or page).
 
     The page can show company the last complete read did not: g1163 2026-11-12
     21:1x had ``garrison`` at ['どうし'] while the page listed どうし+3, and the
     shorter list kept the castle looking hero-only.
+
+    The *newer* of the two wins when both carry a tick: g1163 2026-11-13
+    15:0x had a complete read of two residents (キール/ロックフォール) while
+    an older page still listed four names, so ``_front_names`` reported four
+    and the pair wait let the attack leave only one defender.
     """
     world = _world(mem)
-    listed = []
-    for key in ('garrison', 'garrison_partial'):
-        rows = world.get(key) or {}
-        names = rows.get(castle) if isinstance(rows, dict) else None
-        if isinstance(names, list):
-            listed.append(names)
-    if not listed:
-        return None
-    return max(listed, key=len)
+    full = (world.get('garrison') or {}).get(castle)
+    partial = (world.get('garrison_partial') or {}).get(castle)
+    if isinstance(full, list) and isinstance(partial, list):
+        tick = (world.get('garrison_tick') or {}).get(castle)
+        ptick = (world.get('garrison_partial_tick') or {}).get(castle)
+        if type(tick) is int and type(ptick) is int:
+            return partial if ptick > tick else full
+        if type(tick) is int:
+            return full                    # the page predates tick tracking
+        return max(full, partial, key=len)  # legacy/unstamped: keep v700 rule
+    if isinstance(full, list):
+        return full
+    if isinstance(partial, list):
+        return partial
+    return None
 
 
 def _front_thin(mem, castle) -> bool:
