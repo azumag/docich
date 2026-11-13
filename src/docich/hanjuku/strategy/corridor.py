@@ -393,6 +393,15 @@ def orders(mem) -> list[dict]:
         # The wave owns the observation: a castle-list probe that jumps the
         # queue during an attack wave only spends a visit (g1163 2026-11-12
         # 20:0x: 20 probes in half an hour while オオキク was being attacked).
+        # A *receipt* is different: a captured castle's roster (or a recall's
+        # destination) is independent of the wave, and leaving it to the tour
+        # starved it (g1163 2026-11-13 19:1x: roster_read_due オオキク 141027
+        # still unread at 141337 while the front held).
+        receipt = _due_probe(mem, routes_by, target, lost, roster_only=True)
+        if receipt is not None:
+            _probe_spend(mem, 'roster_probe_due', budgeted=False)
+            _remember_probe(mem, receipt)
+            out.insert(0, receipt)
         return out
     minted = _minted_probe(mem)
     if minted is not None:
@@ -671,7 +680,7 @@ def _unaccounted(mem):
     return count['count'] - len(known)
 
 
-def _due_probe(mem, routes_by, target, lost):
+def _due_probe(mem, routes_by, target, lost, *, roster_only=False):
     """A castle a transfer/recall was sent into: its list is the receipt.
 
     g1163 2026-11-13 12:3x sent ten generals from オシロガ into ドンドン, the
@@ -698,7 +707,7 @@ def _due_probe(mem, routes_by, target, lost):
     asked = {castle: tick for castle, tick in raw.items() if tick <= now}
     due = {source for source, route in routes_by.items()
            if route and len(route) >= 2
-           and (routes.probe_due(mem, source) or source in asked)}
+           and ((not roster_only and routes.probe_due(mem, source)) or source in asked)}
     if not due:
         return None
     source = min(due, key=lambda c: (mem.get('route_probe_read_tick') or {}).get(c, 0))
