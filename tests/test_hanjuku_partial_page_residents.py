@@ -158,3 +158,16 @@ def test_a_move_updates_the_page_for_both_castles():
     assert mem['world']['garrison_partial']['ドンドン'] == ['ジェラート', 'ラビオリ', 'クランベリー']
     assert mem['world']['garrison_partial']['オシロガ'] == ['ガスパチョ', 'ペコリーノ']
     assert mem['world']['garrison']['オシロガ'] == ['ペコリーノ']
+
+
+def test_a_lost_castle_drops_its_page_and_marks_members_unknown():
+    """g1163 2026-11-13 22:3x: ドンドン's page outlived its capture."""
+    from docich.hanjuku.os_layer.world import garrison_lost
+    mem = {'chapter': 9, 'tick': 100, 'world': {
+        'garrison': {'ドンドン': ['キャロット']},
+        'garrison_partial': {'ドンドン': ['キャロット', 'カシス']},
+        'garrison_partial_tick': {'ドンドン': 90}}}
+    assert garrison_lost(mem, 'ドンドン') == ['キャロット']
+    assert 'ドンドン' not in mem['world']['garrison_partial']
+    assert 'ドンドン' not in mem['world']['garrison_partial_tick']
+    assert 'キャロット' in mem['world']['general_location_unknown']
