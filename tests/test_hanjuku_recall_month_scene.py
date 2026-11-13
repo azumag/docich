@@ -48,7 +48,8 @@ def test_a_recall_before_dispatch_yields_the_scene(stage):
     assert actions == [pad('a')]
     assert 'camp_recall_interrupted' in decisions(state)
     record = next(r for r in state['_records'] if r.get('decision') == 'camp_recall_interrupted')
-    assert record['observed_metric'] == {'stage': stage, 'steps': 7}
+    assert record['observed_metric'] == {'stage': stage, 'steps': 7, 'goal': None,
+                                         'target': [414, 496], 'dest_target': None}
     # v693: the intent survives the scene (it walks back to the camp once the
     # scene is over) instead of being dropped and re-found from scratch.
     kept = state['policy']['flow']['recall']
