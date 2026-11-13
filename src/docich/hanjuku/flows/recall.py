@@ -347,7 +347,11 @@ def _camp_recall_step(screen: Screen, mem, frame, *, observed_camps=None):
                 return [pad('a')]
             missing = state['camp_missing_reads'] = int(state.get('camp_missing_reads') or 0) + 1
             if missing == 1:
-                _record(mem, 'camp_position_unconfirmed', observed_metric={'previous_target': state.get('target')},
+                _record(mem, 'camp_position_unconfirmed',
+                        observed_metric={'previous_target': state.get('target'),
+                                         'cursor': list(_cursor(screen) or ()),
+                                         'missing': missing,
+                                         'camp_world': state.get('camp_world')},
                         reason='現在の画面に自軍tentを確認できず、保存した画面座標では決定しない')
             if missing >= 3:
                 _flow(mem)['recall_verification'] = {**state, 'status': 'camp_unobserved'}
