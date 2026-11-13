@@ -769,3 +769,15 @@ def test_a_named_row_select_marks_the_source_verified():
              'general': '—', 'purpose': 'move', 'corridor': True}
     screen = Screen([], None, '', kind='castle_menu')     # no status text yet
     assert deploy._check_source_castle(screen, mem, order) is None
+
+
+def test_a_castle_jump_field_frame_records_the_visible_camps(monkeypatch):
+    """The jump frames are field frames; the camp count is the evidence."""
+    mem = _hero_home_memory(monkeypatch)
+    order = _plan_region(mem)['chart_plan']['orders'][0]
+    M._start_castle_jump(mem, order, order['source'])
+    screen = _screen('map', [], cursor=(80, 90))
+    M.castle_jump_step(screen, mem, None)
+    assert M.castle_jump_step(screen, mem, None) == [M.pad('a')]
+    confirm = mem['_records'][-1]
+    assert confirm['observed_metric']['camps'] == 0

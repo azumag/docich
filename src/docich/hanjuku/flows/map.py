@@ -6,7 +6,8 @@ target under the sortie marker and reads world-map ownership surveys.
 from __future__ import annotations
 from copy import deepcopy
 
-from ..os_layer.screen import Screen, castle_roofs
+from ..os_layer.pixels import Frame
+from ..os_layer.screen import Screen, castle_roofs, own_camps
 from ... import hanjuku_chart as chart
 from ... import hanjuku_chart_adjust as chart_adjust
 from ... import hanjuku_map_sources as sources
@@ -1103,7 +1104,13 @@ def castle_jump_step(screen, mem, frame):
                     **({'strategy_variant': 'hero_select'} if hero_select else {}),
                     observed_metric={'cursor': mem.get('cursor'),
                                      'screen_cursor': list(_cursor(screen) or ()),
-                                     'roof_under_cursor': roof_visible},
+                                     'roof_under_cursor': roof_visible,
+                                     # The castle-jump field frame is also a
+                                     # field observation: how many own camps
+                                     # it showed explains why a recall never
+                                     # started from these frames (g1163
+                                     # 2026-11-14 04:46-05:12).
+                                     'camps': len(own_camps(frame)) if isinstance(frame, Frame) else 0},
                     reason=('主人公の城へのSELECT後のフィールドなので、Aで城メニューを開き実ステータスで出撃元を照合する'
                             if hero_select else
                             'しろ一覧で城名を確認したSELECT後のフィールドなので、屋根が隠れてもAで城メニューを開き実ステータスで出撃元を照合する'))
