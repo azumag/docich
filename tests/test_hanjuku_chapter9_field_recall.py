@@ -152,3 +152,18 @@ def test_a_roof_destination_is_named_so_the_arrival_is_read(monkeypatch):
     record = next(r for r in mem['_records'] if r['decision'] == 'camp_recall_requested')
     assert record['observed_metric']['castle'] == 'タオ'
     assert mem['roster_read_due']['タオ'] == 100 + recall_flow.RECALL_READ_DELAY
+
+
+def test_a_camp_found_records_whether_the_camera_was_localised(monkeypatch):
+    """The 2026-11-14 finds had camp_world null: no roofs agreed on the camera."""
+    monkeypatch.setattr(recall_flow, 'own_camps', lambda frame: [dict(CAMP)])
+    monkeypatch.setattr(recall_flow, 'castle_roofs',
+                        lambda frame, exclude=None: [{'kind': 'own', 'target': (1, 1),
+                                                      'clipped': False}])
+    monkeypatch.setattr(recall_flow, '_observe_recall_origin',
+                        lambda screen, mem, frame, state: state.update(origin=[50, 60]))
+    mem = _mem(tick=100, month_start_tick=100, month_durations=[299])
+    recall_flow.camp_recall_step(MAP, mem, FRAME)
+    record = next(r for r in mem['_records'] if r['decision'] == 'camp_found')
+    assert record['observed_metric']['roofs'] == 1
+    assert record['observed_metric']['origin'] == [50, 60]
