@@ -695,6 +695,13 @@ def _request_recall(mem, state, goal, actions, **fields):
     state.pop('request_trace', None)
     state.pop('input_sent', None)
     state.pop('picker_closed', None)
+    if goal:
+        # The destination's own list is the arrival receipt for a recalled
+        # camp (the field shows no marker for it). Ask the corridor probe to
+        # read that castle so the recalled generals become visible instead of
+        # staying "unaccounted": g1163 2026-11-13 15:5x-16:3x recalled camps
+        # four times and never read where they landed.
+        mem.setdefault('roster_read_due', {})[goal] = int(mem.get('tick') or 0)
     _record(mem, 'camp_recall_requested', chart_step=None,
             observed_metric={'castle': goal, 'camp': state.get('target'),
                              'hero_intended': bool(state.get('hero')), **fields},

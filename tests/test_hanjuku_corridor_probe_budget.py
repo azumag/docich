@@ -309,3 +309,20 @@ def test_a_new_name_in_a_roster_rearms_the_budget():
     mem['world']['garrison'][C] = ['リーキ', 'ベーグル', 'キャロット']
     orders(mem)
     assert len(decided(mem, 'roster_probe')) > before, 'a new general re-arms the tour'
+
+
+def test_a_recall_destination_is_read_without_an_incoming_move():
+    """A recalled camp lands in a castle whose list nobody would open.
+
+    g1163 2026-11-13 15:5x-16:3x: four camp recalls were requested and the
+    destination was never read, so the recalled generals stayed unaccounted.
+    """
+    mem = memory([A, B, C], [])
+    mem['garrison'][C] = ['リーキ', 'ベーグル']
+    mem['world']['garrison'][C] = ['リーキ', 'ベーグル']
+    mem['country_general_count'] = {'count': 32, 'scope': [9, '23-5']}
+    mem['roster_read_due'] = {C: mem['tick']}
+    orders(mem)
+    minted = (mem.get(corridor.PROBE) or {}).get('mint_order') or {}
+    assert minted.get('source') == C
+    assert decided(mem, 'roster_probe_due')
