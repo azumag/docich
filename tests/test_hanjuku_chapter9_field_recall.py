@@ -127,3 +127,13 @@ def test_the_month_end_margin_covers_the_recall_and_the_transition():
     assert recall_flow._month_end_soon(mem) is True
     mem['tick'] = 90
     assert recall_flow._month_end_soon(mem) is False
+
+
+def test_a_camp_found_records_where_it_sits_in_the_month(monkeypatch):
+    """The month timing decides whether the recall can finish before the scene."""
+    monkeypatch.setattr(recall_flow, 'own_camps', lambda frame: [dict(CAMP)])
+    mem = _mem(tick=150, month_start_tick=100, month_durations=[299])
+    recall_flow.camp_recall_step(MAP, mem, FRAME)
+    record = next(r for r in mem['_records'] if r['decision'] == 'camp_found')
+    assert record['observed_metric']['month_elapsed'] == 50
+    assert record['observed_metric']['month_estimate'] == 299

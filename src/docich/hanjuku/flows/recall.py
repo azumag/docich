@@ -297,7 +297,15 @@ def _camp_recall_step(screen: Screen, mem, frame, *, observed_camps=None):
             _reset_boss_jump(mem)
         _observe_recall_origin(screen, mem, frame, state)
         state['camp_world'] = _camp_world_cell(cursor, state.get('origin'), camp['target'])
+        elapsed = (int(mem.get('tick') or 0) - mem['month_start_tick']
+                   if type(mem.get('month_start_tick')) is int else None)
+        estimate = None
+        usable = [int(d) for d in (mem.get('month_durations') or [])[-3:] if type(d) is int]
+        if usable:
+            estimate = max(usable)
         _record(mem, 'camp_found', observed_metric={'camp': list(camp['target']),
+                                                    **({'month_elapsed': elapsed} if elapsed is not None else {}),
+                                                    **({'month_estimate': estimate} if estimate else {}),
                                                     **({'camp_world': state['camp_world']}
                                                        if state.get('camp_world') else {}),
                                                     **({'kind': camp['kind']} if camp.get('kind') else {}),
