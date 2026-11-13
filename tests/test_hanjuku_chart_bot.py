@@ -4005,6 +4005,9 @@ def test_paid_recruit_receipt_survives_later_deduction_and_tracks_actual_join_na
     policy.month_sub_step(parse(c.frame()), mem)
     assert mem['month_sub']['joined_names'] == ['チコリ']
     assert any(r['decision'] == 'recruit_join_announced' for r in mem['_records'])
+    # The home castle's own list is the placement receipt (v793).
+    assert mem['roster_read_due'][chart.home_castle(mem.get('chapter') or 0)] == (
+        mem.get('tick') or 0) + 40
     shop = {'recruit': 'opened', 'recruit_reserve': 50}
     policy._finish_month_sub(parse(month_canvas(106)), mem, shop)
     assert shop['recruit'] == 'done' and shop['recruit_reserve'] == 0
