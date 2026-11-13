@@ -7228,6 +7228,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v781-defended-last-resident",
             "hanjuku-chart-v782-last-resort-stall",
             "hanjuku-chart-v783-front-marks-clean",
+            "hanjuku-chart-v784-partial-move-update",
             "hanjuku-chart-v560-castle-list-scroll",
             "hanjuku-chart-v561-post-month-repair-status",
             "hanjuku-chart-v501-idle-reanchor",

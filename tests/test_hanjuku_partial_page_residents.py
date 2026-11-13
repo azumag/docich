@@ -142,12 +142,11 @@ def test_unticked_data_keeps_the_longest_rule():
     assert corridor._front_names(mem, 'オオキク') == PAGE
 
 
-def test_a_move_clears_the_page_for_both_castles():
-    """A page is a pre-move snapshot; it must not outlive the roster change.
+def test_a_move_updates_the_page_for_both_castles():
+    """The move is authoritative for the mover; the other names stay.
 
-    g1163 2026-11-13 17:5x: a four-name page kept ドンドン looking full while
-    two stood there, so the pair wait was skipped and single generals fed a
-    71-HP defender.
+    g1163 2026-11-13 20:2x: オシロガ's four-name page vanished after one move,
+    the front saw no reinforcements and marched its last resident out.
     """
     from docich.hanjuku.strategy import orders as O
     mem = {'chapter': 9, 'tick': 100, '_records': [], 'world': {
@@ -155,7 +154,7 @@ def test_a_move_clears_the_page_for_both_castles():
         'garrison_partial': {'ドンドン': ['ジェラート', 'ラビオリ', 'クランベリー', 'ペコリーノ'],
                              'オシロガ': ['ガスパチョ']},
         'garrison_partial_tick': {'ドンドン': 90, 'オシロガ': 90}}}
-    O._garrison_move(mem, 'アルテミス', source='ドンドン', target='オシロガ')
-    assert 'ドンドン' not in mem['world']['garrison_partial']
-    assert 'オシロガ' not in mem['world']['garrison_partial']
-    assert mem['world']['garrison']['オシロガ'] == ['アルテミス']
+    O._garrison_move(mem, 'ペコリーノ', source='ドンドン', target='オシロガ')
+    assert mem['world']['garrison_partial']['ドンドン'] == ['ジェラート', 'ラビオリ', 'クランベリー']
+    assert mem['world']['garrison_partial']['オシロガ'] == ['ガスパチョ', 'ペコリーノ']
+    assert mem['world']['garrison']['オシロガ'] == ['ペコリーノ']
