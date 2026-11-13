@@ -7238,6 +7238,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v791-finish-pending-shopping",
             "hanjuku-chart-v792-lost-castle-page",
             "hanjuku-chart-v793-recruit-roster-due",
+            "hanjuku-chart-v794-nonowned-page-clean",
             "hanjuku-chart-v560-castle-list-scroll",
             "hanjuku-chart-v561-post-month-repair-status",
             "hanjuku-chart-v501-idle-reanchor",

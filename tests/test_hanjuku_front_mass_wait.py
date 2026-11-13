@@ -214,3 +214,14 @@ def test_finish_pending_reads_the_current_panel():
     assert corridor.finish_pending(mem) is True
     mem['castle_defenders'] = {D: {'hp': 60, 'general': 'グリッシーニ'}}
     assert corridor.finish_pending(mem) is False
+
+
+def test_a_page_for_a_castle_no_longer_ours_is_dropped():
+    """g1163 2026-11-13 22:3x: ドンドン's page outlived its fall."""
+    mem = memory(['ローズマリー', 'ベーグル'])
+    mem['world']['garrison_partial'] = {'イソ': ['キャロット'], C: ['ローズマリー']}
+    mem['world']['garrison_partial_tick'] = {'イソ': 100, C: 4000}
+    attacks(mem)
+    assert 'イソ' not in mem['world']['garrison_partial']
+    assert 'イソ' not in mem['world']['garrison_partial_tick']
+    assert mem['world']['garrison_partial'].get(C) == ['ローズマリー']
