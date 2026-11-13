@@ -152,3 +152,27 @@ def test_the_interrupted_recall_resumes_and_reaches_a_destination(monkeypatch):
     done = _flow(mem)['recall']
     assert done['stage'] == 'await_dispatch' and done['target_cell'] == [163, 115]
     assert mem['_records'][-1]['decision'] == 'camp_recall_requested'
+
+
+def test_a_recall_destination_is_not_frozen_by_the_month_sub():
+    """g1163 2026-11-14 02:49-02:55: the dest sat at steps 0 for five minutes."""
+    state = recall_state(stage='dest')
+    state['policy']['month_sub'] = {'key': '43-4'}
+    screen = Screen([], None, '', kind='map_target', marker=(90, 80))
+    actions, state = decide(screen, state)
+    recall = state['policy']['flow']['recall']
+    assert recall['stage'] == 'await_dispatch'      # the picker's A went out
+    assert any(r.get('decision') == 'camp_recall_picker_fallback'
+               for r in state.get('_records', []))
+
+
+def test_a_recall_destination_is_not_frozen_by_the_month_sub():
+    """g1163 2026-11-14 02:49-02:55: the dest sat at steps 0 for five minutes."""
+    from docich.hanjuku.orchestrator import _recall_dialog_wanted
+    picker = Screen([], None, '', kind='map_target', marker=(90, 80))
+    field = Screen([], None, '', kind='map')
+    mem = {'month_sub': {'key': '43-4'}}
+    assert _recall_dialog_wanted({'stage': 'dest', 'steps': 0}, picker, 'map', mem) is True
+    assert _recall_dialog_wanted({'stage': 'to_camp', 'steps': 0}, field, 'map', mem) is False
+    mem.pop('month_sub')
+    assert _recall_dialog_wanted({'stage': 'to_camp', 'steps': 0}, field, 'map', mem) is True
