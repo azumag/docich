@@ -170,8 +170,19 @@ def _step(mem, source, target, tag=''):
     :6, already done; no order from the front ran for almost two hours).
     """
     prefix = f'{PREFIX}{source}>{target}:{tag}'
-    used = [int(step[len(prefix):]) for step in (_plan_region(mem).get('orders') or {})
-            if step.startswith(prefix) and step[len(prefix):].isdigit()]
+    used = {int(step[len(prefix):]) for step in (_plan_region(mem).get('orders') or {})
+            if step.startswith(prefix) and step[len(prefix):].isdigit()}
+    # A replaced plan (a chart adjust, a new month) forgets its settled ids.
+    # The launched-order snapshots and live sorties still remember them; a
+    # reused id re-runs an order whose empty source was already retired
+    # (g1163 2026-11-13 21:37/21:40: ハヤク>タオ:45 twice).
+    for extra in (_world(mem).get('launched_orders') or {}, _sorties(mem) or {}):
+        if not isinstance(extra, dict):
+            continue
+        for step in extra:
+            if (isinstance(step, str) and step.startswith(prefix)
+                    and step[len(prefix):].isdigit()):
+                used.add(int(step[len(prefix):]))
     return f'{prefix}{max(used) + 1 if used else 0}'
 
 

@@ -385,3 +385,15 @@ def test_a_receipt_probe_is_available_during_a_wave():
     out = orders(mem)
     assert out and out[0].get('source') == C and out[0].get('source_probe') is True
     assert decided(mem, 'roster_probe_due')
+
+
+def test_a_step_id_does_not_collide_after_the_plan_is_replaced():
+    """g1163 2026-11-13 21:37/21:40: ハヤク>タオ:45 ran twice.
+
+    A replaced plan forgets its settled ids; the launched snapshots still
+    remember them.
+    """
+    mem = memory([A, B, C], [])
+    mem['plan'] = {'orders': {}}
+    mem['world']['launched_orders'] = {f'I:c9:{C}>{D}:45': {'general': 'リーキ'}}
+    assert corridor._step(mem, C, D) == f'I:c9:{C}>{D}:46'
