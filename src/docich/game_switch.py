@@ -103,6 +103,31 @@ def _utc_now() -> str:
     return dt.datetime.now(dt.timezone.utc).isoformat().replace("+00:00", "Z")
 
 
+# An in-progress canonical phase that has not been written for this long can
+# no longer have a live driver: claims write the canonical before each retry
+# and the whole transition is bounded by the switch timeout, so silence beyond
+# this bound means the owner died mid-phase.  The bound is deliberately far
+# above the default switch timeout so a slow but live boundary is untouched.
+_STALE_IN_PROGRESS_S = 600.0
+
+
+def _stale_in_progress(updated_at: object, *, now: float | None = None) -> bool:
+    """True when a canonical in-progress phase has gone silent too long."""
+
+    if not isinstance(updated_at, str) or not updated_at:
+        return True
+    try:
+        last = dt.datetime.fromisoformat(updated_at.replace("Z", "+00:00"))
+    except ValueError:
+        return True
+    if last.tzinfo is None:
+        last = last.replace(tzinfo=dt.timezone.utc)
+    reference = dt.datetime.fromtimestamp(
+        now if now is not None else time.time(), tz=dt.timezone.utc
+    )
+    return (reference - last).total_seconds() > _STALE_IN_PROGRESS_S
+
+
 def _wall_deadline_expired(value: object) -> bool:
     """Return true for an invalid or elapsed canonical wall-clock deadline."""
 
@@ -2456,8 +2481,9 @@ class GameSwitchCoordinator:
                 elif phase in {"idle", "ready"}:
                     pass
                 else:
-                    if phase in IN_PROGRESS_PHASES and _wall_deadline_expired(
-                        state.get("deadline_at")
+                    if phase in IN_PROGRESS_PHASES and (
+                        _wall_deadline_expired(state.get("deadline_at"))
+                        or _stale_in_progress(state.get("updated_at"))
                     ):
                         # A crashed in-progress phase (e.g. a rollback whose
                         # driver died) can never finish on its own.  With an
