@@ -134,3 +134,55 @@ def test_stopped_game_without_agent_still_requires_matching_saved_bytes(adapter,
     (adapter.spec.runtime_dir/'states/hanjuku.state').write_bytes(b'changed')
     with pytest.raises(AdapterError):
         adapter.can_release_terminal_previous(time.monotonic()+1,None)
+
+
+def test_dead_committed_runtime_is_released_without_terminal_evidence(recovery):
+    """A runtime that died before its boundary must not strand canonical.
+
+    The 2026-11-14 tmux-session loss left Hanjuku committed as ``previous``
+    with no boundary record: every recovery replay failed and the whole corner
+    rotation stayed blocked.  Releasing it is only allowed when the adapter
+    proves the runtime is gone, and the reason is recorded.
+    """
+    mgr, old, original_id, original = recovery
+    old.can_release_terminal_previous = lambda deadline, cancel: False
+    old.can_release_dead_previous = lambda deadline, cancel: True
+    result = mgr.coordinator.recover()
+    assert result.status == 'succeeded', result
+    canonical, _ = mgr.store.canonical.load()
+    assert canonical['phase'] == 'idle'
+    assert canonical['previous'] is None
+    last = canonical['last_result']
+    assert last['released_reason'] == 'dead-runtime-no-boundary'
+    assert last['released_terminal']['runtime_id'] == old.spec.runtime_id
+    assert last['restore_request_id'] == original_id
+    assert old.runtime.events == ['agent_stop', 'cleanup']
+    assert mgr.store.receipts.load(original_id) == original
+
+
+def test_unproved_dead_release_is_never_recorded(recovery):
+    mgr, old, _, _ = recovery
+    old.can_release_terminal_previous = lambda deadline, cancel: False
+    old.can_release_dead_previous = lambda deadline, cancel: False
+    mgr.coordinator.recover()
+    state, _ = mgr.store.canonical.load()
+    assert 'released_terminal' not in (state.get('last_result') or {})
+    assert 'cleanup' not in old.runtime.events
+
+
+def test_provably_dead_requires_no_window_agent_or_command_port(adapter, monkeypatch):
+    from unittest.mock import Mock
+    monkeypatch.setattr('docich.hanjuku_run.enabled', lambda game: True)
+    deadline = time.monotonic() + 1
+    # A live game window is never provably dead.
+    assert adapter.runtime_provably_dead(deadline, None) is False
+    del adapter.tmux.windows['docich:game-g1']
+    # A live command port proves a detached presenter/RetroArch survived.
+    assert adapter.runtime_provably_dead(deadline, None) is False
+    monkeypatch.setattr('docich.adapters.retroarch.send_ra_cmd', Mock(return_value=None))
+    assert adapter.runtime_provably_dead(deadline, None) is True
+    assert adapter.can_release_dead_previous(deadline, None) is True
+    # Any surviving agent window also blocks the release.
+    adapter.tmux.windows['docich:agent-g1'] = (adapter.spec.runtime_id, 1, 'agent')
+    assert adapter.runtime_provably_dead(deadline, None) is False
+    assert adapter.can_release_dead_previous(deadline, None) is False
