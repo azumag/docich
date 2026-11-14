@@ -30,9 +30,13 @@ class DiagnosticsGatewayBusyRetryTests(unittest.TestCase):
 
     def test_live_status_query_retries_the_busy_rejection(self):
         text = LIVE_STATUS_WORKFLOW.read_text(encoding="utf-8")
-        self.assertIn("for attempt in 1 2 3 4; do", text)
+        # Both the production-parity status query and the diagnostics query
+        # must survive a deploy that holds the gateway lock.
+        self.assertGreaterEqual(text.count("for attempt in 1 2 3 4; do"), 2)
         self.assertIn("VM operation rejected: gateway_busy", text)
         self.assertIn("VM gateway stayed busy for all retries", text)
+        self.assertIn('"status docich production $SHA"', text)
+        self.assertNotIn("exec docich", text)
 
 
 if __name__ == "__main__":
