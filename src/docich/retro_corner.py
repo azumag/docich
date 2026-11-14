@@ -3669,6 +3669,15 @@ class RetroCornerManager:
         now = self._local_now()
         with self._locked():
             state = self._read_state()
+            # A slot the rotation already released (pinned proof the shared
+            # slot is clear, retirement deferred) has nothing left to recover:
+            # report noop so the fixed recovery entry can still reach
+            # ``corner-rotation recover`` and clear the rotation latch, instead
+            # of refusing on a row that is intentionally kept ``failed``.
+            if state.get("status") == "failed" and isinstance(
+                    state.get("released_settle_pending"), dict):
+                return CornerResult("noop", game=state.get("game"),
+                                    detail="already released by rotation")
             # Deliberately ahead of the recovery-required gate below: a
             # quiesce_failed slot is not a canonical-recovery failure, so the
             # retry path must not claim it.
