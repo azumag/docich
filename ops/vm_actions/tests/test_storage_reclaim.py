@@ -151,7 +151,19 @@ class StorageReclaimTests(unittest.TestCase):
         result = self.run_helper(apply=True)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertTrue((old / "data.bin").exists(), result.stdout)
-        self.assertIn(f"KEEP {old} (files modified within 3d)", result.stdout)
+        self.assertIn(f"KEEP {old} (entries modified within 3d)", result.stdout)
+
+    def test_verify_recent_nested_directory_blocks_apply_even_with_old_files(self):
+        old = self.make("verify/old-with-recent-subdir", OLD)
+        nested = old / "nested"
+        nested.mkdir()
+        (nested / "data.bin").write_text("important")
+        self.age_tree(old, OLD)
+        os.utime(nested, None)
+        result = self.run_helper(apply=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue((nested / "data.bin").exists(), result.stdout)
+        self.assertIn(f"KEEP {old} (entries modified within 3d)", result.stdout)
 
     @unittest.skipUnless(os.path.isdir("/proc"), "cwd reference test requires Linux")
     def test_verify_old_directory_in_use_as_cwd_is_kept(self):
@@ -684,7 +696,7 @@ class ControlPlaneWiringTests(unittest.TestCase):
         self.assertIn("--verify-min-age-days", text)
         self.assertIn('verify_dir="$tmp/verify"', text)
         self.assertIn('is_older_than "$path" "$verify_min_age_days"', text)
-        self.assertIn('find "$path" -type f -mtime -"$verify_min_age_days"', text)
+        self.assertIn('find "$path" -mindepth 1 -mtime -"$verify_min_age_days"', text)
         self.assertIn('stale_clone_refs "$path"', text)
         self.assertIn("git worktree remove", text)
         self.assertIn("worktree prune", text)
