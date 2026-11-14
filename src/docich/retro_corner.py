@@ -3623,6 +3623,22 @@ class RetroCornerManager:
             restored = self._recover_restore_failed(state)
             if restored is not None:
                 return restored
+            # A crash between the durable ``restoring`` write and the restore
+            # switch leaves no automatic path that finishes it: the common
+            # rotation only sees the BUSY row and waits forever, and the
+            # ``restoring`` retry tick is unreachable while rotation is
+            # enabled.  Replaying the already recorded finish is the same
+            # bounded operation the stop path performs, so the fixed operator
+            # entry drives it here after the recorded-request gate proves the
+            # restore still belongs to this corner.
+            if state.get("status") == "restoring":
+                request_id = state.get("rotation_request_id")
+                if not isinstance(request_id, str) or not request_id:
+                    return CornerResult("failed", game=state.get("game"),
+                                        detail="restoring owner is unverified")
+                self._verify_restoring_request(state, request_id)
+                self._ensure_runtime()
+                return self._finish_locked(state, now)
             if not self._failed_state_is_recoverable(state):
                 return CornerResult("noop", detail="failed-slot-not-recoverable")
             target = state.get("game")
