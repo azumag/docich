@@ -221,4 +221,4 @@ worker / queue / model / provider / fallback / runtime component を変更した
 - `/tmp` 直下、または `$root/tmp` 直下を worktree の親にしない。
 - 検証終了時は `git worktree remove` で必ず片付ける（不要になったら `git worktree prune`）。保存先の分離だけでは残留は防げず、放置が根因だった。
 - 残留の観測: `sys_tmp_reclaim_candidates` は `/tmp` 専用。`$root/tmp/verify/` 配下の残留は `storage_breakdown` の `soren_tmp`（合計 bytes のみ・coarse）でしか見えないため、手動確認も併用する。規約違反で `/tmp` 直下に置かれた worktree は `sys_tmp_top_level`（git_worktree 分類）に現れ、24h 経過後に `sys_tmp_reclaim_candidates` が検知する。
-- `stale_patterns` の age gate（`$root/tmp` 直下の depth-1 glob）はこの配下を対象にしない。`storage_reclaim.sh` の verify 専用 sweep は参照検査が未実装のため削除を停止している。検証終了時の `git worktree remove` を必ず行い、残留物は参照状況を確認して手動回収する。
+- `stale_patterns` の age gate（`$root/tmp` 直下の depth-1 glob）はこの配下を対象にしない。`storage_reclaim.sh` の verify 専用 sweep（#4172）は、3日 gate・gate 期間内に更新されたファイルなし・プロセス参照なしをすべて満たす場合だけ APPLY で削除する。linked worktree は `git worktree remove` と `git worktree prune` で処理し、解消できなければ KEEP。symlink は指し先を追わず保持する。判断できない場合は KEEP/SKIP（fail-closed）。検証終了時の `git worktree remove` を必ず行い、残留物は参照状況を確認して手動回収する。
