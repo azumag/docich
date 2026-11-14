@@ -3591,10 +3591,15 @@ class RetroCornerManager:
             raise
         if result.status not in {"completed", "interrupted"}:
             # A queued/waiting finish leaves no marker; name the pend so the
-            # wedge is diagnosable from diagnostics alone.
+            # wedge is diagnosable from diagnostics alone. The suffix is the
+            # fixed CornerResult status so the exact pending gate is visible.
             latest = self._read_state()
             if latest.get("status") == "restoring":
-                latest["last_error_code"] = "restoring-finish-pending"
+                suffix = result.status if result.status in {
+                    "queued", "waiting", "busy", "accepted",
+                    "in_progress", "stopping", "switching",
+                } else "unknown"
+                latest["last_error_code"] = f"restoring-finish-{suffix}"
                 self._write_state(latest)
         return result
 
