@@ -81,6 +81,26 @@ def test_clock_pit_fail_closed_and_advances():
     assert not v.visible({"available_at": "not a timestamp"})
 
 
+def test_visibility_boundary_is_inclusive_fill_fence_is_separate():
+    # PR #3888 re-review "境界規則の解釈" (docich#2644 P3 PR-B): deterministic
+    # replay visibility uses the inclusive ts <= now(); the strict
+    # available_at > fence_at + 2 * max_error_ms rule belongs to N05/N06 fills.
+    c = InjectedClock(10)
+    v = PitInputView(c)
+    assert v.visible({"available_at": 10})
+    assert not v.visible({"available_at": 10.000001})
+
+
+def test_manifest_clock_rejects_max_error_ms_key():
+    # The §3.5 tolerance is a contract constant, never a manifest key.
+    data, raw = _fixture()
+    data["header"]["clock"]["max_error_ms"] = 1000
+    with pytest.raises(ReplayError) as ei:
+        load_manifest(data, lambda filename: raw)
+    assert ei.value.code == "UNKNOWN_KEY"
+    assert ei.value.stage == "header.clock"
+
+
 @pytest.mark.parametrize("mutation", [
     lambda d: d.update({"extra": 1}),
     lambda d: d["header"].update({"unexpected": 1}),

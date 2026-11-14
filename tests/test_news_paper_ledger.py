@@ -18,7 +18,12 @@ from decimal import Decimal as D
 from pathlib import Path
 
 from docich.trading.news_paper import ledger as ld
-from docich.trading.news_paper.execution import ClockQuality, ExecutionOutcome, Fill
+from docich.trading.news_paper.execution import (
+    ClockQuality,
+    ExecutionOutcome,
+    Fill,
+    MarketObservation,
+)
 
 UTC = dt.timezone.utc
 T0 = dt.datetime(2026, 9, 18, 0, 10, 4, tzinfo=UTC)
@@ -433,6 +438,124 @@ class FenceTest(unittest.TestCase):
         again = self.ledger.establish_fence("receipt_001", quality)
         self.assertEqual(fence.fence_at, again.fence_at)
         self.assertEqual(fence.fence_id, again.fence_id)
+
+    def test_fence_is_bound_to_its_marker_and_receipt(self):
+        accept(self.ledger)
+        self.ledger.commit_receipt("receipt_001")
+        fence = self.ledger.establish_fence(
+            "receipt_001", ClockQuality(True, "injected", 1000)
+        )
+        row = self.ledger._conn.execute(
+            "SELECT marker_id, receipt_id FROM fill_fences WHERE fence_id = ?",
+            (fence.fence_id,),
+        ).fetchone()
+        self.assertEqual(row, ("marker:receipt_001", "receipt_001"))
+        self.assertEqual(fence.marker_id, "marker:receipt_001")
+        # A receipt without a committed marker gets no fence at all.
+        self.assertIsNone(
+            self.ledger.establish_fence(
+                "receipt_002", ClockQuality(True, "injected", 1000)
+            )
+        )
+
+    def test_fence_is_reused_across_restart_as_a_whole(self):
+        accept(self.ledger)
+        self.ledger.commit_receipt("receipt_001")
+        first = self.ledger.establish_fence(
+            "receipt_001", ClockQuality(True, "injected", 1000)
+        )
+        self.ledger.close()
+        self.ledger = ld.NewsLedger.open(
+            self.tmp, "run_demo_001", "price_plus_news",
+            clock=lambda: T0 + dt.timedelta(hours=1),
+        )
+        # The caller's later clock quality must not replace the stored fence.
+        again = self.ledger.establish_fence(
+            "receipt_001", ClockQuality(True, "ntp", 60_000)
+        )
+        self.assertEqual(again.fence_id, first.fence_id)
+        self.assertEqual(again.fence_at, first.fence_at)
+        self.assertEqual(again.clock_quality, first.clock_quality)
+        self.assertEqual(again.clock_quality.max_error_ms, 1000)
+
+    def test_crash_after_marker_before_fence_fails_closed(self):
+        accept(self.ledger)
+        self.ledger.commit_receipt("receipt_001")
+        committed_at = ld._parse_ts(self.ledger._conn.execute(
+            "SELECT committed_at FROM execution_markers WHERE receipt_id = 'receipt_001'"
+        ).fetchone()[0])
+        # Crash before the fence INSERT: nothing is stored. A restart an hour
+        # later must sample a *later* fence and refuse the pre-crash quote.
+        self.ledger.close()
+        self.ledger = ld.NewsLedger.open(
+            self.tmp, "run_demo_001", "price_plus_news",
+            clock=lambda: committed_at + dt.timedelta(hours=1),
+        )
+        fence = self.ledger.establish_fence(
+            "receipt_001", ClockQuality(True, "injected", 1000)
+        )
+        self.assertGreater(fence.fence_at, committed_at)
+        old_quote = self._observation(committed_at + dt.timedelta(seconds=1))
+        self.assertFalse(fence.admits(old_quote))
+        boundary = fence.fence_at + dt.timedelta(seconds=2)
+        self.assertFalse(fence.admits(self._observation(boundary)))
+        self.assertTrue(fence.admits(
+            self._observation(boundary + dt.timedelta(microseconds=1))
+        ))
+
+    def test_regressed_clock_never_samples_fence_before_marker_commit(self):
+        accept(self.ledger)
+        self.ledger.commit_receipt("receipt_001")
+        committed_at = ld._parse_ts(self.ledger._conn.execute(
+            "SELECT committed_at FROM execution_markers WHERE receipt_id = 'receipt_001'"
+        ).fetchone()[0])
+        self.ledger.close()
+        self.ledger = ld.NewsLedger.open(
+            self.tmp, "run_demo_001", "price_plus_news",
+            clock=lambda: committed_at - dt.timedelta(hours=1),
+        )
+        fence = self.ledger.establish_fence(
+            "receipt_001", ClockQuality(True, "injected", 1000)
+        )
+        self.assertEqual(fence.fence_at, committed_at)
+
+    def test_tampered_fence_binding_or_timestamp_fails_closed(self):
+        accept(self.ledger)
+        self.ledger.commit_receipt("receipt_001")
+        fence = self.ledger.establish_fence(
+            "receipt_001", ClockQuality(True, "injected", 1000)
+        )
+        quality = ClockQuality(True, "injected", 1000)
+        self.ledger._conn.execute(
+            "UPDATE fill_fences SET receipt_id = 'receipt_other' WHERE fence_id = ?",
+            (fence.fence_id,),
+        )
+        with self.assertRaises(ld.LedgerError) as ctx:
+            self.ledger.establish_fence("receipt_001", quality)
+        self.assertEqual(ctx.exception.code, "STORE_UNAVAILABLE")
+        # A fence that pre-dates its own marker commit is equally unusable.
+        self.ledger._conn.execute(
+            "UPDATE fill_fences SET receipt_id = 'receipt_001', "
+            "fence_at = '2026-09-18T00:00:00.000000Z' WHERE fence_id = ?",
+            (fence.fence_id,),
+        )
+        with self.assertRaises(ld.LedgerError) as ctx:
+            self.ledger.establish_fence("receipt_001", quality)
+        self.assertEqual(ctx.exception.code, "STORE_UNAVAILABLE")
+
+    def _observation(self, available_at: dt.datetime) -> MarketObservation:
+        return MarketObservation(
+            observation_id="quote_crash", source="fixture",
+            asset="stocks:XTKS:DEMO", ingest_sequence=121,
+            market_event_at=available_at - dt.timedelta(seconds=1),
+            market_available_at=available_at - dt.timedelta(seconds=1),
+            available_at=available_at, bid=D("999"), ask=D("1000"),
+            bid_size=D("1000"), ask_size=D("1000"),
+            size_semantics="executable", tradeable=True, realtime=True,
+            session_id="s1", calendar_version="c1", quote_digest="a" * 64,
+            provenance_class="test_fixture",
+            instrument_constraints_version="fixture-stocks-v1",
+        )
 
 
 class ApplyAccountingTest(unittest.TestCase):

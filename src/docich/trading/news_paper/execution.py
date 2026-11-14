@@ -37,6 +37,12 @@ LIVE_ELIGIBLE = False
 EXECUTION_MODEL_VERSION = "next_observation_ioc_v1"
 TIME_IN_FORCE = "next_observation_ioc"
 
+# N00 v2 §3.5 approved operational clock tolerance (confirmed 1000 ms). The
+# fill fence uses ``2 x max_error_ms`` because the quote writer and the fill
+# worker each contribute one tolerance. This is a contract constant, not a
+# replay manifest key (docich#2644 P3 PR-B / #780 precondition 2).
+CONTRACT_MAX_ERROR_MS = 1000
+
 # Fixed diagnostic codes (parent #769 D10). The host never stores free-form
 # exception text in a code field.
 TERMINAL_STATUSES = frozenset({"filled", "canceled", "expired", "rejected"})
@@ -97,7 +103,7 @@ class ClockQuality:
 
     synced: bool
     source: str
-    max_error_ms: int
+    max_error_ms: int = CONTRACT_MAX_ERROR_MS
 
     def __post_init__(self) -> None:
         if not isinstance(self.synced, bool):
