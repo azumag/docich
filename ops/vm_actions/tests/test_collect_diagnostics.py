@@ -5214,3 +5214,35 @@ def test_compact_policy_projects_the_month_status_walk_outcome():
     odd = module._compact_hanjuku_policy({'chapter': 6, 'post_month_status_last': {'failed': 'PRIVATE'}})
     assert odd['post_month'] == {'complete': False, 'failed': 'PRIVATE', 'manifest_done': False,
                                  'manifest_arrived': None, 'carry': None}
+
+
+def test_hanjuku_tactical_keeps_its_projection_at_the_hard_ceiling():
+    # #4152: a fat envelope dropped ``hanjuku_tactical`` to a bare
+    # ``output_omitted`` skeleton, so the live-status path could not read
+    # chapter/month/phase at all. The stub now keeps the same small
+    # projections the soft budget keeps.
+    module = load_collector()
+    stub = module._section_omission_stub('hanjuku_tactical', {
+        'policy': {'chapter': 9, 'month': '9-3', 'phase': 'boss',
+                   'active': True, 'no_input_streak': 0},
+        'chart_worker': {'alive': True, 'pid': 1234},
+        'chapter': 9, 'age_sec': 42,
+        'refill': {'huge': 'z' * 1024},
+        'boss': {'order': '4-B1'}})
+    assert stub['status'] == 'output_omitted'
+    assert stub['reason'] == 'hard_ceiling'
+    assert stub['basis'] == 'bot_record'
+    assert stub['policy'] == {'chapter': 9, 'month': '9-3', 'phase': 'boss',
+                            'active': True, 'no_input_streak': 0}
+    assert stub['chart_worker'] == {'alive': True, 'pid': 1234}
+    assert stub['chapter'] == 9
+    assert stub['age_sec'] == 42
+    assert 'refill' not in stub and 'boss' not in stub
+
+
+def test_hanjuku_tactical_stub_tolerates_missing_fields():
+    module = load_collector()
+    stub = module._section_omission_stub(
+        'hanjuku_tactical', {'refill': {'huge': 'z'}})
+    assert stub == {'status': 'output_omitted', 'reason': 'hard_ceiling',
+                    'basis': 'bot_record'}
