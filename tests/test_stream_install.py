@@ -237,7 +237,13 @@ class CliTest(unittest.TestCase):
         self.assertIn("unit", json.loads(status.stdout))
 
     def test_install_on_a_host_that_is_not_the_runtime_host_is_refused(self):
-        if Path("/home/ubuntu/docich").exists():
+        try:
+            runtime_host = Path("/home/ubuntu/docich").exists()
+        except OSError:
+            # Python 3.12 Path.exists re-raises EACCES; an inaccessible
+            # /home/ubuntu means this is not the runtime host.
+            runtime_host = False
+        if runtime_host:
             self.skipTest("this is the runtime host")
         done = self.run_cli("--install", "--confirm-unit-placement")
         self.assertEqual(done.returncode, 3)
