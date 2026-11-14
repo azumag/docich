@@ -99,6 +99,18 @@ def orphan_battle_menu_step(screen, mem):
         # A persisted foreign/corrupt claim cannot acquire a new allowance.
         flow = mem['orphan_battle_menu'] = {'identity': identity, 'attempts': 3}
     if not parent:
+        if flow.get('plain_command'):
+            # A normal attack is under way. Its fade/result frames are not a
+            # new menu, so advance them with a bounded A instead of holding to
+            # input_stalled (g1190 ch9 2026-11-15: one plain_command then hold).
+            stage = flow.get('advance') or {}
+            stage['n'] = int(stage.get('n') or 0) + 1
+            flow['advance'] = stage
+            if stage['n'] % 2 == 1:
+                _record(mem, 'battle_menu_plain_advance',
+                        observed_metric={'screen': screen.kind, 'n': stage['n']},
+                        reason='通常コマンド選択後の戦闘アニメーション/結果画面を有界のAで進める')
+                return [pad('a')]
         return []  # a fade or an irreversible list is not another parent B
     words = {word for _, _, word in _options(screen)}
     if ('こうげき' in words and 'たいきゃく' in words
@@ -107,6 +119,7 @@ def orphan_battle_menu_step(screen, mem):
         # not an unreadable gray/okunote parent. Choosing こうげき proceeds the
         # battle; holding it stalled the run (g1190 ch9 2026-11-15, ねばねば!!,
         # input_stalled). Egg/okunote rows still take the bounded close path.
+        flow['plain_command'] = True
         _record(mem, 'battle_menu_plain_command',
                 observed_metric={'cursor_y': screen.menu_cursor, 'words': sorted(words)},
                 reason='将軍とHPは読めないが通常コマンドだけの戦闘メニューのため、保留せずこうげきで戦闘を進める')
