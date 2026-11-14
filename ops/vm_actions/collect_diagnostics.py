@@ -7302,6 +7302,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v844-hero-post-advance",
             "hanjuku-chart-v845-map-roof-feedback",
             "hanjuku-chart-v846-ch9-direct-resupply",
+            "hanjuku-chart-v847-world-survey-reuse",
             "hanjuku-chart-v560-castle-list-scroll",
             "hanjuku-chart-v561-post-month-repair-status",
             "hanjuku-chart-v501-idle-reanchor",
