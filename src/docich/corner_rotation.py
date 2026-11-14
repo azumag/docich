@@ -1776,6 +1776,10 @@ class CornerRotationManager:
                 # or dispatch below, so a promise never outlives its slot.
                 self._sync_notice(state, now, eligible, future_manual)
                 if busy:
+                    # Persist before the wait: the restoring-drive outcome and
+                    # history rows collected this tick must not evaporate when
+                    # the wedge is exactly what we are trying to observe.
+                    self.save(state)
                     return self._wait(state, "other-corner-needs-finish-or-recovery")
                 queued = state.get("queued_manual")
                 queued_due = True
