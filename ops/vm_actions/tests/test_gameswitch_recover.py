@@ -282,10 +282,19 @@ class HelperOwnershipTests(unittest.TestCase):
     def test_missing_runtime_directory_is_ownership_missing(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            state = canonical(phase="ready", active=runtime(), next_generation=4)
+            seat = runtime(game="nsnake", adapter="cli")
+            state = canonical(phase="ready", active=seat, next_generation=4)
             with self.assertRaises(HELPER_MODULE.FixedRecoverExit) as ctx:
                 HELPER_MODULE.verify_ownership(root, state)
             self.assertEqual(ctx.exception.code, HELPER_MODULE.EX_OWNERSHIP_MISSING)
+
+    def test_soren_seat_needs_no_runtime_directory(self):
+        # soren/soren91 never materialize spec.runtime_dir, so demanding one
+        # refused every rollback whose previous seat was sorengame.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            HELPER_MODULE.verify_ownership(
+                root, canonical(phase="ready", active=runtime(), next_generation=4))
 
     def test_present_runtime_directory_proves_ownership(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -459,9 +468,10 @@ class HelperDeadSeatOwnershipTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             seat = self.seat()
-            state = failed_candidate_state(seat)
-            # previous (the running game we must restore) has no directory and
-            # is never covered by the candidate's terminal failure.
+            state = failed_candidate_state(
+                seat, previous=runtime(seat_generation=2, game="nsnake", adapter="cli"))
+            # previous (the game we must restore) has no directory and is never
+            # covered by the candidate's terminal failure.
             write_failed_receipt(root, seat)
             with self.assertRaises(HELPER_MODULE.FixedRecoverExit) as ctx:
                 HELPER_MODULE.verify_ownership(root, state)
