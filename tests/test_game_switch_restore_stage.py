@@ -93,6 +93,51 @@ class RestoreStageMarkerTests(unittest.TestCase):
             )
 
 
+    def test_replace_mode_start_failures_name_their_sub_stage(self):
+        import time
+        from types import SimpleNamespace
+
+        state, _ = self.store.canonical.load()
+        previous = {
+            "game": "sorengame", "adapter": "retroarch", "generation": 1,
+            "runtime_id": "g1-0123abcd",
+            "lease_id": "123e4567-e89b-42d3-a456-426614174001",
+            "game_window": "game-g1", "agent_window": "agent-g1",
+            "adapter_session": "docich-game-g1",
+            "started_at": "2026-11-14T08:00:00+00:00",
+        }
+        state.update(
+            phase="failed", operation="switch", request_id=REQUEST_ID,
+            active=None, candidate=None, previous=previous, retiring=[],
+            next_generation=2,
+            last_result={"request_id": REQUEST_ID, "operation": "switch",
+                         "status": "failed", "from_game": "hanjuku-hero",
+                         "to_game": "sorengame", "generation": 1,
+                         "error_code": "start_failed"},
+            last_error={"error_code": "start_failed", "detail": "x"},
+        )
+        self.store.canonical.save(state)
+        adapter = SimpleNamespace(name="retroarch", agent_enabled=False)
+        coordinator = game_switch.GameSwitchCoordinator(
+            self.store, lambda spec: adapter)
+        coordinator._make_adapter = lambda spec, deadline: adapter
+        coordinator._probe_alive = lambda adapter, deadline: False
+        coordinator._teardown_runtime = lambda adapter, deadline: True
+
+        def fake_call(fn, deadline, timeout, label):
+            if label == "materialize":
+                raise RuntimeError("materialize failed")
+            return fn(lambda: None)
+
+        coordinator._call_adapter = fake_call
+        with self.store.transaction() as tx:
+            result = coordinator._restore_previous_locked(
+                tx, REQUEST_ID, "switch", "sorengame", 1, previous,
+                time.monotonic() + 5.0, warnings=[])
+        self.assertIsNone(result)
+        self.assertEqual(self._stage()["stage"], "rollback-materialize-failed")
+
+
 
 if __name__ == "__main__":
     unittest.main()

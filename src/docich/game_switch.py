@@ -1633,6 +1633,11 @@ RESTORE_STAGES = frozenset({
     "continuation-unproven",
     "rollback-adapter-failed",
     "rollback-start-failed",
+    # Replace-mode start sub-stages: materialize owns the Soren fresh-start,
+    # readiness waits for the worker after it, agent-start re-issues the agent.
+    "rollback-materialize-failed",
+    "rollback-readiness-failed",
+    "rollback-agent-start-failed",
 })
 ERROR_STATE_CORRUPT = "state_corrupt"
 ERROR_RECOVERY_REQUIRED = "recovery_required"
@@ -5253,7 +5258,9 @@ class GameSwitchCoordinator:
             warnings.append(f"rollback adapter生成失敗: {_safe_detail(exc)}")
             _record_restore_stage(self.store.state_dir, "rollback-adapter-failed")
             return None
+        start_stage = "rollback-start-failed"
         try:
+            start_stage = "rollback-materialize-failed"
             self._call_adapter(
                 lambda cancel: adapter.materialize_runtime(deadline, cancel),
                 deadline,
@@ -5261,6 +5268,7 @@ class GameSwitchCoordinator:
                 "materialize",
             )
             self._check_deadline(deadline)
+            start_stage = "rollback-readiness-failed"
             self._call_adapter(
                 lambda cancel: adapter.readiness(deadline, cancel),
                 deadline,
@@ -5268,6 +5276,7 @@ class GameSwitchCoordinator:
                 "readiness",
             )
             if adapter.agent_enabled:
+                start_stage = "rollback-agent-start-failed"
                 self._call_adapter(
                     lambda cancel: adapter.start_agent(deadline, cancel),
                     deadline,
@@ -5300,7 +5309,7 @@ class GameSwitchCoordinator:
                         crash_hook=self.crash_hook,
                     )
             warnings.append(f"rollback起動失敗: {_safe_detail(exc)}")
-            _record_restore_stage(self.store.state_dir, "rollback-start-failed")
+            _record_restore_stage(self.store.state_dir, start_stage)
             return None
         last_result = {
             "request_id": request_id,
