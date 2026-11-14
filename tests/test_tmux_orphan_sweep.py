@@ -417,12 +417,16 @@ class TestDynamicChildProtection(unittest.TestCase):
         with self._patch_descendants([7777], [8888]):
             self.assertEqual(protected.expanded(), frozenset({4321, 9001, 7777}))
 
+    # The pane leader's own stop is not the subject of this test and a real
+    # signal to a nonexistent CI pid never reports stopped, which turned the
+    # assertion below into a TmuxError on the hosted runners.
+    @mock.patch("docich.tmux.terminate_process_tree", return_value=_stopped(123))
     @mock.patch("docich.tmux.process_pgid", return_value=None)
     @mock.patch("docich.tmux.processes_with_env")
     @mock.patch("docich.tmux.terminate_owned_processes")
     @mock.patch("docich.tmux.procs.run")
     def test_sweep_never_signals_a_child_spawned_after_the_snapshot(
-        self, mock_run, mock_terminate, mock_env, _mock_pgid
+        self, mock_run, mock_terminate, mock_env, _mock_pgid, _mock_tree
     ):
         server_pid, display_pane, late_child, orphan = 4321, 9001, 7777, 4242
         mock_run.side_effect = [

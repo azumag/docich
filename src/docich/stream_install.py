@@ -56,6 +56,30 @@ class Paths:
         self.runtime_uid_path = f"/run/user/{os.getuid()}/pulse/native"
 
 
+def _safe_exists(path: Path) -> bool:
+    """``Path.exists`` raises ``PermissionError`` in Python 3.12 (EACCES is not
+    ignored), so an inaccessible ``/home/ubuntu`` on a non-runtime host must
+    read as absent instead of failing the read-only status command."""
+    try:
+        return path.exists()
+    except OSError:
+        return False
+
+
+def _safe_is_file(path: Path) -> bool:
+    try:
+        return path.is_file()
+    except OSError:
+        return False
+
+
+def _safe_is_symlink(path: Path) -> bool:
+    try:
+        return path.is_symlink()
+    except OSError:
+        return False
+
+
 def sha256_of(path: Path) -> str | None:
     try:
         return hashlib.sha256(path.read_bytes()).hexdigest()
@@ -133,7 +157,7 @@ def collect_status(paths: Paths, run: Runner = subprocess.run) -> dict[str, obje
             "enabled": _systemctl_value("is-enabled", run),
             "active": _systemctl_value("is-active", run),
         },
-        "wrapper_executable": paths.wrapper.is_file() and os.access(paths.wrapper, os.X_OK),
+        "wrapper_executable": _safe_is_file(paths.wrapper) and os.access(paths.wrapper, os.X_OK),
         "lock_dir": lock_dir_state(paths.lock_dir),
         "env": {
             "backend": backend if backend in {"ffmpeg", "obs"} else ("unset" if backend is None else "other"),
@@ -145,8 +169,8 @@ def collect_status(paths: Paths, run: Runner = subprocess.run) -> dict[str, obje
             "soren_null_sink": "soren_null" in sink_names,
         },
         "markers": {
-            "legacy_paused": (paths.soren_root / "tmp/state/direct_stream.paused").exists(),
-            "docich_paused": (paths.soren_root / "tmp/state/docich_stream.paused").exists(),
+            "legacy_paused": _safe_exists(paths.soren_root / "tmp/state/direct_stream.paused"),
+            "docich_paused": _safe_exists(paths.soren_root / "tmp/state/docich_stream.paused"),
         },
     }
     return state
@@ -184,7 +208,7 @@ def check_unit_source(paths: Paths) -> str:
     for needle in ("Restart=always", "KillMode=mixed", "RestartPreventExitStatus=75"):
         if needle not in text:
             raise InstallRefused(f"unit source lacks {needle}")
-    if not (paths.wrapper.is_file() and os.access(paths.wrapper, os.X_OK)):
+    if not (_safe_is_file(paths.wrapper) and os.access(paths.wrapper, os.X_OK)):
         raise InstallRefused("the wrapper is not an executable file")
     return text
 
@@ -206,7 +230,7 @@ def install_unit(
     check_unit_source(paths)
     source_hash = sha256_of(paths.unit_source)
     installed_hash = sha256_of(paths.unit_target)
-    if paths.unit_target.is_symlink():
+    if _safe_is_symlink(paths.unit_target):
         raise InstallRefused("the installed unit path is a symlink")
     if installed_hash == source_hash:
         return {"unit": "unchanged", "daemon_reload": False}
