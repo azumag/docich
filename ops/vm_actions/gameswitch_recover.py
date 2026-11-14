@@ -14,12 +14,15 @@ the canonical GameSwitch state and refuses to run unless every guard holds:
   ``cleanup_pending`` flag; a mismatch is a declared-mismatch refusal.
 - ownership proof must exist: a durable request receipt on disk for any
   canonical ``request_id`` and a runtime directory for every referenced
-  runtime seat. Missing proof is rejected. Two reviewed exceptions: the
-  ``soren``/``soren91`` seats never materialize a per-runtime directory, and a
-  failed candidate seat whose directory the failed cleanup already removed
-  stays owned through the durable terminal-failure receipt that names the same
-  runtime identity and target. Without both, no later surface could settle the
-  dead seat and the whole corner rotation stayed latched (2026-11-14).
+  runtime seat. Missing proof is rejected. Two reviewed exceptions:
+  ``soren``/``soren91`` seats never materialize a per-runtime directory, so
+  they are proven by the durable identity a commit recorded for exactly that
+  runtime (runtime_id + generation + lease; never by liveness), and a failed
+  candidate that never reached ``materialize`` has no directory to require.
+  A directory-owning seat whose receipt proves materialize completed keeps
+  the ownership failure when its directory is gone. Without these, no later
+  surface could settle a dead seat and the whole corner rotation stayed
+  latched (2026-11-14).
 - the canonical CLI runs once with a bounded deadline in a fixed argv; the
   post-run canonical state must again be valid.
 
@@ -106,9 +109,21 @@ RUNTIME_ID_RE = re.compile(r"g([1-9][0-9]*)-([a-f0-9]{6,32})\Z")
 #: Coordinator adapters that never materialize ``spec.runtime_dir``. ``soren``
 #: owns one shared runtime for sorengame and ``soren91`` rides the same
 #: process, so a seated runtime of these kinds has no directory to prove
-#: anything with. Keep in sync with the adapters that use the spec directory
-#: (``git grep runtime_dir -- src/docich/adapters``).
-DIRLESS_ADAPTERS = frozenset({"soren", "soren91"})
+#: anything with. They are proven by the durable commit identity instead
+#: (``_committed_runtime_identities``). Keep in sync with the adapters that
+#: use the spec directory (``git grep runtime_dir -- src/docich/adapters``).
+SOREN_ADAPTERS = frozenset({"soren", "soren91"})
+
+#: Failure codes that prove the candidate never reached ``materialize``.
+#: ``_failure_code`` maps a generic materialize exception to ``start_failed``;
+#: preflight failures happen before a candidate seat exists (permission from
+#: a terminal failure alone is never enough, see ``_materialize_stage``).
+PRE_MATERIALIZE_FAILURE_CODES = frozenset({"start_failed"})
+#: Failure codes that can only happen after ``materialize`` succeeded. A
+#: request-wide ``timeout`` is ambiguous and deliberately fails closed here.
+POST_MATERIALIZE_FAILURE_CODES = frozenset(
+    {"readiness_timeout", "agent_start_failed", "timeout"}
+)
 
 # Fixed rejection reasons surfaced as exit codes (one meaning per code).
 # 2/3/64/70/71/72 follow the reviewed recover_corner_rotation codes; the
@@ -324,23 +339,40 @@ def verify_ownership(root: Path, state: dict) -> None:
             if pending is not None and not isinstance(pending, bool):
                 raise FixedRecoverExit(EX_UNKNOWN_DRIFT, "request receipt cleanup_pending is not bool")
     terminal_failure = _terminal_failure_receipt(root, state)
+    committed: set[tuple[str, str, int, str]] | None = None
     for label, runtime in _seated_runtimes(state):
-        # Two coordinator adapters never materialize a per-runtime directory:
-        # soren keeps one shared runtime for sorengame, and soren91 rides that
-        # same process. Their seats are normal without a directory, so the
-        # directory cannot be an ownership proof for them (2026-11-14: every
-        # rollback whose previous seat was sorengame refused with
-        # ownership_missing before the canonical CLI could restore it).
-        if runtime["adapter"] in DIRLESS_ADAPTERS:
-            continue
+        if runtime["adapter"] in SOREN_ADAPTERS:
+            # Soren seats never own a per-runtime directory. This checkout's
+            # ownership is proven by the durable identity a commit recorded for
+            # exactly this runtime (runtime_id + generation + lease), not by a
+            # directory and never by liveness (a recovery target is expected to
+            # be dead; liveness belongs to the canonical CLI).
+            if committed is None:
+                committed = _committed_runtime_identities(root, state)
+            if _soren_seat_is_owned(state, terminal_failure, committed, label, runtime):
+                continue
+            raise FixedRecoverExit(
+                EX_OWNERSHIP_MISSING,
+                f"{label} Soren runtime has no durable commit identity",
+            )
         runtime_dir = root / RUNTIMES_REL / str(runtime["runtime_id"])
         if runtime_dir.is_dir():
             continue
-        # The runtime directory is a working directory that the failed
-        # candidate's own cleanup may already have removed. A terminal failed
-        # seat therefore keeps this checkout's ownership through the durable
-        # receipt for its own failed request; requiring the directory forever
-        # left such a seat unrecoverable.
+        # A directory-owning adapter whose candidate failed before
+        # ``materialize`` never created the directory. The receipt's terminal
+        # stage decides that; a candidate that did materialize keeps the
+        # ownership failure (the directory cannot silently disappear).
+        stage = _materialize_stage(state, terminal_failure, label, runtime)
+        if stage == "pre":
+            continue
+        if stage == "post":
+            raise FixedRecoverExit(
+                _missing_directory_reason(label),
+                f"{label} runtime directory {runtime_dir} is missing after materialize",
+            )
+        # Unknown stage (e.g. rollback_failed without a start-stage code): keep
+        # the reviewed failed-candidate proof. Tightening this without a
+        # durable stage marker would re-latch the 2026-11-14 dead view seat.
         if terminal_failure is not None and _dead_seat_is_owned(state, terminal_failure, label, runtime):
             continue
         raise FixedRecoverExit(
@@ -410,6 +442,140 @@ def _dead_seat_is_owned(state: dict, receipt: dict, label: str, runtime: dict) -
         and last_result.get("generation") == runtime.get("generation")
         and last_result.get("to_game") == runtime.get("game")
     )
+
+
+def _runtime_identity(record: object) -> tuple[str, str, int, str] | None:
+    """The exact runtime identity a commit result records, when complete."""
+
+    if not isinstance(record, dict):
+        return None
+    game = record.get("game")
+    runtime_id = record.get("runtime_id")
+    generation = record.get("generation")
+    lease_id = record.get("lease_id")
+    if not isinstance(game, str) or not game:
+        return None
+    match = RUNTIME_ID_RE.fullmatch(runtime_id) if isinstance(runtime_id, str) else None
+    if match is None:
+        return None
+    if not _is_int(generation) or generation < 1:
+        return None
+    if not isinstance(lease_id, str) or not lease_id:
+        return None
+    if int(match.group(1)) != generation:
+        return None
+    return (game, runtime_id, generation, lease_id)
+
+
+def _committed_runtime_identities(
+    root: Path, state: dict
+) -> set[tuple[str, str, int, str]]:
+    """Collect the identities that durable commit results made live.
+
+    Soren has no per-runtime directory, so the commit itself is the ownership
+    proof: the result of the switch/start that published the runtime, or the
+    retirement proof of the switch that replaced it. Only complete identities
+    (game + runtime_id + generation + lease) count; anything else is ignored,
+    so a seat without a commit proof fails closed.
+    """
+
+    identities: set[tuple[str, str, int, str]] = set()
+
+    def add(record: object) -> None:
+        identity = _runtime_identity(record)
+        if identity is not None:
+            identities.add(identity)
+
+    last_result = state.get("last_result")
+    if isinstance(last_result, dict):
+        add(last_result.get("active_runtime"))
+        add(last_result.get("stopped_runtime"))
+    for entry in state.get("retiring") or []:
+        if not isinstance(entry, dict):
+            continue
+        retirement = entry.get("retirement")
+        if isinstance(retirement, dict):
+            add(retirement.get("active_runtime"))
+            add(retirement.get("source_runtime"))
+    directory = root / REQUESTS_REL
+    try:
+        paths = sorted(directory.glob("*.json"))
+    except OSError:
+        return identities
+    for path in paths:
+        try:
+            receipt = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if not isinstance(receipt, dict):
+            continue
+        result = receipt.get("result")
+        if not isinstance(result, dict):
+            continue
+        add(result.get("active_runtime"))
+        add(result.get("stopped_runtime"))
+        add(result.get("source_runtime"))
+    return identities
+
+
+def _soren_seat_is_owned(
+    state: dict,
+    terminal_failure: dict | None,
+    committed: set[tuple[str, str, int, str]],
+    label: str,
+    runtime: dict,
+) -> bool:
+    """A Soren seat is owned by its commit identity or its terminal failure.
+
+    A failed candidate is proven by the terminal-failure receipt (the only
+    durable record for a request that never committed). A stable or retiring
+    seat needs the identity of the commit that published the very same
+    runtime, including its lease.
+    """
+
+    if _is_failed_candidate_seat(label, runtime):
+        if terminal_failure is not None and _dead_seat_is_owned(
+            state, terminal_failure, label, runtime
+        ):
+            return True
+    identity = _runtime_identity(runtime)
+    return identity is not None and identity in committed
+
+
+def _is_failed_candidate_seat(label: str, runtime: dict) -> bool:
+    if label == "candidate":
+        return True
+    return (
+        label.startswith("retiring[")
+        and runtime.get("cleanup_role") == "failed_candidate"
+    )
+
+
+def _materialize_stage(
+    state: dict, terminal_failure: dict | None, label: str, runtime: dict
+) -> str:
+    """Classify a directory-owning seat that lost its runtime directory.
+
+    ``pre``: the terminal failure code proves ``materialize`` never ran, so a
+    missing directory is expected. ``post``: materialize must have completed
+    (stable seats, readiness/agent-start/timeout), so a missing directory is
+    an ownership failure. ``unknown``: the receipt does not name a start
+    stage; callers keep the reviewed failed-candidate proof.
+    """
+
+    if not _is_failed_candidate_seat(label, runtime):
+        return "post"
+    if terminal_failure is None or not _dead_seat_is_owned(
+        state, terminal_failure, label, runtime
+    ):
+        return "post"
+    result = terminal_failure.get("result")
+    code = result.get("error_code") if isinstance(result, dict) else None
+    if code in PRE_MATERIALIZE_FAILURE_CODES:
+        return "pre"
+    if code in POST_MATERIALIZE_FAILURE_CODES:
+        return "post"
+    return "unknown"
 
 
 def run_canonical_recover(root: Path) -> int:

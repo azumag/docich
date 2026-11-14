@@ -288,18 +288,29 @@ class HelperOwnershipTests(unittest.TestCase):
                 HELPER_MODULE.verify_ownership(root, state)
             self.assertEqual(ctx.exception.code, HELPER_MODULE.EX_OWNERSHIP_MISSING)
 
-    def test_soren_seat_needs_no_runtime_directory(self):
-        # soren/soren91 never materialize spec.runtime_dir, so demanding one
-        # refused every rollback whose previous seat was sorengame.
+    def test_soren_seat_is_owned_by_its_commit_identity(self):
+        # soren/soren91 never materialize spec.runtime_dir; the durable
+        # identity of the commit that published the runtime is the proof.
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
+            seat = runtime()
+            write_succeeded_receipt(root, seat)
             HELPER_MODULE.verify_ownership(
-                root, canonical(phase="ready", active=runtime(), next_generation=4))
+                root, canonical(phase="ready", active=seat, next_generation=4))
+
+    def test_soren_seat_without_a_commit_identity_is_refused(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            seat = runtime()
+            with self.assertRaises(HELPER_MODULE.FixedRecoverExit) as ctx:
+                HELPER_MODULE.verify_ownership(
+                    root, canonical(phase="ready", active=seat, next_generation=4))
+            self.assertEqual(ctx.exception.code, HELPER_MODULE.EX_OWNERSHIP_MISSING)
 
     def test_present_runtime_directory_proves_ownership(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            seat = runtime()
+            seat = runtime(game="hanjuku-hero", adapter="retroarch")
             (root / HELPER_MODULE.RUNTIMES_REL / seat["runtime_id"]).mkdir(parents=True)
             HELPER_MODULE.verify_ownership(
                 root, canonical(phase="ready", active=seat, next_generation=4))
@@ -329,10 +340,13 @@ class HelperOwnershipTests(unittest.TestCase):
 FAILED_REQUEST = "0f5d2a1c-3b4e-4a5d-8f6a-1b2c3d4e5f60"
 
 
-def failed_candidate_state(seat, *, previous=None, retiring=None, **overrides):
+def failed_candidate_state(seat, *, previous=None, retiring=None,
+                           error_code="rollback_failed", **overrides):
     """One failed switch whose candidate seat is the given runtime."""
 
-    previous = previous or runtime(seat_generation=seat["generation"] - 1)
+    previous = previous or runtime(
+        seat_generation=seat["generation"] - 1, game="hanjuku-hero",
+        adapter="retroarch")
     state = canonical(
         phase="failed",
         candidate=seat if retiring is None else None,
@@ -344,7 +358,7 @@ def failed_candidate_state(seat, *, previous=None, retiring=None, **overrides):
             "request_id": FAILED_REQUEST,
             "generation": seat["generation"],
             "to_game": seat["game"],
-            "error_code": "rollback_failed",
+            "error_code": error_code,
             "cleanup_pending": True,
         },
     )
@@ -352,7 +366,35 @@ def failed_candidate_state(seat, *, previous=None, retiring=None, **overrides):
     return state
 
 
-def write_failed_receipt(root, seat, request_id=FAILED_REQUEST, **overrides):
+def write_succeeded_receipt(root, seat, request_id="aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"):
+    """A commit receipt that published exactly this runtime (Soren proof)."""
+
+    receipt = {
+        "request_id": request_id,
+        "status": "succeeded",
+        "generation": seat["generation"],
+        "runtime_id": seat["runtime_id"],
+        "target": seat["game"],
+        "result": {
+            "status": "succeeded",
+            "from_game": "hanjuku-hero",
+            "to_game": seat["game"],
+            "generation": seat["generation"],
+            "active_runtime": {
+                "game": seat["game"],
+                "runtime_id": seat["runtime_id"],
+                "generation": seat["generation"],
+                "lease_id": seat["lease_id"],
+            },
+        },
+    }
+    path = root / HELPER_MODULE.REQUESTS_REL / f"{request_id}.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(receipt), encoding="utf-8")
+
+
+def write_failed_receipt(root, seat, request_id=FAILED_REQUEST,
+                         error_code="rollback_failed", **overrides):
     receipt = {
         "request_id": request_id,
         "status": "failed",
@@ -361,7 +403,7 @@ def write_failed_receipt(root, seat, request_id=FAILED_REQUEST, **overrides):
         "target": seat["game"],
         "result": {
             "status": "failed",
-            "error_code": "rollback_failed",
+            "error_code": error_code,
             "to_game": seat["game"],
             "generation": seat["generation"],
         },
@@ -478,6 +520,134 @@ class HelperDeadSeatOwnershipTests(unittest.TestCase):
             self.assertEqual(ctx.exception.code, HELPER_MODULE.EX_OWNERSHIP_MISSING)
 
 
+class HelperStageAwareOwnershipTests(unittest.TestCase):
+    """A directory-owning candidate is stage-aware (#4144 D2)."""
+
+    def seat(self, **overrides):
+        return runtime(seat_generation=3, game="mystery-view", adapter="program",
+                       **overrides)
+
+    def _state(self, seat, error_code, retiring=False):
+        state = failed_candidate_state(
+            seat, error_code=error_code,
+            retiring=seat if retiring else None)
+        if retiring:
+            seat["cleanup_role"] = "failed_candidate"
+        return state
+
+    def test_pre_materialize_candidate_has_no_directory(self):
+        for retiring in (False, True):
+            with self.subTest(retiring=retiring):
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    seat = self.seat()
+                    state = self._state(seat, "start_failed", retiring=retiring)
+                    (root / HELPER_MODULE.RUNTIMES_REL
+                     / state["previous"]["runtime_id"]).mkdir(parents=True)
+                    write_failed_receipt(root, seat, error_code="start_failed")
+                    HELPER_MODULE.verify_ownership(root, state)
+
+    def test_materialized_candidate_keeps_the_ownership_failure(self):
+        for error_code, reason in (
+            ("readiness_timeout", HELPER_MODULE.EX_OWNERSHIP_MISSING_CANDIDATE),
+            ("agent_start_failed", HELPER_MODULE.EX_OWNERSHIP_MISSING_CANDIDATE),
+            ("timeout", HELPER_MODULE.EX_OWNERSHIP_MISSING_CANDIDATE),
+            ("readiness_timeout", HELPER_MODULE.EX_OWNERSHIP_MISSING_RETIRING),
+        ):
+            retiring = reason == HELPER_MODULE.EX_OWNERSHIP_MISSING_RETIRING
+            with self.subTest(error_code=error_code, retiring=retiring):
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    seat = self.seat()
+                    state = self._state(seat, error_code, retiring=retiring)
+                    (root / HELPER_MODULE.RUNTIMES_REL
+                     / state["previous"]["runtime_id"]).mkdir(parents=True)
+                    write_failed_receipt(root, seat, error_code=error_code)
+                    with self.assertRaises(HELPER_MODULE.FixedRecoverExit) as ctx:
+                        HELPER_MODULE.verify_ownership(root, state)
+                    self.assertEqual(ctx.exception.code, reason)
+
+    def test_stable_directory_owning_seat_is_never_pre_materialize(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            seat = runtime(game="hanjuku-hero", adapter="retroarch")
+            with self.assertRaises(HELPER_MODULE.FixedRecoverExit) as ctx:
+                HELPER_MODULE.verify_ownership(
+                    root, canonical(phase="ready", active=seat, next_generation=4))
+            self.assertEqual(ctx.exception.code, HELPER_MODULE.EX_OWNERSHIP_MISSING)
+
+    def test_unknown_adapter_is_fail_closed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            seat = runtime(adapter="future-adapter")
+            with self.assertRaises(HELPER_MODULE.FixedRecoverExit) as ctx:
+                HELPER_MODULE.verify_ownership(
+                    root, canonical(phase="ready", active=seat, next_generation=4))
+            self.assertEqual(ctx.exception.code, HELPER_MODULE.EX_OWNERSHIP_MISSING)
+
+
+class HelperSorenIdentityTests(unittest.TestCase):
+    """Soren ownership is the durable commit identity (#4144 D1)."""
+
+    def seat(self, **overrides):
+        return runtime(**overrides)
+
+    def test_previous_soren_seat_uses_commit_identity(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            previous = self.seat(seat_generation=2)
+            write_succeeded_receipt(root, previous, "cccccccc-dddd-4eee-8fff-000000000000")
+            state = canonical(phase="ready", active=None, previous=previous,
+                              next_generation=4)
+            HELPER_MODULE.verify_ownership(root, state)
+
+    def test_a_lease_mismatch_is_not_ownership(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            seat = self.seat()
+            write_succeeded_receipt(root, seat)
+            seat["lease_id"] = "another-lease"
+            with self.assertRaises(HELPER_MODULE.FixedRecoverExit) as ctx:
+                HELPER_MODULE.verify_ownership(
+                    root, canonical(phase="ready", active=seat, next_generation=4))
+            self.assertEqual(ctx.exception.code, HELPER_MODULE.EX_OWNERSHIP_MISSING)
+
+    def test_retirement_proof_covers_a_retiring_soren_seat(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            seat = self.seat(cleanup_role="retired")
+            state = canonical(
+                phase="failed",
+                retiring=[{**seat, "retirement": {
+                    "source_runtime": {
+                        "game": seat["game"],
+                        "runtime_id": seat["runtime_id"],
+                        "generation": seat["generation"],
+                        "lease_id": seat["lease_id"],
+                    },
+                    "active_runtime": {
+                        "game": "hanjuku-hero",
+                        "runtime_id": "g4-abcdef",
+                        "generation": 4,
+                        "lease_id": "new-lease",
+                    },
+                }}],
+                last_result={"status": "succeeded"})
+            HELPER_MODULE.verify_ownership(root, state)
+
+    def test_soren_failed_candidate_keeps_its_terminal_failure_proof(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            seat = self.seat(seat_generation=3)
+            state = failed_candidate_state(
+                seat, previous=runtime(seat_generation=2, game="hanjuku-hero",
+                                       adapter="retroarch"))
+            (root / HELPER_MODULE.RUNTIMES_REL
+             / state["previous"]["runtime_id"]).mkdir(parents=True)
+            write_failed_receipt(root, seat)
+            HELPER_MODULE.verify_ownership(root, state)
+
+
 class HelperCliTests(unittest.TestCase):
     def _root_with_launcher(self, exit_code=0):
         tmp = tempfile.TemporaryDirectory()
@@ -506,6 +676,25 @@ class HelperCliTests(unittest.TestCase):
             "--timeout", str(HELPER_MODULE.CLI_RECOVER_TIMEOUT_S),
         ])
         self.assertLessEqual(HELPER_MODULE.CLI_RECOVER_TIMEOUT_S, 600)
+
+    def test_soren_seated_failed_state_reaches_the_canonical_cli(self):
+        """The 00:39 recovery was a switch; this pins the recover path (#4144)."""
+
+        root = self._root_with_launcher()
+        seat = runtime(seat_generation=3)
+        write_succeeded_receipt(root, seat)
+        write_state(root, canonical(
+            phase="failed", previous=seat, next_generation=4,
+            last_result={"status": "failed",
+                         "request_id": "bbbbbbbb-cccc-4ddd-8eee-ffffffffffff",
+                         "to_game": "sorengame", "generation": 3}))
+        self.assertEqual(HELPER_MODULE.recover(root, "failed", False), 0)
+        argv = (root / "argv.txt").read_text(encoding="utf-8").splitlines()
+        self.assertEqual(argv, [
+            str(root / HELPER_MODULE.LAUNCHER_REL), "--config",
+            str(root / HELPER_MODULE.CONFIG_REL), "recover",
+            "--timeout", str(HELPER_MODULE.CLI_RECOVER_TIMEOUT_S),
+        ])
 
     def test_missing_launcher_is_refused(self):
         with tempfile.TemporaryDirectory() as tmp:

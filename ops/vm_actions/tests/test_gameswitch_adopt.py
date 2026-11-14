@@ -274,6 +274,7 @@ def write_receipt(root, request_id=REQUEST_ID, receipt_overrides=None, result_ov
         "operation": "switch",
         "target": "sorengame",
         "generation": 3,
+        "runtime_id": "g3-abcdef",
         "status": "failed",
         "result": result,
     }
