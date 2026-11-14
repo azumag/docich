@@ -2561,6 +2561,14 @@ class RetroCornerManager:
             return None
         with self._locked():
             latest = self._read_state()
+            # A durable stop request is an operator stop that arrived while the
+            # corner was still ``starting``.  Consume it exactly like the
+            # direct stop path: a scripted Hanjuku run needs the same request
+            # id in ``hanjuku_manual_save.json`` or its restore waits for a
+            # round boundary that never comes.  ``failed`` stays untouched
+            # here (#4226 owns that slice).
+            if latest.get("status") == "active" and self._scripted_hanjuku(latest):
+                self._request_hanjuku_save(latest)
             if latest.get("status") in {"active", "restoring"}:
                 result = self._finish_locked(latest, self._local_now())
             else:
@@ -3911,34 +3919,50 @@ class RetroCornerManager:
             return stop_manual(self.g, self, self._stop_direct, busy_callback=self._stop_direct)
         return self._stop_direct()
 
+    def _request_hanjuku_save(self, state: dict[str, object]) -> None:
+        """Write the manual-save request that authorizes a Hanjuku stop.
+
+        The caller must hold ``self._locked()`` (the lock is not re-entrant).
+        This is the explicit operator-stop contract: the save request carries
+        the same request id the restore switch will use, and
+        ``allow_unsaved_stop`` only permits the stop when the save itself
+        fails.  Natural endings and non-scripted games never opt in.
+
+        A refusal raises before the caller can write ``restoring``.  The
+        durable stop marker and the active owner are left untouched, so the
+        operator can retry the stop instead of it being silently converted
+        into an unsaved restore.
+        """
+        from .agent.fence import shared_section
+        from .naming import runtime_directory
+        from .retroarch_boundary import MANUAL_SAVE_FILE
+
+        def request_save():
+            canonical, _ = self.store.canonical.load()
+            active = canonical.get("active") or {}
+            expected = state.get("bot_identity")
+            if (canonical.get("phase") != "ready" or not isinstance(expected, dict)
+                    or active.get("game") != "hanjuku-hero"
+                    or any(active.get(k) is None or active.get(k) != expected.get(k) for k in
+                           ("game", "runtime_id", "generation", "lease_id"))):
+                raise RetroCornerError("Hanjuku stop runtime identity is unverified")
+            request_id = new_request_id()
+            atomic_write_json(runtime_directory(self.g.state_dir, active["runtime_id"])
+                              / MANUAL_SAVE_FILE,
+                              {**expected, "schema": 1, "request_id": request_id,
+                               "allow_unsaved_stop": True})
+            state.update(status="active", switch_request_id=request_id,
+                         manual_stop_requested=True)
+
+        shared_section(self.g.state_dir, request_save)
+
     def _stop_direct(self) -> CornerResult:
         with self._locked():
             state = self._read_state()
             if self._scripted_hanjuku(state) and state.get("status") in {"active", "failed"}:
                 # Explicit operator stop attempts a save, then permits an
                 # unsaved stop on failure. Natural endings do not opt in.
-                from .agent.fence import shared_section
-                from .naming import runtime_directory
-                from .retroarch_boundary import MANUAL_SAVE_FILE
-
-                def request_save():
-                    canonical, _ = self.store.canonical.load()
-                    active = canonical.get("active") or {}
-                    expected = state.get("bot_identity")
-                    if (canonical.get("phase") != "ready" or not isinstance(expected, dict)
-                            or active.get("game") != "hanjuku-hero"
-                            or any(active.get(k) is None or active.get(k) != expected.get(k) for k in
-                                   ("game", "runtime_id", "generation", "lease_id"))):
-                        raise RetroCornerError("Hanjuku stop runtime identity is unverified")
-                    request_id = new_request_id()
-                    atomic_write_json(runtime_directory(self.g.state_dir, active["runtime_id"])
-                                      / MANUAL_SAVE_FILE,
-                                      {**expected, "schema": 1, "request_id": request_id,
-                                       "allow_unsaved_stop": True})
-                    state.update(status="active", switch_request_id=request_id,
-                                 manual_stop_requested=True)
-
-                shared_section(self.g.state_dir, request_save)
+                self._request_hanjuku_save(state)
             if state.get("status") not in {"active", "restoring"}:
                 return CornerResult("noop", detail="not-active")
             self._ensure_runtime()
