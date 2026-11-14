@@ -100,6 +100,85 @@ class StorageReclaimTests(unittest.TestCase):
         self.assertFalse(old.exists())
         self.assertTrue(recent.exists())
 
+    # ---- new: verify/ sweep (#4127, AGENTS.md §14) ----------------------
+
+    def test_verify_sweep_keeps_old_and_recent_entries_until_reference_checks_exist(self):
+        # The proposed 3d gate is not an authorization to delete: until
+        # reference checks exist, both old and recent entries must be kept.
+        four_days = time.time() - 4 * 86400
+        old = self.make("verify/1234-old-run", four_days)
+        recent = self.make("verify/1235-active-run", RECENT)
+
+        result = self.run_helper(apply=True)
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(old.exists(), result.stdout)
+        self.assertTrue(recent.exists(), result.stdout)
+        self.assertTrue((self.tmp / "verify").is_dir())
+
+    def test_verify_sweep_dry_run_deletes_nothing(self):
+        four_days = time.time() - 4 * 86400
+        old = self.make("verify/1234-old-run", four_days)
+
+        result = self.run_helper()
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(any(l.startswith("KEEP") and str(old) in l
+                            for l in result.stdout.splitlines()), result.stdout)
+        self.assertTrue(old.exists())
+
+    def test_verify_sweep_respects_custom_gate(self):
+        four_days = time.time() - 4 * 86400
+        entry = self.make("verify/1234-old-run", four_days)
+
+        result = self.run_helper("--verify-min-age-days", "30", apply=True)
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(entry.exists(), result.stdout)
+        self.assertIn("KEEP", result.stdout)
+
+    def test_verify_old_directory_with_recent_internal_file_is_kept(self):
+        old = self.make("verify/old-but-active", OLD)
+        os.utime(old / "data.bin", None)
+        result = self.run_helper(apply=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue((old / "data.bin").exists(), result.stdout)
+        self.assertIn(f"KEEP {old}", result.stdout)
+
+    @unittest.skipUnless(os.path.isdir("/proc"), "cwd reference test requires Linux")
+    def test_verify_old_directory_in_use_as_cwd_is_kept(self):
+        old = self.make("verify/cwd-in-use", OLD)
+        proc = subprocess.Popen(
+            [sys.executable, "-c", "import time; time.sleep(30)"],
+            cwd=str(old), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+        try:
+            time.sleep(0.2)
+            result = self.run_helper(apply=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertTrue(old.exists(), result.stdout)
+            self.assertIn(f"KEEP {old}", result.stdout)
+        finally:
+            proc.kill()
+            proc.wait(timeout=10)
+
+    def test_verify_symlink_to_external_directory_is_never_deleted(self):
+        external = self.base / "external-active"
+        external.mkdir()
+        (external / "important.txt").write_text("keep")
+        verify = self.tmp / "verify"
+        verify.mkdir()
+        link = verify / "external-link"
+        link.symlink_to(external, target_is_directory=True)
+        result = self.run_helper(apply=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(link.is_symlink(), result.stdout)
+        self.assertEqual((external / "important.txt").read_text(), "keep")
+
+    def test_verify_sweep_rejects_non_numeric_gate(self):
+        result = self.run_helper("--verify-min-age-days", "soon")
+        self.assertEqual(result.returncode, 2)
+
     def test_voicevox_archive_requires_opt_in_and_engine(self):
         voicevox = self.base / "voicevox"
         (voicevox / "current").mkdir(parents=True)
@@ -509,6 +588,7 @@ class ControlPlaneWiringTests(unittest.TestCase):
         self.assertNotIn('"$home_root/build"', text)
         # The control plane must not forward these test-only path flags.
         workflow = (ROOT / ".github" / "workflows" / "vm-operations.yml").read_text()
+        self.assertNotIn("--verify-min-age-days", workflow)
         self.assertNotIn("--stale-clone", workflow)
         self.assertNotIn("--snap-cache-root", workflow)
         self.assertNotIn("--home-root", workflow)
@@ -527,6 +607,15 @@ class ControlPlaneWiringTests(unittest.TestCase):
         self.assertIn("aivis_engine", workflow)
         self.assertIn("AIVIS_ENGINE=%s", workflow)
         self.assertIn("AIVIS_ENGINE: ${{ inputs.aivis_engine }}", workflow)
+
+    def test_verify_sweep_uses_its_own_age_gate(self):
+        # #4127: the dedicated 3d gate is parsed, but deletion remains
+        # disabled until safe reference checks are implemented.
+        text = HELPER.read_text()
+        self.assertIn("verify_min_age_days=3", text)
+        self.assertIn("--verify-min-age-days", text)
+        self.assertIn('verify_dir="$tmp/verify"', text)
+        self.assertIn('KEEP $path (process references not verified)', text)
 
     def test_stale_paths_entries_are_absolute_allowlisted_and_live_encoder_excluded(self):
         text = HELPER.read_text()

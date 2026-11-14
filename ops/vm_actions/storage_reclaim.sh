@@ -8,19 +8,19 @@ set -euo pipefail
 # clones additionally need origin match + clean tree + zero process refs
 # (any doubt = skip, fail-closed). Docker: dangling images / build cache
 # older than 7d only — never tagged images, containers or volumes.
-# Network input never reaches a path; external inputs are APPLY,
-# VOICEVOX_ARCHIVE, AIVIS_ENGINE.
+# External inputs are only APPLY, VOICEVOX_ARCHIVE, AIVIS_ENGINE.
 # SIZE MATTERS: gateway exec caps stdin at 16384 bytes including the 3-line
 # preamble — keep this file well under it (guarded by a wiring test).
 #
-# Test-only flags: --root, --min-age-days, --voicevox-root,
-#   --include-voicevox-archive, --skip-system, --snap-cache-root,
-#   --stale-clone "PATH|ORIGIN", --home-root, --sys-tmp, --aivis-root,
-#   --include-aivis-engine
+# Test-only flags: --root, --min-age-days, --verify-min-age-days,
+#   --voicevox-root, --include-voicevox-archive, --skip-system,
+#   --snap-cache-root, --stale-clone "PATH|ORIGIN", --home-root, --sys-tmp,
+#   --aivis-root, --include-aivis-engine
 
 apply="${APPLY:-0}"
 root="/home/ubuntu/soren"
 min_age_days=21
+verify_min_age_days=3
 voicevox_root="/opt/voicevox"
 include_voicevox="${VOICEVOX_ARCHIVE:-0}"
 skip_system=0
@@ -37,8 +37,7 @@ stale_clones=(
 # Fixed one-off leftovers in HOME and the system /tmp: absolute-path
 # allowlist (no globs, no network input), 7-day gate + reference check.
 # --home-root / --sys-tmp are test-only so CI/dev never evaluates real /tmp.
-# NOTE: /home/ubuntu/build is deliberately ABSENT — it holds the live
-# streaming encoder (ffmpeg x11grab) despite its old mtime.
+# /home/ubuntu/build is deliberately ABSENT (live streaming encoder).
 home_root="/home/ubuntu"
 sys_tmp="/tmp"
 aivis_root="/home/ubuntu/.local/share/AivisSpeech-Engine"
@@ -51,6 +50,7 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --root) root="$2"; shift 2 ;;
     --min-age-days) min_age_days="$2"; shift 2 ;;
+    --verify-min-age-days) verify_min_age_days="$2"; shift 2 ;;
     --voicevox-root) voicevox_root="$2"; shift 2 ;;
     --include-voicevox-archive) include_voicevox=1; shift ;;
     --skip-system) skip_system=1; shift ;;
@@ -68,10 +68,10 @@ done
 [[ "$include_voicevox" == 0 || "$include_voicevox" == 1 ]] || { echo "invalid VOICEVOX_ARCHIVE" >&2; exit 2; }
 [[ "$include_aivis" == 0 || "$include_aivis" == 1 ]] || { echo "invalid AIVIS_ENGINE" >&2; exit 2; }
 [[ "$min_age_days" =~ ^[0-9]+$ ]] || { echo "invalid min-age-days" >&2; exit 2; }
+[[ "$verify_min_age_days" =~ ^[0-9]+$ ]] || { echo "invalid verify-min-age-days" >&2; exit 2; }
 [[ -d "$root" ]] || { echo "root not found: $root" >&2; exit 2; }
 
-# Unused second TTS engine: opt-in like VOICEVOX, guarded on the ACTIVE
-# TTS (VOICEVOX engine) being intact (checked at the use site).
+# Unused second TTS engine: opt-in like VOICEVOX, use-site guarded.
 
 # Fixed one-off leftovers (absolute allowlist, 7-day gate + reference check;
 # built after parsing so --home-root/--sys-tmp win). /home/ubuntu/build is
@@ -112,8 +112,7 @@ total=0
 say() { printf '%s\n' "$*"; }
 
 bytes_of() {
-  # 1K-block size, works with both GNU and BSD du. Root-owned targets (snapd
-  # cache) fall back to passwordless sudo so size reporting never claims 0.
+  # 1K-block size (GNU/BSD du); sudo fallback for root-owned targets.
   local kb
   kb="$(du -skx "$1" 2>/dev/null | awk 'NR==1{print $1}')"
   if ! [[ "$kb" =~ ^[0-9]+$ ]]; then
@@ -124,8 +123,7 @@ bytes_of() {
 }
 
 mtime_of() {
-  # GNU stat first, then BSD/macOS, then passwordless sudo for root-owned
-  # paths (snapd cache is 0700 root on production).
+  # GNU stat, then BSD/macOS, then sudo for root-owned paths.
   local m
   if m="$(stat -c %Y "$1" 2>/dev/null)" && [[ "$m" =~ ^[0-9]+$ ]]; then
     printf '%s\n' "$m"
@@ -155,8 +153,7 @@ is_old() {
 
 remove_path() {
   local path="$1" bytes parent
-  # Local existence first, then passwordless sudo for root-owned trees where
-  # the ubuntu user cannot even stat the entry. Missing target = skip.
+  # Missing target = skip; sudo probes root-owned trees ubuntu cannot stat.
   [[ -e "$path" ]] || sudo -n test -e "$path" 2>/dev/null || return 0
   bytes="$(bytes_of "$path")"; bytes="${bytes:-0}"
   printf 'DEL  %12s B  %s\n' "$bytes" "$path"
@@ -180,7 +177,7 @@ run_cmd() {
   fi
 }
 
-say "=== storage_reclaim mode=$([[ "$apply" == 1 ]] && echo apply || echo dry-run) root=$root min_age_days=$min_age_days ==="
+say "=== storage_reclaim mode=$([[ "$apply" == 1 ]] && echo apply || echo dry-run) root=$root min_age_days=$min_age_days verify_min_age_days=$verify_min_age_days ==="
 
 # 1. Stale verification artifacts under soren/tmp (allowlist + age gate).
 tmp="$root/tmp"
@@ -209,16 +206,22 @@ if [[ -d "$deploy_backups" ]]; then
   done
 fi
 
+# 2b. Verify sweep is disabled until safe process-reference checks exist.
+verify_dir="$tmp/verify"
+if [[ -d "$verify_dir" ]]; then
+  for path in "$verify_dir"/*; do
+    [[ -e "$path" ]] || continue
+    say "KEEP $path (process references not verified)"
+  done
+fi
+
 # 3. Stale one-off clones (form "path|origin"): age gate + identity +
-#    reference checks, dry-run only prints. Freshness runs BEFORE any git
-#    subcommand: `git status` creates .git/index.lock and bumps .git's dir
-#    mtime, which would make a later probe see "touched now" (self-defeating).
-#    Every failure mode falls through to KEEP/SKIP (fail-safe).
+#    reference checks. Freshness runs BEFORE any git subcommand (index.lock
+#    would bump .git mtime, self-defeating). Failures fall to KEEP/SKIP.
 tmp_clone_min_age_days=7
 stale_clone_refs() {
-  # Count running processes whose args/cwd reference PATH; excludes this
-  # script (storage_reclaim). Non-zero return = scan failed, so the caller
-  # skips instead of trusting an unverified scan (fail-closed).
+  # Count processes whose args/cwd reference PATH (excludes this script).
+  # Non-zero return = scan failed; caller skips (fail-closed).
   local path="$1" ps_out line cwd found=0
   if ! ps_out="$(ps -eo args= 2>/dev/null)"; then
     return 1
@@ -252,8 +255,7 @@ for clone_spec in "${stale_clones[@]}"; do
     say "SKIP $clone (not a git working tree)"
     continue
   fi
-  # Freshness BEFORE any git subcommand (index.lock would bump .git mtime
-  # and defeat this gate): dir/.git/.git/objects mtimes, then files inside.
+  # Freshness BEFORE git (see section 3): dir/.git/objects mtimes, then files.
   clone_fresh=0
   for probe in "$clone" "$clone/.git" "$clone/.git/objects"; do
     [[ -e "$probe" ]] || continue
@@ -278,8 +280,7 @@ for clone_spec in "${stale_clones[@]}"; do
     *"$expected_origin"*) ;;
     *) say "SKIP $clone (origin does not match $expected_origin)"; continue ;;
   esac
-  # Dirty tree = somebody is still using it. --no-optional-locks keeps status
-  # from rewriting .git/index.
+  # Dirty tree = still in use. --no-optional-locks avoids index rewrites.
   if [[ -n "$(git --no-optional-locks -C "$clone" status --porcelain 2>/dev/null || true)" ]]; then
     say "KEEP $clone (uncommitted changes present)"
     continue
@@ -315,8 +316,7 @@ for path in "${stale_paths[@]}"; do
 done
 
 # 4. snapd download cache: age-gated blobs only, never the snaps themselves.
-#    Root 0700 on production: list/stat/rm fall back to passwordless sudo;
-#    --snap-cache-root (tests) points at a temp dir needing no escalation.
+#    Root 0700 on production: list/stat/rm fall back to passwordless sudo.
 snap_cache_min_age_days=7
 if [[ "$skip_system" == 0 || "$snap_cache_explicit" == 1 ]]; then
   if [[ -d "$snap_cache_root" ]]; then
