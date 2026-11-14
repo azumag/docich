@@ -416,3 +416,13 @@ def test_the_picker_progress_records_the_hero_status_location(monkeypatch):
         p.world_map_step(VIEW, mem, picker())
     record = next(r for r in mem['_records'] if r['decision'] == 'camp_recall_picker_progress')
     assert record['observed_metric']['hero_status'] == {'location': 'キカンドン', 'observed': True}
+
+
+def test_a_goal_less_picker_schedules_the_capital_roster_read(monkeypatch):
+    """g1163 2026-11-14 08:59: statuses null in ch.9; read the capital's list."""
+    mem = memory()
+    at(monkeypatch, 'アルマムーン')
+    monkeypatch.setattr(p, 'world_cursor', lambda _: None)
+    p.world_map_step(VIEW, mem, picker())
+    home = p.chart.home_castle(1)
+    assert mem['roster_read_due'][home] == 100 + 180
