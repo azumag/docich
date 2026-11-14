@@ -813,15 +813,18 @@ class CornerRotationManager:
                     pass
                 own = pending and raw.get("rotation_request_id") == pending["request_id"]
                 if status in BUSY and not own:
-                    if status == "restoring":
+                    if status in {"restoring", "failed"}:
                         # A crashed finish parks the record at ``restoring``
-                        # forever: no pending reservation owns it and the
-                        # legacy restoring retry tick is unreachable while
-                        # rotation is enabled. The timer-safe adapter hook
-                        # replays the recorded restore inside its own bounds;
-                        # on a refusal it records last_error_code and the row
-                        # simply stays busy (fail closed, same as a latch).
-                        runner = getattr(adapter, "recover_failed_restore", None)
+                        # (or ``failed`` when the restore switch lost) forever:
+                        # no pending reservation owns it and the legacy
+                        # restoring retry tick is unreachable while rotation is
+                        # enabled. The adapter hook replays the recorded
+                        # restore inside its own bounds; on a refusal it
+                        # records last_error_code and the row simply stays
+                        # busy (fail closed, same as a latch).
+                        hook = ("recover_failed_restore" if status == "restoring"
+                                else "recover_failed")
+                        runner = getattr(adapter, hook, None)
                         outcome = "no-hook"
                         if callable(runner):
                             try:
