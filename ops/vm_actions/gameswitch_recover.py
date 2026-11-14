@@ -14,7 +14,11 @@ the canonical GameSwitch state and refuses to run unless every guard holds:
   ``cleanup_pending`` flag; a mismatch is a declared-mismatch refusal.
 - ownership proof must exist: a durable request receipt on disk for any
   canonical ``request_id`` and a runtime directory for every referenced
-  runtime seat. Missing proof is rejected.
+  runtime seat. Missing proof is rejected. One reviewed exception: a failed
+  candidate seat whose directory the failed cleanup already removed stays
+  owned through the durable terminal-failure receipt that names the same
+  runtime identity and target, because no later surface could otherwise
+  settle the dead seat (2026-11-14).
 - the canonical CLI runs once with a bounded deadline in a fixed argv; the
   post-run canonical state must again be valid.
 
@@ -110,6 +114,13 @@ EX_INVALID_RESULT = 72
 EX_DECLARED_MISMATCH = 80
 EX_UNKNOWN_DRIFT = 81
 EX_OWNERSHIP_MISSING = 82
+# A missing runtime directory is reported with the seat class it belongs to so
+# the owner-only workflow can say which seat holds the unproven proof. The
+# stable seats keep the original fixed reason (82): only a failed candidate is
+# ever allowed to lose its directory without losing ownership (see
+# ``_terminal_failure_receipt``).
+EX_OWNERSHIP_MISSING_CANDIDATE = 83
+EX_OWNERSHIP_MISSING_RETIRING = 84
 
 CLI_RECOVER_TIMEOUT_S = 420
 CLI_KILL_GRACE_S = 30
@@ -304,13 +315,87 @@ def verify_ownership(root: Path, state: dict) -> None:
             pending = result.get("cleanup_pending")
             if pending is not None and not isinstance(pending, bool):
                 raise FixedRecoverExit(EX_UNKNOWN_DRIFT, "request receipt cleanup_pending is not bool")
+    terminal_failure = _terminal_failure_receipt(root, state)
     for label, runtime in _seated_runtimes(state):
         runtime_dir = root / RUNTIMES_REL / str(runtime["runtime_id"])
-        if not runtime_dir.is_dir():
-            raise FixedRecoverExit(
-                EX_OWNERSHIP_MISSING,
-                f"{label} runtime directory {runtime_dir} is missing",
-            )
+        if runtime_dir.is_dir():
+            continue
+        # The runtime directory is a working directory that the failed
+        # candidate's own cleanup may already have removed. A terminal failed
+        # seat therefore keeps this checkout's ownership through the durable
+        # receipt for its own failed request; requiring the directory forever
+        # left such a seat unrecoverable (2026-11-14: the standard recover
+        # refused with ownership_missing while the canonical CLI was the only
+        # surface that could settle the dead seat).
+        if terminal_failure is not None and _dead_seat_is_owned(state, terminal_failure, label, runtime):
+            continue
+        raise FixedRecoverExit(
+            _missing_directory_reason(label),
+            f"{label} runtime directory {runtime_dir} is missing",
+        )
+
+
+def _missing_directory_reason(label: str) -> int:
+    if label == "candidate":
+        return EX_OWNERSHIP_MISSING_CANDIDATE
+    if label.startswith("retiring["):
+        return EX_OWNERSHIP_MISSING_RETIRING
+    return EX_OWNERSHIP_MISSING
+
+
+def _terminal_failure_receipt(root: Path, state: dict) -> dict | None:
+    """The durable receipt for the request canonical already recorded failed.
+
+    ``failed`` keeps no live ``request_id``, so ``last_result`` is the only
+    pointer to it. The receipt has to be this checkout's own terminal failure;
+    anything unreadable or inconsistent yields no proof (never permission).
+    """
+
+    last_result = state.get("last_result")
+    if not isinstance(last_result, dict) or last_result.get("status") != "failed":
+        return None
+    request_id = last_result.get("request_id")
+    if not _request_id_ok(request_id):
+        return None
+    try:
+        receipt = json.loads(
+            (root / REQUESTS_REL / f"{request_id}.json").read_text(encoding="utf-8")
+        )
+    except (OSError, ValueError):
+        return None
+    if not isinstance(receipt, dict):
+        return None
+    if receipt.get("request_id") != request_id or receipt.get("status") != "failed":
+        return None
+    result = receipt.get("result")
+    if not isinstance(result, dict) or result.get("status") != "failed":
+        return None
+    return receipt
+
+
+def _dead_seat_is_owned(state: dict, receipt: dict, label: str, runtime: dict) -> bool:
+    """The terminal failure receipt names exactly this candidate seat.
+
+    Only a failed candidate (the ``candidate`` seat or a ``retiring`` entry
+    whose cleanup role is ``failed_candidate``) can lose its directory this
+    way. A stable seat without its directory stays an ownership failure, and
+    the receipt has to name the same runtime identity and target as the seat.
+    """
+
+    if label != "candidate" and not label.startswith("retiring["):
+        return False
+    if label.startswith("retiring[") and runtime.get("cleanup_role") != "failed_candidate":
+        return False
+    last_result = state.get("last_result")
+    if not isinstance(last_result, dict):
+        return False
+    return (
+        receipt.get("runtime_id") == runtime.get("runtime_id")
+        and receipt.get("generation") == runtime.get("generation")
+        and receipt.get("target") == runtime.get("game")
+        and last_result.get("generation") == runtime.get("generation")
+        and last_result.get("to_game") == runtime.get("game")
+    )
 
 
 def run_canonical_recover(root: Path) -> int:
