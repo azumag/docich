@@ -1,6 +1,8 @@
 __pycache__/
 *.pyc
 run/
+# ローカル実行のランタイム成果物（#4239 で混入 → #4242 で除去）。再混入防止。
+run-local/
 games/roms/*
 !games/roms/README.md
 .env
