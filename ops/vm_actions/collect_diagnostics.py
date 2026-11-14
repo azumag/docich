@@ -8043,7 +8043,10 @@ def _retained_corner_reason(rotation_data, game):
     for row in rows:
         if not isinstance(row, dict):
             continue
-        record = known.get(row.get("corner"))
+        corner_id = row.get("corner")
+        if not isinstance(corner_id, str):
+            continue
+        record = known.get(corner_id)
         if isinstance(record, dict) and record.get("game") == game:
             reason = row.get("reason_code")
     return reason if reason in CORNER_RETAINED_REASONS else None
