@@ -725,6 +725,31 @@ class RetroArchCoordinatorAdapter:
                 raise AdapterError("RetroArch child shutdown is not confirmed")
         return not any(pane.dead for pane in states)
 
+    def runtime_provably_dead(self, deadline: float, cancel) -> bool:
+        """True when nothing of this contained runtime can still be saved.
+
+        The safe-boundary contract protects a *live* game from being killed
+        without a save.  A runtime whose tmux game/agent windows are gone and
+        whose RetroArch command port no longer answers has no state left to
+        protect.  This probe exists so recovery can distinguish "the boundary
+        has not arrived yet" from "the runtime died before it arrived" — the
+        latter strands canonical in ``failed`` forever because the missing
+        boundary can never be produced (#4187, 2026-11-14 tmux death).
+        """
+        if not self._contained():
+            return False
+        self._check_active(deadline, cancel, "runtime_provably_dead")
+        if self.tmux.window_target_exists(self._game_window_target()):
+            return False
+        if self.tmux.window_target_exists(self._agent_window_target()):
+            return False
+        self._check_active(deadline, cancel, "runtime_provably_dead")
+        # The command port is the last survivor when a presenter or a detached
+        # RetroArch process outlives the window; a reply proves it is alive.
+        reply = send_ra_cmd("GET_STATUS", port=self._network_port(), wait_reply_s=.1)
+        self._check_active(deadline, cancel, "runtime_provably_dead")
+        return reply is None
+
     def _require_safe_cleanup(self, deadline: float, cancel) -> None:
         if self._contained():
             from ..agent.fence import read_canonical
@@ -732,6 +757,10 @@ class RetroArchCoordinatorAdapter:
             committed = any(isinstance(state.get(slot), dict) and
                             state[slot].get("runtime_id") == self.spec.runtime_id
                             for slot in ("active", "previous"))
+            if committed and self.runtime_provably_dead(deadline, cancel):
+                # Nothing can be saved any more, so the boundary requirement
+                # would only make the dead runtime unreleasable.
+                return
             if committed:
                 record = read_record(self.spec.runtime_dir / BOUNDARY_FILE)
                 if not matches(record, self.spec, record.get("request_id")) or record.get("status") != "reached":
@@ -770,6 +799,19 @@ class RetroArchCoordinatorAdapter:
             return False
         self._require_safe_cleanup(deadline, cancel)
         return True
+
+    def can_release_dead_previous(self, deadline: float, cancel) -> bool:
+        """A committed Hanjuku runtime that is provably gone may be released.
+
+        Only the *absence* of every live part of the runtime (game window,
+        agent window, RetroArch command port) authorises this.  A runtime that
+        still answers is never released here: it owes a boundary first.
+        """
+        self._check_active(deadline, cancel, "can_release_dead_previous")
+        from .. import hanjuku_run
+        if not self._contained() or not hanjuku_run.enabled(self.game):
+            return False
+        return self.runtime_provably_dead(deadline, cancel)
 
     def cleanup_runtime(self, deadline: float, cancel) -> None:
         self._require_safe_cleanup(deadline, cancel)

@@ -5755,6 +5755,7 @@ class GameSwitchCoordinator:
                 and active is None
             )
             released_terminal = None
+            release_detail = None
             if (isinstance(previous, Mapping) and active is None and not cleanup_pending
                     and state.get("candidate") is None and not state.get("retiring")
                     and previous.get("adapter") == "retroarch"
@@ -5763,13 +5764,28 @@ class GameSwitchCoordinator:
                     adapter = self._make_adapter(
                         RuntimeSpec.from_runtime(self.store.state_dir, previous), deadline)
                     verify = getattr(adapter, "can_release_terminal_previous", None)
-                    if callable(verify) and self._call_adapter(
+                    releasable = bool(callable(verify) and self._call_adapter(
                             lambda cancel: verify(deadline, cancel), deadline,
-                            self.step_timeouts.probe_s, "terminal_previous"):
+                            self.step_timeouts.probe_s, "terminal_previous"))
+                    release_reason = "terminal"
+                    dead_verify = getattr(adapter, "can_release_dead_previous", None)
+                    if not releasable and callable(dead_verify):
+                        # The terminal boundary can never arrive when the
+                        # runtime died first (tmux session loss).  Refusing
+                        # forever is not fail-closed: it strands canonical in
+                        # `failed` and stops the whole rotation.  Only an
+                        # adapter that proves the runtime is gone may release
+                        # it this way, and the proof is recorded.
+                        releasable = bool(self._call_adapter(
+                            lambda cancel: dead_verify(deadline, cancel), deadline,
+                            self.step_timeouts.probe_s, "dead_previous"))
+                        release_reason = "dead-runtime-no-boundary"
+                    if releasable:
                         if not self._teardown_runtime(adapter, deadline):
                             raise AdapterError("terminal previous cleanup is unconfirmed")
                         released_terminal = {key: previous[key] for key in
                                              ("game", "runtime_id", "generation", "lease_id")}
+                        release_detail = release_reason
                         abandon = True
                 except Exception as exc:
                     return self._recover_fail_locked(
@@ -5793,6 +5809,7 @@ class GameSwitchCoordinator:
             if released_terminal is not None:
                 prior = state.get("last_result") or {}
                 last_result.update(released_terminal=released_terminal,
+                                   released_reason=release_detail,
                                    restore_request_id=prior.get("request_id"))
             tx.transition(
                 {"failed"}, "idle",
