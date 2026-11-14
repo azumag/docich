@@ -138,6 +138,44 @@ class StorageReclaimTests(unittest.TestCase):
         self.assertTrue(entry.exists(), result.stdout)
         self.assertIn("KEEP", result.stdout)
 
+    def test_verify_old_directory_with_recent_internal_file_is_kept(self):
+        old = self.make("verify/old-but-active", OLD)
+        os.utime(old / "data.bin", None)
+        result = self.run_helper(apply=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue((old / "data.bin").exists(), result.stdout)
+        self.assertIn(f"KEEP {old}", result.stdout)
+
+    @unittest.skipUnless(os.path.isdir("/proc"), "cwd reference test requires Linux")
+    def test_verify_old_directory_in_use_as_cwd_is_kept(self):
+        old = self.make("verify/cwd-in-use", OLD)
+        proc = subprocess.Popen(
+            [sys.executable, "-c", "import time; time.sleep(30)"],
+            cwd=str(old), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+        try:
+            time.sleep(0.2)
+            result = self.run_helper(apply=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertTrue(old.exists(), result.stdout)
+            self.assertIn(f"KEEP {old}", result.stdout)
+        finally:
+            proc.kill()
+            proc.wait(timeout=10)
+
+    def test_verify_symlink_to_external_directory_is_never_deleted(self):
+        external = self.base / "external-active"
+        external.mkdir()
+        (external / "important.txt").write_text("keep")
+        verify = self.tmp / "verify"
+        verify.mkdir()
+        link = verify / "external-link"
+        link.symlink_to(external, target_is_directory=True)
+        result = self.run_helper(apply=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(link.is_symlink(), result.stdout)
+        self.assertEqual((external / "important.txt").read_text(), "keep")
+
     def test_verify_sweep_rejects_non_numeric_gate(self):
         result = self.run_helper("--verify-min-age-days", "soon")
         self.assertEqual(result.returncode, 2)
