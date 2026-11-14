@@ -32,9 +32,11 @@ class StorageReclaimTests(unittest.TestCase):
         os.utime(path, (mtime, mtime))
         return path
 
-    def run_helper(self, *args, apply=False):
+    def run_helper(self, *args, apply=False, env_extra=None):
         env = dict(os.environ)
         env["APPLY"] = "1" if apply else "0"
+        if env_extra:
+            env.update(env_extra)
         argv = ["bash", str(HELPER), "--root", str(self.soren)]
         # Hermetic defaults: point every production-root allowlist at a temp
         # dir (or an absent path) so a developer machine that happens to hold
@@ -100,54 +102,61 @@ class StorageReclaimTests(unittest.TestCase):
         self.assertFalse(old.exists())
         self.assertTrue(recent.exists())
 
-    # ---- new: verify/ sweep (#4127, AGENTS.md §14) ----------------------
+    # ---- new: verify/ sweep (#4127, #4172, AGENTS.md §14) ---------------
 
-    def test_verify_sweep_keeps_old_and_recent_entries_until_reference_checks_exist(self):
-        # The proposed 3d gate is not an authorization to delete: until
-        # reference checks exist, both old and recent entries must be kept.
-        four_days = time.time() - 4 * 86400
-        old = self.make("verify/1234-old-run", four_days)
+    def test_verify_sweep_apply_removes_old_unreferenced_entry_without_deep_updates(self):
+        # Positive case: old, no process refs, no file touched within the gate
+        # -> APPLY deletes, dry-run only plans it.
+        old = self.make("verify/1234-old-run", OLD)
+        self.age_tree(old, OLD)
+
+        dry = self.run_helper()
+        self.assertEqual(dry.returncode, 0, dry.stderr)
+        self.assertTrue(any(l.startswith("DEL") and str(old) in l
+                            for l in dry.stdout.splitlines()), dry.stdout)
+        self.assertTrue(old.exists())
+
+        applied = self.run_helper(apply=True)
+        self.assertEqual(applied.returncode, 0, applied.stderr)
+        self.assertFalse(old.exists(), applied.stdout)
+        self.assertTrue((self.tmp / "verify").is_dir())
+
+    def test_verify_sweep_keeps_recent_entry(self):
         recent = self.make("verify/1235-active-run", RECENT)
+        self.age_tree(recent, RECENT)
 
         result = self.run_helper(apply=True)
 
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertTrue(old.exists(), result.stdout)
         self.assertTrue(recent.exists(), result.stdout)
-        self.assertTrue((self.tmp / "verify").is_dir())
-
-    def test_verify_sweep_dry_run_deletes_nothing(self):
-        four_days = time.time() - 4 * 86400
-        old = self.make("verify/1234-old-run", four_days)
-
-        result = self.run_helper()
-
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertTrue(any(l.startswith("KEEP") and str(old) in l
-                            for l in result.stdout.splitlines()), result.stdout)
-        self.assertTrue(old.exists())
+        self.assertIn(f"KEEP {recent} (recent)", result.stdout)
 
     def test_verify_sweep_respects_custom_gate(self):
         four_days = time.time() - 4 * 86400
         entry = self.make("verify/1234-old-run", four_days)
+        self.age_tree(entry, four_days)
 
         result = self.run_helper("--verify-min-age-days", "30", apply=True)
 
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertTrue(entry.exists(), result.stdout)
-        self.assertIn("KEEP", result.stdout)
+        self.assertIn(f"KEEP {entry} (recent)", result.stdout)
 
     def test_verify_old_directory_with_recent_internal_file_is_kept(self):
+        # Old dir mtime alone is not enough: a file touched inside the gate
+        # blocks deletion (mirrors the clone find -mtime -N check).
         old = self.make("verify/old-but-active", OLD)
+        self.age_tree(old, OLD)
         os.utime(old / "data.bin", None)
         result = self.run_helper(apply=True)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertTrue((old / "data.bin").exists(), result.stdout)
-        self.assertIn(f"KEEP {old}", result.stdout)
+        self.assertIn(f"KEEP {old} (files modified within 3d)", result.stdout)
 
     @unittest.skipUnless(os.path.isdir("/proc"), "cwd reference test requires Linux")
     def test_verify_old_directory_in_use_as_cwd_is_kept(self):
         old = self.make("verify/cwd-in-use", OLD)
+        self.age_tree(old, OLD)
         proc = subprocess.Popen(
             [sys.executable, "-c", "import time; time.sleep(30)"],
             cwd=str(old), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
@@ -157,10 +166,27 @@ class StorageReclaimTests(unittest.TestCase):
             result = self.run_helper(apply=True)
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertTrue(old.exists(), result.stdout)
-            self.assertIn(f"KEEP {old}", result.stdout)
+            self.assertIn(f"KEEP {old} (referenced by", result.stdout)
         finally:
             proc.kill()
             proc.wait(timeout=10)
+
+    def test_verify_sweep_skips_when_reference_scan_fails(self):
+        # Fail-closed: if ps cannot be read, no verify entry may be deleted.
+        old = self.make("verify/1234-old-run", OLD)
+        self.age_tree(old, OLD)
+        fakebin = self.base / "fakebin"
+        fakebin.mkdir()
+        fake_ps = fakebin / "ps"
+        fake_ps.write_text("#!/bin/sh\nexit 1\n")
+        fake_ps.chmod(0o755)
+
+        result = self.run_helper(
+            apply=True, env_extra={"PATH": f"{fakebin}:{os.environ['PATH']}"})
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(old.exists(), result.stdout)
+        self.assertIn(f"SKIP {old} (reference check failed)", result.stdout)
 
     def test_verify_symlink_to_external_directory_is_never_deleted(self):
         external = self.base / "external-active"
@@ -172,8 +198,50 @@ class StorageReclaimTests(unittest.TestCase):
         link.symlink_to(external, target_is_directory=True)
         result = self.run_helper(apply=True)
         self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(f"KEEP {link} (symlink; not followed)", result.stdout)
         self.assertTrue(link.is_symlink(), result.stdout)
         self.assertEqual((external / "important.txt").read_text(), "keep")
+
+    def make_linked_worktree(self, name, stamp):
+        main = self.base / f"{name}-main"
+        subprocess.run(["git", "init", "-q", str(main)], check=True,
+                       stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        subprocess.run(
+            ["git", "-C", str(main), "-c", "user.email=t@example.com",
+             "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "init"],
+            check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        worktree = self.tmp / "verify"
+        worktree.mkdir(exist_ok=True)
+        worktree = worktree / name
+        subprocess.run(["git", "-C", str(main), "worktree", "add", "-q", str(worktree)],
+                       check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        self.age_tree(worktree, stamp)
+        return main, worktree
+
+    def test_verify_linked_worktree_is_unregistered_and_pruned(self):
+        main, worktree = self.make_linked_worktree("wt-old", OLD)
+
+        result = self.run_helper(apply=True)
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse(worktree.exists(), result.stdout)
+        listing = subprocess.run(
+            ["git", "-C", str(main), "worktree", "list", "--porcelain"],
+            check=True, stdout=subprocess.PIPE, text=True)
+        self.assertNotIn(str(worktree), listing.stdout)
+        self.assertFalse((main / ".git" / "worktrees" / "wt-old").exists())
+
+    def test_verify_dirty_linked_worktree_is_kept(self):
+        main, worktree = self.make_linked_worktree("wt-dirty", OLD)
+        (worktree / "untracked.txt").write_text("work in progress")
+        self.age_tree(worktree, OLD)
+
+        result = self.run_helper(apply=True)
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(worktree.exists(), result.stdout)
+        self.assertIn(f"KEEP {worktree} (git worktree remove failed)", result.stdout)
+        self.assertTrue((main / ".git" / "worktrees").exists())
 
     def test_verify_sweep_rejects_non_numeric_gate(self):
         result = self.run_helper("--verify-min-age-days", "soon")
@@ -609,13 +677,18 @@ class ControlPlaneWiringTests(unittest.TestCase):
         self.assertIn("AIVIS_ENGINE: ${{ inputs.aivis_engine }}", workflow)
 
     def test_verify_sweep_uses_its_own_age_gate(self):
-        # #4127: the dedicated 3d gate is parsed, but deletion remains
-        # disabled until safe reference checks are implemented.
+        # #4172: deletion is enabled only behind the dedicated 3d gate, the
+        # deep freshness scan and the fail-closed reference check.
         text = HELPER.read_text()
         self.assertIn("verify_min_age_days=3", text)
         self.assertIn("--verify-min-age-days", text)
         self.assertIn('verify_dir="$tmp/verify"', text)
-        self.assertIn('KEEP $path (process references not verified)', text)
+        self.assertIn('is_older_than "$path" "$verify_min_age_days"', text)
+        self.assertIn('find "$path" -type f -mtime -"$verify_min_age_days"', text)
+        self.assertIn('stale_clone_refs "$path"', text)
+        self.assertIn("git worktree remove", text)
+        self.assertIn("worktree prune", text)
+        self.assertNotIn("process references not verified", text)
 
     def test_stale_paths_entries_are_absolute_allowlisted_and_live_encoder_excluded(self):
         text = HELPER.read_text()
