@@ -822,11 +822,21 @@ class CornerRotationManager:
                         # on a refusal it records last_error_code and the row
                         # simply stays busy (fail closed, same as a latch).
                         runner = getattr(adapter, "recover_failed_restore", None)
+                        outcome = "no-hook"
                         if callable(runner):
                             try:
-                                runner()
-                            except Exception:
-                                pass
+                                outcome = runner()
+                            except Exception as exc:
+                                outcome = type(exc).__name__
+                        # The corner's own last_error_code is invisible while
+                        # the drive never fires (e.g. a held state lock), so
+                        # the ledger keeps the last observed outcome too.
+                        state["last_restoring_drive"] = {
+                            "at": now,
+                            "corner": corner_id,
+                            "result": (outcome if isinstance(outcome, str)
+                                       else getattr(outcome, "status", "unknown")),
+                        }
                     # A released failure must not keep stopping the rotation,
                     # but only while the shared slot still proves that exact
                     # request left nothing behind (#2187). The proof is
