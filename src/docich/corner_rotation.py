@@ -1124,8 +1124,14 @@ class CornerRotationManager:
                 corner_notice.clear(self.g)
                 return None
             corner, due_at, source = decision
+            # A prediction can hold the slot past its planned clock. That is
+            # exactly when the card must stay (the viewer needs to know what
+            # is next), so the "too close to promise" withdrawal only applies
+            # to a normal slot that is about to start.
+            hold = "prediction" if self._prediction_hold() else None
             current = corner_notice.read(self.g)
-            if (timestamp(due_at) - now < corner_notice.MIN_LEAD_SECONDS
+            if (hold is None
+                    and timestamp(due_at) - now < corner_notice.MIN_LEAD_SECONDS
                     and (current is None or current.get("corner") != corner)):
                 # Too close to promise, and never a fresh promise after the
                 # fact: the dispatcher starts it in this or the next tick.
@@ -1133,7 +1139,7 @@ class CornerRotationManager:
                 return None
             record = corner_notice.publish(
                 self.g, corner=corner, due_at=due_at, source=source, now=now,
-                hold="prediction" if self._prediction_hold() else None,
+                hold=hold,
             )
         except Exception:
             return None

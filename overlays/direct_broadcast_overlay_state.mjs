@@ -41,14 +41,19 @@ function noticeText(value, limit) {
 }
 
 
-// Advance notice for the next rolling-rotation corner. Nothing is promised
-// while Soren runs a 48-game prediction (the corner boundary waits for it, so
-// the start time is not fixed), after the record went stale, or once the
-// announced time has clearly passed.
+// Advance notice for the next rolling-rotation corner. The card stays visible
+// while Soren runs a 48-game prediction: the corner is still the next one, but
+// the corner boundary waits for the prediction, so the planned clock is only
+// provisional (the page marks it "予想中" and switches to "予想終了後" once it
+// passes). A stale record, an unknown hold, or a passed time without a hold is
+// still dropped.
 function nextCornerNotice(file, nowSec) {
   const state = readJson(file);
   if (!state || state.schema !== NEXT_CORNER_SCHEMA) return null;
-  if (state.hold !== null && state.hold !== undefined && state.hold !== '') return null;
+  const hold = state.hold === null || state.hold === undefined || state.hold === ''
+    ? null
+    : state.hold;
+  if (hold !== null && hold !== 'prediction') return null;
   const corner = noticeText(state.corner, 64);
   const label = noticeText(state.label, 40);
   const when = noticeText(state.when, 14);
@@ -57,8 +62,8 @@ function nextCornerNotice(file, nowSec) {
   const updatedAt = Number(state.updated_at);
   if (!Number.isFinite(dueAt) || !Number.isFinite(updatedAt)) return null;
   if (nowSec - updatedAt < 0 || nowSec - updatedAt > NEXT_CORNER_MAX_AGE_SEC) return null;
-  if (nowSec > dueAt + NEXT_CORNER_DUE_GRACE_SEC) return null;
-  return { corner, label, when, dueAt, updatedAt };
+  if (hold === null && nowSec > dueAt + NEXT_CORNER_DUE_GRACE_SEC) return null;
+  return { corner, label, when, dueAt, updatedAt, hold };
 }
 
 

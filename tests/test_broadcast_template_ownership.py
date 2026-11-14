@@ -65,6 +65,25 @@ class BroadcastTemplateOwnershipTest(unittest.TestCase):
         self.assertNotIn("pagingStartedAt", html)
         self.assertNotIn("fitHanjukuGap(", html)
 
+    def test_next_corner_card_keeps_a_prediction_hold_visible(self):
+        # Owner 2026-11-15: the advance notice must stay above the prediction
+        # panel. A prediction hold may only mark the planned clock as
+        # provisional (予想中) and switch to 予想終了後 after it passes; it must
+        # not remove the card.
+        html = TEMPLATE.read_text(encoding="utf-8")
+        self.assertIn('id="next-corner"', html)
+        self.assertIn("state?.nextCorner", html)
+        self.assertIn("notice.hold === 'prediction'", html)
+        self.assertIn("NEXT CORNER · 予想中", html)
+        self.assertIn("予想終了後", html)
+        # Both cards are laid out together: the feed height reserves the
+        # prediction panel and the notice instead of hiding either one.
+        self.assertIn(
+            'html[data-prediction-active="1"][data-next-corner="1"] #feed '
+            '{ height: 570px; }',
+            html,
+        )
+
     def test_notification_strip_draws_no_colored_left_band(self):
         # Owner 2026-11-08: the left overlay's notification strip (decisions,
         # decision entries, state-change toasts) must not draw the colored

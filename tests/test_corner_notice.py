@@ -119,13 +119,16 @@ def test_dispatch_honours_the_announced_corner(tmp_path):
     assert executor.calls[-1]["corner"] == "paper"
 
 
-def test_prediction_hold_suppresses_the_notice_and_the_speech(tmp_path):
+def test_prediction_hold_keeps_the_notice_but_suppresses_the_speech(tmp_path):
     g, clock, executor, spoken, make = _manager(tmp_path, prediction_guard=lambda: True)
     manager = make()
     manager.tick()
     manager.tick()
     record = corner_notice.read(g)
+    # The card stays visible (marked provisional by the dashboard); only the
+    # spoken promise waits for the prediction to settle.
     assert record is not None and record["hold"] == "prediction"
+    assert record["corner"] and record["due_at"] > clock[0]
     assert spoken == []
 
 
@@ -265,3 +268,18 @@ def test_labels_and_spoken_time_phrases(tmp_path):
     )
     daily = {"corner": "paper", "label": "ペーパートレード", "due_at": int(now + 86400)}
     assert corner_notice.speech_text(daily, now).endswith("明日22時46分からの予定です。")
+
+
+def test_prediction_hold_publishes_a_past_due_notice(tmp_path):
+    g, clock, executor, spoken, make = _manager(tmp_path, prediction_guard=lambda: True)
+    manager = make()
+    state = manager.load(clock[0])
+    state["last_slot_at"] = clock[0] - 3600
+    state["next_due_at"] = clock[0]
+    record = manager._sync_notice(state, clock[0], {"retro", "paper", "meriken"})
+    assert record is not None
+    assert record["hold"] == "prediction"
+    # The planned clock is exactly now: a normal notice waits (too close to
+    # promise), but a prediction hold must still show what comes next.
+    assert record["due_at"] == int(clock[0])
+    assert spoken == []
