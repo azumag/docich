@@ -1089,9 +1089,20 @@ def _world_backdrop(frame: Frame) -> int:
                if frame.pixel(x, y) == WORLD_BACKDROP)
 
 
+def _near_color(pixel, color, tolerance=2) -> bool:
+    """A measured colour, allowing the 16-bit RGB565 capture quantisation.
+
+    The gold frame's measured (57,40,16) becomes (56,40,16) when the core's
+    RGB565 pixels are expanded to 8 bits; an exact compare rejected the real
+    Y view and every target jump closed after the unknown-frame holds (local
+    g1190 2026-11-15, production state resumed with the 1.61 core).
+    """
+    return all(abs(int(a) - int(b)) <= tolerance for a, b in zip(pixel, color))
+
+
 def is_world_map(frame: Frame) -> bool:
     """The Y whole-island view: open sea inside the gold frame (measured 2026-09-28)."""
-    if frame.pixel(128, 10) != WORLD_BORDER:
+    if not _near_color(frame.pixel(128, 10), WORLD_BORDER):
         return False
     sea = sum(1 for x in range(60, 200, 2) for y in range(60, 180, 2) if frame.pixel(x, y) == WORLD_SEA)
     if sea >= WORLD_SEA_MIN:
