@@ -171,6 +171,16 @@ def _fixed_hanjuku_pending(rotation):
     return False if isinstance(corner, str) else None
 
 
+def _fixed_pending_hanjuku(rotation):
+    pending = _fixed_bool(rotation.get("pending"))
+    if pending is False:
+        return False
+    corner = rotation.get("pending_corner")
+    if corner == "hanjuku-hero":
+        return True
+    return False if isinstance(corner, str) else None
+
+
 def _fixed_active_hanjuku(corners):
     game_switch = corners.get("game_switch")
     if not isinstance(game_switch, dict):
@@ -255,6 +265,10 @@ def project(payload):
             "queued_manual": _fixed_bool(rotation.get("queued_manual")),
             "manual_pending": manual_pending,
             "manual_pending_hanjuku": _fixed_hanjuku_pending(rotation),
+            "pending_hanjuku": _fixed_pending_hanjuku(rotation),
+            "error_kind": (rotation.get("error_kind")
+                           if isinstance(rotation.get("error_kind"), str)
+                           else "unknown"),
             "active_hanjuku": _fixed_active_hanjuku(corners),
         },
     }
@@ -295,6 +309,8 @@ def reply(projected, env):
             f"`queued_manual={_bool_token(rotation['queued_manual'])}`",
             f"`manual_pending={_bool_token(rotation['manual_pending'])}`",
             f"`manual_pending_hanjuku={_bool_token(rotation['manual_pending_hanjuku'])}`",
+            f"`pending_hanjuku={_bool_token(rotation['pending_hanjuku'])}`",
+            f"`error_kind={rotation['error_kind']}`",
             f"`active_hanjuku={_bool_token(rotation['active_hanjuku'])}`",
         )),
         "Boss orders: " + ", ".join(f"`{step}={orders[step]}`" for step in STEPS),
