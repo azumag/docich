@@ -706,6 +706,25 @@ def test_close_phase_concert_text_falls_back_to_ordinary():
     assert (house_state['phase'], house_state['age'], house_state['total']) == ('close', 20, 60)
 
 
+def test_month_scan_releases_a_month_event_instead_of_raising_keyerror():
+    """A concert drawn over the monthly menu must not reach the repair fallback.
+
+    Local g2001-ch9 (2026-11-15): the scan state had no actor yet, the screen
+    was a concert (kind=text) and every observation raised KeyError('general')
+    in _repair_step, so the bot held the event indefinitely.
+    """
+    frame = read_png(Path(__file__).parent / 'fixtures/hanjuku/g514-frame-077-retainer-offer.png')
+    mem = {'chapter': 9, 'month': '16-4', 'gold': 250, 'tick': 500,
+           'house': {'phase': 'month_open', 'chapter': 9, 'age': 4, 'total': 0,
+                     'month_scan': True, 'level_only': True,
+                     'pending': [], 'seen': []}}
+    actions = house.step(parse(frame), mem, frame)
+    assert actions is None
+    assert mem['house']['phase'] == 'month_open'
+    assert mem['house']['month_open_released'] is True
+    assert [r['decision'] for r in mem['_records']][-1] == 'house_month_scan_released'
+
+
 def test_unaffordable_dispatch_records_the_defer_before_closing():
     mem = memory('leave_roster', pending=['ゼウス'])
     mem['gold'] = 49

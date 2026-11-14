@@ -1874,6 +1874,19 @@ def _step_once(screen, mem, frame):
         return _castle_check_step(screen, mem, frame)
     if phase.startswith('income_'):
         return _income_step(screen, mem, frame)
+    if phase == 'month_open' and not isinstance(state.get('general'), str):
+        # A monthly scan has no actor until the roster walk starts. A month
+        # event (concert / バカンス / dialogue) can draw over the monthly menu
+        # between the navigation press and the menu itself; the repair
+        # fallback then read state['general'] and raised KeyError on every
+        # observation, so the bot held the event forever (local g2001-ch9
+        # 2026-11-15: repeated bot exit=2 on a concert screen). Release the
+        # screen to the ordinary event policy; the scan resumes at the menu.
+        if not state.get('month_open_released'):
+            state['month_open_released'] = True
+            _record(mem, 'month_scan_released', observed_metric={'screen': screen.kind},
+                    reason='月一スキャン中に月イベント画面が前面に出たため、通常のイベント処理へ画面を返す')
+        return None
     return _repair_step(screen, mem, frame)
 
 
