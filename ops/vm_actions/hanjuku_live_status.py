@@ -274,10 +274,15 @@ def reply(projected, env):
     orders = projected["orders"]
     field = projected["field"]
     rotation = projected["rotation"]
+    chapter = "`unknown`" if projected['chapter'] is None else f"`{projected['chapter']}`"
+    if projected.get('detail_status') == 'stale' and projected['chapter'] is not None:
+        # The last written position is shown for a stalled game; never let it
+        # read as the current one.
+        chapter += " (last record; stale)"
     lines = [
         "Hanjuku live boss status: success",
         f"SHA: `{sha}`",
-        f"Chapter: `{projected['chapter'] if projected['chapter'] is not None else 'unknown'}`",
+        f"Chapter: {chapter}",
         "Diagnostics: " + " ".join((
             f"`{projected['status']}`",
             f"`detail={projected['detail_status']}`" if projected.get('detail_status') else "`detail=none`",

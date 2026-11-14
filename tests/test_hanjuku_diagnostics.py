@@ -70,7 +70,17 @@ def test_stale_record_keeps_a_bounded_age_and_reason(tmp_path):
     assert out['status'] == 'stale'
     assert out['reason'] == 'record_stale'
     assert out['age_sec'] == 100
-    assert 'policy' not in out
+    # The last written position stays observable under the stale label.
+    assert out['chapter'] == 1 and isinstance(out['policy'], dict)
+
+
+def test_stale_record_without_a_valid_chapter_still_hides_the_policy(tmp_path):
+    file, bot = setup(tmp_path)
+    bot['policy'].pop('chapter')
+    file.write_text(json.dumps(bot)); os.utime(file, (100, 100))
+    out = d._collect_hanjuku_tactical(tmp_path, 200)
+    assert out['status'] == 'stale'
+    assert 'chapter' not in out and 'policy' not in out
 
 
 def test_soft_omission_keeps_the_fixed_detail_cause(monkeypatch):

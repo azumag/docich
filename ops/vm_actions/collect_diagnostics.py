@@ -12722,8 +12722,19 @@ def _collect_hanjuku_tactical(state_dir, now):
         if not 0 <= age <= 30:
             # Keep a bounded age: live status must tell "the bot stopped
             # writing" from "the record is unreadable" without the detail.
-            return {**out, 'status': 'stale', 'reason': 'record_stale',
-                    'age_sec': min(int(age), 3600)}
+            # The last written chapter/month/phase stay available, explicitly
+            # under ``status: stale``: during a stalled game (g1163
+            # 2026-11-14, bot silent >1 h) the operator needs the last known
+            # position to decide the recovery, and the live status prints the
+            # stale label beside it.
+            stale = {**out, 'status': 'stale', 'reason': 'record_stale',
+                     'age_sec': min(int(age), 3600)}
+            last = bot.get('policy')
+            if (isinstance(last, dict) and type(last.get('chapter')) is int
+                    and 1 <= last['chapter'] <= 12):
+                stale['chapter'] = last['chapter']
+                stale['policy'] = _compact_hanjuku_policy(last, bot)
+            return stale
         mem = bot.get('policy')
         if (not isinstance(mem, dict) or type(mem.get('chapter')) is not int
                 or not 1 <= mem['chapter'] <= 12):
