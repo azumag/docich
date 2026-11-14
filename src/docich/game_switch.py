@@ -2487,11 +2487,20 @@ class GameSwitchCoordinator:
                     ):
                         # A crashed in-progress phase (e.g. a rollback whose
                         # driver died) can never finish on its own.  With an
-                        # expired deadline there is no live owner to protect,
-                        # so reconcile it through the standard recover path
-                        # and let the canonical reach a declared phase rather
-                        # than wedge the FIFO watchdog forever.
-                        return self.recover(timeout_s=timeout_s)
+                        # expired deadline or a stale in-progress write there
+                        # is no live owner to protect, so reconcile it
+                        # through the standard recover path under the same
+                        # transaction and let the canonical reach a declared
+                        # phase rather than wedge the FIFO watchdog forever.
+                        # Calling self.recover() here would open a second
+                        # transaction on the lock we already hold, so the
+                        # locked reconcile runs on this transaction instead.
+                        deadline = time.monotonic() + (
+                            timeout_s
+                            if timeout_s is not None
+                            else self.default_timeout_s
+                        )
+                        return self.store._recover_locked(tx, deadline=deadline)
                     return SwitchResult(
                         request_id=str(state.get("request_id") or ""),
                         operation=str(state.get("operation") or "maintain_fifo"),
