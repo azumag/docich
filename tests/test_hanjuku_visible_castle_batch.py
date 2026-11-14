@@ -179,5 +179,5 @@ def test_castle_batch_feedback_needs_the_current_castle_panel(change):
     elif change == 'different_kind':
         observed['screen_kind'] = 'map'
     elif change == 'other_menu':
-        observed['menu_navigation_reading']['menu'] = 'global_roster'
+        observed['menu_navigation_reading']['menu'] = 'camp_commands'
     assert entry.observation_interval_ms(observed, taps('down', 4)) == 1500

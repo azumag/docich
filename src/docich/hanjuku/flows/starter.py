@@ -76,7 +76,7 @@ def _enter_next_chapter_after_save(mem):
                    reason='章末セーブの確認直後に先発隊の選択が始まったため次章を確定し、前章の座標・出撃・購入状態を初期化')
 
 
-def _navigation(mem, episode, move, label, hand, selected):
+def _navigation(mem, episode, move, label, hand, selected, *, screen=None):
     signature = [label, list(hand)]
     nav = episode.get('nav') or {}
     if nav.get('signature') != signature:
@@ -93,11 +93,17 @@ def _navigation(mem, episode, move, label, hand, selected):
         if nav['waits'] <= NAV_WAIT:
             return []
         nav.update(burst=0, waits=0)
-    nav['presses'] += 1
-    nav['burst'] += 1
+    actions = [move]
+    if screen is not None:
+        from ..os_layer.commands import starter_list_batch
+        limit = min(MAX_RETRIES - nav['burst'], NAV_PRESS_LIMIT - nav['presses'])
+        actions = starter_list_batch(screen, label, limit=limit) or actions
+    count = sum(action.get('type') == 'pad' for action in actions)
+    nav['presses'] += count
+    nav['burst'] += count
     _record(mem, 'starter_navigation', observed_metric={'selected': selected},
             reason='実先発隊カーソルから選択・不足拒否の項目へ移動する')
-    return [move]
+    return actions
 
 
 def step(screen, mem, frame):
@@ -195,7 +201,7 @@ def step(screen, mem, frame):
     if move is None:
         return []
     if move != 'here':
-        return _navigation(mem, episode, move, target[2], screen.hand, selected)
+        return _navigation(mem, episode, move, target[2], screen.hand, selected, screen=screen)
     episode.pop('nav', None)
     episode['pending'] = target[2]
     episode['attempts'][target[2]] = episode['attempts'].get(target[2], 0) + 1

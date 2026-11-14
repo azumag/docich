@@ -7,7 +7,7 @@ from ...hanjuku_egg_reference import general_max_hp
 from ...hanjuku_egg_stock import observed_uses
 from ..decision_log import _record
 from ..judgment.battle import _own_egg_empty
-from ..os_layer.commands import menu_to, pad
+from ..os_layer.commands import egg_recovery_list_batch, menu_to, pad
 from ..os_layer.readers import _current, _options, month_menu_ready
 from ..os_layer.screen import egg_ritual_recitation_panel
 from ..os_layer.world import NAME
@@ -304,7 +304,7 @@ def _egg_recovery_step(screen, mem, sub):
                                 '卵のない主人公は召喚獣の即死攻撃でゲームオーバーになる'
                                 '(g604 ダークエルフ)ため、主人公の卵だけを回復する'))
                 return [pad('a')]
-            return [move] if move else []
+            return (egg_recovery_list_batch(screen, NAME) or [move]) if move else []
         actor = sub.get('individual_actor') if _individual_egg_selected(mem, sub) else _individual_egg_candidate(screen, mem, sub)
         if actor:
             move = menu_to(screen, actor)
@@ -330,7 +330,7 @@ def _egg_recovery_step(screen, mem, sub):
                                          'cost_pending_quote': EGG_RECOVER_COST},
                         reason='全回復を払えないため、実一覧の残数0・少数の将軍の卵だけを選び費用を確認する')
                 return [pad('a')]
-            return [move] if move else []
+            return (egg_recovery_list_batch(screen, actor) or [move]) if move else []
         if sub.get('full_quote_short'):
             sub['aborted'] = True
             return [pad('b')]  # no measured eligible row; never repeat the full quote
@@ -340,7 +340,7 @@ def _egg_recovery_step(screen, mem, sub):
             _record(mem, 'egg_recover_select', choice='ぜんかいふく',
                     reason='残数が0でない卵も含めて全回復を選択し、次画面で費用を確認')
             return [pad('a')]
-        return [move] if move else []
+        return (egg_recovery_list_batch(screen, 'ぜんかいふく') or [move]) if move else []
     # The measured Namaste line has a false hand in the priest artwork.
     # Its strict text/header match survives animation that changes the sprite
     # hash; other hands and unread/paid options must still hold.
