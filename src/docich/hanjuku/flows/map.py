@@ -467,7 +467,11 @@ def _picker_fallback(mem, recall, nearby, cursor, reason):
                              'observations': recall.get('picker_observations'),
                              'nearby': list(nearby)},
             reason=reason)
-    return _request_recall(mem, recall, castle or recall.get('goal'),
+    # A destination is still required for the arrival read and the dispatch
+    # receipt: with no nearby castle and no goal, name the capital rather than
+    # leaving the recall unnamed (g1163 2026-11-14 10:12: goal null, nearby []).
+    goal = castle or recall.get('goal') or chart.home_castle(mem.get('chapter') or 0)
+    return _request_recall(mem, recall, goal,
                            [pad('a'), {'type': 'wait', 'ms': 700}, pad('a')])
 
 

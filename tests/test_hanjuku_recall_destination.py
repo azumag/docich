@@ -426,3 +426,14 @@ def test_a_goal_less_picker_schedules_the_capital_roster_read(monkeypatch):
     p.world_map_step(VIEW, mem, picker())
     home = p.chart.home_castle(1)
     assert mem['roster_read_due'][home] == 100 + 180
+
+
+def test_the_picker_fallback_names_the_capital_when_no_goal(monkeypatch):
+    """g1163 2026-11-14 10:12: goal null and nearby [] left the recall unnamed."""
+    mem = memory()
+    at(monkeypatch, 'アルマムーン')
+    monkeypatch.setattr(p, 'world_cursor', lambda _: None)
+    for _ in range(p.RECALL_LIMIT - 1):
+        p.world_map_step(VIEW, mem, picker())
+    p.world_map_step(VIEW, mem, picker())
+    assert _flow(mem)['recall']['goal'] == p.chart.home_castle(1)
