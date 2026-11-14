@@ -14,11 +14,12 @@ the canonical GameSwitch state and refuses to run unless every guard holds:
   ``cleanup_pending`` flag; a mismatch is a declared-mismatch refusal.
 - ownership proof must exist: a durable request receipt on disk for any
   canonical ``request_id`` and a runtime directory for every referenced
-  runtime seat. Missing proof is rejected. One reviewed exception: a failed
-  candidate seat whose directory the failed cleanup already removed stays
-  owned through the durable terminal-failure receipt that names the same
-  runtime identity and target, because no later surface could otherwise
-  settle the dead seat (2026-11-14).
+  runtime seat. Missing proof is rejected. Two reviewed exceptions: the
+  ``soren``/``soren91`` seats never materialize a per-runtime directory, and a
+  failed candidate seat whose directory the failed cleanup already removed
+  stays owned through the durable terminal-failure receipt that names the same
+  runtime identity and target. Without both, no later surface could settle the
+  dead seat and the whole corner rotation stayed latched (2026-11-14).
 - the canonical CLI runs once with a bounded deadline in a fixed argv; the
   post-run canonical state must again be valid.
 
@@ -101,6 +102,13 @@ RUNTIME_KEYS = frozenset(
 )
 
 RUNTIME_ID_RE = re.compile(r"g([1-9][0-9]*)-([a-f0-9]{6,32})\Z")
+
+#: Coordinator adapters that never materialize ``spec.runtime_dir``. ``soren``
+#: owns one shared runtime for sorengame and ``soren91`` rides the same
+#: process, so a seated runtime of these kinds has no directory to prove
+#: anything with. Keep in sync with the adapters that use the spec directory
+#: (``git grep runtime_dir -- src/docich/adapters``).
+DIRLESS_ADAPTERS = frozenset({"soren", "soren91"})
 
 # Fixed rejection reasons surfaced as exit codes (one meaning per code).
 # 2/3/64/70/71/72 follow the reviewed recover_corner_rotation codes; the
@@ -317,6 +325,14 @@ def verify_ownership(root: Path, state: dict) -> None:
                 raise FixedRecoverExit(EX_UNKNOWN_DRIFT, "request receipt cleanup_pending is not bool")
     terminal_failure = _terminal_failure_receipt(root, state)
     for label, runtime in _seated_runtimes(state):
+        # Two coordinator adapters never materialize a per-runtime directory:
+        # soren keeps one shared runtime for sorengame, and soren91 rides that
+        # same process. Their seats are normal without a directory, so the
+        # directory cannot be an ownership proof for them (2026-11-14: every
+        # rollback whose previous seat was sorengame refused with
+        # ownership_missing before the canonical CLI could restore it).
+        if runtime["adapter"] in DIRLESS_ADAPTERS:
+            continue
         runtime_dir = root / RUNTIMES_REL / str(runtime["runtime_id"])
         if runtime_dir.is_dir():
             continue
@@ -324,9 +340,7 @@ def verify_ownership(root: Path, state: dict) -> None:
         # candidate's own cleanup may already have removed. A terminal failed
         # seat therefore keeps this checkout's ownership through the durable
         # receipt for its own failed request; requiring the directory forever
-        # left such a seat unrecoverable (2026-11-14: the standard recover
-        # refused with ownership_missing while the canonical CLI was the only
-        # surface that could settle the dead seat).
+        # left such a seat unrecoverable.
         if terminal_failure is not None and _dead_seat_is_owned(state, terminal_failure, label, runtime):
             continue
         raise FixedRecoverExit(
