@@ -62,6 +62,21 @@ def target(limit: int) -> int:
     return limit * TARGET_FRACTION // 4
 
 
+def _drop_sized(mapping, key, remaining):
+    """Remove one member and account for its exact default-JSON UTF-8 size.
+
+    Re-encoding the whole state for every order made compaction quadratic,
+    including when every order was live and nothing could be removed.
+    A singleton object gives the member's bytes; a non-singleton also loses
+    one comma and space. Braces belong to the containing object and stay.
+    """
+    if key not in mapping:
+        return remaining
+    removed = size({key: mapping[key]}) - 2 + (2 if len(mapping) > 1 else 0)
+    del mapping[key]
+    return remaining - removed
+
+
 def load_state(path, limit: int) -> dict:
     """Read the record, tolerating one oversized file so it can be compacted."""
     try:
@@ -144,7 +159,8 @@ def _references(state) -> set:
 def compact_state(state, limit: int) -> dict:
     """Return a copy trimmed to ``target(limit)``; the input is never mutated."""
     import copy
-    if size(state) <= target(limit):
+    remaining = size(state)
+    if remaining <= target(limit):
         return state
     out = copy.deepcopy(state)
     policy = out.get('policy')
@@ -152,32 +168,33 @@ def compact_state(state, limit: int) -> dict:
         return out
     goal = target(limit)
     for key in CACHE_KEYS:
-        if size(out) <= goal:
+        if remaining <= goal:
             return out
-        policy.pop(key, None)
+        remaining = _drop_sized(policy, key, remaining)
     plan = policy.get('plan')
     if isinstance(plan, dict):
         orders = plan.get('orders')
         if isinstance(orders, dict):
             live = _references(out)
             for step, status in list(orders.items()):
-                if size(out) <= goal:
+                if remaining <= goal:
                     return out
                 if status in RETIRED and step not in live:
-                    orders.pop(step, None)
+                    remaining = _drop_sized(orders, step, remaining)
             if not orders:
-                plan.pop('orders', None)
+                remaining = _drop_sized(plan, 'orders', remaining)
     for key in HISTORY_KEYS:
-        if size(out) <= goal:
+        if remaining <= goal:
             return out
         history = policy.get(key)
         if isinstance(history, list) and len(history) > HISTORY_KEEP:
             policy[key] = history[-HISTORY_KEEP:]
+            remaining -= size(history) - size(policy[key])
     for key in COUNTER_KEYS:
-        if size(out) <= goal:
+        if remaining <= goal:
             return out
-        policy.pop(key, None)
-    if size(out) > goal:
+        remaining = _drop_sized(policy, key, remaining)
+    if remaining > goal:
         _prune_settled_marches(out, goal)
     if size(out) > goal:
         _prune_retired_step_maps(out, goal)
@@ -228,17 +245,18 @@ def _prune_retired_step_maps(state, goal: int) -> None:
     retry = policy.get('retry_context')
     if isinstance(retry, dict):
         referenced.update(key for key in retry if isinstance(key, str))
+    remaining = size(state)
     for key in PLAN_STEP_MAPS:
         section = plan.get(key)
         if not isinstance(section, dict):
             continue
         for step in list(section):
-            if size(state) <= goal:
+            if remaining <= goal:
                 return
             if step not in referenced:
-                section.pop(step, None)
+                remaining = _drop_sized(section, step, remaining)
         if not section:
-            plan.pop(key, None)
+            remaining = _drop_sized(plan, key, remaining)
 
 
 def _entry_tick(entry):

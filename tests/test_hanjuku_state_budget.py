@@ -27,6 +27,46 @@ def test_a_small_record_is_returned_untouched():
     assert state_budget.compact_state(state, state_budget.OVERSIZED_READ_LIMIT) is state
 
 
+@pytest.mark.parametrize('status', ['pending', 'failed'])
+def test_wide_plan_does_not_reencode_the_whole_state_per_step(monkeypatch, status):
+    """Long runs must not pay N full-state serializations each observation."""
+    steps = [f'A:城{i}:M{i:06x}' for i in range(400)]
+    state = _state(plan={
+        'orders': dict.fromkeys(steps, status),
+        'order_context': {step: {'general': 'リーキ', 'cards': ['クースカン'] * 4}
+                          for step in steps},
+    })
+    original_size = state_budget.size
+    full_encodes = 0
+
+    def counted(value):
+        nonlocal full_encodes
+        if isinstance(value, dict) and value.get('bot_version') == 'test':
+            full_encodes += 1
+        return original_size(value)
+
+    monkeypatch.setattr(state_budget, 'size', counted)
+    out = state_budget.compact_state(state, 8192)
+    assert full_encodes <= 4
+    if status == 'pending':
+        assert out == state
+    else:
+        assert 'order_context' not in out['policy']['plan']
+        assert original_size(out) < original_size(state)
+        assert out['policy']['plan']['orders'] == state['policy']['plan']['orders']
+    assert len(state['policy']['plan']['orders']) == len(steps)
+
+
+def test_incremental_json_budget_matches_actual_bytes_at_each_removal():
+    members = {'城"\\\n': ['リーキ', {'名前': 'クースカン'}],
+               'empty': {}, 'last': '日本語'}
+    state = _state(plan={'order_context': members})
+    remaining = state_budget.size(state)
+    for key in list(members) + ['absent']:
+        remaining = state_budget._drop_sized(members, key, remaining)
+        assert remaining == state_budget.size(state)
+
+
 def test_caches_are_dropped_before_live_orders():
     state = _state(
         obs_cost={f'k{i}': i for i in range(2000)},
