@@ -66,6 +66,22 @@ class VmOperationsCiPathContractTest(unittest.TestCase):
                 with self.subTest(event=event, changed_paths=changed_paths):
                     self.assertTrue(_workflow_runs(patterns, changed_paths))
 
+    def test_scripts_systemd_only_changes_run_the_contract_suite(self):
+        text = WORKFLOW.read_text(encoding="utf-8")
+        self.assertIn("unittest discover -s ops/vm_actions/tests", text)
+        cases = [
+            ["scripts/systemd/docich-host-metrics.service"],
+            ["scripts/systemd/docich-host-metrics.timer"],
+            ["scripts/systemd/docich-webui.service"],
+            ["scripts/systemd/docich-nethack-canary-smoke.path"],
+        ]
+
+        for event in ("pull_request", "push"):
+            patterns = _event_paths(text, event)
+            for changed_paths in cases:
+                with self.subTest(event=event, changed_paths=changed_paths):
+                    self.assertTrue(_workflow_runs(patterns, changed_paths))
+
     def test_discord_exclusions_follow_their_broad_includes(self):
         text = WORKFLOW.read_text(encoding="utf-8")
         for event in ("pull_request", "push"):
