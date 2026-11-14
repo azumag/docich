@@ -206,18 +206,32 @@ if [[ -d "$deploy_backups" ]]; then
   done
 fi
 
-# 2b. Verification leftovers under $root/tmp/verify (AGENTS.md §14): every
-# direct child is a disposable per-run worktree or tree copy. Sweep with its
-# own short age gate; an active run lives for hours, far under the gate.
+# 2b. Verify leftovers: only stale, unreferenced plain tree copies.
+# Git worktrees and any uncertain trees are deliberately retained.
 verify_dir="$tmp/verify"
 if [[ -d "$verify_dir" ]]; then
   for path in "$verify_dir"/*; do
-    [[ -e "$path" ]] || continue
-    if is_older_than "$path" "$verify_min_age_days"; then
-      remove_path "$path"
-    else
+    [[ -d "$path" && ! -L "$path" ]] || continue
+    if ! is_older_than "$path" "$verify_min_age_days"; then
       say "KEEP $path (recent)"
+      continue
     fi
+    # A .git file denotes a linked worktree; never rm -rf one.
+    if [[ -e "$path/.git" || -L "$path/.git" ]]; then
+      say "KEEP $path (git checkout/worktree)"
+      continue
+    fi
+    if ! recent="$(find "$path" -xdev -type f -mtime -"$verify_min_age_days" -print -quit 2>/dev/null)"; then
+      say "KEEP $path (freshness scan failed)"
+      continue
+    fi
+    if [[ -n "$recent" ]]; then
+      say "KEEP $path (recent internal files)"
+      continue
+    fi
+    # Until a fail-closed process reference scan is available for this path,
+    # do not automatically delete it, even in APPLY mode.
+    say "KEEP $path (process references not verified)"
   done
 fi
 
