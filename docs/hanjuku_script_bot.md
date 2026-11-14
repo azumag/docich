@@ -694,8 +694,8 @@ Sorenの`bgm_worker.sh`は半熟英雄中の共通BGMを止め、次のCLIゲー
 設定値は次回起動にも反映される。niceの調整は当該runtimeだけの復旧操作であり、
 この設定からsudoや優先度変更は行わない。
 
-`audio_volume_percent=80` で、presentationがゲームのプロセスツリーに属するPulseAudio
-sink-inputだけを80%にする（共通sink・読み上げ・BGM worker・他ゲームのstreamは変更しない）。
+`audio_volume_percent=10` で、presentationがゲームのプロセスツリーに属するPulseAudio
+sink-inputだけを10%にする（2026-11-15 オーナー指示で80%から引き下げ。共通sink・読み上げ・BGM worker・他ゲームのstreamは変更しない）。
 ゲームがstreamを作り直しても再適用し、sink-input番号・sink名・音量・muteを
 runtimeの `audio_volume.json` に記録する。
 

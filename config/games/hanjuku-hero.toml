@@ -12,7 +12,7 @@ core = "auto"                          # or コア .so の絶対パス
 audio_enabled = true
 audio_sink = "soren_null"               # 既存の配信busへゲームBGM・効果音を出す
 audio_latency_ms = 289                  # CPU負荷時の音切れ軽減。本番で改善確認した値
-audio_volume_percent = 80               # 半熟英雄のゲーム音声streamだけを80%にする(共通bus・読み上げ・他ゲームは不変)
+audio_volume_percent = 10               # 半熟英雄のゲーム音声streamだけを10%にする(2026-11-15 オーナー指示。共通bus・読み上げ・他ゲームは不変)
 # [retroarch.pad_map] で既定マップの上書きも可能
 
 [lifecycle]
