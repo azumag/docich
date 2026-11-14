@@ -12,8 +12,11 @@ from docich.trading.news_paper.replay import (
 def _fixture():
     raw = json.dumps([{"db": "d", "observation_id": 1, "ingest_sequence": 1,
                        "available_at": 5}]).encode()
+    versions = {"source": "v1", "mapping": "v1", "instrument": "v1",
+                "calendar": "v1", "cost": "v1", "risk": "v1",
+                "policy": "v1", "model": "v1"}
     data = {"header": {"schema_version": "1", "run_id": "r", "scenario_id": "s",
-            "versions": {}, "clock": {"fence_at": 10}, "arm": "A",
+            "versions": versions, "clock": {"fence_at": 10}, "arm": "A",
             "chunks": [{"seq": 1, "filename": "c1.json",
                         "sha256": hashlib.sha256(raw).hexdigest(), "record_count": 1}]}}
     return data, raw
@@ -100,3 +103,45 @@ def test_manifest_rejects_invalid_metadata_before_loading(mutation):
     with pytest.raises(ReplayError):
         load_manifest(data, loader)
     assert not loaded
+
+
+def test_manifest_strict_versions_required_keys():
+    # docich#2644 P3 PR-A: versions must carry every §2.9 required key.
+    data, raw = _fixture()
+    data["header"]["versions"].pop("model")
+    with pytest.raises(ReplayError, match="UNKNOWN_KEY"):
+        load_manifest(data, lambda f: raw)
+
+
+def test_manifest_strict_versions_unknown_key_rejected():
+    data, raw = _fixture()
+    data["header"]["versions"]["surprise"] = "v9"
+    with pytest.raises(ReplayError, match="UNKNOWN_KEY"):
+        load_manifest(data, lambda f: raw)
+
+
+def test_manifest_strict_record_unknown_key_rejected():
+    import json as _json, hashlib as _hl
+    rec = {"db": "d", "observation_id": 1, "ingest_sequence": 1,
+           "available_at": 5, "rogue": True}
+    raw = _json.dumps([rec]).encode()
+    data, _ = _fixture()
+    data["header"]["chunks"][0]["sha256"] = _hl.sha256(raw).hexdigest()
+    with pytest.raises(ReplayError, match="UNKNOWN_KEY"):
+        load_manifest(data, lambda f: raw)
+
+
+def test_replay_error_carries_stage_and_code():
+    data, raw = _fixture()
+    data["header"]["clock"]["extra"] = 1
+    with pytest.raises(ReplayError) as ei:
+        load_manifest(data, lambda f: raw)
+    assert ei.value.code == "UNKNOWN_KEY"
+    assert ei.value.stage == "header.clock"
+
+
+def test_manifest_schema_version_is_pinned():
+    data, raw = _fixture()
+    data["header"]["schema_version"] = "2"
+    with pytest.raises(ReplayError):
+        load_manifest(data, lambda f: raw)

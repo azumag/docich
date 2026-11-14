@@ -23,8 +23,61 @@ MAX_DEPTH = 16
 MAX_FILENAME_LEN = 128
 
 
+# §3.4 error vocabulary (stage, code): fixed codes only, no raw payloads.
+# The decoder below is the single manifest-validation point; when the N01
+# shared validator lands as news_paper/contracts.py, these helpers are the
+# delegation seam (see docich#2644 P3 PR-A deviation record).
+MANIFEST_SCHEMA_VERSION = "1"
+ARMS = frozenset({"A", "B"})
+# §2.9 manifest versions group: declared model/data contract versions that
+# make an A/B comparison attributable. Required keys must all be present;
+# keys outside the allowlist are refused (strict unknown-key policy).
+REQUIRED_VERSION_KEYS = frozenset({
+    "source", "mapping", "instrument", "calendar",
+    "cost", "risk", "policy", "model",
+})
+ALLOWED_VERSION_KEYS = REQUIRED_VERSION_KEYS | frozenset({
+    "ledger", "evidence", "classification", "price", "execution",
+})
+# Record schema allowlist for strict unknown-key rejection at record level.
+# Records are market/news ingest rows; the union below covers the N02
+# observation fields, replay bookkeeping keys, and leakage-fixture flags.
+ALLOWED_RECORD_KEYS = frozenset({
+    "db", "observation_id", "ingest_sequence",
+    "type", "available_at", "timestamp", "observed_at", "bar_close",
+    "confirmed", "forming", "corrected", "universe_changed",
+    "source", "asset", "market_event_at", "market_available_at",
+    "bid", "ask", "bid_size", "ask_size", "bids", "asks",
+    "size_semantics", "tradeable", "realtime", "session_id",
+    "calendar_version", "provenance_class", "instrument_constraints_version",
+    "volatility_bps",
+    "title", "url", "content_digest", "published_at", "source_revision",
+})
+
+
 class ReplayError(Exception):
-    pass
+    """Contract violation at a manifest stage; carries (stage, code)."""
+
+    def __init__(self, detail: str, *, code: str = "VALUE_OUT_OF_RANGE",
+                 stage: str = "manifest") -> None:
+        super().__init__(f"{code}: {stage}: {detail}")
+        self.code = code
+        self.stage = stage
+
+
+def _strict_keys(obj: dict, allowed: frozenset, stage: str) -> None:
+    extra = set(obj) - set(allowed)
+    if extra:
+        raise ReplayError(
+            f"unknown key(s) {sorted(extra)!r}", code="UNKNOWN_KEY", stage=stage)
+
+
+def _missing_keys(obj: dict, required: frozenset, stage: str) -> tuple:
+    missing = tuple(sorted(set(required) - set(obj)))
+    if missing:
+        raise ReplayError(
+            f"missing key(s) {list(missing)!r}", code="UNKNOWN_KEY", stage=stage)
+    return missing
 
 
 @dataclass
@@ -73,112 +126,136 @@ def _depth(obj, d=0):
 
 def load_manifest(data: dict, chunk_loader: Callable[[str], bytes] | None = None) -> Manifest:
     if chunk_loader is None:
-        raise ReplayError("chunk_loader required: inline records are not supported")
-    if not isinstance(data, dict) or set(data) != {"header"}:
-        raise ReplayError("UNKNOWN_KEY: manifest")
-    # header size check
-    header_bytes = json.dumps(data.get("header", {})).encode()
-    if len(header_bytes) > MAX_HEADER_BYTES:
-        raise ReplayError("header too large")
+        raise ReplayError("chunk_loader required: inline records are not supported",
+                          stage="manifest")
+    if not isinstance(data, dict):
+        raise ReplayError("manifest must be an object", code="TYPE_INVALID",
+                          stage="manifest")
+    _strict_keys(data, frozenset({"header"}), "manifest")
     h = data.get("header")
     if not isinstance(h, dict):
-        raise ReplayError("missing header")
-    for k in ("schema_version", "run_id", "scenario_id", "versions", "clock", "arm", "chunks"):
-        if k not in h:
-            raise ReplayError(f"missing header field {k}")
-    if set(h) != {"schema_version", "run_id", "scenario_id", "versions", "clock", "arm", "chunks"}:
-        raise ReplayError("UNKNOWN_KEY: header")
-    if h["schema_version"] != "1" or h["arm"] not in ("A", "B"):
-        raise ReplayError("VALUE_OUT_OF_RANGE: schema_version or arm")
+        raise ReplayError("missing header", code="TYPE_INVALID", stage="header")
+    header_bytes = json.dumps(h).encode()
+    if len(header_bytes) > MAX_HEADER_BYTES:
+        raise ReplayError("header too large", code="PAYLOAD_LIMIT", stage="header")
+    _missing_keys(h, frozenset(
+        {"schema_version", "run_id", "scenario_id", "versions", "clock", "arm", "chunks"}),
+        "header")
+    _strict_keys(h, frozenset(
+        {"schema_version", "run_id", "scenario_id", "versions", "clock", "arm", "chunks"}),
+        "header")
+    if h["schema_version"] != MANIFEST_SCHEMA_VERSION:
+        raise ReplayError("unsupported schema_version", stage="header")
+    if not isinstance(h["arm"], str) or h["arm"] not in ARMS:
+        raise ReplayError("arm must be one of A/B", stage="header")
     if any(not isinstance(h[k], str) or not h[k] for k in ("run_id", "scenario_id")):
-        raise ReplayError("VALUE_OUT_OF_RANGE: identifier")
-    if not isinstance(h["versions"], dict) or not isinstance(h["clock"], dict) or set(h["clock"]) != {"fence_at"}:
-        raise ReplayError("UNKNOWN_KEY: clock or versions")
+        raise ReplayError("identifier", stage="header")
+    if not isinstance(h["versions"], dict):
+        raise ReplayError("versions must be an object", code="TYPE_INVALID",
+                          stage="header")
+    _missing_keys(h["versions"], REQUIRED_VERSION_KEYS, "header.versions")
+    _strict_keys(h["versions"], ALLOWED_VERSION_KEYS, "header.versions")
+    for name, val in h["versions"].items():
+        if val is None or (isinstance(val, str) and not val):
+            raise ReplayError(f"empty version {name}", stage="header.versions")
+    if not isinstance(h["clock"], dict):
+        raise ReplayError("clock must be an object", code="TYPE_INVALID",
+                          stage="header")
+    _missing_keys(h["clock"], frozenset({"fence_at"}), "header.clock")
+    _strict_keys(h["clock"], frozenset({"fence_at"}), "header.clock")
     if type(h["clock"]["fence_at"]) not in (int, float):
-        raise ReplayError("VALUE_OUT_OF_RANGE: fence_at")
+        raise ReplayError("fence_at", code="TYPE_INVALID", stage="header.clock")
     chunks_meta = h["chunks"]
     if not isinstance(chunks_meta, list) or not (1 <= len(chunks_meta) <= MAX_CHUNKS):
-        raise ReplayError("chunks count out of range")
+        raise ReplayError("chunks count out of range", code="PAYLOAD_LIMIT",
+                          stage="header")
     # chunks array meta
     seqs = []
     filenames = set()
     for cm in chunks_meta:
         if not isinstance(cm, dict):
-            raise ReplayError("bad chunk meta")
-        if set(cm) != {"seq", "filename", "sha256", "record_count"}:
-            raise ReplayError("UNKNOWN_KEY: chunk metadata")
+            raise ReplayError("bad chunk meta", code="TYPE_INVALID",
+                              stage="chunk_meta")
+        _strict_keys(cm, frozenset({"seq", "filename", "sha256", "record_count"}),
+                     "chunk_meta")
         if type(cm.get("seq")) is not int or not (1 <= cm["seq"] <= MAX_CHUNKS):
-            raise ReplayError("bad seq")
+            raise ReplayError("bad seq", stage="chunk_meta")
         seqs.append(cm["seq"])
         fn = cm.get("filename")
         if not isinstance(fn, str) or len(fn) > MAX_FILENAME_LEN or len(fn) == 0:
-            raise ReplayError("bad filename")
+            raise ReplayError("bad filename", code="TYPE_INVALID", stage="chunk_meta")
         if fn in (".", "..") or ".." in fn or "/" in fn or "\\" in fn or "\x00" in fn:
-            raise ReplayError("unsafe chunk filename")
+            raise ReplayError("unsafe chunk filename", stage="chunk_meta")
         if fn in filenames:
-            raise ReplayError("duplicate filename")
+            raise ReplayError("duplicate filename", stage="chunk_meta")
         filenames.add(fn)
         sha = cm.get("sha256")
         if not (isinstance(sha, str) and len(sha) == 64 and all(c in "0123456789abcdef" for c in sha.lower())):
-            raise ReplayError("bad sha256")
+            raise ReplayError("bad sha256", stage="chunk_meta")
         rc = cm.get("record_count")
         if not (type(rc) is int and 1 <= rc <= MAX_RECORDS_PER_CHUNK):
-            raise ReplayError("bad record_count")
+            raise ReplayError("bad record_count", code="PAYLOAD_LIMIT",
+                              stage="chunk_meta")
     if seqs != sorted(set(seqs)) or len(set(seqs)) != len(seqs):
-        raise ReplayError("seq not strictly increasing unique")
+        raise ReplayError("seq not strictly increasing unique", stage="chunk_meta")
     # load chunks
     chunks = []
     total = 0
     seen_io = set()
     prev_seq_db: dict[str, int] = {}
     for cm in sorted(chunks_meta, key=lambda x: x["seq"]):
-        if "records" in cm:
-            raise ReplayError("inline records not supported")
         raw = chunk_loader(cm["filename"])
         if not isinstance(raw, bytes) or not (0 < len(raw) <= MAX_CHUNK_BYTES):
-            raise ReplayError("chunk size")
+            raise ReplayError("chunk size", code="PAYLOAD_LIMIT", stage="chunk")
         if hashlib.sha256(raw).hexdigest() != cm["sha256"].lower():
-            raise ReplayError("sha mismatch")
+            raise ReplayError("sha mismatch", stage="chunk")
         try:
             recs = json.loads(raw)
         except (ValueError, UnicodeDecodeError) as exc:
-            raise ReplayError("invalid chunk JSON") from exc
+            raise ReplayError("invalid chunk JSON", code="INVALID_JSON",
+                              stage="chunk") from exc
         if not isinstance(recs, list):
-            raise ReplayError("chunk not list")
+            raise ReplayError("chunk not list", code="TYPE_INVALID", stage="chunk")
         if not (1 <= len(recs) <= MAX_RECORDS_PER_CHUNK):
-            raise ReplayError("chunk record count")
+            raise ReplayError("chunk record count", code="PAYLOAD_LIMIT",
+                              stage="chunk")
         if len(recs) != cm["record_count"]:
-            raise ReplayError("record_count mismatch")
-        # sha check
-        # record size/depth
+            raise ReplayError("record_count mismatch", stage="chunk")
         for r in recs:
             if not isinstance(r, dict):
-                raise ReplayError("record not object")
-            if not isinstance(r.get("db"), str) or not r["db"] or r.get("observation_id") is None or type(r.get("ingest_sequence")) is not int:
-                raise ReplayError("invalid ingest record")
+                raise ReplayError("record not object", code="TYPE_INVALID",
+                                  stage="record")
+            _strict_keys(r, ALLOWED_RECORD_KEYS, "record")
+            if not isinstance(r.get("db"), str) or not r["db"] \
+                    or r.get("observation_id") is None \
+                    or type(r.get("ingest_sequence")) is not int:
+                raise ReplayError("invalid ingest record", stage="record")
             rb = json.dumps(r).encode()
             if len(rb) > MAX_RECORD_BYTES:
-                raise ReplayError("record too large")
+                raise ReplayError("record too large", code="PAYLOAD_LIMIT",
+                                  stage="record")
             if _depth(r) > MAX_DEPTH:
-                raise ReplayError("depth too deep")
+                raise ReplayError("depth too deep", code="PAYLOAD_LIMIT",
+                                  stage="record")
             # ingest order unique
             key = (r.get("db"), r.get("observation_id"))
             if key in seen_io:
-                raise ReplayError("duplicate ingest_order")
+                raise ReplayError("duplicate ingest_order", stage="record")
             seen_io.add(key)
             db = r.get("db")
             seq = r.get("ingest_sequence")
             if db in prev_seq_db and not (seq > prev_seq_db[db]):
-                raise ReplayError("ingest_sequence not increasing")
+                raise ReplayError("ingest_sequence not increasing", stage="record")
             prev_seq_db[db] = seq
         total += len(recs)
         if total > MAX_TOTAL_RECORDS:
-            raise ReplayError("total records exceeded")
+            raise ReplayError("total records exceeded", code="PAYLOAD_LIMIT",
+                              stage="chunk")
         chunks.append(Chunk(seq=cm["seq"], filename=cm["filename"], sha256=cm["sha256"], record_count=cm["record_count"], records=recs))
     # strict increasing seq across
     seqs_sorted = [c.seq for c in chunks]
     if seqs_sorted != sorted(seqs_sorted) or len(set(seqs_sorted)) != len(seqs_sorted):
-        raise ReplayError("seq order")
+        raise ReplayError("seq order", stage="chunk_meta")
     header = ManifestHeader(
         schema_version=h["schema_version"],
         run_id=h["run_id"],
@@ -312,6 +389,8 @@ def load_manifest_from_file(path, chunk_loader=None):
 __all__ = [
     "MODE", "LIVE_ELIGIBLE", "ReplayError", "Chunk", "Manifest", "ManifestHeader",
     "load_manifest", "InjectedClock", "PitInputView", "ARM_A", "ARM_B",
+    "MANIFEST_SCHEMA_VERSION", "REQUIRED_VERSION_KEYS", "ALLOWED_VERSION_KEYS",
+    "ALLOWED_RECORD_KEYS",
     "BaselineConfig", "BaselineArm", "make_baseline_a", "make_baseline_b",
     "LEAKAGE_FIXTURES",
 ]
