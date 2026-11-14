@@ -86,6 +86,11 @@ class RestoreStageMarkerTests(unittest.TestCase):
         self.assertIsNotNone(out["age_sec"])
         path.write_text(json.dumps({"stage": "PRIVATE"}), encoding="utf-8")
         self.assertIsNone(diag._collect_game_switch_restore(self.temp.name, 1794655000)["stage"])
+        for malformed in ([], {"unexpected": "mapping"}, 123, None):
+            path.write_text(json.dumps({"stage": malformed}), encoding="utf-8")
+            self.assertIsNone(
+                diag._collect_game_switch_restore(self.temp.name, 1794655000)["stage"]
+            )
 
 
 
