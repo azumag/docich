@@ -478,6 +478,68 @@ class HelperDeadSeatOwnershipTests(unittest.TestCase):
             self.assertEqual(ctx.exception.code, HELPER_MODULE.EX_OWNERSHIP_MISSING)
 
 
+class HelperDirlessAdapterContractTests(unittest.TestCase):
+    """The dirless-adapter list is a fixed contract (#4206).
+
+    soren keeps one shared runtime for sorengame and soren91 rides that
+    same process, so neither adapter's seat ever materializes a per-runtime
+    directory and ``verify_ownership`` must not demand one. The set is pinned
+    literally rather than derived from ``src/docich/adapters`` because the
+    exemption reflects the shared-process runtime contract, not whether an
+    adapter's source happens to touch ``spec.runtime_dir``.
+    """
+
+    def test_dirless_adapters_is_the_fixed_set(self):
+        self.assertEqual(
+            HELPER_MODULE.DIRLESS_ADAPTERS, frozenset({"soren", "soren91"}))
+
+    def test_every_dirless_adapter_seat_skips_the_directory_requirement(self):
+        for adapter in sorted(HELPER_MODULE.DIRLESS_ADAPTERS):
+            with self.subTest(adapter=adapter):
+                with tempfile.TemporaryDirectory() as tmp:
+                    seat = runtime(adapter=adapter)
+                    state = canonical(phase="ready", active=seat, next_generation=4)
+                    HELPER_MODULE.verify_ownership(Path(tmp), state)
+
+    def test_dirless_exemption_applies_to_every_seat_position(self):
+        # The 2026-11-14 incident was a rollback whose previous (restore
+        # target) seat was sorengame: every seated position is exempt, not
+        # just active.
+        with tempfile.TemporaryDirectory() as tmp:
+            state = canonical(
+                phase="failed",
+                previous=runtime(seat_generation=1, runtime_id="g1-abcdef",
+                                 adapter="soren"),
+                retiring=[runtime(seat_generation=2, runtime_id="g2-abcdef",
+                                  adapter="soren91")],
+                candidate=runtime(seat_generation=3, runtime_id="g3-abcdef",
+                                  adapter="soren"),
+            )
+            HELPER_MODULE.verify_ownership(Path(tmp), state)
+
+    def test_non_dirless_adapters_still_require_the_directory(self):
+        for adapter in ("cli", "retroarch", "browser", "program"):
+            with self.subTest(adapter=adapter):
+                with tempfile.TemporaryDirectory() as tmp:
+                    seat = runtime(adapter=adapter)
+                    state = canonical(phase="ready", active=seat, next_generation=4)
+                    with self.assertRaises(HELPER_MODULE.FixedRecoverExit) as ctx:
+                        HELPER_MODULE.verify_ownership(Path(tmp), state)
+                    self.assertEqual(ctx.exception.code,
+                                     HELPER_MODULE.EX_OWNERSHIP_MISSING)
+
+    def test_dirless_match_is_exact_and_fail_closed(self):
+        for adapter in ("soren ", "SOREN", "soren2", "soren91x"):
+            with self.subTest(adapter=adapter):
+                with tempfile.TemporaryDirectory() as tmp:
+                    seat = runtime(adapter=adapter)
+                    state = canonical(phase="ready", active=seat, next_generation=4)
+                    with self.assertRaises(HELPER_MODULE.FixedRecoverExit) as ctx:
+                        HELPER_MODULE.verify_ownership(Path(tmp), state)
+                    self.assertEqual(ctx.exception.code,
+                                     HELPER_MODULE.EX_OWNERSHIP_MISSING)
+
+
 class HelperCliTests(unittest.TestCase):
     def _root_with_launcher(self, exit_code=0):
         tmp = tempfile.TemporaryDirectory()
