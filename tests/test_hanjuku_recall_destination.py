@@ -202,7 +202,10 @@ def test_unknown_origin_does_not_borrow_old_integrated_cursor_or_picker_without_
     mem['uncertain'] = False
     at(monkeypatch, 'アルマムーン')
     monkeypatch.setattr(p, 'world_markers', lambda _: [])
-    assert p.world_map_step(VIEW, mem, picker()) == [p.pad('right')]
+    # v831: an aimless picker holds one observation on the castle under the
+    # ring instead of pressing right; the stale integrated cursor is still
+    # never borrowed as an origin.
+    assert p.world_map_step(VIEW, mem, picker()) == []
     assert 'goal' not in _flow(mem)['recall']
     assert 'origin' not in _flow(mem)['recall']
 
@@ -448,7 +451,8 @@ def test_an_aimless_picker_confirms_the_own_castle_under_the_ring(monkeypatch):
     """
     mem = memory()
     at(monkeypatch, 'アルマムーン')
-    assert p.world_map_step(VIEW, mem, picker()) == [p.pad('right')]
+    # One settling observation with no press keeps the ring on the castle.
+    assert p.world_map_step(VIEW, mem, picker()) == []
     assert p.world_map_step(VIEW, mem, picker()) == [p.pad('a'), {'type': 'wait', 'ms': 700}, p.pad('a')]
     recall = _flow(mem)['recall']
     assert recall['goal'] == 'アルマムーン'

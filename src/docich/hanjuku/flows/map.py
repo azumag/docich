@@ -362,7 +362,12 @@ def world_map_step(screen, mem, frame):
             # 10:47 spent 50 observations before the origin bound.
             under = next((name for name in nearby
                           if (flags or {}).get(name) == 'own'), None)
-            if under is not None and recall['picker_observations'] >= 2:
+            if under is not None and recall['picker_observations'] < 2:
+                # The ring already stands on the castle: one observation to let
+                # the frame settle, then confirm. Pressing right here would walk
+                # the ring off it and leave the cursor between castles.
+                return []
+            if under is not None:
                 recall.update(goal=under, destination_selected=True,
                               goal_from_cursor=True)
                 _record(mem, 'camp_recall_destination',
