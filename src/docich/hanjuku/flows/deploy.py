@@ -15,7 +15,7 @@ from ..os_layer.font import UNKNOWN
 from ... import hanjuku_chart as chart, hanjuku_chart_adjust as chart_adjust, hanjuku_reference as reference
 from ...hanjuku_egg_reference import enemy_egg_triggers, general_max_hp
 from ..decision_log import _record
-from ..os_layer.commands import menu_to, pad
+from ..os_layer.commands import general_list_batch, menu_to, pad
 from ..os_layer.readers import (CASTLE_STATUS, STATUS_NAMES, _empty_sortie_inventory, _general_visible,
                                 _measured_card_select, _options, _present_generals, _sortie_inventory, _current)
 from ..os_layer.world import NAME, _en_route, _owned
@@ -884,7 +884,7 @@ def _move_general_pick(screen, mem, order):
     move = _list_menu_to(screen, mem, order, general)
     if move is None:
         return _hold_deploy(screen, mem, order, '移動させる将軍へカーソルを合わせられないため保留')
-    return _deploy_input(screen, mem, order, [pad('a')] if move == 'here' else [move],
+    return _deploy_input(screen, mem, order, _general_selection_actions(screen, general, move),
                          '移動させる将軍を選択')
 
 
@@ -1318,6 +1318,17 @@ def _list_menu_to(screen, mem, order, general):
     if move is not None or not names or not cur or general not in names or cur[2] not in names:
         return move
     return pad('down' if names.index(general) > names.index(cur[2]) else 'up')
+
+
+def _general_selection_actions(screen, general, move):
+    """Batch only a readable destination lookup, after the caller's guards.
+
+    Neither a completed roster scan nor a planned landing authorizes A.
+    The next observation must put the real cursor on the requested general.
+    """
+    if move == 'here':
+        return [pad('a')]
+    return general_list_batch(screen, general) or [move]
 
 
 GARRISON_EMPTY_READINGS = 2      # equal empty list frames before "no generals"
@@ -2122,7 +2133,8 @@ def deploy_step(screen: Screen, mem):
                             observed_metric={'present': present[:8], 'selected': general},
                             reason='主人公の敗北でゲームオーバーになる危険を避け、実在する待機将軍を先発にする')
                 return _deploy_input(screen, mem, order, [pad('a')], '実一覧の出撃本人を選択')
-            return _deploy_input(screen, mem, order, [move], '主人公以外の待機将軍を優先して選択カーソルを移動')
+            return _deploy_input(screen, mem, order, _general_selection_actions(screen, general, move),
+                                 '主人公以外の待機将軍を優先して選択カーソルを移動')
         empty_list = 'おりません' in screen.text
         if not screen.hand and not empty_list:
             return _hold_general_list_bounded(screen, mem, order,
@@ -2175,7 +2187,8 @@ def deploy_step(screen: Screen, mem):
                           observed_metric=[w for _, _, w in _options(screen)][:12],
                           reason='チャートの将軍が出撃元の城にいない')
             return [pad('b')]
-        return _deploy_input(screen, mem, order, [pad('a')] if move == 'here' else [move], '出撃将軍を選択')
+        return _deploy_input(screen, mem, order, _general_selection_actions(screen, general, move),
+                             '出撃将軍を選択')
     if kind in {'card_select', 'sortie_confirm'}:
         if (_is_boss_order(order, mem) and _sortie_general(order, mem) == NAME
                 and (_plan_region(mem).get('orders') or {}).get(order['step']) != 'launched_unconfirmed'):

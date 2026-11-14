@@ -14,8 +14,8 @@ from .readers import _current, _options
 
 
 FPS = 60
-CASTLE_LIST_BATCH_MAX = 4
-CASTLE_LIST_RELEASE_MS = 50
+VISIBLE_LIST_BATCH_MAX = 4
+VISIBLE_LIST_RELEASE_MS = 50
 
 
 def pad(button, frames=6):
@@ -98,11 +98,22 @@ def castle_list_batch(screen: Screen, label: str):
     This never scrolls beyond a visible row, wraps, or confirms a destination.
     Each tap has an explicit released interval so it is a distinct input.
     """
+    return _visible_list_batch(screen, label, kind='text', menu='castle_list', x=168)
+
+
+def general_list_batch(screen: Screen, label: str):
+    """Move to a visible sortie general; never scan, scroll or confirm."""
+    return _visible_list_batch(screen, label, kind='general_list', menu='castle_roster', x=144)
+
+
+def _visible_list_batch(screen, label, *, kind, menu, x):
     reading = menu_feedback.reading(screen)
-    if not reading or reading.get('kind') != 'text' or reading.get('menu') != 'castle_list':
+    if not reading or reading.get('kind') != kind or reading.get('menu') != menu:
         return None
-    rows = [(y, word) for x, y, word in _options(screen)
-            if x == 168 and y in range(39, 152, 16)]
+    if reading['cursor'][0] != x:
+        return None
+    rows = [(y, word) for rx, y, word in _options(screen)
+            if rx == x and y in range(39, 152, 16)]
     target = [y for y, word in rows if word == label]
     if len(target) != 1:
         return None
@@ -119,13 +130,13 @@ def castle_list_batch(screen: Screen, label: str):
         return None
     button = 'down' if sign > 0 else 'up'
     actions = [pad(button)]
-    for _ in range(min(distance, CASTLE_LIST_BATCH_MAX) - 1):
-        actions.extend([{'type': 'wait', 'ms': CASTLE_LIST_RELEASE_MS}, pad(button)])
+    for _ in range(min(distance, VISIBLE_LIST_BATCH_MAX) - 1):
+        actions.extend([{'type': 'wait', 'ms': VISIBLE_LIST_RELEASE_MS}, pad(button)])
     return actions
 
 
 def menu_navigation_feedback(state, actions):
-    """Reobserve a short move or a bounded card/castle-list batch sooner."""
+    """Reobserve a short move or a bounded card/visible-list batch sooner."""
     reading = state.get('menu_navigation_reading')
     if (not isinstance(reading, dict) or type(state.get('step')) is not int
             or type(reading.get('step')) is not int or reading.get('step') != state['step']
@@ -141,23 +152,24 @@ def menu_navigation_feedback(state, actions):
             or not isinstance(cursor, list) or len(cursor) != 2
             or any(type(n) is not int or not 0 <= n < bound for n, bound in zip(cursor, (256, 224)))):
         return False
-    castle_batch = (len(actions) > 1 and reading.get('kind') == 'text'
-                    and reading.get('menu') == 'castle_list')
-    if castle_batch:
+    released_batch = (len(actions) > 1 and
+                      (reading.get('kind'), reading.get('menu')) in
+                      (('text', 'castle_list'), ('general_list', 'castle_roster')))
+    if released_batch:
         if len(actions) not in (3, 5, 7):
             return False
         for release in actions[1::2]:
             if (not isinstance(release, dict) or set(release) != {'type', 'ms'}
                     or release.get('type') != 'wait' or type(release.get('ms')) is not int
-                    or release['ms'] != CASTLE_LIST_RELEASE_MS):
+                    or release['ms'] != VISIBLE_LIST_RELEASE_MS):
                 return False
         actions = actions[::2]  # local view only; preserve the complete plan
     if len(actions) > 4:
         return False
     batch = len(actions) > 1
-    # Card batches retain their existing adjacent taps. Castle batches have
+    # Card batches retain their existing adjacent taps. Visible-list batches have
     # explicit releases. Neither path authorizes a confirmation or a receipt.
-    if batch and not (castle_batch or (reading.get('kind') == 'card_select'
+    if batch and not (released_batch or (reading.get('kind') == 'card_select'
                                       and reading.get('menu') == 'sortie_cards')):
         return False
     direction = None
