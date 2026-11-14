@@ -7667,6 +7667,8 @@ def _collect_game_switch_fifo(state_dir, now):
         "terminal_count": 0,
         "malformed_count": 0,
         "head": None,
+        "pending_count": 0,
+        "pending": [],
     }
     try:
         if not directory.is_dir():
@@ -7682,6 +7684,7 @@ def _collect_game_switch_fifo(state_dir, now):
         paths = paths[:FIFO_MAX_RECEIPTS]
 
     queued = []
+    pending = []
     for path in paths:
         present, readable, data = _load_state_file(path)
         if not present or not readable or not isinstance(data, dict):
@@ -7694,6 +7697,12 @@ def _collect_game_switch_fifo(state_dir, now):
             result["queued_count"] += 1
         elif status in {"succeeded", "failed", "rolled_back"}:
             result["terminal_count"] += 1
+        elif status in {"accepted", "allocating"}:
+            # A receipt that never landed makes every later switch refuse with
+            # busy (g1163 2026-11-10: an accepted receipt wedged the retro
+            # corner restore for days). Project the pending rows so the wedge
+            # is visible without the private ledger.
+            pending.append(data)
 
     queued.sort(
         key=lambda item: (
@@ -7701,6 +7710,20 @@ def _collect_game_switch_fifo(state_dir, now):
             int(item.get("generation", 0)) if isinstance(item.get("generation"), int) else 0,
         )
     )
+    pending.sort(key=lambda item: str(item.get("updated_at", "")))
+    if pending:
+        result["pending_count"] = len(pending)
+        result["pending"] = [
+            {
+                "status": row.get("status") if row.get("status") in {"accepted", "allocating"} else None,
+                "operation": row.get("operation") if row.get("operation") in FIFO_OPERATIONS else None,
+                "target": _bounded_str(row.get("target"), 64),
+                "generation": row.get("generation")
+                if isinstance(row.get("generation"), int) else None,
+                "age_sec": _receipt_age_sec(row.get("updated_at"), now),
+            }
+            for row in pending[:5]
+        ]
     if queued:
         head = queued[0]
         operation = head.get("operation")
