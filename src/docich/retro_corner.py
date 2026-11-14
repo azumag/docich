@@ -3562,10 +3562,23 @@ class RetroCornerManager:
         """
         request_id = state.get("rotation_request_id")
         if not isinstance(request_id, str) or not request_id:
-            return CornerResult("failed", game=state.get("game"),
-                                detail="restoring owner is unverified")
+            # A restore recorded before request-binding existed carries no
+            # rotation_request_id. Refusing here wedges the row forever (the
+            # caller never sees the detail), so mark it and let the finish
+            # proceed fenced by the recorded switch_request_id and the
+            # coordinator's expected_source check instead.
+            state["last_error_code"] = "restoring-owner-unverified"
+            self._write_state(state)
+        else:
+            try:
+                self._verify_restoring_request(state, request_id)
+            except Exception:
+                latest = self._read_state()
+                if latest.get("status") == "restoring":
+                    latest["last_error_code"] = "restoring-request-unverified"
+                    self._write_state(latest)
+                raise
         try:
-            self._verify_restoring_request(state, request_id)
             self._ensure_runtime()
             return self._finish_locked(state, self._local_now())
         except Exception:

@@ -1964,18 +1964,29 @@ class TestRestoreFailedRecovery(RetroCornerTestBase):
         self.assertEqual(coordinator.calls, [("switch", "sorengame")])
         self.assertEqual(mgr._read_state()["status"], "completed")
 
-    def test_recover_failed_refuses_restoring_without_owner(self):
+    def test_recover_failed_drives_restoring_without_request_binding(self):
+        """A restoring row written before request binding existed carries no
+        rotation_request_id. Refusing would wedge it forever; the finish is
+        replayed fenced by the coordinator's own expected_source check, and
+        the row is marked so diagnostics can name the gap."""
         mgr, coordinator = self.manager(["robots"])
+        runtime = self._runtime("robots", 1)
         state = mgr._default_state()
         state.update(status="restoring", game="robots", previous_game="sorengame",
+                     switch_request_id=str(uuid.uuid4()),
                      started_at=self.now_value.isoformat())
         mgr._write_state(state)
+        canonical = mgr.store.initialize()
+        canonical.update(phase="ready", next_generation=2, operation=None,
+                         request_id=None, deadline_at=None, active=runtime)
+        mgr.store.canonical.save(canonical)
 
         result = mgr.recover_failed()
 
-        self.assertEqual(result.status, "failed")
-        self.assertEqual(coordinator.calls, [])
-        self.assertEqual(mgr._read_state()["status"], "restoring")
+        self.assertEqual(result.status, "completed")
+        self.assertEqual(coordinator.calls, [("switch", "sorengame")])
+        latest = mgr._read_state()
+        self.assertEqual(latest["status"], "completed")
 
     def test_recover_failed_restore_drives_stuck_restoring(self):
         """The timer-safe restore hook settles the same parked restoring row
@@ -2022,7 +2033,7 @@ class TestRestoreFailedRecovery(RetroCornerTestBase):
         self.assertEqual(coordinator.calls, [])
         latest = mgr._read_state()
         self.assertEqual(latest["status"], "restoring")
-        self.assertEqual(latest["last_error_code"], "restoring-finish-unverified")
+        self.assertEqual(latest["last_error_code"], "restoring-request-unverified")
 
     def _setup_restore_failed(
         self, *, receipt_status="rolled_back", result_patch=None,
