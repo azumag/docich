@@ -15,6 +15,7 @@ from pathlib import Path
 
 from docich.trading.news_paper.execution import (
     ClockQuality,
+    DepthLevel,
     ExecutionOutcome,
     InstrumentConstraints,
     MarketObservation,
@@ -467,6 +468,104 @@ class SupersedeTest(ManagerTestCase):
         self.manager.submit_candidate(request())
         with self.assertRaises(Exception):
             self.manager.reevaluate_held("receipt_001", request(receipt_id="receipt_003"))
+
+
+class SettleTimeCashRecheckTest(unittest.TestCase):
+    """docich#2644 acceptance item 4 (N05 integration, P2-6 residual).
+
+    The ledger already re-checks fee-inclusive cash per fill. This test drives
+    a real multi-level size/fill through ``PaperManager.process_observations``
+    so the N06 sizing -> N05 settle -> terminal-cancel path is exercised with
+    the actual fee arithmetic rather than a mocked exception.
+    """
+
+    def setUp(self) -> None:
+        self.tmp = Path(tempfile.mkdtemp(prefix="n05-manager-settle-"))
+        self.ledger = NewsLedger.open(
+            self.tmp, "run_demo_001", "price_plus_news", clock=SteppingClock()
+        )
+        self.ledger.create_account(
+            account_id="paper_news_demo", run_id="run_demo_001",
+            scenario_id="price_plus_news", initial_cash="601999",
+        )
+        self.manager = PaperManager(
+            self.ledger, clock_quality=ClockQuality(True, "injected", 1000)
+        )
+        # fee_min is charged per fill, while N06 sizing reserves it once per
+        # order; two levels therefore leave a 1-yen settle-time shortfall.
+        self.constraints = constraints(
+            fee_min=D("1000"), fee_bps=D("0"), slippage_bps=D("0"),
+            participation_rate=D("1"),
+        )
+
+    def tearDown(self) -> None:
+        self.ledger.close()
+
+    def _observation(self, after_fence: dt.datetime) -> MarketObservation:
+        return MarketObservation(
+            observation_id="quote_121", source="src", asset=ASSET,
+            ingest_sequence=121,
+            market_event_at=after_fence - dt.timedelta(seconds=10),
+            market_available_at=after_fence,
+            available_at=after_fence + dt.timedelta(seconds=1),
+            bid=D("999"), ask=D("1000"), bid_size=D("5000"), ask_size=D("5000"),
+            size_semantics="executable", tradeable=True, realtime=True,
+            session_id="s1", calendar_version="c1", quote_digest="c" * 64,
+            provenance_class="test_fixture",
+            instrument_constraints_version="fixture-stocks-v1",
+            asks=(
+                DepthLevel(D("1000"), D("300")),
+                DepthLevel(D("1000"), D("300")),
+            ),
+        )
+
+    def test_multi_level_fee_shortfall_becomes_terminal_cancel(self):
+        view = self.manager.submit_candidate(request(
+            quantity_cap=D("600"), reference_price=D("1000"),
+            constraints=self.constraints,
+        ))
+        self.assertEqual(view.status, "accepted")
+        order_id = view.order_ref
+        fence = self.ledger.establish_fence(
+            view.receipt_id, self.manager._clock_quality
+        )
+        obs = self._observation(fence.fence_at + dt.timedelta(seconds=10))
+        outcome = self.manager.process_observations(
+            order_id, [obs], self.constraints
+        )
+
+        self.assertEqual(outcome.status, "canceled")
+        self.assertEqual(outcome.reason_codes, ("INSUFFICIENT_FUNDS",))
+        self.assertTrue(outcome.terminal)
+        self.assertEqual(outcome.stage, "SETTLE")
+        self.assertEqual(outcome.fills, ())
+        self.assertEqual(outcome.filled_quantity, D("0"))
+        self.assertEqual(outcome.canceled_quantity, D("600"))
+        self.assertEqual(
+            outcome.requested_quantity,
+            outcome.filled_quantity + outcome.remaining_quantity
+            + outcome.canceled_quantity,
+        )
+
+        order = self.ledger.order_row(order_id)
+        self.assertEqual(order["status"], "canceled")
+        self.assertEqual(order["filled_quantity"], "0")
+        snap = self.ledger.account_snapshot("paper_news_demo")
+        self.assertEqual(snap.cash, D("601999"))
+        self.assertEqual(snap.positions, {})
+        self.assertEqual(
+            self.ledger._conn.execute(
+                "SELECT COUNT(*) FROM fills WHERE order_id = ?", (order_id,)
+            ).fetchone()[0],
+            0,
+        )
+        self.assertEqual(
+            self.ledger._conn.execute(
+                "SELECT quantity, reason_code FROM cancel_events WHERE order_id = ?",
+                (order_id,),
+            ).fetchall(),
+            [("600", "INSUFFICIENT_FUNDS")],
+        )
 
 
 if __name__ == "__main__":
