@@ -1977,6 +1977,53 @@ class TestRestoreFailedRecovery(RetroCornerTestBase):
         self.assertEqual(coordinator.calls, [])
         self.assertEqual(mgr._read_state()["status"], "restoring")
 
+    def test_recover_failed_restore_drives_stuck_restoring(self):
+        """The timer-safe restore hook settles the same parked restoring row
+        the operator entry does, so the rotation observer can call it."""
+        mgr, coordinator = self.manager(["robots"])
+        rotation_id = str(uuid.uuid4())
+        restore_id = str(uuid.uuid4())
+        runtime = self._runtime("robots", 1)
+        state = mgr._default_state()
+        state.update(
+            status="restoring",
+            game="robots",
+            previous_game="sorengame",
+            rotation_request_id=rotation_id,
+            rotation_runtime_id=runtime["runtime_id"],
+            switch_request_id=restore_id,
+            started_at=self.now_value.isoformat(),
+        )
+        mgr._write_state(state)
+        canonical = mgr.store.initialize()
+        canonical.update(phase="ready", next_generation=2, operation=None,
+                         request_id=None, deadline_at=None, active=runtime)
+        mgr.store.canonical.save(canonical)
+
+        result = mgr.recover_failed_restore()
+
+        self.assertEqual(result.status, "completed")
+        self.assertEqual(coordinator.calls, [("switch", "sorengame")])
+        self.assertEqual(mgr._read_state()["status"], "completed")
+
+    def test_recover_failed_restore_marks_restoring_refusal(self):
+        """A timer-side refusal must not propagate; it records a fixed
+        last_error_code for diagnostics and leaves the row restoring."""
+        mgr, coordinator = self.manager(["robots"])
+        state = mgr._default_state()
+        state.update(status="restoring", game="robots", previous_game="sorengame",
+                     rotation_request_id=str(uuid.uuid4()),
+                     started_at=self.now_value.isoformat())
+        mgr._write_state(state)
+
+        result = mgr.recover_failed_restore()
+
+        self.assertEqual(result.status, "failed")
+        self.assertEqual(coordinator.calls, [])
+        latest = mgr._read_state()
+        self.assertEqual(latest["status"], "restoring")
+        self.assertEqual(latest["last_error_code"], "restoring-finish-unverified")
+
     def _setup_restore_failed(
         self, *, receipt_status="rolled_back", result_patch=None,
         receipt_patch=None, canonical_patch=None, error_code="timeout",

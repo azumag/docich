@@ -3551,6 +3551,32 @@ class RetroCornerManager:
             return CornerResult("failed", game=game, previous_game=previous,
                                 detail="terminal restore proof refused")
 
+    def _drive_recorded_restore(self, state: dict[str, object]) -> CornerResult:
+        """Replay the durable ``restoring`` finish through the recorded-request
+        gate.  A crash between the ``restoring`` write and the restore switch
+        leaves no automatic driver; the same recorded request is replayed here
+        instead of inventing a new one.  On failure the durable state keeps a
+        fixed ``last_error_code`` so diagnostics can name the blocking gate.
+
+        The caller must hold ``self._locked()``.
+        """
+        request_id = state.get("rotation_request_id")
+        if not isinstance(request_id, str) or not request_id:
+            return CornerResult("failed", game=state.get("game"),
+                                detail="restoring owner is unverified")
+        try:
+            self._verify_restoring_request(state, request_id)
+            self._ensure_runtime()
+            return self._finish_locked(state, self._local_now())
+        except Exception:
+            # _finish_locked already records its own failure when it reaches
+            # its switch; only a pre-switch refusal needs the durable marker.
+            latest = self._read_state()
+            if latest.get("status") == "restoring":
+                latest["last_error_code"] = "restoring-finish-unverified"
+                self._write_state(latest)
+            raise
+
     def recover_failed_restore(self) -> CornerResult:
         """Timer-safe subset of ``recover_failed``: restore recovery only (#2187).
 
@@ -3560,10 +3586,22 @@ class RetroCornerManager:
         only settles a proven terminal restore or replays the already recorded
         restore inside that record's own bounded deadline. The caller owns the
         attempt budget and backoff; this method is idempotent per record.
+
+        A record parked at ``restoring`` is the same bounded replay: the
+        rotation only ever sees the BUSY row and the legacy restoring retry
+        tick is unreachable while rotation is enabled, so this entry drives
+        the recorded finish instead of letting the slot wedge every corner.
         """
 
         with self._locked():
             state = self._read_state()
+            if state.get("status") == "restoring":
+                try:
+                    return self._drive_recorded_restore(state)
+                except Exception as exc:
+                    return CornerResult("failed", game=state.get("game"),
+                                        previous_game=state.get("previous_game"),
+                                        detail=_safe_detail(exc))
             if not self._restore_failure_candidate(state):
                 return CornerResult("noop", detail="not-a-restore-failure")
             terminal = self._recover_terminal_hanjuku_restore(state)
@@ -3632,13 +3670,7 @@ class RetroCornerManager:
             # entry drives it here after the recorded-request gate proves the
             # restore still belongs to this corner.
             if state.get("status") == "restoring":
-                request_id = state.get("rotation_request_id")
-                if not isinstance(request_id, str) or not request_id:
-                    return CornerResult("failed", game=state.get("game"),
-                                        detail="restoring owner is unverified")
-                self._verify_restoring_request(state, request_id)
-                self._ensure_runtime()
-                return self._finish_locked(state, now)
+                return self._drive_recorded_restore(state)
             if not self._failed_state_is_recoverable(state):
                 return CornerResult("noop", detail="failed-slot-not-recoverable")
             target = state.get("game")
