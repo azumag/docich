@@ -100,6 +100,17 @@ def orphan_battle_menu_step(screen, mem):
         flow = mem['orphan_battle_menu'] = {'identity': identity, 'attempts': 3}
     if not parent:
         return []  # a fade or an irreversible list is not another parent B
+    words = {word for _, _, word in _options(screen)}
+    if ('こうげき' in words and 'たいきゃく' in words
+            and not words.intersection({'おくのて', 'たまごをつかう', 'きりふだ'})):
+        # A plain こうげき/たいきゃく list is a normal combat command menu,
+        # not an unreadable gray/okunote parent. Choosing こうげき proceeds the
+        # battle; holding it stalled the run (g1190 ch9 2026-11-15, ねばねば!!,
+        # input_stalled). Egg/okunote rows still take the bounded close path.
+        _record(mem, 'battle_menu_plain_command',
+                observed_metric={'cursor_y': screen.menu_cursor, 'words': sorted(words)},
+                reason='将軍とHPは読めないが通常コマンドだけの戦闘メニューのため、保留せずこうげきで戦闘を進める')
+        return [pad('a')]
     if flow['attempts'] < 3:
         flow['attempts'] += 1
         _record(mem, 'battle_menu_context_recheck',
