@@ -16,7 +16,7 @@ import uuid
 from .adapters.base import AdapterError
 from .game_switch import atomic_write_json
 from .hanjuku_bot import BOT_VERSION, classify
-from .hanjuku_hotload import logic_generation as _logic_generation
+from .hanjuku_hotload import logic_generation as _logic_generation, module as _hot_module
 from .hanjuku_pixels import Frame
 from .retroarch_boundary import read_record
 from .naming import runtime_id_generation
@@ -24,6 +24,22 @@ from . import hanjuku_repetition
 
 # The Hanjuku logic generation this module loaded (#1469); see hanjuku_bot.
 LOGIC_GENERATION = _logic_generation()
+
+
+def _bot_version():
+    """Version of the logic generation actually producing this record.
+
+    A long-lived observer keeps this module imported while deploys hot-load
+    newer copies through ``hanjuku_hotload``; the import-time constant then
+    stays stale (g1153: the run record kept v507 while the decisions used
+    v522, #3753). Read the current-generation copy first so the written
+    version matches the code that judged the frame.
+    """
+    try:
+        current = getattr(_hot_module('hanjuku_bot'), 'BOT_VERSION', None)
+    except Exception:
+        current = None
+    return current or BOT_VERSION
 
 RUN_FILE='hanjuku_run.json'
 TERMINAL_REASONS=frozenset({'game_over','screen_stalled','input_stalled'})
@@ -372,7 +388,7 @@ def observe(runtime_dir: Path, identity: dict, frame: Frame, *,
     if loop_proof:
         reason = 'screen_stalled'
         since, duration = loop_proof['since'], loop_proof['seconds']
-    state={**identity,'schema':1,'bot_version':BOT_VERSION,
+    state={**identity,'schema':1,'bot_version':_bot_version(),
            'phase':phase,'frame_sha256':digest,'recent_frame_sha256':recent,'observed_monotonic':now,
            'observed_at':wall,'unchanged_since':since,'unchanged_seconds':duration,
            'playing':playing,'terminal_reason':reason,
@@ -421,7 +437,7 @@ def observe(runtime_dir: Path, identity: dict, frame: Frame, *,
     event(runtime_dir, {
         'event': 'observation', 'at': wall, 'phase': phase,
         'frame_sha256': digest, 'unchanged_seconds': round(duration, 3),
-        'playing': playing, 'terminal_reason': reason, 'bot_version': BOT_VERSION,
+        'playing': playing, 'terminal_reason': reason, 'bot_version': _bot_version(),
         'terminal_candidate': candidate, 'terminal_evidence': state['terminal_evidence'],
         'frame_unchanged_seconds': round(frame_duration, 3),
         'repetition_evidence': loop_proof,
@@ -452,7 +468,7 @@ def action_sent(runtime_dir: Path, identity: dict, action, *, now=None):
         trace={}
     event(runtime_dir,{'event':'input_sent','at':time.time(),'type':action.type,
                       'buttons':list(action.buttons),'hold_ms':action.hold_ms,
-                      'frame_sha256':state.get('frame_sha256'),'bot_version':BOT_VERSION,
+                      'frame_sha256':state.get('frame_sha256'),'bot_version':_bot_version(),
                       'decision_id':trace.get('decision_id'),
                       'decision_frame_sha256':trace.get('frame_sha256')})
     if state:
