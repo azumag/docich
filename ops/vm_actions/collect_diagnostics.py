@@ -7323,6 +7323,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v854-duel-hp-decline",
             "hanjuku-chart-v855-camp-cliff-goal",
             "hanjuku-chart-v856-omedetori-menu-latch",
+            "hanjuku-chart-v857-duel-always-accept",
             "hanjuku-chart-v852-visible-menu-batches",
             "hanjuku-chart-v560-castle-list-scroll",
             "hanjuku-chart-v561-post-month-repair-status",
