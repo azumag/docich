@@ -29,6 +29,7 @@ from docich.hanjuku.os_layer.phase import classify
 from docich.hanjuku_run import append_log
 from docich import hanjuku_run
 from docich.hanjuku.os_layer.commands import menu_navigation_feedback, status_panel_feedback
+from docich.hanjuku.os_layer.navigation import map_cursor_feedback
 
 BOT_STATE_LIMIT = 256 * 1024   # the bot's own memory file, not a boundary record
 
@@ -182,7 +183,8 @@ def persist(runtime: Path, state: dict, records: list, obs_meta: dict, *, action
     # battle_result is recorded after leaving combat and may already show
     # the map. Keep combat pixels in the same bounded ring, including holds
     # and enemy-owned menus, without claiming an input or a battle outcome.
-    capture=(menu_navigation_feedback(state, actions) or status_panel_feedback(state, actions) or bool(card_flow)
+    capture=(menu_navigation_feedback(state, actions) or status_panel_feedback(state, actions)
+             or map_cursor_feedback(state, actions) or bool(card_flow)
              or bool((policy.get('map_discovery') or {}).get('probe'))
              or any(r.get('decision') in {'map_bootstrap_started', 'map_bootstrap_exhausted',
                                          'map_search_candidate', 'map_castle_confirmed',
@@ -220,6 +222,7 @@ def persist(runtime: Path, state: dict, records: list, obs_meta: dict, *, action
         'observation_interval_ms':observation_interval_ms(state, actions),
         'menu_navigation_feedback': state.get('menu_navigation_reading') if menu_navigation_feedback(state, actions) else None,
         'status_panel_feedback': state.get('status_panel_feedback') if status_panel_feedback(state, actions) else None,
+        'map_cursor_feedback': state.get('map_cursor_feedback') if map_cursor_feedback(state, actions) else None,
         'strategy_variant':strategy_variant,'deviation_reason':deviation_reason,
         'expected_metric':input_context.get('expected_metric') if input_context is not None else battle.get('strategy_expected'),
         'planned_actions':actions,
@@ -325,7 +328,8 @@ def observation_interval_ms(state, actions=None):
     summon between the chained B and its next readable command menu.
     Keep the existing allowed 500 ms cycle across card-menu fades too.
     """
-    if menu_navigation_feedback(state, actions) or status_panel_feedback(state, actions):
+    if (menu_navigation_feedback(state, actions) or status_panel_feedback(state, actions)
+            or map_cursor_feedback(state, actions)):
         return 500
     policy=state.get('policy') or {}
     battle=policy.get('battle') or {}

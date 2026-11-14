@@ -227,6 +227,7 @@ KEY_OWNERSHIP = {
     'plan_stale_signature': {'region': PLAN, 'lifetime': 'chapter', 'migrated': False},  # 陳腐計画署名の防御的pop対象
     # --- FLOW: 手順セッション状態 ---
     '_map_registration_hold': {'region': FLOW, 'lifetime': 'procedure', 'migrated': False},  # decide冒頭で毎回popされる一時ホールド
+    '_map_cursor_feedback': {'region': FLOW, 'lifetime': 'procedure', 'migrated': False},  # 現観測の屋根補正証拠。decide冒頭で破棄し末尾で取り出す
     'align_offset': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # ナビゲーションのアライン補正セッション状態
     'align_stall': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # ナビゲーション停滞検出
     'align_steps': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # アラインstep数(ナビセッション)

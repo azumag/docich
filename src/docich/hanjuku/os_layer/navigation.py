@@ -566,6 +566,44 @@ ALIGN_LIMIT = 2                # aligning steps before the jump is redone
 ALIGN_STALL = 2                # same-place corrections before the servo gives up
 
 
+def _short_roof_actions(cursor, roof):
+    """The existing normal-cursor model, bounded to 250 ms per axis."""
+    for point in (cursor, roof):
+        if (not isinstance(point, (list, tuple)) or len(point) != 2
+                or any(type(n) is not int or not 0 <= n < bound
+                       for n, bound in zip(point, (256, 224)))):
+            return None
+    actions = []
+    for d, neg, pos in ((roof[0] - cursor[0], 'left', 'right'),
+                        (roof[1] - cursor[1], 'up', 'down')):
+        if abs(d) > ALIGN_RADIUS:
+            return None
+        if abs(d) > ALIGN_TOL:
+            action = pad(pos if d > 0 else neg, abs(d))
+            if action['hold_ms'] > 250:
+                return None
+            actions.append(action)
+    return actions or None
+
+
+def map_cursor_feedback(state, actions):
+    """One fresh observation of a short, measured own-roof correction.
+
+    The annotation is made only by _align_on_roof, reset each observation,
+    and stamped by the orchestrator. It proves neither delivery nor arrival.
+    """
+    reading = state.get('map_cursor_feedback')
+    if (not isinstance(reading, dict) or set(reading) != {'step', 'kind', 'cursor', 'roof'}
+            or type(state.get('step')) is not int or type(reading.get('step')) is not int
+            or reading['step'] != state['step'] or state.get('screen_kind') != 'map'
+            or reading.get('kind') != 'map' or not isinstance(actions, list)
+            or any(not isinstance(action, dict) or type(action.get('hold_ms')) is not int
+                   for action in actions)):
+        return False
+    expected = _short_roof_actions(reading.get('cursor'), reading.get('roof'))
+    return expected is not None and actions == expected
+
+
 def _align_on_roof(screen, mem, frame, kinds, key):
     """Walk the cursor onto the nearest roof of the expected kind, on screen.
 
@@ -575,6 +613,8 @@ def _align_on_roof(screen, mem, frame, kinds, key):
     wandering). The roof in view is the ground truth: steer by its offset.
     Returns 'on', a list of pad actions, or None (no such roof / too long).
     """
+    mem.pop('_map_cursor_feedback', None)
+
     def _clear_align():
         for name in ('align_steps', 'align_offset', 'align_stall'):
             tracker = mem.get(name)
@@ -640,4 +680,10 @@ def _align_on_roof(screen, mem, frame, kinds, key):
         if abs(d) > ALIGN_TOL:
             frames = (abs(d) + pixels_per_frame - 1) // pixels_per_frame
             actions.append(pad(pos if d > 0 else neg, min(max(1, frames), MAX_HOLD_FRAMES)))
+    if (screen.kind == 'map' and screen.cursor and not screen.marker and not screen.hand
+            and not mem.get('nav_search') and len(near) == 1
+            and roof['kind'] == 'own' and roof.get('clipped') is False
+            and _short_roof_actions(s, roof['target']) == actions):
+        mem['_map_cursor_feedback'] = {'kind': 'map', 'cursor': list(s),
+                                       'roof': list(roof['target'])}
     return actions
