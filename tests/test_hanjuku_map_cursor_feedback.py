@@ -150,6 +150,15 @@ def test_orchestrator_stamps_fresh_evidence_and_discards_it_on_the_next_frame():
     assert entry.observation_interval_ms(following, actions) == 1500
 
 
+def test_chapter_transition_also_discards_in_flight_roof_evidence(roof):
+    from docich.hanjuku.strategy import campaign
+    mem = {'chapter': 1}
+    navigation._align_on_roof(view((86, 100)), mem, FRAME, ('own',), 'test:map')
+    assert mem.get('_map_cursor_feedback')
+    campaign._enter_chapter(mem, 2, reason='test')
+    assert '_map_cursor_feedback' not in mem
+
+
 def test_action_plan_records_all_holds_and_the_original_saved_frame(tmp_path):
     frame = read_png(FIX / 'resume-chapter-2-map.png')
     mem = {}
