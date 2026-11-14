@@ -30,6 +30,7 @@ from ..strategy.orders import (SOURCE_LOCATION_RECHECK_LIMIT, SORTIE_CANCELLED_O
                                _boss_egg_depleted, _boss_target_unlocked, _broken_hero_order,
                                _continue_transit_sorties, _defense_move_pick, _few_castles,
                                _finish_order, _garrison_move, _hero_source_alternative, _order,
+                               drop_retired_step_context,
                                _order_hero_alternatives, _record_source_defender_cancel,
                                _record_sortie_cancelled_observed, _reserve_source_guard, _retake_reserved,
                                _sortie_general, _source, _source_location_recheck, _source_spare_missing,
@@ -1556,6 +1557,9 @@ def _hold_guarded_sortie(mem, order, decision, reason, observed):
     mem['picked'] = []
     _plan_region(mem).setdefault('sortie_general', {}).pop(order['step'], None)
     _plan_region(mem).setdefault('order_context', {}).pop(order['step'], None)
+    # A step retired here ('failed') loses the rest of its plan context too;
+    # a step put back to 'pending' is live and keeps it (docich#4054).
+    drop_retired_step_context(mem)
     _record(mem, decision, chart_step=order['step'], source=_source(order, mem),
             target=order['target'], observed_metric=observed, reason=reason)
     return [pad('b'), pad('b')]

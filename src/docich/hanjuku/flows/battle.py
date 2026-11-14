@@ -42,6 +42,7 @@ from ..strategy.campaign import _castle_label, observe_chapter_castle, observe_c
 from ..strategy.kit import _is_boss_order
 from ..strategy.execution import bound_fields
 from ..strategy.orders import (LONG_MARCH_TICKS, SITE_LATE_ENTRY_TICKS, _bind_sortie,
+                                drop_retired_step_context,
                                 _garrison_move, _match_sortie, _order_for_step, _tactics)
 
 
@@ -1449,6 +1450,7 @@ def battle_end(mem, next_kind, *, defense_continues=False, actor_continues=False
                             '決着が実測できないままボス戦が終わったため、チャート装備を確認してボスへ再挑戦'))
         else:
             _plan_region(mem).setdefault('orders', {})[step] = 'failed'
+            drop_retired_step_context(mem)
             _record(mem, 'situation_held', chart_step=step, strategy_variant='boss_retry_exhausted',
                     observed_metric={'retries': retries[step]}, reason='ボス再試行の上限に到達したため保留')
     elif outcome == 'loss' and (_is_boss_order(boss_order, mem) or cur.get('enemy') == boss_name):
@@ -1492,6 +1494,7 @@ def battle_end(mem, next_kind, *, defense_continues=False, actor_continues=False
             # still heading for the target: steps waiting on that capture and
             # the off-chart planner kept waiting on a sortie that had ended.
             _plan_region(mem).setdefault('orders', {})[step] = 'failed'
+            drop_retired_step_context(mem)
             _record(mem, 'situation_held', chart_step=step, strategy_variant='attack_retry_exhausted',
                     observed_metric={'retries': retries[step], 'outcome': outcome,
                                      'enemy_hp': enemy_hp, 'ally_hp': ally_hp},

@@ -1462,6 +1462,9 @@ def next_order(mem):
     _relaunch_overdue_march(mem)
     _expire_spent_sorties(mem)
     _redirect_blocked_sources(mem)
+    # The maintenance above settles marches by writing 'failed' directly;
+    # drop the settled steps' plan context in the same pass (docich#4054).
+    drop_retired_step_context(mem)
     status = _plan_region(mem).setdefault('orders', {})
     from . import corridor
     if corridor.mechanical(mem):
@@ -1869,6 +1872,71 @@ def _source_spare_missing(order, mem, *, allow_probe=False):
             and len(set(present) - unavailable) < 2)
 
 
+PLAN_STEP_CONTEXT_MAPS = ('order_context', 'card_override', 'general_override',
+                          'sortie_general', 'source_override')
+RETIRED_ORDER_STATES = ('failed', 'done')
+# Same live set the state budget's trim keeps (state_budget.LIVE_ORDER_STATES).
+LIVE_ORDER_STATES = ('pending', 'launched', 'launched_unconfirmed')
+
+
+def _referenced_steps(mem):
+    """Steps a live part of the state can still resolve.
+
+    Mirrors the keep set of the state budget's retired-step trim
+    (state_budget._prune_retired_step_maps): live orders, marches and flow
+    state, the active/attack slots, re-arm waits and retry context.
+    """
+    plan = _plan_region(mem)
+    orders = plan.get('orders') if isinstance(plan.get('orders'), dict) else {}
+    referenced = {step for step, status in orders.items()
+                  if status in LIVE_ORDER_STATES}
+    world = _world(mem)
+    for key in ('sorties', 'launched_orders'):
+        section = world.get(key)
+        if isinstance(section, dict):
+            referenced.update(section)
+    flow = _flow(mem)
+    if isinstance(flow, dict):
+        referenced.update(key for key in flow if isinstance(key, str))
+    for key in ('active', 'attack'):
+        step = plan.get(key)
+        if isinstance(step, str) and step:
+            referenced.add(step)
+    rearm = plan.get('plan_step_rearm')
+    if isinstance(rearm, dict):
+        referenced.update(rearm)
+    retry = mem.get('retry_context')
+    if isinstance(retry, dict):
+        referenced.update(key for key in retry if isinstance(key, str))
+    return referenced
+
+
+def drop_retired_step_context(mem):
+    """Drop per-step plan context for steps nothing live can read again.
+
+    The state budget trims the same maps as a last resort (#4053), but only
+    once the record is already over the read limit: g1163 chapter 9 reached
+    356 274 bytes against the 262 144 limit, 185 KB of it ``order_context``
+    for steps whose orders had long settled. Drop the context where orders
+    settle instead, so a chapter's record stops growing with its failures.
+    Readers (strategy.execution / strategy.orders / flows.deploy) always
+    look a step up through a live order or march, so an unreferenced step's
+    context is unreachable (docich#4054). The budget trim stays as the
+    backstop for state written before this cleanup existed.
+    """
+    plan = _plan_region(mem)
+    referenced = _referenced_steps(mem)
+    for key in PLAN_STEP_CONTEXT_MAPS:
+        section = plan.get(key)
+        if not isinstance(section, dict):
+            continue
+        for step in list(section):
+            if step not in referenced:
+                section.pop(step, None)
+        if not section:
+            plan.pop(key, None)
+
+
 def _finish_order(mem, state, **fields):
     step = _plan_region(mem).get('active')
     if step:
@@ -1892,6 +1960,10 @@ def _finish_order(mem, state, **fields):
                 goals.note_attempt(mem, goal_kind, 'failed', target=order.get('target'))
     _plan_region(mem)['active'] = None
     mem['picked'] = []
+    if state in RETIRED_ORDER_STATES:
+        # The active slot is clear now, so the settled step is unreferenced
+        # unless a live march still resolves it (docich#4054).
+        drop_retired_step_context(mem)
 
 
 SOURCE_MISS_LIMIT = 3         # failed castle menus per order before giving the source up
