@@ -382,3 +382,14 @@ def test_the_picker_fallback_records_every_nearby_castle(monkeypatch):
     p.world_map_step(VIEW, mem, picker())
     record = next(r for r in mem['_records'] if r['decision'] == 'camp_recall_picker_fallback')
     assert 'nearby' in record['observed_metric']
+
+
+def test_the_picker_progress_records_the_hero_castle(monkeypatch):
+    """g1163 2026-11-14 08:59: goal null; was the hero's location known?"""
+    mem = memory(); _world(mem)['garrison'] = {'アルマムーン': [p.NAME]}
+    at(monkeypatch, 'アルマムーン')
+    monkeypatch.setattr(p, 'world_cursor', lambda _: None)
+    for _ in range(10):
+        p.world_map_step(VIEW, mem, picker())
+    record = next(r for r in mem['_records'] if r['decision'] == 'camp_recall_picker_progress')
+    assert record['observed_metric']['hero'] == ['アルマムーン']
