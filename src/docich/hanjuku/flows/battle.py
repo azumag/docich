@@ -564,7 +564,26 @@ def _carried_opening_tactics(mem, cur, existing):
     order = _order_for_step(mem, step)
     bound = bound_fields(order, mem)
     if not bound or bound['general'] != cur.get('ally'):
-        return []
+        # A chapter-9 cursor-picked sortie names nobody in the plan ("—"), and
+        # its departure binding can be absent/unread even though the launch
+        # was confirmed from the source list. The confirmation context carries
+        # the measured actor and cards; use them so the carried cards are not
+        # wasted in the castle attack (owner 2026-11-15: the castle attack
+        # never used cards or eggs).
+        snapshot = order if isinstance(order, dict) else {}
+        if (snapshot.get('corridor') is True and snapshot.get('general') == cur.get('ally')
+                and isinstance(snapshot.get('cards'), list) and snapshot['cards']):
+            # The launched snapshot carries the measured actor and carried kit.
+            bound = {'general': snapshot['general'], 'cards': list(snapshot['cards'])}
+        else:
+            context = (_plan_region(mem).get('order_context') or {}).get(step) or {}
+            observed = context.get('observed_metric')
+            cards = observed.get('cards') if isinstance(observed, dict) else None
+            if (snapshot.get('corridor') is True and isinstance(cards, list) and cards
+                    and context.get('actual_general') == cur.get('ally')):
+                bound = {'general': context['actual_general'], 'cards': list(cards)}
+            else:
+                return []
     boss_entry = _boss_tactics_allowed(mem, cur)
     if _is_boss_order(order, mem) and not boss_entry:
         return []  # reserve the boss kit on the road to the boss
