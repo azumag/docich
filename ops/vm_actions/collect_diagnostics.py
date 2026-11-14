@@ -7275,6 +7275,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v828-picker-hero-read",
             "hanjuku-chart-v829-picker-fallback-home",
             "hanjuku-chart-v830-picker-month-timing",
+            "hanjuku-chart-v831-picker-no-goal-confirm",
             "hanjuku-chart-v560-castle-list-scroll",
             "hanjuku-chart-v561-post-month-repair-status",
             "hanjuku-chart-v501-idle-reanchor",
