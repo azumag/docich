@@ -14960,6 +14960,10 @@ _CORNER_STUB_KEYS = (
     "present", "readable", "status", "game", "previous_game",
     "end_reason", "finish_reason", "last_error_code", "completed_at",
     "updated_at", "phase", "active_game",
+    # Retro-corner wedges are diagnosed from these two evidence fields alone
+    # (g1163 2026-11-14: the whole entry was stubbed at the hard ceiling and
+    # both the settle code and the lock probe disappeared).
+    "restoring_settle_code", "lock_state",
 )
 # Corners entries that never stub individually: ``game_switch`` is the
 # identity of what is actually on screen and ``corner_rotation`` is the

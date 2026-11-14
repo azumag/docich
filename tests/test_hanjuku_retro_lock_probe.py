@@ -57,3 +57,17 @@ def test_an_unreadable_lock_is_not_reported_free(tmp_path):
         assert diag._probe_retro_lock(tmp_path) == 'unreadable'
     finally:
         os.chmod(lock, 0o600)
+
+
+def test_a_stubbed_retro_entry_keeps_the_recovery_fields():
+    entry = {
+        "present": True, "readable": True, "status": "restoring",
+        "game": "hanjuku-hero", "last_error_code": None,
+        "restoring_settle_code": "restoring-finish-pending",
+        "lock_state": "held", "body": "x" * 200,
+    }
+    stub = diag._corner_stub(entry)
+    assert stub["lock_state"] == "held"
+    assert stub["restoring_settle_code"] == "restoring-finish-pending"
+    assert stub["output_omitted"] == "hard_ceiling"
+    assert "body" not in stub
