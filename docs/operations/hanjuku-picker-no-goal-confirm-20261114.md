@@ -35,8 +35,8 @@ if not cursor or not offset or goal is None:
    ピッカーのリングは本拠城から始まり城から城へ吸着するので、カーソルが
    指す自軍城は予算フォールバックが最後に確定する城と同じです。記録は
    `camp_recall_destination` の `origin_source: picker_cursor`。
-2. カーソルが自軍城の上にない場合は `PICKER_NO_GOAL_LIMIT`（40観測、
-   約1.5分）で今いる城に確定します。**敵城の上では確定しません**
+2. カーソルが自軍城の上にない場合は `PICKER_NO_GOAL_LIMIT`（30観測、
+   約2分）で今いる城に確定します。**敵城の上では確定しません**
    （`_picker_on_enemy` は従来どおり予算まで押し続ける）。
 
 `origin` が束縛できる場合（`_recall_goal` が城を返す場合）は従来どおり

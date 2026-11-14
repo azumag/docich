@@ -159,7 +159,7 @@ PICKER_STILL_LIMIT = 8         # recall-picker presses with an unchanged cursor 
 PICKER_VISIT_SLOTS = 12        # distinct cursor positions remembered per recall
 PICKER_LOOP_LIMIT = 3          # visits of one position before giving up
 PICKER_LOOP_MIN_STEP = 8       # px a step must move before it counts as a visit
-PICKER_NO_GOAL_LIMIT = 40      # aimless picker observations before confirming where it stands
+PICKER_NO_GOAL_LIMIT = 30      # aimless picker observations before confirming where it stands
 SELECT_FOCUS_INTERVAL = 300    # observations between hero re-focuses (~7.5 min)
 
 
