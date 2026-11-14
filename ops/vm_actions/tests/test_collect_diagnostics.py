@@ -453,6 +453,21 @@ def test_retained_corner_projection_stays_quiet_for_live_or_settled_corners(tmp_
     assert output["retro_corner"]["retained_reason"] is None
 
 
+def test_retained_corner_reason_ignores_unhashable_corner_id(tmp_path):
+    module = load_collector()
+    _write_retained_game_switch(tmp_path)
+    (tmp_path / "retro_corner.json").write_text(json.dumps({
+        "status": "failed", "game": "hanjuku-hero"}))
+    (tmp_path / "corner_rotation.json").write_text(json.dumps({
+        "known_corners": {"hanjuku-hero": {"game": "hanjuku-hero"}},
+        "failed_corners": [{"corner": ["malformed"], "reason_code": "base-game-unrestored"}],
+    }))
+    output = {}
+    module._collect_corner_files(tmp_path, output, 100)
+    assert output["retro_corner"]["retained_active"] is True
+    assert output["retro_corner"]["retained_reason"] == "corner-terminal-game-retained"
+
+
 def test_retained_corner_reason_falls_back_without_a_ledger_row(tmp_path):
     module = load_collector()
     _write_retained_game_switch(tmp_path)
