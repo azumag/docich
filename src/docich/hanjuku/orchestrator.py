@@ -234,6 +234,52 @@ def plain_text_hold(screen) -> bool:
     return getattr(screen, 'kind', None) == 'text' and getattr(screen, 'hand', None) is None
 
 
+# A map with no cursor sprite cannot be steered: nav_step has no cell to read
+# and map_step plans no input, so the generic no-input gate only moves the
+# screen after NO_INPUT_HOLD_MAX observations (~150 s at the 1.5 s interval).
+# g1153 2026-11-07 22:53-22:55 (issue #3721): the next chapter's map sat with
+# no HUD, text or cursor for 174 s. SELECT recentres the camera on the hero --
+# the measured recovery nav_step already uses for a lost cursor -- and, when
+# no order is waiting on the map, one A advances a scene drawn over it. Each
+# frozen episode gets one of each; a screen neither moves stays with the gate.
+MAP_UNSTEERABLE_HOLD_MAX = 8
+
+
+def map_unsteerable_nudge(screen, mem, kind, phase, streak, digest):
+    """Send one bounded recovery for a frozen map that shows no cursor."""
+    if phase != 'field' or kind != 'map':
+        return None
+    if screen.cursor or screen.marker or screen.text:
+        return None
+    if streak <= MAP_UNSTEERABLE_HOLD_MAX:
+        return None
+    from .state.regions import plan as _plan_region
+    watch = mem.get('map_unsteerable')
+    if not isinstance(watch, dict) or watch.get('digest') != digest:
+        watch = {'digest': digest, 'steps': 0}
+    steps = watch.get('steps')
+    steps = steps if type(steps) is int and 0 <= steps < 2 else 2
+    if steps == 1 and _plan_region(mem).get('orders'):
+        # A plan still owns this map: a blind A could open a menu at the
+        # invisible cell. The SELECT already re-anchored the camera.
+        mem['map_unsteerable'] = {'digest': digest, 'steps': steps}
+        return None
+    if steps >= 2:
+        mem['map_unsteerable'] = {'digest': digest, 'steps': steps}
+        return None
+    actions = [pad('select')] if steps == 0 else [pad('a')]
+    mem['map_unsteerable'] = {'digest': digest, 'steps': steps + 1}
+    if steps == 0:
+        mem['nav_last'] = None
+        mem['uncertain'] = True
+        mem['select_focus_tick'] = int(mem.get('tick') or 0)
+    decision_log._record(mem, 'map_unsteerable_nudge', screen=kind, phase=phase,
+                         observed_metric={'streak': streak, 'steps': steps + 1,
+                                          'digest': digest[:16]},
+                         reason='カーソルの無い地図が同じままなので、SELECT/Aで画面を動かして再観測する')
+    return actions
+
+
 def unknown_hold_advance(screen, mem, actions, digest):
     """Break a frozen unreadable screen with one A press.
 
@@ -1159,6 +1205,11 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
     bounded_wait=(any(_flow(mem).get(k) for k in ('recall','sortie_attempt'))
                   or any(mem.get(k) for k in ('house','month_sub','y_jump',
                                            'resume_egg_ritual')))
+    if (not actions and not bounded_wait
+            and not mem.get('_map_registration_hold')):
+        nudge = map_unsteerable_nudge(screen, mem, kind, phase, streak, digest)
+        if nudge is not None:
+            actions = nudge
     hold_max=(FIELD_TEXT_HOLD_MAX if kind=='text' and phase=='field' and screen.text and not bounded_wait
               else NO_INPUT_HOLD_MAX)
     army_owned = month_flow.army_count_owned(mem)
