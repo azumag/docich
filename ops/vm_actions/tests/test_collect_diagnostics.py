@@ -392,6 +392,86 @@ def test_auto_restore_projection_is_absent_without_a_record(tmp_path):
     assert rotation["auto_restore_status"] is None
 
 
+def _write_retained_game_switch(tmp_path, *, phase="ready", game="hanjuku-hero"):
+    (tmp_path / "game_switch.json").write_text(json.dumps({
+        "phase": phase,
+        "active": {"game": game, "runtime_id": "g1190-67435f4d",
+                   "generation": 1190, "lease_id": "synthetic-lease"},
+    }))
+
+
+def test_retained_corner_game_exposes_the_fixed_operator_reason(tmp_path):
+    """Game-switch retaining a terminal corner's game must say why (#4226).
+
+    #4226: the hanjuku rollback kept `hanjuku-hero` active while the corner
+    state was `failed`, so the overlay card could only report an unexplained
+    unavailable. The diagnostics entry must name the operator-facing reason.
+    """
+    module = load_collector()
+    (tmp_path / "corner_rotation.json").write_text(json.dumps({
+        "status": "waiting",
+        "known_corners": {"hanjuku-hero": {"id": "hanjuku-hero",
+                                           "adapter": "game",
+                                           "game": "hanjuku-hero"}},
+        "failed_corners": [
+            {"corner": "hanjuku-hero", "request_id": "DO-NOT-PUBLISH", "at": 90,
+             "resolution": "released-unverified",
+             "reason_code": "base-game-unrestored",
+             "error_kind": "execution-unverified"},
+        ],
+    }))
+    _write_retained_game_switch(tmp_path)
+    (tmp_path / "retro_corner.json").write_text(json.dumps({
+        "status": "failed", "game": "hanjuku-hero",
+        "secret": "DO-NOT-PUBLISH-CORNER"}))
+    output = {}
+    module._collect_corner_files(tmp_path, output, 100)
+    corner = output["retro_corner"]
+    assert corner["retained_active"] is True
+    assert corner["retained_reason"] == "base-game-unrestored"
+    assert "DO-NOT-PUBLISH" not in json.dumps(output)
+
+
+def test_retained_corner_projection_stays_quiet_for_live_or_settled_corners(tmp_path):
+    module = load_collector()
+    _write_retained_game_switch(tmp_path)
+    # A live corner owning its active game is the normal case, not a retention.
+    (tmp_path / "retro_corner.json").write_text(json.dumps({
+        "status": "active", "game": "hanjuku-hero"}))
+    output = {}
+    module._collect_corner_files(tmp_path, output, 100)
+    assert output["retro_corner"]["retained_active"] is False
+    assert output["retro_corner"]["retained_reason"] is None
+
+    # Terminal but a different game is active: also not a retention.
+    (tmp_path / "retro_corner.json").write_text(json.dumps({
+        "status": "failed", "game": "hanjuku-hero"}))
+    _write_retained_game_switch(tmp_path, game="sorengame")
+    output = {}
+    module._collect_corner_files(tmp_path, output, 100)
+    assert output["retro_corner"]["retained_active"] is False
+    assert output["retro_corner"]["retained_reason"] is None
+
+
+def test_retained_corner_reason_falls_back_without_a_ledger_row(tmp_path):
+    module = load_collector()
+    _write_retained_game_switch(tmp_path)
+    (tmp_path / "retro_corner.json").write_text(json.dumps({
+        "status": "failed", "game": "hanjuku-hero"}))
+    output = {}
+    module._collect_corner_files(tmp_path, output, 100)
+    corner = output["retro_corner"]
+    assert corner["retained_active"] is True
+    assert corner["retained_reason"] == "corner-terminal-game-retained"
+
+    # A mid-flight switch phase is not a settled retention.
+    _write_retained_game_switch(tmp_path, phase="switching")
+    output = {}
+    module._collect_corner_files(tmp_path, output, 100)
+    assert output["retro_corner"]["retained_active"] is False
+    assert output["retro_corner"]["retained_reason"] is None
+
+
 def test_corner_match_target_projection_is_bounded_and_does_not_change_n(tmp_path):
     module = load_collector()
     for value in (1, 3, 100, 0, 101, True, "SECRET-TARGET", None):

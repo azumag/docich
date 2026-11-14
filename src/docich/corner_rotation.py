@@ -58,6 +58,12 @@ HEARTBEAT_FRESH_S = 180.0
 NOTICE_SPEAK_WINDOW_S = 1800.0
 NOTICE_SPOKEN_STATUSES = frozenset({"completed", "interrupted", "expired"})
 TERMINAL = {"idle", "completed", "interrupted", "expired"}
+# ``stop_manual`` writes a durable stop marker only after observing a live
+# (starting/active/restoring) owner, so a marker whose target state file now
+# reads a terminal status can never be consumed by the run it named. Left in
+# place it would instantly stop the next run on the same file (#4226).
+STOP_REQUEST_TERMINAL_STATUSES = TERMINAL | {"failed"}
+STOP_REQUEST_SWEEP_LIMIT = 64
 
 # Fixed latch taxonomy (#986). The exception text is never persisted: provider
 # or config output can carry credentials or generated content. Diagnostics and
@@ -725,6 +731,54 @@ class CornerRotationManager:
                 known.setdefault(retired_key, previous)
             known[corner.id] = current
 
+    def _sweep_terminal_stop_requests(self):
+        """Invalidate durable stop markers whose target run is already over (#4226).
+
+        A marker is only ever created while its target state file shows a live
+        owner, so a marker whose target now reads a terminal status can never
+        be consumed by the run it named -- and would instantly stop the next
+        run on the same file at its first wait-loop check. The sweep is
+        bounded and best-effort: an unreadable or unproven target keeps its
+        marker (fail closed), and a corrupt marker still names the state file
+        it stops, so it is swept by filename too.
+        """
+        request_dir = Path(self.g.state_dir) / STOP_REQUEST_DIR
+        try:
+            markers = sorted(request_dir.glob("*.json"))[:STOP_REQUEST_SWEEP_LIMIT]
+        except OSError:
+            return
+        for marker in markers:
+            try:
+                raw = json.loads((Path(self.g.state_dir) / marker.name).read_text())
+            except (OSError, ValueError):
+                continue
+            if (not isinstance(raw, dict)
+                    or raw.get("status") not in STOP_REQUEST_TERMINAL_STATUSES):
+                continue
+            try:
+                marker.unlink()
+            except OSError:
+                pass
+
+    @staticmethod
+    def _sweep_orphaned_auto_restore(state):
+        """Drop the restore-replay budget once its reservation is gone (#4226).
+
+        The record is only actionable while the exact request it belongs to is
+        still latched as ``pending``/``manual_pending``. A released or
+        committed reservation leaves the row behind as a stale diagnostic that
+        reads like a queued retry; a later reservation starts its own budget.
+        """
+        record = state.get("auto_restore")
+        if not isinstance(record, dict):
+            return
+        for key in ("pending", "manual_pending"):
+            owner = state.get(key)
+            if (isinstance(owner, dict)
+                    and owner.get("request_id") == record.get("request_id")):
+                return
+        state.pop("auto_restore", None)
+
     def _notice_unowned_terminal(self, state, corner_id, adapter, raw, now):
         """Flag a Hanjuku terminal whose corner process is gone (#3599).
 
@@ -792,6 +846,11 @@ class CornerRotationManager:
     def _observe(self, state, now):
         """Import manual usage; unknown or orphaned execution blocks selection."""
 
+        # Every dispatch is preceded by this observation pass, so a stale stop
+        # marker or replay budget left by a dead run is invalidated before the
+        # same state file can be reused (#4226).
+        self._sweep_terminal_stop_requests()
+        self._sweep_orphaned_auto_restore(state)
         pending = state.get("pending")
         rows = state.get("released_requests")
         released_requests = rows if isinstance(rows, dict) else {}
@@ -1700,6 +1759,7 @@ class CornerRotationManager:
         self._release_program_owner(adapter)
         state["history"].append(dict(corner=reservation["corner"], at=now, source="failure"))
         state["pending"] = None
+        self._sweep_orphaned_auto_restore(state)
         # Advance the watermark exactly like the operator recovery does: a long
         # latch must not fall into the clock-gap quarantine below (#986).
         state["last_seen_at"] = now
@@ -1818,6 +1878,13 @@ class CornerRotationManager:
             now = timestamp(self.clock())
             state = self.load(now)
             self._remember_catalog(state)
+            # Terminal corner state invalidates the durable records a dead run
+            # left behind: a stale stop marker must not instantly stop the next
+            # run on the same file, and a released replay budget is no longer
+            # actionable (#4226). Both sweeps run before the latch path so a
+            # recovery_required tick cleans them too.
+            self._sweep_terminal_stop_requests()
+            self._sweep_orphaned_auto_restore(state)
             if state["status"] == "recovery_required":
                 # A corner failure must not stop the other corners once the
                 # shared slot is provably free; the timer retries this every
@@ -2084,6 +2151,7 @@ class CornerRotationManager:
                     state["history"].append(dict(corner=pending["corner"], at=max(now, finished), source="completion"))
                     state.update(pending=None, status="ready", last_result={"corner": pending["corner"],
                                  "request_id": pending["request_id"], "status": status, "at": finished})
+                    self._sweep_orphaned_auto_restore(state)
                     # Compact only old history, after successful execution; retain
                     # at least the last use of every ID including removed entries.
                     latest = {}
@@ -2339,6 +2407,7 @@ class CornerRotationManager:
             state["pending"] = None
             state["history"].append(
                 dict(corner=corner_id, at=max(now, finished), source="completion"))
+        self._sweep_orphaned_auto_restore(state)
         state.update(last_seen_at=now, status="ready", reason=None,
                      last_result={"corner": corner_id,
                                   "request_id": reservation["request_id"],

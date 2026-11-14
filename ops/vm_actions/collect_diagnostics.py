@@ -5752,6 +5752,18 @@ ROTATION_AUTO_RESTORE_STATUSES = frozenset({
 })
 ROTATION_AUTO_RESTORE_ATTEMPT_LIMIT = 3
 ROTATION_FAILED_CORNER_MAX = 8
+# A corner whose own state file is already terminal while game-switch still
+# holds its game as the canonical active owner is an operator action item,
+# not an overlay rendering bug: the shared card correctly reports the corner
+# as unavailable, and only diagnostics can say why the game stayed (#4226).
+# The reason comes only from the fixed failed_corners vocabulary; an
+# unexplained retention falls back to the fixed generic token.
+CORNER_RETAINED_TERMINAL_STATUSES = frozenset({
+    "idle", "completed", "interrupted", "expired", "failed",
+})
+CORNER_RETAINED_REASONS = ROTATION_FAILED_CORNER_REASONS | frozenset({
+    "corner-terminal-game-retained",
+})
 
 WEATHER_CORNER_STATUSES = frozenset({
     "idle", "starting", "active", "restoring", "completed", "interrupted", "failed",
@@ -8013,6 +8025,30 @@ def _rotation_auto_restore_projection(data):
     return out
 
 
+def _retained_corner_reason(rotation_data, game):
+    """Newest fixed failed-corner reason recorded for this corner's game (#4226).
+
+    The corner state file names its game, not the catalog id, so the ledger's
+    ``known_corners`` map is what links a ``failed_corners`` row back to the
+    state file being projected. Only the fixed reason vocabulary is returned;
+    anything else stays None and the caller uses the generic retained token.
+    """
+    if not isinstance(rotation_data, dict) or not isinstance(game, str):
+        return None
+    rows = rotation_data.get("failed_corners")
+    known = rotation_data.get("known_corners")
+    if not isinstance(rows, list) or not isinstance(known, dict):
+        return None
+    reason = None
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        record = known.get(row.get("corner"))
+        if isinstance(record, dict) and record.get("game") == game:
+            reason = row.get("reason_code")
+    return reason if reason in CORNER_RETAINED_REASONS else None
+
+
 def _rotation_pending_projection(state_dir, data, now):
     """Bounded identity of the latched reservation (#986), request id never emitted.
 
@@ -8308,8 +8344,14 @@ def _collect_corner_files(state_dir, payload, now):
     payload["corner_rotation"] = rotation
     present, readable, data = _load_state_file(state_dir / CORNER_STATE_FILES["game_switch"])
     entry = {"present": present, "readable": readable}
+    active_game = None
+    switch_settled = False
     if readable:
         active = data.get("active") if isinstance(data.get("active"), dict) else {}
+        active_game = active.get("game")
+        # Only a settled switch can *retain* a corner game; mid-flight phases
+        # still legitimately name it.
+        switch_settled = data.get("phase") in {"idle", "ready"}
         last = data.get("last_result") if isinstance(data.get("last_result"), dict) else {}
         deadline_at = data.get("deadline_at")
         deadline_expired = None
@@ -8377,6 +8419,21 @@ def _collect_corner_files(state_dir, payload, now):
                     settle_code if isinstance(settle_code, str)
                     and settle_code in _RETRO_RESTORING_SETTLE_CODES else None)
                 entry["lock_state"] = _probe_retro_lock(state_dir)
+            # Game-switch retaining a corner's game while the corner itself is
+            # already terminal is an operator action item (#4226): the shared
+            # overlay card can only report the corner as unavailable, so the
+            # fixed reason lives here instead.
+            retained = (
+                switch_settled
+                and isinstance(data.get("game"), str)
+                and data["game"] == active_game
+                and data.get("status") in CORNER_RETAINED_TERMINAL_STATUSES
+            )
+            entry["retained_active"] = retained
+            entry["retained_reason"] = (
+                (_retained_corner_reason(rotation_data, data["game"])
+                 or "corner-terminal-game-retained") if retained else None
+            )
         payload[name] = entry
 
     present, readable, data = _load_state_file(state_dir / "trading" / "presentation.json")

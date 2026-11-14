@@ -1398,6 +1398,102 @@ def test_stop_queues_durable_request_while_owner_is_starting(tmp_path, monkeypat
     assert isinstance(marker_state["requested_at"], (int, float))
 
 
+def test_terminal_state_file_sweeps_a_stale_durable_stop_request(setup):
+    """A marker for an already-terminal state file must not stop the next run (#4226).
+
+    #4226: the failed corner's wait loop never consumed the durable stop
+    request, so `corner-stop-requests/retro_corner.json` survived its owner
+    and would have instantly stopped the next run on the same file.
+    """
+    g, clock, _, _, make = setup
+    state_dir = Path(g.state_dir)
+    marker_dir = state_dir / "corner-stop-requests"
+    marker_dir.mkdir(parents=True)
+    names = ("retro_corner.json", "retro_corner_manual.json", "paper_corner.json",
+             "soren91_corner.json", "nethack_corner.json")
+    for name in names:
+        (marker_dir / name).write_text(json.dumps(
+            {"state_file": name, "requested_at": clock[0] - 60}))
+    # Terminal targets lose their marker; a live or unproven owner keeps it.
+    (state_dir / "retro_corner.json").write_text(json.dumps({"status": "failed"}))
+    (state_dir / "retro_corner_manual.json").write_text(json.dumps({"status": "interrupted"}))
+    (state_dir / "paper_corner.json").write_text(json.dumps({"status": "completed"}))
+    (state_dir / "soren91_corner.json").write_text(json.dumps({"status": "active"}))
+    (state_dir / "nethack_corner.json").write_text("not-json")
+
+    manager = make()
+    for adapter in manager.adapters.values():
+        adapter.available = False
+    assert manager.tick()["reason"] == "no-enabled-corner"
+
+    assert not (marker_dir / "retro_corner.json").exists()
+    assert not (marker_dir / "retro_corner_manual.json").exists()
+    assert not (marker_dir / "paper_corner.json").exists()
+    assert (marker_dir / "soren91_corner.json").exists()
+    assert (marker_dir / "nethack_corner.json").exists()
+
+
+def test_corrupt_marker_for_a_terminal_file_is_swept_by_name(setup):
+    """A corrupt marker still names the state file it stops (#4226)."""
+    g, clock, _, _, make = setup
+    state_dir = Path(g.state_dir)
+    marker_dir = state_dir / "corner-stop-requests"
+    marker_dir.mkdir(parents=True)
+    (marker_dir / "retro_corner.json").write_text("not-json")
+    (state_dir / "retro_corner.json").write_text(json.dumps({"status": "failed"}))
+
+    manager = make()
+    for adapter in manager.adapters.values():
+        adapter.available = False
+    manager.tick()
+
+    assert not (marker_dir / "retro_corner.json").exists()
+
+
+def test_orphaned_auto_restore_record_is_swept_when_its_reservation_is_gone(setup):
+    """A settled reservation leaves no stale replay budget behind (#4226).
+
+    #4226: the released slot kept `auto_restore` with a past next_attempt_at,
+    which diagnostics then showed as a still-queued restore retry.
+    """
+    g, clock, _, _, make = setup
+    manager = make()
+    assert manager.tick()["result"] == "completed"
+    ledger = state(manager)
+    ledger["auto_restore"] = {"request_id": ledger["last_result"]["request_id"],
+                              "corner": ledger["last_result"]["corner"],
+                              "attempts": 1, "next_attempt_at": clock[0] - 1,
+                              "last_status": "queued"}
+    manager.path.write_text(json.dumps(ledger))
+
+    for adapter in manager.adapters.values():
+        adapter.available = False
+    manager.tick()
+
+    assert "auto_restore" not in state(manager)
+
+
+def test_auto_restore_record_is_kept_while_its_reservation_is_live(setup):
+    """The replay budget survives while its own reservation is still latched (#4226)."""
+    g, clock, _, executor, make = setup
+    executor.result = "queued"
+    manager = make()
+    assert manager.tick()["result"] == "queued"
+    ledger = state(manager)
+    request_id = ledger["pending"]["request_id"]
+    ledger["auto_restore"] = {"request_id": request_id,
+                              "corner": ledger["pending"]["corner"],
+                              "attempts": 1, "next_attempt_at": clock[0] + 3600,
+                              "last_status": "queued"}
+    manager.path.write_text(json.dumps(ledger))
+
+    for adapter in manager.adapters.values():
+        adapter.available = False
+    manager.tick()
+
+    assert state(manager)["auto_restore"]["request_id"] == request_id
+
+
 def _policy_config(root, *, mode=None, cooldown_hours=None, interval_minutes=None):
     root.mkdir(parents=True, exist_ok=True)
     lines = ["[corner_rotation]", "enabled=true"]
