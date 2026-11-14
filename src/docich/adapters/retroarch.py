@@ -39,6 +39,10 @@ HANJUKU_MIRROR_FRAMERATE = 15
 NETWORK_PORT_RANGE = 1000
 RA_READY_POLL_S = 0.5
 RA_READY_IO_TIMEOUT_S = 0.1
+# Dead-runtime proof needs two spaced probes: one lost 0.1 s UDP round trip
+# under CPU saturation (load 25+ in docich#4144) must not release a live
+# runtime without a boundary (docich#4193, follow-up of #4190).
+DEAD_PROBE_SPACING_S = 2.0
 MANUAL_SAVE_TIMEOUT_S = 10.0
 STALLED_TERMINAL_REASONS = frozenset({'screen_stalled', 'input_stalled'})
 
@@ -730,11 +734,13 @@ class RetroArchCoordinatorAdapter:
 
         The safe-boundary contract protects a *live* game from being killed
         without a save.  A runtime whose tmux game/agent windows are gone and
-        whose RetroArch command port no longer answers has no state left to
-        protect.  This probe exists so recovery can distinguish "the boundary
-        has not arrived yet" from "the runtime died before it arrived" — the
-        latter strands canonical in ``failed`` forever because the missing
-        boundary can never be produced (#4187, 2026-11-14 tmux death).
+        whose RetroArch command port no longer answers (two probes separated
+        by ``DEAD_PROBE_SPACING_S``, so one lost round trip is not proof) has
+        no state left to protect.  This probe exists so recovery can
+        distinguish "the boundary has not arrived yet" from "the runtime died
+        before it arrived" — the latter strands canonical in ``failed``
+        forever because the missing boundary can never be produced (#4187,
+        2026-11-14 tmux death; #4193 double probe).
         """
         if not self._contained():
             return False
@@ -746,9 +752,29 @@ class RetroArchCoordinatorAdapter:
         self._check_active(deadline, cancel, "runtime_provably_dead")
         # The command port is the last survivor when a presenter or a detached
         # RetroArch process outlives the window; a reply proves it is alive.
-        reply = send_ra_cmd("GET_STATUS", port=self._network_port(), wait_reply_s=.1)
-        self._check_active(deadline, cancel, "runtime_provably_dead")
-        return reply is None
+        # One unanswered 0.1 s probe is not proof of death: a saturated CPU can
+        # drop a single round trip, and releasing a live runtime without its
+        # boundary is destructive (#4193). Only two probes separated in time,
+        # both unanswered, prove the runtime is gone.
+        port = self._network_port()
+        for attempt in range(2):
+            if attempt:
+                remaining = deadline - time.monotonic()
+                if remaining <= DEAD_PROBE_SPACING_S + RA_READY_IO_TIMEOUT_S:
+                    # No budget for a properly spaced second probe: death stays
+                    # unproven, so the caller keeps the normal boundary path.
+                    return False
+                if cancel is not None:
+                    if cancel.wait(DEAD_PROBE_SPACING_S):
+                        raise DeadlineExceededError("adapter call はcancelされました")
+                else:
+                    time.sleep(DEAD_PROBE_SPACING_S)
+                self._check_active(deadline, cancel, "runtime_provably_dead")
+            reply = send_ra_cmd("GET_STATUS", port=port, wait_reply_s=.1)
+            self._check_active(deadline, cancel, "runtime_provably_dead")
+            if reply is not None:
+                return False
+        return True
 
     def _require_safe_cleanup(self, deadline: float, cancel) -> None:
         if self._contained():
