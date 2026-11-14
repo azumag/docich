@@ -2068,13 +2068,23 @@ def _recall_goal(mem, flags=None):
             hero = [located]
     hero_castle = (hero[0] if len(hero) == 1 and NAME not in _en_route(mem)[0]
                    and NAME not in (_world(mem).get('general_location_unknown') or ()) else None)
+    blocked = _flow(mem).get('camp_recall_blocked') or {}
+
+    def _rank(c, distance):
+        # A castle that already failed to receive this camp twice (a cliff on
+        # the way) ranks behind every unblocked one, so the recall tries
+        # another castle instead of camping again at the same wall.
+        count = blocked.get(c) if isinstance(blocked, dict) else None
+        return (1 if type(count) is int and count >= 2 else 0, distance,
+                c != hero_castle, c)
+
     origin = state.get('origin')
     if (isinstance(origin, (list, tuple)) and len(origin) == 2
             and all(type(value) is int for value in origin)):
         # Units march directly; axis-summed distance can rank a diagonal
         # nearer castle behind a farther one. Squaring avoids rounding ties.
-        return min(owned, key=lambda c: (sum((cells[c][a] - origin[a]) ** 2 for a in (0, 1)),
-                                         c != hero_castle, c)) if owned else None
+        return min(owned, key=lambda c: _rank(
+            c, sum((cells[c][a] - origin[a]) ** 2 for a in (0, 1)))) if owned else None
     # origin が束縛できない場合は、帰還する本人の出撃元を代理の現在地として
     # 距離判定へ使う（issue #2907 の方向 b）。出撃元が自軍城でなくなって
     # いても座標は有効なので、そこへ最も近い自軍城を選べる。
@@ -2084,9 +2094,8 @@ def _recall_goal(mem, flags=None):
                if s in cells]
     if sources:
         # 複数の出撃元を持つ場合は合計距離が最小の城（重心に近い）を選ぶ。
-        return min(owned, key=lambda c: (sum(sum((cells[c][a] - o[a]) ** 2 for a in (0, 1))
-                                             for o in sources),
-                                         c != hero_castle, c)) if owned else None
+        return min(owned, key=lambda c: _rank(
+            c, sum(sum((cells[c][a] - o[a]) ** 2 for a in (0, 1)) for o in sources))) if owned else None
     if hero_castle:
         return hero_castle
     return owned[0] if len(owned) == 1 else None

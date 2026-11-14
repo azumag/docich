@@ -36,6 +36,8 @@ KEY_OWNERSHIP = {
     # --- 出撃 FlowSession (段階1: migrated) ---
     'departure_request': {'region': FLOW, 'lifetime': 'procedure', 'migrated': True},
     'camp_hunt_tick': {'region': FLOW, 'lifetime': 'procedure', 'migrated': False},  # 野営探索の記録間隔(v810)
+    # 帰還先が崖で到達できず再キャンプになった回数 (v855)
+    'camp_recall_blocked': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},
     'camp_battle_tick': {'region': FLOW, 'lifetime': 'procedure', 'migrated': False},  # 戦闘中断の記録間隔(v815)
     'departure_miss':    {'region': FLOW, 'lifetime': 'procedure', 'migrated': True},
     # --- 出撃 ExecutionJournal (段階1: migrated) ---
