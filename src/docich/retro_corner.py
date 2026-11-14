@@ -3971,8 +3971,15 @@ class RetroCornerManager:
     def tick(self) -> CornerResult:
         # Retry our durable result after a network failure, even after teardown.
         # Through the trampoline (#3838) so a deploy reaches this worker live.
+        # tick_active also lets a legacy/no-rotation timer adopt a live run
+        # whose corner observe loop never created the round (#4228).
         from . import hanjuku_hotload
-        hanjuku_hotload.module('hanjuku_predictions').tick(self.g)
+        prediction_module = hanjuku_hotload.module('hanjuku_predictions')
+        prediction_tick = getattr(prediction_module, 'tick_active', None)
+        if callable(prediction_tick):
+            prediction_tick(self.g)
+        else:
+            prediction_module.tick(self.g)
         from .corner_catalog import rotation_enabled
         if rotation_enabled(self.g):
             from .corner_rotation import CornerRotationManager

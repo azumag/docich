@@ -1801,12 +1801,22 @@ class CornerRotationManager:
             reconcile_stream_metadata(self.g)
         except Exception:
             pass
-        # The common timer owns only retry/reconciliation, never new predictions.
+        # The live run owns prediction creation (run-side agent primary). This
+        # timer is the fallback: when the canonical active Hanjuku runtime has
+        # a fresh observed run, tick_active adopts its identity and can create
+        # the round even if the corner observe loop never started. With no live
+        # run it behaves exactly like the old identity-less settlement tick.
         # Resolved through the hot-load trampoline (#3838) so a predictions
         # deploy reaches the long-lived corner worker without a restart.
         from . import hanjuku_hotload
         from .soren_predictions import tick as soren_prediction_tick
-        hanjuku_hotload.module('hanjuku_predictions').tick(self.g)
+        prediction_module = hanjuku_hotload.module('hanjuku_predictions')
+        prediction_tick = getattr(prediction_module, 'tick_active', None)
+        if callable(prediction_tick):
+            prediction_tick(self.g)
+        else:
+            # Rolling deploy: an older hot-loaded copy has no adoption entry.
+            prediction_module.tick(self.g)
         # 予想王 (#933): Soren の resolve 済み row を台帳へ記録する。best-effort で、
         # 失敗しても rotation の tick は止めない。
         soren_prediction_tick(self.g)
