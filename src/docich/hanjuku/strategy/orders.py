@@ -1984,6 +1984,16 @@ def _recall_goal(mem, flags=None):
                    and (flags is None or flags.get(c) == 'own'))
     state = _flow(mem).get('recall') or {}
     hero = [c for c in owned if NAME in ((_world(mem).get('garrison') or {}).get(c) or ())]
+    if not hero:
+        # The monthly status walk records the hero's own location. Use it only
+        # when it was observed and names an owned castle: the picker's goal
+        # was null with five own castles while the hero stood in one of them
+        # (g1163 2026-11-14 08:59/09:01).
+        row = ((mem.get('general_statuses') or {}).get('statuses') or {}).get(NAME) or {}
+        located = (row.get('location') if isinstance(row, dict)
+                   and row.get('location_observed') is True else None)
+        if located in owned:
+            hero = [located]
     hero_castle = (hero[0] if len(hero) == 1 and NAME not in _en_route(mem)[0]
                    and NAME not in (_world(mem).get('general_location_unknown') or ()) else None)
     origin = state.get('origin')
