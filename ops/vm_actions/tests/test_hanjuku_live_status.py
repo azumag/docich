@@ -149,6 +149,8 @@ class ProjectionTests(unittest.TestCase):
             "queued_manual": True,
             "manual_pending": True,
             "manual_pending_hanjuku": True,
+            "pending_hanjuku": False,
+            "error_kind": "unknown",
             "active_hanjuku": False,
         })
         self.assertNotIn("PRIVATE", json.dumps(out))
@@ -234,6 +236,8 @@ class ProjectionTests(unittest.TestCase):
             "queued_manual": None,
             "manual_pending": None,
             "manual_pending_hanjuku": None,
+            "pending_hanjuku": None,
+            "error_kind": "unknown",
             "active_hanjuku": None,
         })
         self.assertIsNone(out["field"]["month"])
@@ -252,6 +256,8 @@ class ProjectionTests(unittest.TestCase):
             "queued_manual": None,
             "manual_pending": None,
             "manual_pending_hanjuku": None,
+            "pending_hanjuku": None,
+            "error_kind": "unknown",
             "active_hanjuku": None,
         })
 
