@@ -263,6 +263,20 @@ def _camp_flagish(p) -> bool:
     return p[0] >= 190 and p[1] <= 110 and p[2] <= 110
 
 
+# The camp body's palette entries shift by up to 6 per channel when a core's
+# 16-bit RGB565 pixels are expanded to 8 bits (the measured (238,198,65)
+# becomes (232,196,64)). An exact compare missed a tent that was on screen,
+# so no recall ever started and the camp sat unattended (local g1190
+# 2026-11-15, production state via the 1.61 core). The production 8-bit
+# capture matches exactly, so this only widens the accepted pixels.
+CAMP_COLOUR_TOLERANCE = 6
+
+
+def _near_camp(pixel, colour) -> bool:
+    return all(abs(int(a) - int(b)) <= CAMP_COLOUR_TOLERANCE
+               for a, b in zip(pixel, colour))
+
+
 def own_camps(frame: Frame) -> list[dict]:
     """Our camping tents (野営) with the cursor cell that selects them.
 
@@ -272,7 +286,8 @@ def own_camps(frame: Frame) -> list[dict]:
     the screen so the servo scrolls the camera until the flag appears.
     """
     body = set(bit_points(frame, union_bits(*(
-        near_bits(frame, colour) for colour in (CAMP_YELLOW, CAMP_ORANGE, CAMP_BAND)))))
+        near_bits(frame, colour, CAMP_COLOUR_TOLERANCE)
+        for colour in (CAMP_YELLOW, CAMP_ORANGE, CAMP_BAND)))))
     found, seen = [], set()
     for start in sorted(body):
         if start in seen:
@@ -295,9 +310,9 @@ def own_camps(frame: Frame) -> list[dict]:
         x0, x1, y0, y1 = min(xs), max(xs), min(ys), max(ys)
         if x1 - x0 > 16 or y1 - y0 > 16:
             continue
-        yellow = sum(1 for c in comp if frame.pixel(*c) == CAMP_YELLOW)
-        orange = sum(1 for c in comp if frame.pixel(*c) == CAMP_ORANGE)
-        band = sum(1 for c in comp if frame.pixel(*c) == CAMP_BAND)
+        yellow = sum(1 for c in comp if _near_camp(frame.pixel(*c), CAMP_YELLOW))
+        orange = sum(1 for c in comp if _near_camp(frame.pixel(*c), CAMP_ORANGE))
+        band = sum(1 for c in comp if _near_camp(frame.pixel(*c), CAMP_BAND))
         if yellow < 6 or orange < 6 or band < 3:
             continue
         # The flag flutters: a thin phase paints one red pixel per row
