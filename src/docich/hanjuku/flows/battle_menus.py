@@ -2192,8 +2192,9 @@ def _monster_stall_switch(mem, owner, ally, enemy, action, skill_count, *, attac
 
     Counts our own decided turns per skill while the enemy panel HP stays the
     same for this ally/enemy pair; any HP change starts over. When both skills
-    have spent their turns the choice is kept (returning the summon exposes
-    its general) and the stall is recorded once. ``attackless`` marks a menu
+    have spent their turns with no damage observed, the summon returns so the
+    general can spend cards/eggs (owner 2026-11-15); the stall is recorded
+    once. ``attackless`` marks a menu
     whose verified table rows are both zero for this opponent: there the
     comparison budget shrinks to one turn per skill and the menu then returns
     the summon instead of repeating commands that cannot damage the enemy.
@@ -2230,12 +2231,20 @@ def _monster_stall_switch(mem, owner, ally, enemy, action, skill_count, *, attac
                                          'turns': dict(turns), 'attackless': True},
                         reason='両技とも攻撃性能がなく敵のHPが動かないため、無効な攻撃を繰り返さず召喚獣を戻す')
             return 'retreat'
-        elif not stall.get('recorded'):
-            stall['recorded'] = True
-            _record(mem, 'monster_skill_stall', strategy_variant='monster_stall_both',
-                    observed_metric={'ally': ally.name, 'enemy': enemy.name, 'enemy_hp': enemy.hp,
-                                     'turns': dict(turns)},
-                    reason='両方の技で敵のHPが変わらないが、召喚獣を戻すと将軍が出るため選択を維持する')
+        else:
+            # Both skills spent their turns with the enemy panel unchanged.
+            # Keeping the summon repeats attacks that do not move it while
+            # the summon's own HP falls (owner 2026-11-15: the グリッシーニ
+            # castle attack lost every time without ever using the general's
+            # cards or eggs). Return to the general so the normal battle can
+            # spend cards/eggs instead.
+            if not stall.get('returned'):
+                stall['returned'] = True
+                _record(mem, 'monster_skill_stall', strategy_variant='monster_stall_both',
+                        observed_metric={'ally': ally.name, 'enemy': enemy.name, 'enemy_hp': enemy.hp,
+                                         'turns': dict(turns)},
+                        reason='両方の技で敵のHPが動かないため、無効な攻撃を繰り返さず召喚獣を戻して将軍の切り札・卵で戦う')
+            return 'retreat'
     stall['last'], stall['tick'] = action, tick
     turns[action] = turns.get(action, 0) + 1
     return action

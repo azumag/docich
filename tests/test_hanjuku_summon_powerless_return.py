@@ -91,7 +91,12 @@ def test_return_reaches_the_egg_row_and_repeats_without_recounting():
     assert mem['monster_stall']['turns'] == turns     # no extra skill turn is spent
 
 
-def test_a_damaging_menu_keeps_the_existing_two_skill_budget():
+def test_a_damaging_table_still_returns_after_both_skills_do_not_move_hp():
+    """Owner 2026-11-15: observed no-damage wins over the damage table.
+
+    The castle attack against グリッシーニ repeated summon skills that never
+    moved the enemy HP and never reached the general's cards or eggs.
+    """
     mem = memory()
     mem['monster_stall'] = {'scope': ['ウッドボール', 'ゼウス'], 'enemy_hp': 85,
                             'turns': {'skill1': MONSTER_STALL_TURNS,
@@ -101,7 +106,7 @@ def test_a_damaging_menu_keeps_the_existing_two_skill_budget():
     mem['tick'] += 20
     mem['_records'] = []
     monster_menu_step(screen, mem)
-    assert mem['monster_menu_choice'] in ('skill1', 'skill2')
+    assert mem['monster_menu_choice'] == 'retreat'
     assert ('monster_skill_stall', 'monster_stall_both') in [
         (r.get('decision'), r.get('strategy_variant')) for r in mem['_records']]
 
