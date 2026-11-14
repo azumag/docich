@@ -483,6 +483,13 @@ def world_map_step(screen, mem, frame):
         _record(mem, 'world_map_units', observed_metric={'count': len(markers),
                 'boxes': [list(m) for m in markers]},
                 reason='全体マップの▲（部隊マーカー）を定期確認')
+    # A resumed/already-open Y view may have no opening timestamp. Its
+    # successful survey must not be immediately repeated on the next map.
+    # Keep explicit world_map_due requests and all unread/picker paths intact.
+    expected = {name for name in chart.castles(mem.get('chapter') or 0)
+                if not chart.is_boss_castle(name)}
+    if expected and expected <= flags.keys() and not mem.get('world_map_pending'):
+        mem['world_map_tick'] = int(mem.get('tick') or 0)
     return _close_world_map(mem)
 
 
@@ -530,6 +537,9 @@ def _close_world_map(mem):
     count = int(tries.get('count') or 0) + 1 if 0 <= tick - int(tries.get('tick') or 0) <= 2 else 1
     if count > WORLD_MAP_CLOSE_LIMIT:
         mem.pop('world_map_close', None)
+        # This may have been an orphan destination picker, not a survey.
+        # Do not let its flag reading defer the next ordinary Y recheck.
+        mem['world_map_due'] = True
         _record(mem, 'world_map_picker_escape', observed_metric={'presses': count - 1},
                 reason='Yで閉じない全体マップは取り残された帰還先の選択なのでBで閉じる')
         return [pad('b')]
