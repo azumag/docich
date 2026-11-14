@@ -1,4 +1,4 @@
-"""Fresh cursor feedback for menus whose coarse screen kind is not a menu.
+"""Fresh cursor feedback for measured list and digit-editor layouts.
 
 Only cadence changes here. No target selection, wrap, batched input or input
 receipt is inferred from the layout. Every next move still reads a new frame.
@@ -22,7 +22,39 @@ _CASTLE_NAMES = frozenset(name.replace('ー', '')
 
 def valid_context(kind, menu):
     return ((kind == 'text' and isinstance(menu, str) and menu in TEXT_MENUS)
+            or (kind == 'month_menu' and menu == 'soldier_quantity')
             or (kind == 'starter_list' and menu == 'starter_upper'))
+
+
+def _soldier_quantity_reading(screen):
+    """The measured g741 digit editor, excluding payment/yes-no cursors.
+
+    The ones-digit hand hides the tens digit. Only the selected digit must
+    be readable here; this supplies cadence, never a quantity or a receipt.
+    """
+    if not screen.hand:
+        return None
+    prompts = [line for line in screen.lines if line.y == 183]
+    numbers = [line for line in screen.lines if line.y == 199]
+    if len(prompts) != 1 or len(numbers) != 1:
+        return None
+    prompt, number = prompts[0], numbers[0]
+    if (prompt.span(24, 152).replace(' ', '') != 'じゅうじキーのさゆうでケタが'
+            or number.span(24, 168).replace(' ', '') != 'じょうげですうちがかわりますぞ!'
+            or len(dict(number.cells)) != len(number.cells)):
+        return None
+    left, top, right, bottom = screen.hand
+    if (abs(top - 197) > 2 or abs(bottom - 210) > 2
+            or not 16 <= right - left <= 24 or not 10 <= bottom - top <= 16):
+        return None
+    x = 216 if left < 200 else 224
+    if not 0 < x - right <= 4:
+        return None
+    cells = dict(number.cells)
+    if cells.get(x) not in tuple('0123456789') or cells.get(224) not in tuple('0123456789'):
+        return None
+    return {'kind': 'month_menu', 'menu': 'soldier_quantity', 'cursor': [x, 199],
+            'directions': ['up', 'down', 'right' if x == 216 else 'left']}
 
 
 def _named_rows(screen, x, ys):
@@ -88,6 +120,8 @@ def reading(screen):
             not isinstance(screen.hand, (tuple, list)) or len(screen.hand) != 4
             or any(type(value) is not int for value in screen.hand)):
         return None
+    if screen.kind == 'month_menu' and screen.has('じゅうじキー'):
+        return _soldier_quantity_reading(screen)
     if screen.kind == 'general_list' and screen.has('しゅつげき') and screen.has('ステータス'):
         rows = _named_rows(screen, 144, range(39, 152, 16))
         return _reading(screen, 'castle_roster', rows, _hand_cursor(screen, rows or []), scrolling=True)

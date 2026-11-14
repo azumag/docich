@@ -7298,6 +7298,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v840-roster-count-mismatch",
             "hanjuku-chart-v841-map-blind-advance",
             "hanjuku-chart-v842-visible-general-batch",
+            "hanjuku-chart-v843-soldier-quantity-feedback",
             "hanjuku-chart-v560-castle-list-scroll",
             "hanjuku-chart-v561-post-month-repair-status",
             "hanjuku-chart-v501-idle-reanchor",
