@@ -355,10 +355,15 @@ class CornerRotationManager:
                 continue
             try:
                 raw = json.loads(path.read_text())
-            except (OSError, ValueError) as exc:
-                raise RotationError("legacy corner state requires explicit recovery") from exc
+            except (OSError, ValueError):
+                # A file that cannot be read cannot seed a trustworthy
+                # observer: the retired observer reads the same file and
+                # would only fail closed on every later tick. Skipping it
+                # here lets the migration finish; the durable stop-marker
+                # sweep stays fail-closed on a target it cannot read (#4226).
+                continue
             if not isinstance(raw, dict):
-                raise RotationError("legacy corner state requires explicit recovery")
+                continue
             if fixed_identity is not None:
                 corner_id, game = fixed_identity
                 known.setdefault(corner_id, {"id": corner_id, "adapter": adapter, "game": game})
@@ -391,8 +396,19 @@ class CornerRotationManager:
             old = Path(self.g.state_dir) / "retro_corner.json"
             if old.exists():
                 legacy = json.loads(old.read_text())
-                if not isinstance(legacy, dict) or legacy.get("schema_version") != 1:
+                if not isinstance(legacy, dict):
                     raise RotationError("legacy state requires explicit recovery")
+                if legacy.get("schema_version") != 1:
+                    # A file left by a run that already ended, carrying no
+                    # rotation payload, has nothing to migrate: the dead
+                    # owner can never finish and no cooldown history exists
+                    # to import (#4226). A live or unproven owner -- or a
+                    # rotation payload in an unknown shape -- still requires
+                    # an explicit recovery.
+                    if (legacy.get("rotation")
+                            or legacy.get("status") not in STOP_REQUEST_TERMINAL_STATUSES):
+                        raise RotationError("legacy state requires explicit recovery")
+                    return state
                 rotation = legacy.get("rotation", {})
                 if not isinstance(rotation, dict):
                     raise RotationError("invalid legacy rotation")
@@ -762,12 +778,16 @@ class CornerRotationManager:
 
     @staticmethod
     def _sweep_orphaned_auto_restore(state):
-        """Drop the restore-replay budget once its reservation is gone (#4226).
+        """Drop a still-pending restore-replay budget once its reservation is gone (#4226).
 
         The record is only actionable while the exact request it belongs to is
         still latched as ``pending``/``manual_pending``. A released or
-        committed reservation leaves the row behind as a stale diagnostic that
-        reads like a queued retry; a later reservation starts its own budget.
+        committed reservation leaves a record that still reads as a queued
+        retry -- attempts remain and no replay outcome settled it -- behind
+        as a stale diagnostic; a later reservation starts its own budget. A
+        record that already reached its outcome (the replay succeeded, or the
+        bounded attempts were spent) is audit of finished work, not a queued
+        retry, so it stays.
         """
         record = state.get("auto_restore")
         if not isinstance(record, dict):
@@ -777,6 +797,11 @@ class CornerRotationManager:
             if (isinstance(owner, dict)
                     and owner.get("request_id") == record.get("request_id")):
                 return
+        attempts = record.get("attempts")
+        if (record.get("last_status") == "succeeded"
+                or (type(attempts) is int
+                    and attempts >= AUTO_RESTORE_ATTEMPT_LIMIT)):
+            return
         state.pop("auto_restore", None)
 
     def _notice_unowned_terminal(self, state, corner_id, adapter, raw, now):
