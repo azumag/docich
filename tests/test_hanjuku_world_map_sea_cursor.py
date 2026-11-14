@@ -38,6 +38,9 @@ WORLD_VIEWS = {
     'g1133-ch6-y-view-grey-sea.png',
     'g1163-ch4-y-view-cleared-sites.png',
     'g1163-ch9-y-view-g-at-west-edge-lake-icon.png', 'g1163-ch9-y-view-g-near-hayaku.png',
+    # A production-state Y view captured through the 16-bit RGB565 path: the
+    # gold frame's (57,40,16) reads as (56,40,16).
+    'g1190-ch9-y-view-quantized.png',
 }
 
 
@@ -63,6 +66,14 @@ def test_the_view_with_the_cursor_on_land_is_still_the_world_map():
     frame = read_png(LAND)
     assert parse(frame).kind == 'world_map'
     assert world_cursor(frame) == (170.5, 87.5)
+
+
+def test_a_16bit_quantized_gold_frame_is_still_the_world_map():
+    """The 1.61 core's RGB565 capture shifts the measured gold by one step."""
+    frame = read_png(FIXTURES / 'g1190-ch9-y-view-quantized.png')
+    assert frame.pixel(128, 10) == (56, 40, 16)
+    assert frame.pixel(128, 10) != WORLD_BORDER
+    assert parse(frame).kind == 'world_map'
 
 
 def test_the_fade_into_the_view_is_not_read_as_the_world_map():
