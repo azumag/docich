@@ -813,6 +813,20 @@ class CornerRotationManager:
                     pass
                 own = pending and raw.get("rotation_request_id") == pending["request_id"]
                 if status in BUSY and not own:
+                    if status == "restoring":
+                        # A crashed finish parks the record at ``restoring``
+                        # forever: no pending reservation owns it and the
+                        # legacy restoring retry tick is unreachable while
+                        # rotation is enabled. The timer-safe adapter hook
+                        # replays the recorded restore inside its own bounds;
+                        # on a refusal it records last_error_code and the row
+                        # simply stays busy (fail closed, same as a latch).
+                        runner = getattr(adapter, "recover_failed_restore", None)
+                        if callable(runner):
+                            try:
+                                runner()
+                            except Exception:
+                                pass
                     # A released failure must not keep stopping the rotation,
                     # but only while the shared slot still proves that exact
                     # request left nothing behind (#2187). The proof is
