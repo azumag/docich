@@ -102,10 +102,9 @@ class StorageReclaimTests(unittest.TestCase):
 
     # ---- new: verify/ sweep (#4127, AGENTS.md §14) ----------------------
 
-    def test_verify_sweep_removes_only_entries_older_than_verify_gate(self):
-        # Verify leftovers use their own short gate (default 3d), independent
-        # of the 21d stale-pattern gate: a 4d-old entry goes, a 1d-old stays,
-        # and the verify directory itself is kept.
+    def test_verify_sweep_keeps_old_and_recent_entries_until_reference_checks_exist(self):
+        # The proposed 3d gate is not an authorization to delete: until
+        # reference checks exist, both old and recent entries must be kept.
         four_days = time.time() - 4 * 86400
         old = self.make("verify/1234-old-run", four_days)
         recent = self.make("verify/1235-active-run", RECENT)
@@ -610,8 +609,8 @@ class ControlPlaneWiringTests(unittest.TestCase):
         self.assertIn("AIVIS_ENGINE: ${{ inputs.aivis_engine }}", workflow)
 
     def test_verify_sweep_uses_its_own_age_gate(self):
-        # #4127: $root/tmp/verify children are swept on a dedicated short
-        # gate (default 3d), not the 21d stale-pattern gate.
+        # #4127: the dedicated 3d gate is parsed, but deletion remains
+        # disabled until safe reference checks are implemented.
         text = HELPER.read_text()
         self.assertIn("verify_min_age_days=3", text)
         self.assertIn("--verify-min-age-days", text)
