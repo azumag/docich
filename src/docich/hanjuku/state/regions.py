@@ -367,6 +367,7 @@ KEY_OWNERSHIP = {
     'roster_survey': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # roster調査手順状態
     'roster_survey_scope': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 同上スコープ
     'select_centered': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # SELECT中央揃えナビゲーション状態
+    'map_unsteerable': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # カーソル無し地図の有界復帰
     'select_focus_tick': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 同上のtick
     'select_tick': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # SELECT tick管理
     'select_used': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # SELECT使用済み
