@@ -206,8 +206,7 @@ if [[ -d "$deploy_backups" ]]; then
   done
 fi
 
-# 2b. Verify leftovers: only stale, unreferenced plain tree copies.
-# Git worktrees and any uncertain trees are deliberately retained.
+# 2b. Fail closed: no automatic verify deletion until reference scan exists.
 verify_dir="$tmp/verify"
 if [[ -d "$verify_dir" ]]; then
   for path in "$verify_dir"/*; do
@@ -216,7 +215,6 @@ if [[ -d "$verify_dir" ]]; then
       say "KEEP $path (recent)"
       continue
     fi
-    # A .git file denotes a linked worktree; never rm -rf one.
     if [[ -e "$path/.git" || -L "$path/.git" ]]; then
       say "KEEP $path (git checkout/worktree)"
       continue
@@ -229,8 +227,6 @@ if [[ -d "$verify_dir" ]]; then
       say "KEEP $path (recent internal files)"
       continue
     fi
-    # Until a fail-closed process reference scan is available for this path,
-    # do not automatically delete it, even in APPLY mode.
     say "KEEP $path (process references not verified)"
   done
 fi
