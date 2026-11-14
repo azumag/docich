@@ -403,3 +403,16 @@ def test_a_status_location_locates_the_hero_for_the_goal():
                                                      'location_observed': True}}}
     flags = {c: 'own' for c in p._owned(mem)}
     assert p._recall_goal(mem, flags) == 'キカンドン'
+
+
+def test_the_picker_progress_records_the_hero_status_location(monkeypatch):
+    """g1163 2026-11-14 08:59: goal null; the status location was the other source."""
+    mem = memory()
+    mem['general_statuses'] = {'statuses': {p.NAME: {'location': 'キカンドン',
+                                                     'location_observed': True}}}
+    at(monkeypatch, 'アルマムーン')
+    monkeypatch.setattr(p, 'world_cursor', lambda _: None)
+    for _ in range(10):
+        p.world_map_step(VIEW, mem, picker())
+    record = next(r for r in mem['_records'] if r['decision'] == 'camp_recall_picker_progress')
+    assert record['observed_metric']['hero_status'] == {'location': 'キカンドン', 'observed': True}

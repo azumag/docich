@@ -1581,7 +1581,8 @@ def test_hanjuku_hotload_versions_are_fixed_values_not_an_arbitrary_prefix():
                  "hanjuku-chart-v823-hunt-chart-all",
                  "hanjuku-chart-v824-picker-fallback-nearby",
                  "hanjuku-chart-v825-picker-hero",
-                 "hanjuku-chart-v826-hero-status-goal",)
+                 "hanjuku-chart-v826-hero-status-goal",
+                 "hanjuku-chart-v827-picker-hero-status",)
     for version in versions:
         assert module._project_corner_state({'bot_version': version})['bot_version'] == version
     for version in (None, 'SECRET', 'hanjuku-chart-v130-SECRET',

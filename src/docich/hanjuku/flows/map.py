@@ -305,6 +305,10 @@ def world_map_step(screen, mem, frame):
         if recall['picker_observations'] % 10 == 0:
             hero_known = sorted(c for c, names in (_world(mem).get('garrison') or {}).items()
                                 if NAME in (names or ()))
+            hero_row = ((mem.get('general_statuses') or {}).get('statuses') or {}).get(NAME)
+            hero_status = ({'location': hero_row.get('location'),
+                            'observed': hero_row.get('location_observed') is True}
+                           if isinstance(hero_row, dict) else None)
             _record(mem, 'camp_recall_picker_progress',
                     observed_metric={'observations': recall['picker_observations'],
                                      'cursor': list(cursor) if cursor else None,
@@ -312,7 +316,8 @@ def world_map_step(screen, mem, frame):
                                      'nearby': nearby,
                                      'own': sorted(c for c, owner in (flags or {}).items()
                                                    if owner == 'own'),
-                                     'hero': hero_known},
+                                     'hero': hero_known,
+                                     **({'hero_status': hero_status} if hero_status else {})},
                     reason='帰還先ピッカーの進捗を10回ごとに記録する')
         if recall['picker_observations'] >= RECALL_LIMIT:
             if not recall.get('picker_forced') and not _picker_on_enemy(nearby, flags):
