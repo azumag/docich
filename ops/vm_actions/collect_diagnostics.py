@@ -7672,7 +7672,8 @@ GAME_SWITCH_RESTORE_STAGES = frozenset({
     "unquiesced-runtime", "adapter-unavailable", "singleton-restart-refused",
     "alive-probe-failed", "readiness-failed", "singleton-recheck-failed",
     "agent-restart-failed", "continuation-unproven", "rollback-adapter-failed",
-    "rollback-start-failed",
+    "rollback-start-failed", "rollback-materialize-failed",
+    "rollback-readiness-failed", "rollback-agent-start-failed",
 })
 
 
