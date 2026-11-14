@@ -393,3 +393,13 @@ def test_the_picker_progress_records_the_hero_castle(monkeypatch):
         p.world_map_step(VIEW, mem, picker())
     record = next(r for r in mem['_records'] if r['decision'] == 'camp_recall_picker_progress')
     assert record['observed_metric']['hero'] == ['アルマムーン']
+
+
+def test_a_status_location_locates_the_hero_for_the_goal():
+    """g1163 2026-11-14 08:59: the hero stood in an own castle but the goal was null."""
+    mem = memory()
+    _world(mem)['garrison'] = {}
+    mem['general_statuses'] = {'statuses': {p.NAME: {'location': 'キカンドン',
+                                                     'location_observed': True}}}
+    flags = {c: 'own' for c in p._owned(mem)}
+    assert p._recall_goal(mem, flags) == 'キカンドン'
