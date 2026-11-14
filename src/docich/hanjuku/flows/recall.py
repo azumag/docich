@@ -5,7 +5,7 @@ from ..os_layer.pixels import Frame
 from ..os_layer.screen import Screen, castle_roofs, own_camps
 from ... import hanjuku_chart as chart
 from ..decision_log import _record
-from ..os_layer.commands import menu_to, pad
+from ..os_layer.commands import fort_list_batch, menu_to, pad
 from ..os_layer.navigation import _start_y_jump
 from ..os_layer.readers import _current, _cursor, _options, fort_list_open, is_camp_menu, is_fort_menu
 from ..os_layer.world import NAME
@@ -779,7 +779,7 @@ def _fort_step(screen, mem, state):
             if move is None:
                 return []
             if move != 'here':
-                return [move]
+                return fort_list_batch(screen, wanted) or [move]
         current = _current(screen)
         if not current or current[2] not in members:
             return []

@@ -1762,6 +1762,9 @@ def _step_once(screen, mem, frame):
                 state['selected'] = target
                 _capture_selection_marker(state, mem, frame, target)
                 _phase(state, 'status')
+            elif actions:
+                from ..os_layer.commands import roster_list_batch
+                actions = roster_list_batch(screen, target) or actions
             return actions
         if not state['seen'] and state.get('roster_opened'):
             state['singleton_first_page'] = _singleton_page(screen, frame)

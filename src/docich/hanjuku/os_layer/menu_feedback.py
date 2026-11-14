@@ -5,6 +5,8 @@ receipt is inferred from the layout. Every next move still reads a new frame.
 """
 from __future__ import annotations
 
+import re
+
 from .readers import (
     ALL_CARD_NAMES, _measured_card_select, _name_read_cleanly, _options, is_camp_menu, is_fort_menu,
 )
@@ -23,6 +25,7 @@ _CASTLE_NAMES = frozenset(name.replace('ー', '')
 def valid_context(kind, menu):
     return ((kind == 'text' and isinstance(menu, str) and menu in TEXT_MENUS)
             or (kind == 'month_menu' and menu == 'soldier_quantity')
+            or (kind == 'shop_quantity' and menu == 'merchant_quantity')
             or (kind == 'starter_list' and menu == 'starter_upper'))
 
 
@@ -43,6 +46,28 @@ def _soldier_quantity_reading(screen):
             or number.span(24, 168).replace(' ', '') != 'じょうげですうちがかわりますぞ!'
             or len(dict(number.cells)) != len(number.cells)):
         return None
+    return _digit_reading(screen, number, 'soldier_quantity')
+
+
+def _merchant_quantity_reading(screen):
+    """Locally calibrated merchant editor; the quote is panel proof only."""
+    if not screen.hand:
+        return None
+    prompts = [line for line in screen.lines if line.y == 183]
+    numbers = [line for line in screen.lines if line.y == 199]
+    if len(prompts) != 1 or len(numbers) != 1:
+        return None
+    prompt, number = prompts[0], numbers[0]
+    if (not re.fullmatch(r'[0-9]{1,2}こで[0-9]{1,4}Gになりまんな!',
+                         prompt.span(24, 168).replace(' ', ''))
+            or number.span(24, 88).replace(' ', '') != 'よろしいでっか?'
+            or len(dict(prompt.cells)) != len(prompt.cells)
+            or len(dict(number.cells)) != len(number.cells)):
+        return None
+    return _digit_reading(screen, number, 'merchant_quantity')
+
+
+def _digit_reading(screen, number, menu):
     left, top, right, bottom = screen.hand
     if (abs(top - 197) > 2 or abs(bottom - 210) > 2
             or not 16 <= right - left <= 24 or not 10 <= bottom - top <= 16):
@@ -53,7 +78,7 @@ def _soldier_quantity_reading(screen):
     cells = dict(number.cells)
     if cells.get(x) not in tuple('0123456789') or cells.get(224) not in tuple('0123456789'):
         return None
-    return {'kind': 'month_menu', 'menu': 'soldier_quantity', 'cursor': [x, 199],
+    return {'kind': screen.kind, 'menu': menu, 'cursor': [x, 199],
             'directions': ['up', 'down', 'right' if x == 216 else 'left']}
 
 
@@ -122,6 +147,8 @@ def reading(screen):
         return None
     if screen.kind == 'month_menu' and screen.has('じゅうじキー'):
         return _soldier_quantity_reading(screen)
+    if screen.kind == 'shop_quantity':
+        return _merchant_quantity_reading(screen)
     if screen.kind == 'general_list' and screen.has('しゅつげき') and screen.has('ステータス'):
         rows = _named_rows(screen, 144, range(39, 152, 16))
         return _reading(screen, 'castle_roster', rows, _hand_cursor(screen, rows or []), scrolling=True)

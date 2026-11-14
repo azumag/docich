@@ -106,31 +106,54 @@ def general_list_batch(screen: Screen, label: str):
     return _visible_list_batch(screen, label, kind='general_list', menu='castle_roster', x=144)
 
 
-def _visible_list_batch(screen, label, *, kind, menu, x):
+def roster_list_batch(screen: Screen, label: str):
+    """Move to a visible partial-survey target, without skipping survey reads."""
+    return _visible_list_batch(screen, label, kind='text', menu='global_roster', x=168)
+
+
+def fort_list_batch(screen: Screen, label: str):
+    return _visible_list_batch(screen, label, kind='text', menu='fort_roster', x=144)
+
+
+def egg_recovery_list_batch(screen: Screen, label: str):
+    return _visible_list_batch(screen, label, kind='text', menu='egg_recovery', x=32,
+                               ys=(47, *range(71, 168, 16)))
+
+
+def starter_list_batch(screen: Screen, label: str, *, limit=VISIBLE_LIST_BATCH_MAX):
+    from .starter_view import NAME_LEFT, UPPER_ROW_Y
+    return _visible_list_batch(screen, label, kind='starter_list', menu='starter_upper',
+                               x=NAME_LEFT, ys=UPPER_ROW_Y, limit=limit)
+
+
+def _visible_list_batch(screen, label, *, kind, menu, x, ys=tuple(range(39, 152, 16)),
+                        limit=VISIBLE_LIST_BATCH_MAX):
     reading = menu_feedback.reading(screen)
     if not reading or reading.get('kind') != kind or reading.get('menu') != menu:
         return None
-    if reading['cursor'][0] != x:
+    if (reading['cursor'][0] != x or reading['cursor'][1] not in ys
+            or type(limit) is not int or not 2 <= limit <= VISIBLE_LIST_BATCH_MAX):
         return None
     rows = [(y, word) for rx, y, word in _options(screen)
-            if rx == x and y in range(39, 152, 16)]
+            if rx == x and y in ys]
     target = [y for y, word in rows if word == label]
     if len(target) != 1:
         return None
-    current = reading['cursor'][1]
-    delta = target[0] - current
-    distance = abs(delta) // 16
-    if delta % 16 or distance < 2:
+    current = ys.index(reading['cursor'][1])
+    target_index = ys.index(target[0])
+    delta = target_index - current
+    distance = abs(delta)
+    if distance < 2:
         return None
     sign = 1 if delta > 0 else -1
     # The full path to the requested row must be present, even when the
     # four-tap cap means this observation only traverses its first part.
-    if any(sum(y == current + sign * 16 * step for y, _ in rows) != 1
+    if any(sum(y == ys[current + sign * step] for y, _ in rows) != 1
            for step in range(distance + 1)):
         return None
     button = 'down' if sign > 0 else 'up'
     actions = [pad(button)]
-    for _ in range(min(distance, VISIBLE_LIST_BATCH_MAX) - 1):
+    for _ in range(min(distance, limit) - 1):
         actions.extend([{'type': 'wait', 'ms': VISIBLE_LIST_RELEASE_MS}, pad(button)])
     return actions
 
@@ -152,12 +175,15 @@ def menu_navigation_feedback(state, actions):
             or not isinstance(cursor, list) or len(cursor) != 2
             or any(type(n) is not int or not 0 <= n < bound for n, bound in zip(cursor, (256, 224)))):
         return False
-    quantity = reading.get('kind') == 'month_menu' and reading.get('menu') == 'soldier_quantity'
+    quantity = (reading.get('kind'), reading.get('menu')) in (
+        ('month_menu', 'soldier_quantity'), ('shop_quantity', 'merchant_quantity'))
     if quantity and (len(actions) != 1 or cursor not in ([216, 199], [224, 199])):
         return False
     released_batch = (len(actions) > 1 and
                       (reading.get('kind'), reading.get('menu')) in
-                      (('text', 'castle_list'), ('general_list', 'castle_roster')))
+                      (('text', 'castle_list'), ('general_list', 'castle_roster'),
+                       ('text', 'global_roster'), ('text', 'fort_roster'),
+                       ('text', 'egg_recovery'), ('starter_list', 'starter_upper')))
     if released_batch:
         if len(actions) not in (3, 5, 7):
             return False
