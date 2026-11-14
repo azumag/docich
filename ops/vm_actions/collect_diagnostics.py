@@ -7646,7 +7646,12 @@ def _project_bot_chart(value):
 
 
 FIFO_OPERATIONS = frozenset({"start", "stop", "switch", "restart", "rotate", "recover"})
-FIFO_MAX_RECEIPTS = 512
+# The store prunes terminal receipts to 1000, so a full scan of the receipt
+# directory stays small; the old 512-file window hid a non-terminal receipt
+# that sorted past it (g1163 2026-11-14: the wedge blocked the corner restore
+# while the projection reported no pending row). 4096 is the bound that keeps a
+# pathological directory from unbounded reads.
+FIFO_MAX_RECEIPTS = 4096
 
 
 def _receipt_age_sec(value, now):

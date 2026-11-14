@@ -109,3 +109,17 @@ def test_a_terminal_only_store_reports_no_pending(tmp_path):
                    status='failed', result={'error_code': 'x'})
     out = diag._collect_game_switch_fifo(tmp_path, 1794304123.0)
     assert out['pending_count'] == 0 and out['pending'] == []
+
+
+def test_a_pending_receipt_past_the_old_window_is_visible(tmp_path):
+    directory = tmp_path / 'game-switch' / 'requests'
+    for index in range(600):
+        _write_receipt(directory, f'{index:08d}-0000-4000-8000-000000000000',
+                       status='succeeded', result={})
+    # Sorts after the old 512-file window.
+    _write_receipt(directory, 'zzzzzzzz-0000-4000-8000-000000000999',
+                   updated_at='2026-11-10T08:52:00+00:00')
+    out = diag._collect_game_switch_fifo(tmp_path, 1794304123.0)
+    assert out['scan_complete'] is True
+    assert out['pending_count'] == 1
+    assert out['pending'][0]['status'] == 'accepted'
