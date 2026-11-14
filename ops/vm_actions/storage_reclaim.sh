@@ -229,9 +229,9 @@ if [[ -d "$verify_dir" ]]; then
     # A symlink is only a link: never follow it, never touch its target.
     [[ -L "$path" ]] && { say "KEEP $path (symlink; not followed)"; continue; }
     is_older_than "$path" "$verify_min_age_days" || { say "KEEP $path (recent)"; continue; }
-    found="$(find "$path" -type f -mtime -"$verify_min_age_days" 2>/dev/null)" || {
+    found="$(find "$path" -mindepth 1 -mtime -"$verify_min_age_days" 2>/dev/null)" || {
       say "SKIP $path (mtime scan failed)"; continue; }
-    [[ -z "$found" ]] || { say "KEEP $path (files modified within ${verify_min_age_days}d)"; continue; }
+    [[ -z "$found" ]] || { say "KEEP $path (entries modified within ${verify_min_age_days}d)"; continue; }
     refs="$(stale_clone_refs "$path")" || { say "SKIP $path (reference check failed)"; continue; }
     [[ "$refs" == 0 ]] || { say "KEEP $path (referenced by $refs running process(es))"; continue; }
     if [[ ! -f "$path/.git" ]]; then remove_path "$path"; continue; fi
