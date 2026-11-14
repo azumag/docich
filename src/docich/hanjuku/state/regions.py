@@ -312,6 +312,7 @@ KEY_OWNERSHIP = {
     'last_house_deferral': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # ハウス延期記録
     'map_registration': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 地図登録手順セッション
     'melee_opening_candidate': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 戦闘開始候補の手順状態
+    'map_blind': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # カーソル・HUD・文字のない地図の連続観測カウンタ(#3721)
     'menu_hold': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # メニューホールド
     'menu_miss': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # メニューミス
     'monster_menu_choice': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # モンスターメニュー選択手順
