@@ -7685,7 +7685,7 @@ def _collect_game_switch_restore(state_dir, now):
     if not readable or not isinstance(data, dict):
         return entry
     stage = data.get("stage")
-    entry["stage"] = stage if stage in GAME_SWITCH_RESTORE_STAGES else None
+    entry["stage"] = stage if isinstance(stage, str) and stage in GAME_SWITCH_RESTORE_STAGES else None
     entry["age_sec"] = _receipt_age_sec(data.get("updated_at"), now)
     return entry
 
