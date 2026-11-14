@@ -9198,6 +9198,7 @@ def _collect_programs(state_dir, soren, now):
     payload["ab"] = _collect_ab(soren, now)
     payload["retro_scores"] = _collect_retro_scores(state_dir, now)
     payload["soren_game"] = _collect_soren_game(soren, now)
+    payload["soren_gameover"] = _collect_soren_gameover(soren, now)
     return payload
 
 
@@ -9864,6 +9865,147 @@ def _collect_soren_game(soren, now):
                 result["runner_alive"] = True
             except (ProcessLookupError, PermissionError, OSError):
                 result["runner_alive"] = False
+    return result
+
+
+# Per-match Soren game-over projection.  Each finished match leaves one
+# ``game_history/<end_ts>_score<N>.jsonl`` turn log; the last record carries
+# the final board in ``state_snapshot.pieces``.  Reviewing every match-end
+# board (top-type histogram, unmerged high pairs, end reason) is the input
+# the strategy-improvement loop needs to find recurring bottlenecks, so the
+# owner-only diagnostics exposes a bounded summary instead of the raw log.
+# Only numeric fields, booleans, the fixed strategy-hash token and a
+# charset-filtered end reason are ever projected.
+SOREN_GAMEOVER_MAX_GAMES = 3
+SOREN_GAMEOVER_TAIL_BYTES = 96 * 1024
+SOREN_GAMEOVER_MAX_REASON_LEN = 80
+SOREN_GAMEOVER_MAX_PIECES = 100000
+SOREN_GAMEOVER_REASON_RE = re.compile(r"[^A-Za-z0-9_|:+\-.]")
+SOREN_GAMEOVER_NAME_RE = re.compile(
+    r"^(?:wildcard_parallel_\d+_game\d+_|\d{8}_\d{6}_)score\d{1,9}\.jsonl$")
+
+
+def _soren_gameover_reason(record):
+    reason = record.get("decision_reason")
+    if not isinstance(reason, str) or not reason:
+        return None
+    cleaned = SOREN_GAMEOVER_REASON_RE.sub("", reason)[:SOREN_GAMEOVER_MAX_REASON_LEN]
+    return cleaned or None
+
+
+def _soren_gameover_piece(entry):
+    """Project one board piece to (bounded type, bounded x)."""
+    if not isinstance(entry, dict):
+        return None
+    piece_type = entry.get("type")
+    piece_x = entry.get("x")
+    if type(piece_type) is not int or not 1 <= piece_type <= 64:
+        return None
+    if type(piece_x) not in (int, float) or not -64.0 <= piece_x <= 64.0:
+        return None
+    return piece_type, round(float(piece_x), 3)
+
+
+def _soren_gameover_pair_gap(pieces):
+    """Min horizontal separation of the highest type that still exists in
+    duplicate on the end board — the 'two Russias never merged' bottleneck."""
+    by_type = {}
+    for piece_type, piece_x in pieces:
+        if piece_type >= 10:
+            by_type.setdefault(piece_type, []).append(piece_x)
+    for piece_type in sorted(by_type, reverse=True):
+        xs = sorted(by_type[piece_type])
+        if len(xs) < 2:
+            continue
+        gap = round(min(b - a for a, b in zip(xs, xs[1:])), 3)
+        return {"type": piece_type, "count": len(xs), "min_dx": gap}
+    return None
+
+
+def _collect_soren_gameover_one(path, now):
+    entry = {"present": True, "readable": False, "age_sec": _file_age_sec(path, now),
+             "turns": None, "score": None, "strategy_hash": None,
+             "russia_created": None, "type_hist": {}, "top_pair": None,
+             "end_reason": None, "deadline_crossed": None,
+             "danger_pieces": None, "truncated": False}
+    try:
+        size = path.stat().st_size
+    except OSError:
+        entry["present"] = False
+        return entry
+    try:
+        with open(path, "rb") as handle:
+            if size > SOREN_GAMEOVER_TAIL_BYTES:
+                handle.seek(size - SOREN_GAMEOVER_TAIL_BYTES)
+                entry["truncated"] = True
+            raw = handle.read(SOREN_GAMEOVER_TAIL_BYTES)
+    except OSError:
+        return entry
+    lines = raw.split(b"\n")
+    if entry["truncated"]:
+        lines = lines[1:]
+    lines = [line for line in lines if line.strip()]
+    entry["readable"] = True
+    if not lines:
+        return entry
+    try:
+        record = json.loads(lines[-1].decode("utf-8", "replace"))
+    except ValueError:
+        return entry
+    if not isinstance(record, dict):
+        return entry
+    turn = record.get("turn")
+    if type(turn) is int and 0 <= turn <= 1000000:
+        entry["turns"] = turn
+    score = record.get("score")
+    if type(score) is int and 0 <= score <= 10**9:
+        entry["score"] = score
+    strategy_hash = record.get("strategy_hash")
+    if isinstance(strategy_hash, str) and re.fullmatch(r"[0-9a-f]{6,16}", strategy_hash):
+        entry["strategy_hash"] = strategy_hash
+    russia = record.get("russia_created")
+    if isinstance(russia, bool):
+        entry["russia_created"] = russia
+    if isinstance(record.get("deadline_crossed"), bool):
+        entry["deadline_crossed"] = record["deadline_crossed"]
+    danger = record.get("danger_piece_count")
+    if type(danger) is int and 0 <= danger <= 100000:
+        entry["danger_pieces"] = danger
+    entry["end_reason"] = _soren_gameover_reason(record)
+    snapshot = record.get("state_snapshot")
+    pieces_raw = snapshot.get("pieces") if isinstance(snapshot, dict) else None
+    if isinstance(pieces_raw, list) and len(pieces_raw) <= SOREN_GAMEOVER_MAX_PIECES:
+        pieces = [p for p in (_soren_gameover_piece(e) for e in pieces_raw) if p]
+        hist = {}
+        for piece_type, _x in pieces:
+            if piece_type >= 10:
+                key = str(piece_type)
+                hist[key] = hist.get(key, 0) + 1
+        entry["type_hist"] = hist
+        entry["top_pair"] = _soren_gameover_pair_gap(pieces)
+    return entry
+
+
+def _collect_soren_gameover(soren, now):
+    """Bounded tail of the newest finished Soren match logs (#gameover-review)."""
+    result = {"present": False, "games": []}
+    history_dir = Path(soren) / "game_history"
+    try:
+        candidates = []
+        for child in history_dir.iterdir():
+            try:
+                if (not child.is_file() or child.is_symlink()
+                        or not SOREN_GAMEOVER_NAME_RE.fullmatch(child.name)):
+                    continue
+                candidates.append(child)
+            except OSError:
+                continue
+    except OSError:
+        return result
+    candidates.sort(key=lambda p: (p.name, p.stat().st_mtime), reverse=True)
+    for child in candidates[:SOREN_GAMEOVER_MAX_GAMES]:
+        result["games"].append(_collect_soren_gameover_one(child, now))
+        result["present"] = True
     return result
 
 
