@@ -415,6 +415,12 @@ cmdlineの生バイト・URL・パス・PIDは出さず、argv/生バイトは�
   end失敗の自動restore再実行の予算を `auto_restore_corner` / `auto_restore_attempts` /
   `auto_restore_attempt_limit` / `auto_restore_next_at` / `auto_restore_status`
   （固定enum）で出す（#2187）。request identityは出さない。
+  game-switchが終了済みcornerのgameをactive保持している場合（switch phaseが
+  `idle`/`ready` で、corner stateが `idle`/`completed`/`interrupted`/`expired`/`failed`）、
+  各corner state投影へ `retained_active`（boolean）と `retained_reason` を出す（#4226）。
+  `retained_reason` は `failed_corners` の固定 reason_code（`base-game-unrestored` 等）を
+  そのgameへ結び付けた最新のもの、無記録や不正値は `corner-terminal-game-retained`。
+  overlay cardは `unavailable` としか示せないため、operatorが保持理由を診断で区別する。
   自動予約とは別に `manual_pending`（bool）、`manual_pending_corner`（固定enum）、
   `manual_pending_state_file`（固定8種のstate名、拡張子なし）、
   `manual_pending_age_sec`（未観測/未来時刻は-1）、`manual_pending_owner`、
