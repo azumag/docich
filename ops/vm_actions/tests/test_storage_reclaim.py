@@ -578,7 +578,7 @@ class ControlPlaneWiringTests(unittest.TestCase):
         self.assertIn("verify_min_age_days=3", text)
         self.assertIn("--verify-min-age-days", text)
         self.assertIn('verify_dir="$tmp/verify"', text)
-        self.assertIn('is_older_than "$path" "$verify_min_age_days"', text)
+        self.assertIn('KEEP $path (process references not verified)', text)
 
     def test_stale_paths_entries_are_absolute_allowlisted_and_live_encoder_excluded(self):
         text = HELPER.read_text()
