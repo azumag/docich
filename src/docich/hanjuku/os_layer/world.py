@@ -439,6 +439,14 @@ def march_arrival_limit(mem, sortie):
     # Boss paths can detour through forest; the Euclidean distance underestimates.
     if chart.is_boss_castle(target_name):
         limit = MARCH_ARRIVAL_CAP
+    hops = chart.corridor_gap(chapter_now, sortie.get('source'), target_name)
+    if hops:
+        # docich#3952: chapter 9 transfers may ride several owned road castles
+        # in one march. A road leg costs roughly a short march each, while the
+        # Euclidean distance above ignores the winding road entirely; bound
+        # the window by the hop count so a long direct transfer is not
+        # declared overdue mid-march.
+        limit = max(limit, min(MARCH_ARRIVAL_CAP, hops * SORTIE_BUSY_TICKS))
     return limit
 
 
