@@ -2825,10 +2825,27 @@ def test_camp_recall_walks_cursor_menu_and_own_castle(monkeypatch):
     assert not any(r['decision'] == 'camp_recall' for r in mem['_records'])
 
 
-def test_camp_recall_confirms_the_marker_when_no_own_castle_is_visible():
-    """Owner 2026-11-05: 最悪キャンセルにせず、どこでも良いから指定する。"""
+def test_camp_recall_y_jumps_to_the_goal_when_no_own_castle_is_visible():
+    """Owner 2026-11-05: 最悪キャンセルにせず、どこでも良いから指定する。
+
+    v836: 帰還先が解決できるなら「どこでも確定」より先に、全体マップの
+    Y ジャンプでその自軍城へマーカーを合わせる（issue #3978）。どこでも
+    確定の picker_forced はジャンプ予算を使い切った時のフォールバックとして
+    残る。"""
     frame = _camp_frame()
     mem = {'chapter': 1, '_records': [], 'recall': {'stage': 'dest', 'target': [26, 66], 'steps': 1}}
+    marker_only = Screen(lines=[], hand=None, text='', kind='map_target', marker=(100, 100))
+    assert policy.camp_recall_step(marker_only, mem, frame) == [policy.pad('y')]
+    assert _flow(mem)['recall']['goal'] == 'アルマムーン'
+    assert mem['y_jump']['goal'] == 'アルマムーン'
+
+
+def test_camp_recall_still_confirms_anywhere_once_the_jump_budget_is_spent():
+    """Owner 2026-11-05: 最悪キャンセルにせず、どこでも良いから指定する。"""
+    frame = _camp_frame()
+    mem = {'chapter': 1, '_records': [],
+           'y_jumps': {'RECALL:target': 2},
+           'recall': {'stage': 'dest', 'target': [26, 66], 'steps': 1}}
     marker_only = Screen(lines=[], hand=None, text='', kind='map_target', marker=(100, 100))
     assert policy.camp_recall_step(marker_only, mem, frame) == [policy.pad('a')]
     assert _flow(mem)['recall']['stage'] == 'await_dispatch'

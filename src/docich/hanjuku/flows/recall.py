@@ -337,8 +337,11 @@ def _camp_recall_step(screen: Screen, mem, frame, *, observed_camps=None):
                                  'last_seen': list(camp['target']), 'steps': 0,
                                  **({'camp_kind': camp['kind']} if camp.get('kind') else {}),
                                  **({'boss': True, 'goal': boss_goal} if boss_goal else {})}
-        if boss_goal:
-            _reset_boss_jump(mem)
+        # A fresh recall starts a fresh destination-jump budget and receipt:
+        # the previous recall's ``y_jumped`` must not confirm this picker's
+        # marker, and its spent attempts must not starve this recall's jump
+        # (the fort and boss routes already reset the same pair).
+        _reset_boss_jump(mem)
         _observe_recall_origin(screen, mem, frame, state)
         state['camp_world'] = _camp_world_cell(cursor, state.get('origin'), camp['target'])
         elapsed = (int(mem.get('tick') or 0) - mem['month_start_tick']
@@ -572,7 +575,7 @@ def _camp_recall_step(screen: Screen, mem, frame, *, observed_camps=None):
             return _boss_redirect_dest_step(screen, mem, frame, state, marker)
         roofs = ([r for r in castle_roofs(frame) if r['kind'] == 'own' and not r['clipped']]
                  if frame is not None else [])
-        if (state.get('hero') or state.get('fort')) and marker:
+        if marker:
             # A 砦 asks for the nearest own castle (owner 2026-11-04). The hero's
             # castle is only _recall_goal's last resort, so a fort must not
             # consult it first: with no bound origin it answered アルマムーン
@@ -582,7 +585,10 @@ def _camp_recall_step(screen: Screen, mem, frame, *, observed_camps=None):
             state['goal'] = goal
             jumped = (mem.get('y_jumped') or {}).get('RECALL') == goal
             if goal and jumped and not castle_roofs(frame):
-                return _finish_hero_recall(mem, state, goal)      # roofs hidden: trust the jump
+                # Roofs hidden after a measured jump: the marker stands on the
+                # goal castle, so confirm it. This covers the ordinary camp
+                # too — a real own castle beats the confirm-anywhere fallback.
+                return _finish_hero_recall(mem, state, goal)
             if goal and not roofs and not jumped and (mem.get('y_jumps') or {}).get('RECALL:target', 0) < 2:
                 return _start_y_jump(mem, {'step': 'RECALL'}, goal, 'target')
         enemy_under_marker = marker and frame is not None and any(

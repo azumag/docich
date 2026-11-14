@@ -7291,6 +7291,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v833-picker-cpu-rollback",
             "hanjuku-chart-v834-picker-restored",
             "hanjuku-chart-v835-map-unsteerable-nudge",
+            "hanjuku-chart-v836-camp-dest-yjump",
             "hanjuku-chart-v560-castle-list-scroll",
             "hanjuku-chart-v561-post-month-repair-status",
             "hanjuku-chart-v501-idle-reanchor",
