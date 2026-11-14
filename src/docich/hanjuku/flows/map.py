@@ -309,8 +309,16 @@ def world_map_step(screen, mem, frame):
             hero_status = ({'location': hero_row.get('location'),
                             'observed': hero_row.get('location_observed') is True}
                            if isinstance(hero_row, dict) else None)
+            start = mem.get('month_start_tick')
+            elapsed = (int(mem.get('tick') or 0) - start
+                       if type(start) is int else None)
+            usable = [int(d) for d in (mem.get('month_durations') or [])[-3:]
+                      if type(d) is int]
             _record(mem, 'camp_recall_picker_progress',
                     observed_metric={'observations': recall['picker_observations'],
+                                     **({'month_elapsed': elapsed}
+                                        if elapsed is not None else {}),
+                                     **({'month_estimate': max(usable)} if usable else {}),
                                      'cursor': list(cursor) if cursor else None,
                                      'goal': recall.get('goal'),
                                      'nearby': nearby,

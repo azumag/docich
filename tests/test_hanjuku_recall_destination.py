@@ -437,3 +437,15 @@ def test_the_picker_fallback_names_the_capital_when_no_goal(monkeypatch):
         p.world_map_step(VIEW, mem, picker())
     p.world_map_step(VIEW, mem, picker())
     assert _flow(mem)['recall']['goal'] == p.chart.home_castle(1)
+
+
+def test_the_picker_progress_records_the_month_timing(monkeypatch):
+    """g1163 2026-11-14 10:16: 34 picker observations were cut by the month scene."""
+    mem = memory(); mem['month_start_tick'] = 0; mem['month_durations'] = [464]
+    at(monkeypatch, 'アルマムーン')
+    monkeypatch.setattr(p, 'world_cursor', lambda _: None)
+    for _ in range(10):
+        p.world_map_step(VIEW, mem, picker())
+    record = next(r for r in mem['_records'] if r['decision'] == 'camp_recall_picker_progress')
+    assert record['observed_metric']['month_elapsed'] == 100
+    assert record['observed_metric']['month_estimate'] == 464
