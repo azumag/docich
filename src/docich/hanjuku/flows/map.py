@@ -160,7 +160,6 @@ PICKER_STILL_LIMIT = 8         # recall-picker presses with an unchanged cursor 
 PICKER_VISIT_SLOTS = 12        # distinct cursor positions remembered per recall
 PICKER_LOOP_LIMIT = 3          # visits of one position before giving up
 PICKER_LOOP_MIN_STEP = 8       # px a step must move before it counts as a visit
-PICKER_NO_GOAL_LIMIT = 30      # aimless picker observations before confirming where it stands
 SELECT_FOCUS_INTERVAL = 300    # observations between hero re-focuses (~7.5 min)
 
 
@@ -353,38 +352,6 @@ def world_map_step(screen, mem, frame):
             if home and home not in (mem.get('roster_read_due') or {}):
                 mem.setdefault('roster_read_due', {})[home] = (
                     int(mem.get('tick') or 0) + 180)
-            # An aimless picker used to press right until the whole budget ran
-            # out. The ring starts on the home castle and snaps castle to
-            # castle, so an own castle under it is a destination the budget
-            # fallback would confirm anyway — naming it now keeps the recall
-            # inside the month it started in. g1163 2026-11-14 10:14-10:16:
-            # 34 picker steps with goal null were cut by the month scene and
-            # the camp's generals stayed in the field; the same stall at
-            # 10:47 spent 50 observations before the origin bound.
-            under = next((name for name in nearby
-                          if (flags or {}).get(name) == 'own'), None)
-            if under is not None and recall['picker_observations'] < 2:
-                # The ring already stands on the castle: one observation to let
-                # the frame settle, then confirm. Pressing right here would walk
-                # the ring off it and leave the cursor between castles.
-                return []
-            if under is not None:
-                recall.update(goal=under, destination_selected=True,
-                              goal_from_cursor=True)
-                _record(mem, 'camp_recall_destination',
-                        observed_metric={'castle': under,
-                                         'origin': recall.get('origin'),
-                                         'origin_source': 'picker_cursor',
-                                         'picker_boxes': ([list(b) for b in world_markers(frame)]
-                                                          if frame is not None else []),
-                                         'hero_castle': _hero_castle(mem)},
-                        reason='帰還先を決める根拠がないため、ピッカーのカーソルが指す自軍城で確定する')
-                return _request_recall(mem, recall, under,
-                                       [pad('a'), {'type': 'wait', 'ms': 700}, pad('a')])
-            if (recall['picker_observations'] >= PICKER_NO_GOAL_LIMIT
-                    and not _picker_on_enemy(nearby, flags)):
-                return _picker_fallback(mem, recall, nearby, cursor,
-                                        '帰還先を決める根拠がないまま観測を使い切るため、今いる城で確定する')
         if not cursor or not offset or goal is None:
             return [pad('right')] if cursor else []
         if recall.get('goal') != goal or not recall.get('destination_selected'):
