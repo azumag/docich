@@ -2279,6 +2279,40 @@ def _latched_ledger_text():
     })
 
 
+def test_status_cli_names_an_initialization_failure(tmp_path, capsys):
+    """The status probe must distinguish setup from ledger I/O (#4144)."""
+
+    corner_rotation, config, _ = _cli_env(tmp_path, enabled=True)
+    config.write_text("not = [valid\n")
+    code = corner_rotation.main(["--config", str(config), "status"])
+    captured = capsys.readouterr()
+    assert code == 5
+    assert captured.out == ""
+    # A fixed literal only: the ConfigError text must not reach the operator.
+    assert captured.err == "corner-rotation status: initialization failed\n"
+
+
+def test_status_cli_names_a_ledger_read_failure(tmp_path, capsys):
+    corner_rotation, config, state_dir = _cli_env(tmp_path, enabled=True)
+    # A directory at the ledger path makes exists() true and read_text() fail.
+    (state_dir / "corner_rotation.json").mkdir()
+    code = corner_rotation.main(["--config", str(config), "status"])
+    captured = capsys.readouterr()
+    assert code == 6
+    assert captured.out == ""
+    assert captured.err == "corner-rotation status: ledger read failed\n"
+
+
+def test_status_cli_prints_a_healthy_ledger_unchanged(tmp_path, capsys):
+    corner_rotation, config, state_dir = _cli_env(tmp_path, enabled=True)
+    (state_dir / "corner_rotation.json").write_text('{"status":"ready"}')
+    code = corner_rotation.main(["--config", str(config), "status"])
+    captured = capsys.readouterr()
+    assert code == 0
+    assert captured.out == '{"status":"ready"}\n'
+    assert captured.err == ""
+
+
 def test_recover_cli_cannot_claim_success_from_an_unreadable_ledger(tmp_path, capsys):
     corner_rotation, config, state_dir = _cli_env(
         tmp_path, enabled=False, body="{ not json")

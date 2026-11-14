@@ -18,7 +18,8 @@ SCRIPT = ROOT / "ops/vm_actions/recover_corner_rotation.sh"
 REQ = "11111111-1111-4111-8111-111111111111"
 
 
-def run_script(tmp_path, corner, *, recover_failed_status="succeeded", manual=None):
+def run_script(tmp_path, corner, *, recover_failed_status="succeeded", manual=None,
+               status_rc=0, status_stderr=""):
     prod = tmp_path / "prod"
     (prod / "bin").mkdir(parents=True)
     (prod / "config").mkdir()
@@ -32,6 +33,8 @@ def run_script(tmp_path, corner, *, recover_failed_status="succeeded", manual=No
     status = json.dumps({"status": "recovery_required",
                          "pending": {"corner": corner, "request_id": REQ},
                          "manual_pending": manual})
+    status_err = tmp_path / "status_err.txt"
+    status_err.write_text(status_stderr)
     launcher = prod / "bin/docich"
     launcher.write_text(f"""#!/bin/bash
 echo "$*" >> {log}
@@ -39,6 +42,10 @@ case "$*" in
   *"corner-rotation status"*) printf '%s' '{status}';;
   *"recover-failed") printf '%s' '{{"status":"{recover_failed_status}"}}';;
 esac
+if [[ "$*" == *"corner-rotation status"* ]]; then
+  cat "{status_err}" >&2
+  exit {status_rc}
+fi
 exit 0
 """)
     launcher.chmod(0o755)
@@ -91,3 +98,32 @@ def test_soren91_cli_exposes_recover_failed():
                           env={"PYTHONPATH": str(ROOT / "src"), "PATH": "/usr/bin:/bin"})
     assert done.returncode == 0, done.stderr
     assert "recover-failed" in done.stdout
+
+
+@pytest.mark.parametrize("status_rc,token", [
+    (5, "corner-rotation status: initialization failed"),
+    (6, "corner-rotation status: ledger read failed"),
+])
+def test_status_failure_surfaces_only_the_fixed_token(tmp_path, status_rc, token):
+    # Extra lines (tracebacks, provider/config text) must never reach the
+    # operator-visible failure message; only the reviewed literal does.
+    done, calls = run_script(
+        tmp_path, "meriken", status_rc=status_rc,
+        status_stderr=f"{token}\nTraceback (most recent call last):\nsecret-material\n")
+    assert done.returncode == 26
+    assert f"cannot verify corner rotation reservation ({token})" in done.stderr
+    # The surfaced message stays far below the reviewed 240-character bound.
+    assert len(done.stderr) <= 240
+    assert "Traceback" not in done.stderr
+    assert "secret-material" not in done.stderr
+    assert corner_calls(calls) == ["corner-rotation status"]
+
+
+def test_status_failure_without_a_fixed_token_stays_plain(tmp_path):
+    done, calls = run_script(
+        tmp_path, "meriken", status_rc=1,
+        status_stderr="some unrelated stderr line\n")
+    assert done.returncode == 26
+    assert done.stderr.strip() == "cannot verify corner rotation reservation"
+    assert "some unrelated stderr line" not in done.stderr
+    assert corner_calls(calls) == ["corner-rotation status"]
