@@ -42,6 +42,18 @@ MONTH_TEXT_ADVANCE_LIMIT = 6    # A presses per unread message over the month me
 
 RECRUIT_READ_DELAY = 40        # ticks after a join before the home roster is read
 
+
+def _schedule_recruit_roster_read(mem):
+    """Schedule the home roster receipt without delaying an earlier probe."""
+    due = mem.setdefault('roster_read_due', {})
+    home = chart.home_castle(mem.get('chapter') or 0)
+    new_due = int(mem.get('tick') or 0) + RECRUIT_READ_DELAY
+    existing_due = due.get(home)
+    # A recruitment receipt must not postpone a castle capture, return,
+    # or reinforcement roster probe already scheduled for this castle.
+    due[home] = min(existing_due, new_due) if type(existing_due) is int else new_due
+
+
 def army_count_owned(mem):
     from ..os_layer.roster import run_identity
     identity = run_identity(mem.get('_run_identity'))
@@ -1518,9 +1530,7 @@ def month_sub_step(screen: Screen, mem):
                 # the join stays "unclassified" while the country count and
                 # the visible garrison disagree (g1163 2026-11-13 22:5x:
                 # カシュー joined, no garrison listed him).
-                mem.setdefault('roster_read_due', {})[
-                    chart.home_castle(mem.get('chapter') or 0)] = (
-                        int(mem.get('tick') or 0) + RECRUIT_READ_DELAY)
+                _schedule_recruit_roster_read(mem)
                 _record(mem, 'recruit_join_announced', general=joined[1], month=sub.get('key'),
                         observed_metric={'placement': 'unclassified'},
                         reason='募集の実加入告知を確認。配置は次の在城一覧で照合する')
