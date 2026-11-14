@@ -510,6 +510,23 @@ def discharge_candidates(screen):
         name = row.span(24, 96).strip()
         if not name:
             continue
+        # The status panel's left border tiles sit on the lower rows of the
+        # same 16px grid (y=127/143). They are not candidates: a border-only
+        # row has no wage in x=96..136 and every name cell is unreadable.
+        # Treating it as a candidate invalidated the whole list and the bot
+        # held the forced-discharge screen forever (local ch9 2026-11-15:
+        # gold -246G, 101 observations per no-input fallback, months passing
+        # with no dismissal). A wage-bearing row with a partial name still
+        # invalidates the list below.
+        cells = [ch for x, ch in row.cells if 24 <= x < 96]
+        status = [ch for x, ch in row.cells if x >= 144 and ch != UNKNOWN]
+        if (cells and all(ch == UNKNOWN for ch in cells)
+                and not re.search(r'\d', row.span(96, 136)) and status):
+            # The right-hand status panel owns this line (e.g. 「ちんぎん 6G」)
+            # while the left border contributes unreadable frame tiles. A real
+            # candidate row always carries its wage here; an unreadable one
+            # without a wage still invalidates the list below.
+            continue
         if UNKNOWN in name or re.search(r'[\d\s]', name) or fixed_wage(name) is None:
             return None
         names.append(name)

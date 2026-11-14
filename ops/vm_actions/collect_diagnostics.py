@@ -7305,6 +7305,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v847-world-survey-reuse",
             "hanjuku-chart-v848-month-event-release",
             "hanjuku-chart-v849-map-terrain-phases",
+            "hanjuku-chart-v850-discharge-border-row",
             "hanjuku-chart-v560-castle-list-scroll",
             "hanjuku-chart-v561-post-month-repair-status",
             "hanjuku-chart-v501-idle-reanchor",
