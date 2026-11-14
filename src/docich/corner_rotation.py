@@ -834,12 +834,31 @@ class CornerRotationManager:
                         # The corner's own last_error_code is invisible while
                         # the drive never fires (e.g. a held state lock), so
                         # the ledger keeps the last observed outcome too.
-                        state["last_restoring_drive"] = {
-                            "at": now,
-                            "corner": corner_id,
-                            "result": (outcome if isinstance(outcome, str)
-                                       else getattr(outcome, "status", "unknown")),
-                        }
+                        result = (outcome if isinstance(outcome, str)
+                                  else getattr(outcome, "status", "unknown"))
+                        drive = {"at": now, "corner": corner_id,
+                                 "result": result}
+                        previous_drive = state.get("last_restoring_drive")
+                        stale = 1
+                        if (status == "failed"
+                                and result in {"noop", "failed"}
+                                and isinstance(previous_drive, dict)
+                                and previous_drive.get("corner") == corner_id
+                                and previous_drive.get("result")
+                                    in {"noop", "failed"}):
+                            stale = int(previous_drive.get("stale", 1)) + 1
+                        drive["stale"] = stale
+                        state["last_restoring_drive"] = drive
+                        # A ``failed`` slot whose own recover keeps refusing or
+                        # failing is dead by evidence: keep it audited but let
+                        # the release proof below free the rotation instead of
+                        # wedging every later corner forever (the skip still
+                        # requires _slot_reusable, so a live remnant stays
+                        # fail-closed).
+                        if status == "failed" and stale >= 2:
+                            self._mark_released_request(
+                                state, corner_id,
+                                raw.get("rotation_request_id"), now)
                     # A released failure must not keep stopping the rotation,
                     # but only while the shared slot still proves that exact
                     # request left nothing behind (#2187). The proof is
