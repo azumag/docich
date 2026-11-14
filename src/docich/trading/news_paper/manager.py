@@ -336,7 +336,31 @@ class PaperManager:
             journal=self._ledger.fill_journal(),
         )
         if outcome.fills or outcome.terminal:
-            self._ledger.apply_execution(outcome)
+            try:
+                self._ledger.apply_execution(outcome)
+            except LedgerError as exc:
+                if exc.code not in ("INSUFFICIENT_FUNDS", "INSUFFICIENT_INVENTORY"):
+                    raise
+                # docich#2644 P2-6 (design issue #4149, option A): a settle-time
+                # fee-inclusive shortfall must become a terminal result, not an
+                # exception escaping to the worker. apply_execution rolls back
+                # atomically, so the order is still pending here; cancel it
+                # with the failure code so audits see a terminal reason.
+                cancel = self._ledger.cancel_pending_order(
+                    order_id, reason_code=exc.code)
+                return ExecutionOutcome(
+                    order_id=outcome.order_id,
+                    status="canceled",
+                    requested_quantity=outcome.requested_quantity,
+                    filled_quantity=outcome.filled_quantity - sum(
+                        (f.quantity for f in outcome.fills), Decimal("0")),
+                    remaining_quantity=Decimal("0"),
+                    canceled_quantity=cancel.canceled_quantity,
+                    fills=(),
+                    reason_codes=(exc.code,),
+                    terminal=True,
+                    stage="SETTLE",
+                )
         return outcome
 
     def cancel_pending(self, receipt_id: str, *, reason_code: str):

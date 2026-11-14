@@ -708,3 +708,52 @@ def test_valuation_money_is_quantized_to_eight_decimals(tmp_path: Path) -> None:
     values = fake.calls[0]
     for key in ("positions_value", "total_equity"):
         assert Decimal(str(values[key])).as_tuple().exponent >= -8, key
+
+
+def test_insufficient_funds_becomes_terminal_cancel_and_worker_survives(
+    tmp_path: Path,
+) -> None:
+    """docich#2644 P2-6 (design #4149): a settle-time INSUFFICIENT_FUNDS must
+    surface as a terminal cancel, not an exception that kills the worker."""
+    from unittest.mock import patch
+
+    from docich.trading.news_paper.ledger import LedgerError
+
+    config = load_config(_write_config(tmp_path))
+    assert config is not None
+    decision_quote = _observation(seq=1, event_seconds=-60, digest="d").identity
+    worker = NewsPaperWorker(
+        config,
+        clock=lambda: T0,
+        candidates=_Candidates([[_request(decision_quote=decision_quote)]]),
+    )
+    worker.start()
+    try:
+        worker.run_once(now=T0)
+        # Eligible quote after the fence budget; the settle is forced to fail
+        # with INSUFFICIENT_FUNDS once (fee-inclusive shortfall path).
+        worker.enqueue(_observation(seq=3, event_seconds=15, digest="f"))
+        real_apply = worker._ledger.apply_execution
+        calls = {"n": 0}
+
+        def fail_once(outcome):
+            calls["n"] += 1
+            if calls["n"] == 1 and outcome.fills:
+                raise LedgerError("INSUFFICIENT_FUNDS")
+            return real_apply(outcome)
+
+        with patch.object(worker._ledger, "apply_execution", side_effect=fail_once):
+            summary = worker.run_once(now=T(20))
+        assert summary["fills"] == 0
+        assert _rows(_db(tmp_path), "SELECT status FROM paper_orders") == [("canceled",)]
+        codes = _rows(_db(tmp_path), "SELECT reason_code FROM cancel_events")
+        assert codes == [("INSUFFICIENT_FUNDS",)]
+        # No partial state survived the rolled-back transaction.
+        assert _rows(_db(tmp_path), "SELECT COUNT(*) FROM fills") == [(0,)]
+        # The worker is still alive: the next cycle completes normally.
+        worker.enqueue(_observation(seq=4, event_seconds=25, digest="g"))
+        summary2 = worker.run_once(now=T(30))
+        assert summary2["cycle"] == 3
+        assert summary2["last_error_code"] is None
+    finally:
+        worker.stop()
