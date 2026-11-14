@@ -7666,6 +7666,30 @@ def _receipt_age_sec(value, now):
         return -1
 
 
+# Fixed stages a previous-runtime restore can refuse at (mirrors
+# game_switch.RESTORE_STAGES). Never free text.
+GAME_SWITCH_RESTORE_STAGES = frozenset({
+    "unquiesced-runtime", "adapter-unavailable", "singleton-restart-refused",
+    "alive-probe-failed", "readiness-failed", "singleton-recheck-failed",
+    "agent-restart-failed", "continuation-unproven", "rollback-adapter-failed",
+    "rollback-start-failed",
+})
+
+
+def _collect_game_switch_restore(state_dir, now):
+    """Fixed-token evidence of the last refused previous-runtime restore."""
+
+    path = Path(state_dir) / "game-switch" / "restore_stage.json"
+    present, readable, data = _load_state_file(path)
+    entry = {"present": present, "readable": readable, "stage": None, "age_sec": None}
+    if not readable or not isinstance(data, dict):
+        return entry
+    stage = data.get("stage")
+    entry["stage"] = stage if stage in GAME_SWITCH_RESTORE_STAGES else None
+    entry["age_sec"] = _receipt_age_sec(data.get("updated_at"), now)
+    return entry
+
+
 def _collect_game_switch_fifo(state_dir, now):
     """Return a bounded, identity-free view of the durable switch FIFO."""
 
@@ -8304,6 +8328,7 @@ def _collect_corner_files(state_dir, payload, now):
     )
     payload["external_video"] = _collect_external_video(state_dir, now)
     payload["game_switch_fifo"] = _collect_game_switch_fifo(state_dir, now)
+    payload["game_switch_restore"] = _collect_game_switch_restore(state_dir, now)
     payload["game_switch_watchdog"] = _collect_game_switch_watchdog()
     payload["corner_rotation_timer_alias"] = _collect_corner_rotation_timer_alias()
 

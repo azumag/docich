@@ -1617,6 +1617,23 @@ ERROR_START_FAILED = "start_failed"
 ERROR_READINESS_TIMEOUT = "readiness_timeout"
 ERROR_AGENT_START_FAILED = "agent_start_failed"
 ERROR_ROLLBACK_FAILED = "rollback_failed"
+# Fixed stages a previous-runtime restore can refuse at. A recover refusal used
+# to leave only the generic ``rollback_failed`` code, so an operator could not
+# tell which gate stopped the restore (g1163 2026-11-14: sorengame restore kept
+# failing for hours with no stage evidence).
+RESTORE_STAGE_FILE = "game-switch/restore_stage.json"
+RESTORE_STAGES = frozenset({
+    "unquiesced-runtime",
+    "adapter-unavailable",
+    "singleton-restart-refused",
+    "alive-probe-failed",
+    "readiness-failed",
+    "singleton-recheck-failed",
+    "agent-restart-failed",
+    "continuation-unproven",
+    "rollback-adapter-failed",
+    "rollback-start-failed",
+})
 ERROR_STATE_CORRUPT = "state_corrupt"
 ERROR_RECOVERY_REQUIRED = "recovery_required"
 ERROR_PROBE_FAILED = "probe_failed"
@@ -1982,6 +1999,19 @@ class _BoundaryCancelClaim:
         if not self.event.wait(timeout) or self.result is None:
             return False, "cancel_boundaryの結果を確認できません"
         return self.result
+
+
+def _record_restore_stage(state_dir, stage: str) -> None:
+    """Best-effort fixed-token marker for a refused previous-runtime restore."""
+
+    if stage not in RESTORE_STAGES:
+        return
+    try:
+        path = Path(state_dir) / RESTORE_STAGE_FILE
+        _prepare_private_dir(path.parent)
+        atomic_write_json(path, {"schema_version": 1, "stage": stage, "updated_at": _utc_now()})
+    except Exception:
+        pass
 
 
 class GameSwitchCoordinator:
@@ -5023,6 +5053,7 @@ class GameSwitchCoordinator:
                 live_singleton_only = False
         if state.get("candidate") is not None or (state.get("retiring") and not live_singleton_only):
             warnings.append("未停止runtimeがあるためpreviousの再起動を拒否しました")
+            _record_restore_stage(self.store.state_dir, "unquiesced-runtime")
             if cleanup_pending_out is not None:
                 cleanup_pending_out.append(True)
             return None
@@ -5036,10 +5067,12 @@ class GameSwitchCoordinator:
             previous_adapter = self._make_adapter(previous_spec, deadline)
         except Exception as exc:
             warnings.append(f"previous adapter生成失敗: {_safe_detail(exc)}")
+            _record_restore_stage(self.store.state_dir, "adapter-unavailable")
             return None
         previous_alive = self._probe_alive(previous_adapter, deadline)
         if live_singleton_only and previous_alive is not True:
             warnings.append("共有singletonの再起動は許可されていません")
+            _record_restore_stage(self.store.state_dir, "singleton-restart-refused")
             return None
         if previous_alive is None:
             if previous_adapter.name == "program":
@@ -5055,6 +5088,7 @@ class GameSwitchCoordinator:
                 previous_alive = False
             else:
                 warnings.append("previous runtimeの生存確認ができません (probe失敗)")
+                _record_restore_stage(self.store.state_dir, "alive-probe-failed")
                 return None
         if previous_alive:
             # The runtime was quiescing: a living process is not necessarily a
@@ -5075,6 +5109,7 @@ class GameSwitchCoordinator:
                 )
             except Exception as exc:
                 warnings.append(f"previous readiness確認失敗: {_safe_detail(exc)}")
+                _record_restore_stage(self.store.state_dir, "readiness-failed")
                 return None
             if live_singleton_only:
                 try:
@@ -5086,6 +5121,7 @@ class GameSwitchCoordinator:
                     proven = False
                 if proven is not True:
                     warnings.append("共有singletonの復帰直前照合に失敗しました")
+                    _record_restore_stage(self.store.state_dir, "singleton-recheck-failed")
                     return None
             # Persist the new lease in previous BEFORE starting the agent so
             # the new worker can await a canonical identity and the old lease
@@ -5114,6 +5150,7 @@ class GameSwitchCoordinator:
                     # again: an agent-enabled rollback must not publish a
                     # runtime whose agent is gone.
                     warnings.append(f"agent再起動失敗: {_safe_detail(exc)}")
+                    _record_restore_stage(self.store.state_dir, "agent-restart-failed")
                     return None
             restored = dict(previous)
             restored["lease_id"] = new_lease
@@ -5174,9 +5211,11 @@ class GameSwitchCoordinator:
                 )
             except Exception as exc:
                 warnings.append(f"previousの継続証拠を確認できません: {_safe_detail(exc)}")
+                _record_restore_stage(self.store.state_dir, "continuation-unproven")
                 return None
             if allowed is not True:
                 warnings.append("previousの継続証拠がないため新規ゲームへの置換を拒否しました")
+                _record_restore_stage(self.store.state_dir, "continuation-unproven")
                 return None
 
         # Replace mode: the previous game was stopped, so restore it as a
@@ -5212,6 +5251,7 @@ class GameSwitchCoordinator:
             adapter = self._make_adapter(rollback_spec, deadline)
         except Exception as exc:
             warnings.append(f"rollback adapter生成失敗: {_safe_detail(exc)}")
+            _record_restore_stage(self.store.state_dir, "rollback-adapter-failed")
             return None
         try:
             self._call_adapter(
@@ -5260,6 +5300,7 @@ class GameSwitchCoordinator:
                         crash_hook=self.crash_hook,
                     )
             warnings.append(f"rollback起動失敗: {_safe_detail(exc)}")
+            _record_restore_stage(self.store.state_dir, "rollback-start-failed")
             return None
         last_result = {
             "request_id": request_id,
