@@ -3580,7 +3580,7 @@ class RetroCornerManager:
                 raise
         try:
             self._ensure_runtime()
-            return self._finish_locked(state, self._local_now())
+            result = self._finish_locked(state, self._local_now())
         except Exception:
             # _finish_locked already records its own failure when it reaches
             # its switch; only a pre-switch refusal needs the durable marker.
@@ -3589,6 +3589,14 @@ class RetroCornerManager:
                 latest["last_error_code"] = "restoring-finish-unverified"
                 self._write_state(latest)
             raise
+        if result.status not in {"completed", "interrupted"}:
+            # A queued/waiting finish leaves no marker; name the pend so the
+            # wedge is diagnosable from diagnostics alone.
+            latest = self._read_state()
+            if latest.get("status") == "restoring":
+                latest["last_error_code"] = "restoring-finish-pending"
+                self._write_state(latest)
+        return result
 
     def recover_failed_restore(self) -> CornerResult:
         """Timer-safe subset of ``recover_failed``: restore recovery only (#2187).

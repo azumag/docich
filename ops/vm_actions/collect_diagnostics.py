@@ -7468,6 +7468,13 @@ _TSUITATE_SETTLE_REFUSALS = frozenset({
     "canonical-busy", "canonical-owns-view", "receipt-open",
 })
 
+_RETRO_RESTORING_SETTLE_CODES = frozenset({
+    # Fixed vocabulary of why the timer-safe restoring settle could not finish
+    # (#4155/#4158). Only these are published; an unknown string is null.
+    "restoring-owner-unverified", "restoring-request-unverified",
+    "restoring-finish-unverified", "restoring-finish-pending",
+})
+
 
 def _project_tsuitate_corner(data):
     """Expose the persisted failure category, not a new recovery decision.
@@ -8291,6 +8298,10 @@ def _collect_corner_files(state_dir, payload, now):
                 entry["counters"] = _project_lawsim_counters(data)
             if name == "retro_corner":
                 entry["saved_checkpoint"] = _collect_hanjuku_checkpoint(state_dir, data)
+                settle_code = data.get("last_error_code")
+                entry["restoring_settle_code"] = (
+                    settle_code if isinstance(settle_code, str)
+                    and settle_code in _RETRO_RESTORING_SETTLE_CODES else None)
         payload[name] = entry
 
     present, readable, data = _load_state_file(state_dir / "trading" / "presentation.json")
