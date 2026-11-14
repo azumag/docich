@@ -950,6 +950,43 @@ def test_fifo_replay_keeps_head_queued_when_writer_wins_claim(monkeypatch, tmp_p
     assert store.canonical.load()[0]["active"]["game"] == "nethack"
 
 
+def test_resume_queued_requeues_orphaned_accepted_receipt():
+    # Production wedge (#4168 diag): a request died after accept, leaving an
+    # "accepted" receipt while canonical went back to stable with no owner.
+    # That non-terminal receipt blocks every later claim through the
+    # nonterminal-receipts gate and nobody ever requeues it, so the whole
+    # FIFO deadlocks. resume_queued must migrate it into the queue first.
+    with tempfile.TemporaryDirectory() as tmp:
+        store, coordinator = _coordinator(
+            BoundaryFactory(), Path(tmp) / "run"
+        )
+        _assert_started(coordinator)
+        orphan_id = str(uuid.uuid4())
+        orphan = store.accept_request(orphan_id, "switch", "robots")
+        assert orphan.status == "accepted"
+        # The driver died after accept; a later stable write left canonical
+        # ownerless while the receipt stayed "accepted" forever.
+        state, _ = store.canonical.load()
+        cleared = dict(state)
+        cleared["phase"] = "ready"
+        cleared["request_id"] = None
+        cleared["operation"] = None
+        store.canonical.save(cleared)
+
+        queued_id = str(uuid.uuid4())
+        store.enqueue_request(queued_id, "switch", "hanjuku")
+        # The orphan blocks the queued head too — the same gate applies.
+        blocked = store.accept_request(queued_id, "switch", "hanjuku")
+        assert blocked.status == "queued"
+
+        resumed = coordinator.resume_queued(timeout_s=1.0)
+        assert resumed.request_id == orphan_id
+        assert resumed.status in {"succeeded", "failed"}
+        # Once the orphan drains, the queued follower can be claimed again.
+        remaining = [item["request_id"] for item in store.receipts.queued()]
+        assert orphan_id not in remaining
+
+
 def test_fifo_maintenance_recovers_expired_drain_and_starts_only_queue_head(monkeypatch):
     with tempfile.TemporaryDirectory() as tmp:
         state_dir = Path(tmp) / "run"

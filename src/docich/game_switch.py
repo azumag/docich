@@ -2289,6 +2289,18 @@ class GameSwitchCoordinator:
                         cleanup_pending=False,
                         receipt=None,
                     )
+                # Orphan sweep: a request that died mid-flight stays
+                # "accepted"/"allocating" forever and blocks every later
+                # claim through the nonterminal-receipts gate.  A stable,
+                # ownerless canonical means none of them can be a live
+                # driver, so migrate them into the durable FIFO like the
+                # orphaned-accepted path does and let the queue drain them
+                # in order instead of deadlocking every caller.
+                for receipt in list(self.store.receipts.receipts()):
+                    if receipt.get("status") in {"allocating", "accepted"}:
+                        self.store._requeue_request_locked(
+                            tx.lock, str(receipt["request_id"])
+                        )
                 queued = self.store.receipts.queued()
                 if not queued:
                     return SwitchResult(
