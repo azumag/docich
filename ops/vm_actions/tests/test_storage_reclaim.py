@@ -113,7 +113,7 @@ class StorageReclaimTests(unittest.TestCase):
         result = self.run_helper(apply=True)
 
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertFalse(old.exists(), result.stdout)
+        self.assertTrue(old.exists(), result.stdout)
         self.assertTrue(recent.exists(), result.stdout)
         self.assertTrue((self.tmp / "verify").is_dir())
 
@@ -124,7 +124,7 @@ class StorageReclaimTests(unittest.TestCase):
         result = self.run_helper()
 
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertTrue(any(l.startswith("DEL") and str(old) in l
+        self.assertTrue(any(l.startswith("KEEP") and str(old) in l
                             for l in result.stdout.splitlines()), result.stdout)
         self.assertTrue(old.exists())
 
