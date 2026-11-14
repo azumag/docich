@@ -2456,6 +2456,16 @@ class GameSwitchCoordinator:
                 elif phase in {"idle", "ready"}:
                     pass
                 else:
+                    if phase in IN_PROGRESS_PHASES and _wall_deadline_expired(
+                        state.get("deadline_at")
+                    ):
+                        # A crashed in-progress phase (e.g. a rollback whose
+                        # driver died) can never finish on its own.  With an
+                        # expired deadline there is no live owner to protect,
+                        # so reconcile it through the standard recover path
+                        # and let the canonical reach a declared phase rather
+                        # than wedge the FIFO watchdog forever.
+                        return self.recover(timeout_s=timeout_s)
                     return SwitchResult(
                         request_id=str(state.get("request_id") or ""),
                         operation=str(state.get("operation") or "maintain_fifo"),
