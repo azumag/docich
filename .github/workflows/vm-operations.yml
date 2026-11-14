@@ -396,8 +396,15 @@ jobs:
         shell: bash
         run: exit 1
 
+      # Post-deploy hooks below all gate on `!cancelled() && (deploy succeeded)`.
+      # An `if:` without any status check gets an implicit `success()`, which
+      # made one failed timer/restart skip every later hook: the 2026-11-14
+      # incident left `Ensure host metrics timer` timing out under CPU
+      # saturation, so the deploy reported success on disk while none of the
+      # restart/reload/realign hooks ran. `!cancelled()` keeps the deploy
+      # gate but decouples the hooks from sibling failures.
       - name: Ensure OpenCode retention timer
-        if: ${{ steps.auth.outputs.operation == 'deploy' && steps.auth.outputs.target == 'production' && (steps.deploy_initial.outcome == 'success' || steps.deploy_retry.outcome == 'success') }}
+        if: ${{ !cancelled() && (steps.auth.outputs.operation == 'deploy' && steps.auth.outputs.target == 'production' && (steps.deploy_initial.outcome == 'success' || steps.deploy_retry.outcome == 'success')) }}
         shell: bash
         env:
           VM_SSH_HOST: ${{ secrets.VM_SSH_HOST }}
@@ -410,7 +417,7 @@ jobs:
             ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" "exec docich production $SHA"
 
       - name: Ensure Twitch OAuth refresh timer
-        if: ${{ steps.auth.outputs.operation == 'deploy' && steps.auth.outputs.target == 'production' && (steps.deploy_initial.outcome == 'success' || steps.deploy_retry.outcome == 'success') }}
+        if: ${{ !cancelled() && (steps.auth.outputs.operation == 'deploy' && steps.auth.outputs.target == 'production' && (steps.deploy_initial.outcome == 'success' || steps.deploy_retry.outcome == 'success')) }}
         shell: bash
         env:
           VM_SSH_HOST: ${{ secrets.VM_SSH_HOST }}
@@ -423,7 +430,7 @@ jobs:
             ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" "exec docich production $SHA"
 
       - name: Ensure Kick OAuth refresh timer
-        if: ${{ steps.auth.outputs.operation == 'deploy' && steps.auth.outputs.target == 'production' && (steps.deploy_initial.outcome == 'success' || steps.deploy_retry.outcome == 'success') }}
+        if: ${{ !cancelled() && (steps.auth.outputs.operation == 'deploy' && steps.auth.outputs.target == 'production' && (steps.deploy_initial.outcome == 'success' || steps.deploy_retry.outcome == 'success')) }}
         shell: bash
         env:
           VM_SSH_HOST: ${{ secrets.VM_SSH_HOST }}
@@ -437,7 +444,7 @@ jobs:
 
       - name: Detect one-time critical storage reclaim epoch
         id: opencode_reclaim_epoch
-        if: ${{ github.event_name == 'push' && steps.auth.outputs.operation == 'deploy' && steps.auth.outputs.target == 'production' && (steps.deploy_initial.outcome == 'success' || steps.deploy_retry.outcome == 'success') }}
+        if: ${{ !cancelled() && (github.event_name == 'push' && steps.auth.outputs.operation == 'deploy' && steps.auth.outputs.target == 'production' && (steps.deploy_initial.outcome == 'success' || steps.deploy_retry.outcome == 'success')) }}
         shell: bash
         env:
           SHA: ${{ steps.candidate.outputs.sha }}
@@ -453,7 +460,7 @@ jobs:
           echo "run=$run" >> "$GITHUB_OUTPUT"
 
       - name: Run bounded storage reclaim before critical OpenCode VACUUM
-        if: ${{ steps.opencode_reclaim_epoch.outputs.run == '1' }}
+        if: ${{ !cancelled() && (steps.opencode_reclaim_epoch.outputs.run == '1') }}
         shell: bash
         env:
           VM_SSH_HOST: ${{ secrets.VM_SSH_HOST }}
@@ -467,7 +474,7 @@ jobs:
             ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" "exec docich production $SHA"
 
       - name: Retry gated OpenCode retention after bounded reclaim
-        if: ${{ steps.opencode_reclaim_epoch.outputs.run == '1' }}
+        if: ${{ !cancelled() && (steps.opencode_reclaim_epoch.outputs.run == '1') }}
         shell: bash
         env:
           VM_SSH_HOST: ${{ secrets.VM_SSH_HOST }}
@@ -481,7 +488,7 @@ jobs:
             ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" "exec docich production $SHA"
 
       - name: Ensure PAPER scheduled improvement timer
-        if: ${{ steps.auth.outputs.operation == 'deploy' && steps.auth.outputs.target == 'production' && (steps.deploy_initial.outcome == 'success' || steps.deploy_retry.outcome == 'success') }}
+        if: ${{ !cancelled() && (steps.auth.outputs.operation == 'deploy' && steps.auth.outputs.target == 'production' && (steps.deploy_initial.outcome == 'success' || steps.deploy_retry.outcome == 'success')) }}
         shell: bash
         env:
           VM_SSH_HOST: ${{ secrets.VM_SSH_HOST }}
@@ -498,7 +505,7 @@ jobs:
       # ops/vm_actions/corner_rotation_timer_migration_epoch (absent = legacy).
       # The hook never restarts the shared display/Soren/audio/stream units.
       - name: Ensure corner rotation timer
-        if: ${{ steps.auth.outputs.operation == 'deploy' && steps.auth.outputs.target == 'production' && (steps.deploy_initial.outcome == 'success' || steps.deploy_retry.outcome == 'success') }}
+        if: ${{ !cancelled() && (steps.auth.outputs.operation == 'deploy' && steps.auth.outputs.target == 'production' && (steps.deploy_initial.outcome == 'success' || steps.deploy_retry.outcome == 'success')) }}
         shell: bash
         env:
           VM_SSH_HOST: ${{ secrets.VM_SSH_HOST }}
@@ -511,7 +518,7 @@ jobs:
             ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" "exec docich production $SHA"
 
       - name: Ensure NetHack daily improvement timer
-        if: ${{ steps.auth.outputs.operation == 'deploy' && steps.auth.outputs.target == 'production' && (steps.deploy_initial.outcome == 'success' || steps.deploy_retry.outcome == 'success') }}
+        if: ${{ !cancelled() && (steps.auth.outputs.operation == 'deploy' && steps.auth.outputs.target == 'production' && (steps.deploy_initial.outcome == 'success' || steps.deploy_retry.outcome == 'success')) }}
         shell: bash
         env:
           VM_SSH_HOST: ${{ secrets.VM_SSH_HOST }}
@@ -524,7 +531,7 @@ jobs:
             ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" "exec docich production $SHA"
 
       - name: Ensure host metrics timer
-        if: ${{ steps.auth.outputs.operation == 'deploy' && steps.auth.outputs.target == 'production' && (steps.deploy_initial.outcome == 'success' || steps.deploy_retry.outcome == 'success') }}
+        if: ${{ !cancelled() && (steps.auth.outputs.operation == 'deploy' && steps.auth.outputs.target == 'production' && (steps.deploy_initial.outcome == 'success' || steps.deploy_retry.outcome == 'success')) }}
         shell: bash
         env:
           VM_SSH_HOST: ${{ secrets.VM_SSH_HOST }}
@@ -538,7 +545,7 @@ jobs:
             ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" "exec docich production $SHA"
 
       - name: Restart radio worker after reviewed Soren runtime update
-        if: ${{ github.event_name == 'push' && steps.auth.outputs.operation == 'deploy' && steps.auth.outputs.target == 'production' && (steps.deploy_initial.outcome == 'success' || steps.deploy_retry.outcome == 'success') }}
+        if: ${{ !cancelled() && (github.event_name == 'push' && steps.auth.outputs.operation == 'deploy' && steps.auth.outputs.target == 'production' && (steps.deploy_initial.outcome == 'success' || steps.deploy_retry.outcome == 'success')) }}
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -570,7 +577,7 @@ jobs:
           cat control/ops/vm_actions/restart_radio_worker.sh | ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" "exec docich production $SHA"
 
       - name: Restart Soren fallback BGM after reviewed runtime update
-        if: ${{ github.event_name == 'push' && steps.auth.outputs.operation == 'deploy' && steps.auth.outputs.target == 'production' && (steps.deploy_initial.outcome == 'success' || steps.deploy_retry.outcome == 'success') }}
+        if: ${{ !cancelled() && (github.event_name == 'push' && steps.auth.outputs.operation == 'deploy' && steps.auth.outputs.target == 'production' && (steps.deploy_initial.outcome == 'success' || steps.deploy_retry.outcome == 'success')) }}
         shell: bash
         env:
           VM_SSH_HOST: ${{ secrets.VM_SSH_HOST }}
@@ -597,7 +604,7 @@ jobs:
             ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" "exec docich production $SHA"
 
       - name: Restart resident poll workers after reviewed runtime epoch
-        if: ${{ github.event_name == 'push' && steps.auth.outputs.operation == 'deploy' && steps.auth.outputs.target == 'production' && (steps.deploy_initial.outcome == 'success' || steps.deploy_retry.outcome == 'success') }}
+        if: ${{ !cancelled() && (github.event_name == 'push' && steps.auth.outputs.operation == 'deploy' && steps.auth.outputs.target == 'production' && (steps.deploy_initial.outcome == 'success' || steps.deploy_retry.outcome == 'success')) }}
         shell: bash
         env:
           VM_SSH_HOST: ${{ secrets.VM_SSH_HOST }}
@@ -624,7 +631,7 @@ jobs:
             ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" "exec docich production $SHA"
 
       - name: Restart resident soviet_watchdog after reviewed runtime epoch
-        if: ${{ github.event_name == 'push' && steps.auth.outputs.operation == 'deploy' && steps.auth.outputs.target == 'production' && (steps.deploy_initial.outcome == 'success' || steps.deploy_retry.outcome == 'success') }}
+        if: ${{ !cancelled() && (github.event_name == 'push' && steps.auth.outputs.operation == 'deploy' && steps.auth.outputs.target == 'production' && (steps.deploy_initial.outcome == 'success' || steps.deploy_retry.outcome == 'success')) }}
         shell: bash
         env:
           VM_SSH_HOST: ${{ secrets.VM_SSH_HOST }}
@@ -652,7 +659,7 @@ jobs:
             ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" "exec docich production $SHA"
 
       - name: Restart active Soren91 agent for reviewed runtime epoch
-        if: ${{ github.event_name == 'push' && steps.auth.outputs.operation == 'deploy' && steps.auth.outputs.target == 'production' && (steps.deploy_initial.outcome == 'success' || steps.deploy_retry.outcome == 'success') }}
+        if: ${{ !cancelled() && (github.event_name == 'push' && steps.auth.outputs.operation == 'deploy' && steps.auth.outputs.target == 'production' && (steps.deploy_initial.outcome == 'success' || steps.deploy_retry.outcome == 'success')) }}
         shell: bash
         env:
           VM_SSH_HOST: ${{ secrets.VM_SSH_HOST }}
@@ -675,7 +682,7 @@ jobs:
             ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" "exec docich production $SHA"
 
       - name: Start one reviewed Soren91 manual probe
-        if: ${{ github.event_name == 'push' && steps.auth.outputs.operation == 'deploy' && steps.auth.outputs.target == 'production' && (steps.deploy_initial.outcome == 'success' || steps.deploy_retry.outcome == 'success') }}
+        if: ${{ !cancelled() && (github.event_name == 'push' && steps.auth.outputs.operation == 'deploy' && steps.auth.outputs.target == 'production' && (steps.deploy_initial.outcome == 'success' || steps.deploy_retry.outcome == 'success')) }}
         shell: bash
         env:
           VM_SSH_HOST: ${{ secrets.VM_SSH_HOST }}
@@ -698,7 +705,7 @@ jobs:
             ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" "exec docich production $SHA"
 
       - name: Restart direct stream for reviewed overlay runtime epoch
-        if: ${{ github.event_name == 'push' && steps.auth.outputs.operation == 'deploy' && steps.auth.outputs.target == 'production' && (steps.deploy_initial.outcome == 'success' || steps.deploy_retry.outcome == 'success') }}
+        if: ${{ !cancelled() && (github.event_name == 'push' && steps.auth.outputs.operation == 'deploy' && steps.auth.outputs.target == 'production' && (steps.deploy_initial.outcome == 'success' || steps.deploy_retry.outcome == 'success')) }}
         shell: bash
         env:
           VM_SSH_HOST: ${{ secrets.VM_SSH_HOST }}
@@ -720,7 +727,7 @@ jobs:
             ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" "exec docich production $SHA"
 
       - name: Reload shared display for reviewed game-gap runtime epoch
-        if: ${{ github.event_name == 'push' && steps.auth.outputs.operation == 'deploy' && steps.auth.outputs.target == 'production' && (steps.deploy_initial.outcome == 'success' || steps.deploy_retry.outcome == 'success') }}
+        if: ${{ !cancelled() && (github.event_name == 'push' && steps.auth.outputs.operation == 'deploy' && steps.auth.outputs.target == 'production' && (steps.deploy_initial.outcome == 'success' || steps.deploy_retry.outcome == 'success')) }}
         shell: bash
         env:
           VM_SSH_HOST: ${{ secrets.VM_SSH_HOST }}
@@ -742,7 +749,7 @@ jobs:
             ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" "exec docich production $SHA"
 
       - name: Realign active Hanjuku projection after production deploy
-        if: ${{ github.event_name == 'push' && steps.auth.outputs.operation == 'deploy' && steps.auth.outputs.target == 'production' && (steps.deploy_initial.outcome == 'success' || steps.deploy_retry.outcome == 'success') }}
+        if: ${{ !cancelled() && (github.event_name == 'push' && steps.auth.outputs.operation == 'deploy' && steps.auth.outputs.target == 'production' && (steps.deploy_initial.outcome == 'success' || steps.deploy_retry.outcome == 'success')) }}
         shell: bash
         env:
           VM_SSH_HOST: ${{ secrets.VM_SSH_HOST }}
@@ -780,7 +787,7 @@ jobs:
           fi
 
       - name: Enable common TwiCa foreground for reviewed runtime epoch
-        if: ${{ github.event_name == 'push' && steps.auth.outputs.operation == 'deploy' && steps.auth.outputs.target == 'production' && (steps.deploy_initial.outcome == 'success' || steps.deploy_retry.outcome == 'success') }}
+        if: ${{ !cancelled() && (github.event_name == 'push' && steps.auth.outputs.operation == 'deploy' && steps.auth.outputs.target == 'production' && (steps.deploy_initial.outcome == 'success' || steps.deploy_retry.outcome == 'success')) }}
         shell: bash
         env:
           VM_SSH_HOST: ${{ secrets.VM_SSH_HOST }}
@@ -824,7 +831,7 @@ jobs:
           exit "$rc"
 
       - name: Refresh active Soren91 GAME OPS rails after reviewed Soren update
-        if: ${{ github.event_name == 'push' && steps.auth.outputs.operation == 'deploy' && steps.auth.outputs.target == 'production' && (steps.deploy_initial.outcome == 'success' || steps.deploy_retry.outcome == 'success') }}
+        if: ${{ !cancelled() && (github.event_name == 'push' && steps.auth.outputs.operation == 'deploy' && steps.auth.outputs.target == 'production' && (steps.deploy_initial.outcome == 'success' || steps.deploy_retry.outcome == 'success')) }}
         shell: bash
         env:
           VM_SSH_HOST: ${{ secrets.VM_SSH_HOST }}
@@ -851,7 +858,7 @@ jobs:
             ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" "exec docich production $SHA"
 
       - name: Restart reviewed Soren status overlay watchers after Soren update
-        if: ${{ github.event_name == 'push' && steps.auth.outputs.operation == 'deploy' && steps.auth.outputs.target == 'production' && (steps.deploy_initial.outcome == 'success' || steps.deploy_retry.outcome == 'success') }}
+        if: ${{ !cancelled() && (github.event_name == 'push' && steps.auth.outputs.operation == 'deploy' && steps.auth.outputs.target == 'production' && (steps.deploy_initial.outcome == 'success' || steps.deploy_retry.outcome == 'success')) }}
         shell: bash
         env:
           VM_SSH_HOST: ${{ secrets.VM_SSH_HOST }}
@@ -874,7 +881,7 @@ jobs:
             ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" "exec docich production $SHA"
 
       - name: Restart docich webui systemd unit
-        if: ${{ steps.auth.outputs.operation == 'restart_webui' || (github.event_name == 'push' && steps.auth.outputs.operation == 'deploy' && steps.auth.outputs.target == 'production' && (steps.deploy_initial.outcome == 'success' || steps.deploy_retry.outcome == 'success')) }}
+        if: ${{ !cancelled() && (steps.auth.outputs.operation == 'restart_webui' || (github.event_name == 'push' && steps.auth.outputs.operation == 'deploy' && steps.auth.outputs.target == 'production' && (steps.deploy_initial.outcome == 'success' || steps.deploy_retry.outcome == 'success'))) }}
         shell: bash
         env:
           VM_SSH_HOST: ${{ secrets.VM_SSH_HOST }}
@@ -1027,7 +1034,7 @@ jobs:
 
       - name: Probe Moomoo JP quote readiness after reviewed production deploy
         id: market_provider_probe
-        if: ${{ github.event_name == 'push' && steps.auth.outputs.operation == 'deploy' && steps.auth.outputs.target == 'production' && (steps.deploy_initial.outcome == 'success' || steps.deploy_retry.outcome == 'success') }}
+        if: ${{ !cancelled() && (github.event_name == 'push' && steps.auth.outputs.operation == 'deploy' && steps.auth.outputs.target == 'production' && (steps.deploy_initial.outcome == 'success' || steps.deploy_retry.outcome == 'success')) }}
         continue-on-error: true
         shell: bash
         env:
@@ -1059,7 +1066,7 @@ jobs:
           echo "Moomoo JP read-only provider probe: $status"
 
       - name: Run one-shot production CPU profile
-        if: ${{ (github.event_name == 'push' && steps.auth.outputs.operation == 'deploy' && steps.auth.outputs.target == 'production' && (steps.deploy_initial.outcome == 'success' || steps.deploy_retry.outcome == 'success')) || (github.event_name == 'workflow_dispatch' && steps.auth.outputs.operation == 'cpu_profile' && steps.auth.outputs.target == 'production') }}
+        if: ${{ !cancelled() && ((github.event_name == 'push' && steps.auth.outputs.operation == 'deploy' && steps.auth.outputs.target == 'production' && (steps.deploy_initial.outcome == 'success' || steps.deploy_retry.outcome == 'success')) || (github.event_name == 'workflow_dispatch' && steps.auth.outputs.operation == 'cpu_profile' && steps.auth.outputs.target == 'production')) }}
         shell: bash
         env:
           VM_SSH_HOST: ${{ secrets.VM_SSH_HOST }}
