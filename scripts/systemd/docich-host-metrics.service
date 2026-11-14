@@ -11,4 +11,6 @@ UMask=0077
 Nice=10
 IOSchedulingClass=idle
 MemoryMax=32M
-TimeoutStartSec=45
+# Must outlast a niced /proc scan under full CPU saturation; the 45s budget
+# timed out during the 2026-11-14 incident and broke the deploy hook chain.
+TimeoutStartSec=120
