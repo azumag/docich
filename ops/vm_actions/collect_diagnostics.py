@@ -7470,9 +7470,16 @@ _TSUITATE_SETTLE_REFUSALS = frozenset({
 
 _RETRO_RESTORING_SETTLE_CODES = frozenset({
     # Fixed vocabulary of why the timer-safe restoring settle could not finish
-    # (#4155/#4158). Only these are published; an unknown string is null.
+    # (#4155/#4158/#4159). The restoring-finish-* suffixes are the fixed
+    # CornerResult statuses. Only these are published; an unknown string is
+    # null.
     "restoring-owner-unverified", "restoring-request-unverified",
     "restoring-finish-unverified", "restoring-finish-pending",
+    "restoring-finish-unknown",
+    "restoring-finish-queued", "restoring-finish-waiting",
+    "restoring-finish-busy", "restoring-finish-accepted",
+    "restoring-finish-in_progress", "restoring-finish-stopping",
+    "restoring-finish-switching",
 })
 
 
