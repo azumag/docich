@@ -538,7 +538,7 @@ def _camp_recall_step(screen: Screen, mem, frame, *, observed_camps=None):
                             reason='野営で決定したが野営メニューが開かずマップに戻ったため、野営へ合わせ直して決定し直す')
             return []              # the window is still fading in
         state.pop('menu_map_waits', None)
-        choice = 'いどう' if state.get('boss') else 'きかん'
+        choice = 'いどう' if (state.get('boss') or state.get('boss_move')) else 'きかん'
         move = menu_to(screen, choice)
         if move is None:
             misses = state['cursor_misses'] = int(state.get('cursor_misses', 0)) + 1
@@ -573,6 +573,8 @@ def _camp_recall_step(screen: Screen, mem, frame, *, observed_camps=None):
         marker = screen.marker
         if state.get('boss'):
             return _boss_redirect_dest_step(screen, mem, frame, state, marker)
+        if state.get('boss_move'):
+            return _boss_move_dest_step(screen, mem, frame, state, marker)
         roofs = ([r for r in castle_roofs(frame) if r['kind'] == 'own' and not r['clipped']]
                  if frame is not None else [])
         if marker:
@@ -656,6 +658,33 @@ def _boss_redirect_dest_step(screen, mem, frame, state, marker):
         return _start_y_jump(mem, {'step': 'RECALL'}, goal, 'target')
     return _abort_boss_redirect(mem, state, 'boss_jump_failed',
                                 'ボスのセルへマーカーを合わせられないため再出撃を取り消す')
+
+
+def _boss_move_dest_step(screen, mem, frame, state, marker):
+    """Aim the destination marker at the boss castle and confirm (いどう).
+
+    #3505: the same Y-jump route a boss sortie takes. Unlike the chapter-9
+    redirect this boss does not move, so the fixed chart cell is enough —
+    ``_target_roof_under_marker`` still requires a jump receipt or the marker
+    measured on the cell, never a blind confirm.
+    """
+    from . import map as _map
+    goal = state.get('goal') or chart.boss_castle(mem.get('chapter') or 0)
+    state['goal'] = goal
+    if not goal or not marker or frame is None:
+        state['boss_lost'] = int(state.get('boss_lost') or 0) + 1
+        if state['boss_lost'] < 3:
+            return []
+        return _abort_boss_redirect(mem, state, 'boss_position_lost',
+                                    'ボスの位置を確認できないため再移動を取り消す')
+    pseudo = {'step': 'RECALL', 'target': goal, 'source': None}
+    if _map._target_roof_under_marker(screen, mem, frame, pseudo):
+        _reset_boss_jump(mem)
+        return _request_recall(mem, state, goal, [pad('a')], target_cell=list(marker), boss=True)
+    if (mem.get('y_jumps') or {}).get('RECALL:target', 0) < BOSS_JUMP_LIMIT:
+        return _start_y_jump(mem, {'step': 'RECALL'}, goal, 'target')
+    return _abort_boss_redirect(mem, state, 'boss_jump_failed',
+                                'ボス城へマーカーを合わせられないため再移動を取り消す')
 
 
 def _reset_boss_jump(mem):

@@ -752,8 +752,11 @@ def test_broken_boss_adjacent_camp_is_recalled_for_repair():
             'location': 'camp', 'broken': False, 'hp': 49, 'max_hp': 49,
             'marker': {'castle_candidate': 'ボス'}},
     }
+    # 無傷のデーメーテールは除外で座り続けるのではなく、いどうでボスへ
+    # 再移動するタスクになる（docich#3505 の boss_move）。
     assert post._tasks(statuses, list(statuses)) == [
-        {'kind': 'recall', 'name': 'ヴィーナス'}]
+        {'kind': 'recall', 'name': 'ヴィーナス'},
+        {'kind': 'boss_move', 'name': 'デーメーテール'}]
 
 
 def test_arm_recalls_a_broken_boss_camp_without_exempting_it():
