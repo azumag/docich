@@ -108,9 +108,11 @@ JEVは自動有効化されていない手動のplayer-policy試験であり、�
 - 枠の開始（pending確定）時に投影を消す。sorengameへ戻った次のtickで次の予告を出す。
   `game_switch.json` の `active.game` が `sorengame` でない間（他コーナー・special view・
   復帰失敗）は出さない。queue modeは間隔が無いので、予約済みmanualがあるときだけ出す。
-- **予想ガード（48試合のprediction）中は出さない。** in-flightのpredictionは
+- **予想ガード（48試合のprediction）中も予告は出す。** in-flightのpredictionは
   コーナー入りの境界を待たせるため開始時刻を約束できない。`hold="prediction"` を
-  記録し、配信側は描画しない（`corner_boundary.prediction_in_flight`）。
+  記録し、配信側はコーナー名と予定時刻を「予想中」として表示し、予定時刻を過ぎたら
+  「予想終了後」に切り替える（`corner_boundary.prediction_in_flight`）。読み上げは
+  行わない。
 - 枠の終了後、`last_result` がterminal（completed / interrupted / expired）かつ
   30分以内なら、共有audio queueへ1回だけ「次のコーナーは〜、18時からの予定です。」を
   入れる。`notice_spoken_for`（request UUID）で冪等にし、`dedup_scope` も同じ
@@ -119,8 +121,9 @@ JEVは自動有効化されていない手動のplayer-policy試験であり、�
   `<docich>/run-soren-live/next_corner.json` を読み、`nextCorner` として
   `/__soren_overlay/broadcast/state` に載せる。
   `overlays/direct_broadcast_overlay.html` は右サイドバー上部のカード
-  （`#next-corner`）として描画する。記録が10分更新されない・予定時刻を15分過ぎた・
-  `hold` 付きのときは出さない。
+  （`#next-corner`）として描画する。記録が10分更新されない・予定時刻を15分過ぎた
+  （`hold` なし）・未知の `hold` のときは出さない。`hold="prediction"` は予定時刻を
+  過ぎても表示を続け、時刻を「予想終了後」に切り替える。
 - 投影・読み上げはbest-effortで、書けない・届かないことは rotation の選択・実行・
   復帰を止めない。
 - 反映の注意: 共有サイドバーの state (`/__soren_overlay/broadcast/state`) を組み立てる

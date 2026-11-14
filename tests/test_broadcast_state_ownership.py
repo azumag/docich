@@ -81,16 +81,43 @@ class NextCornerNoticeTest(unittest.TestCase):
         self.assertEqual(notice["corner"], "ninvaders")
         self.assertEqual(notice["label"], "スペースインベーダー")
         self.assertEqual(notice["when"], "23:46")
-        self.assertEqual(set(notice), {"corner", "label", "when", "dueAt", "updatedAt"})
+        self.assertIsNone(notice["hold"])
+        self.assertEqual(
+            set(notice), {"corner", "label", "when", "dueAt", "updatedAt", "hold"}
+        )
 
-    def test_prediction_hold_hides_the_notice(self):
+    def test_prediction_hold_stays_visible_with_its_provisional_flag(self):
         if shutil.which("node") is None:
             self.skipTest("Node.js is not installed")
         with tempfile.TemporaryDirectory(prefix="docich-next-corner-") as tmpdir:
             tmp = Path(tmpdir)
-            # 48-game prediction in flight: the corner boundary waits for it,
-            # so no start time can be promised.
+            # 48-game prediction in flight: the corner is still next, so the
+            # sidebar keeps the card and marks the planned clock provisional.
             file_uri = self._state(tmp, self._payload(hold="prediction"))
+            notice = self._build(tmp, file_uri, int(time.time()) * 1000)
+        self.assertEqual(notice["corner"], "ninvaders")
+        self.assertEqual(notice["hold"], "prediction")
+
+    def test_prediction_hold_ignores_the_past_due_grace(self):
+        if shutil.which("node") is None:
+            self.skipTest("Node.js is not installed")
+        now = int(time.time())
+        with tempfile.TemporaryDirectory(prefix="docich-next-corner-") as tmpdir:
+            tmp = Path(tmpdir)
+            # The boundary can hold the slot past its planned clock; the card
+            # must not vanish while the prediction is still running.
+            file_uri = self._state(tmp, self._payload(
+                hold="prediction", due_at=now - 3600, updated_at=now,
+            ))
+            notice = self._build(tmp, file_uri, now * 1000)
+        self.assertEqual(notice["hold"], "prediction")
+
+    def test_unknown_hold_is_not_projected(self):
+        if shutil.which("node") is None:
+            self.skipTest("Node.js is not installed")
+        with tempfile.TemporaryDirectory(prefix="docich-next-corner-") as tmpdir:
+            tmp = Path(tmpdir)
+            file_uri = self._state(tmp, self._payload(hold="unknown"))
             self.assertIsNone(self._build(tmp, file_uri, int(time.time()) * 1000))
 
     def test_stale_and_past_records_are_ignored(self):

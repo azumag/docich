@@ -10,8 +10,10 @@ private.
 
 While Soren runs a prediction (the 48-game improvement cycle) the shared corner
 boundary waits for it to settle, so the start time cannot be promised. The
-record then carries ``hold = "prediction"`` and the dashboard renders nothing
-instead of a wrong time.
+record then carries ``hold = "prediction"``: the dashboard still shows which
+corner is next, marks the planned clock as provisional (``予想中``), and
+switches the timing to ``予想終了後`` once that clock passes instead of
+withdrawing the card. The spoken announcement stays suppressed while held.
 
 Record shape (all fields bounded, no identity that is not already public on the
 broadcast)::

@@ -1184,7 +1184,9 @@ html[data-soren-region="bottom"] #hanjuku-gap { display: none !important; }
 /* Next-corner advance notice: docich's rotation decides the next corner before
    it is due and the state adapter publishes it as `nextCorner`. The card sits
    above the GAME feed while sorengame is on air; during a corner the rotation
-   withdraws the record, so the card and its height are not reserved. */
+   withdraws the record, so the card and its height are not reserved. A
+   prediction hold keeps the card visible: the head marks the planned clock as
+   provisional and the timing switches to 予想終了後 once that clock passes. */
 #next-corner {
   display: none;
   margin-top: 8px;
@@ -2956,19 +2958,36 @@ html[data-prediction-active="1"][data-next-corner="1"] #feed { height: 570px; }
     };
   }
   let lastNextCornerKey = '';
+  function nextCornerTiming(notice, nowSec) {
+    if (!notice) return '';
+    const dueAt = Number(notice.dueAt);
+    if (notice.hold === 'prediction'
+        && Number.isFinite(dueAt) && dueAt > 0 && nowSec >= dueAt) {
+      // The prediction boundary can delay the promised slot, so the planned
+      // clock is no longer a time we can stand behind once it has passed.
+      return '予想終了後';
+    }
+    return notice.when ? `${notice.when} 予定` : '';
+  }
   function renderNextCorner() {
     const notice = state?.nextCorner;
-    const active = Boolean(notice && notice.label && notice.when);
+    const nowSec = Math.floor(Date.now() / 1000);
+    const timing = nextCornerTiming(notice, nowSec);
+    const active = Boolean(notice && notice.label && timing);
     document.documentElement.dataset.nextCorner = active ? '1' : '0';
-    const key = active ? `${notice.corner}|${notice.label}|${notice.when}` : '';
+    const held = active && notice.hold === 'prediction';
+    const head = held && timing !== '予想終了後'
+      ? 'NEXT CORNER · 予想中'
+      : 'NEXT CORNER';
+    const key = active ? `${notice.corner}|${notice.label}|${timing}|${head}` : '';
     if (lastNextCornerKey === key) return;
     lastNextCornerKey = key;
     const panel = document.getElementById('next-corner');
     if (!active) { panel.replaceChildren(); return; }
     const body = dashNode('next-corner-body');
     body.appendChild(dashNode('next-corner-label', `次のコーナー: ${notice.label}`));
-    body.appendChild(dashNode('next-corner-when', `${notice.when} 予定`));
-    panel.replaceChildren(dashNode('next-corner-head', 'NEXT CORNER'), body);
+    body.appendChild(dashNode('next-corner-when', timing));
+    panel.replaceChildren(dashNode('next-corner-head', head), body);
   }
   function renderPrediction() {
     const lines = String(state?.feeds?.showStatus?.text || '').split('\n').map(line => line.trim());
