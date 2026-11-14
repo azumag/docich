@@ -7,6 +7,7 @@ import io
 import json
 from pathlib import Path
 from types import SimpleNamespace
+import threading
 import urllib.error
 
 import pytest
@@ -360,6 +361,96 @@ def test_identityless_timer_tick_does_not_starve_the_owner_creation(env):
     assert env.state()['next_poll_at'] == before
     env.tick(141, ID2)
     assert env.state()['round']['runtime_id'] == ID2['runtime_id']
+
+
+def live_run(env, identity=ID, *, observations=1, observed_at=100.0,
+             terminal=None, canonical=None):
+    """Write the canonical + run sides used by the owner-adoption gates."""
+    runtime = env.g.state_dir / 'runtimes' / identity['runtime_id']
+    runtime.mkdir(parents=True, exist_ok=True)
+    atomic_write_json(env.g.state_dir / 'game_switch.json', {
+        'phase': 'ready', 'active': canonical if canonical is not None else identity})
+    row = {**identity, 'schema': 1, 'observations': observations,
+           'observed_at': observed_at}
+    if terminal is not None:
+        row['terminal_reason'] = terminal
+    atomic_write_json(runtime / 'hanjuku_run.json', row)
+    return runtime
+
+
+def test_active_identity_requires_a_fresh_observed_canonical_run(env):
+    live_run(env)
+    assert p.active_identity(env.g, now=100) == ID
+
+    # No observation yet (the agent has not bound its resume context).
+    live_run(env, observations=0)
+    assert p.active_identity(env.g, now=100) is None
+
+    # A dead or finished run is never adopted.
+    live_run(env, terminal='game_over')
+    assert p.active_identity(env.g, now=100) is None
+
+    live_run(env, observed_at=100 - p.RUN_FRESH_SECONDS - 1)
+    assert p.active_identity(env.g, now=100) is None
+    live_run(env, observed_at=0)
+    assert p.active_identity(env.g, now=100) is None
+
+    # Canonical authority, not the displayed label.
+    live_run(env, canonical={**ID, 'game': 'nethack'})
+    assert p.active_identity(env.g, now=100) is None
+    atomic_write_json(env.g.state_dir / 'game_switch.json',
+                      {'phase': 'draining', 'active': ID})
+    assert p.active_identity(env.g, now=100) is None
+    atomic_write_json(env.g.state_dir / 'game_switch.json',
+                      {'phase': 'ready', 'active': ID, 'operation': 'switch',
+                       'request_id': 'in-flight'})
+    assert p.active_identity(env.g, now=100) is None
+
+    # A run record bound to another generation is not this runtime's owner.
+    live_run(env)
+    atomic_write_json(env.runtime / 'hanjuku_run.json',
+                      {**ID2, 'schema': 1, 'observations': 1, 'observed_at': 100.0})
+    assert p.active_identity(env.g, now=100) is None
+
+
+def test_tick_active_creates_the_round_for_an_observed_live_run(env):
+    live_run(env)
+    result = p.tick_active(env.g, now=100,
+                           client_factory=lambda _: (env.remote, None))
+    assert result['mode'] == 'active'
+    assert [call for call in env.remote.calls if call[0] == 'POST']
+    assert env.state()['round']['runtime_id'] == ID['runtime_id']
+
+
+@pytest.mark.parametrize('kwargs', [
+    {'observations': 0},
+    {'observed_at': 0},
+    {'observed_at': 100 - p.RUN_FRESH_SECONDS - 1},
+    {'terminal': 'screen_stalled'},
+])
+def test_tick_active_never_creates_without_a_live_observed_run(env, kwargs):
+    live_run(env, **kwargs)
+    p.tick_active(env.g, now=100, client_factory=lambda _: (env.remote, None))
+    assert not any(call[0] == 'POST' for call in env.remote.calls)
+
+
+def test_owner_ticker_ticks_only_the_current_live_identity(env, monkeypatch):
+    calls = []
+    stop = threading.Event()
+
+    class FakeModule:
+        @staticmethod
+        def active_identity(_g):
+            return ID
+
+        @staticmethod
+        def tick(_g, identity):
+            calls.append(identity)
+            stop.set()
+
+    monkeypatch.setattr(p.hanjuku_hotload, 'module', lambda _name: FakeModule)
+    p._owner_tick_loop(env.g, ID, 0.01, stop)
+    assert calls == [ID]
 
 
 def test_api_outage_persists_result_and_common_tick_retries_after_teardown(env):
@@ -871,7 +962,9 @@ def test_integration_uses_side_channel_outside_input_gate():
     tick_call = "module('hanjuku_predictions').tick(\n                self.g, owned_identity)"
     assert loop.index('shared_section(self.g.state_dir, adapter.observe)') < loop.index(tick_call)
     assert loop.index(tick_call) < loop.index('with self._locked():', loop.index(tick_call))
-    assert "module('hanjuku_predictions').tick(self.g)" in (ROOT/'src/docich/corner_rotation.py').read_text()
+    rotation = (ROOT/'src/docich/corner_rotation.py').read_text()
+    assert "getattr(prediction_module, 'tick_active', None)" in rotation
+    assert 'prediction_tick(self.g)' in rotation
 
 
 def test_saved_settlement_survives_runtime_retention(env):
