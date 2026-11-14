@@ -1345,6 +1345,11 @@ def _observe_garrison(screen, mem, order, *, complete=True):
     castle = _source(order, mem)
     if present is None or not castle:
         return
+    if NAME in present:
+        # A live list that shows the hero names his castle; keep the corridor's
+        # belief in step so a later capture can still move him (v844).
+        from ..strategy import corridor
+        corridor.note_hero_post(mem, castle)
     if not present:
         # A frame that shows the game's own "no generals" line is evidence on
         # its own. Anything else is a transition/OCR miss until it repeats: the

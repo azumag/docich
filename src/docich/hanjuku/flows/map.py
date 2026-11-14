@@ -1781,6 +1781,12 @@ def _commit_departure(mem, order, context, snapshot):
                   reason=f"{context['general']}を{order['target']}へ出撃")
     general = context['general']
     _garrison_move(mem, general, source=_source(order, mem))
+    if general == NAME and order.get('purpose') == 'move' and order.get('corridor') is True:
+        # The hero marched out of the source roster: remember the castle he is
+        # walking into so the next capture's post rule can still move him
+        # without waiting for a roster read (owner 2026-11-15).
+        from ..strategy import corridor
+        corridor.note_hero_post(mem, order['target'])
     _world(mem).setdefault('launched', {})[order['target']] = {'general': general, 'step': order['step']}
     # Snapshot: the battle, boss entry and retries of this sortie must not
     # depend on the plan still containing it.

@@ -36,7 +36,7 @@ The boss phase (every road castle ours) keeps the normal flows.
 from __future__ import annotations
 
 from ... import hanjuku_chart as chart, hanjuku_chart_adjust as chart_adjust
-from ..os_layer.world import _owned, _world
+from ..os_layer.world import _en_route, _owned, _world
 from ..os_layer.world import NAME, SORTIE_BUSY_TICKS, _hero_castle
 from ..state.regions import flow as _flow_region, plan as _plan_region, sorties as _sorties
 from . import routes
@@ -301,7 +301,7 @@ def orders(mem) -> list[dict]:
     routes_by = {source: routes.path(mem, source, target, owned) for source in sorted(owned)}
     front = next((s for s, r in routes_by.items() if r and len(r) == 2), None)
     wave = _wave(mem, target, front)
-    hero_at = _hero_castle(mem)
+    hero_at = _hero_castle(mem) or _believed_hero(mem)
     attacks, moves, hero = [], [], []
     for source, route in routes_by.items():
         if not route or len(route) < 2:
@@ -440,6 +440,14 @@ def orders(mem) -> list[dict]:
     attacks.sort(key=lambda item: item[0])
     moves.sort(key=lambda item: item[0])      # nearest the front first
     out = [order for _, order in (*attacks, *moves, *hero)]
+    # A capture moves the front one castle; the hero's castle has to follow on
+    # that same capture. When no roster or departure names him, read one
+    # castle list before the rear marches, so the next observation can move
+    # him instead of silently doing nothing (owner 2026-11-15).
+    locate = _hero_locate_order(mem, routes_by, target, lost,
+                                {order['source'] for order in out})
+    if locate is not None:
+        out.insert(len(attacks), locate)
     # The budget bounds only the preemption: a probe may jump the queue while
     # real orders wait, not forever. With nothing else to do the tour is the
     # only thing that can find anybody, and an empty plan leaves the bot
@@ -1182,6 +1190,115 @@ def _flip_prone(mem, target) -> bool:
 
 
 HERO_POST_HOPS = 3          # the hero stands this many castles from the target
+# docich: owner 2026-11-15 — 一つ敵城を落としたら前線を一つあげられるので、主人公の
+# いる城も一つ上がる. The post rule can only move a hero it can name: a departure
+# deletes him from the source roster and the destination roster is only read by
+# a later castle visit, so an unread arrival leaves the hero unnamed and the
+# advance silently stops. The belief below bridges that gap, and the bounded
+# read below re-binds him when even the belief is gone.
+HERO_POST = 'hero_post'
+HERO_LOCATE = 'hero_locate'
+HERO_POST_TTL = 7200        # observations a departed hero's destination stays believed
+HERO_LOCATE_BUDGET = 4      # castle-list visits a chapter may spend looking for the hero
+HERO_LOCATE_SPACING = 240   # ticks between two hero-locating visits
+
+
+def _believed_hero(mem):
+    """The owned castle the hero was last sent to, while nothing refutes it.
+
+    Only a corridor departure or a measured roster writes this, and it is
+    dropped as soon as a live list misses him there (``hero_absent``), the
+    castle stops being ours, he is marching, or he is marked unknown.
+    """
+    post = mem.get(HERO_POST)
+    if not isinstance(post, dict):
+        return None
+    castle, tick = post.get('castle'), post.get('tick')
+    chapter = mem.get('chapter') or 0
+    if (not isinstance(castle, str) or type(tick) is not int
+            or castle not in chart.castles(chapter) or castle not in _owned(mem)
+            or NAME in _en_route(mem)[0]
+            or NAME in (_world(mem).get('general_location_unknown') or ())):
+        return None
+    if int(mem.get('tick') or 0) - tick > HERO_POST_TTL:
+        return None
+    return castle
+
+
+def note_hero_post(mem, castle, *, tick=None):
+    """Record where the hero is believed to stand (departure or live list)."""
+    if not isinstance(castle, str) or not castle:
+        return
+    mem[HERO_POST] = {'castle': castle,
+                      'tick': int((mem.get('tick') or 0) if tick is None else tick)}
+
+
+def clear_hero_post(mem):
+    mem.pop(HERO_POST, None)
+
+
+def _hero_locate_order(mem, routes_by, target, lost, visited=()):
+    """Read one castle list to find a hero nobody has named.
+
+    g1163's chapter 9 reached five owned castles with every recorded roster
+    empty: nothing had read the front castle since before it was taken, so the
+    post rule saw no hero on any observation and never moved him. The visit is
+    an ordinary march order (a staffed castle sends somebody, an empty one is
+    re-marked), placed once per ``HERO_LOCATE_SPACING`` inside a small budget;
+    the castle the hero should hold is read first, then the front, then the
+    rear.
+    """
+    if _hero_castle(mem) or _believed_hero(mem) or NAME in _en_route(mem)[0]:
+        return None
+    if _unaccounted(mem) <= 0:
+        return None      # the headcount does not prove anybody is missing
+    now = int(mem.get('tick') or 0)
+    state = mem.get(HERO_LOCATE)
+    if not isinstance(state, dict) or state.get('month') != mem.get('month'):
+        state = mem[HERO_LOCATE] = {'month': mem.get('month'), 'count': 0, 'tick': None}
+    if state.get('tick') == now and isinstance(state.get('order'), dict):
+        return state['order']          # same observation: reuse the minted step
+    if int(state.get('count') or 0) >= HERO_LOCATE_BUDGET:
+        return None
+    last = state.get('tick')
+    if type(last) is int and now - last < HERO_LOCATE_SPACING:
+        return None
+    routable = {source: route for source, route in routes_by.items()
+                if route and len(route) >= 2}
+    # A castle an order already visits is read by that visit; a second order
+    # from it would only spend another sortie on the same list.
+    routable = {source: route for source, route in routable.items()
+                if source not in visited}
+    if not routable:
+        return None
+    read = _world(mem).get('garrison_tick')
+    if not isinstance(read, dict):
+        read = {}
+
+    def fresh(castle):
+        tick = read.get(castle)
+        return type(tick) is int and now - tick < HERO_LOCATE_SPACING
+
+    # The post first (that is where a working rule keeps him), then the front
+    # he may have been left in, then the rear castles.
+    candidates = sorted(
+        (source for source in routable if not fresh(source)),
+        key=lambda source: (0 if len(routable[source]) == HERO_POST_HOPS
+                            else 1 if len(routable[source]) == 2 else 2,
+                            len(routable[source]), source))
+    if not candidates:
+        return None
+    source = candidates[0]
+    route = routable[source]
+    purpose = ('retake' if target in lost else 'attack') if len(route) == 2 else 'move'
+    order = _order(mem, source, route[1], target, purpose)
+    order['hero_locate'] = True
+    order['note'] = f'第9話: 主人公の所在を確認するため{source}の将軍一覧を読む'
+    state.update(count=int(state.get('count') or 0) + 1, tick=now, order=order, castle=source)
+    _record_only(mem, 'hero_locate_order', chart_step=order['step'], castle=source,
+                 observed_metric={'reads': int(state['count']), 'budget': HERO_LOCATE_BUDGET},
+                 reason='主人公の城を記録から特定できないため、自城の一覧を読んで所在を確認する')
+    return order
 
 
 def _hero_post_order(mem, routes_by, hero_at, wave):
@@ -1235,3 +1352,7 @@ def hero_absent(mem):
     wave = mem.get(WAVE)
     if isinstance(wave, dict):
         wave['hero_absent'] = True
+    # The castle the belief named did not hold him, so the belief is refuted:
+    # keep it and every later wave would order the same impossible move
+    # instead of looking for him (owner 2026-11-15).
+    clear_hero_post(mem)
