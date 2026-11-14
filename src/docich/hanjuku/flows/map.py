@@ -335,6 +335,14 @@ def world_map_step(screen, mem, frame):
             if picked is not None:
                 recall.update(origin=picked, origin_source='picker')
         goal = _recall_goal(mem, flags)
+        if goal is None:
+            # The picker cannot aim and the hero's castle is the missing
+            # position (g1163 2026-11-14 08:59/09:01, statuses null in ch.9).
+            # Read the capital's own list so the next picker knows it.
+            home = chart.home_castle(chapter)
+            if home and home not in (mem.get('roster_read_due') or {}):
+                mem.setdefault('roster_read_due', {})[home] = (
+                    int(mem.get('tick') or 0) + 180)
         if not cursor or not offset or goal is None:
             return [pad('right')] if cursor else []
         if recall.get('goal') != goal or not recall.get('destination_selected'):
