@@ -129,6 +129,7 @@ KEY_OWNERSHIP = {
     'hanjuku_level_unread': {'region': WORLD, 'lifetime': 'run', 'migrated': False},  # 未読フラグ
     'hanjuku_value': {'region': WORLD, 'lifetime': 'run', 'migrated': False},  # 観測した半熟値
     'hero_max_hp': {'region': WORLD, 'lifetime': 'chapter', 'migrated': False},  # 観測した主人公最大HP
+    'hero_post': {'region': WORLD, 'lifetime': 'chapter', 'migrated': False},  # 主人公を送った先の推定位置(v843)
     'home_lost': {'region': WORLD, 'lifetime': 'chapter', 'migrated': False},  # 本城喪失観測
     'house_eggs': {'region': WORLD, 'lifetime': 'chapter', 'migrated': False},  # ハウス卵保有観測
     'lost': {'region': WORLD, 'lifetime': 'chapter', 'migrated': False},  # 喪失城の観測事実
@@ -179,6 +180,7 @@ KEY_OWNERSHIP = {
     'chart_edition': {'region': PLAN, 'lifetime': 'run', 'migrated': False},  # 新規ゲーム開始時にピンされるチャート版
     'chart_plan_tick': {'region': PLAN, 'lifetime': 'chapter', 'migrated': False},  # チャート計画の策定tick
     'corridor_drained': {'region': PLAN, 'lifetime': 'chapter', 'migrated': False},  # chapter9 corridorの枯渇管理(定数DRAINED経由)
+    'hero_locate': {'region': PLAN, 'lifetime': 'chapter', 'migrated': False},  # chapter9 主人公の所在確認の予算・発行済み指示(v843)
     'corridor_probe': {'region': PLAN, 'lifetime': 'chapter', 'migrated': False},  # chapter9 corridorの城一覧確認予算(v707)
     'front_guard_hold': {'region': PLAN, 'lifetime': 'chapter', 'migrated': False},  # chapter9 前線1人の待ち時計(v735)
     'front_guard_expired_tick': {'region': PLAN, 'lifetime': 'chapter', 'migrated': False},  # 同tick内の期限切れ固定(v769)
