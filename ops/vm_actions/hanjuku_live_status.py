@@ -14,7 +14,21 @@ import sys
 
 STEPS = ("4-B1", "4-B2", "4-B3", "4-B4")
 ORDER_STATES = frozenset({"pending", "launched_unconfirmed", "launched", "done", "failed"})
-TACTICAL_STATUSES = frozenset({"ok", "unsupported_chapter", "unavailable", "identity_changed", "output_omitted"})
+TACTICAL_STATUSES = frozenset({
+    "ok", "unsupported_chapter", "unavailable", "identity_changed",
+    "output_omitted", "stale",
+})
+# ``stale`` and ``unavailable`` mean the bot record itself cannot be trusted;
+# ``output_omitted`` with ``reason=hard_ceiling`` means the collector dropped
+# detail for envelope size (#4152). Keeping the reason a fixed enum lets the
+# reply separate "capacity" from "stopped loop" / "stale record".
+OMISSION_REASONS = frozenset({"hard_ceiling"})
+# Fixed enum copied from the collector's ``_collect_lifecycle_pause``:
+# distinguishes a lifecycle-stopped loop from a stale record.
+LIFECYCLE_WAITING_FOR = frozenset({
+    "fresh_launch", "lifecycle_handover", "operator_action",
+    "expired_waiting", "orphaned_lifecycle_pause", "unknown", "none",
+})
 ROTATION_STATUSES = frozenset({
     "ready", "waiting", "starting", "active", "restoring", "preparing",
     "recovery_required", "failed",
@@ -187,6 +201,8 @@ def project(payload):
 
     raw_status = tactical.get("status")
     status = raw_status if raw_status in TACTICAL_STATUSES else "unknown"
+    raw_reason = tactical.get("reason")
+    reason = raw_reason if raw_reason in OMISSION_REASONS else None
     chapter = _bounded_int(tactical.get("chapter"), 1, 12)
     age_sec = _bounded_int(tactical.get("age_sec"), 0, 3600)
     policy = tactical.get("policy") if isinstance(tactical.get("policy"), dict) else {}
@@ -229,8 +245,19 @@ def project(payload):
         rotation_status = "unknown"
     manual_pending = _fixed_bool(rotation.get("manual_pending"))
 
+    # ``lifecycle_pause`` survives the hard ceiling (#4152 keeps it in
+    # ``_HARD_KEEP``), so the reply can always separate "the loop is parked
+    # by a lifecycle handover" from "the bot record is stale" and from
+    # "the section was dropped for envelope size".
+    pause = diagnostics.get("lifecycle_pause")
+    pause = pause if isinstance(pause, dict) else {}
+    waiting_for = pause.get("waiting_for")
+    if waiting_for not in LIFECYCLE_WAITING_FOR:
+        waiting_for = None
+
     return {
         "status": status,
+        "reason": reason,
         "chapter": chapter,
         "age_sec": age_sec,
         "active": active,
@@ -244,6 +271,10 @@ def project(payload):
             "manual_pending": manual_pending,
             "manual_pending_hanjuku": _fixed_hanjuku_pending(rotation),
             "active_hanjuku": _fixed_active_hanjuku(corners),
+        },
+        "lifecycle_pause": {
+            "active": _fixed_bool(pause.get("active")),
+            "waiting_for": waiting_for,
         },
     }
 
@@ -266,7 +297,15 @@ def reply(projected, env):
         "Hanjuku live boss status: success",
         f"SHA: `{sha}`",
         f"Chapter: `{projected['chapter'] if projected['chapter'] is not None else 'unknown'}`",
-        f"Diagnostics: `{projected['status']}` / age `{projected['age_sec'] if projected['age_sec'] is not None else 'unknown'}s`",
+        "Diagnostics: " + (
+            f"`{projected['status']}`"
+            + (f" (`{projected['reason']}`)" if projected["reason"] else "")
+            + f" / age `{projected['age_sec'] if projected['age_sec'] is not None else 'unknown'}s`"
+        ),
+        "Lifecycle pause: " + ", ".join((
+            f"`active={_bool_token(projected['lifecycle_pause']['active'])}`",
+            f"`waiting_for={projected['lifecycle_pause']['waiting_for'] or 'unknown'}`",
+        )),
         "Rotation: " + ", ".join((
             f"`status={rotation['status']}`",
             f"`pending={_bool_token(rotation['pending'])}`",

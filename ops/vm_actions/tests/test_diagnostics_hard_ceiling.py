@@ -154,6 +154,138 @@ class HardCeilingTests(unittest.TestCase):
             "collector hard ceiling plus gateway metadata must stay under "
             "DIAGNOSTICS_JSON_MAX; #2533 recurred when the two drifted apart")
 
+    @staticmethod
+    def _hanjuku_tactical():
+        """A realistic ~4 KiB tactical section as the collector emits it."""
+        return {
+            "status": "ok",
+            "basis": "bot_record",
+            "chapter": 9,
+            "age_sec": 3,
+            "policy": {
+                "active": "9-B2",
+                "orders": {"9-B1": "done", "9-B2": "launched"},
+                "month": "57-2",
+                "phase": "field",
+                "captured_count": 7,
+                "world": {
+                    "boss_victories": {"count": 3},
+                    "sorties": {
+                        f"I:{index:06d}:1": {
+                            "status": "launched", "target": "ボス",
+                            "age_ticks": index, "relaunch": 0}
+                        for index in range(30)
+                    },
+                },
+                "recent_decisions": [
+                    {"decision": "order_start", "tick": index}
+                    for index in range(8)],
+            },
+            "chart_worker": {"worker": "chart", "detail": "x" * 1400},
+            "castles": [{"castle": f"castle-{i}", "detail": "x" * 96}
+                        for i in range(20)],
+            "remaining_castles": [f"castle-{i}" for i in range(12)],
+            "last_card_assessment": {"detail": "x" * 512},
+            "refill": {"detail": "x" * 256},
+            "last_house_deferral": {"detail": "x" * 256},
+        }
+
+    def test_hanjuku_tactical_keeps_its_live_status_skeleton(self):
+        # #4152: an envelope just over the 56 KiB ceiling used to blank the
+        # whole tactical section, so live status could only say
+        # ``Chapter: unknown``. The skeleton keeps the compact policy
+        # projection (chapter/month/phase/boss) that live status reads.
+        payload = production_scale_payload(
+            corners={"retro_corner": {"scene_narration": {"status": "ok"}},
+                     "rotation_evidence": {"corners": []}},
+            prediction={"rows": [{"board": f"b-{i}", "detail": "x" * 512}
+                                 for i in range(97)]},
+            storage_artifacts={"artifacts": [
+                {"name": f"artifact-{i}", "detail": "x" * 64}
+                for i in range(160)]},
+            lifecycle_pause={"active": True, "waiting_for": "fresh_launch",
+                             "ack_status": "stopped"},
+            hanjuku_tactical=self._hanjuku_tactical(),
+        )
+        before = len(json.dumps(payload, sort_keys=True,
+                                ensure_ascii=False).encode("utf-8"))
+        self.assertGreater(before, self.module.HARD_JSON_BYTES)
+        text = self.module._diagnostics_budget(payload)
+        self.assertLessEqual(len(text.encode("utf-8")),
+                             self.module.HARD_JSON_BYTES)
+        tactical = payload["hanjuku_tactical"]
+        self.assertEqual(tactical["status"], "output_omitted")
+        self.assertEqual(tactical["reason"], "hard_ceiling")
+        self.assertEqual(tactical["chapter"], 9)
+        self.assertEqual(tactical["age_sec"], 3)
+        policy = tactical["policy"]
+        self.assertEqual(policy["month"], "57-2")
+        self.assertEqual(policy["phase"], "field")
+        self.assertEqual(policy["world"]["boss_victories"]["count"], 3)
+        # The heavy detail is what actually yields.
+        self.assertNotIn("castles", tactical)
+        self.assertNotIn("last_card_assessment", tactical)
+        # ``lifecycle_pause`` is kept so a stopped loop stays distinguishable
+        # from a stale record.
+        self.assertEqual(payload["lifecycle_pause"]["waiting_for"],
+                         "fresh_launch")
+
+    def test_hanjuku_tactical_yields_last_in_the_fallback(self):
+        # The tactical section is the last thing the fallback takes: when
+        # dropping the largest other section alone restores the envelope,
+        # the tactical evidence must remain completely intact.
+        payload = production_scale_payload(
+            corners={"retro_corner": {"scene_narration": {"status": "ok"}},
+                     "rotation_evidence": {"corners": []}},
+            prediction={"rows": [{"board": f"b-{i}", "detail": "x" * 512}
+                                 for i in range(90)]},
+            storage_artifacts={"artifacts": [
+                {"name": f"artifact-{i}", "detail": "x" * 64}
+                for i in range(60)]},
+            hanjuku_tactical=self._hanjuku_tactical(),
+        )
+        before = len(json.dumps(payload, sort_keys=True,
+                                ensure_ascii=False).encode("utf-8"))
+        self.assertGreater(before, self.module.HARD_JSON_BYTES)
+        text = self.module._diagnostics_budget(payload)
+        self.assertLessEqual(len(text.encode("utf-8")),
+                             self.module.HARD_JSON_BYTES)
+        tactical = payload["hanjuku_tactical"]
+        # The soft budget path already reduced the section to its compact
+        # summary (no ``castles`` detail), but the hard-ceiling fallback must
+        # leave that summary untouched -- only ``storage_artifacts`` yields.
+        self.assertEqual(tactical["status"], "output_omitted")
+        self.assertNotIn("reason", tactical)
+        self.assertEqual(tactical["chapter"], 9)
+        self.assertEqual(tactical["policy"]["phase"], "field")
+        self.assertEqual(tactical["policy"]["world"]["boss_victories"]["count"], 3)
+        self.assertEqual(payload["storage_artifacts"]["status"],
+                         "output_omitted")
+
+    def test_hanjuku_tactical_bare_stub_is_the_last_resort(self):
+        # Only when even the skeleton cannot fit -- every other droppable
+        # section is already a marker and a kept section carries the weight --
+        # does the tactical section fall back to the bare omission marker.
+        payload = production_scale_payload(
+            corners={"retro_corner": {"scene_narration": {"status": "ok"}},
+                     "rotation_evidence": {"corners": []}},
+            prediction={"rows": [{"board": f"b-{i}", "detail": "x" * 512}
+                                 for i in range(102)]},
+            storage_artifacts={"artifacts": [
+                {"name": f"artifact-{i}", "detail": "x" * 64}
+                for i in range(40)]},
+            hanjuku_tactical=self._hanjuku_tactical(),
+        )
+        before = len(json.dumps(payload, sort_keys=True,
+                                ensure_ascii=False).encode("utf-8"))
+        self.assertGreater(before, self.module.HARD_JSON_BYTES)
+        text = self.module._diagnostics_budget(payload)
+        self.assertLessEqual(len(text.encode("utf-8")),
+                             self.module.HARD_JSON_BYTES)
+        tactical = payload["hanjuku_tactical"]
+        self.assertEqual(tactical, {"status": "output_omitted",
+                                    "reason": "hard_ceiling"})
+
 
 if __name__ == "__main__":
     unittest.main()

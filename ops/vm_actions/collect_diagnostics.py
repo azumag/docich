@@ -223,7 +223,12 @@ _HARD_DROP_ORDER = ("corners", "ai", "workers", "nethack_history",
 # the production envelope stays above the ceiling the 予想王 ledger can only be
 # observed from a run that happened to fit. ``prediction`` duplicates the same
 # already-bounded dicts under a key the whole-section drops never take away.
-_HARD_KEEP = ("meta", "prediction", "lawsim", "severity_triggers")
+# ``lifecycle_pause`` is kept for #4152: it is a small fixed-enum section and
+# the only evidence that separates "the game loop is stopped by a lifecycle
+# handover" from "the bot record went stale" once ``hanjuku_tactical`` is
+# reduced to its hard-ceiling skeleton.
+_HARD_KEEP = ("meta", "prediction", "lawsim", "severity_triggers",
+              "lifecycle_pause")
 # Production thresholds of the 予想王 boards, kept in sync with
 # ``docich.prediction_leaderboard.DEFAULT_MIN_ROUNDS`` /
 # ``DEFAULT_MIN_PARTICIPATIONS``: the yoso adapter passes no ``--min-rounds`` or
@@ -14921,6 +14926,19 @@ def _section_omission_stub(key, value):
             entry = value.get(keep)
             if isinstance(entry, dict):
                 stub[keep] = entry
+    elif key == "hanjuku_tactical" and isinstance(value, dict):
+        # #4152: the live-status projection reads ``status`` / ``chapter`` /
+        # ``age_sec`` / ``policy`` (the already-compact
+        # ``_compact_hanjuku_policy`` output: orders, month, phase,
+        # boss victories/sorties). A hard-ceiling drop that blanks them makes
+        # ``Chapter: unknown`` indistinguishable from a stopped or stale
+        # game, so the skeleton keeps them -- the same fixed fields the soft
+        # budget path preserves -- while the heavy ``castles`` /
+        # ``remaining_castles`` / ``last_card_assessment`` / ``refill`` /
+        # ``last_house_deferral`` detail is what actually yields.
+        for keep in ("basis", "chapter", "age_sec", "policy"):
+            if keep in value:
+                stub[keep] = value[keep]
     return stub
 
 
@@ -15199,13 +15217,26 @@ def _diagnostics_budget(payload):
     if len(text.encode("utf-8")) > HARD_JSON_BYTES:
         for key, value in sorted(
                 payload.items(),
-                key=lambda item: -len(json.dumps(item[1], sort_keys=True))):
+                # #4152: ``hanjuku_tactical`` yields last regardless of size,
+                # and its stub is the field-preserving skeleton above, so the
+                # live status keeps chapter/month/phase/boss evidence until
+                # every other section is already gone.
+                key=lambda item: (item[0] == "hanjuku_tactical",
+                                  -len(json.dumps(item[1], sort_keys=True)))):
             if key in _HARD_KEEP or not isinstance(value, dict):
                 continue
             payload[key] = _section_omission_stub(key, value)
             text = _nethack_history_budget(payload)
             if len(text.encode("utf-8")) <= HARD_JSON_BYTES:
                 break
+        # Last resort only: when even the skeleton cannot fit (everything else
+        # is already a marker or a kept section), the tactical section falls
+        # back to the bare omission marker.
+        if (len(text.encode("utf-8")) > HARD_JSON_BYTES
+                and isinstance(payload.get("hanjuku_tactical"), dict)):
+            payload["hanjuku_tactical"] = {
+                "status": "output_omitted", "reason": "hard_ceiling"}
+            text = _nethack_history_budget(payload)
     # JSON whitespace is not evidence. Keep the new bounded summary without
     # pushing previously fitting envelopes over their byte budget; all values
     # and the existing conservative detail-reduction order stay unchanged.

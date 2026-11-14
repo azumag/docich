@@ -255,6 +255,59 @@ class ProjectionTests(unittest.TestCase):
             "active_hanjuku": None,
         })
 
+    def test_hard_ceiling_skeleton_still_renders_progress(self):
+        # #4152: a capacity-dropped tactical section keeps its skeleton, so
+        # live status separates "dropped for size" from "stopped" / "stale"
+        # and still renders chapter/month/phase/boss evidence.
+        payload = self.payload()
+        tactical = payload["diagnostics"]["hanjuku_tactical"]
+        tactical["status"] = "output_omitted"
+        tactical["reason"] = "hard_ceiling"
+        tactical["chapter"] = 9
+        tactical["age_sec"] = 4
+        tactical["policy"] = {"active": "9-B2", "orders": {},
+                              "month": "57-2", "phase": "field",
+                              "world": {"boss_victories": {"count": 3}}}
+        payload["diagnostics"]["lifecycle_pause"] = {
+            "active": True, "waiting_for": "fresh_launch",
+            "ack_status": "stopped", "PRIVATE": "DO-NOT-EMIT"}
+        out = self.status.project(payload)
+        self.assertEqual(out["status"], "output_omitted")
+        self.assertEqual(out["reason"], "hard_ceiling")
+        self.assertEqual(out["chapter"], 9)
+        self.assertEqual(out["field"]["month"], "57-2")
+        self.assertEqual(out["field"]["phase"], "field")
+        self.assertEqual(out["field"]["boss_wins"], 3)
+        self.assertEqual(out["lifecycle_pause"],
+                         {"active": True, "waiting_for": "fresh_launch"})
+        env = {"RUN_SHA": "b" * 40, "RUN_ID": "123",
+               "RUN_ATTEMPT": "1", "SOURCE_COMMENT_ID": "456"}
+        text = self.status.reply(out, env)["body"]
+        self.assertIn("`output_omitted` (`hard_ceiling`)", text)
+        self.assertIn("`active=yes`", text)
+        self.assertIn("`waiting_for=fresh_launch`", text)
+        self.assertNotIn("PRIVATE", text)
+        self.assertNotIn("DO-NOT-EMIT", text)
+
+    def test_stale_record_and_missing_pause_stay_distinguishable(self):
+        # #4152: a stale bot record is not a capacity drop and not a parked
+        # loop; the three causes must render differently.
+        payload = self.payload()
+        tactical = payload["diagnostics"]["hanjuku_tactical"]
+        tactical["status"] = "stale"
+        tactical["reason"] = "PRIVATE_REASON"
+        out = self.status.project(payload)
+        self.assertEqual(out["status"], "stale")
+        self.assertIsNone(out["reason"])
+        self.assertEqual(out["lifecycle_pause"],
+                         {"active": None, "waiting_for": None})
+        env = {"RUN_SHA": "b" * 40, "RUN_ID": "123",
+               "RUN_ATTEMPT": "1", "SOURCE_COMMENT_ID": "456"}
+        text = self.status.reply(out, env)["body"]
+        self.assertIn("`stale` / age", text)
+        self.assertIn("`waiting_for=unknown`", text)
+        self.assertNotIn("PRIVATE", text)
+
     def test_reply_contains_only_projection_and_fixed_metadata(self):
         out = self.status.project(self.payload())
         env = {
