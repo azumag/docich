@@ -1,8 +1,11 @@
+import ast
 import hashlib
 import json
+from pathlib import Path
 
 import pytest
 
+from docich.trading.news_paper import replay
 from docich.trading.news_paper.replay import (
     InjectedClock, PitInputView, ReplayError, load_manifest,
     leakage_post_cutoff_doc, leakage_unconfirmed_bar, leakage_forming_bar,
@@ -20,6 +23,23 @@ def _fixture():
             "chunks": [{"seq": 1, "filename": "c1.json",
                         "sha256": hashlib.sha256(raw).hexdigest(), "record_count": 1}]}}
     return data, raw
+
+
+def _chunk(records, *, seq=1, filename="c1.json", record_count=None):
+    raw = json.dumps(records).encode()
+    return raw, {
+        "seq": seq,
+        "filename": filename,
+        "sha256": hashlib.sha256(raw).hexdigest(),
+        "record_count": len(records) if record_count is None else record_count,
+    }
+
+
+def _manifest(chunk_metas):
+    data, _ = _fixture()
+    data["header"]["chunks"] = chunk_metas
+    return data
+
 
 
 def test_manifest_validates_and_is_deterministic():
@@ -65,6 +85,244 @@ def test_manifest_rejects_missing_ingest_sequence():
     data["header"]["chunks"][0]["sha256"] = hashlib.sha256(broken).hexdigest()
     with pytest.raises(ReplayError, match="invalid ingest record"):
         load_manifest(data, lambda filename: broken)
+
+
+# -- PR-C: #780 precondition 3 negative branches ---------------------------
+# The branches below are deliberately kept in this file: DSH note 1-1 assigns
+# the fence negatives to PR-B and leaves record/count/size/guard tests to PR-C.
+
+
+def test_manifest_rejects_record_count_mismatch():
+    raw, meta = _chunk(
+        [{"db": "d", "observation_id": 1, "ingest_sequence": 1}],
+        record_count=2,
+    )
+    with pytest.raises(ReplayError, match="record_count mismatch"):
+        load_manifest(_manifest([meta]), lambda filename: raw)
+
+
+@pytest.mark.parametrize("record_count", [0, replay.MAX_RECORDS_PER_CHUNK + 1])
+def test_manifest_rejects_chunk_meta_record_count_out_of_range(record_count):
+    raw, meta = _chunk(
+        [{"db": "d", "observation_id": 1, "ingest_sequence": 1}],
+        record_count=record_count,
+    )
+    loaded = []
+    def loader(filename):
+        loaded.append(filename)
+        return raw
+    with pytest.raises(ReplayError) as ei:
+        load_manifest(_manifest([meta]), loader)
+    assert ei.value.code == "PAYLOAD_LIMIT"
+    assert ei.value.stage == "chunk_meta"
+    assert not loaded
+
+
+@pytest.mark.parametrize("seqs", [(2, 1), (1, 1)])
+def test_manifest_rejects_non_increasing_or_duplicate_chunk_seq(seqs):
+    raw1, meta1 = _chunk(
+        [{"db": "d", "observation_id": 1, "ingest_sequence": 1}],
+        seq=seqs[0], filename="c1.json",
+    )
+    raw2, meta2 = _chunk(
+        [{"db": "d", "observation_id": 2, "ingest_sequence": 2}],
+        seq=seqs[1], filename="c2.json",
+    )
+    raw_by_name = {"c1.json": raw1, "c2.json": raw2}
+    loaded = []
+    def loader(filename):
+        loaded.append(filename)
+        return raw_by_name[filename]
+    with pytest.raises(ReplayError, match="seq not strictly increasing unique"):
+        load_manifest(_manifest([meta1, meta2]), loader)
+    assert not loaded
+
+
+@pytest.mark.parametrize("across_chunks", [False, True])
+def test_manifest_rejects_duplicate_db_observation_id(across_chunks):
+    first = {"db": "d", "observation_id": 1, "ingest_sequence": 1}
+    second = {"db": "d", "observation_id": 1, "ingest_sequence": 2}
+    if across_chunks:
+        raw1, meta1 = _chunk([first], seq=1, filename="c1.json")
+        raw2, meta2 = _chunk([second], seq=2, filename="c2.json")
+        metas = [meta1, meta2]
+        raw_by_name = {"c1.json": raw1, "c2.json": raw2}
+    else:
+        raw, meta = _chunk([first, second])
+        metas = [meta]
+        raw_by_name = {"c1.json": raw}
+    with pytest.raises(ReplayError, match="duplicate ingest_order"):
+        load_manifest(_manifest(metas), lambda filename: raw_by_name[filename])
+
+
+@pytest.mark.parametrize("sequences", [(2, 2), (2, 1)])
+def test_manifest_rejects_non_increasing_ingest_sequence(sequences):
+    raw, meta = _chunk([
+        {"db": "d", "observation_id": 1, "ingest_sequence": sequences[0]},
+        {"db": "d", "observation_id": 2, "ingest_sequence": sequences[1]},
+    ])
+    with pytest.raises(ReplayError, match="ingest_sequence not increasing"):
+        load_manifest(_manifest([meta]), lambda filename: raw)
+
+
+def test_manifest_ingest_sequence_is_continuous_across_chunks():
+    raw1, meta1 = _chunk(
+        [{"db": "d", "observation_id": 1, "ingest_sequence": 5}],
+        seq=1, filename="c1.json",
+    )
+    raw2, meta2 = _chunk(
+        [{"db": "d", "observation_id": 2, "ingest_sequence": 4}],
+        seq=2, filename="c2.json",
+    )
+    raw_by_name = {"c1.json": raw1, "c2.json": raw2}
+    with pytest.raises(ReplayError, match="ingest_sequence not increasing"):
+        load_manifest(_manifest([meta1, meta2]), lambda filename: raw_by_name[filename])
+
+
+def test_manifest_rejects_oversized_header_before_loading():
+    data, raw = _fixture()
+    data["header"]["run_id"] = "r" * (replay.MAX_HEADER_BYTES + 1)
+    loaded = []
+    def loader(filename):
+        loaded.append(filename)
+        return raw
+    with pytest.raises(ReplayError) as ei:
+        load_manifest(data, loader)
+    assert ei.value.code == "PAYLOAD_LIMIT"
+    assert ei.value.stage == "header"
+    assert not loaded
+
+
+def test_manifest_rejects_chunk_count_over_limit():
+    data, raw = _fixture()
+    data["header"]["chunks"] = [
+        dict(data["header"]["chunks"][0])
+        for _ in range(replay.MAX_CHUNKS + 1)
+    ]
+    loaded = []
+    def loader(filename):
+        loaded.append(filename)
+        return raw
+    with pytest.raises(ReplayError) as ei:
+        load_manifest(data, loader)
+    assert ei.value.code == "PAYLOAD_LIMIT"
+    assert ei.value.stage == "header"
+    assert not loaded
+
+
+def test_manifest_rejects_oversized_chunk_bytes():
+    data, raw = _fixture()
+    oversized = b"x" * (replay.MAX_CHUNK_BYTES + 1)
+    data["header"]["chunks"][0]["sha256"] = hashlib.sha256(oversized).hexdigest()
+    with pytest.raises(ReplayError) as ei:
+        load_manifest(data, lambda filename: oversized)
+    assert ei.value.code == "PAYLOAD_LIMIT"
+    assert ei.value.stage == "chunk"
+
+
+def test_manifest_rejects_chunk_record_count_over_limit():
+    records = [
+        {"db": "d", "observation_id": i, "ingest_sequence": i}
+        for i in range(1, replay.MAX_RECORDS_PER_CHUNK + 2)
+    ]
+    raw, meta = _chunk(records, record_count=1)
+    with pytest.raises(ReplayError) as ei:
+        load_manifest(_manifest([meta]), lambda filename: raw)
+    assert ei.value.code == "PAYLOAD_LIMIT"
+    assert ei.value.stage == "chunk"
+
+
+def test_manifest_rejects_total_record_limit(monkeypatch):
+    # MAX_CHUNKS * MAX_RECORDS_PER_CHUNK currently equals MAX_TOTAL_RECORDS, so
+    # the branch is unreachable with the shipped limits; lower the limit to pin
+    # the fail-closed behavior against a future limit change.
+    monkeypatch.setattr(replay, "MAX_TOTAL_RECORDS", 1)
+    raw, meta = _chunk([
+        {"db": "d", "observation_id": 1, "ingest_sequence": 1},
+        {"db": "d", "observation_id": 2, "ingest_sequence": 2},
+    ])
+    with pytest.raises(ReplayError) as ei:
+        load_manifest(_manifest([meta]), lambda filename: raw)
+    assert ei.value.code == "PAYLOAD_LIMIT"
+    assert ei.value.stage == "chunk"
+
+
+def test_manifest_rejects_oversized_record():
+    raw, meta = _chunk([
+        {"db": "d", "observation_id": 1, "ingest_sequence": 1,
+         "title": "x" * (replay.MAX_RECORD_BYTES + 1)},
+    ])
+    with pytest.raises(ReplayError) as ei:
+        load_manifest(_manifest([meta]), lambda filename: raw)
+    assert ei.value.code == "PAYLOAD_LIMIT"
+    assert ei.value.stage == "record"
+
+
+def test_manifest_rejects_record_depth_over_limit():
+    nested = []
+    cursor = nested
+    for _ in range(replay.MAX_DEPTH + 2):
+        child = []
+        cursor.append(child)
+        cursor = child
+    raw, meta = _chunk([
+        {"db": "d", "observation_id": 1, "ingest_sequence": 1, "bids": nested},
+    ])
+    with pytest.raises(ReplayError) as ei:
+        load_manifest(_manifest([meta]), lambda filename: raw)
+    assert ei.value.code == "PAYLOAD_LIMIT"
+    assert ei.value.stage == "record"
+
+
+FORBIDDEN_IMPORT_ROOTS = frozenset({
+    "socket", "ssl", "http", "urllib", "requests", "httpx", "aiohttp",
+    "websockets", "ftplib", "smtplib", "telnetlib",
+    "openai", "anthropic", "litellm", "ollama", "cohere", "transformers",
+    "time", "datetime", "random", "secrets",
+})
+
+
+def test_replay_module_refuses_network_llm_and_wall_clock_imports():
+    source = Path(replay.__file__).read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    imported = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            imported.update(alias.name for alias in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            imported.add(node.module)
+    roots = {name.split(".")[0] for name in imported}
+    assert not roots & FORBIDDEN_IMPORT_ROOTS
+    assert "importlib" not in roots
+    forbidden_calls = {
+        "utcnow", "today", "time", "monotonic", "perf_counter",
+        "urlopen", "create_connection",
+    }
+    calls = {
+        node.func.attr
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr in forbidden_calls
+    }
+    # ``InjectedClock.now`` is the injected logical clock and is allowed; a
+    # wall-clock ``datetime.now`` / ``date.today`` is not.
+    for node in ast.walk(tree):
+        if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                and node.func.attr == "now"
+                and isinstance(node.func.value, ast.Name)
+                and node.func.value.id in {"datetime", "date", "time"}):
+            calls.add("wall-clock-now")
+    assert not calls
+
+
+def test_manifest_loading_uses_injected_loader_only(monkeypatch):
+    data, raw = _fixture()
+    def forbidden(*args, **kwargs):
+        raise AssertionError("manifest loading must not read files or network")
+    monkeypatch.setattr("builtins.open", forbidden)
+    assert load_manifest(data, lambda filename: raw).chunks
+
 
 
 def test_clock_pit_fail_closed_and_advances():
