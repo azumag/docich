@@ -1,0 +1,29 @@
+"""A summon-only fight latches the one ミカン press on the menu scope.
+
+Owner report 2026-11-15: the menu kept choosing ミカンをおす every turn. The
+fight had no normal battle record, so the omedetori receipt was unscoped and
+the assessment held on skill1 forever.
+"""
+from types import SimpleNamespace
+
+from docich.hanjuku.judgment.omedetori import (
+    omedetori_assessment, omedetori_command_selected,
+)
+
+
+def panel(name, hp=40):
+    return SimpleNamespace(name=name, hp=hp)
+
+
+def test_a_summon_only_fight_latches_one_mikan_and_then_warms():
+    mem = {'monster_menu_choice_scope': ['ally', 'おめでとり', 'キノコやろう']}
+    ally, enemy = panel('おめでとり'), panel('キノコやろう', 500)
+    assert omedetori_assessment(mem, ally, enemy)['rule'] == 'mikan_once'
+    omedetori_command_selected(mem, ally, enemy, 'skill1', cursor_confirmed=False)
+    assert omedetori_assessment(mem, ally, enemy)['rule'] == 'warm_after_unverified_attempt'
+
+
+def test_without_any_scope_the_mikan_press_is_still_held():
+    mem = {}
+    ally, enemy = panel('おめでとり'), panel('キノコやろう', 500)
+    assert omedetori_assessment(mem, ally, enemy)['rule'] == 'unscoped_mikan_hold'

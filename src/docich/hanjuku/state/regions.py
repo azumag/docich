@@ -38,6 +38,8 @@ KEY_OWNERSHIP = {
     'camp_hunt_tick': {'region': FLOW, 'lifetime': 'procedure', 'migrated': False},  # 野営探索の記録間隔(v810)
     # 帰還先が崖で到達できず再キャンプになった回数 (v855)
     'camp_recall_blocked': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},
+    # 召喚戦（通常battle記録なし）でのおめでとり1回押し receipt (v856)
+    'omedetori_cycle_menu': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},
     'camp_battle_tick': {'region': FLOW, 'lifetime': 'procedure', 'migrated': False},  # 戦闘中断の記録間隔(v815)
     'departure_miss':    {'region': FLOW, 'lifetime': 'procedure', 'migrated': True},
     # --- 出撃 ExecutionJournal (段階1: migrated) ---
