@@ -44,16 +44,17 @@ function noticeText(value, limit) {
 // Advance notice for the next rolling-rotation corner. The card stays visible
 // while Soren runs a 48-game prediction: the corner is still the next one, but
 // the corner boundary waits for the prediction, so the planned clock is only
-// provisional (the page marks it "予想中" and switches to "予想終了後" once it
-// passes). A stale record, an unknown hold, or a passed time without a hold is
-// still dropped.
+// provisional (the page marks it "予想中" and shows the remaining games). A
+// short post-corner "prediction-pending" hold lets the next prediction start
+// before another clock is promised; it displays 予想開始待ち. A stale record,
+// an unknown hold, or a passed time without a hold is still dropped.
 function nextCornerNotice(file, nowSec) {
   const state = readJson(file);
   if (!state || state.schema !== NEXT_CORNER_SCHEMA) return null;
   const hold = state.hold === null || state.hold === undefined || state.hold === ''
     ? null
     : state.hold;
-  if (hold !== null && hold !== 'prediction') return null;
+  if (hold !== null && hold !== 'prediction' && hold !== 'prediction-pending') return null;
   const corner = noticeText(state.corner, 64);
   const label = noticeText(state.label, 40);
   const when = noticeText(state.when, 14);
@@ -61,9 +62,16 @@ function nextCornerNotice(file, nowSec) {
   const dueAt = Number(state.due_at);
   const updatedAt = Number(state.updated_at);
   if (!Number.isFinite(dueAt) || !Number.isFinite(updatedAt)) return null;
+  const remainingValue = state.remaining_games;
+  const remainingRaw = remainingValue === null || remainingValue === undefined || remainingValue === ''
+    ? Number.NaN
+    : Number(remainingValue);
+  const remainingGames = Number.isSafeInteger(remainingRaw) && remainingRaw >= 0 && remainingRaw <= 100
+    ? remainingRaw
+    : null;
   if (nowSec - updatedAt < 0 || nowSec - updatedAt > NEXT_CORNER_MAX_AGE_SEC) return null;
   if (hold === null && nowSec > dueAt + NEXT_CORNER_DUE_GRACE_SEC) return null;
-  return { corner, label, when, dueAt, updatedAt, hold };
+  return { corner, label, when, dueAt, updatedAt, hold, remainingGames };
 }
 
 

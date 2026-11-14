@@ -15,6 +15,8 @@ from docich.corner_boundary import (
     _program_slot,
     _queue_read,
     boundary_ready,
+    prediction_snapshot,
+    prediction_worker_running,
     program_lock,
     program_slot,
 )
@@ -75,6 +77,56 @@ def test_boundary_requires_prediction_only_when_in_flight(tmp_path):
     # A resolved prediction no longer blocks.
     (state / 'current_prediction.json').write_text(json.dumps({'status': 'RESOLVED'}))
     assert boundary_ready(state, 100)
+
+
+def test_prediction_snapshot_reports_the_round_remaining_games(tmp_path):
+    state = _state_dir(tmp_path)
+    (state / 'prediction_worker.pid').write_text(str(os.getpid()))
+    (state / 'current_prediction.json').write_text(json.dumps({
+        'prediction_id': 'id', 'outcome_ids': ['a', 'b', 'c', 'd'],
+        'round_version': 2, 'max_games': 48, 'games_completed': 3,
+        'created_at': 100,
+    }))
+    snapshot = prediction_snapshot(state)
+    assert snapshot['in_flight'] is True
+    assert snapshot['worker_running'] is True
+    assert snapshot['remaining_games'] == 45
+    assert snapshot['started_at'] == 100
+    assert prediction_worker_running(state) is True
+
+
+def test_prediction_snapshot_has_no_remaining_for_a_legacy_record(tmp_path):
+    state = _state_dir(tmp_path)
+    (state / 'prediction_worker.pid').write_text(str(os.getpid()))
+    (state / 'current_prediction.json').write_text(json.dumps({
+        'prediction_id': 'id', 'outcome_ids': ['a', 'b'],
+    }))
+    snapshot = prediction_snapshot(state)
+    assert snapshot['in_flight'] is True
+    assert snapshot['remaining_games'] is None
+
+
+def test_prediction_snapshot_ignores_invalid_counts_and_missing_worker(tmp_path):
+    state = _state_dir(tmp_path)
+    (state / 'prediction_worker.pid').write_text(str(os.getpid()))
+    (state / 'current_prediction.json').write_text(json.dumps({
+        'prediction_id': 'id', 'outcome_ids': ['a', 'b'],
+        'max_games': True, 'games_completed': 3,
+    }))
+    assert prediction_snapshot(state)['remaining_games'] is None
+    (state / 'prediction_worker.paused').write_text('')
+    assert prediction_snapshot(state)['in_flight'] is False
+    assert prediction_worker_running(state) is False
+
+
+def test_prediction_snapshot_terminal_status_is_not_in_flight(tmp_path):
+    state = _state_dir(tmp_path)
+    (state / 'prediction_worker.pid').write_text(str(os.getpid()))
+    (state / 'current_prediction.json').write_text(json.dumps({
+        'status': 'RESOLVED', 'prediction_id': 'id', 'outcome_ids': ['a', 'b'],
+        'max_games': 48, 'games_completed': 48,
+    }))
+    assert prediction_snapshot(state)['in_flight'] is False
 
 
 def test_paused_prediction_worker_does_not_block(tmp_path):

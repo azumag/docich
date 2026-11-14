@@ -67,14 +67,19 @@ class BroadcastTemplateOwnershipTest(unittest.TestCase):
 
     def test_next_corner_card_keeps_a_prediction_hold_visible(self):
         # Owner 2026-11-15: the advance notice must stay above the prediction
-        # panel. A prediction hold may only mark the planned clock as
-        # provisional (予想中) and switch to 予想終了後 after it passes; it must
-        # not remove the card.
+        # panel. A prediction hold shows the round's remaining games (never a
+        # clock); a post-corner handoff says 予想開始待ち and must not remove
+        # the card.
         html = TEMPLATE.read_text(encoding="utf-8")
         self.assertIn('id="next-corner"', html)
         self.assertIn("state?.nextCorner", html)
         self.assertIn("notice.hold === 'prediction'", html)
+        self.assertIn("notice.hold === 'prediction-pending'", html)
         self.assertIn("NEXT CORNER · 予想中", html)
+        self.assertIn("NEXT CORNER · 予想準備中", html)
+        self.assertIn("remainingGames", html)
+        self.assertIn("試合後", html)
+        self.assertIn("予想開始待ち", html)
         self.assertIn("予想終了後", html)
         # Both cards are laid out together: the feed height reserves the
         # prediction panel and the notice instead of hiding either one.

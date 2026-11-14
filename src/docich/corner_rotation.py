@@ -21,6 +21,8 @@ from .corner_catalog import (
     configured_interval_seconds,
     cooldown_seconds,
     load_catalog,
+    prediction_handoff_seconds,
+    prediction_hold_wait_seconds,
     rotation_enabled,
     schedule_mode,
 )
@@ -203,7 +205,7 @@ def clear_rotation_stop_request(g, state_path):
 class CornerRotationManager:
     def __init__(self, g, *, clock=time.time, sleep=time.sleep, seed=None,
                  catalog=None, adapter_factory=make_corner_adapter, executor=None,
-                 prediction_guard=None, speech=None):
+                 prediction_guard=None, prediction_state=None, speech=None):
         self.g, self.clock = g, clock
         self.catalog = tuple(load_catalog(g) if catalog is None else catalog)
         self.adapters = {c.id: adapter_factory(g, c) for c in self.catalog}
@@ -215,11 +217,16 @@ class CornerRotationManager:
         self.cooldown_seconds = cooldown_seconds(g)
         # Fixed interval-mode cadence, or None for the 24h/N target.
         self.configured_interval = configured_interval_seconds(g)
+        self.prediction_hold_wait_seconds = prediction_hold_wait_seconds(g)
+        self.prediction_handoff_seconds = prediction_handoff_seconds(g)
         self.path = Path(g.state_dir) / LEDGER_FILE
         self.lock_path = Path(g.state_dir) / "locks/corner-rotation.lock"
         # Bounded probe: an in-flight Soren prediction holds the corner
         # boundary, so the announced start time cannot be promised.
+        # ``prediction_guard`` is the legacy bool injector; ``prediction_state``
+        # returns the richer snapshot (in_flight + remaining_games + worker).
         self._prediction_guard = prediction_guard
+        self._prediction_state = prediction_state
         # Delivery is injected so tests never touch the shared audio queue.
         self._speech = speech
 
@@ -1090,20 +1097,148 @@ class CornerRotationManager:
             return True
         return game == BACKGROUND_GAME
 
-    def _prediction_hold(self):
-        """True while the 48-game prediction makes the start time uncertain."""
+    @staticmethod
+    def _empty_prediction():
+        return {
+            "in_flight": False,
+            "worker_running": False,
+            "remaining_games": None,
+            "started_at": None,
+        }
+
+    def _prediction_snapshot(self):
+        """Bounded prediction view for the notice and dispatch hold."""
+        if self._prediction_state is not None:
+            try:
+                raw = self._prediction_state()
+            except Exception:
+                return self._empty_prediction()
+            if not isinstance(raw, dict):
+                raw = {"in_flight": bool(raw)}
+            remaining = raw.get("remaining_games")
+            if (type(remaining) is not int or isinstance(remaining, bool)
+                    or not 0 <= remaining <= 100):
+                remaining = None
+            started = raw.get("started_at")
+            if (type(started) not in (int, float) or isinstance(started, bool)
+                    or not math.isfinite(started) or started <= 0):
+                started = None
+            return {
+                "in_flight": bool(raw.get("in_flight")),
+                # An injected snapshot is a test double: the worker is part of
+                # the simulated state unless the caller says otherwise.
+                "worker_running": bool(raw.get("worker_running", True)),
+                "remaining_games": remaining,
+                "started_at": started,
+            }
         if self._prediction_guard is not None:
             try:
-                return bool(self._prediction_guard())
+                in_flight = bool(self._prediction_guard())
             except Exception:
-                return False
+                in_flight = False
+            return {
+                "in_flight": in_flight,
+                "worker_running": False,
+                "remaining_games": None,
+                "started_at": None,
+            }
         try:
-            from .corner_boundary import prediction_in_flight
+            from .corner_boundary import prediction_snapshot
             from .trading.soren_output import resolve_soren_root
 
-            return bool(prediction_in_flight(resolve_soren_root(self.g) / "tmp/state"))
+            raw = prediction_snapshot(resolve_soren_root(self.g) / "tmp/state")
+        except Exception:
+            return self._empty_prediction()
+        if not isinstance(raw, dict):
+            return self._empty_prediction()
+        return {
+            "in_flight": bool(raw.get("in_flight")),
+            "worker_running": bool(raw.get("worker_running")),
+            "remaining_games": raw.get("remaining_games"),
+            "started_at": raw.get("started_at"),
+        }
+
+    def _prediction_worker_running(self):
+        """True while the prediction worker can still create a prediction."""
+        if self._prediction_state is not None:
+            return bool(self._prediction_snapshot().get("worker_running"))
+        if self._prediction_guard is not None:
+            # The legacy bool injector cannot distinguish a stopped worker;
+            # pending is a new state, so keep it off for those tests.
+            return False
+        try:
+            from .corner_boundary import prediction_worker_running
+            from .trading.soren_output import resolve_soren_root
+
+            return bool(prediction_worker_running(resolve_soren_root(self.g) / "tmp/state"))
         except Exception:
             return False
+
+    def _prediction_pending_after_slot(self, state, now):
+        """True during the short window where the next prediction starts first."""
+        if self.prediction_handoff_seconds <= 0:
+            return False
+        result = state.get("last_result")
+        if not isinstance(result, dict):
+            return False
+        if result.get("status") not in NOTICE_SPOKEN_STATUSES:
+            return False
+        try:
+            ended = timestamp(result.get("at"))
+        except Exception:
+            return False
+        if not 0 <= now - ended <= self.prediction_handoff_seconds:
+            return False
+        snapshot = self._prediction_snapshot()
+        if snapshot["in_flight"]:
+            return False
+        return self._prediction_worker_running()
+
+    def _prediction_hold_expired(self, state, snapshot, now):
+        """True when a stuck prediction must stop holding the dispatch."""
+        started = snapshot.get("started_at")
+        if started is None:
+            # No bounded start time: fall back to the slot that ended (the
+            # prediction normally starts right after it), then to the first
+            # tick that observed the hold. Never invent a deadline from an old
+            # result, but never hold forever either.
+            result = state.get("last_result")
+            if isinstance(result, dict):
+                try:
+                    started = timestamp(result.get("at"))
+                except Exception:
+                    started = None
+        if started is None:
+            since = state.get("prediction_hold_since")
+            if (type(since) not in (int, float) or isinstance(since, bool)
+                    or not math.isfinite(since) or since <= 0):
+                since = now
+                state["prediction_hold_since"] = now
+            started = since
+        if self.prediction_hold_wait_seconds <= 0:
+            return True
+        return now - started > self.prediction_hold_wait_seconds
+
+    def _prediction_dispatch_hold(self, state, now):
+        """Return a wait reason while a prediction owns the next auto slot.
+
+        Only an automatic dispatch is held: a queued/manual reservation keeps
+        its operator contract. The prediction deadline is a safety valve; when
+        it is exceeded the normal boundary path runs and can still expire.
+        """
+        notice = corner_notice.read(self.g)
+        if (notice is not None and notice.get("hold") == "prediction-pending"
+                and notice.get("source") == "auto"):
+            return "prediction-handoff"
+        snapshot = self._prediction_snapshot()
+        if not snapshot["in_flight"]:
+            state.pop("prediction_hold_since", None)
+            return None
+        if self._prediction_hold_expired(state, snapshot, now):
+            state["prediction_hold_timeout_at"] = max(
+                float(state.get("prediction_hold_timeout_at") or 0), now)
+            return None
+        return "prediction-hold"
 
     def _sync_notice(self, state, now, eligible, future_manual=None):
         """Publish (or clear) the advance notice; speak it once after a slot.
@@ -1127,8 +1262,19 @@ class CornerRotationManager:
             # A prediction can hold the slot past its planned clock. That is
             # exactly when the card must stay (the viewer needs to know what
             # is next), so the "too close to promise" withdrawal only applies
-            # to a normal slot that is about to start.
-            hold = "prediction" if self._prediction_hold() else None
+            # to a normal slot that is about to start. A short post-corner
+            # window announces "予想開始待ち" and lets the prediction start
+            # before a clock is promised again.
+            snapshot = self._prediction_snapshot()
+            hold = None
+            remaining = None
+            if snapshot["in_flight"]:
+                hold = "prediction"
+                remaining = snapshot["remaining_games"]
+            elif (source == "auto"
+                    and timestamp(due_at) - now >= self.prediction_handoff_seconds
+                    and self._prediction_pending_after_slot(state, now)):
+                hold = "prediction-pending"
             current = corner_notice.read(self.g)
             if (hold is None
                     and timestamp(due_at) - now < corner_notice.MIN_LEAD_SECONDS
@@ -1139,7 +1285,7 @@ class CornerRotationManager:
                 return None
             record = corner_notice.publish(
                 self.g, corner=corner, due_at=due_at, source=source, now=now,
-                hold=hold,
+                hold=hold, remaining_games=remaining,
             )
         except Exception:
             return None
@@ -1837,6 +1983,15 @@ class CornerRotationManager:
                         # as the shared slot is free; next_due_at is informational
                         # (the earliest cooldown expiry once nothing is eligible).
                         state["next_due_at"] = now
+                    # An announced/predicted slot is not dispatched into the
+                    # prediction boundary: the notice already says it starts
+                    # after the prediction (or waits for the prediction to
+                    # begin). The normal 10-minute boundary wait would expire
+                    # a 48-game prediction, so wait here instead (bounded).
+                    hold_reason = self._prediction_dispatch_hold(state, now)
+                    if hold_reason is not None:
+                        self.save(state)
+                        return self._wait(state, hold_reason)
                     # A future manual schedule reserves only its own corner:
                     # automatic rotation may keep using every other eligible
                     # corner, but must not pre-run the scheduled corner itself.
@@ -1905,6 +2060,14 @@ class CornerRotationManager:
                     )
                     source = "manual-reservation" if pending.get("source") == "manual" else "reservation"
                     state["history"].append(dict(corner=pending["corner"], at=now, source=source))
+                if pending.get("source") != "manual":
+                    # A prediction may have started after this pending was
+                    # reserved; hold it here too instead of spending the
+                    # boundary wait and expiring the slot.
+                    hold_reason = self._prediction_dispatch_hold(state, now)
+                    if hold_reason is not None:
+                        self.save(state)
+                        return self._wait(state, hold_reason)
                 state.update(status="running", reason=None)
                 self.save(state)
                 with self._slot_heartbeat(pending):

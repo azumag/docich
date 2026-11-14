@@ -89,6 +89,8 @@ def test_production_profile_marks_common_rotation_enabled_with_auto_tsuitate():
     g = load_global(ROOT, ROOT / "config/docich.soren-live.toml")
     raw = rotation_config(g)
     assert raw["enabled"] is True
+    assert raw["prediction_hold_wait_minutes"] == 90
+    assert raw["prediction_handoff_seconds"] == 180
     catalog = load_catalog(g)
     # 2026-10-18: mystery (#684) + lawsim (#697) 追加 → 16本。
     assert len(catalog) == 17
@@ -126,6 +128,40 @@ def test_production_profile_marks_common_rotation_enabled_with_auto_tsuitate():
         "hanjuku-hero", "nethack", "paper", "meriken", "tsuitate", "yosou-oh",
         "doushi-card",
     }
+
+
+def test_prediction_wait_config_is_bounded(tmp_path):
+    from docich.corner_catalog import (
+        prediction_handoff_seconds,
+        prediction_hold_wait_seconds,
+        rotation_config,
+    )
+
+    path = tmp_path / "config.toml"
+    path.write_text(
+        "[corner_rotation]\nenabled=true\n"
+        "prediction_hold_wait_minutes=30\nprediction_handoff_seconds=60\n"
+        "[paths]\nstate_dir=\"run\"\n",
+        encoding="utf-8",
+    )
+    g = load_global(tmp_path, path)
+    assert prediction_hold_wait_seconds(g) == 30 * 60
+    assert prediction_handoff_seconds(g) == 60
+    for key, literal in (
+        ("prediction_hold_wait_minutes", "-1"),
+        ("prediction_hold_wait_minutes", "181"),
+        ("prediction_hold_wait_minutes", "true"),
+        ("prediction_handoff_seconds", "-1"),
+        ("prediction_handoff_seconds", "901"),
+        ("prediction_handoff_seconds", "1.5"),
+    ):
+        path.write_text(
+            f"[corner_rotation]\nenabled=true\n{key}={literal}\n"
+            "[paths]\nstate_dir=\"run\"\n",
+            encoding="utf-8",
+        )
+        with pytest.raises(CornerCatalogError):
+            rotation_config(load_global(tmp_path, path))
 
 
 def test_weather_known_corner_round_trips_through_ledger(tmp_path):

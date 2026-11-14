@@ -120,16 +120,95 @@ def test_dispatch_honours_the_announced_corner(tmp_path):
 
 
 def test_prediction_hold_keeps_the_notice_but_suppresses_the_speech(tmp_path):
-    g, clock, executor, spoken, make = _manager(tmp_path, prediction_guard=lambda: True)
+    g, clock, executor, spoken, make = _manager(
+        tmp_path,
+        prediction_state=lambda: {"in_flight": True, "worker_running": True,
+                                 "remaining_games": 7, "started_at": clock[0]},
+    )
     manager = make()
     manager.tick()
     manager.tick()
     record = corner_notice.read(g)
-    # The card stays visible (marked provisional by the dashboard); only the
-    # spoken promise waits for the prediction to settle.
+    # The card stays visible (marked provisional by the dashboard) and carries
+    # the prediction's own remaining games; only the spoken promise waits.
     assert record is not None and record["hold"] == "prediction"
-    assert record["corner"] and record["due_at"] > clock[0]
+    assert record["remaining_games"] == 7
+    assert record["corner"]
     assert spoken == []
+
+
+def test_prediction_hold_never_dispatches_the_due_corner(tmp_path):
+    g, clock, executor, spoken, make = _manager(
+        tmp_path,
+        prediction_state=lambda: {"in_flight": True, "worker_running": True,
+                                 "remaining_games": 48, "started_at": clock[0]},
+    )
+    manager = make()
+    manager.tick()
+    assert executor.calls == []
+    state = json.loads(manager.path.read_text())
+    assert state["status"] == "waiting"
+    assert state["reason"] == "prediction-hold"
+    assert corner_notice.read(g)["hold"] == "prediction"
+
+
+def test_prediction_resolution_releases_the_due_corner(tmp_path):
+    prediction = {"in_flight": True, "worker_running": True,
+                  "remaining_games": 1, "started_at": 1_000_000.0}
+    g, clock, executor, spoken, make = _manager(
+        tmp_path, prediction_state=lambda: dict(prediction)
+    )
+    manager = make()
+    manager.tick()
+    assert executor.calls == []
+    prediction.update(in_flight=False)
+    clock[0] += 1
+    manager.tick()
+    assert executor.calls and executor.calls[-1]["corner"] == "meriken"
+
+
+def test_prediction_hold_timeout_falls_back_to_the_normal_boundary(tmp_path):
+    prediction = {"in_flight": True, "worker_running": True,
+                  "remaining_games": 1, "started_at": 1_000_000.0}
+    g, clock, executor, spoken, make = _manager(
+        tmp_path, prediction_state=lambda: dict(prediction)
+    )
+    manager = make()
+    manager.tick()
+    assert executor.calls == []
+    # Default 90 minutes: after the bound the normal dispatch/boundary path
+    # runs instead of holding forever.
+    clock[0] += 91 * 60
+    manager.tick()
+    state = json.loads(manager.path.read_text())
+    assert state.get("prediction_hold_timeout_at") is not None
+    assert executor.calls
+
+
+def test_post_corner_handoff_announces_pending_and_holds_dispatch(tmp_path):
+    g, clock, executor, spoken, make = _manager(
+        tmp_path,
+        prediction_state=lambda: {"in_flight": False, "worker_running": True},
+    )
+    manager = make()
+    manager.tick()                       # run a slot
+    assert executor.calls
+    manager.tick()                       # next tick: prediction handoff
+    record = corner_notice.read(g)
+    assert record is not None and record["hold"] == "prediction-pending"
+    assert record["source"] == "auto"
+    assert spoken == []
+    calls = len(executor.calls)
+    manager.tick()                       # still inside the handoff window
+    assert len(executor.calls) == calls
+    # The next slot is an hour away, so the handoff is not dispatching it; it
+    # only gives the prediction time to start before a new clock is promised.
+    state = json.loads(manager.path.read_text())
+    assert state["reason"] == "not-due"
+    # The window expires and a truthful clock is published again.
+    clock[0] += 181
+    manager.tick()
+    assert corner_notice.read(g)["hold"] is None
 
 
 def test_scheduled_manual_corner_is_announced_when_it_comes_first(tmp_path):
@@ -282,4 +361,31 @@ def test_prediction_hold_publishes_a_past_due_notice(tmp_path):
     # The planned clock is exactly now: a normal notice waits (too close to
     # promise), but a prediction hold must still show what comes next.
     assert record["due_at"] == int(clock[0])
+    assert spoken == []
+
+
+def test_notice_uses_the_real_prediction_round_remaining(tmp_path, monkeypatch):
+    import os
+
+    from docich.trading import soren_output
+
+    root = tmp_path / "soren"
+    state = root / "tmp" / "state"
+    state.mkdir(parents=True)
+    (state / "prediction_worker.pid").write_text(str(os.getpid()), encoding="utf-8")
+    (state / "current_prediction.json").write_text(json.dumps({
+        "prediction_id": "id", "outcome_ids": ["a", "b", "c", "d"],
+        "round_version": 2, "max_games": 48, "games_completed": 5,
+        "created_at": 1_000_000,
+    }), encoding="utf-8")
+    monkeypatch.setattr(soren_output, "resolve_soren_root", lambda _g: root)
+
+    g, clock, executor, spoken, make = _manager(tmp_path)
+    manager = make()
+    manager.tick()
+    record = corner_notice.read(g)
+    assert record is not None
+    assert record["hold"] == "prediction"
+    assert record["remaining_games"] == 43
+    assert executor.calls == []
     assert spoken == []

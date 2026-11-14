@@ -55,6 +55,12 @@ schedule_mode = "interval"
 interval_minutes = 60
 # 同一cornerの再選択を許すまでのrolling窓。予約・実開始・終了・手動使用を数える。
 cooldown_hours = 24.0
+# 予想がin-flightの間、dueになったコーナーを通常の10分boundaryでexpireさせず、
+# 予想終了まで待つ上限。予想が固まった場合の安全弁（0-180分）。
+prediction_hold_wait_minutes = 90
+# コーナー直後、次の予想を先に開始するための猶予。この間の掲示は
+# 「予想開始待ち」で、時刻は約束しない。0で無効（0-900秒）。
+prediction_handoff_seconds = 180
 # 唯一のproduction corner catalog。選択・実行履歴はrolling 24hで除外。
 # 候補数Nは実行可能・非休止の件数（24h/Nはinterval_minutes未設定時の目標）。
 # adapter設定のstart_hourは互換用のみ。

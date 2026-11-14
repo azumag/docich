@@ -59,6 +59,9 @@ JEVは自動有効化されていない手動のplayer-policy試験であり、�
   進むので順序は毎回引き直される）。`next_due_at`は「次に発火可能な時刻」の意味になり、
   候補が空のときだけ最も早いcooldown明けへ再アンカーする。
   発火は常に1本ずつで、重複・並行起動はしない（pending・共通program slotは両modeで同じ）。
+- `prediction_hold_wait_minutes`（既定90、0〜180）は予想in-flight中にdueコーナーを
+  待たせる上限。`prediction_handoff_seconds`（既定180、0〜900）はコーナー直後に
+  予想を先に開始する猶予。
 - `cooldown_hours`（既定24）は同一cornerを再選択できるまでのrolling窓。小さいほど連続性が上がる。
   どのmodeでも予約・実開始・終了・手動使用をcooldownへ数える。
 - queue modeの実効間隔は `max(cooldownが許す範囲, 直前cornerの所要時間 + 改善レーンの待ち)`。
@@ -101,7 +104,9 @@ JEVは自動有効化されていない手動のplayer-policy試験であり、�
   `seed`・`slot`・corner IDのSHA-256。
 - 決定は `state_dir/next_corner.json` へboundedに投影する。seed・slot・request UUIDは
   含めない。`corner` / `label`（視聴者向け表示名）/ `when`（表示用時刻）/
-  `due_at` / `source`（auto|manual）/ `hold` / `decided_at` / `updated_at` だけ。
+  `due_at` / `source`（auto|manual）/ `hold` / `remaining_games` / `decided_at` /
+  `updated_at` だけ。`remaining_games` は予想round（v2）の残り試合数（0〜100）で、
+  `hold="prediction"` のときだけ意味を持つ。
 - dispatchは、予告したcornerがまだ候補ならそれを優先する。一度出した予告を
   別のcornerへ差し替えないためで、候補から外れた（pause・cooldown・manual予約との
   競合）ときだけ引き直して投影も更新する。
@@ -109,10 +114,26 @@ JEVは自動有効化されていない手動のplayer-policy試験であり、�
   `game_switch.json` の `active.game` が `sorengame` でない間（他コーナー・special view・
   復帰失敗）は出さない。queue modeは間隔が無いので、予約済みmanualがあるときだけ出す。
 - **予想ガード（48試合のprediction）中も予告は出す。** in-flightのpredictionは
-  コーナー入りの境界を待たせるため開始時刻を約束できない。`hold="prediction"` を
-  記録し、配信側はコーナー名と予定時刻を「予想中」として表示し、予定時刻を過ぎたら
-  「予想終了後」に切り替える（`corner_boundary.prediction_in_flight`）。読み上げは
-  行わない。
+  コーナー入りの境界を待たせるため開始時刻を約束できない。`hold="prediction"` と
+  `remaining_games` を記録し、配信側はコーナー名と「N試合後」を表示する
+  （残数不明/0なら「予想終了後」）。読み上げは行わない。
+- **コーナー終了直後は予想を先に始める猶予を出す。** `last_result` がterminal
+  （completed / interrupted / expired）で `prediction_handoff_seconds` 以内、
+  prediction workerが稼働中、predictionがin-flightでない、次の決定がauto、かつ
+  次のdueが猶予より先なら `hold="prediction-pending"` を出し、配信側は
+  「予想開始待ち」と表示する。予想が始まれば次のtickで `hold="prediction"` に変わる。
+  猶予が切れても予想が始まらない場合は `hold=null` の時刻掲示へ戻し、その時刻は
+  prediction作成の抑止（下記）で守る。queue modeは時刻約束がないためこの猶予を出さない。
+- **予想中のdueコーナーは10分でexpireさせない。** auto dispatchは掲示が
+  `prediction` の間 `prediction-hold`、`prediction-pending` の間
+  `prediction-handoff` として待つ。上限は `prediction_hold_wait_minutes`（既定90分）で、
+  超過時は `prediction-hold-timeout` をstateへ記録して通常のboundary待ちへ戻す
+  （固まった予想で永久に塞がない安全弁）。マニュアル予約は既存経路のまま。
+- **予想と改善の開始はsoviet側で掲示に連動する。** `lib/corner_notice_state.py` が
+  `next_corner.json` を読み、`time`/`prediction`/未知holdでは新規48試合予想を作らない。
+  `prediction-pending` のときだけ、acc>0や改善running/lockがあっても予想の作成を許す
+  （A/B・hot streak・48試合条件は維持）。改善ロック作成は `hold` が付いている間は
+  行わず、試合消化だけを続ける。掲示が消えた後（コーナー開始時）に既存の閾値判定へ戻る。
 - 枠の終了後、`last_result` がterminal（completed / interrupted / expired）かつ
   30分以内なら、共有audio queueへ1回だけ「次のコーナーは〜、18時からの予定です。」を
   入れる。`notice_spoken_for`（request UUID）で冪等にし、`dedup_scope` も同じ
@@ -123,7 +144,8 @@ JEVは自動有効化されていない手動のplayer-policy試験であり、�
   `overlays/direct_broadcast_overlay.html` は右サイドバー上部のカード
   （`#next-corner`）として描画する。記録が10分更新されない・予定時刻を15分過ぎた
   （`hold` なし）・未知の `hold` のときは出さない。`hold="prediction"` は予定時刻を
-  過ぎても表示を続け、時刻を「予想終了後」に切り替える。
+  過ぎても表示を続け、`remaining_games` を「N試合後」として表示する
+  （不明/0は「予想終了後」）。`hold="prediction-pending"` は「予想開始待ち」。
 - 投影・読み上げはbest-effortで、書けない・届かないことは rotation の選択・実行・
   復帰を止めない。
 - 反映の注意: 共有サイドバーの state (`/__soren_overlay/broadcast/state`) を組み立てる
@@ -161,8 +183,9 @@ last_seen、pending、request UUID、結果をatomic writeする。
   （`lib/outbound_queue.sh` → `broadcast/comment.sh`の`get_comment_backlog_counts`）と同じ規則:
   プロセス環境の`COMMENT_QUEUE_DIR` → `<soren>/.env`の`COMMENT_QUEUE_DIR` → `tmp/.comment_queue`。
   相対値はSoren root基準（shellはcwd=Soren rootで動く）。
-- **改善サイクルとA/Bは意図的にゲートしない**（試合/ラウンド境界はgame-switch coordinatorが
-  所有し、A/Bは一時停止して再開する）。
+- **改善サイクルとA/Bはこのboundaryではゲートしない**（試合/ラウンド境界はgame-switch
+  coordinatorが所有し、A/Bは一時停止して再開する）。掲示中の改善**開始**はsoviet側の
+  `corner_notice_state` ゲートが抑止する。
 - 境界待ちをするのは`wait_boundary=True`のコーナー（view系=weather/tsuitate/yoso、
   external video、paper/retroの通常経路）。**NetHackとSoren91（Meriken）は既存設計で
   `wait_boundary=False`**であり、この境界を待たない（Soren91はoverlay-only linkage、
