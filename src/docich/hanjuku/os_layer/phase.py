@@ -103,6 +103,14 @@ def classify(frame: Frame) -> str:
             and f.fraction((146,174,234,191),paper)>.55
             and _battle_panel_border(f)):
         return 'battle'
+    # A combat command list on the right stacks both generals' panels on the
+    # left instead of the usual side-by-side layout (g1190 ch9 2026-11-15,
+    # ねばねば!! こうげき/たいきゃく: the bot held and the run hit
+    # input_stalled). Two paper rows on the left plus the dark panel edge.
+    if (f.fraction((16,174,113,191),paper)>.65
+            and f.fraction((16,190,113,207),paper)>.80
+            and _battle_panel_border(f)):
+        return 'battle'
     # Name grid and two independent bordered top panels: never type endlessly.
     if (f.fraction((80,85,235,210),green)>.55
             and f.fraction((24,18,176,30),green)>.4
