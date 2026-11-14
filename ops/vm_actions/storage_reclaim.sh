@@ -206,27 +206,11 @@ if [[ -d "$deploy_backups" ]]; then
   done
 fi
 
-# 2b. Fail closed: no automatic verify deletion until reference scan exists.
+# 2b. Verify sweep is disabled until safe process-reference checks exist.
 verify_dir="$tmp/verify"
 if [[ -d "$verify_dir" ]]; then
   for path in "$verify_dir"/*; do
-    [[ -d "$path" && ! -L "$path" ]] || continue
-    if ! is_older_than "$path" "$verify_min_age_days"; then
-      say "KEEP $path (recent)"
-      continue
-    fi
-    if [[ -e "$path/.git" || -L "$path/.git" ]]; then
-      say "KEEP $path (git checkout/worktree)"
-      continue
-    fi
-    if ! recent="$(find "$path" -xdev -type f -mtime -"$verify_min_age_days" -print -quit 2>/dev/null)"; then
-      say "KEEP $path (freshness scan failed)"
-      continue
-    fi
-    if [[ -n "$recent" ]]; then
-      say "KEEP $path (recent internal files)"
-      continue
-    fi
+    [[ -e "$path" ]] || continue
     say "KEEP $path (process references not verified)"
   done
 fi
