@@ -489,6 +489,26 @@ def _arm_chapter_end_save(mem):
     mem['chapter_end_save'] = {'chapter': chapter, 'tick': mem.get('tick')}
 
 
+def _duel_offer(mem):
+    """Accept a battle duel only from an equal-or-better live HP panel.
+
+    The battle record carries the two current HP values read from the panels;
+    an unread (or absent) battle keeps the owner's original accept rule.
+    """
+    battle = mem.get('battle') if isinstance(mem, dict) else None
+    if not isinstance(battle, dict):
+        return True, '一騎打ちは青ゲージを消費する前提で受ける', 'accept_duel', None
+    hp, enemy_hp = battle.get('ally_hp'), battle.get('enemy_hp')
+    metric = {'ally': battle.get('ally'), 'enemy': battle.get('enemy'),
+              'ally_hp': hp, 'enemy_hp': enemy_hp}
+    if (type(hp) is int and type(enemy_hp) is int
+            and hp > 0 and enemy_hp > 0 and hp < enemy_hp):
+        return (False,
+                f'一騎打ちの相手HP{enemy_hp}に対し自軍HP{hp}で劣勢のため断り、切り札・卵で戦う',
+                'decline_duel_hp_disadvantage', metric)
+    return True, '一騎打ちは青ゲージを消費する前提で受ける', 'accept_duel', metric
+
+
 def yes_no_step(screen: Screen, mem):
     text = screen.text
     metric = None
@@ -529,11 +549,15 @@ def yes_no_step(screen: Screen, mem):
             choice, reason, variant = ('いかんッ!', '所持金1000G未満のため美女の依頼を断る',
                                        'decline_bijin_below_floor')
     elif 'はたしあい' in text or 'ごあいて' in text:
-        # Owner decision (2026-09-25): accept. A duel fought with the blue
-        # gauge spent properly is a near-certain win, so the hero no longer
-        # needs shielding from the offer.
-        choice, reason = 'うむッ!', '一騎打ちは青ゲージを消費する前提で受ける'
-        variant = 'accept_duel'
+        # Owner decision (2026-09-25) accepted every duel: a blue-gauge duel
+        # was treated as a near-certain win. Owner report (2026-11-15) shows
+        # the bot losing the duel against グリッシーニ every time without ever
+        # using cards or eggs. The live battle panels decide: a duel is only
+        # taken when our general's current HP is not behind the opponent's;
+        # otherwise decline it and fight with cards/eggs in the normal flow.
+        accept, reason, variant, duel_metric = _duel_offer(mem)
+        choice = 'うむッ!' if accept else 'いかんッ!'
+        metric = duel_metric
     elif _is_general_trade_prompt(text):
         # Owner rule (2026-09-28): the general trade (花いちもんめ) almost
         # always offers an unfair deal (odoru7094: ろくでもないのしか手に
