@@ -7,10 +7,9 @@ set -euo pipefail
 # live streaming encoder) are never removed. All targets are age-gated;
 # clones and verify entries also need fail-closed process-reference checks
 # (any doubt = KEEP/SKIP).
-# Docker: dangling images / build cache older than 7d only (never tagged
-# images, containers or volumes). External inputs: APPLY, VOICEVOX_ARCHIVE,
-# AIVIS_ENGINE. SIZE: gateway exec caps stdin at 16384 bytes including the
-# 3-line preamble (wiring test); keep this file under 16000.
+# Docker: dangling images / build cache older than 7d only (no tagged/volumes).
+# External inputs: APPLY, VOICEVOX_ARCHIVE, AIVIS_ENGINE. SIZE: gateway exec
+# caps stdin at 16384 bytes incl. the 3-line preamble; wire test holds 16000.
 #
 # Test-only flags: --root, --min-age-days, --verify-min-age-days,
 #   --voicevox-root, --include-voicevox-archive, --skip-system,
@@ -178,13 +177,17 @@ stale_clone_refs() {
     [[ "$line" == *storage_reclaim* ]] && continue
     if [[ "$line" == *"$path"* ]]; then found=$(( found + 1 )); fi
   done <<< "$ps_out"
-  # [[ ]] does not glob: probe the /proc mount point (Linux/production) and
-  # expand the per-pid cwd globs in the for list instead.
+  # Probe /proc directly (Linux); the for list expands the per-pid globs.
   if [[ -d /proc ]]; then
     for cwd in /proc/[0-9]*/cwd; do
-      [[ -e "$cwd" ]] || continue
-      line="$(readlink -f "$cwd" 2>/dev/null || true)"
-      [[ -n "$line" ]] || continue
+      [[ -L "$cwd" ]] || continue
+      # Other-uid cwd: retry via passwordless sudo. A cwd still present but
+      # unresolvable is a scan failure, never refs=0 (fail-closed).
+      line="$(readlink -f "$cwd" 2>/dev/null || sudo -n readlink -f "$cwd" 2>/dev/null || true)"
+      if [[ -z "$line" ]]; then
+        [[ -L "$cwd" ]] && return 1
+        continue
+      fi
       if [[ "$line" == "$path" || "$line" == "$path"/* ]]; then found=$(( found + 1 )); fi
     done
   fi
@@ -220,13 +223,13 @@ if [[ -d "$deploy_backups" ]]; then
   done
 fi
 
-# 2b. Verify sweep: age gate + deep freshness + fail-closed refs (same scan
-#     as clones). Linked worktrees are unregistered via git, never rm -rf.
+# 2b. Verify sweep: age gate + deep freshness + fail-closed refs. Linked
+#     worktrees go through git, never a bare rm -rf.
 verify_dir="$tmp/verify"
 if [[ -d "$verify_dir" ]]; then
   for path in "$verify_dir"/*; do
     [[ -e "$path" || -L "$path" ]] || continue
-    # A symlink is only a link: never follow it, never touch its target.
+    # A symlink is only a link: keep it, never follow it.
     [[ -L "$path" ]] && { say "KEEP $path (symlink; not followed)"; continue; }
     is_older_than "$path" "$verify_min_age_days" || { say "KEEP $path (recent)"; continue; }
     found="$(find "$path" -mindepth 1 -mtime -"$verify_min_age_days" 2>/dev/null)" || {
@@ -235,8 +238,7 @@ if [[ -d "$verify_dir" ]]; then
     refs="$(stale_clone_refs "$path")" || { say "SKIP $path (reference check failed)"; continue; }
     [[ "$refs" == 0 ]] || { say "KEEP $path (referenced by $refs running process(es))"; continue; }
     if [[ ! -f "$path/.git" ]]; then remove_path "$path"; continue; fi
-    # Linked worktree: registered elsewhere. Unregister + prune so no stale
-    # metadata survives; any failure keeps the entry.
+    # Linked worktree: unregister + prune; any failure keeps the entry.
     common="$(git --no-optional-locks -C "$path" rev-parse --git-common-dir 2>/dev/null)" || {
       say "KEEP $path (worktree metadata unreadable)"; continue; }
     bytes="$(bytes_of "$path")"; bytes="${bytes:-0}"

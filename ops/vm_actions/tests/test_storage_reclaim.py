@@ -14,6 +14,12 @@ OLD = time.time() - 60 * 86400
 RECENT = time.time() - 1 * 86400
 
 
+def passwordless_sudo():
+    return subprocess.run(
+        ["sudo", "-n", "true"], stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL).returncode == 0
+
+
 class StorageReclaimTests(unittest.TestCase):
     def setUp(self):
         self.tempdir = tempfile.TemporaryDirectory()
@@ -199,6 +205,45 @@ class StorageReclaimTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertTrue(old.exists(), result.stdout)
         self.assertIn(f"SKIP {old} (reference check failed)", result.stdout)
+
+    @unittest.skipUnless(os.path.isdir("/proc"), "cwd scan requires Linux /proc")
+    def test_verify_sweep_skips_when_cwd_readlink_cannot_be_resolved(self):
+        # An existing /proc/<pid>/cwd that can be neither readlink'ed directly
+        # nor via sudo makes the scan unverifiable: SKIP, never refs=0.
+        old = self.make("verify/1234-old-run", OLD)
+        self.age_tree(old, OLD)
+        fakebin = self.base / "fakebin-readlink"
+        fakebin.mkdir()
+        for name in ("readlink", "sudo"):
+            fake = fakebin / name
+            fake.write_text("#!/bin/sh\nexit 1\n")
+            fake.chmod(0o755)
+
+        result = self.run_helper(
+            apply=True, env_extra={"PATH": f"{fakebin}:{os.environ['PATH']}"})
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(old.exists(), result.stdout)
+        self.assertIn(f"SKIP {old} (reference check failed)", result.stdout)
+
+    @unittest.skipUnless(os.path.isdir("/proc"), "cwd scan requires Linux /proc")
+    @unittest.skipUnless(passwordless_sudo(), "requires passwordless sudo")
+    def test_verify_sweep_cwd_readlink_falls_back_to_sudo(self):
+        # Other-uid cwds are unreadable directly; the sudo retry keeps the
+        # scan complete so an unreferenced old entry is still reclaimed.
+        old = self.make("verify/1234-old-run", OLD)
+        self.age_tree(old, OLD)
+        fakebin = self.base / "fakebin-readlink-only"
+        fakebin.mkdir()
+        fake = fakebin / "readlink"
+        fake.write_text("#!/bin/sh\nexit 1\n")
+        fake.chmod(0o755)
+
+        result = self.run_helper(
+            apply=True, env_extra={"PATH": f"{fakebin}:{os.environ['PATH']}"})
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse(old.exists(), result.stdout)
 
     def test_verify_symlink_to_external_directory_is_never_deleted(self):
         external = self.base / "external-active"
@@ -663,6 +708,10 @@ class ControlPlaneWiringTests(unittest.TestCase):
         self.assertIn("expected_origin", text)
         self.assertIn("stale_clone_refs", text)
         self.assertIn("uncommitted changes present", text)
+        # Fail-closed cwd scan: retry other-uid cwds via sudo; an existing but
+        # unresolvable cwd is a scan failure, never refs=0.
+        self.assertIn("sudo -n readlink -f", text)
+        self.assertIn('[[ -L "$cwd" ]] && return 1', text)
         # The live streaming encoder must never join the reclaim allowlist.
         self.assertNotIn('"/home/ubuntu/build"', text)
         self.assertNotIn('"$home_root/build"', text)
