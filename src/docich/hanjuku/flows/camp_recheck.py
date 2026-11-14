@@ -527,6 +527,10 @@ def _named_step(screen, mem, frame, state):
             if verification.get('general') == actor:
                 _flow(mem)['recall_verification'] = {**verification, 'status': 'in_castle_observed',
                                               'observation': observation}
+                goal = verification.get('goal')
+                blocked = _flow(mem).get('camp_recall_blocked')
+                if isinstance(blocked, dict) and isinstance(goal, str):
+                    blocked.pop(goal, None)   # the recall into this castle arrived
             _invalidate(mem, '本人の現在ステータスで城内を観測し再帰還のintentを終了', actor)
             _record(mem, 'recall_in_castle_observed', chart_step=None, general=actor,
                     observed_metric=observation, resulting_event='in_castle_destination_unconfirmed',

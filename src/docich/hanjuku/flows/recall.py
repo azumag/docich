@@ -889,6 +889,15 @@ def _recall_dispatch_step(screen, mem, state):
     if state.get('picker_closed') or state['steps'] >= 6:
         status = 'arrival_unconfirmed' if state.get('input_sent') else 'dispatch_unconfirmed'
         interrupted = _flow(mem).pop('recall_interrupted', None) is not None
+        goal = state.get('goal')
+        if not interrupted and isinstance(goal, str):
+            # The general was sent to this castle and never confirmed inside
+            # one. A cliff between the camp and the castle camps him again;
+            # count it so the next recall picks another castle (owner
+            # 2026-11-15: the cliff-side camp never got home).
+            blocked = _flow(mem).setdefault('camp_recall_blocked', {})
+            if isinstance(blocked, dict):
+                blocked[goal] = min(3, int(blocked.get(goal) or 0) + 1)
         _flow(mem)['recall_verification'] = {**state, 'status': status}
         _flow(mem).pop('recall', None)
         _arm_recall_skip(mem, state,
