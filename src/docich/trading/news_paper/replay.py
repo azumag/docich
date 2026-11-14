@@ -286,6 +286,16 @@ class InjectedClock:
 
 
 class PitInputView:
+    """Point-in-time visibility driven by the injected logical clock.
+
+    Boundary split (PR #3888 re-review, 2026-11-10 "境界規則の解釈"): replay
+    visibility is deterministically clocked and has no wall-clock error, so
+    the inclusive boundary ``ts <= now()`` is authoritative here. The N00 v3
+    §1.4 fill fence (``available_at > fence_at + 2 * max_error_ms``, strict)
+    belongs to the real N05/N06 fill path and must not be applied as a
+    visibility margin (docich#2644 P3 PR-B).
+    """
+
     def __init__(self, clock: InjectedClock):
         self.clock = clock
 

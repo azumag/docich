@@ -1014,14 +1014,16 @@ class NewsLedger:
             ).fetchone()
             if marker is None or marker[1] is None:
                 return None
-            marker_id = marker[0]
+            marker_id, committed_at = marker
             existing = cur.execute(
-                "SELECT fence_id, fence_at, worker_id, clock_quality FROM fill_fences "
-                "WHERE marker_id = ?",
+                "SELECT fence_id, receipt_id, fence_at, worker_id, clock_quality "
+                "FROM fill_fences WHERE marker_id = ?",
                 (marker_id,),
             ).fetchone()
             if existing is None:
-                fence_at = self._now()
+                # Fail closed on a regressed clock: a fence sampled before the
+                # durable marker commit would unlock quotes that pre-date it.
+                fence_at = _ts(max(_parse_ts(self._now()), _parse_ts(committed_at)))
                 fence_id = f"fence:{receipt_id}"
                 cur.execute(
                     "INSERT OR IGNORE INTO fill_fences(fence_id, marker_id, receipt_id, fence_at, "
@@ -1040,11 +1042,23 @@ class NewsLedger:
                     ),
                 )
                 existing = cur.execute(
-                    "SELECT fence_id, fence_at, worker_id, clock_quality FROM fill_fences "
-                    "WHERE marker_id = ?",
+                    "SELECT fence_id, receipt_id, fence_at, worker_id, clock_quality "
+                    "FROM fill_fences WHERE marker_id = ?",
                     (marker_id,),
                 ).fetchone()
-            stored_quality = json.loads(existing[3])
+                if existing is None:
+                    # A conflicting/ignored insert must never fall through to a
+                    # fence-less fill path.
+                    raise LedgerError("STORE_UNAVAILABLE")
+            stored_receipt_id = existing[1]
+            if stored_receipt_id != receipt_id:
+                # The fence is bound to the receipt of its marker. A row that
+                # points at another receipt is corrupt; never reuse it.
+                raise LedgerError("STORE_UNAVAILABLE")
+            stored_fence_at = _parse_ts(existing[2])
+            if stored_fence_at < _parse_ts(committed_at):
+                raise LedgerError("STORE_UNAVAILABLE")
+            stored_quality = json.loads(existing[4])
             # The first stored fence wins as a whole: fence_at *and* the clock
             # quality it was sampled with are reused by every worker/restart.
             quality = ClockQuality(
@@ -1055,10 +1069,10 @@ class NewsLedger:
             return Fence(
                 fence_id=existing[0],
                 marker_id=marker_id,
-                receipt_id=receipt_id,
-                fence_at=_parse_ts(existing[1]),
+                receipt_id=stored_receipt_id,
+                fence_at=stored_fence_at,
                 clock_quality=quality,
-                worker_id=existing[2],
+                worker_id=existing[3],
             )
 
     # -- durable fill journal + liquidity (N06 durability ports) ------------

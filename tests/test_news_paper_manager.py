@@ -394,6 +394,43 @@ class RecoveryAndRestartTest(ManagerTestCase):
             self.ledger.account_snapshot("paper_news_demo").cash, cash_before
         )
 
+    def test_crash_after_marker_before_fence_never_backfills(self):
+        view = self.manager.submit_candidate(request())
+        order_id = view.order_ref
+        committed_at = _parse_ts(self.ledger._conn.execute(
+            "SELECT committed_at FROM execution_markers WHERE receipt_id = ?",
+            (view.receipt_id,),
+        ).fetchone()[0])
+        # Simulate a crash after T2 (marker durable) but before the fence row.
+        self.ledger.close()
+        now = [committed_at + dt.timedelta(hours=1)]
+        self.ledger = NewsLedger.open(
+            self.tmp, "run_demo_001", "price_plus_news", clock=lambda: now[0]
+        )
+        self.manager = PaperManager(
+            self.ledger, clock_quality=ClockQuality(True, "injected", 1000)
+        )
+        old = self.observation(
+            before_fence=committed_at + dt.timedelta(seconds=1),
+            observation_id="quote_crash_old",
+        )
+        outcome = self.manager.process_observations(order_id, [old], constraints())
+        self.assertEqual(outcome.status, "pending")
+        self.assertEqual(outcome.fills, ())
+        fence = self.ledger.establish_fence(
+            view.receipt_id, self.manager._clock_quality
+        )
+        self.assertGreater(fence.fence_at, committed_at)
+        # The later fence still admits a genuinely new post-fence quote.
+        now[0] = fence.fence_at + dt.timedelta(seconds=20)
+        new = self.observation(
+            after_fence=fence.fence_at + dt.timedelta(seconds=10),
+            observation_id="quote_crash_new", ingest=122,
+        )
+        outcome = self.manager.process_observations(order_id, [new], constraints())
+        self.assertEqual(outcome.status, "filled")
+        self.assertEqual(len(outcome.fills), 1)
+
 
 class NoRawPayloadTest(ManagerTestCase):
     def test_receipt_stores_ids_and_codes_only(self):

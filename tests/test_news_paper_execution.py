@@ -210,6 +210,29 @@ class ExecutionTests(unittest.TestCase):
                              now=T(0, 21), clock=clock0, fence=fence0, constraints=cons)
         self.assertTrue(out.fills)
 
+    def test_fence_boundary_uses_two_clock_budget_at_contract_tolerance(self):
+        # docich#2644 P3 PR-B: the 2 x max_error_ms margin comes from the
+        # §3.5 contract tolerance, not from a replay manifest key.
+        clock0 = ex.ClockQuality(synced=True, source="ntp")
+        self.assertEqual(clock0.max_error_ms, ex.CONTRACT_MAX_ERROR_MS)
+        self.assertEqual(ex.CONTRACT_MAX_ERROR_MS, 1000)
+        fence0 = fence(clock_quality=clock0, fence_at=T(0, 20))
+        cons = constraints(max_quote_age_seconds=D("30"))
+        border = fence0.fence_at + dt.timedelta(seconds=2)  # 2 * 1000 ms
+        at_border = observation(observation_id="quote_border", available_at=border,
+                                market_event_at=T(0, 15), market_available_at=T(0, 15))
+        now = border + dt.timedelta(seconds=1)
+        out = self.run_order(order(accepted_at=T(-10), not_before_at=T(-10)),
+                             observations=[at_border], now=now, clock=clock0,
+                             fence=fence0, constraints=cons)
+        self.assertEqual(out.fills, ())
+        after = replace(at_border, observation_id="quote_after",
+                        available_at=border + dt.timedelta(microseconds=1))
+        out = self.run_order(order(accepted_at=T(-10), not_before_at=T(-10)),
+                             observations=[after], now=now, clock=clock0,
+                             fence=fence0, constraints=cons)
+        self.assertTrue(out.fills)
+
     def test_absent_fence_never_fills(self):
         out = self.run_order(observations=[observation()], fence=None)
         self.assertEqual(out.fills, ())
