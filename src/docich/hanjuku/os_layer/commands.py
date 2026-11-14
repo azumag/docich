@@ -60,7 +60,7 @@ def menu_navigation_reading(screen):
     Unknown cursors/rows and clipped/fading menus keep normal cadence.
     """
     semantic = menu_feedback.reading(screen)
-    if semantic is not None:
+    if semantic is not None or (screen.kind == 'month_menu' and screen.has('じゅうじキー')):
         return semantic
     if screen.kind not in _FEEDBACK_MENU_KINDS:
         return None
@@ -152,6 +152,9 @@ def menu_navigation_feedback(state, actions):
             or not isinstance(cursor, list) or len(cursor) != 2
             or any(type(n) is not int or not 0 <= n < bound for n, bound in zip(cursor, (256, 224)))):
         return False
+    quantity = reading.get('kind') == 'month_menu' and reading.get('menu') == 'soldier_quantity'
+    if quantity and (len(actions) != 1 or cursor not in ([216, 199], [224, 199])):
+        return False
     released_batch = (len(actions) > 1 and
                       (reading.get('kind'), reading.get('menu')) in
                       (('text', 'castle_list'), ('general_list', 'castle_roster')))
@@ -180,6 +183,8 @@ def menu_navigation_feedback(state, actions):
         if not (action.get('type') == 'pad' and isinstance(buttons, list) and len(buttons) == 1
                 and buttons[0] in ('up', 'down', 'left', 'right') and buttons[0] in directions
                 and type(hold) is int and 16 <= hold <= 100):
+            return False
+        if quantity and hold != 100:
             return False
         if batch and (buttons[0] not in ('up', 'down') or hold != 100
                       or (direction is not None and buttons[0] != direction)):
