@@ -69,8 +69,14 @@ def _worker_running(root, name):
     return _pid_is_alive(_read_pid_file(root / f'{name}.pid'))
 
 
-def _prediction_in_flight(state_dir: Path) -> bool:
-    """True while the prediction worker runs an unresolved prediction.
+def _prediction_int(value, *, upper):
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    return value if 0 <= value <= upper else None
+
+
+def _prediction_snapshot(state_dir: Path) -> dict:
+    """Bounded view of the unresolved prediction, or an empty snapshot.
 
     docich#3335 (B): the soviet_now writer never puts ``status`` in the state
     file — it only writes one after verifying the remote prediction is
@@ -80,20 +86,60 @@ def _prediction_in_flight(state_dir: Path) -> bool:
     itself an in-flight record. When ``status`` IS present the strict
     contract applies: only ACTIVE/LOCKED counts, so a future writer that
     records terminal statuses (RESOLVED/CANCELED) stays correct.
+
+    ``remaining_games`` is the round's own count (``round_version=2``). A
+    legacy record without that counter has no bounded remaining value, so the
+    notice falls back to a plain ``予想終了後`` label. Every field is bounded:
+    the projection is read by the broadcast and must not publish state values
+    it did not validate.
     """
+    empty = {
+        'in_flight': False,
+        'worker_running': False,
+        'remaining_games': None,
+        'max_games': None,
+        'games_completed': None,
+        'started_at': None,
+    }
     if not _worker_running(state_dir, PREDICTION_WORKER):
-        return False
+        return empty
+    empty['worker_running'] = True
     try:
         state = json.loads((state_dir / PREDICTION_STATE_FILE).read_text())
     except (OSError, ValueError):
-        return False
+        return empty
     if not isinstance(state, dict):
-        return False
+        return empty
     if 'status' in state:
-        return state.get('status') in PREDICTION_ACTIVE_STATUSES
-    outcomes = state.get('outcome_ids')
-    prediction_id = state.get('prediction_id')
-    return isinstance(prediction_id, str) and bool(prediction_id) and isinstance(outcomes, list) and len(outcomes) >= 2
+        in_flight = state.get('status') in PREDICTION_ACTIVE_STATUSES
+    else:
+        outcomes = state.get('outcome_ids')
+        prediction_id = state.get('prediction_id')
+        in_flight = (isinstance(prediction_id, str) and bool(prediction_id)
+                     and isinstance(outcomes, list) and len(outcomes) >= 2)
+    if not in_flight:
+        return empty
+    max_games = _prediction_int(state.get('max_games'), upper=100)
+    completed = _prediction_int(state.get('games_completed'), upper=100)
+    remaining = None
+    if max_games is not None and completed is not None:
+        remaining = max(0, min(100, max_games - completed))
+    started_at = state.get('created_at')
+    if (type(started_at) not in (int, float) or isinstance(started_at, bool)
+            or not math.isfinite(started_at) or started_at <= 0):
+        started_at = None
+    return {
+        'in_flight': True,
+        'worker_running': True,
+        'remaining_games': remaining,
+        'max_games': max_games,
+        'games_completed': completed,
+        'started_at': started_at,
+    }
+
+
+def _prediction_in_flight(state_dir: Path) -> bool:
+    return _prediction_snapshot(Path(state_dir))['in_flight']
 
 
 def _fresh_boundary(state_dir: Path, kind: str, requested_at: float, now: float) -> bool:
@@ -127,6 +173,16 @@ def prediction_in_flight(state_dir: Path) -> bool:
     already starting, it does not move the scheduled time).
     """
     return _prediction_in_flight(Path(state_dir))
+
+
+def prediction_snapshot(state_dir: Path) -> dict:
+    """Bounded prediction state for the notice (in-flight flag + remaining)."""
+    return _prediction_snapshot(Path(state_dir))
+
+
+def prediction_worker_running(state_dir: Path) -> bool:
+    """True while the prediction worker can still create a prediction."""
+    return _worker_running(Path(state_dir), PREDICTION_WORKER)
 
 
 def boundary_ready(state_dir: Path, requested_at: float, *, now=None) -> bool:

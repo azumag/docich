@@ -65,6 +65,7 @@ class NextCornerNoticeTest(unittest.TestCase):
             "due_at": now + 3600,
             "source": "auto",
             "hold": None,
+            "remaining_games": None,
             "decided_at": now,
             "updated_at": now,
         }
@@ -82,8 +83,10 @@ class NextCornerNoticeTest(unittest.TestCase):
         self.assertEqual(notice["label"], "スペースインベーダー")
         self.assertEqual(notice["when"], "23:46")
         self.assertIsNone(notice["hold"])
+        self.assertIsNone(notice["remainingGames"])
         self.assertEqual(
-            set(notice), {"corner", "label", "when", "dueAt", "updatedAt", "hold"}
+            set(notice),
+            {"corner", "label", "when", "dueAt", "updatedAt", "hold", "remainingGames"},
         )
 
     def test_prediction_hold_stays_visible_with_its_provisional_flag(self):
@@ -92,11 +95,42 @@ class NextCornerNoticeTest(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="docich-next-corner-") as tmpdir:
             tmp = Path(tmpdir)
             # 48-game prediction in flight: the corner is still next, so the
-            # sidebar keeps the card and marks the planned clock provisional.
-            file_uri = self._state(tmp, self._payload(hold="prediction"))
+            # sidebar keeps the card and carries the round's remaining games.
+            file_uri = self._state(tmp, self._payload(
+                hold="prediction", remaining_games=48,
+            ))
             notice = self._build(tmp, file_uri, int(time.time()) * 1000)
         self.assertEqual(notice["corner"], "ninvaders")
         self.assertEqual(notice["hold"], "prediction")
+        self.assertEqual(notice["remainingGames"], 48)
+
+    def test_prediction_pending_is_projected_without_a_clock(self):
+        if shutil.which("node") is None:
+            self.skipTest("Node.js is not installed")
+        now = int(time.time())
+        with tempfile.TemporaryDirectory(prefix="docich-next-corner-") as tmpdir:
+            tmp = Path(tmpdir)
+            # The short post-corner window: the page shows 予想開始待ち, not a
+            # clock, and a past due time must not withdraw it.
+            file_uri = self._state(tmp, self._payload(
+                hold="prediction-pending", due_at=now - 3600, updated_at=now,
+            ))
+            notice = self._build(tmp, file_uri, now * 1000)
+        self.assertEqual(notice["hold"], "prediction-pending")
+        self.assertIsNone(notice["remainingGames"])
+
+    def test_invalid_remaining_games_is_dropped(self):
+        if shutil.which("node") is None:
+            self.skipTest("Node.js is not installed")
+        with tempfile.TemporaryDirectory(prefix="docich-next-corner-") as tmpdir:
+            tmp = Path(tmpdir)
+            file_uri = self._state(tmp, self._payload(
+                hold="prediction", remaining_games=101,
+            ))
+            notice = self._build(tmp, file_uri, int(time.time()) * 1000)
+        # The record is still a valid promise; an out-of-range count becomes
+        # unknown and the page falls back to 予想終了後.
+        self.assertIsNone(notice["remainingGames"])
 
     def test_prediction_hold_ignores_the_past_due_grace(self):
         if shutil.which("node") is None:

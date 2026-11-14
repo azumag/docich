@@ -1186,7 +1186,8 @@ html[data-soren-region="bottom"] #hanjuku-gap { display: none !important; }
    above the GAME feed while sorengame is on air; during a corner the rotation
    withdraws the record, so the card and its height are not reserved. A
    prediction hold keeps the card visible: the head marks the planned clock as
-   provisional and the timing switches to 予想終了後 once that clock passes. */
+   provisional and the timing shows N試合後; a post-corner prediction-pending
+   hold shows 予想開始待ち. */
 #next-corner {
   display: none;
   margin-top: 8px;
@@ -2960,12 +2961,18 @@ html[data-prediction-active="1"][data-next-corner="1"] #feed { height: 570px; }
   let lastNextCornerKey = '';
   function nextCornerTiming(notice, nowSec) {
     if (!notice) return '';
-    const dueAt = Number(notice.dueAt);
-    if (notice.hold === 'prediction'
-        && Number.isFinite(dueAt) && dueAt > 0 && nowSec >= dueAt) {
-      // The prediction boundary can delay the promised slot, so the planned
-      // clock is no longer a time we can stand behind once it has passed.
+    if (notice.hold === 'prediction') {
+      // The prediction owns the slot, so the corner is the next one *after
+      // the prediction*: show its own remaining games, never a clock.
+      const remaining = Number(notice.remainingGames);
+      if (Number.isSafeInteger(remaining) && remaining > 0) {
+        return `${remaining}試合後`;
+      }
       return '予想終了後';
+    }
+    if (notice.hold === 'prediction-pending') {
+      // The short post-corner window where the prediction must start first.
+      return '予想開始待ち';
     }
     return notice.when ? `${notice.when} 予定` : '';
   }
@@ -2976,9 +2983,10 @@ html[data-prediction-active="1"][data-next-corner="1"] #feed { height: 570px; }
     const active = Boolean(notice && notice.label && timing);
     document.documentElement.dataset.nextCorner = active ? '1' : '0';
     const held = active && notice.hold === 'prediction';
-    const head = held && timing !== '予想終了後'
+    const pending = active && notice.hold === 'prediction-pending';
+    const head = held
       ? 'NEXT CORNER · 予想中'
-      : 'NEXT CORNER';
+      : (pending ? 'NEXT CORNER · 予想準備中' : 'NEXT CORNER');
     const key = active ? `${notice.corner}|${notice.label}|${timing}|${head}` : '';
     if (lastNextCornerKey === key) return;
     lastNextCornerKey = key;

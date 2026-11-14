@@ -10,17 +10,21 @@ private.
 
 While Soren runs a prediction (the 48-game improvement cycle) the shared corner
 boundary waits for it to settle, so the start time cannot be promised. The
-record then carries ``hold = "prediction"``: the dashboard still shows which
-corner is next, marks the planned clock as provisional (``予想中``), and
-switches the timing to ``予想終了後`` once that clock passes instead of
-withdrawing the card. The spoken announcement stays suppressed while held.
+record then carries ``hold = "prediction"`` and the round's own
+``remaining_games``: the dashboard still shows which corner is next, marks the
+planned clock as provisional (``予想中``), and shows ``N試合後`` instead of a
+clock. After a corner ends the rotation may publish a short
+``hold = "prediction-pending"`` window so the next prediction starts before a
+new clock is promised (``予想開始待ち``). The spoken announcement stays
+suppressed while held.
 
 Record shape (all fields bounded, no identity that is not already public on the
 broadcast)::
 
     {"schema": 1, "corner": "ninvaders", "label": "スペースインベーダー",
      "due_at": 1794000000, "when": "18:00", "source": "auto",
-     "hold": null, "decided_at": 1793990000, "updated_at": 1793999600}
+     "hold": null, "remaining_games": null,
+     "decided_at": 1793990000, "updated_at": 1793999600}
 """
 from __future__ import annotations
 
@@ -44,7 +48,7 @@ MAX_AGE_SECONDS = 600.0
 LABEL_LIMIT = 28
 WHEN_LIMIT = 16
 SOURCES = frozenset({"auto", "manual"})
-HOLDS = frozenset({"prediction"})
+HOLDS = frozenset({"prediction", "prediction-pending"})
 # The broadcast runs on Japan time; keep the promise independent of the
 # system timezone so the dashboard, the log and the spoken line agree.
 DISPLAY_TZ = dt.timezone(dt.timedelta(hours=9))
@@ -102,11 +106,15 @@ def read(g) -> dict | None:
     when = _clean_text(raw.get("when"), WHEN_LIMIT)
     source = raw.get("source")
     hold = raw.get("hold")
+    remaining = raw.get("remaining_games")
     due_at = raw.get("due_at")
     updated_at = raw.get("updated_at")
     decided_at = raw.get("decided_at")
     if (not isinstance(corner, str) or not corner or not label or not when
             or source not in SOURCES or (hold is not None and hold not in HOLDS)
+            or (remaining is not None and (
+                type(remaining) is not int or isinstance(remaining, bool)
+                or not 0 <= remaining <= 100))
             or type(due_at) is not int
             or type(updated_at) not in (int, float) or isinstance(updated_at, bool)
             or type(decided_at) is not int):
@@ -119,6 +127,7 @@ def read(g) -> dict | None:
         "due_at": due_at,
         "source": source,
         "hold": hold,
+        "remaining_games": remaining,
         "decided_at": decided_at,
         "updated_at": float(updated_at),
     }
@@ -166,7 +175,7 @@ def speech_text(record: dict, now: float) -> str:
 
 def publish(g, *, corner: str, due_at: float, source: str = "auto",
             decided_at: float | None = None, hold: str | None = None,
-            now: float) -> dict | None:
+            remaining_games: int | None = None, now: float) -> dict | None:
     """Publish or refresh the projection. Returns the record, or ``None``.
 
     Rewrites only when the announcement changed or the previous refresh is a
@@ -176,6 +185,12 @@ def publish(g, *, corner: str, due_at: float, source: str = "auto",
         source = "auto"
     if hold not in HOLDS:
         hold = None
+    if type(remaining_games) is not int or isinstance(remaining_games, bool):
+        remaining_games = None
+    elif not 0 <= remaining_games <= 100:
+        remaining_games = None
+    if hold is None:
+        remaining_games = None
     existing = read(g)
     decided = int(decided_at if decided_at is not None else now)
     if (existing is not None
@@ -192,10 +207,12 @@ def publish(g, *, corner: str, due_at: float, source: str = "auto",
         "when": format_when(due_at, now),
         "source": source,
         "hold": hold,
+        "remaining_games": remaining_games,
         "decided_at": decided,
         "updated_at": int(now),
     }
-    stable = ("schema", "corner", "label", "due_at", "when", "source", "hold", "decided_at")
+    stable = ("schema", "corner", "label", "due_at", "when", "source", "hold",
+              "remaining_games", "decided_at")
     if (existing is not None
             and all(existing.get(key) == record[key] for key in stable)
             and float(now) - existing["updated_at"] < REFRESH_SECONDS):
