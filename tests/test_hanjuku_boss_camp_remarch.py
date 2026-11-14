@@ -154,3 +154,24 @@ def test_recall_queue_runs_the_most_injured_first():
     names = ['ミーティア', 'ヘラ', 'ゼウス']         # name order ≠ injury order
     assert [job['name'] for job in post._tasks(statuses, names)] == [
         'ヘラ', 'ゼウス', 'ミーティア']
+
+
+def test_count_mismatch_runs_tasks_without_membership_proof():
+    """docich#3751: a drifted headcount keeps tasks, drops departures."""
+    mem = _mem_with_status({'location': 'camp', 'hp': 20, 'max_hp': 59})
+    state = mem['post_month_status'] = {
+        'scope': [1, '2-6'], 'identity': None, 'stage': 'roster',
+        'names': ['ゼウス'], 'statuses': mem['general_statuses']['statuses'],
+        'dirty': [], 'top_confirmed': True, 'steps': 0,
+        'started_tick': 50, 'complete': False}
+    mem['country_general_count'] = {
+        'scope': [1, '2-6'], 'identity': None, 'count': 32}
+    assert post._complete_scan(mem, state) is True
+    assert state['complete'] is False
+    assert state['count_mismatch'] == 32
+    assert state['stage'] == 'process'
+    assert state['tasks'] == [{'kind': 'recall', 'name': 'ゼウス'}]
+    assert mem['general_statuses']['complete'] is False
+    assert 'recruit_roster' not in mem
+    assert any(r['decision'] == 'roster_count_mismatch'
+               for r in mem['_records'])

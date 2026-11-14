@@ -7295,6 +7295,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v837-run-bot-version-live",
             "hanjuku-chart-v838-boss-camp-remarch",
             "hanjuku-chart-v839-recall-hp-priority",
+            "hanjuku-chart-v840-roster-count-mismatch",
             "hanjuku-chart-v560-castle-list-scroll",
             "hanjuku-chart-v561-post-month-repair-status",
             "hanjuku-chart-v501-idle-reanchor",

@@ -943,86 +943,103 @@ def _complete_scan(mem, state):
                    for name in state['names'])):
         return False
     country = mem.get('country_general_count') or {}
-    if (isinstance(country, dict) and country.get('scope') == state['scope']
-            and country.get('identity') == state['identity']
-            and type(country.get('count')) is int
-            and country['count'] != len(state['names'])):
-        # A mismatched national headcount means the roster was not complete
-        # (or changed mid-visit). Do not delete a general by extrapolation.
-        return False
-    state['complete'] = True
+    mismatch = (isinstance(country, dict) and country.get('scope') == state['scope']
+                and country.get('identity') == state['identity']
+                and type(country.get('count')) is int
+                and country['count'] != len(state['names']))
+    if mismatch:
+        # #3751: the walk reached its end (every observed name read, none
+        # dirty) but the national headcount drifted mid-visit -- g1153
+        # 8-10 counted 32, then ポセイドン fell in battle and the roster
+        # walked 31. A mismatched count is not a membership proof, so no
+        # departure, prune or 'complete' publication -- but the read
+        # statuses are still evidence: run their tasks instead of losing
+        # the whole month's recalls to roster_end_unconfirmed.
+        state['count_mismatch'] = int(country['count'])
+        _log(mem, 'roster_count_mismatch',
+             observed_metric={'country': country['count'],
+                              'roster': len(state['names']),
+                              'generals': len(state['statuses'])},
+             reason='国人数と名簿末尾が一致しない（走査中の死亡・加入の可能性）ため、'
+                    '除籍は行わず読めた将軍のタスクだけを実行する')
+    else:
+        state.pop('count_mismatch', None)
+        state['complete'] = True
     state['steps'] = 0
     # A *complete* roster walk proves that missing names have left. A battle
     # defeat by itself never proves death. Exclude absent names and all their
     # pending/field references only after this membership proof.
-    missing = set(state['statuses']) - set(state['names'])
-    for name in missing:
-        receipts.record_departure(mem, name)
-        _forget_field_residents(mem, name)
-        _forget_pending(mem, name)
-        for key in ('house_eggs', 'egg_types', 'egg_uses'):
-            if isinstance(mem.get(key), dict):
-                mem[key].pop(name, None)
-        for key in ('egg_recheck', 'roster_pending_joins'):
-            if isinstance(mem.get(key), list):
-                mem[key] = [actor for actor in mem[key] if actor != name]
-        # ``general_location_unknown`` lives in the world region; the flat
-        # read here never matched it, so a departed general stayed queued for
-        # a status confirmation he could never receive.
-        unknown = _world(mem).get('general_location_unknown')
-        if isinstance(unknown, list) and name in unknown:
-            unknown.remove(name)
-        _log(mem, 'post_month_general_departed', general=name,
-             reason='将軍名簿を末尾まで実測したが本人がいないため旧状態を除籍')
-    # A name that was never in the cached statuses cannot be purged by the
-    # ``missing`` loop above, yet the completed walk is the same membership
-    # proof: only names on this list are employed generals.
-    world = _world(mem)
-    unknown = world.get('general_location_unknown')
-    if isinstance(unknown, list):
-        known = set(state['names'])
-        kept = [name for name in unknown if name in known]
-        if len(kept) != len(unknown):
-            world['general_location_unknown'] = kept
-    state['statuses'] = {name: state['statuses'][name] for name in state['names']}
+    if state['complete']:
+        missing = set(state['statuses']) - set(state['names'])
+        for name in missing:
+            receipts.record_departure(mem, name)
+            _forget_field_residents(mem, name)
+            _forget_pending(mem, name)
+            for key in ('house_eggs', 'egg_types', 'egg_uses'):
+                if isinstance(mem.get(key), dict):
+                    mem[key].pop(name, None)
+            for key in ('egg_recheck', 'roster_pending_joins'):
+                if isinstance(mem.get(key), list):
+                    mem[key] = [actor for actor in mem[key] if actor != name]
+            # ``general_location_unknown`` lives in the world region; the flat
+            # read here never matched it, so a departed general stayed queued for
+            # a status confirmation he could never receive.
+            unknown = _world(mem).get('general_location_unknown')
+            if isinstance(unknown, list) and name in unknown:
+                unknown.remove(name)
+            _log(mem, 'post_month_general_departed', general=name,
+                 reason='将軍名簿を末尾まで実測したが本人がいないため旧状態を除籍')
+        # A name that was never in the cached statuses cannot be purged by the
+        # ``missing`` loop above, yet the completed walk is the same membership
+        # proof: only names on this list are employed generals.
+        world = _world(mem)
+        unknown = world.get('general_location_unknown')
+        if isinstance(unknown, list):
+            known = set(state['names'])
+            kept = [name for name in unknown if name in known]
+            if len(kept) != len(unknown):
+                world['general_location_unknown'] = kept
+        state['statuses'] = {name: state['statuses'][name] for name in state['names']}
     carry = [name for name, row in state['statuses'].items()
              if row.get('location') == 'carry']
-    tracking = mem.get('carry_tracking')
-    if carry:
-        if (not isinstance(tracking, dict)
-                or tracking.get('chapter') != mem.get('chapter')):
-            mem['carry_tracking'] = {
-                'chapter': mem.get('chapter'), 'initial': len(carry),
-                'remaining': len(carry), 'started': list(state['scope']),
-                'last_scope': list(state['scope']), 'months': 0,
-                'overdue_done': False}
+    if state['complete']:
+        tracking = mem.get('carry_tracking')
+        if carry:
+            if (not isinstance(tracking, dict)
+                    or tracking.get('chapter') != mem.get('chapter')):
+                mem['carry_tracking'] = {
+                    'chapter': mem.get('chapter'), 'initial': len(carry),
+                    'remaining': len(carry), 'started': list(state['scope']),
+                    'last_scope': list(state['scope']), 'months': 0,
+                    'overdue_done': False}
+            else:
+                tracking['initial'] = max(int(tracking.get('initial') or 0),
+                                          len(carry))
+                tracking['remaining'] = len(carry)
         else:
-            tracking['initial'] = max(int(tracking.get('initial') or 0),
-                                      len(carry))
-            tracking['remaining'] = len(carry)
-    else:
-        mem.pop('carry_tracking', None)
+            mem.pop('carry_tracking', None)
     state['tasks'] = _tasks(state['statuses'], state['names'],
                             mem.get('boss_camp_exempt'), camp_stays=_camp_stays(mem),
                             road=_road_skips_checks(mem))
     mem['general_statuses'] = {
         'scope': list(state['scope']), 'identity': state['identity'],
         'statuses': state['statuses'], 'dirty': {}, 'pending_joins': [],
-        'suspected_departures': [], 'complete': True,
+        'suspected_departures': [], 'complete': bool(state['complete']),
         'tick': int(mem.get('tick') or 0)}
     queue = state['tasks']
     # Commit the same full-survey contract that the existing planner, payroll
     # and egg-repair logic already understand. This is a verified per-general
     # scan, unlike the earlier month-menu names-only count.
-    mem['recruit_roster'] = {
-        'chapter': state['scope'][0], 'month': state['scope'][1],
-        'tick': state['started_tick'], 'identity': state['identity'],
-        'names': list(state['names']),
-        'wages': {name: receipts.fixed_wage(name) for name in state['names']},
-        'complete': False}
-    receipts.complete(mem, {
-        'roster_started': state['started_tick'], 'seen': list(state['names']),
-        'roster_end_observed': True})
+    if state['complete']:
+        mem['recruit_roster'] = {
+            'chapter': state['scope'][0], 'month': state['scope'][1],
+            'tick': state['started_tick'], 'identity': state['identity'],
+            'names': list(state['names']),
+            'wages': {name: receipts.fixed_wage(name) for name in state['names']},
+            'complete': False}
+        receipts.complete(mem, {
+            'roster_started': state['started_tick'], 'seen': list(state['names']),
+            'roster_end_observed': True})
     _stage(state, 'process')
     _log(mem, 'post_month_status_complete',
          observed_metric={'generals': list(state['names']),
