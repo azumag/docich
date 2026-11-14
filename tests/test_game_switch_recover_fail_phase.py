@@ -69,6 +69,32 @@ class RecoverFailPhaseTests(unittest.TestCase):
         current, _ = self.store.canonical.load()
         self.assertEqual(current["phase"], "failed")
 
+    def test_recover_settles_a_driverless_rolling_back_to_failed(self):
+        import time
+        with self.store.transaction() as tx:
+            result = self.coordinator._recover_locked(
+                tx, deadline=time.monotonic() + 5.0)
+        current, missing = self.store.canonical.load()
+        self.assertFalse(missing)
+        self.assertEqual(current["phase"], "failed")
+        self.assertEqual(current["last_error"]["error_code"], "rollback_failed")
+        self.assertEqual(current["previous"], self.previous)
+        self.assertEqual(result.status, "failed")
+        self.assertEqual(result.error_code, "rollback_failed")
+        self.assertEqual(result.cleanup_pending, False)
+
+    def test_recover_leaves_a_stable_failed_phase_recoverable(self):
+        import time
+        state, _ = self.store.canonical.load()
+        state.update(phase="failed", operation=None, request_id=None)
+        self.store.canonical.save(state)
+        with self.store.transaction() as tx:
+            result = self.coordinator._recover_locked(
+                tx, deadline=time.monotonic() + 5.0)
+        current, _ = self.store.canonical.load()
+        self.assertEqual(current["phase"], "failed")
+        self.assertEqual(result.status, "failed")
+
 
 if __name__ == "__main__":
     unittest.main()

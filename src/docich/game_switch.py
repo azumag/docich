@@ -5654,6 +5654,18 @@ class GameSwitchCoordinator:
                 cleanup_pending=False,
                 receipt=None,
             )
+        if phase == "rolling_back":
+            # A rollback whose switch driver died parks the canonical here with
+            # no owner: in-progress phases are refused by the FIFO driver and
+            # the fixed owner recovery only declares failed/recovery_required
+            # (g1163 2026-11-14 stuck for hours). Settle the live phase to the
+            # stable failed one without touching runtimes; the next recover
+            # owns the cleanup/restore.
+            return self._recover_fail_locked(
+                tx, state, warnings,
+                "中断したrollbackをfailedへ確定しました。再実行で復旧します",
+                ERROR_ROLLBACK_FAILED,
+            )
         if phase == "failed" and adopt_failed_candidate:
             return self._recover_adopt_failed_candidate_locked(tx, deadline, warnings)
         if phase == "failed":
