@@ -1190,9 +1190,12 @@ class RetroCornerManager:
         try:
             with self._locked():
                 state = self._read_state()
-                if (state.get("status") != "failed"
-                        or state.get("rotation_request_id") != request_id
-                        or state.get("switch_request_id") != request_id):
+                owner = state.get("rotation_request_id")
+                if owner is None:
+                    # Older restore-failure rows never gained a rotation id;
+                    # the recorded switch request is their only identity.
+                    owner = state.get("switch_request_id")
+                if state.get("status") != "failed" or owner != request_id:
                     return False
                 if not self._released_record_proved(state, corner_id, request_id):
                     return False
