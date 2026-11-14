@@ -1934,6 +1934,49 @@ class TestRestoreFailedRecovery(RetroCornerTestBase):
             "started_at": "2026-09-23T12:00:00Z",
         }
 
+    def test_recover_failed_drives_stuck_restoring_to_completion(self):
+        """A crash between the durable restoring write and the restore switch
+        leaves a BUSY row no automatic path finishes. The fixed operator
+        recovery replays the recorded finish instead."""
+        mgr, coordinator = self.manager(["robots"])
+        rotation_id = str(uuid.uuid4())
+        restore_id = str(uuid.uuid4())
+        runtime = self._runtime("robots", 1)
+        state = mgr._default_state()
+        state.update(
+            status="restoring",
+            game="robots",
+            previous_game="sorengame",
+            rotation_request_id=rotation_id,
+            rotation_runtime_id=runtime["runtime_id"],
+            switch_request_id=restore_id,
+            started_at=self.now_value.isoformat(),
+        )
+        mgr._write_state(state)
+        canonical = mgr.store.initialize()
+        canonical.update(phase="ready", next_generation=2, operation=None,
+                         request_id=None, deadline_at=None, active=runtime)
+        mgr.store.canonical.save(canonical)
+
+        result = mgr.recover_failed()
+
+        self.assertEqual(result.status, "completed")
+        self.assertEqual(coordinator.calls, [("switch", "sorengame")])
+        self.assertEqual(mgr._read_state()["status"], "completed")
+
+    def test_recover_failed_refuses_restoring_without_owner(self):
+        mgr, coordinator = self.manager(["robots"])
+        state = mgr._default_state()
+        state.update(status="restoring", game="robots", previous_game="sorengame",
+                     started_at=self.now_value.isoformat())
+        mgr._write_state(state)
+
+        result = mgr.recover_failed()
+
+        self.assertEqual(result.status, "failed")
+        self.assertEqual(coordinator.calls, [])
+        self.assertEqual(mgr._read_state()["status"], "restoring")
+
     def _setup_restore_failed(
         self, *, receipt_status="rolled_back", result_patch=None,
         receipt_patch=None, canonical_patch=None, error_code="timeout",
