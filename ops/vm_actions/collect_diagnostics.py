@@ -15058,6 +15058,19 @@ def _section_omission_stub(key, value):
             entry = value.get(keep)
             if isinstance(entry, dict):
                 stub[keep] = entry
+    elif key == "hanjuku_tactical" and isinstance(value, dict):
+        # #4152: keep the same small projections the soft budget keeps, so a
+        # fat envelope cannot blank the chapter/month/phase evidence an
+        # operator reads to tell whether the game is still moving.
+        stub["basis"] = "bot_record"
+        for keep in ("policy", "chart_worker"):
+            entry = value.get(keep)
+            if isinstance(entry, dict):
+                stub[keep] = entry
+        for keep in ("chapter", "age_sec"):
+            entry = value.get(keep)
+            if type(entry) is int:
+                stub[keep] = entry
     return stub
 
 
