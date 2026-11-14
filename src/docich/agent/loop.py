@@ -201,6 +201,23 @@ def run_agent(
     # Adapter/brain code below the loop (ffmpeg capture, brain subprocess) is
     # counted through the process-local binding added in #3287.
     telemetry_mod.set_active(tel)
+    # #4228: the run is the primary prediction owner. A fenced Hanjuku agent
+    # starts one best-effort ticker whose identity is this exact runtime, so a
+    # corner observe loop that never starts (or stops before its first tick)
+    # cannot leave the viewers without a wager. The common timer still adopts
+    # the canonical runtime as a fallback.
+    if (fence is not None and game.name == 'hanjuku-hero'
+            and isinstance(fence.lease_id, str) and fence.lease_id):
+        try:
+            from ..hanjuku_predictions import start_owner_ticker
+            start_owner_ticker(g, {
+                'game': fence.game,
+                'runtime_id': fence.runtime_id,
+                'generation': fence.generation,
+                'lease_id': fence.lease_id,
+            })
+        except Exception as exc:
+            print(f"[agent] 警告: Hanjuku 予想 ticker を開始できませんでした: {exc}", flush=True)
 
     save_clock = {'last': 0.0}
     while True:

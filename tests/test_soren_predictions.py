@@ -225,8 +225,10 @@ def test_rotation_timer_runs_the_soren_reader_beside_the_hanjuku_tick():
     source = (Path(__file__).resolve().parents[1] / "src/docich/corner_rotation.py").read_text(
         encoding="utf-8")
 
-    # The Hanjuku tick is resolved through the hot-load trampoline (#3838).
-    hanjuku_tick = "module('hanjuku_predictions').tick(self.g)"
+    # The Hanjuku tick is resolved through the hot-load trampoline (#3838) and
+    # now runs the live-run adoption entry (#4228).
+    assert "getattr(prediction_module, 'tick_active', None)" in source
+    hanjuku_tick = 'prediction_tick(self.g)'
     assert hanjuku_tick in source
     assert "soren_prediction_tick(self.g)" in source
     assert source.index(hanjuku_tick) < source.index("soren_prediction_tick(self.g)")

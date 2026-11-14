@@ -1,7 +1,10 @@
 """One durable Hanjuku prediction, separate from Soren's 48-game round state.
 
-Only the corner owner may create. Common rotation ticks may retry settlement
-of an already-owned round after game teardown. All Twitch I/O is outside the
+The live run owns creation. The run-side agent is the primary creator, and the
+common rotation timer may adopt the canonical active runtime when that owner
+disappeared. Both paths must present the full canonical identity and a fresh
+observed run; identity-less timer ticks still retry settlement of an
+already-owned round but can never create one. All Twitch I/O is outside the
 RetroArch input gate and failures cannot prevent game completion.
 """
 from __future__ import annotations
@@ -14,6 +17,7 @@ import math
 import os
 from pathlib import Path
 import secrets
+import threading
 import time
 
 from . import hanjuku_hotload
@@ -41,6 +45,13 @@ MAX_ERROR_STREAK = 1_000_000
 MAX_CANCEL_SNAPSHOT_BYTES = 256 * 1024
 POLL_SECONDS = 30
 RETRY_SECONDS = 300
+#: A timer/agent tick may adopt a run only while its own record is fresh. The
+#: agent observes about every 1.5 s; this is a liveness bound, not a session
+#: deadline (a stalled screen still keeps observing).
+RUN_FRESH_SECONDS = 120.0
+#: The run-side owner is the primary creator. It polls cheaply and lets the
+#: prediction ledger's own POLL_SECONDS gate the remote reads.
+OWNER_TICK_SECONDS = 5.0
 LIVE = {'ACTIVE', 'LOCKED'}
 DONE = {'RESOLVED', 'CANCELED'}
 ERRORS = {'transport', 'auth', 'rate_limited', 'rejected', 'invalid_response',
@@ -738,8 +749,9 @@ def _advance(g, root, state, identity, now, enabled, ending_window, client_facto
     if now < state['next_poll_at'] and not new_settlement:
         return
     if identity is None and (not row or row['status'] in DONE) and not new_settlement:
-        # g1067 2026-10-28: timer ticks carry no identity and can never create.
-        # Consuming the poll window here starved the owner's observe tick.
+        # g1067 2026-10-28: identity-less timer ticks can never create. Consuming
+        # the poll window here starved the owner's observe tick. The live-run
+        # adoption entry passes an identity, so it does not take this branch.
         return
     state.update(last_poll_at=now, next_poll_at=now + POLL_SECONDS, error=None)
     if not enabled:
@@ -977,6 +989,111 @@ def _advance(g, root, state, identity, now, enabled, ending_window, client_facto
     row.update(id=created[0]['id'], outcome_ids=[o['id'] for o in created[0]['outcomes']],
                status=created[0]['status'])
     state['mode'] = 'active'
+
+
+def active_identity(g, *, now=None):
+    """Canonical identity of the live Hanjuku run, or ``None``.
+
+    Creation is owned by the run, not by the corner's observe loop. A caller
+    may act for this identity only while all of the following are true:
+
+    * the canonical ledger is ``ready`` and its active seat is Hanjuku;
+    * the per-runtime ``hanjuku_run.json`` belongs to that exact identity;
+    * the run has observed at least once (resume context is available);
+    * the run is not terminal and its last observation is fresh.
+
+    A stale/dead run is never adopted: creating a wager for a runtime nobody
+    observes would just open a round that cannot settle. All failures are
+    "no live owner" rather than exceptions, so both the common timer and the
+    run-side ticker can probe without affecting the corner.
+    """
+    now = time.time() if now is None else now
+    try:
+        if type(now) not in (int, float) or isinstance(now, bool) or not math.isfinite(now):
+            return None
+        root = Path(g.state_dir)
+        canonical = read_record(root / 'game_switch.json', limit=256 * 1024)
+        if canonical.get('phase') != 'ready':
+            return None
+        # Never open a wager while a transition still owns the plane. The
+        # canonical active seat is only the live target once every in-flight
+        # marker is clear.
+        if (canonical.get('operation') is not None
+                or canonical.get('request_id') is not None
+                or canonical.get('deadline_at') is not None
+                or canonical.get('candidate') is not None
+                or canonical.get('previous') is not None
+                or canonical.get('retiring')):
+            return None
+        active = canonical.get('active')
+        if not isinstance(active, dict) or active.get('game') != 'hanjuku-hero':
+            return None
+        identity = progress.checked_identity({key: active.get(key) for key in progress.KEYS})
+        runtime = runtime_directory(root, identity['runtime_id'])
+        run = hanjuku_run.load(runtime, identity)
+        if not run:
+            return None
+        if run.get('terminal_reason') in hanjuku_run.TERMINAL_REASONS:
+            return None
+        observations = run.get('observations')
+        if type(observations) is not int or observations < 1:
+            return None
+        observed_at = run.get('observed_at')
+        if type(observed_at) not in (int, float) or isinstance(observed_at, bool):
+            return None
+        if not math.isfinite(observed_at) or observed_at <= 0:
+            return None
+        if not 0 <= now - observed_at <= RUN_FRESH_SECONDS:
+            return None
+        return identity
+    except Exception:
+        return None
+
+
+def tick_active(g, **kwargs):
+    """Tick the live run with its canonical identity (timer fallback).
+
+    When no live run exists this is exactly the old identity-less timer tick:
+    it still retries settlement of an already-owned round, but can never
+    create one. Passing the canonical identity is what lets the common timer
+    adopt a run whose corner/agent owner disappeared.
+    """
+    identity = active_identity(g, now=kwargs.get('now'))
+    if identity is None:
+        return tick(g, **kwargs)
+    return tick(g, identity, **kwargs)
+
+
+def _owner_tick_loop(g, identity, interval, stop):
+    """Run-side owner loop; never raises into the agent's game loop."""
+    from . import hanjuku_hotload
+
+    while not stop.is_set():
+        try:
+            module = hanjuku_hotload.module('hanjuku_predictions')
+            probe = getattr(module, 'active_identity', None)
+            if callable(probe) and probe(g) == identity:
+                module.tick(g, identity)
+        except Exception:
+            pass
+        if stop.wait(interval):
+            return
+
+
+def start_owner_ticker(g, identity, *, interval=OWNER_TICK_SECONDS):
+    """Start the run-side primary prediction ticker for one owned runtime.
+
+    Returns the daemon thread. The game/agent process owns this thread for its
+    lifetime; a lost fence exits the process and the daemon goes with it. The
+    common rotation timer calls :func:`tick_active` as a fallback.
+    """
+    identity = progress.checked_identity(identity)
+    stop = threading.Event()
+    thread = threading.Thread(
+        target=_owner_tick_loop, args=(g, identity, interval, stop),
+        name='hanjuku-predictions-owner', daemon=True)
+    thread.start()
+    return thread
 
 
 def tick(g, identity=None, *, now=None, client_factory=configured_client):
