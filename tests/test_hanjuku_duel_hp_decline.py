@@ -19,8 +19,8 @@ def duel_screen(hand_y=177):
     return parse(c.frame())
 
 
-def test_a_losing_duel_is_declined_so_cards_and_eggs_are_used():
-    mem = {'battle': {'ally': 'ラズベリー', 'enemy': 'グリッシーニ',
+def test_the_heros_losing_duel_is_declined_so_cards_and_eggs_are_used():
+    mem = {'battle': {'ally': 'どうし', 'enemy': 'グリッシーニ',
                       'ally_hp': 20, 'enemy_hp': 60}}
     actions = policy.yes_no_step(duel_screen(193), mem)
     assert actions[0]['buttons'] == ['a']
@@ -30,7 +30,14 @@ def test_a_losing_duel_is_declined_so_cards_and_eggs_are_used():
     assert record['observed_metric']['enemy_hp'] == 60
 
 
-def test_an_equal_or_better_duel_is_accepted():
+def test_a_general_duel_is_declined_even_at_equal_hp():
+    mem = {'battle': {'ally': 'ラズベリー', 'enemy': 'グリッシーニ',
+                      'ally_hp': 80, 'enemy_hp': 40}}
+    assert policy.yes_no_step(duel_screen(193), mem)[0]['buttons'] == ['a']
+    assert mem['_records'][-1]['strategy_variant'] == 'decline_duel_general'
+
+
+def test_the_heros_equal_or_better_duel_is_accepted():
     for ally_hp, enemy_hp in ((60, 60), (80, 40)):
         mem = {'battle': {'ally': 'どうし', 'enemy': 'グリッシーニ',
                           'ally_hp': ally_hp, 'enemy_hp': enemy_hp}}

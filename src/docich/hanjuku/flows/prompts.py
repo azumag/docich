@@ -495,17 +495,27 @@ def _duel_offer(mem):
     The battle record carries the two current HP values read from the panels;
     an unread (or absent) battle keeps the owner's original accept rule.
     """
+    from ..os_layer.world import NAME
     battle = mem.get('battle') if isinstance(mem, dict) else None
     if not isinstance(battle, dict):
         return True, '一騎打ちは青ゲージを消費する前提で受ける', 'accept_duel', None
     hp, enemy_hp = battle.get('ally_hp'), battle.get('enemy_hp')
-    metric = {'ally': battle.get('ally'), 'enemy': battle.get('enemy'),
+    ally = battle.get('ally')
+    metric = {'ally': ally, 'enemy': battle.get('enemy'),
               'ally_hp': hp, 'enemy_hp': enemy_hp}
-    if (type(hp) is int and type(enemy_hp) is int
-            and hp > 0 and enemy_hp > 0 and hp < enemy_hp):
-        return (False,
-                f'一騎打ちの相手HP{enemy_hp}に対し自軍HP{hp}で劣勢のため断り、切り札・卵で戦う',
-                'decline_duel_hp_disadvantage', metric)
+    if type(hp) is int and type(enemy_hp) is int and hp > 0 and enemy_hp > 0:
+        if ally != NAME:
+            # The owner's 2026-09-25 accept rule is about the hero's blue-gauge
+            # duel. A general's duel leaves the cards and eggs unused; the
+            # owner reports those duels lost every time, so decline them and
+            # fight the normal card/egg battle instead.
+            return (False,
+                    f'将軍{ally}の一騎打ちは切り札・卵を使えず、HP{hp}/{enemy_hp}のため断る',
+                    'decline_duel_general', metric)
+        if hp < enemy_hp:
+            return (False,
+                    f'一騎打ちの相手HP{enemy_hp}に対し自軍HP{hp}で劣勢のため断り、切り札・卵で戦う',
+                    'decline_duel_hp_disadvantage', metric)
     return True, '一騎打ちは青ゲージを消費する前提で受ける', 'accept_duel', metric
 
 
