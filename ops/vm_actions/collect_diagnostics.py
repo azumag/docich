@@ -224,6 +224,17 @@ _HARD_DROP_ORDER = ("corners", "ai", "workers", "nethack_history",
 # observed from a run that happened to fit. ``prediction`` duplicates the same
 # already-bounded dicts under a key the whole-section drops never take away.
 _HARD_KEEP = ("meta", "prediction", "lawsim", "severity_triggers")
+# Fixed tokens that let a reduced ``hanjuku_tactical`` section still say why
+# its detail is missing (live status otherwise collapses every cause into
+# ``output_omitted``: g1163 2026-11-14 13:38 could not tell a stopped game
+# loop from a bot that had not written its record).
+_HANJUKU_DETAIL_STATUSES = frozenset({
+    "ok", "stale", "unavailable", "unsupported_chapter", "identity_changed",
+})
+_HANJUKU_DETAIL_REASONS = frozenset({
+    "record_not_ready", "record_unbound", "identity_mismatch", "terminal",
+    "unsupported_policy", "record_stale",
+})
 # Production thresholds of the 予想王 boards, kept in sync with
 # ``docich.prediction_leaderboard.DEFAULT_MIN_ROUNDS`` /
 # ``DEFAULT_MIN_PARTICIPATIONS``: the yoso adapter passes no ``--min-rounds`` or
@@ -12694,23 +12705,29 @@ def _collect_hanjuku_tactical(state_dir, now):
                 or not isinstance(active.get('lease_id'), str) or not active['lease_id']
                 or not isinstance(active.get('runtime_id'), str)
                 or not re.fullmatch(r'g[0-9]+-[a-f0-9]{8}', active['runtime_id'])):
-            return out
+            return {**out, 'reason': 'record_not_ready'}
         runtime = root / 'runtimes' / active['runtime_id']
         out['chart_worker'] = _project_hanjuku_chart_worker(runtime, now)
         bot, modified = _read_hanjuku_record(runtime / 'hanjuku_bot.json')
         run, _ = _read_hanjuku_record(runtime / 'hanjuku_run.json')
         trace = bot.get('decision_trace')
-        if (not isinstance(trace, dict)
-                or any(trace.get(k) != active.get(k) or run.get(k) != active.get(k) for k in HANJUKU_TACTICAL_KEYS)
-                or run.get('terminal_reason') or run.get('terminal_candidate')):
-            return out
+        if not isinstance(trace, dict):
+            return {**out, 'reason': 'record_unbound'}
+        if any(trace.get(k) != active.get(k) or run.get(k) != active.get(k)
+               for k in HANJUKU_TACTICAL_KEYS):
+            return {**out, 'reason': 'identity_mismatch'}
+        if run.get('terminal_reason') or run.get('terminal_candidate'):
+            return {**out, 'reason': 'terminal'}
         age = now - modified
         if not 0 <= age <= 30:
-            return {**out, 'status': 'stale'}
+            # Keep a bounded age: live status must tell "the bot stopped
+            # writing" from "the record is unreadable" without the detail.
+            return {**out, 'status': 'stale', 'reason': 'record_stale',
+                    'age_sec': min(int(age), 3600)}
         mem = bot.get('policy')
         if (not isinstance(mem, dict) or type(mem.get('chapter')) is not int
                 or not 1 <= mem['chapter'] <= 12):
-            return {**out, 'status': 'unsupported_chapter'}
+            return {**out, 'status': 'unsupported_chapter', 'reason': 'unsupported_policy'}
         assessment = _project_hanjuku_card_assessment(mem.get('last_card_assessment'), mem.get('tick'))
         refill = _project_hanjuku_refill(mem, active)
         house_deferral = _project_hanjuku_house_deferral(mem, active)
@@ -15076,7 +15093,15 @@ def _diagnostics_budget(payload):
         policy = summary.get('policy') if isinstance(summary, dict) else None
         chapter = summary.get('chapter') if isinstance(summary, dict) else None
         age_sec = summary.get('age_sec') if isinstance(summary, dict) else None
+        detail_status = summary.get('status') if isinstance(summary, dict) else None
+        detail_reason = summary.get('reason') if isinstance(summary, dict) else None
         payload["hanjuku_tactical"] = {"status": "output_omitted", "basis": "bot_record"}
+        # The omission says "detail reduced", not "game state unknown". Keep
+        # the collector's fixed cause tokens so live status can still name it.
+        if detail_status in _HANJUKU_DETAIL_STATUSES:
+            payload['hanjuku_tactical']['detail_status'] = detail_status
+        if detail_reason in _HANJUKU_DETAIL_REASONS:
+            payload['hanjuku_tactical']['detail_reason'] = detail_reason
         if isinstance(policy, dict):
             payload['hanjuku_tactical']['policy'] = policy
         worker = summary.get('chart_worker') if isinstance(summary, dict) else None

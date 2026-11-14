@@ -255,6 +255,33 @@ class ProjectionTests(unittest.TestCase):
             "active_hanjuku": None,
         })
 
+    def test_reduced_diagnostics_keep_the_fixed_cause_tokens(self):
+        payload = self.payload()
+        tactical = payload["diagnostics"]["hanjuku_tactical"]
+        tactical.clear()
+        tactical.update({"status": "output_omitted", "basis": "bot_record",
+                         "detail_status": "stale", "detail_reason": "record_stale",
+                         "age_sec": 100})
+        out = self.status.project(payload)
+        self.assertEqual(out["status"], "output_omitted")
+        self.assertEqual(out["detail_status"], "stale")
+        self.assertEqual(out["detail_reason"], "record_stale")
+        self.assertEqual(out["age_sec"], 100)
+        body = self.status.reply(out, {
+            "RUN_SHA": "b" * 40, "RUN_ID": "123",
+            "RUN_ATTEMPT": "1", "SOURCE_COMMENT_ID": "456"})["body"]
+        self.assertIn("`detail=stale`", body)
+        self.assertIn("`reason=record_stale`", body)
+        self.assertIn("age `100s`", body)
+
+    def test_an_unknown_detail_token_is_not_projected(self):
+        payload = self.payload()
+        payload["diagnostics"]["hanjuku_tactical"].update({
+            "detail_status": "PRIVATE", "detail_reason": "DO-NOT-EMIT"})
+        out = self.status.project(payload)
+        self.assertIsNone(out["detail_status"])
+        self.assertIsNone(out["detail_reason"])
+
     def test_reply_contains_only_projection_and_fixed_metadata(self):
         out = self.status.project(self.payload())
         env = {

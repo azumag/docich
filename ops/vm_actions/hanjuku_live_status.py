@@ -15,6 +15,12 @@ import sys
 STEPS = ("4-B1", "4-B2", "4-B3", "4-B4")
 ORDER_STATES = frozenset({"pending", "launched_unconfirmed", "launched", "done", "failed"})
 TACTICAL_STATUSES = frozenset({"ok", "unsupported_chapter", "unavailable", "identity_changed", "output_omitted"})
+# Fixed tokens the diagnostics budget keeps beside a reduced tactical section.
+TACTICAL_DETAIL_STATUSES = frozenset({"ok", "stale", "unavailable", "unsupported_chapter", "identity_changed"})
+TACTICAL_DETAIL_REASONS = frozenset({
+    "record_not_ready", "record_unbound", "identity_mismatch", "terminal",
+    "unsupported_policy", "record_stale",
+})
 ROTATION_STATUSES = frozenset({
     "ready", "waiting", "starting", "active", "restoring", "preparing",
     "recovery_required", "failed",
@@ -189,6 +195,10 @@ def project(payload):
     status = raw_status if raw_status in TACTICAL_STATUSES else "unknown"
     chapter = _bounded_int(tactical.get("chapter"), 1, 12)
     age_sec = _bounded_int(tactical.get("age_sec"), 0, 3600)
+    raw_detail = tactical.get("detail_status")
+    detail_status = raw_detail if raw_detail in TACTICAL_DETAIL_STATUSES else None
+    raw_reason = tactical.get("detail_reason")
+    detail_reason = raw_reason if raw_reason in TACTICAL_DETAIL_REASONS else None
     policy = tactical.get("policy") if isinstance(tactical.get("policy"), dict) else {}
     orders = policy.get("orders") if isinstance(policy.get("orders"), dict) else {}
 
@@ -233,6 +243,8 @@ def project(payload):
         "status": status,
         "chapter": chapter,
         "age_sec": age_sec,
+        "detail_status": detail_status,
+        "detail_reason": detail_reason,
         "active": active,
         "orders": projected_orders,
         "field": field,
@@ -266,7 +278,12 @@ def reply(projected, env):
         "Hanjuku live boss status: success",
         f"SHA: `{sha}`",
         f"Chapter: `{projected['chapter'] if projected['chapter'] is not None else 'unknown'}`",
-        f"Diagnostics: `{projected['status']}` / age `{projected['age_sec'] if projected['age_sec'] is not None else 'unknown'}s`",
+        "Diagnostics: " + " ".join((
+            f"`{projected['status']}`",
+            f"`detail={projected['detail_status']}`" if projected.get('detail_status') else "`detail=none`",
+            f"`reason={projected['detail_reason']}`" if projected.get('detail_reason') else "`reason=none`",
+            f"/ age `{projected['age_sec'] if projected['age_sec'] is not None else 'unknown'}s`",
+        )),
         "Rotation: " + ", ".join((
             f"`status={rotation['status']}`",
             f"`pending={_bool_token(rotation['pending'])}`",

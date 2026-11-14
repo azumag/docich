@@ -64,6 +64,48 @@ def test_terminal_and_symlink_and_large_records_hidden(tmp_path):
     assert 'castles' not in d._collect_hanjuku_tactical(tmp_path,110)
 
 
+def test_stale_record_keeps_a_bounded_age_and_reason(tmp_path):
+    setup(tmp_path)
+    out = d._collect_hanjuku_tactical(tmp_path, 200)
+    assert out['status'] == 'stale'
+    assert out['reason'] == 'record_stale'
+    assert out['age_sec'] == 100
+    assert 'policy' not in out
+
+
+def test_soft_omission_keeps_the_fixed_detail_cause(monkeypatch):
+    payload = {'hanjuku_tactical': {'status': 'stale', 'reason': 'record_stale',
+                                    'age_sec': 100, 'castles': ['x' * 2000]},
+               'ai': {'recent_events': ['x' * 2000], 'anomalous_components': {}},
+               'nethack_history': {'daily': {'records': []},
+                                   'completed_runs': {'records': []}},
+               'workers': {'details': {}},
+               'soren91_drop_profile': {'profileStatus': 'missing'}}
+    monkeypatch.setattr(d, 'MAX_JSON_BYTES', 600)
+    d._diagnostics_budget(payload)
+    tactical = payload['hanjuku_tactical']
+    assert tactical['status'] == 'output_omitted'
+    assert tactical['detail_status'] == 'stale'
+    assert tactical['detail_reason'] == 'record_stale'
+    assert tactical['age_sec'] == 100
+
+
+def test_an_unknown_detail_token_is_not_copied(monkeypatch):
+    payload = {'hanjuku_tactical': {'status': 'PRIVATE', 'reason': 'DO NOT EMIT',
+                                    'castles': ['x' * 2000]},
+               'ai': {'recent_events': ['x' * 2000], 'anomalous_components': {}},
+               'nethack_history': {'daily': {'records': []},
+                                   'completed_runs': {'records': []}},
+               'workers': {'details': {}},
+               'soren91_drop_profile': {'profileStatus': 'missing'}}
+    monkeypatch.setattr(d, 'MAX_JSON_BYTES', 600)
+    d._diagnostics_budget(payload)
+    tactical = payload['hanjuku_tactical']
+    assert 'detail_status' not in tactical
+    assert 'detail_reason' not in tactical
+    assert 'PRIVATE' not in str(tactical) and 'DO NOT EMIT' not in str(tactical)
+
+
 def test_generation_switch_during_read_hides_projection(tmp_path,monkeypatch):
     setup(tmp_path); original=d._read_hanjuku_record; calls=0
     def read(path):
