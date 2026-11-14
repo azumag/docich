@@ -8302,6 +8302,7 @@ def _collect_corner_files(state_dir, payload, now):
                 entry["restoring_settle_code"] = (
                     settle_code if isinstance(settle_code, str)
                     and settle_code in _RETRO_RESTORING_SETTLE_CODES else None)
+                entry["lock_state"] = _probe_retro_lock(state_dir)
         payload[name] = entry
 
     present, readable, data = _load_state_file(state_dir / "trading" / "presentation.json")
@@ -9030,6 +9031,34 @@ def _lawsim_projection(corners, now):
         "narration": counters.get("narration"),
         "overlay_announcements": counters.get("overlay_announcements"),
     }
+
+
+def _probe_retro_lock(state_dir):
+    """Whether the retro corner's exclusive lock is free, without writing.
+
+    The timer-safe restore driver (``RetroCornerManager.recover_failed_restore``)
+    runs under ``locks/retro-corner.lock``; a stuck ``restoring`` row with no
+    ``last_error_code`` means the driver's exception (typically a busy lock) is
+    swallowed by the rotation. A shared, non-blocking probe distinguishes a
+    held lock from a missing one and never creates the file or waits.
+    """
+    path = Path(state_dir) / "locks" / "retro-corner.lock"
+    try:
+        fd = os.open(path, os.O_RDONLY)
+    except FileNotFoundError:
+        return "missing"
+    except OSError:
+        return "unreadable"
+    try:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_SH | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return "held"
+        except OSError:
+            return "unreadable"
+        return "free"
+    finally:
+        os.close(fd)
 
 
 def _collect_programs(state_dir, soren, now):
