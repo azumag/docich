@@ -132,9 +132,14 @@ def classify(frame: Frame) -> str:
     if any(f.fraction((35,y,110,y+1),border)>.85 for y in (16,17)):
         return 'field_menu'
     # Outdoor maps are grass/forest/water, unlike the plain battle arena.
+    # Chapter 9's sand/desert and the pale island coasts carry no green at all
+    # (g1190 2026-11-15 03:0x frame: 0.00 grass, 0.00 water on the real field
+    # map, so the bot read 'event' on the map and pressed A into menus).
     grass=f.fraction((0,0,256,135),lambda r,g,b:g>70 and g>r*1.35 and g>b*1.3)
     water=f.fraction((0,135,256,224),lambda r,g,b:b>100 and b>r*1.7)
-    if grass>.22 or water>.25:
+    sand=f.fraction((0,0,256,150),lambda r,g,b:r>150 and g>105 and b<130 and r>b*1.3)
+    pale=f.fraction((0,0,256,150),lambda r,g,b:g>185 and b>170 and r>115 and g>r*1.12 and b<g+25)
+    if grass>.22 or water>.25 or sand>.5 or pale>.5:
         # Encounter/result prompts use a green, white or blue bright border.
         # Both edges are required; animated water/grass is not a prompt.
         bright=lambda r,g,b:max(r,g,b)>220 and r>60
