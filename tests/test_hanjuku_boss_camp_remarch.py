@@ -142,3 +142,15 @@ def test_boss_move_dest_jumps_at_the_boss_without_a_receipt(monkeypatch):
     assert result == [pad('y')]
     assert mem['y_jump']['goal'] == BOSS
     assert mem['y_jump']['mode'] == 'target'
+
+
+def test_recall_queue_runs_the_most_injured_first():
+    """docich#3008: a badly hurt camper is recalled before a healthy one."""
+    statuses = {
+        'ヘラ': {'location': 'camp', 'hp': 20, 'max_hp': 59},
+        'ゼウス': {'location': 'camp', 'hp': 85, 'max_hp': 85},
+        'ミーティア': {'location': 'camp'},          # unmeasured: last
+    }
+    names = ['ミーティア', 'ヘラ', 'ゼウス']         # name order ≠ injury order
+    assert [job['name'] for job in post._tasks(statuses, names)] == [
+        'ヘラ', 'ゼウス', 'ミーティア']

@@ -172,8 +172,18 @@ def _tasks(statuses, names, boss_camp_months=None, camp_stays=False, road=False)
     # name order g1163 queued ジェラート's repair ahead of シュゼット's recall;
     # the repair ran ~3 minutes, the month rolled over and the recall never
     # started (12:32, 12:38, 12:44 — three months). Recalls go first.
-    return ([job for job in queue if job['kind'] in ('recall', 'boss_move')]
-            + [job for job in queue if job['kind'] not in ('recall', 'boss_move')])
+    def _hp_rank(job):
+        info = statuses.get(job['name']) or {}
+        hp, maximum = info.get('hp'), info.get('max_hp')
+        if type(hp) is int and type(maximum) is int and maximum > 0:
+            return (0, hp / maximum)
+        return (1,)                       # unmeasured: after the measured
+    # docich#3008: among the recall jobs the most injured goes first — a
+    # camper left waiting (ヘラ HP 20→10→2 in g1075) can be met and killed.
+    first = [job for job in queue if job['kind'] in ('recall', 'boss_move')]
+    first.sort(key=_hp_rank)              # stable: keeps queue order on ties
+    return first + [job for job in queue
+                    if job['kind'] not in ('recall', 'boss_move')]
 
 
 def _house_freshly_read(mem):
