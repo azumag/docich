@@ -4485,3 +4485,31 @@ def test_loss_observation_does_not_assert_a_bad_defensive_decision(tmp_path):
     assert '判断に課題' not in text
     assert 'どの判断で守りが崩れた' not in text
     assert '守備配置・兵力・敵の接近状況を確認' in text
+
+
+def test_blind_map_advances_a_chapter_intermission():
+    # docich#3721: a chapter transition parks on a map with no HUD, text or
+    # cursor until A advances it (g1153: 174 s of no input; one A continued).
+    from docich.hanjuku.flows.map import MAP_BLIND_ADVANCE
+    mem = {'chapter': 1, 'variant': 'chart', 'picked': [], '_records': [],
+           'tick': 500, 'world_map_tick': 400}
+    blind = Screen(lines=[], hand=None, text='', kind='map')
+    for _ in range(MAP_BLIND_ADVANCE - 1):
+        assert policy.map_step(blind, mem, None) == []
+    assert policy.map_step(blind, mem, None) == [policy.pad('a')]
+    assert mem['map_blind'] == 0
+    assert any(r['decision'] == 'map_blind_advance' for r in mem['_records'])
+
+
+def test_a_visible_cursor_resets_the_blind_map_streak():
+    from docich.hanjuku.flows.map import MAP_BLIND_ADVANCE
+    frame = _own_roof_frame()
+    mem = {'chapter': 1, 'variant': 'chart', 'picked': [], '_records': [],
+           'tick': 500, 'world_map_tick': 400}
+    blind = Screen(lines=[], hand=None, text='', kind='map')
+    for _ in range(MAP_BLIND_ADVANCE - 1):
+        policy.map_step(blind, mem, None)
+    assert mem['map_blind'] == MAP_BLIND_ADVANCE - 1
+    visible = Screen(lines=[], hand=None, text='', kind='map', cursor=(80, 90))
+    policy.map_step(visible, mem, frame)
+    assert mem.get('map_blind') is None

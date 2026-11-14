@@ -162,6 +162,7 @@ PICKER_LOOP_LIMIT = 3          # visits of one position before giving up
 PICKER_LOOP_MIN_STEP = 8       # px a step must move before it counts as a visit
 PICKER_NO_GOAL_LIMIT = 30      # aimless picker observations before confirming where it stands
 SELECT_FOCUS_INTERVAL = 300    # observations between hero re-focuses (~7.5 min)
+MAP_BLIND_ADVANCE = 12         # cursorless/HUD-less map reads before pressing A (#3721)
 
 
 def _world_map_wanted(mem) -> bool:
@@ -1361,6 +1362,22 @@ def map_step(screen: Screen, mem, frame):
         # with `nav_last` null). Counted, not recorded, so it stays cheap.
         _tally(mem, 'map_no_cursor')
     _watch_cursor_still(mem)
+    if not _cursor(screen) and not screen.header and not screen.text:
+        # #3721: a chapter transition parks on a map with no HUD, text or
+        # cursor until A advances the intermission (g1153: 174 s of no
+        # input; one A continued the dialogue). A normal field map always
+        # shows a cursor, so all three missing means a cinematic: press A
+        # once per bounded streak instead of waiting it out.
+        blind = int(mem.get('map_blind') or 0) + 1
+        mem['map_blind'] = blind
+        if blind >= MAP_BLIND_ADVANCE:
+            mem['map_blind'] = 0
+            _record(mem, 'map_blind_advance', screen=screen.kind,
+                    observed_metric={'blind': blind},
+                    reason='カーソル・HUD・文字のない地図が続くため章送り等の演出をAで進める')
+            return [pad('a')]
+    else:
+        mem.pop('map_blind', None)
     # Idle maps deliberately wait for armies/events. Keep any interrupted
     # search for the next order instead of repeatedly jumping home before
     # plan selection and ownership surveys can run.
