@@ -2500,7 +2500,7 @@ class GameSwitchCoordinator:
                             if timeout_s is not None
                             else self.default_timeout_s
                         )
-                        return self.store._recover_locked(tx, deadline=deadline)
+                        return self._recover_locked(tx, deadline=deadline)
                     return SwitchResult(
                         request_id=str(state.get("request_id") or ""),
                         operation=str(state.get("operation") or "maintain_fifo"),
