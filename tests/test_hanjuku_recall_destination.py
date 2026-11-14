@@ -202,10 +202,7 @@ def test_unknown_origin_does_not_borrow_old_integrated_cursor_or_picker_without_
     mem['uncertain'] = False
     at(monkeypatch, 'アルマムーン')
     monkeypatch.setattr(p, 'world_markers', lambda _: [])
-    # v831: an aimless picker holds one observation on the castle under the
-    # ring instead of pressing right; the stale integrated cursor is still
-    # never borrowed as an origin.
-    assert p.world_map_step(VIEW, mem, picker()) == []
+    assert p.world_map_step(VIEW, mem, picker()) == [p.pad('right')]
     assert 'goal' not in _flow(mem)['recall']
     assert 'origin' not in _flow(mem)['recall']
 
@@ -436,39 +433,10 @@ def test_the_picker_fallback_names_the_capital_when_no_goal(monkeypatch):
     mem = memory()
     at(monkeypatch, 'アルマムーン')
     monkeypatch.setattr(p, 'world_cursor', lambda _: None)
-    for _ in range(p.PICKER_NO_GOAL_LIMIT - 1):
+    for _ in range(p.RECALL_LIMIT - 1):
         p.world_map_step(VIEW, mem, picker())
     p.world_map_step(VIEW, mem, picker())
     assert _flow(mem)['recall']['goal'] == p.chart.home_castle(1)
-
-
-def test_an_aimless_picker_confirms_the_own_castle_under_the_ring(monkeypatch):
-    """g1163 2026-11-14 10:14-10:16: 34 aimless steps were cut by the month scene.
-
-    The ring starts on the home castle, so the castle under it is the same
-    destination the budget fallback would confirm — naming it at once keeps
-    the recall inside the month it started in.
-    """
-    mem = memory()
-    at(monkeypatch, 'アルマムーン')
-    # One settling observation with no press keeps the ring on the castle.
-    assert p.world_map_step(VIEW, mem, picker()) == []
-    assert p.world_map_step(VIEW, mem, picker()) == [p.pad('a'), {'type': 'wait', 'ms': 700}, p.pad('a')]
-    recall = _flow(mem)['recall']
-    assert recall['goal'] == 'アルマムーン'
-    assert recall['goal_from_cursor'] is True
-    assert recall['stage'] == 'await_dispatch'
-    record = next(r for r in mem['_records'] if r['decision'] == 'camp_recall_destination')
-    assert record['observed_metric']['origin_source'] == 'picker_cursor'
-
-
-def test_an_aimless_picker_never_confirms_an_enemy_castle(monkeypatch):
-    """A ring standing on an enemy castle keeps pressing until the full budget."""
-    mem = memory()
-    at(monkeypatch, 'アルマムーン', flags={c: 'enemy' for c in p.chart.castles(1)})
-    for _ in range(p.PICKER_NO_GOAL_LIMIT + 1):
-        assert p.world_map_step(VIEW, mem, picker()) == [p.pad('right')]
-    assert _flow(mem)['recall'].get('goal') is None
 
 
 def test_the_picker_progress_records_the_month_timing(monkeypatch):
