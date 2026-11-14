@@ -6208,8 +6208,13 @@ class GameSwitchCoordinator:
             "cleanup_pending": True if cleanup_pending else None,
         }
         try:
+            # Transition from the phase the store holds *now*: a failed rollback
+            # parks the canonical at ``rolling_back`` after the caller captured
+            # ``state``, and a stale expected phase makes this settle silently
+            # no-op (g1163 2026-11-14: recover left the canonical stuck at
+            # rolling_back/rollback_failed with no driver left to finish it).
             tx.transition(
-                {str(state["phase"])}, "failed",
+                {str(current["phase"])}, "failed",
                 updates={
                     "last_result": last_result,
                     "last_error": {"error_code": error_code, "detail": detail},
