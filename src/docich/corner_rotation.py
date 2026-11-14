@@ -2203,9 +2203,27 @@ def main(argv=None):
     parser.add_argument("--config", type=Path)
     parser.add_argument("command", choices=["tick", "status", "recover"])
     args = parser.parse_args(argv)
-    manager = CornerRotationManager(load_global(Path(__file__).resolve().parents[2], args.config))
+    try:
+        manager = CornerRotationManager(
+            load_global(Path(__file__).resolve().parents[2], args.config)
+        )
+    except Exception:
+        if args.command != "status":
+            raise
+        # `status` is the read-only probe the recovery script uses to verify
+        # the reservation. Name the failing stage with a fixed literal so the
+        # caller can distinguish setup from ledger I/O, and never echo the
+        # exception text (it may carry provider output or credentials).
+        print("corner-rotation status: initialization failed", file=sys.stderr)
+        return 5
     if args.command == "status":
-        print(manager.path.read_text() if manager.path.exists() else "{}")
+        try:
+            body = manager.path.read_text() if manager.path.exists() else "{}"
+        except (OSError, UnicodeError):
+            print("corner-rotation status: ledger read failed", file=sys.stderr)
+            return 6
+        print(body)
+        return 0
     elif args.command == "recover":
         # Operator-gated recovery (#986). RotationError messages are fixed
         # literals from this module; unexpected exception text is never printed

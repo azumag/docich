@@ -68,7 +68,21 @@ fi
 # The manual NetHack operator is deliberately not used for this reservation.
 # Read the existing rotation ledger and select only the fixed reviewed path.
 # Unreadable/missing/mixed reservation evidence must never become permission.
-if ! rotation_status="$("$launcher" --config "$config" corner-rotation status 2>/dev/null)"; then
+# The status probe explains its own failures with fixed literals on stderr;
+# only those literals are surfaced, and every other stderr line is discarded
+# so no provider/config text can leak into the operator-visible failure.
+status_err="$(mktemp "${TMPDIR:-/tmp}/docich-corner-rotation-status.XXXXXX")" || \
+  fail "cannot create a temporary file for status diagnostics" 40
+trap 'rm "$status_err" || true' EXIT
+if ! rotation_status="$("$launcher" --config "$config" corner-rotation status 2>"$status_err")"; then
+  status_detail=""
+  if [[ -s "$status_err" ]]; then
+    status_detail="$(grep -E '^corner-rotation status: (initialization failed|ledger read failed)$' \
+      "$status_err" | tail -n 1 || true)"
+  fi
+  if [[ -n "$status_detail" ]]; then
+    fail "cannot verify corner rotation reservation ($status_detail)" 26
+  fi
   fail "cannot verify corner rotation reservation" 26
 fi
 if ! recovery_owner="$(python3 -c '
