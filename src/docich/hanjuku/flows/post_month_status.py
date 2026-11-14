@@ -96,6 +96,20 @@ def _boss_camp_holds_siege(info):
             and info.get('broken') is not True)
 
 
+def _boss_move_ready(info):
+    """A siege-holding camper healthy enough to march on to the boss again.
+
+    #3505: the exemption keeps the siege, but an intact general (アルテミス
+    49/49 in the report) sitting three months still loses the boss fight.
+    Send him on via the camp menu's いどう instead; an injured or unmeasured
+    one keeps the plain exemption (負傷時は従来どおり).
+    """
+    hp, maximum = info.get('hp'), info.get('max_hp')
+    return (_boss_camp_holds_siege(info)
+            and type(hp) is int and type(maximum) is int
+            and maximum > 0 and hp > maximum // 2)
+
+
 def _road_skips_checks(mem):
     """Chapter 9 before its boss phase: no monthly locate or camp recall.
 
@@ -138,6 +152,10 @@ def _tasks(statuses, names, boss_camp_months=None, camp_stays=False, road=False)
             # never holds the siege (docich#3659 follow-up: ヴィーナス).
             if (_boss_camp_holds_siege(info)
                     and int(months.get(name) or 0) <= BOSS_CAMP_EXEMPT_MONTHS):
+                # #3505: an intact siege camper marches on to the boss by the
+                # camp menu's いどう instead of idling the exempt months away.
+                if _boss_move_ready(info):
+                    queue.append({'kind': 'boss_move', 'name': name})
                 continue
             queue.append({'kind': 'recall', 'name': name})
         elif info.get('location') == 'castle':
@@ -154,8 +172,8 @@ def _tasks(statuses, names, boss_camp_months=None, camp_stays=False, road=False)
     # name order g1163 queued ジェラート's repair ahead of シュゼット's recall;
     # the repair ran ~3 minutes, the month rolled over and the recall never
     # started (12:32, 12:38, 12:44 — three months). Recalls go first.
-    return ([job for job in queue if job['kind'] == 'recall']
-            + [job for job in queue if job['kind'] != 'recall'])
+    return ([job for job in queue if job['kind'] in ('recall', 'boss_move')]
+            + [job for job in queue if job['kind'] not in ('recall', 'boss_move')])
 
 
 def _house_freshly_read(mem):
@@ -1597,7 +1615,7 @@ def step(screen, mem, frame):
             # roof detector is not a prerequisite for opening its menu.
             _stage(state, 'locate_open')
             return [pad('a')]
-        if job['kind'] == 'recall':
+        if job['kind'] in ('recall', 'boss_move'):
             camps = own_camps(frame) if frame is not None else []
             cursor = screen.cursor
             if not camps and cursor is None:
@@ -1617,7 +1635,8 @@ def step(screen, mem, frame):
             _flow(mem)['recall'] = {
                 'stage': 'to_camp', 'target': list(camp['target']),
                 'last_seen': list(camp['target']), 'steps': 0,
-                'general': name, 'camp_kind': camp.get('kind')}
+                'general': name, 'camp_kind': camp.get('kind'),
+                **({'boss_move': True} if job['kind'] == 'boss_move' else {})}
             _stage(state, 'wait_recall', recall_started=True)
             recall = recall_flow.camp_recall_step(screen, mem, frame)
             return recall if recall is not None else []

@@ -7293,6 +7293,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v835-map-unsteerable-nudge",
             "hanjuku-chart-v836-camp-dest-yjump",
             "hanjuku-chart-v837-run-bot-version-live",
+            "hanjuku-chart-v838-boss-camp-remarch",
             "hanjuku-chart-v560-castle-list-scroll",
             "hanjuku-chart-v561-post-month-repair-status",
             "hanjuku-chart-v501-idle-reanchor",
