@@ -784,3 +784,106 @@ def require_verified(spec):
         raise AdapterError('AI cannot start before checkpoint verification')
     if receipt:
         _start_mode(receipt)
+
+
+def seal_dead_manual_save(g, runtime_id: str, *, adapter=None, now=None):
+    """Seal a dead runtime's completed manual save into its boundary record.
+
+    A tmux-session loss kills Hanjuku before the boundary acknowledgement is
+    written, even when the manual save it requested had already finished.  The
+    runtime then holds the newest progress with a ``cancelled`` boundary, and
+    every later start refuses it ("Hanjuku reached boundary identity mismatch"),
+    so the corner can never resume that run at all.
+
+    This operator-only seal accepts *only* that exact shape: the runtime is
+    provably gone (no game/agent window, no RetroArch command port), a manual
+    save request bound to the same identity exists, the checkpoint is newer
+    than that request, and the state file parses as a complete RASTATE.  It
+    records the checkpoint as ``suspended`` — the same outcome a completed
+    manual save writes — never as a stall or a game over.
+    """
+    from . import hanjuku_run
+    from .adapters.retroarch import resolve_rom
+    from .config import load_game
+
+    state_dir = Path(g.state_dir)
+    runtimes = state_dir / 'runtimes'
+    if runtimes.is_symlink():
+        raise AdapterError('runtime storage may not be a symlink')
+    runtime = runtimes / runtime_id
+    if runtime.is_symlink() or not runtime.is_dir():
+        raise AdapterError('runtime is missing')
+    generation = runtime_id_generation(runtime_id)
+    run = read_record(runtime / hanjuku_run.RUN_FILE)
+    if not isinstance(run, dict) or not run:
+        raise AdapterError('runtime has no run record')
+    expected = {key: run.get(key) for key in ('game', 'runtime_id', 'generation', 'lease_id')}
+    if expected['game'] != 'hanjuku-hero' or expected['runtime_id'] != runtime_id:
+        raise AdapterError('runtime identity mismatch')
+    if type(expected['generation']) is not int or expected['generation'] != generation:
+        raise AdapterError('runtime generation mismatch')
+    try:
+        uuid.UUID(str(expected['lease_id']))
+    except (TypeError, ValueError) as exc:
+        raise AdapterError('runtime lease is invalid') from exc
+    if run.get('terminal_reason') is not None:
+        raise AdapterError('runtime already has terminal evidence')
+    record = read_record(runtime / BOUNDARY_FILE)
+    if record and not (record.get('status') == 'cancelled'
+                       and all(record.get(key) == value for key, value in expected.items())):
+        raise AdapterError('runtime boundary is not an interrupted one')
+    manual_path = runtime / MANUAL_SAVE_FILE
+    manual = read_record(manual_path)
+    if (not manual or manual.get('allow_unsaved_stop') is True
+            or any(type(manual.get(key)) is not type(value) or manual.get(key) != value
+                   for key, value in {**expected, 'schema': 1}.items())
+            or not isinstance(manual.get('request_id'), str) or not manual['request_id']):
+        raise AdapterError('runtime has no completed manual save request')
+    try:
+        uuid.UUID(manual['request_id'])
+    except ValueError as exc:
+        raise AdapterError('manual save request is invalid') from exc
+    # The runtime must be provably gone; a live game still owes its own
+    # boundary and must never be sealed from the outside.
+    if adapter is None:
+        raise AdapterError('runtime liveness probe is required')
+    deadline = time.monotonic() + 5.0
+    if getattr(adapter, 'runtime_provably_dead', None) is None:
+        raise AdapterError('adapter cannot prove the runtime is gone')
+    if adapter.runtime_provably_dead(deadline, None) is not True:
+        raise AdapterError('runtime is not provably gone')
+    name = resolve_rom(g, load_game(g, 'hanjuku-hero')).stem + '.state'
+    saved = runtime / 'states' / name
+    if saved.is_symlink() or not saved.is_file():
+        raise AdapterError('runtime has no saved checkpoint')
+    before = saved.stat()
+    if before.st_size > MAX_BYTES:
+        raise AdapterError('saved checkpoint exceeds read bound')
+    try:
+        if before.st_mtime_ns < manual_path.stat().st_mtime_ns:
+            raise AdapterError('saved checkpoint predates the manual save request')
+        digest = checkpoint_digest(saved)
+        core_digest(saved)
+    except AdapterError:
+        raise
+    after = saved.stat()
+    if (before.st_size, before.st_mtime_ns) != (after.st_size, after.st_mtime_ns):
+        raise AdapterError('saved checkpoint changed during sealing')
+    stamp = (now or time.time())
+    sealed = dict(_spec_identity(expected), schema=1, status='reached',
+                  outcome='suspended', request_id=manual['request_id'],
+                  checkpoint=name, sha256=digest, checkpoint_bytes=before.st_size,
+                  frame_sha256=run.get('frame_sha256'),
+                  sealed_at=stamp, sealed_from='dead-runtime-manual-save-v1')
+    if read_record(runtime / BOUNDARY_FILE) != record or saved.stat().st_size != before.st_size:
+        raise AdapterError('runtime state changed during sealing')
+    atomic_write_json(runtime / BOUNDARY_FILE, sealed)
+    return {'runtime_id': runtime_id, 'generation': generation,
+            'checkpoint': name, 'bytes': before.st_size,
+            'outcome': 'suspended', 'request_id': manual['request_id']}
+
+
+def _spec_identity(expected):
+    from .game_switch import RuntimeSpec
+    keys = ('game', 'runtime_id', 'generation', 'lease_id')
+    return {key: expected[key] for key in keys}

@@ -3757,6 +3757,31 @@ class RetroCornerManager:
             return CornerResult("failed", game=target, detail="failed-slotの再開状態を作成できません")
         return self._wait_and_finish(resumed)
 
+    def seal_dead_save(self, runtime_id: str) -> CornerResult:
+        """Seal a dead runtime's finished manual save as its boundary.
+
+        Operator-only companion of ``recover_runtime`` for the case where the
+        runtime is already gone and canonical no longer owns it, so relaunching
+        it is impossible: without the seal the newest progress can never be
+        resumed ("Hanjuku reached boundary identity mismatch") and the corner
+        would restart from an older chapter.  Every precondition — dead
+        runtime, completed manual save request, newer complete checkpoint — is
+        re-proved here; the caller only names the runtime.
+        """
+        from . import hanjuku_resume, hanjuku_run
+        from .retroarch_boundary import read_record
+        state_dir = Path(self.g.state_dir)
+        runtime = state_dir / 'runtimes' / validate_runtime_id(runtime_id)
+        run = read_record(runtime / hanjuku_run.RUN_FILE)
+        if not isinstance(run, dict) or not run:
+            raise RetroCornerError('復旧対象runtimeにrun記録がありません')
+        spec = RuntimeSpec.from_runtime(state_dir, dict(run, adapter=str(run.get('adapter') or 'retroarch')))
+        adapter = make_coordinator_adapter(self.g, spec)
+        sealed = hanjuku_resume.seal_dead_manual_save(
+            self.g, spec.runtime_id, adapter=adapter)
+        return CornerResult('completed', game='hanjuku-hero',
+                            detail=f"sealed {sealed['checkpoint']} ({sealed['bytes']} bytes)")
+
     def recover_runtime(self) -> CornerResult:
         """Relaunch a dead scripted runtime, then end the corner safely.
 
@@ -4675,6 +4700,11 @@ def _build_parser() -> argparse.ArgumentParser:
         "recover-failed",
         help="canonical failed後のレトロ枠を安全に復旧し、同じゲームを再試行する",
     )
+    seal = sub.add_parser(
+        "seal-dead-save",
+        help="消滅したruntimeの完了済み手動セーブを境界として確定する（復旧専用）",
+    )
+    seal.add_argument("--runtime-id", required=True)
     sub.add_parser(
         "recover-runtime",
         help="死んだscripted runtimeを正規手順で再起動し、セーブを試みた停止でコーナーを終了する",
@@ -4737,8 +4767,10 @@ def main(argv: list[str] | None = None) -> int:
         method_name = {
             "recover-failed": "recover_failed",
             "recover-runtime": "recover_runtime",
+            "seal-dead-save": "seal_dead_save",
         }.get(args.command, args.command)
-        result = getattr(manager, method_name)()
+        result = (manager.seal_dead_save(args.runtime_id)
+                  if args.command == "seal-dead-save" else getattr(manager, method_name)())
         print(
             json.dumps(
                 {
