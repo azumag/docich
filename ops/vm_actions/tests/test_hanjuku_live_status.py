@@ -261,7 +261,9 @@ class ProjectionTests(unittest.TestCase):
         tactical.clear()
         tactical.update({"status": "output_omitted", "basis": "bot_record",
                          "detail_status": "stale", "detail_reason": "record_stale",
-                         "age_sec": 100})
+                         "chapter": 9, "age_sec": 100,
+                         "policy": {"chapter": 9, "month": "47-9",
+                                    "phase": "month_menu"}})
         out = self.status.project(payload)
         self.assertEqual(out["status"], "output_omitted")
         self.assertEqual(out["detail_status"], "stale")
@@ -273,6 +275,9 @@ class ProjectionTests(unittest.TestCase):
         self.assertIn("`detail=stale`", body)
         self.assertIn("`reason=record_stale`", body)
         self.assertIn("age `100s`", body)
+        # The last known position is shown, but never as the current one.
+        self.assertIn("Chapter: `9` (last record; stale)", body)
+        self.assertIn("`month=47-9`", body)
 
     def test_an_unknown_detail_token_is_not_projected(self):
         payload = self.payload()
