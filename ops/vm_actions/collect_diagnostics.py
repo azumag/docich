@@ -7499,6 +7499,8 @@ def _project_corner_state(data):
             "hanjuku-chart-v904-boss-gather-no-cell",
             "hanjuku-chart-v906-gather-nearest-first",
             "hanjuku-chart-v908-switch-rollback",
+            "hanjuku-chart-v907-castle-jump-scroll",
+            "hanjuku-chart-v909-castle-jump-scroll",
             "hanjuku-chart-v864-shop-list-batch",
             "hanjuku-chart-v862-camp-field-move",
             "hanjuku-chart-v852-visible-menu-batches",

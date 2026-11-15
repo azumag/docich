@@ -8,7 +8,7 @@ from docich.hanjuku.os_layer.commands import menu_navigation_reading, pad
 from docich.hanjuku.os_layer.font import UNKNOWN
 from docich.hanjuku.os_layer.screen import parse
 from test_hanjuku_castle_jump import (
-    CHAPTER_6_LONG, M, _castle_list, _castle_list_window, _jump, _memory,
+    CHAPTER_6_LONG, M, _castle_list, _castle_list_window, _jump, _memory, _native_scroll,
 )
 from test_hanjuku_house import roster
 from test_hanjuku_menu_cursor_tempo import entry, state
@@ -85,7 +85,7 @@ def test_castle_feedback_cannot_reuse_a_previous_observation(change):
     assert entry.observation_interval_ms(saved, [pad('down')]) == 1500
 
 
-def test_long_castle_list_keeps_ten_downs_then_select_with_less_scheduled_wait():
+def test_long_castle_list_scrolls_batches_then_selects_with_bounded_wait():
     mem = _memory()
     mem['chapter'] = 6              # CHAPTER_6_LONG names
     mem['castle_jump'] = _jump('list', menu_presses=2, source='アブダレ')
@@ -97,18 +97,18 @@ def test_long_castle_list_keeps_ten_downs_then_select_with_less_scheduled_wait()
         before = deepcopy(mem)
         interval = entry.observation_interval_ms(state(screen), actions)
         assert mem == before
-        if actions == [pad('select')]:
-            assert interval == 1500
-            break
-        assert actions == [pad('down')]
         intervals.append(interval)
-        selected += 1
-        offset = max(0, selected - 7)
+        if actions == [pad('select')]:
+            break
+        for action in actions:
+            if action.get('type') == 'pad':
+                selected, offset = _native_scroll(selected, offset, action['buttons'][0],
+                                                  len(CHAPTER_6_LONG))
     else:
         raise AssertionError('the source row was never reached')
     assert selected == 10
     assert mem['castle_jump']['phase'] == 'confirm'
     assert not [r for r in mem['_records'] if r['decision'] == 'castle_jump_failed']
-    assert intervals == [500] * 10
-    # Scheduling budget only; input count and the observed SELECT gate stay intact.
-    assert sum(intervals) == 5000  # formerly ten 1500ms cycles
+    # The nine-tap descent batch exceeds the released-batch cadence bound;
+    # the two-tap page turn and the one-row step up keep the fast one.
+    assert intervals == [1500, 500, 500, 1500]
