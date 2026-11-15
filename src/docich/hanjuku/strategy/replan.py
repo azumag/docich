@@ -812,7 +812,7 @@ def interim_candidates(mem, allow_sole=False) -> dict:
         # other source), so the boss waves come from there and the rear
         # generals are gathered by the forward moves below instead.
         road = chart.corridor(chapter) or ()
-        if road and chart.corridor_next(chapter, owned) is None and chart.moving_boss_cell(chapter):
+        if road and chart.corridor_next(chapter, owned) is None:
             owned = [c for c in owned if c == road[-1]]
         boss_xy = next((xy for name, xy in cells.items() if chart.is_boss_castle(name)), None)
         garrison = _world(mem).get('garrison') or {}
@@ -1008,7 +1008,7 @@ def interim_candidates(mem, allow_sole=False) -> dict:
         # the front (road_next is None once every road castle is ours).
         road = chart.corridor(chapter) or ()
         gather = road[-1] if road else None
-        if gather in owned and chart.moving_boss_cell(chapter):
+        if gather in owned:
             lead_moves, stage_more, staged = _corridor_forward_moves(
                 mem, owned, garrison, busy, gather)
             moves.extend(lead_moves)
