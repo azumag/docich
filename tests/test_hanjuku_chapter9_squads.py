@@ -180,3 +180,15 @@ def test_the_fourth_to_sixth_attacker_is_not_held_as_a_duplicate_retake():
         assert O._retake_reserved(attack, mem) is False
         plain = {k: v for k, v in attack.items() if k != 'corridor'}
         assert O._retake_reserved(plain, mem) is True   # other chapters keep the gate
+
+
+def test_the_hero_post_move_comes_before_the_staging_moves():
+    """Owner 2026-11-15: a hero left in the front castle never reached the post."""
+    mem = _hero_forward(_mem(garrison={HOME: [HERO, 'バトウラ'], FRONT: ['リーキ'],
+                                       NEXT: ['ポセイドン']}))
+    orders = _orders(mem)
+    hero = [i for i, o in enumerate(orders) if o.get('corridor_hero')]
+    staging = [i for i, o in enumerate(orders)
+               if o['purpose'] == 'move' and not o.get('corridor_hero')]
+    assert hero and staging
+    assert hero[0] < staging[0]
