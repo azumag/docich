@@ -256,6 +256,71 @@ def _month_end_soon(mem, margin=None):
     return int(mem.get('tick') or 0) - start >= estimate - limit
 
 
+VISIBLE_MOVE_LIMIT = 40      # field-cursor steps allowed on one いどう
+
+
+def _visible_own_castle(mem, frame):
+    """The own castle whose roof is visible now (field いどう destination)."""
+    if not isinstance(frame, Frame):
+        return None
+    from ..os_layer.world import _owned, roof_camera_support
+    support = roof_camera_support(mem, frame)
+    if not support:
+        return None
+    _, cam = support
+    cells = chart.castles(mem.get('chapter') or 0)
+    owned = _owned(mem)
+    for roof in castle_roofs(frame):
+        if roof.get('kind') != 'own' or roof.get('clipped'):
+            continue
+        world = (roof['target'][0] + cam[0], roof['target'][1] + cam[1])
+        for name, cell in cells.items():
+            if name in owned and abs(world[0] - cell[0]) + abs(world[1] - cell[1]) <= 12:
+                return {'castle': name, 'world': list(world)}
+    return None
+
+
+def _visible_move_dest_step(screen, mem, frame, state):
+    """Steer the field cursor onto the visible own castle, then confirm.
+
+    Owner 2026-11-15: the camp menu's いどう is a field-cursor move, not the
+    whole-island picker, so a visible castle can be chosen where it stands
+    instead of walking the island ring.
+    """
+    from ..os_layer.world import observed_cursor_cell
+    from ..os_layer.navigation import nav_step
+    goal = (state.get('move_visible') or {}).get('castle')
+    cell = chart.castles(mem.get('chapter') or 0).get(goal) if goal else None
+    steps = int(state.get('move_steps') or 0) + 1
+    state['move_steps'] = steps
+    if cell is None or not isinstance(frame, Frame) or steps > VISIBLE_MOVE_LIMIT:
+        _visible_move_abort(mem, state, goal, steps, 'cursor_not_found')
+        return [pad('b')]
+    here = observed_cursor_cell(screen, mem, frame)
+    if here and abs(here[0] - cell[0]) + abs(here[1] - cell[1]) <= 12:
+        state['goal'] = goal
+        _record(mem, 'camp_recall_visible_move_confirm',
+                observed_metric={'castle': goal, 'cursor': list(here), 'steps': steps},
+                reason='フィールドカーソルが見えている自軍城の屋根に載ったため、いどう先として決定する')
+        return _request_recall(mem, state, goal, [pad('a')], target_cell=list(here))
+    move = nav_step(screen, mem, frame, cell)
+    if move == 'infeasible':
+        _visible_move_abort(mem, state, goal, steps, move)
+        return [pad('b')]
+    if move in ('up', 'down', 'left', 'right'):
+        return [pad(move)]
+    return []
+
+
+def _visible_move_abort(mem, state, goal, steps, why):
+    _flow(mem).pop('recall', None)
+    mem['uncertain'] = True
+    _arm_recall_skip(mem, state)
+    _record(mem, 'camp_recall_visible_move_aborted',
+            observed_metric={'castle': goal, 'steps': steps, 'why': why},
+            reason='見えている城へフィールドカーソルを合わせられないため、いどうを閉じて通常の帰還に戻す')
+
+
 def _camp_recall_step(screen: Screen, mem, frame, *, observed_camps=None):
     """Owner rule (2026-09-28): a camp (野営) seen on screen is recalled.
 
@@ -538,7 +603,15 @@ def _camp_recall_step(screen: Screen, mem, frame, *, observed_camps=None):
                             reason='野営で決定したが野営メニューが開かずマップに戻ったため、野営へ合わせ直して決定し直す')
             return []              # the window is still fading in
         state.pop('menu_map_waits', None)
-        choice = 'いどう' if (state.get('boss') or state.get('boss_move')) else 'きかん'
+        if not (state.get('boss') or state.get('boss_move')):
+            visible = _visible_own_castle(mem, frame)
+            if visible is not None:
+                state['move_visible'] = visible
+                _record(mem, 'camp_recall_visible_move',
+                        observed_metric={'castle': visible['castle'], 'world': visible['world']},
+                        reason='画面上に自軍城が見えているため、全島ピッカーではなくいどうで可視城へ帰還する')
+        choice = 'いどう' if (state.get('boss') or state.get('boss_move')
+                              or state.get('move_visible')) else 'きかん'
         move = menu_to(screen, choice)
         if move is None:
             misses = state['cursor_misses'] = int(state.get('cursor_misses', 0)) + 1
@@ -565,6 +638,8 @@ def _camp_recall_step(screen: Screen, mem, frame, *, observed_camps=None):
         return [pad('a')]
     if stage == 'dest':
         if screen.kind != 'map_target':
+            if screen.kind == 'map' and state.get('move_visible'):
+                return _visible_move_dest_step(screen, mem, frame, state)
             if screen.kind == 'map':
                 _flow(mem).pop('recall', None)
                 mem['uncertain'] = True
