@@ -11,8 +11,8 @@ from docich.hanjuku.state.regions import flow as _flow
 from docich.hanjuku_screen import Screen
 
 CASTLE = (255, 40, 60)          # the measured own-roof red
-A_TARGET = (60, 60)             # ジョンリギ at cam (491, 514)
-B_TARGET = (76, 211)            # キカンドン at the same cam
+A_TARGET = (60, 180)            # サヌト at cam (92, 140)
+B_TARGET = (188, 36)            # オシロガ at the same cam
 
 
 def castle_frame():
@@ -25,7 +25,7 @@ def castle_frame():
 
 
 def memory():
-    mem = {'chapter': 1, 'captured': ['ジョンリギ', 'キカンドン'], '_records': []}
+    mem = {'chapter': 9, 'captured': ['サヌト', 'オシロガ'], '_records': []}
     _flow(mem)['recall'] = {'stage': 'menu', 'steps': 0, 'target': [80, 90]}
     return mem
 
@@ -33,7 +33,7 @@ def memory():
 def test_the_visible_castle_maps_to_an_owned_name():
     visible = recall_flow._visible_own_castle(memory(), castle_frame())
     assert visible is not None
-    assert visible['castle'] in ('ジョンリギ', 'キカンドン')
+    assert visible['castle'] in ('サヌト', 'オシロガ')
 
 
 def test_the_menu_chooses_idou_and_records_the_visible_castle():
@@ -50,8 +50,8 @@ def test_the_field_cursor_confirm_requests_the_recall():
     visible = recall_flow._visible_own_castle(mem, frame)
     state = _flow(mem)['recall']
     state.update(stage='dest', move_visible=visible)
-    assert visible['castle'] == 'ジョンリギ'          # the first roof in scan order
-    screen = Screen([], None, '', kind='map', cursor=A_TARGET, marker=None)
+    assert visible['castle'] == 'オシロガ'            # the first roof in scan order
+    screen = Screen([], None, '', kind='map', cursor=B_TARGET, marker=None)
     recall_flow.camp_recall_step(screen, mem, frame)
     assert any(r.get('decision') == 'camp_recall_visible_move_confirm' for r in mem['_records'])
     assert _flow(mem)['recall']['stage'] == 'await_dispatch'

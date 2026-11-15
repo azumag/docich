@@ -603,7 +603,10 @@ def _camp_recall_step(screen: Screen, mem, frame, *, observed_camps=None):
                             reason='野営で決定したが野営メニューが開かずマップに戻ったため、野営へ合わせ直して決定し直す')
             return []              # the window is still fading in
         state.pop('menu_map_waits', None)
-        if not (state.get('boss') or state.get('boss_move')):
+        if mem.get('chapter') == 9 and not (state.get('boss') or state.get('boss_move')):
+            # Owner 2026-11-15 measured this on the chapter-9 corridor camp:
+            # the field いどう lets the visible castle be picked where it
+            # stands. Other chapters keep the measured きかん picker flow.
             visible = _visible_own_castle(mem, frame)
             if visible is not None:
                 state['move_visible'] = visible
@@ -640,6 +643,8 @@ def _camp_recall_step(screen: Screen, mem, frame, *, observed_camps=None):
         if screen.kind != 'map_target':
             if screen.kind == 'map' and state.get('move_visible'):
                 return _visible_move_dest_step(screen, mem, frame, state)
+            if state.get('move_visible'):
+                state.pop('move_visible', None)   # the game opened the island picker
             if screen.kind == 'map':
                 _flow(mem).pop('recall', None)
                 mem['uncertain'] = True
