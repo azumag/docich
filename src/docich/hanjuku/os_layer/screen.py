@@ -333,7 +333,11 @@ def own_camps(frame: Frame) -> list[dict]:
         if any(abs(t['target'][0] - target[0]) <= 8 and abs(t['target'][1] - target[1]) <= 8
                for t in found):
             continue
-        found.append({'target': target, 'clipped': flag is None})
+        found.append({'target': target, 'clipped': flag is None,
+                      # The body centre is the fallback selectable cell when
+                      # A on the flag cell does not open the camp menu (the
+                      # hero's larger tent, g1190 2026-11-15).
+                      'body': ((x0 + x1) // 2, (y0 + y1) // 2)})
     for dome in _dome_camps(frame):
         if not any(abs(t['target'][0] - dome['target'][0]) <= 8
                    and abs(t['target'][1] - dome['target'][1]) <= 8 for t in found):
