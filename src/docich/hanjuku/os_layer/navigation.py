@@ -340,7 +340,28 @@ def boss_probe_cell(mem, name, step=None):
     """
     chapter = mem.get('chapter') or 0
     index = (mem.get('boss_step_probe') or {}).get(step) or 0
-    return chart.boss_probe_cell(chapter, name, index)
+    cell = chart.boss_probe_cell(chapter, name, index)
+    # Owner 2026-11-16: from the last corridor castle (イデ！) the direct march
+    # to the moving boss is blocked by the cliffs. The first leg of every boss
+    # order steps to the hero's home area; once that order has been re-armed
+    # (one failed direct attempt behind it) the second leg goes around the
+    # cliff at the measured boss cell. Chapter 9 only: the other charts' boss
+    # probes keep their measured cells.
+    if (chapter == 9 and chart.corridor(chapter) and name
+            and chart.is_boss_castle(name)):
+        relaunched = int((mem.get('boss_relaunch') or {}).get(str(step)) or 0)
+        if relaunched < 1:
+            # The egg-repair house north of イデ！ (owner 2026-11-16: the map
+            # shows it with a heart; chapter 9 has two, and only the northern
+            # one lets the army around the cliff to the boss). Aim its area,
+            # camp there, then take the second leg at the boss cell.
+            corridor = chart.corridor(chapter) or ()
+            last = chart.castles(chapter).get(corridor[-1]) if corridor else None
+            if last:
+                # Cell-aligned (16-px field cells): an off-grid destination is
+                # not a walkable target for the game's own departure menu.
+                return (last[0], last[1] - 32)
+    return cell
 
 
 Y_JUMP_BLOCK_TICKS = 200   # observations (~5 min at 1.5 s) before a closed jump may be retried
@@ -369,6 +390,18 @@ def _want_y_jump(mem, order, name, mode) -> bool:
     chapter = mem.get('chapter') or 0
     if chapter not in Y_JUMP_OFFSET or mem.get('y_jump'):
         return False
+    # A neighbouring castle is one field step away: the destination marker is
+    # already on the screen, and the Y picker's jump only risked the measured
+    # residual loop (g1190 23-x: イソ→イデ！ re-sent six attempts a month and
+    # every month ended unreadable). Walk/mark instead of toggling Y.
+    road = chart.corridor(chapter) or ()
+    source, target = order.get('source'), order.get('target')
+    if source in road and target in road:
+        try:
+            if abs(road.index(source) - road.index(target)) == 1:
+                return False
+        except ValueError:
+            pass
     plan_steps = {o.get('step') for o in (_plan_region(mem).get('chart_plan') or {}).get('orders') or ()}
     active = _plan_region(mem).get('active')
     if active and order['step'] != active and order['step'] not in plan_steps:
@@ -506,9 +539,18 @@ def _y_jump_step(mem, frame):
     # (#2915). Count observations after issued inputs, not the initial read.
     # Never turn that stationary detection into an arrival or a new cell.
     previous = jump.get('last_cursor')
+    # The Y view keeps animating (the cursor's walk cycle, the flag blinks)
+    # while the cursor cell can stay for a few ticks: a repeated coordinate
+    # on a NEW picture is not a frozen read. g1190 2026-11-16 measured the
+    # cursor at (104.5,157.0) in two frames 0.35 s apart and every jump
+    # aborted after three such reads (11 y_jump_failed in one window). The
+    # move budget below still bounds a cursor that never reaches the goal.
+    digest = frame.digest() if frame is not None else None
+    same_picture = digest is not None and digest == jump.get('last_digest')
     jump['still'] = (int(jump.get('still') or 0) + 1
-                     if previous == list(cursor) and jump['moves'] else 0)
+                     if previous == list(cursor) and jump['moves'] and same_picture else 0)
     jump['last_cursor'] = list(cursor)
+    jump['last_digest'] = digest
     if jump['still'] >= Y_JUMP_STILL_LIMIT:
         mem.pop('y_jump', None)
         _note_failed_jump(mem, jump, 'cursor_stationary')

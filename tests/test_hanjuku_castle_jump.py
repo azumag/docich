@@ -543,7 +543,7 @@ def test_last_page_source_is_reached_past_the_old_eight_row_bound():
         actions = M.castle_jump_step(screen, mem, None)
         if actions == [M.pad('select')]:
             break
-        assert actions == [M.pad('down')]
+        assert actions and actions[0] == M.pad('down')   # the press carries its own settle wait
         downs += 1
         selected = min(selected + 1, len(CHAPTER_6_LONG) - 1)
         if selected - offset >= 8:

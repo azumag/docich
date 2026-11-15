@@ -151,3 +151,16 @@ def test_the_first_ring_covers_a_two_tile_estimate_error():
     diagonal = {(16, 16), (-16, 16), (16, -16), (-16, -16)}
     assert axis | diagonal == set(probes[1:9])
     assert {(64, 0), (-64, 0), (0, 64), (0, -64)} == set(probes[9:])
+
+
+def test_the_corridor_boss_first_leg_steps_to_the_ide_north_house():
+    # Owner 2026-11-16: from イデ！ the direct march to the moving boss is
+    # blocked by the cliffs. The egg-repair house north of イデ！ (the heart on
+    # the map; chapter 9 has two and only the northern one reaches the boss)
+    # is the first leg; the re-armed second leg goes around the cliff.
+    mem = {'chapter': 9}
+    ide = chart.castles(9)[chart.corridor(9)[-1]]
+    waypoint = (ide[0], ide[1] - 32)
+    assert N.boss_probe_cell(mem, 'ボス', 'A:x:M1') == waypoint
+    mem['boss_relaunch'] = {'A:x:M1': 1}
+    assert N.boss_probe_cell(mem, 'ボス', 'A:x:M1') != waypoint

@@ -53,6 +53,15 @@ def _interim_source(mem, target, chart_order, owned, busy, allow_sole=False):
     busy = busy | set(_world(mem).get('general_location_unknown') or ())
     unavailable_for_attack = {NAME} if _hero_egg_broken(mem) else set()
     sole = len(owned) == 1          # owner: a single castle may leave the hero alone
+    # Owner 2026-11-15: with the whole road taken, only a march from the last
+    # corridor castle reaches the moving boss; any other source marches into
+    # the cliffs and camps (g1190 15-x: カラ→ボス re-issued every ~85 steps
+    # without ever entering). The gather moves walk the army to イデ！ first.
+    road = chart.corridor(chapter) or ()
+    boss_gather = bool(chart.is_boss_castle(target) and road
+                       and chart.corridor_next(chapter, owned) is None)
+    if boss_gather:
+        owned = {c for c in owned if c == road[-1]}
     free = {c: [g for g in _known_residents(mem, garrison, c) or () if g not in busy]
             for c in owned}
     if routes.is_road(chapter):
@@ -64,6 +73,12 @@ def _interim_source(mem, target, chart_order, owned, busy, allow_sole=False):
     # stalled while the only arrival was オトラント-launched 5-Z2), so a
     # source whose path crosses another own castle ranks behind a clear one.
     need = chart.sender_min(chapter)    # never empty a castle (owner 2026-11-06); 1 on chapter 9
+    # The game refuses a sortie from a castle that keeps only one general. A
+    # boss wave planned from the one-general last castle therefore never
+    # launches and only starves the gather moves (g1190 16-x: イデ！ stayed at
+    # one general while the boss attack order was re-issued every month).
+    if boss_gather:
+        need = 2
     excluded = set()
     # Owner 2026-11-03 (g1097): generals moved into a castle recorded empty
     # stood there unseen while アルマムーン kept sending the sorties. The
@@ -111,9 +126,13 @@ def _interim_source(mem, target, chart_order, owned, busy, allow_sole=False):
     unplaced = [g for g in _unplaced_castle_generals(mem)
                 if g not in busy and g not in unavailable_for_attack]
     arrival = _arrival_castle(mem, owned)
-    if (unplaced and arrival in owned and _source_location_recheck(mem, arrival) is None
+    if (unplaced and not boss_gather and arrival in owned
+            and _source_location_recheck(mem, arrival) is None
             and not chart_adjust.hero_guard_short([*(garrison.get(arrival) or ()), *unplaced],
                                                   unplaced[0], busy, sole_castle=sole)):
+        # A boss wave needs two measured generals at the last castle; an
+        # unplaced joiner is not one (g1190 16-x: ブレッツェル re-issued from
+        # the one-general イデ！ every ~85 steps and never launched).
         # A joiner has no verified source-list membership yet. Open the
         # list as a probe, rather than naming a possibly absent actor.
         return arrival, MOVE_ANY_GENERAL
@@ -364,8 +383,12 @@ def _corridor_forward_moves(mem, owned, garrison, busy, road_next, nearest_first
                     (lambda c: (-routes_len(mem, c, road_next, owned), c)))
     for donor in donors:
         route = routes.path(mem, donor, road_next, owned)
-        if not route or len(route) <= 2:
-            continue                       # the front itself, or no road to it
+        if not route or (len(route) <= 2 and not nearest_first):
+            # The front itself, or no road to it. The gather (nearest_first)
+            # keeps the adjacent donor: its one hop IS the last castle
+            # (g1190 22-x: イソ kept 17 generals while イデ！ stood empty
+            # because the front-adjacent move was skipped).
+            continue
         names = _known_residents(mem, garrison, donor)
         if names is None:
             # An unread rear list: open it with one probe move, as before.
@@ -827,11 +850,10 @@ def interim_candidates(mem, allow_sole=False) -> dict:
         if _hero_egg_broken(mem):
             unavailable |= {NAME}
         sole = len(owned) == 1
-        need = chart.sender_min(chapter)    # never empty a castle (owner 2026-11-06); 1 on chapter 9
-        # The one-general exception for post-conquest boss waves was left
-        # behind by #3567. The game refuses the sortie when the castle has
-        # only one general (e.g. ポセイドン at ボッサール), so it must not
-        # become a planned attack even if every normal castle is owned.
+        # The game refuses a sortie from a one-general castle (e.g.
+        # ポセイドン at ボッサール and the one-general last castle), so a boss
+        # wave needs two generals at the source.
+        need = 2
         # docich#3515: a blind/kept boss launch actively asks for one roster
         # read of its source castle. Mint that probe first so the read
         # settles the phantom (still-listed rolls the launch back) instead

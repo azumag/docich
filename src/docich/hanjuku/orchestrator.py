@@ -58,13 +58,14 @@ def _chapter9_field_recall(mem):
     from .strategy import corridor
     if corridor.mechanical(mem):
         return True
-    # Once the road is fully owned ``corridor.mechanical`` is False and this
-    # gate closes, yet the boss phase needs the same entry point most: every
-    # castle's garrison then reads empty because the army camps on the field,
-    # and only this call re-sends a visible camp at the moving boss. Inside,
-    # ``camp_stays``/``boss_redirect_goal`` still decide whether a camp is
-    # re-sent or left in place, so opening the gate only reaches the recall.
-    return recall_flow.boss_phase(mem)
+    # Owner 2026-11-09: a camped general is never recalled home in the moving
+    # boss's phase. The 2026-11-15 gather experiment (the field camp いどう to
+    # イデ！) only looped on this runtime: the camp menu recall never dispatched
+    # (the blocked table poisoned every castle, the whole-island picker could
+    # not confirm), and each month re-found the same tent. The monthly pass now
+    # owns the gather through the castle-to-castle forward moves, and the army
+    # is back in the castles; keep the field camps where they are.
+    return False
 
 
 # Owner evidence #2076 (g713 UID16229): between a complete battle panel and the

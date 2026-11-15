@@ -471,9 +471,6 @@ def _camp_recall_step(screen: Screen, mem, frame, *, observed_camps=None):
     if state is None:
         if screen.kind != 'map' or frame is None:
             return None
-        gather = gather_castle(mem)
-        if camp_stays(mem) and gather is None:
-            return None     # no gathering castle known: the camp waits where it is, never goes home
         if _month_end_soon(mem):
             return None     # the month-start scene would cut the destination picker
         camps = own_camps(frame) if observed_camps is None else observed_camps
@@ -541,8 +538,7 @@ def _camp_recall_step(screen: Screen, mem, frame, *, observed_camps=None):
         state = _flow(mem)['recall'] = {'stage': 'to_camp', 'target': list(camp['target']),
                                  'last_seen': list(camp['target']), 'steps': 0,
                                  **({'camp_body': body} if (body := camp_body_target(frame, camp['target'])) else {}),
-                                 **({'camp_kind': camp['kind']} if camp.get('kind') else {}),
-                                 **({'gather': gather, 'goal': gather} if gather else {})}
+                                 **({'camp_kind': camp['kind']} if camp.get('kind') else {})}
         # A fresh recall starts a fresh destination-jump budget and receipt:
         # the previous recall's ``y_jumped`` must not confirm this picker's
         # marker, and its spent attempts must not starve this recall's jump
@@ -570,11 +566,8 @@ def _camp_recall_step(screen: Screen, mem, frame, *, observed_camps=None):
                                                     **({'cursor_cell': list(mem['cursor'])}
                                                        if isinstance(mem.get('cursor'), (list, tuple))
                                                        and len(mem['cursor']) == 2 else {}),
-                                                    **({'kind': camp['kind']} if camp.get('kind') else {}),
-                                                    **({'gather_castle': gather} if gather else {})},
-                reason=('画面に自軍の野営を見つけたため、崖を越えられる最後の城へ集結させる'
-                        if gather else
-                        '画面に自軍の野営を見つけたため補給できる自軍城への帰還を指示する'))
+                                                    **({'kind': camp['kind']} if camp.get('kind') else {})},
+                reason='画面に自軍の野営を見つけたため補給できる自軍城への帰還を指示する')
     if state.get('stage') == 'await_dispatch':
         return _recall_dispatch_step(screen, mem, state)
     state['steps'] = int(state.get('steps') or 0) + 1
@@ -795,32 +788,7 @@ def _camp_recall_step(screen: Screen, mem, frame, *, observed_camps=None):
                             reason='野営で決定したが野営メニューが開かずマップに戻ったため、野営へ合わせ直して決定し直す')
             return []              # the window is still fading in
         state.pop('menu_map_waits', None)
-        if (mem.get('chapter') == 9 and camp_stays(mem)
-                and not (state.get('boss') or state.get('boss_move'))):
-            # A recall that was started before the road was fully owned (or by
-            # a monthly task) still carries a home destination. Owner
-            # 2026-11-15: cliffs block every castle but the last one from
-            # reaching the moving boss, so the boss phase gathers the camped
-            # generals at the last corridor castle first; the boss sortie then
-            # launches from there. A direct camp-to-boss いどう never crosses
-            # the cliffs (g1190 89-91: every such redirect camped or stalled).
-            gather = gather_castle(mem)
-            if gather is None:
-                _flow(mem).pop('recall', None)
-                mem['uncertain'] = True
-                _arm_recall_skip(mem, state, BOSS_RETRY_TICKS)
-                _record(mem, 'camp_gather_held',
-                        observed_metric={'camp': state.get('target'), 'gather': None},
-                        reason='集結先の最後の城を決められないため、野営を自城へ戻さず待機する')
-                return [pad('b')] if is_camp_menu(screen) else None
-            state.pop('boss', None)
-            state.pop('boss_move', None)
-            state['gather'] = gather
-            state['goal'] = gather
-            state.pop('move_visible', None)
-            _record(mem, 'camp_gather_adopted',
-                    observed_metric={'camp': state.get('target'), 'gather': gather},
-                    reason='ボス段階の既存帰還状態を、崖を越えられる最後の城への集結へ切り替える')
+
         if mem.get('chapter') == 9 and not (state.get('boss') or state.get('boss_move')):
             # Owner 2026-11-15 measured this on the chapter-9 corridor camp:
             # the field いどう lets the visible castle be picked where it
@@ -1217,11 +1185,14 @@ def _recall_dispatch_step(screen, mem, state):
         status = 'arrival_unconfirmed' if state.get('input_sent') else 'dispatch_unconfirmed'
         interrupted = _flow(mem).pop('recall_interrupted', None) is not None
         goal = state.get('goal')
-        if not interrupted and isinstance(goal, str):
-            # The general was sent to this castle and never confirmed inside
-            # one. A cliff between the camp and the castle camps him again;
-            # count it so the next recall picks another castle (owner
-            # 2026-11-15: the cliff-side camp never got home).
+        if not interrupted and status == 'dispatch_unconfirmed' and isinstance(goal, str):
+            # Only a dispatch that never left counts as a refused castle. The
+            # arrival read missing (``arrival_unconfirmed``) says nothing about
+            # the march: the general may have arrived with the roster frame
+            # missed. Counting it blocked every castle over the months
+            # (g1190 14-x: アルマムーン/カラ/シマウ... at 3) and left the camp
+            # looping on the broken whole-island picker instead of its visible
+            # home castle.
             blocked = _flow(mem).setdefault('camp_recall_blocked', {})
             if isinstance(blocked, dict):
                 blocked[goal] = min(3, int(blocked.get(goal) or 0) + 1)

@@ -643,10 +643,19 @@ def _ready(order, mem) -> bool:
     if not _boss_target_unlocked(order, mem):
         return False
     if ('step' in order and _is_boss_order(order, mem) and order.get('purpose') != 'move'
-            and order.get('roster_probe') is not True
-            and _boss_companion_source(order, mem) is None
-            and (_world(mem).get('garrison') or {}).get(_source(order, mem)) is not None):
-        return False
+            and order.get('roster_probe') is not True):
+        # The corridor chapter's moving boss: the game refuses a sortie from a
+        # castle that keeps only one general, so the chart's boss order from the
+        # one-general last castle was started every ~85 steps and never
+        # launched (g1190 17-x). Other boss charts (chapter 4's sites) keep
+        # their measured one-general reprobe rule.
+        if chart.corridor(mem.get('chapter') or 0):
+            source_names = (_world(mem).get('garrison') or {}).get(_source(order, mem))
+            if source_names is not None and len(set(source_names)) < 2:
+                return False
+        if (_boss_companion_source(order, mem) is None
+                and (_world(mem).get('garrison') or {}).get(_source(order, mem)) is not None):
+            return False
     if ((_broken_hero_order(order, mem) or _boss_egg_depleted(order, mem))
             and not (_boss_companion_source(order, mem) if _is_boss_order(order, mem)
                      else _hero_source_alternative(order, mem))):

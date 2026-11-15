@@ -805,6 +805,7 @@ CASTLE_JUMP_LIMIT = 48          # observations across the whole menu trip
 # bound exhausted. Keep the bound above the longest chapter roster; the loop
 # still stops as soon as the source is visible.
 CASTLE_JUMP_SCROLL_LIMIT = 16   # list scrolls while looking for the source
+CASTLE_JUMP_SCROLL_WAIT_MS = 200  # let each Down reach the list's own scroll
 CASTLE_JUMP_COOLDOWN = 40       # observations before retrying a failed source
 CASTLE_JUMP_FAR = 48            # same distance gate as the Y jump (map px)
 # The orange hand of the main menu and of the しろ list blinks, so whole frames
@@ -1002,6 +1003,10 @@ def _end_castle_jump(screen, mem, why):
     if rows is not None:
         metric['rows'] = [word for _, word in rows]
         metric['scrolls'] = jump.get('scrolls')
+        # The failed trip's hand position tells a page that never shifted
+        # (the hand parked on the last row) from one that did but named the
+        # wrong row (g1190 2026-11-16: 16 downs on the same eight rows).
+        metric['hand'] = list(screen.hand) if screen.hand else None
     if mode == 'reanchor':
         _record(mem, 'cursor_reanchor_failed', target=jump.get('source'),
                 screen=screen.kind, observed_metric=metric,
@@ -1146,7 +1151,12 @@ def castle_jump_step(screen, mem, frame):
             if int(jump.get('scrolls') or 0) < CASTLE_JUMP_SCROLL_LIMIT:
                 jump['scrolls'] = int(jump.get('scrolls') or 0) + 1
                 jump['age'] = 0
-                return [pad('down')]
+                # g1190 2026-11-16: the しろ list swallowed rapid Down presses —
+                # sixteen of them left the hand on the 6th row and the page
+                # never shifted (castle_missing, hand y=113). Give each press
+                # time to reach the list's own scroll so the last page shows
+                # イデ！.
+                return [pad('down'), {'type': 'wait', 'ms': CASTLE_JUMP_SCROLL_WAIT_MS}]
             return _end_castle_jump(screen, mem, 'castle_missing')
         move = menu_to(screen, target)
         if move == 'here':
