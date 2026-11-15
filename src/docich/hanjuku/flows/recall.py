@@ -687,6 +687,29 @@ def _camp_recall_step(screen: Screen, mem, frame, *, observed_camps=None):
                             reason='野営で決定したが野営メニューが開かずマップに戻ったため、野営へ合わせ直して決定し直す')
             return []              # the window is still fading in
         state.pop('menu_map_waits', None)
+        if (mem.get('chapter') == 9 and camp_stays(mem)
+                and not (state.get('boss') or state.get('boss_move'))):
+            # A recall that was started before the road was fully owned (or by
+            # a monthly task) still carries a home destination. In the
+            # moving-boss phase the camp must be re-sent at the boss, never
+            # returned to a castle (owner 2026-11-09). Convert this existing
+            # state instead of only gating new recalls (g1190 89-8: a home
+            # `camp_recall_visible_move` to サヌト repeated in the boss phase).
+            goal = boss_redirect_goal(mem)
+            if goal is None:
+                _flow(mem).pop('recall', None)
+                mem['uncertain'] = True
+                _arm_recall_skip(mem, state, BOSS_RETRY_TICKS)
+                _record(mem, 'camp_boss_redirect_held',
+                        observed_metric={'camp': state.get('target'), 'goal': None},
+                        reason='移動ボスの現在位置を実測できないため、野営を自城へ戻さず待機する')
+                return [pad('b')] if is_camp_menu(screen) else None
+            state['boss'] = True
+            state['goal'] = goal
+            state.pop('move_visible', None)
+            _record(mem, 'camp_boss_redirect_adopted',
+                    observed_metric={'camp': state.get('target'), 'goal': goal},
+                    reason='ボス段階の既存帰還状態を自城帰還ではなくボスへの再出撃へ切り替える')
         if mem.get('chapter') == 9 and not (state.get('boss') or state.get('boss_move')):
             # Owner 2026-11-15 measured this on the chapter-9 corridor camp:
             # the field いどう lets the visible castle be picked where it
