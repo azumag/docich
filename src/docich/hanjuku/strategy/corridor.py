@@ -900,7 +900,10 @@ def _residents(mem, castle):
 
 
 
-CAPTURE_GUARD = 1               # generals kept in a castle captured moments ago
+CAPTURE_GUARD = 2               # generals kept in a castle captured moments ago
+# Owner 2026-11-15/16: the one-general guard still lost ナッテ to the counter-
+# attack right after every capture. Two residents make the fresh capture hold
+# while the next wave stages.
 
 
 FRONT_REFILL_MIN = 2            # residents the attacking castle needs to hold itself

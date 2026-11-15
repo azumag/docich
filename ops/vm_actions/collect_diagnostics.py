@@ -7335,6 +7335,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v867-clipped-dome",
             "hanjuku-chart-v868-picker-recover",
             "hanjuku-chart-v869-carried-cards-actor",
+            "hanjuku-chart-v870-capture-guard-two",
             "hanjuku-chart-v864-shop-list-batch",
             "hanjuku-chart-v862-camp-field-move",
             "hanjuku-chart-v852-visible-menu-batches",
