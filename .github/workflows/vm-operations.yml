@@ -850,6 +850,14 @@ jobs:
           if ! git -C candidate diff --quiet "$BEFORE_SHA" "$SHA" -- ops/vm_actions/soren_inline_overlay_refresh_epoch; then
             refresh_required=1
           fi
+          # The inline rails read the broadcast template from disk at install
+          # time, so an overlay HTML change must refresh them too. Without this
+          # the shared sidebar keeps the previous template until the next
+          # Soren gitlink change (2026-11-15: the next-corner card resize never
+          # reached the live rails).
+          if ! git -C candidate diff --quiet "$BEFORE_SHA" "$SHA" -- overlays/direct_broadcast_overlay.html; then
+            refresh_required=1
+          fi
           [[ "$refresh_required" -eq 1 ]] || exit 0
 
           bash -n control/ops/vm_actions/refresh_soren_inline_overlay.sh
