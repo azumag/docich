@@ -7327,6 +7327,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v858-ch9-carried-cards",
             "hanjuku-chart-v859-plain-battle-menu",
             "hanjuku-chart-v860-plain-battle-fade",
+            "hanjuku-chart-v861-version-transient-migrate",
             "hanjuku-chart-v852-visible-menu-batches",
             "hanjuku-chart-v560-castle-list-scroll",
             "hanjuku-chart-v561-post-month-repair-status",
