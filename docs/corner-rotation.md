@@ -95,7 +95,7 @@ JEVは自動有効化されていない手動のplayer-policy試験であり、�
 ## 次コーナーの予告（`next_corner.json`、2026-11-07 オーナー依頼）
 
 コーナーとコーナーの間（sorengameが表に出ている間）、右サイドバーに
-「次のコーナー: 〜 / 18:00 予定」を出す。予告は推測ではなく、共通timerが
+「次：〜 / 18:00 予定」を出す。予告は推測ではなく、共通timerが
 **dueより前に確定させた次の1枠**である。
 
 - `CornerRotationManager._next_corner_notice` が、dispatchと同じ規則

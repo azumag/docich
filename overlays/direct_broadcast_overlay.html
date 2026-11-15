@@ -2993,7 +2993,7 @@ html[data-prediction-active="1"][data-next-corner="1"] #feed { height: 568px; }
     const panel = document.getElementById('next-corner');
     if (!active) { panel.replaceChildren(); return; }
     const body = dashNode('next-corner-body');
-    body.appendChild(dashNode('next-corner-label', `次のコーナー: ${notice.label}`));
+    body.appendChild(dashNode('next-corner-label', `次：${notice.label}`));
     body.appendChild(dashNode('next-corner-when', timing));
     panel.replaceChildren(dashNode('next-corner-head', head), body);
   }

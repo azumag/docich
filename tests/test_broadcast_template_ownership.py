@@ -80,6 +80,11 @@ class BroadcastTemplateOwnershipTest(unittest.TestCase):
         self.assertIn("remainingGames", html)
         self.assertIn("試合後", html)
         self.assertIn("予想開始待ち", html)
+        # Owner 2026-11-15: the card head already says NEXT CORNER, so the
+        # one-line label keeps only the short 次： prefix and the full corner
+        # name (the longest name fits at the shared 17px size).
+        self.assertIn("`次：${notice.label}`", html)
+        self.assertNotIn("`次のコーナー: ${notice.label}`", html)
         self.assertIn("予想終了後", html)
         # Both cards are laid out together: the feed height reserves the
         # prediction panel and the notice instead of hiding either one.
