@@ -288,7 +288,7 @@ def own_camps(frame: Frame) -> list[dict]:
     body = set(bit_points(frame, union_bits(*(
         near_bits(frame, colour, CAMP_COLOUR_TOLERANCE)
         for colour in (CAMP_YELLOW, CAMP_ORANGE, CAMP_BAND)))))
-    found, seen = [], set()
+    found, seen, bodies = [], set(), {}
     for start in sorted(body):
         if start in seen:
             continue
@@ -334,11 +334,35 @@ def own_camps(frame: Frame) -> list[dict]:
                for t in found):
             continue
         found.append({'target': target, 'clipped': flag is None})
+        bodies[target] = ((x0 + x1) // 2, (y0 + y1) // 2)
     for dome in _dome_camps(frame):
         if not any(abs(t['target'][0] - dome['target'][0]) <= 8
                    and abs(t['target'][1] - dome['target'][1]) <= 8 for t in found):
             found.append(dome)
+    _CAMP_BODIES[frame.digest()] = bodies
     return found
+
+
+_CAMP_BODIES = {}
+
+
+def camp_body_target(frame: Frame, target):
+    """The tent body centre whose flag cell is ``target`` (fallback select).
+
+    A on the flag cell can leave the bare map (the hero's larger tent,
+    g1190 2026-11-15). The body centre is the other selectable cell. Kept
+    separate from ``own_camps`` so its documented dict shape stays stable.
+    """
+    if not isinstance(frame, Frame) or not isinstance(target, (list, tuple)) or len(target) != 2:
+        return None
+    bodies = _CAMP_BODIES.get(frame.digest())
+    if bodies is None:
+        own_camps(frame)
+        bodies = _CAMP_BODIES.get(frame.digest()) or {}
+    for cell, body in bodies.items():
+        if abs(cell[0] - target[0]) <= 12 and abs(cell[1] - target[1]) <= 12:
+            return list(body)
+    return None
 
 
 # Our camp drawn as a dome with a brown door under the same red/orange flag

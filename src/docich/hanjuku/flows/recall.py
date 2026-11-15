@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from ..os_layer.pixels import Frame
-from ..os_layer.screen import Screen, castle_roofs, own_camps
+from ..os_layer.screen import Screen, camp_body_target, castle_roofs, own_camps
 from ... import hanjuku_chart as chart
 from ..decision_log import _record
 from ..os_layer.commands import fort_list_batch, menu_to, pad
@@ -400,6 +400,7 @@ def _camp_recall_step(screen: Screen, mem, frame, *, observed_camps=None):
                                          + abs(c['target'][1] - cursor[1])) if cursor else 0)
         state = _flow(mem)['recall'] = {'stage': 'to_camp', 'target': list(camp['target']),
                                  'last_seen': list(camp['target']), 'steps': 0,
+                                 **({'camp_body': body} if (body := camp_body_target(frame, camp['target'])) else {}),
                                  **({'camp_kind': camp['kind']} if camp.get('kind') else {}),
                                  **({'boss': True, 'goal': boss_goal} if boss_goal else {})}
         # A fresh recall starts a fresh destination-jump budget and receipt:
@@ -588,6 +589,16 @@ def _camp_recall_step(screen: Screen, mem, frame, *, observed_camps=None):
                 waits = state['menu_map_waits'] = int(state.get('menu_map_waits') or 0) + 1
                 if waits >= MENU_OPEN_WAIT:
                     reopens = state['menu_reopens'] = int(state.get('menu_reopens') or 0) + 1
+                    body = state.get('camp_body')
+                    if (isinstance(body, list) and len(body) == 2
+                            and reopens >= 2 and state.get('target') != body):
+                        # The flag cell did not open the menu twice; the tent
+                        # body centre is the other selectable cell.
+                        state['target'] = list(body)
+                        state['last_seen'] = list(body)
+                        _record(mem, 'camp_enter_body_retry',
+                                observed_metric={'camp': list(body), 'reopens': reopens},
+                                reason='野営の旗セルで2回メニューが開かないため、テント本体の中心セルへ合わせ直す')
                     state.pop('menu_map_waits', None)
                     if reopens > MENU_REOPEN_LIMIT:
                         _flow(mem).pop('recall', None)
