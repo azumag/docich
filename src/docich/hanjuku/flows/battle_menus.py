@@ -811,11 +811,17 @@ def battle_menu_step(screen: Screen, mem):
     cur = mem.get('battle') or {}
     if cur:
         sha = getattr(screen, 'frame_sha256', None)
-        if sha is not None and cur.get('menu_sha') == sha:
+        # A blinking cursor/flag alternates two frames: compare against the
+        # last two distinct digests, like the no-input hold does, or the count
+        # resets every observation (g1190 2026-11-16: menu_same stayed 0 on a
+        # frozen きりふだ/たいきゃく menu).
+        recent = [d for d in (cur.get('menu_recent') or []) if isinstance(d, str)][:2]
+        if sha is not None and sha in recent:
             cur['menu_same'] = int(cur.get('menu_same') or 0) + 1
         else:
-            cur['menu_sha'] = sha
             cur['menu_same'] = 0
+        if sha is not None:
+            cur['menu_recent'] = ([sha] + [d for d in recent if d != sha])[:2]
     flow = cur.get('card_flow')
     if screen.kind != 'battle_menu':
         return []
