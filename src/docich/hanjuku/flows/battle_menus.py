@@ -786,6 +786,22 @@ def battle_menu_step(screen: Screen, mem):
     cur['resource_menu_observed'] = True  # a B attempt alone never proves this
     cur.pop('command_open_pending', None)  # foreground receipt, not a planned B
     _card_battle_reading(screen, cur, mem)
+    _labels = {word for _, _, word in _options(screen)}
+    _sha = getattr(screen, 'frame_sha256', None)
+    _recent = [d for d in (cur.get('menu_recent') or []) if isinstance(d, str)][:2]
+    cur['menu_same'] = int(cur.get('menu_same') or 0) + 1 if _sha in _recent else 0
+    if _sha is not None:
+        cur['menu_recent'] = ([_sha] + [d for d in _recent if d != _sha])[:2]
+    if (int(cur.get('menu_same') or 0) >= 10
+            and _labels and 'たいきゃく' in _labels
+            and not _labels.intersection({'こうげき', 'もうこうげき', 'たまごをつかう'})):
+        # A command box with no usable command is a modal overlay: A on the
+        # dead きりふだ row does nothing. B closes it and the melee resumes
+        # (owner 2026-11-16).
+        _record(mem, 'battle_menu_close', **_battle_labels(cur),
+                observed_metric={'labels': sorted(_labels)},
+                reason='攻撃コマンドの無い戦闘メニューはBで閉じて白兵へ戻る')
+        return [pad('b')]
     cur['own_egg_zero_observed'] = _own_egg_empty(mem, cur)
     cur['own_egg_positive_observed'] = _own_egg_positive(mem, cur)
     if _one_hit_lethal(cur):
