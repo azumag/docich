@@ -7332,6 +7332,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v864-camp-body-retry",
             "hanjuku-chart-v865-ch9-chikujou",
             "hanjuku-chart-v866-hero-post-priority",
+            "hanjuku-chart-v867-clipped-dome",
             "hanjuku-chart-v864-shop-list-batch",
             "hanjuku-chart-v862-camp-field-move",
             "hanjuku-chart-v852-visible-menu-batches",
