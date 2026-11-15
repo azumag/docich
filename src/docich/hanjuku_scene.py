@@ -145,6 +145,12 @@ def fact(record):
         if any(value is None for value in values.values()) or record.get('outcome') not in {'win', 'loss'}:
             return None
         result.update(values, outcome=record['outcome'])
+        # A bare 'win'/'loss' left the direction ambiguous — the narrator
+        # misread it as the named general losing (g1207: バタール won vs
+        # ヴィーナス but was announced as the loser). Name both sides.
+        winner, loser = (values['ally'], values['enemy']) if record['outcome'] == 'win' \
+            else (values['enemy'], values['ally'])
+        result.update(winner=winner, loser=loser)
         for key in ('ally_hp', 'enemy_hp'):
             value = number(observed.get(key), 999)
             if value is not None:
