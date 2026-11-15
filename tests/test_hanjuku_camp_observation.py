@@ -127,3 +127,24 @@ def test_an_off_screen_tent_is_scrolled_back_into_view(monkeypatch):
     assert actions[0]['buttons'] == ['left']
     assert _flow(mem)['recall']['edge_scroll'] == 1
     assert any(r['decision'] == 'camp_edge_scroll' for r in mem['_records'])
+
+
+def test_a_cliff_adjacent_marker_moves_perpendicular_before_confirming():
+    # Owner 2026-11-15: a unit standing against a cliff must step
+    # perpendicular away once; marching straight home stays pinned.
+    from docich.hanjuku.os_layer.pixels import Frame
+    rgb = bytearray(bytes((24, 141, 24)) * (256 * 224))    # grass
+    for y in range(106, 118):
+        for x in range(80, 104):                           # black cliff on the left
+            i = (y * 256 + x) * 3
+            rgb[i:i + 3] = bytes((0, 0, 0))
+    frame = Frame(256, 224, bytes(rgb))
+    screen = Screen([], None, '', kind='map_target', marker=(128, 112))
+    mem = {'chapter': 1, 'tick': 100, '_records': [],
+           'recall': {'stage': 'dest', 'steps': 0, 'target': [128, 112]}}
+    actions = p.camp_recall_step(screen, mem, frame)
+    assert actions == [p.pad('right', 16)]
+    assert _flow(mem)['recall']['cliff_detour'] == 'right'
+    assert any(r['decision'] == 'camp_cliff_detour' for r in mem['_records'])
+    # The marker was moved: the next observation never detours twice.
+    assert p.camp_recall_step(screen, mem, frame) != [p.pad('right', 16)]
