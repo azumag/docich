@@ -119,10 +119,14 @@ def _wanted(mem):
     # empty road castle is not a want there — the ledger filled up with six
     # never-attempted ``move`` goals (g1163 2026-11-12 13:4x, queued 86867-92397
     # while all four rear castles read ``[]``), which the normal planner then
-    # tried to serve as name-less moves. Other chapters keep the refill want.
+    # tried to serve as name-less moves. The exemption also holds after the
+    # road is fully owned: ``interim_candidates`` emits no refill moves in a
+    # guard-free chapter (``empty = []``), so post-road move goals can only
+    # ever age as ``unavailable`` (g1190: all 12 owned castles queued,
+    # 130+ starved attempts each while every garrison read empty). Other
+    # chapters keep the refill want.
     try:
-        march = bool(chart.guard_free(chapter) and chart.corridor(chapter)
-                     and chart.corridor_next(chapter, owned) is not None)
+        march = bool(chart.guard_free(chapter) and chart.corridor(chapter))
     except AttributeError:
         # A rebound chart without the road tables (the layer contract allows a
         # minimal namespace) is not a mechanical march.
