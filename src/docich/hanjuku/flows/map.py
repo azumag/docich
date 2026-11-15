@@ -268,6 +268,20 @@ def _picker_origin(chapter, frame):
 def world_map_step(screen, mem, frame):
     """Read every castle's owner from the Y view, then close it with Y
     (or, while a Y jump is running, steer its cursor to the goal castle)."""
+    if not mem.get('chapter'):
+        # g1190 2026-11-16: a chapter transition (or a restored memory) can
+        # leave the chapter unset, and the field frames never carry the
+        # chapter header again. The Y view names every castle, so a name that
+        # exists in one chapter only restores it (the measured recovery path
+        # in strategy/campaign.py). Without this the chapter-9 corridor flows
+        # never ran and the bot stayed on the generic walk.
+        from ..strategy.campaign import observe_chapter_castle
+        owners = mem.get('world_map_flags')
+        if isinstance(owners, dict):
+            for name in list(owners)[:12]:
+                observe_chapter_castle(mem, name)
+                if mem.get('chapter'):
+                    break
     if mem.get('y_jump'):
         order = _order(mem)
         if order is not None and mem['y_jump'].get('step') == order['step']:

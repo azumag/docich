@@ -7507,6 +7507,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v920-castle-scroll-wait",
             "hanjuku-chart-v921-waypoint-cell",
             "hanjuku-chart-v922-title-continue",
+            "hanjuku-chart-v923-chapter-from-yview",
             "hanjuku-chart-v864-shop-list-batch",
             "hanjuku-chart-v862-camp-field-move",
             "hanjuku-chart-v852-visible-menu-batches",
