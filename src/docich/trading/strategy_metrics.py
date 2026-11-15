@@ -94,6 +94,26 @@ class _Results:
         return None if self.losses == 0 else self.gains / self.losses
 
 
+def _symbol_scope(symbols, exclude_symbols) -> tuple[str, frozenset[str]] | None:
+    """Normalize the optional slot scope; a malformed scope is never "all"."""
+    if symbols is None and exclude_symbols is None:
+        return None
+    if symbols is not None and exclude_symbols is not None:
+        raise ValueError("symbols and exclude_symbols are mutually exclusive")
+    mode, raw = ("include", symbols) if symbols is not None else ("exclude", exclude_symbols)
+    if isinstance(raw, (str, bytes)):
+        raise ValueError("symbol scope must be a collection of symbols")
+    try:
+        chosen = frozenset(raw)
+    except TypeError as exc:
+        raise ValueError("symbol scope must be a collection of symbols") from exc
+    if any(not isinstance(item, str) or not item.strip() for item in chosen):
+        raise ValueError("symbol scope contains an invalid symbol")
+    if mode == "include" and not chosen:
+        raise ValueError("an include scope needs at least one symbol")
+    return mode, chosen
+
+
 def _base_result(spec: StrategyExperiment, now: float | None) -> dict[str, object]:
     return {
         "schema_version": 2,
@@ -135,8 +155,17 @@ def evaluate_strategy_experiment(
     *,
     capital_jpy: object,
     now: float | None = None,
+    symbols=None,
+    exclude_symbols=None,
 ) -> dict[str, object]:
     """Evaluate this activation's exits against the shared PAPER ledger basis.
+
+    ``symbols`` / ``exclude_symbols`` restrict the evaluation to one symbol
+    slot (see ``symbol_slots``). Inventory is kept per symbol, so dropping the
+    other symbols' fills changes neither the average cost nor the attribution
+    of the symbols that remain; exits, open positions and inventory
+    completeness are then counted for the scope only. With neither argument
+    the result is identical to the unscoped evaluation.
 
     Every historical fill updates shared average-cost inventory. Only sells
     attributed to this experiment at/after its current activation enter its
@@ -158,6 +187,13 @@ def evaluate_strategy_experiment(
         return result
 
     result = _base_result(spec, moment)
+    try:
+        scope = _symbol_scope(symbols, exclude_symbols)
+    except ValueError:
+        result.update(status="invalid", reason_code="evaluation_invalid_symbol_scope")
+        return result
+    if scope is not None:
+        result["symbol_scope"] = {"mode": scope[0], "symbols": sorted(scope[1])}
     try:
         capital = as_decimal(capital_jpy, "capital_jpy")
         if capital <= 0:
@@ -182,6 +218,8 @@ def evaluate_strategy_experiment(
 
     try:
         for symbol, side, strategy_id, amount, price, filled_at in rows:
+            if scope is not None and (symbol in scope[1]) != (scope[0] == "include"):
+                continue
             lot = lots.setdefault(symbol, _Lot())
             positions[symbol] = positions.get(symbol, ZERO) + (amount if side == "buy" else -amount)
             current = filled_at >= spec.activated_at and strategy_id.startswith(prefixes)
