@@ -367,17 +367,21 @@ class Tmux:
         return r.returncode == 0
 
     def new_game_session(self, session: str, cmd: list[str], cols: int, rows: int) -> None:
-        self._run(["new-session", "-d", "-s", session, "-x", str(cols), "-y", str(rows), shlex.join(cmd)])
+        # Issue #4344: a command passed to new-session that dies instantly
+        # takes the whole session down; keep the shell and send the command.
+        self._run(["new-session", "-d", "-s", session, "-x", str(cols), "-y", str(rows)])
+        self._run(["send-keys", "-t", session, shlex.join(cmd), "Enter"])
         # 配信画面に tmux の緑ステータスバーが映り込むため off にする (architecture.md §4.2)
         self.set_status_off(session)
 
     def new_game_session_checked(self, session: str, cmd: list[str], cols: int, rows: int) -> None:
         validate_tmux_name(session)
         self._checked(
-            ["new-session", "-d", "-s", session, "-x", str(cols), "-y", str(rows), shlex.join(cmd)],
+            ["new-session", "-d", "-s", session, "-x", str(cols), "-y", str(rows)],
             "session作成",
         )
         self._checked(["set-option", "-t", session, "status", "off"], "status設定")
+        self._checked(["send-keys", "-t", session, shlex.join(cmd), "Enter"], "コマンド投入")
 
     def create_game_session_owned(
         self,
@@ -397,7 +401,11 @@ class Tmux:
         ]
         for key, value in self._pane_environment(ownership, env).items():
             args += ["-e", f"{key}={value}"]
-        args.append(shlex.join(cmd))
+        # g1209-1211 (Issue #4344): passing the command to new-session let an
+        # instantly-dying command take the whole session down, so the follow-up
+        # set-option failed with `no such session` and the real launch error
+        # was lost. Create a bare persistent shell first, then send the
+        # command — a crash leaves the session and its output behind.
         result = self._checked(args, "session作成")
         try:
             session_id = validate_tmux_session_id(result.stdout.strip())
@@ -411,6 +419,10 @@ class Tmux:
                 raise OwnershipMismatchError(
                     f"session ownership検証に失敗しました (expected={ownership}, actual={actual})"
                 )
+            # Launch the workload inside the now-verified session. send-keys
+            # keeps the session alive even when the command dies instantly.
+            self._checked(["send-keys", "-t", session_id, shlex.join(cmd), "Enter"],
+                          "コマンド投入")
         except Exception as exc:
             self._rollback_created("session", session_id, exc)
             raise
