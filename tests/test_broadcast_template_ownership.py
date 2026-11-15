@@ -85,7 +85,7 @@ class BroadcastTemplateOwnershipTest(unittest.TestCase):
         # prediction panel and the notice instead of hiding either one.
         self.assertIn(
             'html[data-prediction-active="1"][data-next-corner="1"] #feed '
-            '{ height: 570px; }',
+            '{ height: 568px; }',
             html,
         )
 
@@ -105,8 +105,11 @@ class BroadcastTemplateOwnershipTest(unittest.TestCase):
             self.assertTrue(match, f"missing {prop} in {decl!r}")
             return float(match.group(1))
 
-        self.assertGreaterEqual(px(label, "font-size"), 13)
+        self.assertGreaterEqual(px(label, "font-size"), 16)
         self.assertGreaterEqual(px(when, "font-size"), 16)
+        # Owner 2026-11-15: the corner name and the remaining-games line are
+        # read together, so they share the larger size.
+        self.assertEqual(px(label, "font-size"), px(when, "font-size"))
         rows = (px(head, "line-height") + px(label, "margin-top")
                 + px(label, "line-height") + px(when, "line-height"))
         outer = px(card, "height")
