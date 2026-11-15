@@ -138,6 +138,7 @@ REASON_CODES={
  'invalid Clef credential payload':'configure_jev_route_clef_credential_invalid',
  'reconcile production only':'reconcile_production_only',
  'diagnostics output too large':'diagnostics_output_too_large',
+ 'diagnostics collector failed':'diagnostics_collector_failed',
  'invalid reconcile payload':'reconcile_invalid_request',
  'reviewed reconcile helper missing':'reconcile_helper_missing',
  'reviewed candidate object missing':'reconcile_object_missing',
