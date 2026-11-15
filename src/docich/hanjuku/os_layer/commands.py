@@ -16,6 +16,7 @@ from .readers import _current, _options
 FPS = 60
 VISIBLE_LIST_BATCH_MAX = 4
 VISIBLE_LIST_RELEASE_MS = 50
+MERCHANT_LIST_BATCH_MAX = 3  # 400 ms of input leaves release time in a 500 ms cycle
 
 
 def pad(button, frames=6):
@@ -111,6 +112,12 @@ def roster_list_batch(screen: Screen, label: str):
     return _visible_list_batch(screen, label, kind='text', menu='global_roster', x=168)
 
 
+def merchant_list_batch(screen: Screen, label: str):
+    """Move along visible priced rows; the shop flow still owns all purchases."""
+    return _visible_list_batch(screen, label, kind='shop_list', menu='merchant_list', x=128,
+                               limit=MERCHANT_LIST_BATCH_MAX)
+
+
 def fort_list_batch(screen: Screen, label: str):
     return _visible_list_batch(screen, label, kind='text', menu='fort_roster', x=144)
 
@@ -183,7 +190,8 @@ def menu_navigation_feedback(state, actions):
                       (reading.get('kind'), reading.get('menu')) in
                       (('text', 'castle_list'), ('general_list', 'castle_roster'),
                        ('text', 'global_roster'), ('text', 'fort_roster'),
-                       ('text', 'egg_recovery'), ('starter_list', 'starter_upper')))
+                       ('text', 'egg_recovery'), ('starter_list', 'starter_upper'),
+                       ('shop_list', 'merchant_list')))
     if released_batch:
         if len(actions) not in (3, 5, 7):
             return False
@@ -194,6 +202,9 @@ def menu_navigation_feedback(state, actions):
                 return False
         actions = actions[::2]  # local view only; preserve the complete plan
     if len(actions) > 4:
+        return False
+    if ((reading.get('kind'), reading.get('menu')) == ('shop_list', 'merchant_list')
+            and len(actions) > MERCHANT_LIST_BATCH_MAX):
         return False
     batch = len(actions) > 1
     # Card batches retain their existing adjacent taps. Visible-list batches have
