@@ -1,0 +1,29 @@
+"""Carried cards follow the actor even when the battle step differs.
+
+Owner 2026-11-15: the castle attack never used the carried cards. The battle's
+step can be minted by a retry while the launch snapshot stays under the
+original step.
+"""
+from docich.hanjuku.flows import battle
+
+
+def test_the_actors_launched_cards_are_used_under_another_step(monkeypatch):
+    monkeypatch.setattr(battle, '_order_for_step', lambda mem, step: None)
+    mem = {'chapter': 9,
+           'world': {'launched_orders': {
+               'I:c9:サヌト>オシロガ:64': {'general': 'キール',
+                                          'cards': ['イッテツーン', 'クースカン'],
+                                          'corridor': True, 'confirmation_tick': 5}}}}
+    cur = {'step': 'I:c9:サヌト>オシロガ:99', 'ally': 'キール', 'enemy': 'カッペリーニ'}
+    tactics = battle._carried_opening_tactics(mem, cur, [])
+    assert [t['card'] for t in tactics] == ['イッテツーン', 'クースカン']
+
+
+def test_a_different_actor_gets_nothing(monkeypatch):
+    monkeypatch.setattr(battle, '_order_for_step', lambda mem, step: None)
+    mem = {'chapter': 9,
+           'world': {'launched_orders': {
+               'I:c9:サヌト>オシロガ:64': {'general': 'キール',
+                                          'cards': ['イッテツーン'], 'corridor': True}}}}
+    cur = {'step': 'I:c9:サヌト>オシロガ:99', 'ally': 'ラズベリー', 'enemy': 'カッペリーニ'}
+    assert battle._carried_opening_tactics(mem, cur, []) == []

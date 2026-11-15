@@ -583,7 +583,20 @@ def _carried_opening_tactics(mem, cur, existing):
                     and context.get('actual_general') == cur.get('ally')):
                 bound = {'general': context['actual_general'], 'cards': list(cards)}
             else:
-                return []
+                # The battle's step and the sortie's launch step can disagree
+                # (a retry mints a new step; the march context may not be set
+                # yet). Fall back to the newest launched snapshot of this exact
+                # actor so the carried cards are not wasted (owner 2026-11-15:
+                # the castle attack never used them).
+                ally = cur.get('ally')
+                recent = [(snap.get('confirmation_tick') or 0, snap) for snap in
+                          (_world(mem).get('launched_orders') or {}).values()
+                          if isinstance(snap, dict) and snap.get('general') == ally
+                          and isinstance(snap.get('cards'), list) and snap['cards']]
+                if not recent:
+                    return []
+                chosen = max(recent, key=lambda item: item[0])[1]
+                bound = {'general': ally, 'cards': list(chosen['cards'])}
     boss_entry = _boss_tactics_allowed(mem, cur)
     if _is_boss_order(order, mem) and not boss_entry:
         return []  # reserve the boss kit on the road to the boss
