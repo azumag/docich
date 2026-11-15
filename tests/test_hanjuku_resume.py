@@ -1387,3 +1387,38 @@ def test_natural_rotation_prepare_start_succeeds_after_rollback_transition(setup
     resume.prepare_start(s.g, dict(s.queue, request_id=str(uuid.uuid4())))
     stored = read_record(Path(s.g.state_dir) / 'hanjuku-resume' / resume.REQUEST_FILE)
     assert stored['status'] == 'queued'
+
+
+def test_start_claimable_gates_replay_on_the_exact_request(setup):
+    s = setup
+    s.game.raw['hanjuku'] = {'script_bot': True}  # strict claim mode
+    resume.prepare(s.g, s.game, s.queue)
+    resume.publish(s.g, s.queue)
+    atomic_write_json(Path(s.g.state_dir) / 'corner_rotation.json',
+                      {'pending': dict(s.queue, source=s.queue.get('source', 'manual'),
+                                       phase='dispatched')})
+    assert resume.start_claimable(s.adapter, s.queue['request_id']) is True
+    # A replay under another request id must not bind this corner's decision.
+    assert resume.start_claimable(s.adapter, str(uuid.uuid4())) is False
+    # Once the decision is consumed or rolled back, a replay can only die at
+    # claim(); the switch terminalizes instead of staging a candidate.
+    _write_request(s, 'verified', request_id=s.queue['request_id'])
+    assert resume.start_claimable(s.adapter, s.queue['request_id']) is False
+    (Path(s.g.state_dir) / 'hanjuku-resume' / resume.REQUEST_FILE).unlink()
+    assert resume.start_claimable(s.adapter, s.queue['request_id']) is False
+
+
+def test_start_claimable_stays_permissive_without_strict_mode(setup):
+    s = setup  # fixture game has no [hanjuku] script_bot -> non-strict
+    assert resume.start_claimable(s.adapter, s.queue['request_id']) is True
+    _write_request(s, 'claimed', request_id=s.queue['request_id'], runtime_id='other-runtime')
+    assert resume.start_claimable(s.adapter, s.queue['request_id']) is True
+    # Even non-strict, a claim already bound to this same candidate refuses.
+    _write_request(s, 'claimed', request_id=s.queue['request_id'], runtime_id=s.spec.runtime_id)
+    assert resume.start_claimable(s.adapter, s.queue['request_id']) is False
+
+
+def test_start_claimable_ignores_other_games(setup):
+    s = setup
+    adapter = SimpleNamespace(g=s.g, game=s.game, spec=replace(s.spec, game='nethack'))
+    assert resume.start_claimable(adapter, s.queue['request_id']) is True

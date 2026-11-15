@@ -987,6 +987,111 @@ def test_resume_queued_requeues_orphaned_accepted_receipt():
         assert orphan_id not in remaining
 
 
+def test_queued_hanjuku_replay_terminalizes_when_decision_lost(monkeypatch, tmp_path):
+    # docich#4356 (g1211/g1215): a queued hanjuku-hero switch replays below
+    # the corner's prepare_start(); once the durable boundary decision is
+    # gone, claim() can only fail inside materialize_runtime and every
+    # replay leaves a doomed candidate plus a retiring runtime.  The
+    # coordinator must terminalize the replay before staging anything.
+    store, coordinator = _coordinator(BoundaryFactory(), tmp_path / "run")
+    _assert_started(coordinator)
+    monkeypatch.setattr(
+        "docich.hanjuku_resume.start_claimable",
+        lambda adapter, request_id: False,
+    )
+    head = store.enqueue_request(str(uuid.uuid4()), "switch", "hanjuku-hero")
+    following = store.enqueue_request(str(uuid.uuid4()), "switch", "robots")
+    resumed = coordinator.resume_queued(timeout_s=1.0)
+    assert resumed.request_id == head.request_id
+    assert resumed.status == "failed"
+    assert resumed.error_code == game_switch.ERROR_TIMEOUT
+    receipt = store.receipts.load(head.request_id)
+    assert receipt["status"] == "failed"
+    state, _ = store.canonical.load()
+    assert state["phase"] == "ready"
+    assert state["active"]["game"] == "nethack"
+    assert state.get("candidate") is None
+    assert state.get("retiring") in (None, [])
+    # The doomed head must not wedge the FIFO: the follower stays claimable.
+    assert [item["request_id"] for item in store.receipts.queued()] == [
+        following.request_id
+    ]
+
+
+def test_queued_hanjuku_replay_runs_when_decision_claimable(monkeypatch, tmp_path):
+    # The gate must not block a replay whose decision is still claimable:
+    # the switch runs to completion.  The drain waits on the old game's
+    # round boundary, so drive resume_queued in a worker and release the
+    # boundary like the fifo maintenance tests do (round_boundary_s=5.0
+    # keeps the step timeout out of the race).
+    factory = BoundaryFactory()
+    store, coordinator = _coordinator(factory, tmp_path / "run", round_boundary_s=5.0)
+    _assert_started(coordinator)
+    monkeypatch.setattr(
+        "docich.hanjuku_resume.start_claimable",
+        lambda adapter, request_id: True,
+    )
+    head = store.enqueue_request(str(uuid.uuid4()), "switch", "hanjuku-hero")
+    old = factory.adapters[("nethack", 1)]
+    resumed_box = []
+    worker = threading.Thread(
+        target=lambda: resumed_box.append(coordinator.resume_queued(timeout_s=30.0))
+    )
+    worker.start()
+    assert old.boundary_entered.wait(5.0)
+    old.boundary_release.set()
+    worker.join(5.0)
+    assert not worker.is_alive()
+    resumed = resumed_box[0]
+    assert resumed.request_id == head.request_id
+    assert resumed.status == "succeeded"
+    state, _ = store.canonical.load()
+    assert state["active"]["game"] == "hanjuku-hero"
+
+
+def test_resume_queued_terminalizes_expired_orphaned_accepted_receipt(tmp_path):
+    # docich#4356 follow-up: a capped request died after claim and its
+    # accepted receipt outlived its hard deadline.  The orphan sweep must
+    # not replay a request whose absolute cap already passed; requeueing it
+    # into the durable FIFO lets the exact-head deadline check terminalize
+    # it before any adapter is constructed.
+    factory = BoundaryFactory()
+    store, coordinator = _coordinator(factory, tmp_path / "run")
+    _assert_started(coordinator)
+    orphan_id = str(uuid.uuid4())
+    store.enqueue_request(
+        orphan_id,
+        "switch",
+        "robots",
+        allow_boundary_timeout_extension=False,
+        hard_deadline_at="2999-01-01T00:00:00Z",
+    )
+    orphan = dict(store.receipts.load(orphan_id))
+    orphan["status"] = "accepted"
+    orphan["hard_deadline_at"] = "2000-01-01T00:00:00Z"
+    store.receipts.save(orphan)
+    following = store.enqueue_request(str(uuid.uuid4()), "switch", "robots")
+
+    resumed = coordinator.resume_queued(timeout_s=1.0)
+    assert resumed.request_id == orphan_id
+    assert resumed.status == "failed"
+    assert resumed.error_code == game_switch.ERROR_TIMEOUT
+    receipt = store.receipts.load(orphan_id)
+    assert receipt["status"] == "failed"
+    state, _ = store.canonical.load()
+    assert state["phase"] == "ready"
+    assert state["active"]["game"] == "nethack"
+    assert state.get("candidate") is None
+    # The expired head never staged a candidate; the follower drains next.
+    assert not any(
+        adapter.spec.game == "robots"
+        for adapter in factory.adapters.values()
+    )
+    assert [item["request_id"] for item in store.receipts.queued()] == [
+        following.request_id
+    ]
+
+
 def test_fifo_maintenance_recovers_expired_drain_and_starts_only_queue_head(monkeypatch):
     with tempfile.TemporaryDirectory() as tmp:
         state_dir = Path(tmp) / "run"

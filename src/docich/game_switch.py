@@ -3341,14 +3341,70 @@ class GameSwitchCoordinator:
                       error_code=recovered.error_code,
                       cleanup_pending=recovered.cleanup_pending)
             return recovered
+        transition_target = rotate_target if rotate_target is not None else target
+        if acceptance.claimed_from_queue and transition_target == "hanjuku-hero":
+            # A queued/replayed Hanjuku switch runs below the corner's
+            # prepare_start(): once its durable boundary decision is gone or
+            # bound to another request, claim() can only fail inside
+            # materialize_runtime and every replay leaves a doomed candidate
+            # plus a retiring runtime (g1211/g1215, docich#4356).  Prove the
+            # decision is still claimable for this exact request before
+            # staging anything; the terminal ``failed``+``timeout`` receipt is
+            # the same pre-launch shape the corner already settles.
+            try:
+                spec = self._candidate_spec(acceptance, transition_target)
+                probe_adapter = self._make_adapter(spec, deadline)
+                from .hanjuku_resume import start_claimable
+                claimable = bool(start_claimable(probe_adapter, request_id))
+            except Exception:
+                # The probe only predicts claim(); let the normal start path
+                # surface its own error when the probe itself cannot decide.
+                claimable = True
+            if not claimable:
+                current, _migrated = self.store.canonical.load()
+                current_active = current.get("active")
+                result = {
+                    "request_id": request_id,
+                    "operation": operation,
+                    "status": "failed",
+                    "from_game": (
+                        current_active.get("game")
+                        if isinstance(current_active, dict)
+                        else None
+                    ),
+                    "to_game": transition_target,
+                    "generation": acceptance.generation,
+                    "error_code": ERROR_TIMEOUT,
+                    "detail": "queued/replayed Hanjuku switch has no claimable boundary decision",
+                }
+                tx.transition(
+                    {"validating"},
+                    "ready" if isinstance(current_active, dict) else "idle",
+                    updates={
+                        "operation": None,
+                        "request_id": None,
+                        "deadline_at": None,
+                        "last_result": result,
+                        "last_error": {
+                            "error_code": ERROR_TIMEOUT,
+                            "detail": result["detail"],
+                        },
+                    },
+                    crash_hook=self.crash_hook,
+                )
+                saved = tx.finish_request(request_id, "failed", result)
+                self._log(
+                    "replay_decision_lost", phase="failed", result="failed",
+                    error_code=ERROR_TIMEOUT, detail=result["detail"],
+                )
+                return _result_from_receipt(saved)
         self._log_update(
-            target=rotate_target if rotate_target is not None else target,
-            to_game=rotate_target if rotate_target is not None else target,
+            target=transition_target,
+            to_game=transition_target,
             generation=acceptance.generation,
             runtime_id=str(acceptance.receipt["runtime_id"]),
         )
         self._log("accepted", phase="validating")
-        transition_target = rotate_target if rotate_target is not None else target
         return self._run_operation_locked(
             tx,
             acceptance,
