@@ -44,6 +44,10 @@ BATTLE_COMMAND_MENU_HOLD_MAX = 30
 # the fallback presses A there anyway (g1067 11:13: a castle-progress notice).
 FIELD_TEXT_HOLD_MAX = 4
 
+# The title screen's つづき (battery-save resume) gets this many tries before a
+# blind Start; a new game from the title must never happen while a save exists.
+TITLE_CONTINUE_TRIES = 3
+
 def _chapter9_field_recall(mem):
     """docich#3958: let chapter 9's mechanical march see field camps again.
 
@@ -578,6 +582,17 @@ def legacy_actions(frame: Frame, phase: str, state: dict) -> list[dict]:
     if phase=='shop':
         return [pad('a' if shop_exit_confirmation(frame) else 'b')]
     if phase=='title':
+        # Never press Start blind: a state that boots to the title must resume
+        # the battery save (つづき) instead. g1190 2026-11-16 booted a saved
+        # state that showed the title, Start began a new game and the whole
+        # chapter-9 progress was lost. Only a bounded set of continue attempts,
+        # then Start for a cartridge with no save at all.
+        tries = state.get('title_tries')
+        if not isinstance(tries, dict):
+            tries = state['title_tries'] = {'n': 0}
+        tries['n'] = int(tries.get('n') or 0) + 1
+        if tries['n'] <= TITLE_CONTINUE_TRIES:
+            return [pad('down'), {'type': 'wait', 'ms': 200}, pad('a')]
         return [pad('start')]
     if phase in {'field','field_menu','battle'}:
         # A readable battle panel goes through the risk-aware battle_flow.battle_step;
