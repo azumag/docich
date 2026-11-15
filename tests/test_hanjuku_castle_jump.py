@@ -56,6 +56,14 @@ def test_list_reads_source_name_across_the_long_vowel_mark():
     assert M._castle_list_rows(screen)
     assert M._castle_list_target(screen, 'アルマムーン') == 'アルマームン'
 
+def test_list_reads_ide_through_the_exclamation_variant():
+    # The chart spells the chapter-9 corridor end イデ！ (full-width); the
+    # game's しろ list draws イデ! (half-width). The boss order's source jump
+    # failed as castle_missing on this difference (g1190 2026-11-15 72-2).
+    screen = _castle_list(['カラ', 'イデ!'])
+    assert M._castle_list_target(screen, 'イデ！') == 'イデ!'
+    assert M._castle_key('イデ！') == M._castle_key('イデ!')
+
 
 def test_list_is_not_a_general_roster():
     screen = _castle_list(['ゼウス', 'ヴィーナス'])

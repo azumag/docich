@@ -400,6 +400,7 @@ KEY_OWNERSHIP = {
     'world_map_due': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 全体マップ期限
     'world_map_tick': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 同上tick
     'world_map_wait': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 同上待機
+    'world_map_skull_hold': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 第9話ボス位置のY再観測保持
     'y_jump': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # Yジャンプナビ
     'y_jump_last': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # Yジャンプナビゲーション状態
     'y_jump_return': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 同上復帰
