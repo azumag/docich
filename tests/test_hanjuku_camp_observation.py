@@ -46,7 +46,7 @@ def test_a_lost_tent_is_not_chased_again_until_the_skip_window_passes(monkeypatc
 def test_a_fresh_tent_replaces_the_old_coordinate_before_any_confirmation(monkeypatch):
     monkeypatch.setattr(p, 'own_camps', lambda _frame: [{'target': (150, 100)}])
     mem = memory()
-    assert p.camp_recall_step(MAP, mem, object()) == [p.pad('right', 8)]
+    assert p.camp_recall_step(MAP, mem, object()) == [p.pad('right', 26)]
     assert _flow(mem)['recall']['target'] == [150, 100]
     assert _flow(mem)['recall']['stage'] == 'to_camp'
 
@@ -100,3 +100,15 @@ def test_cursor_covering_a_previously_seen_tent_opens_the_menu(monkeypatch):
     assert _flow(mem)['recall'].get('occluded_enter') is True
     # One occluded attempt only; a still-missing tent follows the old abort.
     assert p.camp_recall_step(MAP, mem, object()) == []
+
+
+def test_two_visible_camps_keep_the_started_target(monkeypatch):
+    # Re-picking the nearest tent every step flipped the servo between two
+    # visible camps (g1190 2026-11-15 74-12, 91 observations aborted).
+    camps = [{'target': (120, 30)}, {'target': (120, 200)}]
+    monkeypatch.setattr(p, 'own_camps', lambda _frame: camps)
+    mem = {'chapter': 1, 'tick': 100,
+           'recall': {'stage': 'to_camp', 'steps': 0, 'target': [120, 200]}}
+    actions = p.camp_recall_step(MAP, mem, object())
+    assert actions == [p.pad('down', 28)]
+    assert _flow(mem)['recall']['target'] == [120, 200]

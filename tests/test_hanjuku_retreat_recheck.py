@@ -135,7 +135,7 @@ def test_missing_dispatch_receipt_does_not_suppress_other_camps(monkeypatch):
     assert _flow(mem)['retreat_rechecks']['ゼウス']['retry_after'] == mem['tick'] + 30
     # Cooldown applies to the named observation, while any other fresh camp is allowed.
     monkeypatch.setattr(p, 'own_camps', lambda _frame: [{'target': (80, 80), 'clipped': False}])
-    assert p.camp_recall_step(MAP, mem, FRAME) == [p.pad('right', 8)]
+    assert p.camp_recall_step(MAP, mem, FRAME) == [p.pad('right', 28)]
     assert not _flow(mem)['recall'].get('retreat_recheck')
 
 

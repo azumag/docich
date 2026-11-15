@@ -2781,7 +2781,7 @@ def test_camp_recall_scrolls_the_camera_for_a_tent_clipped_at_the_top():
     mem = {'chapter': 1, '_records': []}
     screen = Screen(lines=[], hand=None, text='', kind='map', cursor=(100, 100))
     actions = policy.camp_recall_step(screen, mem, frame)
-    assert actions == [policy.pad('up', 8)]
+    assert actions == [policy.pad('up', 28)]
     assert _flow(mem)['recall']['stage'] == 'to_camp'
 
 
@@ -2797,7 +2797,7 @@ def test_camp_recall_walks_cursor_menu_and_own_castle(monkeypatch):
     frame = _camp_frame()
     mem = {'chapter': 1, '_records': []}
     screen = Screen(lines=[], hand=None, text='', kind='map', cursor=(80, 90))
-    assert policy.camp_recall_step(screen, mem, frame) == [policy.pad('left', 8)]
+    assert policy.camp_recall_step(screen, mem, frame) == [policy.pad('left', 28)]
     assert _flow(mem)['recall']['stage'] == 'to_camp'
     assert [r['decision'] for r in mem['_records']] == ['camp_found']
 
