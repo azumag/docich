@@ -451,6 +451,27 @@ def _camp_recall_step(screen: Screen, mem, frame, *, observed_camps=None):
                                          **({'month_elapsed': elapsed}
                                             if elapsed is not None else {})},
                         reason='野営が見えないまま地図フレームが続いているため、カメラと屋根の状況を記録する')
+            # A camp that was located before can be revisited: the tents sit
+            # near the castles and the camera only moves with the cursor, so a
+            # hunt that waits never brings them back (all 32 generals camped,
+            # g1190 94-xx). Bounded by the ARRIVE check inside nav_step.
+            last = _flow(mem).get('camp_last_world')
+            if camp_stays(mem) and _camp_target(last):
+                from ..os_layer.navigation import nav_step
+                move = nav_step(screen, mem, frame, list(last))
+                if move == 'arrived':
+                    _flow(mem).pop('camp_last_world', None)
+                    _record(mem, 'camp_revisit_arrived',
+                            observed_metric={'camp_world': list(last)},
+                            reason='最後に確認した野営の位置へカーソルを寄せ終えたため、テントの再検出を待つ')
+                    return []
+                if move in ('up', 'down', 'left', 'right'):
+                    _record(mem, 'camp_revisit',
+                            observed_metric={'camp_world': list(last), 'move': move},
+                            reason='最後に確認した野営の位置へカーソルを寄せてテントを再発見する')
+                    return [pad(move)]
+                if move == 'infeasible':
+                    _flow(mem).pop('camp_last_world', None)
             return None
         cursor = _cursor(screen)
         camp = min(camps, key=lambda c: (abs(c['target'][0] - cursor[0])
@@ -467,6 +488,8 @@ def _camp_recall_step(screen: Screen, mem, frame, *, observed_camps=None):
         _reset_boss_jump(mem)
         _observe_recall_origin(screen, mem, frame, state)
         state['camp_world'] = _camp_world_cell(cursor, state.get('origin'), camp['target'])
+        if _camp_target(state.get('camp_world')):
+            _flow(mem)['camp_last_world'] = list(state['camp_world'])
         elapsed = (int(mem.get('tick') or 0) - mem['month_start_tick']
                    if type(mem.get('month_start_tick')) is int else None)
         estimate = None
