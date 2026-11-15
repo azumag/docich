@@ -110,13 +110,33 @@ def run_improve_with_validation_retry(g, state_dir, agents, dry_run: bool) -> di
 def run_scheduled_improve(g, state_dir, agents, dry_run: bool, *, now=None) -> dict:
     """Gate (no AI) and then run the shared improvement path at most once."""
     from .trading.paper_improve_schedule import run_scheduled
+    from .trading.paper_improve_slots import common_slot_is_empty, run_slot_improve
 
-    return run_scheduled(
-        state_dir,
-        run=lambda: run_improve_with_validation_retry(g, state_dir, agents, dry_run),
-        dry_run=bool(dry_run),
-        now=now,
-    )
+    # Once every traded symbol runs its own slot, the common experiment owns
+    # no symbol: generating another common candidate would only spend an AI call.
+    try:
+        common_empty = not dry_run and common_slot_is_empty(state_dir)
+    except Exception:
+        common_empty = False
+    if common_empty:
+        summary = {"status": "skipped", "reason": "common-slot-empty", "scheduled": True,
+                   "gate": {"decision": "skip", "reason": "common-slot-empty"}}
+    else:
+        summary = run_scheduled(
+            state_dir,
+            run=lambda: run_improve_with_validation_retry(g, state_dir, agents, dry_run),
+            dry_run=bool(dry_run),
+            now=now,
+        )
+    # Per-symbol slots (Issue #3623 §2.9) are improved in the same daily run,
+    # with their own gate; a failure here never changes the common result.
+    try:
+        summary["slots"] = run_slot_improve(
+            g, trading_dir=state_dir, agents=(agents or "").strip(), dry_run=bool(dry_run), now=now,
+        )
+    except Exception:
+        summary["slots"] = {"status": "failed", "reason_code": "slots-error"}
+    return summary
 
 
 def main(argv: list[str] | None = None) -> int:
