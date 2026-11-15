@@ -93,7 +93,14 @@ def test_missing_camp_after_named_select_never_uses_saved_cell(monkeypatch):
     p.camp_recall_step(MAP, mem, FRAME); p.camp_recall_step(main_menu(), mem, FRAME)
     p.camp_recall_step(parse(roster(selected=1)), mem, FRAME)
     monkeypatch.setattr(p, 'own_camps', lambda _frame: [])
-    for _ in range(3): assert p.camp_recall_step(MAP, mem, FRAME) == []
+    for _ in range(2): assert p.camp_recall_step(MAP, mem, FRAME) == []
+    # One bounded A probe: the cursor may be covering the tent it was focused
+    # onto. A non-camp answer still never trusts a saved cell.
+    assert p.camp_recall_step(MAP, mem, FRAME) == [p.pad('a')]
+    # A non-camp answer still never trusts a saved cell: bounded defer, then
+    # the flow is idle again (None = ordinary map steering).
+    assert p.camp_recall_step(MAP, mem, FRAME) == []
+    for _ in range(2): assert p.camp_recall_step(MAP, mem, FRAME) is None
     assert not _flow(mem).get('recall') and not _flow(mem).get('recall_skip')
     assert _flow(mem)['retreat_rechecks']['ゼウス']['status'] == 'needs_observation'
 
@@ -761,7 +768,9 @@ def test_repeated_camp_status_cannot_reset_exhausted_search_or_anonymous_budget(
         assert p.camp_recall_step(MAP, mem, empty) == [p.pad('x')]
         assert p.camp_recall_step(main_menu(), mem, empty) == [p.pad('a')]
         assert p.camp_recall_step(parse(roster(selected=1)), mem, empty) == [p.pad('select')]
-        for _ in range(c.READ_LIMIT): assert p.camp_recall_step(MAP, mem, empty) == []
+        for _ in range(c.READ_LIMIT - 1): assert p.camp_recall_step(MAP, mem, empty) == []
+        assert p.camp_recall_step(MAP, mem, empty) == [p.pad('a')]   # bounded occluded-tent probe
+        assert p.camp_recall_step(MAP, mem, empty) == []             # non-camp answer defers finitely
         _flow(mem)['retreat_anonymous_budget'] = {'key': 'preserved', 'reads': 17}
         for _ in range(10):
             mem = json.loads(json.dumps(mem)); mem['tick'] += 1
@@ -931,3 +940,40 @@ def test_new_target_request_needs_field_return_before_rearming_camp(monkeypatch,
         p.observe_sortie_transition(MAP, mem, 'unknown')
     c.observe_camp_status(parse(camp_status_frame(hp=85)), mem)
     assert bool(_flow(mem).get('retreat_rechecks')) is want
+
+
+def test_occluded_tent_under_focus_cursor_gets_one_bounded_probe(monkeypatch):
+    """g1190: the SELECT focus lands the cursor on the named camp and its
+    sprite covers the tent, so every named recheck failed 'tent != cursor'.
+    Probe once with A: the camp menu then proves the spot itself."""
+    from docich.hanjuku.os_layer import readers
+    mem = memory()
+    assert p.camp_recall_step(MAP, mem, FRAME) == [p.pad('x')]
+    assert p.camp_recall_step(main_menu(), mem, FRAME) == [p.pad('a')]
+    assert p.camp_recall_step(parse(roster(selected=1)), mem, FRAME) == [p.pad('select')]
+    monkeypatch.setattr(readers, 'own_camps', lambda _frame: [])
+    assert p.camp_recall_step(MAP, mem, FRAME) == []              # reads 1
+    assert p.camp_recall_step(MAP, mem, FRAME) == []              # reads 2
+    assert p.camp_recall_step(MAP, mem, FRAME) == [p.pad('a')]    # bounded probe
+    record = next(r for r in mem['_records'] if r['decision'] == 'camp_focus_occluded_probe')
+    assert record['observed_metric']['cursor'] == [26, 66]
+    assert p.camp_recall_step(camp_menu(1), mem, FRAME) is not None
+    state = _flow(mem).get('recall') or {}
+    assert (state.get('camp_observation') or {}).get('origin') == 'named_focus_occluded'
+    assert (state.get('camp_observation') or {}).get('target') == [26, 66]
+    assert state.get('stage') == 'recheck_status'
+
+
+def test_occluded_probe_on_a_non_camp_cell_defers_finitely(monkeypatch):
+    from docich.hanjuku.os_layer import readers
+    mem = memory()
+    assert p.camp_recall_step(MAP, mem, FRAME) == [p.pad('x')]
+    assert p.camp_recall_step(main_menu(), mem, FRAME) == [p.pad('a')]
+    assert p.camp_recall_step(parse(roster(selected=1)), mem, FRAME) == [p.pad('select')]
+    monkeypatch.setattr(readers, 'own_camps', lambda _frame: [])
+    for _ in range(2): p.camp_recall_step(MAP, mem, FRAME)
+    assert p.camp_recall_step(MAP, mem, FRAME) == [p.pad('a')]
+    # Nothing camp-like under the cursor: no second probe, bounded defer.
+    assert p.camp_recall_step(MAP, mem, FRAME) == []
+    assert not _flow(mem).get('recall')
+    assert _flow(mem)['retreat_rechecks']['ゼウス']['status'] == 'needs_observation'
