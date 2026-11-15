@@ -277,9 +277,19 @@ def assess_experiment(
                     entries=True, pending=None, activated=True)
 
 
-def stage_candidate(trading_dir, candidate, *, expected_key: str, capital_jpy, now: float) -> dict:
-    """Commit a validated candidate against its original baseline, under lock."""
-    target = Path(trading_dir)
+def stage_candidate(
+    trading_dir, candidate, *, expected_key: str, capital_jpy, now: float,
+    slot: str = COMMON_SLOT, layout: SlotLayout | None = None,
+) -> dict:
+    """Commit a validated candidate against its original baseline, under lock.
+
+    ``slot`` / ``layout`` select the slot whose queue receives the candidate
+    (see ``assess_experiment``); the ledger always lives in ``trading_dir``.
+    """
+    root = Path(trading_dir)
+    if slot != COMMON_SLOT and layout is None:
+        raise ValueError("a dedicated slot needs the slot layout")
+    target = slot_dir(root, slot)
     active = load_strategy_experiment(target)
     if experiment_key(active) != expected_key:
         return {"status": "skipped", "changed": False, "reason": "baseline-changed"}
@@ -303,7 +313,7 @@ def stage_candidate(trading_dir, candidate, *, expected_key: str, capital_jpy, n
         return {"status": "skipped", "changed": False, "reason": "pending-exists"}
     # A brand-new installation has no account to drain. Saving a PAPER spec
     # here cannot execute an order or create an account.
-    if (active is None and not (target / "paper.sqlite3").exists()
+    if (slot == COMMON_SLOT and active is None and not (root / "paper.sqlite3").exists()
             and not (target / CONTROL_FILENAME).exists()):
         save_strategy_experiment(target, candidate, activated_at=now)
         (target / PENDING_FILENAME).unlink(missing_ok=True)
@@ -311,7 +321,7 @@ def stage_candidate(trading_dir, candidate, *, expected_key: str, capital_jpy, n
                 "activated": True, "activated_from": "generated", "pending_queued": False,
                 "experiment": experiment_to_payload(load_strategy_experiment(target))}
     save_pending_experiment(target, candidate, proposed_at=now)
-    step = assess_experiment(target, capital_jpy=capital_jpy, now=now)
+    step = assess_experiment(root, capital_jpy=capital_jpy, now=now, slot=slot, layout=layout)
     return {"status": "improved", "kind": "strategy-experiment", "changed": True,
             "activated": step.activated,
             "activated_from": "generated" if step.activated else None,
