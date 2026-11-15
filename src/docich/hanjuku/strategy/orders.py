@@ -2041,6 +2041,32 @@ def _near_goal(mem, order, name, mode):
     return near.get('step') == order['step'] and near.get('goal') == name and near.get('mode') == mode
 
 
+def _recall_owned(mem, chapter, owned, origin=None):
+    """Drop recall targets a march cannot reach.
+
+    Owner rule (2026-11-15): on a corridor chapter the black ground is a
+    cliff, so a castle that merely looks near on screen can be unreachable —
+    a unit sent there marches into the cliff forever. From the origin's
+    nearest corridor castle, drop candidates ``march_blocked`` reports
+    unreachable. A corridor-less chapter, no valid origin, or nothing left
+    keeps the whole owned list.
+    """
+    road = chart.corridor(chapter) or ()
+    cells = chart.castles(chapter) or {}
+    if (not road or not isinstance(origin, (list, tuple)) or len(origin) != 2
+            or not all(type(v) is int for v in origin)):
+        return owned
+    entry = min((c for c in road if c in cells),
+                key=lambda c: (cells[c][0] - origin[0]) ** 2 + (cells[c][1] - origin[1]) ** 2,
+                default=None)
+    if entry is None:
+        return owned
+    road_set = set(owned) | set(road)
+    reachable = [c for c in owned
+                 if c in road and not chart.march_blocked(chapter, entry, c, road_set)]
+    return reachable or owned
+
+
 def _recall_goal(mem, flags=None):
     """Nearest owned castle to the recalled unit's own position.
 
@@ -2052,9 +2078,10 @@ def _recall_goal(mem, flags=None):
     """
     chapter = mem.get('chapter') or 0
     cells = chart.castles(chapter)
-    owned = sorted(c for c in _owned(mem) if c in cells
-                   and (flags is None or flags.get(c) == 'own'))
     state = _flow(mem).get('recall') or {}
+    owned = _recall_owned(mem, chapter, sorted(c for c in _owned(mem) if c in cells
+                                             and (flags is None or flags.get(c) == 'own')),
+                          origin=state.get('origin'))
     hero = [c for c in owned if NAME in ((_world(mem).get('garrison') or {}).get(c) or ())]
     if not hero:
         # The monthly status walk records the hero's own location. Use it only
@@ -2115,7 +2142,8 @@ def _fort_recall_goal(mem, state):
     """
     chapter = mem.get('chapter') or 0
     cells = chart.castles(chapter)
-    owned = sorted(c for c in _owned(mem) if c in cells)
+    owned = _recall_owned(mem, chapter, sorted(c for c in _owned(mem) if c in cells),
+                          origin=state.get('origin'))
     if not owned:
         return None
 

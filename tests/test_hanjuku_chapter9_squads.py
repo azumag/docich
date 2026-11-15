@@ -208,3 +208,18 @@ def test_castle_check_next_pops_the_target_before_opening_from_main_menu():
     assert mem['house']['phase'] == 'castle_check_open'
     assert mem['house']['castle_current'] == 'ブラウニー'
     assert mem['house']['castle_queue'] == []
+
+
+def test_recall_goal_ignores_visible_but_cliff_blocked_castles():
+    """Owner 2026-11-15: a visible castle is not necessarily reachable on a
+    cliff chapter — a general sent there marches into the cliff forever.
+    Recall goals drop candidates march_blocked reports unreachable from the
+    origin's nearest corridor castle."""
+    mem = _mem()
+    from docich.hanjuku.strategy import orders as O
+    owned = O._recall_owned(mem, 9, ['カラ', 'イデ！'], origin=[0, 0])
+    assert owned                                   # something is always chosen
+    # Without an origin the owned list passes through unchanged.
+    assert O._recall_owned(mem, 9, ['カラ', 'イデ！']) == ['カラ', 'イデ！']
+    # A corridor-less chapter ignores cliffs entirely.
+    assert O._recall_owned(mem, 3, ['a', 'b'], origin=[0, 0]) == ['a', 'b']
