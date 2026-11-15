@@ -134,6 +134,15 @@ AUTO_RESTORE_ATTEMPT_LIMIT = 3
 AUTO_RESTORE_BACKOFF_SECONDS = (300.0, 900.0, 2700.0)
 AUTO_RESTORE_STATUSES = frozenset({"succeeded", "queued", "failed", "noop", "interrupted",
                                    "completed", "unknown", "none"})
+# A failed switch may park the shared game-switch plane itself in a terminal
+# failure (for example a failed candidate that cannot be cleaned while the
+# base singleton is busy). The timer retries the reviewed coordinator recovery
+# inside this budget; only stable terminal phases are touched, so an in-flight
+# switch is never raced. Exhaustion keeps the latch for the operator.
+AUTO_PLANE_RECOVERY_ATTEMPT_LIMIT = 3
+AUTO_PLANE_RECOVERY_BACKOFF_SECONDS = (300.0, 900.0, 1800.0)
+AUTO_PLANE_RECOVERY_TIMEOUT_S = 120.0
+AUTO_PLANE_RECOVERY_PHASES = frozenset({"failed", "recovery_required"})
 
 
 class RotationError(RuntimeError):
@@ -1698,6 +1707,90 @@ class CornerRotationManager:
         except Exception:
             return None
 
+    def _auto_plane_recovery_budget(self, state, reservation, now):
+        """Return (allowed, record) for the bounded plane-recovery replay.
+
+        The budget belongs to one reservation: a new request starts a fresh
+        budget, and the attempt count plus the next allowed time are durable so
+        a restart cannot turn the cap into an unbounded recovery loop.
+        """
+
+        record = state.get("auto_plane_recovery")
+        if (not isinstance(record, dict)
+                or record.get("request_id") != reservation.get("request_id")):
+            record = {"request_id": reservation.get("request_id"),
+                      "corner": reservation.get("corner"),
+                      "attempts": 0,
+                      "next_attempt_at": now,
+                      "last_status": None,
+                      "exhausted_recorded": False}
+            state["auto_plane_recovery"] = record
+        attempts = record.get("attempts")
+        if type(attempts) is not int or attempts < 0:
+            attempts = 0
+            record["attempts"] = 0
+        if attempts >= AUTO_PLANE_RECOVERY_ATTEMPT_LIMIT:
+            return False, record
+        next_at = record.get("next_attempt_at")
+        if isinstance(next_at, (int, float)) and not isinstance(next_at, bool) and now < next_at:
+            return False, record
+        return True, record
+
+    def _plane_phase(self, adapter):
+        """Read the shared plane's phase without taking its writer lock."""
+
+        store = getattr(getattr(adapter, "manager", None), "store", None)
+        if store is None:
+            return None
+        try:
+            with store.lock(exclusive=False):
+                canonical, missing = store.canonical.load()
+        except Exception:
+            return None
+        if missing or not isinstance(canonical, dict):
+            return None
+        phase = canonical.get("phase")
+        return phase if isinstance(phase, str) else None
+
+    def _run_auto_plane_recovery(self, state, reservation, adapter, now):
+        """Run at most one reviewed plane recovery for a parked failure.
+
+        Only a stable terminal canonical phase is touched: an in-flight switch
+        has its own driver and must not be raced. The coordinator recovery is
+        the same reviewed path the owner runs by hand (it never starts a
+        corner), and every attempt is bounded and durable. Returns True when an
+        attempt ran so the caller can re-prove the slot.
+        """
+
+        coordinator = getattr(getattr(adapter, "manager", None), "coordinator", None)
+        if not callable(getattr(coordinator, "recover", None)):
+            return False
+        if self._plane_phase(adapter) not in AUTO_PLANE_RECOVERY_PHASES:
+            return False
+        allowed, record = self._auto_plane_recovery_budget(state, reservation, now)
+        if not allowed:
+            return False
+        try:
+            result = coordinator.recover(timeout_s=AUTO_PLANE_RECOVERY_TIMEOUT_S)
+        except Exception:
+            result = None
+        status = getattr(result, "status", None) if result is not None else None
+        if status is None and isinstance(result, str):
+            status = result
+        attempts = int(record.get("attempts") or 0) + 1
+        record.update(attempts=attempts,
+                      last_status=status if isinstance(status, str) and status else "unknown",
+                      next_attempt_at=now + AUTO_PLANE_RECOVERY_BACKOFF_SECONDS[
+                          min(attempts, len(AUTO_PLANE_RECOVERY_BACKOFF_SECONDS)) - 1])
+        state["auto_plane_recovery"] = record
+        if attempts >= AUTO_PLANE_RECOVERY_ATTEMPT_LIMIT and not record.get("exhausted_recorded"):
+            record["exhausted_recorded"] = True
+            self._record_failed_corner_once(
+                state, reservation, resolution="recovery-required",
+                error_kind=state.get("error_kind") or "execution-unverified", now=now,
+            )
+        return True
+
     def _mark_released_request(self, state, corner, request_id, now):
         """Remember one released failure per corner so `_observe` can skip it.
 
@@ -1791,6 +1884,7 @@ class CornerRotationManager:
         else:
             state["pending"] = None
         self._sweep_orphaned_auto_restore(state)
+        state.pop("auto_plane_recovery", None)
         # Advance the watermark exactly like the operator recovery does: a long
         # latch must not fall into the clock-gap quarantine below (#986).
         state["last_seen_at"] = now
@@ -1857,6 +1951,25 @@ class CornerRotationManager:
                 state, reservation, adapter, error_kind=kind, now=now,
                 base_unrestored=leftover, manual=is_manual,
             )
+        # The plane itself may be parked in a terminal failure (the failing
+        # switch rolled back into ``failed``). Retry the reviewed coordinator
+        # recovery within its own budget; when it settles the plane the next
+        # proofs can release the failed corner without an operator.
+        if self._run_auto_plane_recovery(state, reservation, adapter, now):
+            try:
+                outcome = self._commit_verified_failed_start(
+                    state, reservation, adapter, manual=is_manual, now=now
+                )
+            except Exception:
+                outcome = None
+            if outcome is not None:
+                return outcome
+            if self._slot_reusable(adapter, reservation):
+                return self._release_failed_corner(
+                    state, reservation, adapter, error_kind=kind, now=now,
+                    base_unrestored=self._leftover_corner_game(adapter, reservation),
+                    manual=is_manual,
+                )
         # Keep the latch, but the failure must stay recorded for the operator
         # even when the tick only re-reads the latch (#2187).
         self._record_failed_corner_once(state, reservation,
@@ -2463,6 +2576,7 @@ class CornerRotationManager:
             state["history"].append(
                 dict(corner=corner_id, at=max(now, finished), source="completion"))
         self._sweep_orphaned_auto_restore(state)
+        state.pop("auto_plane_recovery", None)
         state.update(last_seen_at=now, status="ready", reason=None,
                      last_result={"corner": corner_id,
                                   "request_id": reservation["request_id"],

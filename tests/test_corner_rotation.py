@@ -1,4 +1,5 @@
 """Offline contract tests; all execution and clocks injected, no paid/runtime IO."""
+import contextlib
 from dataclasses import replace
 import json
 from pathlib import Path
@@ -1451,6 +1452,94 @@ def test_tick_keeps_failed_manual_start_latched_while_slot_is_unproven(setup, mo
     assert final["manual_pending"]["request_id"] == request_id
     assert len(executor.calls) == calls
     assert sum(1 for row in final["failed_corners"] if row["request_id"] == request_id) == 1
+
+
+class _PlaneStore:
+    """Minimal canonical store used by the plane-recovery contract tests."""
+
+    def __init__(self, phase):
+        self.phase = phase
+        self.recover_succeeds = False
+        self.canonical = SimpleNamespace(load=lambda: ({"phase": self.phase}, False))
+
+    def lock(self, exclusive=False):  # noqa: ARG002 - contract shape
+        return contextlib.nullcontext()
+
+
+def _attach_plane(manager, phase="failed"):
+    store = _PlaneStore(phase)
+    calls = []
+
+    class Coordinator:
+        def recover(self, *, timeout_s=None):
+            calls.append(timeout_s)
+            if store.recover_succeeds:
+                store.phase = "ready"
+            return SimpleNamespace(status="succeeded" if store.recover_succeeds else "failed")
+
+    manager.adapters["meriken"].manager = SimpleNamespace(
+        store=store, coordinator=Coordinator(),
+    )
+    return store, calls
+
+
+def test_tick_runs_bounded_plane_recovery_and_releases_manual(setup, monkeypatch):
+    clock, executor, rotation = _fail_manual_start(setup, monkeypatch)
+    latched = state(rotation)
+    store, calls = _attach_plane(rotation, "failed")
+    store.recover_succeeds = True
+    rotation._slot_reusable = lambda *_: store.phase == "ready"
+    rotation._leftover_corner_game = lambda *_: False
+    clock[0] = max(clock[0] + 60, (latched.get("next_due_at") or 0) + 1)
+
+    def next_corner(_adapter, request):
+        executor.calls.append(dict(request))
+        return "completed"
+
+    executor.execute = next_corner
+
+    rotation.tick()
+
+    final = state(rotation)
+    assert calls and isinstance(calls[0], float)
+    assert final.get("manual_pending") is None
+    assert "auto_plane_recovery" not in final
+    assert any(row["corner"] == "meriken" and row["source"] == "failure"
+               for row in final["history"])
+
+
+def test_plane_recovery_is_bounded_and_keeps_the_latch(setup, monkeypatch):
+    clock, _executor, rotation = _fail_manual_start(setup, monkeypatch)
+    _store, calls = _attach_plane(rotation, "failed")
+    rotation._slot_reusable = lambda *_: False
+    rotation._leftover_corner_game = lambda *_: False
+
+    for delta in (0.0, 301.0, 901.0, 1801.0):
+        clock[0] += delta
+        rotation.tick()
+
+    final = state(rotation)
+    assert len(calls) == 3
+    assert final["status"] == "recovery_required"
+    assert final["manual_pending"]["corner"] == "meriken"
+    assert final["auto_plane_recovery"]["attempts"] == 3
+    assert final["auto_plane_recovery"]["exhausted_recorded"] is True
+
+
+def test_plane_recovery_does_not_race_an_inflight_switch(setup, monkeypatch):
+    clock, _executor, rotation = _fail_manual_start(setup, monkeypatch)
+    _store, calls = _attach_plane(rotation, "draining")
+    rotation._slot_reusable = lambda *_: False
+    rotation._leftover_corner_game = lambda *_: False
+    clock[0] += 60
+
+    rotation.tick()
+
+    final = state(rotation)
+    assert calls == []
+    assert final["status"] == "recovery_required"
+    assert final["manual_pending"]["corner"] == "meriken"
+    assert "auto_plane_recovery" not in final
 
 
 def test_manual_wait_reason_changes_do_not_prove_a_new_execution_failure(setup, monkeypatch):
