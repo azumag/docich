@@ -194,3 +194,27 @@ def test_an_existing_home_recall_without_a_boss_cell_is_not_returned_home():
     assert _flow(mem).get('recall') is None
     assert 'camp_boss_redirect_held' in events(mem)
     assert 'camp_recall_visible_move' not in events(mem)
+
+
+def test_a_known_camp_world_is_revisited_in_the_boss_phase(monkeypatch):
+    # g1190 94-xx: all 32 generals camped, no tent on screen, and the hunt only
+    # waited. The camp world remembered from the last camp_found must steer the
+    # cursor back so the tent can be re-detected.
+    from docich.hanjuku.os_layer import navigation
+    monkeypatch.setattr(recall, 'own_camps', lambda _frame: [])
+    monkeypatch.setattr(navigation, 'nav_step', lambda *a, **k: 'left')
+    mem = mem9()
+    _flow(mem)['camp_last_world'] = [500, 500]
+    assert recall._camp_recall_step(field(cursor=(60, 60)), mem, FRAME) == [pad('left')]
+    assert 'camp_revisit' in events(mem)
+
+
+def test_an_arrived_revisit_stops_steering(monkeypatch):
+    from docich.hanjuku.os_layer import navigation
+    monkeypatch.setattr(recall, 'own_camps', lambda _frame: [])
+    monkeypatch.setattr(navigation, 'nav_step', lambda *a, **k: 'arrived')
+    mem = mem9()
+    _flow(mem)['camp_last_world'] = [500, 500]
+    assert recall._camp_recall_step(field(cursor=(60, 60)), mem, FRAME) == []
+    assert 'camp_last_world' not in _flow(mem)
+    assert 'camp_revisit_arrived' in events(mem)
