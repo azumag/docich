@@ -231,6 +231,25 @@ Y_VIEW_SKULL_FIRST = (1, 1)          # the template's first gray pixel (anchor)
 # (chapter 3 measured: skull (101, 63) = cell (306, 141)).
 SKULL_CELL_DX = 0.25
 SKULL_CELL_DY = 2.125
+# RGB565 captures differ by a few levels between cores (the live g1190
+# chapter-9 view has gray 160,164,160 and white 248,252,248 where the
+# production fixtures hold 164,165,164 and 255,254,255), and the chapter-9
+# moving boss draws the same skull sprite with red pupils instead of black
+# eye sockets. Pixel equality therefore never saw the live boss at all
+# (g1190 2026-11-15 71-3: a red-eyed skull beside イデ！ was missed for months).
+Y_VIEW_SKULL_TOLERANCE = 8
+Y_VIEW_SKULL_PUPILS = ((2, 4), (4, 4))       # red pupils in the chapter-9 variant
+
+
+def _skull_colour(pixel, colour, tolerance=Y_VIEW_SKULL_TOLERANCE):
+    return (abs(pixel[0] - colour[0]) <= tolerance
+            and abs(pixel[1] - colour[1]) <= tolerance
+            and abs(pixel[2] - colour[2]) <= tolerance)
+
+
+def _skull_pupil(pixel):
+    """The chapter-9 live boss's red pupil (measured (248, 24, 0))."""
+    return pixel[0] >= 200 and pixel[1] <= 90 and pixel[2] <= 120
 
 
 def y_view_skulls(frame):
@@ -243,11 +262,16 @@ def y_view_skulls(frame):
     out = []
     for y in range(20, min(180, frame.height)):
         for x in range(20, min(236, frame.width)):
-            if frame.pixel(x, y) != gray:
+            if not _skull_colour(frame.pixel(x, y), gray):
                 continue
             ox, oy = x - first_x, y - first_y
-            if all(frame.pixel(ox + dx, oy + dy) == colour
-                   for dx, dy, colour in Y_VIEW_SKULL_TEMPLATE):
+            for dx, dy, colour in Y_VIEW_SKULL_TEMPLATE:
+                pixel = frame.pixel(ox + dx, oy + dy)
+                if (dx, dy) in Y_VIEW_SKULL_PUPILS and _skull_pupil(pixel):
+                    continue
+                if not _skull_colour(pixel, colour):
+                    break
+            else:
                 out.append((ox, oy))
     return out
 

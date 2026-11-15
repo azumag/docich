@@ -331,6 +331,14 @@ def observation_interval_ms(state, actions=None):
     if (menu_navigation_feedback(state, actions) or status_panel_feedback(state, actions)
             or map_cursor_feedback(state, actions)):
         return 500
+    policy = state.get('policy') or {}
+    hold = policy.get('world_map_skull_hold') or {}
+    tick = policy.get('tick')
+    # The Y view closes on its own after about a second: observe the second
+    # skull reading while it is still on screen (chapter 9 boss cell).
+    if (isinstance(hold, dict) and type(hold.get('tick')) is int
+            and type(tick) is int and 0 <= tick - hold['tick'] <= 3):
+        return 500
     policy=state.get('policy') or {}
     battle=policy.get('battle') or {}
     if state.get('screen_kind') == 'battle' and not battle and policy.get('battle_seen'):

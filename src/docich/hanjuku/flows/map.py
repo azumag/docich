@@ -490,6 +490,23 @@ def world_map_step(screen, mem, frame):
                 if not chart.is_boss_castle(name)}
     if expected and expected <= flags.keys() and not mem.get('world_map_pending'):
         mem['world_map_tick'] = int(mem.get('tick') or 0)
+    # Chapter 9's moving boss draws chapter 3's skull with red pupils. One
+    # reading only starts the streak (BOSS_SKULL_READINGS=2), so a survey
+    # that closes here can never confirm a boss that moves between Y visits.
+    # Hold this same view for one observation: the identical frame supplies
+    # the second reading in the same visit.
+    streak = mem.get('boss_cell_streak') or {}
+    hold = mem.get('world_map_skull_hold') or {}
+    now = int(mem.get('tick') or 0)
+    if ((mem.get('chapter') or 0) == 9 and streak.get('count') == 1
+            and not (isinstance(hold, dict)
+                     and 0 <= now - int(hold.get('tick') or 0) <= 3)):
+        mem['world_map_skull_hold'] = {'tick': now}
+        _record(mem, 'world_map_skull_hold',
+                observed_metric={'cell': streak.get('cell'), 'count': streak.get('count')},
+                reason='第9話の移動ボスを同じ全島マップでもう1観測し、ドクロ位置の2回一致を同じ訪問で成立させる')
+        return []
+    mem.pop('world_map_skull_hold', None)
     return _close_world_map(mem)
 
 
@@ -805,8 +822,14 @@ HERO_SELECT_WAIT_LIMIT = 6      # observations without the field return before t
 
 
 def _castle_key(name):
-    """Compare chart and on-screen castle names without the long-vowel mark."""
-    return (name or '').replace('ー', '').replace(' ', '')
+    """Compare chart and on-screen castle names without the long-vowel mark.
+
+    The game's しろ list draws イデ！ with a half-width '!' while the chart and
+    capture list hold the full-width '！'; the chapter-9 boss order died on
+    that difference (g1190 2026-11-15 72-2: castle_missing for イデ！).
+    """
+    return ((name or '').replace('！', '!').replace('？', '?')
+            .replace('ー', '').replace(' ', '').replace('　', ''))
 
 
 def _castle_list_rows(screen):
@@ -957,7 +980,12 @@ def _end_castle_jump(screen, mem, why):
     mode = jump.get('mode')
     mem['castle_jump_skip'] = {'mode': mode, 'step': jump.get('step'),
                                'tick': int(mem.get('tick') or 0)}
-    metric = {'why': why, 'age': jump.get('age'), 'phase': jump.get('phase')}
+    metric = {'why': why, 'age': jump.get('age'), 'phase': jump.get('phase'),
+              'target': jump.get('source')}
+    rows = _castle_list_rows(screen)
+    if rows is not None:
+        metric['rows'] = [word for _, word in rows]
+        metric['scrolls'] = jump.get('scrolls')
     if mode == 'reanchor':
         _record(mem, 'cursor_reanchor_failed', target=jump.get('source'),
                 screen=screen.kind, observed_metric=metric,

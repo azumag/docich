@@ -18,6 +18,7 @@ from docich.hanjuku.strategy import orders
 FIXTURES = Path(__file__).resolve().parent / 'fixtures' / 'hanjuku'
 CH3 = read_png(FIXTURES / 'g1075-ch3-y-view-boss-skull.png')
 CH4 = read_png(FIXTURES / 'g1075-ch4-y-view-season-skulls.png')
+CH9_RED_EYE = read_png(FIXTURES / 'g1190-ch9-y-view-red-eye-boss.png')
 
 
 def test_the_reader_finds_chapter_three_boss_skull_and_its_cell():
@@ -34,6 +35,46 @@ def test_the_four_chapter_four_skulls_map_to_the_registered_sites():
 
 def test_a_frame_without_a_skull_reads_nothing():
     assert y_view_skulls(Frame(256, 224, bytes(256 * 224 * 3))) == []
+
+
+def test_the_live_chapter9_red_eye_boss_is_the_same_skull_sprite():
+    # g1190 2026-11-15 71-3: the chapter-9 moving boss draws chapter 3's
+    # skull with red pupils, and the local RGB565 palette is a few levels off
+    # (gray 160,164,160 / white 248,252,248). The pixel-equal template missed
+    # it, so the boss cell was never measured and the chapter could not end.
+    assert y_view_skulls(CH9_RED_EYE) == [(133, 91)]
+    assert skull_cell_at((133, 91), 9) == (562, 365)
+
+def test_a_chapter9_survey_holds_the_view_for_the_second_reading():
+    # The boss moves between Y visits, so a survey that closes after one
+    # reading never confirms the cell. One observation on the same view
+    # supplies the second equal reading.
+    from docich.hanjuku.flows import map as map_flow
+    from docich.hanjuku.os_layer.screen import Screen
+    frame = CH9_RED_EYE.resized()
+    screen = Screen([], None, '', kind='world_map')
+    mem = {'chapter': 9, 'tick': 100, '_records': []}
+    assert map_flow.world_map_step(screen, mem, frame) == []
+    assert mem['boss_cell_streak']['count'] == 1
+    assert not mem.get('boss_cell')
+    mem['tick'] = 101
+    actions = map_flow.world_map_step(screen, mem, frame)
+    assert actions and actions[0]['buttons'] == ['y']
+    assert mem['boss_cell']['cell'] == [562, 365]
+
+def test_the_skull_hold_observes_again_quickly():
+    # The Y view closes on its own after about a second; the 1500 ms default
+    # would return to the field before the second reading.
+    import importlib.util
+    root = Path(__file__).resolve().parents[1]
+    spec = importlib.util.spec_from_file_location('red_eye_boss_entry',
+                                                 root / 'brains/hanjuku/bot.py')
+    entry = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(entry)
+    state = {'policy': {'world_map_skull_hold': {'tick': 100}, 'tick': 101}}
+    assert entry.observation_interval_ms(state) == 500
+    state['policy']['tick'] = 105
+    assert entry.observation_interval_ms(state) == 1500
 
 
 @pytest.fixture(autouse=True)
