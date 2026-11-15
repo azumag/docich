@@ -580,6 +580,9 @@ def _selected(lines: list[TextLine], hand) -> str | None:
     return None
 
 
+HP_PANEL_TINT = 8      # max channel spread of the panel paper/HP ink
+
+
 def _human_hp(frame: Frame, line: TextLine, x0: int) -> int | None:
     """Read the entire right-aligned three-cell field, including blank cells.
 
@@ -594,7 +597,11 @@ def _human_hp(frame: Frame, line: TextLine, x0: int) -> int | None:
     for y in range(176, 184):
         for x in range(x0, x0 + 24):
             r, g, b = frame.pixel(x, y)
-            if r != g or g != b:
+            # The panel's paper reads (232,236,232) through the core's
+            # readback, not a pure gray: a strict r==g==b rejected every real
+            # battle panel (g1190 2026-11-15: attacks reached the fight and
+            # battle_entry_expired, so no card/egg was ever chosen).
+            if max(r, g, b) - min(r, g, b) > HP_PANEL_TINT:
                 return None
     cells = dict(line.cells)
     text = ''.join(cells.get(x, ' ') for x in range(x0, x0 + 24, 8))
