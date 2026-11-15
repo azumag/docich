@@ -259,25 +259,79 @@ def _month_end_soon(mem, margin=None):
 VISIBLE_MOVE_LIMIT = 40      # field-cursor steps allowed on one いどう
 
 
-def _visible_own_castle(mem, frame):
-    """The own castle whose roof is visible now (field いどう destination)."""
+def _recall_blocked_twice(mem, castle):
+    """A castle that already refused this camp twice (a cliff on the way)."""
+    blocked = _flow(mem).get('camp_recall_blocked') or {}
+    count = blocked.get(castle) if isinstance(blocked, dict) else None
+    return type(count) is int and count >= 2
+
+
+def _visible_own_candidates(mem, frame):
+    """Every own roof on this frame with the castle and screen cell it names.
+
+    'screen' is the roof's measured cell; together with the chart cell it
+    implies the camera even when only one roof is visible. That one-roof
+    camera is what lets the destination picker aim at another castle when
+    the constellation is too weak for observed_cursor_cell (live g1190
+    camp at [87,19]: four roofs, camera_support 1, origin None).
+    """
     if not isinstance(frame, Frame):
-        return None
+        return []
     from ..os_layer.world import _owned, roof_camera_support
     support = roof_camera_support(mem, frame)
     if not support:
-        return None
+        return []
     _, cam = support
     cells = chart.castles(mem.get('chapter') or 0)
     owned = _owned(mem)
+    candidates = []
     for roof in castle_roofs(frame):
         if roof.get('kind') != 'own' or roof.get('clipped'):
             continue
         world = (roof['target'][0] + cam[0], roof['target'][1] + cam[1])
         for name, cell in cells.items():
             if name in owned and abs(world[0] - cell[0]) + abs(world[1] - cell[1]) <= 12:
-                return {'castle': name, 'world': list(world)}
+                candidates.append({'castle': name, 'world': list(world),
+                                   'screen': list(roof['target'])})
+                break
+    return candidates
+
+
+def _visible_own_castle(mem, frame, candidates=None):
+    """The own castle whose roof is visible now (field いどう destination).
+
+    A castle that already failed to receive this camp twice (a cliff on the
+    way) is not chosen again just because it is on screen. With no unblocked
+    candidate the caller falls back to the きかん picker, where
+    _recall_goal ranks every blocked castle behind the unblocked ones.
+    """
+    if candidates is None:
+        candidates = _visible_own_candidates(mem, frame)
+    for candidate in candidates:
+        if not _recall_blocked_twice(mem, candidate['castle']):
+            return candidate
     return None
+
+
+def _bind_camp_origin(mem, state, candidates):
+    """Bind the camp's world cell from one visible own roof when unbound.
+
+    The corridor camp menu leaves the roof constellation too weak for
+    observed_cursor_cell (camera_support 1), so the island picker had no
+    goal and confirmed an empty marker every month. The roof itself is a
+    measured anchor: the camp's world cell is one screen subtraction away.
+    The value only ranks the recall destination; it never licenses an input.
+    """
+    if not candidates or state.get('origin'):
+        return
+    target = state.get('target')
+    roof = candidates[0]
+    screen, world = roof.get('screen'), roof.get('world')
+    if not (_camp_target(target) and _camp_target(screen) and _camp_target(world)):
+        return
+    state['origin'] = [world[0] + target[0] - screen[0],
+                       world[1] + target[1] - screen[1]]
+    state['origin_source'] = 'visible_roof'
 
 
 def _visible_move_dest_step(screen, mem, frame, state):
@@ -618,12 +672,23 @@ def _camp_recall_step(screen: Screen, mem, frame, *, observed_camps=None):
             # Owner 2026-11-15 measured this on the chapter-9 corridor camp:
             # the field いどう lets the visible castle be picked where it
             # stands. Other chapters keep the measured きかん picker flow.
-            visible = _visible_own_castle(mem, frame)
+            candidates = _visible_own_candidates(mem, frame)
+            # Even a blocked roof is a measured camera anchor: it lets the
+            # きかん picker aim at another castle instead of confirming the
+            # camp's own (empty) marker every month.
+            _bind_camp_origin(mem, state, candidates)
+            visible = _visible_own_castle(mem, frame, candidates)
             if visible is not None:
                 state['move_visible'] = visible
                 _record(mem, 'camp_recall_visible_move',
                         observed_metric={'castle': visible['castle'], 'world': visible['world']},
                         reason='画面上に自軍城が見えているため、全島ピッカーではなくいどうで可視城へ帰還する')
+            elif candidates:
+                _record(mem, 'camp_recall_visible_blocked',
+                        observed_metric={'castles': [c['castle'] for c in candidates],
+                                         'blocked': dict(_flow(mem).get('camp_recall_blocked') or {}),
+                                         'origin': list(state['origin']) if state.get('origin') else None},
+                        reason='見えている自軍城はすべて帰還に失敗済みのため、いどうを使わず全島ピッカーで別の城を選ぶ')
         choice = 'いどう' if (state.get('boss') or state.get('boss_move')
                               or state.get('move_visible')) else 'きかん'
         move = menu_to(screen, choice)
