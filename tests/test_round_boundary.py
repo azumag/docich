@@ -1018,6 +1018,41 @@ def test_queued_hanjuku_replay_terminalizes_when_decision_lost(monkeypatch, tmp_
     ]
 
 
+def test_queued_hanjuku_replay_terminalizes_when_probe_indeterminate(monkeypatch, tmp_path):
+    # docich#4361: a claimable probe that raises (PermissionError / corrupt
+    # record / symlink refusal) must fail closed before staging anything.
+    # The old fail-open fallback (claimable = True on probe error) staged
+    # a doomed candidate plus a retiring runtime on every replay, exactly
+    # what #4359's gate was added to prevent.
+    store, coordinator = _coordinator(BoundaryFactory(), tmp_path / "run")
+    _assert_started(coordinator)
+
+    def _raise(adapter, request_id):
+        raise PermissionError("probe cannot read the decision record")
+
+    monkeypatch.setattr(
+        "docich.hanjuku_resume.start_claimable",
+        _raise,
+    )
+    head = store.enqueue_request(str(uuid.uuid4()), "switch", "hanjuku-hero")
+    following = store.enqueue_request(str(uuid.uuid4()), "switch", "robots")
+    resumed = coordinator.resume_queued(timeout_s=1.0)
+    assert resumed.request_id == head.request_id
+    assert resumed.status == "failed"
+    assert resumed.error_code == game_switch.ERROR_PROBE_FAILED
+    receipt = store.receipts.load(head.request_id)
+    assert receipt["status"] == "failed"
+    state, _ = store.canonical.load()
+    assert state["phase"] == "ready"
+    assert state["active"]["game"] == "nethack"
+    assert state.get("candidate") is None
+    assert state.get("retiring") in (None, [])
+    # The doomed head must not wedge the FIFO: the follower stays claimable.
+    assert [item["request_id"] for item in store.receipts.queued()] == [
+        following.request_id
+    ]
+
+
 def test_queued_hanjuku_replay_runs_when_decision_claimable(monkeypatch, tmp_path):
     # The gate must not block a replay whose decision is still claimable:
     # the switch runs to completion.  The drain waits on the old game's

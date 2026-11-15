@@ -3351,18 +3351,34 @@ class GameSwitchCoordinator:
             # decision is still claimable for this exact request before
             # staging anything; the terminal ``failed``+``timeout`` receipt is
             # the same pre-launch shape the corner already settles.
+            probe_error = None
             try:
                 spec = self._candidate_spec(acceptance, transition_target)
                 probe_adapter = self._make_adapter(spec, deadline)
                 from .hanjuku_resume import start_claimable
                 claimable = bool(start_claimable(probe_adapter, request_id))
-            except Exception:
-                # The probe only predicts claim(); let the normal start path
-                # surface its own error when the probe itself cannot decide.
-                claimable = True
+            except Exception as exc:
+                # docich#4361: the probe is the only gate before staging,
+                # so an indeterminate probe must fail closed.  Falling back
+                # to claimable here (the old fail-open) staged a doomed
+                # candidate plus a retiring runtime on every replay.
+                probe_error = exc
+                claimable = False
             if not claimable:
                 current, _migrated = self.store.canonical.load()
                 current_active = current.get("active")
+                if probe_error is not None:
+                    error_code = ERROR_PROBE_FAILED
+                    detail = (
+                        "queued/replayed Hanjuku switch probe could not "
+                        "decide claimability"
+                    )
+                else:
+                    error_code = ERROR_TIMEOUT
+                    detail = (
+                        "queued/replayed Hanjuku switch has no claimable "
+                        "boundary decision"
+                    )
                 result = {
                     "request_id": request_id,
                     "operation": operation,
@@ -3374,8 +3390,8 @@ class GameSwitchCoordinator:
                     ),
                     "to_game": transition_target,
                     "generation": acceptance.generation,
-                    "error_code": ERROR_TIMEOUT,
-                    "detail": "queued/replayed Hanjuku switch has no claimable boundary decision",
+                    "error_code": error_code,
+                    "detail": detail,
                 }
                 tx.transition(
                     {"validating"},
@@ -3386,7 +3402,7 @@ class GameSwitchCoordinator:
                         "deadline_at": None,
                         "last_result": result,
                         "last_error": {
-                            "error_code": ERROR_TIMEOUT,
+                            "error_code": error_code,
                             "detail": result["detail"],
                         },
                     },
@@ -3394,8 +3410,13 @@ class GameSwitchCoordinator:
                 )
                 saved = tx.finish_request(request_id, "failed", result)
                 self._log(
-                    "replay_decision_lost", phase="failed", result="failed",
-                    error_code=ERROR_TIMEOUT, detail=result["detail"],
+                    (
+                        "replay_probe_indeterminate"
+                        if probe_error is not None
+                        else "replay_decision_lost"
+                    ),
+                    phase="failed", result="failed",
+                    error_code=error_code, detail=result["detail"],
                 )
                 return _result_from_receipt(saved)
         self._log_update(
