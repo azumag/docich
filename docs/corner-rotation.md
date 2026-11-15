@@ -129,11 +129,17 @@ JEVは自動有効化されていない手動のplayer-policy試験であり、�
   `prediction-handoff` として待つ。上限は `prediction_hold_wait_minutes`（既定90分）で、
   超過時は `prediction-hold-timeout` をstateへ記録して通常のboundary待ちへ戻す
   （固まった予想で永久に塞がない安全弁）。マニュアル予約は既存経路のまま。
-- **予想と改善の開始はsoviet側で掲示に連動する。** `lib/corner_notice_state.py` が
-  `next_corner.json` を読み、`time`/`prediction`/未知holdでは新規48試合予想を作らない。
-  `prediction-pending` のときだけ、acc>0や改善running/lockがあっても予想の作成を許す
-  （A/B・hot streak・48試合条件は維持）。改善ロック作成は `hold` が付いている間は
-  行わず、試合消化だけを続ける。掲示が消えた後（コーナー開始時）に既存の閾値判定へ戻る。
+- **予想と改善の開始はsoviet側で掲示と実行中のコーナーに連動する。**
+  `lib/corner_notice_state.py` が `next_corner.json` を読み、`time`/`prediction`/未知holdでは
+  新規48試合予想を作らない。`prediction-pending` のときだけ、acc>0や改善running/lockが
+  あっても予想の作成を許す（A/B・hot streak・48試合条件は維持）。改善ロック作成は `hold` が
+  付いている間は行わず、試合消化だけを続ける。
+- **コーナー実行中も新規予想を始めない。** コーナーが始まると `next_corner.json` は消えるため、
+  掲示だけではSoren gameが裏にいる間の予想開始を防げない。`corner_notice_state.py` は同じ
+  `game_switch.json` の `phase`/`active.game` も読み、`ready` + `sorengame` 以外（PAPERの
+  `paper-view`、切替中、failed/recovery_required、idle）では新規予想を作らない。
+  `game_switch.json` が未読・破損・未知phaseのときはfail-openで予想を止めない。改善の開始は
+  この判定では変えない（従来どおり掲示中の `hold` だけが抑止する）。
 - 枠の終了後、`last_result` がterminal（completed / interrupted / expired）かつ
   30分以内なら、共有audio queueへ1回だけ「次のコーナーは〜、18時からの予定です。」を
   入れる。`notice_spoken_for`（request UUID）で冪等にし、`dedup_scope` も同じ
