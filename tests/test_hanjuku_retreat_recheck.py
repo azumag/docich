@@ -1004,3 +1004,17 @@ def test_occluded_probe_on_a_fort_hands_over(monkeypatch):
     monkeypatch.setattr(readers, 'is_fort_menu', lambda _screen: True)
     assert p.camp_recall_step(parse(camp_status_frame(hp=85)), mem, FRAME) == [p.pad('b')]
     assert handed.get('ok')
+
+
+def test_a_gather_goal_may_confirm_the_local_picker(monkeypatch):
+    # Owner 2026-11-15: in the boss phase every camp gathers at the last
+    # castle through the いどう field marker. The recheck used to defer every
+    # deliver-stale map_target; a deliberate gather goal must reach the
+    # recall's own marker confirmation instead.
+    mem = memory(); named_menu(mem)
+    _flow(mem)['recall']['gather'] = 'アルマムーン'
+    _flow(mem)['recall']['goal'] = 'アルマムーン'
+    monkeypatch.setattr(p, 'castle_roofs', lambda _frame: [{'kind': 'own', 'target': (26, 66), 'clipped': False}])
+    actions = p.camp_recall_step(Screen([], None, '', kind='map_target', marker=(26, 66)), mem, FRAME)
+    assert actions != [p.pad('b')]
+    assert _flow(mem)['recall'].get('stage') in ('dest', 'await_dispatch')

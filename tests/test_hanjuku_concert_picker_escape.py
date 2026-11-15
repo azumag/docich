@@ -72,3 +72,31 @@ def test_concert_without_picker_still_advances_with_a():
         rgb[i:i + 3] = bytes((16, 72, 57))
     actions, _ = decide(Frame(256, 224, bytes(rgb)), {})
     assert buttons(actions) == ['a']
+
+
+def test_a_text_screen_with_a_blinking_pixel_still_escapes_b(tmp_path):
+    # g1190 99-7: the chapter-9 shop is classified 'concert' (red curtains +
+
+    # bottom green) and its blinking hand changed the frame digest every
+
+    # observation, so the digest repeat never fired and B looped ~1300 times.
+
+    # A readable text screen must keep a content identity across the blink.
+    from docich.hanjuku_screen import parse
+    from docich.hanjuku_pixels import read_png
+    base = read_png(Path(__file__).resolve().parent / 'fixtures/hanjuku/g1190-shop-bottom-price-panel.png').resized()
+    assert classify(base) == 'concert' and parse(base).text
+    state = {}
+    for i in range(7):
+        rgb = bytearray(base.rgb)
+        x, y = 60 + i, 150
+        idx = (y * 256 + x) * 3
+        rgb[idx:idx + 3] = bytes((200, 0, 0) if i % 2 else (16, 72, 57))
+        frame = Frame(256, 224, bytes(rgb))
+        assert parse(frame).text == parse(base).text
+        actions, state = decide(frame, state)
+        assert buttons(actions) == ['b']
+    rgb = bytearray(base.rgb)
+    rgb[150 * 256 * 3 + 60 * 3:150 * 256 * 3 + 60 * 3 + 3] = bytes((200, 0, 0))
+    actions, state = decide(Frame(256, 224, bytes(rgb)), state)
+    assert buttons(actions) == ['a']

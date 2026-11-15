@@ -41,6 +41,7 @@ WORLD_VIEWS = {
     # A production-state Y view captured through the 16-bit RGB565 path: the
     # gold frame's (57,40,16) reads as (56,40,16).
     'g1190-ch9-y-view-quantized.png',
+    'g1190-ch9-y-view-flags.png',
 }
 
 
