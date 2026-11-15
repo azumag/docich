@@ -910,6 +910,30 @@ def test_policy_rejection_older_than_corner_end_still_blocks(setup):
     assert len(executor.calls) == 1
 
 
+def test_failed_owner_without_recover_hook_releases_after_stale_proof(setup):
+    """A failed adapter row with no owner-only hook must not block forever."""
+    _, clock, _, executor, make = setup
+    manager = make()
+    manager.save(manager.load(clock[0]))
+    manager.adapters["retro"].states = [{
+        "status": "failed",
+        "rotation_request_id": "stale-request",
+        "started_at": clock[0] - 10,
+        "completed_at": clock[0],
+    }]
+    manager._slot_reusable = lambda *_: True
+
+    clock[0] += 1
+    assert manager.tick()["status"] == "waiting"  # first failed drive: stale=1
+
+    clock[0] = max(clock[0] + 1, (state(manager).get("next_due_at") or 0) + 1)
+    manager.tick()
+
+    final = state(manager)
+    assert final["released_requests"]["retro"]["request_id"] == "stale-request"
+    assert len(executor.calls) == 1
+
+
 def test_initial_migration_observes_removed_legacy_corner(setup):
     g, clock, catalog, executor, make = setup
     state_dir = Path(g.state_dir)
