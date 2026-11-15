@@ -28,13 +28,13 @@ def test_the_mech_march_hands_map_frames_to_the_camp_recall():
     assert orchestrator._chapter9_field_recall(_mem()) is True
 
 
-def test_the_boss_phase_also_hands_map_frames_to_the_camp_recall():
-    # g1190 2026-11-15: the whole road taken ended ``corridor.mechanical``, so
-    # this gate closed and 32 camping generals were never re-sent at the boss
-    # (every garrison read [] and interim held forever). The boss phase keeps
-    # the same entry point open; ``camp_stays``/``boss_redirect_goal`` inside
-    # still decide whether a seen camp is re-sent at the boss or left alone.
-    assert orchestrator._chapter9_field_recall(_mem(captured=list(ROAD))) is True
+def test_the_boss_phase_leaves_the_field_camps_alone():
+    # Owner 2026-11-09: a camped general is never recalled home in the moving
+    # boss's phase. g1190 14-15 verified that the field camp いどう never
+    # dispatched (the blocked table poisoned every castle and the whole-island
+    # picker could not confirm), looping the same tent every month. The
+    # monthly castle-to-castle forward moves own the gather instead.
+    assert orchestrator._chapter9_field_recall(_mem(captured=list(ROAD))) is False
 
 
 def test_other_chapters_are_unchanged():
