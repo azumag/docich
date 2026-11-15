@@ -192,6 +192,28 @@ def _month_army_count_check(screen, mem, shop):
     return move if isinstance(move, list) else [move] if move else []
 
 
+def _month_menu_row_col(screen: Screen, label: str):
+    """(row, column) of ``label`` in the measured two-column month menu.
+
+    Rows sit at y=47/63/79/95 (16 px apart); the right column starts at x=128.
+    The label is matched without its punctuation so the game's も〜おしまい!
+    and the caller's spelling agree.
+    """
+    def norm(text):
+        return (text or '').replace('!', '').replace('！', '').replace('〜', '～')
+    want = norm(label)
+    for line in screen.lines:
+        for x, word in line.spans():
+            got = norm(word)
+            if not got:
+                continue
+            if got == want or (len(want) >= 2 and want.startswith(got[:2])):
+                row = (line.y - 47) // 16
+                if 0 <= row <= 3:
+                    return row, 1 if x >= 128 else 0
+    return None
+
+
 def _month_menu_move(screen: Screen, mem, label: str):
     hand = screen.hand
     # The hand can also sit on a menu row (g1190 2026-11-16 19-9: menu_nav_stuck
@@ -207,17 +229,20 @@ def _month_menu_move(screen: Screen, mem, label: str):
         # reach も〜おしまい! and the month menu held forever. Walk the
         # measured two-column layout blind instead: top-left, down three,
         # right, confirm, bounded.
+        row_col = _month_menu_row_col(screen, label)
         state = mem.get('month_blind_nav')
         if not isinstance(state, dict) or state.get('label') != label:
             state = mem['month_blind_nav'] = {'label': label, 'tries': 0}
-        if state['tries'] < MONTH_BLIND_NAV_LIMIT:
+        if row_col is not None and state['tries'] < MONTH_BLIND_NAV_LIMIT:
             state['tries'] += 1
+            row, col = row_col
             _record(mem, 'month_blind_nav', screen=screen.kind, choice=label,
-                    observed_metric={'tries': state['tries'], 'hand': list(hand),
+                    observed_metric={'tries': state['tries'], 'hand': list(hand) if hand else None,
+                                     'row': row, 'col': col,
                                      'limit': MONTH_BLIND_NAV_LIMIT},
-                    reason='月メニューのカーソルが会話ウィンドウを指しているため、実測2列レイアウトを盲操作で進む')
-            return ([pad('up')] * 3 + [pad('left')]
-                    + [pad('down')] * 3 + [pad('right'), pad('a')])
+                    reason='月メニューのカーソル位置が読めないため、実測2列レイアウトを盲操作で目標行へ進む')
+            return ([pad('up')] * 4 + [pad('right' if col else 'left')]
+                    + [pad('down')] * row + [pad('a')])
     move = guarded_menu_to(screen, mem, label, key='month_nav')
     if move == []:
         return _month_text_advance(screen, mem, label) or move

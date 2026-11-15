@@ -7512,6 +7512,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v925-month-hint-guard",
             "hanjuku-chart-v926-yview-anchor",
             "hanjuku-chart-v927-month-blind-wide",
+            "hanjuku-chart-v928-month-blind-target",
             "hanjuku-chart-v864-shop-list-batch",
             "hanjuku-chart-v862-camp-field-move",
             "hanjuku-chart-v852-visible-menu-batches",
