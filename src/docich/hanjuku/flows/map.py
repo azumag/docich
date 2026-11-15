@@ -1725,10 +1725,14 @@ def target_step(screen: Screen, mem, frame):
         return _start_y_jump(mem, order, order['target'], 'target')
     if result is None:
         result = nav_step(screen, mem, frame, goal)
-        if not result and screen.marker and not mem.get('cursor'):
-            # Jumps spent and the marker's place unknown: nothing steers it
-            # (g421 18:24: 70 idle observations). Count it as an unverified
-            # arrival so the sortie is cancelled and retried within its bounds.
+        if not result and screen.marker and (not mem.get('cursor') or mem.get('nav_search')):
+            # Jumps spent and the marker's place unknown (g421 18:24: 70 idle
+            # observations), or the cursor will not move under the presses at
+            # all (_nav_stuck sets nav_search; g1190 ch9 2026-11-15 kept
+            # pressing a picker that ignored every input and the front never
+            # fell). Count it as an unverified arrival so the sortie is
+            # cancelled and retried within its bounds instead of idling.
+            mem.pop('nav_search', None)
             return _unverified_target(screen, mem, order)
     if result == 'arrived' and not _target_roof_under_marker(screen, mem, frame, order):
         if screen.marker and not chart.is_boss_castle(order['target']):
