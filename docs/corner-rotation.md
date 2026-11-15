@@ -307,6 +307,14 @@ last_seen、pending、request UUID、結果をatomic writeする。
 - 予算の状態は診断 `corners.corner_rotation.auto_restore_*`（corner / attempts / attempt_limit /
   next_at / last_status）で見える。request identityは出さない。
 
+#### plane自体がterminal failedに残った場合の自動復旧（2026-11-16）
+
+失敗したswitchがrollbackできず、canonicalのgame-switch planeが`failed`/`recovery_required`の
+まま残るとslot証明が成立せずlatchが続く。tickは同じ予約に対して、**安定したterminal phaseだけ**を
+対象にreview済みの`GameSwitchCoordinator.recover()`を自動で再試行する（in-flightのswitchは触らない）。
+予算はrequestごとに3回・5/15/30分のbackoffで、上限到達後はlatchを維持する。復旧が成立すると
+同じtickがterminal/slot証明を再評価し、成立すれば予約を解放して次のcornerへ進む。
+
 復旧は固定operation `recover-failed`（`ops/vm_actions/recover_corner_rotation.sh`）だけ:
 
 1. `bin/docich --config ... corner-rotation recover` がlatchを解決する。
