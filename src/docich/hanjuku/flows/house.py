@@ -1923,24 +1923,28 @@ def _castle_check_step(screen, mem, frame):
         _phase(state, 'castle_check_next')
         return [pad('b')] if screen.kind in ('castle_menu', 'text', 'main_menu', 'general_list') else []
     if phase == 'castle_check_next':
+        if state.get('castle_current') is None:
+            queue = [n for n in (state.get('castle_queue') or []) if isinstance(n, str) and n]
+            if not queue:
+                mem['month_status_complete'] = {'scope': [mem.get('chapter'), mem.get('month')],
+                                                'tick': int(mem.get('tick') or 0)}
+                _record(mem, 'month_status_complete',
+                        observed_metric={'castles': list(state.get('castle_checked') or []),
+                                         'generals': list(state.get('seen') or [])},
+                        reason='将軍の状態確認と在城の確定を終え、通常の計画フェーズへ戻す')
+                _next_general(mem)
+                return []
+            # g1190 98-3: main_menu に残ったまま next が open へ進むと対象を
+            # 持たない pick が上限までスクロールを空回りし続けた。対象はどの
+            # 画面から来ても必ず pop してから開く。
+            state['castle_current'] = queue.pop(0)
+            state['castle_queue'] = queue
+            state['age'] = 0
         if screen.kind == 'main_menu' and screen.hand:
             _phase(state, 'castle_check_open')
             return []
         if screen.kind != 'map':
             return [pad('b')] if screen.kind in ('castle_menu', 'text', 'main_menu', 'general_list') else []
-        queue = [n for n in (state.get('castle_queue') or []) if isinstance(n, str) and n]
-        if not queue:
-            mem['month_status_complete'] = {'scope': [mem.get('chapter'), mem.get('month')],
-                                            'tick': int(mem.get('tick') or 0)}
-            _record(mem, 'month_status_complete',
-                    observed_metric={'castles': list(state.get('castle_checked') or []),
-                                     'generals': list(state.get('seen') or [])},
-                    reason='将軍の状態確認と在城の確定を終え、通常の計画フェーズへ戻す')
-            _next_general(mem)
-            return []
-        state['castle_current'] = queue.pop(0)
-        state['castle_queue'] = queue
-        state['age'] = 0
         _phase(state, 'castle_check_open')
         return [pad('x')]
     if phase == 'castle_check_open':
