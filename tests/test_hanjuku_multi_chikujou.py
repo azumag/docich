@@ -282,6 +282,25 @@ def test_unavailable_castle_advances_to_another_owned_castle(refusal):
     assert policy.month_sub_step(quote(OTHER, 150, 9), mem) == [policy.pad('a')]
 
 
+def test_no_general_refusal_marks_the_garrison_empty():
+    """g1190: a castle staffed on record but marched out gets refused with
+    「しょうぐんがおりませなんだ」 every month. Record the live empty
+    garrison so later candidate lists stop offering it."""
+    mem = memory()
+    open_build(mem)
+    assert policy.month_sub_step(castles(), mem) == [policy.pad('a')]
+    refused = castles(on=OTHER, text='とほほほしょうぐんがおりませなんだ!' + PROMPT)
+    assert policy.month_sub_step(refused, mem) == [policy.pad('a')]
+    assert _world(mem)['garrison'][HOME] == []
+    # The generic "no more upgrades" refusal says nothing about staffing.
+    mem = memory()
+    open_build(mem)
+    assert policy.month_sub_step(castles(), mem) == [policy.pad('a')]
+    refused = castles(on=OTHER, text='これいじょうのぞうちくはできませんぞ!!' + PROMPT)
+    assert policy.month_sub_step(refused, mem) == [policy.pad('a')]
+    assert _world(mem)['garrison'][HOME] == ['ゼウス']
+
+
 def test_unowned_or_known_empty_castles_are_not_building_candidates():
     mem = memory()
     mem['captured'] = ['ゴーメン']
