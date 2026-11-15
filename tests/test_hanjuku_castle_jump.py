@@ -527,31 +527,49 @@ def _castle_list_window(names, offset, selected):
     return _castle_list(names[offset:offset + 8], hand_y=hand_y)
 
 
+def _native_scroll(selected, offset, button, total):
+    """One accepted list press: the hand walks, then the window shifts a row."""
+    selected = min(max(selected + (1 if button == 'down' else -1), 0), total - 1)
+    if selected - offset >= 8:
+        offset = selected - 7           # the page turns one row past the bottom
+    elif selected < offset:
+        offset = selected
+    return selected, offset
+
+
+def _release_taps(button, count):
+    actions = [M.pad(button)]
+    for _ in range(count - 1):
+        actions.extend([{'type': 'wait', 'ms': 50}, M.pad(button)])
+    return actions
+
+
 def test_last_page_source_is_reached_past_the_old_eight_row_bound():
     """g1163 2026-11-09: the list stopped at row 8, so アブダレ (row 10) failed.
 
-    The list opens on the home castle at row 0 and shows eight rows. Reaching
-    row 10 needs ten Downs and one page shift; the old bound of eight ended
-    every trip with ``castle_missing`` before the row could appear.
+    The list opens on the home castle at row 0 and shows eight rows. Since
+    #4338 each scroll observation sends the descent to the last row plus
+    page-turn taps, so row 10 arrives in two scroll batches instead of
+    eleven single presses.
     """
     mem = _memory()
     mem['chapter'] = 6                    # the source row is a chapter-6 castle
     mem['castle_jump'] = _jump('list', menu_presses=2, source='アブダレ')
-    selected = offset = downs = 0
+    selected = offset = 0
     for _ in range(20):
         screen = _castle_list_window(CHAPTER_6_LONG, offset, selected)
         actions = M.castle_jump_step(screen, mem, None)
         if actions == [M.pad('select')]:
             break
-        assert actions == [M.pad('down')]
-        downs += 1
-        selected = min(selected + 1, len(CHAPTER_6_LONG) - 1)
-        if selected - offset >= 8:
-            offset = selected - 7   # native eight-row window scrolls at the bottom
+        for action in actions:
+            if action.get('type') == 'pad':
+                selected, offset = _native_scroll(selected, offset, action['buttons'][0],
+                                                  len(CHAPTER_6_LONG))
     else:
         raise AssertionError('the source row was never reached')
-    assert downs == 10
+    assert selected == 10
     assert mem['castle_jump']['phase'] == 'confirm'
+    assert mem['castle_jump']['scrolls'] == 2
     assert not [r for r in mem['_records'] if r['decision'] == 'castle_jump_failed']
 
 
@@ -859,3 +877,149 @@ def test_general_roster_is_not_a_castle_list():
     assert M._castle_list_rows(roster, 9) is None
     assert M._castle_list_target(roster, 'カラ', 9) is None
     assert M._castle_list_target(_castle_list(['カラ', 'イデ!']), 'カラ', 9) == 'カラ'
+
+
+# --- page-turn batches and the Y route (issue #4338) ----------------------
+# Chapter 9's しろ list: eight rows fit, カラ sits at index 9.
+CHAPTER_9_LONG = ['アルマムーン', 'ハヤク', 'タオ', 'サヌト', 'オシロガ', 'ドンドン',
+                  'オオキク', 'ナッテ', 'シマウ', 'カラ', 'イソ', 'イデ！']
+
+
+def test_scroll_batch_descends_to_the_last_row_and_turns_the_page():
+    """A source below the eighth row needs the window shifted (#4338).
+
+    The page turns only while the hand sits on the last row, so one
+    observation sends the whole descent plus page-turn taps instead of a
+    lone 6-frame Down that the panel dropped.
+    """
+    mem = _memory()
+    mem['chapter'] = 9
+    # Chapter 9 is a mechanical corridor chapter: corridor.orders hides the
+    # chart plan, so _order_for_step cannot see the J1 order and the jump
+    # would die as orphaned.  The order was launched, so seed its snapshot.
+    order = _plan_region(mem)['chart_plan']['orders'][0]
+    mem['world'] = {'launched_orders': {order['step']: order}}
+    mem['castle_jump'] = _jump('list', menu_presses=2, source='カラ')
+    screen = _castle_list_window(CHAPTER_9_LONG, 0, 0)
+    actions = M.castle_jump_step(screen, mem, None)
+    # Seven descent taps plus two page-turn taps, each a released input.
+    assert actions == _release_taps('down', 7 + M.CASTLE_JUMP_SCROLL_PROOF)
+    assert mem['castle_jump']['scrolls'] == 1
+    record = mem['_records'][-1]
+    assert record['decision'] == 'castle_jump_scroll'
+    assert record['observed_metric']['taps'] == 7 + M.CASTLE_JUMP_SCROLL_PROOF
+
+
+def test_the_scroll_batch_is_sized_from_the_hand_row():
+    mem = _memory()
+    mem['chapter'] = 9
+    # Chapter 9 is a mechanical corridor chapter: corridor.orders hides the
+    # chart plan, so _order_for_step cannot see the J1 order and the jump
+    # would die as orphaned.  The order was launched, so seed its snapshot.
+    order = _plan_region(mem)['chart_plan']['orders'][0]
+    mem['world'] = {'launched_orders': {order['step']: order}}
+    mem['castle_jump'] = _jump('list', menu_presses=2, source='カラ')
+    screen = _castle_list_window(CHAPTER_9_LONG, 0, 6)   # hand already on row 6
+    assert M.castle_jump_step(screen, mem, None) == _release_taps(
+        'down', 1 + M.CASTLE_JUMP_SCROLL_PROOF)
+
+
+def test_the_page_turn_batch_reaches_a_ninth_row_source():
+    """カラ (index 9) is reached: the batch walks the hand off the window."""
+    mem = _memory()
+    mem['chapter'] = 9
+    # Chapter 9 is a mechanical corridor chapter: corridor.orders hides the
+    # chart plan, so _order_for_step cannot see the J1 order and the jump
+    # would die as orphaned.  The order was launched, so seed its snapshot.
+    order = _plan_region(mem)['chart_plan']['orders'][0]
+    mem['world'] = {'launched_orders': {order['step']: order}}
+    mem['castle_jump'] = _jump('list', menu_presses=2, source='カラ')
+    selected = offset = 0
+    for _ in range(10):
+        screen = _castle_list_window(CHAPTER_9_LONG, offset, selected)
+        actions = M.castle_jump_step(screen, mem, None)
+        if actions == [M.pad('select')]:
+            break
+        for action in actions:
+            if action.get('type') == 'pad':
+                selected, offset = _native_scroll(selected, offset, action['buttons'][0],
+                                                  len(CHAPTER_9_LONG))
+    else:
+        raise AssertionError('カラ was never reached')
+    assert selected == 9
+    assert mem['castle_jump']['phase'] == 'confirm'
+    assert mem['castle_jump']['scrolls'] == 1
+    assert not [r for r in mem['_records'] if r['decision'] == 'castle_jump_failed']
+
+
+def test_an_unmoving_list_routes_the_source_through_the_y_map():
+    """Repeated page-turn taps that never shift the window take the Y route
+    early, instead of spending the whole scroll budget (#4338)."""
+    mem = _memory()
+    mem['chapter'] = 9
+    # Chapter 9 is a mechanical corridor chapter: corridor.orders hides the
+    # chart plan, so _order_for_step cannot see the J1 order and the jump
+    # would die as orphaned.  The order was launched, so seed its snapshot.
+    order = _plan_region(mem)['chart_plan']['orders'][0]
+    mem['world'] = {'launched_orders': {order['step']: order}}
+    mem['castle_jump'] = _jump('list', menu_presses=2, source='カラ')
+    top = _castle_list_window(CHAPTER_9_LONG, 0, 0)
+    assert M.castle_jump_step(top, mem, None) == _release_taps('down', 9)
+    # The descent reached the bottom row but the page never moved.
+    bottom = _castle_list_window(CHAPTER_9_LONG, 0, 7)
+    proof = _release_taps('down', M.CASTLE_JUMP_SCROLL_PROOF)
+    for _ in range(M.CASTLE_JUMP_SCROLL_STALL):
+        assert M.castle_jump_step(bottom, mem, None) == proof
+    assert M.castle_jump_step(bottom, mem, None) == [M.pad('b')]
+    assert 'castle_jump' not in mem
+    assert mem['castle_jump_y'] == {'step': 'J1', 'source': 'カラ', 'tick': 10}
+    assert mem['castle_jump_skip']['step'] == 'J1'
+    record = mem['_records'][-1]
+    assert record['decision'] == 'castle_jump_y_fallback'
+    assert record['observed_metric']['stalled'] == M.CASTLE_JUMP_SCROLL_STALL
+    assert not [r for r in mem['_records'] if r['decision'] == 'castle_jump_failed']
+
+
+def test_a_stalled_reanchor_keeps_scrolling_instead_of_taking_the_y_route():
+    # The reanchor owns no order step; a Y route would land unconsumed, so
+    # the list keeps its ordinary bounded retries.
+    mem = _memory()
+    mem['castle_jump'] = {'mode': 'reanchor', 'step': None, 'source': 'アルマムーン',
+                          'phase': 'list', 'age': 0, 'total': 0, 'tick': 0,
+                          'menu_presses': 2, 'scrolls': 0}
+    stuck = _castle_list(['ナキューメラ'])
+    for _ in range(M.CASTLE_JUMP_SCROLL_STALL + 2):
+        actions = M.castle_jump_step(stuck, mem, None)
+        assert actions == _release_taps('down', M.CASTLE_JUMP_SCROLL_PROOF)
+    assert 'castle_jump' in mem
+    assert 'castle_jump_y' not in mem
+
+
+def test_the_y_route_is_taken_when_the_field_returns(monkeypatch):
+    mem = _memory()
+    _allow_interrupted_order(monkeypatch)
+    mem['castle_jump_y'] = {'step': 'J1', 'source': 'アルマムーン', 'tick': 10}
+    sent = {}
+    monkeypatch.setattr(M, '_want_y_jump', lambda *_args: True)
+    monkeypatch.setattr(M, 'y_jump_unreachable', lambda *_args: False)
+
+    def start(_mem, _order, name, mode):
+        sent['args'] = (name, mode)
+        return [M.pad('y')]
+
+    monkeypatch.setattr(M, '_start_y_jump', start)
+    screen = _screen('map', [], cursor=(80, 90))
+    assert M.map_step(screen, mem, None) == [M.pad('y')]
+    assert sent['args'] == ('アルマムーン', 'map')
+    assert 'castle_jump_y' not in mem
+
+
+def test_a_refused_y_route_is_offered_once_then_walks(monkeypatch):
+    mem = _memory()
+    _allow_interrupted_order(monkeypatch)
+    mem['castle_jump_y'] = {'step': 'J1', 'source': 'アルマムーン', 'tick': 10}
+    monkeypatch.setattr(M, '_want_y_jump', lambda *_args: False)
+    monkeypatch.setattr(M, 'nav_step', lambda *_args, **_kwargs: [M.pad('right')])
+    screen = _screen('map', [], cursor=(80, 90))
+    assert M.map_step(screen, mem, None) == [M.pad('right')]
+    assert 'castle_jump_y' not in mem

@@ -108,10 +108,13 @@ def test_a_gap_beyond_the_four_tap_cap_still_prevents_a_batch():
     assert M.castle_jump_step(screen, memory(NAMES[-1]), None) == [commands.pad('down')]
 
 
-def test_hidden_target_keeps_single_row_scrolling_and_its_original_budget():
+def test_hidden_target_gets_the_descent_and_page_turn_batch():
+    # Issue #4338: the window turns only with the hand on its last row, so a
+    # hidden target now gets the full descent plus page-turn taps (#4338)
+    # while the scroll budget itself is unchanged.
     mem = memory(CHAPTER_6_LONG[-1])
     screen = _castle_list(NAMES)
-    assert M.castle_jump_step(screen, mem, None) == [commands.pad('down')]
+    assert M.castle_jump_step(screen, mem, None) == taps('down', 9)
     assert mem['castle_jump']['scrolls'] == 1
     assert mem['castle_jump']['phase'] == 'list'
 

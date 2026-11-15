@@ -17,7 +17,7 @@ from .deploy import (_cancel_broken_hero_sortie, _deploy_context, _deploy_input,
                             _hold_guarded_sortie, _hold_locked_boss, _hold_unrouted_sortie)
 from .recall import (MENU_HOLD_LIMIT, RECALL_LIMIT, _hold_after_picker, _recall_dispatch_step, _request_recall,
                             camp_recall_step)
-from ..os_layer.commands import castle_list_batch, menu_to, pad
+from ..os_layer.commands import VISIBLE_LIST_RELEASE_MS, castle_list_batch, menu_to, pad
 from ..os_layer.navigation import (Y_JUMP_LIMIT, Y_JUMP_OFFSET, _align_on_roof, _drop_stale_y_jump, _start_y_jump,
                                    _forget_failed_jump, _want_y_jump, _y_jump_step, nav_step, y_jump_unreachable)
 from ..os_layer.readers import (UNDER_CURSOR_PX, WORLD_MAP_OFFSET, _cursor, _roof_under_cursor, season_sites,
@@ -805,6 +805,13 @@ CASTLE_JUMP_LIMIT = 48          # observations across the whole menu trip
 # bound exhausted. Keep the bound above the longest chapter roster; the loop
 # still stops as soon as the source is visible.
 CASTLE_JUMP_SCROLL_LIMIT = 16   # list scrolls while looking for the source
+# Issue #4338: the しろ window turns a page only while the hand sits on its
+# last row, and a lone 6-frame Down there was dropped before the page moved
+# (the monthly roster's タオ…シマウ カラ scroll proved the panel does move).
+# Each scroll observation now sends the whole descent plus PROOF taps, so at
+# least one press lands after the hand reaches the bottom row.
+CASTLE_JUMP_SCROLL_PROOF = 2    # extra taps issued once the hand is on the last row
+CASTLE_JUMP_SCROLL_STALL = 2    # unchanged list readings before the Y route takes over
 CASTLE_JUMP_COOLDOWN = 40       # observations before retrying a failed source
 CASTLE_JUMP_FAR = 48            # same distance gate as the Y jump (map px)
 # The orange hand of the main menu and of the しろ list blinks, so whole frames
@@ -876,6 +883,29 @@ def _castle_list_target(screen, source, chapter=None):
         if candidate and (key.startswith(candidate) or candidate.startswith(key)):
             return word
     return None
+
+
+def _castle_list_hand_row(screen, rows):
+    """The visible row index the orange hand points at, or None."""
+    if not screen.hand or not rows:
+        return None
+    hand_y = screen.hand[1] + 6                      # the same anchor as _current
+    index = min(range(len(rows)), key=lambda i: abs(rows[i][0] - hand_y))
+    return index if abs(rows[index][0] - hand_y) <= 8 else None
+
+
+def _castle_list_scroll_batch(rows, hand_row):
+    """Released Down taps that reach the last row, then turn the page.
+
+    A single 6-frame Down at the bottom edge was repeatedly dropped before
+    the window shifted (#4338). The descent plus CASTLE_JUMP_SCROLL_PROOF
+    presses means at least one input lands after the hand reaches the end.
+    """
+    descent = (len(rows) - 1) - (hand_row if type(hand_row) is int else 0)
+    actions = [pad('down')]
+    for _ in range(max(0, descent) + CASTLE_JUMP_SCROLL_PROOF - 1):
+        actions.extend([{'type': 'wait', 'ms': VISIBLE_LIST_RELEASE_MS}, pad('down')])
+    return actions
 
 
 def _start_reanchor_jump(mem, *, owner=None):
@@ -1015,6 +1045,29 @@ def _end_castle_jump(screen, mem, why):
     return []
 
 
+def _castle_jump_y_fallback(screen, mem, jump, rows):
+    """The list never turned a page: close it and route the source through Y.
+
+    Issue #4338: repeated 6-frame Downs sat on the last row without shifting
+    the window, so a source below the eighth row could burn the whole trip
+    budget. The stall is a property of the panel, not of the order: once the
+    menu is closed the ordinary map step retries the same source through the
+    whole-map Y jump (mode 'map'), and walks only when Y cannot run.
+    """
+    mem.pop('castle_jump', None)
+    mem['castle_jump_skip'] = {'mode': jump.get('mode'), 'step': jump.get('step'),
+                               'tick': int(mem.get('tick') or 0)}
+    mem['castle_jump_y'] = {'step': jump.get('step'), 'source': jump.get('source'),
+                            'tick': int(mem.get('tick') or 0)}
+    _record(mem, 'castle_jump_y_fallback', chart_step=jump.get('step'),
+            target=jump.get('source'), screen=screen.kind,
+            observed_metric={'scrolls': jump.get('scrolls'),
+                             'stalled': jump.get('scroll_stall'),
+                             'rows': [word for _, word in rows]},
+            reason='しろ一覧のページ送りが進まないため一覧を閉じ、全体マップ（Y）で出撃元へ飛ぶ')
+    return [pad('b')]
+
+
 def _jump_successor(mem, order, jump=None):
     """The live order that continues a re-planned jump, or None.
 
@@ -1143,10 +1196,26 @@ def castle_jump_step(screen, mem, frame):
         jump['blind'] = 0
         target = _castle_list_target(screen, jump['source'], mem.get('chapter'))
         if target is None:
+            hand_row = _castle_list_hand_row(screen, rows)
+            signature = ([word for _, word in rows], hand_row)
+            jump['scroll_stall'] = (int(jump.get('scroll_stall') or 0) + 1
+                                    if signature == jump.get('scroll_signature') else 0)
+            jump['scroll_signature'] = signature
+            if (jump['scroll_stall'] >= CASTLE_JUMP_SCROLL_STALL
+                    and jump.get('mode') != 'reanchor'):
+                return _castle_jump_y_fallback(screen, mem, jump, rows)
             if int(jump.get('scrolls') or 0) < CASTLE_JUMP_SCROLL_LIMIT:
                 jump['scrolls'] = int(jump.get('scrolls') or 0) + 1
                 jump['age'] = 0
-                return [pad('down')]
+                batch = _castle_list_scroll_batch(rows, hand_row)
+                _record(mem, 'castle_jump_scroll', chart_step=jump.get('step'),
+                        target=jump['source'], screen=screen.kind,
+                        observed_metric={'scrolls': jump['scrolls'],
+                                         'hand_row': hand_row,
+                                         'taps': sum(1 for a in batch if a['type'] == 'pad'),
+                                         'rows': [word for _, word in rows]},
+                        reason='出撃元の行が見えないため、手を一覧の最下行まで送ってページ送りする')
+                return batch
             return _end_castle_jump(screen, mem, 'castle_missing')
         move = menu_to(screen, target)
         if move == 'here':
@@ -1645,6 +1714,15 @@ def map_step(screen: Screen, mem, frame):
         mem.pop('cursor', None)                  # no roof near: jump again rather than search
         _record(mem, 'align_failed', chart_step=order['step'], target=source, screen=screen.kind,
                 reason='全体マップで選んだ出撃元の近くに屋根が無いため全体マップを開き直す')
+    if screen.cursor and not screen.marker:
+        # The stalled しろ list offered this source once (#4338): the same
+        # trip continues through the whole-map Y jump when its budget allows,
+        # and falls back to the ordinary walk when it does not.
+        y_route = mem.pop('castle_jump_y', None)
+        if (isinstance(y_route, dict) and y_route.get('source') == source
+                and not y_jump_unreachable(mem, source)
+                and _want_y_jump(mem, order, source, 'map')):
+            return _start_y_jump(mem, order, source, 'map')
     if screen.cursor and not screen.marker and _want_castle_jump(mem, order, source, goal):
         return _start_castle_jump(mem, order, source)
     result = nav_step(screen, mem, frame, goal, source, step=order['step'])
