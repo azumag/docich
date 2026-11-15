@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from ..os_layer.pixels import Frame
-from ..os_layer.screen import Screen, castle_roofs, own_camps
+from ..os_layer.screen import Screen, camp_body_target, castle_roofs, own_camps
 from ... import hanjuku_chart as chart
 from ..decision_log import _record
 from ..os_layer.commands import fort_list_batch, menu_to, pad
@@ -400,7 +400,7 @@ def _camp_recall_step(screen: Screen, mem, frame, *, observed_camps=None):
                                          + abs(c['target'][1] - cursor[1])) if cursor else 0)
         state = _flow(mem)['recall'] = {'stage': 'to_camp', 'target': list(camp['target']),
                                  'last_seen': list(camp['target']), 'steps': 0,
-                                 **({'camp_body': list(camp['body'])} if camp.get('body') else {}),
+                                 **({'camp_body': body} if (body := camp_body_target(frame, camp['target'])) else {}),
                                  **({'camp_kind': camp['kind']} if camp.get('kind') else {}),
                                  **({'boss': True, 'goal': boss_goal} if boss_goal else {})}
         # A fresh recall starts a fresh destination-jump budget and receipt:

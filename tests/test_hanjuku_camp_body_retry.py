@@ -8,7 +8,7 @@ from test_hanjuku_chart_bot import _camp_frame
 from docich import hanjuku_policy as policy
 from docich.hanjuku.state.regions import flow as _flow
 from docich.hanjuku_screen import Screen
-from docich.hanjuku.os_layer.screen import own_camps
+from docich.hanjuku.os_layer.screen import camp_body_target, own_camps
 
 
 def memory():
@@ -16,8 +16,10 @@ def memory():
 
 
 def test_the_camp_body_is_not_the_flag_target():
-    camp = own_camps(_camp_frame())[0]
-    assert camp['body'] != camp['target']
+    frame = _camp_frame()
+    camp = own_camps(frame)[0]
+    body = camp_body_target(frame, camp['target'])
+    assert body and tuple(body) != tuple(camp['target'])
 
 
 def test_two_failed_reopens_switch_the_retry_to_the_tent_body():
