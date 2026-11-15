@@ -49,8 +49,14 @@ def test_the_last_general_does_not_leave_a_fresh_capture():
     assert decisions(mem, 'capture_guard_held')
 
 
-def test_two_residents_are_not_held():
+def test_two_residents_are_held():
     mem = memory(['リーキ', 'ベーグル'])
+    with chart.map_context(mem):
+        assert corridor._capture_guard_short(mem, B) is True
+
+
+def test_three_residents_are_not_held():
+    mem = memory(['リーキ', 'ベーグル', 'マフィン'])
     with chart.map_context(mem):
         assert corridor._capture_guard_short(mem, B) is False
 
