@@ -766,6 +766,9 @@ def test_corner_binds_committed_start_before_first_observation(manager, monkeypa
     monkeypatch.setattr(manager, '_validate_games', lambda *a: None)
     monkeypatch.setattr(manager, '_announce_start_locked', lambda *a: None)
     if queued:
+        # This test isolates post-commit identity binding. A queued start
+        # must have a claimable boundary decision before it may stage.
+        monkeypatch.setattr('docich.hanjuku_resume.start_claimable', lambda adapter, request_id: True)
         request = str(uuid.uuid4())
         manager.store.initialize()
         with manager.store.transaction() as tx:
