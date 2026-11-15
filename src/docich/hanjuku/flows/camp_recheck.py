@@ -109,7 +109,7 @@ def _camp_shape(proof):
             and type(proof.get('episode')) is int and proof['episode'] > 0
             and type(proof.get('episode_tick')) is int and type(proof.get('observed_tick')) is int
             and 0 <= proof['episode_tick'] <= proof['observed_tick']
-            and proof.get('origin') in ('named_focus', 'anonymous_map_open')
+            and proof.get('origin') in ('named_focus', 'anonymous_map_open', 'named_focus_occluded')
             and isinstance(proof.get('target'), list) and len(proof['target']) == 2
             and all(type(value) is int for value in proof['target'])
             and isinstance(proof.get('frame_sha256'), str) and len(proof['frame_sha256']) == 64
@@ -453,8 +453,9 @@ def _named_step(screen, mem, frame, state):
     from ..decision_log import _record
     from .recall import RECALL_ARRIVE_PX, RECALL_LIMIT, _observe_recall_origin
     from ..os_layer.commands import menu_to, pad
-    from ..os_layer.readers import _cursor, is_camp_menu, is_fort_menu
+    from ..os_layer.readers import _cursor, castle_roofs, is_camp_menu, is_fort_menu
     from ..os_layer.readers import own_camps
+    from ..os_layer.pixels import Frame
     from ..os_layer.world import NAME
     from . import house
     from .recall import enter_fort
@@ -541,11 +542,54 @@ def _named_step(screen, mem, frame, state):
         return [pad('b')]
     if stage == 'recheck_focus':
         cursor = _cursor(screen)
+        if state.get('occluded_probe'):
+            # The bounded A probe answered: a camp menu under the focus cursor
+            # means the cursor sprite covered the tent. Bind that spot and the
+            # frame the menu opened on as this episode's camp receipt — the
+            # field status read still proves the occupant's name afterward.
+            if not is_camp_menu(screen):
+                _defer(mem, state, '遮蔽プローブで野営メニューが開かず現在tentを確認できない')
+                return []
+            episode = state.get('camp_episode') if _valid_episode(mem, state) else None
+            spot = state.get('target')
+            if not spot or not isinstance(frame, Frame) or episode is None:
+                _defer(mem, state, '遮蔽野営の位置・frame・episodeを束縛できず選択しない')
+                return []
+            roofs = sorted([r['kind'], *r['target']] for r in castle_roofs(frame))
+            state['camp_observation'] = {
+                'schema': 1, 'identity': episode['identity'], 'chapter': episode['chapter'],
+                'episode': episode['serial'], 'episode_tick': episode['started_tick'],
+                'observed_tick': mem['tick'], 'origin': 'named_focus_occluded',
+                'target': list(spot), 'frame_sha256': frame.digest(),
+                'roofs': roofs if len(roofs) >= 2 else []}
+            if not _valid_camp(mem, state):
+                _defer(mem, state, '遮蔽野営のreceiptを同episodeで束縛できず選択しない')
+                return []
+            _advance(state, 'recheck_status')
+            move = menu_to(screen, 'ステータス')
+            return ([pad('a')] if move == 'here' else [move] if move
+                    else _wait(mem, state, 'ステータス項目の実カーソルを確認できない', close=True))
         camps = own_camps(frame) if frame is not None and screen.kind == 'map' else []
         under = [camp for camp in camps if not camp.get('clipped') and cursor
                  and all(abs(camp['target'][axis] - cursor[axis]) <= RECALL_ARRIVE_PX
                          for axis in (0, 1))]
         if len(under) != 1:
+            # The SELECT focus lands the cursor on the named camp and the
+            # cursor sprite can cover the whole tent (owner 2026-11-04:
+            # キャンプにカーソルが重なると野営画像を失い — the same gap the
+            # recall flow's RECALL_OCCLUDED_PX path covers). g1190: every
+            # camped general failed this check on every pass while the tent
+            # sat under the cursor. Probe once per focus with A: a camp menu
+            # or a fort menu names the occupant itself, anything else is a
+            # bounded miss.
+            if (not under and cursor and screen.kind == 'map'
+                    and _valid_episode(mem, state) and state.get('reads', 0) >= 2):
+                state['occluded_probe'] = True
+                state['target'] = list(cursor)   # the map cursor covered the camp
+                _record(mem, 'camp_focus_occluded_probe', chart_step=None, general=actor,
+                        observed_metric={'cursor': list(cursor)},
+                        reason='本人focusのカーソルが野営を覆い画像を失っているため、有界のA一回でメニューを開き現在tentを確認する')
+                return [pad('a')]
             return _wait(mem, state, '本人focus後の現在tentとcursorが一致せず決定しない')
         state['target'] = list(under[0]['target'])
         _observe_recall_origin(screen, mem, frame, state)
