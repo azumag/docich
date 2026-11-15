@@ -7443,6 +7443,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v870-capture-guard-two",
             "hanjuku-chart-v871-battle-panel-tint",
             "hanjuku-chart-v872-battle-menu-hold",
+            "hanjuku-chart-v873-orphan-command",
             "hanjuku-chart-v864-shop-list-batch",
             "hanjuku-chart-v862-camp-field-move",
             "hanjuku-chart-v852-visible-menu-batches",

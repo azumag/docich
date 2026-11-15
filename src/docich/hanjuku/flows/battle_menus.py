@@ -136,6 +136,16 @@ def orphan_battle_menu_step(screen, mem):
         _record(mem, 'battle_menu_recheck_unconfirmed',
                 observed_metric={'close_attempts': 3},
                 reason='有限の閉じる入力後も実戦闘メニューが残るため、卵や奥の手を推測して選ばない')
+    if (parent and not flow.get('command_pressed')
+            and words.intersection({'きりふだ', 'こうげき'})):
+        # B does not close this box: after the bounded closes, one confirm on
+        # the observed top command (きりふだ/こうげき) is the only way forward.
+        # g1190 ch9 2026-11-16 held this same menu 101 observations at a time.
+        flow['command_pressed'] = True
+        _record(mem, 'battle_menu_orphan_command',
+                observed_metric={'words': sorted(words), 'cursor_y': screen.menu_cursor},
+                reason='閉じない実戦闘メニューの先頭コマンドを1回だけ確定して戦闘を進める')
+        return [pad('a')]
     return []
 
 
