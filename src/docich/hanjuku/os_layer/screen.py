@@ -406,9 +406,20 @@ def _dome_camps(frame: Frame) -> list[dict]:
         flag = [c for c in window if c[1] < y0 - 6]
         red = [c for c in flag if frame.pixel(*c) == CAMP_FLAG]
         orange = [c for c in flag if frame.pixel(*c) == CAMP_ORANGE]
-        if len(body) < 20 or len(outline) < 25 or len(red) < 2 or len(orange) < 2:
+        # A dome pushed against the top edge loses its flag: the body and
+        # outline still identify the fort, and the recall must scroll the
+        # camera up to reveal the flag instead of ignoring it (owner
+        # 2026-11-15: 砦になったキャンプはまだ無視されている).
+        clipped = y0 < 24 and (len(red) < 2 or len(orange) < 2)
+        if len(body) < 20 or len(outline) < 25:
+            continue
+        if not clipped and (len(red) < 2 or len(orange) < 2):
             continue
         shape = body + outline
+        if clipped:
+            target = (min(c[0] for c in shape) - 8, y0 - 6)
+            found.append({'target': target, 'clipped': True, 'kind': 'dome'})
+            continue
         # Same cell as the small tent: one left of the body, bottom-aligned 16 px.
         target = (min(c[0] for c in shape) - 1, max(c[1] for c in shape) - 15)
         found.append({'target': target, 'clipped': False, 'kind': 'dome'})
