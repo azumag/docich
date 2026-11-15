@@ -5666,7 +5666,13 @@ def _broadcast_template_probe(path, now):
         info = path.stat()
     except OSError:
         return result
-    if path.is_symlink() or not path.is_file():
+    # stat() may succeed while the follow-up metadata checks still fail on a
+    # protected production checkout; keep diagnostics best-effort (PR #4307
+    # found the same residual path after the v883 collector guard).
+    try:
+        if path.is_symlink() or not path.is_file():
+            return result
+    except OSError:
         return result
     result["present"] = True
     result["size"] = info.st_size
