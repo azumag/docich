@@ -450,6 +450,22 @@ def recover(root: Path, declared_phase: str, declared_cleanup_pending: bool) -> 
                 EX_INVALID_RESULT,
                 f"canonical recover exited 0 but phase remains {post_state['phase']}",
             )
+        # A recovery cannot roll back the durable revision or allocate a
+        # different generation. Either suggests an unrelated state transition.
+        if (post_state["revision"] < state["revision"]
+                or post_state["next_generation"] != state["next_generation"]):
+            raise FixedRecoverExit(
+                EX_INVALID_RESULT, "canonical recover changed the state lineage",
+            )
+        before_result = state.get("last_result")
+        after_result = post_state.get("last_result")
+        if (isinstance(before_result, dict)
+                and _request_id_ok(before_result.get("request_id"))
+                and (not isinstance(after_result, dict)
+                     or after_result.get("request_id") != before_result["request_id"])):
+            raise FixedRecoverExit(
+                EX_INVALID_RESULT, "canonical recover changed the request lineage",
+            )
         return 0
     if cli_code == 1:
         raise FixedRecoverExit(EX_RECOVERY_PENDING, "canonical recover is pending (busy/rolled_back)")
