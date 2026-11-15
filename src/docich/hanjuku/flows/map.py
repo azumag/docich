@@ -2335,6 +2335,22 @@ def _unverified_target(screen, mem, order):
     step = order['step']
     misses = mem.setdefault('target_miss', {})
     misses[step] = misses.get(step, 0) + 1
+    # The camera estimate can already sit on the chart cell while the roofs are
+    # unreadable (g1190 2026-11-16 20-9: 132 arrival_unverified and 50
+    # target_not_under_marker in one window while 24 タオ attacks produced no
+    # battle). Accept the cell match instead of cancelling the sortie forever.
+    cell = chart.castles(mem.get('chapter') or 0).get(order['target'])
+    cursor = mem.get('cursor')
+    if (cell and isinstance(cursor, (list, tuple)) and len(cursor) == 2
+            and abs(cursor[0] - cell[0]) <= BOSS_MARKER_CELL_PX
+            and abs(cursor[1] - cell[1]) <= BOSS_MARKER_CELL_PX):
+        misses.pop(step, None)
+        mem['uncertain'] = False
+        _record(mem, 'target_cell_accepted', chart_step=step, target=order['target'],
+                observed_metric={'cursor': list(cursor), 'cell': list(cell),
+                                 'misses': misses.get(step)},
+                reason='屋根が読めないため、カメラ推定がチャートのセルに一致することで出撃先を確定する')
+        return True
     if misses[step] < TARGET_MISS_LIMIT:
         mem['uncertain'] = True               # re-anchor on roofs before confirming
         mem.pop('anchor', None)
