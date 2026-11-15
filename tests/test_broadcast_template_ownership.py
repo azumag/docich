@@ -89,6 +89,30 @@ class BroadcastTemplateOwnershipTest(unittest.TestCase):
             html,
         )
 
+    def test_next_corner_title_and_time_are_large_and_not_clipped(self):
+        # Owner 2026-11-15: the advance notice's title and start time were too
+        # small to read. The card is a fixed-height box with overflow hidden,
+        # so the larger type must still fit: the eye-brow, both rows and the
+        # padding have to stay inside the declared height.
+        html = TEMPLATE.read_text(encoding="utf-8")
+        card = _declarations(html, "#next-corner")
+        head = _declarations(html, ".next-corner-head")
+        label = _declarations(html, ".next-corner-label")
+        when = _declarations(html, ".next-corner-when")
+
+        def px(decl, prop):
+            match = re.search(rf"{prop}:\s*([0-9.]+)px", decl)
+            self.assertTrue(match, f"missing {prop} in {decl!r}")
+            return float(match.group(1))
+
+        self.assertGreaterEqual(px(label, "font-size"), 13)
+        self.assertGreaterEqual(px(when, "font-size"), 16)
+        rows = (px(head, "line-height") + px(label, "margin-top")
+                + px(label, "line-height") + px(when, "line-height"))
+        outer = px(card, "height")
+        self.assertLessEqual(
+            rows + 2 * px(card, "padding") + 2 * px(card, "border"), outer)
+
     def test_notification_strip_draws_no_colored_left_band(self):
         # Owner 2026-11-08: the left overlay's notification strip (decisions,
         # decision entries, state-change toasts) must not draw the colored
