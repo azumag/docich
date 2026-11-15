@@ -373,6 +373,21 @@ class DiagnosticsJsonCapTests(unittest.TestCase):
         self.assertTrue(65537 > gateway.DIAGNOSTICS_JSON_MAX)
 
 
+class DiagnosticsReasonCodeTests(unittest.TestCase):
+    def test_collector_failure_maps_to_a_fixed_reason_code(self):
+        # docich#4318: a crashing collector collapsed to the generic
+        # `operation_rejected`, hiding the diagnostics path in rejections.
+        gateway = load_gateway()
+        self.assertEqual(
+            gateway.reason_code(ValueError("diagnostics collector failed")),
+            "diagnostics_collector_failed",
+        )
+        self.assertEqual(
+            gateway.reason_code(ValueError("diagnostics output invalid")),
+            "operation_rejected",
+        )
+
+
 class DiagnosticsAuthorizeTests(unittest.TestCase):
     def run_auth(self, **overrides):
         env = {
