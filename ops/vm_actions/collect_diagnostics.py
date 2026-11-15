@@ -5666,7 +5666,13 @@ def _broadcast_template_probe(path, now):
         info = path.stat()
     except OSError:
         return result
-    if path.is_symlink() or not path.is_file():
+    # stat() may succeed while follow-up metadata checks fail (e.g. a
+    # protected production checkout on a CI runner). Keep diagnostics
+    # best-effort rather than aborting the entire JSON projection.
+    try:
+        if path.is_symlink() or not path.is_file():
+            return result
+    except OSError:
         return result
     result["present"] = True
     result["size"] = info.st_size
@@ -5712,10 +5718,12 @@ def _collect_broadcast_template(soren, docich_root=None, now=None):
             resolved = "override-docich-absolute"
         else:
             resolved = "override-other"
-    elif docich_template.is_file():
-        resolved = "docich"
     else:
-        resolved = "soren-fallback"
+        try:
+            docich_present = docich_template.is_file()
+        except OSError:
+            docich_present = False
+        resolved = "docich" if docich_present else "soren-fallback"
     return {
         "backend": env.get("SOREN_STREAM_BACKEND"),
         "layout": env.get("SOREN_DIRECT_STAGE_LAYOUT"),
