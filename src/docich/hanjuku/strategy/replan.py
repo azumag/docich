@@ -343,19 +343,26 @@ def _known_residents(mem, garrison, castle):
 # leave the road castle beside the target and recruits join at the hero's
 # castle, so every general behind the front walks one hop toward it each plan,
 # the hero included. Superseded v661's four-general front.
-def _corridor_forward_moves(mem, owned, garrison, busy, road_next):
+def _corridor_forward_moves(mem, owned, garrison, busy, road_next, nearest_first=False):
     """(lead, rest) moves that walk every rear general one hop toward the front.
 
     The first move keeps the lead slot the staging move always had; the rest
     queue behind the front's attacks. The hero moves right after the first
     general of his castle, while others are still there to be listed with
     him; he is never an attacker (``_spares``/``_wave_pick`` keep excluding him).
+
+    ``nearest_first`` puts the donors closest to the front first (the boss
+    gather: two generals at the last castle unlock the first wave, so the
+    nearest castle's troops must arrive before the far rear ones).
     """
     chapter = mem.get('chapter') or 0
     unknown = set(_world(mem).get('general_location_unknown') or ())
     lead, rest = [], []
     staged = set()
-    for donor in sorted(owned, key=lambda c: (-routes_len(mem, c, road_next, owned), c)):
+    donors = sorted(owned, key=(lambda c: (routes_len(mem, c, road_next, owned), c))
+                    if nearest_first else
+                    (lambda c: (-routes_len(mem, c, road_next, owned), c)))
+    for donor in donors:
         route = routes.path(mem, donor, road_next, owned)
         if not route or len(route) <= 2:
             continue                       # the front itself, or no road to it
@@ -1010,7 +1017,7 @@ def interim_candidates(mem, allow_sole=False) -> dict:
         gather = road[-1] if road else None
         if gather in owned:
             lead_moves, stage_more, staged = _corridor_forward_moves(
-                mem, owned, garrison, busy, gather)
+                mem, owned, garrison, busy, gather, nearest_first=True)
             moves.extend(lead_moves)
             busy = busy | staged
     elif routes.is_road(chapter):

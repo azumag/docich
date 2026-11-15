@@ -26,6 +26,9 @@ def test_boss_phase_walks_the_rear_generals_toward_the_last_castle():
         assert moves
         assert any("イデ" in (o.get("note") or "") for o in moves)
         assert all(o['target'] in chart.castles(9) for o in moves)
+        # The nearest castle's hop goes first: two generals at the last castle
+        # unlock the first boss wave, so カラ→イソ leads before the far rear.
+        assert (moves[0]['source'], moves[0]['target']) == ('カラ', 'イソ')
     finally:
         chart.set_boss_cell(9, None)
 
