@@ -597,7 +597,7 @@ class HelperCliTests(unittest.TestCase):
         # Model the canonical CLI committing a ready state before returning.
         launcher.write_text(
             "#!/bin/sh\n"
-            f"printf '%s' '{json.dumps(canonical(phase='ready', active=runtime(), next_generation=2))}' "
+            f"printf '%s' '{json.dumps(canonical(phase='ready', active=runtime(seat_generation=1), next_generation=2))}' "
             f"> '{root / HELPER_MODULE.STATE_REL}'\n"
             "exit 0\n",
             encoding="utf-8",
