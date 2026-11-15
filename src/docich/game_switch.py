@@ -3357,9 +3357,10 @@ class GameSwitchCoordinator:
                 from .hanjuku_resume import start_claimable
                 claimable = bool(start_claimable(probe_adapter, request_id))
             except Exception:
-                # The probe only predicts claim(); let the normal start path
-                # surface its own error when the probe itself cannot decide.
-                claimable = True
+                # An unreadable decision is not proof that this request owns it.
+                # Never stage a candidate on an indeterminate probe result.
+                # Do not include exception text (which may contain local paths).
+                claimable = False
             if not claimable:
                 current, _migrated = self.store.canonical.load()
                 current_active = current.get("active")
