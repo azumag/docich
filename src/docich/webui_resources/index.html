@@ -2283,7 +2283,7 @@ function renderCorners(d){
   if(sum){
     const st=ROT_STATUS_JA[r.status]||ROT_STATUS_JA.unknown;
     const rows=[
-      ["状態",`<span class="badge ${st[1]}">${esc(st[0])}</span>${r.reason?` <span class="help">${esc(ROT_REASON_JA[r.reason]||r.reason)}</span>`:""}`],
+      ["状態",`<span class="badge ${st[1]}">${esc(st[0])}</span>${r.reason?` <span class="help">${esc(ROT_REASON_JA[r.reason]||r.reason)}</span>`:""}${r.overdue?` <span class="badge warn">予定時刻を約${Math.round((r.overdue.overdue_sec||0)/60)}分超過</span>`:""}`],
       ["配信中のゲーム",`${esc(gsw.active_game||"なし")}${gsw.phase&&gsw.phase!=="ready"&&gsw.phase!=="idle"?` <span class="badge warn">切替中: ${esc(gsw.phase)}</span>`:""}`],
       ["自動の選択/起動",r.pending?`${esc(r.pending.corner||"-")}（${r.pending.phase==="dispatched"?"起動要求済み":"選択済み"}、${r.pending.age_sec!=null?esc(Math.round(r.pending.age_sec/60))+"分前":"-"}）`:"なし"],
       ["手動の開始予約",esc(queuedText)],
@@ -2302,14 +2302,18 @@ function renderCorners(d){
     if(r.latch) t="⚠ ローテーションが安全のため停止しています。下の「コーナー状態ファイル」で要復旧/失敗のコーナーを確認し、そのコーナーを手動停止（または GitHub Actions の各 corner operator で recover）してから「ローテーション復旧」を押してください。";
     else if(blocked) t=`開始予約は未精算の手動要求を待っています。${manualText}。ゲーム切替が準備完了でも、予約の起動完了ではありません。`;
     else if(gsw.phase&&!["ready","idle"].includes(gsw.phase)) t="ゲーム切替の途中です。完了するまで手動開始はできません。";
+    if(r.overdue){
+      const warn=`⚠ ローテーションが予定時刻を約${Math.round((r.overdue.overdue_sec||0)/60)}分超過し、同じ待機理由が約${Math.round((r.overdue.reason_age_sec||0)/60)}分続いています。前のコーナーの改善ジョブ記録とコーナー状態ファイルを確認してください。`;
+      t=t?`${warn} ${t}`:warn;
+    }
     adv.textContent=t;
-    adv.style.color=r.latch?"var(--bad)":"";
+    adv.style.color=r.latch?"var(--bad)":(r.overdue?"var(--warn)":"");
   }
   const rotEl=document.getElementById("corners-rotation");
   if(rotEl){
     rotEl.innerHTML=[
       `status=${esc(r.status||"-")} reason=${esc(r.reason||"-")} error_kind=${esc(r.error_kind||"-")} slot=${r.slot==null?"-":esc(r.slot)}`,
-      `next_due=${fmtTime(r.next_due_at)} last_slot=${fmtTime(r.last_slot_at)} last_seen=${fmtTime(r.last_seen_at)}`,
+      `next_due=${fmtTime(r.next_due_at)} last_slot=${fmtTime(r.last_slot_at)} last_seen=${fmtTime(r.last_seen_at)} reason_since=${fmtTime(r.reason_since)}${r.overdue?` overdue=${Math.round((r.overdue.overdue_sec||0)/60)}m`:""}`,
       `eligible=[${(r.eligible||[]).map(esc).join(", ")}]`,
     ].join("<br/>");
   }

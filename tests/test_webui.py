@@ -1872,6 +1872,35 @@ class TestHttpHandlers(unittest.TestCase):
             encoding="utf-8",
         )
 
+    def test_rotation_view_flags_wait_overdue_on_one_reason(self):
+        # #4333: a wait held on one unchanged reason past next_due_at is the
+        # wedge signal; the view must expose it for the overlay warning.
+        self._write_catalog_config()
+        now = time.time()
+        self._write_rotation_state(
+            status="waiting", pending=None,
+            reason="other-corner-needs-finish-or-recovery",
+            reason_since=now - 3600, next_due_at=now - 3600,
+        )
+        status, view = self._request("GET", "/api/corners")
+        self.assertEqual(status, 200, view)
+        rotation = view["rotation"]
+        self.assertEqual(rotation["status"], "waiting")
+        self.assertEqual(rotation["reason_since"], int(now - 3600))
+        self.assertIsNotNone(rotation["overdue"])
+        self.assertEqual(rotation["overdue"]["reason_age_sec"], 3600)
+        self.assertEqual(rotation["overdue"]["overdue_sec"], 3600)
+
+        # A fresh reason inside the warn bound is not a wedge.
+        self._write_rotation_state(
+            status="waiting", pending=None,
+            reason="other-corner-needs-finish-or-recovery",
+            reason_since=now - 60, next_due_at=now - 3600,
+        )
+        status, view = self._request("GET", "/api/corners")
+        self.assertEqual(status, 200, view)
+        self.assertIsNone(view["rotation"]["overdue"])
+
     def test_weather_manual_start_reserves_without_dispatch_and_is_idempotent(self):
         self._write_weather_catalog_config()
         pending = {"corner": "nsnake", "phase": "dispatched",

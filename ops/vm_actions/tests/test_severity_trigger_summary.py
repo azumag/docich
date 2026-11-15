@@ -82,6 +82,17 @@ class SeverityTriggerTests(unittest.TestCase):
         self.assertTrue(report["triggers"]["corner_rotation_recovery_required"])
         self.assertEqual(sum(report["triggers"].values()), 1)
 
+    def test_corner_rotation_overdue_warn_names_trigger(self):
+        # #4333: the wedged rotation kept status=waiting with a healthy-looking
+        # reason for ~8h. The projection ages the unchanged reason; the trigger
+        # must name the branch so the runtime health alert explains itself.
+        report = self.report(corners={"corner_rotation": {"waiting_overdue": True}})
+        self.assertEqual(report["status"], "warn")
+        self.assertTrue(report["triggers"]["corner_rotation_overdue"])
+        self.assertEqual(sum(report["triggers"].values()), 1)
+        report = self.report(corners={"corner_rotation": {"waiting_overdue": False}})
+        self.assertFalse(report["triggers"]["corner_rotation_overdue"])
+
     def test_persist_fail_names_trigger(self):
         _, _, _, i = self.quiet_inputs()
         i["persist"] = {"result": "fail"}

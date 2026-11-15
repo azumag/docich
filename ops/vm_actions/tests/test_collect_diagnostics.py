@@ -102,6 +102,43 @@ def test_rotation_projection_never_emits_seed_or_request_text(tmp_path):
     assert "DO-NOT-PUBLISH" not in json.dumps(output)
 
 
+def test_rotation_projection_flags_wait_overdue_on_one_reason(tmp_path):
+    """#4333: a wait held on one reason past next_due_at is projected."""
+    module = load_collector()
+    (tmp_path / "corner_rotation.json").write_text(json.dumps({
+        "status": "waiting", "reason": "other-corner-needs-finish-or-recovery",
+        "slot": 3, "last_seen_at": 100, "next_due_at": 200,
+        "reason_since": 150, "eligible": ["paper"],
+    }))
+    output = {}
+    # 3500s past due and the reason held for 3550s: both over the warn bound.
+    module._collect_corner_files(tmp_path, output, 3700)
+    projection = output["corner_rotation"]
+    assert projection["waiting_overdue"] is True
+    assert projection["overdue_sec"] == 3500
+    assert projection["reason_age_sec"] == 3550
+    assert projection["reason_since"] == 150
+
+    # A fresh reason inside the warn bound is not a wedge.
+    (tmp_path / "corner_rotation.json").write_text(json.dumps({
+        "status": "waiting", "reason": "other-corner-needs-finish-or-recovery",
+        "slot": 3, "last_seen_at": 100, "next_due_at": 200, "reason_since": 3600,
+    }))
+    output = {}
+    module._collect_corner_files(tmp_path, output, 3700)
+    assert output["corner_rotation"]["waiting_overdue"] is False
+    assert output["corner_rotation"]["overdue_sec"] is None
+
+    # A ledger written before reason_since existed cannot prove continuity.
+    (tmp_path / "corner_rotation.json").write_text(json.dumps({
+        "status": "waiting", "reason": "other-corner-needs-finish-or-recovery",
+        "slot": 3, "last_seen_at": 100, "next_due_at": 200,
+    }))
+    output = {}
+    module._collect_corner_files(tmp_path, output, 3700)
+    assert output["corner_rotation"]["waiting_overdue"] is False
+
+
 def test_rotation_excluded_map_distinguishes_manual_only_from_disabled(tmp_path):
     """Enabling a manual-only corner must be observable without a reservation."""
     module = load_collector()
