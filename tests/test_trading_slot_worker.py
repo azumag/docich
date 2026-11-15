@@ -270,10 +270,10 @@ def test_slot_rotation_drains_only_its_own_symbol(tmp_path):
     assert load_strategy_experiment(slot).experiment_id == "new-v1"
 
 
-def test_dedicated_slot_gate_is_ten_exits_or_fourteen_days(tmp_path):
+def test_dedicated_slot_gate_is_ten_exits_or_seven_days(tmp_path):
     _g, target = _environment(tmp_path)
     _slot(target, "NEW/JPY", active=_spec("new-v1"), pending=_spec("new-v2"),
-          activated_at=NOW - 13 * 86400)
+          activated_at=NOW - 6 * 86400)
     _round_trips(target, "NEW/JPY", 9, experiment_id="new-v1", start=NOW - 7 * 3600)
     waiting = _assess(target, "NEW/JPY")
     assert waiting.status == "active" and waiting.entries_allowed is True

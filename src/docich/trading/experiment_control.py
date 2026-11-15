@@ -32,7 +32,9 @@ MIN_EXPERIMENT_AGE_S = 48 * 3600
 # A dedicated (one-symbol) slot sees far fewer exits than the common slot:
 # the 20-exit / 48-hour gate would rotate it after 0-2 exits (Issue #3623 §2.9).
 SLOT_MIN_EXPERIMENT_CLOSED_SELLS = 10
-SLOT_MIN_EXPERIMENT_AGE_S = 14 * 86400
+# Seven days matches the per-symbol improvement's age rule, so a candidate
+# queued for a symbol that hardly trades starts as soon as the symbol is flat.
+SLOT_MIN_EXPERIMENT_AGE_S = 7 * 86400
 # "early-stop" is no longer produced. PAPER money is simulated and a new
 # candidate arrives at most once a day, so stopping a losing experiment after
 # a handful of exits only paused data collection. It stays a readable drain
