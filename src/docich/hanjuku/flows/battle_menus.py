@@ -286,6 +286,12 @@ def _hero_retreat_menu(screen, mem, cur):
             cur['card_flow'] = None
         _survival_state(mem, cur)['egg_priority'] = True
         return _survival_menu(screen, mem, cur)
+    if emergency:
+        # A deadlocked menu restarts the bounded retreat selection: an earlier
+        # exhausted flow is evidence about a menu that has since changed into
+        # the no-command one (g1190 2026-11-16: menu_same reached 1190 while
+        # the stale exhausted flow kept returning None).
+        cur.pop('hero_retreat', None)
     flow = cur.setdefault('hero_retreat', {})
     if flow.get('unavailable') or flow.get('exhausted'):
         return None

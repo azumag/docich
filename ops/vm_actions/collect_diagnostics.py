@@ -7446,6 +7446,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v873-orphan-command",
             "hanjuku-chart-v874-emergency-retreat",
             "hanjuku-chart-v875-menu-blink",
+            "hanjuku-chart-v876-emergency-reset",
             "hanjuku-chart-v864-shop-list-batch",
             "hanjuku-chart-v862-camp-field-move",
             "hanjuku-chart-v852-visible-menu-batches",
