@@ -7450,6 +7450,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v880-ch9-red-eye-boss",
             "hanjuku-chart-v881-camp-approach",
             "hanjuku-chart-v882-camp-menu-jump-retry",
+            "hanjuku-chart-v883-castle-list-chapter",
             "hanjuku-chart-v864-shop-list-batch",
             "hanjuku-chart-v862-camp-field-move",
             "hanjuku-chart-v852-visible-menu-batches",

@@ -87,6 +87,7 @@ def test_castle_feedback_cannot_reuse_a_previous_observation(change):
 
 def test_long_castle_list_keeps_ten_downs_then_select_with_less_scheduled_wait():
     mem = _memory()
+    mem['chapter'] = 6              # CHAPTER_6_LONG names
     mem['castle_jump'] = _jump('list', menu_presses=2, source='アブダレ')
     selected = offset = 0
     intervals = []

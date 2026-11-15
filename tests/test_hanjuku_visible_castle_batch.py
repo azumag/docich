@@ -33,6 +33,7 @@ def taps(button, count):
 
 def memory(target):
     mem = _memory(_order(source=target))
+    mem['chapter'] = 6              # NAMES are chapter-6 castles
     mem['castle_jump'] = _jump('list', menu_presses=2, source=target)
     return mem
 
