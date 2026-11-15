@@ -251,6 +251,9 @@ last_seen、pending、request UUID、結果をatomic writeする。
    解放済みの失敗はadapter観測が`failed`等のBUSYのまま残り得る。`_observe()`は
    `released_requests`が指すrequestに限り、**その時点で`_slot_reusable()`が
    再び真のときだけ**BUSY観測を枠占有として数えない（後で別ownerが所有すれば即座に待機へ戻る）。
+   adapterがowner-onlyの`recover_failed` hookを持たない場合（`no-hook`）も、2回連続の
+   failed観測をstale証明として同じslot解放経路へ渡す（2026-11-16。これが無いと、解放できる
+   失敗rowが`status=waiting`のまま永続的に次枠を塞ぐ）。
    ただし解放前に書かれたrowが残っている間は、次のcornerはまず共有slotの待ちに落ちる。slot待ちの
    tickは`corner-rotation.lock`を保持し続けるため他のtickは`already-running`を返し、rowの解放は
    そのtickが待ち窓（`CornerExecutionCoordinator`の`wait_seconds`、既定600秒）を使い切った後の

@@ -940,12 +940,18 @@ class CornerRotationManager:
                                  "result": result}
                         previous_drive = state.get("last_restoring_drive")
                         stale = 1
+                        # ``no-hook`` is a failed drive too: an adapter with no
+                        # owner-only recover entry can never retire this row
+                        # itself, so without this the stale proof never reaches
+                        # the slot-release path and the rotation waits forever
+                        # (2026-11-16 production: a failed manual start left a
+                        # ``waiting`` rotation that no operator command owned).
                         if (status == "failed"
-                                and result in {"noop", "failed"}
+                                and result in {"noop", "failed", "no-hook"}
                                 and isinstance(previous_drive, dict)
                                 and previous_drive.get("corner") == corner_id
                                 and previous_drive.get("result")
-                                    in {"noop", "failed"}):
+                                    in {"noop", "failed", "no-hook"}):
                             stale = int(previous_drive.get("stale", 1)) + 1
                         drive["stale"] = stale
                         state["last_restoring_drive"] = drive
@@ -959,6 +965,10 @@ class CornerRotationManager:
                             self._mark_released_request(
                                 state, corner_id,
                                 raw.get("rotation_request_id"), now)
+                            # The snapshot above was taken before this row;
+                            # re-read it so the same tick can skip the released
+                            # failure instead of waiting one more tick.
+                            released_requests = state.get("released_requests") or {}
                     # A released failure must not keep stopping the rotation,
                     # but only while the shared slot still proves that exact
                     # request left nothing behind (#2187). The proof is
