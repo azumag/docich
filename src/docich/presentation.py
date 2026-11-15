@@ -485,10 +485,15 @@ def main(argv=None) -> int:
             # setup failure is recorded, never allowed to stop the game.
             try:
                 if __package__:
-                    from .pulse_volume import keep_applied
+                    from .pulse_volume import keep_applied, reset_monitor_capture
                 else:
-                    from pulse_volume import keep_applied
+                    from pulse_volume import keep_applied, reset_monitor_capture
                 keep_applied(viewer, args.audio_volume_percent, evidence, env=source_env)
+                if args.audio_sink:
+                    # A manual capture boost survives corner switches and
+                    # ffmpeg restarts (PA stream-restore), so normalize it on
+                    # every launch before it can blow out the next game.
+                    reset_monitor_capture(args.audio_sink, env=source_env)
             except Exception as exc:
                 print(f'audio volume setup failed: {type(exc).__name__}', file=sys.stderr, flush=True)
                 try:

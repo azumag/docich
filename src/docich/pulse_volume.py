@@ -189,6 +189,40 @@ def apply_once(root_pid: int, percent: int, *, env=None, run=_pactl, tree=descen
     return {'status': 'applied' if ok else 'unverified', 'target_percent': percent, 'streams': streams}
 
 
+def reset_monitor_capture(sink: str, percent: int = 100, *, env=None, run=_pactl):
+    """Normalize the shared encoder's capture of ``sink`` back to ``percent``.
+
+    A capture volume raised by hand (operator boost on ffmpeg's source-output)
+    otherwise persists across corner switches and ffmpeg restarts — PA's
+    stream-restore resurrects it by application name — and blows out the next
+    game's audio. Each launch therefore normalizes every source-output
+    recording ``<sink>.monitor`` so a stale boost dies with the runtime.
+    """
+    listing = run('list', 'source-outputs', env=env)
+    if listing.returncode != 0:
+        return {'status': 'pactl_failed'}
+    monitor = f'{sink}.monitor'
+    names = sink_names(run('list', 'short', 'sources', env=env).stdout)
+
+    def on_monitor(item):
+        source = item.get('source')
+        return source == monitor or names.get(str(source)) == monitor
+
+    ours = [i for i in parse_source_outputs(listing.stdout)
+            if on_monitor(i) and i.get('index') is not None]
+    for item in ours:
+        if item.get('volume_percent') != [percent] * len(item.get('volume_percent') or [1]):
+            run('set-source-output-volume', str(item['index']), f'{percent}%', env=env)
+    after = [i for i in parse_source_outputs(run('list', 'source-outputs', env=env).stdout)
+             if on_monitor(i)]
+    streams = [{'source_output': i['index'], 'volume_percent': i.get('volume_percent'),
+                'mute': i.get('mute')} for i in after]
+    ok = all(s['volume_percent'] and set(s['volume_percent']) == {percent}
+             for s in streams)
+    return {'status': 'applied' if streams and ok else ('no_stream' if not streams else 'unverified'),
+            'target_percent': percent, 'monitor': monitor, 'streams': streams}
+
+
 def keep_applied(root_process, percent: int, evidence: Path, *, env=None, interval=5.0):
     """Daemon thread: (re)apply while the game runs; record the latest evidence."""
     def loop():
