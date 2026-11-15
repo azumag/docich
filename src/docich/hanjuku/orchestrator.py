@@ -1208,10 +1208,17 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
     # after CONCERT_PICKER_REPEAT_MAX, choose A once and start over. A real
     # picker changes the frame on B, so its count never reaches the bound.
     digest=frame.digest()
+    # A readable text screen keeps its content identity even while a blinking
+    # cursor changes the frame: g1190 99-7 sat on chapter 9's shop ("なに
+    # かってくれる?", phase 'concert') with B for ~1300 observations because
+    # every blink reset the digest repeat. Textless pickers keep the digest,
+    # where a real B changes the frame.
+    watch_identity = (f'{kind}:{screen.text}' if screen.text and kind in {'text', 'shop_list'}
+                      else digest)
     picker_watch=mem.get('concert_picker_watch') or {}
     if phase=='concert' and actions==[pad('b')]:
         repeat=(int(picker_watch.get('repeat') or 0)+1
-                if picker_watch.get('digest')==digest else 1)
+                if picker_watch.get('identity', picker_watch.get('digest'))==watch_identity else 1)
     else:
         repeat=0
     if repeat>=CONCERT_PICKER_REPEAT_MAX:
@@ -1221,7 +1228,7 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
         actions=[pad('a')]
         repeat=0
     if repeat:
-        mem['concert_picker_watch']={'digest':digest,'repeat':repeat}
+        mem['concert_picker_watch']={'identity':watch_identity,'digest':digest,'repeat':repeat}
     else:
         mem.pop('concert_picker_watch',None)
     concert_key = (f'text:{screen.text}' if kind == 'text' and screen.text
