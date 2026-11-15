@@ -44,10 +44,14 @@ def test_another_chapter_keeps_the_refill_want():
     assert ('move', None, other) in got, 'the refill intent still exists outside the march'
 
 
-def test_the_boss_phase_stops_being_a_march():
+def test_the_boss_phase_queues_no_refill_move_either():
+    """g1190 2026-11-15: after the whole road was taken the refill wants came
+    back, but ``interim_candidates`` never serves refill moves in a guard-free
+    chapter — 12 goals aged 130+ ``unavailable`` attempts each while every
+    garrison read empty. The exemption covers the whole chapter 9."""
     mem = _memory(9, list(ROAD))
     got = wanted(mem)
-    assert ('move', None, ROAD[0]) in got, 'once the road is taken, refilling is a want again'
+    assert not [key for key in got if key[0] == 'move']
 
 
 def test_existing_refill_goals_are_removed_during_march():

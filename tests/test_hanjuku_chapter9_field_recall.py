@@ -28,10 +28,13 @@ def test_the_mech_march_hands_map_frames_to_the_camp_recall():
     assert orchestrator._chapter9_field_recall(_mem()) is True
 
 
-def test_the_boss_phase_keeps_its_own_flows():
-    # Every road castle ours ends ``corridor.mechanical``; the boss phase's
-    # redirect flows were never disabled and need no new entry point.
-    assert orchestrator._chapter9_field_recall(_mem(captured=list(ROAD))) is False
+def test_the_boss_phase_also_hands_map_frames_to_the_camp_recall():
+    # g1190 2026-11-15: the whole road taken ended ``corridor.mechanical``, so
+    # this gate closed and 32 camping generals were never re-sent at the boss
+    # (every garrison read [] and interim held forever). The boss phase keeps
+    # the same entry point open; ``camp_stays``/``boss_redirect_goal`` inside
+    # still decide whether a seen camp is re-sent at the boss or left alone.
+    assert orchestrator._chapter9_field_recall(_mem(captured=list(ROAD))) is True
 
 
 def test_other_chapters_are_unchanged():

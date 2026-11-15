@@ -56,7 +56,15 @@ def _chapter9_field_recall(mem):
     hands an idle map frame to that existing flow.
     """
     from .strategy import corridor
-    return corridor.mechanical(mem)
+    if corridor.mechanical(mem):
+        return True
+    # Once the road is fully owned ``corridor.mechanical`` is False and this
+    # gate closes, yet the boss phase needs the same entry point most: every
+    # castle's garrison then reads empty because the army camps on the field,
+    # and only this call re-sends a visible camp at the moving boss. Inside,
+    # ``camp_stays``/``boss_redirect_goal`` still decide whether a camp is
+    # re-sent or left in place, so opening the gate only reaches the recall.
+    return recall_flow.boss_phase(mem)
 
 
 # Owner evidence #2076 (g713 UID16229): between a complete battle panel and the
