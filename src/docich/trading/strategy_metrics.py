@@ -94,6 +94,18 @@ class _Results:
         return None if self.losses == 0 else self.gains / self.losses
 
 
+def read_ledger_rows(trading_dir, *, now: float):
+    """One validated ledger snapshot up to ``now``, or None when unusable.
+
+    None makes each evaluation read (and report the failure) itself, so a bad
+    ledger is never turned into an empty successful snapshot.
+    """
+    try:
+        return _ledger_rows(Path(trading_dir) / "paper.sqlite3", now=float(now))
+    except (_LedgerError, TypeError, ValueError, OverflowError):
+        return None
+
+
 def _symbol_scope(symbols, exclude_symbols) -> tuple[str, frozenset[str]] | None:
     """Normalize the optional slot scope; a malformed scope is never "all"."""
     if symbols is None and exclude_symbols is None:
@@ -157,6 +169,7 @@ def evaluate_strategy_experiment(
     now: float | None = None,
     symbols=None,
     exclude_symbols=None,
+    ledger_rows=None,
 ) -> dict[str, object]:
     """Evaluate this activation's exits against the shared PAPER ledger basis.
 
@@ -166,6 +179,9 @@ def evaluate_strategy_experiment(
     of the symbols that remain; exits, open positions and inventory
     completeness are then counted for the scope only. With neither argument
     the result is identical to the unscoped evaluation.
+
+    ``ledger_rows`` is a snapshot from ``read_ledger_rows`` taken at the same
+    ``now``; it lets one cycle evaluate many slots with a single ledger read.
 
     Every historical fill updates shared average-cost inventory. Only sells
     attributed to this experiment at/after its current activation enter its
@@ -203,7 +219,8 @@ def evaluate_strategy_experiment(
         return result
 
     try:
-        rows = _ledger_rows(Path(trading_dir) / "paper.sqlite3", now=moment)
+        rows = (_ledger_rows(Path(trading_dir) / "paper.sqlite3", now=moment)
+                if ledger_rows is None else ledger_rows)
     except _LedgerError as exc:
         result.update(status=exc.status, reason_code=exc.reason_code)
         return result

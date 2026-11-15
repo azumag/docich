@@ -29,6 +29,8 @@ from .status import build_public_status, freshness_summary_payload, write_public
 from .settlement import settlement_observation_id, simulate_multileg_settlement
 from .strategies import scan_exit_opportunities, scan_opportunities, select_diversified_opportunities
 from .strategy_runtime import get_active_experiment, pop_reason_context
+from . import slot_runtime
+from .symbol_slots import read_slot_layout
 from .strategy_lab import MAX_LOOKBACK
 from .strategy_store import load_strategy_policy
 
@@ -505,17 +507,41 @@ def run_worker_cycle(
             # Attribute decisions to the local commit phase, not a timestamp
             # preceding the newly activated experiment.
             decision_now = max(float(now), float(observation_now_fn()))
+            # Dedicated per-symbol slots (Issue #3623 §2.9). With none on disk
+            # every slot_* value below is empty and the cycle is the plain
+            # common-slot cycle. An unreadable layout blocks the common slot's
+            # entries (assess raises) because that slot may own any symbol.
+            slot_layout = read_slot_layout(state_dir)
+            slots_in_use = bool(slot_layout.dedicated) or not slot_layout.ok
+            common_slot = {"layout": slot_layout} if slots_in_use else {}
+            dedicated_symbols = frozenset(slot_layout.dedicated)
             try:
-                experiment_step = assess_experiment(state_dir, capital_jpy=capital, now=decision_now)
+                experiment_step = assess_experiment(
+                    state_dir, capital_jpy=capital, now=decision_now, **common_slot)
             except Exception:
                 experiment_step = ExperimentStep(None, None, False, "blocked", "control-error")
+            slot_steps = (slot_runtime.assess_slots(
+                state_dir, slot_layout, capital_jpy=capital, now=decision_now)
+                if dedicated_symbols else {})
+            planned_slot_keys = slot_runtime.planned_keys(slot_steps)
             policy = load_strategy_policy(state_dir)
             planned_experiment_key = experiment_key(get_active_experiment())
-            candidates = tuple(scan_opportunities(frames, now=decision_now, policy=policy)) + tuple(
+            common_frames = frames if not dedicated_symbols else {
+                symbol: frame for symbol, frame in frames.items() if symbol not in dedicated_symbols
+            }
+            candidates = tuple(scan_opportunities(common_frames, now=decision_now, policy=policy)) + tuple(
                 scan_relative_value_opportunities(frames, markets, now=decision_now)
             )
             if not experiment_step.entries_allowed:
-                candidates = ()
+                candidates = tuple(item for item in candidates if item.symbol in dedicated_symbols)
+            if dedicated_symbols:
+                # A dedicated symbol's buys (its own rules or another strategy)
+                # follow that slot's gate, not the common experiment's.
+                candidates = tuple(
+                    item for item in candidates
+                    if item.symbol not in dedicated_symbols
+                    or slot_runtime.entries_allowed(slot_steps, item.symbol)
+                ) + slot_runtime.scan_slot_entries(frames, slot_steps, now=decision_now)
             cost_basis = ledger.position_cost_basis()
             # Missing experiment rules are not permission to use legacy exits.
             # A readable strategy can still close holdings when only evaluation
@@ -523,14 +549,29 @@ def run_worker_cycle(
             unknown_exit_policy = get_active_experiment() is None and experiment_step.reason_code in {
                 "invalid-active", "control-invalid", "control-error",
             }
+            # A slot with readable rules exits its own symbol. A slot still
+            # waiting for its first experiment leaves the symbol to the common
+            # rules that bought it; an unreadable slot is exited by nobody.
+            slot_owned = slot_runtime.owned_symbols(slot_steps)
+            slot_excluded = slot_owned | slot_runtime.unowned_symbols(slot_steps)
+            common_basis = cost_basis if not slot_excluded else {
+                symbol: basis for symbol, basis in cost_basis.items() if symbol not in slot_excluded
+            }
             exit_opportunities = () if unknown_exit_policy else scan_exit_opportunities(
-                frames, cost_basis, now=decision_now,
+                frames, common_basis, now=decision_now,
             )
+            if slot_owned:
+                exit_opportunities = tuple(exit_opportunities) + slot_runtime.scan_slot_exits(
+                    frames, cost_basis, slot_steps, now=decision_now)
             exit_symbols = {opportunity.symbol for opportunity in exit_opportunities}
             entries = tuple(
                 opportunity for opportunity in candidates if opportunity.symbol not in exit_symbols
             )
-            selection = select_diversified_opportunities(entries, frames)
+            selection = (
+                select_diversified_opportunities(
+                    entries, frames, symbol_thresholds=slot_runtime.correlation_thresholds(slot_steps))
+                if slot_owned else select_diversified_opportunities(entries, frames)
+            )
             prices = {symbol: frame.last_price for symbol, frame in frames.items()}
             capital = D(str(g.trading.paper_capital_jpy))
             deployed_before = ledger.deployed_reference()
@@ -575,12 +616,21 @@ def run_worker_cycle(
                 if decision.side == "buy":
                     if not checked_entry_gate:
                         try:
-                            experiment_step = assess_experiment(state_dir, capital_jpy=capital, now=decision_now)
+                            experiment_step = assess_experiment(
+                                state_dir, capital_jpy=capital, now=decision_now, **common_slot)
                         except Exception:
                             experiment_step = ExperimentStep(None, None, False, "blocked", "control-error")
+                        if dedicated_symbols:
+                            slot_steps = slot_runtime.assess_slots(
+                                state_dir, slot_layout, capital_jpy=capital, now=decision_now)
                         checked_entry_gate = True
-                    if (not experiment_step.entries_allowed
-                            or experiment_key(experiment_step.active) != planned_experiment_key):
+                    if decision.symbol in dedicated_symbols:
+                        gate_step = slot_steps.get(decision.symbol)
+                        gate_key = planned_slot_keys.get(decision.symbol)
+                    else:
+                        gate_step, gate_key = experiment_step, planned_experiment_key
+                    if (gate_step is None or not gate_step.entries_allowed
+                            or experiment_key(gate_step.active) != gate_key):
                         pop_reason_context(decision.opportunity_id)
                         continue
                 # The per-opportunity reason context is the allowlisted "why" of the
@@ -599,9 +649,13 @@ def run_worker_cycle(
             # candidate without waiting for another narration/LLM job.
             if get_active_experiment() is not None or experiment_step.status != "legacy":
                 try:
-                    experiment_step = assess_experiment(state_dir, capital_jpy=capital, now=decision_now)
+                    experiment_step = assess_experiment(
+                        state_dir, capital_jpy=capital, now=decision_now, **common_slot)
                 except Exception:
                     experiment_step = ExperimentStep(None, None, False, "blocked", "control-error")
+            if dedicated_symbols:
+                slot_steps = slot_runtime.assess_slots(
+                    state_dir, slot_layout, capital_jpy=capital, now=decision_now)
 
         errors: list[str] = []
         if frame_error_count:
