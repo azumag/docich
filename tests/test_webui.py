@@ -2463,6 +2463,33 @@ class TestHttpHandlers(unittest.TestCase):
         for secret in ("PRIVATE-REQUEST", "PRIVATE-DETAIL"):
             self.assertNotIn(secret, json.dumps(data))
 
+    def test_get_corners_marks_a_latch_row_released_after_scheduler_settles_it(self):
+        self._write_weather_catalog_config()
+        now = time.time()
+        self._write_rotation_state(
+            status="waiting", pending=None, reason="not-due",
+            failed_corners=[
+                {"corner": "moon-buggy", "request_id": "PRIVATE-SETTLED",
+                 "at": now - 120, "resolution": "recovery-required",
+                 "reason_code": "execution-or-state-unverified",
+                 "error_kind": "execution-error"},
+                {"corner": "weather", "request_id": "PRIVATE-OPEN",
+                 "at": now - 60, "resolution": "recovery-required",
+                 "reason_code": "execution-or-state-unverified",
+                 "error_kind": "execution-error"},
+            ],
+            released_requests={"moon-buggy": {"request_id": "PRIVATE-SETTLED",
+                                              "at": now - 30}},
+        )
+
+        status, data = self._request("GET", "/api/corners")
+
+        self.assertEqual(status, 200, data)
+        failures = {row["corner"]: row for row in data["rotation"]["recent_failures"]}
+        self.assertEqual(failures["moon-buggy"]["resolution"], "released-unverified")
+        self.assertEqual(failures["weather"]["resolution"], "recovery-required")
+        self.assertNotIn("PRIVATE-SETTLED", json.dumps(data))
+
     def test_get_corners_publishes_the_effective_interval_seconds(self):
         self._write_weather_catalog_config()
         self._write_rotation_state(status="waiting", pending=None,

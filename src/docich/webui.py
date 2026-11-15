@@ -1973,15 +1973,27 @@ def _rotation_failures_view(raw: Any) -> list[dict[str, Any]]:
 
     The ledger records every corner failure so it stays fixable even though the
     scheduler keeps rotating. Only the corner id, time, fixed resolution and
-    fixed error kind are published.
+    fixed error kind are published. A ``recovery-required`` row whose exact
+    request later appears in ``released_requests`` was settled without an
+    operator: publish the current resolution (released) instead of a stale
+    "要復旧" marker, while leaving the ledger row itself untouched.
     """
     rows = raw.get("failed_corners") if isinstance(raw, dict) else None
+    released = raw.get("released_requests") if isinstance(raw, dict) else None
+    if not isinstance(released, dict):
+        released = {}
     out: list[dict[str, Any]] = []
     if isinstance(rows, list):
         for row in rows[-_ROTATION_FAILED_MAX:]:
             if not isinstance(row, dict):
                 continue
             resolution = row.get("resolution")
+            corner = row.get("corner")
+            settled = released.get(corner) if isinstance(corner, str) else None
+            if (resolution == "recovery-required"
+                    and isinstance(settled, dict)
+                    and settled.get("request_id") == row.get("request_id")):
+                resolution = "released-unverified"
             error_kind = row.get("error_kind")
             reason_code = row.get("reason_code")
             out.append({
