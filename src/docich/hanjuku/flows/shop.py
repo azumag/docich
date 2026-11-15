@@ -222,6 +222,16 @@ def shop_step(screen: Screen, mem):
         return (merchant_list_batch(screen, name) or [move]) if move else []
     if had_items is False:
         _record_shop_exit(mem, shop, screen, 'nothing_planned', listed=listed)
+        if shop.get('merchant_done'):
+            # g1190 99-7: the finished merchant was re-entered ~every 85
+            # observations and nothing_planned kept closing it. Latch the
+            # visit closed so no plan re-adds it; evidence stays recorded.
+            if not shop.get('closed'):
+                _record(mem, 'shop_reenter', month=shop.get('key'),
+                        observed_metric={'header_month': _month_key(screen.header),
+                                         'listed': dict(listed or {})},
+                        reason='購入完了済みの商人へ予定品なしで再入したため、当月起こさないよう閉じる')
+            shop['closed'] = True
     return [pad('b')]
 
 
