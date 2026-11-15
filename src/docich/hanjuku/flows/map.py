@@ -485,6 +485,23 @@ def world_map_step(screen, mem, frame):
         return [] if waited < WORLD_MAP_WAIT else _close_world_map(mem)
     mem.pop('world_map_wait', None)
     _apply_world_flags(mem, flags)
+    # The Y view holds the player's own position (the gold G cursor). When the
+    # field estimate is uncertain (a restored state, a missed roof) this is
+    # the authoritative re-anchor: world = (Y cursor - offset) * 8, the same
+    # relation the recall picker uses. g1190 2026-11-16: the field roofs could
+    # not be read at all, the uncertain flag never cleared and every sortie
+    # destination was aimed off-screen until this anchor was taken.
+    y_cursor = world_cursor(frame) if frame is not None else None
+    y_offset = WORLD_MAP_OFFSET.get(mem.get('chapter') or 0)
+    if y_cursor and y_offset:
+        mem['cursor'] = [int(round((y_cursor[0] - y_offset[0]) * 8)),
+                         int(round((y_cursor[1] - y_offset[1]) * 8))]
+        mem['uncertain'] = False
+        mem.pop('anchor', None)
+        _record(mem, 'world_anchor_from_yview',
+                observed_metric={'cursor': list(y_cursor),
+                                 'world': list(mem['cursor'])},
+                reason='全体マップの自位置カーソルからフィールド位置を再確定する')
     # The same view draws chapter 4's 四季王 sites: a cleared one keeps a
     # pennant, a live king keeps the skull.
     if (mem.get('chapter') or 0) == 4 and hasattr(frame, 'pixel'):
