@@ -311,10 +311,28 @@ def _recalc_soldiers(screen, mem, shop):
 
 
 MONTH_EXIT_REFUSAL_LIMIT = 3   # refused month exits per month before leaving anyway
+MONTH_AMOUNT_BACK_LIMIT = 3    # bounded B presses out of the gold amount overlay
+
 
 def month_step(screen: Screen, mem):
     shop = _plan(mem, screen.header)
     body = _month_dialog_body(screen)
+    # The amount-setting overlay draws the hand on the gold and the
+    # 「じゅうじキー…ケタ…すうじ…」 hint over the month menu (measured g1190
+    # 2026-11-16 19-9: the menu then held forever because no menu cursor was
+    # visible). B cancels the amount back to the menu. Bounded per month.
+    hand = screen.hand
+    if screen.has('じゅうじキー') and hand and hand[1] >= 175:
+        state = mem.setdefault('month_amount_back', {'month': mem.get('month'), 'n': 0})
+        if state.get('month') != mem.get('month'):
+            state.update(month=mem.get('month'), n=0)
+        if state['n'] < MONTH_AMOUNT_BACK_LIMIT:
+            state['n'] += 1
+            _record(mem, 'month_amount_back', screen=screen.kind,
+                    observed_metric={'hand': list(hand), 'n': state['n'],
+                                     'limit': MONTH_AMOUNT_BACK_LIMIT},
+                    reason='金額設定オーバーレイのカーソルが金額上にあるため、Bで本メニューへ戻る')
+            return [pad('b')]
     if shop:
         _refresh_egg_priority(mem, shop, screen.header)
         _low_army_refill(mem, shop, screen.header)
@@ -357,7 +375,7 @@ def month_step(screen: Screen, mem):
     # the absence of the menu's own item labels keeps the main menu out of the
     # soldier-quantity flow (g1190 2026-11-16: the menu held forever because
     # quantity_step waited on a picker that was never open).
-    if screen.has('じゅうじキー') and not screen.has('へいしほじゅう'):
+    if screen.has('じゅうじキー') and not screen.has('へいしほじゅう') and not mem.get('month_amount_back'):
         return quantity_step(screen, mem, soldiers=True)
     if ((mem.get('shop') or {}).get('soldier_receipt') or {}).get('status') == 'pending':
         # observe_events settles the receipt before another paid command can
