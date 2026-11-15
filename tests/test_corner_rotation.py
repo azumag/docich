@@ -1380,6 +1380,79 @@ def test_manual_failed_start_latches_only_without_exact_rollback_proof(
         assert final["manual_pending"]["corner"] == "meriken"
 
 
+def _fail_manual_start(setup, monkeypatch):
+    """Drive a manual start into ``manual-execution-unverified``."""
+    from docich import corner_rotation
+
+    g, clock, _, executor, make = setup
+    rotation = make()
+    monkeypatch.setattr(corner_rotation, "CornerRotationManager", lambda _: rotation)
+    owner = SimpleNamespace(path=g.state_dir / "soren91_corner_manual.json")
+    adapter = rotation.adapters["meriken"]
+    adapter.reconcile_failed_start = lambda request_id, **_: False
+
+    def fail_dispatch(*_args):
+        raise CornerExecutionError("launch failed")
+
+    executor.execute = fail_dispatch
+    with pytest.raises(CornerExecutionError, match="launch failed"):
+        corner_rotation.run_manual(g, owner, ["soren91"])
+    assert state(rotation)["status"] == "recovery_required"
+    return clock, executor, rotation
+
+
+def test_tick_releases_failed_manual_start_once_slot_is_proven_free(setup, monkeypatch):
+    """A failed manual start must not stop the rotation until an operator acts."""
+    clock, executor, rotation = _fail_manual_start(setup, monkeypatch)
+    latched = state(rotation)
+    request_id = latched["manual_pending"]["request_id"]
+    rotation._slot_reusable = lambda *_: True
+    rotation._leftover_corner_game = lambda *_: False
+    clock[0] = max(clock[0] + 60, (latched.get("next_due_at") or 0) + 1)
+
+    def next_corner(_adapter, request):
+        executor.calls.append(dict(request))
+        return "completed"
+
+    executor.execute = next_corner
+    calls = len(executor.calls)
+
+    rotation.tick()
+
+    final = state(rotation)
+    assert final["status"] in {"ready", "running", "waiting"}
+    assert final.get("manual_pending") is None
+    row = final["failed_corners"][-1]
+    assert row["corner"] == "meriken"
+    assert row["request_id"] == request_id
+    assert row["resolution"] == "released-unverified"
+    assert row["reason_code"] == "failed-corner-slot-released"
+    assert row["error_kind"] == "execution-error"
+    assert isinstance(row["at"], float)
+    assert any(row["corner"] == "meriken" and row["source"] == "failure"
+               for row in final["history"])
+    # The release is followed by the normal schedule in the same tick.
+    assert len(executor.calls) == calls + 1
+    assert executor.calls[-1]["corner"] != "meriken"
+
+
+def test_tick_keeps_failed_manual_start_latched_while_slot_is_unproven(setup, monkeypatch):
+    clock, executor, rotation = _fail_manual_start(setup, monkeypatch)
+    request_id = state(rotation)["manual_pending"]["request_id"]
+    rotation._slot_reusable = lambda *_: False
+    rotation._leftover_corner_game = lambda *_: False
+    clock[0] += 60
+    calls = len(executor.calls)
+
+    outcome = rotation.tick()
+
+    final = state(rotation)
+    assert outcome["status"] == "recovery_required"
+    assert final["manual_pending"]["request_id"] == request_id
+    assert len(executor.calls) == calls
+    assert sum(1 for row in final["failed_corners"] if row["request_id"] == request_id) == 1
+
+
 def test_manual_wait_reason_changes_do_not_prove_a_new_execution_failure(setup, monkeypatch):
     """A queued manual retry keeps historical error_kind and its reservation.
 

@@ -272,8 +272,10 @@ last_seen、pending、request UUID、結果をatomic writeする。
 
 例外本文はstateに書かない（provider出力やcredentialを含み得るため）。`failed_corners`にも
 例外本文・payload・request identityは保存しない（固定reason_codeと固定`error_kind`のみ）。
-手動予約（`manual_pending`）はoperatorの枠であり暗黙に解放しない: 1.のterminal commitだけを
-自動で試し、成立しなければ従来どおり待機/latchを維持する。
+手動予約（`manual_pending`）も、1.のterminal commitか2.のslot証明が成立した時点で自動解放する
+（2026-11-16 オーナー判断: 1つのコーナーの失敗で次のコーナーを止めない）。解放時は
+`manual_pending`だけを消し、requestとfailureは`failed_corners`/`history`に残す。
+証拠が成立しない間は従来どおり待機/latchを維持する（fail-closed）。
 
 #### 終了済みcornerが枠を保持している場合（reclaim、#2187）
 
@@ -399,7 +401,8 @@ last_seen、pending、request UUID、結果をatomic writeする。
    ledgerが存在しなければlatchは無いので0）。結果JSONには `latch_resolved` を含め、
    ログを読む側はexit codeとこのフラグで判定する。
 
-`tick()` 自身はlatchを自動解除しない（毎分のtimerが自動再試行ループを作るため）。
+`tick()` は証明（terminal commit / slot証明）が成立した範囲でのみlatchを自動解除し、
+証明の無いlatchを強制clearしない（毎分のtimerが同じ判定を再試行する）。
 ledgerの手編集・`pending`の強制clear・state削除・seed再生成・時計調整は復旧手順ではない。
 `error_kind` は**初回のlatch時**の固定分類として、次にlatchし直すまでledgerと診断に残る。
 復旧操作が拒否された時に上書きしない（拒否理由より元原因の分類を残す）。

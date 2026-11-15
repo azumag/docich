@@ -1653,7 +1653,7 @@ class CornerRotationManager:
             return False, record
         return True, record
 
-    def _run_auto_restore_recovery(self, state, pending, adapter, now):
+    def _run_auto_restore_recovery(self, state, pending, adapter, now, *, manual=False):
         """Replay the reviewed restore recovery once, inside its own budget.
 
         Returns a settled outcome when the replay made the reservation
@@ -1693,7 +1693,7 @@ class CornerRotationManager:
         state["auto_restore"] = record
         try:
             return self._commit_verified_failed_start(
-                state, pending, adapter, manual=False, now=now
+                state, pending, adapter, manual=manual, now=now
             )
         except Exception:
             return None
@@ -1758,8 +1758,8 @@ class CornerRotationManager:
         return False
 
     def _release_failed_corner(self, state, reservation, adapter, *, error_kind, now,
-                               base_unrestored=False):
-        """Settle an unproven automatic failure without stopping the rotation.
+                               base_unrestored=False, manual=False):
+        """Settle an unproven failure without stopping the rotation.
 
         Only the shared-slot proof gates this. Adapters may retire their own
         failed owner after rechecking that proof; the failed rotation remains
@@ -1768,6 +1768,9 @@ class CornerRotationManager:
         and the corner returns at its normal cadence. ``base_unrestored`` marks
         the case where the plane was reclaimed from a finished corner whose own
         game could not be restored, so the operator can still fix the base.
+        A released manual reservation is dropped from ``manual_pending`` only;
+        its request and failure stay in the audit, so an operator can still see
+        that the start did not run.
         """
 
         self._record_failed_corner(state, reservation, resolution="released-unverified",
@@ -1783,7 +1786,10 @@ class CornerRotationManager:
         # this request is in flight, so the row is stale by construction.
         self._release_program_owner(adapter)
         state["history"].append(dict(corner=reservation["corner"], at=now, source="failure"))
-        state["pending"] = None
+        if manual:
+            state["manual_pending"] = None
+        else:
+            state["pending"] = None
         self._sweep_orphaned_auto_restore(state)
         # Advance the watermark exactly like the operator recovery does: a long
         # latch must not fall into the clock-gap quarantine below (#986).
@@ -1798,25 +1804,37 @@ class CornerRotationManager:
     def _auto_release_latch(self, state, now):
         """Try to clear a corner-failure latch without an operator (#2187).
 
-        Returns the tick outcome when the pending automatic reservation was
-        settled; ``None`` keeps the latch. Three proofs are tried in order: an
-        exact terminal rollback commit, the reviewed bounded restore replay
-        (only for an end failure that still owns the corner's game), and the
-        shared slot proof. Nothing here starts a corner, drops history or
-        bypasses the program slot.
+        Returns the tick outcome when the reservation was settled; ``None``
+        keeps the latch. Three proofs are tried in order: an exact terminal
+        rollback commit, the reviewed bounded restore replay (only for an end
+        failure that still owns the corner's game), and the shared slot proof.
+        Nothing here starts a corner, drops history or bypasses the program
+        slot.
+
+        A manual reservation is retried too (owner decision, 2026-11-16): a
+        failed manual start must not stop the rotation until an operator runs
+        ``corner-rotation recover``. The reservation is still not dropped
+        silently: only the same terminal/slot proofs that release an automatic
+        failure may release it, and the release keeps the failure row and the
+        cooldown history. A manual corner that is still running (or may be)
+        never passes ``_slot_reusable`` and keeps the latch.
         """
 
         pending = state.get("pending")
         manual = state.get("manual_pending")
-        if not isinstance(pending, dict) or manual is not None:
-            # A manual reservation is an operator slot: never released here.
+        if isinstance(pending, dict) and manual is None:
+            reservation, is_manual = pending, False
+        elif isinstance(manual, dict) and pending is None:
+            reservation, is_manual = manual, True
+        else:
+            # No reservation, or an inconsistent pair: an operator has to look.
             return None
-        adapter = self.adapters.get(pending.get("corner"))
+        adapter = self.adapters.get(reservation.get("corner"))
         if adapter is None:
             return None
         try:
             outcome = self._commit_verified_failed_start(
-                state, pending, adapter, manual=False, now=now
+                state, reservation, adapter, manual=is_manual, now=now
             )
         except Exception:
             outcome = None
@@ -1827,19 +1845,21 @@ class CornerRotationManager:
         # the rotation: the slot is reclaimable. Try the reviewed restore
         # recovery first (bounded by the per-request budget) so the base game
         # stays honest, then hand the slot to the next corner regardless.
-        leftover = self._leftover_corner_game(adapter, pending)
+        leftover = self._leftover_corner_game(adapter, reservation)
         if leftover:
-            replayed = self._run_auto_restore_recovery(state, pending, adapter, now)
+            replayed = self._run_auto_restore_recovery(
+                state, reservation, adapter, now, manual=is_manual
+            )
             if replayed is not None:
                 return replayed
-        if self._slot_reusable(adapter, pending):
+        if self._slot_reusable(adapter, reservation):
             return self._release_failed_corner(
-                state, pending, adapter, error_kind=kind, now=now,
-                base_unrestored=leftover,
+                state, reservation, adapter, error_kind=kind, now=now,
+                base_unrestored=leftover, manual=is_manual,
             )
         # Keep the latch, but the failure must stay recorded for the operator
         # even when the tick only re-reads the latch (#2187).
-        self._record_failed_corner_once(state, pending,
+        self._record_failed_corner_once(state, reservation,
                                         resolution="recovery-required",
                                         error_kind=kind, now=now)
         return None
