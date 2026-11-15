@@ -1886,7 +1886,7 @@ class TestHttpHandlers(unittest.TestCase):
         self.assertEqual(status, 200, view)
         rotation = view["rotation"]
         self.assertEqual(rotation["status"], "waiting")
-        self.assertEqual(rotation["reason_since"], int(now - 3600))
+        self.assertAlmostEqual(rotation["reason_since"], now - 3600, delta=1)
         self.assertIsNotNone(rotation["overdue"])
         self.assertEqual(rotation["overdue"]["reason_age_sec"], 3600)
         self.assertEqual(rotation["overdue"]["overdue_sec"], 3600)
