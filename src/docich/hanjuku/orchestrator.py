@@ -721,6 +721,32 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
     # visible to this observation's idle-time scheduling.
     goals.refresh(mem)
     kind=screen.kind
+    if 'ロードなされますかな' in (screen.text or ''):
+        # The save/load menu looks like a shop to the pixel classifier, so the
+        # shop phase pressed B forever and screen_stalled (g1190 2026-11-15
+        # after the local state was replaced by an older save). Load the
+        # selected save with A; the prompt itself is the evidence.
+        import re as _re
+        loaded_chapter = _re.search(r'だい(\d{1,2})わ', screen.text or '')
+        if loaded_chapter is not None and 1 <= int(loaded_chapter.group(1)) <= 12:
+            # The save slot names its chapter ("だい9わ"). A fresh policy after
+            # a load otherwise keeps chapter None and the corridor plan has no
+            # orders to run (g1190 2026-11-15).
+            mem['chapter'] = int(loaded_chapter.group(1))
+        decision_log._record(mem, 'load_screen_confirm', screen=kind,
+                             observed_metric={'text': (screen.text or '')[-40:],
+                                              **({'chapter': mem.get('chapter')}
+                                                 if mem.get('chapter') else {})},
+                             reason='セーブのロード選択画面を実画面文言で確認したため、選択中のセーブをAでロードする')
+        updated.update(screen_kind=kind, no_input_streak=0, no_input_frames=[])
+        for key in ('_adjusted', '_interim', '_card_scroll_input'):
+            mem.pop(key, None)
+        _journal(mem).pop('_departure_input', None)
+        _journal(mem).pop('_recall_inputs', None)
+        updated['_records'] = mem.pop('_records')
+        updated['_experience'] = mem.pop('_experience', None)
+        updated['policy'] = mem
+        return [pad('a')], updated
     from .os_layer.commands import menu_navigation_reading
     navigation = menu_navigation_reading(screen)
     updated['menu_navigation_reading'] = {**navigation, 'step': step} if navigation else None
