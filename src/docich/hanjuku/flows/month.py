@@ -983,6 +983,16 @@ def _chikujou_step(screen, mem, sub):
             tried = sub.setdefault('rows_tried', [])
             if chosen not in tried:
                 tried.append(chosen)
+            if 'しょうぐんがおりませなんだ' in text:
+                # Live observation: the chosen castle has no general inside.
+                # Mark the garrison empty so later months stop offering it
+                # until a roster read staffs it again (g1190: staffed on
+                # record, marched out to the boss → refused every month).
+                garrison = _world(mem).setdefault('garrison', {})
+                real = next((c for c in chart.CASTLE_NAMES.get(mem.get('chapter') or 1, ())
+                             if STATUS_NAMES.get(c, c) == chosen), chosen)
+                if garrison.get(real) != []:
+                    garrison[real] = []
             sub['rejected_frame'] = text
             sub.pop('chosen', None)
             sub.pop('quoted_cost', None)
