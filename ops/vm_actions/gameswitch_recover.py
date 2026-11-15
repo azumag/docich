@@ -440,8 +440,16 @@ def recover(root: Path, declared_phase: str, declared_cleanup_pending: bool) -> 
     declared_matches(state, declared_phase, declared_cleanup_pending)
     verify_ownership(root, state)
     cli_code = run_canonical_recover(root)
-    load_canonical(root)
+    post_state = load_canonical(root)
     if cli_code == 0:
+        # The CLI exit status alone is not evidence that the canonical state
+        # was recovered. In particular, a failed/recovery_required latch must
+        # never be reported as a successful owner-only recovery.
+        if post_state["phase"] not in {"ready", "idle"}:
+            raise FixedRecoverExit(
+                EX_INVALID_RESULT,
+                f"canonical recover exited 0 but phase remains {post_state['phase']}",
+            )
         return 0
     if cli_code == 1:
         raise FixedRecoverExit(EX_RECOVERY_PENDING, "canonical recover is pending (busy/rolled_back)")
