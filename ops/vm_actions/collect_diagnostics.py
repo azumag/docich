@@ -7489,6 +7489,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v901-battle-fact-winner",
             "hanjuku-chart-v902-tmux-persistent-session",
             "hanjuku-chart-v903-boss-gather-moves",
+            "hanjuku-chart-v904-boss-gather-no-cell",
             "hanjuku-chart-v864-shop-list-batch",
             "hanjuku-chart-v862-camp-field-move",
             "hanjuku-chart-v852-visible-menu-batches",
