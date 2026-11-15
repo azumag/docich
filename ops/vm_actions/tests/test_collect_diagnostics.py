@@ -5378,3 +5378,17 @@ class BroadcastTemplateProbeTests(unittest.TestCase):
                 os.chmod(locked, stat.S_IRWXU)
         self.assertEqual(output["resolved_source"], "soren-fallback")
         self.assertFalse(output["docich_template"]["present"])
+
+
+class BroadcastTemplateProbePermissionTests(unittest.TestCase):
+    def test_probe_metadata_permission_error_is_nonfatal(self):
+        # PR #4307: stat() can succeed while is_file()/is_symlink() still
+        # raise on a protected path; the probe must stay best-effort.
+        module = load_collector()
+        with tempfile.TemporaryDirectory() as directory:
+            template = Path(directory) / "template.html"
+            template.write_text("test", encoding="utf-8")
+            with mock.patch.object(Path, "is_file",
+                                   side_effect=PermissionError(13, "denied")):
+                result = module._broadcast_template_probe(template, 100)
+        self.assertEqual(result, {"present": False})
