@@ -258,6 +258,8 @@ def _month_end_soon(mem, margin=None):
 
 VISIBLE_MOVE_LIMIT = 40      # field-cursor steps allowed on one いどう
 CAMP_STEP_FRAMES = 28        # same 1 px/frame hold as nav_step (was 8)
+SCREEN_W, SCREEN_H = 256, 224  # the field map frame
+EDGE_SCROLL_LIMIT = 8        # bounded camera scrolls toward an off-screen tent
 
 
 def _recall_blocked_twice(mem, castle):
@@ -559,6 +561,27 @@ def _camp_recall_step(screen: Screen, mem, frame, *, observed_camps=None):
                                          'target': list(target)},
                         reason='カーソルが野営画像を覆っているため、直前に実測したtargetを信頼してきかんメニューを開く')
                 return [pad('a')]
+            # The tent was recorded off the screen (a clipped camp at the
+            # edge). The camera only moves with the cursor, so waiting here
+            # never brings it back: push the cursor to that edge for a
+            # bounded number of observations (g1190 91-11: camp target
+            # [-1,9], camp_unobserved after three reads, army stranded).
+            if (cursor and _camp_target(target)
+                    and int(state.get('edge_scroll') or 0) < EDGE_SCROLL_LIMIT
+                    and (target[0] < 0 or target[1] < 0
+                         or target[0] >= SCREEN_W or target[1] >= SCREEN_H)):
+                state['edge_scroll'] = int(state.get('edge_scroll') or 0) + 1
+                if state['edge_scroll'] == 1:
+                    _record(mem, 'camp_edge_scroll',
+                            observed_metric={'camp': list(target), 'cursor': list(cursor)},
+                            reason='保存した野営が画面外にあるため、カーソルを端へ送ってカメラを寄せる')
+                dx = target[0] - cursor[0]
+                dy = target[1] - cursor[1]
+                if abs(dx) >= abs(dy):
+                    move = 'left' if dx < 0 else 'right'
+                else:
+                    move = 'up' if dy < 0 else 'down'
+                return [pad(move, CAMP_STEP_FRAMES)]
             missing = state['camp_missing_reads'] = int(state.get('camp_missing_reads') or 0) + 1
             if missing == 1:
                 _record(mem, 'camp_position_unconfirmed',
