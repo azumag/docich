@@ -17,7 +17,7 @@ def menu(rows=('きりふだ', 'たいきゃく')):
 def battle(**extra):
     cur = {'side': 'attack', 'ally': 'ブレッツェル', 'enemy': 'オレガノ',
            'castle': 'カラ', 'ally_hp': 40, 'enemy_hp': 29,
-           'survival': {'cards_exhausted': True}}
+           'survival': {'cards_exhausted': True}, 'menu_same': 12}
     cur.update(extra)
     return cur
 

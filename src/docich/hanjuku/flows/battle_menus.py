@@ -236,16 +236,22 @@ def _retreat_forbidden(mem, cur):
     return isinstance(ally, str) and ally not in ('', NAME, 'しゅじんこう', 'しじんこう')
 
 
+EMERGENCY_RETREAT_SAME_MENUS = 10   # identical command menus before the escape
+
+
 def _emergency_retreat_due(screen, mem, cur):
-    """The attack menu has no attack command and the resources are spent.
+    """The attack menu has no attack command and has stayed put for a while.
 
     g1190 chapter 9 2026-11-16: ブレッツェル vs オレガノ offered only
     きりふだ/たいきゃく with the cards exhausted, so the command menu had no
-    legal action and the run froze for 101 observations at a time. One bounded
-    retreat is the only escape; it is recorded as an exception to the owner's
-    no-retreat rule.
+    legal action and the run froze for 101 observations at a time. A menu
+    that only persisted (B still works) is not a deadlock: the same frame must
+    have survived ten observations. One bounded retreat is the escape; it is
+    recorded as an exception to the owner's no-retreat rule.
     """
     if cur.get('side') != 'attack' or cur.get('emergency_retreat_used'):
+        return False
+    if int(cur.get('menu_same') or 0) < EMERGENCY_RETREAT_SAME_MENUS:
         return False
     labels = {word for _, _, word in _options(screen)}
     if labels.intersection({'こうげき', 'もうこうげき', 'たまごをつかう'}):
@@ -803,6 +809,13 @@ def _disabled_defense_pending(screen, mem, cur):
 def battle_menu_step(screen: Screen, mem):
     _migrate_card_evidence(mem)
     cur = mem.get('battle') or {}
+    if cur:
+        sha = getattr(screen, 'frame_sha256', None)
+        if sha is not None and cur.get('menu_sha') == sha:
+            cur['menu_same'] = int(cur.get('menu_same') or 0) + 1
+        else:
+            cur['menu_sha'] = sha
+            cur['menu_same'] = 0
     flow = cur.get('card_flow')
     if screen.kind != 'battle_menu':
         return []
