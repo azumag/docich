@@ -24,10 +24,15 @@ from .strategy_lab import (
     persist_evaluation, save_pending_experiment, save_strategy_experiment,
 )
 from .strategy_metrics import evaluate_strategy_experiment
+from .symbol_slots import COMMON_SLOT, SlotLayout, evaluation_scope, slot_dir
 
 CONTROL_FILENAME = "paper_experiment_control.json"
 MIN_EXPERIMENT_CLOSED_SELLS = 20
 MIN_EXPERIMENT_AGE_S = 48 * 3600
+# A dedicated (one-symbol) slot sees far fewer exits than the common slot:
+# the 20-exit / 48-hour gate would rotate it after 0-2 exits (Issue #3623 §2.9).
+SLOT_MIN_EXPERIMENT_CLOSED_SELLS = 10
+SLOT_MIN_EXPERIMENT_AGE_S = 14 * 86400
 # "early-stop" is no longer produced. PAPER money is simulated and a new
 # candidate arrives at most once a day, so stopping a losing experiment after
 # a handful of exits only paused data collection. It stays a readable drain
@@ -78,7 +83,11 @@ def usable_pending_experiment(trading_dir, active) -> StrategyExperiment | None:
     return pending
 
 
-def rotation_reason(active, evaluation: Mapping[str, object] | None, *, now: float) -> str | None:
+def rotation_reason(
+    active, evaluation: Mapping[str, object] | None, *, now: float,
+    min_closed_sells: int = MIN_EXPERIMENT_CLOSED_SELLS,
+    min_age_s: float = MIN_EXPERIMENT_AGE_S,
+) -> str | None:
     """Sample/age gates, requiring usable observations; losses alone never rotate."""
     if active is None:
         return "initial-experiment"
@@ -100,9 +109,9 @@ def rotation_reason(active, evaluation: Mapping[str, object] | None, *, now: flo
             return None
     except (ValueError, TypeError, InvalidOperation):
         return None
-    if count >= MIN_EXPERIMENT_CLOSED_SELLS:
+    if count >= min_closed_sells:
         return "sample-complete"
-    if age >= MIN_EXPERIMENT_AGE_S:
+    if age >= min_age_s:
         return "max-age"
     return None
 
@@ -174,16 +183,37 @@ def _publish(target, active, evaluation, *, now, status, reason, entries, pendin
     return ExperimentStep(active, evaluation, entries, status, reason, activated)
 
 
-def assess_experiment(trading_dir, *, capital_jpy: object, now: float) -> ExperimentStep:
-    """Evaluate/drain/advance once; the caller must hold ``experiment_lock``.
+def assess_experiment(
+    trading_dir, *, capital_jpy: object, now: float,
+    slot: str = COMMON_SLOT, layout: SlotLayout | None = None, ledger_rows=None,
+) -> ExperimentStep:
+    """Evaluate/drain/advance one slot once; the caller holds ``experiment_lock``.
+
+    ``trading_dir`` always owns the shared ledger. ``slot`` selects whose state
+    files and symbols are assessed: the common slot (default) lives in
+    ``trading_dir`` and counts every symbol without a dedicated slot; a
+    dedicated slot lives in ``slots/<symbol>/`` and counts that symbol only.
+    Without ``layout`` (or with no dedicated slot) the common slot is assessed
+    exactly as before slots existed. A dedicated slot with neither an active
+    nor a pending experiment owns nothing yet and never allows entries.
 
     An experiment keeps trading, losing or not, until a next candidate exists
     and the sample/age gate is met. A latched drain continues exits under the old strategy; changing
     its rules while it still owns inventory is forbidden.
     """
-    target = Path(trading_dir)
+    root = Path(trading_dir)
     if isinstance(now, bool) or not math.isfinite(float(now)) or float(now) < 0:
         raise ValueError("invalid experiment clock")
+    dedicated = slot != COMMON_SLOT
+    if dedicated and layout is None:
+        raise ValueError("a dedicated slot needs the slot layout")
+    # Raises on an invalid layout: an unreadable slot may own any symbol.
+    scope = {} if layout is None else dict(evaluation_scope(layout, slot))
+    if ledger_rows is not None:
+        scope["ledger_rows"] = ledger_rows
+    target = slot_dir(root, slot)
+    gate = ({"min_closed_sells": SLOT_MIN_EXPERIMENT_CLOSED_SELLS, "min_age_s": SLOT_MIN_EXPERIMENT_AGE_S}
+            if dedicated else {})
     active = load_strategy_experiment(target)
     pending = usable_pending_experiment(target, active)
     previous = _read_control(target)
@@ -197,20 +227,22 @@ def assess_experiment(trading_dir, *, capital_jpy: object, now: float) -> Experi
         return _publish(target, None, None, now=now, status="blocked", reason="invalid-active",
                         entries=False, pending=pending)
     if active is None and pending is None:
+        if dedicated:
+            return ExperimentStep(None, None, False, "waiting-candidate", "no-experiment")
         return ExperimentStep(None, None, True, "legacy", "no-experiment")
     if active is not None and pending is not None and same_experiment(active, pending):
         # An already-consumed candidate must not reset its evaluation clock.
         (target / PENDING_FILENAME).unlink(missing_ok=True)
         pending = None
     observed = active if active is not None else replace(pending, activated_at=float(now))
-    evaluation = evaluate_strategy_experiment(target, observed, capital_jpy=capital_jpy, now=now)
+    evaluation = evaluate_strategy_experiment(root, observed, capital_jpy=capital_jpy, now=now, **scope)
     if active is not None:
         persist_evaluation(target, evaluation, active)
     if (evaluation.get("status") != "ok"
             or evaluation.get("inventory_complete") is not True):
         return _publish(target, active, evaluation, now=now, status="blocked", reason="evaluation-unavailable",
                         entries=False, pending=pending)
-    reason = rotation_reason(active, evaluation, now=now)
+    reason = rotation_reason(active, evaluation, now=now, **gate)
     prior_drain = previous.get("drain_reason_code")
     if prior_drain is None and previous.get("status") in {"draining", "waiting-candidate"}:
         prior_drain = previous.get("reason_code")
@@ -235,7 +267,7 @@ def assess_experiment(trading_dir, *, capital_jpy: object, now: float) -> Experi
     active = load_strategy_experiment(target)
     if active is None:
         raise ValueError("activated experiment is unreadable")
-    evaluation = evaluate_strategy_experiment(target, active, capital_jpy=capital_jpy, now=now)
+    evaluation = evaluate_strategy_experiment(root, active, capital_jpy=capital_jpy, now=now, **scope)
     persist_evaluation(target, evaluation, active)
     if (evaluation.get("status") != "ok"
             or evaluation.get("inventory_complete") is not True):

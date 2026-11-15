@@ -7330,6 +7330,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v861-version-transient-migrate",
             "hanjuku-chart-v863-load-screen",
             "hanjuku-chart-v864-camp-body-retry",
+            "hanjuku-chart-v864-shop-list-batch",
             "hanjuku-chart-v862-camp-field-move",
             "hanjuku-chart-v852-visible-menu-batches",
             "hanjuku-chart-v560-castle-list-scroll",

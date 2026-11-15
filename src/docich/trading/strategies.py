@@ -405,7 +405,10 @@ def select_diversified_opportunities(
     frames: Mapping[str, MarketFrame],
     *,
     max_pair_correlation: Decimal | None = None,
+    symbol_thresholds: Mapping[str, object] | None = None,
 ) -> StrategySelectionResult:
+    """``symbol_thresholds`` overrides the correlation cap for candidates of
+    symbols that run their own slot experiment; other symbols keep the default."""
     experiment = get_active_experiment()
     selected_threshold = (
         experiment.max_pair_correlation
@@ -416,6 +419,13 @@ def select_diversified_opportunities(
     threshold = as_decimal(selected_threshold, "max_pair_correlation")
     if threshold < 0 or threshold > 1:
         raise TradingValidationError("max_pair_correlation must be between 0 and 1")
+
+    per_symbol: dict[str, Decimal] = {}
+    for symbol, raw in (symbol_thresholds or {}).items():
+        value = as_decimal(raw, "max_pair_correlation")
+        if value < 0 or value > 1:
+            raise TradingValidationError("max_pair_correlation must be between 0 and 1")
+        per_symbol[str(symbol)] = value
 
     selected: list[Opportunity] = []
     rejected: list[SkipDecision] = []
@@ -440,7 +450,7 @@ def select_diversified_opportunities(
             if correlation is None:
                 unknown = True
                 break
-            if correlation >= float(threshold):
+            if correlation >= float(per_symbol.get(opportunity.symbol, threshold)):
                 correlated = True
                 break
         if correlated:
