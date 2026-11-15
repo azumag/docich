@@ -5876,6 +5876,12 @@ ROTATION_AUTO_RESTORE_STATUSES = frozenset({
     "succeeded", "queued", "failed", "noop", "interrupted", "completed", "unknown", "none",
 })
 ROTATION_AUTO_RESTORE_ATTEMPT_LIMIT = 3
+# Bounded terminal-phase plane recovery replayed by the rotation timer
+# (#4349).  Keep in sync with docich.corner_rotation.
+ROTATION_AUTO_PLANE_RECOVERY_ATTEMPT_LIMIT = 3
+ROTATION_AUTO_PLANE_RECOVERY_STATUSES = ROTATION_AUTO_RESTORE_STATUSES | frozenset({
+    "busy", "rolled_back",
+})
 ROTATION_FAILED_CORNER_MAX = 8
 # A corner whose own state file is already terminal while game-switch still
 # holds its game as the canonical active owner is an operator action item,
@@ -7492,6 +7498,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v903-boss-gather-moves",
             "hanjuku-chart-v904-boss-gather-no-cell",
             "hanjuku-chart-v906-gather-nearest-first",
+            "hanjuku-chart-v908-switch-rollback",
             "hanjuku-chart-v864-shop-list-batch",
             "hanjuku-chart-v862-camp-field-move",
             "hanjuku-chart-v852-visible-menu-batches",
@@ -7870,6 +7877,27 @@ def _receipt_age_sec(value, now):
         return -1
 
 
+def _receipt_deadline_expired(value, now):
+    """Tri-state check for a receipt's optional ISO hard deadline.
+
+    ``hard_deadline_at`` is only present on hard-capped requests; None keeps
+    the field distinguishable from a live (False) or elapsed (True) cap.
+    """
+
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        parsed = dt.datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=dt.timezone.utc)
+    try:
+        return parsed.timestamp() <= now
+    except (OverflowError, OSError):
+        return None
+
+
 # Fixed stages a previous-runtime restore can refuse at (mirrors
 # game_switch.RESTORE_STAGES). Never free text.
 GAME_SWITCH_RESTORE_STAGES = frozenset({
@@ -7962,6 +7990,12 @@ def _collect_game_switch_fifo(state_dir, now):
                 "generation": row.get("generation")
                 if isinstance(row.get("generation"), int) else None,
                 "age_sec": _receipt_age_sec(row.get("updated_at"), now),
+                # #4356: an accepted receipt left past its hard cap is the
+                # wedge the watchdog must terminalize; surface the flag so a
+                # stuck one is visible without the private ledger.
+                "hard_deadline_expired": _receipt_deadline_expired(
+                    row.get("hard_deadline_at"), now
+                ),
             }
             for row in pending[:5]
         ]
@@ -7973,6 +8007,9 @@ def _collect_game_switch_fifo(state_dir, now):
             "operation": operation if operation in FIFO_OPERATIONS else None,
             "target": _bounded_str(head.get("target"), 64),
             "age_sec": _receipt_age_sec(head.get("created_at"), now),
+            "hard_deadline_expired": _receipt_deadline_expired(
+                head.get("hard_deadline_at"), now
+            ),
         }
     return result
 
@@ -8201,6 +8238,35 @@ def _rotation_auto_restore_projection(data):
     status = record.get("last_status")
     out["auto_restore_status"] = (status if status in ROTATION_AUTO_RESTORE_STATUSES
                                   else ("unknown" if status is not None else None))
+    return out
+
+
+def _rotation_auto_plane_recovery_projection(data):
+    """Bounded view of the timer's terminal-phase plane recovery (#4349).
+
+    A failed switch can park the shared game-switch plane in ``failed`` /
+    ``recovery_required``; the timer then replays the reviewed coordinator
+    recovery a few times.  The 2026-11-16 hanjuku incident recovered through
+    this path, but the durable record was invisible in diagnostics.
+    """
+
+    record = data.get("auto_plane_recovery")
+    out = {"auto_plane_recovery_corner": None, "auto_plane_recovery_attempts": None,
+           "auto_plane_recovery_attempt_limit": ROTATION_AUTO_PLANE_RECOVERY_ATTEMPT_LIMIT,
+           "auto_plane_recovery_next_at": None, "auto_plane_recovery_status": None}
+    if not isinstance(record, dict):
+        return out
+    out["auto_plane_recovery_corner"] = _bounded_str(record.get("corner"), 64)
+    attempts = record.get("attempts")
+    out["auto_plane_recovery_attempts"] = (
+        attempts if type(attempts) is int and 0 <= attempts <= 100 else None
+    )
+    out["auto_plane_recovery_next_at"] = _bounded_time(record.get("next_attempt_at"))
+    status = record.get("last_status")
+    out["auto_plane_recovery_status"] = (
+        status if status in ROTATION_AUTO_PLANE_RECOVERY_STATUSES
+        else ("unknown" if status is not None else None)
+    )
     return out
 
 
@@ -8534,6 +8600,7 @@ def _collect_corner_files(state_dir, payload, now):
         rotation.update(_rotation_manual_pending_projection(state_dir, data, now))
         rotation.update(_rotation_failed_corners_projection(data))
         rotation.update(_rotation_auto_restore_projection(data))
+        rotation.update(_rotation_auto_plane_recovery_projection(data))
     mode, cooldown = _rotation_policy()
     rotation.update(schedule_mode=mode, cooldown_seconds=cooldown)
     payload["corner_rotation"] = rotation

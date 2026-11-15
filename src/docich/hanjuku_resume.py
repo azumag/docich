@@ -488,6 +488,58 @@ def claim(adapter, deadline, cancel):
         adapter._check_active(deadline, cancel, "claim")
 
 
+def start_claimable(adapter, request_id: str) -> bool:
+    """Whether claim() can still bind a prepared decision to this exact request.
+
+    Read-only mirror of claim()'s fail-closed gates, used by the game-switch
+    replay path before it stages a candidate: a queued/replayed switch runs
+    below the corner's prepare_start(), so once its durable decision is gone
+    or reserved to another request, materialize_runtime can only die at
+    claim() and leave a doomed candidate plus a retiring runtime on every
+    retry (g1211/g1215, docich#4356).  Everything claim() would accept still
+    returns True; anything claim() would refuse returns False.
+    """
+    g, spec = adapter.g, adapter.spec
+    if spec.game != 'hanjuku-hero':
+        return True
+    from .hanjuku_run import enabled
+    strict = enabled(adapter.game)
+    root = Path(g.state_dir) / 'hanjuku-resume'
+    if root.is_symlink():
+        raise AdapterError('checkpoint storage may not be a symlink')
+    request = read_record(root / REQUEST_FILE)
+    if request.get('status') not in {'prepared', 'queued'}:
+        if request.get('runtime_id') == spec.runtime_id and request.get('status') == 'claimed':
+            return False
+        return not strict
+    recovery = request.get('startup_recovery')
+    if (request.get('start_policy') != START_POLICY
+            and not (isinstance(recovery, dict)
+                     and isinstance(recovery.get('original'), dict)
+                     and recovery['original'].get('status') == 'claimed')):
+        return False
+    if not strict:
+        return True
+    # claim() binds whatever decision the ledger names; a replay is only
+    # safe when the decision was prepared for this exact request, otherwise
+    # it would silently consume another corner's sealed checkpoint.
+    attempt_id = (recovery.get('attempt_id') if isinstance(recovery, dict)
+                  else request.get('request_id'))
+    if attempt_id != request_id:
+        return False
+    ledger = read_record(Path(g.state_dir) / 'corner_rotation.json', limit=1024 * 1024)
+    pending = next((row for key in ('pending', 'manual_pending')
+                    if isinstance(row := ledger.get(key), dict)
+                    and row.get('request_id') == attempt_id), {})
+    return not (pending.get('request_id') != attempt_id
+                or (recovery is not None
+                    and pending.get('resume_request_id') != request.get('request_id'))
+                or pending.get('corner') != request.get('corner')
+                or pending.get('source', 'automatic') != request.get('dispatch_source', 'manual')
+                or (pending.get('new_game') is True) != (request.get('new_game') is True)
+                or (pending.get('resume_latest') is True) != request.get('explicit_resume', True))
+
+
 def transition_rollback_claim(g, *, runtime_stopped: bool = False) -> str | None:
     """ロールバック後の claim 状態を遷移させる。
 
