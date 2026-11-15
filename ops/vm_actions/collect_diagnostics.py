@@ -7483,6 +7483,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v895-shop-reenter-closed",
             "hanjuku-chart-v893-castle-check-current",
             "hanjuku-chart-v896-gather-marker-concert",
+            "hanjuku-chart-v896-recall-corridor",
             "hanjuku-chart-v864-shop-list-batch",
             "hanjuku-chart-v862-camp-field-move",
             "hanjuku-chart-v852-visible-menu-batches",
