@@ -133,6 +133,7 @@ def test_main_failures_exit_one_and_never_print_payload(harness, monkeypatch, ca
         expected = 'diagnostics_output_too_large'
     elif failure == 'collector':
         output['returncode'] = 17
+        expected = 'diagnostics_collector_failed'
     elif failure == 'invalid_json':
         output['stdout'] = SENTINEL.encode()
     elif failure == 'preview':
