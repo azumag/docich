@@ -26,6 +26,7 @@ def valid_context(kind, menu):
     return ((kind == 'text' and isinstance(menu, str) and menu in TEXT_MENUS)
             or (kind == 'month_menu' and menu == 'soldier_quantity')
             or (kind == 'shop_quantity' and menu == 'merchant_quantity')
+            or (kind == 'shop_list' and menu == 'merchant_list')
             or (kind == 'starter_list' and menu == 'starter_upper'))
 
 
@@ -117,6 +118,31 @@ def _castle_rows(screen):
     return rows
 
 
+def _merchant_rows(screen):
+    # Foreground questions/refusals can leave the price list visible behind
+    # them. They never authorize list movement, even if a stale hand is found.
+    if any(screen.has(text) for text in ('おいくつ', 'よろしいでっか', 'なりまんな',
+                                         'みせじまい', 'もてない')):
+        return None
+    rows = []
+    for line in screen.lines:
+        if line.y not in range(39, 152, 16):
+            continue
+        name = line.span(128, 192).strip()
+        if not name:
+            continue
+        price = line.span(192, 224).strip()
+        if (name not in ALL_CARD_NAMES or not _name_read_cleanly(line, name)
+                or not re.fullmatch(r'[1-9][0-9]*G', price)
+                or len(dict(line.cells)) != len(line.cells)):
+            return None
+        rows.append((128, line.y, name))
+    if (not rows or len({y for _, y, _ in rows}) != len(rows)
+            or len({name for _, _, name in rows}) != len(rows)):
+        return None
+    return rows
+
+
 def _hand_cursor(screen, rows):
     if not screen.hand:
         return None
@@ -149,6 +175,9 @@ def reading(screen):
         return _soldier_quantity_reading(screen)
     if screen.kind == 'shop_quantity':
         return _merchant_quantity_reading(screen)
+    if screen.kind == 'shop_list':
+        rows = _merchant_rows(screen)
+        return _reading(screen, 'merchant_list', rows, _hand_cursor(screen, rows or []))
     if screen.kind == 'general_list' and screen.has('しゅつげき') and screen.has('ステータス'):
         rows = _named_rows(screen, 144, range(39, 152, 16))
         return _reading(screen, 'castle_roster', rows, _hand_cursor(screen, rows or []), scrolling=True)

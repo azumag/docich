@@ -8,7 +8,7 @@ from ... import hanjuku_chart as chart
 from ...hanjuku_reference import weakest_general
 from ..decision_log import _record
 from .egg_recovery import MONTH_SUB_EXIT_KINDS
-from ..os_layer.commands import menu_to, pad
+from ..os_layer.commands import menu_to, merchant_list_batch, pad
 from ..os_layer.font import UNKNOWN
 from ..os_layer.readers import month_menu_ready
 from ..os_layer.roster import fixed_wage, run_identity
@@ -217,7 +217,9 @@ def shop_step(screen: Screen, mem):
         shop['items'][0] = [name, n]
         shop['want'] = [name, n, price]
         move = menu_to(screen, name)
-        return [pad('a')] if move == 'here' else [move] if move else []
+        if move == 'here':
+            return [pad('a')]
+        return (merchant_list_batch(screen, name) or [move]) if move else []
     if had_items is False:
         _record_shop_exit(mem, shop, screen, 'nothing_planned', listed=listed)
     return [pad('b')]
