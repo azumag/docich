@@ -7484,10 +7484,10 @@ def _project_corner_state(data):
             "hanjuku-chart-v893-castle-check-current",
             "hanjuku-chart-v896-gather-marker-concert",
             "hanjuku-chart-v898-capture-reset",
-<<<<<<< HEAD
-            "hanjuku-chart-v900-battle-fact-winner",
-=======
+            "hanjuku-chart-v901-battle-fact-winner",
             "hanjuku-chart-v899-recall-corridor",
+<<<<<<< HEAD=======
+            "hanjuku-chart-v900-cliff-detour",
 >>>>>>> origin/main
             "hanjuku-chart-v864-shop-list-batch",
             "hanjuku-chart-v862-camp-field-move",

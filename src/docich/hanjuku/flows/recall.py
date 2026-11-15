@@ -396,6 +396,50 @@ def _visible_move_abort(mem, state, goal, steps, why):
             reason='見えている城へフィールドカーソルを合わせられないため、いどうを閉じて通常の帰還に戻す')
 
 
+CLIFF_DARK = lambda r, g, b: max(r, g, b) < 25
+CLIFF_REACH = 24            # px from the marker sampled for the black cliff
+CLIFF_DETOUR_FRAMES = 16    # one short perpendicular step away from the cliff
+
+
+def _cliff_open_side(frame, cell):
+    """The open direction away from an adjacent black cliff, or None.
+
+    Owner 2026-11-15: a camped unit standing against a cliff must first step
+    perpendicular away; marching straight home stays pinned to the wall.
+    """
+    if not isinstance(frame, Frame) or not _camp_target(cell):
+        return None
+    mx, my = cell
+    s = CLIFF_REACH
+    boxes = {'left': (mx - 2 * s, my - 6, mx - s, my + 6),
+             'right': (mx + s, my - 6, mx + 2 * s, my + 6),
+             'up': (mx - 6, my - 2 * s, mx + 6, my - s),
+             'down': (mx - 6, my + s, mx + 6, my + 2 * s)}
+    dark = {side: frame.fraction(box, CLIFF_DARK) for side, box in boxes.items()}
+    if max(dark.values()) < 0.5:
+        return None
+    open_side = min(dark, key=dark.get)
+    return open_side if dark[open_side] < 0.5 else None
+
+
+def _cliff_detour_step(screen, mem, frame, state, marker):
+    """Move the destination marker one step away from the cliff, once.
+
+    The following observation lets the ordinary destination step confirm the
+    moved marker (the unit walks to it), instead of marching into the cliff.
+    """
+    if state.get('cliff_detour') or state.get('gather'):
+        return None
+    side = _cliff_open_side(frame, state.get('target') or marker)
+    if side is None:
+        return None
+    state['cliff_detour'] = side
+    _record(mem, 'camp_cliff_detour',
+            observed_metric={'camp': state.get('target'), 'marker': list(marker), 'side': side},
+            reason='崖に隣接しているため、マーカーを崖と反対方向へ一度離してから帰還を確定する')
+    return [pad(side, CLIFF_DETOUR_FRAMES)]
+
+
 def _camp_recall_step(screen: Screen, mem, frame, *, observed_camps=None):
     """Owner rule (2026-09-28): a camp (野営) seen on screen is recalled.
 
@@ -855,6 +899,9 @@ def _camp_recall_step(screen: Screen, mem, frame, *, observed_camps=None):
         roofs = ([r for r in castle_roofs(frame) if r['kind'] == 'own' and not r['clipped']]
                  if frame is not None else [])
         if marker:
+            detour = _cliff_detour_step(screen, mem, frame, state, marker)
+            if detour is not None:
+                return detour
             # A 砦 asks for the nearest own castle (owner 2026-11-04). The hero's
             # castle is only _recall_goal's last resort, so a fort must not
             # consult it first: with no bound origin it answered アルマムーン
@@ -868,7 +915,10 @@ def _camp_recall_step(screen: Screen, mem, frame, *, observed_camps=None):
                 # goal castle, so confirm it. This covers the ordinary camp
                 # too — a real own castle beats the confirm-anywhere fallback.
                 return _finish_hero_recall(mem, state, goal)
-            if goal and not roofs and not jumped and (mem.get('y_jumps') or {}).get('RECALL:target', 0) < 2:
+            if (goal and not roofs and not jumped and not state.get('cliff_detour')
+                    and (mem.get('y_jumps') or {}).get('RECALL:target', 0) < 2):
+                # A cliff detour moves the marker first; the ordinary confirm
+                # follows on the next observation instead of a Y jump.
                 return _start_y_jump(mem, {'step': 'RECALL'}, goal, 'target')
         enemy_under_marker = marker and frame is not None and any(
             r['kind'] == 'enemy' and abs(r['target'][0] - marker[0]) <= 12
