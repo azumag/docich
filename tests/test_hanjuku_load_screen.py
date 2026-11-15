@@ -20,6 +20,11 @@ def test_the_load_menu_is_read_from_its_prompt():
 
 
 def test_the_load_prompt_presses_a_and_records_it():
-    actions, result = decide(read_png(FRAME), {'policy': {'chapter': 9, 'name': {'done': True}}})
+    actions, result = decide(read_png(FRAME), {'policy': {'name': {'done': True}}})
     assert actions == [{'type': 'pad', 'buttons': ['a'], 'hold_ms': 100}]
     assert result['_records'][-1]['decision'] == 'load_screen_confirm'
+
+
+def test_the_save_slot_names_its_chapter():
+    _, result = decide(read_png(FRAME), {'policy': {'name': {'done': True}}})
+    assert result['policy']['chapter'] == 9      # the "だい9わ" slot

@@ -726,8 +726,17 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
         # shop phase pressed B forever and screen_stalled (g1190 2026-11-15
         # after the local state was replaced by an older save). Load the
         # selected save with A; the prompt itself is the evidence.
+        import re as _re
+        loaded_chapter = _re.search(r'だい(\d{1,2})わ', screen.text or '')
+        if loaded_chapter is not None and 1 <= int(loaded_chapter.group(1)) <= 12:
+            # The save slot names its chapter ("だい9わ"). A fresh policy after
+            # a load otherwise keeps chapter None and the corridor plan has no
+            # orders to run (g1190 2026-11-15).
+            mem['chapter'] = int(loaded_chapter.group(1))
         decision_log._record(mem, 'load_screen_confirm', screen=kind,
-                             observed_metric={'text': (screen.text or '')[-40:]},
+                             observed_metric={'text': (screen.text or '')[-40:],
+                                              **({'chapter': mem.get('chapter')}
+                                                 if mem.get('chapter') else {})},
                              reason='セーブのロード選択画面を実画面文言で確認したため、選択中のセーブをAでロードする')
         updated.update(screen_kind=kind, no_input_streak=0, no_input_frames=[])
         for key in ('_adjusted', '_interim', '_card_scroll_input'):
