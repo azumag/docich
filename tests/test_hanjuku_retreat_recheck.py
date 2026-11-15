@@ -97,8 +97,10 @@ def test_missing_camp_after_named_select_never_uses_saved_cell(monkeypatch):
     # One bounded A probe: the cursor may be covering the tent it was focused
     # onto. A non-camp answer still never trusts a saved cell.
     assert p.camp_recall_step(MAP, mem, FRAME) == [p.pad('a')]
-    # A non-camp answer still never trusts a saved cell: bounded defer, then
-    # the flow is idle again (None = ordinary map steering).
+    # A non-camp answer still never trusts a saved cell: one bounded
+    # menu-render wait, then defer. The flow is idle again (None = ordinary
+    # map steering).
+    assert p.camp_recall_step(MAP, mem, FRAME) == []
     assert p.camp_recall_step(MAP, mem, FRAME) == []
     for _ in range(2): assert p.camp_recall_step(MAP, mem, FRAME) is None
     assert not _flow(mem).get('recall') and not _flow(mem).get('recall_skip')
@@ -770,6 +772,7 @@ def test_repeated_camp_status_cannot_reset_exhausted_search_or_anonymous_budget(
         assert p.camp_recall_step(parse(roster(selected=1)), mem, empty) == [p.pad('select')]
         for _ in range(c.READ_LIMIT - 1): assert p.camp_recall_step(MAP, mem, empty) == []
         assert p.camp_recall_step(MAP, mem, empty) == [p.pad('a')]   # bounded occluded-tent probe
+        assert p.camp_recall_step(MAP, mem, empty) == []             # menu-render wait (bounded)
         assert p.camp_recall_step(MAP, mem, empty) == []             # non-camp answer defers finitely
         _flow(mem)['retreat_anonymous_budget'] = {'key': 'preserved', 'reads': 17}
         for _ in range(10):
@@ -973,7 +976,31 @@ def test_occluded_probe_on_a_non_camp_cell_defers_finitely(monkeypatch):
     monkeypatch.setattr(readers, 'own_camps', lambda _frame: [])
     for _ in range(2): p.camp_recall_step(MAP, mem, FRAME)
     assert p.camp_recall_step(MAP, mem, FRAME) == [p.pad('a')]
-    # Nothing camp-like under the cursor: no second probe, bounded defer.
-    assert p.camp_recall_step(MAP, mem, FRAME) == []
+    # Nothing camp-like under the cursor: one bounded menu-render wait,
+    # then defer. No second probe.
+    assert p.camp_recall_step(MAP, mem, FRAME) == []              # probe_reads 1
+    assert p.camp_recall_step(MAP, mem, FRAME) == []              # bounded defer
     assert not _flow(mem).get('recall')
     assert _flow(mem)['retreat_rechecks']['ゼウス']['status'] == 'needs_observation'
+
+
+def test_occluded_probe_on_a_fort_hands_over(monkeypatch):
+    """g1190 93-1: every occluded probe opened a 砦 menu and deferred — a fort
+    under the focus is the same location proof recheck_status accepts."""
+    from docich.hanjuku.os_layer import readers
+    from docich.hanjuku.flows import camp_recheck as cr
+    mem = memory()
+    assert p.camp_recall_step(MAP, mem, FRAME) == [p.pad('x')]
+    assert p.camp_recall_step(main_menu(), mem, FRAME) == [p.pad('a')]
+    assert p.camp_recall_step(parse(roster(selected=1)), mem, FRAME) == [p.pad('select')]
+    monkeypatch.setattr(readers, 'own_camps', lambda _frame: [])
+    for _ in range(2): p.camp_recall_step(MAP, mem, FRAME)
+    assert p.camp_recall_step(MAP, mem, FRAME) == [p.pad('a')]    # bounded probe
+    handed = {}
+    def _fake_handover(screen, m, state, frame, enter):
+        handed['ok'] = True
+        return [p.pad('b')]
+    monkeypatch.setattr(cr, '_hand_over_to_fort', _fake_handover)
+    monkeypatch.setattr(readers, 'is_fort_menu', lambda _screen: True)
+    assert p.camp_recall_step(parse(camp_status_frame(hp=85)), mem, FRAME) == [p.pad('b')]
+    assert handed.get('ok')

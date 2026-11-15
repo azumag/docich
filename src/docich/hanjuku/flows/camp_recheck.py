@@ -547,7 +547,18 @@ def _named_step(screen, mem, frame, state):
             # means the cursor sprite covered the tent. Bind that spot and the
             # frame the menu opened on as this episode's camp receipt — the
             # field status read still proves the occupant's name afterward.
+            if is_fort_menu(screen):
+                # A 砦 under the focus is the same proof of the opened
+                # location the normal recheck_status path accepts — the
+                # general is garrisoning a fort, not camping (g1190 93-1:
+                # every occluded probe opened a fort menu and deferred).
+                return _hand_over_to_fort(screen, mem, state, frame, enter_fort)
             if not is_camp_menu(screen):
+                # The menu takes a frame to render after the A press; give
+                # it one bounded extra frame before discarding the probe.
+                state['probe_reads'] = int(state.get('probe_reads') or 0) + 1
+                if state['probe_reads'] < 2:
+                    return []
                 _defer(mem, state, '遮蔽プローブで野営メニューが開かず現在tentを確認できない')
                 return []
             episode = state.get('camp_episode') if _valid_episode(mem, state) else None

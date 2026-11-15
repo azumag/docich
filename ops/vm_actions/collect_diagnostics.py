@@ -7476,6 +7476,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v886-occluded-camp-probe",
             "hanjuku-chart-v887-occluded-camp-any",
             "hanjuku-chart-v888-camp-edge-scroll",
+            "hanjuku-chart-v889-occluded-fort-pass",
             "hanjuku-chart-v864-shop-list-batch",
             "hanjuku-chart-v862-camp-field-move",
             "hanjuku-chart-v852-visible-menu-batches",
