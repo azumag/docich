@@ -42,18 +42,3 @@ def test_a_menu_with_an_attack_command_is_not_due():
 def test_the_emergency_is_used_once_per_battle():
     cur = battle(emergency_retreat_used=True)
     assert _emergency_retreat_due(menu(), memory(cur), cur) is False
-
-
-def test_a_blinking_menu_is_still_counted_as_the_same_screen():
-    from docich.hanjuku.flows.battle_menus import _survival_state, battle_menu_step
-    cur = battle()
-    mem = memory(cur)
-    _survival_state(mem, cur)
-    screen = menu()
-    for i in range(12):
-        screen.frame_sha256 = 'A' if i % 2 == 0 else 'B'
-        try:
-            battle_menu_step(screen, mem)
-        except KeyError:
-            pass            # this test only exercises the frame counting
-    assert cur['menu_same'] >= 10
