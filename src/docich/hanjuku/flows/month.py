@@ -241,8 +241,14 @@ def _month_menu_move(screen: Screen, mem, label: str):
                                      'row': row, 'col': col,
                                      'limit': MONTH_BLIND_NAV_LIMIT},
                     reason='月メニューのカーソル位置が読めないため、実測2列レイアウトを盲操作で目標行へ進む')
-            return ([pad('up')] * 4 + [pad('right' if col else 'left')]
-                    + [pad('down')] * row + [pad('a')])
+            # Give each press time to reach the menu's own scan: a rapid
+            # burst is dropped (the same cadence lesson as the しろ list, v920).
+            keys = (['up'] * 4 + ['right' if col else 'left']
+                    + ['down'] * row + ['a'])
+            steps = []
+            for key in keys:
+                steps += [pad(key), {'type': 'wait', 'ms': MONTH_BLIND_NAV_WAIT_MS}]
+            return steps
     move = guarded_menu_to(screen, mem, label, key='month_nav')
     if move == []:
         return _month_text_advance(screen, mem, label) or move
@@ -250,6 +256,7 @@ def _month_menu_move(screen: Screen, mem, label: str):
 
 
 MONTH_BLIND_NAV_LIMIT = 4
+MONTH_BLIND_NAV_WAIT_MS = 120
 
 
 def _month_text_advance(screen: Screen, mem, label: str):
