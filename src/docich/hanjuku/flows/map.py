@@ -2350,7 +2350,10 @@ def _unverified_target(screen, mem, order):
                 observed_metric={'cursor': list(cursor), 'cell': list(cell),
                                  'misses': misses.get(step)},
                 reason='屋根が読めないため、カメラ推定がチャートのセルに一致することで出撃先を確定する')
-        return True
+        # The callers use this function's value as the next action list, so the
+        # acceptance must confirm the marker here (a bare True stalled the flow
+        # right after the record). The A is the measured sortie confirmation.
+        return [pad('a')]
     if misses[step] < TARGET_MISS_LIMIT:
         mem['uncertain'] = True               # re-anchor on roofs before confirming
         mem.pop('anchor', None)

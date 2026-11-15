@@ -7517,6 +7517,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v930-month-amount-back",
             "hanjuku-chart-v931-amount-quantity",
             "hanjuku-chart-v932-target-cell-accept",
+            "hanjuku-chart-v933-cell-accept-action",
             "hanjuku-chart-v864-shop-list-batch",
             "hanjuku-chart-v862-camp-field-move",
             "hanjuku-chart-v852-visible-menu-batches",
