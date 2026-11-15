@@ -28,3 +28,16 @@ def test_boss_phase_walks_the_rear_generals_toward_the_last_castle():
         assert all(o['target'] in chart.castles(9) for o in moves)
     finally:
         chart.set_boss_cell(9, None)
+
+def test_gathering_does_not_need_a_fresh_boss_cell():
+    # The gather is valid whenever the road is complete; the boss cell is only
+    # needed to aim the sortie. After a restart the in-memory cell is None but
+    # the rear generals must still start walking to イデ！ (g1190 10-11: the
+    # garrison stayed at カラ/シマウ because the gather required the cell).
+    chart.set_boss_cell(9, None)
+    mem = memory()
+    _world(mem)['garrison']['カラ'] = ['将軍A', '将軍B']
+    _world(mem)['garrison']['シマウ'] = ['将軍C', '将軍D', '将軍E']
+    orders = list(replan.interim_candidates(mem).values())
+    moves = [o for o in orders if o.get("purpose") == "move"]
+    assert any("イデ" in (o.get("note") or "") for o in moves)
