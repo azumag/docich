@@ -64,20 +64,25 @@ def test_before_the_boss_phase_a_camp_is_recalled_home_as_usual():
                       camp_stays=pms._camp_stays(mem9(owned=5))) == [{'kind': 'recall', 'name': 'ヘラ'}]
 
 
-def test_a_camp_is_picked_up_for_the_boss_not_for_a_castle():
+def test_a_camp_gathers_at_the_last_castle_not_at_the_boss():
+    # Owner 2026-11-15: cliffs block every castle but the last one from the
+    # moving boss, so a camped general gathers at the last corridor castle
+    # first; the boss sortie launches from there.
     mem = mem9()
     camps = [{'target': [60, 60]}]
     recall._camp_recall_step(field(), mem, FRAME, observed_camps=camps)
     state = _flow(mem)['recall']
-    assert state['boss'] is True and state['goal'] == BOSS
+    assert state['gather'] == ROAD[-1] and state['goal'] == ROAD[-1]
+    assert not state.get('boss')
     assert 'camp_found' in events(mem)
 
 
-def test_without_a_boss_cell_a_chapter_nine_camp_stays_put():
+def test_a_gathering_castle_does_not_need_a_fresh_boss_cell():
     chart.set_boss_cell(9, None)
     mem = mem9()
-    assert recall._camp_recall_step(field(), mem, FRAME, observed_camps=[{'target': [60, 60]}]) is None
-    assert 'recall' not in (mem.get('flow') or {}) and _flow(mem).get('recall') is None
+    recall._camp_recall_step(field(), mem, FRAME, observed_camps=[{'target': [60, 60]}])
+    state = _flow(mem)['recall']
+    assert state['gather'] == ROAD[-1] and not state.get('boss')
 
 
 def test_other_chapters_still_recall_camps_home():
@@ -176,23 +181,27 @@ def test_an_aborted_redirect_also_forgets_its_receipt():
     assert 'RECALL' not in (mem.get('y_jumped') or {}) and 'RECALL:target' not in (mem.get('y_jumps') or {})
 
 
-def test_an_existing_home_recall_is_converted_to_the_boss_redirect():
+def test_an_existing_home_recall_is_converted_to_the_gathering_castle():
     # g1190 89-8: a recall started before the road was complete kept its home
-    # destination and chose the visible castle サヌト in the boss phase.
+    # destination and chose the visible castle サヌト in the boss phase. It is
+    # now converted to a gathering move at the last corridor castle.
     mem = mem9(recall={'stage': 'menu', 'steps': 0, 'target': [80, 90]})
     assert recall._camp_recall_step(camp_menu(0), mem, FRAME) == [pad('a')]
     state = _flow(mem)['recall']
-    assert state['boss'] is True and state['goal'] == BOSS
+    assert state['gather'] == ROAD[-1] and state['goal'] == ROAD[-1]
+    assert not state.get('boss')
+    assert state['stage'] == 'dest'
     assert 'camp_recall_visible_move' not in events(mem)
-    assert 'camp_boss_redirect_adopted' in events(mem)
+    assert 'camp_gather_adopted' in events(mem)
 
 
-def test_an_existing_home_recall_without_a_boss_cell_is_not_returned_home():
+def test_an_existing_home_recall_without_a_boss_cell_still_gathers():
     chart.set_boss_cell(9, None)
     mem = mem9(recall={'stage': 'menu', 'steps': 0, 'target': [80, 90]})
-    assert recall._camp_recall_step(camp_menu(0), mem, FRAME) == [pad('b')]
-    assert _flow(mem).get('recall') is None
-    assert 'camp_boss_redirect_held' in events(mem)
+    assert recall._camp_recall_step(camp_menu(0), mem, FRAME) == [pad('a')]
+    state = _flow(mem)['recall']
+    assert state['gather'] == ROAD[-1]
+    assert state['stage'] == 'dest'
     assert 'camp_recall_visible_move' not in events(mem)
 
 
