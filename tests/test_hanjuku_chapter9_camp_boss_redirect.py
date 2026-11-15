@@ -174,3 +174,23 @@ def test_an_aborted_redirect_also_forgets_its_receipt():
     for _ in range(3):
         recall._camp_recall_step(target_screen(), mem, FRAME)
     assert 'RECALL' not in (mem.get('y_jumped') or {}) and 'RECALL:target' not in (mem.get('y_jumps') or {})
+
+
+def test_an_existing_home_recall_is_converted_to_the_boss_redirect():
+    # g1190 89-8: a recall started before the road was complete kept its home
+    # destination and chose the visible castle サヌト in the boss phase.
+    mem = mem9(recall={'stage': 'menu', 'steps': 0, 'target': [80, 90]})
+    assert recall._camp_recall_step(camp_menu(0), mem, FRAME) == [pad('a')]
+    state = _flow(mem)['recall']
+    assert state['boss'] is True and state['goal'] == BOSS
+    assert 'camp_recall_visible_move' not in events(mem)
+    assert 'camp_boss_redirect_adopted' in events(mem)
+
+
+def test_an_existing_home_recall_without_a_boss_cell_is_not_returned_home():
+    chart.set_boss_cell(9, None)
+    mem = mem9(recall={'stage': 'menu', 'steps': 0, 'target': [80, 90]})
+    assert recall._camp_recall_step(camp_menu(0), mem, FRAME) == [pad('b')]
+    assert _flow(mem).get('recall') is None
+    assert 'camp_boss_redirect_held' in events(mem)
+    assert 'camp_recall_visible_move' not in events(mem)
