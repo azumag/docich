@@ -414,3 +414,19 @@ def test_a_pending_finish_skips_the_optional_card_planning(ready, monkeypatch):
     b.plan_bargains(ready, shop, listing(999).header)
     assert shop['items'] == []
     assert not shop.get('bargain_listing_planned')
+
+
+def test_finished_merchant_reenter_latches_closed(ready):
+    # g1190 99-7: the finished merchant was re-entered ~every 85 observations
+    # and nothing_planned kept closing it without latching the visit done.
+    ready['shop']['merchant_done'] = True
+    ready['shop']['bargain_listing_planned'] = False
+    assert p.shop_step(listing(999, rows=(('バルムンク', 90), ('グリンボー', 30))), ready) == [p.pad('b')]
+    assert ready['shop']['closed'] is True
+    assert ready['_records'][-1]['decision'] == 'shop_reenter'
+    # A first visit without merchant_done does not latch closed.
+    ready['shop'] = dict(ready['shop'], merchant_done=False)
+    ready['shop'].pop('closed', None)
+    ready['shop']['bargain_listing_planned'] = False
+    p.shop_step(listing(999, rows=(('バルムンク', 90), ('グリンボー', 30))), ready)
+    assert 'closed' not in ready['shop']
