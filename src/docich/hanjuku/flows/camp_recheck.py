@@ -579,15 +579,17 @@ def _named_step(screen, mem, frame, state):
             # キャンプにカーソルが重なると野営画像を失い — the same gap the
             # recall flow's RECALL_OCCLUDED_PX path covers). g1190: every
             # camped general failed this check on every pass while the tent
-            # sat under the cursor. Probe once per focus with A: a camp menu
-            # or a fort menu names the occupant itself, anything else is a
-            # bounded miss.
-            if (not under and cursor and screen.kind == 'map'
+            # sat under the cursor; neighbour camps within 4px of the focus
+            # fail the same way (under>1). Probe once per focus with A: a
+            # camp menu or a fort menu names the occupant itself, anything
+            # else is a bounded miss, and the field status read still proves
+            # the named general or defers.
+            if (cursor and screen.kind == 'map'
                     and _valid_episode(mem, state) and state.get('reads', 0) >= 2):
                 state['occluded_probe'] = True
                 state['target'] = list(cursor)   # the map cursor covered the camp
                 _record(mem, 'camp_focus_occluded_probe', chart_step=None, general=actor,
-                        observed_metric={'cursor': list(cursor)},
+                        observed_metric={'cursor': list(cursor), 'under': len(under)},
                         reason='本人focusのカーソルが野営を覆い画像を失っているため、有界のA一回でメニューを開き現在tentを確認する')
                 return [pad('a')]
             return _wait(mem, state, '本人focus後の現在tentとcursorが一致せず決定しない')
