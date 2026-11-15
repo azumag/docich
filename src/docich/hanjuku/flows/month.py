@@ -315,7 +315,12 @@ def month_step(screen: Screen, mem):
                     reason='実測した募集導入文と費用条件が一致したため失われた会話追跡を再開')
             return month_sub_step(screen, mem)
         return []
-    if screen.has('じゅうじキー'):
+    # The month menu itself draws the 「じゅうじキー…ケタが…」 hint in its
+    # message window, so the hint alone is not the quantity picker. Requiring
+    # the absence of the menu's own item labels keeps the main menu out of the
+    # soldier-quantity flow (g1190 2026-11-16: the menu held forever because
+    # quantity_step waited on a picker that was never open).
+    if screen.has('じゅうじキー') and not screen.has('へいしほじゅう'):
         return quantity_step(screen, mem, soldiers=True)
     if ((mem.get('shop') or {}).get('soldier_receipt') or {}).get('status') == 'pending':
         # observe_events settles the receipt before another paid command can
