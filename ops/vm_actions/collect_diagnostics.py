@@ -7488,6 +7488,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v900-cliff-detour",
             "hanjuku-chart-v901-battle-fact-winner",
             "hanjuku-chart-v902-tmux-persistent-session",
+            "hanjuku-chart-v905-retiring-dead-dismiss",
             "hanjuku-chart-v903-boss-gather-moves",
             "hanjuku-chart-v904-boss-gather-no-cell",
             "hanjuku-chart-v864-shop-list-batch",

@@ -5444,6 +5444,16 @@ class GameSwitchCoordinator:
             except Exception as exc:
                 torn_down = False
                 evidence = _evidence_from_exception(exc)
+            if not torn_down and self._retiring_targets_absent(runtime):
+                # A dead candidate leaves no tearable state; keep it in
+                # retiring forever would wedge every later operation.
+                torn_down = True
+                self._log(
+                    "cleanup_dead_runtime", phase=str(state.get("phase")),
+                    generation=runtime.get("generation"),
+                    runtime_id=runtime.get("runtime_id"),
+                    detail=_teardown_detail(evidence, runtime),
+                )
             if not torn_down:
                 cleanup_pending = True
                 remaining.append(runtime)
@@ -5480,6 +5490,38 @@ class GameSwitchCoordinator:
             )
         self._prune_hanjuku_logs(warnings)
         return cleanup_pending
+
+    def _retiring_targets_absent(self, runtime: Mapping[str, object]) -> bool:
+        """True only when every recorded tmux target is provably gone.
+
+        Strict probes keep tmux-unreachable from counting as absence, so a
+        runtime we cannot verify stays pending instead of being dismissed.
+        """
+        targets = [
+            ("window", runtime.get("game_window")),
+            ("window", runtime.get("agent_window")),
+            ("session", runtime.get("adapter_session")),
+        ]
+        recorded = [(kind, str(value)) for kind, value in targets if value]
+        if not recorded:
+            return False
+        try:
+            tmux = self._probe_tmux()
+            for kind, value in recorded:
+                exists = (tmux.window_target_exists(value, strict=True)
+                          if kind == "window" else
+                          tmux.session_target_exists(value, strict=True))
+                if exists:
+                    return False
+        except Exception:
+            return False
+        return True
+
+    @staticmethod
+    def _probe_tmux():
+        """Tmux wrapper for dead-runtime probes (test seam)."""
+        from .tmux import Tmux
+        return Tmux()
 
     def _write_retire_marker(self, runtime: Mapping[str, object], warnings: list[str], phase: str) -> None:
         """Common retire marker for every completed generation (docich#3122).
