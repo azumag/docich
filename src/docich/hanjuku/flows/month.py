@@ -193,10 +193,33 @@ def _month_army_count_check(screen, mem, shop):
 
 
 def _month_menu_move(screen: Screen, mem, label: str):
+    hand = screen.hand
+    if (hand and hand[1] >= 175 and screen.has('じゅうじキー')
+            and screen.has(label.replace('!', '').replace('！', ''))):
+        # The hand reads the dialogue window under the menu (measured
+        # g1190 2026-11-16: hand (202,197) on the 「じゅうじキー」 hint while
+        # the menu rows sit at y47-95), so the hand-driven navigation cannot
+        # reach も〜おしまい! and the month menu held forever. Walk the
+        # measured two-column layout blind instead: top-left, down three,
+        # right, confirm, bounded.
+        state = mem.get('month_blind_nav')
+        if not isinstance(state, dict) or state.get('label') != label:
+            state = mem['month_blind_nav'] = {'label': label, 'tries': 0}
+        if state['tries'] < MONTH_BLIND_NAV_LIMIT:
+            state['tries'] += 1
+            _record(mem, 'month_blind_nav', screen=screen.kind, choice=label,
+                    observed_metric={'tries': state['tries'], 'hand': list(hand),
+                                     'limit': MONTH_BLIND_NAV_LIMIT},
+                    reason='月メニューのカーソルが会話ウィンドウを指しているため、実測2列レイアウトを盲操作で進む')
+            return ([pad('up')] * 3 + [pad('left')]
+                    + [pad('down')] * 3 + [pad('right'), pad('a')])
     move = guarded_menu_to(screen, mem, label, key='month_nav')
     if move == []:
         return _month_text_advance(screen, mem, label) or move
     return move
+
+
+MONTH_BLIND_NAV_LIMIT = 4
 
 
 def _month_text_advance(screen: Screen, mem, label: str):
