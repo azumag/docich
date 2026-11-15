@@ -822,3 +822,26 @@ def test_a_visible_camp_under_the_skip_is_recorded(monkeypatch):
     assert M.castle_jump_step(screen, mem, frame) == [M.pad('a')]
     confirm = mem['_records'][-1]
     assert confirm['observed_metric']['camp_skipped'] is True
+
+
+def test_confirm_on_the_main_menu_reopens_the_list():
+    # g1190 2026-11-15 77-10: SELECT closed the しろ list back to the main
+    # menu and the jump waited in confirm for 35 observations to the limit.
+    mem = _memory()
+    mem['castle_jump'] = {'step': 'J1', 'source': 'アルマムーン', 'phase': 'confirm',
+                          'age': 5, 'total': 6, 'mode': None}
+    actions = M.castle_jump_step(_main_menu(), mem, None)
+    assert actions == []
+    assert mem['castle_jump']['phase'] == 'menu'
+    assert mem['castle_jump']['age'] == 0
+    assert any(r['decision'] == 'castle_jump_menu_return' for r in mem['_records'])
+
+
+def test_confirm_returns_to_the_menu_only_twice():
+    mem = _memory()
+    mem['castle_jump'] = {'step': 'J1', 'source': 'アルマムーン', 'phase': 'confirm',
+                          'age': 5, 'total': 6, 'mode': None,
+                          'menu_return_retries': 2}
+    actions = M.castle_jump_step(_main_menu(), mem, None)
+    assert actions == [M.pad('b')]
+    assert 'castle_jump' not in mem

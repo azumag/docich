@@ -953,8 +953,12 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
     if isinstance(recall_in_flight, dict):
         stage = recall_in_flight.get('stage')
         camp_menu = (stage == 'menu' and recall_flow.is_camp_menu(screen))
-        field_picker = (stage in ('to_camp', 'dest')
-                        and kind in ('map', 'map_target') and phase != 'concert')
+        # The menu stage also owns the field frames: when the A on the tent
+        # did not open the menu, the recall has to re-centre the tent; the
+        # sortie's castle jump otherwise consumed the frame (g1190 77-10
+        # 178836 camp_enter -> 178838 castle_jump_confirm).
+        field_picker = ((stage in ('to_camp', 'dest', 'menu')
+                         and kind in ('map', 'map_target') and phase != 'concert'))
         if camp_menu or field_picker:
             actions = recall_flow.camp_recall_step(screen, mem, frame)
     if actions is None:

@@ -1254,6 +1254,23 @@ def castle_jump_step(screen, mem, frame):
                 jump['selects'] = int(jump.get('selects') or 0) + 1
                 return [pad('select')]
             return _end_castle_jump(screen, mem, 'select_not_accepted')
+        if screen.kind == 'main_menu':
+            # SELECT closed the list back to the main menu instead of
+            # flying. Waiting here spent the whole jump budget (g1190
+            # 2026-11-15 77-10: three カラ jumps sat in confirm for 35
+            # observations each and failed with why=limit). Re-open しろ
+            # and retry the same row, bounded.
+            retries = jump['menu_return_retries'] = int(jump.get('menu_return_retries') or 0) + 1
+            _record(mem, 'castle_jump_menu_return', chart_step=jump['step'],
+                    target=jump['source'],
+                    observed_metric={'retries': retries, 'age': jump.get('age')},
+                    reason='しろ一覧のSELECTでフィールドに戻らずメインメニューになったため、一覧を開き直す')
+            if retries <= 2:
+                jump['phase'] = 'menu'
+                jump['age'] = 0
+                jump['menu_presses'] = 0
+                return []
+            return _end_castle_jump(screen, mem, 'select_returned_to_menu')
         if screen.kind in ('castle_info', 'castle_menu', 'general_list'):
             # SELECT opened the castle status instead of flying: back out to
             # the list once and retry with the same target row.
