@@ -34,6 +34,12 @@ from .version import BOT_VERSION
 # screen-stall terminal (hanjuku_run.STALL_SECONDS) that ends the run while
 # nothing is being pressed.
 NO_INPUT_HOLD_MAX = 100
+# A battle command menu owns the screen: it is a decision point, not a scene.
+# The g1190 chapter-9 attacks froze on one for 101 observations (minutes) before
+# the generic fallback pressed one key. Bound the battle menu's no-input wait
+# sooner; the orphan-menu hold and every bounded battle flow stay excluded by
+# the same gate.
+BATTLE_COMMAND_MENU_HOLD_MAX = 30
 # A message box over the field that no flow claims is acknowledged sooner:
 # the fallback presses A there anyway (g1067 11:13: a castle-progress notice).
 FIELD_TEXT_HOLD_MAX = 4
@@ -1247,6 +1253,8 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
         if nudge is not None:
             actions = nudge
     hold_max=(FIELD_TEXT_HOLD_MAX if kind=='text' and phase=='field' and screen.text and not bounded_wait
+              else BATTLE_COMMAND_MENU_HOLD_MAX
+              if kind in BATTLE_COMMAND_MENU_KINDS and not bounded_wait
               else NO_INPUT_HOLD_MAX)
     army_owned = month_flow.army_count_owned(mem)
     recruit_guard = month_flow.recruit_input_guard(screen, mem)
