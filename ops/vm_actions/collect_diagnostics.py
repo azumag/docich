@@ -5691,6 +5691,20 @@ def _broadcast_template_probe(path, now):
     return result
 
 
+def _safe_is_file(path):
+    """is_file() that treats an unreadable parent as absent.
+
+    The diagnostics collector always probes the production docich path; on a
+    runner where /home/ubuntu exists but is not readable, Path.is_file()
+    raises PermissionError and crashed every collector test (security-
+    regressions on PRs, 2026-11-15).
+    """
+    try:
+        return path.is_file()
+    except OSError:
+        return False
+
+
 def _collect_broadcast_template(soren, docich_root=None, now=None):
     """Fixed-category view of the resolved broadcast template identity."""
     soren = Path(soren)
@@ -5712,7 +5726,7 @@ def _collect_broadcast_template(soren, docich_root=None, now=None):
             resolved = "override-docich-absolute"
         else:
             resolved = "override-other"
-    elif docich_template.is_file():
+    elif _safe_is_file(docich_template):
         resolved = "docich"
     else:
         resolved = "soren-fallback"
@@ -7450,6 +7464,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v880-ch9-red-eye-boss",
             "hanjuku-chart-v881-camp-approach",
             "hanjuku-chart-v882-camp-menu-jump-retry",
+            "hanjuku-chart-v883-castle-list-chapter",
             "hanjuku-chart-v864-shop-list-batch",
             "hanjuku-chart-v862-camp-field-move",
             "hanjuku-chart-v852-visible-menu-batches",

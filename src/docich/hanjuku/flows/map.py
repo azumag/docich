@@ -832,8 +832,14 @@ def _castle_key(name):
             .replace('ー', '').replace(' ', '').replace('　', ''))
 
 
-def _castle_list_rows(screen):
-    """Rows of the own-castle list, or None when this is another panel."""
+def _castle_list_rows(screen, chapter=None):
+    """Rows of the own-castle list, or None when this is another panel.
+
+    The general roster (しょうぐん) draws the same help line and the same
+    name column; its rows name generals, so a chapter check rejects it
+    instead of scrolling a roster 16 times as if it were the しろ list
+    (g1190 2026-11-15 81-1: the roster was saved as a castle-list frame).
+    """
     text = screen.text or ''
     if not screen.hand or CASTLE_JUMP_HINT not in text or 'コマンドにもどります' not in text:
         return None
@@ -843,12 +849,19 @@ def _castle_list_rows(screen):
             word = dict(line.spans()).get(168)
             if word:
                 rows.append((line.y, word))
-    return rows or None
+    if not rows:
+        return None
+    if chapter:
+        cells = chart.castles(chapter)
+        names = {_castle_key(name) for name in cells}
+        if names and not any(_castle_key(word) in names for _, word in rows):
+            return None
+    return rows
 
 
-def _castle_list_target(screen, source):
+def _castle_list_target(screen, source, chapter=None):
     """The visible list row naming source (chart spelling may differ)."""
-    rows = _castle_list_rows(screen)
+    rows = _castle_list_rows(screen, chapter)
     if not rows:
         return None
     key = _castle_key(source)
@@ -982,7 +995,7 @@ def _end_castle_jump(screen, mem, why):
                                'tick': int(mem.get('tick') or 0)}
     metric = {'why': why, 'age': jump.get('age'), 'phase': jump.get('phase'),
               'target': jump.get('source')}
-    rows = _castle_list_rows(screen)
+    rows = _castle_list_rows(screen, mem.get('chapter'))
     if rows is not None:
         metric['rows'] = [word for _, word in rows]
         metric['scrolls'] = jump.get('scrolls')
@@ -1118,14 +1131,14 @@ def castle_jump_step(screen, mem, frame):
             if jump['age'] < 3:
                 return []
             return _end_castle_jump(screen, mem, 'list_not_open')
-        rows = _castle_list_rows(screen)
+        rows = _castle_list_rows(screen, mem.get('chapter'))
         if rows is None:
             jump['blind'] = int(jump.get('blind') or 0) + 1
             if jump['blind'] <= CASTLE_JUMP_CURSOR_BLIND:
                 return []
             return _end_castle_jump(screen, mem, 'list_unreadable')
         jump['blind'] = 0
-        target = _castle_list_target(screen, jump['source'])
+        target = _castle_list_target(screen, jump['source'], mem.get('chapter'))
         if target is None:
             if int(jump.get('scrolls') or 0) < CASTLE_JUMP_SCROLL_LIMIT:
                 jump['scrolls'] = int(jump.get('scrolls') or 0) + 1

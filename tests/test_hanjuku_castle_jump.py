@@ -535,6 +535,7 @@ def test_last_page_source_is_reached_past_the_old_eight_row_bound():
     every trip with ``castle_missing`` before the row could appear.
     """
     mem = _memory()
+    mem['chapter'] = 6                    # the source row is a chapter-6 castle
     mem['castle_jump'] = _jump('list', menu_presses=2, source='アブダレ')
     selected = offset = downs = 0
     for _ in range(20):
@@ -845,3 +846,16 @@ def test_confirm_returns_to_the_menu_only_twice():
     actions = M.castle_jump_step(_main_menu(), mem, None)
     assert actions == [M.pad('b')]
     assert 'castle_jump' not in mem
+
+
+def test_general_roster_is_not_a_castle_list():
+    # The しょうぐん roster shares the castle list's help line and name
+    # column; without the chapter check the jump scrolled a roster as if it
+    # were the しろ list (g1190 2026-11-15 81-1 capture).
+    roster = _screen('text', [(39, 168, 'ヴィーナス'), (55, 168, 'ベーグル'),
+                              (71, 168, 'バタール')],
+                     hand=(146, 33, 166, 45),
+                     text='Aボタンでステータスひょうじ Bボタンでコマンドにもどりますじゃ!')
+    assert M._castle_list_rows(roster, 9) is None
+    assert M._castle_list_target(roster, 'カラ', 9) is None
+    assert M._castle_list_target(_castle_list(['カラ', 'イデ!']), 'カラ', 9) == 'カラ'
