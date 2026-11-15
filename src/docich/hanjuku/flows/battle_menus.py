@@ -236,12 +236,37 @@ def _retreat_forbidden(mem, cur):
     return isinstance(ally, str) and ally not in ('', NAME, 'しゅじんこう', 'しじんこう')
 
 
+EMERGENCY_RETREAT_SAME_MENUS = 10   # identical command menus before the escape
+
+
+def _emergency_retreat_due(screen, mem, cur):
+    """The attack menu has no attack command and has stayed put for a while.
+
+    g1190 chapter 9 2026-11-16: ブレッツェル vs オレガノ offered only
+    きりふだ/たいきゃく with the cards exhausted, so the command menu had no
+    legal action and the run froze for 101 observations at a time. A menu
+    that only persisted (B still works) is not a deadlock: the same frame must
+    have survived ten observations. One bounded retreat is the escape; it is
+    recorded as an exception to the owner's no-retreat rule.
+    """
+    if cur.get('side') != 'attack' or cur.get('emergency_retreat_used'):
+        return False
+    if int(cur.get('menu_same') or 0) < EMERGENCY_RETREAT_SAME_MENUS:
+        return False
+    labels = {word for _, _, word in _options(screen)}
+    if labels.intersection({'こうげき', 'もうこうげき', 'たまごをつかう'}):
+        return False
+    return 'たいきゃく' in labels
+
+
 def _hero_retreat_menu(screen, mem, cur):
     # A castle defense cannot retreat (owner 2026-09-29; the menu has no
     # たいきゃく row there), so never try to select it.
-    if not (egg_bait.retreat_due(mem, cur) or _hero_retreat_needed(cur)) or cur.get('side') == 'defense':
+    due = bool(egg_bait.retreat_due(mem, cur) or _hero_retreat_needed(cur))
+    emergency = (not due) and _emergency_retreat_due(screen, mem, cur)
+    if not (due or emergency) or cur.get('side') == 'defense':
         return None
-    if _retreat_forbidden(mem, cur):
+    if _retreat_forbidden(mem, cur) and not emergency:
         if not cur.get('retreat_forbidden_noted'):
             cur['retreat_forbidden_noted'] = True
             _record(mem, 'battle_retreat_forbidden', **_battle_labels(cur),
@@ -291,6 +316,14 @@ def _hero_retreat_menu(screen, mem, cur):
         cur['card_flow'] = None
     flow['selected'] = flow.get('selected', 0) + 1
     flow['wait'] = 0
+    if emergency:
+        cur['emergency_retreat_used'] = True
+        _record(mem, 'battle_emergency_retreat', **_battle_labels(cur),
+                general=cur.get('ally'), enemy=cur.get('enemy'),
+                castle=cur.get('castle'),
+                observed_metric={'ally_hp': cur.get('ally_hp'), 'enemy_hp': cur.get('enemy_hp'),
+                                 'labels': sorted({w for _, _, w in _options(screen)})},
+                reason='攻撃コマンドがなく資源も尽きたため、硬直を避けて1回だけ退却する（第9話の退却禁止の例外）')
     _record(mem, 'battle_hero_retreat_select', **_battle_labels(cur),
             general=cur.get('ally'), enemy=cur.get('enemy'),
             castle=cur.get('castle'), side=cur.get('side'), choice='たいきゃく',
@@ -776,6 +809,13 @@ def _disabled_defense_pending(screen, mem, cur):
 def battle_menu_step(screen: Screen, mem):
     _migrate_card_evidence(mem)
     cur = mem.get('battle') or {}
+    if cur:
+        sha = getattr(screen, 'frame_sha256', None)
+        if sha is not None and cur.get('menu_sha') == sha:
+            cur['menu_same'] = int(cur.get('menu_same') or 0) + 1
+        else:
+            cur['menu_sha'] = sha
+            cur['menu_same'] = 0
     flow = cur.get('card_flow')
     if screen.kind != 'battle_menu':
         return []
