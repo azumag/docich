@@ -585,9 +585,40 @@ class HelperCliTests(unittest.TestCase):
             HELPER_MODULE.recover(rejected, "failed", False)
         self.assertEqual(ctx.exception.code, HELPER_MODULE.EX_RECOVERY_REJECTED)
 
-    def test_successful_recovery_revalidates_the_state(self):
+    def test_cli_zero_without_recovered_state_is_invalid_result(self):
         root = self._root_with_launcher()
+        with self.assertRaises(HELPER_MODULE.FixedRecoverExit) as ctx:
+            HELPER_MODULE.recover(root, "failed", False)
+        self.assertEqual(ctx.exception.code, HELPER_MODULE.EX_INVALID_RESULT)
+
+    def test_cli_zero_with_ready_state_succeeds(self):
+        root = self._root_with_launcher()
+        launcher = root / HELPER_MODULE.LAUNCHER_REL
+        # Model the canonical CLI committing a ready state before returning.
+        launcher.write_text(
+            "#!/bin/sh\n"
+            f"printf '%s' '{json.dumps(canonical(phase='ready', active=runtime(), next_generation=4))}' "
+            f"> '{root / HELPER_MODULE.STATE_REL}'\n"
+            "exit 0\n",
+            encoding="utf-8",
+        )
+        launcher.chmod(0o755)
         self.assertEqual(HELPER_MODULE.recover(root, "failed", False), 0)
+
+    def test_cli_one_remains_pending_even_if_state_is_ready(self):
+        root = self._root_with_launcher(exit_code=1)
+        launcher = root / HELPER_MODULE.LAUNCHER_REL
+        launcher.write_text(
+            "#!/bin/sh\n"
+            f"printf '%s' '{json.dumps(canonical(phase='ready', active=runtime(), next_generation=4))}' "
+            f"> '{root / HELPER_MODULE.STATE_REL}'\n"
+            "exit 1\n",
+            encoding="utf-8",
+        )
+        launcher.chmod(0o755)
+        with self.assertRaises(HELPER_MODULE.FixedRecoverExit) as ctx:
+            HELPER_MODULE.recover(root, "failed", False)
+        self.assertEqual(ctx.exception.code, HELPER_MODULE.EX_RECOVERY_PENDING)
 
 
 class HelperProcessTests(unittest.TestCase):
