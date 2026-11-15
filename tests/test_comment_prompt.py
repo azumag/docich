@@ -37,6 +37,24 @@ def test_full_prompt_is_byte_identical_to_the_legacy_shell(case, tmp_path):
     assert (len(raw), hashlib.sha256(raw).hexdigest()) == (case["bytes"], case["sha256"])
 
 
+def test_announcement_template_is_wired_and_renders(tmp_path):
+    assert prompt.category_template("announcement") == "comment_response_announcement.md"
+    ctx = dict(GOLDEN["contexts"]["main"])
+    built = prompt.build_prompt(
+        "announcement",
+        ctx,
+        comments_block="dociai: 第15次遠征は終了しました。",
+        classifications='[{"index":1,"user":"dociai","comment":"第15次遠征は終了しました。","category":"announcement"}]',
+        gacha_list_file=tmp_path / "gacha.txt",
+    )
+    assert "Category: Announcement" in built
+    assert "第15次遠征は終了しました。" in built
+    assert "${self_chat_context}" not in built
+    assert "${CATEGORY_COMMENTS}" not in built
+    rendered = prompt.with_reply_contract(built)
+    assert "分類が announcement の行" in rendered
+
+
 def test_mode_assets_equal_the_legacy_context_values():
     for mode in prompt.MODES:
         expected = GOLDEN["contexts"][mode]
