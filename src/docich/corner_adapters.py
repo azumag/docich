@@ -26,6 +26,12 @@ def _queue_dispatch(g) -> bool:
 
 TERMINAL_IMPROVEMENT_STATUSES = frozenset({
     "promoted", "kept", "improved", "dry-run", "skipped", "ab-staged",
+    # A policy rejection is a terminal attempt: ninvaders.improve logs it to
+    # history.jsonl and the bridge only records completed_at once the try has
+    # ended. Leaving it out wedges interval-mode rotation on
+    # "other-corner-needs-finish-or-recovery" until an operator edits state
+    # (2026-11-15 production incident, ninvaders policy-invalid).
+    "rejected",
 })
 
 
