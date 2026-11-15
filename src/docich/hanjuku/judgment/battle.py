@@ -1095,8 +1095,11 @@ def _observe_egg_drop_candidate(mem, cur):
         return
     if watch['card'] not in (cur.get('cards_selected') or []):
         return                      # 札一覧の選択に達していない＝使用の根拠がない
+    already_flagged = cur.get('enemy_egg_drop_expected') is True
     cur['enemy_egg_drop_expected'] = True
     cur.pop('egg_drop_watch', None)
+    if already_flagged:
+        return  # 同一戦闘の曖昧さは一度だけ記録する（unclassified が複数回残る実害 #4335）
     _record(mem, 'battle_egg_drop_unconfirmed', **_battle_labels(cur), card=watch['card'],
             enemy=cur.get('enemy'), enemy_hp=hp, ally_hp=cur.get('ally_hp'),
             egg_drop={'value': watch['value'], 'threshold': watch['threshold'],

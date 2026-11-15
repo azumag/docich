@@ -7497,6 +7497,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v905-retiring-dead-dismiss",
             "hanjuku-chart-v903-boss-gather-moves",
             "hanjuku-chart-v904-boss-gather-no-cell",
+            "hanjuku-chart-v910-egg-drop-dedupe",
             "hanjuku-chart-v906-gather-nearest-first",
             "hanjuku-chart-v908-switch-rollback",
             "hanjuku-chart-v907-castle-jump-scroll",
