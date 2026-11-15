@@ -194,7 +194,12 @@ def _month_army_count_check(screen, mem, shop):
 
 def _month_menu_move(screen: Screen, mem, label: str):
     hand = screen.hand
-    if (hand and hand[1] >= 175 and screen.has('じゅうじキー')
+    # The hand can also sit on a menu row (g1190 2026-11-16 19-9: menu_nav_stuck
+    # every ~84 observations with the same rows). The measured two-column
+    # layout plus the exit label identifies this screen whatever the hand
+    # reads, so accept any hand (or none) once the menu itself is proven.
+    if ((not hand or hand[1] >= 175 or screen.has('しょうぐんぼしゅう'))
+            and screen.has('じゅうじキー')
             and screen.has(label.replace('!', '').replace('！', ''))):
         # The hand reads the dialogue window under the menu (measured
         # g1190 2026-11-16: hand (202,197) on the 「じゅうじキー」 hint while
