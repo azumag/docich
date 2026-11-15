@@ -67,6 +67,7 @@ SEVERITY_TRIGGERS = (
     "hanjuku_resume_detached_claim",
     "retro_corner_recovery_required",
     "corner_rotation_recovery_required",
+    "corner_rotation_overdue",
     "required_worker_stale",
     "required_worker_down",
     "paused_workers_actionable",

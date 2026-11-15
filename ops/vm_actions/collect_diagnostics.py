@@ -8491,9 +8491,22 @@ def _collect_corner_files(state_dir, payload, now):
                 isinstance(data.get("pending"), dict)
                 or isinstance(data.get("manual_pending"), dict)):
             scheduled_blocked_reason = "waiting_slot"
+        try:
+            from docich.corner_rotation import overdue_wait
+            overdue = overdue_wait(data, now)
+        except Exception:
+            # An older deployed docich may not carry the probe yet; absence of
+            # the helper must never break the diagnostics collection itself.
+            overdue = None
         rotation.update(
             status=status if status in {"ready", "waiting", "running", "recovery_required"} else "unknown",
             reason=_bounded_str(data.get("reason"), 64),
+            reason_since=_bounded_time(data.get("reason_since")),
+            # ``waiting_overdue`` is the #4333 wedge signal: next_due_at long
+            # past while one unchanged reason keeps holding the wait.
+            waiting_overdue=overdue is not None,
+            overdue_sec=overdue.get("overdue_sec") if overdue else None,
+            reason_age_sec=overdue.get("reason_age_sec") if overdue else None,
             next_due_at=_bounded_time(data.get("next_due_at")),
             last_seen_at=_bounded_time(data.get("last_seen_at")),
             last_slot_at=_bounded_time(data.get("last_slot_at")),
@@ -10951,6 +10964,7 @@ SEVERITY_TRIGGERS = (
     "hanjuku_resume_detached_claim",
     "retro_corner_recovery_required",
     "corner_rotation_recovery_required",
+    "corner_rotation_overdue",
     "required_worker_stale",
     "required_worker_down",
     "paused_workers_actionable",
@@ -11010,6 +11024,12 @@ def _severity_report(workers, queues, ai, improvement, corners=None, hanjuku_res
     rotation = corners.get("corner_rotation") if isinstance(corners, dict) else None
     triggers["corner_rotation_recovery_required"] = (
         isinstance(rotation, dict) and rotation.get("status") == "recovery_required"
+    )
+    # A wait held on one unchanged reason well past next_due_at is the wedge
+    # symptom from #4333: the slot wants to fire but cannot. The ledger
+    # reason itself is ambiguous, so the projection pre-ages it.
+    triggers["corner_rotation_overdue"] = (
+        isinstance(rotation, dict) and rotation.get("waiting_overdue") is True
     )
     triggers["paused_workers_actionable"] = _paused_workers_actionable(workers)
     triggers["unregistered_workers_actionable"] = _unregistered_workers_actionable(workers)

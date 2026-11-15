@@ -934,6 +934,111 @@ def test_failed_owner_without_recover_hook_releases_after_stale_proof(setup):
     assert len(executor.calls) == 1
 
 
+def _wedge_improvement_wait(setup):
+    """Reproduce the #4333 wedge: a blocked improvement keeps the wait."""
+    _, clock, catalog, executor, make = setup
+    manager = make()
+    manager.tick()
+    state_dir = manager.g.state_dir
+    (state_dir / "retro_corner.json").write_text(
+        json.dumps({
+            "status": "completed",
+            "game": "nsnake",
+            "completed_at": clock[0],
+            "improve_job": {"spawned": True},
+        }),
+        encoding="utf-8",
+    )
+    (state_dir / "corner_improve_nsnake.json").write_text(
+        json.dumps({"status": "rejected", "started_at": clock[0] - 1,
+                    "completed_at": clock[0] - 0.5}),
+        encoding="utf-8",
+    )
+    clock[0] += DAY
+    remaining = [corner for corner in catalog if corner.id != "retro"]
+    manager = make(remaining)
+    return manager, clock, remaining
+
+
+def test_wait_reason_since_survives_ticks_and_restart(setup):
+    # #4333: reason_since marks when the current wait reason first appeared so
+    # projections can age one unchanged reason past next_due_at. It must also
+    # survive a fresh manager (production runs one process per timer tick).
+    g, clock, catalog, executor, make = setup
+    full_setup = (g, clock, catalog, executor, make)
+    manager, clock, remaining = _wedge_improvement_wait(full_setup)
+
+    assert manager.tick()["reason"] == "other-corner-needs-finish-or-recovery"
+    since = state(manager)["reason_since"]
+    assert since == clock[0]
+
+    clock[0] += 120
+    assert manager.tick()["reason"] == "other-corner-needs-finish-or-recovery"
+    assert state(manager)["reason_since"] == since
+
+    # A new manager over the same ledger keeps the stamp for the same reason.
+    clock[0] += 120
+    restarted = make(remaining)
+    assert restarted.tick()["reason"] == "other-corner-needs-finish-or-recovery"
+    assert state(restarted)["reason_since"] == since
+
+
+def test_wait_reason_since_restamps_on_reason_change(setup):
+    g, clock, catalog, executor, make = setup
+    manager = make()
+    ledger = {"schema_version": 1}
+    ledger["reason"] = "not-due"
+    manager.save(ledger)
+    first = ledger["reason_since"]
+    assert first == clock[0]
+    clock[0] += 60
+    manager.save(ledger)
+    assert ledger["reason_since"] == first
+    ledger["reason"] = "no-enabled-corner"
+    manager.save(ledger)
+    assert ledger["reason_since"] == clock[0]
+    ledger["reason"] = None
+    manager.save(ledger)
+    assert ledger["reason_since"] is None
+
+
+def test_overdue_wait_flags_the_wedged_reason(setup):
+    from docich.corner_rotation import overdue_wait, OVERDUE_WAIT_WARN_S
+
+    manager, clock, _remaining = _wedge_improvement_wait(setup)
+    manager.tick()
+    ledger = state(manager)
+    assert ledger["status"] == "waiting"
+    assert ledger["next_due_at"] < clock[0] - OVERDUE_WAIT_WARN_S
+    # Inside the warn bound the reason is ambiguous with a healthy drain.
+    assert overdue_wait(ledger, clock[0] + OVERDUE_WAIT_WARN_S - 1) is None
+    probe = overdue_wait(ledger, clock[0] + OVERDUE_WAIT_WARN_S)
+    assert probe["reason_age_sec"] == OVERDUE_WAIT_WARN_S
+    assert probe["overdue_sec"] >= OVERDUE_WAIT_WARN_S
+
+
+def test_overdue_wait_requires_both_due_and_unchanged_reason():
+    from docich.corner_rotation import overdue_wait, OVERDUE_WAIT_WARN_S
+
+    now = 100000.0
+    base = {"status": "waiting", "reason": "all-corners-cooling-down"}
+    # An old reason alone is not overdue while next_due_at is barely past.
+    assert overdue_wait({**base, "next_due_at": now - OVERDUE_WAIT_WARN_S + 1,
+                         "reason_since": now - 3600}, now) is None
+    # Past due but the reason just changed.
+    assert overdue_wait({**base, "next_due_at": now - 3600,
+                         "reason_since": now - OVERDUE_WAIT_WARN_S + 1}, now) is None
+    probe = overdue_wait({**base, "next_due_at": now - 3600,
+                          "reason_since": now - 3600}, now)
+    assert probe == {"overdue_sec": 3600, "reason_age_sec": 3600}
+    # A pre-upgrade ledger without reason_since cannot prove continuity.
+    assert overdue_wait({**base, "next_due_at": now - 3600}, now) is None
+    # Only a waiting ledger with a reason is a wedge candidate.
+    assert overdue_wait({"status": "ready", "next_due_at": 0}, now) is None
+    assert overdue_wait({"status": "waiting", "next_due_at": 0,
+                         "reason_since": 0}, now) is None
+
+
 def test_initial_migration_observes_removed_legacy_corner(setup):
     g, clock, catalog, executor, make = setup
     state_dir = Path(g.state_dir)

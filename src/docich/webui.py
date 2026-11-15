@@ -2091,9 +2091,19 @@ def _rotation_view(g: GlobalConfig) -> dict[str, Any]:
     if isinstance(raw.get("eligible"), list):
         eligible = [item[:64] for item in raw.get("eligible") if isinstance(item, str)][:20]
     error_kind = raw.get("error_kind")
+    try:
+        from .corner_rotation import overdue_wait
+
+        overdue = overdue_wait(raw, now)
+    except Exception:
+        overdue = None
     out.update(
         status=status,
         reason=_view_str(raw.get("reason"), 64),
+        reason_since=_view_time(raw.get("reason_since")),
+        # ``overdue`` is the #4333 wedge signal: next_due_at long past while
+        # one unchanged reason keeps holding the wait.
+        overdue=overdue,
         error_kind=(error_kind if error_kind in _ROTATION_ERROR_KIND_ENUM
                     else (None if error_kind is None else "unknown")),
         slot=_view_int(raw.get("slot")),
