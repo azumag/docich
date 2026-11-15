@@ -112,3 +112,18 @@ def test_two_visible_camps_keep_the_started_target(monkeypatch):
     actions = p.camp_recall_step(MAP, mem, object())
     assert actions == [p.pad('down', 28)]
     assert _flow(mem)['recall']['target'] == [120, 200]
+
+
+def test_an_off_screen_tent_is_scrolled_back_into_view(monkeypatch):
+    # g1190 91-11: the recorded tent was at [-1, 9] (clipped at the edge), no
+    # camp was detected, and the flow waited until camp_unobserved. The
+    # camera only moves with the cursor, so push it toward the edge.
+    monkeypatch.setattr(p, 'own_camps', lambda _frame: [])
+    mem = {'chapter': 1, 'tick': 100,
+           'recall': {'stage': 'to_camp', 'steps': 0,
+                      'target': [-1, 9], 'last_seen': [-1, 9]}}
+    actions = p.camp_recall_step(MAP, mem, object())
+    assert actions and actions[0]['type'] == 'pad'
+    assert actions[0]['buttons'] == ['left']
+    assert _flow(mem)['recall']['edge_scroll'] == 1
+    assert any(r['decision'] == 'camp_edge_scroll' for r in mem['_records'])
