@@ -5341,3 +5341,40 @@ def test_hanjuku_tactical_stub_tolerates_missing_fields():
         'hanjuku_tactical', {'refill': {'huge': 'z'}})
     assert stub == {'status': 'output_omitted', 'reason': 'hard_ceiling',
                     'basis': 'bot_record'}
+
+
+def test_an_inaccessible_docich_root_is_treated_as_absent(tmp_path):
+    # A runner where /home/ubuntu exists but is unreadable made
+    # Path.is_file() raise PermissionError inside the collector and failed
+    # every security-regressions test (2026-11-15).
+    module = load_collector()
+    soren = tmp_path / "soren"
+    (soren / "tmp" / "state").mkdir(parents=True)
+    locked = tmp_path / "locked"
+    (locked / "overlays").mkdir(parents=True)
+    (locked / "overlays" / "direct_broadcast_overlay.html").write_text("x")
+    os.chmod(locked, 0)
+    try:
+        output = module._collect_broadcast_template(soren, docich_root=locked, now=100)
+    finally:
+        os.chmod(locked, stat.S_IRWXU)
+    assert output["resolved_source"] == "soren-fallback"
+    assert output["docich_template"]["present"] is False
+
+
+class BroadcastTemplateProbeTests(unittest.TestCase):
+    def test_an_inaccessible_docich_root_is_treated_as_absent(self):
+        module = load_collector()
+        with tempfile.TemporaryDirectory(prefix="vmops-template-") as tmp:
+            soren = Path(tmp) / "soren"
+            (soren / "tmp" / "state").mkdir(parents=True)
+            locked = Path(tmp) / "locked"
+            (locked / "overlays").mkdir(parents=True)
+            (locked / "overlays" / "direct_broadcast_overlay.html").write_text("x")
+            os.chmod(locked, 0)
+            try:
+                output = module._collect_broadcast_template(soren, docich_root=locked, now=100)
+            finally:
+                os.chmod(locked, stat.S_IRWXU)
+        self.assertEqual(output["resolved_source"], "soren-fallback")
+        self.assertFalse(output["docich_template"]["present"])
