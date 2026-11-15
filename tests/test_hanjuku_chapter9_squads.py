@@ -192,3 +192,19 @@ def test_the_hero_post_move_comes_before_the_staging_moves():
                if o['purpose'] == 'move' and not o.get('corridor_hero')]
     assert hero and staging
     assert hero[0] < staging[0]
+
+
+def test_castle_check_next_pops_the_target_before_opening_from_main_menu():
+    """g1190 98-3: leaving the general list on main_menu re-entered
+    castle_check_open without a popped target, so castle_check_pick scrolled
+    to the roster limit with name=None and burned a B-exit every cycle
+    (house_castle_check_missing with general=None)."""
+    from docich.hanjuku.os_layer.screen import Screen
+    mem = _mem()
+    mem['house'] = {'phase': 'castle_check_next', 'age': 0, 'chapter': 9,
+                    'seen': [], 'castle_queue': ['ブラウニー'], 'month_scan': False}
+    screen = Screen(lines=[], hand=(26, 41, 44, 54), kind='main_menu', text='しょうぐん')
+    assert house._castle_check_step(screen, mem, None) == []
+    assert mem['house']['phase'] == 'castle_check_open'
+    assert mem['house']['castle_current'] == 'ブラウニー'
+    assert mem['house']['castle_queue'] == []
