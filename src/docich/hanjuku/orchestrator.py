@@ -941,7 +941,24 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
     # A planned summon-preemption must not become a blind A on an unfinished
     # command menu, or be replaced by an old monthly/house transaction.
     battle_flow.note_duel_event(screen, mem)
-    actions = map_flow.castle_jump_step(screen, mem, frame)
+    # A camp recall already in flight outranks the sortie plan's castle jump
+    # on the field map and on the camp menu. The jump's confirm A otherwise
+    # consumed the frame and the recall was dropped before its first approach
+    # step (g1190 2026-11-15 75-9: camp_found at [175,96], then
+    # castle_jump_confirm, and the camp menu was closed as 'not a recall in
+    # flight'). The same jump ended on the camp menu at 77-8 (173415
+    # castle_jump_failed text) and closed it before いどう could be chosen.
+    recall_in_flight = _flow(mem).get('recall') or {}
+    actions = None
+    if isinstance(recall_in_flight, dict):
+        stage = recall_in_flight.get('stage')
+        camp_menu = (stage == 'menu' and recall_flow.is_camp_menu(screen))
+        field_picker = (stage in ('to_camp', 'dest')
+                        and kind in ('map', 'map_target') and phase != 'concert')
+        if camp_menu or field_picker:
+            actions = recall_flow.camp_recall_step(screen, mem, frame)
+    if actions is None:
+        actions = map_flow.castle_jump_step(screen, mem, frame)
     if actions is None:
         # A successful reanchor is a nested interrupt: restore the exact
         # foreground owner before unrelated normal-priority flows run.

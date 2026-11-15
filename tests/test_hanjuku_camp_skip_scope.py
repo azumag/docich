@@ -28,7 +28,7 @@ def test_scoped_cooldown_skips_only_the_failed_camp(monkeypatch):
            'recall_skip': {'tick': 100},
            'recall_skip_target': {'chapter': 1, 'target': [120, 100]}}
 
-    assert p.camp_recall_step(MAP, mem, object()) == [p.pad('right', 8)]
+    assert p.camp_recall_step(MAP, mem, object()) == [p.pad('right', 28)]
     assert _flow(mem)['recall']['target'] == [200, 100]
     assert _flow(mem)['recall_skip_target']['target'] == [120, 100]
 

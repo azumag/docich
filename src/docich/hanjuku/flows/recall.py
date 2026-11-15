@@ -257,6 +257,7 @@ def _month_end_soon(mem, margin=None):
 
 
 VISIBLE_MOVE_LIMIT = 40      # field-cursor steps allowed on one いどう
+CAMP_STEP_FRAMES = 28        # same 1 px/frame hold as nav_step (was 8)
 
 
 def _recall_blocked_twice(mem, castle):
@@ -578,8 +579,21 @@ def _camp_recall_step(screen: Screen, mem, frame, *, observed_camps=None):
             return []  # an old screen coordinate never licenses a camp-opening A
         state.pop('camp_missing_reads', None)
         cursor = _cursor(screen)
-        camp = min(camps, key=lambda c: (abs(c['target'][0] - cursor[0])
-                                         + abs(c['target'][1] - cursor[1])) if cursor else 0)
+        # Keep the camp this recall started on: re-picking the nearest tent
+        # each step flipped between two visible camps and the cursor never
+        # arrived (g1190 2026-11-15 74-12: 91 observations aborted). Only a
+        # detection that no longer matches the stored cell re-picks.
+        stored = state.get('target')
+        camp = None
+        if _camp_target(stored):
+            near = min(camps, key=lambda c: (abs(c['target'][0] - stored[0])
+                                             + abs(c['target'][1] - stored[1])))
+            if (abs(near['target'][0] - stored[0])
+                    + abs(near['target'][1] - stored[1]) <= RECALL_SKIP_RADIUS):
+                camp = near
+        if camp is None:
+            camp = min(camps, key=lambda c: (abs(c['target'][0] - cursor[0])
+                                             + abs(c['target'][1] - cursor[1])) if cursor else 0)
         state['target'] = list(camp['target'])
         # The cursor sprite can cover the tent once the servo is on it; keep
         # the last real detection so the arrival step can trust it.
@@ -600,9 +614,14 @@ def _camp_recall_step(screen: Screen, mem, frame, *, observed_camps=None):
             _record(mem, 'camp_enter', observed_metric={'camp': list(state['target'])},
                     reason='野営にカーソルを合わせて決定し、きかんを選ぶ')
             return [pad('a')]
+        # The field cursor moves about one pixel per frame; the old 8-frame
+        # cap walked at most 24 px per observation and a camp across the
+        # screen needed the whole 90-observation budget (g1190 2026-11-15).
         if abs(dx) >= abs(dy):
-            return [pad('right' if dx > 0 else 'left', min(8, abs(dx)))]
-        return [pad('down' if dy > 0 else 'up', min(8, abs(dy)))]
+            frames = min(CAMP_STEP_FRAMES, max(1, abs(dx) - RECALL_ARRIVE_PX))
+            return [pad('right' if dx > 0 else 'left', frames)]
+        frames = min(CAMP_STEP_FRAMES, max(1, abs(dy) - RECALL_ARRIVE_PX))
+        return [pad('down' if dy > 0 else 'up', frames)]
     if stage == 'menu' and is_fort_menu(screen):
         enter_fort(mem, state)
         stage = 'fort_menu'

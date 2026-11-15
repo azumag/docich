@@ -7448,6 +7448,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v878-menu-close-b",
             "hanjuku-chart-v879-camp-recall-picker",
             "hanjuku-chart-v880-ch9-red-eye-boss",
+            "hanjuku-chart-v881-camp-approach",
             "hanjuku-chart-v864-shop-list-batch",
             "hanjuku-chart-v862-camp-field-move",
             "hanjuku-chart-v852-visible-menu-batches",
