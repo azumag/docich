@@ -5623,6 +5623,111 @@ def _collect_tracked_drift(root):
     return classify_tracked_drift(scan_complete, parent_dirty, submodule_drift)
 
 
+# The direct broadcast template (next-corner card, rails) is served either from
+# the docich production checkout or from the Soren runtime copy, depending on
+# SOREN_DIRECT_BROADCAST_OVERLAY_HTML_FILE. A deploy that changes the docich
+# file can therefore leave the live rails on the old template (#4284/#4289).
+# This read-only probe reports, per fixed candidate, the bounded identity and
+# the next-corner font sizes so the served file is observable without exposing
+# file contents, paths or the override value.
+BROADCAST_TEMPLATE_REL = "overlays/direct_broadcast_overlay.html"
+BROADCAST_TEMPLATE_MAX_BYTES = 8 * 1024 * 1024
+BROADCAST_TEMPLATE_ENV_KEYS = (
+    "SOREN_STREAM_BACKEND",
+    "SOREN_DIRECT_STAGE_LAYOUT",
+    "SOREN_DIRECT_OVERLAY_ENABLED",
+    "SOREN_DIRECT_BROADCAST_OVERLAY_ENABLED",
+    "SOREN_DIRECT_BROADCAST_OVERLAY_HTML_FILE",
+)
+
+
+def _env_file_value(path, key):
+    """Read one ``KEY=value`` from an env file without sourcing it."""
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    for raw in text.splitlines():
+        line = raw.strip()
+        if line.startswith("export "):
+            line = line[len("export "):].lstrip()
+        if not line.startswith(key + "="):
+            continue
+        value = line.split("=", 1)[1].strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+            value = value[1:-1]
+        return value
+    return None
+
+
+def _broadcast_template_probe(path, now):
+    result = {"present": False}
+    try:
+        info = path.stat()
+    except OSError:
+        return result
+    if path.is_symlink() or not path.is_file():
+        return result
+    result["present"] = True
+    result["size"] = info.st_size
+    result["mtime_age_sec"] = max(0, int(now - info.st_mtime))
+    try:
+        with path.open("rb") as handle:
+            data = handle.read(BROADCAST_TEMPLATE_MAX_BYTES)
+    except OSError:
+        result["readable"] = False
+        return result
+    result["readable"] = True
+    result["sha256_16"] = hashlib.sha256(data).hexdigest()[:16]
+    result["has_next_corner_card"] = b'id="next-corner"' in data
+    for label in ("label", "when"):
+        match = re.search(
+            rb"\.next-corner-" + label.encode() + rb"\s*\{[^}]*font-size:\s*([0-9.]+)px",
+            data,
+        )
+        result[f"next_corner_{label}_font_px"] = (
+            float(match.group(1)) if match else None
+        )
+    return result
+
+
+def _collect_broadcast_template(soren, docich_root=None, now=None):
+    """Fixed-category view of the resolved broadcast template identity."""
+    soren = Path(soren)
+    docich_root = Path(docich_root) if docich_root is not None else Path("/home/ubuntu/docich")
+    now = time.time() if now is None else now
+    env = {}
+    for key in BROADCAST_TEMPLATE_ENV_KEYS:
+        value = _env_file_value(soren / ".env", key)
+        # Only the template path is classified below; never emit its value.
+        env[key] = value if key != "SOREN_DIRECT_BROADCAST_OVERLAY_HTML_FILE" else None
+    override = _env_file_value(soren / ".env", "SOREN_DIRECT_BROADCAST_OVERLAY_HTML_FILE") or ""
+    override = override.strip()
+    docich_template = docich_root / BROADCAST_TEMPLATE_REL
+    soren_template = soren / BROADCAST_TEMPLATE_REL
+    if override:
+        if override == BROADCAST_TEMPLATE_REL:
+            resolved = "override-soren-relative"
+        elif Path(override).is_absolute() and Path(override) == docich_template:
+            resolved = "override-docich-absolute"
+        else:
+            resolved = "override-other"
+    elif docich_template.is_file():
+        resolved = "docich"
+    else:
+        resolved = "soren-fallback"
+    return {
+        "backend": env.get("SOREN_STREAM_BACKEND"),
+        "layout": env.get("SOREN_DIRECT_STAGE_LAYOUT"),
+        "overlay_enabled": env.get("SOREN_DIRECT_OVERLAY_ENABLED"),
+        "broadcast_enabled": env.get("SOREN_DIRECT_BROADCAST_OVERLAY_ENABLED"),
+        "override_present": bool(override),
+        "resolved_source": resolved,
+        "docich_template": _broadcast_template_probe(docich_template, now),
+        "soren_template": _broadcast_template_probe(soren_template, now),
+    }
+
+
 # Corner/program state filenames under the docich production state_dir. These
 # are the only files read by _collect_programs; announcement/script bodies are
 # deliberately never surfaced (statuses, timestamps and counters only).
@@ -16077,6 +16182,7 @@ def main(argv):
             soren, _program_state_dir(), now, title_sync
         ),
         "tracked_drift": _collect_tracked_drift(PROD_ROOT),
+        "broadcast_template": _collect_broadcast_template(soren),
         # The ring lives in the runtime user's home. Resolve it with the same
         # rule the sampler uses (the passwd entry), not the checkout location
         # and not a config/state_dir value (#2578: reboot-persistent evidence).
