@@ -7485,7 +7485,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v896-gather-marker-concert",
             "hanjuku-chart-v896-recall-corridor",
             "hanjuku-chart-v897-recall-corridor",
-            "hanjuku-chart-v864-shop-list-batch",
+            "hanjuku-chart-v898-capture-reset",            "hanjuku-chart-v864-shop-list-batch",
             "hanjuku-chart-v862-camp-field-move",
             "hanjuku-chart-v852-visible-menu-batches",
             "hanjuku-chart-v560-castle-list-scroll",
