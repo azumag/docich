@@ -1,8 +1,8 @@
-"""Chapter 9's march does not stop to upgrade castles.
+"""Chapter 9's march still upgrades castles.
 
-Owner 2026-11-11: ９話は機械的に次の城にすべての将軍を送る、それ以外はdisable.
-g1163 2026-11-12 16:1x-16:4x spent 74 month steps and repeated castle-list
-scrolls on 築城 while the road was still being taken.
+Owner correction 2026-11-15: the 2026-11-11 skip saved month time, but the
+front castles then fell to counterattacks and retaking them cost more. The
+ordinary chart upgrade decision applies during the march again.
 """
 import pytest
 
@@ -31,11 +31,11 @@ def plan(mem):
     return shop
 
 
-def test_the_march_skips_the_castle_upgrade():
+def test_the_march_keeps_the_castle_upgrade():
     mem = memory(9, [ROAD[0], ROAD[1]])
     shop = plan(mem)
-    assert shop['chikujou'] == 'skipped'
-    assert [r for r in mem['_records'] if r.get('decision') == 'month_chikujou_skipped']
+    assert shop['chikujou'] == 'check'
+    assert not [r for r in mem['_records'] if r.get('decision') == 'month_chikujou_skipped']
 
 
 def test_the_boss_phase_keeps_the_upgrade():

@@ -1129,17 +1129,21 @@ def _plan_extras(mem, shop, reserve, recruit):
     shop['egg_cost'] = egg_cost
     shop['egg_priority'] = bool(_egg_recovery_targets(mem))
     shop['recruit'] = 'check' if recruit else None
+    # Owner correction 2026-11-15: chapter 9's march must still build castles.
+    # The 2026-11-11 skip saved month time, but the front castles then fell to
+    # counterattacks and retaking them cost more. The broken hero's house fund
+    # still wins (the owner's 2026-10-11 rule): no optional building until it
+    # is paid.
     if _mechanical_march(mem):
-        # Owner 2026-11-11: ９話は機械的に次の城にすべての将軍を送る、それ以外は
-        # disable. 築城 cost a real share of the march (g1163 2026-11-12 16:1x-16:4x:
-        # 74 month steps and 5-8 castle-list scrolls per half hour). The month
-        # keeps egg recovery, repairs, recruits and soldiers; only the castle
-        # upgrade is dropped while the road is still being taken.
-        if shop.get('chikujou') != 'skipped':
-            _record(mem, 'month_chikujou_skipped', chart_step=month_chart_step(mem),
-                    month=shop.get('key'),
-                    reason='第9話の機械行軍中は築城を行わず、行軍と卵回復・募集に時間を使う')
-        shop['chikujou'] = 'skipped'
+        broken_hero = bool(_hero_egg_broken(mem)) and _hero_repair_defer_reason(mem) is None
+        if broken_hero:
+            if shop.get('chikujou') != 'skipped':
+                _record(mem, 'month_chikujou_skipped', chart_step=month_chart_step(mem),
+                        month=shop.get('key'),
+                        reason='第9話でも壊れた家の修理費を優先し、築城は見送る')
+            shop['chikujou'] = 'skipped'
+        else:
+            shop['chikujou'] = 'check'
     else:
         shop['chikujou'] = 'check'
     _reserve_hero_repair(mem, shop, shop.get('gold_start'))
