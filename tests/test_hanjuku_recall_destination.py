@@ -481,3 +481,17 @@ def test_the_picker_progress_records_the_month_timing(monkeypatch):
     record = next(r for r in mem['_records'] if r['decision'] == 'camp_recall_picker_progress')
     assert record['observed_metric']['month_elapsed'] == 100
     assert record['observed_metric']['month_estimate'] == 464
+
+
+def test_a_gather_castle_is_not_replaced_by_the_nearest_rule(monkeypatch):
+    # Owner 2026-11-15: every general gathers at the last castle before the
+    # boss. The picker must keep that explicit goal instead of the nearest
+    # castle rule (g1190 97-11 picked シマウ while gathering at イデ！).
+    mem = {'chapter': 9, 'tick': 100, '_records': [], 'captured': [],
+           'recall': {'stage': 'dest', 'steps': 0, 'gather': 'イデ！', 'goal': 'カラ'}}
+    monkeypatch.setattr(p, 'world_cursor', lambda _: (100, 100))
+    monkeypatch.setattr(p, 'world_flags',
+                        lambda *_: {name: 'own' for name in p.chart.castles(9)})
+    monkeypatch.setattr(p, 'world_markers', lambda _: [])
+    p.world_map_step(VIEW, mem, picker())
+    assert _flow(mem)['recall']['goal'] == 'イデ！'
