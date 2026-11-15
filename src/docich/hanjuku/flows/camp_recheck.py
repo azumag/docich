@@ -971,7 +971,7 @@ def _step_flow(screen, mem, frame, existing):
         return [pad('b')] if is_camp_menu(screen) or screen.kind in ('world_map', 'map_target') else []
     if screen.kind == 'unknown' and state['stage'] != 'await_dispatch':
         return _wait(mem, state, '未知前景では帰還menuを選択しない')
-    if state['stage'] == 'dest' and screen.kind == 'map_target':
+    if state['stage'] == 'dest' and screen.kind == 'map_target' and not state.get('gather'):
         _defer(mem, state, '名前付き帰還先を実R pickerで確認できないため確定しない')
         return [pad('b')]
     skip_before = _flow(mem).get('recall_skip')
