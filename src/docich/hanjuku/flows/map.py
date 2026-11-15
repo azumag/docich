@@ -345,7 +345,10 @@ def world_map_step(screen, mem, frame):
             picked = _picker_origin(chapter, frame)
             if picked is not None:
                 recall.update(origin=picked, origin_source='picker')
-        goal = _recall_goal(mem, flags)
+        # A boss-phase gather names its castle explicitly (owner 2026-11-15:
+        # every general must gather at the last castle before the boss); never
+        # replace it with the nearest-castle rule.
+        goal = recall.get('gather') or _recall_goal(mem, flags)
         if goal is None:
             # The picker cannot aim and the hero's castle is the missing
             # position (g1163 2026-11-14 08:59/09:01, statuses null in ch.9).
