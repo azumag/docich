@@ -101,6 +101,9 @@ class DirectStreamOverlayRestartTests(unittest.TestCase):
         block = text.split(marker, 1)[1].split("- name: Restart docich webui systemd unit", 1)[0]
         self.assertIn("games/soviet_now", block)
         self.assertIn("soren_inline_overlay_refresh_epoch", block)
+        # The rails read the template at install time, so an overlay HTML
+        # change has to refresh them even when the Soren gitlink did not move.
+        self.assertIn("overlays/direct_broadcast_overlay.html", block)
         self.assertIn("refresh_soren_inline_overlay.sh", block)
         self.assertIn("github.event_name == 'push'", block)
         self.assertIn("steps.auth.outputs.target == 'production'", block)

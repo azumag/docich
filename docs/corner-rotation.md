@@ -170,6 +170,10 @@ JEVは自動有効化されていない手動のplayer-policy試験であり、�
   **gitlink 同期だけの deploy（soviet 側の配線変更）は自動では再起動されない**ので、
   正規の `ops/vm_actions/reload_shared_overlay.sh` で再起動して
   `/__soren_overlay/broadcast/state` に `nextCorner` が出ることを確認する。
+  同じ deploy は Soren91 の inline GAME/OPS レールも `refresh_soren_inline_overlay.sh` で
+  再描画する（2026-11-15 追加）。inline レールは install 時に HTML を読むため、
+  この step が無いと overlay HTML の変更が次の gitlink 変更まで配信へ出ない。
+  `ops/vm_actions/soren_inline_overlay_refresh_epoch` を bump しても再描画できる。
 
 ## 永続化、キュー、所有権
 
