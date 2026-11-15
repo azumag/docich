@@ -449,7 +449,11 @@ def orders(mem) -> list[dict]:
         hero.append((2, hero_order))
     attacks.sort(key=lambda item: item[0])
     moves.sort(key=lambda item: item[0])      # nearest the front first
-    out = [order for _, order in (*attacks, *moves, *hero)]
+    # The hero's post move outranks the staging moves: a hero left in the
+    # front castle is where a recruit arrives under the enemy, and the owner
+    # 2026-11-15 saw him stay there while the wave kept re-issuing moves
+    # (g1190 ch9: the front stayed サヌト and the post タオ never received him).
+    out = [order for _, order in (*attacks, *hero, *moves)]
     # A capture moves the front one castle; the hero's castle has to follow on
     # that same capture. When no roster or departure names him, read one
     # castle list before the rear marches, so the next observation can move
