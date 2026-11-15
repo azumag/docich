@@ -145,7 +145,10 @@ JEVは自動有効化されていない手動のplayer-policy試験であり、�
   この間 `game_switch` はまだ `sorengame` なので、`corner_rotation.json` の
   `pending` / `manual_pending` が非空の間も `corner_notice_state.py` は新規予想を作らない
   （2026-11-15 13:32 の PAPER で、枠確定後の待ち時間に作られた予想がコーナー中に残るのを観測）。
-  台帳が未読・破損・未知schemaのときは fail-open。改善バッチの加算はこの判定では変えない。
+  さらに interval では `next_due_at` まで `LEAD_SECONDS`（300秒）以内も同じ扱いにする。
+  `next_corner.json` の欠落・遅延があっても予定直前の予想開始を防ぐためで、queue mode は
+  時刻約束がないので pending / active だけで守る。台帳が未読・破損・未知schema・非数値の
+  `next_due_at` のときは fail-open。改善バッチの加算はこの判定では変えない。
 - 枠の終了後、`last_result` がterminal（completed / interrupted / expired）かつ
   30分以内なら、共有audio queueへ1回だけ「次のコーナーは〜、18時からの予定です。」を
   入れる。`notice_spoken_for`（request UUID）で冪等にし、`dedup_scope` も同じ
