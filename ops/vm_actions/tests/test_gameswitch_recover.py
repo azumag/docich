@@ -609,10 +609,10 @@ class HelperCliTests(unittest.TestCase):
         root = self._root_with_launcher()
         launcher = root / HELPER_MODULE.LAUNCHER_REL
         launcher.write_text(
-            "#!/bin/sh\\n"
+            "#!/bin/sh\n"
             f"printf '%s' '{json.dumps(canonical(phase='ready', active=runtime(), next_generation=5))}' "
-            f"> '{root / HELPER_MODULE.STATE_REL}'\\n"
-            "exit 0\\n", encoding="utf-8",
+            f"> '{root / HELPER_MODULE.STATE_REL}'\n"
+            "exit 0\n", encoding="utf-8",
         )
         launcher.chmod(0o755)
         with self.assertRaises(HELPER_MODULE.FixedRecoverExit) as ctx:
@@ -624,10 +624,10 @@ class HelperCliTests(unittest.TestCase):
         write_state(root, canonical(revision=8))
         launcher = root / HELPER_MODULE.LAUNCHER_REL
         launcher.write_text(
-            "#!/bin/sh\\n"
+            "#!/bin/sh\n"
             f"printf '%s' '{json.dumps(canonical(phase='ready', active=runtime(), next_generation=4, revision=7))}' "
-            f"> '{root / HELPER_MODULE.STATE_REL}'\\n"
-            "exit 0\\n", encoding="utf-8",
+            f"> '{root / HELPER_MODULE.STATE_REL}'\n"
+            "exit 0\n", encoding="utf-8",
         )
         launcher.chmod(0o755)
         with self.assertRaises(HELPER_MODULE.FixedRecoverExit) as ctx:
@@ -641,10 +641,10 @@ class HelperCliTests(unittest.TestCase):
         write_state(root, canonical(last_result={"request_id": request_a, "status": "failed"}))
         launcher = root / HELPER_MODULE.LAUNCHER_REL
         launcher.write_text(
-            "#!/bin/sh\\n"
+            "#!/bin/sh\n"
             f"printf '%s' '{json.dumps(canonical(phase='ready', active=runtime(), next_generation=4, last_result={'request_id': request_b}))}' "
-            f"> '{root / HELPER_MODULE.STATE_REL}'\\n"
-            "exit 0\\n", encoding="utf-8",
+            f"> '{root / HELPER_MODULE.STATE_REL}'\n"
+            "exit 0\n", encoding="utf-8",
         )
         launcher.chmod(0o755)
         with self.assertRaises(HELPER_MODULE.FixedRecoverExit) as ctx:
