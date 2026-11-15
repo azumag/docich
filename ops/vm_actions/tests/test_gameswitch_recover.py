@@ -605,6 +605,52 @@ class HelperCliTests(unittest.TestCase):
         launcher.chmod(0o755)
         self.assertEqual(HELPER_MODULE.recover(root, "failed", False), 0)
 
+    def test_cli_zero_with_foreign_generation_is_invalid(self):
+        root = self._root_with_launcher()
+        launcher = root / HELPER_MODULE.LAUNCHER_REL
+        launcher.write_text(
+            "#!/bin/sh\\n"
+            f"printf '%s' '{json.dumps(canonical(phase='ready', active=runtime(), next_generation=5))}' "
+            f"> '{root / HELPER_MODULE.STATE_REL}'\\n"
+            "exit 0\\n", encoding="utf-8",
+        )
+        launcher.chmod(0o755)
+        with self.assertRaises(HELPER_MODULE.FixedRecoverExit) as ctx:
+            HELPER_MODULE.recover(root, "failed", False)
+        self.assertEqual(ctx.exception.code, HELPER_MODULE.EX_INVALID_RESULT)
+
+    def test_cli_zero_with_stale_revision_is_invalid(self):
+        root = self._root_with_launcher()
+        write_state(root, canonical(revision=8))
+        launcher = root / HELPER_MODULE.LAUNCHER_REL
+        launcher.write_text(
+            "#!/bin/sh\\n"
+            f"printf '%s' '{json.dumps(canonical(phase='ready', active=runtime(), next_generation=4, revision=7))}' "
+            f"> '{root / HELPER_MODULE.STATE_REL}'\\n"
+            "exit 0\\n", encoding="utf-8",
+        )
+        launcher.chmod(0o755)
+        with self.assertRaises(HELPER_MODULE.FixedRecoverExit) as ctx:
+            HELPER_MODULE.recover(root, "failed", False)
+        self.assertEqual(ctx.exception.code, HELPER_MODULE.EX_INVALID_RESULT)
+
+    def test_cli_zero_with_foreign_result_request_is_invalid(self):
+        root = self._root_with_launcher()
+        request_a = "0f5d2a1c-3b4e-4a5d-8f6a-1b2c3d4e5f60"
+        request_b = "11111111-2222-3333-4444-555555555555"
+        write_state(root, canonical(last_result={"request_id": request_a, "status": "failed"}))
+        launcher = root / HELPER_MODULE.LAUNCHER_REL
+        launcher.write_text(
+            "#!/bin/sh\\n"
+            f"printf '%s' '{json.dumps(canonical(phase='ready', active=runtime(), next_generation=4, last_result={'request_id': request_b}))}' "
+            f"> '{root / HELPER_MODULE.STATE_REL}'\\n"
+            "exit 0\\n", encoding="utf-8",
+        )
+        launcher.chmod(0o755)
+        with self.assertRaises(HELPER_MODULE.FixedRecoverExit) as ctx:
+            HELPER_MODULE.recover(root, "failed", False)
+        self.assertEqual(ctx.exception.code, HELPER_MODULE.EX_INVALID_RESULT)
+
     def test_cli_one_remains_pending_even_if_state_is_ready(self):
         root = self._root_with_launcher(exit_code=1)
         launcher = root / HELPER_MODULE.LAUNCHER_REL
