@@ -164,6 +164,17 @@ class TestNewGameSession(unittest.TestCase):
         self.assertEqual(calls[0][:6], ["tmux", "new-session", "-d", "-s", "docich-game", "-x"])
         self.assertIn(["tmux", "set-option", "-t", "docich-game", "status", "off"], calls)
 
+    @mock.patch("docich.tmux.procs.run")
+    def test_game_command_is_sent_via_send_keys_not_new_session(self, mock_run):
+        # Issue #4344: a command that dies instantly used to take the whole
+        # session down, surfacing as `no such session` on the status step.
+        mock_run.return_value = _ok()
+        self.tmux.new_game_session("docich-game", ["nethack"], 80, 24)
+
+        calls = [c.args[0] for c in mock_run.call_args_list]
+        self.assertNotIn("nethack", calls[0])  # new-session carries no command
+        self.assertIn(["tmux", "send-keys", "-t", "docich-game", "nethack", "Enter"], calls)
+
 
 class TestCheckedOperations(unittest.TestCase):
     def setUp(self):
