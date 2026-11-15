@@ -587,6 +587,14 @@ def decide(frame: Frame, state: dict, *, adjusted: dict | None = None,
     hanjuku_chart.migrate_legacy_labels(state)
     memory = dict(state.get('policy') or {})
     memory['approx_map'] = bool(approx_map)
+    previous_version = state.get('bot_version')
+    if previous_version and previous_version != BOT_VERSION:
+        # A new bot version re-evaluates the transient battle-menu holds. A
+        # legacy orphan flow persisted by an older version otherwise keeps
+        # holding a battle fade after resume (g1190 ch9 2026-11-15, input_stalled).
+        for key in ('orphan_battle_menu', 'resume_battle_menu',
+                    'battle_menu_hold', 'battle_draw_hold'):
+            memory.pop(key, None)
     # A location mark from an overdue march expires here rather than in the
     # corridor planner: g1163 2026-11-11 23:15-00:05 spent an hour in battles
     # and the month menu without ever planning a sortie, so the planner-only
