@@ -68,7 +68,7 @@ class TestOwnershipEnvironmentExport(unittest.TestCase):
             mock_run.side_effect = [
                 _ok("$4\n"), _ok(),
                 _ok(), _ok(), _ok(),
-                _ok("g1-abcdef\n"), _ok("1\n"), _ok("adapter\n"),
+                _ok("g1-abcdef\n"), _ok("1\n"), _ok("adapter\n"), _ok(),
             ]
             session_id = tmux.create_game_session_owned(
                 "docich-game-g1", ["moon-buggy"], 80, 24, adapter
@@ -78,7 +78,9 @@ class TestOwnershipEnvironmentExport(unittest.TestCase):
         args = mock_run.call_args_list[0].args[0]
         self.assertIn("DOCICH_TMUX_RUNTIME_ID=g1-abcdef", args)
         self.assertIn("DOCICH_TMUX_ROLE=adapter", args)
-        self.assertEqual(args[-1], "moon-buggy")
+        self.assertNotIn("moon-buggy", args)  # command goes via send-keys (#4344)
+        self.assertEqual(mock_run.call_args_list[-1].args[0],
+                         ["tmux", "send-keys", "-t", "$4", "moon-buggy", "Enter"])
 
 
 class TestOrphanSweepOnWindowTeardown(unittest.TestCase):
