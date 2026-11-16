@@ -24,6 +24,20 @@ PURSUIT_LIST_LIMIT = 48
 PURSUIT_COOLDOWN = 240        # ticks before the same general is pursued again
 PURSUIT_MARCH_MIN = 400       # a just-launched march is left alone this long
 LIST_KEY = 'boss_wave_generals'
+ABSENT_END_READS = 3          # identical roster reads at the list end = full pass
+
+
+def _mark_lost(mem, general):
+    """Record a general the full country roster no longer lists.
+
+    Nothing else wrote generals_lost, so the wave kept the dead generals and
+    every later pursuit closed general_not_found (ch9 2026-11-17, 15 of 15).
+    """
+    lost = mem.get('generals_lost')
+    lost = list(lost) if isinstance(lost, list) else []
+    if general not in lost:
+        lost.append(general)
+    mem['generals_lost'] = lost
 
 
 def track(mem):
@@ -43,6 +57,10 @@ def track(mem):
             wave.setdefault(general, {'step': step, 'launched': s.get('tick')})
     home = {g for residents in garrison.values()
             if isinstance(residents, list) for g in residents}
+    if home & lost:
+        # A name seen back in a castle garrison was a misread, not a loss.
+        mem['generals_lost'] = [g for g in (mem.get('generals_lost') or ()) if g not in home]
+        lost = set(mem['generals_lost'])
     for general in list(wave):
         if general in home or general in lost:
             wave.pop(general, None)
@@ -156,6 +174,16 @@ def step(screen, mem, frame):
         if names is None:
             return []
         if probe['general'] not in names:
+            # The roster stops scrolling at its last name. Three identical
+            # reads at that end, with the general still absent, is a full
+            # pass: the general is not on the country list any more.
+            at_end = screen.selected == names[-1]
+            probe['same'] = probe.get('same', 0) + 1 if (at_end and names == probe.get('last')) else 0
+            probe['last'] = names
+            if probe['same'] >= ABSENT_END_READS:
+                _mark_lost(mem, probe['general'])
+                _close(mem, probe, 'general_absent_from_roster')
+                return [pad('b')]
             probe['seeks'] += 1
             if probe['seeks'] > PURSUIT_LIST_LIMIT:
                 _close(mem, probe, 'general_not_found')
