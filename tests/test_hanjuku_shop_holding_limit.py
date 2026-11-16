@@ -188,6 +188,20 @@ def test_full_hand_refusals_stay_bounded_and_terminate(ready):
     assert ready['card_held_floor']['ノリウツール'] == 99
 
 
+def test_strong_floor_from_a_stale_estimate_can_add_one_refusal(ready):
+    """H=80, q=39, stock=0: the learned floor is >=50 but still below truth.
+
+    The first room-only retry is refused, then the geometric guard takes over;
+    this is the one-refusal cost of using the room when the floor is strong but
+    the starting estimate was stale. The old halving accepted on its first
+    retry here, so the regression is bounded at one extra refusal.
+    """
+    refusals, terminal = _refusal_sequence(ready, 'ノリウツール', 80, 39, stock=0)
+    assert refusals == 2                    # 39 (refused) -> 38 (refused) -> 19 (accepted)
+    assert terminal == 19
+    assert ready['card_held_floor']['ノリウツール'] == 62
+
+
 def test_full_kind_drops_only_that_card(ready):
     _refused_after(ready, 'ノリウツール', 1, stock=0, rest=[['ミックミー', 3]])
     assert ready['card_held_floor']['ノリウツール'] == 99
