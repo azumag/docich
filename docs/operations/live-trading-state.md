@@ -91,6 +91,16 @@ L1 は、本番(LIVE)の売買の**土台だけ**で、動作しない。どの�
 
 **フェーズ B の手順(オーナー)**: ① bitbank の画面で API キーを発行(権限は**参照のみ**。取引・出金は付けない)② `umask 077; install -d -m 700 <state>/trading-live/owner`、キーを `<state>/trading-live/owner/bitbank_readonly_key.json`(0600、`{"schema_version":1,"kind":"docich-bitbank-readonly-key","api_key":"…","api_secret":"…"}`)に置く ③ `python -m docich.trading.exchanges.bitbank_live.check --state-dir <state>`(ccxt が入った環境。`pip install -r requirements-trading.txt`)④ 出力を Issue に貼る。結果で、`since` の単位・`remaining_amount` の意味・maker のリベートの符号・参照のみの権限で読める範囲が確定する。**キーは会話・リポジトリ・Issue に書かない。**
 
+## L4a オーナー用 CLI(status / cashflow)
+
+`src/docich/trading/live_owner/`(`live/` を読むだけで、`exchanges/`・ccxt・ネットワークは使わない。テストで固定)。状態ディレクトリを `--state-dir` に**絶対パス**で渡す。
+
+- `python -m docich.trading.live_owner --state-dir <state> status`: **読み取り専用**。台帳が無ければ `ledger: not created` の1行だけで、ディレクトリもファイルも作らない。あれば有効な方針ダイジェストの先頭12桁(無ければ `none`)、状態ごとの意図数(0件の状態は出さない)、未決済・`residual_inventory` のポジション数、安全停止の理由(無ければ `none`)、UNKNOWN_SUBMISSION の数、cashflow 数、event 数を出す。金額と注文 ID は出さない。
+- `python -m docich.trading.live_owner --state-dir <state> cashflow list`: **読み取り専用**。1行1件で id・kind・通貨・時刻(ISO)・source を出し、金額は**端末(TTY)のときだけ**表示する。それ以外は `amount: hidden`。台帳が無ければ status と同じ1行。
+- `python -m docich.trading.live_owner --state-dir <state> cashflow add --kind {deposit,withdrawal,adjustment} --currency CUR --amount DEC --occurred-at ISO8601 --operator NAME --note TEXT [--confirm TOKEN] [--allow-repeat]`: 開始残高・入出金・調整の記録。**二段確認**: `--confirm` 無しは正規化した内容と token を出すだけで、何も書かず・LIVE ディレクトリも作らない。`--confirm TOKEN` で同じ引数から token を再計算し、一致したときだけ writer lease を取って記録する。token は内容と台帳 ID のハッシュなので、台帳ができた後は preview を取り直す。同じ id は `already recorded`、同じ (kind, 通貨, 金額) は `--allow-repeat` が無ければ拒否。
+- 終了コード: `0` 成功 / `1` 拒否(refused) / `2` 引数の誤り(usage) / `5` writer lease を live worker が保持(停止してから再実行)。
+- 金額は `Decimal`(浮動小数は拒否、8桁まで)。`--occurred-at` はタイムゾーン付きの ISO 8601 のみ(naive と未来は拒否)。`--operator` と `--note` は前後の空白を除いて 1〜200 文字。
+
 ## L1 でやらないこと
 
 APIキー・取引所への接続・ワーカー・通知・昇格の適用。いずれも後続の PR で、PR ごとにオーナーの確認を取る。実注文(E)と常駐(F)は、オーナーの明示承認と、取引所の API キーの発行(出金権限なし)が前提。
