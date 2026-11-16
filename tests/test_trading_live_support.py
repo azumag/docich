@@ -125,3 +125,95 @@ def make_mock(clock=None, *, symbols=("OAS/JPY",), jpy="10000", fees=None, caps=
                         fees=fees or MockFees(maker_rate=_D("0"), taker_rate=_D("0.001")),
                         capabilities=caps, state_path=state_path, **kw)
     return mock, clock
+
+
+# ---- L2b: executor harness ---------------------------------------------------------------
+from docich.trading.live import executor as live_executor
+from docich.trading.live import ingest as live_ingest
+from docich.trading.live import ledger as live_ledger
+from docich.trading.live.ingest import ExecutorConfig
+from docich.trading.live.lease import acquire_writer_lease
+from docich.trading.live.ledger import Cashflow, IntentRequest
+
+
+class SimulatedCrash(BaseException):
+    """Raised from a FAULT_HOOK: unwinds like a process death (every open transaction rolls back)."""
+
+
+class Harness:
+    """Ledger + lease + mock exchange + executor on one fake clock.  ``crash()`` is a process restart."""
+
+    def __init__(self, ws, *, symbols=("OAS/JPY",), jpy="10000", caps=None, fees=None, config=None,
+                 gate_open=True, opening=True, state_path=None):
+        self.ws, self.symbols = ws, tuple(symbols)
+        self.clock = Clock()
+        self.mock, _ = make_mock(self.clock, symbols=self.symbols, jpy=jpy, caps=caps, fees=fees,
+                                 state_path=state_path)
+        self.ps = policy_set(self.symbols)
+        self.config = config or ExecutorConfig(settle_s=120.0, sweep_every=1)
+        self.gate_open = gate_open
+        self.seq = 0
+        self.boot()
+        if opening:
+            self.deposit("JPY", jpy)
+        if gate_open:
+            ws.write_enable(self.ps)
+
+    # -- life cycle
+    def boot(self):
+        self.ledger = self.ws.open_ledger(now=self.clock.seconds())
+        self.lease = acquire_writer_lease(self.ledger, self.ws.layout, now=self.clock.seconds())
+        self.ledger.store_policy_set(self.lease, self.ps, now=self.clock.seconds())
+        self.ex = live_executor.OrderExecutor(
+            self.ledger, self.lease, reader=self.mock, sender=self.mock, enable_check=self._gate,
+            clock=self.clock.seconds, symbols=self.symbols, config=self.config)
+
+    def _gate(self):
+        return self.ws.enable_result(self.ps)
+
+    def crash(self):
+        """The process dies: the lock is released by the OS, nothing is closed politely."""
+        os.close(self.lease.fd)
+        self.ledger.close()
+        self.boot()
+
+    def close(self):
+        live_executor.FAULT_HOOK = None
+        live_ingest.FAULT_HOOK = None
+        live_ledger.FAULT_HOOK = None
+        try:
+            self.ledger.close()
+        except Exception:
+            pass
+
+    # -- helpers
+    def deposit(self, currency, amount):
+        self.seq += 1
+        self.ledger.record_cashflow(self.lease, Cashflow(f"cf{self.seq}", "deposit", currency, str(amount),
+                                                         "owner_manual", self.clock.seconds()),
+                                    now=self.clock.seconds())
+
+    def req(self, symbol="OAS/JPY", side="buy", key="k1", amount="10", price="100", order_type="limit",
+            rule_id=None):
+        return IntentRequest(decision_key=key, symbol=symbol, side=side, order_type=order_type, amount=amount,
+                             price=None if order_type == "market" else price,
+                             policy_digest=self.ps.policy_for(symbol).digest,
+                             rule_id=rule_id or ("entry-1" if side == "buy" else "exit-1"))
+
+    def send(self, **kw):
+        intent = self.ex.plan(self.req(**kw))
+        return intent, self.ex.submit(intent.intent_id)
+
+    def state(self, intent_id):
+        return self.ledger.get_intent(intent_id).state
+
+    def trips(self):
+        return sorted(t.reason for t in live_safety_read(self.ledger).trips)
+
+    def advance(self, seconds):
+        self.clock.advance(seconds)
+
+
+def live_safety_read(ledger):
+    from docich.trading.live import safety
+    return safety.read_safety_state(ledger)
