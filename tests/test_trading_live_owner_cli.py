@@ -19,13 +19,16 @@ from docich.trading.live import executor as live_executor
 from docich.trading.live import lease as live_lease
 from docich.trading.live import policy as live_policy
 from docich.trading.live import safety as sf
-from docich.trading.live.exchange import Capabilities, ExchangeAmbiguous, OrderRequest
+from docich.trading.live import reconcile as live_reconcile
+from docich.trading.live import views as live_views
+from docich.trading.live.exchange import Capabilities, ExchangeAmbiguous, OrderRequest, OrderSnapshot
+from docich.trading.live.ingest import observation_from
 from docich.trading.live.executor import SubmitOutcome as S
 from docich.trading.live.ledger import LiveLedger
 from docich.trading.live.lease import acquire_writer_lease
 from docich.trading.live.paths import live_layout
 from docich.trading.live_owner import cli, revision as live_revision
-from test_trading_live_support import (Harness, Workspace, block_network, market_rules, policy_set,
+from test_trading_live_support import (Harness, SimulatedCrash, Workspace, block_network, market_rules, policy_set,
                                        synthetic_mapping, synthetic_spec)
 
 NOW = 1_767_225_600.0                     # 2026-01-01T00:00:00+00:00
@@ -785,7 +788,7 @@ def test_unknown_resolve_not_created_lets_the_machine_prove_it_first(workspace):
 
 
 def test_unknown_resolve_not_created_accepts_an_override_for_an_unprovable_sell(workspace):
-    h = _unknown_harness(workspace)
+    h = _unknown_harness(workspace, caps=Capabilities(False, False, True))
     try:
         buy, _ = h.send(side="buy", key="b0", amount="10", price="100")
         assert h.state(buy.intent_id) == "FILLED"
@@ -815,6 +818,7 @@ def test_unknown_resolve_not_created_accepts_an_override_for_an_unprovable_sell(
         proof = json.loads(_evidence(h.ledger, sell.intent_id))
         assert proof["method"] == "owner_manual" and proof["mode"] == "not_created"
         assert proof["machine"]["override_incomplete_proof"] == "true" and proof["machine"]["result"] == "waiting"
+        assert proof["machine"]["fills_complete"] == "true"
         # the exit is no longer pinned by the unknown submission
         ledger = LiveLedger.open(h.ws.layout, paper_dir=h.ws.paper, now=h.clock.seconds())
         lease = acquire_writer_lease(ledger, h.ws.layout, now=h.clock.seconds())
@@ -831,7 +835,7 @@ def test_unknown_resolve_not_created_accepts_an_override_for_an_unprovable_sell(
 
 
 def test_unknown_resolve_refuses_a_matching_open_order_for_not_created(workspace):
-    h = _unknown_harness(workspace)
+    h = _unknown_harness(workspace, caps=Capabilities(False, False, True))
     try:
         h.mock.faults.push("submit", "LOST_REQUEST")
         intent, _ = h.send(side="buy", key="b1", amount="10", price="90")
@@ -853,7 +857,8 @@ def test_unknown_resolve_refuses_a_matching_open_order_for_not_created(workspace
      "refused: give exactly one of --found-order and --not-created\n"),
     (["--not-created", "--evidence", "too short"], "refused: evidence must be 20..400 characters\n"),
     (["--not-created", "--evidence", "x" * 401], "refused: evidence must be 20..400 characters\n"),
-    (["--found-order", "no-such-id", "--evidence", "x" * 20], "refused: exchange unavailable: OrderNotFound\n"),
+    (["--found-order", "no-such-id", "--evidence", "x" * 20],
+     "refused: the exchange does not know that order id\n"),
 ])
 def test_unknown_resolve_refuses_bad_arguments(workspace, argv, expected):
     h = _unknown_harness(workspace)
@@ -934,5 +939,323 @@ def test_unknown_commands_refuse_a_broken_exchange_and_change_nothing(workspace)
             assert code == 1 and text == "refused: exchange unavailable: ExchangeAmbiguous\n"
         assert (_events(h.ledger), _orders(h.ledger), h.trips()) == before
         assert h.ledger.get_intent(intent.intent_id).state == "UNKNOWN_SUBMISSION"
+    finally:
+        h.close()
+
+
+# ---- unknown: orders that are only visible in the fill history -------------------------------
+def _filled_lost_buy(h, key="b1", amount="10", price="100"):
+    """A lost submit that really filled at once: absent from the open list, present in the fills."""
+    h.mock.faults.push("submit", "LOST_RESPONSE")
+    intent, outcome = h.send(side="buy", key=key, amount=amount, price=price)
+    assert outcome is S.UNKNOWN, outcome
+    assert h.mock.fetch_open_orders("OAS/JPY").orders == ()
+    return intent, h.mock.all_orders()[0].exchange_order_id
+
+
+def test_not_created_refuses_a_lost_order_that_filled_at_once(workspace):
+    h = _unknown_harness(workspace, caps=Capabilities(False, False, True))
+    try:
+        intent, eid = _filled_lost_buy(h)
+        h.advance(500)
+        _released(h)
+        code, show = _run(workspace.state, "unknown", "show", "--intent", intent.intent_id, now=h.clock.seconds(),
+                          reader_factory=lambda state_dir: h.mock)
+        assert code == 0 and "candidates: 1" in show and "matching: 1" in show
+        argv = ["unknown", "resolve", "--intent", intent.intent_id, "--not-created",
+                "--evidence", "checked the exchange history by hand", "--operator", "owner"]
+        for extra in ([], ["--override-incomplete-proof"]):
+            code, text = _run(workspace.state, *argv, *extra, now=h.clock.seconds(),
+                              reader_factory=lambda state_dir: h.mock)
+            assert code == 1, text
+            assert text == "refused: a matching order exists on the exchange; use --found-order\n"
+        assert h.ledger.get_intent(intent.intent_id).state == "UNKNOWN_SUBMISSION"
+        assert _orders(h.ledger) == [] and h.trips() == []
+        # the found path resolves the very same order
+        code, preview = _run(workspace.state, "unknown", "resolve", "--intent", intent.intent_id,
+                             "--found-order", eid, "--evidence", "found it in the fill history",
+                             "--operator", "owner", now=h.clock.seconds(), reader_factory=lambda state_dir: h.mock)
+        assert code == 0, preview
+        code, text = _run(workspace.state, "unknown", "resolve", "--intent", intent.intent_id,
+                          "--found-order", eid, "--evidence", "found it in the fill history",
+                          "--operator", "owner", "--confirm", _token(preview), now=h.clock.seconds(),
+                          reader_factory=lambda state_dir: h.mock)
+        assert code == 0 and text == "resolved: found\n"
+        assert h.ledger.get_intent(intent.intent_id).reason_code == "found_by_owner"
+    finally:
+        h.close()
+
+
+def test_a_fill_of_another_order_is_a_candidate_but_does_not_match(workspace):
+    h = _unknown_harness(workspace, caps=Capabilities(False, False, True))
+    try:
+        h.mock.faults.push("submit", "LOST_REQUEST")
+        intent, outcome = h.send(side="buy", key="b1", amount="10", price="90")
+        assert outcome is S.UNKNOWN
+        h.mock.place_external_order(OrderRequest("OAS/JPY", "buy", "limit", Decimal("3"), Decimal("100"), None))
+        h.advance(500)
+        _released(h)
+        code, show = _run(workspace.state, "unknown", "show", "--intent", intent.intent_id, now=h.clock.seconds(),
+                          reader_factory=lambda state_dir: h.mock)
+        assert code == 0 and "candidates: 1" in show and "matching: 0" in show
+        argv = ["unknown", "resolve", "--intent", intent.intent_id, "--not-created",
+                "--evidence", "checked the exchange history by hand", "--operator", "owner"]
+        code, preview = _run(workspace.state, *argv, now=h.clock.seconds(), reader_factory=lambda state_dir: h.mock)
+        assert code == 0 and "matching: 0" in preview                  # the candidate stage does not refuse
+        code, text = _run(workspace.state, *argv, "--confirm", _token(preview), now=h.clock.seconds(),
+                          reader_factory=lambda state_dir: h.mock)
+        # the unaccounted external fill leaves the balance unproven: only the owner can conclude
+        assert code == 1 and "the machine cannot prove this" in text
+        assert h.ledger.get_intent(intent.intent_id).state == "UNKNOWN_SUBMISSION"
+    finally:
+        h.close()
+
+
+def test_not_created_refuses_two_matching_orders(workspace):
+    h = _unknown_harness(workspace, caps=Capabilities(False, False, True))
+    try:
+        h.mock.faults.push("submit", "LOST_REQUEST")
+        intent, _ = h.send(side="buy", key="b1", amount="10", price="90")
+        for _ in range(2):
+            h.mock.place_external_order(OrderRequest("OAS/JPY", "buy", "limit", Decimal("10"), Decimal("90"), None))
+        _released(h)
+        code, text = _run(workspace.state, "unknown", "resolve", "--intent", intent.intent_id, "--not-created",
+                          "--evidence", "checked the exchange history by hand", "--operator", "owner",
+                          "--override-incomplete-proof", now=h.clock.seconds(),
+                          reader_factory=lambda state_dir: h.mock)
+        assert code == 1 and text == "refused: a matching order exists on the exchange; use --found-order\n"
+        assert h.ledger.get_intent(intent.intent_id).state == "UNKNOWN_SUBMISSION"
+    finally:
+        h.close()
+
+
+def test_an_unlinked_order_row_is_a_candidate_and_can_be_found(workspace):
+    h = _unknown_harness(workspace, caps=Capabilities(False, False, True))
+    try:
+        h.mock.faults.push("submit", "LOST_REQUEST")
+        intent, _ = h.send(side="buy", key="b1", amount="10", price="90")
+        h.mock.place_external_order(OrderRequest("OAS/JPY", "buy", "limit", Decimal("10"), Decimal("90"), None))
+        eid = h.mock.all_orders()[0].exchange_order_id
+        # the sweep's own write: the ledger knows the order but not which intent it belongs to
+        h.ledger.record_order_observation(
+            h.lease, observation_from(h.mock.fetch_order("OAS/JPY", eid), None), now=h.clock.seconds())
+        assert live_views.order_row(h.ledger, eid).intent_id is None
+        _released(h)
+        code, text = _run(workspace.state, "unknown", "resolve", "--intent", intent.intent_id, "--not-created",
+                          "--evidence", "checked the exchange history by hand", "--operator", "owner",
+                          "--override-incomplete-proof", now=h.clock.seconds(),
+                          reader_factory=lambda state_dir: h.mock)
+        assert code == 1 and text == "refused: a matching order exists on the exchange; use --found-order\n"
+        code, preview = _run(workspace.state, "unknown", "resolve", "--intent", intent.intent_id,
+                             "--found-order", eid, "--evidence", "that unlinked order is mine",
+                             "--operator", "owner", now=h.clock.seconds(), reader_factory=lambda state_dir: h.mock)
+        assert code == 0, preview
+        code, text = _run(workspace.state, "unknown", "resolve", "--intent", intent.intent_id,
+                          "--found-order", eid, "--evidence", "that unlinked order is mine",
+                          "--operator", "owner", "--confirm", _token(preview), now=h.clock.seconds(),
+                          reader_factory=lambda state_dir: h.mock)
+        assert code == 0 and text == "resolved: found\n"
+        assert h.ledger.get_intent(intent.intent_id).state in ("ACKED", "PARTIALLY_FILLED", "FILLED")
+    finally:
+        h.close()
+
+
+def test_an_anomaly_is_never_overridable(workspace, monkeypatch):
+    h = _unknown_harness(workspace, caps=Capabilities(False, False, True))
+    try:
+        h.mock.faults.push("submit", "LOST_REQUEST")
+        intent, _ = h.send(side="buy", key="b1", amount="10", price="90")
+        h.advance(500)
+        _released(h)
+        argv = ["unknown", "resolve", "--intent", intent.intent_id, "--not-created", "--override-incomplete-proof",
+                "--evidence", "checked the exchange history by hand", "--operator", "owner"]
+
+        def anomaly_result(ex, pending):
+            return "anomaly"
+
+        code, preview = _run(workspace.state, *argv, now=h.clock.seconds(), reader_factory=lambda state_dir: h.mock)
+        assert code == 0, preview                                     # the preview never calls try_resolve
+        monkeypatch.setattr(live_reconcile, "try_resolve", anomaly_result)
+        code, text = _run(workspace.state, *argv, "--confirm", _token(preview), now=h.clock.seconds(),
+                          reader_factory=lambda state_dir: h.mock)
+        assert code == 1 and text == "refused: the machine found an anomaly; the override does not apply\n"
+        assert h.ledger.get_intent(intent.intent_id).state == "UNKNOWN_SUBMISSION"
+
+        def anomaly_side_effect(ex, pending):
+            ex.ingest.anomaly("a side effect the result does not show")
+            return "waiting"
+
+        monkeypatch.setattr(live_reconcile, "try_resolve", anomaly_side_effect)
+        code, text = _run(workspace.state, *argv, "--confirm", _token(preview), now=h.clock.seconds(),
+                          reader_factory=lambda state_dir: h.mock)
+        assert code == 1 and text == "refused: the machine found an anomaly; the override does not apply\n"
+        assert h.ledger.get_intent(intent.intent_id).state == "UNKNOWN_SUBMISSION"
+    finally:
+        h.close()
+
+
+def test_the_anomaly_counter_still_decides_when_a_trip_is_already_active(workspace, monkeypatch):
+    h = _unknown_harness(workspace, caps=Capabilities(False, False, True))
+    try:
+        h.mock.faults.push("submit", "LOST_REQUEST")
+        intent, _ = h.send(side="buy", key="b1", amount="10", price="90")
+        sf.trip(h.ledger, sf.SafetyReason.DATA_ANOMALY, detail="already active", now=h.clock.seconds())
+        h.advance(500)
+        _released(h)
+
+        def anomaly_side_effect(ex, pending):
+            ex.ingest.anomaly("same reason, already tripped")      # the trip set does not change
+            return "waiting"
+
+        argv = ["unknown", "resolve", "--intent", intent.intent_id, "--not-created",
+                "--override-incomplete-proof", "--evidence", "checked the exchange history by hand",
+                "--operator", "owner"]
+        code, preview = _run(workspace.state, *argv, now=h.clock.seconds(), reader_factory=lambda state_dir: h.mock)
+        assert code == 0, preview
+        monkeypatch.setattr(live_reconcile, "try_resolve", anomaly_side_effect)
+        code, text = _run(workspace.state, *argv, "--confirm", _token(preview), now=h.clock.seconds(),
+                          reader_factory=lambda state_dir: h.mock)
+        assert code == 1 and text == "refused: the machine found an anomaly; the override does not apply\n"
+        assert [trip.reason for trip in sf.read_safety_state(h.ledger).trips] == ["data_anomaly"]
+        assert h.ledger.get_intent(intent.intent_id).state == "UNKNOWN_SUBMISSION"
+    finally:
+        h.close()
+
+
+def test_found_order_refuses_an_inconsistent_snapshot_without_a_trip(workspace):
+    h = _unknown_harness(workspace, caps=Capabilities(False, False, True))
+    try:
+        h.mock.faults.push("submit", "LOST_RESPONSE")
+        intent, _ = h.send(side="buy", key="b1", amount="10", price="90")
+        eid = h.mock.all_orders()[0].exchange_order_id
+        real = h.mock.fetch_order
+
+        def inconsistent(symbol, exchange_order_id):
+            snap = real(symbol, exchange_order_id)
+            return OrderSnapshot(**{**snap.__dict__, "remaining_amount": snap.remaining_amount + 1})
+
+        h.mock.fetch_order = inconsistent
+        before = (_events(h.ledger), _orders(h.ledger), h.trips())
+        argv = ["unknown", "resolve", "--intent", intent.intent_id, "--found-order", eid,
+                "--evidence", "checked the exchange history by hand", "--operator", "owner"]
+        code, text = _run(workspace.state, *argv, now=h.clock.seconds(), reader_factory=lambda state_dir: h.mock)
+        assert code == 1 and text == "refused: the exchange order is not consistent\n"
+        _released(h)
+        token = _token_for(workspace.state, intent.intent_id, f"found:{eid}", "checked the exchange history by hand")
+        code, text = _run(workspace.state, *argv, "--confirm", token, now=h.clock.seconds(),
+                          reader_factory=lambda state_dir: h.mock)
+        assert code == 1 and text == "refused: the exchange order is not consistent\n"
+        assert (_events(h.ledger), _orders(h.ledger), h.trips()) == before
+        assert h.ledger.get_intent(intent.intent_id).state == "UNKNOWN_SUBMISSION"
+    finally:
+        h.close()
+
+
+def test_found_only_candidates_that_cannot_be_read_are_exchange_unavailable(workspace):
+    h = _unknown_harness(workspace, caps=Capabilities(False, False, True))
+    try:
+        h.mock.faults.push("submit", "LOST_REQUEST")
+        intent, _ = h.send(side="buy", key="b1", amount="10", price="90")
+        h.mock.place_external_order(OrderRequest("OAS/JPY", "buy", "limit", Decimal("3"), Decimal("100"), None))
+        h.advance(500)
+        _released(h)
+        before = (_events(h.ledger), _orders(h.ledger), h.trips())
+        h.mock.faults.push("fetch_order", "READ_TIMEOUT")
+        code, text = _run(workspace.state, "unknown", "show", "--intent", intent.intent_id, now=h.clock.seconds(),
+                          reader_factory=lambda state_dir: h.mock)
+        assert code == 1 and text == "refused: exchange unavailable: ExchangeAmbiguous\n"
+        h.mock.faults.push("fetch_order", "READ_TIMEOUT")
+        code, text = _run(workspace.state, "unknown", "resolve", "--intent", intent.intent_id, "--not-created",
+                          "--evidence", "checked the exchange history by hand", "--operator", "owner",
+                          now=h.clock.seconds(), reader_factory=lambda state_dir: h.mock)
+        assert code == 1 and text == "refused: exchange unavailable: ExchangeAmbiguous\n"
+        assert (_events(h.ledger), _orders(h.ledger), h.trips()) == before
+        assert h.ledger.get_intent(intent.intent_id).state == "UNKNOWN_SUBMISSION"
+    finally:
+        h.close()
+
+
+def test_an_intent_that_already_has_an_order_is_refused(workspace):
+    h = _unknown_harness(workspace, caps=Capabilities(False, False, True))
+
+    def hook(point):
+        if point == "after_order_recorded":
+            raise SimulatedCrash(point)
+
+    try:
+        live_executor.FAULT_HOOK = hook
+        with pytest.raises(SimulatedCrash):
+            h.send(side="buy", key="b1", amount="10", price="90")
+        live_executor.FAULT_HOOK = None
+        h.crash()
+        h.mock.faults.push("fetch_order", "READ_TIMEOUT")      # the restart cannot see the order yet
+        live_reconcile.on_startup(h.ex)
+        intent = h.ledger.list_intents(states=("UNKNOWN_SUBMISSION",))[0]
+        recorded = live_views.order_for_intent(h.ledger, intent.intent_id)
+        assert recorded is not None and recorded.exchange_order_id == h.mock.all_orders()[0].exchange_order_id
+        _released(h)
+        code, text = _run(workspace.state, "unknown", "resolve", "--intent", intent.intent_id, "--not-created",
+                          "--override-incomplete-proof", "--evidence", "checked the exchange history by hand",
+                          "--operator", "owner", now=h.clock.seconds(), reader_factory=lambda state_dir: h.mock)
+        assert code == 1 and text == "refused: the ledger already has an order for this intent; use --found-order\n"
+        # a different order id would make sync_order trip "second order for one intent": refuse with no trip
+        h.mock.place_external_order(OrderRequest("OAS/JPY", "buy", "limit", Decimal("4"), Decimal("90"), None))
+        other = [snap.exchange_order_id for snap in h.mock.all_orders() if snap.amount == Decimal("4")][0]
+        before = (_events(h.ledger), _orders(h.ledger), h.trips())
+        code, text = _run(workspace.state, "unknown", "resolve", "--intent", intent.intent_id,
+                          "--found-order", other, "--evidence", "checked the exchange history by hand",
+                          "--operator", "owner", now=h.clock.seconds(), reader_factory=lambda state_dir: h.mock)
+        assert code == 1 and text == "refused: the ledger already has a different order for this intent\n"
+        assert (_events(h.ledger), _orders(h.ledger), h.trips()) == before
+        assert h.ledger.get_intent(intent.intent_id).state == "UNKNOWN_SUBMISSION"
+    finally:
+        live_executor.FAULT_HOOK = None
+        h.close()
+
+
+def test_the_id_printed_by_unknown_list_round_trips(workspace):
+    h = _unknown_harness(workspace, caps=Capabilities(False, False, True))
+    try:
+        h.mock.faults.push("submit", "LOST_REQUEST")
+        intent, _ = h.send(side="buy", key="b1", amount="10", price="90")
+        h.advance(500)
+        code, line = _run(workspace.state, "unknown", "list", now=h.clock.seconds())
+        assert code == 0 and line.split()[0] == intent.intent_id          # the full id, not a prefix
+        code, show = _run(workspace.state, "unknown", "show", "--intent", intent.intent_id, now=h.clock.seconds(),
+                          reader_factory=lambda state_dir: h.mock)
+        assert code == 0 and f"intent: {intent.intent_id}" in show
+        code, preview = _run(workspace.state, "unknown", "resolve", "--intent", intent.intent_id, "--not-created",
+                             "--evidence", "checked the exchange history by hand", "--operator", "owner",
+                             now=h.clock.seconds(), reader_factory=lambda state_dir: h.mock)
+        assert code == 0 and f"intent: {intent.intent_id}" in preview
+    finally:
+        h.close()
+
+
+def test_unknown_works_in_the_default_client_id_mode(workspace):
+    h = _unknown_harness(workspace)                        # the harness default: client order ids
+    try:
+        intent = _lost_buy(h)
+        code, text = _run(workspace.state, "unknown", "list", now=h.clock.seconds())
+        assert code == 0 and intent.intent_id in text
+        code, show = _run(workspace.state, "unknown", "show", "--intent", intent.intent_id, now=h.clock.seconds(),
+                          reader_factory=lambda state_dir: h.mock)
+        assert code == 0 and "matching: 1" in show and "ledger_order: no" in show
+    finally:
+        h.close()
+
+
+def test_unknown_show_without_a_key_file_reports_the_reader_failure(workspace):
+    h = _unknown_harness(workspace, caps=Capabilities(False, False, True))
+    try:
+        intent = _lost_buy(h)
+        _released(h)
+        code, text = _run(workspace.state, "unknown", "show", "--intent", intent.intent_id, now=h.clock.seconds())
+        assert code == 1 and text == "refused: exchange unavailable: ReaderUnavailableError\n"
+        code, text = _run(workspace.state, "unknown", "resolve", "--intent", intent.intent_id, "--not-created",
+                          "--evidence", "checked the exchange history by hand", "--operator", "owner",
+                          now=h.clock.seconds())
+        assert code == 1 and text == "refused: exchange unavailable: ReaderUnavailableError\n"
+        assert h.ledger.get_intent(intent.intent_id).state == "UNKNOWN_SUBMISSION" and _orders(h.ledger) == []
     finally:
         h.close()
