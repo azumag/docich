@@ -258,6 +258,27 @@ class ReplayScenario:
     def ordered(self) -> tuple[ReplayStep, ...]:
         return tuple(sorted(self.steps, key=lambda step: step.at))
 
+
+    def ordered(self) -> tuple[ReplayStep, ...]:
+        """Return steps in original time order (for backward compatibility)."""
+        return tuple(sorted(self.steps, key=lambda step: step.at))
+
+    def digest(self) -> str:
+        return _digest(self)
+
+
+def _decision_effective_at(step: ReplayStep, arm: ReplayArm) -> datetime:
+    """Return the effective time of a decision step after applying classification delay.
+
+    Decisions with classification delay are scheduled at ``step.at + delay``.
+    Observations keep their own ``step.at``.
+    """
+    conditions = arm.conditions
+    if (conditions.news_filter
+            and step.news_eligible is not False
+            and conditions.classification_delay_ms):
+        return step.at + timedelta(milliseconds=conditions.classification_delay_ms)
+    return step.at
     def digest(self) -> str:
         return _digest(self)
 
@@ -510,7 +531,13 @@ def run_replay(manifest: Manifest, arm: ReplayArm, scenario: ReplayScenario,
         warmup_end = arm.conditions.window_start + timedelta(
             seconds=arm.conditions.warmup_seconds
         )
-        for step in scenario.ordered():
+        # Sort by effective time (after applying classification delay for
+        # decisions).  This prevents the clock from moving backward when an
+        # observation's time falls between the original decision time and the
+        # delayed decision time.
+        steps = sorted(scenario.steps, key=lambda s: _decision_effective_at(s, arm))
+        for step in steps:
+
             if not (arm.conditions.window_start <= step.at <= arm.conditions.window_end):
                 raise ReplayError("scenario step outside the replay window",
                                   code="VALUE_OUT_OF_RANGE", stage="scenario")
@@ -519,6 +546,9 @@ def run_replay(manifest: Manifest, arm: ReplayArm, scenario: ReplayScenario,
                                   code="VALUE_OUT_OF_RANGE", stage="scenario")
             if step.decision is not None:
                 if arm.conditions.news_filter and step.news_eligible is False:
+                    # Validate scope/time before skipping: fail-closed so an
+                    # invalid filtered fixture cannot silently pass.
+                    _request_for(arm, manifest, step)
                     actions.append({
                         "kind": "decision_skipped",
                         "at": step.at,
