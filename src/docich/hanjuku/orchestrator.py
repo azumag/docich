@@ -1203,34 +1203,29 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
     # The reanchor FSM only repairs coordinates; dispatch may now resume a
     # previously active order or explain why no safe action is available.
     map_flow.note_reanchor_followup(screen, mem, actions)
-    # A concert picker that B cannot close must not consume the whole stall
-    # window. Count unchanged observations that produced the same picker B;
-    # after CONCERT_PICKER_REPEAT_MAX, choose A once and start over. A real
-    # picker changes the frame on B, so its count never reaches the bound.
+    # Bound B presses for the entire concert phase, regardless of blinking
+    # pixels or alternating A/B detections. Once exhausted, keep advancing
+    # with A until the phase actually changes; never re-arm on a new digest.
     digest=frame.digest()
-    # A readable text screen keeps its content identity even while a blinking
-    # cursor changes the frame: g1190 99-7 sat on chapter 9's shop ("なに
-    # かってくれる?", phase 'concert') with B for ~1300 observations because
-    # every blink reset the digest repeat. Textless pickers keep the digest,
-    # where a real B changes the frame.
-    watch_identity = (f'{kind}:{screen.text}' if screen.text and kind in {'text', 'shop_list'}
-                      else digest)
     picker_watch=mem.get('concert_picker_watch') or {}
-    if phase=='concert' and actions==[pad('b')]:
-        repeat=(int(picker_watch.get('repeat') or 0)+1
-                if picker_watch.get('identity', picker_watch.get('digest'))==watch_identity else 1)
-    else:
-        repeat=0
-    if repeat>=CONCERT_PICKER_REPEAT_MAX:
-        decision_log._record(mem,'concert_picker_escape',screen=kind,phase=phase,
-                       observed_metric={'unchanged_repeats':repeat,'frame_sha256':digest},
-                       reason='曲選択の金色カーソル検出がBで変化しないまま繰り返すため、Aへ切り替える')
-        actions=[pad('a')]
-        repeat=0
-    if repeat:
-        mem['concert_picker_watch']={'identity':watch_identity,'digest':digest,'repeat':repeat}
-    else:
+    if phase!='concert':
         mem.pop('concert_picker_watch',None)
+    else:
+        b_count=int(picker_watch.get('b_count') or 0)
+        exhausted=bool(picker_watch.get('exhausted'))
+        if not exhausted and actions==[pad('b')]:
+            b_count+=1
+            if b_count>=CONCERT_PICKER_REPEAT_MAX:
+                exhausted=True
+                decision_log._record(mem,'concert_picker_escape',screen=kind,phase=phase,
+                           observed_metric={'concert_b_presses':b_count,'frame_sha256':digest},
+                           reason='コンサート中のB入力が上限に達したため、画面の明滅に関わらずAで進める')
+        if exhausted:
+            actions=[pad('a')]
+        if b_count or exhausted:
+            mem['concert_picker_watch']={'b_count':b_count,'exhausted':exhausted}
+        else:
+            mem.pop('concert_picker_watch',None)
     concert_key = (f'text:{screen.text}' if kind == 'text' and screen.text
                    else digest)
     # A battle's summon/monster dialogue has its own reviewed pacing
