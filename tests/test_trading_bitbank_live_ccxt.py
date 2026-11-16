@@ -177,5 +177,5 @@ def test_traces_on_the_real_object_are_cleared_after_a_call():
 def test_the_real_response_date_header_gives_a_clock_sample():
     transport, _, _ = make(body({"assets": []}))
     transport.get("assets", {})
-    samples = transport.clock_samples()
-    assert len(samples) == 1 and -1.5 < samples[0] < 1.5     # the fake server's Date is "now", floored to the second
+    ((low, high),) = transport.clock_samples()
+    assert low <= high and -1.5 < low and high < 1.5       # the fake server's Date is "now", floored to the second

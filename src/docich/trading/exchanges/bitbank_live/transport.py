@@ -14,7 +14,7 @@ Failures are raised as L2 exceptions (see ``errors``).  Keys never reach logs, m
 """
 from __future__ import annotations
 
-import email.utils
+import calendar
 import importlib
 import json
 import logging
@@ -74,6 +74,25 @@ def _quiet_logger() -> logging.Logger:
     return logger
 
 
+_MONTHS = {m: i for i, m in enumerate(("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov",
+                                       "Dec"), start=1)}
+_HTTP_DATE = re.compile(r"^[A-Za-z]{3}, (\d{2}) ([A-Za-z]{3}) (\d{4}) (\d{2}):(\d{2}):(\d{2}) GMT$")
+
+
+def parse_http_date(text: object) -> float | None:
+    """``Sun, 06 Nov 1994 08:49:37 GMT`` -> epoch seconds.  (email.utils would import ``socket``, which this
+    package must never load.)"""
+    match = _HTTP_DATE.match(str(text).strip()) if text else None
+    if not match or match.group(2) not in _MONTHS:
+        return None
+    day, month, year, hour, minute, second = (int(match.group(1)), _MONTHS[match.group(2)], int(match.group(3)),
+                                              int(match.group(4)), int(match.group(5)), int(match.group(6)))
+    try:
+        return float(calendar.timegm((year, month, day, hour, minute, second, 0, 0, 0)))
+    except (ValueError, OverflowError):
+        return None
+
+
 def _json_loads(text):
     return json.loads(text, parse_float=str)
 
@@ -88,7 +107,7 @@ class CcxtReadTransport:
         self._endpoints = dict(endpoints)
         self._min_interval, self._retry_pause = float(min_interval_s), float(retry_pause_s)
         self._clock, self._sleep, self._wall = clock, sleep, wall_clock
-        self._clock_samples: list[float] = []
+        self._clock_samples: list[tuple[float, float]] = []
         self._last_call: float | None = None
         config: dict = {"enableRateLimit": False, "timeout": int(timeout_ms), "verbose": False,
                         "options": {"authMethod": "timeWindow", "timeWindow": str(int(time_window_ms))}}
@@ -175,21 +194,34 @@ class CcxtReadTransport:
         return _unwrap(endpoint, response)
 
     def _note_server_date(self, started: float) -> None:
-        """Remember (local midpoint of the request) - (response Date).  Whole-second resolution: it is >= the true
-        offset and less than one second above it, so the *minimum* over several calls is the usable estimate."""
+        """Record what one response's ``Date`` says about (local clock - bitbank clock).
+
+        ``Date`` is the server's time when it built the response, floored to the second, so with the request sent at
+        ``started`` and the answer received at ``ended`` (local clock) the true offset d satisfies
+        ``started - Date - 1 <= d <= ended - Date``.  Intervals from several calls intersect into a tighter one."""
         headers = getattr(self._exchange, "last_response_headers", None)
         try:
-            date = headers.get("Date") if headers is not None else None
-            server = email.utils.parsedate_to_datetime(date).timestamp() if date else None
+            server = parse_http_date(headers.get("Date")) if headers is not None else None
         except (TypeError, ValueError, AttributeError):
             server = None
         if server is not None:
-            self._clock_samples.append((started + self._wall()) / 2 - server)
+            self._clock_samples.append((started - server - 1.0, self._wall() - server))
             del self._clock_samples[:-32]
 
-    def clock_samples(self) -> tuple[float, ...]:
-        """Seconds: local time minus bitbank's response ``Date``, one per call that carried a Date header."""
+    def clock_samples(self) -> tuple[tuple[float, float], ...]:
+        """(low, high) bounds in seconds for local minus bitbank, one pair per call that carried a Date header."""
         return tuple(self._clock_samples)
+
+    def clock_bounds(self, last: int = 8) -> tuple[float, float] | None:
+        """The intersection of the last ``last`` intervals: (lowest possible, highest possible) offset, seconds."""
+        return intersect_bounds(self._clock_samples[-last:])
+
+
+def intersect_bounds(samples) -> tuple[float, float] | None:
+    samples = list(samples)
+    if not samples:
+        return None
+    return max(lo for lo, _ in samples), min(hi for _, hi in samples)
 
 
 def _unwrap(endpoint: str, response: object):

@@ -25,7 +25,7 @@ from ...live.exchange import ExchangeDataError, ExchangeError, OrderNotFound
 from ...live.policy import INITIAL_SYMBOLS
 from . import parse
 from .credentials import CredentialsUnavailable, load_credentials
-from .factory import MAX_LOCAL_AHEAD_S, MAX_LOCAL_BEHIND_S
+from .factory import MAX_LOCAL_AHEAD_S, MAX_LOCAL_BEHIND_S, judge_clock
 from .reader import BitbankReader, ReaderUnavailable
 from .transport import CHECK_ONLY_ENDPOINTS, ENDPOINTS, CcxtReadTransport
 
@@ -62,6 +62,8 @@ def fee_shape(row: dict) -> str:
 def run_check(transport, symbols: Sequence[str], *, wall_clock: Callable[[], float] = time.time,
               secrets: Sequence[str] = (), public_only: bool = False) -> tuple[list[str], int]:
     """The report lines and an exit code (0 ok, 1 something failed, 2 a secret would have been printed)."""
+    if not symbols:
+        return (["no symbols given"], 1)
     lines: list[str] = []
     failed = False
 
@@ -93,14 +95,14 @@ def run_check(transport, symbols: Sequence[str], *, wall_clock: Callable[[], flo
                 say(f"book {symbol}: FAILED {_name(exc)}")
     for _ in range(max(0, 8 - len(symbols))):            # enough samples to cover every phase of the second
         attempt("clock sample", lambda: transport.get("depth", {"pair": parse.pair_id(symbols[0])}))
-    samples = list(getattr(transport, "clock_samples", lambda: ())())
-    if samples:
-        estimate = min(samples)
-        verdict = ("ok" if -MAX_LOCAL_BEHIND_S <= estimate <= MAX_LOCAL_AHEAD_S else
-                   f"OUTSIDE (limits: ahead <= {MAX_LOCAL_AHEAD_S} s, behind <= {MAX_LOCAL_BEHIND_S} s)")
-        say(f"clock: estimate_s={estimate:.2f} from {len(samples)} samples (local minus bitbank response Date; "
-            f"whole-second resolution; positive = local ahead) -> {verdict}")
-        failed = failed or verdict != "ok"
+    bounds = getattr(transport, "clock_bounds", lambda n=8: None)(8)
+    if bounds is not None:
+        low, high = bounds
+        problem = judge_clock(low, high)
+        say(f"clock: local minus bitbank is within [{low:.2f}, {high:.2f}] s (from the response Date of the last "
+            f"calls; positive = local ahead; limits: ahead <= {MAX_LOCAL_AHEAD_S}, behind <= {MAX_LOCAL_BEHIND_S}) "
+            f"-> {'ok' if problem is None else 'OUTSIDE: ' + problem}")
+        failed = failed or problem is not None
     else:
         failed = True
         say("clock: no response carried a Date header, so the clock cannot be checked")
@@ -152,6 +154,7 @@ def run_check(transport, symbols: Sequence[str], *, wall_clock: Callable[[], flo
     except OrderNotFound:
         say("order lookup of a non-existent id: OrderNotFound (code 50009, as the reader expects)")
     except ExchangeError as exc:
+        failed = True
         say(f"order lookup of a non-existent id: {_name(exc)} (not 50009: the 'order is gone' rule needs review)")
 
     # --- balances: shape only (raw)
@@ -199,6 +202,7 @@ def run_check(transport, symbols: Sequence[str], *, wall_clock: Callable[[], flo
             tally["not_found"] += 1
             continue
         except ExchangeError as exc:
+            failed = True
             tally[f"error:{_name(exc)}"] += 1
             continue
         try:
@@ -272,6 +276,7 @@ def run_check(transport, symbols: Sequence[str], *, wall_clock: Callable[[], flo
                     fn()
                     smoke[(label, "ok")] += 1
                 except ExchangeError as exc:
+                    failed = True        # the strict reader cannot read what bitbank really sends: an assumption is wrong
                     smoke[(label, _name(exc))] += 1
         say(f"reader smoke (strict parsing): {dict(smoke)}")
     return _finish(lines, secrets, 1 if failed else 0)
@@ -290,7 +295,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--state-dir")
     parser.add_argument("--from-env", action="store_true", help="read the key from the environment, not the file")
     parser.add_argument("--public-only", action="store_true", help="only public data; no key is read or needed")
-    parser.add_argument("--symbols", nargs="*", default=list(DEFAULT_SYMBOLS))
+    parser.add_argument("--symbols", nargs="+", default=list(DEFAULT_SYMBOLS))
     args = parser.parse_args(argv)
     credentials = None
     if not args.public_only:

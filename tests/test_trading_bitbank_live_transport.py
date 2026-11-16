@@ -327,14 +327,15 @@ def test_the_response_date_header_becomes_a_clock_sample_on_success_and_on_error
     transport = tr.CcxtReadTransport(None, exchange_factory=factory, min_interval_s=0, wall_clock=lambda: wall[0])
     ex = box["ex"]
     assert ex.enableLastResponseHeaders is True and transport.clock_samples() == ()
-    ex.date_header = email.utils.formatdate(1_699_999_999.0, usegmt=True)       # server (floored) is 1 s behind
+    ex.date_header = email.utils.formatdate(1_699_999_999.0, usegmt=True)       # the server said ...999
     transport.get("assets", {})
-    assert transport.clock_samples() == (1.0,)
+    assert transport.clock_samples() == ((0.0, 1.0),)      # [start - Date - 1, end - Date], instantaneous call
     ex.script["privateGetUserAssets"] = RequestTimeout("t")
     wall[0] += 5
     with pytest.raises(ExchangeAmbiguous):
         transport.get("assets", {})
-    assert transport.clock_samples() == (1.0, 6.0)
+    assert transport.clock_samples() == ((0.0, 1.0), (5.0, 6.0))
+    assert transport.clock_bounds() == (5.0, 1.0)          # the readings disagree: the factory calls this inconsistent
     assert ex.last_response_headers is None                                   # scrubbed afterwards
 
 
@@ -344,3 +345,17 @@ def test_no_date_header_means_no_sample_and_a_garbage_one_is_ignored():
     ex.date_header = "not a date"
     transport.get("assets", {})
     assert transport.clock_samples() == ()
+
+
+@pytest.mark.parametrize("text,epoch", [
+    ("Sun, 06 Nov 1994 08:49:37 GMT", 784111777.0), ("Mon, 16 Nov 2026 12:00:00 GMT", 1794830400.0),
+    ("Thu, 01 Jan 1970 00:00:00 GMT", 0.0)])
+def test_http_dates_are_parsed_without_email_utils(text, epoch):
+    assert tr.parse_http_date(text) == epoch
+
+
+@pytest.mark.parametrize("bad", [None, "", "yesterday", "Mon, 16 Nov 2026 12:00:00 UTC", "Mon, 16 Xyz 2026 12:00:00 GMT",
+                                 "Mon, 32 Nov 2026 99:99:99 GMT", 5])
+def test_bad_http_dates_are_ignored(bad):
+    assert tr.parse_http_date(bad) is None or isinstance(tr.parse_http_date(bad), float)
+    assert tr.parse_http_date(None) is None and tr.parse_http_date("yesterday") is None

@@ -59,27 +59,40 @@ def test_the_local_clock_must_be_close_to_bitbanks_response_date(state, skew_s, 
         assert "clock" in str(err.value)
 
 
-def test_the_estimate_is_the_minimum_over_the_probes_because_of_whole_second_dates(state):
+def _intervals(pairs):
+    class Intervals(FakeTransport):
+        it = iter(pairs)
+
+        def get(self, endpoint, params):
+            data = super().get(endpoint, params)
+            self._samples[-1] = next(self.it, pairs[-1])
+            return data
+    return Intervals
+
+
+def test_each_call_gives_an_interval_and_intervals_intersect_into_a_tight_one(state):
     _install_key(state)
-
-    def jittery(values):
-        class Jittery(FakeTransport):
-            it = iter(values)
-
-            def get(self, endpoint, params):
-                data = super().get(endpoint, params)
-                self._samples[-1] = next(self.it, values[-1])
-                return data
-        return Jittery
-
-    # only ONE sample of the last eight is under the limit (the true offset is ~0.3 s; the floored Date header makes
-    # the others look up to a second larger): a median or a first-sample rule would reject, the minimum accepts
-    one_low = [1.9, 1.8, 1.7, 1.6, 1.5, 0.3, 1.9, 1.8, 1.7, 1.6]
+    # true offset ~0.3 s; a floored Date makes each single interval a full second wide, they cross at [0.2, 0.4]
+    spread = [(0.9 - 1.0, 0.9), (1.1 - 1.0, 1.1), (0.2, 1.2), (-0.8, 0.4), (-0.6, 0.6), (0.0, 1.0), (0.1, 1.1)]
+    assert fc.judge_clock(max(l for l, _ in spread), min(h for _, h in spread)) is None
     fc.open_bitbank_reader(state, symbols=SYMBOLS, clock=lambda: 1.0,
-                           transport_factory=lambda c: jittery(one_low)(default_script()))
-    with pytest.raises(ReaderUnavailable):                      # no sample under the limit: rejected
-        fc.open_bitbank_reader(state, symbols=SYMBOLS, clock=lambda: 1.0,
-                               transport_factory=lambda c: jittery([1.9, 1.5, 0.9, 1.2])(default_script()))
+                           transport_factory=lambda c: _intervals(spread)(default_script()))
+
+
+def test_ahead_is_judged_by_the_highest_possible_offset_and_behind_by_the_lowest():
+    assert fc.judge_clock(0.5, 0.9) is not None and "ahead" in fc.judge_clock(0.5, 0.9)      # could be 0.9 ahead
+    assert fc.judge_clock(0.1, 0.8) is None
+    assert fc.judge_clock(-7.4, -6.5) is not None and "behind" in fc.judge_clock(-7.4, -6.5)  # could be 7.4 behind
+    assert fc.judge_clock(-6.9, -6.0) is None
+    assert "inconsistent" in fc.judge_clock(2.0, 0.5)
+
+
+def test_a_slow_round_trip_widens_the_interval_instead_of_biasing_the_estimate():
+    import docich.trading.exchanges.bitbank_live.transport as tr
+    # started 100.0, answer received 101.5 (a 1.5 s round trip), the server said 99:  d in [100-99-1, 101.5-99]
+    assert tr.intersect_bounds([(100.0 - 99 - 1.0, 101.5 - 99)]) == (0.0, 2.5)
+    # the same offset seen on a fast round trip pins it down
+    assert tr.intersect_bounds([(0.0, 2.5), (0.4, 1.3)]) == (0.4, 1.3)
 
 
 def test_no_date_header_at_all_means_the_clock_cannot_be_trusted(state):
@@ -179,7 +192,7 @@ def test_the_report_shows_raw_shapes_counts_and_no_secrets():
     (lines, code), _ = _run(secrets=(SENTINEL_KEY, SENTINEL_SECRET))
     text = "\n".join(lines)
     assert code == 0, text
-    for expected in ("clock: estimate_s=0.00 from 8 samples", "-> ok", "book snapshot age ms per symbol",
+    for expected in ("clock: local minus bitbank is within [0.00, 0.00] s", "-> ok", "book snapshot age ms per symbol",
                      "NOT the current time", "reader: built for 2/2 symbols",
                      "endpoint assets: ok", "endpoint deposit_history: ok", "endpoint spot_status: ok",
                      "OrderNotFound (code 50009", "balances: currencies=3", "amount_precision(watched)=",
@@ -280,6 +293,32 @@ def test_the_report_judges_the_clock_from_the_date_header_estimate(skew_s, word)
     lines, code = ck.run_check(transport, SYMBOLS, wall_clock=lambda: T0 / 1000)
     text = "\n".join(lines)
     assert word in text and (code == 0) == (word == "-> ok")
+
+
+def test_empty_symbol_lists_are_refused_before_any_request(state):
+    _install_key(state)
+    made = FakeTransport(default_script())
+    with pytest.raises(ReaderUnavailable):
+        fc.open_bitbank_reader(state, symbols=(), clock=lambda: 1.0, transport_factory=lambda c: made)
+    assert made.calls == []
+    transport = FakeTransport(_check_script())
+    assert ck.run_check(transport, (), wall_clock=lambda: T0 / 1000) == (["no symbols given"], 1)
+    assert ck.run_check(transport, (), wall_clock=lambda: T0 / 1000, public_only=True)[1] == 1
+    assert transport.calls == []
+    with pytest.raises(SystemExit):
+        ck.main(["--public-only", "--symbols"])
+
+
+def test_smoke_test_failures_and_order_lookup_failures_fail_the_run():
+    script = _check_script()
+    script["depth"] = lambda params: {"asks": [["x", "1"]], "bids": [], "timestamp": T0}      # book unreadable
+    (lines, code), _ = _run(script)
+    assert code == 1
+    script = _check_script()
+    script["order"] = lambda params: (_ for _ in ()).throw(OrderNotFound("1")) if params["order_id"] == "1" \
+        else (_ for _ in ()).throw(ExchangeAmbiguous("down"))
+    (lines, code), _ = _run(script)
+    assert code == 1 and "error:ExchangeAmbiguous" in "\n".join(lines)
 
 
 def test_a_transport_without_any_date_header_is_reported_as_unable_to_check_the_clock():
