@@ -82,3 +82,8 @@ def clear_safety_trip(ledger, reason: SafetyReason, *, operator: str, note: str,
                       evidence: str, now: float) -> None:
     """HUMAN-ONLY.  Nothing in src/ may call this (a test enforces it)."""
     ledger.clear_safety(reason, operator=operator, note=note, evidence=evidence, now=now)
+
+
+def note_enable_result(ledger, lease, result, *, now: float) -> None:
+    """Record an enable-gate reading.  Trips ENABLE_MISSING only after the gate was once open."""
+    ledger.record_enable_observation(lease, result, now=now)

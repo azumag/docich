@@ -113,7 +113,8 @@ def test_human_only_apis_have_no_call_sites_in_src():
             for line in text.splitlines():
                 if name in line and "def " not in line and not line.lstrip().startswith(("#", '"""')):
                     # the thin wrapper in safety.py is the only allowed reference
-                    assert path.name == "safety.py" or path.name == "ledger.py", (path, line)
+                    assert path.relative_to(SRC / "docich").as_posix() in (
+                        "trading/live/safety.py", "trading/live/ledger.py"), (path, line)
 
 
 # ---- enable gate ------------------------------------------------------------
@@ -484,6 +485,31 @@ def test_cashflows_are_append_only_and_validated(ready):
 
 
 # ---- policy activation -------------------------------------------------------------------
+def test_owner_activation_is_bound_to_the_policy_set_the_enable_file_was_checked_for(ready):
+    ws, ledger, lease, ps = ready
+    other = policy_set(("OAS/JPY", "OMG/JPY"))
+    ledger.store_policy_set(lease, other, now=NOW)
+    ws.write_enable(ps)
+    checked_for_ps = ws.enable_result(ps)
+    with pytest.raises(lg.LiveLedgerError, match="different policy set"):
+        ledger.record_owner_activation(lease, other, enable=checked_for_ps, operator="owner", note="n", now=NOW)
+    assert ledger.active_policy_set_digest() is None
+
+
+def test_enable_never_seen_then_missing_writes_nothing_but_seen_then_missing_trips(ready):
+    ws, ledger, lease, ps = ready
+    missing = ws.enable_result(ps)
+    sf.note_enable_result(ledger, lease, missing, now=NOW)
+    assert not sf.read_safety_state(ledger).trips
+    assert not any(e.kind == "enable_seen" for e in ledger.events(limit=1000))
+    ws.write_enable(ps)
+    sf.note_enable_result(ledger, lease, ws.enable_result(ps), now=NOW + 1)
+    assert not sf.read_safety_state(ledger).trips
+    ws.layout.enable_path.unlink()
+    sf.note_enable_result(ledger, lease, ws.enable_result(ps), now=NOW + 2)
+    assert [t.reason for t in sf.read_safety_state(ledger).trips] == ["enable_missing"]
+
+
 def test_owner_activation_requires_a_valid_enable_file_and_promotion_needs_owner_initial(ready):
     ws, ledger, lease, ps = ready
     with pytest.raises(lg.LiveLedgerError):

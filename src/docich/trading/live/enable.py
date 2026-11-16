@@ -44,6 +44,8 @@ class EnableResult:
     mode: str | None = None
     file_sha256: str | None = None
     expires_at: float | None = None
+    policy_set_digest: str | None = None
+    code_revision: str | None = None
 
     @property
     def allows_orders(self) -> bool:
@@ -135,6 +137,7 @@ def live_enabled(state_dir, *, policy_set_digest: str, code_revision: str,
         if reasons:
             return _no(*reasons)
         return EnableResult(True, (), mode=data["mode"], file_sha256=sha256_hex(raw),
-                            expires_at=expires)
+                            expires_at=expires, policy_set_digest=data["policy_set_digest"],
+                            code_revision=data["code_revision"])
     except Exception:  # fail closed, never raise
         return _no(EnableReason.CHECK_ERROR)
