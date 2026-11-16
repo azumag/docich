@@ -25,16 +25,14 @@ PURSUIT_READ_LIMIT = 90
 PURSUIT_LIST_LIMIT = 48
 PURSUIT_COOLDOWN = 240        # ticks before the same general is pursued again
 PURSUIT_MARCH_MIN = 400       # a just-launched march is left alone this long
-# Chapter 9's boss sweeps north-south (measured 2026-11-17: y 157 <-> 853 in
-# about 330 s) and the camped generals walk ~1.3 px/s against its ~5 px/s, so a
-# chase never closes. Every boss battle so far began within a pass of the
-# northern turnaround (x 674-842, y 165-229); redirects aimed at a southern
-# reading (~75 of them over u1/u2, none attacked) only walked the general away.
-# The pursuit therefore commits a redirect only while the freshly measured cell
-# is in the northern band and otherwise leaves the general camped.
-PURSUIT_NORTH_MAX_Y = 260
-PURSUIT_NORTH_RETRY = 60      # ticks before a southern reading is looked at again
-PURSUIT_FRESH_TICKS = 90      # a reading this young was taken by this very Y view (~6 ticks/s)
+# Chapter 9's boss sweeps north-south (y 157 <-> 853 in about 330 s, measured
+# 2026-11-17) while a camped general walks ~1.3 px/s. v990 tried to commit a
+# redirect only while the boss was in the northern band; the next run refuted
+# it (a southern reading, y 637, was followed by the first seedless boss
+# battle 16 s later), so the band is gone. What the redirect record now carries
+# is what the next decision needs: the general's cell, the boss cell, how old
+# that reading is and the distance between them.
+PURSUIT_FRESH_TICKS = 90      # a skull reading this young was taken by this very Y view (~6 ticks/s)
 LIST_KEY = 'boss_wave_generals'
 ABSENT_END_READS = 3          # identical roster reads at the list end = full pass
 PURSUIT_STEP = 'PURSUIT'      # step id of the pursuit's own Y jump (y_jump['step'])
@@ -139,6 +137,23 @@ def _candidate(mem):
         if best is None or (launched or 0) < (best[1].get('launched') or 0):
             best = (general, e)
     return best
+
+
+def _redirect_metric(mem, probe, marker):
+    """What a redirect aimed at, for the run log: unit, boss, reading age, distance."""
+    metric = {'target_cell': list(marker)}
+    reading = mem.get('boss_cell') or {}
+    cell = reading.get('cell')
+    unit = probe.get('unit_cell')
+    if isinstance(cell, (list, tuple)) and len(cell) == 2:
+        metric['boss_cell'] = list(cell)
+        if type(reading.get('tick')) is int:
+            metric['boss_cell_age'] = int(mem.get('tick') or 0) - reading['tick']
+    if isinstance(unit, (list, tuple)) and len(unit) == 2:
+        metric['unit_cell'] = list(unit)
+        if 'boss_cell' in metric:
+            metric['distance'] = [metric['boss_cell'][0] - unit[0], metric['boss_cell'][1] - unit[1]]
+    return metric
 
 
 def _close(mem, probe, reason):
@@ -350,24 +365,9 @@ def step(screen, mem, frame):
                 return []
             _close(mem, probe, 'boss_position_lost')
             return [pad('b')]
-        reading = mem.get('boss_cell') or {}
-        cell = reading.get('cell')
-        if (isinstance(cell, (list, tuple)) and len(cell) == 2
-                and type(cell[1]) is int and cell[1] > PURSUIT_NORTH_MAX_Y
-                and type(reading.get('tick')) is int
-                and 0 <= int(mem.get('tick') or 0) - reading['tick'] <= PURSUIT_FRESH_TICKS):
-            entry = (mem.get(LIST_KEY) or {}).get(probe['general'])
-            if entry is not None:
-                # Look again soon: the northern pass lasts a minute or so.
-                entry['pursuit_tick'] = (int(mem.get('tick') or 0)
-                                         - (PURSUIT_COOLDOWN - PURSUIT_NORTH_RETRY))
-            _record(mem, 'boss_pursuit_deferred', chart_step=probe.get('step'),
-                    general=probe['general'], resulting_event='boss_not_north',
-                    observed_metric={'boss_cell': list(cell), 'north_max_y': PURSUIT_NORTH_MAX_Y},
-                    reason='ボスが北の折り返しにいないため将軍を野営のまま待たせる')
-            probe['phase'] = 'close'
-            probe['outcome'] = 'boss_not_north'
-            return [pad('b')]
+        if probe.get('unit_cell') is None and screen.cursor is not None:
+            # The picker opens on the unit that is being re-aimed.
+            probe['unit_cell'] = list(screen.cursor)
         pseudo = {'step': 'PURSUIT', 'target': goal, 'source': None}
         if _map._target_roof_under_marker(screen, mem, frame, pseudo):
             entry = (mem.get(LIST_KEY) or {}).get(probe['general'])
@@ -375,7 +375,7 @@ def step(screen, mem, frame):
                 entry['pursuit_tick'] = int(mem.get('tick') or 0)
             _record(mem, 'boss_pursuit_redirected', chart_step=probe.get('step'),
                     general=probe['general'],
-                    observed_metric={'target_cell': list(marker)},
+                    observed_metric=_redirect_metric(mem, probe, marker),
                     reason='将軍ジャンプした部隊のいどう先を、実測ボスセルへ合わせて確定する')
             probe['phase'] = 'close'
             probe['outcome'] = 'redirected'
