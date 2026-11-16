@@ -411,6 +411,7 @@ KEY_OWNERSHIP = {
     'y_jump_target_confirmed': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 同上目標確認
     'y_jump_unreachable': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 同上到達不能管理
     'y_jumped': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 同上完了
+    'y_jumped_res': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 同上着地残差
     'y_jumps': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 同上回数
     'y_jumps_total': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 同上累計
     'boss_stock_cancelled_identity': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # ボス在庫キャンセル同一性マーカー
