@@ -350,7 +350,10 @@ def boss_probe_cell(mem, name, step=None):
     if (chapter == 9 and chart.corridor(chapter) and name
             and chart.is_boss_castle(name)):
         relaunched = int((mem.get('boss_relaunch') or {}).get(str(step)) or 0)
-        if step == 'RECALL':
+        if step in ('RECALL', 'PURSUIT'):
+            # PURSUIT (flows/boss_pursuit) re-aims a camped boss-bound general:
+            # also a second leg. Without it the jump aimed at the waypoint
+            # (ch9 2026-11-17 y_jump_failed residual [13, 14] three times).
             # A camp redirect is the boss order's second leg by definition
             # (owner 2026-11-16): it re-sends a general already camped at the
             # waypoint at the moving boss cell. ``boss_relaunch`` is keyed by

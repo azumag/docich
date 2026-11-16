@@ -25,6 +25,28 @@ PURSUIT_COOLDOWN = 240        # ticks before the same general is pursued again
 PURSUIT_MARCH_MIN = 400       # a just-launched march is left alone this long
 LIST_KEY = 'boss_wave_generals'
 ABSENT_END_READS = 3          # identical roster reads at the list end = full pass
+PURSUIT_STEP = 'PURSUIT'      # step id of the pursuit's own Y jump (y_jump['step'])
+CLOSE_LIMIT = 12              # observations a closing probe waits for the map
+
+
+def _drop_probe(mem):
+    """End the probe and leave no half-finished PURSUIT Y jump behind.
+
+    A remembered y_jump keeps the map flow steering a view nobody owns; a
+    remembered y_jump_return / y_jumped record reads as a finished jump.
+    """
+    mem.pop('boss_pursuit', None)
+    jump = mem.get('y_jump')
+    if isinstance(jump, dict) and jump.get('step') == PURSUIT_STEP:
+        mem.pop('y_jump', None)
+    near = mem.get('near_goal')
+    if isinstance(near, dict) and near.get('step') == PURSUIT_STEP:
+        # map.py skips the periodic hero SELECT while any near_goal remains.
+        mem.pop('near_goal', None)
+    if PURSUIT_STEP in (mem.get('y_jumped') or {}):
+        mem['y_jumped'].pop(PURSUIT_STEP, None)
+        (mem.get('y_jumped_res') or {}).pop(PURSUIT_STEP, None)
+        mem.pop('y_jump_return', None)
 
 
 def _mark_lost(mem, general):
@@ -117,7 +139,7 @@ def step(screen, mem, frame):
         if busy or kind not in ACTIONABLE:
             return None
         probe['reads'] += 1
-        if probe['reads'] > PURSUIT_READ_LIMIT:
+        if probe['reads'] > PURSUIT_READ_LIMIT and probe.get('phase') != 'close':
             _close(mem, probe, 'read_limit')
     else:
         # No other order may be running: stealing the field mid-deploy breaks
@@ -129,6 +151,9 @@ def step(screen, mem, frame):
         if pick is None:
             return None
         general, entry = pick
+        # A fresh pursuit gets a fresh jump budget; three spent jumps would
+        # otherwise end every later pursuit in boss_jump_failed.
+        (mem.get('y_jumps') or {}).pop(f'{PURSUIT_STEP}:target', None)
         probe = mem['boss_pursuit'] = {
             'general': general, 'step': entry.get('step'), 'phase': 'open',
             'reads': 0, 'seeks': 0, 'x_retries': 0}
@@ -232,6 +257,15 @@ def step(screen, mem, frame):
     if probe['phase'] == 'dest':
         if kind != 'map_target':
             if kind == 'world_map':
+                # Our own Y jump opened this view. Closing it with B undid the
+                # jump before its first step: ch9 2026-11-17 pressed y once and
+                # b 51 times and never reached y_jump_confirm.
+                jump = mem.get('y_jump')
+                if isinstance(jump, dict) and jump.get('step') == PURSUIT_STEP:
+                    if frame is None:
+                        return []
+                    from ..os_layer.navigation import _y_jump_step
+                    return _y_jump_step(mem, frame)
                 return [pad('b')]
             if kind == 'map':
                 _close(mem, probe, 'dest_picker_lost')
@@ -265,8 +299,12 @@ def step(screen, mem, frame):
         return [pad('b')]
 
     if probe['phase'] == 'close':
-        if kind == 'map':
-            mem.pop('boss_pursuit', None)
+        probe['closing'] = int(probe.get('closing') or 0) + 1
+        if kind == 'map' or kind == 'world_map' or probe['closing'] > CLOSE_LIMIT:
+            # A world map is closed by the map flow (_close_world_map), which
+            # an empty answer here kept from ever running: ch9 2026-11-17
+            # sat 2500 ticks in close with reads at 2168.
+            _drop_probe(mem)
             mem['uncertain'] = True
             mem['nav_search'] = True
             return None
