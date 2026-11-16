@@ -633,7 +633,7 @@ def test_optional_concert_exits_instead_of_selecting_the_same_track():
 
 
 def test_concert_b_alternation_is_bounded_per_scene():
-    from docich.hanjuku.orchestrator import CONCERT_B_MAX
+    from docich.hanjuku.orchestrator import CONCERT_PICKER_REPEAT_MAX
     rgb=bytearray(frame((160,110,60)).rgb)
     for y in range(150,208):
         for x in range(18,236):
@@ -652,19 +652,21 @@ def test_concert_b_alternation_is_bounded_per_scene():
     assert classify(quiet)=='concert' and classify(picker)=='concert'
     state={}
     sent=[]
-    # The blinking cursor alternates B/A; a consecutive-identity escape never
-    # accumulates, so the per-scene total-B cap is what bounds the loop (#4365).
-    for _ in range(CONCERT_B_MAX*2):
+    # The blinking cursor alternates B/A; only a phase-wide total-B cap bounds
+    # the loop, since consecutive-identity tracking never accumulates (#4365).
+    for _ in range(CONCERT_PICKER_REPEAT_MAX*2):
         for f in (picker,quiet):
             actions,state=decide(f,state)
             sent.append(actions[0]['buttons'])
-    assert sent.count(['b'])==CONCERT_B_MAX
+    # The cap counts B attempts and converts the MAXth to A, so MAX-1 B's are
+    # actually sent before the phase stays on A.
+    assert sent.count(['b'])==CONCERT_PICKER_REPEAT_MAX-1
     assert sent[-4:]==[['a']]*4
-    assert (state['policy'].get('concert_b') or {}).get('exhausted') is True
+    assert (state['policy'].get('concert_picker_watch') or {}).get('exhausted') is True
 
 
 def test_concert_b_count_clears_when_phase_leaves():
-    from docich.hanjuku.orchestrator import CONCERT_B_MAX
+    from docich.hanjuku.orchestrator import CONCERT_PICKER_REPEAT_MAX
     rgb=bytearray(frame((160,110,60)).rgb)
     for y in range(150,208):
         for x in range(18,236):
@@ -681,12 +683,12 @@ def test_concert_b_count_clears_when_phase_leaves():
         gold[i:i+3]=bytes((197,141,74))
     picker=Frame(256,224,bytes(gold))
     state={}
-    for _ in range(CONCERT_B_MAX+1):
+    for _ in range(CONCERT_PICKER_REPEAT_MAX+1):
         _,state=decide(picker,state)
         _,state=decide(quiet,state)
-    assert (state['policy'].get('concert_b') or {}).get('exhausted') is True
+    assert (state['policy'].get('concert_picker_watch') or {}).get('exhausted') is True
     _,state=decide(frame((0,0,0)),state)   # non-concert phase clears the scene
-    assert 'concert_b' not in state['policy']
+    assert 'concert_picker_watch' not in state['policy']
 
 
 def test_red_curtain_merchant_exits_price_list_then_advances_farewell():
