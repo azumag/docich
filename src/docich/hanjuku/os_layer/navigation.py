@@ -390,18 +390,14 @@ def _want_y_jump(mem, order, name, mode) -> bool:
     chapter = mem.get('chapter') or 0
     if chapter not in Y_JUMP_OFFSET or mem.get('y_jump'):
         return False
-    # A neighbouring castle is one field step away: the destination marker is
-    # already on the screen, and the Y picker's jump only risked the measured
-    # residual loop (g1190 23-x: イソ→イデ！ re-sent six attempts a month and
-    # every month ended unreadable). Walk/mark instead of toggling Y.
-    road = chart.corridor(chapter) or ()
-    source, target = order.get('source'), order.get('target')
-    if source in road and target in road:
-        try:
-            if abs(road.index(source) - road.index(target)) == 1:
-                return False
-        except ValueError:
-            pass
+    # Owner 2026-11-16: neighbouring corridor castles used to skip the jump
+    # because the destination marker was expected to sit on the same screen —
+    # but the estimate drifts to the screen edge, a clipped roof is no proof,
+    # and the accepted A sent the general to open ground (g1190: サヌト→オシロガ
+    # and アルマムーン→ハヤク marched ~900 ticks and camped). Even adjacent
+    # targets now jump: the Y view puts the marker on the measured cell and
+    # the roofs only fine-tune it.
+    # (Removed 2026-11-16: the corridor-adjacent early return.)
     plan_steps = {o.get('step') for o in (_plan_region(mem).get('chart_plan') or {}).get('orders') or ()}
     active = _plan_region(mem).get('active')
     if active and order['step'] != active and order['step'] not in plan_steps:
@@ -578,6 +574,9 @@ def _y_jump_step(mem, frame):
         mem['y_jump_return'] = jump['mode']
         if jump['mode'] == 'target':
             mem.setdefault('y_jumped', {})[jump['step']] = jump['goal']
+            # The landing residual decides how far the field marker can sit
+            # from the measured cell: TOL landings are trusted outright.
+            mem.setdefault('y_jumped_res', {})[jump['step']] = [round(dx, 1), round(dy, 1)]
             mem['y_jump_target_confirmed'] = {'step': jump['step'], 'tick': mem.get('tick')}
         mem['near_goal'] = {'step': jump['step'], 'goal': jump['goal'], 'mode': jump['mode']}
         (mem.get('align_steps') or {}).pop(f"{jump['step']}:{jump['mode']}", None)
