@@ -470,6 +470,21 @@ def y_jump_close_settle_step(screen, mem, generic):
 # The same freeze reaches the egg and monster command boxes, which ignore one
 # button exactly like the ordinary たまごをつかう／きりふだ／たいきゃく box.
 BATTLE_COMMAND_MENU_KINDS = frozenset({'battle_menu', 'egg_battle_menu', 'monster_menu'})
+
+
+def field_fallback_actions(kind):
+    """The no-input fallback's input for a frozen ``field``-phase screen."""
+    if kind in {'unknown', 'map'}:
+        # A bare map the chart policy has no plan for: SELECT recentres the
+        # cursor on the hero (measured) and lets nav_step re-anchor.
+        return [pad('select')]
+    if kind in {'map_target', 'world_map'}:
+        return [pad('b')]                   # leave or cancel an open map view
+    if kind in BATTLE_COMMAND_MENU_KINDS:
+        # g1190 2026-11-16: A on a stale rescue menu changed nothing and the
+        # run ended screen_stalled; B closes it and the melee resumes.
+        return [pad('b')]
+    return [pad('a')]                       # a message over the field: acknowledge
 BATTLE_MENU_HOLD_ADVANCE = 5   # identical readable command frames before one A
 
 
@@ -1348,19 +1363,13 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
             mem.pop('house_nav', None)
         if not actions:
             if phase=='field':
+                actions=field_fallback_actions(kind)
                 if kind in {'unknown','map'}:
-                    # A bare map the chart policy has no plan for: SELECT
-                    # recentres the cursor on the hero (measured), which moves
-                    # the screen and lets nav_step re-anchor. Mirrors the
-                    # bookkeeping map_step.select_focus does after that jump.
-                    actions=[pad('select')]
+                    # Mirrors the bookkeeping map_step.select_focus does after
+                    # the SELECT jump.
                     mem['nav_last']=None
                     mem['uncertain']=True
                     mem['select_focus_tick']=int(mem.get('tick') or 0)
-                elif kind in {'map_target','world_map'}:
-                    actions=[pad('b')]      # leave or cancel an open map view
-                else:
-                    actions=[pad('a')]      # a message over the field: acknowledge
             elif phase=='transition':
                 actions=[pad('a')]          # a dark scene that stopped moving, not a fade
             elif phase=='name':

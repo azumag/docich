@@ -1835,7 +1835,7 @@ def target_step(screen: Screen, mem, frame):
             # fell). Count it as an unverified arrival so the sortie is
             # cancelled and retried within its bounds instead of idling.
             mem.pop('nav_search', None)
-            return _unverified_target(screen, mem, order)
+            return _unverified_target(screen, mem, order, frame)
     if result == 'arrived' and not _target_roof_under_marker(screen, mem, frame, order):
         if screen.marker and not chart.is_boss_castle(order['target']):
             # g1067 09:49-10:19: dead reckoning stopped the marker 10 px right
@@ -1850,7 +1850,7 @@ def target_step(screen: Screen, mem, frame):
                         observed_metric={'cursor': mem.get('cursor'), 'marker': list(_cursor(screen) or ())},
                         reason='推定到着点の近くに目的と同じ色の屋根があるため、その屋根へマーカーを合わせる')
                 return _deploy_input(screen, mem, order, aligned, '推定到着点の近くの屋根へ出撃先マーカーを合わせる')
-        return _unverified_target(screen, mem, order)
+        return _unverified_target(screen, mem, order, frame)
     if result == 'arrived':
         context = _deploy_context(order, mem, expected_metric='のりこんだ表示で目標城を確認')
         snapshot = departure_snapshot(order, mem, context['general'], _source(order, mem))
@@ -2341,19 +2341,43 @@ def _target_roof_under_marker(screen, mem, frame, order) -> bool:
                for r in roofs)
 
 
-def _unverified_target(screen, mem, order):
+CELL_EVIDENCE_ROOF_PX = 24      # a castle roof this close to the marker backs a cell match
+
+
+def _cell_match_evidence(screen, mem, order, frame) -> bool:
+    """The screen backs a dead-reckoned cell match for the target.
+
+    g1190 2026-11-16 (chapter 9): the estimate sat on オシロガ's cell while
+    the marker stood over the sea north of the island, and the accepted A
+    sent the general to the coast where he camped. A Y jump to the target
+    lands on its cell; otherwise a castle roof must stand by the marker.
+    """
+    if (mem.get('y_jumped') or {}).get(order['step']) == order['target']:
+        return True
+    s = _cursor(screen)
+    if not s or frame is None:
+        return False
+    return any(abs(r['target'][0] - s[0]) <= CELL_EVIDENCE_ROOF_PX
+               and abs(r['target'][1] - s[1]) <= CELL_EVIDENCE_ROOF_PX
+               for r in castle_roofs(frame))
+
+
+def _unverified_target(screen, mem, order, frame=None):
     step = order['step']
     misses = mem.setdefault('target_miss', {})
     misses[step] = misses.get(step, 0) + 1
     # The camera estimate can already sit on the chart cell while the roofs are
     # unreadable (g1190 2026-11-16 20-9: 132 arrival_unverified and 50
     # target_not_under_marker in one window while 24 タオ attacks produced no
-    # battle). Accept the cell match instead of cancelling the sortie forever.
+    # battle). Accept the cell match instead of cancelling the sortie forever,
+    # but only with evidence on screen (``_cell_match_evidence``): the bare
+    # estimate confirmed a marker over the sea (owner 2026-11-16, ch9).
     cell = chart.castles(mem.get('chapter') or 0).get(order['target'])
     cursor = mem.get('cursor')
     if (cell and isinstance(cursor, (list, tuple)) and len(cursor) == 2
             and abs(cursor[0] - cell[0]) <= BOSS_MARKER_CELL_PX
-            and abs(cursor[1] - cell[1]) <= BOSS_MARKER_CELL_PX):
+            and abs(cursor[1] - cell[1]) <= BOSS_MARKER_CELL_PX
+            and _cell_match_evidence(screen, mem, order, frame)):
         misses.pop(step, None)
         mem['uncertain'] = False
         _record(mem, 'target_cell_accepted', chart_step=step, target=order['target'],
