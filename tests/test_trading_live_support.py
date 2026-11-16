@@ -81,3 +81,47 @@ def block_network(monkeypatch):
         raise AssertionError("LIVE L1 tests must not use the network")
     monkeypatch.setattr(socket.socket, "connect", refuse)
     monkeypatch.setattr(socket, "create_connection", refuse)
+
+
+# ---- L2: mock exchange fixtures --------------------------------------------------------
+from decimal import Decimal as _D
+
+from docich.trading.live.exchange import Capabilities, MarketRules
+from docich.trading.live.mock_exchange import MockExchange, MockFees
+
+
+class Clock:
+    """A settable millisecond clock shared by the mock and the executor tests."""
+
+    def __init__(self, start_ms: int = 1_700_000_000_000) -> None:
+        self.ms = start_ms
+
+    def __call__(self) -> int:
+        return self.ms
+
+    def seconds(self) -> float:
+        return self.ms / 1000
+
+    def advance(self, seconds: float) -> None:
+        self.ms += int(seconds * 1000)
+
+
+def market_rules(symbol="OAS/JPY", **kw):
+    base, quote = symbol.split("/")
+    values = dict(symbol=symbol, base=base, quote=quote, amount_step=_D("1"), min_amount=_D("1"),
+                  price_tick=_D("0.001"), base_unit=_D("0.0001"), quote_unit=_D("0.0001"),
+                  max_fee_rate=_D("0.002"))
+    values.update(kw)
+    return MarketRules(**values)
+
+
+def make_mock(clock=None, *, symbols=("OAS/JPY",), jpy="10000", fees=None, caps=None, state_path=None, **kw):
+    clock = clock or Clock()
+    markets = {s: market_rules(s) for s in symbols}
+    balances = {"JPY": _D(jpy), **{s.split("/")[0]: _D(0) for s in symbols}}
+    caps = caps or Capabilities(client_order_id=True, fetch_by_client_id=True, fills_by_order=True,
+                                client_order_id_max_len=32)
+    mock = MockExchange(clock_ms=clock, markets=markets, balances=balances,
+                        fees=fees or MockFees(maker_rate=_D("0"), taker_rate=_D("0.001")),
+                        capabilities=caps, state_path=state_path, **kw)
+    return mock, clock
