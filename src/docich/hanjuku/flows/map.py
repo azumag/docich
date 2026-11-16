@@ -18,7 +18,7 @@ from .deploy import (_cancel_broken_hero_sortie, _deploy_context, _deploy_input,
 from .recall import (MENU_HOLD_LIMIT, RECALL_LIMIT, _hold_after_picker, _recall_dispatch_step, _request_recall,
                             camp_recall_step)
 from ..os_layer.commands import VISIBLE_LIST_RELEASE_MS, castle_list_batch, menu_to, pad
-from ..os_layer.navigation import (Y_JUMP_LIMIT, Y_JUMP_OFFSET, _align_on_roof, _drop_stale_y_jump, _start_y_jump,
+from ..os_layer.navigation import (Y_JUMP_LIMIT, Y_JUMP_OFFSET, Y_JUMP_TOL, _align_on_roof, _drop_stale_y_jump, _start_y_jump,
                                    _forget_failed_jump, _want_y_jump, _y_jump_step, nav_step, y_jump_unreachable)
 from ..os_layer.readers import (UNDER_CURSOR_PX, WORLD_MAP_OFFSET, _cursor, _roof_under_cursor, season_sites,
                                 world_cursor, world_flags, world_markers)
@@ -2378,6 +2378,20 @@ def _departure_request_step(screen, mem, order, request):
 
 
 
+def _precise_y_landing(mem, order) -> bool:
+    """A Y jump placed the marker on the measured cell within ``Y_JUMP_TOL``.
+
+    The coarse landing (moves exhausted, residual up to ``Y_JUMP_FINAL_TOL`` ≈
+    a cell and a half) still needs a roof to prove it; the TOL landing is on
+    the cell itself (owner 2026-11-16: Y jump for the rough placement, fine
+    tune after), so a clipped or unreadable roof must not reject it.
+    """
+    if (mem.get('y_jumped') or {}).get(order['step']) != order['target']:
+        return False
+    res = (mem.get('y_jumped_res') or {}).get(order['step'])
+    return bool(res and abs(res[0]) <= Y_JUMP_TOL and abs(res[1]) <= Y_JUMP_TOL)
+
+
 def _target_roof_under_marker(screen, mem, frame, order) -> bool:
     """The marker stands on a castle roof of the expected owner.
 
@@ -2403,11 +2417,17 @@ def _target_roof_under_marker(screen, mem, frame, order) -> bool:
         return bool(cell and world
                     and abs(world[0] - cell[0]) <= BOSS_MARKER_CELL_PX
                     and abs(world[1] - cell[1]) <= BOSS_MARKER_CELL_PX)
+    if _precise_y_landing(mem, order):
+        # The Y view put the marker on the measured cell (owner 2026-11-16:
+        # jump for the rough placement, fine-tune after). A clipped roof at
+        # the screen edge is no reason to doubt that placement and loop.
+        return True
     roofs = castle_roofs(frame)
     if not roofs and (mem.get('y_jumped') or {}).get(order['step']) == order['target']:
         return True                           # winter palette: trust the Y jump (g421 18:13)
     want = 'own' if order['target'] in _owned(mem) else 'enemy'
     return any(r['kind'] == want
+               and not r.get('clipped')
                and abs(r['target'][0] - s[0]) <= UNDER_CURSOR_PX
                and abs(r['target'][1] - s[1]) <= UNDER_CURSOR_PX
                for r in roofs)
@@ -2422,14 +2442,20 @@ def _cell_match_evidence(screen, mem, order, frame) -> bool:
     g1190 2026-11-16 (chapter 9): the estimate sat on オシロガ's cell while
     the marker stood over the sea north of the island, and the accepted A
     sent the general to the coast where he camped. A Y jump to the target
-    lands on its cell; otherwise a castle roof must stand by the marker.
+    lands on its cell; otherwise a castle roof must stand by the marker —
+    a roof of the *expected* owner, fully in frame. A clipped roof's box is
+    cut by the screen edge, so its bottom-centre anchor does not mark the
+    castle's selecting cell: confirming beside it sent アルマムーン→ハヤク
+    generals marching 900 ticks to nowhere (g1190 2026-11-16 17:20).
     """
     if (mem.get('y_jumped') or {}).get(order['step']) == order['target']:
         return True
     s = _cursor(screen)
     if not s or frame is None:
         return False
-    return any(abs(r['target'][0] - s[0]) <= CELL_EVIDENCE_ROOF_PX
+    want = 'own' if order['target'] in _owned(mem) else 'enemy'
+    return any(r['kind'] == want and not r.get('clipped')
+               and abs(r['target'][0] - s[0]) <= CELL_EVIDENCE_ROOF_PX
                and abs(r['target'][1] - s[1]) <= CELL_EVIDENCE_ROOF_PX
                for r in castle_roofs(frame))
 

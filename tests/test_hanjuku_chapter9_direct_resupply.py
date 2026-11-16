@@ -1,10 +1,10 @@
-"""Chapter 9 moves ride the owned road straight to the front castle (docich#3952).
+"""Chapter 9 moves relay one road hop at a time toward the front castle.
 
-Measured 2026-11-11 22:2x-23:0x: hop-by-hop relays fed the front at ~1 general
-per 5 minutes, the front never held a squad and オオキク's defender recovered
-between attacks (18 -> 34 -> 44). A rear castle's transfer now targets the
-castle beside the next road castle in one march whenever every road castle in
-between is ours; one enemy castle on the way falls back to the one-hop relay.
+Owner 2026-11-16: a castle on the road is reached only from the one before
+it — a transfer aimed past a neighbour is absorbed by the castle between and
+never arrives (タオ→オシロガ over サヌト settled as move_overdue after 1400+
+ticks). A move's leg is the adjacent hop only; the N-2→N-1→N relay rides
+successive orders. (Reverts docich#3952's direct-resupply leg.)
 """
 from docich import hanjuku_chart as chart
 from docich.hanjuku import orchestrator  # noqa: F401
@@ -29,53 +29,41 @@ def _road_mem(*, upto=6, **extra):
     return mem
 
 
-def test_a_rear_castle_moves_straight_to_the_front_castle():
+def test_a_rear_castle_moves_one_hop_toward_the_front_castle():
     mem = _road_mem()                          # ドンドン is the front, オオキク next
     with chart.map_context(mem):
         orders = corridor.orders(mem)
     front = ROAD[5]                            # ドンドン
     moves = [o for o in orders if o['purpose'] == 'move' and not o.get('corridor_hero')]
-    assert moves and all(o['target'] == front for o in moves)
-    assert {o['source'] for o in moves} == set(ROAD[:5]) - {front}
+    assert moves
+    for o in moves:
+        route = routes.path(mem, o['source'], front, set(mem['captured']))
+        assert route and o['target'] == route[1]      # the adjacent hop only
+        assert chart.corridor_gap(9, o['source'], o['target']) == 1
 
 
 def test_an_enemy_castle_on_the_way_retargets_the_last_owned_castle():
-    """オシロガ lost: the front recomputes to サヌト and moves still go direct."""
+    """オシロガ lost: the front recomputes to サヌト and moves stay one hop."""
     mem = _road_mem()
     mem['captured'] = [c for c in mem['captured'] if c != ROAD[4]]   # オシロガ lost
     mem['lost'] = [ROAD[4]]
     with chart.map_context(mem):
         orders = corridor.orders(mem)
     moves = {(o['source'], o['target']) for o in orders if o['purpose'] == 'move'}
-    assert (ROAD[3], ROAD[4]) not in moves     # a move never lands on an enemy castle
-    assert {o['target'] for o in orders if o['purpose'] == 'move'} == {ROAD[3]}
+    for source, target in moves:
+        assert chart.corridor_gap(9, source, target) == 1   # single hop only
     for o in orders:
         assert o['target'] in mem['captured'] or o['purpose'] != 'move'
 
 
-def test_a_broken_road_leg_falls_back_to_the_first_hop():
-    """The one-hop relay remains when the direct leg cannot be proven owned."""
-    mem = _road_mem()
-    calls = iter([None, None])                 # move_leg cannot prove the leg
-    real = routes.move_leg
-    try:
-        routes.move_leg = lambda *a, **k: False
-        with chart.map_context(mem):
-            orders = corridor.orders(mem)
-    finally:
-        routes.move_leg = real
-    moves = {o['source']: o['target'] for o in orders if o['purpose'] == 'move'}
-    for source, hop in moves.items():
-        route = routes.path(mem, source, ROAD[6], set(mem['captured']))
-        assert hop == route[1]                 # exactly the old relay hop
-
-
-def test_the_move_leg_gate_accepts_owned_roads_and_rejects_gaps():
+def test_the_move_leg_gate_accepts_owned_roads_but_order_requires_a_hop():
     mem = _road_mem()
     with chart.map_context(mem):
         assert routes.move_leg(mem, ROAD[0], ROAD[5])        # 5 hops, all owned
         order = {'purpose': 'move', 'target': ROAD[5]}
-        assert routes.order_allowed(mem, order, ROAD[0])
+        assert not routes.order_allowed(mem, order, ROAD[0])   # not adjacent: no
+        order = {'purpose': 'move', 'target': ROAD[1]}
+        assert routes.order_allowed(mem, order, ROAD[0])       # adjacent: yes
         order = {'purpose': 'move', 'target': ROAD[6]}       # enemy target: no
         assert not routes.order_allowed(mem, order, ROAD[0])
         attack = {'purpose': 'retake', 'target': ROAD[6]}
@@ -106,14 +94,14 @@ def test_the_squad_cap_and_guard_free_still_hold():
         assert moves                       # moves never wait for a full squad
 
 
-def test_direct_moves_still_count_against_the_wave_budget():
+def test_one_hop_moves_still_count_against_the_wave_budget():
     mem = _road_mem()
     with chart.map_context(mem):
         corridor.orders(mem)               # opens the wave
         for i in range(corridor.SQUAD):
-            step = f'{corridor.PREFIX}{ROAD[2]}>{ROAD[5]}:{100 + i}'
+            step = f'{corridor.PREFIX}{ROAD[2]}>{ROAD[3]}:{100 + i}'
             _world(mem).setdefault('sorties', {})[step] = {'general': f'将軍{i}', 'source': ROAD[2],
-                                   'target': ROAD[5], 'purpose': 'move',
+                                   'target': ROAD[3], 'purpose': 'move',
                                    'status': 'en_route', 'tick': 5000}
             _plan_region(mem).setdefault('orders', {})[step] = 'launched'
         assert not [o for o in corridor.orders(mem)
