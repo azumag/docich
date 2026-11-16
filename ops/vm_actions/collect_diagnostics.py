@@ -7550,6 +7550,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v951-yjump-goldg-only",
             "hanjuku-chart-v952-ch9-merge",
             "hanjuku-chart-v953-cliff-detour-cap",
+            "hanjuku-chart-v954-reprobe-cooldown",
             "hanjuku-chart-v864-shop-list-batch",
             "hanjuku-chart-v862-camp-field-move",
             "hanjuku-chart-v852-visible-menu-batches",

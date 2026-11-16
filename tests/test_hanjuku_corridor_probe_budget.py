@@ -114,6 +114,36 @@ def test_a_general_showing_up_in_a_castle_list_rearms_the_budget():
     assert out and out[0].get('source_probe') is True, 'a found general re-arms the tour'
 
 
+def test_a_just_read_drained_castle_is_not_reprobed():
+    """g1190 2026-11-16 ch9: the only drained castle re-read six times a month.
+
+    Every probe closed on 「出撃元に出せる将軍がいない」 and re-marked the castle,
+    which made it the oldest (and only) mark again — an endless loop of visits
+    to a list that had just proven empty.
+    """
+    mem = memory([A, B, C], [A])
+    mem['corridor_drained'] = {A: {'kind': 'empty', 'tick': mem['tick'] - 10,
+                                   'month': '23-5'}}
+    mem['country_general_count'] = {'count': 32, 'scope': [9, '23-5']}
+    out = orders(mem)
+    assert out, 'real orders are still planned'
+    assert not any(order.get('source') == A for order in out), \
+        'the castle just verified empty is not re-read on the next plan'
+    assert not decided(mem, 'roster_probe')
+
+
+def test_a_stale_drained_mark_is_reprobed():
+    """The tour still revisits a castle not verified for a while."""
+    mem = memory([A, B, C], [A])
+    mem['corridor_drained'] = {
+        A: {'kind': 'empty', 'tick': mem['tick'] - corridor.REPROBE_MIN_TICKS,
+            'month': '23-5'}}
+    mem['country_general_count'] = {'count': 32, 'scope': [9, '23-5']}
+    out = orders(mem)
+    assert out and out[0].get('source') == A
+    assert decided(mem, 'roster_probe')
+
+
 def test_a_new_month_rearms_the_budget():
     mem = memory([A, B, C], [A, B])
     mem['garrison'][C] = ['リーキ', 'ベーグル']
