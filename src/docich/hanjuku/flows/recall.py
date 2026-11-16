@@ -746,6 +746,16 @@ def _camp_recall_step(screen: Screen, mem, frame, *, observed_camps=None):
         _reset_boss_jump(mem)
         _observe_recall_origin(screen, mem, frame, state)
         state['camp_world'] = _camp_world_cell(cursor, state.get('origin'), camp['target'])
+        # Owner 2026-11-16 (fix A): re-wire the lost second leg. A camp that
+        # formed beside the north waypoint is re-sent at the boss's freshly
+        # measured cell through the existing ``_boss_redirect_dest_step``;
+        # camps anywhere else still take the ordinary nearest-castle recall.
+        boss = boss_redirect_goal(mem)
+        if boss and state.get('camp_world'):
+            wx, wy = chart.CH9_BOSS_WAYPOINT
+            if (abs(state['camp_world'][0] - wx) <= 320
+                    and abs(state['camp_world'][1] - wy) <= 320):
+                state['boss'], state['goal'] = True, boss
         if _camp_target(state.get('camp_world')):
             _flow(mem)['camp_last_world'] = list(state['camp_world'])
         elapsed = (int(mem.get('tick') or 0) - mem['month_start_tick']
