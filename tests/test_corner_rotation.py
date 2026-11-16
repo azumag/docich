@@ -3345,16 +3345,69 @@ def test_queued_manual_cancel_removes_imported_ledger_entry(setup):
     assert executor.calls[-1]['request_id'] == live['request_id']
 
 
-def test_queued_manual_cancel_busy_while_execution_lock_held(setup):
+def test_queued_manual_cancel_records_intent_while_execution_lock_held(setup):
     _, _, _, _, make = setup
     owner = make()
     owner.queue_manual('nsnake')
     with owner.locked() as acquired:
         assert acquired
-        with pytest.raises(RotationError) as caught:
-            make().cancel_queued_manual('nsnake')
-        assert caught.value.reason_code == 'busy'
+        busy = make()
+        review = busy.cancel_queued_manual('nsnake')
+        assert review['status'] == 'eligible'
+        assert review['via'] == 'intent'
+        outcome = busy.cancel_queued_manual('nsnake', apply=True,
+                                            expected=review['fingerprint'])
+        assert outcome['status'] == 'cancel_requested'
     assert owner._manual_queue_path.exists()
+    assert state(owner)['queued_manual_cancel']['expected'] == review['fingerprint']
+
+
+def test_queued_manual_cancel_intent_commits_on_next_free_tick(setup):
+    _, _, _, _, make = setup
+    owner = make()
+    owner.queue_manual('nsnake')
+    with owner.locked() as acquired:
+        assert acquired
+        busy = make()
+        review = busy.cancel_queued_manual('nsnake')
+        outcome = busy.cancel_queued_manual('nsnake', apply=True,
+                                            expected=review['fingerprint'])
+        assert outcome['status'] == 'cancel_requested'
+    after = make().tick()
+    ledger = state(make())
+    assert ledger['queued_manual'] is None
+    assert ledger['queued_manual_cancel'] is None
+    assert (ledger['last_queued_manual_cancel']['reason']
+            == 'owner-cancelled-queued-reservation-cancelled')
+    assert ledger['pending'] is None
+    assert not owner._manual_queue_path.exists()
+
+
+def test_queued_manual_cancel_intent_refuses_changed_reservation(setup):
+    _, _, _, _, make = setup
+    owner = make()
+    owner.queue_manual('nsnake')
+    with owner.locked() as acquired:
+        assert acquired
+        busy = make()
+        review = busy.cancel_queued_manual('nsnake')
+        outcome = busy.cancel_queued_manual('nsnake', apply=True,
+                                            expected=review['fingerprint'])
+        assert outcome['status'] == 'cancel_requested'
+    # Re-queue a different reservation before the intent commits.
+    owner._manual_queue_path.unlink()
+    owner.queue_manual('paper-view')
+    make().tick()
+    ledger = state(make())
+    assert ledger['queued_manual_cancel'] is None
+    cancel = ledger['last_queued_manual_cancel']
+    assert cancel['reason'] == 'owner-cancelled-queued-reservation-reservation_changed'
+    # The refused intent names the re-queued reservation it declined to drop;
+    # that same reservation then dispatched normally through the tick.
+    assert cancel['reservation']['corner'] == 'paper'
+    dispatched = (ledger.get('pending') or {}).get('request_id') or \
+        (ledger.get('last_result') or {}).get('request_id')
+    assert dispatched == cancel['reservation']['request_id']
 
 
 def test_queued_manual_cancel_requires_reviewed_fingerprint(setup):
