@@ -113,19 +113,33 @@ def _refused_after(ready, name, qty, stock=None, gold_before=300, rest=(), since
     return p.shop_step(screen, ready), screen
 
 
-def test_refusal_records_a_holding_floor_and_retries_half(ready):
+def test_refusal_records_a_holding_floor_and_retries_the_room(ready):
     actions, _ = _refused_after(ready, 'ノリウツール', 60, stock=0, rest=[['ミックミー', 50]])
     assert actions == [p.pad('a')]
     shop = ready['shop']
     assert shop['bought'] == []
     assert ready['card_bought_since_read'] == {'ノリウツール': 0}      # refused copies are not held
     assert ready['card_held_floor'] == {'ノリウツール': 40}            # 60 on top of >=40 broke 99
-    assert shop['items'] == [['ノリウツール', 30], ['ミックミー', 50]]  # 30 <= room 59
+    assert shop['items'] == [['ノリウツール', 59], ['ミックミー', 50]]  # 59 is the whole room floor 40 leaves
 
 
 def test_retry_never_exceeds_the_room_the_floor_leaves(ready):
-    _refused_after(ready, 'ノリウツール', 99, stock=0)         # floor 1, room 98, half 49
-    assert ready['shop']['items'] == [['ノリウツール', 49]]
+    _refused_after(ready, 'ノリウツール', 99, stock=0)         # floor 1, room 98
+    assert ready['shop']['items'] == [['ノリウツール', 98]]    # retry is the room, never above it
+
+
+def test_tight_floor_retries_the_full_room_in_one_refusal(ready):
+    """One refusal is enough when the learned floor is the binding estimate."""
+    ready['card_stock'] = {'ノリウツール': 60}
+    _refused_after(ready, 'ノリウツール', 39, stock=60, since=0)
+    # 39 on top of >=61 broke 99; the floor (61) exceeds the panel stock (60),
+    # so hold_room() is 99 - 61 = 38 and the retry is that whole room.
+    assert ready['card_held_floor'] == {'ノリウツール': 61}
+    assert b.held_estimate(ready, 'ノリウツール') == 61
+    assert ready['shop']['items'] == [['ノリウツール', 38]]
+    # If the true holding equals the proven floor, the single retry is exactly
+    # the largest quantity the merchant can still sell (no halving needed).
+    assert ready['card_held_floor']['ノリウツール'] + ready['shop']['items'][0][1] == b.HOLD_CAP
 
 
 def test_full_kind_drops_only_that_card(ready):
@@ -135,17 +149,19 @@ def test_full_kind_drops_only_that_card(ready):
 
 
 def test_a_second_refusal_in_the_same_visit_is_handled_again(ready):
-    _refused_after(ready, 'ノリウツール', 99, stock=0)
+    _refused_after(ready, 'ノリウツール', 99, stock=0)          # retry 98 (room)
     shop = ready['shop']
     clean = parse(Canvas().frame()); clean.kind = 'shop_list'
     p.shop_step(clean, ready)
     assert shop['hold_limit_open'] is False
-    ready['card_bought_since_read'] = {'ノリウツール': 49}
-    shop.update(bought=[['ノリウツール', 49, 18]], last_buy={'row': ['ノリウツール', 49, 18], 'gold': 300})
+    ready['card_bought_since_read'] = {'ノリウツール': 98}
+    shop.update(bought=[['ノリウツール', 98, 18]], last_buy={'row': ['ノリウツール', 98, 18], 'gold': 300})
     screen = refused_list(); screen.kind = 'shop_list'
     assert p.shop_step(screen, ready) == [p.pad('a')]
-    assert ready['card_held_floor']['ノリウツール'] == 51      # >=51 held, 49 more broke 99
-    assert shop['items'] == [['ノリウツール', 24]]
+    assert ready['card_held_floor']['ノリウツール'] == 2       # >=2 held, 98 more broke 99
+    # The room-only retry was refused too, so it falls back to halving and the
+    # search stays geometric instead of decrementing 98 -> 97 -> 96 ...
+    assert shop['items'] == [['ノリウツール', 49]]             # room 97, halved to 49
 
 
 def test_purchase_confirmation_counts_toward_the_estimate(ready):
@@ -210,7 +226,7 @@ def test_refusal_records_full_shop_context_after_retry(ready):
                   if r.get('deviation_reason') == 'holding_limit')
     metric = record['observed_metric']
     assert metric['card_stock_total'] == 11
-    assert metric['items'] == [['ノリウツール', 30], *rest]
+    assert metric['items'] == [['ノリウツール', 59], *rest]
     assert metric['shop_state']['hold_limit'] == 1
     assert metric['shop_state']['hold_limit_open'] is True
     assert metric['shop_state']['want'] is None
@@ -218,7 +234,7 @@ def test_refusal_records_full_shop_context_after_retry(ready):
     assert metric['shop_state']['gold'] == 300
     # Snapshots must not change when the live queue changes.
     shop['items'][0][1] = 1
-    assert metric['items'][0][1] == 30
+    assert metric['items'][0][1] == 59
 
 
 def test_refusal_shop_snapshot_detaches_nested_purchase_row(ready):
