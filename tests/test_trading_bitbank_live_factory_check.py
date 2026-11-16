@@ -97,54 +97,128 @@ def _per_pair(pair, rows_key, rows):
     return lambda params: {rows_key: rows if params.get("pair") == pair else []}
 
 
-def _check_script():
+def _trades(n=6, start=T0):
+    return [trade_row(trade_id=100 + i, order_id=1000000 + i, executed_at=start + i * 1000) for i in range(n)]
+
+
+def _since_aware(rows, unit):
+    """A trade_history that honours `since` in the given unit ("ms" or "sec") for the pair of `rows`."""
+    def answer(params):
+        if params.get("pair") != "oas_jpy":
+            return {"trades": []}
+        since = params.get("since")
+        if since is None:
+            return {"trades": rows}
+        threshold = int(since) if unit == "ms" else int(since) * 1000
+        return {"trades": [r for r in rows if r["executed_at"] >= threshold]}
+    return answer
+
+
+def _check_script(unit="ms"):
     from bitbank_live_support import pairs_payload
+    rows = _trades()
+    rows[1] = trade_row(trade_id=101, order_id=1000001, maker_taker="maker", fee_amount_quote="-0.2",
+                        fee_occurred_amount_quote="-0.2", executed_at=T0 + 1000)
+    rows[2] = trade_row(trade_id=102, order_id=1000002, maker_taker="maker", fee_amount_quote="0.2",
+                        fee_occurred_amount_quote="0.2", executed_at=T0 + 2000)       # positive on a negative-rate pair
     return default_script(
         pairs=pairs_payload(**{"OAS/JPY": {"maker_fee_rate_quote": "-0.0002"}}),
         depth=_depth_at(T0),
         active_orders=_per_pair("oas_jpy", "orders", [order_row(order_id=1000001, status="UNFILLED")]),
-        trade_history=_per_pair("oas_jpy", "trades", [
-            trade_row(trade_id=7, order_id=1000001, executed_at=T0 + 100),
-            trade_row(trade_id=8, order_id=1000002, maker_taker="maker", fee_amount_quote="-0.2",
-                      fee_occurred_amount_quote="-0.2", executed_at=T0 + 200)]),
+        trade_history=_since_aware(rows, unit),
         deposit_history={"deposits": []}, spot_status={"statuses": []},
         order=lambda params: (_ for _ in ()).throw(OrderNotFound("1")) if params["order_id"] == "1" else
-        order_row(order_id=int(params["order_id"]), status="FULLY_FILLED", executed_amount="10", remaining_amount="0"))
+        order_row(order_id=int(params["order_id"]), status="CANCELED_PARTIALLY_FILLED", executed_amount="4",
+                  remaining_amount=None if params["order_id"].endswith("3") else "0"))
 
 
-def test_the_check_report_has_counts_and_shapes_and_no_secrets():
-    transport = FakeTransport(_check_script())
-    lines, code = ck.run_check(transport, SYMBOLS, wall_clock=lambda: T0 / 1000, secrets=(SENTINEL_KEY, SENTINEL_SECRET))
+def _run(script=None, **kw):
+    transport = FakeTransport(script or _check_script())
+    return ck.run_check(transport, SYMBOLS, wall_clock=lambda: T0 / 1000, **kw), transport
+
+
+def test_the_default_symbols_are_the_policys_symbols():
+    from docich.trading.live.policy import INITIAL_SYMBOLS
+    assert ck.DEFAULT_SYMBOLS == tuple(INITIAL_SYMBOLS)
+
+
+def test_the_report_shows_raw_shapes_counts_and_no_secrets():
+    (lines, code), _ = _run(secrets=(SENTINEL_KEY, SENTINEL_SECRET))
     text = "\n".join(lines)
     assert code == 0, text
-    for expected in ("clock: skew_ms=0", "reader: built for 2 symbols", "endpoint assets: ok", "endpoint deposit_history: ok",
-                     "endpoint spot_status: ok", "OrderNotFound (code 50009", "balances: currencies=3",
-                     "open orders OAS/JPY: count=1", "fills OAS/JPY: count=2", "negative_fees=1",
-                     "maker_taker=", "executed_at_digits={13: 2}", "since unit experiment", "reader smoke:"):
+    for expected in ("clock: skew_ms per symbol {'OAS/JPY': 0, 'XYM/JPY': 0} (within +-800", "reader: built for 2/2 symbols",
+                     "endpoint assets: ok", "endpoint deposit_history: ok", "endpoint spot_status: ok",
+                     "OrderNotFound (code 50009", "balances: currencies=3", "amount_precision(watched)=",
+                     "open orders OAS/JPY: count=1", "fills OAS/JPY: count=6", "executed_at digits: {13: 6}",
+                     "reader smoke (strict parsing):"):
         assert expected in text, (expected, text)
-    # the report never carries an amount, price or id of a real order
-    for forbidden in ("10000", "1000001", "100.0", SENTINEL_KEY, SENTINEL_SECRET):
-        assert forbidden not in text.replace("amount_step=1", ""), forbidden
+    for forbidden in ("1000001", "10000.", SENTINEL_KEY, SENTINEL_SECRET):
+        assert forbidden not in text, forbidden
 
 
-def test_the_remaining_amount_relation_is_reported_from_lookups_of_orders_seen_in_history():
-    lines, _ = ck.run_check(FakeTransport(_check_script()), SYMBOLS, wall_clock=lambda: T0 / 1000)
+def test_fee_shapes_tell_a_wrong_sign_from_a_missing_field():
+    (lines, _), _ = _run()
     text = "\n".join(lines)
-    assert "orders from history" in text and "FULLY_FILLED" in text
+    assert "quote-negative/maker/occurred-agrees" in text and "quote-positive/maker/occurred-agrees" in text
+    assert "quote-positive/taker/occurred-agrees" in text
+    assert ck.fee_shape(trade_row(fee_amount_quote=None)) == "field-missing-or-unreadable"
+    assert ck.fee_shape(trade_row(fee_occurred_amount_quote="9")) .endswith("occurred-DISAGREES")
+    assert ck.fee_shape(trade_row(fee_amount_base="0.1")).startswith("both-nonzero")
+    assert ck.fee_shape(trade_row(fee_amount_base="0.1", fee_amount_quote="0")).startswith("base-positive")
+    assert ck.fee_shape(trade_row(fee_amount_base="0", fee_amount_quote="0")).startswith("both-zero")
+
+
+def test_remaining_amount_answers_are_counted_even_when_the_strict_reader_would_refuse_them():
+    (lines, _), _ = _run()
+    text = "\n".join(lines)
+    assert "remaining-null" in text and "remaining==0" in text      # order ids ending in 3 return a null remaining
+    assert "CANCELED_PARTIALLY_FILLED" in text
+
+
+@pytest.mark.parametrize("unit,verdict", [("ms", "since is in MILLISECONDS"), ("sec", "since is in SECONDS")])
+def test_the_since_experiment_tells_milliseconds_from_seconds(unit, verdict):
+    (lines, _), _ = _run(_check_script(unit))
+    assert verdict in "\n".join(lines)
+
+
+def test_the_since_experiment_says_undetermined_with_too_few_trades():
+    script = _check_script()
+    script["trade_history"] = _since_aware(_trades(2), "ms")
+    (lines, _), _ = _run(script)
+    assert "since unit experiment: undetermined" in "\n".join(lines)
+    script["trade_history"] = {"trades": []}
+    (lines, _), _ = _run(script)
+    assert "since unit experiment: undetermined" in "\n".join(lines)
+
+
+def test_a_bad_pair_is_named_and_the_rest_of_the_report_goes_on():
+    from bitbank_live_support import pairs_payload
+    script = _check_script()
+    script["pairs"] = pairs_payload(**{"XYM/JPY": {"unit_amount": "zero"}})
+    (lines, code), _ = _run(script)
+    text = "\n".join(lines)
+    assert code == 1 and "market XYM/JPY: BAD (bad field: unit_amount)" in text
+    assert "reader: built for 1/2 symbols" in text and "fills OAS/JPY: count=6" in text
+
+
+def test_parse_errors_name_the_field_in_the_report():
+    script = _check_script()
+    script["depth"] = {"asks": [], "bids": [], "timestamp": 12}
+    (lines, code), _ = _run(script)
+    assert code == 1 and any("clock OAS/JPY: FAILED ExchangeDataError(-) bad field: timestamp" in l for l in lines)
+
+
+def test_public_only_never_touches_a_private_endpoint():
+    (lines, code), transport = _run(public_only=True)
+    assert code == 0 and "public-only: private endpoints were not touched" in "\n".join(lines)
+    assert {name for name, _ in transport.calls} == {"depth", "pairs"}
 
 
 def test_a_failing_endpoint_is_reported_and_the_exit_code_says_so():
     script = _check_script()
     script["deposit_history"] = ExchangeAmbiguous("no permission")
-    lines, code = ck.run_check(FakeTransport(script), SYMBOLS, wall_clock=lambda: T0 / 1000)
+    (lines, code), _ = _run(script)
     assert code == 1 and any(line.startswith("endpoint deposit_history: FAILED") for line in lines)
-
-
-def test_a_reader_that_cannot_be_built_stops_the_check_with_a_failure():
-    script = _check_script()
-    script["pairs"] = ExchangeAmbiguous("down")
-    lines, code = ck.run_check(FakeTransport(script), SYMBOLS, wall_clock=lambda: T0 / 1000)
-    assert code == 1 and any("reader: NOT BUILT" in line for line in lines)
 
 
 def test_the_check_refuses_to_print_anything_that_contains_the_key():
@@ -170,3 +244,18 @@ def test_main_without_a_key_says_so_and_touches_nothing(state, capsys):
     assert ck.main(["--state-dir", str(state)]) == 1
     out = capsys.readouterr().out
     assert "NOT AVAILABLE (file_missing)" in out and list(state.iterdir()) == []
+    assert ck.main([]) == 1 and "--state-dir is required" in capsys.readouterr().out
+
+
+def test_main_with_a_key_but_no_ccxt_prints_one_plain_line(state, capsys, monkeypatch):
+    _install_key(state)
+    import docich.trading.exchanges.bitbank_live.transport as tr
+
+    def no_ccxt(config):
+        raise ModuleNotFoundError("No module named 'ccxt'")
+
+    monkeypatch.setattr(tr, "_ccxt_factory", no_ccxt)
+    assert ck.main(["--state-dir", str(state)]) == 1
+    out = capsys.readouterr().out
+    assert out.strip() == "ccxt is not installed here: pip install -r requirements-trading.txt"
+    assert SENTINEL_KEY not in out

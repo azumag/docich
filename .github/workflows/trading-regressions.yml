@@ -171,4 +171,5 @@ jobs:
       - name: Bitbank read-only transport against the real ccxt (no network)
         run: |
           python3 -m pip install -r requirements-trading.txt
+          python3 -c "import ccxt; print('ccxt', ccxt.__version__)"   # an import failure must fail here, not skip
           python3 -m pytest -q tests/test_trading_bitbank_live_ccxt.py

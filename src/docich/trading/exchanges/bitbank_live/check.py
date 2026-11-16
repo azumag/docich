@@ -1,35 +1,65 @@
-"""The owner's read-only check against a real account (phase B).  Run it yourself; it sends no order.
+"""The owner's read-only check against bitbank (phase B).  Run it yourself; it sends no order.
 
     python -m docich.trading.exchanges.bitbank_live.check --state-dir <dir> [--from-env] [--symbols OAS/JPY ...]
+    python -m docich.trading.exchanges.bitbank_live.check --public-only      # no key needed
 
-It prints counts, shapes and units only: no key, no secret, no balance, no price, no order or trade
-detail.  Before anything is printed, every line is compared with the key and secret; if one appears,
-nothing is printed and the exit code is 2.  Only GET endpoints are used (the transport refuses the rest).
+It prints counts, shapes and units only: no key, no secret, no balance, no price, no order or trade detail.
+Before anything is printed every line is compared with the key and secret; if one appears, nothing is printed
+and the exit code is 2.  Only GET endpoints are used (the transport refuses everything else).
+
+The report works on the *raw* rows, not through the strict reader: its job is to show how bitbank really answers,
+including the answers the reader would refuse (a null ``remaining_amount``, an odd fee), so those are counted
+instead of being turned into a bare error.
 """
 from __future__ import annotations
 
 import argparse
+import statistics
 import sys
 import time
 from collections import Counter
+from decimal import Decimal
 from typing import Callable, Sequence
 
 from ...live.exchange import ExchangeDataError, ExchangeError, OrderNotFound
+from ...live.policy import INITIAL_SYMBOLS
 from . import parse
 from .credentials import CredentialsUnavailable, load_credentials
 from .reader import BitbankReader, ReaderUnavailable
 from .transport import CHECK_ONLY_ENDPOINTS, ENDPOINTS, CcxtReadTransport
 
-DEFAULT_SYMBOLS = ("OAS/JPY", "OMG/JPY", "XYM/JPY", "CYBER/JPY", "MONA/JPY", "ATOM/JPY", "KLAY/JPY", "LPT/JPY",
-                   "AXS/JPY", "IMX/JPY", "BOBA/JPY")
+DEFAULT_SYMBOLS = tuple(INITIAL_SYMBOLS)
+SKEW_LIMIT_MS = 800
 
 
 def _name(exc: BaseException) -> str:
-    return f"{type(exc).__name__}({getattr(exc, 'health_kind', '-')})"
+    """Class, kind and (for parse errors) the field name: never a value (the messages carry none)."""
+    extra = f" {exc}" if isinstance(exc, ExchangeDataError) else ""
+    return f"{type(exc).__name__}({getattr(exc, 'health_kind', '-')}){extra}"
+
+
+def _sign(value: Decimal) -> str:
+    return "zero" if value == 0 else ("negative" if value < 0 else "positive")
+
+
+def fee_shape(row: dict) -> str:
+    """Which currency carries the fee, its sign, the role, and whether the 'occurred' field agrees."""
+    def num(key):
+        try:
+            return parse.dec_str(row.get(key), key)
+        except ExchangeDataError:
+            return None
+    base, quote, occurred = num("fee_amount_base"), num("fee_amount_quote"), row.get("fee_occurred_amount_quote")
+    if base is None or quote is None:
+        return "field-missing-or-unreadable"
+    agree = "n/a" if occurred is None else ("agrees" if num("fee_occurred_amount_quote") == quote else "DISAGREES")
+    where = ("both-zero" if base == 0 and quote == 0 else "both-nonzero" if base != 0 and quote != 0
+             else f"base-{_sign(base)}" if base != 0 else f"quote-{_sign(quote)}")
+    return f"{where}/{row.get('maker_taker', '?')}/occurred-{agree}"
 
 
 def run_check(transport, symbols: Sequence[str], *, wall_clock: Callable[[], float] = time.time,
-              secrets: Sequence[str] = ()) -> tuple[list[str], int]:
+              secrets: Sequence[str] = (), public_only: bool = False) -> tuple[list[str], int]:
     """The report lines and an exit code (0 ok, 1 something failed, 2 a secret would have been printed)."""
     lines: list[str] = []
     failed = False
@@ -46,122 +76,168 @@ def run_check(transport, symbols: Sequence[str], *, wall_clock: Callable[[], flo
             say(f"{label}: FAILED {_name(exc)}")
         return None
 
-    # --- clock
-    from .factory import measure_skew_ms
-    skew = attempt("clock", lambda: measure_skew_ms(transport, symbols[0], wall_clock=wall_clock))
-    if skew is not None:
-        say(f"clock: skew_ms={skew} (limit 800; local minus bitbank, from the public depth timestamp)")
+    # --- clock, for every symbol (is depth.timestamp "now"?  a quiet pair would show it)
+    skews = {}
+    for symbol in symbols:
+        before = wall_clock()
+        data = attempt(f"clock {symbol}", lambda s=symbol: transport.get("depth", {"pair": parse.pair_id(s)}))
+        after = wall_clock()
+        if data is not None:
+            try:
+                server = parse.ms_value(parse._field(data, "timestamp", "timestamp"), "timestamp")
+                skews[symbol] = int(round((before + after) / 2 * 1000)) - server
+            except ExchangeDataError as exc:
+                failed = True
+                say(f"clock {symbol}: FAILED {_name(exc)}")
+    if skews:
+        verdict = "within" if all(abs(v) <= SKEW_LIMIT_MS for v in skews.values()) else "OUTSIDE"
+        say(f"clock: skew_ms per symbol {skews} ({verdict} +-{SKEW_LIMIT_MS}; local minus bitbank, from depth.timestamp)")
 
-    # --- reader (loads pairs and assets)
-    reader = None
-    try:
-        reader = BitbankReader(transport, symbols=symbols, clock=wall_clock)
-        say(f"reader: built for {len(symbols)} symbols")
-    except ReaderUnavailable as exc:
-        failed = True
-        say(f"reader: NOT BUILT ({exc})")
-    if reader is not None:
+    # --- public market data: each symbol on its own, so one bad pair is named and the rest go on
+    pairs_data = attempt("pairs", lambda: transport.get("pairs", {}))
+    good = []
+    if pairs_data is not None:
         for symbol in symbols:
-            rules = reader.market_rules(symbol)
-            say(f"market {symbol}: amount_step={rules.amount_step} min_amount={rules.min_amount} "
-                f"price_tick={rules.price_tick} max_fee_rate={rules.max_fee_rate} base_unit={rules.base_unit} "
-                f"quote_unit={rules.quote_unit}")
+            try:
+                rules, rates = parse.market_rules_from(pairs_data, {s: 4 for s in symbol.split("/")}, [symbol])
+                r = rules[symbol]
+                say(f"market {symbol}: amount_step={r.amount_step} min_amount={r.min_amount} price_tick={r.price_tick} "
+                    f"max_fee_rate={r.max_fee_rate} maker_quote={rates[symbol].maker_quote} "
+                    f"taker_quote={rates[symbol].taker_quote} maker_base={rates[symbol].maker_base} "
+                    f"taker_base={rates[symbol].taker_base}")
+                good.append(symbol)
+            except ExchangeDataError as exc:
+                failed = True
+                say(f"market {symbol}: BAD ({exc})")
+    if public_only:
+        say("public-only: private endpoints were not touched")
+        return _finish(lines, secrets, 1 if failed else 0)
 
-    # --- every GET endpoint is reachable with this key (counts only)
-    probes = {
-        "assets": ("assets", {}), "active_orders": ("active_orders", {"pair": parse.pair_id(symbols[0]), "count": 5}),
-        "trade_history": ("trade_history", {"pair": parse.pair_id(symbols[0]), "count": 5}),
-        "deposit_history": ("deposit_history", {}), "spot_status": ("spot_status", {})}
+    # --- the reader on the symbols that are fine
+    reader = None
+    if good:
+        try:
+            reader = BitbankReader(transport, symbols=good, clock=wall_clock)
+            say(f"reader: built for {len(good)}/{len(symbols)} symbols")
+        except ReaderUnavailable as exc:
+            failed = True
+            say(f"reader: NOT BUILT ({exc})")
+
+    # --- every GET endpoint is reachable with this key
+    first = good[0] if good else symbols[0]
+    probes = {"assets": ("assets", {}), "active_orders": ("active_orders", {"pair": parse.pair_id(first), "count": 5}),
+              "trade_history": ("trade_history", {"pair": parse.pair_id(first), "count": 5}),
+              "deposit_history": ("deposit_history", {}), "spot_status": ("spot_status", {})}
     for label, (endpoint, params) in probes.items():
         if attempt(f"endpoint {label}", lambda e=endpoint, p=params: transport.get(e, p)) is not None:
             say(f"endpoint {label}: ok")
     try:   # the answer to a non-existent order is information, not a failure
-        transport.get("order", {"pair": parse.pair_id(symbols[0]), "order_id": "1"})
+        transport.get("order", {"pair": parse.pair_id(first), "order_id": "1"})
         say("order lookup of a non-existent id: UNEXPECTEDLY SUCCEEDED")
     except OrderNotFound:
         say("order lookup of a non-existent id: OrderNotFound (code 50009, as the reader expects)")
     except ExchangeError as exc:
-        say(f"order lookup of a non-existent id: {_name(exc)} (not 50009: the 'order is gone' rule may need review)")
+        say(f"order lookup of a non-existent id: {_name(exc)} (not 50009: the 'order is gone' rule needs review)")
 
-    if reader is None:
-        return _finish(lines, secrets, 1)
+    # --- balances: shape only (raw)
+    assets = attempt("balances", lambda: transport.get("assets", {}))
+    if isinstance(assets, dict) and isinstance(assets.get("assets"), list):
+        rows = [r for r in assets["assets"] if isinstance(r, dict)]
+        def d(row, key):
+            try:
+                return parse.dec_str(row.get(key), key)
+            except ExchangeDataError:
+                return None
+        consistent = sum(1 for r in rows if None not in (d(r, "onhand_amount"), d(r, "free_amount"), d(r, "locked_amount"))
+                         and d(r, "onhand_amount") == d(r, "free_amount") + d(r, "locked_amount"))
+        precisions = {str(r.get("asset", "?")).upper(): r.get("amount_precision") for r in rows
+                      if str(r.get("asset", "")).upper() in {s.split("/")[0] for s in symbols} | {"JPY"}}
+        say(f"balances: currencies={len(rows)} nonzero={sum(1 for r in rows if (d(r, 'onhand_amount') or 0) != 0)} "
+            f"onhand==free+locked in {consistent}/{len(rows)} amount_precision(watched)={precisions}")
 
-    # --- balances: shape only
-    snapshot = attempt("balances", reader.fetch_balance)
-    if snapshot is not None:
-        nonzero = [c for c, a in snapshot.assets.items() if a.total != 0]
-        consistent = sum(1 for a in snapshot.assets.values() if a.total == a.free + a.locked)
-        say(f"balances: currencies={len(snapshot.assets)} nonzero={len(nonzero)} "
-            f"onhand==free+locked in {consistent}/{len(snapshot.assets)}")
+    # --- open orders and fills per symbol, raw
+    trade_rows: dict[str, list[dict]] = {}
+    for symbol in good or symbols:
+        pair = parse.pair_id(symbol)
+        data = attempt(f"open orders {symbol}", lambda p=pair: transport.get("active_orders", {"pair": p, "count": 100}))
+        if isinstance(data, dict) and isinstance(data.get("orders"), list):
+            say(f"open orders {symbol}: count={len(data['orders'])} statuses="
+                f"{dict(Counter(str(o.get('status')) for o in data['orders'] if isinstance(o, dict)))}")
+        data = attempt(f"fills {symbol}", lambda p=pair: transport.get("trade_history", {"pair": p, "count": 1000,
+                                                                                         "order": "desc"}))
+        if isinstance(data, dict) and isinstance(data.get("trades"), list):
+            trade_rows[symbol] = [t for t in data["trades"] if isinstance(t, dict)]
+            say(f"fills {symbol}: count={len(trade_rows[symbol])}")
+    all_trades = [t for rows in trade_rows.values() for t in rows]
+    say(f"fee shapes (base/quote, sign, role, occurred): {dict(Counter(fee_shape(t) for t in all_trades))}")
+    say(f"executed_at digits: {dict(Counter(len(str(t.get('executed_at'))) for t in all_trades))}  "
+        f"id types: {dict(Counter(type(t.get('trade_id')).__name__ for t in all_trades))}")
 
-    # --- open orders and fills per symbol (counts and shapes)
-    sample_orders: list[tuple[str, str]] = []
-    fee_shapes: Counter = Counter()
-    roles: Counter = Counter()
-    digit_lengths: Counter = Counter()
-    negative_fees = 0
-    for symbol in symbols:
-        page = attempt(f"open orders {symbol}", lambda s=symbol: reader.fetch_open_orders(s))
-        if page is not None:
-            say(f"open orders {symbol}: count={len(page.orders)} complete={page.complete} "
-                f"statuses={dict(Counter(o.status.value for o in page.orders))}")
-        fills = attempt(f"fills {symbol}", lambda s=symbol: reader.fetch_fills(s, since_ms=0))
-        if fills is not None:
-            say(f"fills {symbol}: count={len(fills.fills)} complete={fills.complete}")
-            for fill in fills.fills:
-                fee_shapes[(fill.fee.status.value, fill.fee.currency == symbol.split('/')[0] if fill.fee.currency
-                            else None)] += 1
-                roles[fill.maker_taker] += 1
-                digit_lengths[len(str(fill.executed_at_ms))] += 1
-                negative_fees += bool(fill.fee.amount is not None and fill.fee.amount < 0)
-                if len(sample_orders) < 20:
-                    sample_orders.append((symbol, fill.exchange_order_id))
-    say(f"fills overall: fee_shapes(status,in_base)={dict(fee_shapes)} maker_taker={dict(roles)} "
-        f"executed_at_digits={dict(digit_lengths)} negative_fees={negative_fees}")
-
-    # --- the meaning of remaining_amount (counts only)
+    # --- remaining_amount, from raw order rows of orders seen in the trade history
     tally: Counter = Counter()
-    for symbol, order_id in dict.fromkeys(sample_orders):
+    seen = list(dict.fromkeys((s, t.get("order_id")) for s, rows in trade_rows.items() for t in rows))[:20]
+    for symbol, order_id in seen:
         try:
-            snap = reader.fetch_order(symbol, order_id)
+            row = transport.get("order", {"pair": parse.pair_id(symbol), "order_id": str(order_id)})
         except OrderNotFound:
             tally["not_found"] += 1
             continue
         except ExchangeError as exc:
             tally[f"error:{_name(exc)}"] += 1
             continue
-        relation = "start==executed+remaining" if snap.amount == snap.executed_amount + snap.remaining_amount else (
-            "remaining==0" if snap.remaining_amount == 0 else "other")
-        tally[(snap.status.value, relation)] += 1
-    say(f"orders from history ({len(dict.fromkeys(sample_orders))} looked up): {dict(tally)}")
+        try:
+            start, executed = parse.dec_str(row.get("start_amount"), "start"), parse.dec_str(row.get("executed_amount"), "ex")
+            remaining_raw = row.get("remaining_amount")
+            if remaining_raw is None:
+                relation = "remaining-null"
+            else:
+                remaining = parse.dec_str(remaining_raw, "rem")
+                relation = ("start==executed+remaining" if start == executed + remaining else
+                            "remaining==0" if remaining == 0 else "other")
+        except ExchangeDataError:
+            relation = "unreadable"
+        tally[(row.get("type"), row.get("status"), relation)] += 1
+    say(f"orders from history ({len(seen)} looked up; type, status, remaining relation): {dict(tally)}")
 
-    # --- since unit experiment on one symbol (counts only)
-    base_ms = int(wall_clock() * 1000) - 24 * 3600 * 1000
-    counts = {}
-    for label, since in (("none", None), ("ms_24h_ago", base_ms), ("sec_24h_ago", base_ms // 1000)):
-        params = {"pair": parse.pair_id(symbols[0]), "count": 1000, "order": "desc"}
-        if since is not None:
-            params["since"] = since
-        data = attempt(f"since experiment {label}", lambda p=params: transport.get("trade_history", p))
-        if isinstance(data, dict) and isinstance(data.get("trades"), list):
-            counts[label] = len(data["trades"])
-    say(f"since unit experiment ({symbols[0]}): trade counts {counts}  "
-        f"(the unit is the one whose count is not the same as 'none' and not an empty/complete mismatch)")
+    # --- the unit of `since`: pivot on the median trade time so the two readings give different answers
+    busiest = max(trade_rows, key=lambda s: len(trade_rows[s]), default=None)
+    stamps = sorted(int(t["executed_at"]) for t in trade_rows.get(busiest, []) if str(t.get("executed_at")).isdigit())
+    if busiest is None or len(stamps) < 4 or stamps[0] == stamps[-1]:
+        say("since unit experiment: undetermined (needs one symbol with at least 4 trades at different times)")
+    else:
+        pivot = int(statistics.median_low(stamps))
+        counts = {}
+        for label, since in (("none", None), ("pivot_as_ms", pivot), ("pivot_as_sec", pivot // 1000)):
+            params = {"pair": parse.pair_id(busiest), "count": 1000, "order": "desc"}
+            if since is not None:
+                params["since"] = since
+            data = attempt(f"since experiment {label}", lambda p=params: transport.get("trade_history", p))
+            if isinstance(data, dict) and isinstance(data.get("trades"), list):
+                counts[label] = len(data["trades"])
+        total, as_ms, as_sec = counts.get("none"), counts.get("pivot_as_ms"), counts.get("pivot_as_sec")
+        if None in (total, as_ms, as_sec):
+            verdict = "undetermined (a request failed)"
+        elif 0 < as_ms < total and as_sec == total:
+            verdict = "since is in MILLISECONDS"
+        elif as_ms == 0 and 0 < as_sec < total:
+            verdict = "since is in SECONDS"
+        else:
+            verdict = "undetermined"
+        say(f"since unit experiment ({busiest}): counts {counts} -> {verdict}")
 
-    # --- reader smoke: every read method on every symbol, class names only
-    smoke: Counter = Counter()
-    for symbol in symbols:
-        for label, fn in (("book", lambda s=symbol: reader.fetch_order_book(s)),
-                          ("open_orders", lambda s=symbol: reader.fetch_open_orders(s)),
-                          ("fills", lambda s=symbol: reader.fetch_fills(s, since_ms=0))):
-            try:
-                fn()
-                smoke[(label, "ok")] += 1
-            except ExchangeDataError as exc:
-                smoke[(label, "DataError")] += 1
-            except ExchangeError as exc:
-                smoke[(label, type(exc).__name__)] += 1
-    say(f"reader smoke: {dict(smoke)}")
+    # --- reader smoke: every read method on every good symbol, class names only
+    if reader is not None:
+        smoke: Counter = Counter()
+        for symbol in good:
+            for label, fn in (("book", lambda s=symbol: reader.fetch_order_book(s)),
+                              ("open_orders", lambda s=symbol: reader.fetch_open_orders(s)),
+                              ("fills", lambda s=symbol: reader.fetch_fills(s, since_ms=0))):
+                try:
+                    fn()
+                    smoke[(label, "ok")] += 1
+                except ExchangeError as exc:
+                    smoke[(label, _name(exc))] += 1
+        say(f"reader smoke (strict parsing): {dict(smoke)}")
     return _finish(lines, secrets, 1 if failed else 0)
 
 
@@ -175,18 +251,28 @@ def _finish(lines: list[str], secrets: Sequence[str], code: int) -> tuple[list[s
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="read-only bitbank check (phase B)")
-    parser.add_argument("--state-dir", required=True)
+    parser.add_argument("--state-dir")
     parser.add_argument("--from-env", action="store_true", help="read the key from the environment, not the file")
+    parser.add_argument("--public-only", action="store_true", help="only public data; no key is read or needed")
     parser.add_argument("--symbols", nargs="*", default=list(DEFAULT_SYMBOLS))
     args = parser.parse_args(argv)
+    credentials = None
+    if not args.public_only:
+        if not args.state_dir:
+            print("--state-dir is required (or use --public-only)")
+            return 1
+        try:
+            credentials = load_credentials(args.state_dir, source="env" if args.from_env else "file")
+        except CredentialsUnavailable as exc:
+            print(f"credentials: NOT AVAILABLE ({exc.reason.value})")
+            return 1
     try:
-        credentials = load_credentials(args.state_dir, source="env" if args.from_env else "file")
-    except CredentialsUnavailable as exc:
-        print(f"credentials: NOT AVAILABLE ({exc.reason.value})")
+        transport = CcxtReadTransport(credentials, endpoints={**ENDPOINTS, **CHECK_ONLY_ENDPOINTS})
+    except ModuleNotFoundError:
+        print("ccxt is not installed here: pip install -r requirements-trading.txt")
         return 1
-    transport = CcxtReadTransport(credentials, endpoints={**ENDPOINTS, **CHECK_ONLY_ENDPOINTS})
-    secrets = credentials.reveal()
-    lines, code = run_check(transport, args.symbols, secrets=secrets)
+    secrets = credentials.reveal() if credentials is not None else ()
+    lines, code = run_check(transport, args.symbols, secrets=secrets, public_only=args.public_only)
     print("\n".join(lines))
     return code
 
