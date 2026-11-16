@@ -1018,6 +1018,45 @@ def test_queued_hanjuku_replay_terminalizes_when_decision_lost(monkeypatch, tmp_
     ]
 
 
+@pytest.mark.parametrize("probe_error", [
+    PermissionError("boundary record unreadable"),
+    ValueError("boundary record malformed"),
+    OSError("boundary record inaccessible"),
+])
+def test_queued_hanjuku_replay_probe_error_fails_closed(
+    monkeypatch, tmp_path, probe_error
+):
+    # docich#4361: a probe exception is not evidence that claim() can
+    # succeed.  Do not stage a doomed candidate or retire the active game.
+    factory = BoundaryFactory()
+    store, coordinator = _coordinator(factory, tmp_path / "run")
+    _assert_started(coordinator)
+
+    def broken_probe(adapter, request_id):
+        raise probe_error
+
+    monkeypatch.setattr("docich.hanjuku_resume.start_claimable", broken_probe)
+    head = store.enqueue_request(str(uuid.uuid4()), "switch", "hanjuku-hero")
+    following = store.enqueue_request(str(uuid.uuid4()), "switch", "robots")
+    result = coordinator.resume_queued(timeout_s=1.0)
+
+    assert result.request_id == head.request_id
+    assert result.status == "failed"
+    assert result.error_code == game_switch.ERROR_TIMEOUT
+    receipt = store.receipts.load(head.request_id)
+    assert receipt["status"] == "failed"
+    state, _ = store.canonical.load()
+    assert state["phase"] == "ready"
+    assert state["active"]["game"] == "nethack"
+    assert state.get("candidate") is None
+    assert state.get("retiring") in (None, [])
+    assert [item["request_id"] for item in store.receipts.queued()] == [
+        following.request_id
+    ]
+    # No exception details (including paths) should reach durable receipts.
+    assert str(probe_error) not in str(receipt)
+
+
 def test_queued_hanjuku_replay_runs_when_decision_claimable(monkeypatch, tmp_path):
     # The gate must not block a replay whose decision is still claimable:
     # the switch runs to completion.  The drain waits on the old game's
