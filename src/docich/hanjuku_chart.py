@@ -262,7 +262,7 @@ del _chapter
 # cell itself sits inside the cliff ring, so the aim is the pocket's
 # reachable entrance south-east of it (owner 2026-11-16: armies aimed at the
 # heart cell camped far short). View (88, 82.5) -> field cell.
-CH9_BOSS_WAYPOINT = (200, 280)
+CH9_BOSS_WAYPOINT = (160, 208)
 HOUSE_VIEW = {1: (118.5, 126.5), 2: (128.5, 94.5), 3: (116.5, 108.5),
               4: (134.0, 87.5), 5: (124.5, 80.5), 6: (110.5, 138.5),
               7: (144.5, 98.5), 8: (146.5, 104.5), 9: (118.5, 76.5),
