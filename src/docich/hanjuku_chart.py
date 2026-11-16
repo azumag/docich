@@ -260,11 +260,12 @@ del _chapter
 # The waypoint heart is also the boss-phase waypoint: only its area lets an
 # army around the cliffs to the moving boss (owner 2026-11-16). Chapter 9
 # draws TWO hearts on the Y view — at view (82.5, 68.5) and (117.7, 74.9) —
-# and the boss approach uses the RIGHT one: the Y jump landing must be the
-# grass immediately LEFT of the right heart (owner 2026-11-16: 2つのうち
-# 右のハートの左). The x=113 black cliff line beside the heart rejects the
-# marker, so aim the open grass row just below it. View (110.0, 78.0) -> cell.
-CH9_BOSS_WAYPOINT = (376, 244)
+# and the boss approach uses the RIGHT one: the Y jump landing is the grass
+# strip immediately RIGHT of the right heart (owner 2026-11-16: 右ハートの右).
+# Its west edge is a black cliff line; the open strip x=122-125,y=72-76 sits
+# between the heart and the dark forest band further east. View (123.5, 74.0)
+# -> cell.
+CH9_BOSS_WAYPOINT = (484, 212)
 HOUSE_VIEW = {1: (118.5, 126.5), 2: (128.5, 94.5), 3: (116.5, 108.5),
               4: (134.0, 87.5), 5: (124.5, 80.5), 6: (110.5, 138.5),
               7: (144.5, 98.5), 8: (146.5, 104.5), 9: (118.5, 76.5),
