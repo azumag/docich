@@ -34,7 +34,7 @@ PURSUIT_MARCH_MIN = 400       # a just-launched march is left alone this long
 # is in the northern band and otherwise leaves the general camped.
 PURSUIT_NORTH_MAX_Y = 260
 PURSUIT_NORTH_RETRY = 60      # ticks before a southern reading is looked at again
-PURSUIT_FRESH_TICKS = 30      # a reading this young was taken by this very Y view
+PURSUIT_FRESH_TICKS = 90      # a reading this young was taken by this very Y view (~6 ticks/s)
 LIST_KEY = 'boss_wave_generals'
 ABSENT_END_READS = 3          # identical roster reads at the list end = full pass
 PURSUIT_STEP = 'PURSUIT'      # step id of the pursuit's own Y jump (y_jump['step'])
@@ -328,6 +328,13 @@ def step(screen, mem, frame):
                     if frame is None:
                         return []
                     from ..os_layer.navigation import _y_jump_step
+                    from ..os_layer.world import _apply_skull_boss
+                    # The map flow reads the skull on every Y view, but this
+                    # jump is ours: without the read the northern-band check
+                    # judged the reading of an earlier view (ch9 2026-11-17:
+                    # the measurement landed after the redirect it should have
+                    # gated).
+                    _apply_skull_boss(mem, frame)
                     return _y_jump_step(mem, frame)
                 return [pad('b')]
             if kind == 'map':

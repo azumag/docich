@@ -71,3 +71,21 @@ def test_an_old_reading_is_not_judged_here(monkeypatch):
     monkeypatch.setattr(nav, '_start_y_jump', lambda *a, **k: ['jump'])
     assert bp.step(picker(), mem, FakeFrame()) == ['jump']
     assert mem['boss_pursuit']['phase'] == 'dest'
+
+
+def test_the_pursuit_reads_the_skull_on_its_own_y_view(monkeypatch):
+    # The jump the dest phase runs is its own: the northern-band check needs
+    # the skull of this very view, not the reading of an earlier one.
+    mem = memory((850, 853), read_tick=1000)
+    mem['boss_pursuit']['reads'] = 10
+    mem['y_jump'] = {'goal': 'ボス', 'mode': 'target', 'step': bp.PURSUIT_STEP,
+                     'moves': 0, 'wait': 0}
+    seen = []
+    import docich.hanjuku.os_layer.navigation as nav
+    import docich.hanjuku.os_layer.world as world
+    monkeypatch.setattr(world, '_apply_skull_boss', lambda m, f: seen.append(f))
+    monkeypatch.setattr(nav, '_y_jump_step', lambda m, f: ['jump-step'])
+    frame = FakeFrame()
+    on_world_map = SimpleNamespace(kind='world_map', hand=None, selected=None, text='')
+    assert bp.step(on_world_map, mem, frame) == ['jump-step']
+    assert seen == [frame]
