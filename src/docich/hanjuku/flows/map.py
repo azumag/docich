@@ -2408,6 +2408,7 @@ def _target_roof_under_marker(screen, mem, frame, order) -> bool:
         return True                           # winter palette: trust the Y jump (g421 18:13)
     want = 'own' if order['target'] in _owned(mem) else 'enemy'
     return any(r['kind'] == want
+               and not r.get('clipped')
                and abs(r['target'][0] - s[0]) <= UNDER_CURSOR_PX
                and abs(r['target'][1] - s[1]) <= UNDER_CURSOR_PX
                for r in roofs)
@@ -2422,14 +2423,20 @@ def _cell_match_evidence(screen, mem, order, frame) -> bool:
     g1190 2026-11-16 (chapter 9): the estimate sat on オシロガ's cell while
     the marker stood over the sea north of the island, and the accepted A
     sent the general to the coast where he camped. A Y jump to the target
-    lands on its cell; otherwise a castle roof must stand by the marker.
+    lands on its cell; otherwise a castle roof must stand by the marker —
+    a roof of the *expected* owner, fully in frame. A clipped roof's box is
+    cut by the screen edge, so its bottom-centre anchor does not mark the
+    castle's selecting cell: confirming beside it sent アルマムーン→ハヤク
+    generals marching 900 ticks to nowhere (g1190 2026-11-16 17:20).
     """
     if (mem.get('y_jumped') or {}).get(order['step']) == order['target']:
         return True
     s = _cursor(screen)
     if not s or frame is None:
         return False
-    return any(abs(r['target'][0] - s[0]) <= CELL_EVIDENCE_ROOF_PX
+    want = 'own' if order['target'] in _owned(mem) else 'enemy'
+    return any(r['kind'] == want and not r.get('clipped')
+               and abs(r['target'][0] - s[0]) <= CELL_EVIDENCE_ROOF_PX
                and abs(r['target'][1] - s[1]) <= CELL_EVIDENCE_ROOF_PX
                for r in castle_roofs(frame))
 
