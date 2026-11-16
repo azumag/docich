@@ -3303,3 +3303,112 @@ def test_paper_adapter_has_no_retro_style_failed_start_reconcile(tmp_path):
         state_file="paper_corner_manual.json") is False
     with pytest.raises(AttributeError):
         GameCornerAdapter.reconcile_failed_start(adapter, "11111111-1111-4111-8111-111111111111")
+
+
+def test_queued_manual_cancel_removes_inbox_request(setup):
+    g, clock, _, executor, make = setup
+    manager = make()
+    manager.queue_manual('nsnake')
+    review = manager.cancel_queued_manual('nsnake')
+    assert review['status'] == 'eligible' and review['location'] == 'inbox'
+    assert review['fingerprint'] and review['corner'] == 'retro'
+    outcome = manager.cancel_queued_manual('nsnake', apply=True,
+                                           expected=review['fingerprint'])
+    assert outcome['status'] == 'cancelled' and outcome['location'] == 'inbox'
+    assert not (Path(g.state_dir) / 'corner_manual_queue.json').exists()
+    assert state(manager)['last_queued_manual_cancel']['reservation']['corner'] == 'retro'
+    with pytest.raises(RotationError) as caught:
+        manager.cancel_queued_manual('nsnake')
+    assert caught.value.reason_code == 'queued_request_missing'
+    assert executor.calls == []
+
+
+def test_queued_manual_cancel_removes_imported_ledger_entry(setup):
+    g, clock, _, executor, make = setup
+    manager = make()
+    executor.result = 'queued'
+    manager.tick()
+    live = state(manager)['pending']
+    manager.queue_manual('paper-view')
+    st = manager.load(clock[0])
+    manager._import_manual_queue(st)
+    assert state(manager)['queued_manual']['corner'] == 'paper'
+    review = make().cancel_queued_manual('paper-view')
+    assert review['location'] == 'ledger'
+    outcome = make().cancel_queued_manual('paper-view', apply=True,
+                                          expected=review['fingerprint'])
+    assert outcome['status'] == 'cancelled'
+    after = state(manager)
+    assert after['queued_manual'] is None
+    assert after['pending']['request_id'] == live['request_id']
+    executor.result = 'completed'
+    assert executor.calls[-1]['request_id'] == live['request_id']
+
+
+def test_queued_manual_cancel_busy_while_execution_lock_held(setup):
+    _, _, _, _, make = setup
+    owner = make()
+    owner.queue_manual('nsnake')
+    with owner.locked() as acquired:
+        assert acquired
+        with pytest.raises(RotationError) as caught:
+            make().cancel_queued_manual('nsnake')
+        assert caught.value.reason_code == 'busy'
+    assert owner._manual_queue_path.exists()
+
+
+def test_queued_manual_cancel_requires_reviewed_fingerprint(setup):
+    _, _, _, _, make = setup
+    manager = make()
+    manager.queue_manual('nsnake')
+    with pytest.raises(RotationError) as caught:
+        manager.cancel_queued_manual('nsnake', apply=True)
+    assert caught.value.reason_code == 'expected_reservation_required'
+    review = manager.cancel_queued_manual('nsnake')
+    with pytest.raises(RotationError) as caught:
+        manager.cancel_queued_manual('nsnake', apply=True, expected='0' * 64)
+    assert caught.value.reason_code == 'reservation_changed'
+    assert manager._manual_queue_path.exists()
+
+
+def test_queued_manual_cancel_refuses_dispatched_request(setup):
+    _, clock, _, executor, make = setup
+    manager = make()
+    request = manager.queue_manual('nsnake')
+    executor.result = 'queued'
+    manager.tick()
+    assert state(manager)['pending']['request_id'] == request['request_id']
+    with pytest.raises(RotationError) as caught:
+        manager.cancel_queued_manual('nsnake')
+    assert caught.value.reason_code == 'queued_request_missing'
+    executor.result = 'completed'
+
+
+def test_hanjuku_resume_discard_unclaimed(setup):
+    g, clock, _, _, make = setup
+    import uuid as _uuid
+    from docich import hanjuku_resume
+    from docich.game_switch import atomic_write_json
+    rid = str(_uuid.uuid4())
+    assert hanjuku_resume.discard_unclaimed(g, rid) == 'absent'
+    root = Path(g.state_dir) / 'hanjuku-resume'
+    root.mkdir(parents=True, exist_ok=True)
+    atomic_write_json(root / hanjuku_resume.REQUEST_FILE,
+                      dict(schema=1, status='queued', request_id=rid,
+                           corner='hanjuku-hero', selected_at=clock[0]))
+    sealed = root / (rid + '.state')
+    sealed.write_bytes(b'x')
+    assert hanjuku_resume.discard_unclaimed(g, rid) == 'removed'
+    assert not (root / hanjuku_resume.REQUEST_FILE).exists()
+    assert not sealed.exists()
+    atomic_write_json(root / hanjuku_resume.REQUEST_FILE,
+                      dict(schema=1, status='claimed', request_id=rid,
+                           corner='hanjuku-hero'))
+    from docich.adapters.base import AdapterError
+    with pytest.raises(AdapterError):
+        hanjuku_resume.discard_unclaimed(g, rid)
+    atomic_write_json(root / hanjuku_resume.REQUEST_FILE,
+                      dict(schema=1, status='queued', request_id=str(_uuid.uuid4()),
+                           corner='hanjuku-hero'))
+    with pytest.raises(AdapterError):
+        hanjuku_resume.discard_unclaimed(g, rid)

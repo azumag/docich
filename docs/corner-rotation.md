@@ -785,6 +785,24 @@ WebUI の半熟英雄には3つの起動方法がある。
 その要求を消さず起動を拒否し、既存の復旧を必要とする。時刻指定は従来の境界判定のままで、
 新規開始との組合せは扱わない。
 
+#### dispatch前の手動予約の取消（check-cancel-queued-hanjuku / cancel-queued-hanjuku）
+
+`cancel_scheduled_manual` が扱うのは時刻指定予約がまだ独立inboxにある場合だけであり、
+即時予約や取り込み済みの `queued_manual` には取消経路がなかった。
+`CornerRotationManager.cancel_queued_manual` は、inbox と `queued_manual` の両方を対象に、
+非ブロックの実行lockと manual-queue lock を保持して予約全体を検証し、dispatch 前だけを
+取り消す。枠の実行中は lock が取れず `busy` で拒否する。`pending`/`manual_pending` へ
+進んだ予約、recovery latch、時計逆行、別cornerの予約、指紋不一致は固定理由で拒否し、
+以後は従来どおり stop/recovery 経路に委譲する。
+
+`resume_latest` 予約が作った `hanjuku-resume/hanjuku_resume.json`（prepared/queued）と
+シール済み `<request_id>.state` は、request_id 照合のうえ `discard_unclaimed` で先に破棄する。
+claimed/verified の受領や別要求の記録は解除しない（dispatch消費済み＝recovery領域）。
+取消は audit `last_queued_manual_cancel` に元予約を残し、cooldown・履歴・休止・
+他owner/receipt/runtime は変更しない。check は予約全体の sha256 指紋を返し、apply は
+レビュー済み指紋の一致を必須とする。canonical operator の固定 operation は
+`check-cancel-queued-hanjuku` / `cancel-queued-hanjuku`。
+
 ### 長時間コーナー中の再起動（slot heartbeat）
 
 ローテーションは枠の実行中、tick が flock を保持したままコーナー終了まで待つため、

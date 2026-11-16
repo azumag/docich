@@ -381,6 +381,29 @@ def prepare(g, game, queued):
             core_sha256=checkpoint_digest(Path(resolve_core(game)))))
 
 
+def discard_unclaimed(g, request_id):
+    """Drop one never-dispatched checkpoint request owned by a queued reservation.
+
+    Only 'prepared'/'queued' receipts may be removed; a claimed or verified
+    receipt means dispatch already consumed it and the recovery paths own the
+    record. Returns 'removed' or 'absent'.
+    """
+    request_id = str(uuid.UUID(request_id))
+    with _lock(g) as root:
+        prior = read_record(root / REQUEST_FILE)
+        if not prior:
+            return 'absent'
+        if prior.get('request_id') != request_id:
+            raise AdapterError('checkpoint request belongs to another reservation')
+        if prior.get('status') not in {'prepared', 'queued'}:
+            raise AdapterError('checkpoint request is not discardable')
+        (root / REQUEST_FILE).unlink()
+        sealed = root / (request_id + '.state')
+        if sealed.exists() or sealed.is_symlink():
+            sealed.unlink()
+        return 'removed'
+
+
 def recover_prepared(g, corner):
     """Reuse a sealed, unpublished request under the caller's inbox lock."""
     from .corner_rotation import timestamp
