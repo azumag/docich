@@ -7560,6 +7560,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v961-boss-redirect-leg",
             "hanjuku-chart-v962-roster-walk-cap",
             "hanjuku-chart-v963-interim-retire",
+            "hanjuku-chart-v964-waypoint-west",
             "hanjuku-chart-v864-shop-list-batch",
             "hanjuku-chart-v862-camp-field-move",
             "hanjuku-chart-v852-visible-menu-batches",
