@@ -270,7 +270,8 @@ def _decision_effective_at(step: ReplayStep, arm: ReplayArm) -> datetime:
     Observations keep their own ``step.at``.
     """
     conditions = arm.conditions
-    if (conditions.news_filter
+    if (step.decision is not None
+            and conditions.news_filter
             and step.news_eligible is not False
             and conditions.classification_delay_ms):
         return step.at + timedelta(milliseconds=conditions.classification_delay_ms)
