@@ -256,10 +256,6 @@ class ReplayScenario:
         object.__setattr__(self, "steps", steps)
 
     def ordered(self) -> tuple[ReplayStep, ...]:
-        return tuple(sorted(self.steps, key=lambda step: step.at))
-
-
-    def ordered(self) -> tuple[ReplayStep, ...]:
         """Return steps in original time order (for backward compatibility)."""
         return tuple(sorted(self.steps, key=lambda step: step.at))
 
@@ -279,8 +275,6 @@ def _decision_effective_at(step: ReplayStep, arm: ReplayArm) -> datetime:
             and conditions.classification_delay_ms):
         return step.at + timedelta(milliseconds=conditions.classification_delay_ms)
     return step.at
-    def digest(self) -> str:
-        return _digest(self)
 
 
 @dataclass(frozen=True)
@@ -397,7 +391,7 @@ def _request_for(arm: ReplayArm, manifest: Manifest, step: ReplayStep) -> tuple[
         raise ReplayError("decision constraints do not match the arm conditions",
                           code="ACCOUNT_SCOPE_MISMATCH", stage="scenario")
     at = step.at
-    if arm.conditions.news_filter and step.news_eligible is not None \
+    if arm.conditions.news_filter and step.news_eligible is not False \
             and arm.conditions.classification_delay_ms:
         delay = timedelta(milliseconds=arm.conditions.classification_delay_ms)
         at = at + delay
