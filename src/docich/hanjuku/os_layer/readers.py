@@ -595,32 +595,35 @@ def world_cursor(frame, chapter=None):
     # 2's gold camp triangle beside フーリック widened the box so no target
     # jump there could read the G (isolated probe, g421 state). Take the
     # G-sized window holding the most gold instead of the whole box.
-    best = None
+    windows = {}
     for x0 in sorted({x for x, _ in gold}):
         for y0 in sorted({y for _, y in gold}):
             inside = [(x, y) for x, y in gold if x0 <= x <= x0 + 18 and y0 <= y <= y0 + 18]
-            if best is None or len(inside) > len(best):
-                best = inside
-    if best and len(best) >= 12:
-        xs = [x for x, _ in best]; ys = [y for _, y in best]
+            if len(inside) >= 12:
+                key = (round(min(x for x, _ in inside) / 4), round(min(y for _, y in inside) / 4))
+                if len(inside) > len(windows.get(key) or []):
+                    windows[key] = inside
+    # The real G corner keeps its gold at the box's four corners and nowhere
+    # else. A castle pennant or a unit ▲ (g1190 40-9: the ▲ cluster at
+    # ~(126,96) read as the cursor, ~0.26 corner fill) has gold spread across
+    # the whole box. Score every window on that corner fill and return the
+    # true G rather than the densest blob, so a marker can't hide the cursor.
+    scored = []
+    for inside in windows.values():
+        xs = [x for x, _ in inside]; ys = [y for _, y in inside]
         w, h = max(xs) - min(xs), max(ys) - min(ys)
-        if w >= 10 and h >= 10:
-            cx, cy = (min(xs) + max(xs)) / 2, (min(ys) + max(ys)) / 2
-            # The real G corner keeps its gold at the box's four corners and
-            # nowhere else. A castle pennant or a unit ▲ (g1190 40-9: the ▲
-            # cluster at ~(126,96) read as the cursor, ~0.26 corner fill) has
-            # gold spread across the whole box — reject it so the jump does
-            # not steer on a marker and land somewhere else entirely.
-            corners = ((min(xs), min(ys)), (max(xs), min(ys)),
-                       (min(xs), max(ys)), (max(xs), max(ys)))
-            at_corner = sum(1 for x, y in best
-                            if any(abs(x - x0) <= 3 and abs(y - y0) <= 3
-                                   for x0, y0 in corners))
-            if at_corner >= len(best) * 0.7:
-                return (cx, cy)
-            if chapter == 9:
-                return None
-            best = None
+        if w < 10 or h < 10:
+            continue
+        corners = ((min(xs), min(ys)), (max(xs), min(ys)),
+                   (min(xs), max(ys)), (max(xs), max(ys)))
+        at_corner = sum(1 for x, y in inside
+                        if any(abs(x - x0) <= 3 and abs(y - y0) <= 3
+                               for x0, y0 in corners))
+        scored.append((at_corner / len(inside), len(inside),
+                       (min(xs) + max(xs)) / 2, (min(ys) + max(ys)) / 2))
+    scored.sort(reverse=True)
+    if scored and scored[0][0] >= 0.7:
+        return (scored[0][2], scored[0][3])
     if chapter == 9:
         # Chapter 9's real cursor is the gold G. The blue-ring fallback below
         # accepts the blinking blue icon in the lake at (169, 116) and steers
