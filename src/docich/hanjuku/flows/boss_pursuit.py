@@ -25,6 +25,16 @@ PURSUIT_READ_LIMIT = 90
 PURSUIT_LIST_LIMIT = 48
 PURSUIT_COOLDOWN = 240        # ticks before the same general is pursued again
 PURSUIT_MARCH_MIN = 400       # a just-launched march is left alone this long
+# Chapter 9's boss sweeps north-south (measured 2026-11-17: y 157 <-> 853 in
+# about 330 s) and the camped generals walk ~1.3 px/s against its ~5 px/s, so a
+# chase never closes. Every boss battle so far began within a pass of the
+# northern turnaround (x 674-842, y 165-229); redirects aimed at a southern
+# reading (~75 of them over u1/u2, none attacked) only walked the general away.
+# The pursuit therefore commits a redirect only while the freshly measured cell
+# is in the northern band and otherwise leaves the general camped.
+PURSUIT_NORTH_MAX_Y = 260
+PURSUIT_NORTH_RETRY = 60      # ticks before a southern reading is looked at again
+PURSUIT_FRESH_TICKS = 30      # a reading this young was taken by this very Y view
 LIST_KEY = 'boss_wave_generals'
 ABSENT_END_READS = 3          # identical roster reads at the list end = full pass
 PURSUIT_STEP = 'PURSUIT'      # step id of the pursuit's own Y jump (y_jump['step'])
@@ -332,6 +342,24 @@ def step(screen, mem, frame):
             if probe['lost'] < 3:
                 return []
             _close(mem, probe, 'boss_position_lost')
+            return [pad('b')]
+        reading = mem.get('boss_cell') or {}
+        cell = reading.get('cell')
+        if (isinstance(cell, (list, tuple)) and len(cell) == 2
+                and type(cell[1]) is int and cell[1] > PURSUIT_NORTH_MAX_Y
+                and type(reading.get('tick')) is int
+                and 0 <= int(mem.get('tick') or 0) - reading['tick'] <= PURSUIT_FRESH_TICKS):
+            entry = (mem.get(LIST_KEY) or {}).get(probe['general'])
+            if entry is not None:
+                # Look again soon: the northern pass lasts a minute or so.
+                entry['pursuit_tick'] = (int(mem.get('tick') or 0)
+                                         - (PURSUIT_COOLDOWN - PURSUIT_NORTH_RETRY))
+            _record(mem, 'boss_pursuit_deferred', chart_step=probe.get('step'),
+                    general=probe['general'], resulting_event='boss_not_north',
+                    observed_metric={'boss_cell': list(cell), 'north_max_y': PURSUIT_NORTH_MAX_Y},
+                    reason='ボスが北の折り返しにいないため将軍を野営のまま待たせる')
+            probe['phase'] = 'close'
+            probe['outcome'] = 'boss_not_north'
             return [pad('b')]
         pseudo = {'step': 'PURSUIT', 'target': goal, 'source': None}
         if _map._target_roof_under_marker(screen, mem, frame, pseudo):
