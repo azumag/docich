@@ -154,3 +154,24 @@ def test_checks_wait_while_an_order_is_in_flight(ws):
         assert h.ex.check_balance() is False
     finally:
         h.close()
+
+
+def test_a_failing_order_lookup_does_not_turn_a_normal_fill_into_a_balance_mismatch(ws):
+    h = _harness(ws)
+    try:
+        h.send(side="buy", key="b1", amount="10", price="90")          # resting
+        h.mock.trade_against("OAS/JPY", taker_side="sell", price="90", amount="4")
+        for _ in range(20):
+            h.mock.faults.push("fetch_order", "READ_TIMEOUT")
+        h.ex.step()
+        h.advance(40)
+        h.ex.step()
+        assert h.trips() == []                       # the ledger is behind, so nothing is judged
+        h.mock.faults._items.clear()
+        h.advance(40)
+        h.ex.step()
+        h.advance(40)
+        h.ex.step()
+        assert h.trips() == []
+    finally:
+        h.close()

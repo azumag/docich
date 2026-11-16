@@ -483,3 +483,14 @@ def test_known_limit_an_unprovable_lost_sell_pins_the_exit_until_a_human_acts(h)
     assert h.state(sell.intent_id) == "UNKNOWN_SUBMISSION"
     with pytest.raises(Exception):
         h.ex.plan(h.req(side="sell", key="s2", amount="8", price="99"))
+
+
+def test_a_duplicated_unknown_fee_fill_ticks_the_grace_counter_once_per_poll(h):
+    h.mock.faults.push("fill", "FEE_MISSING", backfill_after=2)
+    h.mock.faults.push("fetch_fills", "DUPLICATE_FILL")
+    h.mock.faults.push("fetch_fills", "DUPLICATE_FILL")
+    intent, _ = _buy(h)
+    for _ in range(3):
+        h.ex.step()
+    assert h.state(intent.intent_id) == "FILLED"
+    assert views.all_fills(h.ledger)[0].fee_status == "known" and h.trips() == []

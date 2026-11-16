@@ -66,7 +66,7 @@ class OrderExecutor:
         self.monitor = BalanceMonitor()
         self._rules: dict[str, MarketRules] = {}
         self._steps = 0
-        self.sweep_since_ms: int | None = None
+        self.sweep_since_ms: dict[str, int] = {}
         self.none_seen: dict[str, float] = {}
 
     # ------------------------------------------------------------------ helpers
@@ -191,6 +191,7 @@ class OrderExecutor:
         self._steps += 1
         if self._steps == 1 or self._steps % max(1, self.config.sweep_every) == 0:
             report.swept = reconcile.sweep(self)
+        self.ingest.close_flat_positions()
         report.balance_checked = self.check_balance()
         return report
 
@@ -213,7 +214,15 @@ class OrderExecutor:
         if not self.quiet():
             return False
 
+        behind: list[str] = []
+
         def between():
+            # the ledger must be up to date *inside* the two balance reads: refresh every open order, and
+            # judge nothing if any refresh failed or found something it cannot account for
+            for intent in self.ledger.list_intents(states=("ACKED", "PARTIALLY_FILLED")):
+                outcome = self.ingest.refresh(intent)
+                if outcome in ("unavailable", "missing", "data_error", "anomaly", "no_order"):
+                    behind.append(outcome)
             for symbol in self.symbols:
                 self.reader.fetch_open_orders(symbol)
 
@@ -225,7 +234,7 @@ class OrderExecutor:
         except ExchangeDataError as exc:
             self.ingest.anomaly(f"fetch_balance: {exc}")
             return False
-        if not stable:
+        if not stable or behind or not self.quiet():
             return False
         self.monitor.observe(self.ledger, result, now=self.clock())
         return True

@@ -103,9 +103,11 @@ class Ingestor:
     def anomaly(self, detail: str) -> None:
         self.ledger.trip_safety(SafetyReason.DATA_ANOMALY, detail=detail, now=self.clock())
 
-    def since_ms(self, snap: OrderSnapshot | None) -> int:
-        base = snap.ordered_at_ms if snap is not None and snap.ordered_at_ms is not None else int(self.clock() * 1000)
-        return max(0, base - int(self.config.skew_margin_s * 1000))
+    def since_ms(self, intent: Intent) -> int:
+        """A fixed lower bound for reading fill history: when this intent was sent (or planned), minus the skew
+        margin.  It never moves with the clock, so fills missed during an outage are still reachable."""
+        sent = views.submitting_time(self.ledger, intent.intent_id) or intent.created_at
+        return max(0, int(sent * 1000) - int(self.config.skew_margin_s * 1000))
 
     # ---------------------------------------------------------------- orders
     def sync_order(self, intent: Intent, snap: OrderSnapshot) -> bool:
@@ -146,9 +148,10 @@ class Ingestor:
             return "no_order" if "unknown order" in str(exc) else "conflict"
 
     def pull_fills(self, intent: Intent, snap: OrderSnapshot) -> None:
-        page = self.reader.fetch_fills(intent.symbol, since_ms=self.since_ms(snap),
+        page = self.reader.fetch_fills(intent.symbol, since_ms=self.since_ms(intent),
                                        exchange_order_id=snap.exchange_order_id)
         recorded = 0
+        ticked: set[str] = set()   # one grace tick per fill per poll, however often it is delivered
         for fill in page.fills:
             if fill.exchange_order_id != snap.exchange_order_id:
                 continue
@@ -157,7 +160,9 @@ class Ingestor:
                 continue
             key = f"{fill.symbol}:{fill.trade_id}"
             if fill.fee.status is FeeStatus.UNKNOWN and views.fill_row(self.ledger, key) is None:
-                self._fee_wait[key] = self._fee_wait.get(key, 0) + 1
+                if key not in ticked:
+                    ticked.add(key)
+                    self._fee_wait[key] = self._fee_wait.get(key, 0) + 1
                 if self._fee_wait[key] <= self.config.fee_grace_polls:
                     continue
             if self.record_fill_once(fill) == "recorded":
@@ -205,7 +210,20 @@ class Ingestor:
         if views.has_open_intent(self.ledger, intent.position_id):
             return
         if views.position_net_base(self.ledger, intent.position_id) == 0:
+            _fault("before_close_position")
             self.ledger.close_position(self.lease, intent.position_id, now=self.clock())
+
+    def close_flat_positions(self) -> int:
+        """Close open positions that hold nothing and have no open intent (idempotent; also heals a crash
+        between an intent's terminal state and the close of its position)."""
+        closed = 0
+        for position_id in views.open_position_ids(self.ledger):
+            if views.has_open_intent(self.ledger, position_id):
+                continue
+            if views.position_net_base(self.ledger, position_id) == 0:
+                self.ledger.close_position(self.lease, position_id, now=self.clock())
+                closed += 1
+        return closed
 
     # ---------------------------------------------------------------- one round for one intent
     def refresh(self, intent: Intent) -> str:

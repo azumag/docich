@@ -144,3 +144,9 @@ def submitting_time(ledger, intent_id: str) -> float | None:
 def fill_count(ledger) -> int:
     with ledger.read_cursor() as cur:
         return cur.execute("SELECT COUNT(*) FROM fills").fetchone()[0]
+
+
+def open_position_ids(ledger) -> list[str]:
+    with ledger.read_cursor() as cur:
+        return [row[0] for row in cur.execute("SELECT position_id FROM positions WHERE status='open' "
+                                              "ORDER BY opened_at, position_id")]

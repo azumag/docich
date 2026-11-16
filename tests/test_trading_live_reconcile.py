@@ -375,3 +375,83 @@ def test_sigkill_at_a_named_point_then_restart_recovers_without_a_second_order(w
         assert h.trips() == [] and h.ledger.verify_event_chain()
     finally:
         h.close()
+
+
+# ---- Devin review of L2b ------------------------------------------------------------------
+def test_a_cut_off_order_list_never_links_a_manual_order_to_a_lost_submission(ws):
+    h = _harness(ws, "list_match")
+    try:
+        h.mock.faults.push("submit", "LOST_REQUEST")
+        intent, _ = h.send(price="90")
+        for _ in range(2):   # two manual orders with exactly the attributes of the lost one
+            h.mock.place_external_order(OrderRequest("OAS/JPY", "buy", "limit", D("10"), D("90"), None))
+        h.mock.faults.push("fetch_open_orders", "TRUNCATED_PAGE")
+        h.ex.step()
+        assert h.state(intent.intent_id) == "UNKNOWN_SUBMISSION"
+        assert views.order_for_intent(h.ledger, intent.intent_id) is None
+        assert all(i.state != "ACKED" for i in h.ledger.list_intents(states=("ACKED",)))
+    finally:
+        h.close()
+
+
+def test_a_skipped_symbol_keeps_its_own_history_cursor_so_manual_trades_are_still_found(ws):
+    from docich.trading.live.mock_exchange import MockFees
+    h = Harness(ws, symbols=("OAS/JPY", "XYM/JPY"), fees=MockFees(D("0"), D("0")))
+    for symbol in h.symbols:
+        h.mock.set_book(symbol, asks=[(D("100"), D("1000"))], bids=[(D("100"), D("1000"))])
+    try:
+        h.mock.faults.push("submit", "LOST_REQUEST")
+        intent, _ = h.send(symbol="OAS/JPY", price="90")
+        for _ in range(6):                                  # the lookups fail for ~12 minutes (> skew margin)
+            h.mock.faults.push("fetch_order_by_client_id", "READ_TIMEOUT")
+        h.ex.step()                                         # OAS is now skipped by the sweep; XYM is read
+        h.advance(30)
+        # a manual round trip on OAS (balances end where they started) while OAS is skipped
+        h.mock.place_external_order(OrderRequest("OAS/JPY", "buy", "limit", D("1"), D("100"), None))
+        h.mock.place_external_order(OrderRequest("OAS/JPY", "sell", "limit", D("1"), D("100"), None))
+        for _ in range(12):
+            h.advance(121)
+            h.ex.step()
+        assert h.state(intent.intent_id) == "NOT_CREATED"
+        assert "unknown_order" in h.trips()                 # found later from OAS's own, unmoved cursor
+    finally:
+        h.close()
+
+
+def test_fill_history_is_read_from_a_fixed_start_even_without_order_times(ws):
+    h = _harness(ws, "client_id")
+    try:
+        real = h.mock.fetch_order
+
+        def no_times(symbol, eid):
+            from dataclasses import replace
+            return replace(real(symbol, eid), ordered_at_ms=None)
+
+        h.mock.fetch_order = no_times
+        intent, _ = h.send(price="90")
+        h.mock.trade_against("OAS/JPY", taker_side="sell", price="90", amount="4")
+        for _ in range(3):
+            h.mock.faults.push("fetch_fills", "READ_TIMEOUT")
+        h.ex.step()
+        h.advance(400)                          # longer than the skew margin
+        h.mock.trade_against("OAS/JPY", taker_side="sell", price="90", amount="6")
+        for _ in range(3):
+            h.ex.step()
+        assert h.state(intent.intent_id) == "FILLED" and sorted(f.amount for f in views.all_fills(h.ledger)) == [4, 6]
+        assert h.trips() == []
+    finally:
+        h.close()
+
+
+def test_a_crash_between_the_terminal_state_and_closing_the_position_is_healed_at_startup(ws):
+    h = _harness(ws, "client_id")
+    try:
+        buy, _ = h.send(side="buy", key="b0", amount="10", price="100")
+        _crash_during_send(h, "before_close_position", side="sell", key="s1", amount="10", price="99")
+        with h.ledger.read_cursor() as cur:
+            assert cur.execute("SELECT status FROM positions WHERE position_id=?",
+                               (buy.position_id,)).fetchone()[0] == "closed"
+        again, _ = h.send(side="buy", key="b2", amount="5", price="100")
+        assert again.position_id != buy.position_id
+    finally:
+        h.close()

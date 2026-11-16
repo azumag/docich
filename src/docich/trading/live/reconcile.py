@@ -19,6 +19,10 @@ from .ingest import observation_from
 from .ledger import Intent
 
 
+_ALL_STATES = ("PLANNED", "SUBMITTING", "UNKNOWN_SUBMISSION", "ACKED", "PARTIALLY_FILLED", "FILLED",
+               "CANCELED", "EXPIRED", "REJECTED", "ABANDONED", "NOT_CREATED")
+
+
 def _link(ex, intent: Intent, snap: OrderSnapshot, how: str) -> str:
     if not ex.ingest.sync_order(intent, snap):
         return "anomaly"
@@ -113,9 +117,11 @@ def try_resolve(ex, intent: Intent) -> str:
         if len(matching) > 1:
             ex.ingest.anomaly(f"resolve {intent.intent_id}: {len(matching)} exchange orders match")
             return "anomaly"
+        complete = page.complete and fills.complete
+        if matching and not complete:
+            return "waiting"   # a cut-off list cannot show that the match is the only one (could be a manual order)
         if matching:
             return _link(ex, intent, matching[0], "list_match")
-        complete = page.complete and fills.complete
 
     # --- negative conclusion: time + complete answers + balance
     if not complete or not stable or result is None or not result.proven(currencies):
@@ -137,45 +143,42 @@ def try_resolve(ex, intent: Intent) -> str:
 
 
 def sweep(ex) -> bool:
-    """Look for orders the ledger does not know (owner's manual orders, a lost link).  True if it ran."""
+    """Look for orders the ledger does not know (owner's manual orders, a lost link).  True if it ran.
+
+    Each symbol has its own history cursor; it moves forward only after a complete read of that symbol, so
+    a symbol that was skipped (an unknown submission) or read badly is re-read from where it was left.
+    """
     ledger, reader, cfg = ex.ledger, ex.reader, ex.config
     unknown_symbols = {i.symbol for i in ledger.list_intents(states=("UNKNOWN_SUBMISSION",))}
     now = ex.clock()
     margin_ms = int(cfg.skew_margin_s * 1000)
-    if ex.sweep_since_ms is None:
-        created = [i.created_at for i in ledger.list_intents(states=("PLANNED", "SUBMITTING", "UNKNOWN_SUBMISSION",
-                                                                     "ACKED", "PARTIALLY_FILLED", "FILLED",
-                                                                     "CANCELED", "ABANDONED", "NOT_CREATED",
-                                                                     "REJECTED", "EXPIRED"))]
-        ex.sweep_since_ms = int(min(created + [now]) * 1000) - margin_ms
     ran = False
-    complete_all = True
     for symbol in ex.symbols:
         if symbol in unknown_symbols:
             continue  # resolving the unknown submission accounts for orders on this symbol
+        if symbol not in ex.sweep_since_ms:
+            created = [i.created_at for i in ledger.list_intents(states=_ALL_STATES)]
+            ex.sweep_since_ms[symbol] = int(min(created + [now]) * 1000) - margin_ms
         try:
             page = reader.fetch_open_orders(symbol)
-            fills = reader.fetch_fills(symbol, since_ms=max(0, ex.sweep_since_ms))
+            fills = reader.fetch_fills(symbol, since_ms=max(0, ex.sweep_since_ms[symbol]))
             snaps = {o.exchange_order_id: o for o in page.orders}
             for fill in fills.fills:
                 if fill.exchange_order_id not in snaps and views.order_row(ledger, fill.exchange_order_id) is None:
                     snaps[fill.exchange_order_id] = reader.fetch_order(symbol, fill.exchange_order_id)
         except ExchangeDataError as exc:
             ex.ingest.anomaly(f"sweep {symbol}: {exc}")
-            complete_all = False
             continue
-        except (ExchangeAmbiguous, OrderNotFound):   # unavailable or not visible: skip this symbol for now
-            complete_all = False
+        except (ExchangeAmbiguous, OrderNotFound):   # unavailable or not visible: this symbol is re-read next time
             continue
-        complete_all = complete_all and page.complete and fills.complete
         known = views.known_order_ids(ledger)
         for eid, snap in snaps.items():
             if views.order_row(ledger, eid) is not None:
                 continue
             ledger.record_order_observation(ex.lease, observation_from(snap, known.get(eid)), now=now)
+        if page.complete and fills.complete:
+            ex.sweep_since_ms[symbol] = int(now * 1000) - margin_ms
         ran = True
-    if ran and complete_all:
-        ex.sweep_since_ms = int(now * 1000) - margin_ms
     return ran
 
 
@@ -194,6 +197,7 @@ def on_startup(ex) -> dict[str, int]:
             counts[outcome] += 1
     for intent in ledger.list_intents(states=("ACKED", "PARTIALLY_FILLED")):
         ex.ingest.refresh(intent)
+    ex.ingest.close_flat_positions()
     sweep(ex)
     ex.check_balance()
     return counts
