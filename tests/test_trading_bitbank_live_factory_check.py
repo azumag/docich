@@ -36,30 +36,57 @@ def _depth_at(server_ms):
     return {"asks": [["101", "5"]], "bids": [["100", "4"]], "timestamp": server_ms}
 
 
-def _open(state, server_ms, *, wall=None, transport=None, **kw):
-    script = default_script(depth=_depth_at(server_ms))
-    made = transport or FakeTransport(script)
-    return fc.open_bitbank_reader(state, symbols=SYMBOLS, clock=lambda: 1.0,
-                                  wall_clock=wall or (lambda: T0 / 1000), transport_factory=lambda creds: made, **kw)
+def _open(state, *, skew_s=0.0, transport=None, **kw):
+    made = transport or FakeTransport(default_script(), skew_s=skew_s)
+    return fc.open_bitbank_reader(state, symbols=SYMBOLS, clock=lambda: 1.0, transport_factory=lambda creds: made, **kw)
 
 
 # ---- factory -------------------------------------------------------------------------------
 def test_a_clean_start_builds_a_reader(state):
     _install_key(state)
-    reader = _open(state, T0)
-    assert reader.market_rules("OAS/JPY").min_amount == 1
+    assert _open(state).market_rules("OAS/JPY").min_amount == 1
 
 
-@pytest.mark.parametrize("server_offset_ms,ok", [(0, True), (700, True), (-700, True), (900, False), (-900, False),
-                                                 (5000, False)])
-def test_the_local_clock_must_be_close_to_bitbanks(state, server_offset_ms, ok):
+@pytest.mark.parametrize("skew_s,ok", [(0.0, True), (0.5, True), (0.8, True), (0.9, False), (3.0, False),
+                                       (-0.9, True), (-6.9, True), (-7.1, False), (-30.0, False)])
+def test_the_local_clock_must_be_close_to_bitbanks_response_date(state, skew_s, ok):
     _install_key(state)
     if ok:
-        _open(state, T0 + server_offset_ms)
+        _open(state, skew_s=skew_s)
     else:
         with pytest.raises(ReaderUnavailable) as err:
-            _open(state, T0 + server_offset_ms)
+            _open(state, skew_s=skew_s)
         assert "clock" in str(err.value)
+
+
+def test_the_estimate_is_the_minimum_over_the_probes_because_of_whole_second_dates(state):
+    _install_key(state)
+
+    class Jittery(FakeTransport):
+        values = iter([1.4, 1.1, 0.7, 0.4, 0.3, 0.6, 0.9, 1.2, 1.5, 1.8, 1.9, 1.3])
+
+        def get(self, endpoint, params):
+            data = super().get(endpoint, params)
+            self._samples[-1] = next(self.values, 1.0)
+            return data
+
+    # the true offset is ~0.3 s; single samples run up to 1.9 s because the Date header is floored to the second
+    reader = fc.open_bitbank_reader(state, symbols=SYMBOLS, clock=lambda: 1.0,
+                                    transport_factory=lambda c: Jittery(default_script()))
+    assert reader is not None
+
+
+def test_no_date_header_at_all_means_the_clock_cannot_be_trusted(state):
+    _install_key(state)
+    with pytest.raises(ReaderUnavailable) as err:
+        _open(state, skew_s=None)
+    assert "clock check failed" in str(err.value)
+
+
+def test_depth_timestamps_play_no_part_in_the_clock_check(state):
+    _install_key(state)
+    transport = FakeTransport(default_script(depth=_depth_at(T0 - 5000)), skew_s=0.0)   # a book published 5 s ago
+    assert _open(state, transport=transport) is not None
 
 
 def test_no_key_means_no_reader_and_no_transport_is_even_built(state):
@@ -85,11 +112,11 @@ def test_a_transport_that_cannot_be_built_is_reported_by_class_name_only(state):
 
 @pytest.mark.parametrize("script", [
     {"pairs": ExchangeAmbiguous("down")}, {"assets": ExchangeAmbiguous("down")},
-    {"depth": ExchangeAmbiguous("down")}, {"depth": {"asks": [], "bids": []}}])
+    {"depth": ExchangeAmbiguous("down")}])
 def test_any_failure_while_starting_means_no_reader(state, script):
     _install_key(state)
     with pytest.raises(ReaderUnavailable):
-        _open(state, T0, transport=FakeTransport(default_script(**script)))
+        _open(state, transport=FakeTransport(default_script(**script), skew_s=0.0))
 
 
 # ---- the check script ------------------------------------------------------------------------
@@ -146,7 +173,8 @@ def test_the_report_shows_raw_shapes_counts_and_no_secrets():
     (lines, code), _ = _run(secrets=(SENTINEL_KEY, SENTINEL_SECRET))
     text = "\n".join(lines)
     assert code == 0, text
-    for expected in ("clock: skew_ms per symbol {'OAS/JPY': 0, 'XYM/JPY': 0} (within +-800", "reader: built for 2/2 symbols",
+    for expected in ("clock: estimate_s=0.00 from 8 samples", "-> ok", "book snapshot age ms per symbol",
+                     "NOT the current time", "reader: built for 2/2 symbols",
                      "endpoint assets: ok", "endpoint deposit_history: ok", "endpoint spot_status: ok",
                      "OrderNotFound (code 50009", "balances: currencies=3", "amount_precision(watched)=",
                      "open orders OAS/JPY: count=1", "fills OAS/JPY: count=6", "executed_at digits: {13: 6}",
@@ -205,7 +233,21 @@ def test_parse_errors_name_the_field_in_the_report():
     script = _check_script()
     script["depth"] = {"asks": [], "bids": [], "timestamp": 12}
     (lines, code), _ = _run(script)
-    assert code == 1 and any("clock OAS/JPY: FAILED ExchangeDataError(-) bad field: timestamp" in l for l in lines)
+    assert code == 1 and any("book OAS/JPY: FAILED ExchangeDataError(-) bad field: timestamp" in l for l in lines)
+
+
+@pytest.mark.parametrize("skew_s,word", [(0.3, "-> ok"), (2.0, "OUTSIDE"), (-9.0, "OUTSIDE")])
+def test_the_report_judges_the_clock_from_the_date_header_estimate(skew_s, word):
+    transport = FakeTransport(_check_script(), skew_s=skew_s)
+    lines, code = ck.run_check(transport, SYMBOLS, wall_clock=lambda: T0 / 1000)
+    text = "\n".join(lines)
+    assert word in text and (code == 0) == (word == "-> ok")
+
+
+def test_a_transport_without_any_date_header_is_reported_as_unable_to_check_the_clock():
+    transport = FakeTransport(_check_script(), skew_s=None)
+    lines, code = ck.run_check(transport, SYMBOLS, wall_clock=lambda: T0 / 1000)
+    assert code == 1 and "no response carried a Date header" in "\n".join(lines)
 
 
 def test_public_only_never_touches_a_private_endpoint():

@@ -76,22 +76,35 @@ def run_check(transport, symbols: Sequence[str], *, wall_clock: Callable[[], flo
             say(f"{label}: FAILED {_name(exc)}")
         return None
 
-    # --- clock, for every symbol (is depth.timestamp "now"?  a quiet pair would show it)
-    skews = {}
+    # --- clock.  depth.timestamp is when the book was published (not "now"); the usable server clock is the
+    # response Date header (whole seconds), and the minimum of several samples is the estimate.
+    ages = {}
     for symbol in symbols:
         before = wall_clock()
-        data = attempt(f"clock {symbol}", lambda s=symbol: transport.get("depth", {"pair": parse.pair_id(s)}))
+        data = attempt(f"book {symbol}", lambda s=symbol: transport.get("depth", {"pair": parse.pair_id(s)}))
         after = wall_clock()
         if data is not None:
             try:
-                server = parse.ms_value(parse._field(data, "timestamp", "timestamp"), "timestamp")
-                skews[symbol] = int(round((before + after) / 2 * 1000)) - server
+                published = parse.ms_value(parse._field(data, "timestamp", "timestamp"), "timestamp")
+                ages[symbol] = int(round((before + after) / 2 * 1000)) - published
             except ExchangeDataError as exc:
                 failed = True
-                say(f"clock {symbol}: FAILED {_name(exc)}")
-    if skews:
-        verdict = "within" if all(abs(v) <= SKEW_LIMIT_MS for v in skews.values()) else "OUTSIDE"
-        say(f"clock: skew_ms per symbol {skews} ({verdict} +-{SKEW_LIMIT_MS}; local minus bitbank, from depth.timestamp)")
+                say(f"book {symbol}: FAILED {_name(exc)}")
+    for _ in range(max(0, 8 - len(symbols))):            # enough samples to cover every phase of the second
+        attempt("clock sample", lambda: transport.get("depth", {"pair": parse.pair_id(symbols[0])}))
+    samples = list(getattr(transport, "clock_samples", lambda: ())())
+    if samples:
+        estimate = min(samples)
+        verdict = "ok" if -7.0 <= estimate <= 0.8 else "OUTSIDE (limits: ahead <= 0.8 s, behind <= 7 s)"
+        say(f"clock: estimate_s={estimate:.2f} from {len(samples)} samples (local minus bitbank response Date; "
+            f"whole-second resolution; positive = local ahead) -> {verdict}")
+        failed = failed or verdict != "ok"
+    else:
+        failed = True
+        say("clock: no response carried a Date header, so the clock cannot be checked")
+    if ages:
+        say(f"book snapshot age ms per symbol {ages} (informational: depth.timestamp is when the book was "
+            f"published, NOT the current time)")
 
     # --- public market data: each symbol on its own, so one bad pair is named and the rest go on
     pairs_data = attempt("pairs", lambda: transport.get("pairs", {}))

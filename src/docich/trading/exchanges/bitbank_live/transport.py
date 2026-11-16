@@ -14,6 +14,7 @@ Failures are raised as L2 exceptions (see ``errors``).  Keys never reach logs, m
 """
 from __future__ import annotations
 
+import email.utils
 import importlib
 import json
 import logging
@@ -81,11 +82,13 @@ class CcxtReadTransport:
     def __init__(self, credentials: Credentials | None, *, timeout_ms: int = 10_000, time_window_ms: int = 10_000,
                  min_interval_s: float = 0.2, retry_pause_s: float = 1.0,
                  clock: Callable[[], float] = time.monotonic, sleep: Callable[[float], None] = time.sleep,
+                 wall_clock: Callable[[], float] = time.time,
                  exchange_factory: Callable[[dict], object] | None = None,
                  endpoints: Mapping[str, str] = ENDPOINTS) -> None:
         self._endpoints = dict(endpoints)
         self._min_interval, self._retry_pause = float(min_interval_s), float(retry_pause_s)
-        self._clock, self._sleep = clock, sleep
+        self._clock, self._sleep, self._wall = clock, sleep, wall_clock
+        self._clock_samples: list[float] = []
         self._last_call: float | None = None
         config: dict = {"enableRateLimit": False, "timeout": int(timeout_ms), "verbose": False,
                         "options": {"authMethod": "timeWindow", "timeWindow": str(int(time_window_ms))}}
@@ -108,6 +111,7 @@ class CcxtReadTransport:
     # ------------------------------------------------------------------ hardening
     def _harden(self, exchange) -> None:
         exchange.verbose = False
+        exchange.enableLastResponseHeaders = True       # the response ``Date`` is the only server clock bitbank gives
         exchange.logger = _quiet_logger()
         exchange.on_json_response = _json_loads          # numbers stay strings: no float ever exists
         real_fetch = exchange.fetch
@@ -120,7 +124,8 @@ class CcxtReadTransport:
         exchange.fetch = guarded_fetch
 
     def _scrub(self) -> None:
-        for name in ("last_http_response", "last_json_response", "last_request_headers", "last_request_body"):
+        for name in ("last_http_response", "last_json_response", "last_request_headers", "last_request_body",
+                     "last_response_headers"):
             if hasattr(self._exchange, name):
                 setattr(self._exchange, name, None)
 
@@ -151,19 +156,40 @@ class CcxtReadTransport:
         """The data on success, else an L2 exception *instance* (returned, so it carries no traceback of ccxt)."""
         self._scrub()
         method = getattr(self._exchange, method_name)
+        started = self._wall()
         try:
             response = method(dict(params))
         except ReadOnlyViolation:
             raise
         except Exception as exc:
+            self._note_server_date(started)
             body = getattr(self._exchange, "last_http_response", None)
             names = tuple(cls.__name__ for cls in type(exc).__mro__ if cls.__name__ not in ("object", "Exception",
                                                                                               "BaseException"))
             self._scrub()
             return errors.classify(endpoint=endpoint, body=body if isinstance(body, str) else None, exc_names=names)
+        else:
+            self._note_server_date(started)
         finally:
             self._scrub()
         return _unwrap(endpoint, response)
+
+    def _note_server_date(self, started: float) -> None:
+        """Remember (local midpoint of the request) - (response Date).  Whole-second resolution: it is >= the true
+        offset and less than one second above it, so the *minimum* over several calls is the usable estimate."""
+        headers = getattr(self._exchange, "last_response_headers", None)
+        try:
+            date = headers.get("Date") if headers is not None else None
+            server = email.utils.parsedate_to_datetime(date).timestamp() if date else None
+        except (TypeError, ValueError, AttributeError):
+            server = None
+        if server is not None:
+            self._clock_samples.append((started + self._wall()) / 2 - server)
+            del self._clock_samples[:-32]
+
+    def clock_samples(self) -> tuple[float, ...]:
+        """Seconds: local time minus bitbank's response ``Date``, one per call that carried a Date header."""
+        return tuple(self._clock_samples)
 
 
 def _unwrap(endpoint: str, response: object):

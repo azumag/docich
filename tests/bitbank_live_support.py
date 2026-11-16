@@ -58,12 +58,19 @@ def depth_payload():
 class FakeTransport:
     """``script``: endpoint -> payload, an exception (raised), a callable(params), or a list of those (consumed)."""
 
-    def __init__(self, script=None):
+    def __init__(self, script=None, skew_s=0.0):
         self.script = dict(script or {})
         self.calls = []
+        self.skew_s = skew_s            # what each call "measured" for local minus the response Date (None: no Date)
+        self._samples = []
+
+    def clock_samples(self):
+        return tuple(self._samples)
 
     def get(self, endpoint, params):
         self.calls.append((endpoint, dict(params)))
+        if self.skew_s is not None:
+            self._samples.append(self.skew_s)
         item = self.script[endpoint]
         if isinstance(item, list):
             item = item.pop(0) if len(item) > 1 else item[0]

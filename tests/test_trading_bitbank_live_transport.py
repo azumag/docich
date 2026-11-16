@@ -49,6 +49,9 @@ class FakeCcxt:
         self.last_http_response = None
         self.last_request_headers = "hdr"
         self.last_request_body = "body"
+        self.last_response_headers = None
+        self.date_header = None
+        self.enableLastResponseHeaders = False
         self.verbose = True
         self.logger = logging.getLogger("ccxt")
         self.on_json_response = None
@@ -67,6 +70,8 @@ class FakeCcxt:
 
     def _call(self, name, params):
         self.fetch(URLS[name], "GET", {"ACCESS-KEY": SENTINEL_KEY}, None)
+        if self.date_header is not None:
+            self.last_response_headers = {"Date": self.date_header}
         item = self.script.get(name, {"success": 1, "data": {"ok": True}})
         if isinstance(item, list):
             item = item.pop(0) if len(item) > 1 else item[0]
@@ -308,3 +313,34 @@ def test_a_violation_in_the_reader_path_is_not_turned_into_an_ordinary_error():
 
     with pytest.raises(tr.ReadOnlyViolation):
         BitbankReader(Boom(), symbols=("OAS/JPY",), clock=lambda: 0.0)
+
+
+def test_the_response_date_header_becomes_a_clock_sample_on_success_and_on_error():
+    import email.utils
+    wall = [1_700_000_000.0]
+    box = {}
+
+    def factory(config):
+        box["ex"] = FakeCcxt(config)
+        return box["ex"]
+
+    transport = tr.CcxtReadTransport(None, exchange_factory=factory, min_interval_s=0, wall_clock=lambda: wall[0])
+    ex = box["ex"]
+    assert ex.enableLastResponseHeaders is True and transport.clock_samples() == ()
+    ex.date_header = email.utils.formatdate(1_699_999_999.0, usegmt=True)       # server (floored) is 1 s behind
+    transport.get("assets", {})
+    assert transport.clock_samples() == (1.0,)
+    ex.script["privateGetUserAssets"] = RequestTimeout("t")
+    wall[0] += 5
+    with pytest.raises(ExchangeAmbiguous):
+        transport.get("assets", {})
+    assert transport.clock_samples() == (1.0, 6.0)
+    assert ex.last_response_headers is None                                   # scrubbed afterwards
+
+
+def test_no_date_header_means_no_sample_and_a_garbage_one_is_ignored():
+    transport, ex, _ = make()
+    transport.get("assets", {})
+    ex.date_header = "not a date"
+    transport.get("assets", {})
+    assert transport.clock_samples() == ()

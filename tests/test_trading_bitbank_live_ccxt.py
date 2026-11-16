@@ -25,7 +25,9 @@ def _no_network(monkeypatch):
 
 class FakeResponse:
     def __init__(self, text, status=200, reason="OK"):
-        self.text, self.status_code, self.reason, self.headers = text, status, reason, {"content-type": "application/json"}
+        import email.utils
+        self.text, self.status_code, self.reason = text, status, reason
+        self.headers = {"content-type": "application/json", "Date": email.utils.formatdate(usegmt=True)}
         self.encoding = "utf-8"
 
     def raise_for_status(self):
@@ -170,3 +172,10 @@ def test_traces_on_the_real_object_are_cleared_after_a_call():
     transport.get("assets", {})
     ex = transport._exchange
     assert ex.last_http_response is None and getattr(ex, "last_request_headers", None) is None
+
+
+def test_the_real_response_date_header_gives_a_clock_sample():
+    transport, _, _ = make(body({"assets": []}))
+    transport.get("assets", {})
+    samples = transport.clock_samples()
+    assert len(samples) == 1 and -1.5 < samples[0] < 1.5     # the fake server's Date is "now", floored to the second
