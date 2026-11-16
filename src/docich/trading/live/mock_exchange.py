@@ -157,6 +157,14 @@ class MockExchange:
         except KeyError as exc:
             raise ExchangeRejected("unknown_market", symbol) from exc
 
+    def _buy_margin(self) -> Decimal:
+        """Worst-case quote cost per unit of notional for a buy.  The fee is charged in
+        ``m.quote`` only when fees are quote-denominated; a base-denominated buy pays it
+        out of the coins it receives."""
+        if self._fees.currency != "quote":
+            return Decimal(1)
+        return 1 + max(self._fees.maker_rate, self._fees.taker_rate, _ZERO)
+
     def _locked(self) -> dict[str, Decimal]:
         locked: dict[str, Decimal] = {}
         for o in self._orders.values():
@@ -164,7 +172,7 @@ class MockExchange:
                 continue
             m = self._markets[o.symbol]
             if o.side == "buy":
-                locked[m.quote] = locked.get(m.quote, _ZERO) + o.remaining * o.price
+                locked[m.quote] = locked.get(m.quote, _ZERO) + o.remaining * o.price * self._buy_margin()
             else:
                 locked[m.base] = locked.get(m.base, _ZERO) + o.remaining
         return locked
@@ -304,10 +312,9 @@ class MockExchange:
         if (req.client_order_id and self._caps.client_order_id and origin == "bot" and
                 any(x.client_order_id == req.client_order_id for x in self._orders.values())):
             raise ExchangeRejected("duplicate_client_order_id", req.client_order_id)
-        worst = max(self._fees.maker_rate, self._fees.taker_rate, _ZERO)
         if req.side == "buy":
             cost = (req.amount * req.price) if req.order_type == "limit" else self._estimate_market_cost(req)
-            if cost * (1 + worst) > self._free(m.quote):
+            if cost * self._buy_margin() > self._free(m.quote):
                 raise ExchangeRejected("insufficient_funds", m.quote)
         elif req.amount > self._free(m.base):
             raise ExchangeRejected("insufficient_funds", m.base)
@@ -383,6 +390,7 @@ class MockExchange:
         o = self._orders.get(str(exchange_order_id))
         hidden = o is not None and o.hidden_polls > 0
         self._tick_visibility()
+        self._persist()  # the consumed polls are a change too: keep them over a restart
         if o is None or o.symbol != symbol or hidden:
             raise OrderNotFound(str(exchange_order_id))
         return self._snap(o)
@@ -394,6 +402,7 @@ class MockExchange:
         found = [o for o in self._orders.values() if o.symbol == symbol and o.client_order_id == client_order_id]
         hidden = bool(found) and found[0].hidden_polls > 0
         self._tick_visibility()
+        self._persist()
         return self._snap(found[0]) if found and not hidden else None
 
     def fetch_open_orders(self, symbol: str) -> OrderPage:
@@ -401,6 +410,7 @@ class MockExchange:
         orders = [o for o in self._orders.values() if o.symbol == symbol and o.status in _OPEN
                   and o.hidden_polls <= 0]
         self._tick_visibility()
+        self._persist()
         orders.sort(key=lambda o: o.seq)
         views = [self._snap(o) for o in orders]
         if fault is not None and fault.kind == "TRUNCATED_PAGE":
@@ -427,6 +437,7 @@ class MockExchange:
                     f.fee_backfill_after -= 1
             out.append(self._fill_view(f))
         self._tick_visibility()
+        self._persist()
         complete = True
         if fault is not None:
             if fault.kind == "TRUNCATED_PAGE":  # also when nothing is visible: the page may be cut off
@@ -487,6 +498,7 @@ class MockExchange:
 
     def set_clock_skew(self, ms: int) -> None:
         self._skew_ms = int(ms)
+        self._persist()
 
     def totals(self) -> dict[str, Decimal]:
         return dict(self._totals)

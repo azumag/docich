@@ -37,7 +37,8 @@ def dec_text(value: Decimal) -> str:
     value = dec(value)
     if value == 0:
         return "0"
-    return format(value.normalize(), "f")
+    text = format(value, "f")  # normalize() would round to the context precision
+    return text.rstrip("0").rstrip(".") if "." in text else text
 
 
 def ms_to_seconds(ms: int) -> float:

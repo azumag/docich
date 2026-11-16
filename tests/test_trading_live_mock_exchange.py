@@ -36,6 +36,8 @@ def test_dec_text_is_one_text_per_value():
     assert {ex.dec_text(D(v)) for v in ("10", "10.0000", "1E+1", "0010")} == {"10"}
     assert ex.dec_text(D("0.0")) == "0" and ex.dec_text(D("-0")) == "0"
     assert ex.dec_text(D("0.250")) == "0.25" and ex.dec_text(D("1E-8")) == "0.00000001"
+    # more significant digits than the context precision must not be rounded
+    assert ex.dec_text(D("1.12345678901234567890123456789")) == "1.12345678901234567890123456789"
 
 
 def test_ms_to_seconds_is_stable():
@@ -78,7 +80,8 @@ def test_limit_buy_takes_asks_at_their_price_and_rests_the_remainder():
     assert mock.totals()["JPY"] == D("10000") - D("696") - D("0.696")
     assert mock.totals()["OAS"] == D(7)
     balance = mock.fetch_balance().assets
-    assert balance["JPY"].locked == D("300") and balance["JPY"].free == balance["JPY"].total - D("300")
+    # the resting remainder locks its fee too: 3 * 100 * 1.001
+    assert balance["JPY"].locked == D("300.3") and balance["JPY"].free == balance["JPY"].total - D("300.3")
     assert [o.exchange_order_id for o in mock.fetch_open_orders("OAS/JPY").orders] == [snap.exchange_order_id]
 
 
@@ -144,7 +147,39 @@ def test_funds_are_reserved_by_resting_orders():
     mock.submit_order(req(amount="9", price="100"))
     with pytest.raises(ExchangeRejected):
         mock.submit_order(req(amount="2", price="100"))
-    assert mock.fetch_balance().assets["JPY"].free == D("100")
+    assert mock.fetch_balance().assets["JPY"].free == D("99.1")  # 900 * 1.001 (worst-case fee) is locked
+
+
+def test_resting_buys_lock_their_fee_so_totals_never_go_negative():
+    fees = MockFees(maker_rate=D("0.01"), taker_rate=D("0.01"))
+    mock, _ = make_mock(jpy="201", fees=fees)
+    mock.submit_order(req(amount="1", price="100"))
+    with pytest.raises(ExchangeRejected):
+        mock.submit_order(req(amount="1", price="100"))  # 101 is locked, only 100 is free
+    mock.trade_against("OAS/JPY", taker_side="sell", price="100", amount="1")
+    assert mock.totals()["JPY"] == D("100")
+    # two orders that both fit (fees included) still cannot drive the balance negative
+    mock2, _ = make_mock(jpy="202", fees=fees)
+    first = mock2.submit_order(req(amount="1", price="100"))
+    second = mock2.submit_order(req(amount="1", price="100"))
+    assert mock2.fetch_balance().assets["JPY"].free == 0
+    mock2.trade_against("OAS/JPY", taker_side="sell", price="100", amount="1")
+    balance = mock2.fetch_balance().assets["JPY"]
+    assert balance.total == D("101") and balance.free == 0  # the fill freed nothing usable
+    mock2.trade_against("OAS/JPY", taker_side="sell", price="100", amount="1")
+    assert mock2.totals()["JPY"] == 0 and mock2.fetch_balance().assets["JPY"].free == 0
+    assert mock2.fetch_order("OAS/JPY", first.exchange_order_id).status is OrderStatus.FULLY_FILLED
+    assert mock2.fetch_order("OAS/JPY", second.exchange_order_id).status is OrderStatus.FULLY_FILLED
+
+
+def test_base_fee_buy_is_not_charged_a_quote_margin():
+    fees = MockFees(maker_rate=D("0.01"), taker_rate=D("0.01"), currency="base")
+    mock, _ = make_mock(jpy="100", fees=fees)
+    mock.submit_order(req(amount="1", price="100"))  # rests; the fee comes out of the coins
+    mock2, _ = make_mock(jpy="100", fees=fees)
+    mock2.set_book("OAS/JPY", asks=[(D("100"), D("1"))])
+    mock2.submit_order(req("buy", "market", amount="1", price=None))
+    assert mock2.totals()["JPY"] == 0 and mock2.totals()["OAS"] == D("0.99")
 
 
 def test_cancel_kinds_and_race():
@@ -331,6 +366,38 @@ def test_state_is_written_before_a_lost_response_is_raised(tmp_path):
         mock.submit_order(req())
     reread, _ = make_mock(clock, state_path=path)
     assert len(reread.all_orders()) == 1
+
+
+def test_read_progress_survives_a_restart(tmp_path):
+    path = tmp_path / "mock.json"
+    mock, clock = make_mock(state_path=path)
+    mock.set_book("OAS/JPY", asks=[(D("100"), D("10"))])
+    mock.faults.push("fill", "FEE_MISSING", backfill_after=1)
+    mock.submit_order(req(amount="1", price="100"))
+    assert mock.fetch_fills("OAS/JPY", since_ms=0).fills[0].fee.status is FeeStatus.UNKNOWN
+    again, _ = make_mock(clock, state_path=path)
+    assert again.fetch_fills("OAS/JPY", since_ms=0).fills[0].fee.status is FeeStatus.KNOWN
+
+
+def test_delayed_fills_and_hidden_orders_keep_their_progress_over_a_restart(tmp_path):
+    path = tmp_path / "mock.json"
+    mock, clock = make_mock(state_path=path)
+    mock.set_book("OAS/JPY", asks=[(D("100"), D("10"))])
+    mock.faults.push("fill", "FILL_DELAY", n=2)
+    mock.submit_order(req(amount="1", price="100"))
+    assert mock.fetch_fills("OAS/JPY", since_ms=0).fills == ()
+    again, _ = make_mock(clock, state_path=path)
+    assert again.fetch_fills("OAS/JPY", since_ms=0).fills == ()  # one delay tick was already spent
+    assert len(again.fetch_fills("OAS/JPY", since_ms=0).fills) == 1
+
+    path2 = tmp_path / "mock2.json"
+    mock2, clock2 = make_mock(state_path=path2)
+    mock2.faults.push("submit", "VISIBILITY_LAG", n=2)
+    mock2.submit_order(req(amount="1", price="100"))
+    assert mock2.fetch_open_orders("OAS/JPY").orders == ()
+    again2, _ = make_mock(clock2, state_path=path2)
+    assert again2.fetch_open_orders("OAS/JPY").orders == ()  # one poll was already spent
+    assert len(again2.fetch_open_orders("OAS/JPY").orders) == 1
 
 
 def test_free_never_goes_negative_and_total_equals_free_plus_locked():
