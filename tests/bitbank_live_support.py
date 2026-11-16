@@ -58,12 +58,23 @@ def depth_payload():
 class FakeTransport:
     """``script``: endpoint -> payload, an exception (raised), a callable(params), or a list of those (consumed)."""
 
-    def __init__(self, script=None):
+    def __init__(self, script=None, skew_s=0.0):
         self.script = dict(script or {})
         self.calls = []
+        self.skew_s = skew_s            # the true offset every call "measured" (None: no Date), +-0.0 uncertainty
+        self._samples = []
+
+    def clock_samples(self):
+        return tuple(self._samples)
+
+    def clock_bounds(self, last=8):
+        from docich.trading.exchanges.bitbank_live.transport import intersect_bounds
+        return intersect_bounds(self._samples[-last:])
 
     def get(self, endpoint, params):
         self.calls.append((endpoint, dict(params)))
+        if self.skew_s is not None:
+            self._samples.append((self.skew_s, self.skew_s))
         item = self.script[endpoint]
         if isinstance(item, list):
             item = item.pop(0) if len(item) > 1 else item[0]

@@ -13,11 +13,14 @@ import json
 
 from ...live.exchange import ExchangeAmbiguous, ExchangeError, OrderNotFound
 
-_CLOCK = {20004} | set(range(20033, 20040))
-_AUTH = {20001, 20002, 20003, 20005} | set(range(20011, 20027))
+# Code groups follow bitbank's errors.md.  Only 20034 (invalid ACCESS-REQUEST-TIME), 20035 (not sent within
+# ACCESS-TIME-WINDOW) and 20037 (invalid ACCESS-REQUEST-TIME) are about time; 20004/20033/20036/20038/20039 are
+# missing or malformed headers of ours (a "request" error), and 20018/20019 mean a missing /v1/ in the path.
+_CLOCK = {20034, 20035, 20037}
+_AUTH = {20001, 20002, 20003, 20005, 20011, 20014, 20023, 20024, 20025, 20026}
 _RATE = {10009}
 _NETWORK = {10001, 10003, 10005, 10007, 10008, 70001, 70002, 70003, 70011, 70012}
-_ACCOUNT = set(range(50003, 50009))
+_ACCOUNT = {50003, 50004, 50005, 50006, 50008}
 NOT_FOUND_CODE = 50009
 
 _NAME_KIND = {

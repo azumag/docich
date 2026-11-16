@@ -13,13 +13,17 @@ def body(code):
 
 
 @pytest.mark.parametrize("code,kind", [
-    (20001, "auth"), (20002, "auth"), (20003, "auth"), (20005, "auth"), (20011, "auth"), (20026, "auth"),
-    (20004, "clock"), (20033, "clock"), (20039, "clock"),
+    (20001, "auth"), (20002, "auth"), (20003, "auth"), (20005, "auth"), (20011, "auth"), (20014, "auth"),
+    (20023, "auth"), (20026, "auth"),
+    (20034, "clock"), (20035, "clock"), (20037, "clock"),
+    (20004, "request"), (20018, "request"), (20019, "request"), (20033, "request"), (20036, "request"),
+    (20038, "request"), (20039, "request"),                       # our own malformed or missing headers
     (10009, "rate"),
-    (10001, "network"), (10008, "network"), (70001, "network"), (70012, "network"),
-    (50003, "account"), (50008, "account"),
-    (10000, "request"), (30001, "request"), (40013, "request"), (40001, "request"), (50011, "request"),
-    (60001, "request"), (60002, "request"), (99999, "request")])
+    (10001, "network"), (10005, "network"), (10007, "network"), (10008, "network"), (70001, "network"),
+    (70012, "network"),
+    (50003, "account"), (50005, "account"), (50006, "account"), (50008, "account"),
+    (10000, "request"), (10002, "request"), (30001, "request"), (40013, "request"), (40001, "request"),
+    (50011, "request"), (60001, "request"), (60002, "request"), (99999, "request")])
 def test_bitbank_codes_map_to_ambiguous_with_a_kind(code, kind):
     error = er.classify(endpoint="assets", body=body(code))
     assert type(error) is ExchangeAmbiguous and error.health_kind == kind
