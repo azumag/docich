@@ -21,6 +21,7 @@ from docich.trading.live import policy as live_policy
 from docich.trading.live import safety as sf
 from docich.trading.live import reconcile as live_reconcile
 from docich.trading.live import views as live_views
+from docich.trading.live.enable import EnableReason, EnableResult
 from docich.trading.live.exchange import Capabilities, ExchangeAmbiguous, OrderRequest, OrderSnapshot
 from docich.trading.live.ingest import observation_from
 from docich.trading.live.executor import SubmitOutcome as S
@@ -1718,6 +1719,83 @@ def test_the_cli_never_records_an_enable_observation(workspace, monkeypatch):
                 "--override-incomplete-proof", "--evidence", "checked the exchange history by hand",
                 "--operator", "owner"]
         code, preview = _run(workspace.state, *argv, now=h.clock.seconds(), reader_factory=lambda state_dir: h.mock)
+        assert code == 0, preview
+        code, text = _run(workspace.state, *argv, "--confirm", _token(preview), now=h.clock.seconds(),
+                          reader_factory=lambda state_dir: h.mock)
+        assert code == 0 and text == "resolved: not created (owner evidence)\n"
+        assert h.ledger.get_intent(intent.intent_id).state == "NOT_CREATED"
+    finally:
+        h.close()
+
+
+# ---- pins: a clear with no ledger, and a stop the machine records during a resolution ----------
+def _state_contents(state_dir) -> list[tuple[str, int]]:
+    """Every entry below the state dir (relative name, size): a created ledger or lease shows up."""
+    root = Path(state_dir)
+    return sorted((str(entry.relative_to(root)), entry.stat().st_size) for entry in root.rglob("*"))
+
+
+@pytest.mark.parametrize("reason", ["unknown_order", "enable_missing"])
+@pytest.mark.parametrize("confirm", [False, True], ids=["preview", "confirm"])
+def test_trip_clear_without_a_ledger_refuses_and_creates_nothing(tmp_path, reason, confirm):
+    argv = _trip_clear_args(reason)
+    if confirm:
+        argv += ["--confirm", "0" * 10]              # any 10-hex token: the missing ledger is refused first
+    before = _state_contents(tmp_path)
+    code, text = _run(tmp_path, *argv)
+    assert code == 1 and text == "refused: no active trip for that reason\n"
+    assert _state_contents(tmp_path) == before
+    assert before == [] and not (tmp_path / "trading-live").exists()
+
+
+def _record_machine_stop(ex, reason: str) -> None:
+    """The write the worker itself makes for this reason (never ingest.anomaly)."""
+    now = ex.clock()
+    if reason == sf.SafetyReason.ENABLE_MISSING.value:
+        # record_enable_observation only trips after the gate was seen open, so make that true first
+        ex.ledger.record_enable_observation(ex.lease, EnableResult(True, (), mode="trade"), now=now)
+        ex.ledger.record_enable_observation(ex.lease, EnableResult(False, (EnableReason.EXPIRED,)), now=now)
+        return
+    ex.ledger.trip_safety(sf.SafetyReason.LEASE_LOST, detail="the writer lease was lost", now=now)
+
+
+@pytest.mark.parametrize("reason", ["enable_missing", "lease_lost"])
+def test_a_stop_recorded_by_the_machine_during_the_resolution_refuses_the_owner_override(
+        workspace, monkeypatch, reason):
+    h = _unknown_harness(workspace, caps=Capabilities(False, False, True))
+    try:
+        h.mock.faults.push("submit", "LOST_REQUEST")
+        intent, outcome = h.send(side="buy", key="b1", amount="10", price="90")
+        assert outcome is S.UNKNOWN
+        h.advance(500)
+        _released(h)                                     # the harness lease goes back once; each CLI run takes its own
+        argv = ["unknown", "resolve", "--intent", intent.intent_id, "--not-created",
+                "--override-incomplete-proof", "--evidence", "checked the exchange history by hand",
+                "--operator", "owner"]
+        code, preview = _run(workspace.state, *argv, now=h.clock.seconds(),
+                             reader_factory=lambda state_dir: h.mock)
+        assert code == 0, preview
+        token = _token(preview)
+
+        def recorded_stop(ex, pending):
+            _record_machine_stop(ex, reason)
+            return "waiting"
+
+        monkeypatch.setattr(live_reconcile, "try_resolve", recorded_stop)
+        code, text = _run(workspace.state, *argv, "--confirm", token, now=h.clock.seconds(),
+                          reader_factory=lambda state_dir: h.mock)
+        assert code == 1
+        assert text == (f"refused: the machine recorded a safety stop during this run ({reason}); "
+                        f"the override does not apply\n")
+        assert h.ledger.get_intent(intent.intent_id).state == "UNKNOWN_SUBMISSION"
+        assert h.ledger.list_intents(states=("NOT_CREATED",)) == []
+
+        def waiting(ex, pending):
+            return "waiting"                             # no stop comes from this path
+
+        monkeypatch.setattr(live_reconcile, "try_resolve", waiting)
+        code, preview = _run(workspace.state, *argv, now=h.clock.seconds(),
+                             reader_factory=lambda state_dir: h.mock)
         assert code == 0, preview
         code, text = _run(workspace.state, *argv, "--confirm", _token(preview), now=h.clock.seconds(),
                           reader_factory=lambda state_dir: h.mock)
