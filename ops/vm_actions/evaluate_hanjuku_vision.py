@@ -30,6 +30,7 @@ PARSER_FILES = (
     "src/docich/hanjuku/os_layer/starter_view.py",
     "src/docich/hanjuku/os_layer/font.py", "src/docich/hanjuku/os_layer/glyphs.py",
     "src/docich/hanjuku/os_layer/pixels.py",
+    "src/docich/hanjuku/os_layer/castles.py", "src/docich/hanjuku/os_layer/castle_data.py",
 )
 COUNTS = ("labeled", "expected_present", "correct_present", "correct_absent",
           "wrong_value", "false_present", "abstained")

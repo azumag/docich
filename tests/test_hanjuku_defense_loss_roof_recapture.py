@@ -54,11 +54,20 @@ def test_the_lost_castle_keeps_its_loss_against_its_own_coloured_roof():
     assert mem['world_flags'][CASTLE] == {'kind': 'enemy', 'tick': 1000, 'chapter': 3}
     assert CASTLE not in mem['owner_streak']
     roofs, cam = field_roofs()
-    assert [r['kind'] for r in roofs] == ['own', 'own']
+    # The fixture shows one large Lv5 castle; its separate roof pieces used
+    # to be counted twice. Shape matching merges them without undoing loss.
+    assert [(r['kind'], r['level']) for r in roofs] == [('own', 5)]
     for _ in range(4):
         policy.observe_owners(mem, roofs, cam)
     assert CASTLE not in mem['captured'] and mem['lost'] == [CASTLE]
     assert not decisions(mem, 'castle_owned_observed')
+    assert not decisions(mem, 'castle_owned_vetoed')  # One castle is no constellation.
+    # Keep exercising the world-flag veto with a genuinely second anchor,
+    # rather than the two pieces of the same roof counted by the old reader.
+    home = policy.chart.castles(3)[policy.chart.home_castle(3)]
+    other = {'kind': 'own', 'target': (home[0] - cam[0], home[1] - cam[1])}
+    for _ in range(4):
+        policy.observe_owners(mem, [*roofs, other], cam)
     assert [r['castle'] for r in decisions(mem, 'castle_owned_vetoed')] == [CASTLE]
     # The vetoed roof must not leave the ownership record claiming 'own':
     # g1163 2026-11-13 14:05 did exactly that for オオキク, so the presentation

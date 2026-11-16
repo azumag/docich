@@ -5,14 +5,15 @@ Live frames from g1075-1d5f65e9 (2026-10-29 JST):
 - g1075-world-map-ring-top-edge.png    ring at the sea's top edge (153, 50.5)
 - g1075-world-map-ring-off.png         the blinking ring is off: no cursor
 - g1075-target-marker-beside-rigua.png 12:25:30, target marker at (128, 118),
-  リグア's roof target at (121, 125): offset (-7, +7)
+  リグア's Lv1 shape target at (128, 127): offset (0, +9). The old colour
+  fragment at (121,125) was pulled left by the marker covering its roof.
 """
 from pathlib import Path
 
 from docich.hanjuku.os_layer.navigation import ALIGN_LIMIT, _align_on_roof
 from docich.hanjuku.os_layer.pixels import read_png
 from docich.hanjuku.os_layer.readers import world_cursor
-from docich.hanjuku.os_layer.screen import parse
+from docich.hanjuku.os_layer.screen import castle_roofs, parse
 
 FIXTURES = Path(__file__).resolve().parent / 'fixtures' / 'hanjuku'
 
@@ -48,14 +49,24 @@ def marker_screen():
 
 def test_alignment_holds_half_the_offset_so_a_fast_marker_does_not_overshoot():
     screen, shot = marker_screen()
+    assert [(r['kind'], r['level'], r['target']) for r in castle_roofs(shot)] == [('enemy', 1, (128, 127))]
     actions = _align_on_roof(screen, {}, shot, ('enemy',), 'I:b59ab6:3:target')
-    assert [(a['buttons'], a['hold_ms']) for a in actions] == [(['left'], 67), (['down'], 67)]
+    assert [(a['buttons'], a['hold_ms']) for a in actions] == [(['down'], 83)]
 
 
 def test_at_the_step_limit_a_marker_within_the_confirm_distance_is_on():
     screen, shot = marker_screen()
+    # Simulate a subsequent marker read 2px down. The verified castle is
+    # unchanged; 7px is inside the existing confirmation tolerance.
+    screen.marker = (128, 120)
     mem = {'align_steps': {'k': ALIGN_LIMIT}}
     assert _align_on_roof(screen, mem, shot, ('enemy',), 'k') == 'on'
+
+
+def test_native_marker_outside_the_confirm_distance_does_not_accept_on_budget_exhaustion():
+    screen, shot = marker_screen()
+    mem = {'align_steps': {'k': ALIGN_LIMIT}}
+    assert _align_on_roof(screen, mem, shot, ('enemy',), 'k') is None
 
 
 def test_no_roof_of_the_expected_owner_nearby_still_reopens_the_jump():

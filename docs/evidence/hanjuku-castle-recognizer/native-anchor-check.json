@@ -1,0 +1,14 @@
+{
+  "goal": [
+    144,
+    127
+  ],
+  "observed_cursor_at_input": [
+    143,
+    127
+  ],
+  "scene_after_A": "castle_menu",
+  "source": "read-only existing local chapter9 map save",
+  "rom_sha256": "59027382154fc0aefdb2fa84251b171cbf490bc5e013205a24e677122b446a24",
+  "core_sha256": "8ed333ac04544cc6ab67ceb445d095f7600bb17586d4887d99117fbd1ef776f6"
+}

@@ -1,0 +1,39 @@
+{
+  "source": "local Snes9x 1.63 fae2fea; native 256x224 capture; ch1 fresh start, ch9 existing local save; no ROM/RAM/source-save edits during acquisition",
+  "core_sha256": "8ed333ac04544cc6ab67ceb445d095f7600bb17586d4887d99117fbd1ef776f6",
+  "checks": [
+    {
+      "file": "ch01-own-lv2-map.png",
+      "class_id": "own-lv2",
+      "theme": 1,
+      "origin_xy": [
+        120,
+        87
+      ],
+      "static_opaque_pixels": 712,
+      "png_sha256": "77ec4b0b73deb831dba344ba71a1c1fbfd551a1a5d165c84baad5850a30a3805"
+    },
+    {
+      "file": "ch09-own-lv1-map.png",
+      "class_id": "own-lv1",
+      "theme": 2,
+      "origin_xy": [
+        120,
+        87
+      ],
+      "static_opaque_pixels": 624,
+      "png_sha256": "d3c6a86802cf4be317b136e27ba816a0660c134e793d2526f80149e54c721647"
+    },
+    {
+      "file": "ch01-enemy-lv1-map.png",
+      "class_id": "enemy-lv1",
+      "theme": 1,
+      "origin_xy": [
+        104,
+        71
+      ],
+      "static_opaque_pixels": 784,
+      "png_sha256": "b577572e207e751fb58aa4808f0230bc6b011e1449af8d9c17cd30fb0fc72fc1"
+    }
+  ]
+}
