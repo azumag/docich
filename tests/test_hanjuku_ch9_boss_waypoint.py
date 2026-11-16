@@ -16,7 +16,7 @@ from docich.hanjuku.strategy import corridor
 ORDER = {'step': 'A:t:Mboss', 'target': 'ボス', 'source': 'イデ！'}
 FRAME = Frame(256, 224, b'\x00' * (256 * 224 * 3))
 IDE = chart.castles(9)['イデ！']
-WAYPOINT = (IDE[0], IDE[1] - 32)
+WAYPOINT = chart.CH9_BOSS_WAYPOINT
 
 
 def screen(cursor):

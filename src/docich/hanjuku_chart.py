@@ -257,6 +257,10 @@ del _chapter
 # within 1 px on measured chapter 4. Chapter 9 draws a second heart at
 # source (16, 20) -> view (82.5, 68.5); the registered one is the central
 # heart, re-measure before swapping if dispatches starve on it.
+# The northern heart is also the boss-phase waypoint: only its area lets an
+# army around the cliffs to the moving boss (owner 2026-11-16). Field cell
+# = (view - Y_JUMP_OFFSET) * 8 = (82.5-63.0, 68.5-47.5) * 8.
+CH9_BOSS_WAYPOINT = (156, 168)
 HOUSE_VIEW = {1: (118.5, 126.5), 2: (128.5, 94.5), 3: (116.5, 108.5),
               4: (134.0, 87.5), 5: (124.5, 80.5), 6: (110.5, 138.5),
               7: (144.5, 98.5), 8: (146.5, 104.5), 9: (118.5, 76.5),

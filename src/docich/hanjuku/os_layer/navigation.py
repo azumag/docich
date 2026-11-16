@@ -358,9 +358,12 @@ def boss_probe_cell(mem, name, step=None):
             corridor = chart.corridor(chapter) or ()
             last = chart.castles(chapter).get(corridor[-1]) if corridor else None
             if last:
-                # Cell-aligned (16-px field cells): an off-grid destination is
-                # not a walkable target for the game's own departure menu.
-                return (last[0], last[1] - 32)
+                # The egg-repair house north of イデ！ (owner 2026-11-16: the
+                # map shows it with a heart; chapter 9 has two, and only the
+                # northern one lets the army around the cliff to the boss).
+                # The old last-(0,32) hop stayed under the cliff and could
+                # never detour it; aim the house's field cell instead.
+                return chart.CH9_BOSS_WAYPOINT
     return cell
 
 

@@ -159,8 +159,7 @@ def test_the_corridor_boss_first_leg_steps_to_the_ide_north_house():
     # the map; chapter 9 has two and only the northern one reaches the boss)
     # is the first leg; the re-armed second leg goes around the cliff.
     mem = {'chapter': 9}
-    ide = chart.castles(9)[chart.corridor(9)[-1]]
-    waypoint = (ide[0], ide[1] - 32)
+    waypoint = chart.CH9_BOSS_WAYPOINT
     assert N.boss_probe_cell(mem, 'ボス', 'A:x:M1') == waypoint
     mem['boss_relaunch'] = {'A:x:M1': 1}
     assert N.boss_probe_cell(mem, 'ボス', 'A:x:M1') != waypoint
