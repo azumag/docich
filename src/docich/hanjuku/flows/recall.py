@@ -424,29 +424,42 @@ def _cliff_open_side(frame, cell):
 
 
 def _cliff_detour_step(screen, mem, frame, state, marker):
-    """Move the destination marker one step away from the cliff, re-arming.
+    """Order the unit to a perpendicular cell one step off the cliff.
 
-    A single perpendicular step cannot round a cliff wall: ch9's one-way
-    castles mean a shortcut march re-pins on the same wall after the first
-    detour (owner 2026-11-16, g1190 ch9). While a black cliff stays adjacent
-    to the marker, keep stepping the marker the open direction — the unit
-    follows it along the wall until the marker clears the cliff's reach —
-    bounded so an unreachable goal still gives up.
+    Owner 2026-11-16: a cliff-edge camp sent straight home marches into the
+    wall. The escape must be a real move order to an adjacent cell on the
+    open side — not a nudge of the home-bound marker — so the unit
+    physically steps perpendicular; the freed camp is then recalled home.
     """
     if state.get('gather'):
         return None
     if int(state.get('cliff_detours') or 0) >= CLIFF_DETOUR_MAX:
         return None
-    side = _cliff_open_side(frame, state.get('target') or marker)
+    target = state.get('target')
+    side = _cliff_open_side(frame, target or marker)
     if side is None:
         return None
+    step = CLIFF_DETOUR_FRAMES
+    dx, dy = {'left': (-step, 0), 'right': (step, 0),
+              'up': (0, -step), 'down': (0, step)}[side]
+    escape = ([int(target[0] + dx), int(target[1] + dy)]
+              if _camp_target(target) else
+              [int(marker[0] + dx), int(marker[1] + dy)])
     state['cliff_detours'] = int(state.get('cliff_detours') or 0) + 1
     state['cliff_detour'] = side
+    state['escape_cell'] = escape
     _record(mem, 'camp_cliff_detour',
             observed_metric={'camp': state.get('target'), 'marker': list(marker),
-                             'side': side, 'step': state['cliff_detours']},
-            reason='崖に隣接しているため、マーカーを崖と反対方向へずらして壁沿いに抜けさせる')
-    return [pad(side, CLIFF_DETOUR_FRAMES)]
+                             'side': side, 'escape': escape,
+                             'step': state['cliff_detours']},
+            reason='崖に隣接しているため、まず崖と垂直方向の隣接セルへ将軍を移動させて崖から離す')
+    mdx, mdy = escape[0] - marker[0], escape[1] - marker[1]
+    if abs(mdx) <= RECALL_CONFIRM_PX and abs(mdy) <= RECALL_CONFIRM_PX:
+        return _request_recall(mem, state, state.get('goal'), [pad('a')],
+                               target_cell=escape, escape_move=True)
+    if abs(mdx) >= abs(mdy):
+        return [pad('right' if mdx > 0 else 'left', min(6, abs(mdx)))]
+    return [pad('down' if mdy > 0 else 'up', min(6, abs(mdy)))]
 
 
 def _camp_recall_step(screen: Screen, mem, frame, *, observed_camps=None):

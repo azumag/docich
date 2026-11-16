@@ -142,16 +142,16 @@ def test_a_cliff_adjacent_marker_moves_perpendicular_before_confirming():
     screen = Screen([], None, '', kind='map_target', marker=(128, 112))
     mem = {'chapter': 1, 'tick': 100, '_records': [],
            'recall': {'stage': 'dest', 'steps': 0, 'target': [128, 112]}}
+    # The cliff is left of the marker, so the escape cell is one step right.
+    # The marker must be steered there and confirmed — a real move order, not
+    # a nudge of the home-bound marker (owner 2026-11-16).
     actions = p.camp_recall_step(screen, mem, frame)
-    assert actions == [p.pad('right', 16)]
     assert _flow(mem)['recall']['cliff_detour'] == 'right'
+    assert _flow(mem)['recall']['escape_cell'] == [128 + 16, 112]
     assert any(r['decision'] == 'camp_cliff_detour' for r in mem['_records'])
-    # Owner 2026-11-16 (ch9 one-way castles): a single step cannot round a
-    # cliff *wall*, so while the marker stays cliff-adjacent the detour
-    # re-arms and keeps sliding it along the wall, bounded by the cap.
-    from docich.hanjuku.flows.recall import CLIFF_DETOUR_MAX
-    for _ in range(CLIFF_DETOUR_MAX - 1):
-        assert p.camp_recall_step(screen, mem, frame) == [p.pad('right', 16)]
-    assert _flow(mem)['recall']['cliff_detours'] == CLIFF_DETOUR_MAX
-    # Beyond the bound the goal is treated as unreachable: detour gives up.
-    assert p.camp_recall_step(screen, mem, frame) != [p.pad('right', 16)]
+    # Marker at (128,112) is left of escape (144,112): steer right toward it.
+    assert actions == [p.pad('right', 6)]
+    # Once the marker sits on the escape cell the move order is confirmed.
+    screen2 = Screen([], None, '', kind='map_target', marker=(144, 112))
+    actions2 = p.camp_recall_step(screen2, mem, frame)
+    assert actions2 == [p.pad('a')]
