@@ -60,6 +60,17 @@
 - **共通スロットが空になったら**：売買している銘柄がすべて専用スロットを持つと、共通の実験はどの銘柄も受け持たないので、共通の候補の生成（AI 呼び出し）を飛ばす。
 - 記録：`paper_improve_slots_status.json`（件数と銘柄ごとの結果）、`paper_improve_slots_state.json`（銘柄ごとの前回の候補の時刻）。
 
+### 表示（画面・放送・診断）
+
+`status.json` の `worker_summary` にある `experiment_status` / `experiment_reason_code` / `experiment_entries_allowed` は、**共通スロットだけ**の状態である。専用スロットの様子は次の場所で見る（読み取りだけで、売買の判断には使わない。[`slot_overview.py`](../../src/docich/trading/slot_overview.py)）。
+
+- **`worker_summary`**：`slot_count`（専用スロットの数）、`slot_active_count`、`slot_entries_allowed_count`、`slot_blocked_count`、`slot_layout_invalid`、`common_owned_symbol_count`（共通スロットが受け持つ銘柄の数）。
+- **放送の状態表示**：`Slots: <数> on=<買い可> blocked=<停止> common=<共通の受け持ち>`。共通スロットの受け持ちが 0 銘柄のときは、共通の `Experiment:` 行を出さない。
+- **画面（ダッシュボード）**：「銘柄別戦略」の欄に、スロットの数と買い可の数、直近に約定した銘柄の戦略名と、交代までの進み具合（決済 n/10、経過 n/7 日）を出す。表示枠の都合で 1 行だけ。
+- **放送の「戦略」の説明**：専用スロットがあると、その銘柄の戦略（名前と `thesis`）を AI に渡し、共通の既定パラメータ（`policy`）を銘柄の戦略として語らないよう指示する。AI を使えないときの定型文は、戦略名と決済件数だけを読む（`thesis` は改善 AI の作業メモで、bps や特徴量の名前が多いため）。
+- **診断**（`collect_diagnostics.py` の `paper_slots`）：状態ごとの数、買い可の数、決済数の合計、止まっているスロットと交代が近いスロットを最大 3 件、銘柄ごとの AI 改善の件数。戦略の名前やルールは出さない。
+- 決済の理由は、約定の `signal_context.rule_id`（例 `exit-3`）と、そのスロットの `exit_rules` を突き合わせると分かる。
+
 ## 戦略判断と成績の補正
 
 - **売却コストを含む exit 判断:** [`paper.py`](../../src/docich/trading/paper.py) の共通約定価格計算を使い、売却時の手数料・スリッページ控除後価格を購入原価と比較する。既定は片道 12 bps の手数料と 5 bps のスリッページ。購入原価には買い側コストが既に含まれるため、重複控除しない。新しい理由表示の単位は `net_pnl_bps`。

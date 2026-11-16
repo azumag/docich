@@ -1161,6 +1161,19 @@ def render_docich_corner_stats(corner):
         experiment_reason = worker_summary.get("experiment_reason_code")
         if experiment_reason:
             experiment_parts.append("reason=" + _corner_short(experiment_reason, limit=18))
+        slot_count = worker_summary.get("slot_count")
+        if type(slot_count) is int and slot_count > 0:
+            # Per-symbol slots trade on their own rules; the trio above is
+            # only the common slot, which may own no symbol at all.
+            lines.append("  Slots: " + _corner_short(
+                f"{slot_count} on={_paper_count(worker_summary, 'slot_entries_allowed_count')}"
+                f" blocked={_paper_count(worker_summary, 'slot_blocked_count')}"
+                f" common={_paper_count(worker_summary, 'common_owned_symbol_count')}",
+                limit=43))
+            if worker_summary.get("common_owned_symbol_count") == 0:
+                experiment_parts = []
+        if worker_summary.get("slot_layout_invalid") is True:
+            lines.append("  Slots: layout invalid (buys stopped)")
         if experiment_parts:
             lines.append("  Experiment: " + _corner_short(" ".join(experiment_parts), limit=40))
         attempted = _corner_int(coverage.get("attempted"))

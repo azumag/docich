@@ -47,7 +47,9 @@ Observed sources (all read-only):
     paper_corner.json,
     paper_corner_manual.json, trading/presentation.json,
     trading/paper_improve_status.json, trading/paper_experiment_control.json,
-    trading/paper_strategy_evaluation.json): lifecycle statuses, timestamps,
+    trading/paper_strategy_evaluation.json, trading/paper_improve_slots_status.json,
+    trading/slots/<BASE>_<QUOTE>/{slot,paper_experiment_control,
+    paper_strategy_evaluation}.json): lifecycle statuses, timestamps,
     counters and finite PAPER result totals only. Strategy identity, rules,
     announcement/script bodies, prompts and log bodies are
     never read out. FIFO output is limited to queued count and the head's
@@ -8133,6 +8135,120 @@ def _collect_paper_experiment(state_dir, now):
     return entry
 
 
+PAPER_SLOT_SYMBOL_RE = re.compile(r"[A-Z0-9]{1,16}/[A-Z0-9]{1,16}")
+PAPER_SLOT_DIR_RE = re.compile(r"[A-Z0-9]{1,16}_[A-Z0-9]{1,16}")
+PAPER_SLOT_MAX_DIRS = 256
+# The production envelope sits ~4.7 KiB under HARD_JSON_BYTES (headroom monitor,
+# 2026-11-16); keep this section well under 1 KiB.
+PAPER_SLOT_LISTED = 3
+PAPER_SLOT_ROTATION_CLOSED_SELLS = 10
+PAPER_SLOT_ROTATION_AGE_S = 7 * 86400
+PAPER_SLOT_IMPROVE_STATUSES = frozenset({"running", "improved", "skipped", "failed", "dry-run"})
+PAPER_SLOT_IMPROVE_REASON_CODES = frozenset({
+    "disabled", "daily-limit", "already-running", "ledger-unavailable",
+    "slot-layout-invalid", "facts-error", "no-targets", "no-agents",
+    "lane-busy", "no-candidate-staged", "slots-error",
+}) | PAPER_IMPROVE_REASON_CODES
+
+
+def _collect_paper_slot(directory, now):
+    """One dedicated slot: fixed enums and counts only, never rule text."""
+    present, readable, data = _load_state_file(directory / "paper_experiment_control.json")
+    entry = {"status": "unknown", "entries_allowed": False, "closed_sells": None, "age_sec": None,
+             "reason_code": None, "evaluation_status": None, "open_position_count": None,
+             "control_readable": readable}
+    if not readable:
+        return entry
+    activated_at = _paper_observed_number(data.get("activated_at"), nonnegative=True)
+    entry.update(
+        status=_rotation_enum(data.get("status"), PAPER_EXPERIMENT_STATUSES),
+        reason_code=_rotation_enum(data.get("reason_code"), PAPER_EXPERIMENT_REASON_CODES),
+        entries_allowed=data.get("entries_allowed") is True,
+        evaluation_status=_rotation_enum(data.get("evaluation_status"), PAPER_EVALUATION_STATUSES),
+        open_position_count=_paper_observed_count(data.get("open_position_count")),
+        age_sec=None if activated_at is None else max(0, int(now - activated_at)),
+    )
+    evaluation = _collect_paper_experiment_evaluation(directory, data, now)
+    if evaluation.get("matches_active") is True:
+        entry["closed_sells"] = evaluation.get("closed_sells")
+    return entry
+
+
+def _collect_paper_slots_improve(trading_dir, now):
+    path = trading_dir / "paper_improve_slots_status.json"
+    present, readable, data = _load_state_file(path)
+    entry = {"present": present, "readable": readable, "age_sec": _file_age_sec(path, now)}
+    if not readable:
+        return entry
+    entry.update(
+        status=_rotation_enum(data.get("status"), PAPER_SLOT_IMPROVE_STATUSES),
+        reason_code=(None if data.get("reason_code") is None
+                     else _rotation_enum(data.get("reason_code"), PAPER_SLOT_IMPROVE_REASON_CODES)),
+        started_at=_bounded_time(data.get("started_at")),
+        completed_at=_bounded_time(data.get("completed_at")),
+    )
+    for key in ("targets", "calls", "queued", "activated", "rejected", "deferred"):
+        entry[key] = _paper_observed_count(data.get(key))
+    return entry
+
+
+def _collect_paper_slots(state_dir, now):
+    """Aggregate dedicated per-symbol slots (Issue #3623 §2.9).
+
+    Counts by status plus the few slots nearest rotation; 40+ full entries
+    would not fit the diagnostics budget and are not needed to triage.
+    """
+    trading_dir = Path(state_dir) / "trading"
+    root = trading_dir / "slots"
+    entry = {"present": root.is_dir(), "slot_count": 0, "invalid_count": 0,
+             "status_counts": {}, "entries_allowed_count": 0, "closed_sells_total": 0,
+             "nearest_rotation": [],
+             "improve": _collect_paper_slots_improve(trading_dir, now)}
+    if not entry["present"]:
+        return entry
+    try:
+        children = sorted(root.iterdir())[:PAPER_SLOT_MAX_DIRS]
+    except OSError:
+        entry["invalid_count"] = None
+        return entry
+    slots = []
+    for child in children:
+        if child.is_symlink() or not child.is_dir() or not PAPER_SLOT_DIR_RE.fullmatch(child.name):
+            entry["invalid_count"] += 1
+            continue
+        _, meta_readable, meta = _load_state_file(child / "slot.json")
+        symbol = meta.get("symbol") if meta_readable else None
+        if (not isinstance(symbol, str) or not PAPER_SLOT_SYMBOL_RE.fullmatch(symbol)
+                or symbol.replace("/", "_") != child.name):
+            entry["invalid_count"] += 1
+            continue
+        slot = _collect_paper_slot(child, now)
+        slot["symbol"] = symbol
+        slots.append(slot)
+    counts = {}
+    for slot in slots:
+        counts[slot["status"]] = counts.get(slot["status"], 0) + 1
+    entry["slot_count"] = len(slots)
+    entry["status_counts"] = dict(sorted(counts.items()))
+    entry["entries_allowed_count"] = sum(1 for slot in slots if slot["entries_allowed"])
+    entry["closed_sells_total"] = sum(slot["closed_sells"] or 0 for slot in slots)
+
+    def progress(slot):
+        sells = (slot["closed_sells"] or 0) / PAPER_SLOT_ROTATION_CLOSED_SELLS
+        age = (slot["age_sec"] or 0) / PAPER_SLOT_ROTATION_AGE_S
+        return max(sells, age)
+
+    # Slots that are not trading normally come first, then the nearest rotation.
+    ranked = sorted(slots, key=lambda slot: (slot["status"] == "active" and slot["entries_allowed"],
+                                             -progress(slot), slot["symbol"]))
+    entry["nearest_rotation"] = [
+        {key: slot[key] for key in ("symbol", "status", "reason_code", "entries_allowed",
+                                    "closed_sells", "age_sec")}
+        for slot in ranked[:PAPER_SLOT_LISTED]
+    ]
+    return entry
+
+
 def _rotation_policy():
     """Fixed projection of the configured dispatch policy (no secrets).
 
@@ -8713,6 +8829,7 @@ def _collect_corner_files(state_dir, payload, now):
     payload["presentation"] = entry
     payload["paper_improve"] = _collect_paper_improve_status(state_dir, now)
     payload["paper_experiment"] = _collect_paper_experiment(state_dir, now)
+    payload["paper_slots"] = _collect_paper_slots(state_dir, now)
     payload["rotation_evidence"] = _collect_rotation_evidence(state_dir)
 
 
@@ -9505,6 +9622,7 @@ def _collect_programs(state_dir, soren, now):
             "present": False, "readable": False, "age_sec": -1,
             "evaluation": {"present": False, "readable": False, "age_sec": -1},
         },
+        "paper_slots": {"present": False, "slot_count": 0},
     }
     if state_dir.is_dir():
         _collect_corner_files(state_dir, payload, now)

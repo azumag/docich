@@ -418,6 +418,11 @@ def _paper_snapshot(root: Path, *, now: float | None = None) -> dict[str, object
             "arbitrage_candidate_count",
             "new_fill_count",
             "new_settlement_count",
+            "slot_count",
+            "slot_active_count",
+            "slot_entries_allowed_count",
+            "slot_blocked_count",
+            "common_owned_symbol_count",
         ):
             number = _int_value(raw_worker.get(key))
             if number is not None and number >= 0:
@@ -441,6 +446,8 @@ def _paper_snapshot(root: Path, *, now: float | None = None) -> dict[str, object
             worker["experiment_reason_code"] = experiment_reason
         if type(raw_worker.get("experiment_entries_allowed")) is bool:
             worker["experiment_entries_allowed"] = raw_worker["experiment_entries_allowed"]
+        if type(raw_worker.get("slot_layout_invalid")) is bool:
+            worker["slot_layout_invalid"] = raw_worker["slot_layout_invalid"]
 
     freshness_counts = {"fresh": 0, "stale": 0, "missing": 0, "invalid": 0, "unknown": 0}
     freshness_issues: list[dict[str, str]] = []

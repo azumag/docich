@@ -66,9 +66,15 @@
         <h3>保有上位 <span id="holdingnote" class="muted"></span></h3>
         <div id="holdings">-</div>
       </div>
-      <div class="panel" id="free-strategy-panel">
-        <h3>AI戦略研究 <span class="paper-tag">独立PAPER</span> <span id="free-strategy-health" class="muted">未起動</span></h3>
-        <div id="free-strategies">-</div>
+      <div id="strategy-row">
+        <div class="panel" id="slot-strategy-panel">
+          <h3>銘柄別戦略 <span id="slot-summary" class="muted">-</span></h3>
+          <div id="slot-strategies">-</div>
+        </div>
+        <div class="panel" id="free-strategy-panel">
+          <h3>AI戦略研究 <span class="paper-tag">独立PAPER</span> <span id="free-strategy-health" class="muted">未起動</span></h3>
+          <div id="free-strategies">-</div>
+        </div>
       </div>
     </aside>
   </main>
@@ -123,8 +129,40 @@
         `<span class="lab-meta ${cls}">${escapeHtml(money(item.net_pnl_jpy))}</span></div>`;
     }).join("");
   }
+  const slotTarget = document.getElementById("slot-strategies");
+  const slotSummary = document.getElementById("slot-summary");
+  const shortSymbol = (symbol) => String(symbol || "").replace(/\/JPY$/, "");
+  function renderSlots() {
+    if (!slotTarget || typeof render === "undefined" || !render.lastData) return;
+    const group = render.lastData.slots || {};
+    const count = Number(group.slot_count) || 0;
+    if (!count) {
+      if (slotSummary) slotSummary.textContent = "共通戦略のみ";
+      slotTarget.innerHTML = '<div class="muted">専用枠なし</div>';
+      return;
+    }
+    if (slotSummary) {
+      const allowed = Number(group.entries_allowed_count) || 0;
+      slotSummary.textContent = `${count}銘柄・買い可${allowed}`;
+      slotSummary.className = allowed < count || group.layout_ok === false ? "warn" : "muted";
+    }
+    const need = Number(group.rotation_closed_sells) || 10;
+    const days = Number(group.rotation_days) || 7;
+    const items = Array.isArray(group.slots) ? group.slots.slice(0, 1) : []; // one row fits the fixed 960x540 frame
+    slotTarget.innerHTML = items.map((item) => {
+      const sells = Number.isFinite(Number(item.closed_sells)) && item.closed_sells !== null
+        ? `${item.closed_sells}/${need}決済` : "集計待ち";
+      const age = Number.isFinite(Number(item.age_days)) && item.age_days !== null
+        ? ` ${Number(item.age_days).toFixed(1)}/${days}日` : "";
+      const blocked = item.entries_allowed ? "" : " 停止";
+      return `<div class="lab-row"><span class="lab-name">${escapeHtml(shortSymbol(item.symbol))} ` +
+        `<span class="lab-phase">${escapeHtml(item.name || item.experiment_id || "戦略待ち")}</span></span>` +
+        `<span class="lab-meta${blocked ? " warn" : ""}">${escapeHtml(sells + age + blocked)}</span></div>`;
+    }).join("");
+  }
   renderResearch();
-  setInterval(renderResearch, 2000);
+  renderSlots();
+  setInterval(() => { renderResearch(); renderSlots(); }, 2000);
 })();
 </script>
 </body>
