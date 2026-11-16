@@ -399,6 +399,7 @@ def _visible_move_abort(mem, state, goal, steps, why):
 CLIFF_DARK = lambda r, g, b: max(r, g, b) < 25
 CLIFF_REACH = 24            # px from the marker sampled for the black cliff
 CLIFF_DETOUR_FRAMES = 16    # one short perpendicular step away from the cliff
+CLIFF_DETOUR_MAX = 6        # wall-sliding steps before the goal is unreachable
 
 
 def _cliff_open_side(frame, cell):
@@ -423,20 +424,28 @@ def _cliff_open_side(frame, cell):
 
 
 def _cliff_detour_step(screen, mem, frame, state, marker):
-    """Move the destination marker one step away from the cliff, once.
+    """Move the destination marker one step away from the cliff, re-arming.
 
-    The following observation lets the ordinary destination step confirm the
-    moved marker (the unit walks to it), instead of marching into the cliff.
+    A single perpendicular step cannot round a cliff wall: ch9's one-way
+    castles mean a shortcut march re-pins on the same wall after the first
+    detour (owner 2026-11-16, g1190 ch9). While a black cliff stays adjacent
+    to the marker, keep stepping the marker the open direction — the unit
+    follows it along the wall until the marker clears the cliff's reach —
+    bounded so an unreachable goal still gives up.
     """
-    if state.get('cliff_detour') or state.get('gather'):
+    if state.get('gather'):
+        return None
+    if int(state.get('cliff_detours') or 0) >= CLIFF_DETOUR_MAX:
         return None
     side = _cliff_open_side(frame, state.get('target') or marker)
     if side is None:
         return None
+    state['cliff_detours'] = int(state.get('cliff_detours') or 0) + 1
     state['cliff_detour'] = side
     _record(mem, 'camp_cliff_detour',
-            observed_metric={'camp': state.get('target'), 'marker': list(marker), 'side': side},
-            reason='崖に隣接しているため、マーカーを崖と反対方向へ一度離してから帰還を確定する')
+            observed_metric={'camp': state.get('target'), 'marker': list(marker),
+                             'side': side, 'step': state['cliff_detours']},
+            reason='崖に隣接しているため、マーカーを崖と反対方向へずらして壁沿いに抜けさせる')
     return [pad(side, CLIFF_DETOUR_FRAMES)]
 
 
