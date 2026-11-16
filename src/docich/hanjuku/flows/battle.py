@@ -1228,6 +1228,16 @@ def note_duel_event(screen, mem):
 def _hero_retreat_open(mem, cur):
     if not (egg_bait.retreat_due(mem, cur) or _hero_retreat_needed(cur)) or cur.get('side') == 'defense':
         return None
+    ally = cur.get('ally')
+    if (mem.get('chapter') == 9 and isinstance(ally, str)
+            and ally not in ('', NAME, 'しゅじんこう', 'しじんこう')):
+        # Owner 2026-11-09: in chapter 9 only the hero retreats, so the menu
+        # opened "to check the retreat" is refused at once
+        # (battle_retreat_forbidden) and, with the rescue already spent, it
+        # stayed open (the game paused) for 101 observations per cycle
+        # (g1190 2026-11-16 シェーブル vs ジェラート). Eggs and cards are
+        # still offered by the survival menu.
+        return None
     if _critical_safe_card(mem, cur, cur.get('survival') or {}, for_retreat=True):
         return None
     if _egg_before_retreat(mem, cur):

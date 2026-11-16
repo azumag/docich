@@ -21,14 +21,20 @@ def test_boss_phase_walks_the_rear_generals_toward_the_last_castle():
         mem = memory()
         _world(mem)['garrison']['カラ'] = ['将軍A', '将軍B']
         _world(mem)['garrison']['シマウ'] = ['将軍C', '将軍D', '将軍E']
+        _world(mem)['garrison']['イソ'] = ['将軍F', '将軍G']
         orders = list(replan.interim_candidates(mem).values())
         moves = [o for o in orders if o.get("purpose") == "move"]
         assert moves
         assert any("イデ" in (o.get("note") or "") for o in moves)
         assert all(o['target'] in chart.castles(9) for o in moves)
+        # The front-adjacent castle's one hop is the last castle itself: the
+        # gather must not skip it (g1190 22-x: イソ kept 17 generals while
+        # イデ！ stood empty).
+        assert any(o['source'] == 'イソ' and o['target'] == 'イデ！' for o in moves)
         # The nearest castle's hop goes first: two generals at the last castle
-        # unlock the first boss wave, so カラ→イソ leads before the far rear.
-        assert (moves[0]['source'], moves[0]['target']) == ('カラ', 'イソ')
+        # unlock the first boss wave, so the front-adjacent イソ→イデ！ leads
+        # before the far rear.
+        assert (moves[0]['source'], moves[0]['target']) == ('イソ', 'イデ！')
     finally:
         chart.set_boss_cell(9, None)
 

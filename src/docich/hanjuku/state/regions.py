@@ -344,6 +344,8 @@ KEY_OWNERSHIP = {
     'month_status_complete': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 月ステータス完了フラグ
     'month_sub': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 月サブ状態
     'month_text_advance': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 月テキスト送り手順状態
+    'month_blind_nav': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 月メニュー盲操作の試行回数
+    'month_amount_back': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 金額設定オーバーレイからの復帰回数
     'name': {'region': FLOW, 'lifetime': 'run', 'migrated': False},  # 名付け手順のdoneが新規ゲーム検出に使われラン跨ぎ
     'nav_last': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 直近ナビゲーション状態
     'nav_pressed': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 押下済みナビ

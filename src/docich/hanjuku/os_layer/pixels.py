@@ -124,6 +124,11 @@ class Frame:
 
     def fraction(self, rect, predicate) -> float:
         x0,y0,x1,y1 = rect
+        # Clamp to the frame: a marker near the edge gives _cliff_open_side a
+        # box that runs off-screen, where pixel() returns () and predicate(*())
+        # raises TypeError (g1190 ch9 edge camp -> invalid observation).
+        x0,y0 = max(0, x0), max(0, y0)
+        x1,y1 = min(self.width, x1), min(self.height, y1)
         samples = [self.pixel(x,y) for y in range(y0,y1,2) for x in range(x0,x1,2)]
         return sum(predicate(*p) for p in samples)/max(1,len(samples))
 

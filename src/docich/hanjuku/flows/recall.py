@@ -371,7 +371,22 @@ def _visible_move_dest_step(screen, mem, frame, state):
     if cell is None or not isinstance(frame, Frame) or steps > VISIBLE_MOVE_LIMIT:
         _visible_move_abort(mem, state, goal, steps, 'cursor_not_found')
         return [pad('b')]
+    if steps == 1:
+        _plan_cliff_escape(mem, state, frame)
+    escape = state.get('escape_world')
     here = observed_cursor_cell(screen, mem, frame)
+    if escape:
+        # Owner 2026-11-16: the cliff-bound camp first steps perpendicular
+        # off the wall; the freed camp is recalled home on a later pass.
+        if here and abs(here[0] - escape[0]) + abs(here[1] - escape[1]) <= 8:
+            return _request_recall(mem, state, None, [pad('a')],
+                                   target_cell=list(here), escape_move=True)
+        move = nav_step(screen, mem, frame, tuple(escape))
+        if move in ('up', 'down', 'left', 'right'):
+            return [pad(move)]
+        if move == 'infeasible':
+            state.pop('escape_world', None)     # fall back to the castle
+        return []
     if here and abs(here[0] - cell[0]) + abs(here[1] - cell[1]) <= 12:
         state['goal'] = goal
         _record(mem, 'camp_recall_visible_move_confirm',
@@ -387,6 +402,44 @@ def _visible_move_dest_step(screen, mem, frame, state):
     return []
 
 
+CLIFF_ESCAPE_REARM_TICKS = 1800   # one escape per camp area in this many observations
+CLIFF_ESCAPE_AREA_PX = 48         # camps this close count as the same area
+
+
+def _plan_cliff_escape(mem, state, frame):
+    """Arm a perpendicular escape cell when the camp stands against a cliff.
+
+    g1190 2026-11-16 (タオ): the tent sat under the end of a diagonal wall
+    and every visible-castle いどう marched it into that wall, so it camped
+    on the same tile month after month. One escape per camp area is armed;
+    the next recall of the freed camp goes straight to the castle.
+    """
+    origin, target = state.get('origin'), state.get('target')
+    if not (_camp_target(origin) and _camp_target(target)):
+        return
+    now = int(mem.get('tick') or 0)
+    done = _flow(mem).setdefault('camp_cliff_escaped', {})
+    for key, tick in list(done.items()):
+        if type(tick) is not int or now - tick > CLIFF_ESCAPE_REARM_TICKS:
+            done.pop(key, None)
+    for key in done:
+        x, y = (int(v) for v in key.split(','))
+        if abs(x - origin[0]) <= CLIFF_ESCAPE_AREA_PX and abs(y - origin[1]) <= CLIFF_ESCAPE_AREA_PX:
+            return
+    found = _cliff_escape(frame, target)
+    if found is None:
+        return
+    side, (ex, ey) = found
+    escape = [origin[0] + ex - target[0], origin[1] + ey - target[1]]
+    state['escape_world'] = escape
+    state['cliff_detour'] = side
+    done[f'{origin[0]},{origin[1]}'] = now
+    _record(mem, 'camp_cliff_escape',
+            observed_metric={'camp': list(target), 'origin': list(origin),
+                             'side': side, 'escape': escape},
+            reason='野営が崖に接しているため、城へ向かう前に崖と垂直方向の開けた隣接地点へ移動させる')
+
+
 def _visible_move_abort(mem, state, goal, steps, why):
     _flow(mem).pop('recall', None)
     mem['uncertain'] = True
@@ -396,48 +449,117 @@ def _visible_move_abort(mem, state, goal, steps, why):
             reason='見えている城へフィールドカーソルを合わせられないため、いどうを閉じて通常の帰還に戻す')
 
 
-CLIFF_DARK = lambda r, g, b: max(r, g, b) < 25
-CLIFF_REACH = 24            # px from the marker sampled for the black cliff
+# Cliff walls are near-black in summer (8, 16, 0) and sand (16, 24, 8) but a
+# dark grey (40, 48, 32) in winter (g1190 2026-11-16 タオ): the old < 25 test
+# never saw a winter cliff, so the escape never fired there.
+# (32, 32, 32) is every sprite's outline (cursor, tent, castle), never a wall
+# colour, so it is not a cliff.
+CLIFF_DARK = lambda r, g, b: max(r, g, b) <= 50 and (r, g, b) != (32, 32, 32)
+CLIFF_REACH = 24            # px from the camp sampled for the black cliff
 CLIFF_DETOUR_FRAMES = 16    # one short perpendicular step away from the cliff
+CLIFF_DETOUR_MAX = 6        # wall-sliding steps before the goal is unreachable
+CLIFF_RADIUS = 28           # px around the tent body searched for cliff pixels
+CLIFF_MIN_PIXELS = 40       # dark pixels in that disc that make the tent cliff-bound
+CLIFF_ESCAPE_PX = 24        # distance of the perpendicular escape cell
+_DIRS = {'left': (-1, 0), 'right': (1, 0), 'up': (0, -1), 'down': (0, 1)}
 
 
-def _cliff_open_side(frame, cell):
-    """The open direction away from an adjacent black cliff, or None.
+def _cliff_escape(frame, cell):
+    """(side, (x, y)) of an open perpendicular step off an adjacent cliff.
 
-    Owner 2026-11-15: a camped unit standing against a cliff must first step
+    Owner 2026-11-15/16: a camp standing against a cliff must first step
     perpendicular away; marching straight home stays pinned to the wall.
+    g1190 2026-11-16 (タオ): the tent sat under the end of a diagonal wall
+    with the lake below it. The wall's direction is the centroid of the dark
+    pixels around the tent body; the escape is the 4-way step most opposite
+    to it whose landing stands on the tent's own ground colours (not the
+    lake, not another wall). ``cell`` is the camp's selecting cell (the
+    body is about (8, 12) px further).
     """
     if not isinstance(frame, Frame) or not _camp_target(cell):
         return None
-    mx, my = cell
-    s = CLIFF_REACH
-    boxes = {'left': (mx - 2 * s, my - 6, mx - s, my + 6),
-             'right': (mx + s, my - 6, mx + 2 * s, my + 6),
-             'up': (mx - 6, my - 2 * s, mx + 6, my - s),
-             'down': (mx - 6, my + s, mx + 6, my + 2 * s)}
-    dark = {side: frame.fraction(box, CLIFF_DARK) for side, box in boxes.items()}
-    if max(dark.values()) < 0.5:
+    cx, cy = cell[0] + 8, cell[1] + 12
+    w, h = frame.width, frame.height
+    body = (cx - 9, cy - 16, cx + 9, cy + 6)     # the tent sprite itself
+    dark, ring = [], {}
+    r2 = CLIFF_RADIUS * CLIFF_RADIUS
+    for y in range(max(0, cy - CLIFF_RADIUS), min(h, cy + CLIFF_RADIUS + 1)):
+        for x in range(max(0, cx - CLIFF_RADIUS), min(w, cx + CLIFF_RADIUS + 1)):
+            d2 = (x - cx) ** 2 + (y - cy) ** 2
+            if d2 > r2 or (body[0] <= x <= body[2] and body[1] <= y <= body[3]):
+                continue
+            p = frame.pixel(x, y)
+            if CLIFF_DARK(*p[:3]):
+                dark.append((x, y))
+            elif 100 <= d2 <= 256:
+                ring[p] = ring.get(p, 0) + 1
+    if len(dark) < CLIFF_MIN_PIXELS or not ring:
         return None
-    open_side = min(dark, key=dark.get)
-    return open_side if dark[open_side] < 0.5 else None
+    ax = cx - sum(x for x, _ in dark) / len(dark)
+    ay = cy - sum(y for _, y in dark) / len(dark)
+    ground = {c for c, _ in sorted(ring.items(), key=lambda kv: -kv[1])[:4]}
+    best = None
+    for side, (dx, dy) in _DIRS.items():
+        # The walkability test below does the real filtering: a step into
+        # the wall or the lake is never taken. Among open steps, the one
+        # most opposite to the wall's mass wins (a diagonal wall can leave
+        # only a sideways step open: g1190 タオ, lake below, wall up-right).
+        score = dx * ax + dy * ay
+        ex, ey = cx + dx * CLIFF_ESCAPE_PX, cy + dy * CLIFF_ESCAPE_PX
+        if not (4 <= ex < w - 4 and 4 <= ey < h - 4):
+            continue
+        land = [frame.pixel(x, y) for y in range(ey - 5, ey + 6)
+                for x in range(ex - 5, ex + 6) if 0 <= x < w and 0 <= y < h]
+        path = [frame.pixel(cx + dx * k, cy + dy * k) for k in range(10, CLIFF_ESCAPE_PX + 1, 2)]
+        if not land or any(CLIFF_DARK(*p[:3]) for p in path + land):
+            continue
+        if sum(p in ground for p in land) < 0.5 * len(land):
+            continue
+        if best is None or score > best[0]:
+            best = (score, side, (ex - 8, ey - 12))
+    return (best[1], best[2]) if best else None
+
+
+def _cliff_open_side(frame, cell):
+    """The open direction away from an adjacent cliff, or None."""
+    found = _cliff_escape(frame, cell)
+    return found[0] if found else None
 
 
 def _cliff_detour_step(screen, mem, frame, state, marker):
-    """Move the destination marker one step away from the cliff, once.
+    """Order the unit to a perpendicular cell one step off the cliff.
 
-    The following observation lets the ordinary destination step confirm the
-    moved marker (the unit walks to it), instead of marching into the cliff.
+    Owner 2026-11-16: a cliff-edge camp sent straight home marches into the
+    wall. The escape must be a real move order to an adjacent cell on the
+    open side — not a nudge of the home-bound marker — so the unit
+    physically steps perpendicular; the freed camp is then recalled home.
     """
-    if state.get('cliff_detour') or state.get('gather'):
+    if state.get('gather'):
         return None
-    side = _cliff_open_side(frame, state.get('target') or marker)
-    if side is None:
+    if int(state.get('cliff_detours') or 0) >= CLIFF_DETOUR_MAX:
         return None
+    target = state.get('target')
+    base = target if _camp_target(target) else [int(marker[0]), int(marker[1])]
+    found = _cliff_escape(frame, base)
+    if found is None:
+        return None
+    side, (ex, ey) = found
+    escape = [int(ex), int(ey)]
+    state['cliff_detours'] = int(state.get('cliff_detours') or 0) + 1
     state['cliff_detour'] = side
+    state['escape_cell'] = escape
     _record(mem, 'camp_cliff_detour',
-            observed_metric={'camp': state.get('target'), 'marker': list(marker), 'side': side},
-            reason='崖に隣接しているため、マーカーを崖と反対方向へ一度離してから帰還を確定する')
-    return [pad(side, CLIFF_DETOUR_FRAMES)]
+            observed_metric={'camp': state.get('target'), 'marker': list(marker),
+                             'side': side, 'escape': escape,
+                             'step': state['cliff_detours']},
+            reason='崖に隣接しているため、まず崖と垂直方向の隣接セルへ将軍を移動させて崖から離す')
+    mdx, mdy = escape[0] - marker[0], escape[1] - marker[1]
+    if abs(mdx) <= RECALL_CONFIRM_PX and abs(mdy) <= RECALL_CONFIRM_PX:
+        return _request_recall(mem, state, state.get('goal'), [pad('a')],
+                               target_cell=escape, escape_move=True)
+    if abs(mdx) >= abs(mdy):
+        return [pad('right' if mdx > 0 else 'left', min(6, abs(mdx)))]
+    return [pad('down' if mdy > 0 else 'up', min(6, abs(mdy)))]
 
 
 def _camp_recall_step(screen: Screen, mem, frame, *, observed_camps=None):
@@ -471,9 +593,6 @@ def _camp_recall_step(screen: Screen, mem, frame, *, observed_camps=None):
     if state is None:
         if screen.kind != 'map' or frame is None:
             return None
-        gather = gather_castle(mem)
-        if camp_stays(mem) and gather is None:
-            return None     # no gathering castle known: the camp waits where it is, never goes home
         if _month_end_soon(mem):
             return None     # the month-start scene would cut the destination picker
         camps = own_camps(frame) if observed_camps is None else observed_camps
@@ -541,8 +660,7 @@ def _camp_recall_step(screen: Screen, mem, frame, *, observed_camps=None):
         state = _flow(mem)['recall'] = {'stage': 'to_camp', 'target': list(camp['target']),
                                  'last_seen': list(camp['target']), 'steps': 0,
                                  **({'camp_body': body} if (body := camp_body_target(frame, camp['target'])) else {}),
-                                 **({'camp_kind': camp['kind']} if camp.get('kind') else {}),
-                                 **({'gather': gather, 'goal': gather} if gather else {})}
+                                 **({'camp_kind': camp['kind']} if camp.get('kind') else {})}
         # A fresh recall starts a fresh destination-jump budget and receipt:
         # the previous recall's ``y_jumped`` must not confirm this picker's
         # marker, and its spent attempts must not starve this recall's jump
@@ -570,11 +688,8 @@ def _camp_recall_step(screen: Screen, mem, frame, *, observed_camps=None):
                                                     **({'cursor_cell': list(mem['cursor'])}
                                                        if isinstance(mem.get('cursor'), (list, tuple))
                                                        and len(mem['cursor']) == 2 else {}),
-                                                    **({'kind': camp['kind']} if camp.get('kind') else {}),
-                                                    **({'gather_castle': gather} if gather else {})},
-                reason=('画面に自軍の野営を見つけたため、崖を越えられる最後の城へ集結させる'
-                        if gather else
-                        '画面に自軍の野営を見つけたため補給できる自軍城への帰還を指示する'))
+                                                    **({'kind': camp['kind']} if camp.get('kind') else {})},
+                reason='画面に自軍の野営を見つけたため補給できる自軍城への帰還を指示する')
     if state.get('stage') == 'await_dispatch':
         return _recall_dispatch_step(screen, mem, state)
     state['steps'] = int(state.get('steps') or 0) + 1
@@ -795,32 +910,7 @@ def _camp_recall_step(screen: Screen, mem, frame, *, observed_camps=None):
                             reason='野営で決定したが野営メニューが開かずマップに戻ったため、野営へ合わせ直して決定し直す')
             return []              # the window is still fading in
         state.pop('menu_map_waits', None)
-        if (mem.get('chapter') == 9 and camp_stays(mem)
-                and not (state.get('boss') or state.get('boss_move'))):
-            # A recall that was started before the road was fully owned (or by
-            # a monthly task) still carries a home destination. Owner
-            # 2026-11-15: cliffs block every castle but the last one from
-            # reaching the moving boss, so the boss phase gathers the camped
-            # generals at the last corridor castle first; the boss sortie then
-            # launches from there. A direct camp-to-boss いどう never crosses
-            # the cliffs (g1190 89-91: every such redirect camped or stalled).
-            gather = gather_castle(mem)
-            if gather is None:
-                _flow(mem).pop('recall', None)
-                mem['uncertain'] = True
-                _arm_recall_skip(mem, state, BOSS_RETRY_TICKS)
-                _record(mem, 'camp_gather_held',
-                        observed_metric={'camp': state.get('target'), 'gather': None},
-                        reason='集結先の最後の城を決められないため、野営を自城へ戻さず待機する')
-                return [pad('b')] if is_camp_menu(screen) else None
-            state.pop('boss', None)
-            state.pop('boss_move', None)
-            state['gather'] = gather
-            state['goal'] = gather
-            state.pop('move_visible', None)
-            _record(mem, 'camp_gather_adopted',
-                    observed_metric={'camp': state.get('target'), 'gather': gather},
-                    reason='ボス段階の既存帰還状態を、崖を越えられる最後の城への集結へ切り替える')
+
         if mem.get('chapter') == 9 and not (state.get('boss') or state.get('boss_move')):
             # Owner 2026-11-15 measured this on the chapter-9 corridor camp:
             # the field いどう lets the visible castle be picked where it
@@ -1217,11 +1307,14 @@ def _recall_dispatch_step(screen, mem, state):
         status = 'arrival_unconfirmed' if state.get('input_sent') else 'dispatch_unconfirmed'
         interrupted = _flow(mem).pop('recall_interrupted', None) is not None
         goal = state.get('goal')
-        if not interrupted and isinstance(goal, str):
-            # The general was sent to this castle and never confirmed inside
-            # one. A cliff between the camp and the castle camps him again;
-            # count it so the next recall picks another castle (owner
-            # 2026-11-15: the cliff-side camp never got home).
+        if not interrupted and status == 'dispatch_unconfirmed' and isinstance(goal, str):
+            # Only a dispatch that never left counts as a refused castle. The
+            # arrival read missing (``arrival_unconfirmed``) says nothing about
+            # the march: the general may have arrived with the roster frame
+            # missed. Counting it blocked every castle over the months
+            # (g1190 14-x: アルマムーン/カラ/シマウ... at 3) and left the camp
+            # looping on the broken whole-island picker instead of its visible
+            # home castle.
             blocked = _flow(mem).setdefault('camp_recall_blocked', {})
             if isinstance(blocked, dict):
                 blocked[goal] = min(3, int(blocked.get(goal) or 0) + 1)

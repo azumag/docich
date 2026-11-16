@@ -26,6 +26,12 @@ DOMES = {'g1075-boss-target-enclosure.png': (173, 42),
          'g1097-dome-beside-house.png': (142, 117),
          'g1097-probe-dome-under-cursor.png': (131, 110),
          'g1097-probe-fort-list.png': (132, 110)}
+# Frames that show a 砦 next to an ordinary tent (checked in
+# test_hanjuku_ch9_fort_and_cliff_tent.py): the 565 readback of a local core.
+WITH_TENT = {'g1190-ch9-tao-fort-and-cliff-tent-565.png',
+             'g1190-ch9-tao-cliff-tent-winter-565.png',
+             # a real own camp (tent + red flag) beside the cliff at (176, 129)
+             'g1190-ch9-target-marker-over-sea-565.png'}
 
 
 @pytest.mark.parametrize('name,target', sorted(DOMES.items()))
@@ -37,7 +43,7 @@ def test_the_live_dome_is_our_camp(name, target):
 def test_no_other_saved_frame_shows_a_dome():
     checked = 0
     for path in sorted(FIXTURES.glob('*.png')):
-        if path.name in DOMES:
+        if path.name in DOMES or path.name in WITH_TENT:
             continue
         frame = read_png(path)
         if (frame.width, frame.height) != (256, 224):

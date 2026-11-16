@@ -35,3 +35,29 @@ def test_an_enemy_castle_attack_keeps_the_five_surveys():
     _probe_launch_markers(mem, [])
     assert not _flow(mem)['launch_probe'][STEP].get('blind')
     assert mem['_records'] == []
+
+
+def test_a_chapter_nine_blind_move_is_kept_for_the_roster_not_rolled_back():
+    """g1190 2026-11-16: chapter 9 draws marching units as portraits.
+
+    The two "markers" the survey found were the egg-repair hearts, so no
+    transfer could ever be confirmed. When the roster wait expired the move
+    was rolled back and the general written back into the source garrison,
+    although the サヌト castle menu already listed him (ギー/ショコラ/
+    アンディーブ). The march is kept like a boss march: a source roster that
+    still lists the general rolls it back, one without him confirms it.
+    """
+    from docich.hanjuku.flows import map as p
+    mem = memory('ドンドン', ['ドンドン', 'オシロガ'])
+    _world(mem)['garrison'] = {'オシロガ': ['ヘラ']}
+    _probe_launch_markers(mem, [])
+    mem['tick'] += p.LAUNCH_PROBE_ROSTER_TICKS
+    _probe_launch_markers(mem, [])
+    probe = _flow(mem)['launch_probe'].get(STEP)
+    assert isinstance(probe, dict) and probe.get('kept') is True
+    assert _world(mem)['sorties'][STEP]['status'] == 'en_route'
+    assert _world(mem)['garrison']['オシロガ'] == ['ヘラ'], 'no write-back of the general'
+    assert 'オシロガ' in (mem.get('roster_read_due') or {})
+    p.settle_launch_probes_from_roster(mem, 'オシロガ', ['ヘラ'])
+    assert STEP not in _flow(mem)['launch_probe']
+    assert _world(mem)['sorties'][STEP].get('launch_confirmed') is True

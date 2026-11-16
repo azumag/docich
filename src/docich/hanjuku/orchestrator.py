@@ -44,6 +44,10 @@ BATTLE_COMMAND_MENU_HOLD_MAX = 30
 # the fallback presses A there anyway (g1067 11:13: a castle-progress notice).
 FIELD_TEXT_HOLD_MAX = 4
 
+# The title screen's つづき (battery-save resume) gets this many tries before a
+# blind Start; a new game from the title must never happen while a save exists.
+TITLE_CONTINUE_TRIES = 3
+
 def _chapter9_field_recall(mem):
     """docich#3958: let chapter 9's mechanical march see field camps again.
 
@@ -58,13 +62,14 @@ def _chapter9_field_recall(mem):
     from .strategy import corridor
     if corridor.mechanical(mem):
         return True
-    # Once the road is fully owned ``corridor.mechanical`` is False and this
-    # gate closes, yet the boss phase needs the same entry point most: every
-    # castle's garrison then reads empty because the army camps on the field,
-    # and only this call re-sends a visible camp at the moving boss. Inside,
-    # ``camp_stays``/``boss_redirect_goal`` still decide whether a camp is
-    # re-sent or left in place, so opening the gate only reaches the recall.
-    return recall_flow.boss_phase(mem)
+    # Owner 2026-11-09: a camped general is never recalled home in the moving
+    # boss's phase. The 2026-11-15 gather experiment (the field camp いどう to
+    # イデ！) only looped on this runtime: the camp menu recall never dispatched
+    # (the blocked table poisoned every castle, the whole-island picker could
+    # not confirm), and each month re-found the same tent. The monthly pass now
+    # owns the gather through the castle-to-castle forward moves, and the army
+    # is back in the castles; keep the field camps where they are.
+    return False
 
 
 # Owner evidence #2076 (g713 UID16229): between a complete battle panel and the
@@ -465,6 +470,21 @@ def y_jump_close_settle_step(screen, mem, generic):
 # The same freeze reaches the egg and monster command boxes, which ignore one
 # button exactly like the ordinary たまごをつかう／きりふだ／たいきゃく box.
 BATTLE_COMMAND_MENU_KINDS = frozenset({'battle_menu', 'egg_battle_menu', 'monster_menu'})
+
+
+def field_fallback_actions(kind):
+    """The no-input fallback's input for a frozen ``field``-phase screen."""
+    if kind in {'unknown', 'map'}:
+        # A bare map the chart policy has no plan for: SELECT recentres the
+        # cursor on the hero (measured) and lets nav_step re-anchor.
+        return [pad('select')]
+    if kind in {'map_target', 'world_map'}:
+        return [pad('b')]                   # leave or cancel an open map view
+    if kind in BATTLE_COMMAND_MENU_KINDS:
+        # g1190 2026-11-16: A on a stale rescue menu changed nothing and the
+        # run ended screen_stalled; B closes it and the melee resumes.
+        return [pad('b')]
+    return [pad('a')]                       # a message over the field: acknowledge
 BATTLE_MENU_HOLD_ADVANCE = 5   # identical readable command frames before one A
 
 
@@ -577,6 +597,17 @@ def legacy_actions(frame: Frame, phase: str, state: dict) -> list[dict]:
     if phase=='shop':
         return [pad('a' if shop_exit_confirmation(frame) else 'b')]
     if phase=='title':
+        # Never press Start blind: a state that boots to the title must resume
+        # the battery save (つづき) instead. g1190 2026-11-16 booted a saved
+        # state that showed the title, Start began a new game and the whole
+        # chapter-9 progress was lost. Only a bounded set of continue attempts,
+        # then Start for a cartridge with no save at all.
+        tries = state.get('title_tries')
+        if not isinstance(tries, dict):
+            tries = state['title_tries'] = {'n': 0}
+        tries['n'] = int(tries.get('n') or 0) + 1
+        if tries['n'] <= TITLE_CONTINUE_TRIES:
+            return [pad('down'), {'type': 'wait', 'ms': 200}, pad('a')]
         return [pad('start')]
     if phase in {'field','field_menu','battle'}:
         # A readable battle panel goes through the risk-aware battle_flow.battle_step;
@@ -1203,34 +1234,29 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
     # The reanchor FSM only repairs coordinates; dispatch may now resume a
     # previously active order or explain why no safe action is available.
     map_flow.note_reanchor_followup(screen, mem, actions)
-    # A concert picker that B cannot close must not consume the whole stall
-    # window. Count unchanged observations that produced the same picker B;
-    # after CONCERT_PICKER_REPEAT_MAX, choose A once and start over. A real
-    # picker changes the frame on B, so its count never reaches the bound.
+    # Bound B presses for the entire concert phase, regardless of blinking
+    # pixels or alternating A/B detections. Once exhausted, keep advancing
+    # with A until the phase actually changes; never re-arm on a new digest.
     digest=frame.digest()
-    # A readable text screen keeps its content identity even while a blinking
-    # cursor changes the frame: g1190 99-7 sat on chapter 9's shop ("なに
-    # かってくれる?", phase 'concert') with B for ~1300 observations because
-    # every blink reset the digest repeat. Textless pickers keep the digest,
-    # where a real B changes the frame.
-    watch_identity = (f'{kind}:{screen.text}' if screen.text and kind in {'text', 'shop_list'}
-                      else digest)
     picker_watch=mem.get('concert_picker_watch') or {}
-    if phase=='concert' and actions==[pad('b')]:
-        repeat=(int(picker_watch.get('repeat') or 0)+1
-                if picker_watch.get('identity', picker_watch.get('digest'))==watch_identity else 1)
-    else:
-        repeat=0
-    if repeat>=CONCERT_PICKER_REPEAT_MAX:
-        decision_log._record(mem,'concert_picker_escape',screen=kind,phase=phase,
-                       observed_metric={'unchanged_repeats':repeat,'frame_sha256':digest},
-                       reason='曲選択の金色カーソル検出がBで変化しないまま繰り返すため、Aへ切り替える')
-        actions=[pad('a')]
-        repeat=0
-    if repeat:
-        mem['concert_picker_watch']={'identity':watch_identity,'digest':digest,'repeat':repeat}
-    else:
+    if phase!='concert':
         mem.pop('concert_picker_watch',None)
+    else:
+        b_count=int(picker_watch.get('b_count') or 0)
+        exhausted=bool(picker_watch.get('exhausted'))
+        if not exhausted and actions==[pad('b')]:
+            b_count+=1
+            if b_count>=CONCERT_PICKER_REPEAT_MAX:
+                exhausted=True
+                decision_log._record(mem,'concert_picker_escape',screen=kind,phase=phase,
+                           observed_metric={'concert_b_presses':b_count,'frame_sha256':digest},
+                           reason='コンサート中のB入力が上限に達したため、画面の明滅に関わらずAで進める')
+        if exhausted:
+            actions=[pad('a')]
+        if b_count or exhausted:
+            mem['concert_picker_watch']={'b_count':b_count,'exhausted':exhausted}
+        else:
+            mem.pop('concert_picker_watch',None)
     concert_key = (f'text:{screen.text}' if kind == 'text' and screen.text
                    else digest)
     # A battle's summon/monster dialogue has its own reviewed pacing
@@ -1337,19 +1363,13 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
             mem.pop('house_nav', None)
         if not actions:
             if phase=='field':
+                actions=field_fallback_actions(kind)
                 if kind in {'unknown','map'}:
-                    # A bare map the chart policy has no plan for: SELECT
-                    # recentres the cursor on the hero (measured), which moves
-                    # the screen and lets nav_step re-anchor. Mirrors the
-                    # bookkeeping map_step.select_focus does after that jump.
-                    actions=[pad('select')]
+                    # Mirrors the bookkeeping map_step.select_focus does after
+                    # the SELECT jump.
                     mem['nav_last']=None
                     mem['uncertain']=True
                     mem['select_focus_tick']=int(mem.get('tick') or 0)
-                elif kind in {'map_target','world_map'}:
-                    actions=[pad('b')]      # leave or cancel an open map view
-                else:
-                    actions=[pad('a')]      # a message over the field: acknowledge
             elif phase=='transition':
                 actions=[pad('a')]          # a dark scene that stopped moving, not a fade
             elif phase=='name':

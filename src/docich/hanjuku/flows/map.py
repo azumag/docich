@@ -268,6 +268,20 @@ def _picker_origin(chapter, frame):
 def world_map_step(screen, mem, frame):
     """Read every castle's owner from the Y view, then close it with Y
     (or, while a Y jump is running, steer its cursor to the goal castle)."""
+    if not mem.get('chapter'):
+        # g1190 2026-11-16: a chapter transition (or a restored memory) can
+        # leave the chapter unset, and the field frames never carry the
+        # chapter header again. The Y view names every castle, so a name that
+        # exists in one chapter only restores it (the measured recovery path
+        # in strategy/campaign.py). Without this the chapter-9 corridor flows
+        # never ran and the bot stayed on the generic walk.
+        from ..strategy.campaign import observe_chapter_castle
+        owners = mem.get('world_map_flags')
+        if isinstance(owners, dict):
+            for name in list(owners)[:12]:
+                observe_chapter_castle(mem, name)
+                if mem.get('chapter'):
+                    break
     if mem.get('y_jump'):
         order = _order(mem)
         if order is not None and mem['y_jump'].get('step') == order['step']:
@@ -471,6 +485,23 @@ def world_map_step(screen, mem, frame):
         return [] if waited < WORLD_MAP_WAIT else _close_world_map(mem)
     mem.pop('world_map_wait', None)
     _apply_world_flags(mem, flags)
+    # The Y view holds the player's own position (the gold G cursor). When the
+    # field estimate is uncertain (a restored state, a missed roof) this is
+    # the authoritative re-anchor: world = (Y cursor - offset) * 8, the same
+    # relation the recall picker uses. g1190 2026-11-16: the field roofs could
+    # not be read at all, the uncertain flag never cleared and every sortie
+    # destination was aimed off-screen until this anchor was taken.
+    y_cursor = world_cursor(frame) if hasattr(frame, 'pixel') else None
+    y_offset = WORLD_MAP_OFFSET.get(mem.get('chapter') or 0)
+    if y_cursor and y_offset:
+        mem['cursor'] = [int(round((y_cursor[0] - y_offset[0]) * 8)),
+                         int(round((y_cursor[1] - y_offset[1]) * 8))]
+        mem['uncertain'] = False
+        mem.pop('anchor', None)
+        _record(mem, 'world_anchor_from_yview',
+                observed_metric={'cursor': list(y_cursor),
+                                 'world': list(mem['cursor'])},
+                reason='全体マップの自位置カーソルからフィールド位置を再確定する')
     # The same view draws chapter 4's 四季王 sites: a cleared one keeps a
     # pennant, a live king keeps the skull.
     if (mem.get('chapter') or 0) == 4 and hasattr(frame, 'pixel'):
@@ -1032,6 +1063,10 @@ def _end_castle_jump(screen, mem, why):
     if rows is not None:
         metric['rows'] = [word for _, word in rows]
         metric['scrolls'] = jump.get('scrolls')
+        # The failed trip's hand position tells a page that never shifted
+        # (the hand parked on the last row) from one that did but named the
+        # wrong row (g1190 2026-11-16: 16 downs on the same eight rows).
+        metric['hand'] = list(screen.hand) if screen.hand else None
     if mode == 'reanchor':
         _record(mem, 'cursor_reanchor_failed', target=jump.get('source'),
                 screen=screen.kind, observed_metric=metric,
@@ -1872,7 +1907,7 @@ def target_step(screen: Screen, mem, frame):
             # fell). Count it as an unverified arrival so the sortie is
             # cancelled and retried within its bounds instead of idling.
             mem.pop('nav_search', None)
-            return _unverified_target(screen, mem, order)
+            return _unverified_target(screen, mem, order, frame)
     if result == 'arrived' and not _target_roof_under_marker(screen, mem, frame, order):
         if screen.marker and not chart.is_boss_castle(order['target']):
             # g1067 09:49-10:19: dead reckoning stopped the marker 10 px right
@@ -1887,7 +1922,7 @@ def target_step(screen: Screen, mem, frame):
                         observed_metric={'cursor': mem.get('cursor'), 'marker': list(_cursor(screen) or ())},
                         reason='推定到着点の近くに目的と同じ色の屋根があるため、その屋根へマーカーを合わせる')
                 return _deploy_input(screen, mem, order, aligned, '推定到着点の近くの屋根へ出撃先マーカーを合わせる')
-        return _unverified_target(screen, mem, order)
+        return _unverified_target(screen, mem, order, frame)
     if result == 'arrived':
         context = _deploy_context(order, mem, expected_metric='のりこんだ表示で目標城を確認')
         snapshot = departure_snapshot(order, mem, context['general'], _source(order, mem))
@@ -1996,6 +2031,9 @@ LAUNCH_PROBE_NEW_MARKER_PX = 4  # centre distance that still counts as the same 
 # while only the hero's own marker was on the view).
 LAUNCH_PROBE_MIN_BOX = 20      # bounding-box pixels for a plausible unit marker
 LAUNCH_PROBE_ROSTER_TICKS = 200  # blind probe ticks to wait for the source roster before rollback
+# Chapters whose world map draws marching units as portraits, never as the
+# (255,24,0) triangle the survey reads (g1190 2026-11-16 chapter 9).
+PORTRAIT_MARCH_CHAPTERS = frozenset({9})
 LAUNCH_MISS_LIMIT = 2           # unverified launches an order may retry before failing
 
 
@@ -2065,7 +2103,13 @@ def _probe_launch_markers(mem, markers):
             since = probe.get('tick')
             if type(since) is int and now - since < LAUNCH_PROBE_ROSTER_TICKS:
                 continue
-            if chart.is_boss_castle(probe.get('target')):
+            portrait = mem.get('chapter') in PORTRAIT_MARCH_CHAPTERS
+            if chart.is_boss_castle(probe.get('target')) or portrait:
+                # g1190 2026-11-16: chapter 9 draws every marching unit as a
+                # portrait too (the two "markers" were the egg-repair hearts),
+                # so no transfer was ever confirmed and each was rolled back
+                # with the general written back into the source garrison
+                # while the destination's menu already listed him.
                 # g1133 2026-11-05: chapter 6 draws marching units as
                 # portraits, so the triangle survey can never confirm a boss
                 # launch. Twelve boss sorties were rolled back and sent again
@@ -2091,8 +2135,9 @@ def _probe_launch_markers(mem, markers):
                                          'target': probe.get('target'),
                                          'markers': [list(b) for b in markers],
                                          'reads': probe.get('reads')},
-                        resulting_event='boss_march_kept',
-                        reason='ボス行軍は部隊表示が肖像で▲を検出できないため、出撃成立の巻き戻しをせず到着・期限の実測に委ねる')
+                        resulting_event=('boss_march_kept' if chart.is_boss_castle(probe.get('target'))
+                                         else 'portrait_march_kept'),
+                        reason='行軍中の部隊表示が肖像で▲を検出できないため、出撃成立の巻き戻しをせず出撃元の一覧・到着・期限の実測に委ねる')
                 continue
             probes.pop(step, None)
             _rollback_unverified_launch(mem, step, probe, markers)
@@ -2368,10 +2413,53 @@ def _target_roof_under_marker(screen, mem, frame, order) -> bool:
                for r in roofs)
 
 
-def _unverified_target(screen, mem, order):
+CELL_EVIDENCE_ROOF_PX = 24      # a castle roof this close to the marker backs a cell match
+
+
+def _cell_match_evidence(screen, mem, order, frame) -> bool:
+    """The screen backs a dead-reckoned cell match for the target.
+
+    g1190 2026-11-16 (chapter 9): the estimate sat on オシロガ's cell while
+    the marker stood over the sea north of the island, and the accepted A
+    sent the general to the coast where he camped. A Y jump to the target
+    lands on its cell; otherwise a castle roof must stand by the marker.
+    """
+    if (mem.get('y_jumped') or {}).get(order['step']) == order['target']:
+        return True
+    s = _cursor(screen)
+    if not s or frame is None:
+        return False
+    return any(abs(r['target'][0] - s[0]) <= CELL_EVIDENCE_ROOF_PX
+               and abs(r['target'][1] - s[1]) <= CELL_EVIDENCE_ROOF_PX
+               for r in castle_roofs(frame))
+
+
+def _unverified_target(screen, mem, order, frame=None):
     step = order['step']
     misses = mem.setdefault('target_miss', {})
     misses[step] = misses.get(step, 0) + 1
+    # The camera estimate can already sit on the chart cell while the roofs are
+    # unreadable (g1190 2026-11-16 20-9: 132 arrival_unverified and 50
+    # target_not_under_marker in one window while 24 タオ attacks produced no
+    # battle). Accept the cell match instead of cancelling the sortie forever,
+    # but only with evidence on screen (``_cell_match_evidence``): the bare
+    # estimate confirmed a marker over the sea (owner 2026-11-16, ch9).
+    cell = chart.castles(mem.get('chapter') or 0).get(order['target'])
+    cursor = mem.get('cursor')
+    if (cell and isinstance(cursor, (list, tuple)) and len(cursor) == 2
+            and abs(cursor[0] - cell[0]) <= BOSS_MARKER_CELL_PX
+            and abs(cursor[1] - cell[1]) <= BOSS_MARKER_CELL_PX
+            and _cell_match_evidence(screen, mem, order, frame)):
+        misses.pop(step, None)
+        mem['uncertain'] = False
+        _record(mem, 'target_cell_accepted', chart_step=step, target=order['target'],
+                observed_metric={'cursor': list(cursor), 'cell': list(cell),
+                                 'misses': misses.get(step)},
+                reason='屋根が読めないため、カメラ推定がチャートのセルに一致することで出撃先を確定する')
+        # The callers use this function's value as the next action list, so the
+        # acceptance must confirm the marker here (a bare True stalled the flow
+        # right after the record). The A is the measured sortie confirmation.
+        return [pad('a')]
     if misses[step] < TARGET_MISS_LIMIT:
         mem['uncertain'] = True               # re-anchor on roofs before confirming
         mem.pop('anchor', None)

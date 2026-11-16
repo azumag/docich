@@ -192,11 +192,71 @@ def _month_army_count_check(screen, mem, shop):
     return move if isinstance(move, list) else [move] if move else []
 
 
+def _month_menu_row_col(screen: Screen, label: str):
+    """(row, column) of ``label`` in the measured two-column month menu.
+
+    Rows sit at y=47/63/79/95 (16 px apart); the right column starts at x=128.
+    The label is matched without its punctuation so the game's も〜おしまい!
+    and the caller's spelling agree.
+    """
+    def norm(text):
+        return (text or '').replace('!', '').replace('！', '').replace('〜', '～')
+    want = norm(label)
+    for line in screen.lines:
+        for x, word in line.spans():
+            got = norm(word)
+            if not got:
+                continue
+            if got == want or (len(want) >= 2 and want.startswith(got[:2])):
+                row = (line.y - 47) // 16
+                if 0 <= row <= 3:
+                    return row, 1 if x >= 128 else 0
+    return None
+
+
 def _month_menu_move(screen: Screen, mem, label: str):
+    hand = screen.hand
+    # The hand can also sit on a menu row (g1190 2026-11-16 19-9: menu_nav_stuck
+    # every ~84 observations with the same rows). The measured two-column
+    # layout plus the exit label identifies this screen whatever the hand
+    # reads, so accept any hand (or none) once the menu itself is proven.
+    if ((not hand or hand[1] >= 175 or screen.has('しょうぐんぼしゅう'))
+            and screen.has('じゅうじキー')
+            and screen.has(label.replace('!', '').replace('！', ''))):
+        # The hand reads the dialogue window under the menu (measured
+        # g1190 2026-11-16: hand (202,197) on the 「じゅうじキー」 hint while
+        # the menu rows sit at y47-95), so the hand-driven navigation cannot
+        # reach も〜おしまい! and the month menu held forever. Walk the
+        # measured two-column layout blind instead: top-left, down three,
+        # right, confirm, bounded.
+        row_col = _month_menu_row_col(screen, label)
+        state = mem.get('month_blind_nav')
+        if not isinstance(state, dict) or state.get('label') != label:
+            state = mem['month_blind_nav'] = {'label': label, 'tries': 0}
+        if row_col is not None and state['tries'] < MONTH_BLIND_NAV_LIMIT:
+            state['tries'] += 1
+            row, col = row_col
+            _record(mem, 'month_blind_nav', screen=screen.kind, choice=label,
+                    observed_metric={'tries': state['tries'], 'hand': list(hand) if hand else None,
+                                     'row': row, 'col': col,
+                                     'limit': MONTH_BLIND_NAV_LIMIT},
+                    reason='月メニューのカーソル位置が読めないため、実測2列レイアウトを盲操作で目標行へ進む')
+            # Give each press time to reach the menu's own scan: a rapid
+            # burst is dropped (the same cadence lesson as the しろ list, v920).
+            keys = (['up'] * 4 + ['right' if col else 'left']
+                    + ['down'] * row + ['a'])
+            steps = []
+            for key in keys:
+                steps += [pad(key), {'type': 'wait', 'ms': MONTH_BLIND_NAV_WAIT_MS}]
+            return steps
     move = guarded_menu_to(screen, mem, label, key='month_nav')
     if move == []:
         return _month_text_advance(screen, mem, label) or move
     return move
+
+
+MONTH_BLIND_NAV_LIMIT = 4
+MONTH_BLIND_NAV_WAIT_MS = 120
 
 
 def _month_text_advance(screen: Screen, mem, label: str):
@@ -251,15 +311,28 @@ def _recalc_soldiers(screen, mem, shop):
 
 
 MONTH_EXIT_REFUSAL_LIMIT = 3   # refused month exits per month before leaving anyway
+MONTH_AMOUNT_BACK_LIMIT = 3    # bounded B presses out of the gold amount overlay
+
 
 def month_step(screen: Screen, mem):
     shop = _plan(mem, screen.header)
     body = _month_dialog_body(screen)
+    # The amount-setting overlay draws the hand on the gold and the
+    # 「じゅうじキー…ケタ…すうじ…」 hint over the month menu (measured g1190
+    # 2026-11-16 19-9: the menu then held forever with the hand parked on the
+    # gold and no menu cursor visible). The hand on the gold IS the amount
+    # picker: let quantity_step drive it (v930 tried a bounded B there and the
+    # overlay never closed).
+    hand = screen.hand
     if shop:
         _refresh_egg_priority(mem, shop, screen.header)
         _low_army_refill(mem, shop, screen.header)
         _prioritise_recruit(mem, shop, (screen.header or {}).get('gold'))
         _limit_soldier_refill(mem, shop, screen.header)
+    # The soldier plan must be sized first: the picker reads shop['soldiers'].
+    if (screen.has('じゅうじキー') and (not screen.has('へいしほじゅう')
+                                       or (hand and hand[1] >= 175))):
+        return quantity_step(screen, mem, soldiers=True)
     if (mem.get('month_sub', {}).get('kind') == 'recruit'
             and month_menu_ready(screen) and _month_menu_quiet(screen)):
         if not _finish_month_sub(screen, mem, shop):
@@ -292,7 +365,12 @@ def month_step(screen: Screen, mem):
                     reason='実測した募集導入文と費用条件が一致したため失われた会話追跡を再開')
             return month_sub_step(screen, mem)
         return []
-    if screen.has('じゅうじキー'):
+    # The month menu itself draws the 「じゅうじキー…ケタが…」 hint in its
+    # message window, so the hint alone is not the quantity picker. Requiring
+    # the absence of the menu's own item labels keeps the main menu out of the
+    # soldier-quantity flow (g1190 2026-11-16: the menu held forever because
+    # quantity_step waited on a picker that was never open).
+    if screen.has('じゅうじキー') and not screen.has('へいしほじゅう'):
         return quantity_step(screen, mem, soldiers=True)
     if ((mem.get('shop') or {}).get('soldier_receipt') or {}).get('status') == 'pending':
         # observe_events settles the receipt before another paid command can
