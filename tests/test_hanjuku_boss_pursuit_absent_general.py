@@ -9,8 +9,12 @@ from types import SimpleNamespace
 
 from docich.hanjuku.flows import boss_pursuit as bp
 from docich.hanjuku.flows import house
+from docich.hanjuku.orchestrator import decide
+from test_hanjuku_chart_bot import Canvas
 
 LIST = ['どうし', 'ココット', 'レモン']
+IDENTITY = {'game': 'hanjuku-hero', 'generation': 900,
+            'runtime_id': 'g900-synthetic', 'lease_id': 'test-lost-reset'}
 
 
 def memory(general='ポワソン'):
@@ -81,6 +85,14 @@ def test_real_roster_frames_mark_absent_only_at_list_end():
     from PIL import Image
     from docich.hanjuku.os_layer.pixels import Frame
     from docich.hanjuku.os_layer.screen import parse
+    # The captured walk starts on the first page with どうし selected: the
+    # top-of-list premise is measured from the frames, not assumed.
+    first_im = Image.open(FIXTURE / 'f004.png').convert('RGB')
+    first_frame = Frame(first_im.width, first_im.height, first_im.tobytes())
+    first_screen = parse(first_frame)
+    assert house.roster(first_screen)[0] == 'どうし'
+    assert first_screen.selected == 'どうし'
+
     mem = memory()
     fired = None
     for path in sorted(FIXTURE.glob('f*.png')):
@@ -88,10 +100,50 @@ def test_real_roster_frames_mark_absent_only_at_list_end():
         frame = Frame(im.width, im.height, im.tobytes())
         screen = parse(frame)
         bp.step(screen, mem, frame)
+        if path.name == 'f004.png':
+            assert mem['boss_pursuit'].get('roster_top') is True
         if mem.get('generals_lost') and fired is None:
             fired = path.name
     assert fired == 'f030.png'
     assert mem['generals_lost'] == ['ポワソン']
+
+
+def test_roster_top_unconfirmed_closes_without_recording_a_loss(monkeypatch):
+    """A list that never reaches its top ends as unconfirmed, not as a loss."""
+    mem = memory()
+    probe = mem['boss_pursuit']
+    pages = [['ココット', 'レモン']] * (bp._roster.MAX_GENERALS + 2)
+    screens = feed(monkeypatch, pages, ['レモン'] * len(pages))
+    for s in screens:
+        bp.step(s, mem, None)
+        if probe['phase'] == 'close':
+            break
+    assert probe['outcome'] == 'roster_top_unconfirmed'
+    assert probe['top_seeks'] == bp._roster.MAX_GENERALS + 1
+    assert not mem.get('generals_lost')
+
+
+def test_run_identity_change_clears_generals_lost():
+    """A saved loss record must not survive into a different run."""
+    mem = memory()
+    mem['generals_lost'] = ['ポワソン']
+    mem['_run_identity'] = dict(IDENTITY)
+    mem['survey_run_identity'] = dict(IDENTITY)
+    frame = Canvas((64, 140, 40)).frame()
+    changed = decide(frame, {'policy': mem},
+                     run_identity={**IDENTITY, 'lease_id': 'another'})[1]
+    assert 'generals_lost' not in changed['policy']
+    same = decide(frame, {'policy': memory_with_loss()},
+                  run_identity=dict(IDENTITY))[1]
+    assert same['policy'].get('generals_lost') == ['ポワソン']
+
+
+def memory_with_loss():
+    mem = memory()
+    mem['generals_lost'] = ['ポワソン']
+    mem['_run_identity'] = dict(IDENTITY)
+    mem['survey_run_identity'] = dict(IDENTITY)
+    return mem
 
 
 def test_general_back_in_a_garrison_is_removed_from_lost():
