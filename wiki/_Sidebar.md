@@ -14,6 +14,7 @@
 **ゲーム**
 - [[対応ゲーム|Games]]
 - [[半熟英雄 (SFC)|Game-Hanjuku-Hero]]
+- [[半熟英雄 ローカル ドライバ/ビューア運用|Hanjuku-Local-Driver-Viewer]]
 - [[NetHack|Game-NetHack]]
 - [[soren game|Game-Sorengame]]
 
