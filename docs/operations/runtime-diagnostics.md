@@ -337,7 +337,11 @@ cleanup の成功・対象の不存在・すべての読み取りの成功を保
   再接続先チャンネルが含まれるため、**allowlistの数値・enumキーだけを写し、
   元のdictは保持しない**。URL・キー・チャンネル名・PIDは出さない。
 - `game_switch_fifo` は `game-switch/requests` のreceiptを固定上限で読み、queued件数と
-  FIFO先頭の operation/target/age だけを出す。request ID、payload、生成本文、秘密情報は
+  FIFO先頭の operation/target/age だけを出す。`accepted`/`allocating` のまま止まった
+  receiptは `pending`（最大5件、status/operation/target/generation/age のみ）として出す。
+  `head` と `pending` 各行の `hard_deadline_expired` は、hard deadlineを持つrequestが
+  期限超過なら true、期限内なら false、deadline非設定なら null を返す（#4356）。
+  request ID、payload、生成本文、秘密情報は
   出さない。malformed receiptやscan未完了は復旧せず、監視側で要対応として扱う。
 - `corners.soren_game` は試合状態の固定enum（`MOVE`/`DROP`/`WAITING`/`STOP`/
   `GAMEOVER`）、state更新からの秒数、建国markerの有無と帰属、試合数、score、駒数、
@@ -415,6 +419,10 @@ cmdlineの生バイト・URL・パス・PIDは出さず、argv/生バイトは�
   end失敗の自動restore再実行の予算を `auto_restore_corner` / `auto_restore_attempts` /
   `auto_restore_attempt_limit` / `auto_restore_next_at` / `auto_restore_status`
   （固定enum）で出す（#2187）。request identityは出さない。
+  terminal phaseに残った共有planeへの自動復旧の予算も同様に `auto_plane_recovery_corner` /
+  `auto_plane_recovery_attempts` / `auto_plane_recovery_attempt_limit` /
+  `auto_plane_recovery_next_at` / `auto_plane_recovery_status`（固定enum）で出す（#4349）。
+  request identityは出さない。
   game-switchが終了済みcornerのgameをactive保持している場合（switch phaseが
   `idle`/`ready` で、corner stateが `idle`/`completed`/`interrupted`/`expired`/`failed`）、
   各corner state投影へ `retained_active`（boolean）と `retained_reason` を出す（#4226）。

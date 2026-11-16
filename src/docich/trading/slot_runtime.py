@@ -38,6 +38,19 @@ def assess_slots(trading_dir, layout: SlotLayout, *, capital_jpy, now: float) ->
     return steps
 
 
+def slot_summary(steps: Mapping[str, ExperimentStep], universe, *, invalid: bool = False) -> dict:
+    """Bounded counts for ``status.json``'s worker_summary (no per-slot detail)."""
+    symbols = set(universe)
+    return {
+        "slot_count": len(steps),
+        "slot_active_count": sum(1 for step in steps.values() if step.status == "active"),
+        "slot_entries_allowed_count": sum(1 for step in steps.values() if step.entries_allowed),
+        "slot_blocked_count": sum(1 for step in steps.values() if step.status == "blocked"),
+        "slot_layout_invalid": bool(invalid),
+        "common_owned_symbol_count": len(symbols - set(steps)),
+    }
+
+
 def planned_keys(steps: Mapping[str, ExperimentStep]) -> dict[str, str]:
     return {symbol: experiment_key(step.active) for symbol, step in steps.items()}
 

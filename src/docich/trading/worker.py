@@ -736,6 +736,10 @@ def run_worker_cycle(
             "experiment_status": experiment_step.status,
             "experiment_reason_code": experiment_step.reason_code,
             "experiment_entries_allowed": experiment_step.entries_allowed,
+            # The experiment_* trio above describes the common slot only. Once
+            # symbols move to dedicated slots these counts say how many there
+            # are and how many symbols the common slot still trades.
+            **slot_runtime.slot_summary(slot_steps, markets.keys(), invalid=not slot_layout.ok),
         })
         payload["heartbeat_at"] = float(now)
         payload["snapshot_seq"] = snapshot_seq

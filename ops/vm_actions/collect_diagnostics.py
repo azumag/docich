@@ -47,7 +47,9 @@ Observed sources (all read-only):
     paper_corner.json,
     paper_corner_manual.json, trading/presentation.json,
     trading/paper_improve_status.json, trading/paper_experiment_control.json,
-    trading/paper_strategy_evaluation.json): lifecycle statuses, timestamps,
+    trading/paper_strategy_evaluation.json, trading/paper_improve_slots_status.json,
+    trading/slots/<BASE>_<QUOTE>/{slot,paper_experiment_control,
+    paper_strategy_evaluation}.json): lifecycle statuses, timestamps,
     counters and finite PAPER result totals only. Strategy identity, rules,
     announcement/script bodies, prompts and log bodies are
     never read out. FIFO output is limited to queued count and the head's
@@ -5876,6 +5878,12 @@ ROTATION_AUTO_RESTORE_STATUSES = frozenset({
     "succeeded", "queued", "failed", "noop", "interrupted", "completed", "unknown", "none",
 })
 ROTATION_AUTO_RESTORE_ATTEMPT_LIMIT = 3
+# Bounded terminal-phase plane recovery replayed by the rotation timer
+# (#4349).  Keep in sync with docich.corner_rotation.
+ROTATION_AUTO_PLANE_RECOVERY_ATTEMPT_LIMIT = 3
+ROTATION_AUTO_PLANE_RECOVERY_STATUSES = ROTATION_AUTO_RESTORE_STATUSES | frozenset({
+    "busy", "rolled_back",
+})
 ROTATION_FAILED_CORNER_MAX = 8
 # A corner whose own state file is already terminal while game-switch still
 # holds its game as the canonical active owner is an operator action item,
@@ -7529,6 +7537,11 @@ def _project_corner_state(data):
             "hanjuku-chart-v942-target-cell-evidence",
             "hanjuku-chart-v943-battle-menu-fallback-b",
             "hanjuku-chart-v944-ch9-retreat-menu-loop",
+            "hanjuku-chart-v910-egg-drop-dedupe",
+            "hanjuku-chart-v908-switch-rollback",
+            "hanjuku-chart-v907-castle-jump-scroll",
+            "hanjuku-chart-v909-castle-jump-scroll",
+            "hanjuku-chart-v945-ch9-merge-main",
             "hanjuku-chart-v864-shop-list-batch",
             "hanjuku-chart-v862-camp-field-move",
             "hanjuku-chart-v852-visible-menu-batches",
@@ -7907,6 +7920,27 @@ def _receipt_age_sec(value, now):
         return -1
 
 
+def _receipt_deadline_expired(value, now):
+    """Tri-state check for a receipt's optional ISO hard deadline.
+
+    ``hard_deadline_at`` is only present on hard-capped requests; None keeps
+    the field distinguishable from a live (False) or elapsed (True) cap.
+    """
+
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        parsed = dt.datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=dt.timezone.utc)
+    try:
+        return parsed.timestamp() <= now
+    except (OverflowError, OSError):
+        return None
+
+
 # Fixed stages a previous-runtime restore can refuse at (mirrors
 # game_switch.RESTORE_STAGES). Never free text.
 GAME_SWITCH_RESTORE_STAGES = frozenset({
@@ -7999,6 +8033,12 @@ def _collect_game_switch_fifo(state_dir, now):
                 "generation": row.get("generation")
                 if isinstance(row.get("generation"), int) else None,
                 "age_sec": _receipt_age_sec(row.get("updated_at"), now),
+                # #4356: an accepted receipt left past its hard cap is the
+                # wedge the watchdog must terminalize; surface the flag so a
+                # stuck one is visible without the private ledger.
+                "hard_deadline_expired": _receipt_deadline_expired(
+                    row.get("hard_deadline_at"), now
+                ),
             }
             for row in pending[:5]
         ]
@@ -8010,6 +8050,9 @@ def _collect_game_switch_fifo(state_dir, now):
             "operation": operation if operation in FIFO_OPERATIONS else None,
             "target": _bounded_str(head.get("target"), 64),
             "age_sec": _receipt_age_sec(head.get("created_at"), now),
+            "hard_deadline_expired": _receipt_deadline_expired(
+                head.get("hard_deadline_at"), now
+            ),
         }
     return result
 
@@ -8130,6 +8173,120 @@ def _collect_paper_experiment(state_dir, now):
     return entry
 
 
+PAPER_SLOT_SYMBOL_RE = re.compile(r"[A-Z0-9]{1,16}/[A-Z0-9]{1,16}")
+PAPER_SLOT_DIR_RE = re.compile(r"[A-Z0-9]{1,16}_[A-Z0-9]{1,16}")
+PAPER_SLOT_MAX_DIRS = 256
+# The production envelope sits ~4.7 KiB under HARD_JSON_BYTES (headroom monitor,
+# 2026-11-16); keep this section well under 1 KiB.
+PAPER_SLOT_LISTED = 3
+PAPER_SLOT_ROTATION_CLOSED_SELLS = 10
+PAPER_SLOT_ROTATION_AGE_S = 7 * 86400
+PAPER_SLOT_IMPROVE_STATUSES = frozenset({"running", "improved", "skipped", "failed", "dry-run"})
+PAPER_SLOT_IMPROVE_REASON_CODES = frozenset({
+    "disabled", "daily-limit", "already-running", "ledger-unavailable",
+    "slot-layout-invalid", "facts-error", "no-targets", "no-agents",
+    "lane-busy", "no-candidate-staged", "slots-error",
+}) | PAPER_IMPROVE_REASON_CODES
+
+
+def _collect_paper_slot(directory, now):
+    """One dedicated slot: fixed enums and counts only, never rule text."""
+    present, readable, data = _load_state_file(directory / "paper_experiment_control.json")
+    entry = {"status": "unknown", "entries_allowed": False, "closed_sells": None, "age_sec": None,
+             "reason_code": None, "evaluation_status": None, "open_position_count": None,
+             "control_readable": readable}
+    if not readable:
+        return entry
+    activated_at = _paper_observed_number(data.get("activated_at"), nonnegative=True)
+    entry.update(
+        status=_rotation_enum(data.get("status"), PAPER_EXPERIMENT_STATUSES),
+        reason_code=_rotation_enum(data.get("reason_code"), PAPER_EXPERIMENT_REASON_CODES),
+        entries_allowed=data.get("entries_allowed") is True,
+        evaluation_status=_rotation_enum(data.get("evaluation_status"), PAPER_EVALUATION_STATUSES),
+        open_position_count=_paper_observed_count(data.get("open_position_count")),
+        age_sec=None if activated_at is None else max(0, int(now - activated_at)),
+    )
+    evaluation = _collect_paper_experiment_evaluation(directory, data, now)
+    if evaluation.get("matches_active") is True:
+        entry["closed_sells"] = evaluation.get("closed_sells")
+    return entry
+
+
+def _collect_paper_slots_improve(trading_dir, now):
+    path = trading_dir / "paper_improve_slots_status.json"
+    present, readable, data = _load_state_file(path)
+    entry = {"present": present, "readable": readable, "age_sec": _file_age_sec(path, now)}
+    if not readable:
+        return entry
+    entry.update(
+        status=_rotation_enum(data.get("status"), PAPER_SLOT_IMPROVE_STATUSES),
+        reason_code=(None if data.get("reason_code") is None
+                     else _rotation_enum(data.get("reason_code"), PAPER_SLOT_IMPROVE_REASON_CODES)),
+        started_at=_bounded_time(data.get("started_at")),
+        completed_at=_bounded_time(data.get("completed_at")),
+    )
+    for key in ("targets", "calls", "queued", "activated", "rejected", "deferred"):
+        entry[key] = _paper_observed_count(data.get(key))
+    return entry
+
+
+def _collect_paper_slots(state_dir, now):
+    """Aggregate dedicated per-symbol slots (Issue #3623 §2.9).
+
+    Counts by status plus the few slots nearest rotation; 40+ full entries
+    would not fit the diagnostics budget and are not needed to triage.
+    """
+    trading_dir = Path(state_dir) / "trading"
+    root = trading_dir / "slots"
+    entry = {"present": root.is_dir(), "slot_count": 0, "invalid_count": 0,
+             "status_counts": {}, "entries_allowed_count": 0, "closed_sells_total": 0,
+             "nearest_rotation": [],
+             "improve": _collect_paper_slots_improve(trading_dir, now)}
+    if not entry["present"]:
+        return entry
+    try:
+        children = sorted(root.iterdir())[:PAPER_SLOT_MAX_DIRS]
+    except OSError:
+        entry["invalid_count"] = None
+        return entry
+    slots = []
+    for child in children:
+        if child.is_symlink() or not child.is_dir() or not PAPER_SLOT_DIR_RE.fullmatch(child.name):
+            entry["invalid_count"] += 1
+            continue
+        _, meta_readable, meta = _load_state_file(child / "slot.json")
+        symbol = meta.get("symbol") if meta_readable else None
+        if (not isinstance(symbol, str) or not PAPER_SLOT_SYMBOL_RE.fullmatch(symbol)
+                or symbol.replace("/", "_") != child.name):
+            entry["invalid_count"] += 1
+            continue
+        slot = _collect_paper_slot(child, now)
+        slot["symbol"] = symbol
+        slots.append(slot)
+    counts = {}
+    for slot in slots:
+        counts[slot["status"]] = counts.get(slot["status"], 0) + 1
+    entry["slot_count"] = len(slots)
+    entry["status_counts"] = dict(sorted(counts.items()))
+    entry["entries_allowed_count"] = sum(1 for slot in slots if slot["entries_allowed"])
+    entry["closed_sells_total"] = sum(slot["closed_sells"] or 0 for slot in slots)
+
+    def progress(slot):
+        sells = (slot["closed_sells"] or 0) / PAPER_SLOT_ROTATION_CLOSED_SELLS
+        age = (slot["age_sec"] or 0) / PAPER_SLOT_ROTATION_AGE_S
+        return max(sells, age)
+
+    # Slots that are not trading normally come first, then the nearest rotation.
+    ranked = sorted(slots, key=lambda slot: (slot["status"] == "active" and slot["entries_allowed"],
+                                             -progress(slot), slot["symbol"]))
+    entry["nearest_rotation"] = [
+        {key: slot[key] for key in ("symbol", "status", "reason_code", "entries_allowed",
+                                    "closed_sells", "age_sec")}
+        for slot in ranked[:PAPER_SLOT_LISTED]
+    ]
+    return entry
+
+
 def _rotation_policy():
     """Fixed projection of the configured dispatch policy (no secrets).
 
@@ -8238,6 +8395,35 @@ def _rotation_auto_restore_projection(data):
     status = record.get("last_status")
     out["auto_restore_status"] = (status if status in ROTATION_AUTO_RESTORE_STATUSES
                                   else ("unknown" if status is not None else None))
+    return out
+
+
+def _rotation_auto_plane_recovery_projection(data):
+    """Bounded view of the timer's terminal-phase plane recovery (#4349).
+
+    A failed switch can park the shared game-switch plane in ``failed`` /
+    ``recovery_required``; the timer then replays the reviewed coordinator
+    recovery a few times.  The 2026-11-16 hanjuku incident recovered through
+    this path, but the durable record was invisible in diagnostics.
+    """
+
+    record = data.get("auto_plane_recovery")
+    out = {"auto_plane_recovery_corner": None, "auto_plane_recovery_attempts": None,
+           "auto_plane_recovery_attempt_limit": ROTATION_AUTO_PLANE_RECOVERY_ATTEMPT_LIMIT,
+           "auto_plane_recovery_next_at": None, "auto_plane_recovery_status": None}
+    if not isinstance(record, dict):
+        return out
+    out["auto_plane_recovery_corner"] = _bounded_str(record.get("corner"), 64)
+    attempts = record.get("attempts")
+    out["auto_plane_recovery_attempts"] = (
+        attempts if type(attempts) is int and 0 <= attempts <= 100 else None
+    )
+    out["auto_plane_recovery_next_at"] = _bounded_time(record.get("next_attempt_at"))
+    status = record.get("last_status")
+    out["auto_plane_recovery_status"] = (
+        status if status in ROTATION_AUTO_PLANE_RECOVERY_STATUSES
+        else ("unknown" if status is not None else None)
+    )
     return out
 
 
@@ -8528,9 +8714,22 @@ def _collect_corner_files(state_dir, payload, now):
                 isinstance(data.get("pending"), dict)
                 or isinstance(data.get("manual_pending"), dict)):
             scheduled_blocked_reason = "waiting_slot"
+        try:
+            from docich.corner_rotation import overdue_wait
+            overdue = overdue_wait(data, now)
+        except Exception:
+            # An older deployed docich may not carry the probe yet; absence of
+            # the helper must never break the diagnostics collection itself.
+            overdue = None
         rotation.update(
             status=status if status in {"ready", "waiting", "running", "recovery_required"} else "unknown",
             reason=_bounded_str(data.get("reason"), 64),
+            reason_since=_bounded_time(data.get("reason_since")),
+            # ``waiting_overdue`` is the #4333 wedge signal: next_due_at long
+            # past while one unchanged reason keeps holding the wait.
+            waiting_overdue=overdue is not None,
+            overdue_sec=overdue.get("overdue_sec") if overdue else None,
+            reason_age_sec=overdue.get("reason_age_sec") if overdue else None,
             next_due_at=_bounded_time(data.get("next_due_at")),
             last_seen_at=_bounded_time(data.get("last_seen_at")),
             last_slot_at=_bounded_time(data.get("last_slot_at")),
@@ -8558,6 +8757,7 @@ def _collect_corner_files(state_dir, payload, now):
         rotation.update(_rotation_manual_pending_projection(state_dir, data, now))
         rotation.update(_rotation_failed_corners_projection(data))
         rotation.update(_rotation_auto_restore_projection(data))
+        rotation.update(_rotation_auto_plane_recovery_projection(data))
     mode, cooldown = _rotation_policy()
     rotation.update(schedule_mode=mode, cooldown_seconds=cooldown)
     payload["corner_rotation"] = rotation
@@ -8667,6 +8867,7 @@ def _collect_corner_files(state_dir, payload, now):
     payload["presentation"] = entry
     payload["paper_improve"] = _collect_paper_improve_status(state_dir, now)
     payload["paper_experiment"] = _collect_paper_experiment(state_dir, now)
+    payload["paper_slots"] = _collect_paper_slots(state_dir, now)
     payload["rotation_evidence"] = _collect_rotation_evidence(state_dir)
 
 
@@ -9459,6 +9660,7 @@ def _collect_programs(state_dir, soren, now):
             "present": False, "readable": False, "age_sec": -1,
             "evaluation": {"present": False, "readable": False, "age_sec": -1},
         },
+        "paper_slots": {"present": False, "slot_count": 0},
     }
     if state_dir.is_dir():
         _collect_corner_files(state_dir, payload, now)
@@ -10988,6 +11190,7 @@ SEVERITY_TRIGGERS = (
     "hanjuku_resume_detached_claim",
     "retro_corner_recovery_required",
     "corner_rotation_recovery_required",
+    "corner_rotation_overdue",
     "required_worker_stale",
     "required_worker_down",
     "paused_workers_actionable",
@@ -11047,6 +11250,12 @@ def _severity_report(workers, queues, ai, improvement, corners=None, hanjuku_res
     rotation = corners.get("corner_rotation") if isinstance(corners, dict) else None
     triggers["corner_rotation_recovery_required"] = (
         isinstance(rotation, dict) and rotation.get("status") == "recovery_required"
+    )
+    # A wait held on one unchanged reason well past next_due_at is the wedge
+    # symptom from #4333: the slot wants to fire but cannot. The ledger
+    # reason itself is ambiguous, so the projection pre-ages it.
+    triggers["corner_rotation_overdue"] = (
+        isinstance(rotation, dict) and rotation.get("waiting_overdue") is True
     )
     triggers["paused_workers_actionable"] = _paused_workers_actionable(workers)
     triggers["unregistered_workers_actionable"] = _unregistered_workers_actionable(workers)

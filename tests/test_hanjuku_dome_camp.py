@@ -29,7 +29,9 @@ DOMES = {'g1075-boss-target-enclosure.png': (173, 42),
 # Frames that show a 砦 next to an ordinary tent (checked in
 # test_hanjuku_ch9_fort_and_cliff_tent.py): the 565 readback of a local core.
 WITH_TENT = {'g1190-ch9-tao-fort-and-cliff-tent-565.png',
-             'g1190-ch9-tao-cliff-tent-winter-565.png'}
+             'g1190-ch9-tao-cliff-tent-winter-565.png',
+             # a real own camp (tent + red flag) beside the cliff at (176, 129)
+             'g1190-ch9-target-marker-over-sea-565.png'}
 
 
 @pytest.mark.parametrize('name,target', sorted(DOMES.items()))

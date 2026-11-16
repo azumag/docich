@@ -272,6 +272,7 @@ KEY_OWNERSHIP = {
     'carry_tracking': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # carry追跡の手順状態
     'castle_jump': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 城ジャンプナビゲーション状態
     'castle_jump_skip': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 同上スキップ
+    'castle_jump_y': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 同上 Y 経路退避
     'castle_status_as_list': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 城ステータスをリストとして読む手順状態
     'chapter_end_save': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 章末セーブ手順状態
     'chapter_probe': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 章確認プローブ手順状態

@@ -102,6 +102,43 @@ def test_rotation_projection_never_emits_seed_or_request_text(tmp_path):
     assert "DO-NOT-PUBLISH" not in json.dumps(output)
 
 
+def test_rotation_projection_flags_wait_overdue_on_one_reason(tmp_path):
+    """#4333: a wait held on one reason past next_due_at is projected."""
+    module = load_collector()
+    (tmp_path / "corner_rotation.json").write_text(json.dumps({
+        "status": "waiting", "reason": "other-corner-needs-finish-or-recovery",
+        "slot": 3, "last_seen_at": 100, "next_due_at": 200,
+        "reason_since": 150, "eligible": ["paper"],
+    }))
+    output = {}
+    # 3500s past due and the reason held for 3550s: both over the warn bound.
+    module._collect_corner_files(tmp_path, output, 3700)
+    projection = output["corner_rotation"]
+    assert projection["waiting_overdue"] is True
+    assert projection["overdue_sec"] == 3500
+    assert projection["reason_age_sec"] == 3550
+    assert projection["reason_since"] == 150
+
+    # A fresh reason inside the warn bound is not a wedge.
+    (tmp_path / "corner_rotation.json").write_text(json.dumps({
+        "status": "waiting", "reason": "other-corner-needs-finish-or-recovery",
+        "slot": 3, "last_seen_at": 100, "next_due_at": 200, "reason_since": 3600,
+    }))
+    output = {}
+    module._collect_corner_files(tmp_path, output, 3700)
+    assert output["corner_rotation"]["waiting_overdue"] is False
+    assert output["corner_rotation"]["overdue_sec"] is None
+
+    # A ledger written before reason_since existed cannot prove continuity.
+    (tmp_path / "corner_rotation.json").write_text(json.dumps({
+        "status": "waiting", "reason": "other-corner-needs-finish-or-recovery",
+        "slot": 3, "last_seen_at": 100, "next_due_at": 200,
+    }))
+    output = {}
+    module._collect_corner_files(tmp_path, output, 3700)
+    assert output["corner_rotation"]["waiting_overdue"] is False
+
+
 def test_rotation_excluded_map_distinguishes_manual_only_from_disabled(tmp_path):
     """Enabling a manual-only corner must be observable without a reservation."""
     module = load_collector()
@@ -390,6 +427,69 @@ def test_auto_restore_projection_is_absent_without_a_record(tmp_path):
     rotation = output["corner_rotation"]
     assert rotation["auto_restore_corner"] is None and rotation["auto_restore_attempts"] is None
     assert rotation["auto_restore_status"] is None
+
+
+def test_auto_plane_recovery_projection_is_bounded(tmp_path):
+    # #4349 recovery was invisible in the 2026-11-16 hanjuku incident
+    # (#4356): the durable record must surface with bounded fields.
+    module = load_collector()
+    (tmp_path / "corner_rotation.json").write_text(json.dumps({
+        "auto_plane_recovery": {
+            "corner": "hanjuku-hero", "request_id": "DO-NOT-PUBLISH",
+            "attempts": 2, "next_attempt_at": 130,
+            "last_status": "failed",
+        },
+    }))
+    output = {}
+    module._collect_corner_files(tmp_path, output, 100)
+    rotation = output["corner_rotation"]
+    assert rotation["auto_plane_recovery_corner"] == "hanjuku-hero"
+    assert rotation["auto_plane_recovery_attempts"] == 2
+    assert (rotation["auto_plane_recovery_attempt_limit"]
+            == module.ROTATION_AUTO_PLANE_RECOVERY_ATTEMPT_LIMIT)
+    assert rotation["auto_plane_recovery_next_at"] == 130
+    assert rotation["auto_plane_recovery_status"] == "failed"
+    assert "DO-NOT-PUBLISH" not in json.dumps(output)
+
+
+def test_auto_plane_recovery_projection_defaults_without_a_record(tmp_path):
+    module = load_collector()
+    (tmp_path / "corner_rotation.json").write_text(json.dumps({"status": "waiting"}))
+    output = {}
+    module._collect_corner_files(tmp_path, output, 100)
+    rotation = output["corner_rotation"]
+    assert rotation["auto_plane_recovery_corner"] is None
+    assert rotation["auto_plane_recovery_attempts"] is None
+    assert rotation["auto_plane_recovery_status"] is None
+
+
+def test_fifo_projection_flags_expired_hard_deadlines(tmp_path):
+    # #4356: an accepted receipt left past its hard cap is the wedge the
+    # watchdog must terminalize; flag it without exposing request identity.
+    module = load_collector()
+    requests = tmp_path / "game-switch" / "requests"
+    requests.mkdir(parents=True)
+    now = 1794758400.0  # 2026-11-15T16:00:00Z
+    (requests / "11111111-1111-4111-8111-111111111111.json").write_text(json.dumps({
+        "status": "accepted", "operation": "switch", "target": "hanjuku-hero",
+        "generation": 3, "updated_at": "2026-11-15T15:00:00Z",
+        "hard_deadline_at": "2026-11-15T15:30:00Z",
+    }))
+    (requests / "22222222-2222-4222-8222-222222222222.json").write_text(json.dumps({
+        "status": "accepted", "operation": "switch", "target": "robots",
+        "generation": 4, "updated_at": "2026-11-15T15:00:00Z",
+    }))
+    (requests / "33333333-3333-4333-8333-333333333333.json").write_text(json.dumps({
+        "status": "queued", "operation": "switch", "target": "nethack",
+        "generation": 5, "created_at": "2026-11-15T15:40:00Z",
+        "hard_deadline_at": "2026-11-15T17:00:00Z",
+    }))
+    result = module._collect_game_switch_fifo(tmp_path, now)
+    pending = {row["target"]: row for row in result["pending"]}
+    assert pending["hanjuku-hero"]["hard_deadline_expired"] is True
+    assert pending["robots"]["hard_deadline_expired"] is None
+    assert result["head"]["hard_deadline_expired"] is False
+    assert "11111111" not in json.dumps(result)
 
 
 def _write_retained_game_switch(tmp_path, *, phase="ready", game="hanjuku-hero"):

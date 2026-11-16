@@ -1973,15 +1973,27 @@ def _rotation_failures_view(raw: Any) -> list[dict[str, Any]]:
 
     The ledger records every corner failure so it stays fixable even though the
     scheduler keeps rotating. Only the corner id, time, fixed resolution and
-    fixed error kind are published.
+    fixed error kind are published. A ``recovery-required`` row whose exact
+    request later appears in ``released_requests`` was settled without an
+    operator: publish the current resolution (released) instead of a stale
+    "要復旧" marker, while leaving the ledger row itself untouched.
     """
     rows = raw.get("failed_corners") if isinstance(raw, dict) else None
+    released = raw.get("released_requests") if isinstance(raw, dict) else None
+    if not isinstance(released, dict):
+        released = {}
     out: list[dict[str, Any]] = []
     if isinstance(rows, list):
         for row in rows[-_ROTATION_FAILED_MAX:]:
             if not isinstance(row, dict):
                 continue
             resolution = row.get("resolution")
+            corner = row.get("corner")
+            settled = released.get(corner) if isinstance(corner, str) else None
+            if (resolution == "recovery-required"
+                    and isinstance(settled, dict)
+                    and settled.get("request_id") == row.get("request_id")):
+                resolution = "released-unverified"
             error_kind = row.get("error_kind")
             reason_code = row.get("reason_code")
             out.append({
@@ -2079,9 +2091,19 @@ def _rotation_view(g: GlobalConfig) -> dict[str, Any]:
     if isinstance(raw.get("eligible"), list):
         eligible = [item[:64] for item in raw.get("eligible") if isinstance(item, str)][:20]
     error_kind = raw.get("error_kind")
+    try:
+        from .corner_rotation import overdue_wait
+
+        overdue = overdue_wait(raw, now)
+    except Exception:
+        overdue = None
     out.update(
         status=status,
         reason=_view_str(raw.get("reason"), 64),
+        reason_since=_view_time(raw.get("reason_since")),
+        # ``overdue`` is the #4333 wedge signal: next_due_at long past while
+        # one unchanged reason keeps holding the wait.
+        overdue=overdue,
         error_kind=(error_kind if error_kind in _ROTATION_ERROR_KIND_ENUM
                     else (None if error_kind is None else "unknown")),
         slot=_view_int(raw.get("slot")),

@@ -57,6 +57,12 @@ HEARTBEAT_FRESH_S = 180.0
 # "just now" and stays silent on the audio queue.
 NOTICE_SPEAK_WINDOW_S = 1800.0
 NOTICE_SPOKEN_STATUSES = frozenset({"completed", "interrupted", "expired"})
+# A ledger can sit in ``waiting`` with a healthy-looking reason long after its
+# slot was due when a post-corner job never reaches a terminal record
+# (#4333). ``save`` stamps ``reason_since`` when the persisted reason changes;
+# a wait that is BOTH this far past ``next_due_at`` and unchanged for this
+# long is reported as overdue by diagnostics and the WebUI overlay.
+OVERDUE_WAIT_WARN_S = 600.0
 TERMINAL = {"idle", "completed", "interrupted", "expired"}
 # ``stop_manual`` writes a durable stop marker only after observing a live
 # (starting/active/restoring) owner, so a marker whose target state file now
@@ -217,6 +223,33 @@ def clear_rotation_stop_request(g, state_path):
     return True
 
 
+def overdue_wait(state, now, *, warn_after=OVERDUE_WAIT_WARN_S):
+    """Overdue-wait probe for read-only projections of the ledger (#4333).
+
+    A wait is overdue when it is BOTH at least ``warn_after`` seconds past
+    ``next_due_at`` and still on the same ``reason`` it held ``warn_after``
+    seconds ago. Normal waits change reason or dispatch before both hold.
+    Returns ``{"overdue_sec", "reason_age_sec"}`` when overdue, else ``None``.
+    ``reason_since`` is stamped by ``CornerRotationManager.save`` — a ledger
+    written before it existed cannot prove the reason's age and reports
+    ``None`` until the next save stamps it.
+    """
+    if not isinstance(state, dict) or state.get("status") != "waiting":
+        return None
+    if not isinstance(state.get("reason"), str) or not state["reason"]:
+        return None
+    try:
+        due = timestamp(state.get("next_due_at"))
+        since = timestamp(state.get("reason_since"))
+    except (RotationError, ValueError, OverflowError, OSError):
+        return None
+    overdue = now - due
+    age = now - since
+    if overdue < warn_after or age < warn_after:
+        return None
+    return {"overdue_sec": int(overdue), "reason_age_sec": int(age)}
+
+
 class CornerRotationManager:
     def __init__(self, g, *, clock=time.time, sleep=time.sleep, seed=None,
                  catalog=None, adapter_factory=make_corner_adapter, executor=None,
@@ -244,6 +277,10 @@ class CornerRotationManager:
         self._prediction_state = prediction_state
         # Delivery is injected so tests never touch the shared audio queue.
         self._speech = speech
+        # The wait reason most recently seen in this ledger (set by ``load``,
+        # advanced by ``save``). ``save`` compares the state's reason against
+        # it to keep ``reason_since`` at the moment the reason first appeared.
+        self._saved_reason = None
 
     @contextmanager
     def locked(self):
@@ -260,6 +297,21 @@ class CornerRotationManager:
                 fcntl.flock(lock, fcntl.LOCK_UN)
 
     def save(self, state):
+        """Persist the ledger, stamping when the current wait reason began.
+
+        ``reason`` alone cannot separate a healthy wait from a wedge: the same
+        literals also appear during normal drains. ``reason_since`` lets
+        diagnostics and the overlay age one unchanged reason past
+        ``next_due_at`` (#4333).
+        """
+        reason = state.get("reason")
+        since = state.get("reason_since")
+        if reason is None:
+            state["reason_since"] = None
+        elif (reason != self._saved_reason
+                or type(since) not in (int, float) or not math.isfinite(since)):
+            state["reason_since"] = timestamp(self.clock())
+        self._saved_reason = reason
         atomic_write_json(self.path, state)
 
     @property
@@ -392,6 +444,12 @@ class CornerRotationManager:
         return known
 
     def load(self, now):
+        """Load the ledger and remember the reason it last persisted."""
+        state = self._load(now)
+        self._saved_reason = state.get("reason")
+        return state
+
+    def _load(self, now):
         if not self.path.exists():
             if any(raw.get("rotation_request_id") for adapter in self.adapters.values()
                    for raw in adapter.observations()):
