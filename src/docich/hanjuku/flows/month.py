@@ -380,8 +380,11 @@ def month_step(screen: Screen, mem):
         # change the balance. A few unchanged menu frames are not a receipt.
         return []
     if screen.has('うむッ') and screen.has('いかんッ'):
-        # "よろしいですかな?" after も〜おしまい!: confirm only our own exit.
-        choice = 'うむッ!' if mem.get('month_exit') or mem.get('month_sub') else 'いかんッ!'
+        # "よろしいですかな?" after も〜おしまい! confirms our own exit; the
+        # same prompt also gates the merchant (しょうにん) we just opened.
+        choice = ('うむッ!' if (mem.get('month_exit') or mem.get('month_sub')
+                               or mem.pop('month_merchant_confirm', None))
+                  else 'いかんッ!')
         scope = _soldier_count_scope(mem, screen.header)
         check = mem.get('army_count_check')
         check = check if isinstance(check, dict) else {}
@@ -442,7 +445,13 @@ def month_step(screen: Screen, mem):
         move = _month_menu_move(screen, mem, 'しょうにん')
         if isinstance(move, list):
             return move
-        return [pad('a')] if move == 'here' else [move] if move else []
+        if move == 'here':
+            # The merchant entry asks 「うむッ/いかんッ」 (g1190 39-2: answering
+            # いかんッ kept the merchant closed and the menu looped). Remember
+            # the intent so the next うむッ/いかんッ prompt confirms the entry.
+            mem['month_merchant_confirm'] = True
+            return [pad('a')]
+        return [move] if move else []
     if (shop and shop.get('items') and not shop.get('merchant_skip_logged')
             and not shop.get('cards_held')):
         # Diagnostic only: planned merchant items were skipped by the gate above
