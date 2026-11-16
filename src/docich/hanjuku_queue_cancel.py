@@ -47,7 +47,7 @@ def main(argv=None):
     if result.get('reason') not in EXIT:
         result = {'status': 'refused', 'reason': 'queue_rejected'}
     print(json.dumps(result, separators=(',', ':')))
-    if result['status'] in {'eligible', 'cancelled'}:
+    if result['status'] in {'eligible', 'cancelled', 'cancel_requested'}:
         return 0
     return EXIT[result['reason']]
 
