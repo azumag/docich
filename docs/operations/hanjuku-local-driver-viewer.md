@@ -205,13 +205,25 @@ HANJUKU_SRAM_IN=/Users/azumag/work/docich/tmp/hanjuku-local/saves/prod1190.srm \
 7. **ドライバ/ビューアは未追跡の tmp ツール**。`git clean` や `tmp` の掃除で消さない。別途バックアップを
    取るなら `tmp/hanjuku-local/*.py` をコピーする。
 
-## 7. 現況（2026-11-16 13:40 JST 時点）
+## 7. 現況（2026-11-16 17:2x JST 時点）
 
-- ビューア: 稼働中（pid 2829、`http://127.0.0.1:8765/`）。
-- ドライバ: **停止中**。11:14 に `[drv] terminal: True`（タイトル復帰を terminal と判定）で正常終了し、
-  state はタイトル画面で保存（`tmp/hanjuku-local/states/prod1190.state`、`.prev` は 05:02 のもの）。
-- 最後に観測できた進行: 第9話 month 70-5、captured `タオ/ハヤク`（サヌトは 8 時間の間に失陥）。
-- 再開するときは §5 の「タイトルに落ちたときの復帰」を先に読み、**blind な START 連打をしない**こと。
+- ビューア: 稼働中（`http://127.0.0.1:8765/`）。
+- ドライバ: 稼働中、`HANJUKU_CODE_ROOT=.worktrees/hanjuku-ch9-clear`、bot `hanjuku-chart-v947-...`、
+  第9話 month 16-2 からリプレイ中。
+- **2026-11-16 夕方の事故と復帰（重要）**:
+  - `pkill -TERM` 後に `.state` / `.prev` を読むと `load state -> False` で失敗し、
+    新規ブート→タイトルで `terminal: True` 終了した。「タイトルに落ちた」ではなく
+    **state の unserialize 失敗**。ファイルヘッダは `#!s9xsnp:0011`（正常に読める
+    `ch9-local.state` は `0014`）で、停止時の serialize が現行コアと互換でない形式を
+    書いた疑いがある。読めない state に再試行し続けると終了時の上書きで元の進行が消える。
+  - `prod1190.srm` のセーブスロットは第9話（13:41 の slot.png で `だい9わ 16ねん2のつき`
+    を確認）だが、そのまま LOAD_FLOW すると第1話が始まった — スロット内の実データが
+    ロード可能な第9話セーブではなかった。月16→35の進行は state のみにあり失われた。
+  - `ch9-local.srm`（= `prod1190.srm.bak`、同 MD5）を `HANJUKU_SRAM_IN` にして
+    `HANJUKU_LOAD_FLOW=1 --noload` で起動すると第9話 16-2 に正しく復帰した。
+  - 教訓: state を読めないときは無理に再試行せず、**まず全 `.state`/`.srm` を
+    `/tmp` などへ丸ごとバックアップ**してから、確実な第9話 srm（slot.png で章を確認）
+    を `SRAM_IN` にする。`SRAM_OUT` は別名ファイルへ向けて既存 srm を上書きしない。
 
 ### タイトル復帰を恒久化する改善案（follow-up 候補）
 
