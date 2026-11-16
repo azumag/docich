@@ -350,6 +350,13 @@ def boss_probe_cell(mem, name, step=None):
     if (chapter == 9 and chart.corridor(chapter) and name
             and chart.is_boss_castle(name)):
         relaunched = int((mem.get('boss_relaunch') or {}).get(str(step)) or 0)
+        if step == 'RECALL':
+            # A camp redirect is the boss order's second leg by definition
+            # (owner 2026-11-16): it re-sends a general already camped at the
+            # waypoint at the moving boss cell. ``boss_relaunch`` is keyed by
+            # the order step, so the pseudo-step never reads it — without this
+            # the redirect's Y jump landed back on the waypoint, not the skull.
+            relaunched = 1
         if relaunched < 1:
             # The egg-repair house north of イデ！ (owner 2026-11-16: the map
             # shows it with a heart; chapter 9 has two, and only the northern
