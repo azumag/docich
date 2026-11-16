@@ -7579,6 +7579,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v980-blindexit",
             "hanjuku-chart-v981-cursor-allwin",
             "hanjuku-chart-v982-gbox",
+            "hanjuku-chart-v984",
             "hanjuku-chart-v864-shop-list-batch",
             "hanjuku-chart-v862-camp-field-move",
             "hanjuku-chart-v852-visible-menu-batches",
