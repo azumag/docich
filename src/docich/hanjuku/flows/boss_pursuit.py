@@ -88,12 +88,15 @@ def step(screen, mem, frame):
         return None
     track(mem)
     kind = screen.kind
+    busy = (mem.get('house') or mem.get('post_month_status')
+            or mem.get('month_sub') or mem.get('month_nav')
+            or mem.get('month_blind_nav'))
     probe = mem.get('boss_pursuit')
     if isinstance(probe, dict):
         # A menu/battle/shop phase owns the screen now: wait it out without
         # spending the read budget, so the probe resumes on the map instead
         # of starving at read_limit inside someone else's phase.
-        if kind not in ACTIONABLE:
+        if busy or kind not in ACTIONABLE:
             return None
         probe['reads'] += 1
         if probe['reads'] > PURSUIT_READ_LIMIT:
@@ -102,8 +105,7 @@ def step(screen, mem, frame):
         # No other order may be running: stealing the field mid-deploy breaks
         # the active sortie, and the pursuit only starts from the field map.
         if (kind != 'map' or _plan_region(mem).get('active')
-                or not chart.moving_boss_cell(9)
-                or (mem.get('post_month_status') or mem.get('house'))):
+                or not chart.moving_boss_cell(9) or busy):
             return None
         pick = _candidate(mem)
         if pick is None:
