@@ -35,10 +35,11 @@ class SafetyState:
     def block_new_buys(self) -> bool:
         return bool(self.trips) or self.unresolved_unknown_submissions > 0 or not self.ledger_readable
 
-    @property
-    def block_exit_orders(self) -> bool:
-        # v1: while stopped, monitor and reconcile only (owner decision pending for fee/data cases).
-        return self.block_new_buys
+    # Owner decision (2026-11-16): a safety stop blocks new buys only; sells (exits) still go out.
+    # One exception lives in ledger.mark_submitting: ENABLE_MISSING is the owner's off switch and blocks
+    # sells too.  A double sell is prevented by the one_open_intent index (one open intent per
+    # symbol and side, UNKNOWN_SUBMISSION included), not here.  An unknown *buy* does not block a sell:
+    # if it filled, the coins only grew.
 
 
 _UNKNOWN = "UNKNOWN_SUBMISSION"
@@ -52,6 +53,11 @@ def active_trips(cur: sqlite3.Cursor) -> tuple[SafetyTrip, ...]:
 
 def unresolved_unknowns(cur: sqlite3.Cursor) -> int:
     return cur.execute("SELECT COUNT(*) FROM intents WHERE state=?", (_UNKNOWN,)).fetchone()[0]
+
+
+def enable_missing_active(cur: sqlite3.Cursor) -> bool:
+    return cur.execute("SELECT 1 FROM safety_trips WHERE reason=? AND cleared_at IS NULL",
+                       (SafetyReason.ENABLE_MISSING.value,)).fetchone() is not None
 
 
 def insert_trip(cur: sqlite3.Cursor, reason: SafetyReason, detail: str, now: float) -> bool:

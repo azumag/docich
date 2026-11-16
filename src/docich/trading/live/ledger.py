@@ -512,8 +512,12 @@ class LiveLedger:
     def mark_submitting(self, lease: WriterLease, intent_id: str, *, now: float) -> Intent:
         """The send may happen only after this returns (the commit is the barrier)."""
         with self._tx(lease) as cur:
-            if safety.active_trips(cur) or safety.unresolved_unknowns(cur):
-                raise SafetyBlocked("safety stop is active")
+            current = self._intent(cur, intent_id)
+            if current.side == "buy":
+                if safety.active_trips(cur) or safety.unresolved_unknowns(cur):
+                    raise SafetyBlocked("safety stop is active: new buys are blocked")
+            elif safety.enable_missing_active(cur):
+                raise SafetyBlocked("the owner's enable file is missing: nothing is sent")
             intent = self._move(cur, lease, intent_id, "PLANNED", "SUBMITTING", now)
         _fault("after_submitting_commit")
         return intent

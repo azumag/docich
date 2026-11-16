@@ -338,6 +338,45 @@ def test_mark_submitting_refused_while_tripped(ready):
         ledger.mark_submitting(lease, intent.intent_id, now=NOW)
 
 
+@pytest.mark.parametrize("reason", list(sf.SafetyReason))
+def test_sell_goes_out_during_a_safety_stop_but_buy_does_not(ready, reason):
+    ws, ledger, lease, ps = ready
+    buy = ledger.create_intent(lease, _req(ps), now=NOW)
+    sell = ledger.create_intent(lease, lg.IntentRequest("kx-sell", "OAS/JPY", "sell", "limit", "10",
+                                                        ps.policy_for("OAS/JPY").digest, "exit-1", "101"), now=NOW)
+    sf.trip(ledger, reason, detail="x", now=NOW)
+    with pytest.raises(lg.SafetyBlocked):
+        ledger.mark_submitting(lease, buy.intent_id, now=NOW)
+    if reason is sf.SafetyReason.ENABLE_MISSING:  # the owner's off switch stops sells too
+        with pytest.raises(lg.SafetyBlocked):
+            ledger.mark_submitting(lease, sell.intent_id, now=NOW)
+    else:
+        assert ledger.mark_submitting(lease, sell.intent_id, now=NOW).state == "SUBMITTING"
+
+
+def _sell(ps, key):
+    return lg.IntentRequest(key, "OAS/JPY", "sell", "limit", "10", ps.policy_for("OAS/JPY").digest, "exit-1", "101")
+
+
+def test_an_unknown_buy_does_not_pin_the_exit(ready):
+    ws, ledger, lease, ps = ready
+    buy = ledger.create_intent(lease, _req(ps), now=NOW)
+    ledger.mark_submitting(lease, buy.intent_id, now=NOW)
+    ledger.mark_in_flight_unknown(lease, now=NOW)
+    sell = ledger.create_intent(lease, _sell(ps, "kx-sell"), now=NOW)
+    assert ledger.mark_submitting(lease, sell.intent_id, now=NOW).state == "SUBMITTING"
+
+
+def test_no_second_sell_can_be_planned_while_the_first_sell_is_unknown(ready):
+    ws, ledger, lease, ps = ready
+    ledger.create_intent(lease, _req(ps), now=NOW)
+    first = ledger.create_intent(lease, _sell(ps, "kx-sell-1"), now=NOW)
+    ledger.mark_submitting(lease, first.intent_id, now=NOW)
+    ledger.mark_in_flight_unknown(lease, now=NOW)
+    with pytest.raises(lg.LiveLedgerError):
+        ledger.create_intent(lease, _sell(ps, "kx-sell-2"), now=NOW)
+
+
 def _run_child(ws, body):
     code = textwrap.dedent(f"""
         import os, signal, sys
@@ -581,11 +620,11 @@ def test_trip_is_allowed_without_a_lease(ws):
 
 # ---- safety latch -----------------------------------------------------------------------
 @pytest.mark.parametrize("reason", list(sf.SafetyReason))
-def test_each_reason_blocks_new_buys_and_exits(ws, reason):
+def test_each_reason_blocks_new_buys(ws, reason):
     ledger = ws.open_ledger()
     sf.trip(ledger, reason, detail="d", now=NOW)
     state = sf.read_safety_state(ledger)
-    assert state.block_new_buys and state.block_exit_orders
+    assert state.block_new_buys
     ledger.close()
 
 
