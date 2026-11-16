@@ -23,6 +23,7 @@ from docich.trading.live import reconcile as live_reconcile
 from docich.trading.live import views as live_views
 from docich.trading.live.enable import EnableReason, EnableResult
 from docich.trading.live.exchange import Capabilities, ExchangeAmbiguous, OrderRequest, OrderSnapshot
+from docich.trading.live.exchange import FillPage, OrderPage
 from docich.trading.live.ingest import observation_from
 from docich.trading.live.executor import SubmitOutcome as S
 from docich.trading.live.ledger import LiveLedger
@@ -851,6 +852,156 @@ def test_unknown_resolve_refuses_a_matching_open_order_for_not_created(workspace
                           now=h.clock.seconds(), reader_factory=lambda state_dir: h.mock)
         assert code == 1 and text == "refused: a matching order exists on the exchange; use --found-order\n"
         assert (_events(h.ledger), _orders(h.ledger), h.trips()) == before
+    finally:
+        h.close()
+
+
+class _LateIncompletePage:
+    """The response changes between reads: no match first, then a cut-off page that does contain one.
+
+    The first open-orders read (the CLI's own candidate check) sees nothing.  Every later read returns
+    an incomplete page with the intent's order: try_resolve must answer "waiting", not a proof.
+    """
+
+    def __init__(self, mock, matching, *, fail_on: int | None = None):
+        self.mock, self.matching, self.fail_on = mock, matching, fail_on
+        self.open_reads = 0
+
+    @property
+    def capabilities(self):
+        return self.mock.capabilities
+
+    def market_rules(self, symbol):
+        return self.mock.market_rules(symbol)
+
+    def fetch_balance(self):
+        return self.mock.fetch_balance()
+
+    def fetch_open_orders(self, symbol):
+        self.open_reads += 1
+        if self.open_reads == 1:
+            return OrderPage((), complete=True)
+        if self.fail_on is not None and self.open_reads == self.fail_on:
+            raise ExchangeAmbiguous("boom")
+        return OrderPage((self.matching,), complete=False)
+
+    def fetch_fills(self, symbol, *, since_ms, exchange_order_id=None):
+        return FillPage((), complete=True)
+
+    def fetch_order(self, symbol, exchange_order_id):
+        return self.mock.fetch_order(symbol, exchange_order_id)
+
+
+def test_not_created_refuses_an_order_that_appears_after_the_first_read(workspace):
+    h = _unknown_harness(workspace, caps=Capabilities(False, False, True))
+    try:
+        h.mock.faults.push("submit", "LOST_REQUEST")
+        intent, outcome = h.send(side="buy", key="b1", amount="10", price="90")
+        assert outcome is S.UNKNOWN
+        h.advance(500)
+        eid = h.mock.place_external_order(
+            OrderRequest("OAS/JPY", "buy", "limit", Decimal("10"), Decimal("90"), None))
+        matching = h.mock.fetch_order("OAS/JPY", eid)
+        _released(h)
+        before_trips = h.trips()
+        argv = ["unknown", "resolve", "--intent", intent.intent_id, "--not-created",
+                "--override-incomplete-proof", "--evidence", "checked the exchange history by hand",
+                "--operator", "owner"]
+        code, preview = _run(workspace.state, *argv, now=h.clock.seconds(),
+                             reader_factory=lambda state_dir: _LateIncompletePage(h.mock, matching))
+        assert code == 0 and "matching: 0" in preview, preview
+        code, text = _run(workspace.state, *argv, "--confirm", _token(preview), now=h.clock.seconds(),
+                          reader_factory=lambda state_dir: _LateIncompletePage(h.mock, matching))
+        after = h.ledger.get_intent(intent.intent_id)
+        result = (code, text, after.state, len(h.ledger.list_intents(states=("NOT_CREATED",))), h.trips())
+        assert result == (1, "refused: a matching order exists on the exchange; use --found-order\n",
+                          "UNKNOWN_SUBMISSION", 0, before_trips)
+    finally:
+        h.close()
+
+
+def test_not_created_refuses_a_late_matching_order_when_the_machine_waits(workspace, monkeypatch):
+    h = _unknown_harness(workspace, caps=Capabilities(False, False, True))
+    try:
+        h.mock.faults.push("submit", "LOST_REQUEST")
+        intent, outcome = h.send(side="buy", key="b1", amount="10", price="90")
+        assert outcome is S.UNKNOWN
+        h.advance(500)
+        eid = h.mock.place_external_order(
+            OrderRequest("OAS/JPY", "buy", "limit", Decimal("10"), Decimal("90"), None))
+        matching = h.mock.fetch_order("OAS/JPY", eid)
+
+        def waiting(ex, pending):
+            return "waiting"                                   # this test is about the fresh read only
+
+        monkeypatch.setattr(live_reconcile, "try_resolve", waiting)
+        _released(h)
+        before_trips = h.trips()
+        argv = ["unknown", "resolve", "--intent", intent.intent_id, "--not-created",
+                "--override-incomplete-proof", "--evidence", "checked the exchange history by hand",
+                "--operator", "owner"]
+        code, preview = _run(workspace.state, *argv, now=h.clock.seconds(),
+                             reader_factory=lambda state_dir: _LateIncompletePage(h.mock, matching))
+        assert code == 0 and "matching: 0" in preview, preview
+        code, text = _run(workspace.state, *argv, "--confirm", _token(preview), now=h.clock.seconds(),
+                          reader_factory=lambda state_dir: _LateIncompletePage(h.mock, matching))
+        after = h.ledger.get_intent(intent.intent_id)
+        result = (code, text, after.state, len(h.ledger.list_intents(states=("NOT_CREATED",))), h.trips())
+        assert result == (1, "refused: a matching order exists on the exchange; use --found-order\n",
+                          "UNKNOWN_SUBMISSION", 0, before_trips)
+    finally:
+        h.close()
+
+
+def test_not_created_refuses_when_the_fresh_read_is_exchange_unavailable(workspace, monkeypatch):
+    h = _unknown_harness(workspace, caps=Capabilities(False, False, True))
+    try:
+        h.mock.faults.push("submit", "LOST_REQUEST")
+        intent, outcome = h.send(side="buy", key="b1", amount="10", price="90")
+        assert outcome is S.UNKNOWN
+        h.advance(500)
+        eid = h.mock.place_external_order(
+            OrderRequest("OAS/JPY", "buy", "limit", Decimal("10"), Decimal("90"), None))
+        matching = h.mock.fetch_order("OAS/JPY", eid)
+
+        def waiting(ex, pending):
+            return "waiting"                                   # only the fresh read touches the exchange
+
+        monkeypatch.setattr(live_reconcile, "try_resolve", waiting)
+        _released(h)
+        argv = ["unknown", "resolve", "--intent", intent.intent_id, "--not-created",
+                "--override-incomplete-proof", "--evidence", "checked the exchange history by hand",
+                "--operator", "owner"]
+        code, preview = _run(workspace.state, *argv, now=h.clock.seconds(),
+                             reader_factory=lambda state_dir: _LateIncompletePage(h.mock, matching))
+        assert code == 0, preview                              # the preview's single read still succeeds
+        code, text = _run(workspace.state, *argv, "--confirm", _token(preview), now=h.clock.seconds(),
+                          reader_factory=lambda state_dir: _LateIncompletePage(h.mock, matching, fail_on=2))
+        assert code == 1 and text.startswith("refused: exchange unavailable")
+        assert h.ledger.get_intent(intent.intent_id).state == "UNKNOWN_SUBMISSION"
+        assert h.ledger.list_intents(states=("NOT_CREATED",)) == []
+    finally:
+        h.close()
+
+
+def test_found_order_links_the_order_with_an_active_blocking_stop(workspace):
+    h = _unknown_harness(workspace, caps=Capabilities(False, False, True))
+    try:
+        intent = _lost_buy(h, fault="LOST_RESPONSE")
+        eid = h.mock.all_orders()[0].exchange_order_id
+        h.ledger.trip_safety(sf.SafetyReason.UNKNOWN_ORDER, detail="test stop", now=h.clock.seconds())
+        assert h.trips() == ["unknown_order"]
+        _released(h)
+        argv = ["unknown", "resolve", "--intent", intent.intent_id, "--found-order", eid,
+                "--evidence", "found it on the exchange by hand", "--operator", "owner"]
+        code, preview = _run(workspace.state, *argv, now=h.clock.seconds(),
+                             reader_factory=lambda state_dir: h.mock)
+        assert code == 0 and "order_matches: true" in preview, preview
+        code, text = _run(workspace.state, *argv, "--confirm", _token(preview), now=h.clock.seconds(),
+                          reader_factory=lambda state_dir: h.mock)
+        after = h.ledger.get_intent(intent.intent_id)
+        assert (code, text, after.state, after.reason_code) == (0, "resolved: found\n", "ACKED", "found_by_owner")
+        assert h.trips() == ["unknown_order"]                  # the stop was not the thing resolved
     finally:
         h.close()
 

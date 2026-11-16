@@ -913,9 +913,13 @@ def _resolve_not_created(args, out, clock, ex, ledger, intent, lo_ms, hi_ms, ope
         print("refused: the machine cannot prove this; add --override-incomplete-proof if you checked "
               "the exchange yourself", file=out)
         return EXIT_REFUSED
+    fresh = _candidate_orders(ledger, ex.reader, intent, lo_ms, hi_ms)   # the last look before the proof
+    if fresh.matching:
+        print("refused: a matching order exists on the exchange; use --found-order", file=out)
+        return EXIT_REFUSED
     proof = _evidence("not_created", operator, evidence, clock(), result,
-                      "true" if found.open_complete else "false", "true" if found.fills_complete else "false",
-                      len(found.candidates), True)
+                      "true" if fresh.open_complete else "false", "true" if fresh.fills_complete else "false",
+                      len(fresh.candidates), True)
     try:
         done = ledger.transition_intent(ex.lease, intent.intent_id, expected_state="UNKNOWN_SUBMISSION",
                                         to_state="NOT_CREATED", now=clock(), reason_code="owner_not_created",
