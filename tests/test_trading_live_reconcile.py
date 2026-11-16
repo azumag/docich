@@ -5,6 +5,7 @@ import signal
 import subprocess
 import sys
 import textwrap
+from types import SimpleNamespace
 from dataclasses import replace
 from decimal import Decimal as D
 from pathlib import Path
@@ -503,3 +504,23 @@ def test_link_found_order_refuses_a_snapshot_that_changed_the_recorded_order(ws)
         assert h.state(intent.intent_id) == "UNKNOWN_SUBMISSION" and "data_anomaly" in h.trips()
     finally:
         h.close()
+
+
+# ---- the owner CLI matches orders with the resolver's own rule -------------------------------
+def _snapshot(**kw):
+    values = dict(symbol="OAS/JPY", side="buy", order_type="limit", amount=D("10"), price=D("90"),
+                  ordered_at_ms=5_000)
+    values.update(kw)
+    return SimpleNamespace(**values)
+
+
+def test_matches_intent_is_the_public_name_of_the_existing_predicate():
+    assert reconcile._matches is reconcile.matches_intent
+    intent = SimpleNamespace(symbol="OAS/JPY", side="buy", order_type="limit", amount="10", price="90")
+    assert reconcile.matches_intent(intent, _snapshot(), 0, 10_000) is True
+    assert reconcile._matches(intent, _snapshot(), 0, 10_000) is True
+    assert reconcile.matches_intent(intent, _snapshot(), 0, 1_000) is False          # outside the window
+    assert reconcile.matches_intent(intent, _snapshot(amount=D("11")), 0, 10_000) is False
+    assert reconcile.matches_intent(intent, _snapshot(side="sell"), 0, 10_000) is False
+    assert reconcile.matches_intent(intent, _snapshot(price=D("91")), 0, 10_000) is False
+    assert reconcile.matches_intent(intent, _snapshot(ordered_at_ms=None), 0, 0) is True

@@ -37,7 +37,7 @@ def link_found_order(ex, intent: Intent, snap: OrderSnapshot, how: str, *, evide
 _link = link_found_order
 
 
-def _matches(intent: Intent, snap: OrderSnapshot, lo_ms: int, hi_ms: int) -> bool:
+def matches_intent(intent: Intent, snap: OrderSnapshot, lo_ms: int, hi_ms: int) -> bool:
     if (snap.symbol, snap.side, snap.order_type) != (intent.symbol, intent.side, intent.order_type):
         return False
     if snap.amount != Decimal(intent.amount):
@@ -45,6 +45,9 @@ def _matches(intent: Intent, snap: OrderSnapshot, lo_ms: int, hi_ms: int) -> boo
     if intent.order_type == "limit" and snap.price != Decimal(intent.price):
         return False
     return snap.ordered_at_ms is None or lo_ms <= snap.ordered_at_ms <= hi_ms
+
+
+_matches = matches_intent
 
 
 def try_resolve(ex, intent: Intent) -> str:

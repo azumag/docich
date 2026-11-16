@@ -4,9 +4,11 @@
     python -m docich.trading.live_owner --state-dir <dir> cashflow list
     python -m docich.trading.live_owner --state-dir <dir> cashflow add --kind deposit ...
     python -m docich.trading.live_owner --state-dir <dir> activate --snapshot ... --experiment-digest ...
+    python -m docich.trading.live_owner --state-dir <dir> unknown list|show|resolve ...
 
 The two writers (``cashflow add`` and ``activate``) print a token first and act only when the owner
-repeats it.  Nothing here talks to an exchange: the state dir is the only input.
+repeats it.  ``unknown resolve`` does the same and records the owner's evidence.  Nothing here talks
+to an exchange except the checks in ``unknown show|resolve`` (through a read-only reader).
 
 Exit codes: 0 ok, 1 refused, 2 usage, 5 the writer lease is held by the live worker.
 Money is a Decimal from text; floats never appear (``exchange.dec``/``dec_text``).
@@ -23,15 +25,17 @@ from pathlib import Path
 from typing import Callable, TextIO
 
 from . import revision as revision_module
-from ..live import enable as live_enable, lease as live_lease, policy as live_policy, safety
+from ..live import enable as live_enable, executor as live_executor, ingest as live_ingest, lease as live_lease
+from ..live import policy as live_policy, reconcile as live_reconcile, safety, views as live_views
 from ..live.canonical import canonical_json, sha256_hex
-from ..live.exchange import dec, dec_text
+from ..live.exchange import ExchangeError, dec, dec_text
 from ..live.ledger import Cashflow, LiveLedger, LiveLedgerError
 from ..live.paths import LiveLayout, live_layout
 from ..live.policy import INITIAL_SYMBOLS
 
 EXIT_OK, EXIT_REFUSED, EXIT_USAGE, EXIT_LEASE_HELD = 0, 1, 2, 5
 MAX_TEXT = 200                  # operator and note
+MIN_EVIDENCE, MAX_EVIDENCE = 20, 400
 MAX_AMOUNT_PLACES = 8
 FUTURE_SKEW_S = 60.0
 _PLAIN_DECIMAL = re.compile(r"[+-]?[0-9]+(?:\.[0-9]+)?")
@@ -358,6 +362,302 @@ def _activate(args, out: TextIO, clock: Callable[[], float], revision: Callable[
     return _record_activation(args, ps, enable_result, rev, operator, note, out, clock)
 
 
+# ---- unknown: a human resolves an UNKNOWN_SUBMISSION intent --------------------------------
+def _exchange_reader(reader_factory, state_dir):
+    """The reader for one command: injected by tests, else the real factory (imported here, lazily)."""
+    if reader_factory is not None:
+        return reader_factory(Path(state_dir))
+    from . import exchange_access          # the exchange layer is never imported with this module
+    return exchange_access.open_reader(state_dir)
+
+
+def _is_exchange_failure(exc: BaseException) -> bool:
+    if isinstance(exc, ExchangeError):
+        return True
+    from . import exchange_access
+    return isinstance(exc, exchange_access.ReaderUnavailableError)
+
+
+def _unavailable(exc: BaseException, out: TextIO) -> int:
+    print(f"refused: exchange unavailable: {type(exc).__name__}", file=out)
+    return EXIT_REFUSED
+
+
+def _closed_gate():
+    """The read-only executor's gate: always closed, so even a bug can never send."""
+    return live_enable.EnableResult(False, (live_enable.EnableReason.FILE_MISSING,))
+
+
+def _open_read_only_executor(state_dir, ledger, writer, reader, clock):
+    """An executor that can poll but never send (sender None): every owner check runs through it."""
+    return live_executor.OrderExecutor(ledger, writer, reader=reader, sender=None, enable_check=_closed_gate,
+                                       clock=clock, symbols=INITIAL_SYMBOLS,
+                                       config=live_ingest.ExecutorConfig())
+
+
+def _window(ledger, intent, now: float, config) -> tuple[int, int]:
+    submitted_at = live_views.submitting_time(ledger, intent.intent_id) or intent.updated_at
+    margin_ms = int(config.skew_margin_s * 1000)
+    return int(submitted_at * 1000) - margin_ms, int(now * 1000) + margin_ms
+
+
+def _settle_elapsed(ledger, intent, now: float, config) -> bool:
+    submitted_at = live_views.submitting_time(ledger, intent.intent_id) or intent.updated_at
+    return now - submitted_at >= config.settle_s
+
+
+def _matching_open_orders(ledger, reader, intent, lo_ms: int, hi_ms: int):
+    """(page, unknown open orders, those matching the intent) — nothing the ledger already knows."""
+    page = reader.fetch_open_orders(intent.symbol)
+    known = live_views.known_order_ids(ledger)
+    candidates = [snap for snap in page.orders if snap.exchange_order_id not in known]
+    matching = [snap for snap in candidates if live_reconcile.matches_intent(intent, snap, lo_ms, hi_ms)]
+    return page, candidates, matching
+
+
+def _evidence(mode: str, operator: str, evidence: str, checked_at: float, result: str, open_list_complete: str,
+              candidates: int, override: bool, found_order_id: str | None = None) -> str:
+    """The proof the owner puts on the intent row: strings only, no amounts.
+
+    The exchange order id appears only for a found order (the not_created proof names no order).
+    """
+    payload: dict[str, object] = {
+        "method": "owner_manual", "mode": mode, "operator": operator, "evidence": evidence,
+        "checked_at": str(checked_at),
+        "machine": {"result": result, "open_list_complete": open_list_complete,
+                    "candidates": str(candidates),
+                    "override_incomplete_proof": "true" if override else "false"}}
+    if found_order_id is not None:
+        payload["found_order_id"] = found_order_id
+    return canonical_json(payload).decode("utf-8")
+
+
+def _unknown_list(args, out: TextIO, clock: Callable[[], float], is_tty: bool) -> int:
+    layout = live_layout(args.state_dir)
+    if not layout.ledger_path.is_file():
+        print("ledger: not created", file=out)
+        return EXIT_OK
+    ledger = LiveLedger.open_readonly(layout)
+    try:
+        intents = ledger.list_intents(states=("UNKNOWN_SUBMISSION",))
+    finally:
+        ledger.close()
+    if not intents:
+        print("unknown_submissions: none", file=out)
+        return EXIT_OK
+    now = clock()
+    for intent in intents:
+        age = max(0, int(now - intent.created_at))
+        amount = intent.amount if is_tty else "hidden"
+        price = (intent.price if intent.price is not None else "none") if is_tty else "hidden"
+        print(f"{intent.intent_id[:12]} {intent.symbol} {intent.side} {intent.order_type} "
+              f"age: {age}s amount: {amount} price: {price}", file=out)
+    return EXIT_OK
+
+
+def _unknown_show(args, out: TextIO, clock: Callable[[], float], is_tty: bool, reader_factory) -> int:
+    layout = live_layout(args.state_dir)
+    if not layout.ledger_path.is_file():
+        print("ledger: not created", file=out)
+        return EXIT_OK
+    ledger = LiveLedger.open_readonly(layout)
+    try:
+        intent = ledger.get_intent(args.intent)
+        if intent is None or intent.state != "UNKNOWN_SUBMISSION":
+            print("refused: not an unknown submission", file=out)
+            return EXIT_REFUSED
+        config, now = live_ingest.ExecutorConfig(), clock()
+        lo_ms, hi_ms = _window(ledger, intent, now, config)
+        settle = _settle_elapsed(ledger, intent, now, config)
+        try:
+            reader = _exchange_reader(reader_factory, args.state_dir)
+            page, candidates, matching = _matching_open_orders(ledger, reader, intent, lo_ms, hi_ms)
+        except Exception as exc:
+            if not _is_exchange_failure(exc):
+                raise
+            return _unavailable(exc, out)
+    finally:
+        ledger.close()
+    print(f"intent: {intent.intent_id[:12]}", file=out)
+    print(f"window_ms: {lo_ms}..{hi_ms}", file=out)
+    print(f"open_list_complete: {'true' if page.complete else 'false'}", file=out)
+    print(f"candidates: {len(candidates)}", file=out)
+    print(f"matching: {len(matching)}", file=out)
+    if matching:
+        if is_tty:
+            for snap in matching:
+                print(f"order: {snap.exchange_order_id}", file=out)
+        else:
+            print("order: id: hidden", file=out)
+    print(f"settle_elapsed: {'true' if settle else 'false'}", file=out)
+    return EXIT_OK
+
+
+def _unknown_resolve(args, out: TextIO, clock: Callable[[], float], is_tty: bool, reader_factory) -> int:
+    if (args.found_order is not None) == bool(args.not_created):
+        print("refused: give exactly one of --found-order and --not-created", file=out)
+        return EXIT_REFUSED
+    try:
+        operator = _parse_text(args.operator, "operator")
+        evidence = args.evidence.strip()
+        if not MIN_EVIDENCE <= len(evidence) <= MAX_EVIDENCE:
+            raise ValueError(f"evidence must be {MIN_EVIDENCE}..{MAX_EVIDENCE} characters")
+    except ValueError as exc:
+        print(f"refused: {exc}", file=out)
+        return EXIT_REFUSED
+    mode = f"found:{args.found_order}" if args.found_order is not None else "not_created"
+    layout = live_layout(args.state_dir)
+    if not layout.ledger_path.is_file():
+        print("refused: unknown intent", file=out)
+        return EXIT_REFUSED
+    content = {"intent_id": args.intent, "mode": mode, "evidence": evidence, "operator": operator,
+               "override_incomplete_proof": "true" if args.override_incomplete_proof else "false"}
+    token = _token(content, _ledger_id(layout))
+    ledger = LiveLedger.open_readonly(layout)
+    try:
+        intent = ledger.get_intent(args.intent)
+        if intent is None:
+            print("refused: unknown intent", file=out)
+            return EXIT_REFUSED
+        if intent.state != "UNKNOWN_SUBMISSION":
+            print("refused: not an unknown submission", file=out)
+            return EXIT_REFUSED
+        if args.confirm is None:
+            return _preview_resolution(args, out, clock, is_tty, reader_factory, ledger, intent, mode, operator,
+                                       evidence, token)
+    finally:
+        ledger.close()
+    if args.confirm.strip() != token:
+        print("refused: confirmation token does not match", file=out)
+        return EXIT_REFUSED
+    return _run_resolution(args, out, clock, is_tty, reader_factory, operator, evidence)
+
+
+def _preview_resolution(args, out, clock, is_tty, reader_factory, ledger, intent, mode, operator, evidence,
+                        token) -> int:
+    config, now = live_ingest.ExecutorConfig(), clock()
+    lo_ms, hi_ms = _window(ledger, intent, now, config)
+    settle = _settle_elapsed(ledger, intent, now, config)
+    page, candidates, matching = None, [], []
+    try:
+        reader = _exchange_reader(reader_factory, args.state_dir)
+        if args.found_order is not None:
+            snap = reader.fetch_order(intent.symbol, args.found_order)
+            if not live_reconcile.matches_intent(intent, snap, lo_ms, hi_ms):
+                print("refused: the exchange order does not match this intent", file=out)
+                return EXIT_REFUSED
+            row = live_views.order_row(ledger, args.found_order)
+            if row is not None and row.intent_id not in (None, intent.intent_id):
+                print("refused: that exchange order id belongs to another intent", file=out)
+                return EXIT_REFUSED
+        else:
+            page, candidates, matching = _matching_open_orders(ledger, reader, intent, lo_ms, hi_ms)
+            if matching:
+                print("refused: a matching order exists on the exchange; use --found-order", file=out)
+                return EXIT_REFUSED
+            if not settle:
+                print("refused: settle time has not passed", file=out)
+                return EXIT_REFUSED
+    except Exception as exc:
+        if not _is_exchange_failure(exc):
+            raise
+        return _unavailable(exc, out)
+    print(f"intent: {intent.intent_id[:12]}", file=out)
+    print(f"mode: {mode}", file=out)
+    print(f"window_ms: {lo_ms}..{hi_ms}", file=out)
+    if args.found_order is not None:
+        print("order_matches: true", file=out)
+        print("order_unclaimed: true", file=out)
+    else:
+        print(f"open_list_complete: {'true' if page.complete else 'false'}", file=out)
+        print(f"candidates: {len(candidates)}", file=out)
+        print("matching: 0", file=out)
+        print(f"settle_elapsed: {'true' if settle else 'false'}", file=out)
+        print(f"override_incomplete_proof: {'true' if args.override_incomplete_proof else 'false'}", file=out)
+    print(f"operator: {operator}", file=out)
+    print(f"evidence: {evidence}", file=out)
+    print(f"token: {token}", file=out)
+    return EXIT_OK
+
+
+def _run_resolution(args, out, clock, is_tty, reader_factory, operator, evidence) -> int:
+    layout = live_layout(args.state_dir)
+    ledger, writer = None, None
+    try:
+        ledger = LiveLedger.open(layout, paper_dir=Path(args.state_dir) / "trading", now=clock())
+        try:
+            writer = live_lease.acquire_writer_lease(ledger, layout, now=clock())
+        except live_lease.LeaseHeld:
+            print("refused: the live worker holds the writer lease; stop it first", file=out)
+            return EXIT_LEASE_HELD
+        intent = ledger.get_intent(args.intent)                 # the world may have moved since the preview
+        if intent is None or intent.state != "UNKNOWN_SUBMISSION":
+            print("refused: not an unknown submission", file=out)
+            return EXIT_REFUSED
+        try:
+            reader = _exchange_reader(reader_factory, args.state_dir)
+            ex = _open_read_only_executor(args.state_dir, ledger, writer, reader, clock)
+            config, now = ex.config, clock()
+            lo_ms, hi_ms = _window(ledger, intent, now, config)
+            if args.found_order is not None:
+                return _resolve_found(args, out, clock, ex, ledger, intent, lo_ms, hi_ms, operator, evidence)
+            return _resolve_not_created(args, out, clock, ex, ledger, intent, lo_ms, hi_ms, operator, evidence)
+        except Exception as exc:
+            if not _is_exchange_failure(exc):
+                raise
+            return _unavailable(exc, out)
+    finally:
+        _release_writer(ledger, writer, clock)
+
+
+def _resolve_found(args, out, clock, ex, ledger, intent, lo_ms, hi_ms, operator, evidence) -> int:
+    snap = ex.reader.fetch_order(intent.symbol, args.found_order)
+    if not live_reconcile.matches_intent(intent, snap, lo_ms, hi_ms):
+        print("refused: the exchange order does not match this intent", file=out)
+        return EXIT_REFUSED
+    row = live_views.order_row(ledger, args.found_order)
+    if row is not None and row.intent_id not in (None, intent.intent_id):
+        print("refused: that exchange order id belongs to another intent", file=out)
+        return EXIT_REFUSED
+    proof = _evidence("found_order", operator, evidence, clock(), "not_run", "unknown", 1,
+                      bool(args.override_incomplete_proof), found_order_id=args.found_order)
+    if live_reconcile.link_found_order(ex, intent, snap, "owner", evidence=proof) == "anomaly":
+        print("refused: the ledger found an anomaly", file=out)
+        return EXIT_REFUSED
+    print("resolved: found", file=out)
+    return EXIT_OK
+
+
+def _resolve_not_created(args, out, clock, ex, ledger, intent, lo_ms, hi_ms, operator, evidence) -> int:
+    page, _candidates, matching = _matching_open_orders(ledger, ex.reader, intent, lo_ms, hi_ms)
+    if matching:
+        print("refused: a matching order exists on the exchange; use --found-order", file=out)
+        return EXIT_REFUSED
+    if not _settle_elapsed(ledger, intent, clock(), ex.config):
+        print("refused: settle time has not passed", file=out)
+        return EXIT_REFUSED
+    result = live_reconcile.try_resolve(ex, intent)          # the machine's own proof is tried first
+    if result in ("acked", "not_created"):
+        print(f"resolved: by the machine ({result})", file=out)
+        return EXIT_OK
+    if not args.override_incomplete_proof:
+        print("refused: the machine cannot prove this; add --override-incomplete-proof if you checked "
+              "the exchange yourself", file=out)
+        return EXIT_REFUSED
+    proof = _evidence("not_created", operator, evidence, clock(), result, "true" if page.complete else "false",
+                      0, True)
+    try:
+        done = ledger.transition_intent(ex.lease, intent.intent_id, expected_state="UNKNOWN_SUBMISSION",
+                                        to_state="NOT_CREATED", now=clock(), reason_code="owner_not_created",
+                                        evidence=proof)
+    except LiveLedgerError:
+        print("refused: the ledger refused the resolution", file=out)
+        return EXIT_REFUSED
+    ex.ingest._close_if_flat(done)                           # exactly what try_resolve does at its end
+    print("resolved: not created (owner evidence)", file=out)
+    return EXIT_OK
+
+
 # ---- argument parsing and dispatch -----------------------------------------------------------
 def _build_parser(out: TextIO) -> argparse.ArgumentParser:
     parser = _Parser(prog="python -m docich.trading.live_owner", stream=out,
@@ -385,12 +685,27 @@ def _build_parser(out: TextIO) -> argparse.ArgumentParser:
     activate.add_argument("--operator", required=True)
     activate.add_argument("--note", required=True)
     activate.add_argument("--confirm", help="the token printed by the preview")
+    unknown = commands.add_parser("unknown", stream=out, help="UNKNOWN_SUBMISSION intents")
+    unknowns = unknown.add_subparsers(dest="unknown_command", required=True)
+    unknowns.add_parser("list", stream=out, help="read-only list (no exchange)")
+    show = unknowns.add_parser("show", stream=out, help="read-only checks against the exchange")
+    show.add_argument("--intent", required=True)
+    resolve = unknowns.add_parser("resolve", stream=out, help="record the owner's resolution with evidence")
+    resolve.add_argument("--intent", required=True)
+    resolve.add_argument("--found-order", help="the exchange order id that is this intent's order")
+    resolve.add_argument("--not-created", action="store_true", help="the order was never created")
+    resolve.add_argument("--evidence", required=True, help="what the owner checked (20..400 characters)")
+    resolve.add_argument("--operator", required=True)
+    resolve.add_argument("--override-incomplete-proof", action="store_true",
+                         help="accept the owner's conclusion when the machine cannot prove it")
+    resolve.add_argument("--confirm", help="the token printed by the preview")
     return parser
 
 
 def main(argv: list[str] | None = None, *, out: TextIO | None = None, clock: Callable[[], float] = time.time,
          is_tty: bool | None = None,
-         revision: Callable[[], str] = revision_module.current_revision) -> int:
+         revision: Callable[[], str] = revision_module.current_revision,
+         reader_factory: Callable[[Path], object] | None = None) -> int:
     out = sys.stdout if out is None else out
     if is_tty is None:
         is_tty = bool(getattr(out, "isatty", lambda: False)())
@@ -409,6 +724,12 @@ def main(argv: list[str] | None = None, *, out: TextIO | None = None, clock: Cal
         return _status(args, out)
     if args.command == "activate":
         return _activate(args, out, clock, revision)
+    if args.command == "unknown":
+        if args.unknown_command == "list":
+            return _unknown_list(args, out, clock, is_tty)
+        if args.unknown_command == "show":
+            return _unknown_show(args, out, clock, is_tty, reader_factory)
+        return _unknown_resolve(args, out, clock, is_tty, reader_factory)
     if args.cashflow_command == "list":
         return _cashflow_list(args, out, is_tty)
     return _cashflow_add(args, out, clock, is_tty)
