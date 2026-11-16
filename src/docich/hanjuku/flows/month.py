@@ -248,6 +248,10 @@ def _month_menu_move(screen: Screen, mem, label: str):
             # burst is dropped (the same cadence lesson as the しろ list, v920).
             keys = (['up'] * 4 + ['right' if col else 'left']
                     + ['down'] * row + ['a'])
+            if label.startswith('しょうにん'):
+                # The blind 'a' opens the merchant's うむッ/いかんッ gate; mark
+                # it so the next confirm answers うむッ instead of refusing.
+                mem['month_merchant_confirm'] = True
             steps = []
             for key in keys:
                 steps += [pad(key), {'type': 'wait', 'ms': MONTH_BLIND_NAV_WAIT_MS}]

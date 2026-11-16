@@ -7572,6 +7572,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v973-month-nav",
             "hanjuku-chart-v974-pursuit-month-gate",
             "hanjuku-chart-v975-merchant-confirm",
+            "hanjuku-chart-v976-merchant-blind",
             "hanjuku-chart-v864-shop-list-batch",
             "hanjuku-chart-v862-camp-field-move",
             "hanjuku-chart-v852-visible-menu-batches",
