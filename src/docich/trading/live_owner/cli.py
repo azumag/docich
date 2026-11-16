@@ -5,10 +5,13 @@
     python -m docich.trading.live_owner --state-dir <dir> cashflow add --kind deposit ...
     python -m docich.trading.live_owner --state-dir <dir> activate --snapshot ... --experiment-digest ...
     python -m docich.trading.live_owner --state-dir <dir> unknown list|show|resolve ...
+    python -m docich.trading.live_owner --state-dir <dir> trip list
+    python -m docich.trading.live_owner --state-dir <dir> trip clear --reason ... --confirm ...
 
 The two writers (``cashflow add`` and ``activate``) print a token first and act only when the owner
-repeats it.  ``unknown resolve`` does the same and records the owner's evidence.  Nothing here talks
-to an exchange except the checks in ``unknown show|resolve`` (through a read-only reader).
+repeats it.  ``unknown resolve`` and ``trip clear`` do the same; ``unknown resolve`` records the
+owner's evidence and ``trip clear`` is the human-only stop release.  Nothing here talks to an
+exchange except the checks in ``unknown show|resolve`` (through a read-only reader).
 
 Exit codes: 0 ok, 1 refused, 2 usage, 5 the writer lease is held by the live worker.
 Money is a Decimal from text; floats never appear (``exchange.dec``/``dec_text``).
@@ -277,6 +280,154 @@ def _cashflow_add(args, out: TextIO, clock: Callable[[], float], is_tty: bool) -
         print("refused: confirmation token does not match", file=out)
         return EXIT_REFUSED
     return _record(args, content, when.timestamp(), _cashflow_id(content), out, clock)
+
+
+# ---- trip: the owner's view of the safety stops, and the human-only release -------------------
+def _trip_line(trip) -> str:
+    when = datetime.fromtimestamp(trip.tripped_at, tz=timezone.utc).isoformat()
+    return f"trip_id={trip.trip_id} reason={trip.reason} tripped_at={when}"
+
+
+def _trip_detail(trip, out: TextIO, is_tty: bool) -> None:
+    print(f"detail={trip.detail if is_tty else 'hidden'}", file=out)
+
+
+def _active_trip(state, reason: str):
+    """The one active trip of this reason (None if there is none)."""
+    return next((trip for trip in state.trips if trip.reason == reason), None)
+
+
+def _trip_content(reason: str, trip, operator: str, note: str, evidence: str) -> dict[str, str]:
+    return {"kind": "trip_clear", "reason": reason, "trip_id": str(trip.trip_id), "operator": operator,
+            "note": note, "evidence": evidence}
+
+
+def _clear_arguments(args) -> tuple[str, str, str]:
+    """operator, note and evidence, validated exactly as ``unknown resolve`` validates evidence."""
+    operator = _parse_text(args.operator, "operator")
+    note = _parse_text(args.note, "note")
+    evidence = args.evidence.strip()
+    if not MIN_EVIDENCE <= len(evidence) <= MAX_EVIDENCE:
+        raise ValueError(f"evidence must be {MIN_EVIDENCE}..{MAX_EVIDENCE} characters")
+    return operator, note, evidence
+
+
+def _enable_file_refusal(args, ledger, clock: Callable[[], float],
+                         revision: Callable[[], str]) -> str | None:
+    """Why ENABLE_MISSING cannot be cleared now (None: the enable file allows it).
+
+    The check is ``enabled`` (a shadow file counts), the same field the worker trips on, and it is
+    bound to the active policy set's digest and to the current code revision.
+    """
+    digest = ledger.active_policy_set_digest()
+    if digest is None:
+        return "refused: no active policy set"
+    try:
+        rev = revision()
+    except revision_module.RevisionError as exc:
+        return f"refused: {exc}"
+    result = live_enable.live_enabled(args.state_dir, policy_set_digest=digest, code_revision=rev, now=clock())
+    if not result.enabled:
+        return "refused: enable file is not valid: " + ", ".join(reason.value for reason in result.reasons)
+    return None
+
+
+def _trip_list(args, out: TextIO, is_tty: bool) -> int:
+    layout = live_layout(args.state_dir)
+    if not layout.ledger_path.is_file():
+        print("ledger: not created", file=out)
+        return EXIT_OK
+    ledger = LiveLedger.open_readonly(layout)
+    try:
+        state = safety.read_safety_state(ledger)
+    finally:
+        ledger.close()
+    if not state.ledger_readable:
+        print("refused: the safety state cannot be read", file=out)
+        return EXIT_REFUSED
+    if not state.trips:
+        print("no active safety stops", file=out)
+        return EXIT_OK
+    for trip in state.trips:
+        print(_trip_line(trip), file=out)
+        _trip_detail(trip, out, is_tty)
+    return EXIT_OK
+
+
+def _trip_clear(args, out: TextIO, clock: Callable[[], float], is_tty: bool,
+                revision: Callable[[], str]) -> int:
+    try:
+        operator, note, evidence = _clear_arguments(args)
+    except ValueError as exc:
+        print(f"refused: {exc}", file=out)
+        return EXIT_REFUSED
+    layout = live_layout(args.state_dir)
+    if not layout.ledger_path.is_file():
+        print("refused: no active trip for that reason", file=out)
+        return EXIT_REFUSED
+    ledger = LiveLedger.open_readonly(layout)
+    try:
+        state = safety.read_safety_state(ledger)
+        if not state.ledger_readable:
+            print("refused: the safety state cannot be read", file=out)
+            return EXIT_REFUSED
+        trip = _active_trip(state, args.reason)
+        if trip is None:
+            print("refused: no active trip for that reason", file=out)
+            return EXIT_REFUSED
+        if args.reason == safety.SafetyReason.ENABLE_MISSING.value:
+            refusal = _enable_file_refusal(args, ledger, clock, revision)
+            if refusal is not None:
+                print(refusal, file=out)
+                return EXIT_REFUSED
+        token = _token(_trip_content(args.reason, trip, operator, note, evidence), _ledger_id(layout))
+    finally:
+        ledger.close()
+    if args.confirm is None:
+        print(_trip_line(trip), file=out)
+        _trip_detail(trip, out, is_tty)
+        print(f"token: {token}", file=out)
+        return EXIT_OK
+    if args.confirm.strip() != token:
+        print("refused: confirmation token does not match", file=out)
+        return EXIT_REFUSED
+    return _record_trip_clear(args, out, clock, revision, operator, note, evidence, trip)
+
+
+def _record_trip_clear(args, out: TextIO, clock: Callable[[], float], revision: Callable[[], str],
+                       operator: str, note: str, evidence: str, previewed) -> int:
+    layout = live_layout(args.state_dir)
+    ledger, writer = None, None
+    try:
+        ledger = LiveLedger.open(layout, paper_dir=Path(args.state_dir) / "trading", now=clock())
+        try:
+            writer = live_lease.acquire_writer_lease(ledger, layout, now=clock())
+        except live_lease.LeaseHeld:
+            print("refused: the live worker holds the writer lease; stop it first", file=out)
+            return EXIT_LEASE_HELD
+        state = safety.read_safety_state(ledger)         # the world may have moved since the preview
+        if not state.ledger_readable:
+            print("refused: the safety state cannot be read", file=out)
+            return EXIT_REFUSED
+        trip = _active_trip(state, args.reason)
+        if trip is None or trip.trip_id != previewed.trip_id:
+            print("refused: the safety stop changed since the preview; run the preview again", file=out)
+            return EXIT_REFUSED
+        if args.reason == safety.SafetyReason.ENABLE_MISSING.value:
+            refusal = _enable_file_refusal(args, ledger, clock, revision)
+            if refusal is not None:
+                print(refusal, file=out)
+                return EXIT_REFUSED
+        try:
+            safety.clear_safety_trip(ledger, safety.SafetyReason(args.reason), operator=operator, note=note,
+                                     evidence=evidence, now=clock())
+        except LiveLedgerError as exc:
+            print(f"refused: {exc}", file=out)
+            return EXIT_REFUSED
+        print(f"cleared: {args.reason} (trip_id={trip.trip_id})", file=out)
+        return EXIT_OK
+    finally:
+        _release_writer(ledger, writer, clock)
 
 
 # ---- activate (the owner's policy set activation) --------------------------------------------
@@ -818,6 +969,15 @@ def _build_parser(out: TextIO) -> argparse.ArgumentParser:
     resolve.add_argument("--override-incomplete-proof", action="store_true",
                          help="accept the owner's conclusion when the machine cannot prove it")
     resolve.add_argument("--confirm", help="the token printed by the preview")
+    trip = commands.add_parser("trip", stream=out, help="the safety stops (read-only list, human-only clear)")
+    trips = trip.add_subparsers(dest="trip_command", required=True)
+    trips.add_parser("list", stream=out, help="read-only list (details only on a TTY)")
+    clear = trips.add_parser("clear", stream=out, help="release one active stop after a previewed token")
+    clear.add_argument("--reason", required=True, choices=tuple(reason.value for reason in safety.SafetyReason))
+    clear.add_argument("--operator", required=True)
+    clear.add_argument("--note", required=True)
+    clear.add_argument("--evidence", required=True, help="what the owner checked (20..400 characters)")
+    clear.add_argument("--confirm", help="the token printed by the preview")
     return parser
 
 
@@ -849,6 +1009,10 @@ def main(argv: list[str] | None = None, *, out: TextIO | None = None, clock: Cal
         if args.unknown_command == "show":
             return _unknown_show(args, out, clock, is_tty, reader_factory)
         return _unknown_resolve(args, out, clock, is_tty, reader_factory)
+    if args.command == "trip":
+        if args.trip_command == "list":
+            return _trip_list(args, out, is_tty)
+        return _trip_clear(args, out, clock, is_tty, revision)
     if args.cashflow_command == "list":
         return _cashflow_list(args, out, is_tty)
     return _cashflow_add(args, out, clock, is_tty)

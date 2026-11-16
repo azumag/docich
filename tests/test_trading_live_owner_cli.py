@@ -395,17 +395,21 @@ def test_the_live_package_never_pulls_in_the_owner_cli():
     assert result.stdout.strip() == "clean", result.stderr
 
 
-def test_later_human_only_apis_are_not_mentioned_yet():
+def test_human_only_clears_are_called_only_from_the_owner_cli():
     files = sorted(PKG.glob("*.py"))
     assert [path.name for path in files] == ["__init__.py", "__main__.py", "cli.py", "exchange_access.py",
                                              "revision.py"]
     for path in files:
         text = path.read_text(encoding="utf-8")
+        if path.name == "cli.py":
+            continue
         for word in ("clear_safety_trip", "clear_safety"):
             assert word not in text, (path.name, word)
-        if path.name != "cli.py":
-            assert "record_owner_activation" not in text, path.name
-    assert "record_owner_activation" in (PKG / "cli.py").read_text(encoding="utf-8")
+        assert "record_owner_activation" not in text, path.name
+    cli_text = (PKG / "cli.py").read_text(encoding="utf-8")
+    assert cli_text.count("safety.clear_safety_trip(") == 1
+    assert ".clear_safety(" not in cli_text
+    assert "record_owner_activation" in cli_text
 
 
 # ---- activate: the owner's policy set activation --------------------------------------------
@@ -1395,5 +1399,329 @@ def test_unknown_show_without_a_key_file_reports_the_reader_failure(workspace):
                           now=h.clock.seconds())
         assert code == 1 and text == "refused: exchange unavailable: ReaderUnavailableError\n"
         assert h.ledger.get_intent(intent.intent_id).state == "UNKNOWN_SUBMISSION" and _orders(h.ledger) == []
+    finally:
+        h.close()
+
+
+# ---- trip: list the safety stops and clear one (human only) ----------------------------------
+def _trip(state_dir, reason, *, detail="test stop", now=NOW):
+    ledger = LiveLedger.open(live_layout(state_dir), paper_dir=Path(state_dir) / "trading", now=now)
+    try:
+        assert ledger.trip_safety(sf.SafetyReason(reason), detail=detail, now=now)
+    finally:
+        ledger.close()
+
+
+def _trip_clear_args(reason, **kw):
+    values = {"reason": reason, "operator": "owner", "note": "owner cleared the stop",
+              "evidence": "checked the exchange and the ledger by hand"}
+    values.update(kw)
+    argv = []
+    for name, value in values.items():
+        argv += [f"--{name.replace('_', '-')}", value]
+    return ["trip", "clear", *argv]
+
+
+def _active_trips(state_dir):
+    ledger = LiveLedger.open_readonly(live_layout(state_dir))
+    try:
+        with ledger.read_cursor() as cur:
+            return sf.active_trips(cur)
+    finally:
+        ledger.close()
+
+
+def _trip_rows(state_dir):
+    ledger = LiveLedger.open_readonly(live_layout(state_dir))
+    try:
+        with ledger.read_cursor() as cur:
+            return cur.execute("SELECT trip_id, reason, cleared_at, cleared_by FROM safety_trips "
+                               "ORDER BY trip_id").fetchall()
+    finally:
+        ledger.close()
+
+
+def _safety_cleared(state_dir):
+    ledger = LiveLedger.open_readonly(live_layout(state_dir))
+    try:
+        return [event for event in ledger.events(limit=1000) if event.kind == "safety_cleared"]
+    finally:
+        ledger.close()
+
+
+def test_trip_list_without_a_ledger_creates_nothing(tmp_path):
+    before = _listing(tmp_path)
+    code, text = _run(tmp_path, "trip", "list")
+    assert code == 0 and text == "ledger: not created\n"
+    assert _listing(tmp_path) == before and not (tmp_path / "trading-live").exists()
+
+
+def test_trip_list_shows_each_stop_and_hides_the_detail_unless_a_tty(tmp_path):
+    _trip(tmp_path, "data_anomaly", detail="the balance could not be proven")
+    trip_id = _active_trips(tmp_path)[0].trip_id
+    code, text = _run(tmp_path, "trip", "list", is_tty=False)
+    assert code == 0
+    assert f"trip_id={trip_id} reason=data_anomaly tripped_at=2026-01-01T00:00:00+00:00" in text
+    assert "detail=hidden" in text and "the balance could not be proven" not in text
+    code, tty = _run(tmp_path, "trip", "list", is_tty=True)
+    assert code == 0 and "detail=the balance could not be proven" in tty and "detail=hidden" not in tty
+
+
+def test_trip_list_refuses_an_unreadable_state(tmp_path, monkeypatch):
+    _trip(tmp_path, "data_anomaly")
+    monkeypatch.setattr(sf, "read_safety_state", lambda ledger: sf.SafetyState((), 0, False))
+    code, text = _run(tmp_path, "trip", "list")
+    assert code == 1 and text == "refused: the safety state cannot be read\n"
+
+
+def test_trip_clear_preview_writes_nothing(tmp_path):
+    _trip(tmp_path, "data_anomaly")
+    before = _trip_rows(tmp_path)
+    code, text = _run(tmp_path, *_trip_clear_args("data_anomaly"))
+    assert code == 0 and "token: " in text
+    assert [trip.reason for trip in _active_trips(tmp_path)] == ["data_anomaly"]
+    assert _trip_rows(tmp_path) == before and _safety_cleared(tmp_path) == []
+
+
+def test_trip_clear_with_a_wrong_token_changes_nothing(tmp_path):
+    _trip(tmp_path, "data_anomaly")
+    code, text = _run(tmp_path, *_trip_clear_args("data_anomaly"), "--confirm", "0" * 10)
+    assert code == 1 and text == "refused: confirmation token does not match\n"
+    assert [trip.reason for trip in _active_trips(tmp_path)] == ["data_anomaly"]
+    assert _safety_cleared(tmp_path) == []
+
+
+def test_trip_clear_refuses_when_that_reason_has_no_active_stop(tmp_path):
+    _trip(tmp_path, "data_anomaly")
+    code, text = _run(tmp_path, *_trip_clear_args("fee_missing"))
+    assert code == 1 and text == "refused: no active trip for that reason\n"
+    assert [trip.reason for trip in _active_trips(tmp_path)] == ["data_anomaly"]
+
+
+def test_trip_clear_preview_then_confirm_clears_the_row(tmp_path):
+    _trip(tmp_path, "data_anomaly")
+    trip_id = _active_trips(tmp_path)[0].trip_id
+    code, preview = _run(tmp_path, *_trip_clear_args("data_anomaly"))
+    assert code == 0
+    code, text = _run(tmp_path, *_trip_clear_args("data_anomaly"), "--confirm", _token(preview))
+    assert code == 0 and text == f"cleared: data_anomaly (trip_id={trip_id})\n"
+    assert _active_trips(tmp_path) == ()
+    trip_row_id, _, cleared_at, cleared_by = _trip_rows(tmp_path)[0]
+    assert trip_row_id == trip_id and cleared_at is not None and cleared_by == "owner"
+    assert [event.entity_id for event in _safety_cleared(tmp_path)] == ["data_anomaly"]
+
+
+def test_a_retripped_stop_invalidates_the_previous_token(tmp_path):
+    _trip(tmp_path, "data_anomaly", detail="the first stop")
+    first = _active_trips(tmp_path)[0].trip_id
+    code, preview = _run(tmp_path, *_trip_clear_args("data_anomaly"))
+    assert code == 0
+    code, text = _run(tmp_path, *_trip_clear_args("data_anomaly"), "--confirm", _token(preview))
+    assert code == 0 and text == f"cleared: data_anomaly (trip_id={first})\n"
+    _trip(tmp_path, "data_anomaly", detail="the second stop")
+    second = _active_trips(tmp_path)[0].trip_id
+    assert second != first
+    code, text = _run(tmp_path, *_trip_clear_args("data_anomaly"), "--confirm", _token(preview))
+    assert code == 1 and text == "refused: confirmation token does not match\n"   # the token names the old trip
+    assert [trip.trip_id for trip in _active_trips(tmp_path)] == [second]
+    code, preview = _run(tmp_path, *_trip_clear_args("data_anomaly"))
+    assert code == 0
+    code, text = _run(tmp_path, *_trip_clear_args("data_anomaly"), "--confirm", _token(preview))
+    assert code == 0 and text == f"cleared: data_anomaly (trip_id={second})\n"
+    assert _active_trips(tmp_path) == ()
+
+
+def test_a_stop_that_changes_under_the_lease_refuses_the_clear(tmp_path, monkeypatch):
+    _trip(tmp_path, "data_anomaly", detail="the previewed stop")
+    previewed = _active_trips(tmp_path)[0].trip_id
+    code, preview = _run(tmp_path, *_trip_clear_args("data_anomaly"))
+    assert code == 0
+    token = _token(preview)
+    real = live_lease.acquire_writer_lease
+
+    def changed(ledger, layout, **kw):
+        sf.clear_safety_trip(ledger, sf.SafetyReason.DATA_ANOMALY, operator="owner", note="test",
+                             evidence="test", now=kw["now"])
+        ledger.trip_safety(sf.SafetyReason.DATA_ANOMALY, detail="the new stop", now=kw["now"])
+        return real(ledger, layout, **kw)
+
+    monkeypatch.setattr(live_lease, "acquire_writer_lease", changed)
+    code, text = _run(tmp_path, *_trip_clear_args("data_anomaly"), "--confirm", token)
+    assert code == 1 and text == "refused: the safety stop changed since the preview; run the preview again\n"
+    active = _active_trips(tmp_path)
+    assert [trip.reason for trip in active] == ["data_anomaly"] and active[0].trip_id != previewed
+
+
+def test_trip_clear_with_the_worker_holding_the_lease_returns_five(tmp_path):
+    layout = live_layout(tmp_path)
+    ledger = LiveLedger.open(layout, paper_dir=tmp_path / "trading", now=NOW)
+    try:
+        ledger.trip_safety(sf.SafetyReason.DATA_ANOMALY, detail="test", now=NOW)
+        held = live_lease.acquire_writer_lease(ledger, layout, now=NOW)
+        try:
+            code, preview = _run(tmp_path, *_trip_clear_args("data_anomaly"))
+            assert code == 0 and "token: " in preview
+            code, text = _run(tmp_path, *_trip_clear_args("data_anomaly"), "--confirm", _token(preview))
+            assert code == 5 and text == "refused: the live worker holds the writer lease; stop it first\n"
+        finally:
+            live_lease.release_writer_lease(ledger, held, now=NOW)
+    finally:
+        ledger.close()
+    assert [trip.reason for trip in _active_trips(tmp_path)] == ["data_anomaly"]
+
+
+def test_enable_missing_without_an_active_policy_set_is_refused(tmp_path):
+    _trip(tmp_path, "enable_missing", detail="the gate closed")
+    code, text = _run(tmp_path, *_trip_clear_args("enable_missing"), revision=lambda: "a" * 40)
+    assert code == 1 and text == "refused: no active policy set\n"
+    assert [trip.reason for trip in _active_trips(tmp_path)] == ["enable_missing"]
+
+
+def _activated_harness(workspace):
+    """A ledger with an active policy set and an ENABLE_MISSING trip (the harness lease handed back)."""
+    h = _unknown_harness(workspace, caps=Capabilities(False, False, True), gate_open=False)
+    workspace.write_enable(h.ps, revision="a" * 40)
+    h.ledger.record_owner_activation(h.lease, h.ps, enable=workspace.enable_result(h.ps),
+                                     operator="owner", note="test activation", now=h.clock.seconds())
+    h.ledger.trip_safety(sf.SafetyReason.ENABLE_MISSING, detail="the gate closed", now=h.clock.seconds())
+    _released(h)
+    return h
+
+
+def test_enable_missing_without_an_enable_file_is_refused(workspace):
+    h = _activated_harness(workspace)
+    try:
+        workspace.layout.enable_path.unlink()
+        code, text = _run(workspace.state, *_trip_clear_args("enable_missing"), revision=lambda: "a" * 40)
+        assert code == 1 and text.startswith("refused: enable file is not valid")
+        assert [trip.reason for trip in _active_trips(workspace.state)] == ["enable_missing"]
+    finally:
+        h.close()
+
+
+def test_enable_missing_is_cleared_with_a_valid_shadow_enable_file(workspace):
+    h = _activated_harness(workspace)
+    try:
+        workspace.write_enable(h.ps, mode="shadow", revision="a" * 40)   # enabled counts; trade is not required
+        argv = _trip_clear_args("enable_missing")
+        code, preview = _run(workspace.state, *argv, revision=lambda: "a" * 40)
+        assert code == 0 and "token: " in preview
+        code, text = _run(workspace.state, *argv, "--confirm", _token(preview), revision=lambda: "a" * 40)
+        assert code == 0 and text.startswith("cleared: enable_missing")
+        assert _active_trips(workspace.state) == ()
+    finally:
+        h.close()
+
+
+def test_enable_missing_refuses_the_confirm_when_the_file_was_removed_after_the_preview(workspace):
+    h = _activated_harness(workspace)
+    try:
+        argv = _trip_clear_args("enable_missing")
+        code, preview = _run(workspace.state, *argv, revision=lambda: "a" * 40)
+        assert code == 0 and "token: " in preview
+        workspace.layout.enable_path.unlink()
+        code, text = _run(workspace.state, *argv, "--confirm", _token(preview), revision=lambda: "a" * 40)
+        assert code == 1 and text.startswith("refused: enable file is not valid")
+        assert [trip.reason for trip in _active_trips(workspace.state)] == ["enable_missing"]
+    finally:
+        h.close()
+
+
+def test_the_owner_clears_an_unknown_order_stop_and_then_resolves_the_intent(workspace, monkeypatch):
+    h = _unknown_harness(workspace, caps=Capabilities(False, False, True))
+    try:
+        h.mock.faults.push("submit", "LOST_REQUEST")
+        intent, outcome = h.send(side="buy", key="b1", amount="10", price="90")
+        assert outcome is S.UNKNOWN
+        h.advance(500)
+        h.ledger.trip_safety(sf.SafetyReason.UNKNOWN_ORDER, detail="an order the ledger does not know",
+                             now=h.clock.seconds())
+        _released(h)
+
+        def waiting(ex, pending):
+            return "waiting"                                   # no trip comes from this path
+
+        monkeypatch.setattr(live_reconcile, "try_resolve", waiting)
+        resolve_argv = ["unknown", "resolve", "--intent", intent.intent_id, "--not-created",
+                        "--override-incomplete-proof", "--evidence", "checked the exchange history by hand",
+                        "--operator", "owner"]
+        code, text = _run(workspace.state, *resolve_argv, now=h.clock.seconds(),
+                          reader_factory=lambda state_dir: h.mock)
+        assert code == 1
+        assert text == (f"refused: an active safety stop must be cleared first "
+                        f"({sf.SafetyReason.UNKNOWN_ORDER.value})\n")
+        clear_argv = _trip_clear_args("unknown_order")
+        code, preview = _run(workspace.state, *clear_argv)
+        assert code == 0 and "token: " in preview
+        code, text = _run(workspace.state, *clear_argv, "--confirm", _token(preview))
+        assert code == 0 and text.startswith("cleared: unknown_order")
+        code, preview = _run(workspace.state, *resolve_argv, now=h.clock.seconds(),
+                             reader_factory=lambda state_dir: h.mock)
+        assert code == 0, preview
+        code, text = _run(workspace.state, *resolve_argv, "--confirm", _token(preview), now=h.clock.seconds(),
+                          reader_factory=lambda state_dir: h.mock)
+        assert code == 0 and text == "resolved: not created (owner evidence)\n"
+        assert h.ledger.get_intent(intent.intent_id).state == "NOT_CREATED"
+    finally:
+        h.close()
+
+
+def test_a_non_blocking_stop_does_not_block_the_not_created_override(workspace, monkeypatch):
+    h = _unknown_harness(workspace, caps=Capabilities(False, False, True))
+    try:
+        h.mock.faults.push("submit", "LOST_REQUEST")
+        intent, outcome = h.send(side="buy", key="b1", amount="10", price="90")
+        assert outcome is S.UNKNOWN
+        h.advance(500)
+        workspace.layout.enable_path.unlink()                  # the gate is closed, so ENABLE_MISSING may stand
+        h.ledger.trip_safety(sf.SafetyReason.ENABLE_MISSING, detail="the gate closed", now=h.clock.seconds())
+        _released(h)
+
+        def waiting(ex, pending):
+            return "waiting"
+
+        monkeypatch.setattr(live_reconcile, "try_resolve", waiting)
+        argv = ["unknown", "resolve", "--intent", intent.intent_id, "--not-created",
+                "--override-incomplete-proof", "--evidence", "checked the exchange history by hand",
+                "--operator", "owner"]
+        code, preview = _run(workspace.state, *argv, now=h.clock.seconds(), reader_factory=lambda state_dir: h.mock)
+        assert code == 0, preview                                 # ENABLE_MISSING is not one of the blocking four
+        assert "token: " in preview
+        code, text = _run(workspace.state, *argv, "--confirm", _token(preview), now=h.clock.seconds(),
+                          reader_factory=lambda state_dir: h.mock)
+        assert code == 0 and text == "resolved: not created (owner evidence)\n"
+        assert h.ledger.get_intent(intent.intent_id).state == "NOT_CREATED"
+    finally:
+        h.close()
+
+
+def test_the_cli_never_records_an_enable_observation(workspace, monkeypatch):
+    h = _unknown_harness(workspace, caps=Capabilities(False, False, True))
+    try:
+        h.mock.faults.push("submit", "LOST_REQUEST")
+        intent, outcome = h.send(side="buy", key="b1", amount="10", price="90")
+        assert outcome is S.UNKNOWN
+        h.advance(500)
+        _released(h)
+
+        def forbidden(*args, **kwargs):
+            raise AssertionError("the CLI must not record an enable observation")
+
+        monkeypatch.setattr(live_executor, "note_enable_result", forbidden)   # the name the executor calls
+        monkeypatch.setattr(LiveLedger, "record_enable_observation", forbidden)
+
+        def waiting(ex, pending):
+            return "waiting"
+
+        monkeypatch.setattr(live_reconcile, "try_resolve", waiting)
+        argv = ["unknown", "resolve", "--intent", intent.intent_id, "--not-created",
+                "--override-incomplete-proof", "--evidence", "checked the exchange history by hand",
+                "--operator", "owner"]
+        code, preview = _run(workspace.state, *argv, now=h.clock.seconds(), reader_factory=lambda state_dir: h.mock)
+        assert code == 0, preview
+        code, text = _run(workspace.state, *argv, "--confirm", _token(preview), now=h.clock.seconds(),
+                          reader_factory=lambda state_dir: h.mock)
+        assert code == 0 and text == "resolved: not created (owner evidence)\n"
+        assert h.ledger.get_intent(intent.intent_id).state == "NOT_CREATED"
     finally:
         h.close()
