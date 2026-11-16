@@ -439,12 +439,12 @@ def orders(mem) -> list[dict]:
             # 攻撃側では行わない。
         else:
             purpose = 'move'
-            # Send the general to the castle beside the target, not one hop
-            # (docich#3952): hop-by-hop relays starved the front. An enemy
-            # castle between here and the front breaks the owned-road leg, so
-            # fall back to the first hop of the measured route. The hero's
-            # post is planned separately by ``_hero_post_order``.
-            hop = route[-2] if front and routes.move_leg(mem, source, front, owned) else route[1]
+            # Owner 2026-11-16: the road reaches a castle only from the one
+            # before it — a transfer aimed past a neighbour is absorbed by
+            # the castle between and never arrives (タオ→オシロガ over サヌト
+            # settled as move_overdue after 1400+ ticks). The leg is the next
+            # hop only; the N-2→N-1→N relay rides successive orders.
+            hop = route[1]
         if purpose == 'move' and _moved(mem, wave, hop, source) >= SQUAD:
             continue                       # this capture's six already left
         if purpose == 'move' and _capture_guard_short(mem, source):

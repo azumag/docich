@@ -70,10 +70,13 @@ def order_allowed(mem, order, source):
     if source not in owned:
         return False
     if order.get('purpose') == 'move':
-        # Chapter 9 sends transfers straight to the front castle (docich#3952):
-        # any owned destination the owned road reaches is a legal move leg.
+        # Owner 2026-11-16: chapter 9's road only carries a march to the
+        # castle before it — a transfer aimed past a neighbour is absorbed by
+        # the castle between and never arrives (タオ→オシロガ over サヌト
+        # settled as move_overdue after 1400+ ticks). A move's leg is the
+        # adjacent hop only; the N-2→N-1→N relay rides successive orders.
         return (order.get('target') in owned
-                and move_leg(mem, source, order['target'], owned))
+                and allowed(mem, source, order['target']))
     return allowed(mem, source, order.get('target'))
 
 

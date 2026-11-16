@@ -583,7 +583,12 @@ def _defense_rebalance(mem, owned, busy, heading):
                    default=None)
         donors = []
         for source in sorted(owned, key=lambda c: _distance(chapter, c, target)):
-            if source == target or len(free[source]) < 2:
+            # A road chapter only reaches a castle from the one before it
+            # (owner 2026-11-16): a donor two hops back marches into the
+            # castle between and is absorbed — タオ→オシロガ over サヌト kept
+            # settling as move_overdue. The donor must be a road neighbour.
+            if (source == target or len(free[source]) < 2
+                    or not routes.allowed(mem, source, target)):
                 continue
             sendable = [g for g in _spares(free[source]) if g != NAME]
             if not sendable:
