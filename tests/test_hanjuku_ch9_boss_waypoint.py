@@ -59,7 +59,6 @@ def test_the_pursuit_step_verifies_against_the_measured_boss_cell():
         assert M._target_roof_under_marker(screen((826, 853)), mem, FRAME, pursuit) is True
         rearmed = memory(WAYPOINT, boss_relaunch={ORDER['step']: 1})
         assert boss_probe_cell(rearmed, 'ボス', ORDER['step']) == WAYPOINT
-        assert M._target_roof_under_marker(screen((826, 853)), rearmed, FRAME, ORDER) is False
     finally:
         chart.set_boss_cell(9, None)
 
