@@ -487,7 +487,7 @@ class CornerRotationOperatorPolicyTests(unittest.TestCase):
     def test_workflow_is_fixed_and_never_exposes_arbitrary_command_input(self):
         text = WF.read_text(encoding="utf-8")
         for required in (
-            "options: [restart-service, recover-failed, rollback-timer, start-hanjuku, resume-hanjuku-latest, clear-hanjuku-clock-quarantine, recover-runtime, check-cancel-hanjuku, cancel-hanjuku, check-admin-release-hanjuku, admin-release-hanjuku, check-recover-hanjuku-resume, recover-hanjuku-resume, recover-hanjuku-retry, check-cancel-prediction, cancel-prediction, check-sync-prediction, sync-prediction, check-release-stale-failed-owner, release-stale-failed-owner]",
+            "options: [restart-service, recover-failed, rollback-timer, start-hanjuku, resume-hanjuku-latest, clear-hanjuku-clock-quarantine, recover-runtime, check-cancel-hanjuku, cancel-hanjuku, check-cancel-queued-hanjuku, cancel-queued-hanjuku, check-admin-release-hanjuku, admin-release-hanjuku, check-recover-hanjuku-resume, recover-hanjuku-resume, recover-hanjuku-retry, check-cancel-prediction, cancel-prediction, check-sync-prediction, sync-prediction, check-release-stale-failed-owner, release-stale-failed-owner]",
             "github.actor_id == 9018513",
             "github.triggering_actor == 'azumag'",
             "github.ref_protected == true",
@@ -601,8 +601,8 @@ class CornerRotationOperatorPolicyTests(unittest.TestCase):
         self.assertNotIn("${{ inputs.expected_reservation }}", text)
         self.assertNotIn("INPUT_EXPECTED_RESERVATION:", text)
         self.assertNotIn("EXPECTED:", text)
-        # The 4th EXPECTED derivation is the stale failed owner step (#3682).
-        self.assertEqual(text.count('EXPECTED="$(python3 -I control/ops/vm_actions/corner_rotation_input.py)"'), 4)
+        # The 5th EXPECTED derivation is the queued manual cancel step.
+        self.assertEqual(text.count('EXPECTED="$(python3 -I control/ops/vm_actions/corner_rotation_input.py)"'), 5)
 
     def test_new_and_legacy_workflows_serialize_on_the_same_concurrency_group(self):
         group = "group: retro-corner-operator-${{ github.repository }}"
