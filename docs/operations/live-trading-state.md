@@ -69,6 +69,18 @@ L1 は、本番(LIVE)の売買の**土台だけ**で、動作しない。どの�
 - 手数料が不明な約定の許容は、台帳の期間にわたって積み上がる。L3 で、生の応答から手数料を復元する。
 - bitbank の `remaining_amount` の意味(取消後の残量など)を L3 で確かめるまで、「約定数量+残量が注文数量と合わない」応答は ACK を記録しない(DATA_ANOMALY)。
 
+## L3a: bitbank の読み取り層(ccxt なし・ネットワークなし)
+
+`src/docich/trading/exchanges/bitbank_live/`(`live/` の外。`live/` はこのパッケージを import しない)。**読み取りだけ**で、送信・取消の経路は存在しない(AST のテストで固定)。
+
+- `credentials.py`: 読み取り専用キーの読み込み。置き場は `<state>/trading-live/owner/bitbank_readonly_key.json`(0600、owner ディレクトリは 0700、symlink 不可)。環境変数は `source="env"` と明示したときだけ使い、読んだら環境から消す。キーが無い・検査に通らない場合は fail-closed(理由コードだけを例外にし、値・パスは出さない)。`Credentials` は repr/str/pickle で何も出さない。
+- `parse.py`: bitbank の生の JSON → L2 の型。**文字列から Decimal**(float は拒否)、時刻は13桁のミリ秒だけ(秒・マイクロ秒は拒否)、注文の状態は bitbank の語彙そのまま、`remaining_amount` は送られた値のまま(正規化しない)。手数料は `fee_amount_base`/`fee_amount_quote` の生の文字列から決め、不明瞭なら UNKNOWN(両方非0、`fee_occurred_amount_quote` との不一致、符号が料率と逆、など)。`max_fee_rate` は4つの料率の絶対値の最大(1つでも読めなければ None)。
+- `errors.py`: 失敗の分類。読み取りが上げてよいのは `ExchangeAmbiguous`(既定)と `OrderNotFound`(注文の照会に対する 50009 だけ)で、`ExchangeRejected` は上げない。60002 を資金拘束のエラーとして扱わない。メッセージにはエンドポイント・種類・HTTP・コード・例外クラス名だけ。
+- `reader.py`: `BitbankReader`(`ExchangeReader` だけを実装)。**bitbank にクライアント注文 ID は無い**(`Capabilities(client_order_id=False, fetch_by_client_id=False, fills_by_order=True)`)ので、送信が失われた注文は一覧との突き合わせでしか見つけられない。**一覧の完全性は保守的**: 未約定の注文は件数が `count` 未満のときだけ完全、約定履歴は件数が1ページ未満か、最古の約定がすでに開始時刻より前のときだけ完全。`since` は取引所に送らず(単位の記述が文書間で食い違うため)、手元で絞る。市場ルール・料率は作るときに読み、`market_rules` はネットワークに出ない。作れなければ `ReaderUnavailable`。
+- 取引所の接続(ccxt を使う `transport`)と、オーナーが実キーで行う確認(`check`)は L3b。それまで実取引所には一度も接続しない。
+
+**未確認(実キーで確かめる = フェーズ B)**: `since` の単位 / 取消後・一部約定後の `remaining_amount` の意味 / maker のリベートの符号 / 手数料の丸め / 参照のみの権限で読める範囲 / 応答の形(`data.pairs`・`data.assets`・`data.orders`・`data.trades`)が文書のとおりか。合成データでの試験は、仮定との整合しか示さない。
+
 ## L1 でやらないこと
 
 APIキー・取引所への接続・ワーカー・通知・昇格の適用。いずれも後続の PR で、PR ごとにオーナーの確認を取る。実注文(E)と常駐(F)は、オーナーの明示承認と、取引所の API キーの発行(出金権限なし)が前提。
