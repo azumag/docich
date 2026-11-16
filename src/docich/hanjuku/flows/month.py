@@ -443,6 +443,15 @@ def month_step(screen: Screen, mem):
         if extra is not None:
             return extra
         _hold_month_cards(mem, shop)
+    if (shop and shop.get('cards_held') == 'recruit_pending'
+            and not _recruit_precedes_cards(shop)):
+        # The held flag outlived the recruit question: a deferred_roster month
+        # keeps the normal purchase order (comment above), so the cards and
+        # merchant must be released or the menu loops forever (g1190 40-8).
+        shop.pop('cards_held')
+        _record(mem, 'month_cards_released', month=shop.get('key'),
+                observed_metric={'recruit': shop.get('recruit')},
+                reason='将軍募集が人数未確認で当月実行不能に延期されたため、保留していた切り札・商人を解放する')
     # Owner (2026-10-17): a low army's refill is bought before the cards.
     if (shop and not shop.get('cards_held') and not shop['merchant_done']
             and shop['items'] and not low_army_first(shop)):
