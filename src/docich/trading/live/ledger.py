@@ -513,6 +513,11 @@ class LiveLedger:
                    {"from": current.state, "to": to_state, "reason": reason_code}, now)
         return self._intent(cur, intent_id)
 
+    def get_intent(self, intent_id: str) -> Intent | None:
+        with self.read_cursor() as cur:
+            row = cur.execute(f"SELECT {_INTENT_COLS} FROM intents WHERE intent_id=?", (intent_id,)).fetchone()
+        return Intent(*row) if row else None
+
     def list_intents(self, *, states: tuple[str, ...]) -> list[Intent]:
         """Read-only; oldest first."""
         if not states:

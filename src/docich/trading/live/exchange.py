@@ -254,3 +254,31 @@ def make_client_order_id(decision_key: str, caps: Capabilities) -> str | None:
         return None
     limit = caps.client_order_id_max_len if caps.client_order_id_max_len > 1 else 32
     return ("d" + hashlib.sha256(decision_key.encode("utf-8")).hexdigest())[:limit]
+
+
+class Guarded:
+    """Wrap a reader/sender: an exception nobody classified becomes ``ExchangeAmbiguous``.
+
+    Everything the executor calls on the exchange goes through this, so "the exchange failed in an
+    unexpected way" always means "outcome unknown" and never leaks out as a crash of the polling loop
+    (or, worse, as a wrong "not created").  Ledger code is not wrapped.
+    """
+
+    def __init__(self, inner) -> None:
+        object.__setattr__(self, "_inner", inner)
+
+    def __getattr__(self, name: str):
+        attr = getattr(self._inner, name)
+        if not callable(attr):
+            return attr
+
+        def call(*args, **kwargs):
+            try:
+                return attr(*args, **kwargs)
+            except ExchangeError:
+                raise
+            except Exception as exc:
+                if type(exc).__name__ == "LeaseLost":
+                    raise
+                raise ExchangeAmbiguous(f"{name}: unclassified {type(exc).__name__}") from exc
+        return call
