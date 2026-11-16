@@ -7564,6 +7564,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v965-waypoint-right-heart",
             "hanjuku-chart-v966-waypoint-grass-row",
             "hanjuku-chart-v967-waypoint-east",
+            "hanjuku-chart-v968-waypoint-ne-field",
             "hanjuku-chart-v864-shop-list-batch",
             "hanjuku-chart-v862-camp-field-move",
             "hanjuku-chart-v852-visible-menu-batches",
