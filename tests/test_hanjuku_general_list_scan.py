@@ -396,6 +396,37 @@ def test_the_status_name_check_folds_the_half_width_exclamation():
     assert not [r for r in mem['_records'] if r['decision'] == 'source_castle_mismatch']
 
 
+def test_a_finished_interim_order_leaves_the_slot():
+    """g1190 chapter 9: roster probe I:381454:101 completed 'done', the state
+    budget pruned its orders entry, and the absent status read as "not
+    started" — the same read-only order re-issued for hours. Retiring the
+    interim slot on the terminal state breaks that loop."""
+    from docich.hanjuku.strategy.orders import _finish_order
+    mem = {'chapter': 9, 'orders': {}, '_records': [], 'picked': [],
+           'chart_adjust': {'interim_order': {'step': 'I:381454:101', 'general': 'しょうぐん',
+                                              'source': 'イデ！', 'target': 'ボス',
+                                              'roster_probe': True}}}
+    _plan_region(mem)['active'] = 'I:381454:101'
+    _finish_order(mem, 'done', reason='読取のみの指示を終了')
+    assert mem['chart_adjust']['interim_order'] is None
+
+
+def test_a_pruned_interim_status_does_not_block_the_next_mint():
+    """The state budget prune can beat _finish_order to the slot (a status
+    written directly, or an order finished by another path). A started step
+    whose orders entry vanished is treated as finished, not busy."""
+    from docich.hanjuku.strategy.replan import _mechanical_interim
+    state = {'interim_order': {'step': 'I:381454:101', 'general': 'しょうぐん',
+                               'source': 'イデ！', 'target': 'ボス',
+                               'roster_probe': True}}
+    mem = {'chapter': 9, 'tick': 5000, 'orders': {}, '_records': [], 'picked': [],
+           'chart_adjust': state, 'captured': [], 'lost': [],
+           'order_start_tick': {'I:381454:101': 4990}}
+    _mechanical_interim(mem, state, '381454', 'd')
+    assert state.get('interim_order') is None or \
+        state['interim_order']['step'] != 'I:381454:101'
+
+
 def test_partial_short_ocr_during_scan_does_not_settle_probe():
     """A truncated visible page is not proof of a short roster mid-scan."""
     from docich.hanjuku.state.regions import flow as _flow

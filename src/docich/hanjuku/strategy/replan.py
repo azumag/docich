@@ -1386,6 +1386,14 @@ def _mechanical_interim(mem, state, rid, digest, allow_sole=False):
     """
     interim = state.get('interim_order')
     status = _plan_region(mem).get('orders') or {}
+    if (interim and _plan_region(mem).get('active') != interim['step']
+            and status.get(interim['step']) is None
+            and interim['step'] in (mem.get('order_start_tick') or {})):
+        # A terminal status written outside ``_finish_order`` is pruned the
+        # same way: a step that started and whose orders entry vanished has
+        # run its course, so the interim slot is free for the next candidate.
+        state['interim_order'] = None
+        interim = None
     busy = (interim and status.get(interim['step']) in (None, 'pending')
             and _source(interim, mem) in _owned(mem)
             and routes.order_allowed(mem, interim, _source(interim, mem))
