@@ -8138,7 +8138,9 @@ def _collect_paper_experiment(state_dir, now):
 PAPER_SLOT_SYMBOL_RE = re.compile(r"[A-Z0-9]{1,16}/[A-Z0-9]{1,16}")
 PAPER_SLOT_DIR_RE = re.compile(r"[A-Z0-9]{1,16}_[A-Z0-9]{1,16}")
 PAPER_SLOT_MAX_DIRS = 256
-PAPER_SLOT_LISTED = 5
+# The production envelope sits ~4.7 KiB under HARD_JSON_BYTES (headroom monitor,
+# 2026-11-16); keep this section well under 1 KiB.
+PAPER_SLOT_LISTED = 3
 PAPER_SLOT_ROTATION_CLOSED_SELLS = 10
 PAPER_SLOT_ROTATION_AGE_S = 7 * 86400
 PAPER_SLOT_IMPROVE_STATUSES = frozenset({"running", "improved", "skipped", "failed", "dry-run"})
@@ -8241,7 +8243,7 @@ def _collect_paper_slots(state_dir, now):
                                              -progress(slot), slot["symbol"]))
     entry["nearest_rotation"] = [
         {key: slot[key] for key in ("symbol", "status", "reason_code", "entries_allowed",
-                                    "closed_sells", "age_sec", "open_position_count")}
+                                    "closed_sells", "age_sec")}
         for slot in ranked[:PAPER_SLOT_LISTED]
     ]
     return entry

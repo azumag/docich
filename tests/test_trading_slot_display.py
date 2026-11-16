@@ -156,16 +156,43 @@ def test_narration_describes_slot_strategies_not_the_common_policy():
     assert "43銘柄" in text and "XYMの戦略は「反発狙い」" in text and "決済2件" in text
     assert "二本立て" not in text
     assert "下げた後の戻り" not in text  # the AI's working note is not read verbatim
-    assert facts["slot_strategies"][0]["thesis"] == "下げた後の戻りを取る。"  # but the AI sees it
+    assert facts["slot_strategies"][0]["candidate_note"] == "下げた後の戻りを取る。"  # but the AI sees it
     assert corner_script._slot_facts({"slot_count": 0}) == {}
 
 
-def test_corner_prompt_tells_the_ai_not_to_present_policy_as_a_slot_strategy():
-    import inspect
+def _prompt_facts(with_slots):
+    facts = {"policy": {"momentum_lookback": 3}, "research": {}}
+    if with_slots:
+        facts.update(corner_script._slot_facts({
+            "slot_count": 1, "entries_allowed_count": 1, "common_owned_symbol_count": 0,
+            "rotation_closed_sells": 10, "rotation_days": 7,
+            "slots": [{"symbol": "APE/JPY", "experiment_id": "ape_1", "name": "急落リバウンド",
+                       "thesis": "現状26決済/7勝。", "closed_sells": 1, "age_days": 0.3,
+                       "entries_allowed": True}],
+        }))
+    return facts
 
-    source = inspect.getsource(corner_script)
-    assert "facts.slot_strategies" in source
-    assert "facts.policy をその銘柄の戦略として語らない" in source
+
+def test_every_narration_prompt_carries_the_slot_rules():
+    prompts = [
+        corner_script.build_prompt(_prompt_facts(True)),
+        corner_script.build_next_prompt(_prompt_facts(True), [], target_key="strategy"),
+        corner_script.build_next_prompt(_prompt_facts(True), [], target_key="fills"),
+        corner_script.build_next_prompt(_prompt_facts(True), []),
+    ]
+    for prompt in prompts:
+        assert "【銘柄別の戦略】" in prompt
+        assert "facts.policy は専用の戦略を持たない銘柄の既定値" in prompt
+        assert "候補を作ったときの改善AIのメモで、今の成績ではない" in prompt
+    assert "【今回の固定枠】strategy（銘柄別の戦略）" in prompts[1]
+
+
+def test_narration_prompts_without_slots_are_unchanged():
+    for prompt in (corner_script.build_prompt(_prompt_facts(False)),
+                   corner_script.build_next_prompt(_prompt_facts(False), [], target_key="strategy")):
+        assert "facts.policy は専用の戦略を持たない銘柄の既定値" not in prompt
+    assert "【今回の固定枠】strategy（戦略パラメータ）" in corner_script.build_next_prompt(
+        _prompt_facts(False), [], target_key="strategy")
 
 
 def _paper_status(tmp_path, worker_summary):
@@ -242,7 +269,7 @@ def test_diagnostics_aggregates_slots_and_fits_the_gateway(tmp_path):
     assert slots["closed_sells_total"] == 15
     assert slots["nearest_rotation"][0]["symbol"] == "BAT/JPY"  # not trading comes first
     assert slots["nearest_rotation"][1]["symbol"] == "BNB/JPY"  # 5/10 sells
-    assert len(slots["nearest_rotation"]) == 5
+    assert len(slots["nearest_rotation"]) == 3
     assert slots["improve"]["status"] == "improved" and slots["improve"]["activated"] == 43
     assert "results" not in slots["improve"]
     raw = json.dumps(slots)
@@ -255,7 +282,7 @@ def test_diagnostics_aggregates_slots_and_fits_the_gateway(tmp_path):
     payload = {"status": "ok", "corners": {"paper_slots": slots}}
     clean = gateway._sanitize_diagnostics(payload)
     assert clean == payload
-    assert len(module._diagnostics_budget(clean).encode("utf-8")) < 2048
+    assert len(json.dumps(slots).encode("utf-8")) < 1024  # production headroom is ~4.7 KiB
 
 
 def test_diagnostics_without_slots_reports_absent(tmp_path):

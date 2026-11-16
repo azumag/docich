@@ -167,7 +167,9 @@ def _slot_facts(raw: object) -> dict:
         strategies.append({
             "symbol": str(item.get("symbol", "")),
             "name": str(item.get("name") or ""),
-            "thesis": str(item.get("thesis") or ""),
+            # The improvement AI's note written when the candidate was made.
+            # Its figures describe the past, not this slot's results.
+            "candidate_note": str(item.get("thesis") or ""),
             "closed_sells": item.get("closed_sells"),
             "age_days": item.get("age_days"),
             "entries_allowed": item.get("entries_allowed") is True,
@@ -332,6 +334,7 @@ def build_prompt(facts: Mapping[str, object]) -> str:
         "ニュースが何を意味しそうか、次に何を見るべきかまで自分の視点で噛み砕いてください。"
         "存在しない数値・銘柄・ニュース・因果関係は絶対に作らないでください。\n"
         f"{facts_json}\n\n"
+        f"{_slot_guidance(facts)}"
         "【ニュースの扱い】\n"
         f"{research_note}"
         "- **見出しの文言をそのまま読み上げず、媒体名も口に出さないでください。** 「『見出し』（媒体）」という紹介は禁止です。"
@@ -400,10 +403,8 @@ def build_prompt(facts: Mapping[str, object]) -> str:
         "- corner: 今日の相場の見取り図と、今日いちばん見るべき点を語るオープニング。\n"
         "- news: research.news_items から5〜6件を個別に、事実→含意→観測点の順で詳しく解説する。\n"
         "- chart: facts.timeframes の4つの時間足を1つずつ解説する。timeframesが空なら正直に言い、数値を作らない。\n"
-        "- strategy: facts.slot_strategies があれば、銘柄ごとに別の戦略で売買している事実を述べ、その銘柄の name と thesis の狙いを、"
-        "決済件数(closed_sells、rotation_closed_sells件または rotation_days日で次の戦略に交代)・損益・ニュースから観測すべき点と結び付ける。"
-        "このとき facts.policy をその銘柄の戦略として語らない(policy は専用の戦略を持たない銘柄の既定値)。"
-        "slot_strategies が無ければ、現在の戦略パラメータの狙いを同じように結び付ける。\n"
+        "- strategy: facts.slot_strategies があれば【銘柄別の戦略】に従い、銘柄ごとの戦略の狙いを損益・見送り傾向・ニュースから観測すべき点と結び付ける。"
+        "無ければ、現在の戦略パラメータの狙いを同じように結び付ける。\n"
         "- result: 累積損益・本日実績と理論値の差・直近約定・保有を分析し、research.assetがあれば保有銘柄の面白い解説を自然に織り込む。\n"
         "- fills: 直近約定を1件ずつ、signalの観測値と閾値で『なぜ発注したか』を数値つきで説明する。\n"
         "- review: facts.round_trips の往復を1件ずつ、判断の良し悪しを根拠つきで評価し、次に活かす点を述べる。\n"
@@ -494,6 +495,21 @@ def _policy_text(policy: Mapping[str, object]) -> str:
         f"{_fmt_num(policy.get('mean_reversion_z')) or policy.get('mean_reversion_z')}以下、1回の投入は資金の"
         f"{_fmt_num(policy.get('max_notional_fraction')) or policy.get('max_notional_fraction')}までです。"
         "これらの数値は入口を決める境界であって、利益を保証する数字ではありません。"
+    )
+
+
+def _slot_guidance(facts: Mapping[str, object]) -> str:
+    """Prompt rules for per-symbol slots; empty when no slot strategy is in facts."""
+    if not facts.get("slot_strategies"):
+        return ""
+    return (
+        "【銘柄別の戦略】facts.slot_strategies があるので、売買は銘柄ごとの専用の戦略で行っています。\n"
+        "- 戦略を語るときは、その銘柄の name と candidate_note の狙いを噛み砕いて述べる。"
+        "facts.policy は専用の戦略を持たない銘柄の既定値なので、その銘柄の戦略として語らない。\n"
+        "- candidate_note の中の数字（決済数・勝ち数・損益・bpsなど）は、候補を作ったときの改善AIのメモで、今の成績ではない。"
+        "今の成績として読まない。決済件数は closed_sells、損益はほかの facts から述べる。\n"
+        "- 各戦略は決済 slot_summary.rotation_closed_sells 件か rotation_days 日で評価を区切り、次の案に交代する。"
+        "件数が少ないうちは勝ち負けだけで良し悪しを決めない。\n"
     )
 
 
@@ -1108,8 +1124,11 @@ def build_next_prompt(
         '"rationale": "検証方法と反証条件", "evidence": "根拠", "confidence": "low|medium|high"}]'
         if news_hints else ""
     )
+    label = SEGMENT_LABELS.get(target_key, "")
+    if target_key == "strategy" and facts.get("slot_strategies"):
+        label = "銘柄別の戦略"
     target_instruction = (
-        f"【今回の固定枠】{target_key}（{SEGMENT_LABELS[target_key]}）。"
+        f"【今回の固定枠】{target_key}（{label}）。"
         "この枠の内容だけを書き、別の枠の説明や総括を混ぜないでください。"
         "新しい切り口が少なくてもこの枠を省略せず、factsで裏付けられる範囲だけを述べてください。\n"
         if target_key is not None else
@@ -1134,6 +1153,7 @@ def build_next_prompt(
         f"{facts_json}\n\n"
         f"【話し済みの切り口】{covered_text}\n"
         f"{target_instruction}"
+        f"{_slot_guidance(facts)}"
         "【話し方】\n"
         "- です・ます調の自然な話し言葉。いちばん伝えたいことを最初の文で言い、その後に理由や数字を添える。\n"
         "- 冒頭に「結論からお伝えしますと」「まず結論ですが」のような前口上・枕詞を置かない。"
