@@ -77,9 +77,17 @@ L1 は、本番(LIVE)の売買の**土台だけ**で、動作しない。どの�
 - `parse.py`: bitbank の生の JSON → L2 の型。**文字列から Decimal**(float は拒否)、時刻は13桁のミリ秒だけ(秒・マイクロ秒は拒否)、注文の状態は bitbank の語彙そのまま、`remaining_amount` は送られた値のまま(正規化しない)。手数料は `fee_amount_base`/`fee_amount_quote` の生の文字列から決め、不明瞭なら UNKNOWN(両方非0、`fee_occurred_amount_quote` との不一致、符号が料率と逆、など)。`max_fee_rate` は4つの料率の絶対値の最大(1つでも読めなければ None)。
 - `errors.py`: 失敗の分類。読み取りが上げてよいのは `ExchangeAmbiguous`(既定)と `OrderNotFound`(注文の照会に対する 50009 だけ)で、`ExchangeRejected` は上げない。60002 を資金拘束のエラーとして扱わない。メッセージにはエンドポイント・種類・HTTP・コード・例外クラス名だけ。
 - `reader.py`: `BitbankReader`(`ExchangeReader` だけを実装)。**bitbank にクライアント注文 ID は無い**(`Capabilities(client_order_id=False, fetch_by_client_id=False, fills_by_order=True)`)ので、送信が失われた注文は一覧との突き合わせでしか見つけられない。**一覧の完全性は保守的**: 未約定の注文は件数が `count` 未満のときだけ完全、約定履歴は件数が1ページ未満か、最古の約定がすでに開始時刻より前のときだけ完全。`since` は取引所に送らず(単位の記述が文書間で食い違うため)、手元で絞る。市場ルール・料率は作るときに読み、`market_rules` はネットワークに出ない。作れなければ `ReaderUnavailable`。
-- 取引所の接続(ccxt を使う `transport`)と、オーナーが実キーで行う確認(`check`)は L3b。それまで実取引所には一度も接続しない。
+- 取引所の接続(ccxt を使う `transport`)と、オーナーが実キーで行う確認(`check`)は L3b。
 
 **未確認(実キーで確かめる = フェーズ B)**: `since` の単位 / 取消後・一部約定後の `remaining_amount` の意味 / maker のリベートの符号 / 手数料の丸め / 参照のみの権限で読める範囲 / 応答の形(`data.pairs`・`data.assets`・`data.orders`・`data.trades`)が文書のとおりか。合成データでの試験は、仮定との整合しか示さない。
+
+## L3b: ccxt の transport・起動ファクトリ・オーナー用の確認(まだどこからも呼ばれない)
+
+- `transport.py`(`CcxtReadTransport`): ccxt を使うのはここだけ(関数の中で遅延 import)。ccxt の統一メソッド(`fetch_order` など。`fee_amount_base` を捨て、数値を float にする)は使わず、固定の GET の暗黙メソッド6つ(`ENDPOINTS`)を呼び、生の JSON を `parse_float=str` で受ける(float が一度も生まれない)。**読み取り専用を3層で担保**: ① エンドポイント名は固定の表から引く ② `exchange.fetch` を包み、GET 以外・本文つき・表に無い URL は、送信の前に `ReadOnlyViolation`(`BaseException`。誰も握りつぶせない)③ この層にも読み取り層にも送信の型(`submit_order`・`cancel_order`・`kind`)が無い。レート制限は最小間隔 0.2 秒(bitbank の上限 10回/秒の半分)、429 は1回だけ待って再試行、他の失敗は再試行しない(次の周で L2b が再び見る)。ccxt のログ・`verbose`・直近の要求ヘッダーは封じ、呼び出しのたびに消す。例外は L2 の例外にだけ変換し、ccxt の例外の連鎖・本文・キーは残さない。
+- `factory.py`(`open_bitbank_reader`): キーを読む → transport → 市場ルールと料率を読む → **時計のずれを公開の板の時刻と比べ、±800ms を超えたら作らない**(bitbank は未来側に1秒以上ずれた要求を拒否する)。どれかが失敗すれば `ReaderUnavailable`(理由だけ)。
+- `check.py`(オーナーが実キーで行う確認 = フェーズ B。注文は一切送らない): 件数・形・単位だけを出す(キー・秘密・残高の額・価格・注文の中身は出さない。出力の前に、すべての行をキーと秘密に照合し、含まれていれば何も出さず終了コード 2)。内容: 時計のずれ / 11銘柄の市場ルール(公開情報)/ 各 GET エンドポイントの到達(assets・active_orders・trade_history・deposit_history・spot/status)/ 存在しない注文を照会したときのエラー(50009 か)/ 残高の形(`onhand == free + locked`)/ 銘柄ごとの未約定注文数と約定数 / 手数料の形(base・quote・負)・maker/taker・時刻の桁数 / 履歴にある注文を照会し `開始数量 == 約定+残量` かの分布 / 約定履歴の `since` の単位の実験(なし・ミリ秒・秒で件数を比べる)/ 読み取り層の全メソッドの煙試験。
+
+**フェーズ B の手順(オーナー)**: ① bitbank の画面で API キーを発行(権限は**参照のみ**。取引・出金は付けない)② `umask 077; install -d -m 700 <state>/trading-live/owner`、キーを `<state>/trading-live/owner/bitbank_readonly_key.json`(0600、`{"schema_version":1,"kind":"docich-bitbank-readonly-key","api_key":"…","api_secret":"…"}`)に置く ③ `python -m docich.trading.exchanges.bitbank_live.check --state-dir <state>`(ccxt が入った環境。`pip install -r requirements-trading.txt`)④ 出力を Issue に貼る。結果で、`since` の単位・`remaining_amount` の意味・maker のリベートの符号・参照のみの権限で読める範囲が確定する。**キーは会話・リポジトリ・Issue に書かない。**
 
 ## L1 でやらないこと
 
