@@ -103,6 +103,8 @@ KEY_OWNERSHIP = {
     'boss_hp_seen': {'region': WORLD, 'lifetime': 'chapter', 'migrated': False},  # 観測ボスHP
     'boss_no_damage': {'region': WORLD, 'lifetime': 'chapter', 'migrated': False},  # ボス無ダメージ観測
     'boss_victories': {'region': WORLD, 'lifetime': 'chapter', 'migrated': False},  # ボス勝利観測
+    'boss_pursuit': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # ボス追撃probe手順状態
+    'boss_wave_generals': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # ボス行軍将軍の追撃対象リスト
     'camp_status_seen': {'region': WORLD, 'lifetime': 'chapter', 'migrated': False},  # 観測済み野営ステータス
     'captured': {'region': WORLD, 'lifetime': 'chapter', 'migrated': False},  # 捕獲城の観測事実
     'card_bought_since_read': {'region': WORLD, 'lifetime': 'chapter', 'migrated': False},  # 最終パネル読み以降の購入枚数台帳
@@ -345,6 +347,8 @@ KEY_OWNERSHIP = {
     'month_sub': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 月サブ状態
     'month_text_advance': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 月テキスト送り手順状態
     'month_blind_nav': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 月メニュー盲操作の試行回数
+    'month_blind_opened': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 盲操作で確定した月メニュー項目(1tickマーカー)
+    'month_merchant_confirm': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 商人入口のうむッ確認意図
     'month_amount_back': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 金額設定オーバーレイからの復帰回数
     'name': {'region': FLOW, 'lifetime': 'run', 'migrated': False},  # 名付け手順のdoneが新規ゲーム検出に使われラン跨ぎ
     'nav_last': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 直近ナビゲーション状態

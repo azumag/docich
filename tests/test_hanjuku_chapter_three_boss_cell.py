@@ -132,7 +132,9 @@ def test_the_y_view_with_the_g_over_the_cave_is_the_world_map():
     screen = parse(frame, phase=classify(frame))
     assert screen.kind == 'world_map'
     assert screen.marker is None
-    assert world_cursor(frame) == (138.5, 126.0)
+    # The corner-fill score measures the gold body inside the G box, not the
+    # outline: the centre sits 1-2.5 px inside the measured 131-146/118-134 box.
+    assert world_cursor(frame) == (137.5, 128.5)
 
 
 def test_the_open_boss_jump_over_the_cave_is_steered_not_dropped():

@@ -762,9 +762,19 @@ def _y_view(cursor_centre, *, gold=False, shift=0):
     put(128, 10, hanjuku_screen.WORLD_BORDER)
     cx, cy = cursor_centre
     import math
+    if gold:
+        # The real G keeps its gold at the four corners of an ~11 px box
+        # (readers.world_cursor corner-fill rule), so draw L-shaped corner
+        # brackets rather than a ring.
+        x0, y0, x1, y1 = round(cx - 5), round(cy - 5), round(cx + 5), round(cy + 5)
+        for (ex, ey, sx, sy) in ((x0, y0, 1, 1), (x1, y0, -1, 1), (x0, y1, 1, -1), (x1, y1, -1, -1)):
+            for d in range(4):
+                put(ex + sx * d, ey, (255, 182 - shift, 0))
+                put(ex, ey + sy * d, (255, 182 - shift, 0))
+        return Frame(256, 224, bytes(px))
     for a in range(0, 360, 12):
         x, y = round(cx + 5.5 * math.cos(math.radians(a))), round(cy + 5.5 * math.sin(math.radians(a)))
-        put(x, y, (255, 182 - shift, 0) if gold else (255, 255 - shift, 255))
+        put(x, y, (255, 255 - shift, 255))
     return Frame(256, 224, bytes(px))
 
 

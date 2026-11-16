@@ -51,7 +51,7 @@ def test_a_cliff_bound_camp_steps_off_the_wall_before_the_visible_move(monkeypat
     _flow(mem)['recall'] = _visible_state()
     here = {'cell': [201, 554]}
     monkeypatch.setattr(world, 'observed_cursor_cell', lambda *a, **k: here['cell'])
-    monkeypatch.setattr(navigation, 'nav_step', lambda s, m, f, cell: 'right')
+    monkeypatch.setattr(navigation, 'nav_step', lambda s, m, f, cell, **_k: 'right')
     screen = Screen([], None, '', kind='map', cursor=TENT)
     state = _flow(mem)['recall']
     assert recall._visible_move_dest_step(screen, mem, frame, state) == [recall.pad('right')]

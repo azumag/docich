@@ -897,6 +897,21 @@ GENERAL_LIST_SCAN_STALLS = 3
 GENERAL_LIST_SCAN_TICKS = 60
 
 
+def _scan_press_limit(mem):
+    """Presses a roster walk may take before the safety limit ends it.
+
+    g1190 2026-11-16 33-4: イデ！'s boss-phase roster held 18 generals and the
+    walk hit the flat 16-press cap every read, so end='limit' never cleared
+    ``roster_read_due`` and the interim probe order was re-issued 100+ times.
+    A roster cannot exceed the country's general count, so that count (plus
+    the stall margin) is the bound; the constant stays the fallback.
+    """
+    army = (mem.get('country_general_count') or {}).get('count')
+    if type(army) is not int or army <= 0:
+        return GENERAL_LIST_SCAN_PRESSES
+    return max(GENERAL_LIST_SCAN_PRESSES, army + GENERAL_LIST_SCAN_STALLS)
+
+
 def _planned_general_on_page(screen, mem, order, present):
     """The plan's own general when this page already shows him.
 
@@ -959,7 +974,7 @@ def _general_list_scan(screen, mem, order):
         scan['stalls'] += 1
         if scan['stalls'] >= GENERAL_LIST_SCAN_STALLS:
             scan['end'] = 'stalled'
-    if not scan['end'] and scan['presses'] >= GENERAL_LIST_SCAN_PRESSES:
+    if not scan['end'] and scan['presses'] >= _scan_press_limit(mem):
         scan['end'] = 'limit'
     if not scan['end']:
         found = _planned_general_on_page(screen, mem, order, present)
@@ -1428,11 +1443,16 @@ def _observe_garrison(screen, mem, order, *, complete=True):
     if completed or short_complete:
         # Only a conclusive read consumes the verification request. Otherwise
         # the planner must be able to retry the roster probe.
-        (mem.get('roster_read_due') or {}).pop(castle, None)
+        due = mem.get('roster_read_due') or {}
+        due.pop(castle, None)
+        # The same castle may be requested under the on-screen spelling
+        # (イデ！ draws as イデ！): a complete read settles both entries.
+        from .map import _castle_key, settle_launch_probes_from_roster
+        for key in [k for k in due if _castle_key(k) == _castle_key(castle)]:
+            due.pop(key, None)
         # A completed walk of the source list is the evidence a blind
         # world-map probe waits for (g1133: chapter 6 draws units as
         # portraits, so the Y view never showed the committed unit).
-        from .map import settle_launch_probes_from_roster
         settle_launch_probes_from_roster(mem, castle, present)
     if castle in _owned(mem):
         # A marching general the game stopped inside this castle is only
@@ -1462,7 +1482,8 @@ def _check_source_castle(screen, mem, order):
         return _deploy_input(screen, mem, order, [pad('a')] if move == 'here' else [move],
                              '出撃前に城のステータスで城名を確認')
     name = m.group(1)
-    if name == source or STATUS_NAMES.get(source) == name:
+    from .map import _castle_key
+    if name == source or STATUS_NAMES.get(source) == name or _castle_key(name) == _castle_key(source):
         mem['castle_verified'] = step
         _observe_status_garrison(screen, mem, name=source)
         # The open castle menu belongs to the castle under the cursor, and its
@@ -1480,6 +1501,8 @@ def _check_source_castle(screen, mem, order):
     mem.pop('castle_verified', None)
     cells = chart.castles(mem.get('chapter') or 0)
     label = next((k for k, v in STATUS_NAMES.items() if v == name and k in cells), name)
+    if label not in cells:
+        label = next((c for c in cells if _castle_key(c) == _castle_key(label)), label)
     if label in cells:
         mem['cursor'], mem['uncertain'] = list(cells[label]), False    # we know where we are now
     misses = _count_source_mismatch(mem, step, label)

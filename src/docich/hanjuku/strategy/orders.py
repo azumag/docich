@@ -1970,6 +1970,15 @@ def _finish_order(mem, state, **fields):
     _plan_region(mem)['active'] = None
     mem['picked'] = []
     if state in RETIRED_ORDER_STATES:
+        # A finished interim order must leave the interim slot: the state
+        # budget prunes its 'done'/'failed' status, after which ``_orders``
+        # and ``_mechanical_interim`` both read the absent entry as
+        # "not started" and the same interim step re-issues forever (g1190
+        # chapter 9: roster probe I:381454:101 looped for hours).
+        adjust = mem.get('chart_adjust') or {}
+        interim = adjust.get('interim_order')
+        if interim and interim.get('step') == step:
+            adjust['interim_order'] = None
         # The active slot is clear now, so the settled step is unreferenced
         # unless a live march still resolves it (docich#4054).
         drop_retired_step_context(mem)

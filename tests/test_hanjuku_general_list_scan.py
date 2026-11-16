@@ -333,6 +333,100 @@ def test_incomplete_long_roster_keeps_due_for_retry():
     assert _plan_region(mem)['orders']['1-A3'] == 'launched'
 
 
+def test_a_full_army_roster_wraps_inside_the_scaled_press_limit():
+    """g1190 2026-11-16 33-4: イデ！'s boss-phase roster held 18 generals; the
+    flat 16-press cap ended every walk at 'limit', roster_read_due never
+    cleared and the interim probe was re-issued 100+ times. The country's
+    general count bounds the walk instead."""
+    army = ['どうし', 'アルファルファ', 'ナストリーニ', 'ランプータン', 'デュオニソス', 'キャロット',
+            'カペリーニ', 'ドリアン', 'ソーピニヨン', 'シャルドネ', 'オレガノ', 'シフォン',
+            'コンポート', 'ユイートル', 'セミヨン', 'バーミセリ', 'バラクーダ', 'ビシソワーズ']
+
+    def page(top, row):
+        return general_list(army[top:top + 4], row)
+
+    mem = boss_site_memory()
+    mem['country_general_count'] = {'count': 32, 'scope': [4, '140-0']}
+    mem['roster_read_due'] = {'アルマムーン': 139990, 'アルマムン': 139980}
+    # Cursor descends the first window, then the window scrolls one row per
+    # press while the hand stays on the last row, until the list wraps.
+    pages = [page(0, r) for r in range(4)] + [page(t, 3) for t in range(1, 15)]
+    for actions in walk(mem, pages):
+        assert actions == [policy.pad('down')]
+    assert mem['general_list_scan']['presses'] == 18
+    walk(mem, [page(0, 0)])
+    assert mem['general_list_scan']['end'] == 'wrapped'
+    assert _world(mem)['garrison']['アルマムーン'] == army
+    # The completed read settles both spellings of the due request.
+    assert mem['roster_read_due'] == {}
+
+
+def test_the_army_count_fallback_keeps_the_flat_limit():
+    """Without a country count the old 16-press bound still ends the walk."""
+    army = ['どうし', 'アルファルファ', 'ナストリーニ', 'ランプータン', 'デュオニソス', 'キャロット',
+            'カペリーニ', 'ドリアン', 'ソーピニヨン', 'シャルドネ', 'オレガノ', 'シフォン',
+            'コンポート', 'ユイートル', 'セミヨン', 'バーミセリ', 'バラクーダ', 'ビシソワーズ']
+
+    def page(top, row):
+        return general_list(army[top:top + 4], row)
+
+    mem = boss_site_memory()
+    pages = [page(0, r) for r in range(4)] + [page(t, 3) for t in range(1, 13)]
+    for actions in walk(mem, pages):
+        assert actions == [policy.pad('down')]
+    walk(mem, [page(13, 3)])
+    assert mem['general_list_scan']['presses'] == 16
+    assert mem['general_list_scan']['end'] == 'limit'
+
+
+def test_the_status_name_check_folds_the_half_width_exclamation():
+    """The status panel draws イデ！ as イデ！; that castle is still the source."""
+    from docich import hanjuku_chart as chart
+    from docich.hanjuku_screen import Screen
+    order = {'step': 'I:9', 'general': 'どうし', 'source': 'イデ！', 'target': 'ボス',
+             'cards': [], 'after': None, 'note': 't'}
+    mem = {'chapter': 9, 'orders': {'I:9': 'pending'}, 'picked': [], '_records': [],
+           'active': 'I:9', 'launched_orders': {'I:9': order},
+           'cursor': list(chart.castles(9)['オシロガ'])}
+    status = Screen(lines=[], hand=None, kind='castle_menu',
+                    text='しゅつげきイデ!じょうステータスしゅうにゅう30Gレベル3しょうぐん18めいどうし')
+    assert policy._check_source_castle(status, mem, order) == [policy.pad('b')]
+    assert mem['castle_verified'] == 'I:9'
+    assert mem['cursor'] == list(chart.castles(9)['イデ！'])
+    assert not [r for r in mem['_records'] if r['decision'] == 'source_castle_mismatch']
+
+
+def test_a_finished_interim_order_leaves_the_slot():
+    """g1190 chapter 9: roster probe I:381454:101 completed 'done', the state
+    budget pruned its orders entry, and the absent status read as "not
+    started" — the same read-only order re-issued for hours. Retiring the
+    interim slot on the terminal state breaks that loop."""
+    from docich.hanjuku.strategy.orders import _finish_order
+    mem = {'chapter': 9, 'orders': {}, '_records': [], 'picked': [],
+           'chart_adjust': {'interim_order': {'step': 'I:381454:101', 'general': 'しょうぐん',
+                                              'source': 'イデ！', 'target': 'ボス',
+                                              'roster_probe': True}}}
+    _plan_region(mem)['active'] = 'I:381454:101'
+    _finish_order(mem, 'done', reason='読取のみの指示を終了')
+    assert mem['chart_adjust']['interim_order'] is None
+
+
+def test_a_pruned_interim_status_does_not_block_the_next_mint():
+    """The state budget prune can beat _finish_order to the slot (a status
+    written directly, or an order finished by another path). A started step
+    whose orders entry vanished is treated as finished, not busy."""
+    from docich.hanjuku.strategy.replan import _mechanical_interim
+    state = {'interim_order': {'step': 'I:381454:101', 'general': 'しょうぐん',
+                               'source': 'イデ！', 'target': 'ボス',
+                               'roster_probe': True}}
+    mem = {'chapter': 9, 'tick': 5000, 'orders': {}, '_records': [], 'picked': [],
+           'chart_adjust': state, 'captured': [], 'lost': [],
+           'order_start_tick': {'I:381454:101': 4990}}
+    _mechanical_interim(mem, state, '381454', 'd')
+    assert state.get('interim_order') is None or \
+        state['interim_order']['step'] != 'I:381454:101'
+
+
 def test_partial_short_ocr_during_scan_does_not_settle_probe():
     """A truncated visible page is not proof of a short roster mid-scan."""
     from docich.hanjuku.state.regions import flow as _flow

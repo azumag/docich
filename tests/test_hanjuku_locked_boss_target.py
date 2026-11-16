@@ -38,7 +38,7 @@ def test_adjusted_boss_target_cannot_bypass_unlock_with_an_unconditional_order(c
 
 def test_unsent_hotloaded_boss_marker_cannot_confirm_a_locked_castle(monkeypatch):
     order, mem = memory()
-    monkeypatch.setattr(p, 'nav_step', lambda *args: 'arrived')
+    monkeypatch.setattr(p, 'nav_step', lambda *args, **kwargs: 'arrived')
     monkeypatch.setattr(p, '_target_roof_under_marker', lambda *args: True)
     monkeypatch.setattr(p, '_want_y_jump', lambda *args: False)
     actions = p.target_step(Screen([], None, '', kind='map_target'), mem, None)

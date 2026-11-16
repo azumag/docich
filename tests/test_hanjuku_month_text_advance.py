@@ -59,7 +59,15 @@ def test_plain_menu_without_text_still_holds():
     screen = menu(body=None)
     assert not policy._month_dialog_body(screen)
     mem = {'month': '1-11', '_records': []}
-    assert stuck(mem, screen)[-1] == []
+    moves = stuck(mem, screen)
+    assert moves[:policy.MENU_NAV_PRESS_LIMIT] == [policy.pad('down')] * policy.MENU_NAV_PRESS_LIMIT
+    assert moves[policy.MENU_NAV_PRESS_LIMIT] == [policy.pad('b')]
+    # A stuck walk on a proven menu now escapes through the bounded blind
+    # plan; once its tries are spent the guarded hold resumes.
+    assert [r['decision'] for r in mem['_records']][-1] == 'month_blind_nav'
+    for _ in range(policy.MONTH_BLIND_NAV_LIMIT + 1):
+        policy._month_menu_move(screen, mem, 'へいしほじゅう')
+    assert policy._month_menu_move(screen, mem, 'へいしほじゅう') == []
 
 
 def test_a_choice_is_never_confirmed_by_the_advance():
@@ -121,8 +129,13 @@ def test_ignored_navigation_is_retried_after_a_short_hold_not_150_s():
     limit, hold = policy.MENU_NAV_PRESS_LIMIT, policy.MENU_NAV_RETRY_HOLD
     assert moves[:limit] == [policy.pad('down')] * limit
     assert moves[limit] == [policy.pad('b')]
-    assert moves[limit + 1:limit + hold] == [[]] * (hold - 1)
-    assert moves[limit + hold] == policy.pad('down')    # the move itself, retried
+    # Once cancelled, the blind rescue fires its bounded tries before the
+    # guarded hold/retry cycle resumes.
+    blind = moves[limit + 1]
+    assert blind[-2] == policy.pad('a') and blind[-1] == {'type': 'wait', 'ms': policy.MONTH_BLIND_NAV_WAIT_MS}
+    tail = moves[limit + 1 + policy.MONTH_BLIND_NAV_LIMIT:]
+    hold_idx = next(i for i, m in enumerate(tail) if m == policy.pad('down'))
+    assert all(m == [] for m in tail[:hold_idx])
     assert policy.pad('a') not in moves and [policy.pad('a')] not in moves
     assert any(r['decision'] == 'menu_nav_retry' for r in mem['_records'])
     # A cursor that finally moves ends the episode as usual.

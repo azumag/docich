@@ -350,6 +350,13 @@ def boss_probe_cell(mem, name, step=None):
     if (chapter == 9 and chart.corridor(chapter) and name
             and chart.is_boss_castle(name)):
         relaunched = int((mem.get('boss_relaunch') or {}).get(str(step)) or 0)
+        if step == 'RECALL':
+            # A camp redirect is the boss order's second leg by definition
+            # (owner 2026-11-16): it re-sends a general already camped at the
+            # waypoint at the moving boss cell. ``boss_relaunch`` is keyed by
+            # the order step, so the pseudo-step never reads it — without this
+            # the redirect's Y jump landed back on the waypoint, not the skull.
+            relaunched = 1
         if relaunched < 1:
             # The egg-repair house north of イデ！ (owner 2026-11-16: the map
             # shows it with a heart; chapter 9 has two, and only the northern
@@ -358,9 +365,13 @@ def boss_probe_cell(mem, name, step=None):
             corridor = chart.corridor(chapter) or ()
             last = chart.castles(chapter).get(corridor[-1]) if corridor else None
             if last:
-                # Cell-aligned (16-px field cells): an off-grid destination is
-                # not a walkable target for the game's own departure menu.
-                return (last[0], last[1] - 32)
+                # The egg-repair house north of イデ！ (owner 2026-11-16: the
+                # map shows it with a heart; chapter 9 has two, and only the
+                # northern one lets the army around the cliff to the boss).
+                # The move to the waypoint is the Y jump landing itself
+                # (target_step confirms it without field walking), so the aim
+                # is the heart cell the jump puts the marker on.
+                return chart.CH9_BOSS_WAYPOINT
     return cell
 
 
@@ -523,6 +534,11 @@ def _y_jump_step(mem, frame):
         jump['wait'] += 1
         if jump['wait'] < Y_JUMP_WAIT:
             return []
+        try:
+            from pathlib import Path as _P
+            _P('/tmp/yjump_fail.png').write_bytes(frame.png_bytes())
+        except Exception:
+            pass
         mem.pop('y_jump', None)
         _note_failed_jump(mem, jump, 'cursor_unreadable')
         _record(mem, 'y_jump_failed', chart_step=jump['step'], target=jump['goal'],

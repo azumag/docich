@@ -595,22 +595,55 @@ def world_cursor(frame, chapter=None):
     # 2's gold camp triangle beside フーリック widened the box so no target
     # jump there could read the G (isolated probe, g421 state). Take the
     # G-sized window holding the most gold instead of the whole box.
-    best = None
+    windows = {}
     for x0 in sorted({x for x, _ in gold}):
         for y0 in sorted({y for _, y in gold}):
             inside = [(x, y) for x, y in gold if x0 <= x <= x0 + 18 and y0 <= y <= y0 + 18]
-            if best is None or len(inside) > len(best):
-                best = inside
-    if best and len(best) >= 12:
-        xs = [x for x, _ in best]; ys = [y for _, y in best]
-        if max(xs) - min(xs) >= 10 and max(ys) - min(ys) >= 10:
-            return ((min(xs) + max(xs)) / 2, (min(ys) + max(ys)) / 2)
+            if len(inside) >= 12:
+                key = (round(min(x for x, _ in inside) / 4), round(min(y for _, y in inside) / 4))
+                if len(inside) > len(windows.get(key) or []):
+                    windows[key] = inside
+    # The real G corner keeps its gold at the box's four corners and nowhere
+    # else. A castle pennant or a unit ▲ (g1190 40-9: the ▲ cluster at
+    # ~(126,96) read as the cursor, ~0.26 corner fill) has gold spread across
+    # the whole box. Score every window on that corner fill and return the
+    # true G rather than the densest blob, so a marker can't hide the cursor.
+    scored = []
+    for inside in windows.values():
+        xs = [x for x, _ in inside]; ys = [y for _, y in inside]
+        w, h = max(xs) - min(xs), max(ys) - min(ys)
+        if w < 10 or h < 10:
+            continue
+        corners = ((min(xs), min(ys)), (max(xs), min(ys)),
+                   (min(xs), max(ys)), (max(xs), max(ys)))
+        at_corner = sum(1 for x, y in inside
+                        if any(abs(x - x0) <= 3 and abs(y - y0) <= 3
+                               for x0, y0 in corners))
+        scored.append((at_corner / len(inside), len(inside),
+                       (min(xs) + max(xs)) / 2, (min(ys) + max(ys)) / 2))
+    scored.sort(reverse=True)
+    if scored and scored[0][0] >= 0.7:
+        return (scored[0][2], scored[0][3])
     if chapter == 9:
-        # Chapter 9's real cursor is the gold G. The blue-ring fallback below
-        # accepts the blinking blue icon in the lake at (169, 116) and steers
-        # the jump on a fixed wrong point (owner 2026-11-16: サヌト jumps kept
-        # failing at the identical residual [-87, -28.5]). Unreadable is
-        # safer than a false cursor.
+        # Chapter 9's real cursor is the blue "G" box: a solid ~11x11 blue
+        # square holding a white G, ringed by thin gold corner brackets too
+        # sparse for the gold test above. Detect the dense blue body of the
+        # same icon instead — it is the cursor the jump steers. The blinking
+        # blue lake icon at (169, 116) is a tiny sparse dot (~9 px) and the
+        # pennant strips are smaller still, so a size+density floor keeps
+        # both out (g1190: jump frames show only the 98-px G box qualifying).
+        best_box = None
+        for x0 in range(40, 220 - 12):
+            for y0 in range(40, 200 - 12):
+                inside = [(x, y) for x in range(x0, x0 + 12) for y in range(y0, y0 + 12)
+                          if _is_blue_pixel(frame.pixel(x, y))]
+                if len(inside) >= 40 and (best_box is None or len(inside) > len(best_box)):
+                    best_box = inside
+        if best_box:
+            xs = [x for x, _ in best_box]; ys = [y for _, y in best_box]
+            if max(xs) - min(xs) >= 8 and max(ys) - min(ys) >= 8:
+                return ((min(xs) + max(xs)) / 2, (min(ys) + max(ys)) / 2)
+        # Otherwise unreadable is safer than a false cursor.
         return None
     # 2. Blue-dotted black dashed ring. The white ring vote cannot see this
     # cursor, and the gold map frame would otherwise be misread as a G.

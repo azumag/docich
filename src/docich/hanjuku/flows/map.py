@@ -19,7 +19,8 @@ from .recall import (MENU_HOLD_LIMIT, RECALL_LIMIT, _hold_after_picker, _recall_
                             camp_recall_step)
 from ..os_layer.commands import VISIBLE_LIST_RELEASE_MS, castle_list_batch, menu_to, pad
 from ..os_layer.navigation import (Y_JUMP_LIMIT, Y_JUMP_OFFSET, Y_JUMP_TOL, _align_on_roof, _drop_stale_y_jump, _start_y_jump,
-                                   _forget_failed_jump, _want_y_jump, _y_jump_step, nav_step, y_jump_unreachable)
+                                   _forget_failed_jump, _want_y_jump, _y_jump_step, boss_probe_cell, nav_step,
+                                   y_jump_unreachable)
 from ..os_layer.readers import (UNDER_CURSOR_PX, WORLD_MAP_OFFSET, _cursor, _roof_under_cursor, season_sites,
                                 world_cursor, world_flags, world_markers)
 from ..os_layer.world import (NAME, _apply_season_sites, _apply_skull_boss, _apply_world_flags,
@@ -1870,7 +1871,15 @@ def target_step(screen: Screen, mem, frame):
             flow(mem).pop('departure_request', None)   # a reservation of another order owns nothing
         else:
             return _departure_request_step(screen, mem, order, request).actions
-    goal = _measured_goal(mem, order, order['target'])
+    if chart.is_boss_castle(order['target']):
+        # Owner 2026-11-16 (chapter 9): the boss order's first leg aims at the
+        # waypoint north of イデ！ (the cliffs block the direct line at the
+        # skull); a re-armed step aims at the measured boss cell itself. The
+        # plain chart cell would aim every attempt straight at the skull.
+        goal = (boss_probe_cell(mem, order['target'], order['step'])
+                or _measured_goal(mem, order, order['target']))
+    else:
+        goal = _measured_goal(mem, order, order['target'])
     if goal is None:
         return []
     routed = _hold_unrouted_sortie(mem, order)
@@ -1898,7 +1907,16 @@ def target_step(screen: Screen, mem, frame):
             and _want_y_jump(mem, order, order['target'], 'target')):
         return _start_y_jump(mem, order, order['target'], 'target')
     if result is None:
-        result = nav_step(screen, mem, frame, goal)
+        if (chart.is_boss_castle(order['target'])
+                and (mem.get('y_jumped') or {}).get(order['step']) == order['target']):
+            # Chapter 9 (owner 2026-11-16): the move to the north waypoint is
+            # the Y jump itself. Once the view put the target marker on the aim
+            # cell, dead-reckoned field walking only drifts it into the cliff
+            # ring and the arrival never verifies, so the jumped landing is
+            # confirmed directly — the sortie actually marches north.
+            result = 'arrived'
+        else:
+            result = nav_step(screen, mem, frame, goal, order['target'], step=order['step'])
         if not result and screen.marker and (not mem.get('cursor') or mem.get('nav_search')):
             # Jumps spent and the marker's place unknown (g421 18:24: 70 idle
             # observations), or the cursor will not move under the presses at
@@ -2412,7 +2430,13 @@ def _target_roof_under_marker(screen, mem, frame, order) -> bool:
         # captured frame in v402.
         if (mem.get('y_jumped') or {}).get(order['step']) == order['target']:
             return True
-        cell = chart.castles(mem.get('chapter') or 0).get(order['target'])
+        # Chapter 9's moving boss (owner 2026-11-16): the first leg lands on
+        # the waypoint north of イデ！, not on the skull itself — verifying
+        # against the bare boss cell cancelled every first leg. The probe cell
+        # is the actual aim point (waypoint while unrelaunched, the boss cell
+        # once re-armed); other chapters get their assigned probe candidate.
+        cell = (boss_probe_cell(mem, order['target'], order['step'])
+                or chart.castles(mem.get('chapter') or 0).get(order['target']))
         world = update_world(screen, mem, frame, order['target'])
         return bool(cell and world
                     and abs(world[0] - cell[0]) <= BOSS_MARKER_CELL_PX
@@ -2453,6 +2477,12 @@ def _cell_match_evidence(screen, mem, order, frame) -> bool:
     s = _cursor(screen)
     if not s or frame is None:
         return False
+    if (chart.is_boss_castle(order['target'])
+            and (mem.get('chapter') or 0) == chart.MOVING_BOSS_CHAPTER):
+        # The moving boss's aim points — the north waypoint or the skull's
+        # cell — have no roof beside the marker. The anchored estimate is the
+        # only evidence either landing can carry.
+        return not mem.get('uncertain')
     want = 'own' if order['target'] in _owned(mem) else 'enemy'
     return any(r['kind'] == want and not r.get('clipped')
                and abs(r['target'][0] - s[0]) <= CELL_EVIDENCE_ROOF_PX
@@ -2471,6 +2501,10 @@ def _unverified_target(screen, mem, order, frame=None):
     # but only with evidence on screen (``_cell_match_evidence``): the bare
     # estimate confirmed a marker over the sea (owner 2026-11-16, ch9).
     cell = chart.castles(mem.get('chapter') or 0).get(order['target'])
+    if chart.is_boss_castle(order['target']):
+        # A boss order's aim cell is its probe cell (chapter 9's first leg is
+        # the waypoint north of イデ！), not the bare chart cell.
+        cell = boss_probe_cell(mem, order['target'], order['step']) or cell
     cursor = mem.get('cursor')
     if (cell and isinstance(cursor, (list, tuple)) and len(cursor) == 2
             and abs(cursor[0] - cell[0]) <= BOSS_MARKER_CELL_PX

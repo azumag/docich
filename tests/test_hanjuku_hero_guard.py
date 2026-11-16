@@ -100,7 +100,7 @@ def test_hotloaded_unsubmitted_hero_target_never_sends_departure(monkeypatch):
     _plan_region(mem)['order_context'] = {step: {'actual_general': p.NAME,
         'observed_metric': {'cards': sorted(order['cards'])}}}
     _flow(mem)['sortie_attempt'] = {'step': step, 'target_seen': True}
-    monkeypatch.setattr(p, 'nav_step', lambda *args: pytest.fail('hero target navigation'))
+    monkeypatch.setattr(p, 'nav_step', lambda *args, **kwargs: pytest.fail('hero target navigation'))
     assert p.target_step(Screen([], None, '', kind='map_target'), mem, None) == [p.pad('b'), p.pad('b')]
     assert not _flow(mem).get('sortie_attempt') and not mem.get('sorties')
     assert _plan_region(mem)['orders'][step] == 'pending'

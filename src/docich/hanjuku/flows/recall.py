@@ -746,6 +746,20 @@ def _camp_recall_step(screen: Screen, mem, frame, *, observed_camps=None):
         _reset_boss_jump(mem)
         _observe_recall_origin(screen, mem, frame, state)
         state['camp_world'] = _camp_world_cell(cursor, state.get('origin'), camp['target'])
+        # Owner 2026-11-16 (fix A): re-wire the lost second leg. A camp goes
+        # to the boss when it formed beside the north waypoint OR when a
+        # boss-launched general (``boss_wave_generals``) is known to be
+        # camping — in the boss phase the field camps are expired boss
+        # marches. Other camps keep the ordinary nearest-castle recall.
+        boss = boss_redirect_goal(mem)
+        if boss and state.get('camp_world'):
+            wx, wy = chart.CH9_BOSS_WAYPOINT
+            wave = mem.get('boss_wave_generals') or {}
+            actors = ((mem.get('camp_status_seen') or {}).get('actors') or {})
+            if ((abs(state['camp_world'][0] - wx) <= 320
+                    and abs(state['camp_world'][1] - wy) <= 320)
+                    or any(g in actors for g in wave)):
+                state['boss'], state['goal'] = True, boss
         if _camp_target(state.get('camp_world')):
             _flow(mem)['camp_last_world'] = list(state['camp_world'])
         elapsed = (int(mem.get('tick') or 0) - mem['month_start_tick']
