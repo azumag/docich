@@ -314,7 +314,7 @@ def test_the_owner_package_imports_no_exchange_network_or_process_module():
 def test_the_revision_module_has_no_other_dependency():
     modules = _imported_modules(PKG / "revision.py")
     assert modules, "the import scan found nothing"
-    assert {name.split(".")[0] for name in modules} <= {"__future__", "re", "pathlib", "subprocess"}
+    assert {name.split(".")[0] for name in modules} <= {"__future__", "re", "os", "pathlib", "subprocess"}
 
 
 def test_only_the_package_entry_point_imports_the_owner_package():
@@ -499,8 +499,10 @@ def test_activate_with_the_worker_holding_the_lease_returns_five(workspace, tmp_
 
 # ---- revision.py: the commit the enable file is bound to -------------------------------------
 def _git(repo, *args):
-    return subprocess.run(["git", *args], cwd=str(repo), capture_output=True, text=True, check=True,
-                          env=dict(os.environ, GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_NOSYSTEM="1"))
+    """Run git like revision.py does: no inherited GIT_* variable, a fixed configuration."""
+    env = {name: value for name, value in os.environ.items() if not name.startswith("GIT_")}
+    env.update({"GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1", "LC_ALL": "C"})
+    return subprocess.run(["git", *args], cwd=str(repo), capture_output=True, text=True, check=True, env=env)
 
 
 def _git_repo(tmp_path):
@@ -527,3 +529,30 @@ def test_current_revision_returns_head_and_refuses_a_dirty_or_missing_repo(tmp_p
     plain.mkdir()
     with pytest.raises(live_revision.RevisionError):
         live_revision.current_revision(plain)
+
+
+def test_current_revision_ignores_inherited_git_dir_and_work_tree(tmp_path, monkeypatch):
+    repo = _git_repo(tmp_path)
+    other = tmp_path / "other"
+    other.mkdir()
+    _git(other, "init")
+    (other / "other.txt").write_text("other\n", encoding="utf-8")
+    _git(other, "add", "other.txt")
+    _git(other, "-c", "user.name=test", "-c", "user.email=test@example.invalid", "commit", "-m", "other")
+    repo_head = _git(repo, "rev-parse", "HEAD").stdout.strip()
+    other_head = _git(other, "rev-parse", "HEAD").stdout.strip()
+    assert repo_head != other_head
+    monkeypatch.setenv("GIT_DIR", str(other / ".git"))
+    monkeypatch.setenv("GIT_WORK_TREE", str(other))
+    assert live_revision.current_revision(repo) == repo_head      # not the other repository's HEAD
+
+
+def test_current_revision_requires_the_top_level_of_its_own_checkout(tmp_path):
+    repo = _git_repo(tmp_path)
+    (repo / "sub").mkdir()
+    with pytest.raises(live_revision.RevisionError, match="top of its own git checkout"):
+        live_revision.current_revision(repo / "sub")             # a subdirectory is not the checkout
+    nested = repo / "sub" / "deeper"
+    nested.mkdir()
+    with pytest.raises(live_revision.RevisionError, match="top of its own git checkout"):
+        live_revision.current_revision(nested)                   # nor a plain directory inside the repo
