@@ -162,6 +162,9 @@ class Intent:
     state_version: int
     exchange_order_id: str | None
     reason_code: str | None
+    client_order_id: str | None = None
+    created_at: float = 0.0
+    updated_at: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -219,7 +222,8 @@ class Event:
 
 
 _INTENT_COLS = ("intent_id, decision_key, symbol, side, order_type, amount, price, policy_digest, "
-                "position_id, rule_id, state, state_version, exchange_order_id, reason_code")
+                "position_id, rule_id, state, state_version, exchange_order_id, reason_code, "
+                "client_order_id, created_at, updated_at")
 
 
 def _fault(point: str) -> None:
@@ -508,6 +512,16 @@ class LiveLedger:
         self._emit(cur, "intent_state", "intent", intent_id,
                    {"from": current.state, "to": to_state, "reason": reason_code}, now)
         return self._intent(cur, intent_id)
+
+    def list_intents(self, *, states: tuple[str, ...]) -> list[Intent]:
+        """Read-only; oldest first."""
+        if not states:
+            return []
+        marks = ",".join("?" for _ in states)
+        with self.read_cursor() as cur:
+            rows = cur.execute(f"SELECT {_INTENT_COLS} FROM intents WHERE state IN ({marks}) "
+                               "ORDER BY created_at, intent_id", tuple(states)).fetchall()
+        return [Intent(*row) for row in rows]
 
     def mark_submitting(self, lease: WriterLease, intent_id: str, *, now: float) -> Intent:
         """The send may happen only after this returns (the commit is the barrier)."""

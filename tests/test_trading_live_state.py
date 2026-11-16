@@ -79,6 +79,7 @@ def test_import_live_package_has_no_side_effects_or_network_modules(tmp_path):
         before = sorted(os.listdir({str(tmp_path)!r}))
         import docich.trading.live.ledger, docich.trading.live.enable, docich.trading.live.policy
         import docich.trading.live.lease, docich.trading.live.safety, docich.trading.live.paths
+        import docich.trading.live.exchange, docich.trading.live.mock_exchange
         bad = [m for m in ("ssl", "ccxt", "http.client", "urllib.request", "requests") if m in sys.modules]
         assert not bad, bad
         assert sorted(os.listdir({str(tmp_path)!r})) == before
@@ -658,3 +659,13 @@ def test_unreadable_ledger_reads_as_blocked():
             raise sqlite3.DatabaseError("corrupt")
     state = sf.read_safety_state(Broken())
     assert state.block_new_buys and not state.ledger_readable
+
+
+def test_list_intents_is_read_only_and_ordered_and_intents_carry_times(ready):
+    ws, ledger, lease, ps = ready
+    first = ledger.create_intent(lease, _req(ps), now=NOW)
+    second = ledger.create_intent(lease, _req(ps, symbol="XYM/JPY", key="k2"), now=NOW + 1)
+    listed = ledger.list_intents(states=("PLANNED",))
+    assert [i.intent_id for i in listed] == [first.intent_id, second.intent_id]
+    assert listed[0].created_at == NOW and listed[0].updated_at == NOW and listed[0].client_order_id is None
+    assert ledger.list_intents(states=()) == [] and ledger.list_intents(states=("FILLED",)) == []
