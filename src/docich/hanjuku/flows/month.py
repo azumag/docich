@@ -220,8 +220,11 @@ def _month_menu_move(screen: Screen, mem, label: str):
     # every ~84 observations with the same rows). The measured two-column
     # layout plus the exit label identifies this screen whatever the hand
     # reads, so accept any hand (or none) once the menu itself is proven.
+    # The menu proves itself by its own item labels, not only the じゅうじキー
+    # hint: an income message (「ししき…せんとうさいかいですじゃ」 g1190 39-2)
+    # replaces the hint and the menu still held forever without the blind nav.
     if ((not hand or hand[1] >= 175 or screen.has('しょうぐんぼしゅう'))
-            and screen.has('じゅうじキー')
+            and (screen.has('じゅうじキー') or screen.has('メインメニュー'))
             and screen.has(label.replace('!', '').replace('！', ''))):
         # The hand reads the dialogue window under the menu (measured
         # g1190 2026-11-16: hand (202,197) on the 「じゅうじキー」 hint while
