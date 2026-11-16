@@ -625,11 +625,25 @@ def world_cursor(frame, chapter=None):
     if scored and scored[0][0] >= 0.7:
         return (scored[0][2], scored[0][3])
     if chapter == 9:
-        # Chapter 9's real cursor is the gold G. The blue-ring fallback below
-        # accepts the blinking blue icon in the lake at (169, 116) and steers
-        # the jump on a fixed wrong point (owner 2026-11-16: サヌト jumps kept
-        # failing at the identical residual [-87, -28.5]). Unreadable is
-        # safer than a false cursor.
+        # Chapter 9's real cursor is the blue "G" box: a solid ~11x11 blue
+        # square holding a white G, ringed by thin gold corner brackets too
+        # sparse for the gold test above. Detect the dense blue body of the
+        # same icon instead — it is the cursor the jump steers. The blinking
+        # blue lake icon at (169, 116) is a tiny sparse dot (~9 px) and the
+        # pennant strips are smaller still, so a size+density floor keeps
+        # both out (g1190: jump frames show only the 98-px G box qualifying).
+        best_box = None
+        for x0 in range(40, 220 - 12):
+            for y0 in range(40, 200 - 12):
+                inside = [(x, y) for x in range(x0, x0 + 12) for y in range(y0, y0 + 12)
+                          if _is_blue_pixel(frame.pixel(x, y))]
+                if len(inside) >= 40 and (best_box is None or len(inside) > len(best_box)):
+                    best_box = inside
+        if best_box:
+            xs = [x for x, _ in best_box]; ys = [y for _, y in best_box]
+            if max(xs) - min(xs) >= 8 and max(ys) - min(ys) >= 8:
+                return ((min(xs) + max(xs)) / 2, (min(ys) + max(ys)) / 2)
+        # Otherwise unreadable is safer than a false cursor.
         return None
     # 2. Blue-dotted black dashed ring. The white ring vote cannot see this
     # cursor, and the gold map frame would otherwise be misread as a G.

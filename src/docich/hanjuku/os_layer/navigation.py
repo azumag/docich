@@ -534,6 +534,11 @@ def _y_jump_step(mem, frame):
         jump['wait'] += 1
         if jump['wait'] < Y_JUMP_WAIT:
             return []
+        try:
+            from pathlib import Path as _P
+            _P('/tmp/yjump_fail.png').write_bytes(frame.png_bytes())
+        except Exception:
+            pass
         mem.pop('y_jump', None)
         _note_failed_jump(mem, jump, 'cursor_unreadable')
         _record(mem, 'y_jump_failed', chart_step=jump['step'], target=jump['goal'],
