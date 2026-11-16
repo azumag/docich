@@ -2323,6 +2323,15 @@ def test_spending_month_menu_navigation_that_never_moves_is_bounded_too():
     assert policy.month_step(parse(frame), mem) == [policy.pad('b')]
     assert [r['decision'] for r in mem['_records']][-1] == 'menu_nav_stuck'
     assert mem['_records'][-1]['observed_metric']['route'] == 'month_nav'
+    # A stuck walk now escapes via the measured two-column blind plan (the
+    # trailing 'a' opens へいしほじゅう), bounded by MONTH_BLIND_NAV_LIMIT;
+    # once the tries are spent the guarded hold resumes and still never fires
+    # an unbounded confirm.
+    blind = ['up'] * 4 + ['left', 'down', 'a']
+    for _ in range(policy.MONTH_BLIND_NAV_LIMIT):
+        plan = policy.month_step(parse(frame), mem)
+        assert [a['buttons'][0] for a in plan if a['type'] == 'pad'] == blind
+    assert [r['decision'] for r in mem['_records']][-1] == 'month_blind_nav'
     assert policy.month_step(parse(frame), mem) == []
 
 

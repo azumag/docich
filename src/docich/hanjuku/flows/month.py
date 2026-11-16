@@ -186,9 +186,9 @@ def _month_army_count_check(screen, mem, shop):
             return [pad('b')]
         return []  # do not repeat A over a still-visible parent menu
     move = _month_menu_move(screen, mem, 'へいしほじゅう')
-    if move == 'here':
+    if _month_opened(move, mem, 'へいしほじゅう'):
         state['stage'] = 'requested'
-        return [pad('a')]
+        return move if isinstance(move, list) else [pad('a')]
     return move if isinstance(move, list) else [move] if move else []
 
 
@@ -214,18 +214,49 @@ def _month_menu_row_col(screen: Screen, label: str):
     return None
 
 
+def _month_nav_stuck(mem):
+    """The guarded walk already cancelled once without reaching the target."""
+    nav = mem.get('month_nav')
+    return isinstance(nav, dict) and nav.get('cancel_sent') is True
+
+
+def _month_opened(move, mem, label: str):
+    """'here' from the guarded walk, or a blind-nav plan ending on ``label``.
+
+    The blind plan's trailing 'a' opens the target exactly like the 'here'
+    branch's A, so callers apply the same opened-state (month_sub, refill
+    stage, exit/merchant flags). The marker is one tick old: reaching the
+    guarded walk below clears it, and a stale label cannot match a walk move.
+    """
+    if move == 'here':
+        return True
+    if isinstance(move, list) and mem.get('month_blind_opened') == label:
+        mem.pop('month_blind_opened', None)
+        return True
+    return False
+
+
 def _month_menu_move(screen: Screen, mem, label: str):
     hand = screen.hand
     # The hand can also sit on a menu row (g1190 2026-11-16 19-9: menu_nav_stuck
     # every ~84 observations with the same rows). The measured two-column
     # layout plus the exit label identifies this screen whatever the hand
-    # reads, so accept any hand (or none) once the menu itself is proven.
+    # reads, so blind navigation is the fallback once the walk provably cannot
+    # work: the hand sits on the dialogue window (y>=175), or a guarded walk
+    # already cancelled once without progress. A merely missing hand is not
+    # evidence: menu_to holds then, the same as before the blind walk existed.
     # The menu proves itself by its own item labels, not only the じゅうじキー
     # hint: an income message (「ししき…せんとうさいかいですじゃ」 g1190 39-2)
     # replaces the hint and the menu still held forever without the blind nav.
-    if ((not hand or hand[1] >= 175 or screen.has('しょうぐんぼしゅう'))
+    # Never blind-walk into a live dialogue: the presses would reach the
+    # message, not the menu. The only exempt body is the menu's own じゅうじキー
+    # hint line; any other foreground text is owned by _month_text_advance or
+    # the hold path.
+    dialogue_free = _month_menu_quiet(screen) or screen.has('じゅうじキー')
+    if (((hand and hand[1] >= 175) or _month_nav_stuck(mem))
             and (screen.has('じゅうじキー') or screen.has('メインメニュー'))
-            and screen.has(label.replace('!', '').replace('！', ''))):
+            and screen.has(label.replace('!', '').replace('！', ''))
+            and dialogue_free):
         # The hand reads the dialogue window under the menu (measured
         # g1190 2026-11-16: hand (202,197) on the 「じゅうじキー」 hint while
         # the menu rows sit at y47-95), so the hand-driven navigation cannot
@@ -248,20 +279,16 @@ def _month_menu_move(screen: Screen, mem, label: str):
             # burst is dropped (the same cadence lesson as the しろ list, v920).
             keys = (['up'] * 4 + ['right' if col else 'left']
                     + ['down'] * row + ['a'])
-            if label.startswith('しょうにん'):
-                # The blind 'a' opens the merchant's うむッ/いかんッ gate; mark
-                # it so the next confirm answers うむッ instead of refusing.
-                mem['month_merchant_confirm'] = True
-            if label.startswith('も〜おしまい'):
-                # The blind 'a' sits on the exit item without the 'here' branch
-                # that sets month_exit, so the よろしいですかな gate would read
-                # month_exit=False and refuse with いかんッ forever (g1190
-                # 41-1: blind_nav→も〜おしまい→いかんッ loop). Mark the exit.
-                mem['month_exit'] = True
+            # The blind 'a' opens the target like the 'here' branch's A: mark
+            # which label it confirmed so the caller applies the same
+            # opened-state (month_sub, refill stage, exit/merchant flags)
+            # instead of returning the steps with the open unrecorded.
+            mem['month_blind_opened'] = label
             steps = []
             for key in keys:
                 steps += [pad(key), {'type': 'wait', 'ms': MONTH_BLIND_NAV_WAIT_MS}]
             return steps
+    mem.pop('month_blind_opened', None)
     move = guarded_menu_to(screen, mem, label, key='month_nav')
     if move == []:
         return _month_text_advance(screen, mem, label) or move
@@ -424,9 +451,10 @@ def month_step(screen: Screen, mem):
                                          'soldiers_planned': (shop or {}).get('soldiers')},
                         reason='兵士補充・兵数確認が月初メニュー内で完了しないため、上限回数で打ち切って月を進める')
         move = _month_menu_move(screen, mem, choice)
-        if isinstance(move, list):
+        opened = _month_opened(move, mem, choice)
+        if isinstance(move, list) and not opened:
             return move
-        if move == 'here':
+        if opened:
             if choice == 'うむッ!':
                 mem['month_exit'] = False
                 # An observed exit, not the earlier purchase-complete flag, arms
@@ -434,7 +462,7 @@ def month_step(screen: Screen, mem):
                 from .post_month_status import arm as arm_post_month_status
                 arm_post_month_status(mem)
             _record(mem, 'month_confirm', choice=choice, reason='月初メニュー終了の確認')
-            return [pad('a')]
+            return move if isinstance(move, list) else [pad('a')]
         return [move] if move else [pad('b')]
     count_check = _month_army_count_check(screen, mem, shop)
     if count_check is not None:
@@ -471,14 +499,15 @@ def month_step(screen: Screen, mem):
     if (shop and not shop.get('cards_held') and not shop['merchant_done']
             and shop['items'] and not low_army_first(shop)):
         move = _month_menu_move(screen, mem, 'しょうにん')
-        if isinstance(move, list):
+        opened = _month_opened(move, mem, 'しょうにん')
+        if isinstance(move, list) and not opened:
             return move
-        if move == 'here':
+        if opened:
             # The merchant entry asks 「うむッ/いかんッ」 (g1190 39-2: answering
             # いかんッ kept the merchant closed and the menu looped). Remember
             # the intent so the next うむッ/いかんッ prompt confirms the entry.
             mem['month_merchant_confirm'] = True
-            return [pad('a')]
+            return move if isinstance(move, list) else [pad('a')]
         return [move] if move else []
     if (shop and shop.get('items') and not shop.get('merchant_skip_logged')
             and not shop.get('cards_held')):
@@ -555,14 +584,16 @@ def month_step(screen: Screen, mem):
             return []
     if shop and not shop['soldiers_done']:
         move = _month_menu_move(screen, mem, 'へいしほじゅう')
-        if isinstance(move, list):
+        opened = _month_opened(move, mem, 'へいしほじゅう')
+        if isinstance(move, list) and not opened:
             return move
-        if move == 'here':
+        if opened:
             check = mem.get('army_count_check')
             if (isinstance(check, dict) and check.get('stage') == 'measured'
                     and check.get('scope') == _soldier_count_scope(mem, screen.header)):
                 check['refill_requested'] = True
-        return [pad('a')] if move == 'here' else [move] if move else []
+            return move if isinstance(move, list) else [pad('a')]
+        return [move] if move else []
     if mem.get('month_sub') and not _finish_month_sub(screen, mem, shop):
         # g462 18:06:04: the menu frame still predates the game's reaction to
         # the A press that opened the sub. Pressing anything here (も〜おしまい!
@@ -584,11 +615,12 @@ def month_step(screen: Screen, mem):
                                  'soldiers': soldiers},
                 reason='月一の購入を終了')
     move = _month_menu_move(screen, mem, 'も〜おしまい!')
-    if isinstance(move, list):
+    opened = _month_opened(move, mem, 'も〜おしまい!')
+    if isinstance(move, list) and not opened:
         return move
-    if move == 'here':
+    if opened:
         mem['month_exit'] = True
-        return [pad('a')]
+        return move if isinstance(move, list) else [pad('a')]
     return [move] if move else []
 
 
@@ -744,9 +776,10 @@ def _month_extra(screen, mem, shop, *, recruit_only=False, egg_only=False):
             goals.note_attempt(mem, 'egg_recover', 'skipped')
             continue
         move = _month_menu_move(screen, mem, label)
-        if isinstance(move, list):
+        opened = _month_opened(move, mem, label)
+        if isinstance(move, list) and not opened:
             return move
-        if move == 'here':
+        if opened:
             shop[sub] = 'opened'
             mem['month_sub'] = {'kind': sub, 'gold_before': gold, 'presses': 0, 'key': shop.get('key'),
                                 'left_menu': False}
@@ -755,7 +788,7 @@ def _month_extra(screen, mem, shop, *, recruit_only=False, egg_only=False):
                     g for gs in (_world(mem).get('garrison') or {}).values() for g in gs or ()})
             _record(mem, 'month_sub_open', month=shop.get('key'), gold=gold, choice=label,
                     reason=f'{label}を選択')
-            return [pad('a')]
+            return move if isinstance(move, list) else [pad('a')]
         if move is None:
             if sub == 'egg' and shop.get('egg_before_recruit'):
                 waits = int(shop.get('egg_menu_wait') or 0) + 1
@@ -905,12 +938,13 @@ def _month_chikujou(screen, mem, shop):
     # dialogue stayed in front of the menu and the unguarded walk pressed
     # down at an unmoving hand every observation).
     move = _month_menu_move(screen, mem, 'ちくじょう')
-    if isinstance(move, list):
+    opened = _month_opened(move, mem, 'ちくじょう')
+    if isinstance(move, list) and not opened:
         return move
     if move is None:
         shop['chikujou'] = 'skipped'
         return None
-    if move != 'here':
+    if not opened:
         return [move]
     shop['chikujou'] = 'opened'
     mem['month_sub'] = {'kind': 'chikujou', 'gold_before': gold, 'presses': 0, 'key': shop.get('key'),
@@ -920,7 +954,7 @@ def _month_chikujou(screen, mem, shop):
     _record(mem, 'month_sub_open', month=shop.get('key'), gold=gold, choice='ちくじょう',
             observed_metric={'reserve': reserve, 'tried': list(tried)},
             reason='必要資金を残して、当月まだ増築していない所有城の防衛力を上げる')
-    return [pad('a')]
+    return move if isinstance(move, list) else [pad('a')]
 
 
 def _chikujou_visible_maxed(screen, mem):
