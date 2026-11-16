@@ -208,7 +208,7 @@ HANJUKU_SRAM_IN=/Users/azumag/work/docich/tmp/hanjuku-local/saves/prod1190.srm \
 ## 7. 現況（2026-11-16 17:2x JST 時点）
 
 - ビューア: 稼働中（`http://127.0.0.1:8765/`）。
-- ドライバ: 稼働中、`HANJUKU_CODE_ROOT=.worktrees/hanjuku-ch9-clear`、bot `hanjuku-chart-v947-...`、
+- ドライバ: 稼働中、`HANJUKU_CODE_ROOT=.worktrees/hanjuku-ch9-clear`、bot `hanjuku-chart-v951-...`、
   第9話 month 16-2 からリプレイ中。
 - **2026-11-16 夕方の事故と復帰（重要）**:
   - `pkill -TERM` 後に `.state` / `.prev` を読むと `load state -> False` で失敗し、
