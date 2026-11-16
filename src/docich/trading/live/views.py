@@ -146,6 +146,12 @@ def fill_count(ledger) -> int:
         return cur.execute("SELECT COUNT(*) FROM fills").fetchone()[0]
 
 
+def trip_count(ledger) -> int:
+    """Every safety trip row, cleared ones included (a cleared stop is never deleted)."""
+    with ledger.read_cursor() as cur:
+        return cur.execute("SELECT COUNT(*) FROM safety_trips").fetchone()[0]
+
+
 def open_position_ids(ledger) -> list[str]:
     with ledger.read_cursor() as cur:
         return [row[0] for row in cur.execute("SELECT position_id FROM positions WHERE status='open' "
