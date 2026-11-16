@@ -7558,6 +7558,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v959-boss-pocket-entry",
             "hanjuku-chart-v960-boss-waypoint-yjump",
             "hanjuku-chart-v961-boss-redirect-leg",
+            "hanjuku-chart-v962-roster-walk-cap",
             "hanjuku-chart-v864-shop-list-batch",
             "hanjuku-chart-v862-camp-field-move",
             "hanjuku-chart-v852-visible-menu-batches",
