@@ -134,8 +134,8 @@ def test_a_cliff_adjacent_marker_moves_perpendicular_before_confirming():
     # perpendicular away; marching straight home stays pinned.
     from docich.hanjuku.os_layer.pixels import Frame
     rgb = bytearray(bytes((24, 141, 24)) * (256 * 224))    # grass
-    for y in range(106, 118):
-        for x in range(80, 104):                           # black cliff on the left
+    for y in range(100, 150):
+        for x in range(96, 119):                           # black cliff against the tent's left
             i = (y * 256 + x) * 3
             rgb[i:i + 3] = bytes((0, 0, 0))
     frame = Frame(256, 224, bytes(rgb))
@@ -147,11 +147,11 @@ def test_a_cliff_adjacent_marker_moves_perpendicular_before_confirming():
     # a nudge of the home-bound marker (owner 2026-11-16).
     actions = p.camp_recall_step(screen, mem, frame)
     assert _flow(mem)['recall']['cliff_detour'] == 'right'
-    assert _flow(mem)['recall']['escape_cell'] == [128 + 16, 112]
+    assert _flow(mem)['recall']['escape_cell'] == [128 + 24, 112]
     assert any(r['decision'] == 'camp_cliff_detour' for r in mem['_records'])
-    # Marker at (128,112) is left of escape (144,112): steer right toward it.
+    # Marker at (128,112) is left of escape (152,112): steer right toward it.
     assert actions == [p.pad('right', 6)]
     # Once the marker sits on the escape cell the move order is confirmed.
-    screen2 = Screen([], None, '', kind='map_target', marker=(144, 112))
+    screen2 = Screen([], None, '', kind='map_target', marker=(152, 112))
     actions2 = p.camp_recall_step(screen2, mem, frame)
     assert actions2 == [p.pad('a')]

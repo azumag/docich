@@ -373,12 +373,19 @@ def camp_body_target(frame: Frame, target):
 # y42-57); a full flag is required, a clipped dome waits for the camera.
 DOME_DOOR = (123, 88, 0)
 DOME_DOOR_TOLERANCE = 1   # the same tile is (123, 89, 0) through a libretro 565 readback
+# The local libretro core expands RGB565 by a plain shift: the door reads
+# (120, 88, 0), the body (128, 196, 216)/(112, 148, 192)/(200, 204, 240) and
+# the flag (248, 0, 0)/(232, 112, 56) - 3 to 7 per channel off - so the 砦 of
+# two generals beside タオ was never seen (g1190 2026-11-16, owner: 砦になった
+# キャンプで帰還シーケンスが働かない). Production's 8-bit capture is exact.
+DOME_565_TOLERANCE = 8
 DOME_BODY = ((131, 198, 222), (115, 149, 197), (205, 206, 246))
 DOME_OUTLINE = (32, 32, 32)
 
 
 def _dome_camps(frame: Frame) -> list[dict]:
-    door = set(bit_points(frame, near_bits(frame, DOME_DOOR, DOME_DOOR_TOLERANCE)))
+    door = set(bit_points(frame, near_bits(frame, DOME_DOOR, DOME_565_TOLERANCE)))
+    near = lambda p, c: all(abs(int(a) - int(b)) <= DOME_565_TOLERANCE for a, b in zip(p, c))
     found, seen = [], set()
     for start in sorted(door):
         if start in seen:
@@ -401,11 +408,11 @@ def _dome_camps(frame: Frame) -> list[dict]:
             continue
         window = [(x, y) for y in range(y0 - 14, min(frame.height, y1 + 2))
                   for x in range(max(0, x0 - 8), min(frame.width, x1 + 9))]
-        body = [c for c in window if frame.pixel(*c) in DOME_BODY]
+        body = [c for c in window if any(near(frame.pixel(*c), b) for b in DOME_BODY)]
         outline = [c for c in window if frame.pixel(*c) == DOME_OUTLINE]
         flag = [c for c in window if c[1] < y0 - 6]
-        red = [c for c in flag if frame.pixel(*c) == CAMP_FLAG]
-        orange = [c for c in flag if frame.pixel(*c) == CAMP_ORANGE]
+        red = [c for c in flag if near(frame.pixel(*c), CAMP_FLAG)]
+        orange = [c for c in flag if near(frame.pixel(*c), CAMP_ORANGE)]
         # A dome pushed against the top edge loses its flag: the body and
         # outline still identify the fort, and the recall must scroll the
         # camera up to reveal the flag instead of ignoring it (owner
