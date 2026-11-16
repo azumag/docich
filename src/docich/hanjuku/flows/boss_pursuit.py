@@ -1,0 +1,233 @@
+"""Re-aim a boss-bound general at the moving boss via the roster SELECT jump.
+
+Owner 2026-11-16: 「ボス出撃した将軍はリストに覚えておいて、Xメニューの
+「しょうぐん」からSELECTでジャンプして、ボスへの出撃に向かわせるべき」.
+
+A boss order launches a general out of the castle; the unit then marches on
+the field while the boss keeps moving. A fixed waypoint Y jump keeps landing
+in the cliff/forest walls, so the pursuit instead jumps the field view to the
+launched general (X -> しょうぐん -> name -> SELECT), opens its unit menu and
+re-issues いどう at the boss's freshly measured cell — the same destination
+step a camp redirect takes.
+"""
+from __future__ import annotations
+
+from ... import hanjuku_chart as chart
+from ..decision_log import _record
+from ..os_layer.commands import menu_to, pad
+from ..os_layer.readers import is_camp_menu
+from ..state.regions import plan as _plan_region, world as _world
+from . import house
+
+PURSUIT_READ_LIMIT = 90
+PURSUIT_LIST_LIMIT = 48
+PURSUIT_COOLDOWN = 240        # ticks before the same general is pursued again
+PURSUIT_MARCH_MIN = 400       # a just-launched march is left alone this long
+LIST_KEY = 'boss_wave_generals'
+
+
+def track(mem):
+    """Merge boss-target sorties into the remembered pursuit list (owner rule).
+
+    Entries stay while their general is out: a garrison record of the same
+    name means the unit came home, and a lost general can never be jumped to.
+    """
+    sorties = _world(mem).get('sorties') or {}
+    garrison = _world(mem).get('garrison') or {}
+    lost = set(mem.get('generals_lost') or ())
+    wave = mem.setdefault(LIST_KEY, {})
+    for step, s in sorties.items():
+        general = (s or {}).get('general')
+        if (s or {}).get('target') == chart.boss_castle(mem.get('chapter') or 0) \
+                and isinstance(general, str) and general:
+            wave.setdefault(general, {'step': step, 'launched': s.get('tick')})
+    home = {g for residents in garrison.values()
+            if isinstance(residents, list) for g in residents}
+    for general in list(wave):
+        if general in home or general in lost:
+            wave.pop(general, None)
+    return wave
+
+
+def _candidate(mem):
+    """The oldest boss-bound general that has marched long enough to re-aim."""
+    now = int(mem.get('tick') or 0)
+    wave = mem.get(LIST_KEY) or {}
+    best = None
+    for general, e in wave.items():
+        launched = e.get('launched')
+        if type(launched) is int and now - launched < PURSUIT_MARCH_MIN:
+            continue
+        last = e.get('pursuit_tick')
+        if type(last) is int and now - last < PURSUIT_COOLDOWN:
+            continue
+        if best is None or (launched or 0) < (best[1].get('launched') or 0):
+            best = (general, e)
+    return best
+
+
+def _close(mem, probe, reason):
+    probe['phase'] = 'close'
+    probe['outcome'] = reason
+    _record(mem, 'boss_pursuit_unverified', chart_step=probe.get('step'),
+            general=probe.get('general'), resulting_event=reason,
+            reason='将軍へのSELECTジャンプが成立しないため位置を推測せずメニューを閉じる')
+
+
+def step(screen, mem, frame):
+    """Owner the screen only while a pursuit is queued or may be started."""
+    if (mem.get('chapter') or 0) != 9:
+        return None
+    track(mem)
+    probe = mem.get('boss_pursuit')
+    if not isinstance(probe, dict):
+        # No other order may be running: stealing the field mid-deploy breaks
+        # the active sortie, and the pursuit list only matters in the boss phase.
+        if (_plan_region(mem).get('active') or not chart.moving_boss_cell(9)
+                or (mem.get('post_month_status') or mem.get('house'))):
+            return None
+        pick = _candidate(mem)
+        if pick is None:
+            return None
+        general, entry = pick
+        probe = mem['boss_pursuit'] = {
+            'general': general, 'step': entry.get('step'), 'phase': 'open',
+            'reads': 0, 'seeks': 0, 'x_retries': 0}
+        _record(mem, 'boss_pursuit_queued', chart_step=entry.get('step'), general=general,
+                reason='ボスへ出撃した将軍へX→しょうぐん→SELECTでジャンプし、動くボスの現在セルへいどうを出し直す')
+        return []
+
+    kind = screen.kind
+    probe['reads'] += 1
+    if probe['reads'] > PURSUIT_READ_LIMIT:
+        _close(mem, probe, 'read_limit')
+
+    phase = probe['phase']
+    if phase == 'open':
+        if kind == 'map':
+            probe['phase'] = 'roster'
+            return [pad('x')]
+        if kind == 'main_menu':
+            probe['phase'] = 'roster'
+        elif kind in ('general_list', 'castle_menu', 'castle_info', 'map_target', 'card_select'):
+            return [pad('b')]
+        else:
+            return None
+
+    if probe['phase'] == 'roster':
+        if kind == 'map':
+            probe['x_retries'] += 1
+            if probe['x_retries'] > 2:
+                _close(mem, probe, 'x_not_open')
+                return None
+            return [pad('x')]
+        if kind == 'main_menu':
+            move = menu_to(screen, 'しょうぐん')
+            if move == 'here':
+                probe['phase'] = 'pick'
+                return [pad('a')]
+            if move:
+                return [move]
+            _close(mem, probe, 'general_menu_missing')
+            return [pad('b')]
+        if house.roster(screen):
+            probe['phase'] = 'pick'
+        else:
+            return []
+
+    if probe['phase'] == 'pick':
+        names = house.roster(screen)
+        if names is None:
+            return []
+        if probe['general'] not in names:
+            probe['seeks'] += 1
+            if probe['seeks'] > PURSUIT_LIST_LIMIT:
+                _close(mem, probe, 'general_not_found')
+                return [pad('b')]
+            return [pad('down')]
+        move = menu_to(screen, probe['general'])
+        if move == 'here':
+            # SELECT on the roster jumps the field view to this general —
+            # a field SELECT alone would always focus the hero (house.py).
+            probe['phase'] = 'field_open'
+            return [pad('select')]
+        return [move] if move else []
+
+    if probe['phase'] == 'field_open':
+        if kind == 'map':
+            probe['phase'] = 'unit_move'
+            return [pad('a')]
+        if kind == 'text':
+            return [pad('b')] if house.roster(screen) is not None else None
+        if kind == 'world_map':
+            return [pad('y')]
+        if kind in ('main_menu', 'castle_menu', 'castle_info', 'general_list'):
+            return [pad('b')]
+        return []
+
+    if probe['phase'] == 'unit_move':
+        if is_camp_menu(screen):
+            move = menu_to(screen, 'いどう')
+            if move == 'here':
+                probe['phase'] = 'dest'
+                return [pad('a')]
+            if move:
+                return [move]
+            return []
+        if kind in ('castle_menu', 'castle_info'):
+            _close(mem, probe, 'unit_menu_unreadable')
+            return [pad('b')]
+        if kind == 'map':
+            return []
+        if kind == 'text':
+            return [pad('b')] if house.roster(screen) is not None else None
+        if kind == 'world_map':
+            return [pad('y')]
+        return []
+
+    if probe['phase'] == 'dest':
+        if kind != 'map_target':
+            if kind == 'world_map':
+                return [pad('b')]
+            if kind == 'map':
+                _close(mem, probe, 'dest_picker_lost')
+                return [pad('b')]
+            return []
+        from . import map as _map
+        goal = chart.boss_castle(9)
+        marker = screen.marker
+        if not marker or frame is None or not chart.moving_boss_cell(9):
+            probe['lost'] = int(probe.get('lost') or 0) + 1
+            if probe['lost'] < 3:
+                return []
+            _close(mem, probe, 'boss_position_lost')
+            return [pad('b')]
+        pseudo = {'step': 'PURSUIT', 'target': goal, 'source': None}
+        if _map._target_roof_under_marker(screen, mem, frame, pseudo):
+            entry = (mem.get(LIST_KEY) or {}).get(probe['general'])
+            if entry is not None:
+                entry['pursuit_tick'] = int(mem.get('tick') or 0)
+            _record(mem, 'boss_pursuit_redirected', chart_step=probe.get('step'),
+                    general=probe['general'],
+                    observed_metric={'target_cell': list(marker)},
+                    reason='将軍ジャンプした部隊のいどう先を、実測ボスセルへ合わせて確定する')
+            probe['phase'] = 'close'
+            probe['outcome'] = 'redirected'
+            return [pad('a')]
+        from ..os_layer.navigation import _start_y_jump
+        if (mem.get('y_jumps') or {}).get('PURSUIT:target', 0) < 3:
+            return _start_y_jump(mem, pseudo, goal, 'target')
+        _close(mem, probe, 'boss_jump_failed')
+        return [pad('b')]
+
+    if probe['phase'] == 'close':
+        if kind == 'map':
+            mem.pop('boss_pursuit', None)
+            mem['uncertain'] = True
+            mem['nav_search'] = True
+            return None
+        if kind in ('main_menu', 'general_list', 'castle_menu', 'castle_info',
+                    'map_target', 'card_select') or house.roster(screen):
+            return [pad('b')]
+        return []
+    return None
