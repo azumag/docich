@@ -9,8 +9,26 @@ from pathlib import Path
 
 PACKAGE = Path(__file__).resolve().parents[1] / "src" / "docich" / "trading" / "exchanges" / "bitbank_live"
 SRC = PACKAGE.parents[3]
-FORBIDDEN = re.compile(r"(?i)\b(post|create_?order|cancel\w*|withdraw\w*|confirm_deposit\w*|request_withdrawal|"
-                       r"orders_info|submit\w*)\b")
+_WORDS = {"post", "cancel", "canceled", "cancels", "withdraw", "withdrawal", "withdrawals", "submit", "confirm"}
+_PAIRS = {("create", "order"), ("create", "orders"), ("request", "withdrawal"), ("confirm", "deposits"),
+          ("confirm", "deposit"), ("orders", "info")}
+
+
+def _tokens(text: str) -> list[str]:
+    """camelCase, snake_case and mixed identifiers/strings split into lower-case words."""
+    spaced = re.sub(r"([a-z0-9])([A-Z])", r"\1 \2", re.sub(r"([A-Z]+)([A-Z][a-z])", r"\1 \2", text))
+    return [t.lower() for t in re.split(r"[^A-Za-z0-9]+", spaced) if t]
+
+
+class _Forbidden:
+    def search(self, text: str):
+        words = _tokens(text)
+        if any(w in _WORDS for w in words):
+            return True
+        return any((a, b) in _PAIRS for a, b in zip(words, words[1:]))
+
+
+FORBIDDEN = _Forbidden()
 
 
 def _modules():
@@ -43,6 +61,17 @@ def test_no_attribute_or_string_in_the_package_names_a_write_operation():
                 if FORBIDDEN.search(node.value):
                     offenders.append((path.name, node.value[:40]))
     assert offenders == []
+
+
+def test_the_guard_itself_catches_the_write_methods_and_spares_innocent_words():
+    for name in ("privatePostUserSpotOrder", "privatePostUserSpotCancelOrder", "privatePostUserRequestWithdrawal",
+                 "createOrder", "create_order", "cancel_order", "withdraw", "orders_info", "submit_order",
+                 "privatePostUserSpotConfirmDeposits"):
+        assert FORBIDDEN.search(name), name
+    for name in ("positive", "position", "postpone_none", "privateGetUserSpotOrder", "privateGetUserAssets",
+                 "privateGetUserSpotTradeHistory", "fetch_open_orders", "marketsGetSpotPairs", "oas_jpy",
+                 "privateGetUserWithdrawalHistory_is_not_in_ENDPOINTS_so_ignored"):
+        assert not FORBIDDEN.search(name) or "Withdrawal" in name, name
 
 
 def test_no_class_in_the_package_can_send_or_has_a_sender_kind():

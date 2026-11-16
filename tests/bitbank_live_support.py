@@ -115,10 +115,16 @@ def render_bitbank(mock):
 
     def pairs(_):
         rows = []
+        fees = mock._fees
+        zero = "0"
         for symbol, rules in mock._markets.items():
-            rate = str(rules.max_fee_rate)
-            rows.append(pair_row(symbol, taker_fee_rate_base=rate, taker_fee_rate_quote=rate,
-                                 maker_fee_rate_base="0", maker_fee_rate_quote="0",
+            maker, taker = str(fees.maker_rate), str(fees.taker_rate)
+            side_base = fees.currency == "base"
+            rows.append(pair_row(symbol,
+                                 maker_fee_rate_base=maker if side_base else zero,
+                                 taker_fee_rate_base=taker if side_base else zero,
+                                 maker_fee_rate_quote=zero if side_base else maker,
+                                 taker_fee_rate_quote=zero if side_base else taker,
                                  unit_amount=str(rules.min_amount),
                                  amount_digits=-rules.amount_step.as_tuple().exponent,
                                  price_digits=-rules.price_tick.as_tuple().exponent))

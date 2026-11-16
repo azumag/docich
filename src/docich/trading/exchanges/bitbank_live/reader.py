@@ -15,8 +15,8 @@ from dataclasses import dataclass
 from decimal import Decimal
 from typing import Callable, Mapping, Protocol, Sequence
 
-from ...live.exchange import (BalanceSnapshot, Capabilities, ExchangeDataError, ExchangeError, FillPage, MarketRules,
-                              OrderBook, OrderNotFound, OrderPage, OrderSnapshot)
+from ...live.exchange import (BalanceSnapshot, Capabilities, ExchangeAmbiguous, ExchangeDataError, ExchangeError,
+                              FillPage, MarketRules, OrderBook, OrderNotFound, OrderPage, OrderSnapshot)
 from . import parse
 
 
@@ -60,14 +60,24 @@ class BitbankReader:
 
     # -------------------------------------------------------------- plumbing
     def _get(self, endpoint: str, params: Mapping[str, object]) -> object:
+        """Whatever the transport raises, a read comes out as Ambiguous, DataError, or (order lookup only)
+        OrderNotFound.  A "rejection" of a read, or an exception nobody classified, is just "unknown"."""
         try:
             data = self._transport.get(endpoint, params)
-        except ExchangeError as exc:
-            self._health = ReaderHealth(getattr(exc, "health_kind", "network"), self._health.consecutive_failures + 1,
-                                        self._health.last_ok_at)
-            raise
-        self._health = ReaderHealth(None, 0, self._clock())
-        return data
+        except (ExchangeAmbiguous, ExchangeDataError) as exc:
+            error: ExchangeError = exc
+        except OrderNotFound as exc:
+            error = exc if endpoint == "order" else ExchangeAmbiguous(f"{endpoint}: not found")
+        except ExchangeError:
+            error = ExchangeAmbiguous(f"{endpoint}: unexpected exchange error")
+        except Exception as exc:
+            error = ExchangeAmbiguous(f"{endpoint}: unclassified {type(exc).__name__}")
+        else:
+            self._health = ReaderHealth(None, 0, self._clock())
+            return data
+        kind = getattr(error, "health_kind", "data" if isinstance(error, ExchangeDataError) else "network")
+        self._health = ReaderHealth(kind, self._health.consecutive_failures + 1, self._health.last_ok_at)
+        raise error
 
     def _parsed(self, fn, *args):
         try:
@@ -130,13 +140,18 @@ class BitbankReader:
             params["order_id"] = str(exchange_order_id)
         data = self._get("trade_history", params)
         rows = self._parsed(_list, data, "trades")
-        fills = [self._parsed(parse.fill_from, row, self._by_pair, self._rates) for row in rows]
+        # Rows older than the requested start are only dated, not parsed: an odd row in old history must not
+        # make every read fail.  Rows inside the window are parsed strictly (a bad one fails the page).
+        stamps = [self._parsed(parse.ms_value, parse._field(row, "executed_at", "executed_at"), "executed_at")
+                  for row in rows]
+        fills = [self._parsed(parse.fill_from, row, self._by_pair, self._rates)
+                 for row, stamp in zip(rows, stamps) if stamp >= since_ms]
         if any(f.symbol != symbol for f in fills) or (
                 exchange_order_id is not None and any(f.exchange_order_id != str(exchange_order_id) for f in fills)):
             self._parsed(_mismatch, "trade_history")
-        oldest = min((f.executed_at_ms for f in fills), default=None)
+        oldest = min(stamps, default=None)
         complete = len(rows) < self._fills_count or (oldest is not None and oldest < since_ms)
-        kept = sorted((f for f in fills if f.executed_at_ms >= since_ms), key=lambda f: (f.executed_at_ms, f.trade_id))
+        kept = sorted(fills, key=lambda f: (f.executed_at_ms, int(f.trade_id)))   # ids are digits (parse.id_text)
         return FillPage(fills=tuple(kept), complete=complete)
 
 

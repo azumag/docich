@@ -60,7 +60,7 @@ def parse_error_body(body: str | None) -> int | None:
         parsed = json.loads(body)
     except ValueError:
         return None
-    if not isinstance(parsed, dict) or parsed.get("success") != 0:
+    if not isinstance(parsed, dict) or parsed.get("success") not in (0, "0"):   # ccxt's samples show both
         return None
     data = parsed.get("data")
     code = data.get("code") if isinstance(data, dict) else None

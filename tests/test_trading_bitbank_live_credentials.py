@@ -56,7 +56,7 @@ def test_a_valid_file_loads_and_reveals_nothing_by_accident(state):
         pickle.dumps(creds)
     with pytest.raises(AttributeError):
         creds.extra = 1
-    assert creds != creds or True   # comparison is not defined; it must not raise or leak
+    assert creds.__eq__(creds) is NotImplemented     # no value comparison is offered
 
 
 def test_missing_everything_is_file_missing_and_nothing_is_created(state):

@@ -58,6 +58,11 @@ def test_a_bitbank_code_wins_over_the_http_status_and_the_class_name():
     assert error.health_kind == "auth"
 
 
+def test_success_given_as_a_string_is_understood():
+    assert er.parse_error_body(json.dumps({"success": "0", "data": {"code": 20001}})) == 20001
+    assert er.parse_error_body(json.dumps({"success": "1", "data": {"code": 20001}})) is None
+
+
 def test_a_success_body_or_garbage_is_not_mistaken_for_an_error_code():
     assert er.parse_error_body(json.dumps({"success": 1, "data": {"code": 20001}})) is None
     assert er.parse_error_body("not json") is None and er.parse_error_body(None) is None

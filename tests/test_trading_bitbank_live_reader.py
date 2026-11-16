@@ -7,8 +7,8 @@ from bitbank_live_support import (SYMBOLS, T0, FakeTransport, assets_payload, de
                                   pairs_payload, trade_row)
 from docich.trading.exchanges.bitbank_live import errors as er
 from docich.trading.exchanges.bitbank_live import reader as rd
-from docich.trading.live.exchange import (ExchangeAmbiguous, ExchangeDataError, FeeStatus, OrderNotFound,
-                                          OrderStatus)
+from docich.trading.live.exchange import (ExchangeAmbiguous, ExchangeDataError, ExchangeRejected, FeeStatus,
+                                          OrderNotFound, OrderStatus)
 
 
 def make(script=None, **kw):
@@ -171,3 +171,47 @@ def test_the_reader_is_not_a_sender():
     reader, _ = make()
     for name in ("submit_order", "cancel_order", "kind", "create_order", "withdraw"):
         assert not hasattr(reader, name)
+
+
+@pytest.mark.parametrize("raised", [ExchangeRejected("code"), RuntimeError("boom"), KeyError("k"),
+                                    ExchangeAmbiguous("x"), OrderNotFound("1")])
+@pytest.mark.parametrize("method", ["fetch_balance", "fetch_open_orders", "fetch_fills", "fetch_order_book"])
+def test_a_read_never_raises_a_rejection_or_a_stray_exception(method, raised):
+    reader, transport = make()
+    endpoint = {"fetch_balance": "assets", "fetch_open_orders": "active_orders", "fetch_fills": "trade_history",
+                "fetch_order_book": "depth"}[method]
+    transport.script[endpoint] = raised
+    args = {"fetch_balance": (), "fetch_open_orders": ("OAS/JPY",), "fetch_fills": ("OAS/JPY",),
+            "fetch_order_book": ("OAS/JPY",)}[method]
+    kwargs = {"since_ms": 0} if method == "fetch_fills" else {}
+    with pytest.raises(ExchangeAmbiguous) as err:
+        getattr(reader, method)(*args, **kwargs)
+    assert not isinstance(err.value, (ExchangeRejected, OrderNotFound))
+
+
+def test_order_not_found_is_only_allowed_through_for_an_order_lookup():
+    reader, transport = make()
+    transport.script["order"] = OrderNotFound("1")
+    with pytest.raises(OrderNotFound):
+        reader.fetch_order("OAS/JPY", "1")
+    transport.script["order"] = ExchangeRejected("c")
+    with pytest.raises(ExchangeAmbiguous):
+        reader.fetch_order("OAS/JPY", "1")
+    transport.script["order"] = RuntimeError("x")
+    with pytest.raises(ExchangeAmbiguous):
+        reader.fetch_order("OAS/JPY", "1")
+
+
+def test_a_bad_row_in_old_history_is_tolerated_but_a_bad_row_inside_the_window_fails():
+    old_bad = trade_row(trade_id=1, executed_at=T0, amount="oops")           # before since
+    good = trade_row(trade_id=2, executed_at=T0 + 5000)
+    reader, _ = make(default_script(trade_history={"trades": [good, old_bad]}))
+    page = reader.fetch_fills("OAS/JPY", since_ms=T0 + 1000)
+    assert [f.trade_id for f in page.fills] == ["2"] and page.complete
+    reader, _ = make(default_script(trade_history={"trades": [trade_row(trade_id=3, executed_at=T0 + 5000,
+                                                                        amount="oops"), good]}))
+    with pytest.raises(ExchangeDataError):
+        reader.fetch_fills("OAS/JPY", since_ms=T0 + 1000)
+    reader, _ = make(default_script(trade_history={"trades": [dict(trade_row(), executed_at="soon")]}))
+    with pytest.raises(ExchangeDataError):                                    # an undatable row is never skipped
+        reader.fetch_fills("OAS/JPY", since_ms=0)
