@@ -1,0 +1,457 @@
+{
+  "kind": "reference calibration, not natural-run accuracy",
+  "background_rgb": [
+    8,
+    112,
+    16
+  ],
+  "origin_xy": [
+    100,
+    80
+  ],
+  "size": [
+    256,
+    224
+  ],
+  "before_one_correct_owner": 20,
+  "after_one_correct_owner_and_level": 30,
+  "total": 30,
+  "cases": [
+    {
+      "file": "ch01-05-own-lv1.png",
+      "before": [
+        [
+          "own",
+          null
+        ]
+      ],
+      "after": [
+        [
+          "own",
+          1
+        ]
+      ]
+    },
+    {
+      "file": "ch06-09-own-lv1.png",
+      "before": [
+        [
+          "own",
+          null
+        ]
+      ],
+      "after": [
+        [
+          "own",
+          1
+        ]
+      ]
+    },
+    {
+      "file": "ch10-12-own-lv1.png",
+      "before": [
+        [
+          "own",
+          null
+        ]
+      ],
+      "after": [
+        [
+          "own",
+          1
+        ]
+      ]
+    },
+    {
+      "file": "ch01-05-own-lv2.png",
+      "before": [
+        [
+          "own",
+          null
+        ]
+      ],
+      "after": [
+        [
+          "own",
+          2
+        ]
+      ]
+    },
+    {
+      "file": "ch06-09-own-lv2.png",
+      "before": [
+        [
+          "own",
+          null
+        ]
+      ],
+      "after": [
+        [
+          "own",
+          2
+        ]
+      ]
+    },
+    {
+      "file": "ch10-12-own-lv2.png",
+      "before": [
+        [
+          "own",
+          null
+        ]
+      ],
+      "after": [
+        [
+          "own",
+          2
+        ]
+      ]
+    },
+    {
+      "file": "ch01-05-own-lv3.png",
+      "before": [
+        [
+          "own",
+          null
+        ]
+      ],
+      "after": [
+        [
+          "own",
+          3
+        ]
+      ]
+    },
+    {
+      "file": "ch06-09-own-lv3.png",
+      "before": [
+        [
+          "own",
+          null
+        ]
+      ],
+      "after": [
+        [
+          "own",
+          3
+        ]
+      ]
+    },
+    {
+      "file": "ch10-12-own-lv3.png",
+      "before": [
+        [
+          "own",
+          null
+        ]
+      ],
+      "after": [
+        [
+          "own",
+          3
+        ]
+      ]
+    },
+    {
+      "file": "ch01-05-own-lv4.png",
+      "before": [
+        [
+          "own",
+          null
+        ]
+      ],
+      "after": [
+        [
+          "own",
+          4
+        ]
+      ]
+    },
+    {
+      "file": "ch06-09-own-lv4.png",
+      "before": [
+        [
+          "own",
+          null
+        ]
+      ],
+      "after": [
+        [
+          "own",
+          4
+        ]
+      ]
+    },
+    {
+      "file": "ch10-12-own-lv4.png",
+      "before": [
+        [
+          "own",
+          null
+        ]
+      ],
+      "after": [
+        [
+          "own",
+          4
+        ]
+      ]
+    },
+    {
+      "file": "ch01-05-own-lv5.png",
+      "before": [
+        [
+          "own",
+          null
+        ],
+        [
+          "own",
+          null
+        ]
+      ],
+      "after": [
+        [
+          "own",
+          5
+        ]
+      ]
+    },
+    {
+      "file": "ch06-09-own-lv5.png",
+      "before": [
+        [
+          "own",
+          null
+        ],
+        [
+          "own",
+          null
+        ]
+      ],
+      "after": [
+        [
+          "own",
+          5
+        ]
+      ]
+    },
+    {
+      "file": "ch10-12-own-lv5.png",
+      "before": [
+        [
+          "own",
+          null
+        ],
+        [
+          "own",
+          null
+        ]
+      ],
+      "after": [
+        [
+          "own",
+          5
+        ]
+      ]
+    },
+    {
+      "file": "ch01-05-enemy-lv1.png",
+      "before": [
+        [
+          "enemy",
+          null
+        ]
+      ],
+      "after": [
+        [
+          "enemy",
+          1
+        ]
+      ]
+    },
+    {
+      "file": "ch06-09-enemy-lv1.png",
+      "before": [
+        [
+          "enemy",
+          null
+        ]
+      ],
+      "after": [
+        [
+          "enemy",
+          1
+        ]
+      ]
+    },
+    {
+      "file": "ch10-12-enemy-lv1.png",
+      "before": [],
+      "after": [
+        [
+          "enemy",
+          1
+        ]
+      ]
+    },
+    {
+      "file": "ch01-05-enemy-lv2.png",
+      "before": [
+        [
+          "enemy",
+          null
+        ]
+      ],
+      "after": [
+        [
+          "enemy",
+          2
+        ]
+      ]
+    },
+    {
+      "file": "ch06-09-enemy-lv2.png",
+      "before": [
+        [
+          "enemy",
+          null
+        ]
+      ],
+      "after": [
+        [
+          "enemy",
+          2
+        ]
+      ]
+    },
+    {
+      "file": "ch10-12-enemy-lv2.png",
+      "before": [],
+      "after": [
+        [
+          "enemy",
+          2
+        ]
+      ]
+    },
+    {
+      "file": "ch01-05-enemy-lv3.png",
+      "before": [
+        [
+          "enemy",
+          null
+        ]
+      ],
+      "after": [
+        [
+          "enemy",
+          3
+        ]
+      ]
+    },
+    {
+      "file": "ch06-09-enemy-lv3.png",
+      "before": [
+        [
+          "enemy",
+          null
+        ]
+      ],
+      "after": [
+        [
+          "enemy",
+          3
+        ]
+      ]
+    },
+    {
+      "file": "ch10-12-enemy-lv3.png",
+      "before": [],
+      "after": [
+        [
+          "enemy",
+          3
+        ]
+      ]
+    },
+    {
+      "file": "ch01-05-enemy-lv4.png",
+      "before": [
+        [
+          "enemy",
+          null
+        ]
+      ],
+      "after": [
+        [
+          "enemy",
+          4
+        ]
+      ]
+    },
+    {
+      "file": "ch06-09-enemy-lv4.png",
+      "before": [
+        [
+          "enemy",
+          null
+        ],
+        [
+          "enemy",
+          null
+        ]
+      ],
+      "after": [
+        [
+          "enemy",
+          4
+        ]
+      ]
+    },
+    {
+      "file": "ch10-12-enemy-lv4.png",
+      "before": [],
+      "after": [
+        [
+          "enemy",
+          4
+        ]
+      ]
+    },
+    {
+      "file": "ch01-05-enemy-lv5.png",
+      "before": [],
+      "after": [
+        [
+          "enemy",
+          5
+        ]
+      ]
+    },
+    {
+      "file": "ch06-09-enemy-lv5.png",
+      "before": [
+        [
+          "enemy",
+          null
+        ]
+      ],
+      "after": [
+        [
+          "enemy",
+          5
+        ]
+      ]
+    },
+    {
+      "file": "ch10-12-enemy-lv5.png",
+      "before": [],
+      "after": [
+        [
+          "enemy",
+          5
+        ]
+      ]
+    }
+  ]
+}

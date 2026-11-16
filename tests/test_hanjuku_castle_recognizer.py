@@ -1,0 +1,198 @@
+"""Shape calibration plus native holdouts; this is not a natural-run accuracy score."""
+import hashlib
+import importlib.util
+import json
+from pathlib import Path
+import subprocess
+import sys
+
+from PIL import Image, ImageDraw
+import pytest
+
+from docich.hanjuku.os_layer import castles
+from docich.hanjuku.os_layer.pixels import Frame, read_png
+from docich.hanjuku.os_layer.screen import castle_roofs
+
+ROOT = Path(__file__).resolve().parents[1]
+CORPUS = ROOT / 'evals/hanjuku/castles'
+FIXTURES = ROOT / 'tests/fixtures/hanjuku'
+MANIFEST = json.loads((CORPUS / 'manifest.json').read_text())
+SAMPLES = [(c, s) for c in MANIFEST['classes'] for s in c['samples']]
+
+
+def field(sample, *, background=(8, 112, 16), origin=(80, 64), flags=True, replicated=False):
+    with Image.open(CORPUS / sample['file']) as source:
+        sprite = source.copy()
+    if not flags:
+        for x, y in sample['animated_flag_cells_xy']:
+            sprite.paste((0, 0, 0, 0), (x * 8, y * 8, x * 8 + 8, y * 8 + 8))
+    image = Image.new('RGB', (256, 224), background)
+    image.paste(sprite, origin, sprite)
+    if replicated:
+        data = bytearray(image.tobytes())
+        for i in range(0, len(data), 3):
+            data[i] |= data[i] >> 5
+            data[i + 1] |= data[i + 1] >> 6
+            data[i + 2] |= data[i + 2] >> 5
+        image = Image.frombytes('RGB', image.size, bytes(data))
+    return image
+
+
+def frame(image):
+    return Frame(*image.size, image.tobytes())
+
+
+def test_runtime_contains_five_shared_own_and_fifteen_enemy_shapes():
+    from docich.hanjuku.os_layer import castle_data
+    assert len(castles.templates()) == 20
+    own = [t for t in castles.templates() if t.kind == 'own']
+    assert [t.level for t in own] == [1, 2, 3, 4, 5]
+    assert all(t.themes == (1, 2, 3) for t in own)
+    enemy = [t for t in castles.templates() if t.kind == 'enemy']
+    assert {(t.level, t.themes) for t in enemy} == {
+        (level, (theme,)) for level in range(1, 6) for theme in (1, 2, 3)}
+    assert castle_data.CORPUS_SHA256 == hashlib.sha256((CORPUS / 'manifest.json').read_bytes()).hexdigest()
+    spec = importlib.util.spec_from_file_location('compile_castles', ROOT / 'tools/hanjuku_compile_castles.py')
+    compiler = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(compiler)
+    assert compiler.build() == compiler.OUTPUT.read_text()
+
+
+def test_runtime_needs_neither_pillow_nor_the_evaluation_corpus():
+    # Disable site-packages. Only src/ is needed to classify a native frame;
+    # the runtime never opens evals/, a ROM, a save or a template PNG.
+    code = """import sys
+sys.path.insert(0, 'src')
+from pathlib import Path
+from docich.hanjuku.os_layer.pixels import read_png
+from docich.hanjuku.os_layer.screen import castle_roofs
+roofs = castle_roofs(read_png(Path('tests/fixtures/hanjuku/g1190-ch9-desert-field.png')))
+assert [(r['kind'], r['level']) for r in roofs] == [('own', 1)]
+assert 'PIL' not in sys.modules
+"""
+    subprocess.run([sys.executable, '-S', '-c', code], cwd=ROOT, check=True, timeout=15)
+
+
+@pytest.mark.parametrize('record,sample', SAMPLES, ids=[s['file'] for _, s in SAMPLES])
+@pytest.mark.parametrize('replicated', [False, True], ids=['565', '888'])
+def test_all_thirty_references_return_one_correct_castle(record, sample, replicated):
+    backgrounds = [(8, 112, 16), (248, 252, 248), (216, 168, 64)]
+    image = field(sample, background=backgrounds[sample['theme'] - 1], flags=False, replicated=replicated)
+    roofs = castle_roofs(frame(image))
+    assert len(roofs) == 1
+    roof = roofs[0]
+    assert (roof['kind'], roof['level'], roof['source']) == (record['owner'], record['level'], 'sprite')
+    assert sample['theme'] in roof['themes']
+    if record['owner'] == 'enemy':
+        assert roof['themes'] == (sample['theme'],)
+    assert roof['score'] == 1.0
+    assert roof['sprite_box'] == (80, 64, 127, 119)
+
+
+@pytest.mark.parametrize('marker', ['free', 'target'])
+@pytest.mark.parametrize('sample', [s for c, s in SAMPLES if c['level'] in (1, 5) and s['theme'] == 3],
+                         ids=lambda s: s['file'])
+def test_cursor_covering_castle_body_does_not_erase_or_duplicate_castle(sample, marker):
+    image = field(sample)
+    draw = ImageDraw.Draw(image)
+    x, y = 104, 104
+    if marker == 'target':
+        draw.rectangle((x + 2, y + 2, x + 13, y + 13), fill=(0, 64, 189))
+        draw.line((x + 5, y + 5, x + 10, y + 5), fill='white')
+        draw.line((x + 5, y + 5, x + 5, y + 10), fill='white')
+    else:
+        for yy in (y + 1, y + 14):
+            for xx in (*range(x + 2, x + 5), *range(x + 11, x + 14)):
+                image.putpixel((xx, yy), (255, 255, 255))
+        for yy in (y + 2, y + 3, y + 4):
+            image.putpixel((x + 1, yy), (255, 255, 255))
+    roofs = castle_roofs(frame(image))
+    assert len(roofs) == 1 and roofs[0].get('source') == 'sprite'
+    assert roofs[0]['kind'] == sample['file'].split('-')[-2]
+    assert roofs[0]['level'] == int(sample['file'][-5])
+
+
+@pytest.mark.parametrize('case', json.loads((CORPUS / 'verification/checks.json').read_text())['checks'],
+                         ids=lambda c: c['file'])
+def test_independent_native_verification_frames(case):
+    roofs = castle_roofs(read_png(CORPUS / 'verification' / case['file']))
+    assert len(roofs) == 1
+    kind, level = case['class_id'].split('-lv')
+    assert (roofs[0]['kind'], roofs[0]['level']) == (kind, int(level))
+    ox, oy = case['origin_xy']
+    assert roofs[0]['sprite_box'] == (ox, oy, ox + 47, oy + 55)
+
+
+def test_large_native_castle_is_one_and_previously_unread_desert_castle_is_found():
+    large = castle_roofs(read_png(FIXTURES / 'g1075-ch3-patagone-field-after-loss.png'))
+    assert [(r['kind'], r.get('level')) for r in large] == [('own', 5)]
+    desert = castle_roofs(read_png(FIXTURES / 'g1190-ch9-desert-field.png'))
+    assert [(r['kind'], r.get('level')) for r in desert] == [('own', 1)]
+
+
+def test_slate_holdout_keeps_existing_target_anchor_and_roof_box():
+    roofs = castle_roofs(read_png(FIXTURES / 'g1133-ch6-oceana-target-marker.png'))
+    assert len(roofs) == 1
+    assert roofs[0]['box'] == (132, 103, 151, 121)
+    assert roofs[0]['target'] == (141, 122)
+    assert (roofs[0]['kind'], roofs[0]['level'], roofs[0]['themes']) == ('enemy', 2, (2,))
+
+
+def test_two_castles_keep_separate_positions_and_levels():
+    image = field(SAMPLES[0][1], origin=(16, 48))
+    sample = next(s for c, s in SAMPLES if c['owner'] == 'enemy' and c['level'] == 5 and s['theme'] == 3)
+    with Image.open(CORPUS / sample['file']) as sprite:
+        image.paste(sprite, (160, 128), sprite)
+    roofs = castle_roofs(frame(image))
+    assert {(r['kind'], r['level'], r['sprite_box'][:2]) for r in roofs} == {
+        ('own', 1, (16, 48)), ('enemy', 5, (160, 128))}
+
+
+def test_flat_palette_blocks_and_shuffled_pixels_are_not_shape_matches():
+    image = Image.new('RGB', (256, 224), (8, 112, 16))
+    draw = ImageDraw.Draw(image)
+    for i, colour in enumerate(((16, 16, 24), (248, 252, 144), (72, 88, 136), (248, 56, 56))):
+        draw.rectangle((i * 60, 60, i * 60 + 45, 115), fill=colour)
+    assert castles.match_castles(frame(image)) == []
+    sprite = field(SAMPLES[-1][1])
+    # Same per-row colour counts, destroyed shape: no classifier confidence.
+    data = sprite.tobytes()
+    shuffled = b''.join(b''.join(data[(y * 256 + x) * 3:(y * 256 + x) * 3 + 3]
+                                  for x in range(255, -1, -1)) for y in range(224))
+    # A mirror can still be a genuine shape, so use alternating row rotations too.
+    rows = [shuffled[y * 768:(y + 1) * 768] for y in range(224)]
+    scrambled = b''.join(row[(y % 13) * 3:] + row[:(y % 13) * 3] for y, row in enumerate(rows))
+    assert castles.match_castles(Frame(256, 224, scrambled)) == []
+
+
+def test_insufficient_visible_body_abstains_and_cached_results_are_not_mutable():
+    image = frame(field(SAMPLES[0][1]))
+    assert castles.match_castles(image, [(80, 64, 127, 119)]) == []
+    roofs = castles.match_castles(image)
+    roofs[0]['level'] = 99
+    assert castles.match_castles(image)[0]['level'] == 1
+
+
+def test_occluded_upgrade_features_do_not_force_a_level():
+    image = frame(field(SAMPLES[0][1]))
+    roofs = castles.match_castles(image, [(80, 64, 127, 99)])
+    # Masking all the upper towers removes the upgrade evidence. Either
+    # abstain entirely, or report an explicitly ambiguous level.
+    assert not roofs or all(r['level'] is None for r in roofs)
+
+
+def test_vision_provenance_includes_recognizer_and_compiled_pixels():
+    spec = importlib.util.spec_from_file_location('castle_vision_eval', ROOT / 'ops/vm_actions/evaluate_hanjuku_vision.py')
+    vision = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(vision)
+    hashes = vision._source_hashes()
+    assert 'src/docich/hanjuku/os_layer/castles.py' in hashes
+    assert 'src/docich/hanjuku/os_layer/castle_data.py' in hashes
+
+
+def test_clipped_sprite_uses_legacy_fallback_without_inventing_level():
+    image = field(SAMPLES[0][1], origin=(224, 64))
+    assert castles.match_castles(frame(image)) == []
+    roofs = castle_roofs(frame(image))
+    assert len(roofs) == 1 and roofs[0]['kind'] == 'own' and roofs[0]['clipped']
+    assert roofs[0].get('level') is None and roofs[0].get('source') != 'sprite'

@@ -172,6 +172,17 @@ def _roof_kind(r, g, b):
 
 
 def castle_roofs(frame: Frame, exclude=None) -> list[dict]:
+    """Sprite-verified castles, with colour-roof fallback for unreadable shapes."""
+    from .castles import match_castles, merge_roofs
+
+    occlusions = [tuple(exclude)] if exclude else []
+    for cursor in (_target_marker(frame), _free_cursor(row_masks(frame, white), frame)):
+        if cursor:
+            occlusions.append((cursor[0], cursor[1], cursor[0] + 15, cursor[1] + 15))
+    return merge_roofs(_colour_roofs(frame, exclude), match_castles(frame, occlusions))
+
+
+def _colour_roofs(frame: Frame, exclude=None) -> list[dict]:
     """Castle roof components with a bottom-centre anchor, in screen pixels."""
     labels = {}
     for y in range(0, frame.height, 1):
