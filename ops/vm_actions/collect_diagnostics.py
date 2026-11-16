@@ -7528,6 +7528,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v941-cliff-escape-fort-565",
             "hanjuku-chart-v942-target-cell-evidence",
             "hanjuku-chart-v943-battle-menu-fallback-b",
+            "hanjuku-chart-v944-ch9-retreat-menu-loop",
             "hanjuku-chart-v864-shop-list-batch",
             "hanjuku-chart-v862-camp-field-move",
             "hanjuku-chart-v852-visible-menu-batches",

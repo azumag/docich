@@ -301,6 +301,10 @@ def _hero_retreat_menu(screen, mem, cur):
     return [pad('a')]
 
 
+RESCUE_RECLOSE_WAIT = 3     # observations a spent rescue menu may stay open
+RESCUE_RECLOSE_LIMIT = 6    # extra closing Bs per battle
+
+
 def _survival_menu(screen, mem, cur):
     rescue = _survival_state(mem, cur)
     rescue['pending_opens'] = 0
@@ -359,6 +363,19 @@ def _survival_menu(screen, mem, cur):
                     observed_metric={'menu_ticks': rescue.get('menu_ticks'),
                                      'labels': sorted(labels)},
                     reason='救済メニューの観測予算を使い切ったため一度だけ戻り、以後は通常のコマンド判定に委ねる')
+            return [pad('b')]
+        # The single B can be swallowed while the window draws, or the menu
+        # is reopened by another owner; a spent menu left open pauses the
+        # battle until the 101-observation fallback (g1190 2026-11-16 ch9).
+        # Close again after a few observations, bounded per battle.
+        waits = rescue['exhausted_waits'] = int(rescue.get('exhausted_waits') or 0) + 1
+        closes = int(rescue.get('exhausted_recloses') or 0)
+        if waits >= RESCUE_RECLOSE_WAIT and closes < RESCUE_RECLOSE_LIMIT:
+            rescue['exhausted_waits'] = 0
+            rescue['exhausted_recloses'] = closes + 1
+            _record(mem, 'battle_menu_rescue_reclose', **_battle_labels(cur),
+                    observed_metric={'recloses': closes + 1, 'labels': sorted(labels)},
+                    reason='使い切った救済メニューが開いたまま戦闘が止まっているため、Bで閉じて白兵へ戻す')
             return [pad('b')]
         return None
     # A visible list is authoritative. Do not infer carried cards from the
