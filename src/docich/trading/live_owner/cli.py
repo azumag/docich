@@ -40,6 +40,9 @@ MIN_EVIDENCE, MAX_EVIDENCE = 20, 400
 MAX_AMOUNT_PLACES = 8
 FUTURE_SKEW_S = 60.0
 _PLAIN_DECIMAL = re.compile(r"[+-]?[0-9]+(?:\.[0-9]+)?")
+# An owner resolution must not pass an active stop of these kinds (other stops do not block it).
+_BLOCKING_STOPS = frozenset({safety.SafetyReason.UNKNOWN_ORDER.value, safety.SafetyReason.DATA_ANOMALY.value,
+                             safety.SafetyReason.FEE_MISSING.value, safety.SafetyReason.BALANCE_MISMATCH.value})
 
 
 class _Parser(argparse.ArgumentParser):
@@ -473,6 +476,13 @@ def _not_created_problem(ledger, reader, intent, lo_ms: int, hi_ms: int, settle:
     return None, found
 
 
+def _active_stop_reasons(ledger, blocking_only: bool = False) -> str:
+    """The active stops, comma separated ("" if none); blocking_only keeps the four refusal reasons."""
+    reasons = (trip.reason for trip in safety.read_safety_state(ledger).trips
+               if not blocking_only or trip.reason in _BLOCKING_STOPS)
+    return ", ".join(reasons)
+
+
 def _evidence(mode: str, operator: str, evidence: str, checked_at: float, result: str, open_list_complete: str,
               fills_complete: str, candidates: int, override: bool, found_order_id: str | None = None) -> str:
     """The proof the owner puts on the intent row: strings only, no amounts.
@@ -600,6 +610,7 @@ def _preview_resolution(args, out, clock, is_tty, reader_factory, ledger, intent
     lo_ms, hi_ms = _window(ledger, intent, now, config)
     settle = _settle_elapsed(ledger, intent, now, config)
     found = None
+    stops = ""
     try:
         reader = _exchange_reader(reader_factory, args.state_dir)
         if args.found_order is not None:
@@ -615,6 +626,10 @@ def _preview_resolution(args, out, clock, is_tty, reader_factory, ledger, intent
             refusal, found = _not_created_problem(ledger, reader, intent, lo_ms, hi_ms, settle)
             if refusal is not None:
                 print(refusal, file=out)
+                return EXIT_REFUSED
+            stops = _active_stop_reasons(ledger, blocking_only=True)
+            if stops and args.override_incomplete_proof:
+                print(f"refused: an active safety stop must be cleared first ({stops})", file=out)
                 return EXIT_REFUSED
     except Exception as exc:
         if not _is_exchange_failure(exc):
@@ -632,6 +647,8 @@ def _preview_resolution(args, out, clock, is_tty, reader_factory, ledger, intent
         print(f"candidates: {len(found.candidates)}", file=out)
         print(f"matching: {len(found.matching)}", file=out)
         print(f"settle_elapsed: {'true' if settle else 'false'}", file=out)
+        if stops:
+            print(f"safety_stops_active: {stops}", file=out)
         print(f"override_incomplete_proof: {'true' if args.override_incomplete_proof else 'false'}", file=out)
     print(f"operator: {operator}", file=out)
     print(f"evidence: {evidence}", file=out)
@@ -710,6 +727,7 @@ def _resolve_not_created(args, out, clock, ex, ledger, intent, lo_ms, hi_ms, ope
         return original(detail)
 
     ex.ingest.anomaly = counted                          # only this executor instance, restored below
+    before = live_views.trip_count(ledger)               # a trip inserted outside the wrapper is invisible to it
     try:
         result = live_reconcile.try_resolve(ex, intent)  # the machine's own proof is tried first
     finally:
@@ -719,6 +737,14 @@ def _resolve_not_created(args, out, clock, ex, ledger, intent, lo_ms, hi_ms, ope
         return EXIT_OK
     if result == "anomaly" or counter["anomalies"]:
         print("refused: the machine found an anomaly; the override does not apply", file=out)
+        return EXIT_REFUSED
+    if live_views.trip_count(ledger) > before:           # a ledger method may have tripped the latch itself
+        print(f"refused: the machine recorded a safety stop during this run "
+              f"({_active_stop_reasons(ledger)}); the override does not apply", file=out)
+        return EXIT_REFUSED
+    stops = _active_stop_reasons(ledger, blocking_only=True)
+    if stops:
+        print(f"refused: an active safety stop must be cleared first ({stops})", file=out)
         return EXIT_REFUSED
     if not args.override_incomplete_proof:
         print("refused: the machine cannot prove this; add --override-incomplete-proof if you checked "

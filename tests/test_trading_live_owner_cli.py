@@ -1099,7 +1099,6 @@ def test_the_anomaly_counter_still_decides_when_a_trip_is_already_active(workspa
     try:
         h.mock.faults.push("submit", "LOST_REQUEST")
         intent, _ = h.send(side="buy", key="b1", amount="10", price="90")
-        sf.trip(h.ledger, sf.SafetyReason.DATA_ANOMALY, detail="already active", now=h.clock.seconds())
         h.advance(500)
         _released(h)
 
@@ -1112,11 +1111,100 @@ def test_the_anomaly_counter_still_decides_when_a_trip_is_already_active(workspa
                 "--operator", "owner"]
         code, preview = _run(workspace.state, *argv, now=h.clock.seconds(), reader_factory=lambda state_dir: h.mock)
         assert code == 0, preview
+        # the trip is already active when the machine trips the same reason (the row set does not change)
+        sf.trip(h.ledger, sf.SafetyReason.DATA_ANOMALY, detail="already active", now=h.clock.seconds())
         monkeypatch.setattr(live_reconcile, "try_resolve", anomaly_side_effect)
         code, text = _run(workspace.state, *argv, "--confirm", _token(preview), now=h.clock.seconds(),
                           reader_factory=lambda state_dir: h.mock)
         assert code == 1 and text == "refused: the machine found an anomaly; the override does not apply\n"
         assert [trip.reason for trip in sf.read_safety_state(h.ledger).trips] == ["data_anomaly"]
+        assert h.ledger.get_intent(intent.intent_id).state == "UNKNOWN_SUBMISSION"
+    finally:
+        h.close()
+
+
+def test_a_stop_recorded_outside_the_anomaly_counter_refuses_the_override(workspace, monkeypatch):
+    h = _unknown_harness(workspace, caps=Capabilities(False, False, True))
+    try:
+        h.mock.faults.push("submit", "LOST_REQUEST")
+        intent, outcome = h.send(side="buy", key="b1", amount="10", price="90")
+        assert outcome is S.UNKNOWN
+        h.advance(500)
+        _released(h)
+        argv = ["unknown", "resolve", "--intent", intent.intent_id, "--not-created",
+                "--override-incomplete-proof", "--evidence", "checked the exchange history by hand",
+                "--operator", "owner"]
+        code, preview = _run(workspace.state, *argv, now=h.clock.seconds(), reader_factory=lambda state_dir: h.mock)
+        assert code == 0, preview
+
+        def fee_missing(ex, pending):
+            assert ex.ledger.trip_safety(sf.SafetyReason.FEE_MISSING, detail="test", now=ex.clock())
+            return "waiting"                                   # no ingest.anomaly: the counter cannot see the trip
+
+        monkeypatch.setattr(live_reconcile, "try_resolve", fee_missing)
+        code, text = _run(workspace.state, *argv, "--confirm", _token(preview), now=h.clock.seconds(),
+                          reader_factory=lambda state_dir: h.mock)
+        assert code == 1 and text.startswith("refused: the machine recorded a safety stop during this run")
+        assert h.ledger.get_intent(intent.intent_id).state == "UNKNOWN_SUBMISSION"
+        assert live_views.trip_count(h.ledger) == 1             # exactly the row the test's own path inserted
+        assert h.trips() == ["fee_missing"]
+    finally:
+        h.close()
+
+
+def test_an_active_stop_refuses_the_override_until_the_owner_clears_it(workspace, monkeypatch):
+    h = _unknown_harness(workspace, caps=Capabilities(False, False, True))
+    try:
+        h.mock.faults.push("submit", "LOST_REQUEST")
+        intent, outcome = h.send(side="buy", key="b1", amount="10", price="90")
+        assert outcome is S.UNKNOWN
+        h.advance(500)
+        _released(h)
+
+        def waiting(ex, pending):
+            return "waiting"                                   # no trip comes from this path
+
+        monkeypatch.setattr(live_reconcile, "try_resolve", waiting)
+        argv = ["unknown", "resolve", "--intent", intent.intent_id, "--not-created",
+                "--override-incomplete-proof", "--evidence", "checked the exchange history by hand",
+                "--operator", "owner"]
+        code, preview = _run(workspace.state, *argv, now=h.clock.seconds(), reader_factory=lambda state_dir: h.mock)
+        assert code == 0, preview
+        token = _token(preview)
+        h.ledger.trip_safety(sf.SafetyReason.UNKNOWN_ORDER, detail="test", now=h.clock.seconds())
+        code, text = _run(workspace.state, *argv, "--confirm", token, now=h.clock.seconds(),
+                          reader_factory=lambda state_dir: h.mock)
+        assert code == 1 and text.startswith("refused: an active safety stop must be cleared first")
+        assert h.ledger.get_intent(intent.intent_id).state == "UNKNOWN_SUBMISSION"
+        h.ledger.clear_safety(sf.SafetyReason.UNKNOWN_ORDER, operator="owner", note="test", evidence="test",
+                              now=h.clock.seconds())
+        code, text = _run(workspace.state, *argv, "--confirm", token, now=h.clock.seconds(),
+                          reader_factory=lambda state_dir: h.mock)
+        assert code == 0 and text == "resolved: not created (owner evidence)\n"
+        assert h.ledger.get_intent(intent.intent_id).state == "NOT_CREATED"
+    finally:
+        h.close()
+
+
+def test_the_preview_reports_active_stops_and_refuses_them_only_with_the_override(workspace):
+    h = _unknown_harness(workspace, caps=Capabilities(False, False, True))
+    try:
+        h.mock.faults.push("submit", "LOST_REQUEST")
+        intent, outcome = h.send(side="buy", key="b1", amount="10", price="90")
+        assert outcome is S.UNKNOWN
+        h.advance(500)
+        _released(h)
+        argv = ["unknown", "resolve", "--intent", intent.intent_id, "--not-created",
+                "--evidence", "checked the exchange history by hand", "--operator", "owner"]
+        code, clean = _run(workspace.state, *argv, now=h.clock.seconds(), reader_factory=lambda state_dir: h.mock)
+        assert code == 0 and "safety_stops_active" not in clean and "token: " in clean
+        h.ledger.trip_safety(sf.SafetyReason.UNKNOWN_ORDER, detail="test", now=h.clock.seconds())
+        code, refused = _run(workspace.state, *argv, "--override-incomplete-proof", now=h.clock.seconds(),
+                             reader_factory=lambda state_dir: h.mock)
+        assert code == 1 and refused.startswith("refused: an active safety stop must be cleared first")
+        assert "token: " not in refused
+        code, stopped = _run(workspace.state, *argv, now=h.clock.seconds(), reader_factory=lambda state_dir: h.mock)
+        assert code == 0 and "safety_stops_active: unknown_order" in stopped and "token: " in stopped
         assert h.ledger.get_intent(intent.intent_id).state == "UNKNOWN_SUBMISSION"
     finally:
         h.close()
