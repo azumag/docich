@@ -14,6 +14,7 @@ from __future__ import annotations
 
 from ... import hanjuku_chart as chart
 from ..decision_log import _record
+from ..os_layer import roster as _roster
 from ..os_layer.commands import menu_to, pad
 from ..os_layer.readers import is_camp_menu
 from ..state.regions import plan as _plan_region, world as _world
@@ -199,10 +200,23 @@ def step(screen, mem, frame):
         if names is None:
             return []
         if probe['general'] not in names:
-            # The roster stops scrolling at its last name. Three identical
-            # reads at that end, with the general still absent, is a full
-            # pass: the general is not on the country list any more.
-            at_end = screen.selected == names[-1]
+            # A loss needs a full top-to-end walk. A list opened mid-way
+            # would otherwise condemn a general above the cursor unseen.
+            if not probe.get('roster_top'):
+                if names and names[0] == 'どうし' and screen.selected == names[0]:
+                    probe['roster_top'] = True
+                else:
+                    probe['top_seeks'] = probe.get('top_seeks', 0) + 1
+                    if probe['top_seeks'] > _roster.MAX_GENERALS:
+                        _close(mem, probe, 'roster_top_unconfirmed')
+                        return [pad('b')]
+                    return [pad('up')]
+            # A stopped cursor alone is not proof of the list end. Require
+            # the physical scroll-end pixels (or a short final page) and
+            # three identical reads: the general is off the country list.
+            at_end = ((frame is not None and house._roster_scroll_end(screen, frame))
+                      or (len(names) < _roster.VISIBLE_NAME_ROWS
+                          and screen.selected == names[-1]))
             probe['same'] = probe.get('same', 0) + 1 if (at_end and names == probe.get('last')) else 0
             probe['last'] = names
             if probe['same'] >= ABSENT_END_READS:

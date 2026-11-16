@@ -508,3 +508,64 @@ def test_the_balance_check_does_not_make_the_missing_order_counter_tick_twice(ws
         assert "data_anomaly" in h.trips()              # the 3rd poll is the first one past it
     finally:
         h.close()
+
+
+# ---- a read-only executor (no sender) ------------------------------------------------------
+def _read_only(h):
+    return live_executor.OrderExecutor(h.ledger, h.lease, reader=h.mock, sender=None, enable_check=h._gate,
+                                       clock=h.clock.seconds, symbols=h.symbols, config=h.config)
+
+
+def test_an_executor_without_a_sender_abandons_the_intent_instead_of_sending_it(h):
+    ro = _read_only(h)
+    intent = h.ex.plan(h.req(key="ro1"))
+    assert ro.submit(intent.intent_id) is S.BLOCKED
+    after = h.ledger.get_intent(intent.intent_id)
+    assert after.state == "ABANDONED" and after.reason_code == "no_sender"
+    assert h.mock.submissions == []
+
+
+def test_a_read_only_executor_refuses_to_cancel_and_still_polls_the_orders_it_did_not_send(h):
+    intent, _ = _buy(h, price="90")                    # resting: recorded and ACKED
+    ro = _read_only(h)
+    sent = list(h.mock.submissions)
+    with pytest.raises(ValueError):
+        ro.cancel(intent.intent_id)
+    assert h.mock.submissions == sent and h.state(intent.intent_id) == "ACKED"
+    assert [o.status for o in h.mock.all_orders()] == [OrderStatus.UNFILLED]
+    h.mock.trade_against("OAS/JPY", taker_side="sell", price="90", amount="4")
+    ro.step()                                           # polls through the reader alone
+    assert h.state(intent.intent_id) == "PARTIALLY_FILLED"
+    h.mock.trade_against("OAS/JPY", taker_side="sell", price="90", amount="6")
+    ro.step()
+    assert h.state(intent.intent_id) == "FILLED"
+
+
+def test_a_sender_that_is_not_the_mock_is_still_refused(h):
+    class Other:
+        kind = "ccxt"
+
+        def submit_order(self, req): raise AssertionError("must not be called")
+
+        def cancel_order(self, symbol, exchange_order_id): raise AssertionError("must not be called")
+
+    with pytest.raises(ValueError):
+        live_executor.OrderExecutor(h.ledger, h.lease, reader=h.mock, sender=Other(), enable_check=h._gate,
+                                    clock=h.clock.seconds, symbols=h.symbols, config=h.config)
+    with pytest.raises(ValueError):                    # no kind at all is refused too
+        live_executor.OrderExecutor(h.ledger, h.lease, reader=h.mock, sender=object(), enable_check=h._gate,
+                                    clock=h.clock.seconds, symbols=h.symbols, config=h.config)
+
+
+def test_reset_rules_makes_the_next_rules_call_read_the_market_again(h):
+    real, calls = h.mock.market_rules, []
+
+    def counted(symbol):
+        calls.append(symbol)
+        return real(symbol)
+
+    h.mock.market_rules = counted
+    assert h.ex.rules()["OAS/JPY"].symbol == "OAS/JPY" and calls == ["OAS/JPY"]
+    assert h.ex.rules()["OAS/JPY"].symbol == "OAS/JPY" and calls == ["OAS/JPY"]   # served from the cache
+    h.ex.reset_rules()
+    assert h.ex.rules()["OAS/JPY"].symbol == "OAS/JPY" and calls == ["OAS/JPY"] * 2

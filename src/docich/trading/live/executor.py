@@ -8,7 +8,8 @@ Rules this module keeps (each is tested with crash injection):
   (timeout, disconnect, an exception nobody classified) leaves the intent UNKNOWN_SUBMISSION, and
   the same intent is never sent twice.  A new attempt is a *new* intent (new decision_key) after the
   old one is proven NOT_CREATED.
-* Only a sender whose ``kind`` is on the allow-list can be used.  In L2/L3 that is the mock.
+* Only a sender whose ``kind`` is on the allow-list can be used.  In L2/L3 that is the mock.  A
+  ``sender=None`` executor is read-only: it polls, but every submit is abandoned and cancel refuses.
 * The writer lease is checked right before every send and cancel.  Losing it stops everything.
 """
 from __future__ import annotations
@@ -54,13 +55,14 @@ class StepReport:
 
 
 class OrderExecutor:
-    def __init__(self, ledger, lease: WriterLease, *, reader: ExchangeReader, sender: OrderSender,
+    def __init__(self, ledger, lease: WriterLease, *, reader: ExchangeReader, sender: OrderSender | None,
                  enable_check: Callable[[], object], clock: Callable[[], float], symbols: tuple[str, ...],
                  config: ExecutorConfig = ExecutorConfig()) -> None:
-        if getattr(sender, "kind", None) not in SENDER_KINDS_ALLOWED:
+        if sender is not None and getattr(sender, "kind", None) not in SENDER_KINDS_ALLOWED:
             raise ValueError(f"sender kind {getattr(sender, 'kind', None)!r} is not allowed")
         self.ledger, self.lease = ledger, lease
-        self.reader, self.sender = Guarded(reader), Guarded(sender)
+        self.reader = Guarded(reader)
+        self.sender = None if sender is None else Guarded(sender)
         self.enable_check, self.clock, self.symbols, self.config = enable_check, clock, tuple(symbols), config
         self.ingest = Ingestor(ledger, lease, self.reader, config, clock)
         self.monitor = BalanceMonitor()
@@ -75,6 +77,10 @@ class OrderExecutor:
             if symbol not in self._rules:
                 self._rules[symbol] = self.reader.market_rules(symbol)
         return dict(self._rules)
+
+    def reset_rules(self) -> None:
+        """Forget the cached market rules so the next ``rules()`` reads them again."""
+        self._rules.clear()
 
     def _abandon(self, intent_id: str, reason: str) -> None:
         self.ledger.transition_intent(self.lease, intent_id, expected_state="PLANNED", to_state="ABANDONED",
@@ -106,6 +112,9 @@ class OrderExecutor:
         note_enable_result(self.ledger, self.lease, gate, now=self.clock())
         if not gate.allows_orders:
             self._abandon(intent_id, "gate_closed")
+            return SubmitOutcome.BLOCKED
+        if self.sender is None:                       # read-only executor: nothing can leave
+            self._abandon(intent_id, "no_sender")
             return SubmitOutcome.BLOCKED
         try:
             rules = self.reader.market_rules(intent.symbol)
@@ -159,6 +168,8 @@ class OrderExecutor:
         self._guard(lambda: self._cancel(intent_id))
 
     def _cancel(self, intent_id: str) -> None:
+        if self.sender is None:
+            raise ValueError("this executor has no sender (read-only)")
         intent = self.ledger.get_intent(intent_id)
         if intent is None or intent.state not in ("ACKED", "PARTIALLY_FILLED") or not intent.exchange_order_id:
             raise ValueError("only an acknowledged order can be canceled")
