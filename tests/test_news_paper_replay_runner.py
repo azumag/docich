@@ -204,6 +204,58 @@ class N04bRunnerTest(unittest.TestCase):
         self.assertTrue(evidence["passed"])
         self.assertEqual(evidence["common"]["differences"]["news_filter"], [False, True])
 
+    def test_delay_interleaves_observation_without_rewinding_clock(self):
+        # B's decision occurs at t=15, after the t=12 observation.
+        scenario = ReplayScenario((
+            ReplayStep(
+                at=BASE + dt.timedelta(seconds=10),
+                decision=_request("receipt_early", "event_early",
+                                  BASE + dt.timedelta(seconds=10)),
+                news_eligible=True,
+            ),
+            ReplayStep(
+                at=BASE + dt.timedelta(seconds=12),
+                receipt_id="receipt_early",
+                observations=(_observation(121, BASE + dt.timedelta(seconds=12),
+                                           "quote_early"),),
+            ),
+            ReplayStep(
+                at=BASE + dt.timedelta(seconds=20),
+                receipt_id="receipt_early",
+                observations=(_observation(122, BASE + dt.timedelta(seconds=20),
+                                           "quote_later"),),
+            ),
+        ))
+        result = run_n04b(self.manifest, self.arm_a, self.arm_b, scenario)
+        self.assertTrue(result.passed)
+        a = result.arm_a.first.actions
+        b = result.arm_b.first.actions
+        self.assertEqual(a[0]["kind"], "decision")
+        self.assertEqual(b[0]["kind"], "observation_skipped")
+        self.assertEqual(b[0]["reason_code"], "NO_ORDER")
+        self.assertEqual(b[1]["kind"], "decision")
+        self.assertEqual(b[1]["at"], BASE + dt.timedelta(seconds=15))
+        self.assertEqual(b[2]["kind"], "observation")
+        self.assertEqual(result.arm_b.first.fill_count, 1)
+
+    def test_filtered_decision_still_validates_scope(self):
+        invalid = replace(
+            _request("receipt_bad", "event_bad", BASE + dt.timedelta(seconds=10)),
+            account_id="other_account",
+        )
+        scenario = ReplayScenario((
+            ReplayStep(
+                at=BASE + dt.timedelta(seconds=10),
+                decision=invalid,
+                news_eligible=False,
+            ),
+        ))
+        with tempfile.TemporaryDirectory(prefix="n04b-filter-invalid-") as root:
+            with self.assertRaises(ReplayError) as raised:
+                run_replay(_manifest("B"), self.arm_b, scenario,
+                           state_dir=Path(root) / "run")
+        self.assertEqual(raised.exception.code, "ACCOUNT_SCOPE_MISMATCH")
+
     def test_ab_rejects_non_news_condition_difference(self):
         bad_risk = replace(self.risk, max_positions=4)
         bad_b = ReplayArm("B", replace(
