@@ -556,6 +556,25 @@ def _boss_egg_rank(mem, general):
     return 1
 
 
+def _boss_eggless(mem, general):
+    """A general whose measured status shows no egg at all.
+
+    The boss fight's damage is the egg's (owner 2026-11-05), so an eggless
+    general takes the sortie, meets the boss at ally HP -> 0 and removes
+    nothing: ch9 2026-11-17 (local driver, g1190) リースリング, カペリーニ and
+    ヘラ, all ``egg: None`` rows, left the boss at HP 500 / 129 unchanged and
+    were lost, while the egg carriers シフォン (まねっこ) and エピィ (スロット)
+    took 500 -> 129 -> 0. Only a measured row counts (an HP and no egg); an
+    unread general stays a candidate.
+    """
+    row = ((mem.get('general_statuses') or {}).get('statuses') or {}).get(general)
+    if not isinstance(row, dict) or type(row.get('hp')) is not int:
+        return False
+    if row.get('egg') or row.get('broken') is True:
+        return False
+    return not isinstance((mem.get('egg_types') or {}).get(general), str)
+
+
 def _defense_rebalance(mem, owned, busy, heading):
     """Boss-wait moves that staff a weak priority castle (#2985).
 
@@ -891,6 +910,8 @@ def interim_candidates(mem, allow_sole=False) -> dict:
             spare = _spares(free, {NAME} if _hero_egg_broken(mem) else (), sole)
             for g in spare:
                 if g != MOVE_ANY_GENERAL and g not in unavailable:
+                    if _boss_eggless(mem, g):
+                        continue          # an eggless wave is a pure loss
                     xy = cells.get(c)
                     distance = (round(((xy[0] - boss_xy[0]) ** 2
                                        + (xy[1] - boss_xy[1]) ** 2) ** 0.5)

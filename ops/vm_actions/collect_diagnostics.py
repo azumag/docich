@@ -7585,6 +7585,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v990-pursuit-north-gate",
             "hanjuku-chart-v991-pursuit-own-skull",
             "hanjuku-chart-v992-pursuit-redirect-log",
+            "hanjuku-chart-v993-boss-wave-eggless",
             "hanjuku-chart-v985-roster-lost",
             "hanjuku-chart-v982-gbox",
             "hanjuku-chart-v984-roster-map-anchor",
