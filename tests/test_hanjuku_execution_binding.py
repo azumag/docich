@@ -82,7 +82,7 @@ def test_independent_saved_binding_survives_mutation_of_confirmation_context():
 
 def test_selected_target_saves_actual_actor_even_after_plan_replacement(monkeypatch):
     mem = memory(); confirm(mem); mutate_plan(mem)
-    monkeypatch.setattr(p, 'nav_step', lambda *args: 'arrived')
+    monkeypatch.setattr(p, 'nav_step', lambda *args, **kwargs: 'arrived')
     monkeypatch.setattr(p, '_target_roof_under_marker', lambda *args: True)
     monkeypatch.setattr(p, '_want_y_jump', lambda *args: False)
     mem['cursor'] = list(chart.castles(1)['スペンソニア'])

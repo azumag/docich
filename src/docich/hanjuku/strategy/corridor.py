@@ -1389,7 +1389,13 @@ def _hero_post_order(mem, routes_by, hero_at, wave):
     here = dists.get(hero_at)
     if here is None:
         return None
-    post = next((d for d in sorted(set(dists.values())) if d >= HERO_POST_HOPS), None)
+    # Owner 2026-11-16: ボスフェーズのみ最前線の「イデ」に主人公をおいてよい —
+    # once every road castle is ours the post advances to the front itself,
+    # so the hero gathers at イデ！ with the wave instead of staying behind.
+    boss_phase = (bool(chart.corridor(mem.get('chapter') or 0))
+                  and chart.corridor_next(mem.get('chapter') or 0, _owned(mem)) is None)
+    post = (min(dists.values()) if boss_phase
+            else next((d for d in sorted(set(dists.values())) if d >= HERO_POST_HOPS), None))
     if post is None:
         return None                       # only the front and the target: stay
     if here > post:

@@ -928,7 +928,7 @@ def test_new_target_request_needs_field_return_before_rearming_camp(monkeypatch,
     _flow(mem).pop('retreat_rechecks'); mem['tick'] = 200
     confirm(mem)
     _flow(mem)['sortie_attempt']['confirmation_tick'] = 200
-    monkeypatch.setattr(p, 'nav_step', lambda *args: 'arrived')
+    monkeypatch.setattr(p, 'nav_step', lambda *args, **kwargs: 'arrived')
     monkeypatch.setattr(p, '_target_roof_under_marker', lambda *args: True)
     monkeypatch.setattr(p, '_want_y_jump', lambda *args: False)
     assert p.target_step(Screen([], None, '', kind='map_target'), mem, None) == [p.pad('a')]

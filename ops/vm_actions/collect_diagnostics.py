@@ -7553,6 +7553,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v954-reprobe-cooldown",
             "hanjuku-chart-v954-castle-shapes",
             "hanjuku-chart-v955-stale-attempt-claim",
+            "hanjuku-chart-v957-boss-waypoint",
             "hanjuku-chart-v864-shop-list-batch",
             "hanjuku-chart-v862-camp-field-move",
             "hanjuku-chart-v852-visible-menu-batches",

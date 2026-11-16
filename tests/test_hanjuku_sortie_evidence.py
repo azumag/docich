@@ -221,7 +221,7 @@ def commit_departure(mem):
 def test_launch_record_uses_selected_general_and_keeps_chart_general(monkeypatch):
     mem = memory()
     mem.update(active='1-A2', orders={'1-A2': 'pending'}, general_override={'1-A2': 'ゼウス'})
-    monkeypatch.setattr(policy, 'nav_step', lambda *args: 'arrived')
+    monkeypatch.setattr(policy, 'nav_step', lambda *args, **kwargs: 'arrived')
     assert policy.target_step(menu('map_target', []), mem, None) == [policy.pad('a')]
     commit_departure(mem)
     rec = next(r for r in mem['_records'] if r['decision'] == 'order_launched')
@@ -282,7 +282,7 @@ def test_boss_visible_hero_does_not_authorize_an_uncalibrated_kit(monkeypatch):
                                       + tuple((80 + 8*i, ch) for i, ch in enumerate('しょうぐん'))))
         assert policy.deploy_step(screen, mem) == []
     assert '1-B1' not in _plan_region(mem).get('order_context', {})
-    monkeypatch.setattr(policy, 'nav_step', lambda *args: pytest.fail('unverified boss navigation'))
+    monkeypatch.setattr(policy, 'nav_step', lambda *args, **kwargs: pytest.fail('unverified boss navigation'))
     assert policy.target_step(menu('map_target', []), mem, None) == []
 
 
@@ -293,7 +293,7 @@ def test_boss_target_uses_existing_context_without_relabeling_companion(monkeypa
     _plan_region(mem)['order_context'] = {'1-B1': {'actual_general': 'ゼウス',
                                    'observed_metric': {'cards': ['クースカン', 'ノリウツール']}}}
     _plan_region(mem)['general_override'] = {'1-B1': 'どうし'}
-    monkeypatch.setattr(policy, 'nav_step', lambda *args: 'arrived')
+    monkeypatch.setattr(policy, 'nav_step', lambda *args, **kwargs: 'arrived')
     assert policy.target_step(menu('map_target', []), mem, None) == [policy.pad('a')]
     commit_departure(mem)
     assert _world(mem)['launched']['けっかい']['general'] == 'ゼウス'
@@ -306,7 +306,7 @@ def test_legacy_boss_flow_without_hero_evidence_is_held(kind, monkeypatch):
     _plan_region(mem)['general_override'] = {'1-B1': 'ゼウス'}
     _plan_region(mem)['order_context'] = {'1-B1': {'actual_general': 'ゼウス',
                                    'observed_metric': {'cards': ['クースカン', 'ノリウツール']}}}
-    monkeypatch.setattr(policy, 'nav_step', lambda *args: pytest.fail('unverified boss navigation'))
+    monkeypatch.setattr(policy, 'nav_step', lambda *args, **kwargs: pytest.fail('unverified boss navigation'))
     screen = menu(kind, ['うむッ!', 'クースカン', 'ノリウツール'])
     actions = policy.target_step(screen, mem, None) if kind == 'map_target' else policy.deploy_step(screen, mem)
     assert actions == [] and _plan_region(mem)['active'] == '1-B1'
@@ -332,7 +332,7 @@ def test_retry_context_follows_every_sortie_input_and_action_plan(tmp_path, monk
     if retry:
         mem['retry_context'] = {'1-A2': context}
     nav_results = iter([[policy.pad('down')], 'arrived'])
-    monkeypatch.setattr(policy, 'nav_step', lambda *args: next(nav_results))
+    monkeypatch.setattr(policy, 'nav_step', lambda *args, **kwargs: next(nav_results))
     screens = [menu('castle_menu', ['しゅつげき']),
                menu('general_list', ['ゼウス', 'どうし']),
                menu('general_list', ['どうし']),
@@ -1055,7 +1055,7 @@ def test_hero_priority_full_boss_departure_keeps_real_actor_through_battle(monke
     # Hot-load/adopted-plan bookkeeping cannot relabel the already confirmed
     # unit. Even a changed override must keep the selected companion.
     _plan_region(mem)['general_override']['1-B1'] = 'どうし'
-    monkeypatch.setattr(policy, 'nav_step', lambda *args: 'arrived')
+    monkeypatch.setattr(policy, 'nav_step', lambda *args, **kwargs: 'arrived')
     assert policy.target_step(menu('map_target', []), mem, None) == [policy.pad('a')]
     commit_departure(mem)
     assert _sorties(mem)['1-B1']['general'] == _world(mem)['launched']['けっかい']['general'] == 'ゼウス'
