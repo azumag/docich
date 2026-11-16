@@ -15,8 +15,9 @@ from __future__ import annotations
 from ... import hanjuku_chart as chart
 from ..decision_log import _record
 from ..os_layer import roster as _roster
-from ..os_layer.commands import menu_to, pad
-from ..os_layer.readers import is_camp_menu
+from ..os_layer.commands import fort_list_batch, menu_to, pad
+from ..os_layer.readers import (
+    _current, _options, fort_list_open, is_camp_menu, is_fort_menu)
 from ..state.regions import plan as _plan_region, world as _world
 from . import house
 
@@ -28,6 +29,7 @@ LIST_KEY = 'boss_wave_generals'
 ABSENT_END_READS = 3          # identical roster reads at the list end = full pass
 PURSUIT_STEP = 'PURSUIT'      # step id of the pursuit's own Y jump (y_jump['step'])
 CLOSE_LIMIT = 12              # observations a closing probe waits for the map
+UNIT_MENU_WAIT = 14           # map reads waiting for the unit's menu to draw
 
 
 def _drop_probe(mem):
@@ -249,6 +251,14 @@ def step(screen, mem, frame):
         return []
 
     if probe['phase'] == 'unit_move':
+        if probe.get('fort_stage') or is_fort_menu(screen):
+            if kind == 'map_target':
+                # The 砦's しゅつげき ended on the destination picker (a castle
+                # sortie's): the dest phase below takes it from here.
+                probe['phase'] = 'dest'
+            else:
+                return _fort_step(screen, mem, probe)
+    if probe['phase'] == 'unit_move':
         if is_camp_menu(screen):
             move = menu_to(screen, 'いどう')
             if move == 'here':
@@ -261,6 +271,13 @@ def step(screen, mem, frame):
             _close(mem, probe, 'unit_menu_unreadable')
             return [pad('b')]
         if kind == 'map':
+            # The menu draws a few frames after the A; a map that stays bare
+            # is no menu this probe reads (ch9 2026-11-17 s1: 6 pursuits sat
+            # 90 reads in unit_move and ended read_limit).
+            probe['menu_waits'] = int(probe.get('menu_waits') or 0) + 1
+            if probe['menu_waits'] > UNIT_MENU_WAIT:
+                _close(mem, probe, 'unit_menu_unreadable')
+                return [pad('b')]
             return []
         if kind == 'text':
             return [pad('b')] if house.roster(screen) is not None else None
@@ -327,3 +344,60 @@ def step(screen, mem, frame):
             return [pad('b')]
         return []
     return None
+
+
+def _fort_step(screen, mem, probe):
+    """Leave a 砦 by しゅつげき: its list names who may go, the card, then the picker.
+
+    Measured on ch9 2026-11-17 (isolated probe of the g1190 state): the general
+    the pursuit selected sat in a 砦 with another, A on his unit opened
+    しゅつげき/こうかん (no いどう), A on しゅつげき listed the two inside, A on
+    the name showed his status card and the next A opened the destination
+    picker on the 砦 (map_target). The same route recall.py takes for a 砦.
+    The general missing from the list is not a loss: only close.
+    """
+    kind = screen.kind
+    stage = probe.get('fort_stage') or 'menu'
+    probe['fort_stage'] = stage
+    if kind == 'map':
+        probe['fort_waits'] = int(probe.get('fort_waits') or 0) + 1
+        if probe['fort_waits'] > UNIT_MENU_WAIT:
+            _close(mem, probe, 'fort_menu_closed')
+            return [pad('b')]
+        return []
+    if stage == 'menu':
+        if not is_fort_menu(screen):
+            return []
+        if not fort_list_open(screen):
+            move = menu_to(screen, 'しゅつげき')
+            if move is None:
+                return []
+            if move != 'here':
+                return [move]
+            probe['fort_stage'] = 'list'
+            return [pad('a')]
+        probe['fort_stage'] = stage = 'list'
+    if stage == 'list':
+        if not fort_list_open(screen):
+            return []
+        members = [word for x, _, word in _options(screen) if x > 100]
+        wanted = probe['general']
+        if wanted not in members:
+            _close(mem, probe, 'general_not_in_fort')
+            return [pad('b')]
+        move = menu_to(screen, wanted)
+        if move is None:
+            return []
+        if move != 'here':
+            return fort_list_batch(screen, wanted) or [move]
+        probe['fort_stage'] = 'status'
+        probe['fort_reads'] = 0
+        return [pad('a')]
+    # status card: one A opens the picker, a repeat only while the card stays
+    probe['fort_reads'] = int(probe.get('fort_reads') or 0) + 1
+    if probe['fort_reads'] > 40:
+        _close(mem, probe, 'fort_picker_missing')
+        return [pad('b')]
+    if house.general_status(screen):
+        return [pad('a')] if probe['fort_reads'] % 6 == 1 else []
+    return []
