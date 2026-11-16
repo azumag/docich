@@ -494,3 +494,17 @@ def test_a_duplicated_unknown_fee_fill_ticks_the_grace_counter_once_per_poll(h):
         h.ex.step()
     assert h.state(intent.intent_id) == "FILLED"
     assert views.all_fills(h.ledger)[0].fee_status == "known" and h.trips() == []
+
+
+def test_the_balance_check_does_not_make_the_missing_order_counter_tick_twice(ws):
+    h = Harness(ws, config=ExecutorConfig(settle_s=120.0, sweep_every=1, fill_lag_polls=2))
+    try:
+        intent, _ = _buy(h, price="90")
+        h.mock.fetch_order = lambda symbol, eid: (_ for _ in ()).throw(OrderNotFound(eid))
+        for _ in range(2):
+            h.ex.step()
+        assert "data_anomaly" not in h.trips()          # 2 polls missing: still within fill_lag_polls=2
+        h.ex.step()
+        assert "data_anomaly" in h.trips()              # the 3rd poll is the first one past it
+    finally:
+        h.close()

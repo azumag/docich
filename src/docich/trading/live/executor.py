@@ -220,7 +220,7 @@ class OrderExecutor:
             # the ledger must be up to date *inside* the two balance reads: refresh every open order, and
             # judge nothing if any refresh failed or found something it cannot account for
             for intent in self.ledger.list_intents(states=("ACKED", "PARTIALLY_FILLED")):
-                outcome = self.ingest.refresh(intent)
+                outcome = self.ingest.refresh(intent, tick=False)
                 if outcome in ("unavailable", "missing", "data_error", "anomaly", "no_order"):
                     behind.append(outcome)
             for symbol in self.symbols:
