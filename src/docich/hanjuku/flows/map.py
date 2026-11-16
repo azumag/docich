@@ -491,7 +491,7 @@ def world_map_step(screen, mem, frame):
     # relation the recall picker uses. g1190 2026-11-16: the field roofs could
     # not be read at all, the uncertain flag never cleared and every sortie
     # destination was aimed off-screen until this anchor was taken.
-    y_cursor = world_cursor(frame) if frame is not None else None
+    y_cursor = world_cursor(frame) if hasattr(frame, 'pixel') else None
     y_offset = WORLD_MAP_OFFSET.get(mem.get('chapter') or 0)
     if y_cursor and y_offset:
         mem['cursor'] = [int(round((y_cursor[0] - y_offset[0]) * 8)),

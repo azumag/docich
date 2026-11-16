@@ -545,8 +545,10 @@ def _y_jump_step(mem, frame):
     # cursor at (104.5,157.0) in two frames 0.35 s apart and every jump
     # aborted after three such reads (11 y_jump_failed in one window). The
     # move budget below still bounds a cursor that never reaches the goal.
-    digest = frame.digest() if frame is not None else None
-    same_picture = digest is not None and digest == jump.get('last_digest')
+    digest = frame.digest() if hasattr(frame, 'digest') else None
+    # No readable picture identity (no frame) keeps the old rule: a repeated
+    # cursor cell counts as still.
+    same_picture = digest is None or digest == jump.get('last_digest')
     jump['still'] = (int(jump.get('still') or 0) + 1
                      if previous == list(cursor) and jump['moves'] and same_picture else 0)
     jump['last_cursor'] = list(cursor)

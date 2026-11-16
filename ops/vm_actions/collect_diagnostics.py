@@ -7542,6 +7542,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v907-castle-jump-scroll",
             "hanjuku-chart-v909-castle-jump-scroll",
             "hanjuku-chart-v945-ch9-merge-main",
+            "hanjuku-chart-v946-ch9-merge-fixes",
             "hanjuku-chart-v864-shop-list-batch",
             "hanjuku-chart-v862-camp-field-move",
             "hanjuku-chart-v852-visible-menu-batches",
