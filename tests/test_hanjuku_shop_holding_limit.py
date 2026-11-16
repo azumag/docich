@@ -113,19 +113,20 @@ def _refused_after(ready, name, qty, stock=None, gold_before=300, rest=(), since
     return p.shop_step(screen, ready), screen
 
 
-def test_refusal_records_a_holding_floor_and_retries_the_room(ready):
+def test_refusal_records_a_holding_floor_and_retries_half(ready):
     actions, _ = _refused_after(ready, 'ノリウツール', 60, stock=0, rest=[['ミックミー', 50]])
     assert actions == [p.pad('a')]
     shop = ready['shop']
     assert shop['bought'] == []
     assert ready['card_bought_since_read'] == {'ノリウツール': 0}      # refused copies are not held
     assert ready['card_held_floor'] == {'ノリウツール': 40}            # 60 on top of >=40 broke 99
-    assert shop['items'] == [['ノリウツール', 59], ['ミックミー', 50]]  # 59 is the whole room floor 40 leaves
+    # floor 40 is below the strong-floor threshold, so the geometric halving stands.
+    assert shop['items'] == [['ノリウツール', 30], ['ミックミー', 50]]
 
 
 def test_retry_never_exceeds_the_room_the_floor_leaves(ready):
     _refused_after(ready, 'ノリウツール', 99, stock=0)         # floor 1, room 98
-    assert ready['shop']['items'] == [['ノリウツール', 98]]    # retry is the room, never above it
+    assert ready['shop']['items'] == [['ノリウツール', 49]]    # weak floor: halved, still <= room
 
 
 def test_tight_floor_retries_the_full_room_in_one_refusal(ready):
@@ -142,6 +143,51 @@ def test_tight_floor_retries_the_full_room_in_one_refusal(ready):
     assert ready['card_held_floor']['ノリウツール'] + ready['shop']['items'][0][1] == b.HOLD_CAP
 
 
+def _refusal_sequence(ready, name, held, first, stock=0):
+    """Drive repeated refusals with a synthetic true holding.
+
+    Returns (refusals, terminal_qty): terminal_qty is the first ask the shop
+    would accept, or 0 when the card was dropped after the bounded search.
+    """
+    ready['card_stock'] = {name: stock}
+    q = first
+    refusals = 0
+    while q > 0 and refusals < 20:
+        if held + q <= b.HOLD_CAP:
+            return refusals, q
+        shop = ready['shop']
+        ready['card_bought_since_read'] = {name: q}
+        shop.update(items=[], want=None, bought=[[name, q, 18]],
+                    bargain_listing_planned=True, bargain_planned=True,
+                    last_buy={'row': [name, q, 18], 'gold': 300})
+        screen = refused_list(gold=300); screen.kind = 'shop_list'
+        p.shop_step(screen, ready)
+        refusals += 1
+        clean = parse(Canvas().frame()); clean.kind = 'shop_list'
+        p.shop_step(clean, ready)          # close this refusal episode
+        row = next((r for r in ready['shop'].get('items') or [] if r[0] == name), None)
+        if row is None:
+            return refusals, 0             # retry exhausted: this card is dropped
+        q = row[1]
+    return refusals, q
+
+
+def test_weak_floor_keeps_halving_for_a_large_first_ask(ready):
+    """H=60, q=99: no extra refusal versus the old halving path."""
+    refusals, terminal = _refusal_sequence(ready, 'ノリウツール', 60, 99)
+    assert refusals == 2                    # 99 -> 49 (refused) -> 24 (accepted)
+    assert terminal == 24
+    assert ready['card_held_floor']['ノリウツール'] == 51
+
+
+def test_full_hand_refusals_stay_bounded_and_terminate(ready):
+    """H=99, q=99: the card is dropped instead of decrementing one copy at a time."""
+    refusals, terminal = _refusal_sequence(ready, 'ノリウツール', 99, 99)
+    assert refusals == 7                    # 99, 49, 24, 12, 6, 3, 1 all refused
+    assert terminal == 0                    # retry 0 drops this card
+    assert ready['card_held_floor']['ノリウツール'] == 99
+
+
 def test_full_kind_drops_only_that_card(ready):
     _refused_after(ready, 'ノリウツール', 1, stock=0, rest=[['ミックミー', 3]])
     assert ready['card_held_floor']['ノリウツール'] == 99
@@ -149,19 +195,17 @@ def test_full_kind_drops_only_that_card(ready):
 
 
 def test_a_second_refusal_in_the_same_visit_is_handled_again(ready):
-    _refused_after(ready, 'ノリウツール', 99, stock=0)          # retry 98 (room)
+    _refused_after(ready, 'ノリウツール', 99, stock=0)          # weak floor, retry 49
     shop = ready['shop']
     clean = parse(Canvas().frame()); clean.kind = 'shop_list'
     p.shop_step(clean, ready)
     assert shop['hold_limit_open'] is False
-    ready['card_bought_since_read'] = {'ノリウツール': 98}
-    shop.update(bought=[['ノリウツール', 98, 18]], last_buy={'row': ['ノリウツール', 98, 18], 'gold': 300})
+    ready['card_bought_since_read'] = {'ノリウツール': 49}
+    shop.update(bought=[['ノリウツール', 49, 18]], last_buy={'row': ['ノリウツール', 49, 18], 'gold': 300})
     screen = refused_list(); screen.kind = 'shop_list'
     assert p.shop_step(screen, ready) == [p.pad('a')]
-    assert ready['card_held_floor']['ノリウツール'] == 2       # >=2 held, 98 more broke 99
-    # The room-only retry was refused too, so it falls back to halving and the
-    # search stays geometric instead of decrementing 98 -> 97 -> 96 ...
-    assert shop['items'] == [['ノリウツール', 49]]             # room 97, halved to 49
+    assert ready['card_held_floor']['ノリウツール'] == 51      # >=51 held, 49 more broke 99
+    assert shop['items'] == [['ノリウツール', 24]]
 
 
 def test_purchase_confirmation_counts_toward_the_estimate(ready):
@@ -226,7 +270,7 @@ def test_refusal_records_full_shop_context_after_retry(ready):
                   if r.get('deviation_reason') == 'holding_limit')
     metric = record['observed_metric']
     assert metric['card_stock_total'] == 11
-    assert metric['items'] == [['ノリウツール', 59], *rest]
+    assert metric['items'] == [['ノリウツール', 30], *rest]
     assert metric['shop_state']['hold_limit'] == 1
     assert metric['shop_state']['hold_limit_open'] is True
     assert metric['shop_state']['want'] is None
@@ -234,7 +278,7 @@ def test_refusal_records_full_shop_context_after_retry(ready):
     assert metric['shop_state']['gold'] == 300
     # Snapshots must not change when the live queue changes.
     shop['items'][0][1] = 1
-    assert metric['items'][0][1] == 59
+    assert metric['items'][0][1] == 30
 
 
 def test_refusal_shop_snapshot_detaches_nested_purchase_row(ready):

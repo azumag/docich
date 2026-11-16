@@ -117,17 +117,17 @@ def _learn_holding_limit(screen: Screen, mem, shop):
         # held + qty > 99 was refused, so at least 100 - qty copies are held.
         floor = mem.setdefault(HELD_FLOOR, {})
         floor[name] = max(floor.get(name, 0) if type(floor.get(name)) is int else 0, HOLD_CAP + 1 - qty)
-        # Ask the room the refusal just proved instead of an arbitrary halving.
-        # hold_room() folds in the new floor together with the panel stock and
-        # the since-read ledger, and can never exceed qty - 1 (the refusal
-        # proves held >= 100 - qty). A tight floor now yields an acceptable
-        # ask in one refusal rather than walking down by repeated halves.
-        # If that very retry was also refused, the room bound was too weak to
-        # trust: fall back to halving so a full hand still converges in a few
-        # rounds instead of decrementing by one copy at a time.
+        # A strong floor (the refusal proves at least half the cap is held)
+        # makes hold_room() a tight, trustworthy ask: a single refusal can then
+        # reach the largest sellable quantity instead of an arbitrary halving.
+        # A weak floor (a large first ask proves only a couple of copies) is
+        # not enough to judge the room, so keep the geometric halving there;
+        # without this guard a full hand would walk down one copy at a time.
+        room = hold_room(mem, name)
         previous = shop.get('hold_limit_retry')
         repeated = isinstance(previous, dict) and previous.get(name) == qty
-        retry = min(qty // 2, hold_room(mem, name)) if repeated else hold_room(mem, name)
+        strong = floor[name] >= HOLD_CAP // 2
+        retry = room if strong and not repeated else min(qty // 2, room)
         shop['hold_limit_retry'] = {**(previous if isinstance(previous, dict) else {}), name: retry}
         dropped = [r for r in items if r[0] == name]
         items = [r for r in items if r[0] != name]
