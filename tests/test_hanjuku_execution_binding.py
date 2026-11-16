@@ -9,7 +9,7 @@ import pytest
 
 from docich import hanjuku_chart as chart, hanjuku_policy as p
 from docich.hanjuku.os_layer.screen import Screen
-from docich.hanjuku.strategy.execution import confirm_departure_order
+from docich.hanjuku.strategy.execution import confirm_departure_order, execution_claimed
 from test_hanjuku_sortie_evidence import actor_panel, measured_loaded_sortie
 from docich.hanjuku.state.regions import flow as _flow, journal as _journal
 from docich.hanjuku.state.regions import world as _world, sorties as _sorties, plan as _plan_region
@@ -228,4 +228,20 @@ def test_reconciled_attempt_does_not_claim_a_repicked_pending_order():
     _world(mem)['sorties'] = {}
     _world(mem)['launched_orders'] = {}
     _plan_region(mem)['orders']['1-A3'] = 'pending'
+    assert p._order_for_step(mem, '1-A3') is not None
+
+
+def test_a_stale_attempt_does_not_claim_the_reissued_step():
+    """g1190 2026-11-16 ch9: a sortie_attempt whose confirmation died ~12000
+    ticks earlier still claimed the pair's next minted id. Every fresh
+    オオキク>ナッテ order resolved to None, the castle jump aborted
+    'order_changed' five ticks in, and zero sorties launched while
+    ``order_start`` repeated."""
+    mem = memory()
+    _flow(mem)['sortie_attempt'] = {'step': '1-A3', 'target_seen': False,
+                                    'confirmation_tick': 20}
+    mem['tick'] = 20 + 60
+    assert execution_claimed(mem, '1-A3'), 'a live attempt still owns the step'
+    mem['tick'] = 20 + 121        # past SORTIE_ATTEMPT_TTL
+    assert not execution_claimed(mem, '1-A3')
     assert p._order_for_step(mem, '1-A3') is not None

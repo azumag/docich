@@ -144,10 +144,27 @@ def execution_claimed(mem, step):
     while it lives. Once that sortie resolves and the order is pending again,
     the leftover attempt must not resolve the re-picked step to None - g1107
     2026-11-03 looped order_start + silent B on every castle menu for months.
+
+    The claim only holds while the attempt is fresh: an attempt whose
+    confirmation died ages ago still matched every fresh mint of the same
+    castle pair, so ``_order_for_step`` returned None on each observation and
+    the castle jump aborted 'order_changed' five ticks in, forever (g1190 ch9
+    2026-11-16: オオキク>ナッテ:24 pinned by a ~12000-tick-old attempt; zero
+    sorties left while order_start repeated). The age bound mirrors
+    ``_sortie_in_flight``'s, which already stops treating the same record as a
+    live launch.
     """
     attempt = _flow(mem).get('sortie_attempt') or {}
     snapshot = (_world(mem).get('launched_orders') or {}).get(step) or {}
+    confirm = attempt.get('confirmation_tick')
+    fresh = (type(confirm) is not int
+             or 0 <= int(mem.get('tick') or 0) - confirm <= _attempt_claim_ttl())
     return ((attempt.get('step') == step and 'confirmation_tick' in attempt
-             and not attempt.get('interrupted'))
+             and not attempt.get('interrupted') and fresh)
             or ((_plan_region(mem).get('orders') or {}).get(step) in ('launched', 'launched_unconfirmed')
                 and 'departure_binding' in snapshot))
+
+
+def _attempt_claim_ttl() -> int:
+    from .corridor import SORTIE_ATTEMPT_TTL
+    return SORTIE_ATTEMPT_TTL

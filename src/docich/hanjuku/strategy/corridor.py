@@ -60,6 +60,14 @@ PROBE_REARM_TICKS = 3600
 # A recall's destination read is due only this long; an old entry must not
 # keep minting an unbudgeted probe (the read pops only a complete roster).
 ROSTER_READ_DUE_TTL = 900
+# A drained castle just read empty is not re-probed this soon: every tracked
+# arrival already re-opens it (``_drained`` yields to a march that may still be
+# on the road), and an untracked one needs time to walk in. Without the gap a
+# single drained castle is re-read on every plan cycle while real orders wait
+# behind it (g1190 2026-11-16 ch9: アルマムーン was the only drained castle and
+# its empty list was re-opened six times a month, each ending
+# 「出撃元に出せる将軍がいない」).
+REPROBE_MIN_TICKS = 600
 # Idle probes (nothing else to plan) are minted at most this often. Zero
 # keeps one minted per observation, which is what stops the empty plan from
 # standing still; the in-flight suppression is what removes the churn.
@@ -833,7 +841,13 @@ def _roster_probe(mem, routes_by, target, lost):
                and _drained(mem, source, 'move')}
     if not drained:
         return None
-    source = min(drained, key=lambda c: drained[c].get('tick') or 0)
+    now = int(mem.get('tick') or 0)
+    stale = {source: entry for source, entry in drained.items()
+             if not isinstance(entry, dict) or type(entry.get('tick')) is not int
+             or now - entry['tick'] >= REPROBE_MIN_TICKS}
+    if not stale:
+        return None
+    source = min(stale, key=lambda c: (stale[c] or {}).get('tick') or 0)
     route = routes_by[source]
     purpose = ('retake' if target in lost else 'attack') if len(route) == 2 else 'move'
     return _order(mem, source, route[1], target, purpose)
