@@ -252,6 +252,12 @@ def _month_menu_move(screen: Screen, mem, label: str):
                 # The blind 'a' opens the merchant's うむッ/いかんッ gate; mark
                 # it so the next confirm answers うむッ instead of refusing.
                 mem['month_merchant_confirm'] = True
+            if label.startswith('も〜おしまい'):
+                # The blind 'a' sits on the exit item without the 'here' branch
+                # that sets month_exit, so the よろしいですかな gate would read
+                # month_exit=False and refuse with いかんッ forever (g1190
+                # 41-1: blind_nav→も〜おしまい→いかんッ loop). Mark the exit.
+                mem['month_exit'] = True
             steps = []
             for key in keys:
                 steps += [pad(key), {'type': 'wait', 'ms': MONTH_BLIND_NAV_WAIT_MS}]
