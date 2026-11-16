@@ -81,6 +81,24 @@ def test_roster_triangle_needs_a_unique_fresh_castle_position():
         assert 'castle_candidate' not in post._marker(mem, object())
 
 
+def test_roster_triangle_uses_sequence_anchor_when_nav_last_is_stale():
+    """g1253: a roster walk outlasts the 30-tick nav_last freshness, so the
+    army-marker fallback kept losing the castle. The sequence start snapshot
+    keeps the same camera valid for the whole pass."""
+    from docich import hanjuku_chart as chart
+    castle, cell = next(iter(chart.castles(1).items()))
+    anchor = {'cell': list(cell), 'screen': [63, 53], 'tick': 60}
+    mem = memory(uncertain=False,
+                 nav_last={'kind': 'map', 'screen': [63, 53], 'tick': 60},
+                 post_month_status={'map_anchor': anchor})
+    with patch.object(post, 'world_markers', return_value=[(60, 50, 66, 56)]):
+        # nav_last is 40 ticks stale: the snapshot still maps the castle.
+        assert post._marker(mem, object())['castle_candidate'] == castle
+        # Without the snapshot the same stale read gives no candidate.
+        del mem['post_month_status']['map_anchor']
+        assert 'castle_candidate' not in post._marker(mem, object())
+
+
 def test_known_garrison_does_not_need_redundant_select():
     mem = memory(garrison={'アルマムーン': ['ゼウス']})
     post.arm(mem)

@@ -369,6 +369,7 @@ def arm(mem):
                      if manifest_due else None),
         'steps': 0, 'phase_reads': 0,
         'complete': not scan and not manifest_due,
+        'map_anchor': _map_anchor(mem),
         'started_tick': int(mem.get('tick') or 0)}
     _log(mem, 'post_month_status_armed',
          observed_metric={'scope': scope, 'cached': len(statuses),
@@ -728,6 +729,24 @@ def _static_marker(state, marker):
     return static
 
 
+def _map_anchor(mem):
+    """Map camera snapshot taken when the post-month sequence starts.
+
+    A roster walk runs far longer than the 30-tick ``nav_last`` freshness the
+    army-marker fallback demands, so the per-sequence camera is pinned here:
+    the camera cannot move while menus are open over the field.
+    """
+    last = mem.get('nav_last') or {}
+    cell = mem.get('cursor')
+    if (not mem.get('uncertain') and last.get('kind') == 'map'
+            and isinstance(cell, (list, tuple)) and len(cell) == 2
+            and isinstance(last.get('screen'), list) and len(last['screen']) == 2
+            and type(mem.get('tick')) is int):
+        return {'cell': list(cell), 'screen': list(last['screen']),
+                'tick': mem['tick']}
+    return None
+
+
 def _marker(mem, frame, general=None):
     """Record the roster selection triangle and bind its castle from the map.
 
@@ -774,14 +793,23 @@ def _marker(mem, frame, general=None):
               'marker_reason': 'army_marker_fallback'}
     last = mem.get('nav_last') or {}
     cell = mem.get('cursor')
-    if (mem.get('uncertain') or last.get('kind') != 'map'
-            or not isinstance(cell, (list, tuple)) or len(cell) != 2
-            or not isinstance(last.get('screen'), list)
-            or len(last['screen']) != 2
-            or type(mem.get('tick')) is not int
-            or type(last.get('tick')) is not int
-            or not 0 <= mem['tick'] - last['tick'] <= 30):
-        return result
+    fresh = (not mem.get('uncertain') and last.get('kind') == 'map'
+             and isinstance(cell, (list, tuple)) and len(cell) == 2
+             and isinstance(last.get('screen'), list) and len(last['screen']) == 2
+             and type(mem.get('tick')) is int and type(last.get('tick')) is int
+             and 0 <= mem['tick'] - last['tick'] <= 30)
+    if not fresh:
+        # The sequence's own camera snapshot still describes the frame: the
+        # field camera cannot move while the roster is open over it.
+        anchor = (mem.get('post_month_status') or {}).get('map_anchor')
+        if (mem.get('uncertain') or not isinstance(anchor, dict)
+                or not isinstance(anchor.get('cell'), list)
+                or len(anchor['cell']) != 2
+                or not isinstance(anchor.get('screen'), list)
+                or len(anchor['screen']) != 2):
+            return result
+        cell = anchor['cell']
+        last = {'screen': anchor['screen']}
     # Main-menu roster draws on top of the last field camera. The camera did
     # not move while the roster is open; retain only a unique near-castle hit.
     from ... import hanjuku_chart as chart
