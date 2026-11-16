@@ -1,11 +1,12 @@
-"""The owner's LIVE command line (L4a): status, cashflow list and the owner's cashflows.
+"""The owner's LIVE command line (L4a): status, cashflow list, cashflow add and activate.
 
     python -m docich.trading.live_owner --state-dir <dir> status
     python -m docich.trading.live_owner --state-dir <dir> cashflow list
     python -m docich.trading.live_owner --state-dir <dir> cashflow add --kind deposit ...
+    python -m docich.trading.live_owner --state-dir <dir> activate --snapshot ... --experiment-digest ...
 
-Only ``cashflow add --confirm TOKEN`` writes; it prints the token first and records the cashflow
-only when the owner repeats it.  Nothing here talks to an exchange: the state dir is the only input.
+The two writers (``cashflow add`` and ``activate``) print a token first and act only when the owner
+repeats it.  Nothing here talks to an exchange: the state dir is the only input.
 
 Exit codes: 0 ok, 1 refused, 2 usage, 5 the writer lease is held by the live worker.
 Money is a Decimal from text; floats never appear (``exchange.dec``/``dec_text``).
@@ -21,7 +22,8 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Callable, TextIO
 
-from ..live import lease as live_lease, safety
+from . import revision as revision_module
+from ..live import enable as live_enable, lease as live_lease, policy as live_policy, safety
 from ..live.canonical import canonical_json, sha256_hex
 from ..live.exchange import dec, dec_text
 from ..live.ledger import Cashflow, LiveLedger, LiveLedgerError
@@ -203,6 +205,17 @@ def _identical_exists(ledger, kind: str, currency: str, amount: Decimal) -> bool
     return any(Decimal(row[0]) == amount for row in rows)
 
 
+def _release_writer(ledger, writer, clock: Callable[[], float]) -> None:
+    """Give the writer lease back and close the ledger; both may be None (nothing to undo)."""
+    if writer is not None:
+        try:
+            live_lease.release_writer_lease(ledger, writer, now=clock())
+        except Exception:           # never hide the outcome of the write behind a release failure
+            pass
+    if ledger is not None:
+        ledger.close()
+
+
 def _record(args, content: dict[str, str], occurred_at: float, cashflow_id: str, out: TextIO,
             clock: Callable[[], float]) -> int:
     layout = live_layout(args.state_dir)
@@ -233,13 +246,7 @@ def _record(args, content: dict[str, str], occurred_at: float, cashflow_id: str,
         print(f"recorded: {cashflow_id}", file=out)
         return EXIT_OK
     finally:
-        if writer is not None:
-            try:
-                live_lease.release_writer_lease(ledger, writer, now=clock())
-            except Exception:       # never hide the outcome of the write behind a release failure
-                pass
-        if ledger is not None:
-            ledger.close()
+        _release_writer(ledger, writer, clock)
 
 
 def _cashflow_add(args, out: TextIO, clock: Callable[[], float], is_tty: bool) -> int:
@@ -264,6 +271,93 @@ def _cashflow_add(args, out: TextIO, clock: Callable[[], float], is_tty: bool) -
     return _record(args, content, when.timestamp(), _cashflow_id(content), out, clock)
 
 
+# ---- activate (the owner's policy set activation) --------------------------------------------
+def _short(exc: BaseException) -> str:
+    """One short line of an exception's message (never a file's content)."""
+    text = " ".join(str(exc).split())
+    return text[:200] if text else "invalid input"
+
+
+def _activation_content(ps, enable_result, rev: str, operator: str, note: str) -> dict[str, str]:
+    return {"policy_set_digest": ps.digest, "enable_file_sha256": enable_result.file_sha256 or "",
+            "code_revision": rev, "operator": operator, "note": note}
+
+
+def _preview_activation(ps, spec, enable_result, rev: str, operator: str, token: str, out: TextIO,
+                        ledger_exists: bool) -> None:
+    print(f"ledger: {'exists' if ledger_exists else 'will be created'}", file=out)
+    print(f"policy_set: {ps.digest[:12]}", file=out)
+    print(f"experiment: {live_policy.experiment_digest(spec)[:12]}", file=out)
+    print(f"code_revision: {rev[:12]}", file=out)
+    print(f"mode: {enable_result.mode}", file=out)
+    print(f"operator: {operator}", file=out)
+    print(f"token: {token}", file=out)
+
+
+def _record_activation(args, ps, enable_result, rev: str, operator: str, note: str, out: TextIO,
+                       clock: Callable[[], float]) -> int:
+    layout = live_layout(args.state_dir)
+    ledger, writer = None, None
+    try:
+        ledger = LiveLedger.open(layout, paper_dir=Path(args.state_dir) / "trading", now=clock())
+        try:
+            writer = live_lease.acquire_writer_lease(ledger, layout, now=clock())
+        except live_lease.LeaseHeld:
+            print("refused: the live worker holds the writer lease; stop it first", file=out)
+            return EXIT_LEASE_HELD
+        again = live_enable.live_enabled(args.state_dir, policy_set_digest=ps.digest, code_revision=rev,
+                                         now=clock())
+        if (again.enabled, again.file_sha256, again.mode) != (enable_result.enabled, enable_result.file_sha256,
+                                                             enable_result.mode):
+            print("refused: the enable file changed; run the preview again", file=out)
+            return EXIT_REFUSED
+        try:
+            ledger.record_owner_activation(writer, ps, enable=again, operator=operator, note=note, now=clock())
+        except LiveLedgerError:
+            print("refused: the ledger refused the activation", file=out)
+            return EXIT_REFUSED
+        print(f"activated: {ps.digest[:12]}", file=out)
+        return EXIT_OK
+    finally:
+        _release_writer(ledger, writer, clock)
+
+
+def _activate(args, out: TextIO, clock: Callable[[], float], revision: Callable[[], str]) -> int:
+    try:
+        operator = _parse_text(args.operator, "operator")
+        note = _parse_text(args.note, "note")
+    except ValueError as exc:
+        print(f"refused: {exc}", file=out)
+        return EXIT_REFUSED
+    try:
+        spec = live_policy.load_experiment_snapshot(args.snapshot, expected_digest=args.experiment_digest)
+        ps = live_policy.build_policy_set(spec, INITIAL_SYMBOLS)
+    except Exception as exc:        # the snapshot is the owner's input: refuse it, never traceback
+        print(f"refused: {type(exc).__name__}: {_short(exc)}", file=out)
+        return EXIT_REFUSED
+    try:
+        rev = revision()
+    except revision_module.RevisionError as exc:
+        print(f"refused: {exc}", file=out)
+        return EXIT_REFUSED
+    enable_result = live_enable.live_enabled(args.state_dir, policy_set_digest=ps.digest, code_revision=rev,
+                                             now=clock())
+    if not enable_result.enabled:
+        print("refused: enable file is not valid: "
+              + ", ".join(reason.value for reason in enable_result.reasons), file=out)
+        return EXIT_REFUSED
+    content = _activation_content(ps, enable_result, rev, operator, note)
+    layout = live_layout(args.state_dir)
+    token = _token(content, _ledger_id(layout))
+    if args.confirm is None:
+        _preview_activation(ps, spec, enable_result, rev, operator, token, out, layout.ledger_path.is_file())
+        return EXIT_OK
+    if args.confirm.strip() != token:
+        print("refused: confirmation token does not match", file=out)
+        return EXIT_REFUSED
+    return _record_activation(args, ps, enable_result, rev, operator, note, out, clock)
+
+
 # ---- argument parsing and dispatch -----------------------------------------------------------
 def _build_parser(out: TextIO) -> argparse.ArgumentParser:
     parser = _Parser(prog="python -m docich.trading.live_owner", stream=out,
@@ -284,11 +378,19 @@ def _build_parser(out: TextIO) -> argparse.ArgumentParser:
     add.add_argument("--confirm", help="the token printed by the preview")
     add.add_argument("--allow-repeat", action="store_true",
                      help="record another cashflow with the same kind, currency and amount")
+    activate = commands.add_parser("activate", stream=out,
+                                   help="record an owner activation of a policy set (needs a valid enable file)")
+    activate.add_argument("--snapshot", required=True, help="the experiment snapshot (JSON)")
+    activate.add_argument("--experiment-digest", required=True, help="the snapshot's 64-hex digest")
+    activate.add_argument("--operator", required=True)
+    activate.add_argument("--note", required=True)
+    activate.add_argument("--confirm", help="the token printed by the preview")
     return parser
 
 
 def main(argv: list[str] | None = None, *, out: TextIO | None = None, clock: Callable[[], float] = time.time,
-         is_tty: bool | None = None) -> int:
+         is_tty: bool | None = None,
+         revision: Callable[[], str] = revision_module.current_revision) -> int:
     out = sys.stdout if out is None else out
     if is_tty is None:
         is_tty = bool(getattr(out, "isatty", lambda: False)())
@@ -305,6 +407,8 @@ def main(argv: list[str] | None = None, *, out: TextIO | None = None, clock: Cal
         return EXIT_USAGE
     if args.command == "status":
         return _status(args, out)
+    if args.command == "activate":
+        return _activate(args, out, clock, revision)
     if args.cashflow_command == "list":
         return _cashflow_list(args, out, is_tty)
     return _cashflow_add(args, out, clock, is_tty)
