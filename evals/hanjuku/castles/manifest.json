@@ -1,0 +1,1124 @@
+{
+  "schema_version": 1,
+  "source": {
+    "kind": "local_rom_graphics",
+    "rom_body_size": 1048576,
+    "rom_body_sha256": "59027382154fc0aefdb2fa84251b171cbf490bc5e013205a24e677122b446a24",
+    "chapter_theme_table_offset": "0x7e45",
+    "chapter_themes": [
+      1,
+      1,
+      1,
+      1,
+      1,
+      2,
+      2,
+      2,
+      2,
+      3,
+      3,
+      3
+    ],
+    "own_tiles_offset": "0xc0000",
+    "enemy_tiles_offsets": {
+      "1": "0xc0380",
+      "2": "0xc0700",
+      "3": "0xc0ac0"
+    },
+    "flag_pose_offsets": [
+      "0xc0300",
+      "0xc0340"
+    ],
+    "selected_flag_pose": 0
+  },
+  "sprite_size": [
+    48,
+    56
+  ],
+  "colour_projection": "snes-bgr555-to-rgb565-truncated-rgb888",
+  "alpha": "0 for palette index 0, layout 0x7f and terrain cell 0xff; 255 otherwise",
+  "classes": [
+    {
+      "id": "own-lv1",
+      "owner": "own",
+      "level": 1,
+      "samples": [
+        {
+          "theme": 1,
+          "chapters": [
+            1,
+            2,
+            3,
+            4,
+            5
+          ],
+          "file": "ch01-05-own-lv1.png",
+          "png_sha256": "d1ba44a13978f5b869e725c510015370231f2e712d1666fde6fbcad4b167e40b",
+          "layout_offset": "0x0d93f",
+          "palette_offset": "0xc38e0",
+          "opaque_pixels": 658,
+          "opaque_box_xyxy_inclusive": [
+            16,
+            18,
+            39,
+            55
+          ],
+          "terrain_cells_xy": [
+            [
+              3,
+              3
+            ]
+          ],
+          "animated_flag_cells_xy": [
+            [
+              2,
+              2
+            ],
+            [
+              4,
+              2
+            ]
+          ],
+          "rgba_sha256": "23fa9e8a433047407c3627e00e7b394b5189939de4e5758e8d3af489204c40f1"
+        },
+        {
+          "theme": 2,
+          "chapters": [
+            6,
+            7,
+            8,
+            9
+          ],
+          "file": "ch06-09-own-lv1.png",
+          "png_sha256": "d1ba44a13978f5b869e725c510015370231f2e712d1666fde6fbcad4b167e40b",
+          "layout_offset": "0x0d93f",
+          "palette_offset": "0xc3ce0",
+          "opaque_pixels": 658,
+          "opaque_box_xyxy_inclusive": [
+            16,
+            18,
+            39,
+            55
+          ],
+          "terrain_cells_xy": [
+            [
+              3,
+              3
+            ]
+          ],
+          "animated_flag_cells_xy": [
+            [
+              2,
+              2
+            ],
+            [
+              4,
+              2
+            ]
+          ],
+          "rgba_sha256": "23fa9e8a433047407c3627e00e7b394b5189939de4e5758e8d3af489204c40f1"
+        },
+        {
+          "theme": 3,
+          "chapters": [
+            10,
+            11,
+            12
+          ],
+          "file": "ch10-12-own-lv1.png",
+          "png_sha256": "5d52f78396946a0d54671788dd53931fda8f47356158c4bcf465200afc983658",
+          "layout_offset": "0x0d93f",
+          "palette_offset": "0xc40e0",
+          "opaque_pixels": 658,
+          "opaque_box_xyxy_inclusive": [
+            16,
+            18,
+            39,
+            55
+          ],
+          "terrain_cells_xy": [
+            [
+              3,
+              3
+            ]
+          ],
+          "animated_flag_cells_xy": [
+            [
+              2,
+              2
+            ],
+            [
+              4,
+              2
+            ]
+          ],
+          "rgba_sha256": "d92cebc7eb498210d64443a43e59c3fa554ec6d79158c91f0d67ffba171f7976"
+        }
+      ]
+    },
+    {
+      "id": "own-lv2",
+      "owner": "own",
+      "level": 2,
+      "samples": [
+        {
+          "theme": 1,
+          "chapters": [
+            1,
+            2,
+            3,
+            4,
+            5
+          ],
+          "file": "ch01-05-own-lv2.png",
+          "png_sha256": "fbf8c226857ac5d85941ffe94648d37166d5ef905d1a00c4e8189b021c7e7d1e",
+          "layout_offset": "0x0d969",
+          "palette_offset": "0xc38e0",
+          "opaque_pixels": 763,
+          "opaque_box_xyxy_inclusive": [
+            16,
+            10,
+            39,
+            55
+          ],
+          "terrain_cells_xy": [],
+          "animated_flag_cells_xy": [
+            [
+              3,
+              1
+            ],
+            [
+              2,
+              2
+            ],
+            [
+              4,
+              2
+            ]
+          ],
+          "rgba_sha256": "04152ef7b871bd6694ac5c01f6bc5b0e4c2f3ab19dd81b7ca6feaeef6474a72f"
+        },
+        {
+          "theme": 2,
+          "chapters": [
+            6,
+            7,
+            8,
+            9
+          ],
+          "file": "ch06-09-own-lv2.png",
+          "png_sha256": "fbf8c226857ac5d85941ffe94648d37166d5ef905d1a00c4e8189b021c7e7d1e",
+          "layout_offset": "0x0d969",
+          "palette_offset": "0xc3ce0",
+          "opaque_pixels": 763,
+          "opaque_box_xyxy_inclusive": [
+            16,
+            10,
+            39,
+            55
+          ],
+          "terrain_cells_xy": [],
+          "animated_flag_cells_xy": [
+            [
+              3,
+              1
+            ],
+            [
+              2,
+              2
+            ],
+            [
+              4,
+              2
+            ]
+          ],
+          "rgba_sha256": "04152ef7b871bd6694ac5c01f6bc5b0e4c2f3ab19dd81b7ca6feaeef6474a72f"
+        },
+        {
+          "theme": 3,
+          "chapters": [
+            10,
+            11,
+            12
+          ],
+          "file": "ch10-12-own-lv2.png",
+          "png_sha256": "69c16d80084c83145a2ba483bf6221d133ecd9cd4084ab910df1c5bbdfd57d9c",
+          "layout_offset": "0x0d969",
+          "palette_offset": "0xc40e0",
+          "opaque_pixels": 763,
+          "opaque_box_xyxy_inclusive": [
+            16,
+            10,
+            39,
+            55
+          ],
+          "terrain_cells_xy": [],
+          "animated_flag_cells_xy": [
+            [
+              3,
+              1
+            ],
+            [
+              2,
+              2
+            ],
+            [
+              4,
+              2
+            ]
+          ],
+          "rgba_sha256": "8397e47418fca3c392cb89dd8c6a369380fa931d0b75390d369dd96be6ee3162"
+        }
+      ]
+    },
+    {
+      "id": "own-lv3",
+      "owner": "own",
+      "level": 3,
+      "samples": [
+        {
+          "theme": 1,
+          "chapters": [
+            1,
+            2,
+            3,
+            4,
+            5
+          ],
+          "file": "ch01-05-own-lv3.png",
+          "png_sha256": "dd7fce65795d771f25afed23df84b3564a3a08d7b17d35999d7708dd62f3e2d3",
+          "layout_offset": "0x0d993",
+          "palette_offset": "0xc38e0",
+          "opaque_pixels": 946,
+          "opaque_box_xyxy_inclusive": [
+            8,
+            18,
+            47,
+            55
+          ],
+          "terrain_cells_xy": [],
+          "animated_flag_cells_xy": [
+            [
+              2,
+              2
+            ],
+            [
+              4,
+              2
+            ],
+            [
+              3,
+              3
+            ]
+          ],
+          "rgba_sha256": "dbe6e568e61c4bd607de259820a49aa7b21eb1f26937ac1e3226bccc7f810cb4"
+        },
+        {
+          "theme": 2,
+          "chapters": [
+            6,
+            7,
+            8,
+            9
+          ],
+          "file": "ch06-09-own-lv3.png",
+          "png_sha256": "dd7fce65795d771f25afed23df84b3564a3a08d7b17d35999d7708dd62f3e2d3",
+          "layout_offset": "0x0d993",
+          "palette_offset": "0xc3ce0",
+          "opaque_pixels": 946,
+          "opaque_box_xyxy_inclusive": [
+            8,
+            18,
+            47,
+            55
+          ],
+          "terrain_cells_xy": [],
+          "animated_flag_cells_xy": [
+            [
+              2,
+              2
+            ],
+            [
+              4,
+              2
+            ],
+            [
+              3,
+              3
+            ]
+          ],
+          "rgba_sha256": "dbe6e568e61c4bd607de259820a49aa7b21eb1f26937ac1e3226bccc7f810cb4"
+        },
+        {
+          "theme": 3,
+          "chapters": [
+            10,
+            11,
+            12
+          ],
+          "file": "ch10-12-own-lv3.png",
+          "png_sha256": "bccd9dbc7694789a2fb273101aa9a8e7673d5ecc5d4999ac3ebdbb8315500502",
+          "layout_offset": "0x0d993",
+          "palette_offset": "0xc40e0",
+          "opaque_pixels": 946,
+          "opaque_box_xyxy_inclusive": [
+            8,
+            18,
+            47,
+            55
+          ],
+          "terrain_cells_xy": [],
+          "animated_flag_cells_xy": [
+            [
+              2,
+              2
+            ],
+            [
+              4,
+              2
+            ],
+            [
+              3,
+              3
+            ]
+          ],
+          "rgba_sha256": "cc3bbd2d33df51a5049f90394f97652a6c5d993b464de51d841fe4e59a5e8dca"
+        }
+      ]
+    },
+    {
+      "id": "own-lv4",
+      "owner": "own",
+      "level": 4,
+      "samples": [
+        {
+          "theme": 1,
+          "chapters": [
+            1,
+            2,
+            3,
+            4,
+            5
+          ],
+          "file": "ch01-05-own-lv4.png",
+          "png_sha256": "e1bd97cd31e26766142372998271fb8b4fed4f64736594026e0eb8168aa10006",
+          "layout_offset": "0x0d9bd",
+          "palette_offset": "0xc38e0",
+          "opaque_pixels": 1402,
+          "opaque_box_xyxy_inclusive": [
+            8,
+            10,
+            47,
+            55
+          ],
+          "terrain_cells_xy": [
+            [
+              3,
+              2
+            ]
+          ],
+          "animated_flag_cells_xy": [
+            [
+              2,
+              1
+            ],
+            [
+              4,
+              1
+            ]
+          ],
+          "rgba_sha256": "b9884e765a79f8bbb3131d9c41c629affdb8ddff1fc514bbbcb3ce8147f00dea"
+        },
+        {
+          "theme": 2,
+          "chapters": [
+            6,
+            7,
+            8,
+            9
+          ],
+          "file": "ch06-09-own-lv4.png",
+          "png_sha256": "e1bd97cd31e26766142372998271fb8b4fed4f64736594026e0eb8168aa10006",
+          "layout_offset": "0x0d9bd",
+          "palette_offset": "0xc3ce0",
+          "opaque_pixels": 1402,
+          "opaque_box_xyxy_inclusive": [
+            8,
+            10,
+            47,
+            55
+          ],
+          "terrain_cells_xy": [
+            [
+              3,
+              2
+            ]
+          ],
+          "animated_flag_cells_xy": [
+            [
+              2,
+              1
+            ],
+            [
+              4,
+              1
+            ]
+          ],
+          "rgba_sha256": "b9884e765a79f8bbb3131d9c41c629affdb8ddff1fc514bbbcb3ce8147f00dea"
+        },
+        {
+          "theme": 3,
+          "chapters": [
+            10,
+            11,
+            12
+          ],
+          "file": "ch10-12-own-lv4.png",
+          "png_sha256": "cc89f0d88abb5ad0f59dbb0d6760d5b6dd3cb0347b740610c8753a86fa4a8b8a",
+          "layout_offset": "0x0d9bd",
+          "palette_offset": "0xc40e0",
+          "opaque_pixels": 1402,
+          "opaque_box_xyxy_inclusive": [
+            8,
+            10,
+            47,
+            55
+          ],
+          "terrain_cells_xy": [
+            [
+              3,
+              2
+            ]
+          ],
+          "animated_flag_cells_xy": [
+            [
+              2,
+              1
+            ],
+            [
+              4,
+              1
+            ]
+          ],
+          "rgba_sha256": "6b9d3f51e2db6f92f87dd4ba01f63684f7f101d12ba31a4f682e9d98714252dc"
+        }
+      ]
+    },
+    {
+      "id": "own-lv5",
+      "owner": "own",
+      "level": 5,
+      "samples": [
+        {
+          "theme": 1,
+          "chapters": [
+            1,
+            2,
+            3,
+            4,
+            5
+          ],
+          "file": "ch01-05-own-lv5.png",
+          "png_sha256": "29c2f940ce835415c7a04893204b52ec9660229addf5cccfd4c634b10e71ee3a",
+          "layout_offset": "0x0d9e7",
+          "palette_offset": "0xc38e0",
+          "opaque_pixels": 2024,
+          "opaque_box_xyxy_inclusive": [
+            0,
+            2,
+            47,
+            55
+          ],
+          "terrain_cells_xy": [
+            [
+              3,
+              1
+            ]
+          ],
+          "animated_flag_cells_xy": [
+            [
+              0,
+              0
+            ],
+            [
+              2,
+              0
+            ],
+            [
+              4,
+              0
+            ],
+            [
+              5,
+              0
+            ]
+          ],
+          "rgba_sha256": "59aa680a6483b3ed241de41ff2779e62af8c99761ba30ca1ea07d0140b1c6179"
+        },
+        {
+          "theme": 2,
+          "chapters": [
+            6,
+            7,
+            8,
+            9
+          ],
+          "file": "ch06-09-own-lv5.png",
+          "png_sha256": "29c2f940ce835415c7a04893204b52ec9660229addf5cccfd4c634b10e71ee3a",
+          "layout_offset": "0x0d9e7",
+          "palette_offset": "0xc3ce0",
+          "opaque_pixels": 2024,
+          "opaque_box_xyxy_inclusive": [
+            0,
+            2,
+            47,
+            55
+          ],
+          "terrain_cells_xy": [
+            [
+              3,
+              1
+            ]
+          ],
+          "animated_flag_cells_xy": [
+            [
+              0,
+              0
+            ],
+            [
+              2,
+              0
+            ],
+            [
+              4,
+              0
+            ],
+            [
+              5,
+              0
+            ]
+          ],
+          "rgba_sha256": "59aa680a6483b3ed241de41ff2779e62af8c99761ba30ca1ea07d0140b1c6179"
+        },
+        {
+          "theme": 3,
+          "chapters": [
+            10,
+            11,
+            12
+          ],
+          "file": "ch10-12-own-lv5.png",
+          "png_sha256": "661aebfb0ba0db7e35443f7e2751c6f03a56b11b53f9cf613f2d0f45178e0f97",
+          "layout_offset": "0x0d9e7",
+          "palette_offset": "0xc40e0",
+          "opaque_pixels": 2024,
+          "opaque_box_xyxy_inclusive": [
+            0,
+            2,
+            47,
+            55
+          ],
+          "terrain_cells_xy": [
+            [
+              3,
+              1
+            ]
+          ],
+          "animated_flag_cells_xy": [
+            [
+              0,
+              0
+            ],
+            [
+              2,
+              0
+            ],
+            [
+              4,
+              0
+            ],
+            [
+              5,
+              0
+            ]
+          ],
+          "rgba_sha256": "d8a0972892b0b4187bf44fbc6cb67ed93c6b015b100cca3fce333fb2a905ebbf"
+        }
+      ]
+    },
+    {
+      "id": "enemy-lv1",
+      "owner": "enemy",
+      "level": 1,
+      "samples": [
+        {
+          "theme": 1,
+          "chapters": [
+            1,
+            2,
+            3,
+            4,
+            5
+          ],
+          "file": "ch01-05-enemy-lv1.png",
+          "png_sha256": "a1f3b3d6b56b53ebe47b3dd5ce946b9ec367cfab2e92e0d729ce1c3d5318561b",
+          "layout_offset": "0x0da11",
+          "palette_offset": "0xc38e0",
+          "opaque_pixels": 812,
+          "opaque_box_xyxy_inclusive": [
+            8,
+            16,
+            39,
+            55
+          ],
+          "terrain_cells_xy": [],
+          "animated_flag_cells_xy": [
+            [
+              4,
+              2
+            ]
+          ],
+          "rgba_sha256": "ce7e8e24754478cbe56ae48eeab1b9d8635082fd47caf28293b8893005619333"
+        },
+        {
+          "theme": 2,
+          "chapters": [
+            6,
+            7,
+            8,
+            9
+          ],
+          "file": "ch06-09-enemy-lv1.png",
+          "png_sha256": "cccea6573c2e70ae109a5f66f773ab65390bd98d836111fe8a0d15263f6078d9",
+          "layout_offset": "0x0dae3",
+          "palette_offset": "0xc3ce0",
+          "opaque_pixels": 770,
+          "opaque_box_xyxy_inclusive": [
+            16,
+            8,
+            39,
+            49
+          ],
+          "terrain_cells_xy": [
+            [
+              3,
+              6
+            ]
+          ],
+          "animated_flag_cells_xy": [
+            [
+              3,
+              1
+            ]
+          ],
+          "rgba_sha256": "0b0fcab19c7e2e70eaeb49be4a5b1a3d7d8340c9dabac1ed4b6cb9572a16649d"
+        },
+        {
+          "theme": 3,
+          "chapters": [
+            10,
+            11,
+            12
+          ],
+          "file": "ch10-12-enemy-lv1.png",
+          "png_sha256": "3a71a574b4a0329d83c636d5b59cca5363680054c60f7b55745fbec58e22ca2a",
+          "layout_offset": "0x0dbb5",
+          "palette_offset": "0xc40e0",
+          "opaque_pixels": 986,
+          "opaque_box_xyxy_inclusive": [
+            8,
+            16,
+            39,
+            55
+          ],
+          "terrain_cells_xy": [
+            [
+              3,
+              2
+            ]
+          ],
+          "animated_flag_cells_xy": [],
+          "rgba_sha256": "222e92a4dd395bec1b4ad01acd984581730ad1834867abf2f62aa8dcaaa481ae"
+        }
+      ]
+    },
+    {
+      "id": "enemy-lv2",
+      "owner": "enemy",
+      "level": 2,
+      "samples": [
+        {
+          "theme": 1,
+          "chapters": [
+            1,
+            2,
+            3,
+            4,
+            5
+          ],
+          "file": "ch01-05-enemy-lv2.png",
+          "png_sha256": "484a79f74a9765366340dcc6a78f5bbee95f27518a199d6700b30370bc60a23b",
+          "layout_offset": "0x0da3b",
+          "palette_offset": "0xc38e0",
+          "opaque_pixels": 886,
+          "opaque_box_xyxy_inclusive": [
+            8,
+            16,
+            39,
+            55
+          ],
+          "terrain_cells_xy": [],
+          "animated_flag_cells_xy": [
+            [
+              4,
+              2
+            ]
+          ],
+          "rgba_sha256": "9ffa7ec56d06edf0b70d1ed4fc2d8c4a3d2ec11792cbe81cbb437a279e987d30"
+        },
+        {
+          "theme": 2,
+          "chapters": [
+            6,
+            7,
+            8,
+            9
+          ],
+          "file": "ch06-09-enemy-lv2.png",
+          "png_sha256": "5dba6715c49372fd67ead12ab9916ccf9bcf3b1baa553e54623bbe557438299d",
+          "layout_offset": "0x0db0d",
+          "palette_offset": "0xc3ce0",
+          "opaque_pixels": 1002,
+          "opaque_box_xyxy_inclusive": [
+            8,
+            8,
+            39,
+            49
+          ],
+          "terrain_cells_xy": [
+            [
+              2,
+              6
+            ],
+            [
+              3,
+              6
+            ]
+          ],
+          "animated_flag_cells_xy": [
+            [
+              2,
+              1
+            ]
+          ],
+          "rgba_sha256": "c9b98238b3d56c5a554fce7389ccfd55cfc533c370f733b4aeb1b6eb7afe2505"
+        },
+        {
+          "theme": 3,
+          "chapters": [
+            10,
+            11,
+            12
+          ],
+          "file": "ch10-12-enemy-lv2.png",
+          "png_sha256": "4c6594182d4eaee81be961e44defdacd3309519383fa1b8698a9a79028a5ba62",
+          "layout_offset": "0x0dbdf",
+          "palette_offset": "0xc40e0",
+          "opaque_pixels": 1194,
+          "opaque_box_xyxy_inclusive": [
+            8,
+            8,
+            39,
+            55
+          ],
+          "terrain_cells_xy": [
+            [
+              2,
+              1
+            ],
+            [
+              3,
+              1
+            ]
+          ],
+          "animated_flag_cells_xy": [],
+          "rgba_sha256": "602a3d7d51a966eee8ed519f9876da5455b6a5acf1d7c317e9480bde5929f986"
+        }
+      ]
+    },
+    {
+      "id": "enemy-lv3",
+      "owner": "enemy",
+      "level": 3,
+      "samples": [
+        {
+          "theme": 1,
+          "chapters": [
+            1,
+            2,
+            3,
+            4,
+            5
+          ],
+          "file": "ch01-05-enemy-lv3.png",
+          "png_sha256": "72211ef74427078f07b79ed2150d7f70adcc1e546bb23db7cfa63efeb70741dd",
+          "layout_offset": "0x0da65",
+          "palette_offset": "0xc38e0",
+          "opaque_pixels": 1351,
+          "opaque_box_xyxy_inclusive": [
+            8,
+            8,
+            47,
+            55
+          ],
+          "terrain_cells_xy": [],
+          "animated_flag_cells_xy": [
+            [
+              1,
+              1
+            ]
+          ],
+          "rgba_sha256": "5f093e645d8585882369e16968be5b5882bb834cf72895146a11023cfa6f02e8"
+        },
+        {
+          "theme": 2,
+          "chapters": [
+            6,
+            7,
+            8,
+            9
+          ],
+          "file": "ch06-09-enemy-lv3.png",
+          "png_sha256": "8d4fd8f1c896963b459be3f6c9f79bc12773d5e0afd873997f70913cb8fb58e3",
+          "layout_offset": "0x0db37",
+          "palette_offset": "0xc3ce0",
+          "opaque_pixels": 1262,
+          "opaque_box_xyxy_inclusive": [
+            8,
+            8,
+            39,
+            55
+          ],
+          "terrain_cells_xy": [],
+          "animated_flag_cells_xy": [
+            [
+              4,
+              1
+            ]
+          ],
+          "rgba_sha256": "12c2ff8ee86382ff5eede51b36d31209734ffbdee5957e765d6d96a3a33b1dfa"
+        },
+        {
+          "theme": 3,
+          "chapters": [
+            10,
+            11,
+            12
+          ],
+          "file": "ch10-12-enemy-lv3.png",
+          "png_sha256": "860e30623a2651b86b7c856f12bd805b1f14fe1626f03037e36f74e1a06e676f",
+          "layout_offset": "0x0dc09",
+          "palette_offset": "0xc40e0",
+          "opaque_pixels": 1522,
+          "opaque_box_xyxy_inclusive": [
+            8,
+            8,
+            47,
+            55
+          ],
+          "terrain_cells_xy": [
+            [
+              2,
+              1
+            ],
+            [
+              4,
+              1
+            ]
+          ],
+          "animated_flag_cells_xy": [],
+          "rgba_sha256": "f48e7caecd4498a9563f93f91d562ee708a8d52ddad27efe654ebc020cc5d21d"
+        }
+      ]
+    },
+    {
+      "id": "enemy-lv4",
+      "owner": "enemy",
+      "level": 4,
+      "samples": [
+        {
+          "theme": 1,
+          "chapters": [
+            1,
+            2,
+            3,
+            4,
+            5
+          ],
+          "file": "ch01-05-enemy-lv4.png",
+          "png_sha256": "dff76a2f455c9c439e7146e053ee7b80a75d1da08713ae6f0198b228b1a2fc97",
+          "layout_offset": "0x0da8f",
+          "palette_offset": "0xc38e0",
+          "opaque_pixels": 1607,
+          "opaque_box_xyxy_inclusive": [
+            8,
+            8,
+            47,
+            55
+          ],
+          "terrain_cells_xy": [],
+          "animated_flag_cells_xy": [
+            [
+              1,
+              1
+            ]
+          ],
+          "rgba_sha256": "6b0d2430cc70591f156d2538c13b744ed89cb77454d1a18e6c713e1692350016"
+        },
+        {
+          "theme": 2,
+          "chapters": [
+            6,
+            7,
+            8,
+            9
+          ],
+          "file": "ch06-09-enemy-lv4.png",
+          "png_sha256": "02b31cb85026f8d40d5793ce5922299799042596de8e8f1b86e768074ee4b56c",
+          "layout_offset": "0x0db61",
+          "palette_offset": "0xc3ce0",
+          "opaque_pixels": 1655,
+          "opaque_box_xyxy_inclusive": [
+            8,
+            2,
+            47,
+            55
+          ],
+          "terrain_cells_xy": [
+            [
+              3,
+              0
+            ]
+          ],
+          "animated_flag_cells_xy": [
+            [
+              5,
+              1
+            ]
+          ],
+          "rgba_sha256": "f01c7efc8fd4446669445dc7e2d08846b876fc05db6441793cccd5f731ba0326"
+        },
+        {
+          "theme": 3,
+          "chapters": [
+            10,
+            11,
+            12
+          ],
+          "file": "ch10-12-enemy-lv4.png",
+          "png_sha256": "26291c0c5425cbc58bd80b525fc0a06045adb64cb96c23e8dcb24b8d217c06a8",
+          "layout_offset": "0x0dc33",
+          "palette_offset": "0xc40e0",
+          "opaque_pixels": 1852,
+          "opaque_box_xyxy_inclusive": [
+            8,
+            0,
+            47,
+            55
+          ],
+          "terrain_cells_xy": [
+            [
+              4,
+              0
+            ]
+          ],
+          "animated_flag_cells_xy": [],
+          "rgba_sha256": "2e1a10244e7fce5f72b87f680fa80ef3e82e6e533a3a6ac23c50712c6b7d7653"
+        }
+      ]
+    },
+    {
+      "id": "enemy-lv5",
+      "owner": "enemy",
+      "level": 5,
+      "samples": [
+        {
+          "theme": 1,
+          "chapters": [
+            1,
+            2,
+            3,
+            4,
+            5
+          ],
+          "file": "ch01-05-enemy-lv5.png",
+          "png_sha256": "f7fa90a3ad59661a3ca181219b8c7779624d22a06bf68d5c8b6486730a70d032",
+          "layout_offset": "0x0dab9",
+          "palette_offset": "0xc38e0",
+          "opaque_pixels": 2186,
+          "opaque_box_xyxy_inclusive": [
+            0,
+            0,
+            47,
+            55
+          ],
+          "terrain_cells_xy": [],
+          "animated_flag_cells_xy": [],
+          "rgba_sha256": "fe8666241c81c0adb12c32371a5ee0a08fb3c660ff79c246f31347cf869584b0"
+        },
+        {
+          "theme": 2,
+          "chapters": [
+            6,
+            7,
+            8,
+            9
+          ],
+          "file": "ch06-09-enemy-lv5.png",
+          "png_sha256": "f02d5ebdbc24b7e97fb05d7cd57df615d75f0f2f2cb8425ace50a7950114ccda",
+          "layout_offset": "0x0db8b",
+          "palette_offset": "0xc3ce0",
+          "opaque_pixels": 2308,
+          "opaque_box_xyxy_inclusive": [
+            0,
+            0,
+            47,
+            55
+          ],
+          "terrain_cells_xy": [],
+          "animated_flag_cells_xy": [
+            [
+              5,
+              0
+            ]
+          ],
+          "rgba_sha256": "d753dfca1c9ff2b1b2460ac6a852356be01de57cc2e3dbcf9efa3a07ea6151ee"
+        },
+        {
+          "theme": 3,
+          "chapters": [
+            10,
+            11,
+            12
+          ],
+          "file": "ch10-12-enemy-lv5.png",
+          "png_sha256": "8c6b8ef999a7792ed1ad8614b54901b89873cf744a43d42267b7b7e2602afa5b",
+          "layout_offset": "0x0dc5d",
+          "palette_offset": "0xc40e0",
+          "opaque_pixels": 2303,
+          "opaque_box_xyxy_inclusive": [
+            0,
+            0,
+            47,
+            55
+          ],
+          "terrain_cells_xy": [],
+          "animated_flag_cells_xy": [],
+          "rgba_sha256": "64f972ad5bb7cfd29494a21947396aad94b013b5d1e33c6f1d2f76d494888493"
+        }
+      ]
+    }
+  ],
+  "image_count": 30,
+  "unique_rgba_count": 25
+}
