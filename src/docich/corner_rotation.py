@@ -800,6 +800,112 @@ class CornerRotationManager:
             return {"status": "cancelled", "corner": chosen,
                     "trigger_at": timestamp(request["trigger_at"])}
 
+    def cancel_queued_manual(self, game, *, expected=None, apply=False, now=None):
+        """Cancel one manual reservation before its dispatch.
+
+        Covers both the durable inbox record and an imported ``queued_manual``,
+        for immediate and due scheduled requests alike. Once a tick promotes
+        the request to ``pending``/``manual_pending`` the stop/recovery path
+        owns it and this refuses. The non-blocking execution lock keeps the
+        check and the removal race-free with dispatch, so a live slot reports
+        ``busy`` instead of being touched.
+        """
+        if apply and not (isinstance(expected, str) and len(expected) == 64
+                          and all(c in "0123456789abcdef" for c in expected)):
+            raise RotationError(
+                "queued manual cancellation requires the reviewed fingerprint",
+                reason_code="expected_reservation_required",
+            )
+        if not rotation_enabled(self.g):
+            raise RotationError(
+                "common corner rotation is disabled", reason_code="rotation_disabled"
+            )
+        with self.locked() as acquired:
+            if not acquired:
+                raise RotationError(
+                    "a corner slot is executing", reason_code="busy"
+                )
+            with self._manual_queue_lock():
+                if now is None:
+                    now = timestamp(self.clock())
+                state = self.load(now)
+                if state["status"] == "recovery_required":
+                    raise RotationError(
+                        "corner recovery required before queued manual cancellation",
+                        reason_code="recovery_required",
+                    )
+                if now < state["last_seen_at"]:
+                    raise RotationError("clock regressed", reason_code="clock_regressed")
+                choices = [c.id for c in self.catalog if c.game == game]
+                if len(choices) != 1:
+                    raise RotationError(
+                        "queued manual corner is unavailable",
+                        reason_code="queued_request_missing",
+                    )
+                chosen = choices[0]
+                inbox = self._read_manual_queue()
+                queued = state.get("queued_manual")
+                if inbox is not None and queued is not None and inbox != queued:
+                    raise RotationError(
+                        "conflicting manual queue ownership",
+                        reason_code="manual_queue_conflict",
+                    )
+                request = queued if isinstance(queued, dict) else inbox
+                if not isinstance(request, dict) or request.get("corner") != chosen:
+                    raise RotationError(
+                        "queued manual request is not queued",
+                        reason_code="queued_request_missing",
+                    )
+                request_id = str(uuid.UUID(request["request_id"]))
+                timestamp(request["selected_at"])
+                if request.get("trigger_at") is not None:
+                    timestamp(request["trigger_at"])
+                for in_flight in (state.get("pending"), state.get("manual_pending")):
+                    if (isinstance(in_flight, dict)
+                            and in_flight.get("request_id") == request_id):
+                        raise RotationError(
+                            "queued manual request was already dispatched",
+                            reason_code="already_dispatched",
+                        )
+                fingerprint = hashlib.sha256(json.dumps(
+                    request, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+                location = ("both" if inbox is not None and queued is not None
+                            else "ledger" if queued is not None else "inbox")
+                if not apply:
+                    return {"status": "eligible", "corner": chosen,
+                            "location": location, "fingerprint": fingerprint}
+                if fingerprint != expected:
+                    raise RotationError(
+                        "queued manual reservation changed since review",
+                        reason_code="reservation_changed",
+                    )
+                artifact = None
+                if request.get("resume_latest") is True:
+                    from .adapters.base import AdapterError
+                    from .hanjuku_resume import discard_unclaimed
+                    try:
+                        artifact = discard_unclaimed(self.g, request_id)
+                    except AdapterError as exc:
+                        raise RotationError(
+                            "checkpoint artifact unsafe to discard",
+                            reason_code="artifact_unverified",
+                        ) from exc
+                if inbox is not None:
+                    self._manual_queue_path.unlink()
+                state["queued_manual"] = None
+                # Retain the cancelled request privately for audit. Cooldown,
+                # history, pauses and every runtime/receipt remain untouched.
+                state["last_queued_manual_cancel"] = {
+                    "reservation": request, "at": now,
+                    "reason": "owner-cancelled-queued-reservation"}
+                self.save(state)
+                self._clear_notice()
+                result = {"status": "cancelled", "corner": chosen,
+                          "location": location}
+                if artifact is not None:
+                    result["resume_artifact"] = artifact
+                return result
+
     def _remember_catalog(self, state):
         known = state.setdefault("known_corners", {})
         if not isinstance(known, dict):
