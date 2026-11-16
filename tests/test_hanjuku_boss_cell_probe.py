@@ -161,8 +161,11 @@ def test_the_corridor_boss_first_leg_steps_to_the_ide_north_house():
     mem = {'chapter': 9}
     waypoint = chart.CH9_BOSS_WAYPOINT
     assert N.boss_probe_cell(mem, 'ボス', 'A:x:M1') == waypoint
+    # The order's relaunch counter no longer short-cuts the first leg: the
+    # second leg belongs to the pursuit (ch9 2026-11-17, generals that took the
+    # direct leg sat in the pocket beside イデ！).
     mem['boss_relaunch'] = {'A:x:M1': 1}
-    assert N.boss_probe_cell(mem, 'ボス', 'A:x:M1') != waypoint
+    assert N.boss_probe_cell(mem, 'ボス', 'A:x:M1') == waypoint
 
 
 def test_pursuit_pseudo_step_aims_the_boss_like_a_camp_redirect():

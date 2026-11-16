@@ -342,39 +342,25 @@ def boss_probe_cell(mem, name, step=None):
     index = (mem.get('boss_step_probe') or {}).get(step) or 0
     cell = chart.boss_probe_cell(chapter, name, index)
     # Owner 2026-11-16: from the last corridor castle (イデ！) the direct march
-    # to the moving boss is blocked by the cliffs. The first leg of every boss
-    # order steps to the hero's home area; once that order has been re-armed
-    # (one failed direct attempt behind it) the second leg goes around the
-    # cliff at the measured boss cell. Chapter 9 only: the other charts' boss
-    # probes keep their measured cells.
+    # to the moving boss is blocked by the cliffs, so every boss order launched
+    # from a castle takes the first leg to the hero's home area (the northern
+    # egg-repair house, the heart on the map). The second leg is the pursuit's
+    # (flows/boss_pursuit), which aims the camped general at the boss cell
+    # through the PURSUIT/RECALL pseudo-steps. Chapter 9 only.
+    #
+    # Measured 2026-11-17: the order's own ``boss_relaunch`` counter used to
+    # switch an order to the boss cell after one failed attempt, and the ids of
+    # live steps carried a counter of 1, so new generals went straight at the
+    # boss cell (Y confirm 170.5, 93.5) and sat in the pocket beside イデ！.
+    # With the first leg forced, ブリオッシュ and ジェラート camped north.
     if (chapter == 9 and chart.corridor(chapter) and name
             and chart.is_boss_castle(name)):
-        relaunched = int((mem.get('boss_relaunch') or {}).get(str(step)) or 0)
         if step in ('RECALL', 'PURSUIT'):
-            # PURSUIT (flows/boss_pursuit) re-aims a camped boss-bound general:
-            # also a second leg. Without it the jump aimed at the waypoint
-            # (ch9 2026-11-17 y_jump_failed residual [13, 14] three times).
-            # A camp redirect is the boss order's second leg by definition
-            # (owner 2026-11-16): it re-sends a general already camped at the
-            # waypoint at the moving boss cell. ``boss_relaunch`` is keyed by
-            # the order step, so the pseudo-step never reads it — without this
-            # the redirect's Y jump landed back on the waypoint, not the skull.
-            relaunched = 1
-        if relaunched < 1:
-            # The egg-repair house north of イデ！ (owner 2026-11-16: the map
-            # shows it with a heart; chapter 9 has two, and only the northern
-            # one lets the army around the cliff to the boss). Aim its area,
-            # camp there, then take the second leg at the boss cell.
-            corridor = chart.corridor(chapter) or ()
-            last = chart.castles(chapter).get(corridor[-1]) if corridor else None
-            if last:
-                # The egg-repair house north of イデ！ (owner 2026-11-16: the
-                # map shows it with a heart; chapter 9 has two, and only the
-                # northern one lets the army around the cliff to the boss).
-                # The move to the waypoint is the Y jump landing itself
-                # (target_step confirms it without field walking), so the aim
-                # is the heart cell the jump puts the marker on.
-                return chart.CH9_BOSS_WAYPOINT
+            return cell
+        corridor = chart.corridor(chapter) or ()
+        last = chart.castles(chapter).get(corridor[-1]) if corridor else None
+        if last:
+            return chart.CH9_BOSS_WAYPOINT
     return cell
 
 

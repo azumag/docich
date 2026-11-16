@@ -46,11 +46,20 @@ def test_a_first_leg_landing_at_the_skull_itself_is_not_the_aim():
         chart.set_boss_cell(9, None)
 
 
-def test_a_rearmed_step_verifies_against_the_measured_boss_cell():
+def test_the_pursuit_step_verifies_against_the_measured_boss_cell():
+    # The second leg is the pursuit's (flows/boss_pursuit): its pseudo-step
+    # aims and verifies at the measured boss cell. A castle order never skips
+    # the first leg any more, whatever its relaunch counter says (ch9
+    # 2026-11-17: counter-1 orders went straight at the skull and sat in the
+    # pocket beside イデ！).
     chart.set_boss_cell(9, (826, 853))
     try:
-        mem = memory((826, 853), boss_relaunch={ORDER['step']: 1})
-        assert M._target_roof_under_marker(screen((826, 853)), mem, FRAME, ORDER) is True
+        pursuit = {'step': 'PURSUIT', 'target': 'ボス', 'source': None}
+        mem = memory((826, 853))
+        assert M._target_roof_under_marker(screen((826, 853)), mem, FRAME, pursuit) is True
+        rearmed = memory(WAYPOINT, boss_relaunch={ORDER['step']: 1})
+        assert boss_probe_cell(rearmed, 'ボス', ORDER['step']) == WAYPOINT
+        assert M._target_roof_under_marker(screen((826, 853)), rearmed, FRAME, ORDER) is False
     finally:
         chart.set_boss_cell(9, None)
 
