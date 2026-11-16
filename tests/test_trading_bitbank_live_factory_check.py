@@ -62,18 +62,24 @@ def test_the_local_clock_must_be_close_to_bitbanks_response_date(state, skew_s, 
 def test_the_estimate_is_the_minimum_over_the_probes_because_of_whole_second_dates(state):
     _install_key(state)
 
-    class Jittery(FakeTransport):
-        values = iter([1.4, 1.1, 0.7, 0.4, 0.3, 0.6, 0.9, 1.2, 1.5, 1.8, 1.9, 1.3])
+    def jittery(values):
+        class Jittery(FakeTransport):
+            it = iter(values)
 
-        def get(self, endpoint, params):
-            data = super().get(endpoint, params)
-            self._samples[-1] = next(self.values, 1.0)
-            return data
+            def get(self, endpoint, params):
+                data = super().get(endpoint, params)
+                self._samples[-1] = next(self.it, values[-1])
+                return data
+        return Jittery
 
-    # the true offset is ~0.3 s; single samples run up to 1.9 s because the Date header is floored to the second
-    reader = fc.open_bitbank_reader(state, symbols=SYMBOLS, clock=lambda: 1.0,
-                                    transport_factory=lambda c: Jittery(default_script()))
-    assert reader is not None
+    # only ONE sample of the last eight is under the limit (the true offset is ~0.3 s; the floored Date header makes
+    # the others look up to a second larger): a median or a first-sample rule would reject, the minimum accepts
+    one_low = [1.9, 1.8, 1.7, 1.6, 1.5, 0.3, 1.9, 1.8, 1.7, 1.6]
+    fc.open_bitbank_reader(state, symbols=SYMBOLS, clock=lambda: 1.0,
+                           transport_factory=lambda c: jittery(one_low)(default_script()))
+    with pytest.raises(ReaderUnavailable):                      # no sample under the limit: rejected
+        fc.open_bitbank_reader(state, symbols=SYMBOLS, clock=lambda: 1.0,
+                               transport_factory=lambda c: jittery([1.9, 1.5, 0.9, 1.2])(default_script()))
 
 
 def test_no_date_header_at_all_means_the_clock_cannot_be_trusted(state):
@@ -234,6 +240,38 @@ def test_parse_errors_name_the_field_in_the_report():
     script["depth"] = {"asks": [], "bids": [], "timestamp": 12}
     (lines, code), _ = _run(script)
     assert code == 1 and any("book OAS/JPY: FAILED ExchangeDataError(-) bad field: timestamp" in l for l in lines)
+
+
+def test_the_report_ends_with_one_verdict_per_open_question():
+    (lines, _), _ = _run()
+    text = "\n".join(lines)
+    for topic in ("since unit", "remaining_amount of an order stopped early", "maker fee / rebate sign", "fee currency",
+                  "readable endpoints", "clock"):
+        assert f"VERDICT {topic}" in text, topic
+    assert "VERDICT since unit: ANSWERED, since is in MILLISECONDS" in text
+    assert "VERDICT remaining_amount of an order stopped early: ANSWERED" in text
+    assert "VERDICT maker fee / rebate sign: ANSWERED" in text
+
+
+def test_an_account_without_history_gets_undetermined_with_what_would_settle_it():
+    script = _check_script()
+    script["trade_history"] = {"trades": []}
+    (lines, _), _ = _run(script)
+    text = "\n".join(lines)
+    for expected in ("VERDICT since unit: UNDETERMINED - needs one symbol with at least 4 trades",
+                     "VERDICT remaining_amount of an order stopped early: UNDETERMINED - no order in the trade history was stopped",
+                     "VERDICT maker fee / rebate sign: UNDETERMINED - no maker fill",
+                     "VERDICT fee currency (base or quote): UNDETERMINED"):
+        assert expected in text, expected
+
+
+def test_a_failed_build_says_what_kind_of_failure_it_was(state):
+    _install_key(state)
+    bad = ExchangeAmbiguous("x")
+    bad.health_kind = "clock"
+    with pytest.raises(ReaderUnavailable) as err:
+        _open(state, transport=FakeTransport(default_script(assets=bad), skew_s=0.0))
+    assert "ExchangeAmbiguous/clock" in str(err.value)
 
 
 @pytest.mark.parametrize("skew_s,word", [(0.3, "-> ok"), (2.0, "OUTSIDE"), (-9.0, "OUTSIDE")])

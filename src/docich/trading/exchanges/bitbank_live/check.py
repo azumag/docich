@@ -25,11 +25,12 @@ from ...live.exchange import ExchangeDataError, ExchangeError, OrderNotFound
 from ...live.policy import INITIAL_SYMBOLS
 from . import parse
 from .credentials import CredentialsUnavailable, load_credentials
+from .factory import MAX_LOCAL_AHEAD_S, MAX_LOCAL_BEHIND_S
 from .reader import BitbankReader, ReaderUnavailable
 from .transport import CHECK_ONLY_ENDPOINTS, ENDPOINTS, CcxtReadTransport
 
 DEFAULT_SYMBOLS = tuple(INITIAL_SYMBOLS)
-SKEW_LIMIT_MS = 800
+_RUNNING_OR_DONE = {"INACTIVE", "UNFILLED", "PARTIALLY_FILLED", "FULLY_FILLED", "REJECTED"}
 
 
 def _name(exc: BaseException) -> str:
@@ -95,7 +96,8 @@ def run_check(transport, symbols: Sequence[str], *, wall_clock: Callable[[], flo
     samples = list(getattr(transport, "clock_samples", lambda: ())())
     if samples:
         estimate = min(samples)
-        verdict = "ok" if -7.0 <= estimate <= 0.8 else "OUTSIDE (limits: ahead <= 0.8 s, behind <= 7 s)"
+        verdict = ("ok" if -MAX_LOCAL_BEHIND_S <= estimate <= MAX_LOCAL_AHEAD_S else
+                   f"OUTSIDE (limits: ahead <= {MAX_LOCAL_AHEAD_S} s, behind <= {MAX_LOCAL_BEHIND_S} s)")
         say(f"clock: estimate_s={estimate:.2f} from {len(samples)} samples (local minus bitbank response Date; "
             f"whole-second resolution; positive = local ahead) -> {verdict}")
         failed = failed or verdict != "ok"
@@ -182,7 +184,8 @@ def run_check(transport, symbols: Sequence[str], *, wall_clock: Callable[[], flo
             trade_rows[symbol] = [t for t in data["trades"] if isinstance(t, dict)]
             say(f"fills {symbol}: count={len(trade_rows[symbol])}")
     all_trades = [t for rows in trade_rows.values() for t in rows]
-    say(f"fee shapes (base/quote, sign, role, occurred): {dict(Counter(fee_shape(t) for t in all_trades))}")
+    fee_counter = Counter(fee_shape(t) for t in all_trades)
+    say(f"fee shapes (base/quote, sign, role, occurred): {dict(fee_counter)}")
     say(f"executed_at digits: {dict(Counter(len(str(t.get('executed_at'))) for t in all_trades))}  "
         f"id types: {dict(Counter(type(t.get('trade_id')).__name__ for t in all_trades))}")
 
@@ -213,6 +216,7 @@ def run_check(transport, symbols: Sequence[str], *, wall_clock: Callable[[], flo
     say(f"orders from history ({len(seen)} looked up; type, status, remaining relation): {dict(tally)}")
 
     # --- the unit of `since`: pivot on the median trade time so the two readings give different answers
+    since_verdict = "undetermined"
     busiest = max(trade_rows, key=lambda s: len(trade_rows[s]), default=None)
     stamps = sorted(int(t["executed_at"]) for t in trade_rows.get(busiest, []) if str(t.get("executed_at")).isdigit())
     if busiest is None or len(stamps) < 4 or stamps[0] == stamps[-1]:
@@ -236,7 +240,26 @@ def run_check(transport, symbols: Sequence[str], *, wall_clock: Callable[[], flo
             verdict = "since is in SECONDS"
         else:
             verdict = "undetermined"
+        since_verdict = verdict
         say(f"since unit experiment ({busiest}): counts {counts} -> {verdict}")
+
+    # --- one verdict per open question, so an empty section is never mistaken for an answer
+    say("---- verdicts (what this run could and could not settle) ----")
+    since_ok = since_verdict.startswith("since is in")
+    say("VERDICT since unit: " + (f"ANSWERED, {since_verdict}" if since_ok else
+        "UNDETERMINED - needs one symbol with at least 4 trades at different times in its history"))
+    ended_early = {k: v for k, v in tally.items() if isinstance(k, tuple) and k[1] not in _RUNNING_OR_DONE}
+    say("VERDICT remaining_amount of an order stopped early: " + (f"ANSWERED, {ended_early}" if ended_early else
+        "UNDETERMINED - no order in the trade history was stopped before it finished (a small order that is partly "
+        "filled and then closed by the owner would settle it; otherwise it is settled in phase E)"))
+    makers = {k: v for k, v in fee_counter.items() if "/maker/" in k and not k.startswith("both-zero")}
+    say("VERDICT maker fee / rebate sign: " + (f"ANSWERED, {makers}" if makers else
+        "UNDETERMINED - no maker fill with a non-zero fee in the history"))
+    paid = {k: v for k, v in fee_counter.items() if not k.startswith("both-zero") and "missing" not in k}
+    say("VERDICT fee currency (base or quote): " + (f"ANSWERED, {paid}" if paid else
+        "UNDETERMINED - no fill with a non-zero fee in the history"))
+    say("VERDICT readable endpoints / key permissions: see the 'endpoint ...' lines above (FAILED = not readable)")
+    say("VERDICT clock: see the 'clock:' line above")
 
     # --- reader smoke: every read method on every good symbol, class names only
     if reader is not None:

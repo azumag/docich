@@ -56,7 +56,8 @@ class BitbankReader:
         try:
             self.reload_rules()
         except ExchangeError as exc:
-            raise ReaderUnavailable(f"cannot load market rules ({type(exc).__name__})") from None
+            raise ReaderUnavailable(f"cannot load market rules ({type(exc).__name__}/"
+                                    f"{getattr(exc, 'health_kind', '-')})") from None
 
     # -------------------------------------------------------------- plumbing
     def _get(self, endpoint: str, params: Mapping[str, object]) -> object:

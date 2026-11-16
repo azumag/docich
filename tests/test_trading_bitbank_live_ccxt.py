@@ -108,7 +108,7 @@ def test_numbers_in_the_response_stay_strings_even_when_the_exchange_sends_json_
 def test_error_bodies_become_the_right_l2_exceptions():
     cases = [
         (FakeResponse('{"success":0,"data":{"code":20001}}'), "auth"),
-        (FakeResponse('{"success":0,"data":{"code":20033}}'), "clock"),
+        (FakeResponse('{"success":0,"data":{"code":20034}}'), "clock"),
         (FakeResponse('{"success":0,"data":{"code":10009}}', status=429, reason="Too Many Requests"), "rate"),
         (FakeResponse("<html>bad gateway</html>", status=502, reason="Bad Gateway"), "network"),
     ]

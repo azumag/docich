@@ -56,7 +56,7 @@ def open_bitbank_reader(state_dir, *, symbols: Sequence[str], clock: Callable[[]
     try:
         skew = estimate_skew_s(transport, symbols[0], probes=probes)
     except (ExchangeError, ValueError) as exc:
-        raise ReaderUnavailable(f"clock check failed ({type(exc).__name__})") from None
+        raise ReaderUnavailable(f"clock check failed ({type(exc).__name__}/{getattr(exc, 'health_kind', '-')})") from None
     if skew > max_ahead_s:
         raise ReaderUnavailable("clock: the local clock is ahead of bitbank's by too much")
     if skew < -max_behind_s:
