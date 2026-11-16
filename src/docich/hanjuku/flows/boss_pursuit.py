@@ -69,9 +69,17 @@ def _candidate(mem):
 def _close(mem, probe, reason):
     probe['phase'] = 'close'
     probe['outcome'] = reason
+    entry = (mem.get(LIST_KEY) or {}).get(probe.get('general'))
+    if entry is not None:
+        entry['pursuit_tick'] = int(mem.get('tick') or 0)
     _record(mem, 'boss_pursuit_unverified', chart_step=probe.get('step'),
             general=probe.get('general'), resulting_event=reason,
             reason='将軍へのSELECTジャンプが成立しないため位置を推測せずメニューを閉じる')
+
+
+ACTIONABLE = frozenset({'map', 'main_menu', 'general_list', 'castle_menu',
+                        'castle_info', 'map_target', 'card_select', 'text',
+                        'world_map', 'unknown'})
 
 
 def step(screen, mem, frame):
@@ -79,11 +87,22 @@ def step(screen, mem, frame):
     if (mem.get('chapter') or 0) != 9:
         return None
     track(mem)
+    kind = screen.kind
     probe = mem.get('boss_pursuit')
-    if not isinstance(probe, dict):
+    if isinstance(probe, dict):
+        # A menu/battle/shop phase owns the screen now: wait it out without
+        # spending the read budget, so the probe resumes on the map instead
+        # of starving at read_limit inside someone else's phase.
+        if kind not in ACTIONABLE:
+            return None
+        probe['reads'] += 1
+        if probe['reads'] > PURSUIT_READ_LIMIT:
+            _close(mem, probe, 'read_limit')
+    else:
         # No other order may be running: stealing the field mid-deploy breaks
-        # the active sortie, and the pursuit list only matters in the boss phase.
-        if (_plan_region(mem).get('active') or not chart.moving_boss_cell(9)
+        # the active sortie, and the pursuit only starts from the field map.
+        if (kind != 'map' or _plan_region(mem).get('active')
+                or not chart.moving_boss_cell(9)
                 or (mem.get('post_month_status') or mem.get('house'))):
             return None
         pick = _candidate(mem)
@@ -96,11 +115,6 @@ def step(screen, mem, frame):
         _record(mem, 'boss_pursuit_queued', chart_step=entry.get('step'), general=general,
                 reason='ボスへ出撃した将軍へX→しょうぐん→SELECTでジャンプし、動くボスの現在セルへいどうを出し直す')
         return []
-
-    kind = screen.kind
-    probe['reads'] += 1
-    if probe['reads'] > PURSUIT_READ_LIMIT:
-        _close(mem, probe, 'read_limit')
 
     phase = probe['phase']
     if phase == 'open':
