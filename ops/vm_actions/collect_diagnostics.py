@@ -7580,6 +7580,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v981-cursor-allwin",
             "hanjuku-chart-v985-roster-lost",
             "hanjuku-chart-v982-gbox",
+            "hanjuku-chart-v984-roster-map-anchor",
             "hanjuku-chart-v864-shop-list-batch",
             "hanjuku-chart-v862-camp-field-move",
             "hanjuku-chart-v852-visible-menu-batches",

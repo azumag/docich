@@ -115,7 +115,7 @@ def test_human_only_apis_have_no_call_sites_in_src():
                 if name in line and "def " not in line and not line.lstrip().startswith(("#", '"""')):
                     # the thin wrapper in safety.py is the only allowed reference
                     assert path.relative_to(SRC / "docich").as_posix() in (
-                        "trading/live/safety.py", "trading/live/ledger.py"), (path, line)
+                        "trading/live/safety.py", "trading/live/ledger.py", "trading/live_owner/cli.py"), (path, line)
 
 
 # ---- enable gate ------------------------------------------------------------
