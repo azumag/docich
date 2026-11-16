@@ -7556,6 +7556,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v957-boss-waypoint",
             "hanjuku-chart-v958-boss-waypoint-north",
             "hanjuku-chart-v959-boss-pocket-entry",
+            "hanjuku-chart-v960-boss-waypoint-yjump",
             "hanjuku-chart-v864-shop-list-batch",
             "hanjuku-chart-v862-camp-field-move",
             "hanjuku-chart-v852-visible-menu-batches",

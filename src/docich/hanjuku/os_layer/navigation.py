@@ -361,9 +361,9 @@ def boss_probe_cell(mem, name, step=None):
                 # The egg-repair house north of イデ！ (owner 2026-11-16: the
                 # map shows it with a heart; chapter 9 has two, and only the
                 # northern one lets the army around the cliff to the boss).
-                # The heart cell itself is inside the cliff ring — armies
-                # aimed there camped short of it — so the waypoint is the
-                # pocket's reachable entrance instead.
+                # The move to the waypoint is the Y jump landing itself
+                # (target_step confirms it without field walking), so the aim
+                # is the heart cell the jump puts the marker on.
                 return chart.CH9_BOSS_WAYPOINT
     return cell
 

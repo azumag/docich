@@ -1907,7 +1907,16 @@ def target_step(screen: Screen, mem, frame):
             and _want_y_jump(mem, order, order['target'], 'target')):
         return _start_y_jump(mem, order, order['target'], 'target')
     if result is None:
-        result = nav_step(screen, mem, frame, goal, order['target'], step=order['step'])
+        if (chart.is_boss_castle(order['target'])
+                and (mem.get('y_jumped') or {}).get(order['step']) == order['target']):
+            # Chapter 9 (owner 2026-11-16): the move to the north waypoint is
+            # the Y jump itself. Once the view put the target marker on the aim
+            # cell, dead-reckoned field walking only drifts it into the cliff
+            # ring and the arrival never verifies, so the jumped landing is
+            # confirmed directly — the sortie actually marches north.
+            result = 'arrived'
+        else:
+            result = nav_step(screen, mem, frame, goal, order['target'], step=order['step'])
         if not result and screen.marker and (not mem.get('cursor') or mem.get('nav_search')):
             # Jumps spent and the marker's place unknown (g421 18:24: 70 idle
             # observations), or the cursor will not move under the presses at
