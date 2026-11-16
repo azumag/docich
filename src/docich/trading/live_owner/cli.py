@@ -181,7 +181,8 @@ def _cashflow_list(args, out: TextIO, is_tty: bool) -> int:
 
 
 # ---- cashflow add (the only writer) ----------------------------------------------------------
-def _preview(content: dict[str, str], token: str, out: TextIO, is_tty: bool) -> None:
+def _preview(content: dict[str, str], token: str, out: TextIO, is_tty: bool, ledger_exists: bool) -> None:
+    print(f"ledger: {'exists' if ledger_exists else 'will be created'}", file=out)
     print(f"kind: {content['kind']}", file=out)
     print(f"currency: {content['currency']}", file=out)
     print(f"amount: {content['amount'] if is_tty else 'hidden'}", file=out)
@@ -255,7 +256,7 @@ def _cashflow_add(args, out: TextIO, clock: Callable[[], float], is_tty: bool) -
     layout = live_layout(args.state_dir)
     token = _token(content, _ledger_id(layout))
     if args.confirm is None:
-        _preview(content, token, out, is_tty)
+        _preview(content, token, out, is_tty, layout.ledger_path.is_file())
         return EXIT_OK
     if args.confirm.strip() != token:
         print("refused: confirmation token does not match", file=out)
@@ -298,6 +299,9 @@ def main(argv: list[str] | None = None, *, out: TextIO | None = None, clock: Cal
         return exc.code if isinstance(exc.code, int) else EXIT_USAGE
     if not Path(args.state_dir).is_absolute():
         print("refused: --state-dir must be an absolute path", file=out)
+        return EXIT_USAGE
+    if not Path(args.state_dir).is_dir():
+        print("refused: --state-dir must be an existing directory", file=out)
         return EXIT_USAGE
     if args.command == "status":
         return _status(args, out)

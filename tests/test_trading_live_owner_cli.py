@@ -10,14 +10,30 @@ from pathlib import Path
 
 import pytest
 
+from docich.trading.live import balance as live_balance
 from docich.trading.live import lease as live_lease
+from docich.trading.live import safety as sf
+from docich.trading.live.executor import SubmitOutcome as S
 from docich.trading.live.ledger import LiveLedger
 from docich.trading.live.paths import live_layout
 from docich.trading.live_owner import cli
+from test_trading_live_support import Harness, Workspace, block_network, market_rules
 
 NOW = 1_767_225_600.0                     # 2026-01-01T00:00:00+00:00
 WHEN = "2026-01-01T00:00:00+00:00"
 PKG = Path(__file__).resolve().parents[1] / "src" / "docich" / "trading" / "live_owner"
+
+
+@pytest.fixture(autouse=True)
+def _no_network(monkeypatch):
+    block_network(monkeypatch)
+
+
+@pytest.fixture
+def workspace():
+    ws = Workspace()
+    yield ws
+    ws.cleanup()
 
 
 # ---- helpers -------------------------------------------------------------------------------
@@ -71,6 +87,14 @@ def test_status_without_a_ledger_creates_nothing(tmp_path):
     assert _listing(tmp_path) == before and not (tmp_path / "trading-live").exists()
 
 
+def test_a_state_dir_that_does_not_exist_is_refused(tmp_path):
+    missing = tmp_path / "not-created"
+    for argv in (("status",), ("cashflow", "list"), (*_add_args(), "--confirm", "0" * 10)):
+        code, text = _run(missing, *argv)
+        assert code == 2 and text == "refused: --state-dir must be an existing directory\n", argv
+    assert not missing.exists() and _listing(tmp_path) == []
+
+
 def test_cashflow_list_without_a_ledger_creates_nothing(tmp_path):
     before = _listing(tmp_path)
     code, text = _run(tmp_path, "cashflow", "list")
@@ -92,11 +116,38 @@ def test_status_on_a_fresh_ledger_shows_no_amounts_and_no_policy(tmp_path):
         assert not re.search(r"[0-9a-f]{16,}", line), line     # no ids or digests
 
 
+def test_status_on_a_populated_ledger(workspace):
+    h = Harness(workspace)
+    h.mock.set_book("OAS/JPY", asks=[(Decimal("100"), Decimal("1000"))], bids=[(Decimal("99"), Decimal("1000"))])
+    try:
+        filled, outcome = h.send(side="buy", key="b1", amount="10", price="100")     # a real fill
+        assert outcome is S.ACKED and h.state(filled.intent_id) == "FILLED"
+        h.mock.faults.push("submit", "LOST_RESPONSE")
+        lost, outcome = h.send(side="buy", key="b2", amount="5", price="90")         # resting, response lost
+        assert outcome is S.UNKNOWN and h.state(lost.intent_id) == "UNKNOWN_SUBMISSION"
+        sf.trip(h.ledger, sf.SafetyReason.DATA_ANOMALY, detail="status test", now=h.clock.seconds())
+        code, text = _run(workspace.state, "status")
+    finally:
+        h.close()
+    assert code == 0
+    assert re.search(r"^policy: (none|[0-9a-f]{12})$", text, re.M)
+    assert "safety: data_anomaly" in text
+    assert "unknown_submissions: 1" in text
+    assert "positions.open: 1" in text and "positions.residual_inventory: 0" in text
+    assert "FILLED=1" in text and "UNKNOWN_SUBMISSION=1" in text
+    assert "cashflows: 1" in text                    # the harness records the opening deposit
+    assert "amount" not in text.lower()
+    for line in text.splitlines():
+        assert not re.search(r"\d+\.\d+", line), line          # no decimal amounts
+        assert not re.search(r"[0-9a-f]{16,}", line), line     # no ids or digests
+
+
 # ---- cashflow add: preview ------------------------------------------------------------------
 def test_cashflow_add_preview_creates_nothing_and_the_token_is_stable(tmp_path):
     before = _listing(tmp_path)
     code, text = _run(tmp_path, *_add_args())
     assert code == 0
+    assert "ledger: will be created" in text
     assert "kind: deposit" in text and "currency: JPY" in text and "operator: owner" in text
     assert "amount: hidden" in text and f"occurred_at: {WHEN}" in text
     assert re.fullmatch(r"[0-9a-f]{10}", _token(text))
@@ -108,6 +159,11 @@ def test_cashflow_add_preview_creates_nothing_and_the_token_is_stable(tmp_path):
     # the token is over the UTC time, so the same instant in another offset matches
     _, jst = _run(tmp_path, *_add_args(occurred_at="2026-01-01T09:00:00+09:00"))
     assert _token(jst) == _token(text) and f"occurred_at: {WHEN}" in jst
+    # after the first record the same preview says the ledger is there, and the token moves (ledger id)
+    assert _confirmed(tmp_path, *_add_args())[0] == 0
+    _, after = _run(tmp_path, *_add_args())
+    assert "ledger: exists" in after and "will be created" not in after
+    assert _token(after) != _token(text)
 
 
 # ---- cashflow add: recording and duplicate guards ------------------------------------------
@@ -132,6 +188,22 @@ def test_cashflow_add_records_exactly_one_row_then_refuses_duplicates(tmp_path):
     code, allowed = _confirmed(tmp_path, *_add_args(note="second deposit"), "--allow-repeat")
     assert code == 0 and allowed.startswith("recorded: cf-")
     assert len(_cashflows(tmp_path)) == 2
+
+
+def test_cashflow_money_direction_reaches_the_expected_balance(tmp_path):
+    assert _confirmed(tmp_path, *_add_args(kind="deposit", amount="1000"))[0] == 0
+    assert _confirmed(tmp_path, *_add_args(kind="withdrawal", amount="100", note="withdraw"))[0] == 0
+    code, text = _confirmed(tmp_path, *_add_args(kind="adjustment", amount="-50", note="correction"))
+    assert code == 0 and text.startswith("recorded: cf-")           # a negative adjustment is allowed
+    code, refused = _run(tmp_path, *_add_args(kind="withdrawal", amount="-100", note="reverse"))
+    assert code == 1 and refused.startswith("refused:") and "must be positive" in refused
+    assert len(_cashflows(tmp_path)) == 3
+    ledger = LiveLedger.open_readonly(live_layout(tmp_path))
+    try:
+        expected = live_balance.expected_balances(ledger, {"OAS/JPY": market_rules("OAS/JPY")})
+    finally:
+        ledger.close()
+    assert expected["JPY"].total == Decimal("850")                  # 1000 - 100 + (-50)
 
 
 @pytest.mark.parametrize("changed", [
