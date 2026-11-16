@@ -77,7 +77,11 @@ def track(mem):
     wave = mem.setdefault(LIST_KEY, {})
     for step, s in sorties.items():
         general = (s or {}).get('general')
-        if (s or {}).get('target') == chart.boss_castle(mem.get('chapter') or 0) \
+        # An unconfirmed launch keeps its site in planned_target only (target
+        # stays None until the march is bound): ch9 2026-11-17 main line, two
+        # boss launches never reached this list and no pursuit ever started.
+        target = (s or {}).get('target') or (s or {}).get('planned_target')
+        if target == chart.boss_castle(mem.get('chapter') or 0) \
                 and isinstance(general, str) and general:
             wave.setdefault(general, {'step': step, 'launched': s.get('tick')})
     home = {g for residents in garrison.values()
@@ -87,9 +91,27 @@ def track(mem):
         mem['generals_lost'] = [g for g in (mem.get('generals_lost') or ()) if g not in home]
         lost = set(mem['generals_lost'])
     for general in list(wave):
-        if general in home or general in lost:
+        if (general in home and not _camped_since(mem, general, wave[general].get('launched'))) \
+                or general in lost:
             wave.pop(general, None)
     return wave
+
+
+def _camped_since(mem, general, launched):
+    """The latest observed status row says the general camps in the field.
+
+    The monthly status read ends a march record on a camp or castle reading and
+    writes the general back into the source garrison (orders._expire_spent_sorties).
+    A camp reading after the launch means the unit stands in the field - a 砦 or
+    a tent the pursuit can still send out - so the garrison entry must not drop
+    it from the list (ch9 2026-11-17 main line: リースリング, launched tick 23868,
+    status read camp at 24091, record ended at 24100).
+    """
+    rows = (mem.get('general_statuses') or {}).get('statuses')
+    row = rows.get(general) if isinstance(rows, dict) else None
+    return (isinstance(row, dict) and row.get('location_observed') is True
+            and row.get('location') == 'camp' and type(row.get('tick')) is int
+            and (type(launched) is not int or row['tick'] >= launched))
 
 
 def _candidate(mem):
