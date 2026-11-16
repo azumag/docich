@@ -512,7 +512,7 @@ def _y_jump_step(mem, frame):
     jump = mem['y_jump']
     jump['seen'] = True
     chapter = mem.get('chapter') or 0
-    cursor = world_cursor(frame)
+    cursor = world_cursor(frame, chapter)
     flags = world_flags(frame, chapter, cursor) if cursor else {}
     if flags and not jump.get('owners'):
         jump['owners'] = True

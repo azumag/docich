@@ -571,7 +571,7 @@ def _is_black_pixel(pixel) -> bool:
     return r <= 70 and g <= 70 and b <= 70
 
 
-def world_cursor(frame):
+def world_cursor(frame, chapter=None):
     """Centre of the Y view's cursor.
 
     Detection order:
@@ -605,6 +605,13 @@ def world_cursor(frame):
         xs = [x for x, _ in best]; ys = [y for _, y in best]
         if max(xs) - min(xs) >= 10 and max(ys) - min(ys) >= 10:
             return ((min(xs) + max(xs)) / 2, (min(ys) + max(ys)) / 2)
+    if chapter == 9:
+        # Chapter 9's real cursor is the gold G. The blue-ring fallback below
+        # accepts the blinking blue icon in the lake at (169, 116) and steers
+        # the jump on a fixed wrong point (owner 2026-11-16: サヌト jumps kept
+        # failing at the identical residual [-87, -28.5]). Unreadable is
+        # safer than a false cursor.
+        return None
     # 2. Blue-dotted black dashed ring. The white ring vote cannot see this
     # cursor, and the gold map frame would otherwise be misread as a G.
     blue_pixels = [(x, y) for x in range(40, 220) for y in range(40, 200)
