@@ -1,9 +1,11 @@
 """Crash injection and restart reconciliation of the LIVE executor (Issue #3623, L2b)."""
+import json
 import os
 import signal
 import subprocess
 import sys
 import textwrap
+from dataclasses import replace
 from decimal import Decimal as D
 from pathlib import Path
 
@@ -453,5 +455,51 @@ def test_a_crash_between_the_terminal_state_and_closing_the_position_is_healed_a
                                (buy.position_id,)).fetchone()[0] == "closed"
         again, _ = h.send(side="buy", key="b2", amount="5", price="100")
         assert again.position_id != buy.position_id
+    finally:
+        h.close()
+
+
+# ---- linking an order found by hand ---------------------------------------------------------
+def test_link_found_order_records_the_owner_reason_and_evidence(ws):
+    h = _harness(ws, "client_id")
+    try:
+        h.mock.faults.push("submit", "LOST_RESPONSE")
+        intent, outcome = h.send(side="buy", key="b1", amount="10", price="100")
+        assert outcome is live_executor.SubmitOutcome.UNKNOWN and h.state(intent.intent_id) == "UNKNOWN_SUBMISSION"
+        snap = h.mock.all_orders()[0]
+        assert reconcile.link_found_order(h.ex, h.ledger.get_intent(intent.intent_id), snap, "owner",
+                                          evidence="checked by hand") == "acked"
+        after = h.ledger.get_intent(intent.intent_id)
+        assert after.state in ("ACKED", "PARTIALLY_FILLED", "FILLED")
+        assert after.reason_code == "found_by_owner"
+        with h.ledger.read_cursor() as cur:
+            evidence = cur.execute("SELECT evidence FROM intents WHERE intent_id=?",
+                                   (intent.intent_id,)).fetchone()[0]
+        reasons = [json.loads(e.payload)["payload"].get("reason") for e in h.ledger.events(limit=1000)
+                   if e.kind == "intent_state" and e.entity_id == intent.intent_id]
+        assert evidence == "checked by hand" and "found_by_owner" in reasons
+    finally:
+        h.close()
+
+
+def test_link_found_order_refuses_a_snapshot_that_changed_the_recorded_order(ws):
+    h = _harness(ws, "client_id")
+    try:
+        # the order row exists (the ack was recorded), but the crash and an unreadable lookup keep the
+        # intent UNKNOWN: nothing has been linked to it yet
+        _die_at("after_order_recorded")
+        with pytest.raises(SimulatedCrash):
+            h.send(side="buy", key="b1", amount="10", price="90")
+        live_executor.FAULT_HOOK = live_ingest.FAULT_HOOK = live_ledger.FAULT_HOOK = None
+        h.crash()
+        h.mock.faults.push("fetch_order", "READ_TIMEOUT")
+        reconcile.on_startup(h.ex)
+        intent = _only_intent(h)
+        assert intent.state == "UNKNOWN_SUBMISSION" and h.trips() == []
+        assert views.order_for_intent(h.ledger, intent.intent_id) is not None
+        snap = h.mock.all_orders()[0]
+        changed = replace(snap, amount=snap.amount + 1, remaining_amount=snap.remaining_amount + 1)
+        assert reconcile.link_found_order(h.ex, h.ledger.get_intent(intent.intent_id), changed, "owner") == "anomaly"
+        assert h.state(intent.intent_id) == "UNKNOWN_SUBMISSION" and "data_anomaly" in h.trips()
     finally:
         h.close()

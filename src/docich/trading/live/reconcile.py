@@ -23,14 +23,18 @@ _ALL_STATES = ("PLANNED", "SUBMITTING", "UNKNOWN_SUBMISSION", "ACKED", "PARTIALL
                "CANCELED", "EXPIRED", "REJECTED", "ABANDONED", "NOT_CREATED")
 
 
-def _link(ex, intent: Intent, snap: OrderSnapshot, how: str) -> str:
+def link_found_order(ex, intent: Intent, snap: OrderSnapshot, how: str, *, evidence: str | None = None) -> str:
+    """Link an order we found on the exchange to an UNKNOWN_SUBMISSION intent (positive evidence)."""
     if not ex.ingest.sync_order(intent, snap):
         return "anomaly"
     acked = ex.ledger.transition_intent(ex.lease, intent.intent_id, expected_state="UNKNOWN_SUBMISSION",
                                         to_state="ACKED", now=ex.clock(), exchange_order_id=snap.exchange_order_id,
-                                        reason_code=f"found_by_{how}")
+                                        reason_code=f"found_by_{how}", evidence=evidence)
     ex.ingest.refresh(acked)
     return "acked"
+
+
+_link = link_found_order
 
 
 def _matches(intent: Intent, snap: OrderSnapshot, lo_ms: int, hi_ms: int) -> bool:
