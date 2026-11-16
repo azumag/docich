@@ -131,7 +131,7 @@ def test_an_off_screen_tent_is_scrolled_back_into_view(monkeypatch):
 
 def test_a_cliff_adjacent_marker_moves_perpendicular_before_confirming():
     # Owner 2026-11-15: a unit standing against a cliff must step
-    # perpendicular away once; marching straight home stays pinned.
+    # perpendicular away; marching straight home stays pinned.
     from docich.hanjuku.os_layer.pixels import Frame
     rgb = bytearray(bytes((24, 141, 24)) * (256 * 224))    # grass
     for y in range(106, 118):
@@ -146,5 +146,12 @@ def test_a_cliff_adjacent_marker_moves_perpendicular_before_confirming():
     assert actions == [p.pad('right', 16)]
     assert _flow(mem)['recall']['cliff_detour'] == 'right'
     assert any(r['decision'] == 'camp_cliff_detour' for r in mem['_records'])
-    # The marker was moved: the next observation never detours twice.
+    # Owner 2026-11-16 (ch9 one-way castles): a single step cannot round a
+    # cliff *wall*, so while the marker stays cliff-adjacent the detour
+    # re-arms and keeps sliding it along the wall, bounded by the cap.
+    from docich.hanjuku.flows.recall import CLIFF_DETOUR_MAX
+    for _ in range(CLIFF_DETOUR_MAX - 1):
+        assert p.camp_recall_step(screen, mem, frame) == [p.pad('right', 16)]
+    assert _flow(mem)['recall']['cliff_detours'] == CLIFF_DETOUR_MAX
+    # Beyond the bound the goal is treated as unreachable: detour gives up.
     assert p.camp_recall_step(screen, mem, frame) != [p.pad('right', 16)]
