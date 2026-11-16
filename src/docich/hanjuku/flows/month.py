@@ -452,6 +452,15 @@ def month_step(screen: Screen, mem):
         _record(mem, 'month_cards_released', month=shop.get('key'),
                 observed_metric={'recruit': shop.get('recruit')},
                 reason='将軍募集が人数未確認で当月実行不能に延期されたため、保留していた切り札・商人を解放する')
+    if shop and not shop.get('merchant_done') and not shop.get('items'):
+        # Nothing to buy: the merchant gate below needs shop['items'], so with an
+        # empty list the merchant never runs and merchant_done never clears — the
+        # month then refuses to exit and loops (g1190 41-1). A month with no
+        # purchase list is a month whose merchant is already done.
+        shop['merchant_done'] = True
+        _record(mem, 'month_merchant_skipped', month=shop.get('key'),
+                observed_metric={'gold': shop.get('gold_start')},
+                reason='購入対象が無いため商人を完了扱いにして月を終わらせる')
     # Owner (2026-10-17): a low army's refill is bought before the cards.
     if (shop and not shop.get('cards_held') and not shop['merchant_done']
             and shop['items'] and not low_army_first(shop)):
