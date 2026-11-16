@@ -184,3 +184,19 @@ def test_a_fill_row_becomes_a_fill():
     {"side": "x"}, {"pair": "nope_jpy"}])
 def test_a_fill_missing_a_required_field_is_a_data_error(change):
     _bad(p.fill_from, trade_row(**change), BY_PAIR, RATES)
+
+
+@pytest.mark.parametrize("digits", ["3.9", "-0.5", 3.0, "1.5", "19", "-1", "x"])
+def test_a_precision_field_must_be_a_whole_number_in_range(digits):
+    precisions = p.asset_precisions(assets_payload())
+    _bad(p.market_rules_from, pairs_payload(**{"OAS/JPY": {"amount_digits": digits}}), precisions, SYMBOLS)
+    bad = assets_payload()
+    bad["assets"][0]["amount_precision"] = digits
+    _bad(p.asset_precisions, bad)
+
+
+def test_whole_number_precisions_as_text_or_int_are_fine():
+    precisions = p.asset_precisions(assets_payload())
+    rules, _ = p.market_rules_from(pairs_payload(**{"OAS/JPY": {"amount_digits": "2", "price_digits": 1}}), precisions,
+                                   SYMBOLS)
+    assert rules["OAS/JPY"].amount_step == D("0.01") and rules["OAS/JPY"].price_tick == D("0.1")

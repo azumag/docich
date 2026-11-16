@@ -215,3 +215,36 @@ def test_a_bad_row_in_old_history_is_tolerated_but_a_bad_row_inside_the_window_f
     reader, _ = make(default_script(trade_history={"trades": [dict(trade_row(), executed_at="soon")]}))
     with pytest.raises(ExchangeDataError):                                    # an undatable row is never skipped
         reader.fetch_fills("OAS/JPY", since_ms=0)
+
+
+def test_health_success_is_recorded_only_when_a_whole_read_succeeded():
+    now = [10.0]
+    transport = FakeTransport(default_script())
+    reader = rd.BitbankReader(transport, symbols=SYMBOLS, clock=lambda: now[0])
+    assert reader.health() == rd.ReaderHealth(None, 0, 10.0)
+    bad = {"assets": [{"asset": "jpy"}]}               # arrives fine, cannot be parsed
+    transport.script["assets"] = bad
+    for t, expected in ((20.0, 1), (30.0, 2), (40.0, 3)):
+        now[0] = t
+        with pytest.raises(ExchangeDataError):
+            reader.fetch_balance()
+        assert reader.health() == rd.ReaderHealth("data", expected, 10.0)      # the last success stays at 10
+    transport.script["assets"] = assets_payload()
+    now[0] = 50.0
+    reader.fetch_balance()
+    assert reader.health() == rd.ReaderHealth(None, 0, 50.0)
+
+
+@pytest.mark.parametrize("method,endpoint,breaker", [
+    ("fetch_open_orders", "active_orders", {"orders": [order_row(pair="xym_jpy")]}),
+    ("fetch_fills", "trade_history", {"trades": [trade_row(pair="xym_jpy")]}),
+    ("fetch_order", "order", order_row(order_id=5)),
+])
+def test_a_mismatched_response_is_a_failed_read_not_a_success(method, endpoint, breaker):
+    reader, transport = make()
+    transport.script[endpoint] = breaker
+    args = ("OAS/JPY", "1000001") if method == "fetch_order" else ("OAS/JPY",)
+    kwargs = {"since_ms": 0} if method == "fetch_fills" else {}
+    with pytest.raises(ExchangeDataError):
+        getattr(reader, method)(*args, **kwargs)
+    assert reader.health().consecutive_failures == 1 and reader.health().last_error_kind == "data"

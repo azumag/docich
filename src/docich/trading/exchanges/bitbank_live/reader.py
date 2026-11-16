@@ -73,7 +73,6 @@ class BitbankReader:
         except Exception as exc:
             error = ExchangeAmbiguous(f"{endpoint}: unclassified {type(exc).__name__}")
         else:
-            self._health = ReaderHealth(None, 0, self._clock())
             return data
         kind = getattr(error, "health_kind", "data" if isinstance(error, ExchangeDataError) else "network")
         self._health = ReaderHealth(kind, self._health.consecutive_failures + 1, self._health.last_ok_at)
@@ -86,6 +85,10 @@ class BitbankReader:
             self._health = ReaderHealth("data", self._health.consecutive_failures + 1, self._health.last_ok_at)
             raise
 
+    def _ok(self) -> None:
+        """Called by a public read once its response is fully parsed and checked."""
+        self._health = ReaderHealth(None, 0, self._clock())
+
     def health(self) -> ReaderHealth:
         return self._health
 
@@ -94,6 +97,7 @@ class BitbankReader:
         rules, rates = self._parsed(parse.market_rules_from, self._get("pairs", {}), precisions, self._symbols,
                                     self._floor)
         self._rules, self._rates = rules, rates
+        self._ok()
 
     # -------------------------------------------------------------- ExchangeReader
     @property
@@ -107,11 +111,15 @@ class BitbankReader:
             raise ExchangeDataError("unknown symbol") from None
 
     def fetch_balance(self) -> BalanceSnapshot:
-        return self._parsed(parse.balance_from, self._get("assets", {}), self._clock())
+        result = self._parsed(parse.balance_from, self._get("assets", {}), self._clock())
+        self._ok()
+        return result
 
     def fetch_order_book(self, symbol: str, *, depth: int = 20) -> OrderBook:
         self.market_rules(symbol)
-        return self._parsed(parse.book_from, self._get("depth", {"pair": parse.pair_id(symbol)}), symbol, depth)
+        result = self._parsed(parse.book_from, self._get("depth", {"pair": parse.pair_id(symbol)}), symbol, depth)
+        self._ok()
+        return result
 
     def fetch_order(self, symbol: str, exchange_order_id: str) -> OrderSnapshot:
         self.market_rules(symbol)
@@ -119,6 +127,7 @@ class BitbankReader:
         snap = self._parsed(parse.order_from, data, self._by_pair)
         if snap.symbol != symbol or snap.exchange_order_id != str(exchange_order_id):
             self._parsed(_mismatch, "order")
+        self._ok()
         return snap
 
     def fetch_order_by_client_id(self, symbol: str, client_order_id: str) -> OrderSnapshot | None:
@@ -131,6 +140,7 @@ class BitbankReader:
         orders = tuple(self._parsed(parse.order_from, row, self._by_pair) for row in rows)
         if any(o.symbol != symbol for o in orders):
             self._parsed(_mismatch, "active_orders")
+        self._ok()
         return OrderPage(orders=orders, complete=len(rows) < self._open_count)
 
     def fetch_fills(self, symbol: str, *, since_ms: int, exchange_order_id: str | None = None) -> FillPage:
@@ -152,6 +162,7 @@ class BitbankReader:
         oldest = min(stamps, default=None)
         complete = len(rows) < self._fills_count or (oldest is not None and oldest < since_ms)
         kept = sorted(fills, key=lambda f: (f.executed_at_ms, int(f.trade_id)))   # ids are digits (parse.id_text)
+        self._ok()
         return FillPage(fills=tuple(kept), complete=complete)
 
 

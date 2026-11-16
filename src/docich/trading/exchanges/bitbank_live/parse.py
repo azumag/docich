@@ -74,13 +74,10 @@ def _field(mapping: Mapping, key: str, name: str):
 
 
 def _digits(value: object, name: str) -> int:
-    try:
-        number = int(dec_str(value, name))
-    except ExchangeDataError:
-        raise
-    if not (0 <= number <= 18):
-        raise _bad(name)
-    return number
+    number = dec_str(value, name)
+    if number != number.to_integral_value() or not (0 <= number <= 18):
+        raise _bad(name)           # "3.9" or "-0.5" is refused, not truncated
+    return int(number)
 
 
 def _rate_or_none(value: object) -> Decimal | None:
