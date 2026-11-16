@@ -603,8 +603,24 @@ def world_cursor(frame, chapter=None):
                 best = inside
     if best and len(best) >= 12:
         xs = [x for x, _ in best]; ys = [y for _, y in best]
-        if max(xs) - min(xs) >= 10 and max(ys) - min(ys) >= 10:
-            return ((min(xs) + max(xs)) / 2, (min(ys) + max(ys)) / 2)
+        w, h = max(xs) - min(xs), max(ys) - min(ys)
+        if w >= 10 and h >= 10:
+            cx, cy = (min(xs) + max(xs)) / 2, (min(ys) + max(ys)) / 2
+            # The real G corner keeps its gold at the box's four corners and
+            # nowhere else. A castle pennant or a unit ▲ (g1190 40-9: the ▲
+            # cluster at ~(126,96) read as the cursor, ~0.26 corner fill) has
+            # gold spread across the whole box — reject it so the jump does
+            # not steer on a marker and land somewhere else entirely.
+            corners = ((min(xs), min(ys)), (max(xs), min(ys)),
+                       (min(xs), max(ys)), (max(xs), max(ys)))
+            at_corner = sum(1 for x, y in best
+                            if any(abs(x - x0) <= 3 and abs(y - y0) <= 3
+                                   for x0, y0 in corners))
+            if at_corner >= len(best) * 0.7:
+                return (cx, cy)
+            if chapter == 9:
+                return None
+            best = None
     if chapter == 9:
         # Chapter 9's real cursor is the gold G. The blue-ring fallback below
         # accepts the blinking blue icon in the lake at (169, 116) and steers
