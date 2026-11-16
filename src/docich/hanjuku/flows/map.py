@@ -1959,6 +1959,9 @@ LAUNCH_PROBE_NEW_MARKER_PX = 4  # centre distance that still counts as the same 
 # while only the hero's own marker was on the view).
 LAUNCH_PROBE_MIN_BOX = 20      # bounding-box pixels for a plausible unit marker
 LAUNCH_PROBE_ROSTER_TICKS = 200  # blind probe ticks to wait for the source roster before rollback
+# Chapters whose world map draws marching units as portraits, never as the
+# (255,24,0) triangle the survey reads (g1190 2026-11-16 chapter 9).
+PORTRAIT_MARCH_CHAPTERS = frozenset({9})
 LAUNCH_MISS_LIMIT = 2           # unverified launches an order may retry before failing
 
 
@@ -2028,7 +2031,13 @@ def _probe_launch_markers(mem, markers):
             since = probe.get('tick')
             if type(since) is int and now - since < LAUNCH_PROBE_ROSTER_TICKS:
                 continue
-            if chart.is_boss_castle(probe.get('target')):
+            portrait = mem.get('chapter') in PORTRAIT_MARCH_CHAPTERS
+            if chart.is_boss_castle(probe.get('target')) or portrait:
+                # g1190 2026-11-16: chapter 9 draws every marching unit as a
+                # portrait too (the two "markers" were the egg-repair hearts),
+                # so no transfer was ever confirmed and each was rolled back
+                # with the general written back into the source garrison
+                # while the destination's menu already listed him.
                 # g1133 2026-11-05: chapter 6 draws marching units as
                 # portraits, so the triangle survey can never confirm a boss
                 # launch. Twelve boss sorties were rolled back and sent again
@@ -2054,8 +2063,9 @@ def _probe_launch_markers(mem, markers):
                                          'target': probe.get('target'),
                                          'markers': [list(b) for b in markers],
                                          'reads': probe.get('reads')},
-                        resulting_event='boss_march_kept',
-                        reason='ボス行軍は部隊表示が肖像で▲を検出できないため、出撃成立の巻き戻しをせず到着・期限の実測に委ねる')
+                        resulting_event=('boss_march_kept' if chart.is_boss_castle(probe.get('target'))
+                                         else 'portrait_march_kept'),
+                        reason='行軍中の部隊表示が肖像で▲を検出できないため、出撃成立の巻き戻しをせず出撃元の一覧・到着・期限の実測に委ねる')
                 continue
             probes.pop(step, None)
             _rollback_unverified_launch(mem, step, probe, markers)

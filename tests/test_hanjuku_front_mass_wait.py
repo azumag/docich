@@ -225,3 +225,27 @@ def test_a_page_for_a_castle_no_longer_ours_is_dropped():
     assert 'イソ' not in mem['world']['garrison_partial']
     assert 'イソ' not in mem['world']['garrison_partial_tick']
     assert mem['world']['garrison_partial'].get(C) == ['ローズマリー']
+
+
+def test_a_stale_front_roster_starts_the_attack_to_reread_the_list():
+    """g1190 2026-11-16 ch9: サヌト's list was last read 16000 ticks earlier.
+
+    Transfers whose ▲ was missed (sortie_launch_failed) had in fact arrived:
+    the castle menu listed アンディーブ/ヘラ/カシュー/ショコラ/▼ while the
+    garrison still said two, so the pair wait held the wave and nothing ever
+    re-read the front (the front is never drained, so the tour skips it).
+    An old reading must not hold the attack: starting it opens the castle's
+    sortie list, which refreshes the residents.
+    """
+    mem = memory(['ローズマリー', 'ベーグル'])
+    mem['world']['garrison_tick'] = {C: mem['tick'] - corridor.FRONT_ROSTER_STALE_TICKS - 1}
+    assert attacks(mem), 'a stale reading must not keep the wave home'
+    assert decided(mem, 'front_roster_stale')
+    assert not decided(mem, 'front_wait_mass')
+
+
+def test_a_fresh_front_roster_still_waits_for_the_pair():
+    mem = memory(['ローズマリー', 'ベーグル'])
+    mem['world']['garrison_tick'] = {C: mem['tick'] - 10}
+    assert attacks(mem) == []
+    assert decided(mem, 'front_wait_mass')

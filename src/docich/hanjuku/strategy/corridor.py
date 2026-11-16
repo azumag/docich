@@ -390,6 +390,20 @@ def orders(mem) -> list[dict]:
             # but the pair wait is about not feeding the defender, not about
             # protecting the castle.
             _mass = _keep + 2
+            # A stale front reading is not a resident count: the pair wait
+            # yields so the attack opens the castle's sortie list and reads
+            # the residents again (see ``_front_roster_stale``). The guard
+            # above still keeps the last measured resident home.
+            if (not _finish and _repelled_alone(mem, target)
+                    and isinstance(_front_names_now, list)
+                    and 0 < len(_front_names_now) < _mass
+                    and _front_roster_stale(mem, source)):
+                _record_only(mem, 'front_roster_stale', target=source,
+                             observed_metric={'residents': list(_front_names_now)[:8],
+                                              'read_tick': _front_read_tick(mem, source),
+                                              'tick': int(mem.get('tick') or 0)},
+                             reason='前線の在城一覧が古いため2人待ちをせず出撃を始め、出撃一覧で在城を読み直す')
+                _finish = True
             if (not _finish and _repelled_alone(mem, target)
                     and isinstance(_front_names_now, list)
                     and 0 < len(_front_names_now) < _mass
@@ -1019,6 +1033,34 @@ def _front_names(mem, castle):
     if isinstance(partial, list):
         return partial
     return None
+
+
+FRONT_ROSTER_STALE_TICKS = 600   # observations before a front's resident list is re-read
+
+
+def _front_read_tick(mem, castle):
+    """The newest tick of a full or partial resident read of ``castle``."""
+    world = _world(mem)
+    ticks = [t for t in ((world.get('garrison_tick') or {}).get(castle),
+                         (world.get('garrison_partial_tick') or {}).get(castle))
+             if type(t) is int]
+    return max(ticks) if ticks else None
+
+
+def _front_roster_stale(mem, castle) -> bool:
+    """The front's resident list is too old to hold the wave on.
+
+    g1190 2026-11-16 ch9: transfers into サヌト whose ▲ the Y view missed were
+    rolled back as failed launches, yet they had arrived (the castle menu
+    listed アンディーブ/ヘラ/カシュー/ショコラ/▼). The pair wait and the front
+    guard count residents from the last read, and nothing re-reads a front
+    castle (the tour only visits drained ones), so the wave waited on a
+    16000-tick-old list of two. An unstamped reading is not judged stale.
+    """
+    read = _front_read_tick(mem, castle)
+    if read is None:
+        return False
+    return int(mem.get('tick') or 0) - read > FRONT_ROSTER_STALE_TICKS
 
 
 def _front_thin(mem, castle) -> bool:
