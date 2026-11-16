@@ -1,0 +1,92 @@
+[
+  {
+    "file": "g1133-ch6-enemy-castle-slate-roof.png",
+    "median_ms": {
+      "before": 38.13,
+      "after": 65.36
+    },
+    "roofs": {
+      "before": [
+        [
+          "enemy",
+          null
+        ]
+      ],
+      "after": [
+        [
+          "enemy",
+          2
+        ]
+      ]
+    }
+  },
+  {
+    "file": "g1133-ch6-oceana-target-marker.png",
+    "median_ms": {
+      "before": 37.62,
+      "after": 62.09
+    },
+    "roofs": {
+      "before": [
+        [
+          "enemy",
+          null
+        ]
+      ],
+      "after": [
+        [
+          "enemy",
+          2
+        ]
+      ]
+    }
+  },
+  {
+    "file": "resume-chapter-2-map.png",
+    "median_ms": {
+      "before": 36.96,
+      "after": 57.12
+    },
+    "roofs": {
+      "before": [
+        [
+          "own",
+          null
+        ]
+      ],
+      "after": [
+        [
+          "own",
+          2
+        ]
+      ]
+    }
+  },
+  {
+    "file": "g1075-ch4-snow-field.png",
+    "median_ms": {
+      "before": 37.33,
+      "after": 74.0
+    },
+    "roofs": {
+      "before": [],
+      "after": []
+    }
+  },
+  {
+    "file": "g1190-ch9-desert-field.png",
+    "median_ms": {
+      "before": 35.21,
+      "after": 51.84
+    },
+    "roofs": {
+      "before": [],
+      "after": [
+        [
+          "own",
+          1
+        ]
+      ]
+    }
+  }
+]
