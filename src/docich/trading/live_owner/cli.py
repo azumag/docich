@@ -476,9 +476,13 @@ def _not_created_problem(ledger, reader, intent, lo_ms: int, hi_ms: int, settle:
     return None, found
 
 
-def _active_stop_reasons(ledger, blocking_only: bool = False) -> str:
-    """The active stops, comma separated ("" if none); blocking_only keeps the four refusal reasons."""
-    reasons = (trip.reason for trip in safety.read_safety_state(ledger).trips
+def _active_stop_reasons(state, blocking_only: bool = False) -> str:
+    """The active stops of one SafetyState, comma separated ("" if none).
+
+    blocking_only keeps the four refusal reasons.  The caller reads the state once and passes it in,
+    so the readability and the reasons of a decision always come from the same read.
+    """
+    reasons = (trip.reason for trip in state.trips
                if not blocking_only or trip.reason in _BLOCKING_STOPS)
     return ", ".join(reasons)
 
@@ -627,7 +631,11 @@ def _preview_resolution(args, out, clock, is_tty, reader_factory, ledger, intent
             if refusal is not None:
                 print(refusal, file=out)
                 return EXIT_REFUSED
-            stops = _active_stop_reasons(ledger, blocking_only=True)
+            state = safety.read_safety_state(ledger)
+            if not state.ledger_readable:
+                print("refused: the safety state cannot be read", file=out)
+                return EXIT_REFUSED
+            stops = _active_stop_reasons(state, blocking_only=True)
             if stops and args.override_incomplete_proof:
                 print(f"refused: an active safety stop must be cleared first ({stops})", file=out)
                 return EXIT_REFUSED
@@ -738,11 +746,15 @@ def _resolve_not_created(args, out, clock, ex, ledger, intent, lo_ms, hi_ms, ope
     if result == "anomaly" or counter["anomalies"]:
         print("refused: the machine found an anomaly; the override does not apply", file=out)
         return EXIT_REFUSED
+    state = safety.read_safety_state(ledger)             # one read for both checks below
+    if not state.ledger_readable:
+        print("refused: the safety state cannot be read", file=out)
+        return EXIT_REFUSED
     if live_views.trip_count(ledger) > before:           # a ledger method may have tripped the latch itself
         print(f"refused: the machine recorded a safety stop during this run "
-              f"({_active_stop_reasons(ledger)}); the override does not apply", file=out)
+              f"({_active_stop_reasons(state)}); the override does not apply", file=out)
         return EXIT_REFUSED
-    stops = _active_stop_reasons(ledger, blocking_only=True)
+    stops = _active_stop_reasons(state, blocking_only=True)
     if stops:
         print(f"refused: an active safety stop must be cleared first ({stops})", file=out)
         return EXIT_REFUSED

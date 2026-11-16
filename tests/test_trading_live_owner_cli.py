@@ -1210,6 +1210,56 @@ def test_the_preview_reports_active_stops_and_refuses_them_only_with_the_overrid
         h.close()
 
 
+def test_an_unreadable_safety_state_refuses_the_preview_with_or_without_the_override(workspace, monkeypatch):
+    h = _unknown_harness(workspace, caps=Capabilities(False, False, True))
+    try:
+        h.mock.faults.push("submit", "LOST_REQUEST")
+        intent, outcome = h.send(side="buy", key="b1", amount="10", price="90")
+        assert outcome is S.UNKNOWN
+        h.advance(500)
+        _released(h)
+        monkeypatch.setattr(sf, "read_safety_state", lambda ledger: sf.SafetyState((), 0, False))
+        argv = ["unknown", "resolve", "--intent", intent.intent_id, "--not-created",
+                "--evidence", "checked the exchange history by hand", "--operator", "owner"]
+        for extra in ([], ["--override-incomplete-proof"]):
+            code, text = _run(workspace.state, *argv, *extra, now=h.clock.seconds(),
+                              reader_factory=lambda state_dir: h.mock)
+            assert code == 1, text
+            assert text.startswith("refused: the safety state cannot be read")
+            assert "token: " not in text
+        assert h.ledger.get_intent(intent.intent_id).state == "UNKNOWN_SUBMISSION"
+    finally:
+        h.close()
+
+
+def test_an_unreadable_safety_state_refuses_the_confirm_after_a_valid_preview(workspace, monkeypatch):
+    h = _unknown_harness(workspace, caps=Capabilities(False, False, True))
+    try:
+        h.mock.faults.push("submit", "LOST_REQUEST")
+        intent, outcome = h.send(side="buy", key="b1", amount="10", price="90")
+        assert outcome is S.UNKNOWN
+        h.advance(500)
+        _released(h)
+        argv = ["unknown", "resolve", "--intent", intent.intent_id, "--not-created",
+                "--evidence", "checked the exchange history by hand", "--operator", "owner"]
+        code, preview = _run(workspace.state, *argv, now=h.clock.seconds(), reader_factory=lambda state_dir: h.mock)
+        assert code == 0, preview                                    # the real state is readable
+        token = _token(preview)
+
+        def waiting(ex, pending):
+            return "waiting"
+
+        monkeypatch.setattr(live_reconcile, "try_resolve", waiting)
+        monkeypatch.setattr(sf, "read_safety_state", lambda ledger: sf.SafetyState((), 0, False))
+        code, text = _run(workspace.state, *argv, "--confirm", token, now=h.clock.seconds(),
+                          reader_factory=lambda state_dir: h.mock)
+        assert code == 1 and text == "refused: the safety state cannot be read\n"
+        assert h.ledger.get_intent(intent.intent_id).state == "UNKNOWN_SUBMISSION"
+        assert h.ledger.list_intents(states=("NOT_CREATED",)) == []
+    finally:
+        h.close()
+
+
 def test_found_order_refuses_an_inconsistent_snapshot_without_a_trip(workspace):
     h = _unknown_harness(workspace, caps=Capabilities(False, False, True))
     try:
