@@ -29,7 +29,7 @@ def test_lampkin_returns_to_the_egg_at_single_digit_hp(monkeypatch):
     quiet(monkeypatch)
     state_ = state()
     # Cursor starts on the first skill; the return row is the third row.
-    assert menus.monster_menu_step(view(ally_hp=9, cursor=160), state_) == [menus.pad('down')]
+    assert menus.monster_menu_step(view(ally_hp=9, cursor=160), state_) == [menus.pad('down'),{'type':'wait','ms':60},menus.pad('down')]
     assert state_['monster_menu_choice'] == 'retreat'
     assert menus.monster_menu_step(view(ally_hp=9, cursor=176), state_) == [menus.pad('down')]
     assert state_['monster_menu_choice'] == 'retreat'
@@ -62,7 +62,7 @@ def test_ambiguous_same_monster_both_sides_still_returns_to_the_egg(monkeypatch)
     """
     quiet(monkeypatch)
     state_ = state()
-    assert menus.monster_menu_step(view(ally_hp=9, enemy='ランプキン', cursor=160), state_) == [menus.pad('down')]
+    assert menus.monster_menu_step(view(ally_hp=9, enemy='ランプキン', cursor=160), state_) == [menus.pad('down'),{'type':'wait','ms':60},menus.pad('down')]
     assert state_['monster_menu_choice'] == 'retreat'
 
 
