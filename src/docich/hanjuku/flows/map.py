@@ -252,6 +252,25 @@ def boss_sortie_menu_escape_step(mem, kind, actions):
     return [pad('b')]
 
 
+def _picker_goal(mem, flags, recall):
+    """The destination chosen for THIS picker episode, or a fresh choice.
+
+    ``_recall_goal`` answers from the recall's origin, its sorties and the
+    hero's measured castle, and any of those can move while the ring is being
+    steered. Re-deriving it every observation made the ring chase a goal that
+    flipped between two own castles (g1190 2026-11-17 20:14-20:16: タタール →
+    ジャンセニア → タタール within five observations, so every press looked
+    aimless). Once this episode selected a destination it keeps it while the
+    castle is still ours.
+    """
+    state = recall if isinstance(recall, dict) else {}
+    bound = state.get('picker_goal')
+    if (isinstance(bound, str) and state.get('destination_selected')
+            and (not isinstance(flags, dict) or flags.get(bound) == 'own')):
+        return bound
+    return _recall_goal(mem, flags)
+
+
 def _picker_origin(chapter, frame):
     """The recalling unit's chart cell, only when the picker shows exactly one ▲.
 
@@ -363,7 +382,7 @@ def world_map_step(screen, mem, frame):
         # A boss-phase gather names its castle explicitly (owner 2026-11-15:
         # every general must gather at the last castle before the boss); never
         # replace it with the nearest-castle rule.
-        goal = recall.get('gather') or _recall_goal(mem, flags)
+        goal = recall.get('gather') or _picker_goal(mem, flags, recall)
         if goal is None:
             # The picker cannot aim and the hero's castle is the missing
             # position (g1163 2026-11-14 08:59/09:01, statuses null in ch.9).
@@ -407,7 +426,7 @@ def world_map_step(screen, mem, frame):
         if not cursor or not offset or goal is None:
             return [pad('right')] if cursor else []
         if recall.get('goal') != goal or not recall.get('destination_selected'):
-            recall.update(goal=goal, destination_selected=True)
+            recall.update(goal=goal, destination_selected=True, picker_goal=goal)
             origin = recall.get('origin')
             _record(mem, 'camp_recall_destination',
                     observed_metric={'castle': goal, 'origin': origin,
