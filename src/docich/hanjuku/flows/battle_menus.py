@@ -168,6 +168,53 @@ BATTLE_MENU_STALL_WAIT = 4      # unchanged observations held before re-pressing
 BATTLE_MENU_STALL_RETRIES = 2   # further identical presses before closing the menu
 
 
+MENU_MOVE_BATCH_MAX = 6        # the most option rows batched into one no-hand menu move
+MENU_MOVE_RELEASE_MS = 60      # released interval so each batched press reads as a distinct tap
+
+
+def _menu_move_batch(screen, label, move):
+    """Expand a vertical no-hand menu move into a bounded press run.
+
+    Each command-box row is one cursor step, so when the target row sits
+    several readable rows away the whole run can be sent in one observation
+    instead of re-reading between single presses (a row takes ~500 ms each
+    under ``menu_navigation_feedback``). Overshooting is harmless: callers
+    only confirm on ``'here'``, so a too-far cursor simply steps back on the
+    next read. Only the contiguous no-hand column menus are batched — a
+    hand-cursor grid can move horizontally and is left to single presses.
+    """
+    buttons = move.get('buttons') if isinstance(move, dict) else None
+    direction = buttons[0] if isinstance(buttons, list) and buttons else None
+    if direction not in ('up', 'down') or getattr(screen, 'hand', None):
+        return move
+    cur = getattr(screen, 'menu_cursor', None)
+    rows = sorted({line.y for line in getattr(screen, 'menu_rows', ()) or ()})
+    if type(cur) is not int or cur not in rows:
+        return move
+    target_ys = [y for x, y, w in _options(screen) if w == label]
+    if not target_ys:
+        return move
+    target_y = min(target_ys, key=lambda y: abs(y - cur))
+    if target_y not in rows:
+        return move
+    dist = rows.index(target_y) - rows.index(cur)
+    count = dist if direction == 'down' else -dist
+    if count <= 1:
+        return move
+    count = min(count, MENU_MOVE_BATCH_MAX)
+    actions = [move]
+    for _ in range(count - 1):
+        actions.extend([{'type': 'wait', 'ms': MENU_MOVE_RELEASE_MS}, pad(direction)])
+    return actions
+
+
+def _emit_moves(move):
+    """Wrap a single move dict in a list; a built action list passes through."""
+    if isinstance(move, list):
+        return move
+    return [move] if isinstance(move, dict) else []
+
+
 def _battle_menu_move(screen, mem, label, *, key='battle_menu_move'):
     """One command-box step that never repeats a press on an identical frame.
 
@@ -196,7 +243,7 @@ def _battle_menu_move(screen, mem, label, *, key='battle_menu_move'):
     direction = buttons[0] if isinstance(buttons, list) and buttons else None
     if not isinstance(sha, str) or direction is None:
         mem.pop(key, None)
-        return move
+        return _menu_move_batch(screen, label, move)
     cur = mem.get('battle') or {}
     context = [mem.get('chapter'), cur.get('ally'), cur.get('enemy'),
                screen.kind, screen.menu_cursor, label, direction]
@@ -214,7 +261,7 @@ def _battle_menu_move(screen, mem, label, *, key='battle_menu_move'):
                     observed_metric={'direction': direction, 'retry': state['retries'],
                                      'frame_sha256': sha},
                     reason='同一画面が続くため同じ方向入力を待ってから再試行する')
-            return move
+            return _menu_move_batch(screen, label, move)
         mem.pop(key, None)
         _record(mem, 'battle_menu_nav_unaccepted', screen=screen.kind, choice=label,
                 observed_metric={'direction': direction, 'retries': state['retries'],
@@ -222,7 +269,7 @@ def _battle_menu_move(screen, mem, label, *, key='battle_menu_move'):
                 reason='同一画面のまま方向入力が受け付けられないため、確定せずメニューを閉じる')
         return pad('b')
     state.update(sha=sha, waits=0)
-    return move
+    return _menu_move_batch(screen, label, move)
 
 
 def _retreat_forbidden(mem, cur):
@@ -286,7 +333,7 @@ def _hero_retreat_menu(screen, mem, cur):
         return [pad('b')]
     move = _battle_menu_move(screen, mem, 'たいきゃく')
     if move != 'here':
-        return [move] if move else []
+        return _emit_moves(move)
     if (cur.get('card_flow') or {}).get('selection_planned'):
         _card_use_unclassified(mem, cur, '退却を優先し切り札の実使用は未確認')
     else:
@@ -442,7 +489,7 @@ def _survival_menu(screen, mem, cur):
         return [pad('b')]
     move = _battle_menu_move(screen, mem, label)
     if move != 'here':
-        return [move] if move else []  # no blind A on a missing cursor
+        return _emit_moves(move)  # no blind A on a missing cursor
     if label == 'きりふだ':
         if rescue['cards_checked'] >= 3:
             rescue['final_card_read'] = True
@@ -524,7 +571,7 @@ def _survival_card_list(screen, mem, cur, flow, names):
             cur.pop('card_damage_list_blocked', None)
             cur['card_flow'] = None
             return [pad('b')]
-        return [move] if move else []
+        return _emit_moves(move)
     gate = _card_damage_gate(mem, cur, card, listed_cards=names)
     if not gate['allowed']:
         _card_gate_refused(mem, cur, card, gate, listed_cards=names)
@@ -897,7 +944,7 @@ def battle_menu_step(screen: Screen, mem):
                 _card_use_unclassified(mem, cur, '切り札行へ動かないため一覧を開かずメニューを閉じる')
             elif move:
                 flow['stage'] = 'down'
-            return [move] if move else []
+            return _emit_moves(move)
         flow['stage'] = 'list'
         return [pad('a')]
     if not flow and cur.get('egg_battle') and 'きりふだ' in screen.text:
@@ -984,7 +1031,7 @@ def battle_menu_step(screen: Screen, mem):
     if action == 'use_egg':
         move = _battle_menu_move(screen, mem, 'たまごをつかう')
         if move != 'here':
-            return [move] if move else []
+            return _emit_moves(move)
         _egg_recheck(mem)
         return [pad('a')]
     return [pad('b')]
@@ -1416,7 +1463,7 @@ def okunote_step(screen, mem):
         if (move is None and screen.kind == 'battle_menu'
                 and (cur.get('okunote_egg_preempt') or {}).get('recorded')):
             return [pad('down')]  # bounded by the 16-observation menu budget
-        return [move] if move else []
+        return _emit_moves(move)
     if label == 'おくのて' and cur.get('okunote_last_resort_recorded'):
         cur['okunote_last_resort_selected'] = True
     if label == 'おくのて':
@@ -1518,7 +1565,7 @@ def card_list_step(screen: Screen, mem):
             if flow['cursor_ticks'] > CARD_LIST_CURSOR_LIMIT:
                 _card_use_unclassified(mem, cur, '切り札のカーソルを確認できるまでの上限に達したため一覧を閉じる')
                 return [pad('b')]
-            return [move] if move else []
+            return _emit_moves(move)
         flow['stage'] = 'announce'
         flow['selection_planned'] = True
         cur['card_damage_rescue_needed'] = False
@@ -1625,7 +1672,7 @@ def egg_choice_step(screen: Screen, mem):
     choice = names[0]
     move = _battle_menu_to(screen, choice)
     if move != 'here':
-        return [move] if move else []
+        return _emit_moves(move)
     flow['selected'] += 1
     flow['wait'] = 0
     _record(mem, 'egg_choice_select', observed_metric={'candidates': names, 'choice': choice},
