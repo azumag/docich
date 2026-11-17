@@ -329,6 +329,6 @@ def test_pending_join_or_future_roster_does_not_hide_camp(monkeypatch):
     monkeypatch.setattr(recall_flow, 'own_camps', lambda frame: [dict(CAMP)])
     for changes in ({'roster_pending_joins': ['新入り']},
                     {'general_statuses': _complete_roster(tick=501)}):
-        mem = _mem(tick=500, _run_identity=dict(ROSTER_IDENTITY),
-                   general_statuses=_complete_roster(), **changes)
+        mem = _mem(**{'tick': 500, '_run_identity': dict(ROSTER_IDENTITY),
+                      'general_statuses': _complete_roster(), **changes})
         assert recall_flow.camp_recall_step(MAP, mem, FRAME) is not None
