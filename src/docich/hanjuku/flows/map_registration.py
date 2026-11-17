@@ -11,6 +11,7 @@ it cannot record coordinates or confirm a menu before calibration.
 from __future__ import annotations
 
 import re
+import unicodedata
 
 from ... import hanjuku_chart as chart, hanjuku_map_sources as sources
 from ..decision_log import _record
@@ -51,6 +52,21 @@ def translation(previous, current, *, limit=None):
     return winners[0] if best >= 2 and len(winners) == 1 else None
 
 
+def _fold(text):
+    """Fold a screen label to a width-insensitive form for name matching.
+
+    The font draws '!' as a full-width glyph but the reader returns ASCII
+    '!' (measured live, chapter 9: the native status panel reads
+    ``しゅつげきイデ!じょうステータスしゅうにゅう...`` while the source
+    catalog spells the castle ``イデ！``). Comparing raw strings made
+    every イデ！ location check unprovable, so the bot retried the same
+    general three times each month and dropped him from the sortie plan.
+    Only the folded forms are compared; callers still receive the
+    catalog's canonical key.
+    """
+    return unicodedata.normalize('NFKC', text).replace(' ', '')
+
+
 def _label(screen, chapter):
     if screen.kind == 'castle_info' and CASTLE_STATUS.search(screen.text) is None:
         # Native enemy info has no ステータス word. Match its foreground
@@ -66,7 +82,7 @@ def _label(screen, chapter):
             return None
         label = header[0][1]
         label = next((n for n in sources.SOURCE_CASTLES.get(chapter, {})
-                      if STATUS_NAMES.get(n, n) == label), label)
+                      if _fold(STATUS_NAMES.get(n, n)) == _fold(label)), label)
         return label if label in sources.SOURCE_CASTLES.get(chapter, {}) else None
     if screen.kind not in {'castle_menu', 'castle_info'} or CASTLE_STATUS.search(screen.text) is None:
         return None
@@ -81,7 +97,7 @@ def _label(screen, chapter):
         if match:
             label = match[1]
             label = next((n for n in sources.SOURCE_CASTLES.get(chapter, {})
-                          if STATUS_NAMES.get(n, n) == label), label)
+                          if _fold(STATUS_NAMES.get(n, n)) == _fold(label)), label)
             if label in sources.SOURCE_CASTLES.get(chapter, {}):
                 names.append(label)
     return names[0] if len(names) == 1 else None
