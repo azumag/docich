@@ -1507,6 +1507,7 @@ def _defense_card_kit_read(screen, mem, cur, flow, names):
     # Only a pair of matching readable observations within the bounded window
     # can establish the kit. A late first sighting must remain fail-closed.
     if flow['list_ticks'] > DEFENSE_MENU_READ_LIMIT:
+        cur['defense_card_menu'] = {**scope, 'cards': [], 'readings': flow['list_ticks']}
         _defense_kit_read_unread(mem, cur, '読取上限までに一致する実一覧を確認できない')
         return [pad('b'), pad('b')]
     if not names:
