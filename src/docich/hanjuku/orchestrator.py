@@ -701,6 +701,28 @@ def decide(frame: Frame, state: dict, *, adjusted: dict | None = None,
 IDLE_TEXT_KEYS = 24      # distinct (screen kind, text head) pairs kept
 IDLE_TEXT_HEAD = 16      # leading characters of the screen text kept
 
+# #4422: caches invalidated when a new run's identity is seen. Named so the
+# drop log can report exactly which observations were discarded.
+IDENTITY_RESET_KEYS = (
+    'house', 'post_month_status', 'post_month_status_last', 'boss_camp_exempt',
+    'boss_camp_exempt_scope', 'general_statuses', 'house_field_scan',
+    'house_scan_tick', 'house_scan_month', 'month_roster_scan',
+    'country_income', 'country_wages', 'recruit_field_scan_attempts',
+    'recruit_month_scan_attempts', 'recruit_roster_attempts', 'house_eggs',
+    'hero_repair_deferral', 'egg_uses', 'egg_zero_owners', 'egg_types',
+    'egg_memory',
+    'egg_recheck', 'castle_income', 'castle_ownership', 'starter_party',
+    'map_registration', 'map_discovery', 'boss_victories', 'obs_cost',
+    'generals_lost',
+)
+
+
+def _identity_label(identity):
+    """Short, log-safe run id: ``runtime_id:generation``."""
+    if not isinstance(identity, dict):
+        return '-'
+    return f"{identity.get('runtime_id')}:{identity.get('generation')}"
+
 
 def _tally_observation(mem, kind, screen, actions):
     """Issue #3194 (36): how many observations send nothing, and while on what.
@@ -759,12 +781,15 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
         hanjuku_roster.invalidate(mem)
         if previous_identity != identity:
             reset_native_map_scope = bool(mem.get('map_registration') or mem.get('map_discovery'))
-            for key in ('house', 'post_month_status', 'post_month_status_last', 'boss_camp_exempt', 'boss_camp_exempt_scope', 'general_statuses', 'house_field_scan', 'house_scan_tick', 'house_scan_month', 'month_roster_scan', 'country_income', 'country_wages',
-                        'recruit_field_scan_attempts', 'recruit_month_scan_attempts', 'recruit_roster_attempts',
-                        'house_eggs', 'hero_repair_deferral', 'egg_uses', 'egg_zero_owners', 'egg_types', 'egg_memory', 'egg_recheck', 'castle_income', 'castle_ownership',
-                        'starter_party', 'map_registration', 'map_discovery', 'boss_victories', 'obs_cost',
-                        'generals_lost'):
+            removed = [key for key in IDENTITY_RESET_KEYS if key in mem]
+            for key in IDENTITY_RESET_KEYS:
                 mem.pop(key, None)
+            if removed:
+                from .state_budget import log_dropped_keys
+                log_dropped_keys(source='identity_change', keys=removed,
+                                 reason='run_identity_changed',
+                                 from_run=_identity_label(previous_identity),
+                                 to_run=_identity_label(identity))
         # A matching old trace may retain observed zero counts, but never
         # upgrades an old unbound roster into a complete reusable snapshot.
         mem['survey_run_identity'] = identity

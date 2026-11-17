@@ -206,6 +206,56 @@ def test_an_old_trace_does_not_substitute_for_the_current_observation_identity()
     assert updated['policy']['survey_run_identity'] == other
 
 
+def test_identity_change_logs_the_caches_it_discards(capsys):
+    """#4422: separate an identity reset from compaction using the log alone."""
+    from docich.hanjuku import state_budget
+
+    mem = completed()
+    keys = ('post_month_status', 'post_month_status_last', 'general_statuses',
+            'house_eggs', 'obs_cost')
+    for key in keys:
+        mem[key] = {'probe': 1}
+    state = {'policy': mem, 'decision_trace': dict(IDENTITY)}
+    other = {**IDENTITY, 'generation': 2, 'runtime_id': 'g2-synthetic'}
+    decide(month_canvas(250, month=6), state, run_identity=other)
+    lines = [line for line in capsys.readouterr().err.splitlines()
+             if state_budget.DROP_LOG_TAG in line]
+    assert len(lines) == 1
+    line = lines[0]
+    assert 'source=identity_change' in line
+    assert 'reason=run_identity_changed' in line
+    for key in keys:
+        assert key in line
+    # A matching identity never emits a drop line.
+    capsys.readouterr()
+    same = completed()
+    same['general_statuses'] = {'probe': 1}
+    decide(month_canvas(250, month=6), {'policy': same}, run_identity=IDENTITY)
+    assert state_budget.DROP_LOG_TAG not in capsys.readouterr().err
+
+
+def test_identity_reset_covers_the_egg_observation_record(capsys):
+    """#4418 added ``egg_memory`` after #4422 listed the caches to drop.
+
+    The two changes met in the same identity-reset block; a rebase that keeps
+    only the #4422 list would leave this run's egg observations alive across a
+    run change (the flat ``egg_types``/``egg_uses`` mirrors are dropped), so the
+    record must be both listed and actually removed.
+    """
+    from docich.hanjuku import orchestrator, state_budget
+
+    assert 'egg_memory' in orchestrator.IDENTITY_RESET_KEYS
+    mem = completed()
+    mem['egg_memory'] = {'どうし': {'egg': 'エラベルエッグ', 'uses': 2, 'tick': 10}}
+    state = {'policy': mem, 'decision_trace': dict(IDENTITY)}
+    other = {**IDENTITY, 'generation': 2, 'runtime_id': 'g2-synthetic'}
+    _, updated = decide(month_canvas(250, month=6), state, run_identity=other)
+    assert 'egg_memory' not in updated['policy']
+    lines = [line for line in capsys.readouterr().err.splitlines()
+             if state_budget.DROP_LOG_TAG in line]
+    assert len(lines) == 1 and 'egg_memory' in lines[0]
+
+
 def test_same_run_legacy_zero_counts_are_preserved_without_promoting_its_old_survey():
     mem = completed()
     mem.pop('survey_run_identity')

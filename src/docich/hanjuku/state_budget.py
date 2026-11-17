@@ -19,6 +19,8 @@ Two things keep that impossible:
 """
 from __future__ import annotations
 
+import sys
+
 from ..adapters.base import AdapterError
 from ..retroarch_boundary import read_record
 
@@ -43,6 +45,29 @@ REFERENCE_KEYS = ('order_context', 'sortie_general')
 PLAN_STEP_MAPS = ('order_context', 'card_override', 'general_override',
                   'sortie_general', 'source_override')
 LIVE_ORDER_STATES = ('pending', 'launched', 'launched_unconfirmed')
+
+# #4422: a vanished cache used to be diagnosed only by before/after inference.
+# Both writers that can delete a cached status emit one tagged stderr line, so
+# a recurrence can be attributed to the writer from the log alone.
+DROP_LOG_TAG = '[hanjuku-state-drop]'
+DROP_LOG_KEYS_LIMIT = 40        # covers every identity-reset key; bounds step-id floods
+
+
+def log_dropped_keys(*, source: str, keys, reason: str, **context) -> None:
+    """Emit one stderr line naming the state keys a writer removed.
+
+    ``source`` tells the two writers apart (``compact_state`` at write-back vs.
+    the orchestrator's run-identity reset), ``reason`` says why, and ``context``
+    carries the sizes / identities that make the path verifiable on a live run.
+    """
+    shown = list(dict.fromkeys(keys))
+    names = ','.join(shown[:DROP_LOG_KEYS_LIMIT])
+    if len(shown) > DROP_LOG_KEYS_LIMIT:
+        names += f',...(+{len(shown) - DROP_LOG_KEYS_LIMIT})'
+    fields = ' '.join(f'{name}={value}' for name, value in context.items()
+                      if value is not None)
+    print(f'{DROP_LOG_TAG} source={source} reason={reason} '
+          f'keys={names or "-"} {fields}'.rstrip(), file=sys.stderr, flush=True)
 
 
 def size(state) -> int:
@@ -157,20 +182,43 @@ def _references(state) -> set:
 
 
 def compact_state(state, limit: int) -> dict:
-    """Return a copy trimmed to ``target(limit)``; the input is never mutated."""
-    import copy
-    remaining = size(state)
-    if remaining <= target(limit):
+    """Return a copy trimmed to ``target(limit)``; the input is never mutated.
+
+    Every removal is reported on stderr with its source, so #4419's missing
+    caches can be attributed to compaction without before/after inference.
+    """
+    before = size(state)
+    if before <= target(limit):
         return state
+    out, dropped = _compact_oversized(state, limit, before)
+    if dropped:
+        log_dropped_keys(source='compact_state', keys=dropped,
+                         reason='size_over_limit', before_bytes=before,
+                         after_bytes=size(out), limit=limit)
+    return out
+
+
+def _compact_oversized(state, limit: int, remaining: int):
+    """Trim an already-oversized record, also returning the keys removed."""
+    import copy
     out = copy.deepcopy(state)
     policy = out.get('policy')
     if not isinstance(policy, dict):
-        return out
+        return out, []
+
+    dropped = []
+
+    def drop(mapping, key, label=None):
+        nonlocal remaining
+        if key in mapping:
+            dropped.append(label or key)
+        remaining = _drop_sized(mapping, key, remaining)
+
     goal = target(limit)
     for key in CACHE_KEYS:
         if remaining <= goal:
-            return out
-        remaining = _drop_sized(policy, key, remaining)
+            return out, dropped
+        drop(policy, key)
     plan = policy.get('plan')
     if isinstance(plan, dict):
         orders = plan.get('orders')
@@ -178,30 +226,32 @@ def compact_state(state, limit: int) -> dict:
             live = _references(out)
             for step, status in list(orders.items()):
                 if remaining <= goal:
-                    return out
+                    return out, dropped
                 if status in RETIRED and step not in live:
-                    remaining = _drop_sized(orders, step, remaining)
+                    drop(orders, step, f'plan.orders:{step}')
             if not orders:
-                remaining = _drop_sized(plan, 'orders', remaining)
+                drop(plan, 'orders', 'plan.orders')
     for key in HISTORY_KEYS:
         if remaining <= goal:
-            return out
+            return out, dropped
         history = policy.get(key)
         if isinstance(history, list) and len(history) > HISTORY_KEEP:
             policy[key] = history[-HISTORY_KEEP:]
+            dropped.append(key)     # its tail was discarded
             remaining -= size(history) - size(policy[key])
     for key in COUNTER_KEYS:
         if remaining <= goal:
-            return out
-        remaining = _drop_sized(policy, key, remaining)
+            return out, dropped
+        drop(policy, key)
     if remaining > goal:
-        _prune_settled_marches(out, goal)
-    if size(out) > goal:
-        _prune_retired_step_maps(out, goal)
-    return out
+        _prune_settled_marches(out, goal, dropped)
+    # The prune helper returns on its own once the record fits; calling it
+    # unconditionally avoids an extra full serialization here.
+    _prune_retired_step_maps(out, goal, dropped)
+    return out, dropped
 
 
-def _prune_retired_step_maps(state, goal: int) -> None:
+def _prune_retired_step_maps(state, goal: int, dropped=None) -> None:
     """Drop per-step plan context that no live order or march can read again.
 
     g1163 2026-11-13 09:5x: the record reached 356 274 bytes against the
@@ -246,6 +296,8 @@ def _prune_retired_step_maps(state, goal: int) -> None:
     if isinstance(retry, dict):
         referenced.update(key for key in retry if isinstance(key, str))
     remaining = size(state)
+    if remaining <= goal:
+        return
     for key in PLAN_STEP_MAPS:
         section = plan.get(key)
         if not isinstance(section, dict):
@@ -254,8 +306,12 @@ def _prune_retired_step_maps(state, goal: int) -> None:
             if remaining <= goal:
                 return
             if step not in referenced:
+                if dropped is not None:
+                    dropped.append(f'plan.{key}:{step}')
                 remaining = _drop_sized(section, step, remaining)
         if not section:
+            if dropped is not None:
+                dropped.append(f'plan.{key}')
             remaining = _drop_sized(plan, key, remaining)
 
 
@@ -272,7 +328,7 @@ def _entry_tick(entry):
     return None
 
 
-def _prune_settled_marches(state, goal: int) -> None:
+def _prune_settled_marches(state, goal: int, dropped=None) -> None:
     """Drop launch bookkeeping for marches that ended long ago.
 
     `world.launched_orders` and `world.sorties` keep one record per launch with
@@ -316,3 +372,5 @@ def _prune_settled_marches(state, goal: int) -> None:
             tick = _entry_tick(section[step])
             if tick is None or now - tick > SETTLED_MARCH_TICKS:
                 section.pop(step, None)
+                if dropped is not None:
+                    dropped.append(f'world.{key}:{step}')
