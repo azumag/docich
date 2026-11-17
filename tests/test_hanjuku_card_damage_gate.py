@@ -15,6 +15,10 @@ def refused_card(monkeypatch):
     The rule for hits that do not finish the enemy is in test_hanjuku_card_wear_down.py.
     """
     monkeypatch.setattr('docich.hanjuku.judgment.battle._card_wears_down_enemy', lambda estimate: False)
+    # #4411: the boss wear-down rule is also isolated here; its contracts live
+    # in test_hanjuku_card_wear_down.py.
+    monkeypatch.setattr('docich.hanjuku.judgment.battle._boss_card_wears_down_enemy',
+                        lambda estimate, cur: False)
 
 
 def memory(card='ゼンマイン', *, enemy='クミン', enemy_hp=27, ally='ココット',
