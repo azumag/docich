@@ -224,7 +224,7 @@ def _hero_broken_sortie_suppressed(order, mem) -> bool:
     count = gate.get('count', 0)
     if count >= HERO_BROKEN_SORTIE_CANCEL_LIMIT:
         gates.pop(step, None)
-        _plan_region(mem).setdefault('orders', {})[step] = 'failed'
+        _mark_order_failed(mem, step)
         return True
     return True
 
@@ -261,7 +261,7 @@ def _sortie_cancelled_observed_suppressed(order, mem) -> bool:
     count = gate.get('count', 0)
     if count >= SORTIE_CANCELLED_OBSERVED_LIMIT:
         gates.pop(step, None)
-        _plan_region(mem).setdefault('orders', {})[step] = 'failed'
+        _mark_order_failed(mem, step)
         return True
     return True
 
@@ -313,7 +313,7 @@ def _source_defender_suppressed(order, mem) -> bool:
     count = gate.get('count', 0)
     if count >= SOURCE_DEFENDER_CANCEL_LIMIT:
         gates.pop(step, None)
-        _plan_region(mem).setdefault('orders', {})[step] = 'failed'
+        _mark_order_failed(mem, step)
         return True
     return True
 
@@ -349,7 +349,7 @@ def _record_source_defender_cancel(mem, order, present=None, available=None, gat
     limit = SOURCE_DEFENDER_CANCEL_LIMIT
     if count >= limit:
         gates.pop(step, None)
-        _plan_region(mem).setdefault('orders', {})[step] = 'failed'
+        _mark_order_failed(mem, step)
     elif not gate:
         gates.pop(step, None)     # a location recheck reopens the same list at once
     else:
@@ -377,7 +377,7 @@ def _record_sortie_cancelled_observed(mem, order, sortie):
     limit = SORTIE_CANCELLED_OBSERVED_LIMIT
     if count >= limit:
         gates.pop(step, None)
-        _plan_region(mem).setdefault('orders', {})[step] = 'failed'
+        _mark_order_failed(mem, step)
     else:
         gates[step] = {'general': general, 'source': source, 'month': month,
                        'count': count, 'target': sortie.get('target')}
@@ -675,6 +675,21 @@ def _ready(order, mem) -> bool:
             return True
         return _all_normal_captured(mem)
     return False
+
+
+def _mark_order_failed(mem, step):
+    """Mark an order settled and prune now-unreachable per-step context.
+
+    #4054: the gate-suppression and relaunch paths below settle an order
+    directly (``orders[step] = 'failed'``) without going through
+    ``_finish_order``, so the same per-step context that ``_finish_order``
+    drops via ``drop_retired_step_context`` stayed behind and rebuilt the
+    growth the ``compact_state`` backstop had to remove once already.
+    ``drop_retired_step_context`` keeps a step a live march can still read,
+    so it is safe to call even when the order's sortie is still in flight.
+    """
+    _plan_region(mem).setdefault('orders', {})[step] = 'failed'
+    drop_retired_step_context(mem)
 
 
 def _orders(mem):
@@ -1080,7 +1095,7 @@ def _relaunch_overdue_march(mem):
             # g1163 2026-11-13 14:24 still settled an "enemy castle" sortie
             # into オオキク, which had been ours since 14:11. The stale order
             # only spent a launch and a destination read.
-            status[step] = 'failed'
+            _mark_order_failed(mem, step)
             _record(mem, 'sortie_target_owned_settled', chart_step=step,
                     general=sortie.get('general'),
                     observed_metric={'target': target, 'purpose': purpose,
@@ -1126,7 +1141,7 @@ def _relaunch_overdue_march(mem):
             # castle stays off the move list via routes.unread_dispatches
             # until its own general list is read. An unconfirmed launch
             # still retries through the normal relaunch budget.
-            status[step] = 'failed'
+            _mark_order_failed(mem, step)
             _record(mem, 'sortie_move_overdue_settled', chart_step=step,
                     general=sortie.get('general'), observed_metric=observed,
                     reason='自城への移動の入城は行先の一覧でしか観測できず、出し直しても同じ確認漏れになるため、指示を閉じて行先一覧の確認へ委ねる')
@@ -1144,7 +1159,7 @@ def _relaunch_overdue_march(mem):
                 and target not in _owned(mem)
                 and not routes.is_road(chapter)
                 and chart.march_blocked(chapter, source, target, set(_owned(mem)))):
-            status[step] = 'failed'
+            _mark_order_failed(mem, step)
             _record(mem, 'sortie_march_blocked_settled', chart_step=step,
                     general=sortie.get('general'), observed_metric=observed,
                     reason='行路が自城に塞がれて入城できないため指示を閉じ、塞ぐ城からの出撃へ委ねる')
@@ -1348,7 +1363,7 @@ def _expire_spent_sorties(mem):
                             'status_tick': row.get('tick') if isinstance(row, dict) else None,
                             'misses': misses[step]}
                 if misses[step] >= _MISS_LIMIT:
-                    _plan_region(mem).setdefault('orders', {})[step] = 'failed'
+                    _mark_order_failed(mem, step)
                     _record(mem, 'sortie_launch_failed', chart_step=step, general=general,
                             deviation_reason='出撃確定後に部隊が現れない',
                             observed_metric=observed,
