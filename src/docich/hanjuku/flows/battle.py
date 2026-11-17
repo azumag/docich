@@ -31,8 +31,8 @@ from ..judgment.battle import (EGG_WALL_DAMAGE, DEFENDER_SUMMON_OPEN_LIMIT, CARD
                                _defender_summon_preempt,
                                _egg_before_retreat, _egg_rescue_pending, _egg_drop_evidence, _egg_drop_tactics, _egg_plan, _hero_marching,
                                _hero_losing_melee, _hero_retreat_needed, _hold_general_loss_metric, _hold_melee_egg, _melee_balance,
-                               _migrate_card_evidence, _observe_egg_drop_candidate, _one_hit_lethal, _own_egg_empty,
-                               _own_egg_positive, _strong_card_tactics, _strong_enemy, _survival_needed,
+                               _dying_with_egg, _migrate_card_evidence, _observe_egg_drop_candidate, _one_hit_lethal,
+                               _own_egg_empty, _own_egg_positive, _strong_card_tactics, _strong_enemy, _survival_needed,
                                _survival_state, _tactic_enemy_ok, reset_battle_controls,
                                HERO_SURVIVAL_REOPEN_LIMIT)
 from ..os_layer.commands import _human_menu_open, pad
@@ -562,6 +562,13 @@ def _carried_opening_tactics(mem, cur, existing):
     retreat. Never invent cards from the shop stock or an unconfirmed plan.
     """
     step = cur.get('step')
+    if _dying_with_egg(mem, cur):
+        if not cur.get('egg_opening_preempt_recorded'):
+            cur['egg_opening_preempt_recorded'] = True
+            _record(mem, 'battle_egg_opening_preempt', **_battle_labels(cur),
+                    observed_metric={'ally_hp': cur.get('ally_hp'), 'enemy_hp': cur.get('enemy_hp')},
+                    reason='敵HPの半分以下で倒れかけの将軍は、開幕切り札を消費する前に卵の変身だけが生存を保つため、開幕札を撃たず卵を優先する')
+        return []
     order = _order_for_step(mem, step)
     bound = bound_fields(order, mem)
     if not bound or bound['general'] != cur.get('ally'):
