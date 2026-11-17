@@ -15,7 +15,8 @@ from ..os_layer.font import UNKNOWN
 from ... import hanjuku_chart as chart, hanjuku_chart_adjust as chart_adjust, hanjuku_reference as reference
 from ...hanjuku_egg_reference import enemy_egg_triggers, general_max_hp
 from ..decision_log import _record
-from ..os_layer.commands import general_list_batch, menu_to, pad
+from ..os_layer.commands import (MENU_NAV_BATCH_MAX, MENU_NAV_RELEASE_MS, general_list_batch,
+                                 menu_to, pad)
 from ..os_layer.readers import (CASTLE_STATUS, STATUS_NAMES, _empty_sortie_inventory, _general_visible,
                                 _measured_card_select, _options, _present_generals, _sortie_inventory, _current)
 from ..os_layer.world import NAME, _en_route, _owned
@@ -1072,7 +1073,8 @@ def _cursor_order_pick(screen, mem, order):
                         observed_metric={'present': present[:8], 'cursor': name,
                                          'chosen': healthy},
                         reason='前線へ送る将軍は、傷ついた将軍より元気な将軍を先に出す')
-                return _deploy_input(screen, mem, order, [move],
+                return _deploy_input(screen, mem, order,
+                                     _general_selection_actions(screen, healthy, move),
                                      '増援は元気な将軍へカーソルを送る')
     if order.get('purpose') != 'move' and order.get('corridor') is True:
         leader = _full_hp_leader(mem, present, name,
@@ -1084,7 +1086,8 @@ def _cursor_order_pick(screen, mem, order):
                 _record(mem, 'full_hp_leader', chart_step=step,
                         observed_metric={'present': present[:8], 'cursor': name, 'chosen': leader},
                         reason='カーソルの将軍が半減以下のため、満タンの将軍を先頭にして攻撃する')
-                return _deploy_input(screen, mem, order, [move],
+                return _deploy_input(screen, mem, order,
+                                     _general_selection_actions(screen, leader, move),
                                      '攻撃は満タンの将軍へカーソルを送る')
     if name == NAME or name in busy:
         others = [g for g in present if g != NAME and g not in busy]
@@ -1348,12 +1351,22 @@ def _listed_generals(screen, mem, order):
 
 
 def _list_menu_to(screen, mem, order, general):
-    """``menu_to``, or one press toward a walked name outside the window."""
+    """``menu_to``, or a press run toward a walked name outside the window.
+
+    A walked list knows the target's index, so an off-screen destination is a
+    fixed distance: release-separated taps cover it in one observation instead
+    of one row per frame. The landing is still observed before any A.
+    """
     move = menu_to(screen, general)
     names, cur = _listed_generals(screen, mem, order), _current(screen)
     if move is not None or not names or not cur or general not in names or cur[2] not in names:
         return move
-    return pad('down' if names.index(general) > names.index(cur[2]) else 'up')
+    distance = names.index(general) - names.index(cur[2])
+    direction = 'down' if distance > 0 else 'up'
+    actions = [pad(direction)]
+    for _ in range(min(abs(distance), MENU_NAV_BATCH_MAX) - 1):
+        actions.extend([{'type': 'wait', 'ms': MENU_NAV_RELEASE_MS}, pad(direction)])
+    return actions
 
 
 def _general_selection_actions(screen, general, move):
@@ -1364,6 +1377,8 @@ def _general_selection_actions(screen, general, move):
     """
     if move == 'here':
         return [pad('a')]
+    if isinstance(move, list):
+        return move
     return general_list_batch(screen, general) or [move]
 
 
@@ -2219,7 +2234,7 @@ def deploy_step(screen: Screen, mem):
                         reason=('守備将軍の卵を落とせる最大HPの将軍を代役にする' if droppers
                                 else '後続手順とボス条件を満たすため'))
                 move = menu_to(screen, chosen)
-                return [pad('a')] if move == 'here' else [move] if move else []
+                return _general_selection_actions(screen, chosen, move) if move else []
             if (not _plan_region(mem).get('source_override', {}).get(order['step'])
                     and chart.home_castle(mem.get('chapter') or 1) in _owned(mem)):
                 _plan_region(mem).setdefault('source_override', {})[order['step']] = chart.home_castle(
