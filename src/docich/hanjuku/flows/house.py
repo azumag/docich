@@ -743,8 +743,9 @@ def _observe_status(screen, mem):
         elif info.get('egg') is None and info.get('broken') is not True:
             # A status read that shows no egg outranks the remembered type:
             # the boss wave must not keep sending a general whose egg is gone
-            # (Devin review on #4414).
-            (mem.get('egg_uses') or {}).pop(name, None)
+            # (Devin review on #4414). The count stays untouched: a recorded 0
+            # is what keeps orders._holds_egg from falling back to the
+            # roster's initial egg.
             (mem.get('egg_types') or {}).pop(name, None)
         receipts.status_observed(mem, mem['house_eggs'][name])
         observe_hero_repair_status(info, mem)

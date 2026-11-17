@@ -7587,6 +7587,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v992-pursuit-redirect-log",
             "hanjuku-chart-v993-boss-wave-eggless",
             "hanjuku-chart-v994-review-fixes",
+            "hanjuku-chart-v995-egg-count-kept",
             "hanjuku-chart-v985-roster-lost",
             "hanjuku-chart-v982-gbox",
             "hanjuku-chart-v984-roster-map-anchor",
