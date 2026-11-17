@@ -118,7 +118,11 @@ def test_a_failure_inside_the_suppression_window_is_not_retried():
     mem['failed_local_step'] = {local: mem['tick'] - 10}
     advance(mem, rid)
     assert _plan_region(mem)['orders'][step] == 'failed'
-    assert orders.next_order(mem) is None
+    # The suppressed step itself is never retried inside the window; other
+    # legitimate orders (now including home-castle spares, Owner 2026-11-17)
+    # may still be offered.
+    got = orders.next_order(mem)
+    assert got is None or got['step'] != step
 
 
 def test_the_retry_is_capped_per_month_and_step():

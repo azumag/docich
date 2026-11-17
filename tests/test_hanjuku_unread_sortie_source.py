@@ -66,17 +66,17 @@ def test_two_observed_generals_choose_spare_and_keep_hero_at_castle():
 
 
 @pytest.mark.parametrize('names', [['ゼウス', 'どうし'], ['ゼウス', 'どうし', 'クミン']])
-def test_probe_never_leaves_the_hero_with_fewer_than_two_others(names):
-    """v305 (owner 2026-10-29): 主人公のいる城が手薄になるのはよくない."""
+def test_probe_may_leave_the_hero_alone(names):
+    """Owner 2026-11-17: 主人公一人を残して出撃できる -- the probe picks a
+    non-hero general even when the hero is left alone."""
     mem = stalled()
     order = dict(next(o for o in p.interim_candidates(mem).values() if o.get('source_probe')),
                  step='I:probe-hero:1')
     mem.update(active=order['step'], orders={}, launched_orders={order['step']: order})
-    assert p.deploy_step(generals(names), mem) == [p.pad('b'), p.pad('b')]
-    assert mem['_records'][-1]['decision'] == 'sortie_held_hero_guard'
-    assert _plan_region(mem)['orders'][order['step']] == 'failed'
+    actions = p.deploy_step(generals(names), mem)
+    assert actions != [p.pad('b'), p.pad('b')]
     assert _world(mem)['garrison']['ジョンリギ'] == names
-    assert all(o['source'] != 'ジョンリギ' for o in p.interim_candidates(mem).values())
+    assert not [r for r in mem['_records'] if r['decision'] == 'sortie_held_hero_guard']
 
 
 def test_a_lost_or_known_empty_castle_is_never_a_probe_source():
