@@ -192,3 +192,38 @@ def test_enemy_egg_use_trace_uses_the_same_link():
     assert trace['stage'] == 'enemy_egg_used'
     assert trace['observed_metric']['decision_tick'] == 100
     assert trace['observed_metric']['enemy_transform_observed'] is True
+
+
+@pytest.mark.parametrize('first_visible_at', [3, 4, 5])
+def test_late_first_kit_read_never_licenses_defense_egg_drop(first_visible_at):
+    mem = defense_mem()
+    cur = mem['battle']
+    cur['card_flow'] = {'card': None, 'stage': 'list', 'read_kit': True}
+    blank = menu((), kind='text')
+    visible = menu(('イッテツーン',), kind='text')
+    for observation in range(1, p.DEFENSE_MENU_READ_LIMIT + 2):
+        result = p.card_list_step(
+            visible if observation >= first_visible_at else blank, mem)
+        if observation < first_visible_at:
+            assert result == []
+        if cur.get('card_flow') is None:
+            break
+    if first_visible_at <= p.DEFENSE_MENU_READ_LIMIT - 1:
+        assert cur['defense_card_menu']['cards'] == ['イッテツーン']
+        assert p._egg_plan(mem, cur)['kit_source'] == 'menu_read'
+    else:
+        assert cur['defense_card_menu']['cards'] == []
+        assert p._egg_plan(mem, cur)['kit_source'] == 'unknown'
+        assert records(mem, 'battle_defense_kit_read_unread')
+
+
+def test_defense_kit_read_requires_consecutive_matching_lists():
+    mem = defense_mem()
+    cur = mem['battle']
+    cur['card_flow'] = {'card': None, 'stage': 'list', 'read_kit': True}
+    a = menu(('イッテツーン',), kind='text')
+    b = menu(('クースカン',), kind='text')
+    for screen in (a, b, a, b):
+        assert p.card_list_step(screen, mem) == []
+    assert p.card_list_step(a, mem) == [p.pad('b'), p.pad('b')]
+    assert p._egg_plan(mem, cur)['kit_source'] == 'unknown'
