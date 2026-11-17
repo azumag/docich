@@ -15,6 +15,8 @@ from .world import _apply_world_flags, _hero_castle, update_world
 
 
 MAX_HOLD_FRAMES = 28          # 1 px/frame below 30 frames; beyond it accelerates
+FAR_HOLD_FRAMES = 84          # longer hold for far goals: fewer observation gaps (slow cursor walks)
+FAR_HOLD_PX = 56              # distance beyond which the longer hold applies
 ARRIVE_PX = 4
 
 
@@ -164,7 +166,8 @@ def nav_step(screen: Screen, mem, frame, goal, goal_name=None):
     actions, expected = [], [0, 0]
     for axis, d, neg, pos in ((0, dx, 'left', 'right'), (1, dy, 'up', 'down')):
         if abs(d) > ARRIVE_PX:
-            frames = min(abs(d), MAX_HOLD_FRAMES)
+            cap = FAR_HOLD_FRAMES if abs(d) > FAR_HOLD_PX else MAX_HOLD_FRAMES
+            frames = min(abs(d), cap)
             actions.append(pad(pos if d > 0 else neg, frames))
             expected[axis] = frames if d > 0 else -frames
     mem['nav_last'] = {'screen': list(s), 'expected': expected, 'search': search}
@@ -285,7 +288,8 @@ def _y_jump_step(mem, frame):
     actions = []
     for d, neg, pos in ((dx, 'left', 'right'), (dy, 'up', 'down')):
         if abs(d) > Y_JUMP_TOL:
-            actions.append(pad(pos if d > 0 else neg, min(56, max(1, round(abs(d) * 2)))))
+            cap = FAR_HOLD_FRAMES * 2 if abs(d) > FAR_HOLD_PX else 56
+            actions.append(pad(pos if d > 0 else neg, min(cap, max(1, round(abs(d) * 2)))))
     return actions
 
 
