@@ -126,3 +126,21 @@ def test_launch_probe_retry_budget_survives_equivalent_replanned_step():
     failed = [r for r in mem['_records'] if r['decision'] == 'sortie_launch_failed']
     assert failed and failed[-1]['chart_step'] == second
     assert failed[-1]['observed_metric']['misses'] == p.LAUNCH_MISS_LIMIT
+
+
+def test_a_single_hero_marker_does_not_fail_the_launch():
+    """g1190 2026-11-18: タプロベイン→タタール failed with only the hero's marker.
+
+    The Y view showed one red marker (the hero) and no new unit mark, which is
+    not evidence that the launch failed while 12 generals stood at the source.
+    The retry budget is wider in that case so the order is not spent.
+    """
+    mem = {'chapter': 1, 'month': '1-7', 'tick': 100,
+           'garrison': {'アルマムーン': ['どうし']},
+           'general_location_unknown': [], 'lost': [], 'captured': [], '_records': []}
+    step = 'A:one00001:Mabc123'
+    hero_only = [(141, 85, 147, 91)]
+    for _ in range(p.LAUNCH_MISS_LIMIT):
+        p._rollback_unverified_launch(mem, step, _arm_unverified_launch(mem, step), hero_only)
+    assert _plan_region(mem)['orders'][step] == 'pending'
+    assert not [r for r in mem['_records'] if r['decision'] == 'sortie_launch_failed']
