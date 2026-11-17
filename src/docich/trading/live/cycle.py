@@ -27,6 +27,7 @@ from ..market_data import MarketFrame
 from . import fence
 from .lease import LeaseLost
 from .safety import note_enable_result, read_safety_state
+from .ttl import cancel_expired
 
 if TYPE_CHECKING:  # annotations only: the cycle itself does not need these types to run
     from .enable import EnableResult
@@ -250,7 +251,11 @@ def _run_cycle(deps: CycleDeps, state: CycleState) -> CycleReport:
         else:
             deps.executor.reset_rules()
 
-    # 5. task 5b-2: TTL cancel of stale open orders goes here.
+    # 5. withdraw open orders older than the TTL (only when the executor has a sender)
+    try:
+        cancel_expired(deps, state, now)
+    except LeaseLost as exc:
+        return _lease_lost(deps, state, mode, now, str(exc))
 
     # 6. poll/resolve/sweep/close-flat/check-balance
     try:
