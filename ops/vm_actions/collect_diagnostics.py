@@ -7638,6 +7638,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v1041-egg-receipt-presence",
             "hanjuku-chart-v1043-recall-picker-evidence",
             "hanjuku-chart-v1045-battle-menu-cursor-nudge",
+            "hanjuku-chart-v1100-defense-egg-menu-kit",
             "hanjuku-chart-v985-roster-lost",
             "hanjuku-chart-v982-gbox",
             "hanjuku-chart-v984-roster-map-anchor",

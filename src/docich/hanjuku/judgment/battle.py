@@ -177,6 +177,9 @@ def _card_use_unclassified(mem, cur, reason):
     _record(mem, 'battle_card_unclassified', **_battle_labels(cur), card=card,
             expected_metric='選択した切り札の実使用告知',
             observed_metric={'confirmation': 'unclassified'}, reason=reason)
+    if flow.get('egg_drop_only'):
+        _egg_drop_trace(mem, cur, 'unclassified', card=card,
+                        tactic_id=flow.get('tactic_id'), reason=reason)
     cur['card_flow'] = None
 
 
@@ -903,6 +906,49 @@ def _carried_kit(mem, cur):
     return None if order is None else _deploy_cards(order, mem)
 
 
+# #4456: a defense battle has no sortie order, so its kit is unknown until the
+# real きりふだ list is read. The flow layer records that read on the battle;
+# bounded and scope-bound so a stale or foreign menu never becomes a kit.
+DEFENSE_MENU_READ_LIMIT = 4
+
+
+def _defense_menu_kit(mem, cur):
+    """Real きりふだ names read in this defense battle, or None when unknown.
+
+    ``cur['defense_card_menu']`` is written only by the flow layer from a
+    readable card list, with no selection and no consumption. Scope binding
+    rejects a menu read from another battle or an older opening panel. An
+    unreadable/empty list is recorded with no names and stays kit_unknown
+    (fail-closed); a defense menu we could not read is never an assumed kit.
+    """
+    if cur.get('side') != 'defense' or cur.get('step'):
+        return None
+    seen = cur.get('defense_card_menu')
+    if not isinstance(seen, dict):
+        # The existing defense survival path already reads the real きりふだ
+        # list and records its names. Reuse that ground truth instead of
+        # opening a second menu (#4456 DSH review: no parallel menu path).
+        rescue = cur.get('survival')
+        listed = rescue.get('listed_cards') if isinstance(rescue, dict) else None
+        if not isinstance(listed, list) or not listed:
+            return None
+        seen = {'cards': listed, 'readings': 1}
+    elif any(seen.get(k) != cur.get(k) for k in
+             ('enemy', 'ally', 'start_enemy_hp', 'start_ally_hp')):
+        return None
+    readings = seen.get('readings')
+    if type(readings) is not int or not 1 <= readings <= DEFENSE_MENU_READ_LIMIT:
+        return None
+    cards = seen.get('cards')
+    if not isinstance(cards, (list, tuple)):
+        return None
+    names = []
+    for name in cards:
+        if isinstance(name, str) and name in reference.CARDS and name not in names:
+            names.append(name)
+    return names[:40] or None
+
+
 def _confirmed_carried_kit(mem, cur):
     """出撃時に確定した携行札の未使用残り。確定できない戦闘は None。
 
@@ -985,7 +1031,18 @@ def _egg_plan(mem, cur):
     defense = True if side == 'defense' else False if side == 'attack' else None
     triggers = enemy_egg_triggers(enemy, player_castle_defense=defense)
     kit = _carried_kit(mem, cur)
-    ids = None if kit is None else [CARD_IDS.get(card) for card in kit]
+    kit_source = 'order' if kit is not None else 'unknown'
+    # #4456: a defense battle has no sortie order. Fall back to the real
+    # きりふだ names read by the flow layer, but only when defense, no step,
+    # and the kit is otherwise unknown. A menu we could not read stays unknown.
+    if kit is None and defense is True and not cur.get('step'):
+        menu_kit = _defense_menu_kit(mem, cur)
+        if menu_kit is not None:
+            kit, kit_source = menu_kit, 'menu_read'
+    # #4456 review condition: a defense battle never claims a carried card-ID
+    # total. Even a real menu read cannot prove the enemy's opening-egg gate,
+    # so id_sum / deny_opening_egg stay None whatever the kit source.
+    ids = None if kit is None or defense is True else [CARD_IDS.get(card) for card in kit]
     enemy_max, ally_max, excluded = _egg_max_hp(cur)
     total = (enemy_max + ally_max
              if type(enemy_max) is int and type(ally_max) is int else None)
@@ -1004,7 +1061,8 @@ def _egg_plan(mem, cur):
     plan = {'enemy': enemy, 'ally': cur.get('ally'),
             'threat': _egg_threat(triggers), 'has_egg': triggers.has_egg,
             'egg_state': egg_state,
-            'kit_known': kit is not None, 'carried': list(kit or []),
+            'kit_known': kit is not None, 'kit_source': kit_source,
+            'carried': list(kit or []),
             'id_sum': None if ids is None or any(i is None for i in ids) else sum(ids),
             'deny_opening_egg': None,
             'enemy_max_hp': enemy_max, 'ally_max_hp': ally_max,
@@ -1054,7 +1112,8 @@ def _egg_plan(mem, cur):
             row['drops'] = prediction['drops']
     plan['cards'] = rows
     # 携行IDの合計が48以上だと敵が開幕で卵を使う (gcgx ai.html)。不明IDは失敗扱い。
-    if kit is not None:
+    # 防衛では携行ID合計未知のため確定しない (#4456 レビュー条件2)。
+    if kit is not None and defense is not True:
         plan['deny_opening_egg'] = plan['id_sum'] is not None and plan['id_sum'] < ENEMY_EGG_CARD_ID_SUM
     if isinstance(plan['sortie_dropper'], dict):
         # 出撃時と戦闘時で同じ対戦相手なら同じ算出になるはず (#1553)。
@@ -1087,9 +1146,95 @@ def _egg_plan(mem, cur):
     if plan['dropper'] is not None:
         plan['egg_drop'] = _egg_drop_evidence(cur, plan['dropper'])
         plan['verdict'] = 'droppable'
+        if not cur.get('egg_drop_decision_recorded'):
+            cur['egg_drop_decision_recorded'] = True
+            cur['egg_drop_decision_tick'] = mem.get('tick')
+            _egg_drop_trace(mem, cur, 'decided', card=plan['dropper'], plan=plan,
+                            tactic_id=f"eggdrop:{cur.get('step')}:{plan['dropper']}")
     plan['egg_drop_free'] = bool(free)
     cur['egg_plan'] = plan
     return plan
+
+
+def _egg_drop_trace(mem, cur, stage, *, card=None, tactic_id=None, plan=None, **extra):
+    """One link in the opening egg-drop decision -> execution trace (#4456).
+
+    g1270: a droppable decision and a selected card were followed by the
+    enemy's egg use and an empty settled-use list. Every stage writes the same
+    tactic id and the ticks it was observed at, so the order can be checked in
+    the decision log without inferring execution from the decision alone.
+    """
+    plan = plan if isinstance(plan, dict) else (cur.get('egg_plan') or {})
+    flow = cur.get('card_flow') or {}
+    card = card or flow.get('card') or plan.get('dropper')
+    tid = tactic_id or flow.get('tactic_id')
+    if tid is None and card and cur.get('egg_drop_decision_tick') is not None:
+        tid = f"eggdrop:{cur.get('step')}:{card}"
+    observed = {'tick': mem.get('tick'),
+                'decision_tick': cur.get('egg_drop_decision_tick'),
+                'selected_tick': cur.get('egg_drop_selected_tick'),
+                'kit_source': plan.get('kit_source'), 'verdict': plan.get('verdict'),
+                'max_hp_sum': plan.get('max_hp_sum'), 'remainder': plan.get('remainder'),
+                'threshold': plan.get('threshold'),
+                'drop_value': reference.egg_drop_value(card) if card else None,
+                'cards_selected': list(cur.get('cards_selected') or []),
+                'cards_unclassified': list(cur.get('cards_unclassified') or []),
+                'enemy_transform_observed': bool(cur.get('enemy_transform_observed')),
+                **extra}
+    return _record(mem, 'battle_egg_drop_trace', **_battle_labels(cur),
+                   card=card, tactic_id=tid, stage=stage,
+                   expected_metric='決定→選択→実使用/未確認→敵卵使用の順序',
+                   observed_metric=observed,
+                   reason=f'開幕卵落の{stage}時点を記録（実行の確定ではない）')
+
+
+def _defense_kit_read_window(mem, cur):
+    """A defense opening egg drop blocked only by an unread kit (#4456).
+
+    Unlike the okunote deadline this is not HP-driven: the enemy can use its
+    egg at any time, so the card list is read once at the opening. Existing
+    bounded defenses (okunote/summon/last resort) keep priority; this only
+    fills the gap when no other rescue is due and the kit alone blocks a drop.
+    """
+    if cur.get('side') != 'defense' or cur.get('step'):
+        return None
+    if (_defender_egg_window(mem, cur) or _defender_summon_preempt(mem, cur)
+            or _defender_last_resort(mem, cur)
+            or any((cur.get(k) or {}).get('exhausted') for k in
+                   ('okunote_egg_preempt', 'okunote_summon_preempt', 'defense_egg_kit_read'))):
+        return None
+    # A rescue/conservation episode is already in charge of the card menu (and
+    # records its names). Do not start a second menu episode behind it.
+    rescue = cur.get('survival') or {}
+    if (rescue.get('opens') or rescue.get('pending_opens') or rescue.get('listed_cards')
+            or rescue.get('critical_open_recheck') or rescue.get('egg_attempted')
+            or rescue.get('conserving_melee') or cur.get('card_damage_rescue_needed')
+            or cur.get('command_open_pending')):
+        return None
+    plan = cur.get('egg_plan') or {}
+    if (plan.get('has_egg') is not True or plan.get('egg_state') != 'available'
+            or type(plan.get('max_hp_sum')) is not int
+            or plan.get('kit_source') != 'unknown' or plan.get('dropper') is not None
+            or cur.get('defense_card_menu') is not None
+            or cur.get('card_flow') or cur.get('egg_battle')
+            or cur.get('card_summon_observed') or cur.get('enemy_summon_observed')
+            or cur.get('card_damage_list_blocked') or cur.get('cards_unclassified')
+            or (cur.get('survival') or {}).get('exhausted')
+            or _one_hit_lethal(cur)):
+        return None
+    return {'reason': 'egg_drop_kit_unread', 'due': True,
+            'max_hp_sum': plan['max_hp_sum'], 'remainder': plan.get('remainder'),
+            'threshold': plan.get('threshold')}
+
+
+def _defense_kit_read_unread(mem, cur, reason):
+    """Close an unreadable defense card-menu read and stay fail-closed."""
+    guard = cur.setdefault('defense_egg_kit_read', {'opens': 1})
+    guard['read_done'] = True
+    cur['card_flow'] = None
+    _record(mem, 'battle_defense_kit_read_unread', **_battle_labels(cur),
+            observed_metric={'opens': guard.get('opens', 1), 'reason': reason},
+            reason='防衛の実切り札一覧を読めず、kit_unknown のまま fail-closed で戻る')
 
 
 def _egg_drop_tactics(mem, cur, enemy, plan=None):

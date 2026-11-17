@@ -28,8 +28,9 @@ from ..judgment.battle import (EGG_WALL_DAMAGE, DEFENDER_SUMMON_OPEN_LIMIT, CARD
                                _card_damage_gate, _card_damage_key, _card_damage_recheck_resources,
                                _card_melee_ready, _card_use_unclassified, _charted_melee, _command_open_wait,
                                _critical_safe_card, _critical_survival_needed, _defender_egg_window, _defender_last_resort,
-                               _defender_summon_preempt,
-                               _egg_before_retreat, _egg_rescue_pending, _egg_drop_evidence, _egg_drop_tactics, _egg_plan, _hero_marching,
+                               _defender_summon_preempt, _defense_kit_read_unread, _defense_kit_read_window,
+                               _egg_before_retreat, _egg_rescue_pending, _egg_drop_evidence, _egg_drop_tactics,
+                               _egg_drop_trace, _egg_plan, _hero_marching,
                                _hero_losing_melee, _hero_retreat_needed, _hold_general_loss_metric, _hold_melee_egg, _melee_balance,
                                _dying_with_egg, _migrate_card_evidence, _observe_egg_drop_candidate, _one_hit_lethal,
                                _own_egg_empty, _own_egg_positive, _strong_card_tactics, _strong_enemy, _survival_needed,
@@ -896,6 +897,14 @@ def battle_step(screen: Screen, mem):
         return [pad('b')]
     if cur.get('card_flow'):
         flow = cur['card_flow']
+        if flow.get('read_kit'):
+            # Open the command menu with the existing bounded B retries; no
+            # selection is ever made from a read-only kit flow.
+            flow['battle_frames_without_receipt'] = int(flow.get('battle_frames_without_receipt') or 0) + 1
+            if flow['battle_frames_without_receipt'] <= CARD_MENU_OPEN_RETRIES:
+                return [pad('b')]
+            _defense_kit_read_unread(mem, cur, 'コマンドメニューが開かないため上限')
+            return [pad('b')]
         opening_hp = flow.get('enemy_hp_at_open')
         # g484: Queen 68->34 after selected クースカン, but two idle
         # observations before reopening B let the Queen summon. A measured
@@ -1022,7 +1031,9 @@ def battle_step(screen: Screen, mem):
                     cur['strategy_variant'] = 'after_card_unconfirmed'
                     cur['deviation_reason'] = '前の切り札の実使用告知が未校正のため、選択記録を根拠に連続使用を継続'
             cur['card_flow'] = {'card': tactic['card'], 'stage': 'menu', 'note': note,
-                                'enemy_hp_at_open': b.enemy_hp, 'tactic_id': tid}
+                                'enemy_hp_at_open': b.enemy_hp, 'tactic_id': tid,
+                                'egg_drop_only': bool(tactic.get('egg_drop_only')),
+                                'kit_source': egg_plan.get('kit_source')}
             # 卵落が最大HP合計の余りを超える札は、命中すれば敵の卵を落とす。
             # どの札が落ちさせても同じなので、チャート札も同じ根拠で監視する。
             drop_evidence = _egg_drop_evidence(cur, tactic['card'])
@@ -1037,7 +1048,7 @@ def battle_step(screen: Screen, mem):
                     **({'egg_drop': drop_evidence,
                         'egg_plan': {key: egg_plan.get(key) for key in
                                      ('threat', 'deny_opening_egg', 'id_sum', 'droppers',
-                                      'dropper', 'max_hp_sum',
+                                      'dropper', 'max_hp_sum', 'kit_source',
                                       'remainder', 'egg_state')}}
                        if drop_evidence else {}),
                     resulting_event='card_planned')
@@ -1095,6 +1106,12 @@ def battle_step(screen: Screen, mem):
             rescue['pending_opens'] = rescue.get('pending_opens', 0) + 1
             rescue['menu_ticks'] = 0
             return _human_menu_open(cur, 'survival', mem)
+    # #4456: a defense battle has no sortie kit. Read the real きりふだ list
+    # once (bounded) before falling back to melee; existing rescue/retreat and
+    # chart-card priorities above have already had their turn. No selection.
+    kit_read = _defense_kit_read_open(mem, cur)
+    if kit_read is not None:
+        return kit_read
     return _melee_step(mem, cur)
 
 
@@ -1321,6 +1338,39 @@ def _defender_egg_open(mem, cur):
             expected_metric='実メニューの奥の手と現在カーソルを確認して選択',
             reason='味方の卵・札が使えず敵の召喚危険が目前のため、連打を止めて奥の手を確認する')
     return _human_menu_open(cur, 'defender_egg', mem)
+
+
+def _defense_kit_read_open(mem, cur):
+    """#4456: open the real きりふだ list once, bounded, for a defense kit.
+
+    Uses the existing card_flow menu-open path (and the existing defense open
+    budget); no parallel menu mechanism and no selection/consumption. The read
+    itself is done by battle_menus.card_list_step.
+    """
+    window = _defense_kit_read_window(mem, cur)
+    if not window or not window['due']:
+        return None
+    guard = cur.setdefault('defense_egg_kit_read', {'opens': 0})
+    if guard.get('exhausted') or guard.get('read_done'):
+        return None
+    if guard['opens'] >= DEFENDER_EGG_OPEN_LIMIT:
+        guard['exhausted'] = True
+        _record(mem, 'battle_defense_kit_read_failed', **_battle_labels(cur),
+                observed_metric={**window, 'open_attempt': guard['opens'],
+                                 'limit': DEFENDER_EGG_OPEN_LIMIT},
+                reason='防衛の実切り札一覧を有限回試したが読めず、kit_unknown のまま fail-closed で戻る')
+        return None
+    guard['opens'] += 1
+    # A read-only flow: card is None, so no tactic/list selection can consume a
+    # card. The existing card_flow branch sends the bounded B to open the menu.
+    cur['card_flow'] = {'card': None, 'stage': 'menu', 'read_kit': True,
+                        'enemy_hp_at_open': cur.get('enemy_hp')}
+    _record(mem, 'battle_defense_kit_read_open', **_battle_labels(cur),
+            observed_metric={**window, 'open_attempt': guard['opens'],
+                             'limit': DEFENDER_EGG_OPEN_LIMIT},
+            expected_metric='実切り札一覧の札名を読む（選択・消費なし）',
+            reason='防衛戦の開幕卵落は携行不明のため、実メニューの札名を有界で読む')
+    return [pad('b')]
 
 
 def battle_end(mem, next_kind, *, defense_continues=False, actor_continues=False,
