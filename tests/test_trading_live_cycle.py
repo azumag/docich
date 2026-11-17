@@ -908,3 +908,39 @@ def test_the_real_bitbank_reader_health_returns_to_continue_after_failures(ws, h
 
     assert reader.health().consecutive_failures == 0
     assert reader.health().last_error_kind is None
+
+
+# ---- f1. repeated decide failures advance the shared failure counter ------------------------
+def test_repeated_decide_failures_advance_the_failure_counter(ws, harnesses):
+    h = harnesses(gate_open=False)
+    rig = make_rig(ws, h)
+    ws.write_enable(h.ps, mode="shadow")
+
+    def decide_down(deps, state, ctx):
+        raise ValueError("decide down")
+
+    rig.deps = replace(rig.deps, decide=decide_down)
+
+    first = run_cycle(rig.deps, rig.state)
+    assert first.outcome is CycleOutcome.CYCLE_FAILED
+    assert first.reason == "decide_failed:ValueError"
+    assert rig.state.consecutive_failures == 1
+
+    second = run_cycle(rig.deps, rig.state)
+    assert second.outcome is CycleOutcome.CYCLE_FAILED
+    assert second.reason == "decide_failed:ValueError"
+    assert rig.state.consecutive_failures == 2
+    assert next_wait(30, rig.state.consecutive_failures) == 60.0
+
+    rig.deps = replace(rig.deps, decide=lambda deps, state, ctx: None)
+    recovered = run_cycle(rig.deps, rig.state)
+    assert recovered.outcome is CycleOutcome.CONTINUE
+    assert rig.state.consecutive_failures == 0
+
+
+# ---- f2. the pure backoff helper must not overflow for absurd failure counts ----------------
+def test_next_wait_never_overflows():
+    assert next_wait(30.0, 1025) == 300.0
+    assert next_wait(30.0, 10 ** 6) == 300.0
+    assert next_wait(400.0, 10 ** 6) == 400.0
+    assert next_wait(30.0, 5) == 300.0

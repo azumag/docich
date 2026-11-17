@@ -312,6 +312,7 @@ def _run_cycle(deps: CycleDeps, state: CycleState) -> CycleReport:
             except LeaseLost as exc:
                 return _lease_lost(deps, state, mode, now, str(exc), block_reasons, frames, stale)
             except Exception as exc:
+                state.consecutive_failures += 1
                 return _finish(deps, state, CycleOutcome.CYCLE_FAILED, mode,
                                f"decide_failed:{type(exc).__name__}", block_reasons, frames,
                                stale, now)
@@ -371,5 +372,5 @@ def next_wait(interval: float, consecutive_failures: int) -> float:
         raise ValueError("interval must be at least 30 seconds")
     if consecutive_failures <= 0:
         return float(interval)
-    backoff = interval * 2 ** (consecutive_failures - 1)
+    backoff = interval * 2 ** min(consecutive_failures - 1, 16)
     return float(max(interval, min(backoff, 300.0)))
