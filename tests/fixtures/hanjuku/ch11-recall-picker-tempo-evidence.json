@@ -1,0 +1,180 @@
+{
+  "source_state_sha256": "4919b3bd8163124525c1e637c21cdf9207bcf11c5dd73cdc51c5165edc1d6af5",
+  "chapter": 11,
+  "owned": [
+    "アルマムーン",
+    "チリベット",
+    "タプロベイン",
+    "ジャンセニア",
+    "ゴンダル",
+    "マランマ"
+  ],
+  "results": [
+    {
+      "cycle_frames": 90,
+      "route": [
+        {
+          "castle": [
+            "アルマムーン"
+          ],
+          "cursor": [
+            121.0,
+            150.5
+          ]
+        },
+        {
+          "castle": [
+            "チリベット"
+          ],
+          "cursor": [
+            87.0,
+            150.5
+          ]
+        },
+        {
+          "castle": [
+            "タプロベイン"
+          ],
+          "cursor": [
+            105.0,
+            132.5
+          ]
+        },
+        {
+          "castle": [
+            "ジャンセニア"
+          ],
+          "cursor": [
+            169.0,
+            124.5
+          ]
+        },
+        {
+          "castle": [
+            "ゴンダル"
+          ],
+          "cursor": [
+            175.0,
+            150.5
+          ]
+        },
+        {
+          "castle": [
+            "マランマ"
+          ],
+          "cursor": [
+            79.0,
+            126.5
+          ]
+        },
+        {
+          "castle": [
+            "アルマムーン"
+          ],
+          "cursor": [
+            121.0,
+            150.5
+          ]
+        }
+      ]
+    },
+    {
+      "cycle_frames": 30,
+      "route": [
+        {
+          "castle": [
+            "アルマムーン"
+          ],
+          "cursor": [
+            121.0,
+            150.5
+          ]
+        },
+        {
+          "castle": [
+            "チリベット"
+          ],
+          "cursor": [
+            87.0,
+            150.5
+          ]
+        },
+        {
+          "castle": [
+            "タプロベイン"
+          ],
+          "cursor": [
+            105.0,
+            132.5
+          ]
+        },
+        {
+          "castle": [
+            "ジャンセニア"
+          ],
+          "cursor": [
+            169.0,
+            124.5
+          ]
+        },
+        {
+          "castle": [
+            "ゴンダル"
+          ],
+          "cursor": [
+            175.0,
+            150.5
+          ]
+        },
+        {
+          "castle": [
+            "マランマ"
+          ],
+          "cursor": [
+            79.0,
+            126.5
+          ]
+        },
+        {
+          "castle": [
+            "アルマムーン"
+          ],
+          "cursor": [
+            121.0,
+            150.5
+          ]
+        }
+      ]
+    }
+  ],
+  "limit": "isolated local replay only; no arrival or production timing measured",
+  "date": "2026-11-17",
+  "game_date": "75-5",
+  "button": "down",
+  "hold_frames": 6,
+  "released_frames_after_hold": 2,
+  "scope": "six consecutive native selector hops (one full owned-castle cycle) at 30-frame and 90-frame observation cycles; identical named castles",
+  "frame": {
+    "file": "ch11-recall-picker-tempo-jansenia.png",
+    "png_sha256": "b49bbef26384575d54a2c94377ffefdd207682a3fe40f379b529584945695644",
+    "rgb_sha256": "db2ccc2a349873b1a466a7aeae922718d25a7798fa238950ec7ede34228dd9e9",
+    "cursor": [
+      169.0,
+      124.5
+    ],
+    "flags": {
+      "アルマムーン": "own",
+      "チリベット": "own",
+      "タプロベイン": "own",
+      "ジャンセニア": "own",
+      "ゴンダル": "own",
+      "マランマ": "own",
+      "タタール": "enemy",
+      "クラボニア": "enemy",
+      "トリフェ": "enemy",
+      "アエンタール": "enemy",
+      "ネペンテ": "enemy"
+    }
+  },
+  "method": "isolated local snes9x replay; source save and running game not modified"
+}

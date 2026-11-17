@@ -365,6 +365,7 @@ def _recall_picker_cycles(chapter, flags, nearby, goal):
 def world_map_step(screen, mem, frame):
     """Read every castle's owner from the Y view, then close it with Y
     (or, while a Y jump is running, steer its cursor to the goal castle)."""
+    mem.pop('_menu_navigation_feedback', None)
     if not mem.get('chapter'):
         # g1190 2026-11-16: a chapter transition (or a restored memory) can
         # leave the chapter unset, and the field frames never carry the
@@ -595,6 +596,10 @@ def world_map_step(screen, mem, frame):
             # observation re-reads the cursor and corrects any overshoot.
             if cycle_picker:
                 # Each tap selects a whole castle; holding can skip the goal.
+                # Cadence only: the next actual ring still proves the castle.
+                mem['_menu_navigation_feedback'] = {
+                    'kind': 'world_map', 'menu': 'recall_castles',
+                    'cursor': [round(value) for value in cursor], 'directions': ['down']}
                 return [pad(press)]
             span = abs(dx) if press in ('left', 'right') else abs(dy)
             return [pad(press, _picker_hold_frames(span))]

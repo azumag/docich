@@ -186,6 +186,9 @@ def menu_navigation_feedback(state, actions):
         ('month_menu', 'soldier_quantity'), ('shop_quantity', 'merchant_quantity'))
     if quantity and (len(actions) != 1 or cursor not in ([216, 199], [224, 199])):
         return False
+    if ((reading.get('kind'), reading.get('menu')) == ('world_map', 'recall_castles')
+            and (directions != ['down'] or actions != [pad('down')])):
+        return False
     released_batch = (len(actions) > 1 and
                       (reading.get('kind'), reading.get('menu')) in
                       (('text', 'castle_list'), ('general_list', 'castle_roster'),
