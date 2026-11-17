@@ -448,11 +448,15 @@ def test_opposite_move_legs_are_not_both_planned():
 
 
 def test_a_general_who_sortied_into_the_back_half_returns_to_the_hub():
-    """Owner 2026-11-18 02:3x: back-half veterans always come back through タタール."""
+    """Owner 2026-11-18 02:3x: back-half veterans always come back through タタール.
+
+    With no back-half castle owned, every other answer sends him to the front
+    (the chasm side), so only the explicit hub rule names タタール.
+    """
     from docich.hanjuku.state.regions import flow as _flow
     from docich.hanjuku.strategy.orders import _recall_goal
-    mem = memory([*FRONT, 'タタール', 'クラボニア'])
-    mem['sorties'] = {'S1': {'source': 'タタール', 'target': 'クラボニア', 'status': 'en_route'}}
+    mem = memory([*FRONT, 'タタール'])
+    mem['sorties'] = {'S1': {'source': 'マランマ', 'target': 'クラボニア', 'status': 'en_route'}}
     _flow(mem)['recall'] = {'target': [134, 120], 'sorties': ['S1']}
     assert _recall_goal(mem) == 'タタール'
 
