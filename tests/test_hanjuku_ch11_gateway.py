@@ -550,3 +550,14 @@ def test_the_hero_may_leave_the_home_castle_alone():
     assert hero and hero[0].get('target') == 'タタール', orders
     sit = replan._adjust_situation(mem)
     assert chart_adjust.startable(hero[0], sit) is None
+def test_the_recall_picker_holds_proportionally_to_the_distance():
+    """Owner 2026-11-18: 帰還のカーソル移動が遅すぎて進行を阻害している.
+
+    One 100 ms tap per observation moved the ring a pixel at a time; far
+    castles took many observations and the month scene cut the recall.
+    """
+    from docich.hanjuku.flows.map import _picker_hold_frames
+    assert _picker_hold_frames(2) <= 2
+    assert _picker_hold_frames(8) == 8
+    assert _picker_hold_frames(60) == 56
+    assert _picker_hold_frames(120) == 56

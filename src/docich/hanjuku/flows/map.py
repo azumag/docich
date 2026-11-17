@@ -589,7 +589,15 @@ def world_map_step(screen, mem, frame):
                 # (g1133 00:14:49, ダーラントへ向かうカーソルが止まり取消)。
                 return _picker_fallback(mem, recall, nearby, cursor,
                                         '帰還先カーソルが入力しても動かないため、取り消さず今いる城で確定する')
-            return [pad(press)]
+            # One 100 ms tap per observation walked the ring across the island
+            # a pixel at a time (owner 2026-11-18: 帰還のカーソル移動が遅すぎて
+            # 進行を阻害している). Hold proportionally to what is left; the next
+            # observation re-reads the cursor and corrects any overshoot.
+            if cycle_picker:
+                # Each tap selects a whole castle; holding can skip the goal.
+                return [pad(press)]
+            span = abs(dx) if press in ('left', 'right') else abs(dy)
+            return [pad(press, _picker_hold_frames(span))]
         return _request_recall(mem, recall, goal,
                                [pad('a'), {'type': 'wait', 'ms': 700}, pad('a')])
     flags = world_flags(frame, mem.get('chapter') or 0)
@@ -656,6 +664,20 @@ def world_map_step(screen, mem, frame):
         return []
     mem.pop('world_map_skull_hold', None)
     return _close_world_map(mem)
+
+
+def _picker_hold_frames(span):
+    """Frames to hold for the recall picker's cursor, by remaining distance.
+
+    The old one-tap step moved a view pixel at a time; a far castle took many
+    observations and the month scene cut the recall. Far moves use two frames
+    per pixel (the Y-jump's fast scale) and the last stretch uses one, so the
+    next read can settle on the castle.
+    """
+    size = abs(span)
+    if size <= 24:
+        return max(1, min(16, round(size)))
+    return min(56, max(1, round(size * 2)))
 
 
 def _picker_on_enemy(nearby, flags):
