@@ -98,6 +98,7 @@ KEY_OWNERSHIP = {
     'boss_cancel_cell': {'region': WORLD, 'lifetime': 'chapter', 'migrated': False},  # ボスキャンセル観測セル
     'boss_cell': {'region': WORLD, 'lifetime': 'chapter', 'migrated': False},  # ボス観測セル
     'boss_cell_streak': {'region': WORLD, 'lifetime': 'chapter', 'migrated': False},  # 同上連続観測
+    'boss_skull_unmeasured': {'region': WORLD, 'lifetime': 'chapter', 'migrated': False},  # 髑髏1件外の検出数(#4447)
     'boss_defeated': {'region': WORLD, 'lifetime': 'chapter', 'migrated': False},  # ボス撃破観測
     'boss_hp_history': {'region': WORLD, 'lifetime': 'chapter', 'migrated': False},  # 観測したボスHP履歴
     'boss_hp_seen': {'region': WORLD, 'lifetime': 'chapter', 'migrated': False},  # 観測ボスHP
