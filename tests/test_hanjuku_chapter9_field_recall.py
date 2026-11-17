@@ -280,15 +280,24 @@ def test_a_hunt_sample_records_all_chart_cells(monkeypatch):
     assert len(record['observed_metric']['chart_all']) == 12
 
 
+ROSTER_IDENTITY = {'game': 'hanjuku-hero', 'runtime_id': 'test-run',
+                   'generation': 1, 'lease_id': 'test-lease'}
+
+
+def _complete_roster(*, location='castle', dirty=None, chapter=9, tick=450):
+    return {'complete': True, 'tick': tick, 'identity': dict(ROSTER_IDENTITY),
+            'scope': [chapter, '1-1'], 'dirty': dirty or {},
+            'statuses': {'リーキ': {'location': location}}}
+
+
 def test_a_tent_with_no_camper_in_the_roster_is_not_recalled(monkeypatch):
     """g1190 2026-11-18: cell 128,113 was recalled at every castle, never arrived.
 
     The roster held no camp at all, so the tent-shaped sprite was not a camp.
     """
     monkeypatch.setattr(recall_flow, 'own_camps', lambda frame: [dict(CAMP)])
-    mem = _mem(tick=500, general_statuses={
-        'complete': True, 'tick': 450,
-        'statuses': {'どうし': {'location': 'castle', 'castle': 'アルマムーン'}}})
+    mem = _mem(tick=500, _run_identity=dict(ROSTER_IDENTITY),
+               general_statuses=_complete_roster())
     assert recall_flow.camp_recall_step(MAP, mem, FRAME) is None
     assert 'recall' not in _flow(mem)
     assert any(r.get('decision') == 'camp_sighting_no_camper' for r in mem['_records'])
@@ -296,7 +305,30 @@ def test_a_tent_with_no_camper_in_the_roster_is_not_recalled(monkeypatch):
 
 def test_a_tent_with_a_camper_in_the_roster_still_starts_the_recall(monkeypatch):
     monkeypatch.setattr(recall_flow, 'own_camps', lambda frame: [dict(CAMP)])
-    mem = _mem(tick=500, general_statuses={
-        'complete': True, 'tick': 450,
-        'statuses': {'リーキ': {'location': 'camp'}}})
+    mem = _mem(tick=500, _run_identity=dict(ROSTER_IDENTITY),
+               general_statuses=_complete_roster(location='camp'))
     assert recall_flow.camp_recall_step(MAP, mem, FRAME) is not None
+
+
+def test_dirty_location_does_not_hide_a_real_camp(monkeypatch):
+    monkeypatch.setattr(recall_flow, 'own_camps', lambda frame: [dict(CAMP)])
+    mem = _mem(tick=500, _run_identity=dict(ROSTER_IDENTITY),
+               general_statuses=_complete_roster(dirty={'リーキ': ['location']}))
+    assert recall_flow.camp_recall_step(MAP, mem, FRAME) is not None
+    assert not any(r['decision'] == 'camp_sighting_no_camper' for r in mem['_records'])
+
+
+def test_previous_chapter_roster_does_not_hide_camp(monkeypatch):
+    monkeypatch.setattr(recall_flow, 'own_camps', lambda frame: [dict(CAMP)])
+    mem = _mem(tick=500, _run_identity=dict(ROSTER_IDENTITY),
+               general_statuses=_complete_roster(chapter=8))
+    assert recall_flow.camp_recall_step(MAP, mem, FRAME) is not None
+
+
+def test_pending_join_or_future_roster_does_not_hide_camp(monkeypatch):
+    monkeypatch.setattr(recall_flow, 'own_camps', lambda frame: [dict(CAMP)])
+    for changes in ({'roster_pending_joins': ['新入り']},
+                    {'general_statuses': _complete_roster(tick=501)}):
+        mem = _mem(tick=500, _run_identity=dict(ROSTER_IDENTITY),
+                   general_statuses=_complete_roster(), **changes)
+        assert recall_flow.camp_recall_step(MAP, mem, FRAME) is not None
