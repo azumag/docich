@@ -34,6 +34,8 @@ read -r key_type key_body _ < "$pubkey_file"
 install -d -o root -g root -m 0755 /usr/local/libexec/azumag-vm-ops
 install -o root -g root -m 0644 "$source_dir/ops_brief.py" /usr/local/libexec/azumag-vm-ops/ops_brief.py
 install -o root -g root -m 0644 "$source_dir/projection_io.py" /usr/local/libexec/azumag-vm-ops/projection_io.py
+# #4412: the gateway loads the A/B pre-flight module next to itself.
+install -o root -g root -m 0644 "$source_dir/ab_gate_preflight.py" /usr/local/libexec/azumag-vm-ops/ab_gate_preflight.py
 install -o root -g root -m 0755 "$gateway_source" /usr/local/libexec/azumag-vm-ops/gateway.py
 install -o root -g root -m 0755 "$source_dir/stage_repair.py" /usr/local/libexec/azumag-vm-ops/stage_repair.py
 for helper in gateway_entry.py hanjuku_evidence_gateway.py hanjuku_evidence.py tsuitate_status_gateway.py; do

@@ -9,6 +9,8 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+from ops.vm_actions.tests import _ab_gate_support
+
 ROOT = Path(__file__).resolve().parents[3]
 spec = importlib.util.spec_from_file_location("brief_gateway_test", ROOT / "ops/vm_actions/gateway.py")
 gw = importlib.util.module_from_spec(spec)
@@ -124,6 +126,7 @@ class BriefGenerationTests(unittest.TestCase):
         self.assertIn("ops_brief.py check-source", ops_ci)
         self.assertIn('"$source_dir/ops_brief.py"', (ROOT / "ops/vm_actions/install_vm_gateway.sh").read_text())
         self.assertIn('"$source_dir/projection_io.py"', (ROOT / "ops/vm_actions/install_vm_gateway.sh").read_text())
+        self.assertIn('"$source_dir/ab_gate_preflight.py"', (ROOT / "ops/vm_actions/install_vm_gateway.sh").read_text())
 
     def test_explicit_shared_source_overrides_environment(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -323,6 +326,7 @@ class BriefDeploymentTests(unittest.TestCase):
         gw.git(self.root, "-c", "protocol.file.allow=always", "submodule", "add", "-q", str(self.sub), brief.PROJECTION)
         self.baseline = self.commit(self.root)
         self.live.mkdir()
+        _ab_gate_support.install_clear_gate(self.live)
         (self.live / "prompts").mkdir()
         (self.live / brief.DESTINATION).write_bytes(self.legacy)
         (self.live / "code.txt").write_text("before\n")

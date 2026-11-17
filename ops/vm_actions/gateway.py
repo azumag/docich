@@ -10,6 +10,9 @@ _brief_spec.loader.exec_module(ops_brief)
 _projection_spec=importlib.util.spec_from_file_location('vmops_projection_io',Path(__file__).with_name('projection_io.py'))
 projection_io=importlib.util.module_from_spec(_projection_spec)
 _projection_spec.loader.exec_module(projection_io)
+_ab_gate_spec=importlib.util.spec_from_file_location('vmops_ab_gate',Path(__file__).with_name('ab_gate_preflight.py'))
+ab_gate=importlib.util.module_from_spec(_ab_gate_spec)
+_ab_gate_spec.loader.exec_module(ab_gate)
 
 SHA_RE=re.compile(r'[0-9a-f]{40}\Z')
 MAX_PAYLOAD=128*1024*1024
@@ -144,6 +147,7 @@ REASON_CODES={
  'reviewed candidate object missing':'reconcile_object_missing',
  'presynced reconcile fetch failed':'reconcile_fetch_failed',
  'presynced reconcile refused':'reconcile_refused',
+ 'ab gate refused':'ab_gate_refused',
 }
 
 def reason_code(exc):
@@ -361,6 +365,31 @@ def _projection_guard_event(soren_root):
                  policy=policy if policy in PROJECTION_GUARD_POLICIES else None,
                  recorded_at=recorded if type(recorded) is int else None)
     return entry
+
+
+# #4412: the deploy/reconcile plane must not overwrite live soviet_now bytes
+# while an A/B experiment is running. The gate lives in the runtime projection,
+# not in docich state, so it sees the same signals the runtime does.
+AB_GATE_PROJECTION = 'games/soviet_now'
+AB_GATE_MARKER_DIR = 'ab-gate'
+AB_GATE_HELPER_RC = 66  # REASON_AB_GATE_REFUSED in reconcile_presynced_submodule.py
+
+
+def _ab_gate_projection_root(cfg, repo):
+    value = cfg['repos'][repo].get('projections', {}).get(AB_GATE_PROJECTION)
+    return Path(value) if isinstance(value, str) and value else None
+
+
+def _enforce_ab_gate(cfg, repo, operation, log=None):
+    """Fail-closed A/B check before the first live projection byte write."""
+    root = _ab_gate_projection_root(cfg, repo)
+    if root is None:
+        return 'skipped'
+    marker = state_root(cfg)/AB_GATE_MARKER_DIR/f'{operation}.json'
+    try:
+        return ab_gate.check(root, marker=marker, log=log, operation=operation)
+    except ab_gate.GateRefused as exc:
+        raise ValueError('ab gate refused') from exc
 
 
 def _bundle_storage_review(cfg,repo,now=None,max_entries=BUNDLE_DIAGNOSTICS_MAX_ENTRIES):
@@ -941,6 +970,10 @@ def deploy_git(cfg,repo,sha):
     head=git(root,'rev-parse','HEAD')
     if not SHA_RE.fullmatch(head): raise ValueError('tracked VM drift detected')
     if not bundle.is_file(): raise ValueError('bundle missing')
+    # #4412: check the A/B gate against the currently live projection before
+    # starting the transaction that will write /home/ubuntu/soren. A refusal
+    # here leaves no deployment_intent and touches no live bytes.
+    _enforce_ab_gate(cfg, repo, 'deploy-'+sha[:12])
     projection_plans=[]
     applied=[]
     intent_written=False
@@ -1002,6 +1035,9 @@ def deploy_git(cfg,repo,sha):
         sync_owned_submodules(root)
         projection_plans,remaining=_plan_projections(
             cfg,repo,root,projection_base,sha,state.get("pending_repairs", []))
+        # #4412: re-check right before the first live byte write. An A/B may
+        # have started while the bundle import/checkout/plan was in progress.
+        _enforce_ab_gate(cfg, repo, 'deploy-'+sha[:12]+'-apply')
         for changes in projection_plans:
             applied.append(changes)
             _apply_projection(changes)
@@ -1416,6 +1452,10 @@ def reconcile_presynced(cfg, repo, target, sha):
     # name; the real verdict overwrites it on the success path (DSH #3344).
     gc_verdict = {'status': 'unavailable'}
     with os.fdopen(fd, 'wb') as out:
+        # #4412: gate the live projection before the reviewed helpers can
+        # write its bytes. The helper repeats the check just before its first
+        # write (defense in depth); the durable marker is owned here.
+        _enforce_ab_gate(cfg, repo, f'reconcile-{opid}', log=out)
         # Candidate objects already uploaded with the deploy bundle are
         # authoritative once hash-verified; the protected-main refresh is
         # best-effort so a transient fetch failure cannot wedge recovery.
@@ -1443,6 +1483,14 @@ def reconcile_presynced(cfg, repo, target, sha):
             [str(root), old_root, old_sub, new_sub, RECONCILE_SUBMODULE, *attest],
             out,
         )
+        if rc == AB_GATE_HELPER_RC:
+            # The helper re-checks the gate immediately before its first live
+            # write. Record an A/B that started after our pre-check as a
+            # durable refusal too; the operation log already has its verdict.
+            try:
+                _enforce_ab_gate(cfg, repo, f'reconcile-{opid}-helper', log=out)
+            except ValueError:
+                pass
         if rc != 0:
             raise ValueError('presynced reconcile refused')
         # #3344: the protected-main fetch above also grows production .git;
