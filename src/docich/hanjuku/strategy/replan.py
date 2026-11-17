@@ -783,6 +783,12 @@ def interim_candidates(mem, allow_sole=False) -> dict:
         # A lost castle in the middle of the road is the next one again.
         road_next = chart.corridor_next(chapter, owned)
         targets = [c for c in targets if c == road_next]
+    gate = chart.gateway(chapter)
+    if gate and gate['hub'] not in owned:
+        # The hub separates two halves of the map (owner 2026-11-17, chapter
+        # 11): while it is the enemy's, nothing beyond it can be reached, so a
+        # sortie there just walks back. Keep the army on the hub and the front.
+        targets = [c for c in targets if c not in gate['back']]
     # Owner 2026-11-02 (ボス城へ余剰兵力を連続投入): while the boss chain is
     # held and the boss unbeaten, send every spare general at it in successive
     # waves — the charted single sortie is not the only assault. The in-flight
