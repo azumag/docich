@@ -1195,8 +1195,22 @@ def interim_candidates(mem, allow_sole=False) -> dict:
     # spare general per plan from a front castle into the hub so the back-half
     # waves have depth instead of one defender at a time.
     gate = chart.gateway(chapter)
-    if gate and gate['hub'] in owned and any(c not in owned for c in gate['back']):
+    stage_lost_hub = bool(gate and gate['hub'] not in owned)
+    if gate and (gate['hub'] in owned or stage_lost_hub) and (
+            stage_lost_hub or any(c not in owned for c in gate['back'])):
         hub = gate['hub']
+        if stage_lost_hub:
+            # The hub is the enemy's, so the army has nowhere to stage: g1190
+            # 2026-11-18 kept 17 generals at home while every front castle held
+            # one, and each hub retake marched the whole island. Stage the
+            # spares at the own castle nearest the hub and START with that move
+            # so it is not queued behind the retake waves.
+            # Staging at the home castle would only move the army home: pick
+            # the own front castle nearest the hub that is not the home one.
+            front_owned = [c for c in owned if c in gate['front'] and c != home]
+            if front_owned:
+                hub = min(front_owned,
+                          key=lambda c: (_distance(chapter, c, gate['hub']), c))
         hub_busy = busy | {g for o in moves for g in (o.get('general'),) if isinstance(g, str)}
         gather = []
         for source in (c for c in owned if c in gate['front'] and c != hub):
@@ -1215,6 +1229,7 @@ def interim_candidates(mem, allow_sole=False) -> dict:
         for source, spares in gather[:HUB_GATHER_PER_PLAN]:
             moves.append({'general': spares[0], 'target': hub, 'cards': [], 'source': source,
                           'after': None, 'purpose': 'move',
+                          **({'stage_first': True} if stage_lost_hub else {}),
                           'note': f"暫定: 後半へ備えて{_general_label(spares[0])}を{source}から"
                                   f"中央の{hub}へ集める"})
     # A pending 四季王 site order with no companion needs an egg pair at one
@@ -1351,11 +1366,20 @@ def interim_candidates(mem, allow_sole=False) -> dict:
     waves = [o for o in sorties['attack'] if chart.is_boss_castle(o.get('target'))]
     attacks = [o for o in sorties['attack'] if not chart.is_boss_castle(o.get('target'))]
     lead = [*known_retakes, *moves, *unread_retakes]
+    # A lost hub leaves the army at home; the staging move leads so the next
+    # month's wave starts from a castle near the hub instead of the home
+    # castle (g1190 2026-11-18, #4495).
+    stage_first = [o for o in moves if o.get('stage_first')]
     # A stalled retake no longer gates the boss, so the boss wave leads: the
     # failing retake would otherwise take the front slot every cycle.
-    front = [] if retakes_stalled else lead[:1]
-    for order in (*front, *staffing, *waves, *boss_wave_orders,
-                  *(lead if retakes_stalled else lead[1:]),
+    if stage_first and not retakes_stalled:
+        front = stage_first[:1]
+        tail = [o for o in lead if o is not stage_first[0]]
+    elif retakes_stalled:
+        front, tail = [], lead
+    else:
+        front, tail = lead[:1], lead[1:]
+    for order in (*front, *staffing, *waves, *boss_wave_orders, *tail,
                   *attacks, *stage_more, *rotation, *wave_orders):
         # A generic source-list probe at a measured one-general castle is
         # not a feasible sortie. Only an arrival or a new joiner expected at

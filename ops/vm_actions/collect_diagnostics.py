@@ -7614,6 +7614,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v1020-recall-picker-cycle",
             "hanjuku-chart-v1022-plan-invalid-source",
             "hanjuku-chart-v1023-hub-guard",
+            "hanjuku-chart-v1024-staging-first",
             "hanjuku-chart-v1020-recall-giveup",
             "hanjuku-chart-v1021-plan-invalid-source",
             "hanjuku-chart-v985-roster-lost",
