@@ -151,6 +151,18 @@ def build_decisions(deps: "CycleDeps", state: "CycleState", ctx: "CycleContext")
             continue
         books[symbol] = book
 
+    # ---- a book can age while the later books are fetched serially --------------------
+    # The per-fetch check above cannot see a book that was fresh then and is old by the
+    # time the whole loop (up to 10 s per fetch) has finished: filter once more on the
+    # clock the sizing call will use.  Dropping the book drops the symbol's entries and
+    # exits exactly as the first check does.
+    sized_at = deps.clock()
+    for symbol in sorted(tuple(books)):
+        if sized_at * 1000 - books[symbol].exchange_ts_ms > BOOK_MAX_AGE_S * 1000:
+            current, dropped = _drop_symbol(current, symbol, "stale_book")
+            skip_decisions.extend(dropped)
+            del books[symbol]
+
     # ---- markets: rules + a fresh frame + a good book ---------------------------------
     markets: dict[str, SymbolMarket] = {}
     for symbol in sorted(books):
@@ -215,7 +227,14 @@ def build_decisions(deps: "CycleDeps", state: "CycleState", ctx: "CycleContext")
         for plan in result.buys:
             skip_decisions.append(SkipDecision(plan.opportunity_id, plan.symbol,
                                                "cycle_budget", side="buy"))
-        result = dataclasses.replace(result, buys=())
+        # Re-size without the buy opportunities: dropping only the plan tuples would leave
+        # free_quote_left/headroom_left (and the residual ids) reflecting buys that are not
+        # kept.  The sells are the same, and the first result's skips are kept as-is.
+        rerun_attempts = sell_attempts_for(deps.ledger, current.exits, inputs.held,
+                                           deps.policy_set)
+        rerun = call_size(dataclasses.replace(current, entries=()), markets,
+                          rerun_attempts)
+        result = dataclasses.replace(rerun, skipped=result.skipped)
 
     # ---- dust positions become residual inventory --------------------------------------
     if result is not None:
@@ -231,11 +250,14 @@ def build_decisions(deps: "CycleDeps", state: "CycleState", ctx: "CycleContext")
                                                    "residual_mark_failed", side="sell"))
                 continue
             try:
+                # The sizer's own min_lot: min_amount 0 still reports dust against the
+                # amount_step, so the ledger must see the same effective minimum.
                 deps.ledger.mark_residual_inventory(
                     deps.lease, position_id, now=ctx.now,
-                    min_amount=rule.min_amount, amount_step=rule.amount_step,
+                    min_amount=max(rule.min_amount, rule.amount_step),
+                    amount_step=rule.amount_step,
                 )
-            except LiveLedgerError:
+            except (LiveLedgerError, ValueError):
                 skip_decisions.append(SkipDecision(position_id, symbol,
                                                    "residual_mark_failed", side="sell"))
 

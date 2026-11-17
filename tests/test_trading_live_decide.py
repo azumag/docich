@@ -653,7 +653,8 @@ def test_the_cycle_budget(ws, harnesses, monkeypatch):
                and row.payload["symbol"] == "OAS/JPY" for row in rows)
 
     # (b) the clock crosses the budget only after the real sizing call: buys are dropped,
-    # sells stay.  The dry run is call 1, the real call is call 2.
+    # sells stay.  The dry run is call 1, the real call is call 2, and the buy-free
+    # re-run is call 3.
     h.clock.advance(-41)
     assert rig.clock() == NOW
     buy = opportunity("XYM/JPY", "buy", oid="buy-2")
@@ -677,8 +678,9 @@ def test_the_cycle_budget(ws, harnesses, monkeypatch):
     state = CycleState(cycle_number=1)
     second = build_decisions(rig.deps, state, make_ctx(rig))
 
-    assert len(calls) == 2
-    assert sized_buys[-1] == 1                 # the real call did plan the buy
+    assert len(calls) == 3
+    assert sized_buys[:2] == [1, 1]           # the dry run and the real call planned the buy
+    assert sized_buys[-1] == 0                # the buy-free re-run plans no buy
     assert second.over_budget is True
     assert second.result is not None
     assert second.result.buys == ()
@@ -1135,12 +1137,14 @@ def test_buys_are_kept_at_exactly_the_budget_after_sizing(ws, harnesses, monkeyp
     assert at_budget.result is not None and len(at_budget.result.buys) == 1
     assert at_budget.result.buys[0].symbol == "OAS/JPY"
 
-    # One millisecond later the same real call plans the buy and the budget drops it.
+    # One millisecond later the same real call plans the buy, the budget drops it, and the
+    # buy-free re-run is call 3.
     h.clock.advance(-40)
     assert rig.clock() == NOW
     over, calls, sized_buys = run(40.001, CycleState(cycle_number=1))
-    assert len(calls) == 2
-    assert sized_buys[-1] == 1
+    assert len(calls) == 3
+    assert sized_buys[:2] == [1, 1]
+    assert sized_buys[-1] == 0
     assert rig.clock() - NOW > decide_module.CYCLE_BUDGET_S
     assert over.over_budget is True
     assert over.result is not None and over.result.buys == ()
@@ -1180,3 +1184,345 @@ def test_dedupe_prune_keeps_the_entry_at_exactly_the_cutoff(ws, harnesses, monke
     assert drop_key not in state.dedupe
     assert state.dedupe[new_key] == 5000
     assert len(state.dedupe) == 2
+
+
+# ---- m1/m3 fixtures: the writer lease is per-layout, so a second Harness needs a second
+# workspace; the alt fixtures mirror ``ws``/``harnesses`` without changing them.
+@pytest.fixture
+def ws_alt():
+    """A second workspace: the writer lease is per-layout, so a second Harness needs one."""
+    workspace = Workspace()
+    yield workspace
+    workspace.cleanup()
+
+
+@pytest.fixture
+def harnesses_alt(ws_alt):
+    made = []
+
+    def make(**kw):
+        harness = Harness(ws_alt, **kw)
+        made.append(harness)
+        return harness
+
+    yield make
+    for harness in made:
+        harness.close()
+
+
+# ---- m1: a zero exchange minimum must not abort the dust mark ----------------------------
+def test_dust_with_a_zero_exchange_minimum_is_marked_not_fatal(ws, ws_alt, harnesses,
+                                                               harnesses_alt,
+                                                               monkeypatch):
+    """min_amount 0: the sizer's min_lot still reports the dust, and the mark must see it."""
+    h = harnesses(symbols=("OAS/JPY", "XYM/JPY"))
+    ps = policy_set_for("OAS/JPY", "XYM/JPY")
+    store(h, ps)
+    rules = {"OAS/JPY": rule(min_amount="0"), "XYM/JPY": rule("XYM/JPY")}
+    h.mock.adjust_balance("OAS", "0.005")
+    dust = fill_position(h, ps, amount="0.005", price="100", key="dust-oas")
+    rig = make_rig(ws, h, ps=ps, rules=rules, symbols=("OAS/JPY", "XYM/JPY"))
+    exit_opportunity = opportunity("OAS/JPY", "sell", oid="exit-1")
+    monkeypatch.setattr(decide_module, "scan_live",
+                        lambda *a, **k: LiveSignals((), (exit_opportunity,), (), {}))
+
+    # The exchange minimum is 0, but the sizer's min_lot is the 0.01 amount_step: the
+    # position is residual inventory and the mark gets that min_lot, not the raw 0.
+    built = build_decisions(rig.deps, rig.state, make_ctx(rig))
+
+    assert built.result is not None
+    assert built.result.sells == ()
+    assert built.result.residual_position_ids == (dust.position_id,)
+    assert views.open_position_rows(h.ledger) == []
+    assert position_status(h.ledger, dust.position_id) == "residual_inventory"
+    assert not any(str(skip.reason_code) == "residual_mark_failed"
+                   for skip in built.result.skipped)
+
+    # A ValueError from the ledger (not just LiveLedgerError) is a skip, never a cycle
+    # abort: the remaining symbol is still sized and recorded.
+    h2 = harnesses_alt(symbols=("OAS/JPY", "XYM/JPY"))
+    ps2 = policy_set_for("OAS/JPY", "XYM/JPY")
+    store(h2, ps2)
+    h2.mock.adjust_balance("OAS", "0.005")
+    dust2 = fill_position(h2, ps2, amount="0.005", price="100", key="dust-oas-2")
+    rig2 = make_rig(ws_alt, h2, ps=ps2, rules=rules, symbols=("OAS/JPY", "XYM/JPY"))
+    entry = opportunity("XYM/JPY", "buy", oid="buy-xym")
+    exit2 = opportunity("OAS/JPY", "sell", oid="exit-2")
+    monkeypatch.setattr(decide_module, "scan_live",
+                        lambda *a, **k: LiveSignals((entry,), (exit2,), (), {}))
+
+    def refuse_mark(*args, **kwargs):
+        raise ValueError("min_amount must be positive")
+
+    monkeypatch.setattr(h2.ledger, "mark_residual_inventory", refuse_mark)
+    failed = build_decisions(rig2.deps, CycleState(cycle_number=1), make_ctx(rig2))
+
+    assert failed.result is not None
+    assert failed.result.residual_position_ids == (dust2.position_id,)
+    assert len(failed.result.buys) == 1 and failed.result.buys[0].symbol == "XYM/JPY"
+    assert position_status(h2.ledger, dust2.position_id) == "open"
+    payloads = [row.payload for row in decision_rows(h2.ledger)]
+    assert any(payload["action"] == "skip"
+               and payload["reason"] == "residual_mark_failed"
+               and payload["symbol"] == "OAS/JPY"
+               and payload["side"] == "sell" for payload in payloads)
+    assert any(payload["action"] == "plan"
+               and payload["side"] == "buy"
+               and payload["symbol"] == "XYM/JPY" for payload in payloads)
+
+
+# ---- m2: a book can age while the later books are fetched serially -----------------------
+def test_a_book_that_aged_while_other_books_were_fetched_is_dropped(ws, harnesses,
+                                                                    monkeypatch):
+    """The first check sees each fetch; the second check sees the clock at sizing time."""
+    symbols = ("OAS/JPY", "XYM/JPY", "ZEC/JPY")
+    h = harnesses(symbols=symbols)
+    ps = policy_set_for(*symbols)
+    store(h, ps)
+    rules = {symbol: rule(symbol) for symbol in symbols}
+    rig = make_rig(ws, h, ps=ps, rules=rules, symbols=symbols)
+    for symbol in symbols:
+        rig.reader.books[symbol] = book(symbol, ts=int(NOW * 1000))
+    real_fetch = rig.reader.fetch_order_book
+    fetch_step = {"seconds": 10.0}
+
+    def fetch_and_advance(symbol, *, depth=20):
+        h.clock.advance(fetch_step["seconds"])
+        return real_fetch(symbol, depth=depth)
+
+    monkeypatch.setattr(rig.reader, "fetch_order_book", fetch_and_advance)
+
+    # Two entries, +10 s per fetch: OAS is 10 s old at its own (fresh) check, then XYM is
+    # 20 s old at its check.  By the time sizing would run the clock is NOW+20, so even the
+    # first book (fresh when fetched) is now over 15 s old.
+    first_entries = (opportunity("OAS/JPY", "buy", oid="buy-oas"),
+                     opportunity("XYM/JPY", "buy", oid="buy-xym"))
+    monkeypatch.setattr(decide_module, "scan_live",
+                        lambda *a, **k: LiveSignals(first_entries, (), (), {}))
+    first = build_decisions(rig.deps, rig.state, make_ctx(rig))
+
+    assert rig.reader.book_calls == [("OAS/JPY", 20), ("XYM/JPY", 20)]
+    assert rig.clock() == NOW + 20
+    assert first.result is None
+    assert first.signals.entries == ()
+    assert [(row.payload["symbol"], row.payload["side"], row.payload["reason"])
+            for row in decision_rows(h.ledger)] == [
+        ("XYM/JPY", "buy", "stale_book"),   # stale at the first check
+        ("OAS/JPY", "buy", "stale_book"),   # accepted at the first check, stale at sizing
+    ]
+
+    # Three entries, +6 s per fetch: ZEC is 18 s old at its own (first) check; at sizing
+    # time the clock is NOW+18, so OAS (18 s) and XYM (18 s) are dropped by the second
+    # check too.  Nothing may reach sizing.
+    h.clock.advance(-20)
+    assert rig.clock() == NOW
+    fetch_step["seconds"] = 6.0
+    rig.reader.book_calls.clear()
+    three_entries = (opportunity("OAS/JPY", "buy", oid="buy-oas-3"),
+                     opportunity("XYM/JPY", "buy", oid="buy-xym-3"),
+                     opportunity("ZEC/JPY", "buy", oid="buy-zec-3"))
+    monkeypatch.setattr(decide_module, "scan_live",
+                        lambda *a, **k: LiveSignals(three_entries, (), (), {}))
+    before = len(decision_rows(h.ledger))
+    second = build_decisions(rig.deps, CycleState(cycle_number=1), make_ctx(rig))
+
+    assert rig.reader.book_calls == [("OAS/JPY", 20), ("XYM/JPY", 20), ("ZEC/JPY", 20)]
+    assert rig.clock() == NOW + 18
+    assert second.result is None
+    assert second.signals.entries == ()
+    assert [(row.payload["symbol"], row.payload["side"], row.payload["reason"])
+            for row in decision_rows(h.ledger)[before:]] == [
+        ("ZEC/JPY", "buy", "stale_book"),   # stale at the first check
+        ("OAS/JPY", "buy", "stale_book"),   # stale at the second check (18 > 15)
+        ("XYM/JPY", "buy", "stale_book"),   # stale at the second check (18 > 15)
+    ]
+
+    # Two entries, +6 s per fetch: at sizing time both books are 12 s old (<= 15), so the
+    # second check keeps them and both buys are planned.
+    h.clock.advance(-18)
+    assert rig.clock() == NOW
+    rig.reader.book_calls.clear()
+    fresh_entries = (opportunity("OAS/JPY", "buy", oid="buy-oas-fresh"),
+                     opportunity("XYM/JPY", "buy", oid="buy-xym-fresh"))
+    monkeypatch.setattr(decide_module, "scan_live",
+                        lambda *a, **k: LiveSignals(fresh_entries, (), (), {}))
+    before = len(decision_rows(h.ledger))
+    third = build_decisions(rig.deps, CycleState(cycle_number=1), make_ctx(rig))
+
+    assert rig.reader.book_calls == [("OAS/JPY", 20), ("XYM/JPY", 20)]
+    assert rig.clock() == NOW + 12
+    assert third.result is not None
+    assert {plan.symbol for plan in third.result.buys} == {"OAS/JPY", "XYM/JPY"}
+    new_rows = decision_rows(h.ledger)[before:]
+    assert {row.payload["symbol"] for row in new_rows} == {"OAS/JPY", "XYM/JPY"}
+    assert not any(row.payload["reason"] == "stale_book" for row in new_rows)
+
+
+# ---- m3: the dropped buys must not keep their free_quote/headroom footprint --------------
+def test_dropping_buys_for_the_budget_restores_the_leftovers(ws, ws_alt, harnesses,
+                                                             harnesses_alt, monkeypatch):
+    """The budget drop re-runs sizing without the buys, so the leftovers match a no-buy run."""
+    # Case A: one entry, no exits.  Capital 10000, nothing deployed, free_quote 10000.
+    h = harnesses()
+    ps = policy_set_for("OAS/JPY")
+    store(h, ps)
+    rig = make_rig(ws, h, ps=ps, rules={"OAS/JPY": rule()})
+    buy = opportunity("OAS/JPY", "buy", oid="buy-1")
+    monkeypatch.setattr(decide_module, "scan_live",
+                        lambda *a, **k: LiveSignals((buy,), (), (), {}))
+    real_size = decide_module.size_orders
+    calls: list[int] = []
+    sized_entries: list[int] = []
+
+    def wrapper(signals_arg, policy_set_arg, markets_arg, held_arg, funds_arg, **kwargs):
+        out = real_size(signals_arg, policy_set_arg, markets_arg, held_arg, funds_arg,
+                        **kwargs)
+        calls.append(1)
+        sized_entries.append(len(signals_arg.entries))
+        if len(calls) == 2:          # the dry run is call 1, the real call is call 2
+            h.clock.advance(41)
+        return out
+
+    monkeypatch.setattr(decide_module, "size_orders", wrapper)
+    over = build_decisions(rig.deps, rig.state, make_ctx(rig))
+
+    assert over.over_budget is True
+    assert over.result is not None
+    assert over.result.buys == () and over.result.sells == ()
+    # The buy-free re-run is call 3: no entry reaches it, and the leftovers are the full
+    # starting free quote / capital rather than the first result's after-buy numbers.
+    assert len(calls) == 3
+    assert sized_entries == [1, 1, 0]
+    assert over.result.free_quote_left == over.inputs.funds.free_quote == D("10000")
+    assert over.result.headroom_left == D("10000")
+
+    # Control: the same cycle with no buy opportunity at all (the exit has no position).
+    h.clock.advance(-41)
+    assert rig.clock() == NOW
+    monkeypatch.setattr(decide_module, "size_orders", real_size)
+    no_buy = LiveSignals((), (opportunity("OAS/JPY", "sell", oid="exit-no-position"),), (), {})
+    monkeypatch.setattr(decide_module, "scan_live", lambda *a, **k: no_buy)
+    control = build_decisions(rig.deps, CycleState(cycle_number=1), make_ctx(rig))
+    assert control.result is not None
+    assert control.result.buys == () and control.result.sells == ()
+    assert over.result.free_quote_left == control.result.free_quote_left
+    assert over.result.headroom_left == control.result.headroom_left
+
+    # Case B: a sell is kept (same symbol as the buy, as in g7(b), so there is one market
+    # and exactly one dry run).  Its effect on free_quote_left/headroom_left must be the
+    # same as a control run with the same sell and no buy.
+    h2 = harnesses_alt(symbols=("XYM/JPY",))
+    ps2 = policy_set_for("XYM/JPY")
+    store(h2, ps2)
+    h2.mock.adjust_balance("XYM", "10")
+    fill_position(h2, ps2, symbol="XYM/JPY", amount="10", price="100", key="hold-xym")
+    rig2 = make_rig(ws_alt, h2, ps=ps2, rules={"XYM/JPY": rule("XYM/JPY")},
+                    symbols=("XYM/JPY",))
+    buy2 = opportunity("XYM/JPY", "buy", oid="buy-2")
+    sell2 = opportunity("XYM/JPY", "sell", oid="exit-2")
+    monkeypatch.setattr(decide_module, "scan_live",
+                        lambda *a, **k: LiveSignals((buy2,), (sell2,), (), {}))
+    real_size2 = decide_module.size_orders
+    calls2: list[int] = []
+    sized_entries2: list[int] = []
+
+    def wrapper2(signals_arg, policy_set_arg, markets_arg, held_arg, funds_arg, **kwargs):
+        out = real_size2(signals_arg, policy_set_arg, markets_arg, held_arg, funds_arg,
+                         **kwargs)
+        calls2.append(1)
+        sized_entries2.append(len(signals_arg.entries))
+        if len(calls2) == 2:
+            h2.clock.advance(41)
+        return out
+
+    monkeypatch.setattr(decide_module, "size_orders", wrapper2)
+    dropped = build_decisions(rig2.deps, rig2.state, make_ctx(rig2))
+
+    assert dropped.over_budget is True
+    assert dropped.result is not None
+    assert dropped.result.buys == ()
+    assert len(dropped.result.sells) == 1 and dropped.result.sells[0].symbol == "XYM/JPY"
+    assert len(calls2) == 3
+    assert sized_entries2 == [1, 1, 0]
+
+    h2.clock.advance(-41)
+    assert rig2.clock() == NOW
+    monkeypatch.setattr(decide_module, "size_orders", real_size2)
+    monkeypatch.setattr(decide_module, "scan_live",
+                        lambda *a, **k: LiveSignals((), (sell2,), (), {}))
+    control2 = build_decisions(rig2.deps, CycleState(cycle_number=1), make_ctx(rig2))
+
+    assert control2.result is not None
+    assert control2.result.buys == () and len(control2.result.sells) == 1
+    assert dropped.result.free_quote_left == control2.result.free_quote_left == D("9000")
+    assert dropped.result.headroom_left == control2.result.headroom_left == D("10000")
+
+
+# ---- m4: the budget drop must not lose the skips the first sizing made -------------------
+def test_budget_drop_keeps_the_skips_of_the_first_sizing(ws, harnesses, monkeypatch):
+    """g7(b) with two entries: sizing skips one itself, and that skip must survive the drop.
+
+    OAS/JPY already has an open buy intent, so the sizer skips its entry with
+    ``open_buy_exists`` and plans the XYM/JPY buy.  The clock crosses the budget only at the
+    real sizing call (after the two dry runs), so the planned buy becomes a ``cycle_budget``
+    skip and sizing is re-run without any entries.  That re-run cannot know about
+    ``open_buy_exists``: the first result's skips must be carried over, and the recorded
+    rows must show both skips exactly once.
+    """
+    h = harnesses(symbols=("OAS/JPY", "XYM/JPY"))
+    ps = policy_set_for("OAS/JPY", "XYM/JPY")
+    store(h, ps)
+    # The real input the sizer reads: an open buy on OAS/JPY is in open_buy_symbols.
+    open_buy(h, ps, symbol="OAS/JPY", amount="1", price="100", key="held-open")
+    rig = make_rig(ws, h, ps=ps, rules={"OAS/JPY": rule(), "XYM/JPY": rule("XYM/JPY")},
+                   symbols=("OAS/JPY", "XYM/JPY"))
+    entries = (opportunity("OAS/JPY", "buy", oid="buy-oas"),
+               opportunity("XYM/JPY", "buy", oid="buy-xym"))
+    monkeypatch.setattr(decide_module, "scan_live",
+                        lambda *a, **k: LiveSignals(entries, (), (), {}))
+
+    real_size = decide_module.size_orders
+    sized_entries: list[int] = []
+    real_skips: list[tuple] = []
+    real_buys: list[tuple[str, ...]] = []
+
+    def wrapper(signals_arg, policy_set_arg, markets_arg, held_arg, funds_arg, **kwargs):
+        out = real_size(signals_arg, policy_set_arg, markets_arg, held_arg, funds_arg,
+                        **kwargs)
+        sized_entries.append(len(signals_arg.entries))
+        if len(signals_arg.entries) == 2:   # the real call: both entries (dry runs see one)
+            real_skips.append(out.skipped)
+            real_buys.append(tuple(plan.symbol for plan in out.buys))
+            h.clock.advance(41)             # the budget is crossed after sizing, not before
+        return out
+
+    monkeypatch.setattr(decide_module, "size_orders", wrapper)
+    built = build_decisions(rig.deps, rig.state, make_ctx(rig))
+
+    # The two dry runs see one entry each, the real call both, and the budget re-run none.
+    assert sized_entries == [1, 1, 2, 0]
+    assert rig.clock() == NOW + 41
+    # Hand-checked first sizing: OAS/JPY is skipped (open buy) and XYM/JPY buys 5 @ 100
+    # (capital 10000, deployed 100, policy fraction 0.30, entry fraction 0.05 -> 500).
+    assert real_buys == [("XYM/JPY",)]
+    assert [(str(skip.opportunity_id), str(skip.reason_code), str(skip.side))
+            for skip in real_skips[0]] == [("buy-oas", "open_buy_exists", "buy")]
+
+    assert built.over_budget is True
+    assert built.result is not None
+    assert built.result.buys == () and built.result.sells == ()
+
+    rows = decision_rows(h.ledger)
+    assert [(row.payload["action"], row.payload["side"], row.payload["symbol"],
+             row.payload["opportunity_id"], row.payload["reason"]) for row in rows] == [
+        ("skip", "buy", "XYM/JPY", "buy-xym", "cycle_budget"),      # (b) the dropped plan
+        ("skip", "buy", "OAS/JPY", "buy-oas", "open_buy_exists"),   # (a) the sizing skip
+    ]
+    # (c) one row per decision: nothing recorded twice, and the dropped buy is not a plan.
+    assert len({(row.payload["action"], row.payload["side"], row.payload["opportunity_id"],
+                 row.payload["reason"]) for row in rows}) == len(rows) == 2
+    assert not any(row.payload["action"] == "plan" for row in rows)
+
+    # The re-run sized no entries, so only the first result can report the OAS skip: this is
+    # exactly that carried-over tuple, not something the re-run could have produced.
+    assert built.result.skipped == real_skips[0]
