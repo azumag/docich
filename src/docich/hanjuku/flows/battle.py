@@ -1661,6 +1661,13 @@ def battle_end(mem, next_kind, *, defense_continues=False, actor_continues=False
     _tally(mem, 'battles_judged')
     from . import camp_recheck as hanjuku_camp_recheck
     hanjuku_camp_recheck.capture(mem, cur)
+    # A field encounter that interrupted a march leaves anchor/near_goal
+    # pointing at the pre-battle camera cell; without the reset nav_step
+    # steers from that stale position and walks to a wrong coordinate.
+    for key in ('anchor', 'near_goal', 'goal_anchor_lock', 'select_used',
+                'nav_search', 'nav_search_leg', 'nav_last', 'nav_pressed', 'nav_still'):
+        mem.pop(key, None)
+    mem['uncertain'] = True
     _maybe_recall_weak_hero(mem, cur, outcome, ally_hp)
     # A battle result may return straight to the map while the post-month
     # status owner is still expecting its pre-battle roster or SELECT menu.
