@@ -223,6 +223,30 @@ UNKNOWN_BATTLE_ADVANCE = 10   # any unreadable frames inside a battle before one
 UNKNOWN_HOLD_BURST_MAX = 3
 
 
+# A sortie in flight keeps the field for this many ticks before the camp
+# recall may re-open its own picker.
+RECALL_YIELD_TO_SORTIE = 300
+
+
+def _sortie_owns_the_field(mem) -> bool:
+    """A march/departure is being steered right now.
+
+    g1190 2026-11-17 20:27: `y_jump_open/confirm` (the sortie flow) and
+    `camp_recall_picker_step` alternated every observation, so the ring was
+    steered at two different castles and looked aimless on screen. One owner
+    at a time: the sortie is the committed action, the recall waits.
+    """
+    from .state.regions import flow as _flow
+    attempt = _flow(mem).get('sortie_attempt')
+    if not isinstance(attempt, dict):
+        return False
+    tick = attempt.get('confirmation_tick')
+    if type(tick) is not int:
+        tick = attempt.get('tick')
+    now = mem.get('tick')
+    return type(tick) is int and type(now) is int and 0 <= now - tick <= RECALL_YIELD_TO_SORTIE
+
+
 def _recall_dialog_wanted(recall, screen, phase, mem) -> bool:
     """Whether the in-flight camp recall owns this screen.
 
@@ -232,6 +256,8 @@ def _recall_dialog_wanted(recall, screen, phase, mem) -> bool:
     minutes and the month scene closed it).
     """
     if not (recall and phase != 'concert'):
+        return False
+    if _sortie_owns_the_field(mem):
         return False
     from .flows import camp_recheck as hanjuku_camp_recheck
     if hanjuku_camp_recheck.owns_dialog(screen, mem):
