@@ -709,7 +709,18 @@ def _apply_skull_boss(mem, frame):
     skulls = y_view_skulls(frame)
     if len(skulls) != 1:
         mem.pop('boss_cell_streak', None)
+        # #4447: a moving-boss chapter that never measures a cell is invisible
+        # until the boss order is expected. Surface how many skull sprites the
+        # view actually drew (0 = none on screen, 2+ = castle sites share the
+        # sprite) so the next whole-island read can be diagnosed. Record only
+        # on a count change to keep the frequent survey quiet.
+        if mem.get('boss_skull_unmeasured') != len(skulls):
+            mem['boss_skull_unmeasured'] = len(skulls)
+            _record(mem, 'boss_skull_unmeasured',
+                    observed_metric={'skulls': len(skulls), 'chapter': chapter},
+                    reason='ボスドクロが1つに検出されないためセル未測定。検出数で原因を切り分ける')
         return
+    mem.pop('boss_skull_unmeasured', None)
     cell = skull_cell_at(skulls[0], chapter)
     if cell is None:
         return
