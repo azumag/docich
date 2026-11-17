@@ -246,3 +246,201 @@ def test_signal_import_without_network_or_side_effects(tmp_path):
         env=dict(os.environ, PYTHONPATH=str(SRC)),
     )
     assert out.stdout.strip() == "clean", out.stderr
+
+
+def exit_spec(
+    experiment_id: str,
+    *,
+    metric: str,
+    op: str = ">=",
+    threshold: str,
+) -> StrategyExperiment:
+    """A spec whose single exit rule is one Condition on an exit metric."""
+    return StrategyExperiment(
+        experiment_id=experiment_id,
+        name=f"{experiment_id} name",
+        thesis=f"{experiment_id} thesis",
+        entry_rules=(
+            Rule(
+                "entry-1",
+                "all",
+                (Condition("return_bps", ">=", D("100"), 3),),
+                D("0.10"),
+            ),
+        ),
+        exit_rules=(
+            Rule(
+                "exit-1",
+                "all",
+                (Condition(metric, op, D(threshold)),),
+                D("0.10"),
+            ),
+        ),
+    )
+
+
+def test_exit_is_evaluated_with_the_held_symbols_own_policy():
+    matching = exit_spec("exp-exit-match", metric="hold_minutes", threshold="10")
+    waiting = exit_spec("exp-exit-wait", metric="hold_minutes", threshold="100000")
+    frames = {
+        "OAS/JPY": frame("OAS/JPY", RISING),
+        "XYM/JPY": frame("XYM/JPY", RISING),
+    }
+    positions = {"OAS/JPY": position("5"), "XYM/JPY": position("5")}
+
+    # A holds the matching policy: only A exits, and B is evaluated with its
+    # own (non-matching) policy so its entry is not suppressed.
+    first = scan_live(
+        frames,
+        positions,
+        policy_set_for((matching, "OAS/JPY"), (waiting, "XYM/JPY")),
+        now=NOW,
+    )
+    assert tuple(item.opportunity_id for item in first.exits) == (
+        f"lab-exit:exp-exit-match:exit-1:OAS/JPY:{int(NOW)}",
+    )
+    assert tuple(item.symbol for item in first.exits) == ("OAS/JPY",)
+    assert tuple(item.opportunity_id for item in first.entries) == (
+        f"lab:exp-exit-wait:entry-1:XYM/JPY:{int(NOW)}",
+    )
+
+    # Mirror: the same policies swapped between the symbols must flip the exit,
+    # so symbol order or a fixed policy cannot decide the result.
+    flipped = scan_live(
+        frames,
+        positions,
+        policy_set_for((waiting, "OAS/JPY"), (matching, "XYM/JPY")),
+        now=NOW,
+    )
+    assert tuple(item.opportunity_id for item in flipped.exits) == (
+        f"lab-exit:exp-exit-match:exit-1:XYM/JPY:{int(NOW)}",
+    )
+    assert tuple(item.symbol for item in flipped.exits) == ("XYM/JPY",)
+    assert tuple(item.opportunity_id for item in flipped.entries) == (
+        f"lab:exp-exit-wait:entry-1:OAS/JPY:{int(NOW)}",
+    )
+
+
+def test_exit_uses_the_average_cost_not_the_total_cost():
+    ps = policy_set_for(
+        (exit_spec("exp-exit-pnl", metric="pnl_bps", threshold="100"), "OAS/JPY")
+    )
+    # cost is 5000 while avg_cost is 90: pnl_bps is about +2090 at 90 and about
+    # -9782 at 5000, so the rule can only fire with the real average cost.
+    basis = CostBasis(
+        net_base=D("5"), cost=D("5000"), avg_cost=D("90"), opened_at=NOW - 3600
+    )
+    result = scan_live(
+        {"OAS/JPY": frame("OAS/JPY", RISING)}, {"OAS/JPY": basis}, ps, now=NOW
+    )
+
+    oid = f"lab-exit:exp-exit-pnl:exit-1:OAS/JPY:{int(NOW)}"
+    assert tuple(item.opportunity_id for item in result.exits) == (oid,)
+    assert result.entries == ()
+    assert result.reason_contexts == {
+        oid: {
+            "kind": "lab_exit",
+            "experiment_id": "exp-exit-pnl",
+            "rule_id": "exit-1",
+            "combine": "all",
+            "conditions": [
+                {
+                    "feature": "pnl_bps",
+                    "observed": "2090.529488888888888888888890",
+                    "threshold": "100",
+                    "op": ">=",
+                    "unit": "net_pnl_bps",
+                }
+            ],
+            "average_price": "90",
+            "last_price": "109",
+            "pnl_bps": "2090.529488888888888888888890",
+            "hold_minutes": "60.0",
+        }
+    }
+
+
+def test_exit_does_not_fire_when_the_average_cost_is_above_the_price():
+    ps = policy_set_for(
+        (exit_spec("exp-exit-pnl-high", metric="pnl_bps", threshold="100"), "OAS/JPY")
+    )
+    # avg_cost 200 is above the 109 last price (pnl_bps about -4559), so the
+    # rule cannot fire.  cost is deliberately far below the price so a
+    # cost-instead-of-avg_cost regression would fire and suppress the entry.
+    basis = CostBasis(
+        net_base=D("5"), cost=D("50"), avg_cost=D("200"), opened_at=NOW - 3600
+    )
+    result = scan_live(
+        {"OAS/JPY": frame("OAS/JPY", RISING)}, {"OAS/JPY": basis}, ps, now=NOW
+    )
+
+    exit_id = f"lab-exit:exp-exit-pnl-high:exit-1:OAS/JPY:{int(NOW)}"
+    entry_id = f"lab:exp-exit-pnl-high:entry-1:OAS/JPY:{int(NOW)}"
+    assert result.exits == ()
+    assert exit_id not in result.reason_contexts
+    assert tuple(item.opportunity_id for item in result.entries) == (entry_id,)
+    assert result.reason_contexts[entry_id]["kind"] == "lab_entry"
+
+
+def test_exit_uses_the_positions_opened_at():
+    ps = policy_set_for(
+        (exit_spec("exp-exit-hold", metric="hold_minutes", threshold="30"), "OAS/JPY")
+    )
+    frames = {"OAS/JPY": frame("OAS/JPY", RISING)}
+    oid = f"lab-exit:exp-exit-hold:exit-1:OAS/JPY:{int(NOW)}"
+
+    held = scan_live(
+        frames, {"OAS/JPY": position("5", opened_at=NOW - 3600)}, ps, now=NOW
+    )
+    assert tuple(item.opportunity_id for item in held.exits) == (oid,)
+    assert held.reason_contexts[oid]["hold_minutes"] == "60.0"
+
+    fresh = scan_live(
+        frames, {"OAS/JPY": position("5", opened_at=NOW - 600)}, ps, now=NOW
+    )
+    assert fresh.exits == ()
+    assert oid not in fresh.reason_contexts
+    assert tuple(item.opportunity_id for item in fresh.entries) == (
+        f"lab:exp-exit-hold:entry-1:OAS/JPY:{int(NOW)}",
+    )
+
+
+def test_exit_reason_contexts_are_merged_into_the_result():
+    ps = policy_set_for(
+        (exit_spec("exp-exit-merged", metric="hold_minutes", threshold="10"), "OAS/JPY"),
+        (exit_spec("exp-entry-merged", metric="hold_minutes", threshold="100000"), "XYM/JPY"),
+    )
+    frames = {
+        "OAS/JPY": frame("OAS/JPY", RISING),
+        "XYM/JPY": frame("XYM/JPY", RISING),
+    }
+    result = scan_live(frames, {"OAS/JPY": position("5")}, ps, now=NOW)
+
+    exit_id = f"lab-exit:exp-exit-merged:exit-1:OAS/JPY:{int(NOW)}"
+    entry_id = f"lab:exp-entry-merged:entry-1:XYM/JPY:{int(NOW)}"
+    assert tuple(item.opportunity_id for item in result.exits) == (exit_id,)
+    assert tuple(item.opportunity_id for item in result.entries) == (entry_id,)
+    assert set(result.reason_contexts) == {exit_id, entry_id}
+    assert len(result.reason_contexts) == 2
+    assert result.reason_contexts[exit_id] == {
+        "kind": "lab_exit",
+        "experiment_id": "exp-exit-merged",
+        "rule_id": "exit-1",
+        "combine": "all",
+        "conditions": [
+            {
+                "feature": "hold_minutes",
+                "observed": "60.0",
+                "threshold": "10",
+                "op": ">=",
+                "unit": "minutes",
+            }
+        ],
+        "average_price": "90",
+        "last_price": "109",
+        "pnl_bps": "2090.529488888888888888888890",
+        "hold_minutes": "60.0",
+    }
+    assert result.reason_contexts[entry_id]["kind"] == "lab_entry"
+    assert result.reason_contexts[entry_id]["experiment_id"] == "exp-entry-merged"
+    assert result.reason_contexts[entry_id]["rule_id"] == "entry-1"
