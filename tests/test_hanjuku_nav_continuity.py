@@ -44,3 +44,17 @@ def test_a_long_gap_does_not_integrate():
            'nav_last': {'tick': 200 - W.NAV_CONTINUITY_TICKS - 1, 'kind': 'map', 'screen': [50, 50]}}
     world = W.update_world(screen((54, 50)), mem, FRAME)
     assert world != [104, 100]
+
+
+def test_the_jump_hold_slows_down_near_the_goal():
+    """Owner 2026-11-18: the cursor reached the castle, then overshot past it.
+
+    The old hold (two frames per view pixel) carried the cursor beyond the goal
+    and the next read steered it back the other way, so the sortie never
+    confirmed. Close range now uses about one frame per pixel.
+    """
+    from docich.hanjuku.os_layer.navigation import _jump_hold_frames
+    assert _jump_hold_frames(2) < 2 * 2
+    assert _jump_hold_frames(8) == 8
+    assert _jump_hold_frames(32) <= 20
+    assert _jump_hold_frames(60) == 56
