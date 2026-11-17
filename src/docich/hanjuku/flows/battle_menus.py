@@ -19,9 +19,9 @@ from ..judgment.battle import (BEHIND_EGG_RATIO_TENTHS, CARD_ANNOUNCE_LIMIT, CAR
                                OKUNOTE_MAX_SELF_DAMAGE, SURVIVAL_CARDS, _available_rare_tactic, _battle_labels,
                                _behind, _card_damage_gate, _card_gate_alternatives, _card_gate_choice,
                                _card_gate_refused, _card_use_unclassified, _command_open_wait, _confirmed_carried_kit, _critical_safe_card,
-                               DEFENDER_EGG_OPEN_LIMIT, DEFENDER_SUMMON_SCROLL_LIMIT, EGG_WALL_DAMAGE,
+                               DEFENDER_EGG_OPEN_LIMIT, DEFENDER_SUMMON_SCROLL_LIMIT, DEFENSE_MENU_READ_LIMIT, EGG_WALL_DAMAGE,
                                _critical_survival_needed, _defender_egg_window, _defender_last_resort, _defender_summon_preempt,
-                               _defender_summon_last_resort,
+                               _defender_summon_last_resort, _defense_kit_read_unread, _egg_drop_trace,
                                _egg_before_retreat, _egg_rescue_pending, _egg_drop_evidence, _hero_retreat_needed, _hold_melee_egg, _melee_balance,
                                _healthy_melee_margin_evidence, _melee_continuation_evidence,
                                _stale_army_melee_hold,
@@ -898,6 +898,20 @@ def battle_menu_step(screen: Screen, mem):
                     observed_metric={'enemy_hp': cur.get('enemy_hp'), 'ally_hp': cur.get('ally_hp')},
                     reason='敵HPが一撃で倒せる値のため、奥の手・卵・切り札を選ばずメニューを閉じて白兵へ戻る')
         return [pad('b')]
+    if flow and flow.get('read_kit'):
+        # #4456: reuse the command-menu navigation to reach きりふだ, then let
+        # card_list_step read the names. No selection and no consumption.
+        flow['command_menu_ticks'] = int(flow.get('command_menu_ticks') or 0) + 1
+        if flow['command_menu_ticks'] > 8:
+            _defense_kit_read_unread(mem, cur, '切り札行へ到達できず上限')
+            return [pad('b')]
+        move = _battle_menu_move(screen, mem, 'きりふだ')
+        if move != 'here':
+            if isinstance(move, dict) and move.get('buttons') == ['b']:
+                _defense_kit_read_unread(mem, cur, '切り札行へ動かないため一覧を開かない')
+            return [move] if move else []
+        flow['stage'] = 'list'
+        return [pad('a')]
     # A newly readable resource invalidates the earlier all-disabled receipt
     # before a pending preemption can select an irreversible command.
     if any(w in BATTLE_MENU for _, _, w in _options(screen)):
@@ -1479,6 +1493,41 @@ def okunote_step(screen, mem):
     return [pad('a')]
 
 
+def _defense_card_kit_read(screen, mem, cur, flow, names):
+    """#4456: read the real きりふだ names only; never select or consume a card.
+
+    A readable, stable list becomes ``cur['defense_card_menu']`` and feeds the
+    judgment layer with a scope-bound kit. An empty/unreadable list is recorded
+    with no names, so the kit stays unknown (fail-closed). Bounded by
+    DEFENSE_MENU_READ_LIMIT, matching the existing unreadable-list pattern.
+    """
+    cur.setdefault('defense_egg_kit_read', {'opens': 1})
+    flow['list_ticks'] = int(flow.get('list_ticks') or 0) + 1
+    scope = {k: cur.get(k) for k in ('enemy', 'ally', 'start_enemy_hp', 'start_ally_hp')}
+    # Only a pair of matching readable observations within the bounded window
+    # can establish the kit. A late first sighting must remain fail-closed.
+    if flow['list_ticks'] > DEFENSE_MENU_READ_LIMIT:
+        cur['defense_card_menu'] = {**scope, 'cards': [], 'readings': flow['list_ticks']}
+        _defense_kit_read_unread(mem, cur, '読取上限までに一致する実一覧を確認できない')
+        return [pad('b'), pad('b')]
+    if not names:
+        flow.pop('kit_names', None)
+        return []
+    cards = list(dict.fromkeys(names))
+    previous = flow.get('kit_names')
+    flow['kit_names'] = cards
+    if previous != cards:
+        return []          # require two consecutive agreeing readable lists
+    cur['defense_card_menu'] = {**scope, 'cards': cards, 'readings': flow['list_ticks']}
+    cur['defense_egg_kit_read']['read_done'] = True
+    cur['card_flow'] = None
+    _record(mem, 'battle_defense_kit_read', **_battle_labels(cur),
+            observed_metric={**scope, 'cards': cards, 'observations': flow['list_ticks']},
+            resulting_event='kit_read_no_selection',
+            reason='防衛戦の実切り札一覧から札名だけを読み、選択・消費せず携行として扱う')
+    return [pad('b'), pad('b')]
+
+
 def card_list_step(screen: Screen, mem):
     """Keep card intention/selection separate from observed consumption."""
     _migrate_card_evidence(mem)
@@ -1504,6 +1553,8 @@ def card_list_step(screen: Screen, mem):
     # its own planning and damage gates. A held event card must be visible.
     if not flow:
         return [pad('b')]
+    if flow.get('read_kit'):
+        return _defense_card_kit_read(screen, mem, cur, flow, names)
     if flow['stage'] == 'list' and flow.get('survival'):
         return _survival_card_list(screen, mem, cur, flow, names)
     if flow['stage'] == 'list':
@@ -1578,6 +1629,10 @@ def card_list_step(screen: Screen, mem):
                 expected_metric='実使用告知', observed_metric={'listed_cards': names,
                                                            'card_damage_gate': gate},
                 resulting_event='selection_planned_not_yet_confirmed', reason='切り札選択入力を予定。消費は未確定')
+        if flow.get('egg_drop_only'):
+            cur['egg_drop_selected_tick'] = mem.get('tick')
+            _egg_drop_trace(mem, cur, 'selected', card=flow['card'],
+                            tactic_id=flow.get('tactic_id'), listed_cards=names)
         return [pad('a')]
     if flow['stage'] == 'announce' and flow.get('selection_planned'):
         flow['announce_ticks'] = flow.get('announce_ticks', 0) + 1
@@ -2484,6 +2539,10 @@ def monster_menu_step(screen: Screen, mem):
                                         'enemy': enemy.name, 'enemy_hp': enemy.hp,
                                         'transform_skill': any('たまごにもどれ' in str(t) for t in row_texts)},
                         reason='敵が卵を使用して変身したため開幕の卵温存判断を無効化する')
+                if cur.get('egg_drop_decision_recorded') and not cur.get('egg_drop_enemy_use_recorded'):
+                    cur['egg_drop_enemy_use_recorded'] = True
+                    _egg_drop_trace(mem, cur, 'enemy_egg_used',
+                                    transform_skill=any('たまごにもどれ' in str(t) for t in row_texts))
             except Exception:
                 pass
             rescue = cur.get('survival')
