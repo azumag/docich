@@ -140,7 +140,12 @@ def test_g1075_a_hidden_recruit_goes_to_the_season_king_site():
     (actions,) = walk(mem, [page(0, 0)])
     assert _world(mem)['garrison']['アルマムーン'] == home
     # アポロン (74/14, egg) is the strongest egg holder and leaves the hero four.
-    assert actions == [policy.pad('down')]
+    # The walked list knows his index, so the four-row move ships as one
+    # release-separated run rather than one press per observation.
+    assert actions == [policy.pad('down'),
+                       {'type': 'wait', 'ms': 60}, policy.pad('down'),
+                       {'type': 'wait', 'ms': 60}, policy.pad('down'),
+                       {'type': 'wait', 'ms': 60}, policy.pad('down')]
     assert _plan_region(mem)['general_override']['4-B2'] == 'アポロン'
 
 
@@ -178,8 +183,12 @@ def test_a_dropped_dakuten_in_the_walk_does_not_hold_a_boss_sortie():
     for actions in walk(mem, pages):
         assert actions == [policy.pad('down')]
     (actions,) = walk(mem, [general_list(HOME[0:4], 0)])
-    # The walked list folds back to the roster; the アポロン pick keeps moving.
-    assert actions == [policy.pad('down')]
+    # The walked list folds back to the roster; the アポロン pick keeps moving,
+    # now as one release-separated four-tap run for the known distance.
+    assert actions == [policy.pad('down'),
+                       {'type': 'wait', 'ms': 60}, policy.pad('down'),
+                       {'type': 'wait', 'ms': 60}, policy.pad('down'),
+                       {'type': 'wait', 'ms': 60}, policy.pad('down')]
     assert _world(mem)['garrison']['アルマムーン'] == HOME
     held = [r for r in mem['_records']
             if r.get('reason') == '出撃一覧の本人・カーソルを確認できないため保留']
@@ -193,7 +202,10 @@ def test_a_dropped_dakuten_on_the_visible_page_does_not_hold_a_boss_sortie():
     walk(mem, pages)
     misread = ['どうし', 'ピスタチオ', 'キッシュ', 'クランヘリー']
     (actions,) = walk(mem, [general_list(misread, 0)])
-    assert actions == [policy.pad('down')]
+    assert actions == [policy.pad('down'),
+                       {'type': 'wait', 'ms': 60}, policy.pad('down'),
+                       {'type': 'wait', 'ms': 60}, policy.pad('down'),
+                       {'type': 'wait', 'ms': 60}, policy.pad('down')]
     held = [r for r in mem['_records']
             if r.get('reason') == '出撃一覧の本人・カーソルを確認できないため保留']
     assert not held
