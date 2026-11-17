@@ -7611,6 +7611,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v1017-revert-hub-recall",
             "hanjuku-chart-v1018-recall-side-source",
             "hanjuku-chart-v1019-target-cursor-tempo",
+            "hanjuku-chart-v1020-recall-giveup",
             "hanjuku-chart-v985-roster-lost",
             "hanjuku-chart-v982-gbox",
             "hanjuku-chart-v984-roster-map-anchor",

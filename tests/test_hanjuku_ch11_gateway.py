@@ -281,3 +281,25 @@ def test_a_front_half_sortie_source_does_not_restrict_the_recall():
     _flow(mem)['recall'] = {'target': [134, 120], 'sorties': ['S1']}
     owned = sorted([*FRONT, 'タタール', 'クラボニア'])
     assert _recall_owned(mem, 11, owned, origin=None) == owned
+
+
+def test_a_camp_that_every_castle_refused_is_skipped():
+    """g1190 2026-11-17: camp (134,120) sent 117 recalls at アルマムーン, never arrived.
+
+    With no own castle in the back half there is nothing to arrive at, so the
+    recall stops spending the month until the situation changes.
+    """
+    from docich.hanjuku.flows import map as hanjuku_map
+    mem = memory(['アルマムーン', 'マランマ', 'ゴンダル'])
+    mem['flow'] = {'recall_goal_failures': {'134,120': {
+        'アルマムーン': 9, 'マランマ': 5, 'ゴンダル': 4}}}
+    recall = {'target': [134, 120], 'origin': [640, 340]}
+    assert hanjuku_map._recall_exhausted(mem, recall) is True
+
+
+def test_a_partly_failed_camp_still_returns():
+    from docich.hanjuku.flows import map as hanjuku_map
+    mem = memory(['アルマムーン', 'マランマ', 'ゴンダル'])
+    mem['flow'] = {'recall_goal_failures': {'134,120': {'アルマムーン': 9}}}
+    recall = {'target': [134, 120], 'origin': [640, 340]}
+    assert hanjuku_map._recall_exhausted(mem, recall) is False

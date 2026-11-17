@@ -252,6 +252,29 @@ def boss_sortie_menu_escape_step(mem, kind, actions):
     return [pad('b')]
 
 
+RECALL_GOAL_FAILURE_LIMIT = 4   # repeats at one camp before the month is not spent
+
+
+def _recall_exhausted(mem, recall):
+    """Every own castle has already refused this camp's recall several times.
+
+    g1190 2026-11-17: camp (134,120) sent 117 recalls at アルマムーン and never
+    arrived; the general stood in the back half with no own castle there, so no
+    destination could work. Retrying every month only spends the month's action.
+    """
+    camp = (recall or {}).get('target') if isinstance(recall, dict) else None
+    if not (isinstance(camp, (list, tuple)) and len(camp) == 2):
+        return False
+    failures = (_flow(mem).get('recall_goal_failures') or {})
+    pair = failures.get(f'{int(camp[0])},{int(camp[1])}') if isinstance(failures, dict) else None
+    if not isinstance(pair, dict) or not pair:
+        return False
+    owned = [c for c in _owned(mem) if c in (chart.castles(mem.get('chapter') or 0) or {})]
+    if not owned:
+        return False
+    return all(int(pair.get(c) or 0) >= RECALL_GOAL_FAILURE_LIMIT for c in owned)
+
+
 def _goal_after_failures(mem, flags, recall, goal):
     """A destination that never accepted this camp's recall is replaced.
 
@@ -420,6 +443,17 @@ def world_map_step(screen, mem, frame):
         # A boss-phase gather names its castle explicitly (owner 2026-11-15:
         # every general must gather at the last castle before the boss); never
         # replace it with the nearest-castle rule.
+        if _recall_exhausted(mem, recall):
+            from .recall import _arm_recall_skip as _arm_skip
+            _record(mem, 'camp_recall_given_up',
+                    observed_metric={'camp': list(recall.get('target') or ()),
+                                     'failures': dict((_flow(mem).get('recall_goal_failures') or {})
+                                                      .get(','.join(str(int(v))
+                                                                    for v in recall['target'])) or {})},
+                    reason='全ての自軍城への帰還が繰り返し未確認のため、この野営への帰還を一定期間見送る')
+            _flow(mem).pop('recall', None)
+            _arm_skip(mem, recall)
+            return [pad('b')]
         goal = recall.get('gather') or _picker_goal(mem, flags, recall)
         goal = _goal_after_failures(mem, flags, recall, goal)
         if goal is None:
