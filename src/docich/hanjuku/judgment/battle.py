@@ -442,21 +442,32 @@ def _card_wears_down_enemy(estimate):
     Owner 2026-11-02: damage the soldiers absorb is not lost, the army gap it
     opens wins the melee. Halving, healing and self-harm keep their own rules.
 
-    Boss generals (#4411): a boss soldier has 100 HP, so the ordinary
-    "remove one whole soldier" proxy never fires for a 90-damage card even
-    though the pool really drops.  A positive guaranteed raw hit is the
-    whittle-down itself.  This is not a claim about the general's own HP:
-    damage_lower_bound stays as the estimator computed it, and the gate
-    keeps every egg flag and threat untouched.
     """
     raw, pool = estimate['raw_damage_min'], estimate['enemy_soldier_hp_upper']
     soldiers = estimate['enemy_soldiers_upper']
     if (estimate['effect_kind'] not in CLASH_SAFE_EFFECTS or estimate['self_harm']
             or type(raw) is not int or raw <= 0 or type(pool) is not int):
         return False
-    if raw > pool or (soldiers > 0 and raw >= pool / soldiers):
-        return True
-    return estimate['target_kind'] == 'boss_general'
+    return raw > pool or (soldiers > 0 and raw >= pool / soldiers)
+
+
+def _boss_card_wears_down_enemy(estimate, cur):
+    """#4411: a boss hit that the ordinary "remove a soldier" proxy misses.
+
+    A boss soldier has 100 HP, so a 90-damage card never removes one even
+    though the pool really drops.  A positive guaranteed raw hit is the
+    whittle-down itself.  This is not a claim about the general's own HP:
+    damage_lower_bound stays as the estimator computed it, and the gate
+    keeps every egg flag and threat untouched.  The stale-chain guard is
+    scoped here so the ordinary permission above is never withdrawn.
+    """
+    if estimate['target_kind'] != 'boss_general' or _card_wears_down_enemy(estimate):
+        return False
+    raw, pool = estimate['raw_damage_min'], estimate['enemy_soldier_hp_upper']
+    if (estimate['effect_kind'] not in CLASH_SAFE_EFFECTS or estimate['self_harm']
+            or type(raw) is not int or raw <= 0 or type(pool) is not int):
+        return False
+    return not _card_control_chain_pending(cur)
 
 
 def _card_control_chain_pending(cur):
@@ -519,13 +530,11 @@ def _card_damage_gate(mem, cur, card, *, listed_cards=None):
         result.update(allowed=True, role='enemy_egg_triggers_unreachable')
     elif drop and drop.get('drops'):
         result.update(allowed=True, role='egg_drop_candidate_not_a_kill')
-    elif (_card_wears_down_enemy(estimate)
-          and not (estimate['target_kind'] == 'boss_general' and _card_control_chain_pending(cur))):
+    elif _card_wears_down_enemy(estimate) or _boss_card_wears_down_enemy(estimate, cur):
         # Owner 2026-11-02: a card need not finish the enemy in one hit. Holding
         # it does not stop the enemy's egg either; the melee reaches the same
         # triggers. g1097 07:05: ミックミー was refused four times with ヴィーナス
         # at 41 (7 left at most), and ココット fell with the card in hand.
-        # #4411: the boss extension must not inherit a stale control chain.
         result.update(allowed=True, role='damage_not_a_kill')
     elif listed_cards is None:
         result.update(needs_live_list=True, role='inspect_live_inventory_before_selection')

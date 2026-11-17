@@ -179,3 +179,14 @@ def test_boss_lethal_still_precedes_the_whittle_permission():
     mem = memory('マグネガキン', enemy='クイーン', enemy_hp=70, soldiers=(0, 0))
     result = gate(mem, 'マグネガキン')
     assert (result['allowed'], result['role']) == (True, 'single_card_lethal')
+
+
+def test_control_chain_does_not_withdraw_the_ordinary_boss_permission():
+    """Devin #4471: a re-observed zero-soldier boss still takes a plain hit."""
+    mem = memory('キャトルミュー', enemy='プリンス', enemy_hp=250, ally_hp=37, soldiers=(0, 0))
+    mem['battle']['cards_selected'] = ['クースカン']
+    mem['battle']['cards_unclassified'] = ['クースカン']
+    result = gate(mem, 'キャトルミュー')
+    assert result['estimate']['target_kind'] == 'boss_general'
+    assert rules._card_wears_down_enemy(result['estimate']) is True
+    assert (result['allowed'], result['role']) == (True, 'damage_not_a_kill')
