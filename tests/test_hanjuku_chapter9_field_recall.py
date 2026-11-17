@@ -309,3 +309,29 @@ def test_a_tent_with_a_camper_in_the_roster_still_starts_the_recall(monkeypatch)
         'complete': True, 'tick': 450,
         'statuses': {'リーキ': {'location': 'camp'}}})
     assert recall_flow.camp_recall_step(MAP, mem, FRAME) is not None
+
+
+def test_a_tent_inside_a_castle_roof_box_is_not_a_camp(monkeypatch):
+    """g1190 2026-11-18 02:24: camp (134,120) failed 411 times.
+
+    The captured frame shows a castle at box (120,95)-(167,142); the "camp"
+    cell sat inside it, so the detection was reading the castle sprite.
+    """
+    monkeypatch.setattr(recall_flow, 'own_camps',
+                        lambda frame: [{'target': (134, 120), 'clipped': False}])
+    monkeypatch.setattr(recall_flow, 'castle_roofs',
+                        lambda frame: [{'kind': 'own', 'box': (120, 95, 167, 142),
+                                        'target': (144, 127)}])
+    mem = _mem(tick=500)
+    assert recall_flow.camp_recall_step(MAP, mem, FRAME) is None
+    assert 'recall' not in _flow(mem)
+
+
+def test_a_tent_beside_a_castle_is_still_recalled(monkeypatch):
+    monkeypatch.setattr(recall_flow, 'own_camps',
+                        lambda frame: [{'target': (200, 60), 'clipped': False}])
+    monkeypatch.setattr(recall_flow, 'castle_roofs',
+                        lambda frame: [{'kind': 'own', 'box': (120, 95, 167, 142),
+                                        'target': (144, 127)}])
+    mem = _mem(tick=500)
+    assert recall_flow.camp_recall_step(MAP, mem, FRAME) is not None

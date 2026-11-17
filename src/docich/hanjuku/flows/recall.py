@@ -640,6 +640,27 @@ def _cliff_detour_step(screen, mem, frame, state, marker):
     return [pad('down' if mdy > 0 else 'up', min(6, abs(mdy)))]
 
 
+def _camp_inside_roof(camp, roofs):
+    """The tent detection fired on part of a castle sprite, not on a camp.
+
+    g1190 2026-11-18 02:24: camp (134,120) was recalled 411 times and never
+    arrived; the captured frame shows a castle at box (120,95)-(167,142) and
+    the "camp" cell sits inside it. A real tent stands beside a castle, not
+    inside its roof box.
+    """
+    cell = (camp or {}).get('target')
+    if not (isinstance(cell, (list, tuple)) and len(cell) == 2):
+        return False
+    for roof in roofs or ():
+        box = roof.get('box') if isinstance(roof, dict) else None
+        if not (isinstance(box, (list, tuple)) and len(box) == 4):
+            continue
+        x0, y0, x1, y1 = box
+        if int(x0) <= cell[0] <= int(x1) and int(y0) <= cell[1] <= int(y1):
+            return True
+    return False
+
+
 def _camp_recall_step(screen: Screen, mem, frame, *, observed_camps=None):
     """Owner rule (2026-09-28): a camp (野営) seen on screen is recalled.
 
@@ -675,6 +696,21 @@ def _camp_recall_step(screen: Screen, mem, frame, *, observed_camps=None):
             return None     # the month-start scene would cut the destination picker
         camps = own_camps(frame) if observed_camps is None else observed_camps
         camps = _filter_recall_skip(mem, camps)
+        if camps and isinstance(frame, Frame):
+            # The castle sprite's colours match the tent palette: drop a
+            # "camp" that sits inside a castle roof box.
+            roofs = castle_roofs(frame)
+            kept = [c for c in camps if not _camp_inside_roof(c, roofs)]
+            if len(kept) != len(camps):
+                now = int(mem.get('tick') or 0)
+                if now - int(_flow(mem).get('camp_castle_fp_tick') or 0) >= 100:
+                    _flow(mem)['camp_castle_fp_tick'] = now
+                    _record(mem, 'camp_sighting_on_castle',
+                            observed_metric={'dropped': [list(c.get('target') or ())
+                                                         for c in camps if c not in kept][:4],
+                                             'roofs': [list(r.get('box') or ()) for r in roofs][:4]},
+                            reason='検出したテントが城の屋根ボックス内にあるため、城スプライトの誤検出として除外する')
+            camps = kept
         # Owner 2026-11-18 02:2x: the roster is NOT evidence that a visible tent
         # is empty. Four or five tents were on screen while every status row
         # said nobody was camped, so a sighting is never dismissed by the
