@@ -225,6 +225,10 @@ def startable(order, request) -> str | None:
         return None if _probe_actor(general) else 'invalid_source_probe'
     present = garrison.get(source) or ()
     if general in present:
+        # Owner 2026-11-18 04:1x: the hero may leave the home castle alone to
+        # recruit at the chapter-11 hub, even though that empties it.
+        if order.get('hero_hub_move') is True:
+            return None
         # A measured singleton cannot dispatch its last defender (chapter 9
         # excepted, owner 2026-11-09: ``chart.sender_min`` is 1 there).
         if len(set(present) - marching) < chart.sender_min(request.get('chapter')):

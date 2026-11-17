@@ -1440,6 +1440,7 @@ def interim_candidates(mem, allow_sole=False) -> dict:
         present = (_world(mem).get('garrison') or {}).get(order['source'])
         if (isinstance(present, (list, tuple)) and len(set(present)) == 1
                 and not chart.guard_free(chapter)       # chapter 9: the last general may go
+                and order.get('hero_hub_move') is not True   # owner: the hero may leave alone
                 and order.get('roster_probe') is not True):
             # A new joiner is unconfirmed until the castle's live list is
             # opened. Since #3578's confirmed-source policy names the generic
