@@ -1266,6 +1266,7 @@ def _cursor_take(screen, mem, order, name, present):
 
 
 CURSOR_CARD_DOWNS = 12          # rows walked past empty or over-cap cards before the list is closed
+CARD_PICK_RELEASE_MS = 150      # released interval so a batched card pick reads as a distinct A
 
 
 def _cursor_order_cards(order, mem) -> bool:
@@ -1296,6 +1297,26 @@ def _cursor_card_step(screen, mem, order, inventory, picked):
     total = sum(CARD_IDS.get(card, 0) for card in picked)
     if inventory['remaining'] > 0 and row is not None:
         card_id = CARD_IDS.get(row['card'])
+        need = inventory['remaining']
+        # The cursor stays on a stocked row after a pick (the same card's
+        # stock decrements 1 per A), so a row that covers every remaining slot
+        # under the egg-ID cap is taken with one batched A run. The previous
+        # one-pick-per-observation loop spent a full cycle confirming each A.
+        if (row['stock'] >= need and card_id is not None
+                and total + need * card_id < ENEMY_EGG_CARD_ID_SUM):
+            picked.extend([row['card']] * need)
+            _plan_region(mem)['card_override'][step] = list(picked)
+            _record(mem, 'card_pick', **_deploy_context(order, mem), card=row['card'],
+                    observed_metric={'stock': row['stock'], 'remaining': need, 'count': need,
+                                     'id_sum': total + need * card_id, 'cursor_order': True,
+                                     'inventory_evidence': inventory['inventory_evidence'],
+                                     'observed_rows': inventory['observed_rows']},
+                    resulting_event='selection_planned_not_yet_confirmed',
+                    reason='第9話は一覧のカーソル位置の札を上から順に携行し、残り枠をまとめて取る')
+            actions = [pad('a')]
+            for _ in range(need - 1):
+                actions.extend([{'type': 'wait', 'ms': CARD_PICK_RELEASE_MS}, pad('a')])
+            return actions
         if row['stock'] > 0 and card_id is not None and total + card_id < ENEMY_EGG_CARD_ID_SUM:
             picked.append(row['card'])
             _plan_region(mem)['card_override'][step] = list(picked)
