@@ -129,6 +129,41 @@ class ProjectionTests(unittest.TestCase):
             }
         }
 
+    def chapter9_payload(self):
+        payload = self.payload()
+        tactical = payload["diagnostics"]["hanjuku_tactical"]
+        tactical["chapter"] = 9
+        tactical["policy"]["active"] = "9-B2"
+        tactical["policy"]["orders"] = {
+            "9-B1": "pending",
+            "9-B2": "launched_unconfirmed",
+            "9-B3": "done",
+            "9-B4": "unknown_state",
+        }
+        return payload
+
+    def test_boss_steps_follow_the_chapter_the_run_is_on(self):
+        """A chapter 9 game reported chapter 4's steps (production 2026-11-17)."""
+        out = self.status.project(self.chapter9_payload())
+        self.assertEqual(out["chapter"], 9)
+        self.assertEqual(out["active"], "9-B2")
+        self.assertEqual(set(out["orders"]), {"9-B1", "9-B2", "9-B3", "9-B4"})
+        self.assertEqual(out["orders"]["9-B1"], "pending")
+        self.assertEqual(out["orders"]["9-B4"], "unknown")
+        self.assertEqual(self.status.boss_steps(9), ("9-B1", "9-B2", "9-B3", "9-B4"))
+        # An unknown chapter keeps the legacy tuple so old records still render.
+        self.assertEqual(self.status.boss_steps(None), self.status.STEPS)
+        self.assertEqual(self.status.boss_steps(True), self.status.STEPS)
+
+    def test_rendered_reply_names_the_current_chapter_steps(self):
+        out = self.status.project(self.chapter9_payload())
+        body = self.status.reply(out, {
+            "RUN_SHA": "a" * 40, "RUN_ID": "1", "RUN_ATTEMPT": "1",
+            "SOURCE_COMMENT_ID": "1",
+        })["body"]
+        self.assertIn("`9-B1=pending`", body)
+        self.assertNotIn("`4-B1=", body)
+
     def test_projection_exposes_only_fixed_boss_tokens(self):
         out = self.status.project(self.payload())
         self.assertEqual(out["chapter"], 4)
