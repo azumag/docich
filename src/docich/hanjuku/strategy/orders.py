@@ -1492,6 +1492,25 @@ def next_order(mem):
     # The maintenance above settles marches by writing 'failed' directly;
     # drop the settled steps' plan context in the same pass (docich#4054).
     drop_retired_step_context(mem)
+    # A stored plan can name a castle we no longer own (the hub fell while a
+    # plan kept sorting from it). Replanning only drops it when the builder
+    # runs, which a battle/menu loop can defer for hours; drop it here so the
+    # next rebuild sees the real ownership (g1190 2026-11-18 05:1x: the plan
+    # still said タタール→クラボニア after タタール was lost).
+    stored_plan = _plan_region(mem).get('chart_plan') or {}
+    chapter_owned = _owned(mem) & set(chart.castles(mem.get('chapter') or 0))
+    if stored_plan and any(
+            isinstance(o, dict) and o.get('purpose') in ('retake', 'attack', 'move')
+            and isinstance(o.get('source'), str) and o['source'] not in chapter_owned
+            for o in stored_plan.get('orders') or ()):
+        _plan_region(mem)['chart_plan'] = None
+        _record(mem, 'chart_plan_dropped_foreign_source',
+                observed_metric={'sources': sorted({o.get('source')
+                                                    for o in stored_plan.get('orders') or ()
+                                                    if isinstance(o, dict)
+                                                    and isinstance(o.get('source'), str)
+                                                    and o['source'] not in chapter_owned})[:6]},
+                reason='保存計画が自軍でない城を出撃元にしているため破棄し、現在の所有状況で組み直す')
     status = _plan_region(mem).setdefault('orders', {})
     from . import corridor
     if corridor.mechanical(mem):

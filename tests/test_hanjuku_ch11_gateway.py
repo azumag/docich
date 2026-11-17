@@ -561,3 +561,21 @@ def test_the_recall_picker_holds_proportionally_to_the_distance():
     assert _picker_hold_frames(8) == 8
     assert _picker_hold_frames(60) == 56
     assert _picker_hold_frames(120) == 56
+
+
+def test_a_stored_plan_with_a_lost_source_is_dropped_at_dispatch():
+    """g1190 2026-11-18 05:1x: the plan kept タタール→クラボニア after タタール fell.
+
+    Replanning drops it, but a battle/menu loop can defer the rebuild for hours,
+    so the dispatcher must also drop a plan that names a lost source.
+    """
+    from docich.hanjuku.state.regions import plan as _plan
+    from docich.hanjuku.strategy.orders import next_order
+    mem = memory(['マランマ', 'ゴンダル', 'チリベット'])
+    _plan(mem)['chart_plan'] = {'source': 'mechanical', 'orders': [
+        {'step': 'A:x:M1', 'purpose': 'attack', 'source': 'タタール',
+         'target': 'クラボニア', 'general': 'g', 'cards': [], 'after': None}]}
+    mem['_records'] = []
+    next_order(mem)
+    assert _plan(mem).get('chart_plan') is None
+    assert any(r.get('decision') == 'chart_plan_dropped_foreign_source' for r in mem['_records'])
