@@ -2089,8 +2089,24 @@ def _recall_owned(mem, chapter, owned, origin=None):
     """
     road = chart.corridor(chapter) or ()
     cells = chart.castles(chapter) or {}
-    if (not road or not isinstance(origin, (list, tuple)) or len(origin) != 2
-            or not all(type(v) is int for v in origin)):
+    measured = (isinstance(origin, (list, tuple)) and len(origin) == 2
+                and all(type(v) is int for v in origin))
+    gate = chart.gateway(chapter)
+    if gate and owned and measured:
+        # The halves of a gateway chapter are split by an impassable cliff
+        # (owner 2026-11-17, chapter 11): a general who retreated in the back
+        # half was sent at the nearest front castle, walked into the chasm and
+        # camped on the edge for good. Judge the side from the measured origin
+        # and stay on it; the hub is the one castle both halves reach.
+        hub = gate['hub']
+        back = [c for c in owned if c in gate['back'] or c == hub]
+        front = [c for c in owned if c in gate['front'] or c == hub]
+        if back and front:
+            def _nearest(group):
+                return min(sum((cells[c][a] - origin[a]) ** 2 for a in (0, 1))
+                           for c in group)
+            return sorted(back if _nearest(back) < _nearest(front) else front)
+    if (not road or not measured):
         return owned
     entry = min((c for c in road if c in cells),
                 key=lambda c: (cells[c][0] - origin[0]) ** 2 + (cells[c][1] - origin[1]) ** 2,

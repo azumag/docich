@@ -139,3 +139,35 @@ def test_a_healthy_general_still_attacks():
     orders = [o for o in replan.interim_candidates(mem).values()
               if isinstance(o, dict) and o.get('target') in BACK]
     assert orders, 'a healthy hub must still push into the back half'
+
+
+def test_a_back_half_camp_does_not_target_a_front_castle():
+    """Owner 2026-11-17: a retreated back-half general camped on the cliff edge.
+
+    He was sent at the nearest own castle across the chasm, so the march never
+    ended. The destination must stay in the half he can walk in.
+    """
+    from docich.hanjuku.strategy.orders import _recall_owned
+    owned = sorted([*FRONT, 'タタール', 'クラボニア'])
+    cells = chart.castles(11)
+    # A camp right next to クラボニア (back half).
+    origin = [cells['クラボニア'][0] - 12, cells['クラボニア'][1] + 8]
+    got = _recall_owned({}, 11, owned, origin=origin)
+    assert 'クラボニア' in got
+    assert not set(got) & set(FRONT), got
+
+
+def test_a_front_half_camp_still_targets_the_front():
+    from docich.hanjuku.strategy.orders import _recall_owned
+    owned = sorted([*FRONT, 'タタール', 'クラボニア'])
+    cells = chart.castles(11)
+    origin = [cells['マランマ'][0] + 10, cells['マランマ'][1] - 6]
+    got = _recall_owned({}, 11, owned, origin=origin)
+    assert set(got) & set(FRONT)
+    assert 'クラボニア' not in got
+
+
+def test_an_unmeasured_camp_keeps_every_castle():
+    from docich.hanjuku.strategy.orders import _recall_owned
+    owned = sorted([*FRONT, 'タタール', 'クラボニア'])
+    assert _recall_owned({}, 11, owned, origin=None) == owned
