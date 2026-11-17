@@ -1003,7 +1003,7 @@ def _complete_scan(mem, state):
             receipts.record_departure(mem, name)
             _forget_field_residents(mem, name)
             _forget_pending(mem, name)
-            for key in ('house_eggs', 'egg_types', 'egg_uses'):
+            for key in ('house_eggs', 'egg_types', 'egg_uses', 'egg_memory'):
                 if isinstance(mem.get(key), dict):
                     mem[key].pop(name, None)
             for key in ('egg_recheck', 'roster_pending_joins'):

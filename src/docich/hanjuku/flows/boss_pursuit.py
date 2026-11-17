@@ -12,6 +12,8 @@ step a camp redirect takes.
 """
 from __future__ import annotations
 
+import time
+
 from ... import hanjuku_chart as chart
 from ..decision_log import _record
 from ..os_layer import roster as _roster
@@ -78,6 +80,10 @@ def _mark_lost(mem, general):
     stale = sorted(c for c, residents in garrison.items()
                    if isinstance(residents, list) and general in residents)
     mem.setdefault('generals_lost_garrison', {})[general] = stale
+    # #4415: remember when the loss was confirmed on the same clock as
+    # garrison_observed_at. A march write-back after this instant is bookkeeping,
+    # not a fresh roster read that could call the general back home.
+    mem.setdefault('generals_lost_at', {})[general] = time.time()
 
 
 def track(mem):
@@ -102,14 +108,27 @@ def track(mem):
     home = {g for residents in garrison.values()
             if isinstance(residents, list) for g in residents}
     stale = mem.get('generals_lost_garrison') or {}
+    lost_at = mem.get('generals_lost_at') or {}
+    observed = _world(mem).get('garrison_observed_at') or {}
     back = set()
     for g in lost & home:
         # A name seen back in a castle garrison was a misread, not a loss -
         # unless only the castles that listed him when the roster walk found
         # him absent still do (a march record's write-back, not a return).
+        # #4415: for a dated loss, a listing only counts when that castle's
+        # page was actually read after the loss. _expire_spent_sorties' write-
+        # back drops the page timestamp, so it can never heal the loss.
         castles = {c for c, residents in garrison.items()
                    if isinstance(residents, list) and g in residents}
-        if castles - set(stale.get(g) or ()) or g not in stale:
+        if g in lost_at:
+            at = lost_at.get(g)
+            evidence = {c for c in castles
+                        if isinstance(observed.get(c), (int, float))
+                        and isinstance(at, (int, float)) and observed[c] >= at}
+            evidence -= set(stale.get(g) or ())
+        else:
+            evidence = castles - set(stale.get(g) or ())
+        if evidence or g not in stale:
             back.add(g)
     if back:
         mem['generals_lost'] = [g for g in (mem.get('generals_lost') or ()) if g not in back]

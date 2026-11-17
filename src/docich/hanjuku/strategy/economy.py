@@ -5,6 +5,7 @@ priority and the chikujou reserve. These functions decide amounts and
 priorities; the month/shop flows carry them out through the menus.
 """
 from __future__ import annotations
+from ..state import egg_memory
 from ..state.regions import world as _world, sorties as _sorties, plan as _plan_region
 
 from ... import hanjuku_chart as chart
@@ -344,11 +345,9 @@ def _eligible_recovery_actors(mem, actors):
 
 def _depleted_eggs(mem):
     # Ordinary eggs recover to four, while one-shot/king eggs hold only one.
-    types = mem.get('egg_types') or {}
-    counts = mem.get('egg_uses') or {}
-    return _eligible_recovery_actors(mem, {name for name, uses in counts.items()
-            if type(uses) is int and 0 <= uses < (
-                1 if types.get(name) in {'いっぱつエッグ', 'キングエッグ'} else 4)})
+    # #4415: read the newest egg observation, so a measured no-egg / broken egg
+    # is not budgeted as a recovery debt and a later recovery is not double-paid.
+    return _eligible_recovery_actors(mem, egg_memory.depleted_egg_names(mem))
 
 
 def _egg_measured_cost(mem):

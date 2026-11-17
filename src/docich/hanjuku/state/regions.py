@@ -107,6 +107,7 @@ KEY_OWNERSHIP = {
     'boss_wave_generals': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # ボス行軍将軍の追撃対象リスト
     'generals_lost': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 名簿一巡で不在と確認した将軍 (v985)
     'generals_lost_garrison': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 喪失確定時にその将軍を載せていた守備隊の城 (v994)
+    'generals_lost_at': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 喪失確定時刻 (garrison_observed_at と同じ時計, v998/#4415)
     'camp_status_seen': {'region': WORLD, 'lifetime': 'chapter', 'migrated': False},  # 観測済み野営ステータス
     'captured': {'region': WORLD, 'lifetime': 'chapter', 'migrated': False},  # 捕獲城の観測事実
     'card_bought_since_read': {'region': WORLD, 'lifetime': 'chapter', 'migrated': False},  # 最終パネル読み以降の購入枚数台帳
@@ -125,6 +126,7 @@ KEY_OWNERSHIP = {
     'cursor': {'region': WORLD, 'lifetime': 'chapter', 'migrated': False},  # 測定済みマップカーソル位置
     'duel_event': {'region': WORLD, 'lifetime': 'chapter', 'migrated': False},  # 観測した決闘イベント
     'egg_recheck': {'region': WORLD, 'lifetime': 'run', 'migrated': False},  # 卵再確認・ラン同一性リセット管理
+    'egg_memory': {'region': WORLD, 'lifetime': 'run', 'migrated': False},  # 観測時刻つき卵レコード (v998/#4415)
     'egg_types': {'region': WORLD, 'lifetime': 'run', 'migrated': False},  # 観測した卵種類・ラン同一性リセット管理
     'egg_uses': {'region': WORLD, 'lifetime': 'run', 'migrated': False},  # 観測した卵使用回数・ラン同一性リセット管理
     'egg_zero_owners': {'region': WORLD, 'lifetime': 'chapter', 'migrated': False},  # 卵0保有者の観測

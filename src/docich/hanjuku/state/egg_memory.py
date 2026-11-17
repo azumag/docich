@@ -1,0 +1,178 @@
+"""One observation-timestamped egg record per general (docich#4415).
+
+The legacy ``egg_types`` / ``egg_uses`` dicts are written only when an egg is
+seen, carry no observation time and are never cleared by a 「たまごなし」 row.
+A stale egg type therefore outlived the egg in the boss wave and in
+``_holds_egg``, while simply clearing it broke ``_holds_egg``'s initial-equipment
+fallback and the monthly recovery budget (#4414 v994/v995, reverted in v996).
+
+This module keeps the single authoritative record — type, remaining uses,
+presence, observation tick and source — for every observation, including
+"no egg". ``holds_egg``, the boss wave and the recovery budget all read through
+it. The flat dicts stay as a mirror for readers not yet migrated and for old
+snapshots; when a record is absent the legacy reading is used as a fallback.
+"""
+from __future__ import annotations
+
+from ...hanjuku_egg_reference import GENERAL_EGGS
+from ...hanjuku_egg_stock import observed_uses
+
+KEY = 'egg_memory'
+
+# Observation sources, kept on the record so a later reader can tell a direct
+# status-row reading from a sortie-screen row or a camp re-check.
+STATUS = 'status'
+SORTIE = 'sortie'
+CAMP = 'camp'
+RECOVERY = 'recovery'
+
+ROTTEN = 'くさってる'
+_FULL_USES = 4
+_ONE_SHOT = frozenset({'いっぱつエッグ', 'キングエッグ'})
+
+
+def _tick(mem):
+    return int(mem.get('tick') or 0)
+
+
+def observe(mem, general, *, egg=None, uses=None, present=None, source,
+            broken=False):
+    """Write one egg observation, including a measured "no egg".
+
+    ``present`` means "an egg of some kind is held" — a spent (uses=0) egg is
+    still present and still a recovery debt; it is merely unusable for damage.
+    When omitted it is derived from the row: a named egg row is present, while
+    the status parser's 「たまごなし」 / 「こわれている」 rows carry no egg name.
+    ``uses`` is kept only when it is a real observed count.
+    """
+    uses = observed_uses(uses)
+    if present is None:
+        present = bool(egg) and egg != ROTTEN
+    rec = {'egg': egg if isinstance(egg, str) else None,
+           'uses': uses,
+           'present': bool(present),
+           'broken': bool(broken),
+           'observed_tick': _tick(mem),
+           'source': source}
+    mem.setdefault(KEY, {})[general] = rec
+    return rec
+
+
+def record(mem, general):
+    """The newest egg record for ``general``, or None when never observed."""
+    rec = (mem.get(KEY) or {}).get(general)
+    return rec if isinstance(rec, dict) else None
+
+
+def latest_at(mem, general, tick=None):
+    """The record only when it is at least as new as ``tick``.
+
+    A status row and its egg observation are normally written at the same
+    ``mem['tick']``. When a later observation exists it wins over an older
+    status row; when only the row is fresh the caller uses the row instead.
+    A row without a tick cannot outrank a dated record.
+    """
+    rec = record(mem, general)
+    if rec is None or type(rec.get('observed_tick')) is not int:
+        return None
+    if type(tick) is int and rec['observed_tick'] < tick:
+        return None
+    return rec
+
+
+def forget(mem, general):
+    """Drop one general's egg record (roster invalidation / bulk receipt)."""
+    (mem.get(KEY) or {}).pop(general, None)
+
+
+def clear(mem):
+    """Drop all egg records (run-identity reset / new month)."""
+    mem.pop(KEY, None)
+
+
+def holds_egg(mem, general):
+    """Whether a usable egg is held, from the newest observation.
+
+    Falls back to the legacy ``egg_types`` / ``egg_uses`` / ``GENERAL_EGGS``
+    reading when no observation exists (old snapshots and seeded tests).
+    """
+    rec = record(mem, general)
+    if rec is not None:
+        return (bool(rec.get('present')) and rec.get('uses') != 0
+                and not rec.get('broken') and rec.get('egg') != ROTTEN)
+    kind = (mem.get('egg_types') or {}).get(general)
+    held = kind != ROTTEN if kind is not None else bool((GENERAL_EGGS.get(general) or (False,))[0])
+    return held and (mem.get('egg_uses') or {}).get(general) != 0
+
+
+def eggless(mem, general, status_row=None):
+    """A measured no-egg row not contradicted by a newer, still-live egg.
+
+    A record is required because an eggless general takes a boss sortie, meets
+    the boss at ally HP -> 0 and leaves nothing behind (ch9 2026-11-17). An
+    unread general is never called eggless. A stale ``egg_types`` entry alone
+    cannot keep such a candidate any more (#4415).
+    """
+    if not isinstance(status_row, dict) or type(status_row.get('hp')) is not int:
+        return False
+    if status_row.get('egg') or status_row.get('broken') is True:
+        return False
+    rec = latest_at(mem, general, status_row.get('tick'))
+    if rec is not None and (rec.get('present') and not rec.get('broken')
+                            and rec.get('egg') != ROTTEN and rec.get('uses') != 0):
+        return False
+    return True
+
+
+def egg_rank(mem, general, status_row=None):
+    """Boss-fight usability of a general's egg: 0 best, 2 worst.
+
+    Kept in the same read port as ``holds_egg``/``eggless`` so the wave never
+    ranks a remembered egg above a newer no-egg observation.
+    """
+    row = status_row if isinstance(status_row, dict) else None
+    rec = latest_at(mem, general, row.get('tick') if row else None)
+    if rec is not None:
+        if (not rec.get('present') or rec.get('broken') or rec.get('uses') == 0
+                or rec.get('egg') == ROTTEN):
+            return 2
+        return 0 if isinstance(rec.get('egg'), str) and rec['egg'] else 1
+    if row:
+        if row.get('broken') is True:
+            return 2
+        uses = row.get('uses')
+        if type(uses) is int and uses <= 0:
+            return 2
+        egg = row.get('egg')
+        if isinstance(egg, str) and egg:
+            return 2 if egg == ROTTEN else 0
+    uses = (mem.get('egg_uses') or {}).get(general)
+    if type(uses) is int and uses <= 0:
+        return 2
+    if isinstance((mem.get('egg_types') or {}).get(general), str):
+        return 0 if type(uses) is int and uses > 0 else 1
+    return 1
+
+
+def depleted_egg_names(mem):
+    """Generals whose newest egg reading is a spent, recoverable egg.
+
+    A measured no-egg or broken egg is not a recovery debt. One-shot and king
+    eggs recover to one use; ordinary eggs to four.
+    """
+    types = mem.get('egg_types') or {}
+    counts = mem.get('egg_uses') or {}
+    names = set(types) | set(counts) | set(mem.get(KEY) or {})
+    out = set()
+    for name in names:
+        rec = record(mem, name)
+        if rec is not None:
+            if not rec.get('present') or rec.get('broken'):
+                continue
+            egg, uses = rec.get('egg'), rec.get('uses')
+        else:
+            egg, uses = types.get(name), counts.get(name)
+        full = 1 if egg in _ONE_SHOT else _FULL_USES
+        if type(uses) is int and 0 <= uses < full:
+            out.add(name)
+    return out

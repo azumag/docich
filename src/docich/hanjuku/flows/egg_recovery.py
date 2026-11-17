@@ -11,6 +11,7 @@ from ..os_layer.commands import egg_recovery_list_batch, menu_to, pad
 from ..os_layer.readers import _current, _options, month_menu_ready
 from ..os_layer.screen import egg_ritual_recitation_panel
 from ..os_layer.world import NAME
+from ..state import egg_memory
 from ..strategy.economy import (EGG_RECOVER_COST, EGG_RITUAL_LIMIT, WAGE_SPEND_HOLD,
                                 _depleted_eggs, _egg_measured_cost, _egg_recovery_targets,
                                 _month_key)
@@ -70,6 +71,8 @@ def _observe_recovery_list_quantities(screen, mem, sub):
         observed_member(mem, [actor])
         quantity = int(readings[0])
         mem.setdefault('egg_uses', {})[actor] = quantity
+        egg_memory.observe(mem, actor, egg=(mem.get('egg_types') or {}).get(actor),
+                           uses=quantity, present=True, source=egg_memory.RECOVERY)
         if quantity == 0:
             mem['egg_zero_owners'] = sorted(set(mem.get('egg_zero_owners') or []) | {actor})[:32]
         else:
@@ -318,6 +321,8 @@ def _egg_recovery_step(screen, mem, sub):
                 # This is the actual list quantity, not a planned use/payment.
                 quantity = int(readings[0])
                 mem.setdefault('egg_uses', {})[actor] = quantity
+                egg_memory.observe(mem, actor, egg=(mem.get('egg_types') or {}).get(actor),
+                                   uses=quantity, present=True, source=egg_memory.RECOVERY)
                 if quantity == 0:
                     mem['egg_zero_owners'] = sorted(set(mem.get('egg_zero_owners') or []) | {actor})[:32]
                 else:

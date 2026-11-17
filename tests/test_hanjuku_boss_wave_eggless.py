@@ -54,19 +54,20 @@ def test_a_row_without_hp_is_not_proof_of_no_egg():
     assert [a for a in boss_attacks(mem) if a['source'] == SOURCE]
 
 
-def test_a_remembered_egg_type_keeps_the_general():
+def test_a_freshly_observed_egg_type_keeps_the_general():
+    from docich.hanjuku.state import egg_memory
     mem = memory(['アマンディーヌ', 'ヘラ'], {'アマンディーヌ': row(None), 'ヘラ': row(None)})
-    mem['egg_types'] = {'アマンディーヌ': 'スロットエッグ'}
+    egg_memory.observe(mem, 'アマンディーヌ', egg='スロットエッグ', uses=4,
+                       present=True, source=egg_memory.STATUS)
     attacks = [a for a in boss_attacks(mem) if a['source'] == SOURCE]
     assert attacks and attacks[0]['general'] == 'アマンディーヌ'
 
 
-def test_a_stale_egg_type_still_keeps_an_eggless_row_a_candidate():
-    # Known limit (Devin review on #4414, follow-up issue): egg_types is
-    # written only when an egg shows and never cleared, and other writers
-    # (the sortie screen, camp recheck) carry no timestamp, so a measured
-    # "no egg" row cannot be ranked against it. The conservative reading keeps
-    # the general a candidate - the behaviour before the eggless rule.
+def test_a_stale_egg_type_no_longer_keeps_an_eggless_row_a_candidate():
+    # #4415: egg_types is written only when an egg shows and never cleared,
+    # and the other writers carry no timestamp. With no dated observation a
+    # measured "no egg" row now wins, so an old egg type cannot keep a general
+    # who lost the egg in the boss-wave candidate list.
     mem = memory(['アマンディーヌ', 'ヘラ'], {'アマンディーヌ': row(None), 'ヘラ': row(None)})
     mem['egg_types'] = {'アマンディーヌ': 'スロットエッグ', 'ヘラ': 'スロットエッグ'}
-    assert [a for a in boss_attacks(mem) if a['source'] == SOURCE]
+    assert [a for a in boss_attacks(mem) if a['source'] == SOURCE] == []

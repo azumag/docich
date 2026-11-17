@@ -5,6 +5,7 @@ of them without waiting for a model, adopts a validated adjusted chart when
 one answers, and records every deviation.
 """
 from __future__ import annotations
+from ..state import egg_memory
 from ..state.regions import world as _world, sorties as _sorties, plan as _plan_region
 
 import hashlib
@@ -539,21 +540,7 @@ def _boss_egg_rank(mem, general):
     every other rule stay as they are.
     """
     row = ((mem.get('general_statuses') or {}).get('statuses') or {}).get(general)
-    if isinstance(row, dict):
-        if row.get('broken') is True:
-            return 2
-        uses = row.get('uses')
-        if type(uses) is int and uses <= 0:
-            return 2
-        egg = row.get('egg')
-        if isinstance(egg, str) and egg:
-            return 2 if egg == 'くさってる' else 0
-    uses = (mem.get('egg_uses') or {}).get(general)
-    if type(uses) is int and uses <= 0:
-        return 2
-    if isinstance((mem.get('egg_types') or {}).get(general), str):
-        return 0 if type(uses) is int and uses > 0 else 1
-    return 1
+    return egg_memory.egg_rank(mem, general, row)
 
 
 def _boss_eggless(mem, general):
@@ -565,14 +552,12 @@ def _boss_eggless(mem, general):
     ヘラ, all ``egg: None`` rows, left the boss at HP 500 / 129 unchanged and
     were lost, while the egg carriers シフォン (まねっこ) and エピィ (スロット)
     took 500 -> 129 -> 0. Only a measured row counts (an HP and no egg); an
-    unread general stays a candidate.
+    unread general stays a candidate. #4415: a stale ``egg_types`` entry alone
+    no longer keeps the general — a newer dated observation is required, and
+    the same read port serves ``_holds_egg`` and the recovery budget.
     """
     row = ((mem.get('general_statuses') or {}).get('statuses') or {}).get(general)
-    if not isinstance(row, dict) or type(row.get('hp')) is not int:
-        return False
-    if row.get('egg') or row.get('broken') is True:
-        return False
-    return not isinstance((mem.get('egg_types') or {}).get(general), str)
+    return egg_memory.eggless(mem, general, row)
 
 
 def _defense_rebalance(mem, owned, busy, heading):
