@@ -1605,12 +1605,41 @@ def _release_stale_failures(mem, orders, rid):
     return book
 
 
+def _plan_has_foreign_source(mem, stored):
+    """The stored plan still names a castle we no longer own.
+
+    g1190 2026-11-17: the hub タタール fell while the plan's orders still sent
+    every sortie from it (retake タタール→ネペンテ, move アルマムーン→タタール). The
+    plan stayed adopted for 8,400 ticks while no order could launch.
+    """
+    chapter = mem.get('chapter') or 0
+    owned = {c for c in _owned(mem) if c in (chart.castles(chapter) or {})}
+    for order in stored.get('orders') or ():
+        if not isinstance(order, dict):
+            continue
+        purpose = order.get('purpose')
+        source = order.get('source')
+        target = order.get('target')
+        if purpose in ('retake', 'attack', 'move') and isinstance(source, str) and source not in owned:
+            return True
+        if purpose == 'move' and isinstance(target, str) and target not in owned:
+            return True
+    return False
+
+
 def _mechanical_chart(mem, state, rid, digest):
     """Construct and adopt a full chart mechanically (no LLM answer)."""
     if _plan_pending(mem):
         return
     allow_sole = False   # no castle is ever emptied (owner 2026-11-06)
     stored = _plan_region(mem).get('chart_plan') or {}
+    if stored and _plan_has_foreign_source(mem, stored):
+        _record(mem, 'chart_plan_invalidated',
+                observed_metric={'orders': [o.get('step') for o in stored.get('orders') or ()
+                                            if isinstance(o, dict)][:6]},
+                reason='計画が自軍でない城を出撃元/移動先にしているため破棄して組み直す')
+        _plan_region(mem)['chart_plan'] = None
+        stored = {}
     if stored.get('request_id') == rid and stored.get('source') == 'mechanical':
         # Even within the same month, rebuild an exhausted mechanical chart
         # against the current garrison and in-flight sorties (keep defenders).
