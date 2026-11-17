@@ -105,19 +105,40 @@ MENU_HOLD_KINDS = frozenset({
 })
 
 
+def _same_event_line(watch, key):
+    """Whether a changed narration key is still the same line.
+
+    Dialogue text is typed out character-by-character, so each observation
+    extends the previous text and a strict key equality restarts the wait on
+    every typed frame: g1270 48-7 logged situation_held alternating
+    concert/event with a fresh digest on every observation while the month
+    dialogue typed. A prefix extension is the typewriter reveal of the same
+    line, not a new line.
+    """
+    prev = watch.get('key') if isinstance(watch, dict) else None
+    if prev == key:
+        return True
+    if not (isinstance(prev, str) and isinstance(key, str)
+            and prev.startswith('text:') and key.startswith('text:')):
+        return False
+    old, new = prev[5:], key[5:]
+    return len(new) > len(old) and new.startswith(old)
+
+
 def event_text_advance(mem, phase, kind, key, actions, guarded=False):
     """True when an unchanged scripted event narration line should advance.
 
     The counter lives in the policy memory, which the brain persists on every
     decision, so it survives the fresh per-observation subprocess. Any action,
-    a phase/kind change, or a changed line resets it.
+    a phase/kind change, or a changed line resets it. A line still being
+    typed out keeps the count: the new text only extends the previous one.
     """
     watch = mem.get('event_text_watch') or {}
     raw = watch.get('count') if isinstance(watch, dict) else None
     if guarded:
         count = 0
     elif phase in EVENT_TEXT_ADVANCE_PHASES and kind == 'text' and not actions:
-        count = (raw + 1 if watch.get('key') == key
+        count = (raw + 1 if _same_event_line(watch, key)
                  and type(raw) is int and raw >= 0 else 1)
     else:
         count = 0

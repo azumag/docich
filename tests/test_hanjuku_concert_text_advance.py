@@ -42,6 +42,43 @@ def test_a_changed_line_restarts_the_wait():
     assert mem['event_text_watch'] == {'key': 'text:second', 'count': 1}
 
 
+def test_typewriter_reveal_keeps_the_wait_counting():
+    # g1270 48-7: the month dialogue typed char-by-char, each frame grew the
+    # text, the key changed every observation and situation_held repeated.
+    # A prefix extension is the same line still being revealed, so the count
+    # must keep going and the A completes it.
+    mem = {}
+    for text in ('48ねん7のつき9899G「お',
+                 '48ねん7のつき9899G「おめにかかれて'):
+        assert event_text_advance(mem, 'event', 'text', f'text:{text}', []) is False
+    assert event_text_advance(
+        mem, 'event', 'text',
+        'text:48ねん7のつき9899G「おめにかかれてこうえいです。このたび', []) is True
+
+
+def test_a_shorter_or_replaced_line_restarts_the_wait():
+    # A line that shrinks or diverges mid-string is a genuinely new line:
+    # the wait must restart, not ride on the previous count.
+    mem = {}
+    for _ in range(EVENT_TEXT_ADVANCE_MAX - 1):
+        event_text_advance(mem, 'event', 'text', 'text:こうえいです', [])
+    # A shorter text is not a typewriter extension.
+    assert event_text_advance(mem, 'event', 'text', 'text:こう', []) is False
+    assert mem['event_text_watch'] == {'key': 'text:こう', 'count': 1}
+    # A text that does not start with the previous one is a different line.
+    assert event_text_advance(mem, 'event', 'text', 'text:さようなら', []) is False
+    assert mem['event_text_watch'] == {'key': 'text:さようなら', 'count': 1}
+
+
+def test_typewriter_reveal_only_counts_text_keys():
+    # Digest-keyed frames (unreadable text) keep resetting on every change;
+    # the prefix rule never applies to them.
+    mem = {}
+    event_text_advance(mem, 'event', 'text', 'aa96ff129027', [])
+    assert event_text_advance(mem, 'event', 'text', 'aa96ff129027ff', []) is False
+    assert mem['event_text_watch'] == {'key': 'aa96ff129027ff', 'count': 1}
+
+
 def test_other_phases_and_kinds_never_advance_blindly():
     for phase, kind in (('field', 'text'), ('shop', 'text'), ('event', 'map'),
                         ('month_menu', 'text')):
