@@ -8,7 +8,7 @@ from ..decision_log import _record
 from ..os_layer.commands import fort_list_batch, menu_to, pad
 from ..os_layer.navigation import _start_y_jump
 from ..os_layer.readers import _current, _cursor, _options, fort_list_open, is_camp_menu, is_fort_menu
-from ..os_layer.world import NAME
+from ..os_layer.world import NAME, _owned
 from ..strategy.orders import _fort_recall_goal, _recall_goal, _recall_owned
 from ..state.regions import flow as _flow, journal as _journal
 
@@ -31,6 +31,7 @@ MENU_REOPEN_LIMIT = 3          # presses again per recall
 DOME_SCREEN_WAIT = 6           # other-screen observations after A on a dome before B
 BOSS_RETRY_TICKS = 120         # first wait before a camp is sent at the moving boss again
 BOSS_JUMP_LIMIT = 2            # Y jumps to the boss per redirect
+RELAY_ARRIVE_PX = 32           # a camp this close to the back-half relay cell has finished leg one
 
 # #4468: a field general's blue G badge is the very same square as the real
 # いどう destination marker. On g1190 2026-11-17 the recall read a bare field
@@ -413,6 +414,47 @@ def _visible_recall_candidates(mem, state, frame):
         candidates = side or []
     return candidates
 
+def _relay_target(mem, state):
+    """Back-half camps walk to the middle of their half before recalling to the hub.
+
+    Owner 2026-11-17 (#4473): a general who retreated from a back-half castle
+    stands in a hollow below the hub. A direct きかん at タタール walks into the
+    cliff and leaves the general camping on the edge month after month (117
+    failed recalls at camp (134,120)). When no back-half castle is ours, send
+    him there first with the camp menu's いどう (a field-cursor move, so no
+    picker geometry is involved), then recall to the hub on the next pass.
+
+    The relay cell is the centroid of the gateway's back castles — field
+    (508,264) in chapter 11, north of the hub (504,480) — so it is biased into
+    the back half rather than sitting on the direct line to the hub. Only a
+    measured back-half camp with no own back-half castle qualifies; a boss,
+    a gather or an already-running move keeps the existing route.
+    """
+    chapter = mem.get('chapter') or 0
+    gate = chart.gateway(chapter) if hasattr(chart, 'gateway') else None
+    if not gate or not gate.get('back') or not gate.get('hub'):
+        return None
+    if state.get('boss') or state.get('boss_move') or state.get('gather'):
+        return None
+    cells = chart.castles(chapter)
+    pts = [cells[c] for c in gate['back'] if c in cells]
+    if len(pts) != len(gate['back']) or gate['hub'] not in cells:
+        return None
+    origin = state.get('camp_world') or state.get('origin')
+    if not _camp_target(origin) or origin[1] >= cells[gate['hub']][1]:
+        # Not measured, or already on the hub/front side: no cliff between.
+        return None
+    if any(c in _owned(mem) for c in gate['back']):
+        # An own castle in this half is a reachable destination; keep きかん.
+        return None
+    relay = [round(sum(p[0] for p in pts) / len(pts)),
+             round(sum(p[1] for p in pts) / len(pts))]
+    if abs(origin[0] - relay[0]) + abs(origin[1] - relay[1]) <= RELAY_ARRIVE_PX:
+        # Leg one is done. The next recall starts here and きかん aims at the
+        # hub (the nearest own castle to the relay cell).
+        return None
+    return {'cell': relay, 'hub': gate['hub']}
+
 
 def _visible_move_dest_step(screen, mem, frame, state):
     """Steer the field cursor onto the visible own castle, then confirm.
@@ -423,16 +465,24 @@ def _visible_move_dest_step(screen, mem, frame, state):
     """
     from ..os_layer.world import observed_cursor_cell
     from ..os_layer.navigation import nav_step
-    goal = (state.get('move_visible') or {}).get('castle')
-    cell = chart.castles(mem.get('chapter') or 0).get(goal) if goal else None
+    mv = state.get('move_visible') or {}
+    goal = mv.get('castle')
+    # A relay destination is a measured field cell, not a castle name; the
+    # ordinary visible-castle move still resolves its cell from the chart.
+    cell = (list(mv['cell']) if isinstance(mv.get('cell'), (list, tuple))
+            and len(mv['cell']) == 2 else None)
+    if cell is None and goal:
+        cell = chart.castles(mem.get('chapter') or 0).get(goal)
     steps = int(state.get('move_steps') or 0) + 1
     state['move_steps'] = steps
     if cell is None or not isinstance(frame, Frame) or steps > VISIBLE_MOVE_LIMIT:
         _visible_move_abort(mem, state, goal, steps, 'cursor_not_found')
         return [pad('b')]
-    if steps == 1:
+    if steps == 1 and not state.get('relay'):
+        # A relay already starts inside the hollow; a perpendicular escape
+        # would divert it away from the measured back-half middle cell.
         _plan_cliff_escape(mem, state, frame)
-    escape = state.get('escape_world')
+    escape = None if state.get('relay') else state.get('escape_world')
     here = observed_cursor_cell(screen, mem, frame)
     if escape:
         # Owner 2026-11-16: the cliff-bound camp first steps perpendicular
@@ -447,6 +497,22 @@ def _visible_move_dest_step(screen, mem, frame, state):
             state.pop('escape_world', None)     # fall back to the castle
         return []
     if here and abs(here[0] - cell[0]) + abs(here[1] - cell[1]) <= 12:
+        if state.get('relay'):
+            # Leg one only: the A confirms the field move, not a castle recall.
+            # Drop the flow so the next observation re-detects the camp at the
+            # relay cell; from there the ordinary きかん route aims at the hub.
+            relay = state['relay']
+            _flow(mem)['recall_relay_done'] = {
+                'chapter': mem.get('chapter') or 0,
+                'cell': list(cell), 'hub': relay.get('hub'),
+                'tick': int(mem.get('tick') or 0)}
+            _record(mem, 'camp_recall_relay_reached',
+                    observed_metric={'cell': list(cell), 'hub': relay.get('hub'),
+                                     'cursor': list(here), 'steps': steps},
+                    reason='後半中央までいどうで移動して到達したため、次回のきかんでハブへ帰還させる')
+            _flow(mem).pop('recall', None)
+            mem['uncertain'] = True
+            return [pad('a')]
         state['goal'] = goal
         _record(mem, 'camp_recall_visible_move_confirm',
                 observed_metric={'castle': goal, 'cursor': list(here), 'steps': steps},
@@ -1136,8 +1202,19 @@ def _camp_recall_step(screen: Screen, mem, frame, *, observed_camps=None):
                                              'blocked': dict(_flow(mem).get('camp_recall_blocked') or {}),
                                              'origin': list(state['origin']) if state.get('origin') else None},
                             reason='見えている自軍城はすべて帰還に失敗済みのため、いどうを使わず全島ピッカーで別の城を選ぶ')
+        if not (state.get('boss') or state.get('boss_move') or state.get('gather')
+                or state.get('move_visible')):
+            relay = _relay_target(mem, state)
+            if relay is not None:
+                state['relay'] = relay
+                state['move_visible'] = {'cell': list(relay['cell']), 'relay': True}
+                _record(mem, 'camp_recall_relay_start',
+                        observed_metric={'cell': list(relay['cell']), 'hub': relay.get('hub'),
+                                         'camp': list(state.get('target') or ())},
+                        reason='後半の自軍城が無くハブへ直行すると崖に詰まるため、まず後半中央へいどうで移動する')
         choice = 'いどう' if (state.get('boss') or state.get('boss_move')
-                              or state.get('move_visible') or state.get('gather')) else 'きかん'
+                              or state.get('move_visible') or state.get('gather')
+                              or state.get('relay')) else 'きかん'
         move = menu_to(screen, choice)
         if move is None:
             misses = state['cursor_misses'] = int(state.get('cursor_misses', 0)) + 1
@@ -1159,9 +1236,18 @@ def _camp_recall_step(screen: Screen, mem, frame, *, observed_camps=None):
                         else '野営の実手カーソルを帰還項目へ合わせる'))
         if move != 'here':
             return [move]
-        state['stage'] = 'dest'
+        state['stage'] = 'relay' if state.get('relay') else 'dest'
         state['steps'] = 0            # each stage gets the full observation budget
         return [pad('a')]
+    if stage == 'relay':
+        # いどう opened a field-cursor move. Steer it to the relay cell; the
+        # whole-island picker geometry (and its chapter-11 offset mismatch)
+        # is not involved in this leg.
+        if screen.kind in ('map', 'map_target'):
+            return _visible_move_dest_step(screen, mem, frame, state)
+        _flow(mem).pop('recall', None)
+        mem['uncertain'] = True
+        return [pad('b')] if screen.kind == 'world_map' else []
     if stage == 'dest':
         if screen.kind != 'map_target':
             if screen.kind == 'map' and state.get('move_visible'):
