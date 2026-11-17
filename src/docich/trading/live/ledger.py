@@ -10,6 +10,7 @@ import sqlite3
 import uuid
 from contextlib import contextmanager
 from dataclasses import dataclass, field
+from decimal import Decimal
 from pathlib import Path
 from typing import Callable, Iterator
 
@@ -123,6 +124,8 @@ _TRANSITIONS = {
     "PARTIALLY_FILLED": {"PARTIALLY_FILLED", "FILLED", "CANCELED"},
 }
 _OPEN_STATES = ("PLANNED", "SUBMITTING", "UNKNOWN_SUBMISSION", "ACKED", "PARTIALLY_FILLED")
+
+LIVE_EVENT_KINDS = frozenset({"live_decision", "shadow_fill", "worker_state"})
 
 
 class LiveLedgerError(RuntimeError):
@@ -563,6 +566,70 @@ class LiveLedger:
             cur.execute("UPDATE positions SET status='closed', closed_at=? WHERE position_id=? AND status='open'",
                         (float(now), position_id))
             self._emit(cur, "position_closed", "position", position_id, {}, now)
+
+    def mark_residual_inventory(self, lease, position_id: str, *, now: float,
+                                min_amount: Decimal, amount_step: Decimal) -> None:
+        if lease is None:
+            raise ValueError("a writer lease is required")
+        if (not isinstance(min_amount, Decimal) or not isinstance(amount_step, Decimal)
+                or not min_amount.is_finite() or not amount_step.is_finite()
+                or min_amount <= 0 or amount_step <= 0):
+            raise ValueError("min_amount and amount_step must be positive decimals")
+        with self._tx(lease) as cur:
+            row = cur.execute("SELECT status FROM positions WHERE position_id=?", (position_id,)).fetchone()
+            if row is None or row[0] != "open":
+                raise LiveLedgerError("position is not open")
+            if cur.execute("SELECT 1 FROM intents WHERE position_id=? AND state IN (?,?,?,?,?)",
+                           (position_id, *_OPEN_STATES)).fetchone():
+                raise LiveLedgerError("position still has open intents")
+            net = Decimal(0)
+            for symbol, side, amount, fee_status, fee_amount, fee_currency in cur.execute(
+                    "SELECT symbol, side, amount, fee_status, fee_amount, fee_currency FROM fills "
+                    "WHERE position_id=?", (position_id,)):
+                net += Decimal(amount) if side == "buy" else -Decimal(amount)
+                if fee_status == "known" and fee_currency == symbol.split("/")[0]:
+                    net -= Decimal(fee_amount)
+            if not (net > 0 and (net // amount_step) * amount_step < min_amount):
+                raise LiveLedgerError("position is not residual inventory")
+            cur.execute("UPDATE positions SET status='residual_inventory', closed_at=? "
+                        "WHERE position_id=? AND status='open'", (float(now), position_id))
+            self._emit(cur, "position_residual", "position", position_id,
+                       {"net_base": decimal_text(net, name="net_base")}, now)
+
+    def record_live_event(self, lease, kind: str, payload: dict, *, now: float) -> None:
+        if lease is None:
+            raise ValueError("a writer lease is required")
+        if not isinstance(kind, str) or kind not in LIVE_EVENT_KINDS:
+            raise ValueError("kind is not an allowed live event kind")
+        if not isinstance(payload, dict):
+            raise ValueError("payload must be a dict")
+
+        def check(value: object) -> None:
+            if isinstance(value, (str, int)) or value is None:
+                return
+            if isinstance(value, (float, Decimal)):
+                raise ValueError("numbers must be passed as strings or integers")
+            if isinstance(value, dict):
+                for key, item in value.items():
+                    if not isinstance(key, str):
+                        raise ValueError("payload keys must be strings")
+                    check(item)
+                return
+            if isinstance(value, list):
+                for item in value:
+                    check(item)
+                return
+            raise ValueError("payload values must be strings, integers, null, dictionaries or lists")
+
+        check(payload)
+        try:
+            body = canonical_json(payload)
+        except CanonicalError as exc:
+            raise ValueError(str(exc)) from exc
+        if len(body) > 16384:
+            raise ValueError("payload exceeds 16384 bytes")
+        with self._tx(lease) as cur:
+            self._emit(cur, kind, "live", None, payload, now)
 
     # -- exchange facts -----------------------------------------------------
     def record_order_observation(self, lease, obs: OrderObservation, *, now: float) -> None:
