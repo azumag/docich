@@ -186,3 +186,22 @@ def test_hub_adjacent_back_camp_does_not_switch_to_front_after_hub_failure():
 def test_only_hub_owned_keeps_hub_as_recall_target():
     from docich.hanjuku.strategy.orders import _recall_owned
     assert _recall_owned({}, 11, ['タタール'], origin=[440, 452]) == ['タタール']
+
+
+def test_the_side_is_judged_without_the_y_map_flags():
+    """g1190 2026-11-17 21:1x: タタール/ネペンテ owned but unflagged in this frame.
+
+    The flags-filtered list held only front castles, so a back-half camper was
+    sent to ジャンセニア across the chasm. Ownership must come from the run's
+    own captures.
+    """
+    from docich.hanjuku.strategy.orders import _recall_owned
+    captured = [*FRONT, 'タタール', 'クラボニア']
+    mem = {'chapter': 11, 'captured': captured, 'home_lost': False}
+    cells = chart.castles(11)
+    origin = [cells['クラボニア'][0] - 12, cells['クラボニア'][1] + 8]
+    # Only front castles survive this frame's flag filter.
+    flags_owned = list(FRONT)
+    got = _recall_owned(mem, 11, flags_owned, origin=origin)
+    assert 'クラボニア' in got or 'タタール' in got, got
+    assert not set(got) & set(FRONT), got
