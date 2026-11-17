@@ -141,7 +141,7 @@ class SizingResult:
     buys: tuple[OrderPlan, ...]
     skipped: tuple[SkipDecision, ...]
     residual_position_ids: tuple[str, ...]   # positions whose ledger quantity is dust (S6)
-    headroom_left: Decimal              # remaining "deployed headroom" after all plans
+    headroom_left: Decimal              # remaining "deployed headroom" after all plans (>= 0)
     free_quote_left: Decimal            # F_rest after all buys
 
 
@@ -175,6 +175,7 @@ class _BookUnusable(Exception):
 class _RuleValues:
     amount_step: Decimal
     min_amount: Decimal
+    min_lot: Decimal                     # effective minimum lot: max(min_amount, amount_step)
     price_tick: Decimal
     quote_unit: Decimal
     fee_rate: Decimal | None
@@ -203,7 +204,17 @@ def _rules_values(rules: MarketRules) -> _RuleValues:
         raise ValueError("amount_step and price_tick must be positive")
     if min_amount < 0 or quote_unit < 0:
         raise ValueError("min_amount and quote_unit must be non-negative")
-    return _RuleValues(amount_step, min_amount, price_tick, quote_unit, fee_rate)
+    # A zero exchange minimum must not turn into a zero-amount order: the smallest
+    # executable lot is always at least one amount step.
+    min_lot = max(min_amount, amount_step)
+    return _RuleValues(
+        amount_step=amount_step,
+        min_amount=min_amount,
+        min_lot=min_lot,
+        price_tick=price_tick,
+        quote_unit=quote_unit,
+        fee_rate=fee_rate,
+    )
 
 
 def _usable_levels(levels, *, tick: Decimal, descending: bool) -> tuple[tuple[Decimal, Decimal], ...]:
@@ -292,7 +303,10 @@ def size_orders(
     residual_ids: list[str] = []
     residual_seen: set[str] = set()
     sells: list[OrderPlan] = []
-    headroom = max(ZERO, capital - deployed)
+    # Signed on purpose: when deployed exceeds capital the overshoot must survive, so a
+    # sale restores only the headroom that is actually missing (it cannot manufacture
+    # fresh headroom).  The negative value is clamped only in the reported result.
+    headroom = capital - deployed
     free_rest = free_quote
 
     # ---- sells first: a planned sale restores INVESTMENT-LIMIT headroom -----------------
@@ -329,6 +343,15 @@ def size_orders(
         if attempts >= settings.max_sell_attempts:
             skipped.append(_skip(opportunity, "sell_attempts_exhausted", "sell"))
             continue
+        # A sell whose decision was already handled must not be planned again; the key
+        # includes the attempt number, so a retry with a fresh attempt still goes through.
+        decision_key = (
+            f"live1:{policy.digest[:16]}:{opportunity.opportunity_id}:"
+            f"{position.position_id[:8]}:a{attempts}"
+        )
+        if decision_key in decided_keys:
+            skipped.append(_skip(opportunity, "already_decided", "sell"))
+            continue
 
         rules = _rules_values(market.rules)
         net_base = _decimal(position.net_base, f"held[{symbol}].net_base")
@@ -336,14 +359,14 @@ def size_orders(
         if net_base <= 0:
             skipped.append(_skip(opportunity, "no_inventory", "sell"))
             continue
-        if floor_step(net_base, rules.amount_step) < rules.min_amount:
+        if floor_step(net_base, rules.amount_step) < rules.min_lot:
             if position.position_id not in residual_seen:
                 residual_seen.add(position.position_id)
                 residual_ids.append(position.position_id)
             skipped.append(_skip(opportunity, "below_min_amount", "sell"))
             continue
         sellable = floor_step(min(net_base, free_base), rules.amount_step)
-        if sellable <= 0 or sellable < rules.min_amount:
+        if sellable <= 0 or sellable < rules.min_lot:
             skipped.append(_skip(opportunity, "exchange_free_short", "sell"))
             continue
 
@@ -369,16 +392,13 @@ def size_orders(
             amount = floor_step(accumulated, rules.amount_step)
             limit = bids[-1][0]
             notes = ("depth_insufficient",)
-            if amount <= 0 or amount < rules.min_amount:
+            if amount <= 0 or amount < rules.min_lot:
                 skipped.append(_skip(opportunity, "depth_insufficient", "sell"))
                 continue
 
         notional = amount * limit
         sells.append(OrderPlan(
-            decision_key=(
-                f"live1:{policy.digest[:16]}:{opportunity.opportunity_id}:"
-                f"{position.position_id[:8]}:a{attempts}"
-            ),
+            decision_key=decision_key,
             opportunity_id=opportunity.opportunity_id,
             symbol=symbol,
             side="sell",
@@ -393,8 +413,9 @@ def size_orders(
             reason_code=opportunity.reason_code,
             notes=tuple(sorted(notes)),
         ))
-        # Proceeds can fund replacement buys in the investment-limit sense only; they do
-        # NOT raise free_quote, because a limit sell may not fill this cycle.
+        # Proceeds can fund replacement buys in the investment-limit sense only (and only
+        # once they clear any overshoot); they do NOT raise free_quote, because a limit
+        # sell may not fill this cycle.
         headroom = min(capital, headroom + notional)
 
     # ---- buys second --------------------------------------------------------------------
@@ -478,7 +499,7 @@ def size_orders(
             amount0 = floor_step(min(target / limit, visible), rules.amount_step)
             notes = ("depth_insufficient",)
 
-        executable_min = ceil_step(rules.min_amount, rules.amount_step)
+        executable_min = ceil_step(rules.min_lot, rules.amount_step)
         if amount0 >= executable_min:
             amount = amount0
             plan_limit = limit
@@ -541,6 +562,6 @@ def size_orders(
         buys=tuple(buys),
         skipped=tuple(skipped),
         residual_position_ids=tuple(residual_ids),
-        headroom_left=headroom,
+        headroom_left=max(ZERO, headroom),  # report only: the internal value stays signed
         free_quote_left=free_rest,
     )

@@ -1478,3 +1478,219 @@ def test_open_sell_does_not_touch_headroom():
     assert result.sells == ()
     assert result.headroom_left == D("8000")
     assert result.headroom_left == max(D("0"), D("10000") - D("2000"))
+
+
+# ---- (p) reviewed fixes: signed headroom, decided sells, zero min_amount ---------------
+
+
+def test_over_capital_sale_that_does_not_clear_the_overshoot_allows_no_buy():
+    ps = policy_set_for((spec("exp-1"), "AAA/JPY"), (spec("exp-2"), "BBB/JPY"))
+    marks = {
+        "AAA/JPY": market("AAA/JPY", step="1", minamt="1", tick="1",
+                          bids=(("100", "50"),)),
+        "BBB/JPY": market(
+            "BBB/JPY", last_close="100", step="0.01", minamt="0.01", tick="1",
+            quote_unit="1", fee="0.001", asks=(("100", "1000"),),
+        ),
+    }
+    held = {"AAA/JPY": HeldPosition("pos-aaa", D("1"), D("1"))}
+    sell = opportunity("AAA/JPY", "sell", oid="opp-1")
+    buy = opportunity("BBB/JPY", "buy", oid="opp-2", fraction="0.30")
+
+    result = size_orders(
+        live_signals(entries=(buy,), exits=(sell,)), ps, marks, held,
+        funds("1000", "1500", "1000"), now=NOW,
+    )
+
+    # C=1000, D=1500 -> -500; the 100 sale only reaches -400, still over the limit.
+    assert len(result.sells) == 1
+    assert (result.sells[0].amount, result.sells[0].price) == (D("1"), D("100"))
+    assert result.buys == ()
+    assert codes(result) == ["total_cap_exhausted"]
+    assert result.headroom_left == D("0")
+
+
+def test_over_capital_without_sells_allows_no_buy():
+    ps = policy_set_for((spec("exp-1"), "AAA/JPY"), (spec("exp-2"), "BBB/JPY"))
+    mark = market(
+        "BBB/JPY", last_close="100", step="0.01", minamt="0.01", tick="1",
+        quote_unit="1", fee="0.001", asks=(("100", "1000"),),
+    )
+    buy = opportunity("BBB/JPY", "buy", oid="opp-2", fraction="0.30")
+
+    result = size_orders(
+        live_signals(entries=(buy,)), ps, {"BBB/JPY": mark}, {},
+        funds("1000", "1500", "1000"), now=NOW,
+    )
+
+    assert result.buys == ()
+    assert codes(result) == ["total_cap_exhausted"]
+    assert result.headroom_left == D("0")
+
+
+def test_over_capital_sale_that_clears_the_overshoot_allows_a_buy_of_the_rest():
+    ps = policy_set_for((spec("exp-1"), "AAA/JPY"), (spec("exp-2"), "BBB/JPY"))
+    marks = {
+        "AAA/JPY": market("AAA/JPY", step="1", minamt="1", tick="1",
+                          bids=(("100", "50"),)),
+        "BBB/JPY": market(
+            "BBB/JPY", last_close="100", step="0.01", minamt="0.01", tick="1",
+            quote_unit="1", fee="0.001", asks=(("100", "1000"),),
+        ),
+    }
+    held = {"AAA/JPY": HeldPosition("pos-aaa", D("6"), D("6"))}
+    sell = opportunity("AAA/JPY", "sell", oid="opp-1")
+    buy = opportunity("BBB/JPY", "buy", oid="opp-2", fraction="0.30")
+
+    result = size_orders(
+        live_signals(entries=(buy,), exits=(sell,)), ps, marks, held,
+        funds("1000", "1500", "1000"), now=NOW,
+    )
+
+    # -500 + 600 = 100: cap 300 and funding 998 are wider, so headroom binds at 100.
+    assert result.skipped == ()
+    assert len(result.sells) == 1
+    assert (result.sells[0].amount, result.sells[0].price) == (D("6"), D("100"))
+    assert len(result.buys) == 1
+    plan = result.buys[0]
+    assert (plan.amount, plan.price) == (D("1"), D("100"))
+    assert plan.required_quote == D("101.1")
+    assert result.headroom_left == D("0")
+    assert result.free_quote_left == D("898.9")
+
+
+def test_a_sell_whose_key_is_already_decided_is_skipped():
+    ps = policy_set_for((spec("exp-1"), "AAA/JPY"))
+    digest = ps.policies["AAA/JPY"].digest
+    key0 = f"live1:{digest[:16]}:opp-1:pos-aaa:a0"
+    mark = market("AAA/JPY", step="1", minamt="1", tick="1", bids=(("100", "50"),))
+    held = {"AAA/JPY": HeldPosition("pos-aaa", D("10"), D("10"))}
+
+    result = size_orders(
+        live_signals(exits=(opportunity("AAA/JPY", "sell", oid="opp-1"),)),
+        ps, {"AAA/JPY": mark}, held, funds("10000", "2000", "10000"), now=NOW,
+        decided_keys={key0},
+    )
+
+    assert result.sells == ()
+    assert codes(result) == ["already_decided"]
+    assert result.residual_position_ids == ()
+    assert result.headroom_left == max(D("0"), D("10000") - D("2000"))
+    assert result.skipped[0].side == "sell"
+
+
+def test_next_attempt_key_is_not_blocked_by_the_previous_one():
+    ps = policy_set_for((spec("exp-1"), "AAA/JPY"))
+    digest = ps.policies["AAA/JPY"].digest
+    key0 = f"live1:{digest[:16]}:opp-1:pos-aaa:a0"
+    key1 = f"live1:{digest[:16]}:opp-1:pos-aaa:a1"
+    mark = market("AAA/JPY", step="1", minamt="1", tick="1", bids=(("100", "50"),))
+    held = {"AAA/JPY": HeldPosition("pos-aaa", D("10"), D("10"))}
+
+    result = size_orders(
+        live_signals(exits=(opportunity("AAA/JPY", "sell", oid="opp-1"),)),
+        ps, {"AAA/JPY": mark}, held, funds("10000", "2000", "10000"), now=NOW,
+        decided_keys={key0}, sell_attempts={"opp-1": 1},
+    )
+
+    assert result.skipped == ()
+    assert len(result.sells) == 1
+    assert result.sells[0].decision_key == key1
+
+
+def test_exhausted_attempts_win_over_already_decided():
+    ps = policy_set_for((spec("exp-1"), "AAA/JPY"))
+    digest = ps.policies["AAA/JPY"].digest
+    key5 = f"live1:{digest[:16]}:opp-1:pos-aaa:a5"
+    mark = market("AAA/JPY", step="1", minamt="1", tick="1", bids=(("100", "50"),))
+    held = {"AAA/JPY": HeldPosition("pos-aaa", D("10"), D("10"))}
+
+    result = size_orders(
+        live_signals(exits=(opportunity("AAA/JPY", "sell", oid="opp-1"),)),
+        ps, {"AAA/JPY": mark}, held, funds("10000", "2000", "10000"), now=NOW,
+        decided_keys={key5}, sell_attempts={"opp-1": 5},
+    )
+
+    assert result.sells == ()
+    assert codes(result) == ["sell_attempts_exhausted"]
+
+
+def test_zero_min_amount_buy_is_rounded_up_to_one_step_never_zero():
+    ps = policy_set_for((spec("exp-1"), "AAA/JPY"))
+    entry = opportunity("AAA/JPY", "buy", oid="opp-1", fraction="0.005")
+    mark = market(
+        "AAA/JPY", last_close="100", step="0.01", minamt="0", tick="1",
+        quote_unit="0", fee="0.001", asks=(("100", "10"),),
+    )
+
+    result = size_orders(
+        live_signals(entries=(entry,)), ps, {"AAA/JPY": mark}, {},
+        funds("100", "0", "100"), now=NOW,
+    )
+
+    assert result.skipped == ()
+    assert len(result.buys) == 1
+    plan = result.buys[0]
+    assert (plan.amount, plan.price) == (D("0.01"), D("100"))
+    assert plan.notes == ("min_amount_rounded_up",)
+    assert plan.required_quote == D("1.001")
+    assert result.free_quote_left == D("98.999")
+    assert result.headroom_left == D("99")
+    assert all(item.amount > 0 for item in result.buys + result.sells)
+
+
+def test_zero_min_amount_buy_over_the_hard_cap_is_below_min_amount():
+    ps = policy_set_for((spec("exp-1"), "AAA/JPY"))
+    entry = opportunity("AAA/JPY", "buy", oid="opp-1", fraction="0.005")
+    mark = market(
+        "AAA/JPY", last_close="100", step="0.01", minamt="0", tick="1",
+        quote_unit="0", fee="0.001", asks=(("100", "10"),),
+    )
+
+    result = size_orders(
+        live_signals(entries=(entry,)), ps, {"AAA/JPY": mark}, {},
+        funds("2", "0", "100"), now=NOW,
+    )
+
+    # hard_cap 0.6 < the one-step notional 1.
+    assert result.buys == ()
+    assert codes(result) == ["below_min_amount"]
+
+
+def test_zero_min_amount_sell_dust_is_residual():
+    ps = policy_set_for((spec("exp-1"), "AAA/JPY"))
+    mark = market("AAA/JPY", step="0.01", minamt="0", tick="1",
+                  bids=(("100", "10"),))
+    exit_ = opportunity("AAA/JPY", "sell", oid="opp-1")
+
+    dust = size_orders(
+        live_signals(exits=(exit_,)), ps, {"AAA/JPY": mark},
+        {"AAA/JPY": HeldPosition("pos-aaa", D("0.005"), D("1"))}, funds(), now=NOW,
+    )
+    assert dust.sells == ()
+    assert codes(dust) == ["below_min_amount"]
+    assert dust.residual_position_ids == ("pos-aaa",)
+
+    short = size_orders(
+        live_signals(exits=(exit_,)), ps, {"AAA/JPY": mark},
+        {"AAA/JPY": HeldPosition("pos-aaa", D("1"), D("0.005"))}, funds(), now=NOW,
+    )
+    assert short.sells == ()
+    assert codes(short) == ["exchange_free_short"]
+    assert short.residual_position_ids == ()
+
+
+def test_min_amount_below_the_step_behaves_like_one_step():
+    ps = policy_set_for((spec("exp-1"), "AAA/JPY"))
+    mark = market("AAA/JPY", step="0.01", minamt="0.001", tick="1",
+                  bids=(("100", "10"),))
+
+    result = size_orders(
+        live_signals(exits=(opportunity("AAA/JPY", "sell", oid="opp-1"),)),
+        ps, {"AAA/JPY": mark},
+        {"AAA/JPY": HeldPosition("pos-aaa", D("0.011"), D("0.011"))}, funds(), now=NOW,
+    )
+
+    assert result.skipped == ()
+    assert len(result.sells) == 1
+    assert (result.sells[0].amount, result.sells[0].price) == (D("0.01"), D("100"))
