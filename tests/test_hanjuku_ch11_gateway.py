@@ -385,6 +385,25 @@ def test_a_lost_hub_stages_the_army_forward_first():
     assert first.get('target') in {'マランマ', 'ゴンダル', 'チリベット'}, first
 
 
+def test_a_lost_hub_moves_several_spares_in_one_plan():
+    """19 generals sat at home while staging sent one per plan (#4495)."""
+    from docich.hanjuku.strategy.replan import interim_candidates
+    from docich.hanjuku.state.regions import world as _world
+    mem = {'chapter': 11, 'month': '77-10', 'tick': 100,
+           'captured': ['マランマ', 'ゴンダル', 'チリベット'],
+           'lost': ['ネペンテ', 'タタール', 'ジャンセニア', 'タプロベイン'],
+           'egg_types': {}, 'egg_uses': {}, 'house_eggs': {}}
+    _world(mem)['garrison'] = {
+        'アルマムーン': ['どうし', 'アテナ', 'レモン', 'ピオーネ', 'バゲット', 'バター',
+                         'ゼウス', 'ヘラ', 'カシュー', 'カイン'],
+        'ゴンダル': ['バゲット2'], 'チリベット': ['ヘパイストス'], 'マランマ': ['ヘスティア']}
+    orders = [o for o in interim_candidates(mem).values() if isinstance(o, dict)]
+    moves = [o for o in orders if o.get('purpose') == 'move']
+    generals = {o.get('general') for o in moves}
+    assert len(moves) >= 3, orders
+    assert len(generals) == len(moves), moves
+
+
 def test_an_owned_hub_keeps_the_ordinary_gather():
     from docich.hanjuku.strategy.replan import interim_candidates
     orders = [o for o in interim_candidates(_attrition_mem(hub_owned=True)).values() if isinstance(o, dict)]

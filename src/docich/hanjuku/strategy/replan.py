@@ -243,6 +243,7 @@ MOVE_ANY_GENERAL = chart_adjust.PROBE_GENERAL   # move from an unread list: the 
 # producing successor defenders while ながはま held eight spares).
 INTERIM_WAVE_LIMIT = 6
 GATEWAY_HUB_GUARD = 3        # the shared hub keeps two defenders while it sends
+STAGE_LOST_HUB_PER_PLAN = 4  # spares moved forward while the hub is the enemy's
 HUB_GATHER_PER_PLAN = 2      # spare generals moved into a chapter's hub per plan
 ATTACK_MIN_HP_RATIO = 0.20   # measured HP/max below this is a wasted attack sortie
 # Owner 2026-11-05: the boss dies to volume, not strength. Half-ripe eggs are
@@ -1226,12 +1227,25 @@ def interim_candidates(mem, allow_sole=False) -> dict:
         # could only start at the hub). Two moves per plan keep the month's
         # sortie slots available for the attacks themselves.
         gather.sort(key=lambda item: (-len(item[1]), _distance(chapter, item[0], hub), item[0]))
-        for source, spares in gather[:HUB_GATHER_PER_PLAN]:
-            moves.append({'general': spares[0], 'target': hub, 'cards': [], 'source': source,
-                          'after': None, 'purpose': 'move',
-                          **({'stage_first': True} if stage_lost_hub else {}),
-                          'note': f"暫定: 後半へ備えて{_general_label(spares[0])}を{source}から"
-                                  f"中央の{hub}へ集める"})
+        # While the hub is lost the army sits at home (19 generals on
+        # 2026-11-18) and every retake marches the island; stage more per plan
+        # so the front castle can start sending its own sorties sooner. One
+        # source may contribute several spares — the home stack is the donor.
+        stage_limit = STAGE_LOST_HUB_PER_PLAN if stage_lost_hub else HUB_GATHER_PER_PLAN
+        per_source = STAGE_LOST_HUB_PER_PLAN if stage_lost_hub else 1
+        staged = 0
+        for source, spares in gather:
+            for general in spares[:per_source]:
+                if staged >= stage_limit:
+                    break
+                moves.append({'general': general, 'target': hub, 'cards': [], 'source': source,
+                              'after': None, 'purpose': 'move',
+                              **({'stage_first': True} if stage_lost_hub else {}),
+                              'note': f"暫定: 後半へ備えて{_general_label(general)}を{source}から"
+                                      f"中央の{hub}へ集める"})
+                staged += 1
+            if staged >= stage_limit:
+                break
     # A pending 四季王 site order with no companion needs an egg pair at one
     # castle: move a spare general to join a lone egg-holder (or the hero's
     # castle) so one can sortie while an egg-holder stays. g1075 held every
