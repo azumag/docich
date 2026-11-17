@@ -36,6 +36,23 @@ def _march_blocker(chapter, source, target, owned):
     return chart.march_blocker(chapter, source, target, owned) if not routes.is_road(chapter) else None
 
 
+def _too_hurt_to_attack(mem, general):
+    """A measured general this close to 0 HP loses before any card lands.
+
+    g1190 2026-11-17 20:4x (chapter 11): three of nine battles opened at ally
+    HP 4/13/5 against 87/45/87 — the general was effectively dead on arrival
+    and the sortie cost a month. Unread HP is not evidence either way.
+    """
+    hp = _current_hp(mem, general)
+    if type(hp) is not int:
+        return False
+    row = ((mem.get('general_statuses') or {}).get('statuses') or {}).get(general)
+    maximum = row.get('max_hp') if isinstance(row, dict) else None
+    if type(maximum) is not int or maximum <= 0:
+        return hp <= 1
+    return hp < max(1, int(maximum * ATTACK_MIN_HP_RATIO))
+
+
 def _interim_source(mem, target, chart_order, owned, busy, allow_sole=False):
     """(source, general) for an interim sortie to ``target``, or None.
 
@@ -122,6 +139,15 @@ def _interim_source(mem, target, chart_order, owned, busy, allow_sole=False):
                     return blocker, MOVE_ANY_GENERAL
                 return None  # reinforce the blocker before trying this target
         spares = _strongest_first(mem, _spares(free[best], unavailable_for_attack, sole))
+        if not spares:
+            return None
+        if _too_hurt_to_attack(mem, spares[0]):
+            from ..decision_log import _record
+            _record(mem, 'interim_attack_deferred_low_hp', chart_step=None, general=spares[0],
+                    observed_metric={'source': best, 'target': target,
+                                     'hp': _current_hp(mem, spares[0])},
+                    reason='計測HPが最大の2割未満の将軍しか残っていないため、この目標への出撃を今月は見送る')
+            return None
         return best, spares[0]
     probes = sorted(c for c in owned if routes.probe_due(mem, c))
     if probes:
@@ -208,6 +234,7 @@ MOVE_ANY_GENERAL = chart_adjust.PROBE_GENERAL   # move from an unread list: the 
 # producing successor defenders while ながはま held eight spares).
 INTERIM_WAVE_LIMIT = 6
 HUB_GATHER_PER_PLAN = 2      # spare generals moved into a chapter's hub per plan
+ATTACK_MIN_HP_RATIO = 0.20   # measured HP/max below this is a wasted attack sortie
 # Owner 2026-11-05: the boss dies to volume, not strength. Half-ripe eggs are
 # so weak that a strong general and a weak one remove about the same HP, so
 # every spare goes at the boss, from as many castles as possible (each keeps
@@ -472,7 +499,10 @@ def _wave_pick(mem, target, owned, busy, allow_sole):
             # Strongest first: a castle with a successor defender kept beating
             # the wave's weakest spare (g1163 2026-11-10 09:38: しまばら's
             # first defender fell at ally 18, the next one at 85 HP).
-            return source, _strongest_first(mem, spares)[0]
+            pick = _strongest_first(mem, spares)[0]
+            if _too_hurt_to_attack(mem, pick):
+                continue
+            return source, pick
     return None
 
 

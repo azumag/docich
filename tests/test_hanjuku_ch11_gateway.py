@@ -113,3 +113,29 @@ def test_the_hub_gathers_two_moves_and_the_deepest_stack_first():
     # Each source keeps a defender.
     assert orders[0]['general'] != 'ソルト' or True
     assert all(o['general'] not in ('—',) for o in orders)
+
+
+def test_a_general_below_the_hp_floor_is_not_sent_to_attack():
+    """g1190 2026-11-17: battles opened at ally HP 4/13/5 against 87/45/87."""
+    from docich.hanjuku.strategy import replan
+    mem = memory([*FRONT, 'タタール'],
+                 {'アルマムーン': ['アテナ'], 'タタール': ['ミュスカデ', 'リースリング']})
+    mem['general_statuses'] = {'statuses': {
+        'ミュスカデ': {'general': 'ミュスカデ', 'hp': 2, 'max_hp': 40},
+        'リースリング': {'general': 'リースリング', 'hp': 1, 'max_hp': 30}}}
+    mem['_records'] = []
+    orders = [o for o in replan.interim_candidates(mem).values()
+              if isinstance(o, dict) and o.get('target') in BACK]
+    assert orders == []
+    assert any(r.get('decision') == 'interim_attack_deferred_low_hp' for r in mem['_records'])
+
+
+def test_a_healthy_general_still_attacks():
+    from docich.hanjuku.strategy import replan
+    mem = memory([*FRONT, 'タタール'],
+                 {'アルマムーン': ['アテナ'], 'タタール': ['ミュスカデ', 'リースリング']})
+    mem['general_statuses'] = {'statuses': {
+        'ミュスカデ': {'general': 'ミュスカデ', 'hp': 38, 'max_hp': 40}}}
+    orders = [o for o in replan.interim_candidates(mem).values()
+              if isinstance(o, dict) and o.get('target') in BACK]
+    assert orders, 'a healthy hub must still push into the back half'
