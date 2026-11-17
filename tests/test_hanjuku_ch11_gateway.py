@@ -49,7 +49,9 @@ def test_the_gateway_table_only_describes_chapter_11():
 
 def test_back_half_is_not_targeted_while_the_hub_is_the_enemys():
     got = targets(memory(FRONT))
-    assert got == ['タタール']
+    # The hub retake leads; a staging move may name a front castle, but never
+    # the far half.
+    assert 'タタール' in got
     assert not set(got) & set(BACK)
 
 
@@ -353,3 +355,37 @@ def test_the_thin_hub_still_sends_into_the_back_half():
     owned = {'アルマムーン', 'マランマ', 'ゴンダル', 'タタール'}
     picked = _interim_source(mem, 'クラボニア', None, owned, set())
     assert picked and picked[0] == 'タタール', picked
+
+
+def _attrition_mem(hub_owned=False):
+    from docich.hanjuku.state.regions import world as _world
+    captured = ['マランマ', 'ゴンダル', 'チリベット'] + (['タタール'] if hub_owned else [])
+    mem = {'chapter': 11, 'month': '77-3', 'tick': 100, 'captured': captured,
+           'lost': ['ネペンテ', 'ジャンセニア', 'タプロベイン'] + ([] if hub_owned else ['タタール']),
+           'egg_types': {}, 'egg_uses': {}, 'house_eggs': {}}
+    _world(mem)['garrison'] = {
+        'アルマムーン': ['どうし', 'アテナ', 'レモン', 'ピオーネ', 'バゲット', 'バター', 'ゼウス', 'ヘラ'],
+        'ゴンダル': ['カシュー'], 'チリベット': ['ヘパイストス'], 'マランマ': ['ヘスティア', 'カイン']}
+    if hub_owned:
+        _world(mem)['garrison']['タタール'] = ['ミュスカデ']
+    return mem
+
+
+def test_a_lost_hub_stages_the_army_forward_first():
+    """#4495: 17 generals at home while every front castle held one.
+
+    The plan must start with a move of a spare into the own front castle
+    nearest the hub, so the next wave starts near the hub.
+    """
+    from docich.hanjuku.strategy.replan import interim_candidates
+    orders = [o for o in interim_candidates(_attrition_mem()).values() if isinstance(o, dict)]
+    first = orders[0]
+    assert first.get('purpose') == 'move', first
+    assert first.get('source') == 'アルマムーン'
+    assert first.get('target') in {'マランマ', 'ゴンダル', 'チリベット'}, first
+
+
+def test_an_owned_hub_keeps_the_ordinary_gather():
+    from docich.hanjuku.strategy.replan import interim_candidates
+    orders = [o for o in interim_candidates(_attrition_mem(hub_owned=True)).values() if isinstance(o, dict)]
+    assert orders and orders[0].get('purpose') != 'move' or orders[0].get('target') == 'タタール', orders[:3]
