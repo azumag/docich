@@ -2099,8 +2099,17 @@ def _recall_owned(mem, chapter, owned, origin=None):
         # camped on the edge for good. Judge the side from the measured origin
         # and stay on it; the hub is the one castle both halves reach.
         hub = gate['hub']
-        back = [c for c in owned if c in gate['back']]
-        front = [c for c in owned if c in gate['front']]
+        if set(owned) <= {hub} and hub in owned:
+            # Only the shared hub is allowed this frame; it is the one castle
+            # both halves can walk to.
+            return [hub]
+        # Ownership comes from the run's own captures, not only from this
+        # frame's Y map: g1190 2026-11-17 21:1x had タタール/ネペンテ owned but
+        # unflagged, so the back-half group looked empty and a back-half camper
+        # was sent to ジャンセニア across the chasm.
+        universe = sorted(set(c for c in _owned(mem) if c in cells) | set(owned))
+        back = [c for c in universe if c in gate['back']]
+        front = [c for c in universe if c in gate['front']]
         if back and front:
             # The shared hub cannot identify which side the camp is on:
             # including it in both distances makes a hub-adjacent camp tie.
@@ -2108,11 +2117,14 @@ def _recall_owned(mem, chapter, owned, origin=None):
                 return min(sum((cells[c][a] - origin[a]) ** 2 for a in (0, 1))
                            for c in group)
             side = back if _nearest(back) < _nearest(front) else front
-            return sorted([*side, *([hub] if hub in owned else [])])
+            kept = [c for c in owned if c in set(side)] or side
+            return sorted([*kept, *([hub] if hub in universe and hub not in kept else [])])
         if back or front:
             # Only one side has an owned castle; keep the shared hub as a
             # reachable alternative without reintroducing the opposite side.
-            return sorted([*(back or front), *([hub] if hub in owned else [])])
+            side = back or front
+            kept = [c for c in owned if c in set(side)] or side
+            return sorted([*kept, *([hub] if hub in universe and hub not in kept else [])])
     if (not road or not measured):
         return owned
     entry = min((c for c in road if c in cells),
