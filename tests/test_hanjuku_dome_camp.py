@@ -31,7 +31,13 @@ DOMES = {'g1075-boss-target-enclosure.png': (173, 42),
 WITH_TENT = {'g1190-ch9-tao-fort-and-cliff-tent-565.png',
              'g1190-ch9-tao-cliff-tent-winter-565.png',
              # a real own camp (tent + red flag) beside the cliff at (176, 129)
-             'g1190-ch9-target-marker-over-sea-565.png'}
+             'g1190-ch9-target-marker-over-sea-565.png',
+             # the 砦 menu/list/card/picker of ch9 2026-11-17 (v987 fixtures):
+             # own tents stand beside the fort on the map behind them
+             'g1190-ch9-riesling-fort-menu.png',
+             'g1190-ch9-riesling-fort-list.png',
+             'g1190-ch9-riesling-fort-card.png',
+             'g1190-ch9-riesling-fort-picker.png'}
 
 
 @pytest.mark.parametrize('name,target', sorted(DOMES.items()))

@@ -161,5 +161,19 @@ def test_the_corridor_boss_first_leg_steps_to_the_ide_north_house():
     mem = {'chapter': 9}
     waypoint = chart.CH9_BOSS_WAYPOINT
     assert N.boss_probe_cell(mem, 'ボス', 'A:x:M1') == waypoint
+    # The order's relaunch counter no longer short-cuts the first leg: the
+    # second leg belongs to the pursuit (ch9 2026-11-17, generals that took the
+    # direct leg sat in the pocket beside イデ！).
     mem['boss_relaunch'] = {'A:x:M1': 1}
-    assert N.boss_probe_cell(mem, 'ボス', 'A:x:M1') != waypoint
+    assert N.boss_probe_cell(mem, 'ボス', 'A:x:M1') == waypoint
+
+
+def test_pursuit_pseudo_step_aims_the_boss_like_a_camp_redirect():
+    # ch9 2026-11-17: the pursuit re-aims a camped boss-bound general, a second
+    # leg. Its pseudo-step PURSUIT fell through to the first-leg waypoint, so
+    # the Y jump closed y_jump_failed (residual [13, 14]) three times.
+    mem = {'chapter': 9}
+    waypoint = chart.CH9_BOSS_WAYPOINT
+    assert N.boss_probe_cell(mem, 'ボス', 'PURSUIT') != waypoint
+    assert N.boss_probe_cell(mem, 'ボス', 'PURSUIT') == N.boss_probe_cell(mem, 'ボス', 'RECALL')
+    assert N.boss_probe_cell(mem, 'ボス', 'A:x:M1') == waypoint

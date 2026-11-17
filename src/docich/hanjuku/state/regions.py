@@ -105,6 +105,8 @@ KEY_OWNERSHIP = {
     'boss_victories': {'region': WORLD, 'lifetime': 'chapter', 'migrated': False},  # ボス勝利観測
     'boss_pursuit': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # ボス追撃probe手順状態
     'boss_wave_generals': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # ボス行軍将軍の追撃対象リスト
+    'generals_lost': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 名簿一巡で不在と確認した将軍 (v985)
+    'generals_lost_garrison': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 喪失確定時にその将軍を載せていた守備隊の城 (v994)
     'camp_status_seen': {'region': WORLD, 'lifetime': 'chapter', 'migrated': False},  # 観測済み野営ステータス
     'captured': {'region': WORLD, 'lifetime': 'chapter', 'migrated': False},  # 捕獲城の観測事実
     'card_bought_since_read': {'region': WORLD, 'lifetime': 'chapter', 'migrated': False},  # 最終パネル読み以降の購入枚数台帳
