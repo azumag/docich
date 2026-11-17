@@ -18,7 +18,7 @@ def memory(gold=180, uses=None):
 def test_recruitment_first_checks_recovery_even_when_army_or_egg_quantity_is_unknown(uses):
     mem = memory(uses=uses)
     actions = policy.month_step(parse(month_canvas(180, on='しょうぐんぼしゅう')), mem)
-    assert actions == [policy.pad('down')]
+    assert actions == [policy.pad('down'),{'type':'wait','ms':60},policy.pad('down')]
     assert mem['shop']['egg'] == 'pending'
     assert 'month_sub' not in mem
     assert policy.month_step(parse(month_canvas(180, on='たまごのかいふく')), mem) == [policy.pad('a')]

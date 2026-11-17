@@ -2295,10 +2295,10 @@ def test_month_menu_navigation_that_never_moves_cancels_without_confirming():
     frame = month_canvas(59, on='しょうにん')
     assert parse(frame).kind == 'month_menu'
     actions, state = decide(frame, state)          # the survey's own first look
-    assert [a['buttons'] for a in actions] == [['down']]
+    assert [a['buttons'] for a in actions if a.get('buttons')] == [['down']]
     for _ in range(policy.MENU_NAV_PRESS_LIMIT):
         actions, state = decide(frame, state)
-        assert [a['buttons'] for a in actions] == [['down']]
+        assert [a['buttons'] for a in actions if a.get('buttons')] == [['down']]*3
     assert state['policy']['house_nav']['direction'] == 'down'
     actions, state = decide(frame, state)
     assert actions == [policy.pad('b')]
@@ -2346,8 +2346,8 @@ def test_menu_nav_guard_never_cuts_off_navigation_that_keeps_closing_in():
     approaches = []
     for on in ('しょうにん', 'しょうぐんかいこ', 'ちくじょう'):
         actions = policy.month_step(parse(month_canvas(59, on=on)), mem)
-        approaches.append((on, [a['buttons'] for a in actions]))
-    assert [buttons for _, buttons in approaches] == [[['down']], [['down']], [['down']]]
+        approaches.append((on, [a['buttons'] for a in actions if a.get('buttons')]))
+    assert [buttons for _, buttons in approaches] == [[['down']], [['down']]*2, [['down']]]
     # Reaching the row ends the navigation the reviewed way, with no A guess.
     assert policy.month_step(parse(month_canvas(59, on='も〜おしまい!')), mem) == [policy.pad('a')]
     assert mem['month_exit'] is True
@@ -3911,7 +3911,7 @@ def test_short_generals_keep_hero_egg_and_wage_reserves():
     mem = _short_recruit_memory(); mem['egg_uses'] = {'どうし': 0}
     shop = policy._plan(mem, {'year': 1, 'month': 7, 'gold': 130})
     assert shop['reserve'] == 50 and shop['recruit_reserve'] == 50 and shop['soldiers'] == 30
-    assert policy.month_step(parse(month_canvas(130, on='しょうぐんぼしゅう')), mem) == [policy.pad('down')]
+    assert policy.month_step(parse(month_canvas(130, on='しょうぐんぼしゅう')), mem) == [policy.pad('down'),{'type':'wait','ms':60},policy.pad('down')]
     assert mem.get('month_sub', {}).get('kind') != 'recruit'
     mem = _short_recruit_memory(); mem['egg_uses'] = {'どうし': 0}
     policy.month_step(parse(month_canvas(100, on='しょうぐんぼしゅう')), mem)
@@ -3961,7 +3961,7 @@ def test_overestimated_egg_cost_defers_recruit_then_uses_real_balance():
             'egg': 'pending', 'reserve': 150, 'recruit_reserve': 36,
             'soldiers': 0, 'chikujou': 'check'}
     screen = parse(month_canvas(216, on='しょうぐんぼしゅう'))
-    assert policy._month_extra(screen, mem, shop, recruit_only=True) == [policy.pad('down')]
+    assert policy._month_extra(screen, mem, shop, recruit_only=True) == [policy.pad('down'),{'type':'wait','ms':60},policy.pad('down')]
     assert shop['recruit'] == 'check'
     assert mem.get('month_sub', {}).get('kind') != 'recruit'
     # Paid full recovery is measured rather than replacing the reserve by
@@ -4206,7 +4206,8 @@ def test_elabel_choice_uses_actual_names_and_knight_cursor(cursor):
     assert s.kind == 'egg_choice_menu'
     assert s.menu_cursor == 176 + 16 * cursor
     mem = {}
-    assert policy.egg_choice_step(s, mem) == [policy.pad('a' if cursor == 0 else 'up')]
+    assert policy.egg_choice_step(s, mem) == ([policy.pad('a')] if cursor == 0
+        else [x for i in range(cursor) for x in ([policy.pad('up')] if i == 0 else [{'type':'wait','ms':60},policy.pad('up')])])
     assert bool(mem.get('_records')) == (cursor == 0)
 
 
@@ -4267,7 +4268,8 @@ def test_elabel_choice_matches_actual_ascii_digit_but_preserves_visible_labels(c
     s = parse(egg_choice_frame(names, cursor=cursor))
     assert s.kind == 'egg_choice_menu'
     assert egg_choice_names(s) == list(names)
-    assert policy.egg_choice_step(s, {}) == [policy.pad('a' if cursor == 0 else 'up')]
+    assert policy.egg_choice_step(s, {}) == ([policy.pad('a')] if cursor == 0
+        else [x for i in range(cursor) for x in ([policy.pad('up')] if i == 0 else [{'type':'wait','ms':60},policy.pad('up')])])
 
 
 def test_elabel_digit_fold_does_not_accept_a_different_monster_number():

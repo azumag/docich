@@ -261,6 +261,48 @@ def _menu_distance(screen: Screen, label: str):
     return abs(ty - cur[1]) + abs(tx - cur[0])
 
 
+# A contiguous vertical column of menu rows can be pressed through in one run:
+# each released tap reads as a distinct move, so a 2-row target = down,wait,down.
+MENU_NAV_BATCH_MAX = 6
+MENU_NAV_RELEASE_MS = 60
+
+
+def _menu_to_batch(screen: Screen, label: str, move, *, exact=True):
+    """Expand a hand-cursor menu's vertical move into a bounded press run.
+
+    A hand-cursor menu can move two ways, so only a pure-vertical path (target
+    in the same column) batches; a left/right detour stays a single press so
+    the 2D path still re-reads each step. An unreadable/non-contiguous column
+    returns ``move`` unchanged.
+    """
+    buttons = move.get('buttons') if isinstance(move, dict) else None
+    direction = buttons[0] if isinstance(buttons, list) and buttons else None
+    if direction not in ('up', 'down'):
+        return move
+    cur = _current(screen)
+    if not cur:
+        return move
+    target = [(x, y, w) for x, y, w in _options(screen)
+              if (w == label if exact else w.startswith(label))]
+    if not target:
+        return move
+    tx, ty, _ = min(target, key=lambda t: abs(t[1] - cur[1]) + abs(t[0] - cur[0]))
+    if abs(tx - cur[0]) > 4:
+        return move
+    rows = sorted({y for x, y, w in _options(screen) if abs(x - tx) <= 4})
+    if cur[1] not in rows or ty not in rows:
+        return move
+    dist = rows.index(ty) - rows.index(cur[1])
+    count = dist if direction == 'down' else -dist
+    if count <= 1:
+        return move
+    count = min(count, MENU_NAV_BATCH_MAX)
+    actions = [move]
+    for _ in range(count - 1):
+        actions.extend([{'type': 'wait', 'ms': MENU_NAV_RELEASE_MS}, pad(direction)])
+    return actions
+
+
 def guarded_menu_to(screen: Screen, mem, label: str, *, key: str, limit=MENU_NAV_PRESS_LIMIT):
     """Move toward an observed label; cancel once after bounded non-progress.
 
@@ -296,7 +338,7 @@ def guarded_menu_to(screen: Screen, mem, label: str, *, key: str, limit=MENU_NAV
                         'direction': direction, 'distance': distance,
                         'presses': presses, 'cancel_sent': cancel_sent, 'held': held}
     if presses < limit:
-        return move
+        return _menu_to_batch(screen, label, move)
     if not cancel_sent:
         state['cancel_sent'] = True
         _record(mem, 'menu_nav_stuck', screen=screen.kind, choice=label,
@@ -316,7 +358,7 @@ def guarded_menu_to(screen: Screen, mem, label: str, *, key: str, limit=MENU_NAV
     _record(mem, 'menu_nav_retry', screen=screen.kind, choice=label,
             observed_metric={'held': state['held'], 'direction': direction, 'route': key},
             reason='Bで戻った後も目標行へ近づかないため、短い待機の後に移動をやり直す')
-    return move
+    return _menu_to_batch(screen, label, move)
 
 
 # ---------------------------------------------------------------- name entry

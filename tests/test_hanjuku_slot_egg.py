@@ -41,7 +41,7 @@ def test_actor_observed_slot_type_identifies_reel_with_only_monster_names():
 ])
 def test_three_monster_rows_alone_or_another_actors_type_do_not_prove_slot(mem):
     screen = parse(egg_choice_frame(OTHER, cursor=2))
-    assert policy.egg_choice_step(screen, deepcopy(mem)) == [policy.pad('up')]
+    assert policy.egg_choice_step(screen, deepcopy(mem)) == [policy.pad('up'),{'type':'wait','ms':60},policy.pad('up')]
 
 
 def test_rotating_names_and_cursor_do_not_reset_stop_budget_or_lose_slot_mode():

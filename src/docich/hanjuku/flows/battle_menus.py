@@ -561,7 +561,7 @@ def _survival_card_list(screen, mem, cur, flow, names):
     if not eligible:
         return _card_gate_close(mem, cur, names)
     card = _card_gate_choice(mem, cur, eligible, names)
-    move = _battle_menu_to(screen, card)
+    move = _menu_move_batch(screen, card, _battle_menu_to(screen, card))
     if move != 'here':
         if flow['list_ticks'] > CARD_LIST_CURSOR_LIMIT:
             # A final current cursor may select an eligible card, as in the
@@ -956,7 +956,7 @@ def battle_menu_step(screen: Screen, mem):
             # The box did not accept the direction: close it without opening the
             # card flow. `_battle_menu_to` never emits B, so this is the
             # bounded unaccepted close, not a step toward the row.
-            return [move]
+            return _emit_moves(move)
         if move is not None:
             tid = rare['tactic_id']
             cur.setdefault('tactics_done', []).append(tid)
@@ -967,7 +967,7 @@ def battle_menu_step(screen: Screen, mem):
                     reason=('実携行のキャトルミューをボスへ使用し90ダメージを狙う'
                             if cur.get('enemy') in chart.BOSSES.values() else
                             '実携行のキャトルミューを敵EMへ使用し224ダメージと石化を狙う'))
-            return [pad('a')] if move == 'here' else [move]
+            return [pad('a')] if move == 'here' else _emit_moves(move)
     if cur.get('survival') or _survival_needed(cur):
         return _survival_menu(screen, mem, cur)
     # Chart has no card due this frame: independent judgment under the chart,
@@ -1269,7 +1269,7 @@ def okunote_step(screen, mem):
             if 'おくのて' in labels:
                 retries = int(guard.get('parent_retries') or 0)
                 if retries < 4:
-                    move = _battle_menu_to(screen, 'おくのて')
+                    move = _menu_move_batch(screen, 'おくのて', _battle_menu_to(screen, 'おくのて'))
                     if move == 'here':
                         guard['parent_retries'] = retries + 1
                         _record(mem, 'battle_okunote_parent_resend', **_battle_labels(cur),
@@ -1278,7 +1278,7 @@ def okunote_step(screen, mem):
                         return [pad('a')]
                     guard['parent_retries'] = retries + 1
                     if move is not None:
-                        return [move]
+                        return _emit_moves(move)
                     return [pad('down')]
                 _record(mem, 'battle_okunote_committed_unread', **_battle_labels(cur),
                         observed_metric={'parent_retries': retries},
@@ -1458,7 +1458,7 @@ def okunote_step(screen, mem):
                     reason='可視候補がすべて自傷のため、選ばざるを得ない候補で奥の手を進める')
         else:
             label = candidates[-1]
-    move = _battle_menu_to(screen, label)
+    move = _menu_move_batch(screen, label, _battle_menu_to(screen, label))
     if move != 'here':
         if (move is None and screen.kind == 'battle_menu'
                 and (cur.get('okunote_egg_preempt') or {}).get('recorded')):
@@ -1559,7 +1559,7 @@ def card_list_step(screen: Screen, mem):
                     reason='予定札の致死判定を満たさないため実一覧で根拠を満たす札へ移動')
         # The list may retain its cursor after a failed/partial input. Never
         # assume row zero or send a multi-key selection from an old image.
-        move = _battle_menu_to(screen, flow['card'])
+        move = _menu_move_batch(screen, flow['card'], _battle_menu_to(screen, flow['card']))
         flow['cursor_ticks'] = int(flow.get('cursor_ticks', 0)) + 1
         if move != 'here':
             if flow['cursor_ticks'] > CARD_LIST_CURSOR_LIMIT:
@@ -1670,7 +1670,7 @@ def egg_choice_step(screen: Screen, mem):
     # The first actual candidate is a valid summon. No unverified power ranking
     # or arbitrary entry is introduced; later skill/HP policy handles its fight.
     choice = names[0]
-    move = _battle_menu_to(screen, choice)
+    move = _menu_move_batch(screen, choice, _battle_menu_to(screen, choice))
     if move != 'here':
         return _emit_moves(move)
     flow['selected'] += 1
@@ -1897,7 +1897,7 @@ def _defender_summon_egg_menu(screen, mem, battle):
     labels = [w for _, _, w in _options(screen)]
     from . import okunote
     if 'おくのて' in labels:
-        move = _battle_menu_to(screen, 'おくのて')
+        move = _menu_move_batch(screen, 'おくのて', _battle_menu_to(screen, 'おくのて'))
         if move == 'here':
             if not guard.get('recorded'):
                 guard['recorded'] = True
@@ -1913,7 +1913,7 @@ def _defender_summon_egg_menu(screen, mem, battle):
             okunote.selected(mem, battle, candidate=False)
             return [pad('a')]
         if move is not None:
-            return [move]
+            return _emit_moves(move)
         # Cursor unread: keep scrolling like the no-label case, never confirm.
     downs = int(guard.get('downs') or 0)
     if downs < DEFENDER_SUMMON_SCROLL_LIMIT:
@@ -2216,7 +2216,7 @@ def egg_battle_step(screen: Screen, mem):
             if opening is not None:
                 return opening
         label = 'もうこうげき' if fierce else 'こうげき'
-        move = _battle_menu_to(screen, label)
+        move = _menu_move_batch(screen, label, _battle_menu_to(screen, label))
         if move is None:
             visible = {w for _, _, w in _options(screen)}
             if screen.menu_cursor is None:
@@ -2282,14 +2282,14 @@ def egg_battle_step(screen: Screen, mem):
                                      'enemy_hp': enemy_rows[0].hp if len(enemy_rows) == 1 else None},
                     reason=('卵・予定札がなく退却もできない負傷将軍は、実HPに基づきもうこうげきで応戦する'
                             if fierce else '実コマンド位置を確認して通常攻撃へ戻す'))
-        return [pad('a')] if move == 'here' else [move]
+        return [pad('a')] if move == 'here' else _emit_moves(move)
     _egg_recheck(mem)
     if screen.hand:
         move = menu_to(screen, 'たまごをつかう')
         if move == 'here':
             return [pad('a')]
         if move:
-            return [move]
+            return _emit_moves(move)
         # Hand present but the label is unreadable: keep moving like no-hand.
     # No hand (or unreadable hand): walk down twice from こうげき to たまご.
     stage = int(mem.get('egg_menu_stage') or 0)
@@ -2835,12 +2835,25 @@ def monster_menu_step(screen: Screen, mem):
         cur = mem.get('monster_menu_cursor')
     if cur is None:
         cur = rows[0].y
-    if target > cur + 4:
-        mem['monster_menu_cursor'] = cur + 16
-        return [pad('down')]
-    if target < cur - 4:
-        mem['monster_menu_cursor'] = cur - 16
-        return [pad('up')]
+    if target > cur + 4 or target < cur - 4:
+        row_ys = [line.y for line in rows]
+        # A readable contiguous column can be pressed through to the skill row
+        # in one run (2 rows to ファバードもどき = ↓×2+A in one observation).
+        # An unreadable cursor is only a predicted position, so it keeps one
+        # step per observation and a drifted guess still self-corrects on the
+        # next real read.
+        if type(screen.menu_cursor) is int and screen.menu_cursor in row_ys:
+            count = target_index - row_ys.index(screen.menu_cursor)
+            if abs(count) > 1:
+                direction = 'down' if count > 0 else 'up'
+                count = min(abs(count), MENU_MOVE_BATCH_MAX)
+                mem['monster_menu_cursor'] = target
+                acts = [pad(direction)]
+                for _ in range(count - 1):
+                    acts.extend([{'type': 'wait', 'ms': MENU_MOVE_RELEASE_MS}, pad(direction)])
+                return acts
+        mem['monster_menu_cursor'] = cur + 16 if target > cur else cur - 16
+        return [pad('down' if target > cur else 'up')]
     if screen.menu_cursor == target and balloon_cycle:
         balloon_command_selected(mem, ally, enemy, action, BALLOON_FINCH_MAX_HP)
     if akematsu_cycle and action == 'skill1':
