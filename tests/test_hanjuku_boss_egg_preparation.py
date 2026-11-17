@@ -65,6 +65,33 @@ def test_guard_is_scoped_to_chapter_one_hero_boss_and_known_counts():
     assert policy._ready(order(), memory(True))
 
 
+def test_depletion_reads_the_dated_record_when_the_flat_ledger_is_absent():
+    # #4439: the guard reads through the egg_memory port. A hero count that
+    # survives only as a dated observation still holds the boss sortie, and a
+    # full record does not invent a depletion.
+    from docich.hanjuku.state import egg_memory
+    mem = memory()
+    egg_memory.observe(mem, 'どうし', egg='スロットエッグ', uses=2, present=True,
+                       source=egg_memory.STATUS)
+    assert policy._boss_egg_depleted(order(), mem)
+    egg_memory.observe(mem, 'どうし', egg='スロットエッグ', uses=4, present=True,
+                       source=egg_memory.STATUS)
+    assert not policy._boss_egg_depleted(order(), mem)
+
+
+def test_the_wait_probe_masks_both_egg_mirrors_not_only_the_flat_ledger():
+    # #4439: the recovery-wait readiness probe blanks egg_uses so the depleted
+    # gate does not judge the wait itself. The record port must be blanked
+    # with it, or a dated record would re-arm the gate inside _ready.
+    from docich.hanjuku.state import egg_memory
+    mem = memory(3)
+    egg_memory.observe(mem, 'どうし', egg='スロットエッグ', uses=3, present=True,
+                       source=egg_memory.STATUS)
+    policy._off_chart(mem)
+    assert mem['_records'][-1]['decision'] == 'boss_egg_recovery_wait'
+    assert mem['boss_egg_wait'][2] == 3
+
+
 def test_recovery_wait_reserves_income_for_eggs_before_soldier_refill():
     mem = memory(3)
     mem['soldiers_seen'] = 60

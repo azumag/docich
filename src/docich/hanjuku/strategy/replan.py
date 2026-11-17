@@ -2148,10 +2148,12 @@ def _off_chart(mem):
     # next normal month advances. Other ready orders were considered first.
     waiting = next((o for o in _orders(mem) if _boss_egg_depleted(o, mem)
                     and not _hero_source_alternative(o, mem)
-                    and _ready(o, {**mem, 'egg_uses': {}})
+                    # The depleted-egg gate must not judge the wait itself, so
+                    # blank both egg mirrors in the readiness probe (#4439).
+                    and _ready(o, {**mem, 'egg_uses': {}, 'egg_memory': {}})
                     and (_plan_region(mem).get('orders') or {}).get(o['step']) in (None, 'pending')), None)
     if waiting:
-        key = (waiting['step'], mem.get('month'), (mem.get('egg_uses') or {}).get(NAME))
+        key = (waiting['step'], mem.get('month'), egg_memory.current_uses(mem, NAME))
         if mem.get('boss_egg_wait') != list(key):
             mem['boss_egg_wait'] = list(key)
             _record(mem, 'boss_egg_recovery_wait', chart_step=waiting['step'],

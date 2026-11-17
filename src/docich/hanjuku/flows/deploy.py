@@ -20,6 +20,7 @@ from ..os_layer.commands import (MENU_NAV_BATCH_MAX, MENU_NAV_RELEASE_MS, genera
 from ..os_layer.readers import (CASTLE_STATUS, STATUS_NAMES, _empty_sortie_inventory, _general_visible,
                                 _measured_card_select, _options, _present_generals, _sortie_inventory, _current)
 from ..os_layer.world import NAME, _en_route, _owned
+from ..state import egg_memory
 from ..strategy.boss_cards import UNSEEN, boss_card_reserved, boss_kit
 from ..strategy.kit import (CARD_IDS, CARD_MISS_LIMIT, CARD_SCROLL_LIMIT, CARD_UNREADABLE_LIMIT, CARRY_SLOTS,
                            NORMAL_CARD_UNREADABLE_LIMIT, SORTIE_CONFIRM_UNREADABLE_LIMIT,
@@ -2183,7 +2184,8 @@ def deploy_step(screen: Screen, mem):
                 return _cancel_broken_hero_sortie(mem, order)
             if _boss_egg_depleted(order, mem):
                 return _hold_guarded_sortie(mem, order, 'boss_sortie_cancelled_for_egg',
-                    '代役がいないため主人公の卵回復を待つ', {'general': NAME, 'egg_uses': mem['egg_uses'][NAME]})
+                    '代役がいないため主人公の卵回復を待つ',
+                    {'general': NAME, 'egg_uses': egg_memory.current_uses(mem, NAME)})
             (mem.get('boss_absent') or {}).pop(order['step'], None)
             move = _list_menu_to(screen, mem, order, general)
             if move is None:
@@ -2270,7 +2272,7 @@ def deploy_step(screen: Screen, mem):
         mem['picked'] = []
         _plan_region(mem).setdefault('order_context', {}).pop(order['step'], None)
         _record(mem, 'boss_sortie_cancelled_for_egg', chart_step=order['step'],
-                observed_metric={'general': NAME, 'egg_uses': mem['egg_uses'][NAME],
+                observed_metric={'general': NAME, 'egg_uses': egg_memory.current_uses(mem, NAME),
                                  'screen': kind}, expected_metric={'egg_uses': 4},
                 reason='出撃画面で主人公の卵の消耗を確認したため、ボス出撃を取り消して回復を待つ')
         return [pad('b'), pad('b')]
