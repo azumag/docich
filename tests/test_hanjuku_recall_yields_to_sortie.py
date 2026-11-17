@@ -1,0 +1,40 @@
+"""One map owner at a time: a sortie in flight keeps the field from the recall.
+
+g1190 2026-11-17 20:27: `y_jump_open/confirm` (sortie steering) and
+`camp_recall_picker_step` alternated every observation — the ring was moved at
+two different castles and looked aimless in the live view.
+"""
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
+
+from docich.hanjuku import orchestrator
+from docich.hanjuku.os_layer.screen import Screen
+
+
+def memory(tick, attempt=None):
+    mem = {'chapter': 11, 'month': '63-11', 'tick': tick, 'garrison': {}}
+    if attempt is not None:
+        mem['flow'] = {'sortie_attempt': attempt}
+    return mem
+
+
+def test_a_sortie_in_flight_keeps_the_recall_picker_away():
+    mem = memory(500, {'step': 'A:x:My', 'target_seen': True, 'confirmation_tick': 480})
+    assert orchestrator._sortie_owns_the_field(mem) is True
+    assert orchestrator._recall_dialog_wanted({'stage': 'dest'}, Screen([], None, '', kind='map'),
+                                              'field', mem) is False
+
+
+def test_an_old_sortie_attempt_no_longer_blocks_the_recall():
+    mem = memory(900, {'step': 'A:x:My', 'target_seen': False, 'confirmation_tick': 100})
+    assert orchestrator._sortie_owns_the_field(mem) is False
+    assert orchestrator._recall_dialog_wanted({'stage': 'dest'}, Screen([], None, '', kind='map'),
+                                              'field', mem) is True
+
+
+def test_without_a_sortie_the_recall_still_owns_its_screen():
+    mem = memory(500)
+    assert orchestrator._recall_dialog_wanted({'stage': 'dest'}, Screen([], None, '', kind='map'),
+                                              'field', mem) is True

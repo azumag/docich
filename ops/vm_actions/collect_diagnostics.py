@@ -7599,6 +7599,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v1005-hub-gather",
             "hanjuku-chart-v1006-hub-gather-rate",
             "hanjuku-chart-v1007-picker-goal-bind",
+            "hanjuku-chart-v1008-recall-yields-sortie",
             "hanjuku-chart-v985-roster-lost",
             "hanjuku-chart-v982-gbox",
             "hanjuku-chart-v984-roster-map-anchor",
