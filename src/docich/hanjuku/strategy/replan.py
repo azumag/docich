@@ -1755,6 +1755,11 @@ def _mechanical_chart(mem, state, rid, digest):
             'note': order.get('note') or '',
             **({'source_probe': True} if order.get('source_probe') is True else {}),
             **({'roster_probe': True} if order.get('roster_probe') is True else {}),
+            # The plan's order dict only copies known fields; the hero-hub
+            # move permission has to survive this rebuild or startable()
+            # rejects the move as hero_not_dispatchable (g1190 2026-11-18:
+            # the hero stayed at home while the plan named only attacks).
+            **({'hero_hub_move': True} if order.get('hero_hub_move') is True else {}),
         })
     _suppress_recent_failures(mem, orders)
     # Failed steps the plan still offers are retried after their bounded

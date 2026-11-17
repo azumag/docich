@@ -7626,6 +7626,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v1033-hero-to-hub",
             "hanjuku-chart-v1034-fine-yjump",
             "hanjuku-chart-v1035-blue-g-cursor",
+            "hanjuku-chart-v1036-hero-flag",
             "hanjuku-chart-v1020-recall-giveup",
             "hanjuku-chart-v1021-plan-invalid-source",
             "hanjuku-chart-v985-roster-lost",
