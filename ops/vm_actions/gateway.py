@@ -147,6 +147,7 @@ REASON_CODES={
  'reviewed candidate object missing':'reconcile_object_missing',
  'presynced reconcile fetch failed':'reconcile_fetch_failed',
  'presynced reconcile refused':'reconcile_refused',
+ 'ab gate refused':'ab_gate_refused',
 }
 
 def reason_code(exc):
@@ -388,7 +389,7 @@ def _enforce_ab_gate(cfg, repo, operation, log=None):
     try:
         return ab_gate.check(root, marker=marker, log=log, operation=operation)
     except ab_gate.GateRefused as exc:
-        raise ValueError(f'ab gate refused: {exc.outcome}/{exc.reason}') from exc
+        raise ValueError('ab gate refused') from exc
 
 
 def _bundle_storage_review(cfg,repo,now=None,max_entries=BUNDLE_DIAGNOSTICS_MAX_ENTRIES):
