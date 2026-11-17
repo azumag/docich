@@ -51,6 +51,12 @@ def _interim_source(mem, target, chart_order, owned, busy, allow_sole=False):
     chapter = mem.get('chapter') or 0
     home = chart.home_castle(chapter)
     garrison = _world(mem).get('garrison') or {}
+    gate = chart.gateway(chapter)
+    if gate and target in gate['back']:
+        # The map's halves are joined only through the hub (owner 2026-11-17,
+        # chapter 11): a back-half sortie from a front castle marches out and
+        # back. Only the hub or an already-owned back castle may send it.
+        owned = {c for c in owned if c == gate['hub'] or c in gate['back']}
     busy = busy | set(_world(mem).get('general_location_unknown') or ())
     unavailable_for_attack = {NAME} if _hero_egg_broken(mem) else set()
     sole = len(owned) == 1          # owner: a single castle may leave the hero alone
@@ -433,6 +439,11 @@ def _wave_pick(mem, target, owned, busy, allow_sole):
     chapter = mem.get('chapter') or 0
     home = chart.home_castle(chapter)
     garrison = _world(mem).get('garrison') or {}
+    gate = chart.gateway(chapter)
+    if gate and target in gate['back']:
+        # Waves to a back-half castle can only start at the hub (owner
+        # 2026-11-17, chapter 11): the halves are joined there alone.
+        owned = {c for c in owned if c == gate['hub'] or c in gate['back']}
     unavailable = set(_world(mem).get('general_location_unknown') or ())
     need = chart.sender_min(chapter)    # never empty a castle (owner 2026-11-06); 1 on chapter 9
     # Nearest source first: a wave from あるまむーん to しまばら walks ~753 cells
@@ -1132,6 +1143,28 @@ def interim_candidates(mem, allow_sole=False) -> dict:
             'general': general, 'target': target, 'cards': [], 'source': donors[0],
             'after': None, 'purpose': 'move',
             'note': f"暫定: {_general_label(general)}を{donors[0]}から空の{target}へ移動"})
+    # Owner 2026-11-17 (chapter 11): once the front is taken the army waits at
+    # the hub タタール, because every back-half sortie starts there. Move one
+    # spare general per plan from a front castle into the hub so the back-half
+    # waves have depth instead of one defender at a time.
+    gate = chart.gateway(chapter)
+    if gate and gate['hub'] in owned and any(c not in owned for c in gate['back']):
+        hub = gate['hub']
+        hub_busy = busy | {g for o in moves for g in (o.get('general'),) if isinstance(g, str)}
+        for source in sorted((c for c in owned if c in gate['front'] and c != hub),
+                             key=lambda c: (_distance(chapter, c, hub), c)):
+            if source in heading:
+                continue
+            free = [g for g in garrison.get(source) or () if g not in hub_busy]
+            # Keep the castle defended: only a castle with a spare may send.
+            spares = [g for g in _spares(free) if g != NAME]
+            if not spares:
+                continue
+            moves.append({'general': spares[0], 'target': hub, 'cards': [], 'source': source,
+                          'after': None, 'purpose': 'move',
+                          'note': f"暫定: 後半へ備えて{_general_label(spares[0])}を{source}から"
+                                  f"中央の{hub}へ集める"})
+            break
     # A pending 四季王 site order with no companion needs an egg pair at one
     # castle: move a spare general to join a lone egg-holder (or the hero's
     # castle) so one can sortie while an egg-holder stays. g1075 held every

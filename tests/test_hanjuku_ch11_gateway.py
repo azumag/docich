@@ -32,6 +32,12 @@ def targets(mem):
                    if isinstance(order, dict)})
 
 
+def attack_targets(mem):
+    return sorted({order.get('target') for order in interim_candidates(mem).values()
+                   if isinstance(order, dict)
+                   and order.get('purpose') in ('attack', 'retake')})
+
+
 def test_the_gateway_table_only_describes_chapter_11():
     gate = chart.gateway(11)
     assert gate['hub'] == 'タタール'
@@ -48,9 +54,10 @@ def test_back_half_is_not_targeted_while_the_hub_is_the_enemys():
 
 
 def test_the_back_half_opens_once_the_hub_is_ours():
-    got = targets(memory([*FRONT, 'タタール']))
-    assert set(got) & set(BACK)
-    assert 'タタール' not in got
+    mem = memory([*FRONT, 'タタール'])
+    assert set(attack_targets(mem)) & set(BACK)
+    # The hub is no longer an attack target; it is the gathering point (move).
+    assert 'タタール' not in attack_targets(mem)
 
 
 def test_a_hub_that_was_lost_keeps_the_back_half_closed():
@@ -60,3 +67,33 @@ def test_a_hub_that_was_lost_keeps_the_back_half_closed():
     got = targets(mem)
     assert 'タタール' in got          # it is the retake target again
     assert not set(got) & set(BACK)
+
+
+def test_back_half_attacks_only_launch_from_the_hub():
+    """A front-castle army cannot reach a back castle, so it must not be the source."""
+    garrison = {'アルマムーン': ['アテナ', 'セルリアク'], 'タタール': ['ミュスカデ', 'リースリング'],
+                'ジャンセニア': ['レモン', 'ピオーネ'], 'チリベット': ['バゲット', 'バター'],
+                'ゴンダル': ['ソルト', 'ハーブ'], 'マランマ': ['ペッパー', 'ミント'],
+                'タプロベイン': ['ローズ', 'ローズマリー']}
+    orders = [o for o in interim_candidates(memory([*FRONT, 'タタール'], garrison)).values()
+              if isinstance(o, dict) and o.get('target') in BACK]
+    assert orders, 'the back half must still be attacked once the hub is ours'
+    for order in orders:
+        assert order['source'] in ('タタール', *BACK), order
+
+
+def test_spares_gather_at_the_hub_for_the_back_half():
+    garrison = {'アルマムーン': ['アテナ', 'セルリアク'], 'タタール': ['ミュスカデ'],
+                'ジャンセニア': ['レモン', 'ピオーネ'], 'チリベット': ['バゲット', 'バター'],
+                'ゴンダル': ['ソルト', 'ハーブ'], 'マランマ': ['ペッパー', 'ミント'],
+                'タプロベイン': ['ローズ', 'ローズマリー']}
+    orders = [o for o in interim_candidates(memory([*FRONT, 'タタール'], garrison)).values()
+              if isinstance(o, dict)]
+    gather = [o for o in orders if o.get('target') == 'タタール' and o.get('purpose') == 'move']
+    assert gather, 'a spare should move into the hub so the back-half waves have depth'
+    assert gather[0]['source'] in FRONT
+
+
+def test_no_gather_before_the_hub_is_ours():
+    orders = [o for o in interim_candidates(memory(FRONT)).values() if isinstance(o, dict)]
+    assert not [o for o in orders if o.get('target') == 'タタール' and o.get('purpose') == 'move']
