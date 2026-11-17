@@ -7605,6 +7605,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v1011-recall-side-flags",
             "hanjuku-chart-v1012-camp-row-stale",
             "hanjuku-chart-v1013-recall-goal-retry",
+            "hanjuku-chart-v1014-goal-retry-flags",
             "hanjuku-chart-v985-roster-lost",
             "hanjuku-chart-v982-gbox",
             "hanjuku-chart-v984-roster-map-anchor",

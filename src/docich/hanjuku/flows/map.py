@@ -275,10 +275,13 @@ def _goal_after_failures(mem, flags, recall, goal):
     # Flag readings can omit owned castles; the strategy helper includes
     # capture history and preserves the shared gateway hub.
     from ..strategy.orders import _recall_owned
+    # Use every captured castle, not only this frame's flag readings: g1190
+    # 2026-11-17 22:0x flagged just アルマムーン while マランマ/ゴンダル/チリベット
+    # were owned, so the replacement list was empty and the same silent
+    # failure repeated five times.
     owned = _recall_owned(
         mem, chapter,
-        sorted(c for c in _owned(mem) if c in cells
-               and (not isinstance(flags, dict) or flags.get(c) == 'own')),
+        sorted(c for c in _owned(mem) if c in cells),
         origin=recall.get('origin') if isinstance(recall, dict) else None)
     fresh = [c for c in owned if c not in pair]
     if not fresh:
