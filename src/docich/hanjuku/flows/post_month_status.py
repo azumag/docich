@@ -66,6 +66,10 @@ CARRY_OVERDUE_MONTHS = 2
 # the same task a bounded number of times within this month; a dispatched
 # recall is never repeated.
 RECALL_TASK_RETRIES = 2
+# A battle that took the foreground from an in-progress recall is not the
+# recall's own attempt; it is retried without spending the month's budget for
+# this many ticks after `flow.recall_interrupted` (set by recall.py).
+RECALL_INTERRUPT_GRACE = 240
 
 
 def _log(mem, event, **details):
@@ -1798,15 +1802,24 @@ def step(screen, mem, frame):
             retries = retries if isinstance(retries, dict) else {}
             used = retries.get(name)
             used = used if type(used) is int and used >= 0 else 0
-            if (used < RECALL_TASK_RETRIES
-                    and not _recall_was_dispatched(
-                        mem, name, since=state.get('started_tick') or 0)):
-                retries[name] = used + 1
+            interrupted_at = _flow(mem).get('recall_interrupted')
+            tick = mem.get('tick')
+            interrupted = (type(interrupted_at) is int and type(tick) is int
+                           and 0 <= tick - interrupted_at <= RECALL_INTERRUPT_GRACE)
+            if (interrupted or used < RECALL_TASK_RETRIES) and not _recall_was_dispatched(
+                    mem, name, since=state.get('started_tick') or 0):
+                # A battle that took the foreground away before the recall A is
+                # not the recall's own failure: retry it without spending the
+                # month's budget (g1190 2026-11-17: two interruptions in a row
+                # dropped a full-HP camper for the month, ~5200 ticks out).
+                if not interrupted:
+                    retries[name] = used + 1
                 state['recall_task_retries'] = retries
                 state.setdefault('tasks', []).append(dict(job))
                 _log(mem, 'post_month_recall_requeued', general=name,
-                     observed_metric={'attempt': used + 1,
-                                      'limit': RECALL_TASK_RETRIES},
+                     observed_metric={'attempt': retries.get(name, used),
+                                      'limit': RECALL_TASK_RETRIES,
+                                      'battle_interrupt': interrupted},
                      reason='帰還Aの送信前に戦闘・イベントが割り込み、本人の帰還が'
                             '未送信のため同月内に再試行する')
                 _task_complete(mem, state, result='recall_interrupted_requeued')
