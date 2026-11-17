@@ -180,6 +180,36 @@ def probe_due(mem, castle):
             and (last is None or now - int(last) >= PROBE_INTERVAL))
 
 
+def _remember_residents(mem, castle, names):
+    """Mark the generals standing in a read roster as resident in that castle.
+
+    The monthly recall queue and the sortie planner read each general's
+    individual status row, not the castle roster. A recalled camper who walks
+    home appears in the destination list (the recall's arrival receipt) while
+    his row still says 'camp', so the next month recalled him again
+    (g1190 2026-11-17: オレガノ/ユイートル had been camp-recall targets for
+    many months). The roster is authoritative for residency.
+    """
+    statuses = (mem.get('general_statuses') or {}).get('statuses')
+    if not isinstance(statuses, dict) or not isinstance(names, (list, tuple)):
+        return
+    from ..decision_log import _record
+    now = int(mem.get('tick') or 0)
+    moved = []
+    for name in names:
+        row = statuses.get(name)
+        if not isinstance(row, dict):
+            continue
+        if row.get('location') == 'castle' and row.get('castle') == castle:
+            continue
+        row.update(location='castle', castle=castle, location_observed=True, tick=now)
+        moved.append(name)
+    if moved:
+        _record(mem, 'roster_resident_confirmed', castle=castle,
+                observed_metric={'residents': list(names)[:12], 'moved': moved[:12]},
+                reason='実一覧に居た将軍を在城として更新し、帰還済みの野営を再対象にしない')
+
+
 def observed_roster(mem, castle, names):
     # Every chapter: chapter 4 recorded ビクトリア empty, never read it, and
     # sent five moves there (g1075 2026-10-29, #3037).
@@ -195,3 +225,4 @@ def observed_roster(mem, castle, names):
             _record(mem, 'sortie_move_arrival_observed', chart_step=step,
                     general=sortie['general'], castle=castle,
                     reason='中継城の実一覧で移動した本人を確認し、次の出撃の前提を更新')
+    _remember_residents(mem, castle, names)

@@ -664,3 +664,37 @@ def test_an_order_really_marching_keeps_its_launched_flag():
                             'status': 'en_route', 'tick': mem['tick'] - 100}
     rebuild(mem)
     assert _plan_region(mem)['orders'][step] == 'launched'
+
+
+def test_a_read_roster_marks_its_generals_as_resident():
+    """g1190 2026-11-17: a recalled camper's row stayed 'camp' after he arrived.
+
+    The monthly recall queue reads the individual status rows, so the same
+    camp was recalled month after month even though the destination roster
+    already showed him living there.
+    """
+    from docich.hanjuku.state.regions import world as _world
+    mem = {'chapter': 9, 'tick': 500, '_records': [],
+           'general_statuses': {'statuses': {
+               'オレガノ': {'general': 'オレガノ', 'location': 'camp', 'hp': 65,
+                           'max_hp': 65, 'tick': 100},
+               'ユイートル': {'general': 'ユイートル', 'location': 'castle',
+                             'castle': 'ジャンセニア', 'tick': 100},
+           }},
+           'garrison': {'マランマ': []}}
+    routes.observed_roster(mem, 'マランマ', ['オレガノ', 'ユイートル'])
+    row = mem['general_statuses']['statuses']['オレガノ']
+    assert row['location'] == 'castle'
+    assert row['castle'] == 'マランマ'
+    assert row['location_observed'] is True
+    assert row['tick'] == 500
+    assert mem['general_statuses']['statuses']['ユイートル']['castle'] == 'マランマ'
+    record = [r for r in mem['_records'] if r['decision'] == 'roster_resident_confirmed'][-1]
+    assert record['castle'] == 'マランマ'
+    assert set(record['observed_metric']['moved']) == {'オレガノ', 'ユイートル'}
+
+
+def test_a_roster_read_without_status_rows_writes_nothing():
+    mem = {'chapter': 9, 'tick': 500, '_records': [], 'garrison': {'マランマ': []}}
+    routes.observed_roster(mem, 'マランマ', ['オレガノ'])
+    assert not any(r['decision'] == 'roster_resident_confirmed' for r in mem['_records'])

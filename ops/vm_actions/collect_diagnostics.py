@@ -7594,6 +7594,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v999-castle-label-width",
             "hanjuku-chart-v1000-title-continue-guided",
             "hanjuku-chart-v1002-recall-interrupt-budget",
+            "hanjuku-chart-v1003-roster-resident",
             "hanjuku-chart-v985-roster-lost",
             "hanjuku-chart-v982-gbox",
             "hanjuku-chart-v984-roster-map-anchor",
