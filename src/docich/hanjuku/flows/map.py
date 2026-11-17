@@ -346,6 +346,22 @@ def _picker_origin(chapter, frame):
     return [round(((x0 + x1) / 2 - offset[0]) * 8), round(((y0 + y1) / 2 - offset[1]) * 8)]
 
 
+def _recall_picker_cycles(chapter, flags, nearby, goal):
+    """Measured chapter-11 R picker: Up/Down cycle the owned castles.
+
+    Left/Right do nothing here, even when the next castle is horizontally
+    beside the ring. A one-way scan avoids assuming a spatial neighbour or
+    an internal castle ordering; every next frame still proves the selection.
+    Require the complete current flag reading, not remembered ownership.
+    """
+    if chapter != 11 or not isinstance(flags, dict) or len(nearby) != 1:
+        return False
+    castles = {name for name in chart.castles(chapter) if not chart.is_boss_castle(name)}
+    return (goal in castles and nearby[0] in castles
+            and flags.get(goal) == flags.get(nearby[0]) == 'own'
+            and all(flags.get(name) in ('own', 'enemy') for name in castles))
+
+
 def world_map_step(screen, mem, frame):
     """Read every castle's owner from the Y view, then close it with Y
     (or, while a Y jump is running, steer its cursor to the goal castle)."""
@@ -513,6 +529,9 @@ def world_map_step(screen, mem, frame):
             across = 'right' if dx > 0 else 'left'
             along = 'down' if dy > 0 else 'up'
             press, other = (across, along) if abs(dx) >= abs(dy) else (along, across)
+            cycle_picker = _recall_picker_cycles(chapter, flags, nearby, goal)
+            if cycle_picker:
+                press = 'down'
             # g1075 15:10:55-15:14:46: the ring stayed on アルマムーン through
             # 54 left presses (only the enemy ボス lies to its left), and one
             # down press moved it to グリン. Record every step, so its frame is
@@ -539,7 +558,7 @@ def world_map_step(screen, mem, frame):
                 if len(visits) > PICKER_VISIT_SLOTS:
                     visits = dict(sorted(visits.items(), key=lambda kv: kv[1])[-PICKER_VISIT_SLOTS:])
             recall.update(picker_visits=visits, picker_loops=loops)
-            if still >= PICKER_AXIS_SWITCH:
+            if not cycle_picker and still >= PICKER_AXIS_SWITCH:
                 if min(abs(dx), abs(dy)) >= 3:
                     press = other
                 else:
@@ -552,8 +571,10 @@ def world_map_step(screen, mem, frame):
             _record(mem, 'camp_recall_picker_step',
                     observed_metric={'cursor': list(cursor), 'goal': goal,
                                      'offset': [round(dx, 1), round(dy, 1)], 'press': press,
-                                     'still': still, 'loops': loops},
-                    reason='帰還先の城へ全体マップのカーソルを1歩動かす')
+                                     'still': still, 'loops': loops,
+                                     'navigation': 'own_castle_cycle' if cycle_picker else 'geometry'},
+                    reason=('帰還先の実ピッカーは上下で自軍城を巡回するため、下へ1回動かして次の城を読み直す'
+                            if cycle_picker else '帰還先の城へ全体マップのカーソルを1歩動かす'))
             if (still >= PICKER_STILL_LIMIT or loops >= PICKER_LOOP_LIMIT) and _picker_on_enemy(nearby, flags):
                 _record(mem, 'camp_recall_aborted', resulting_event='picker_cursor_stationary',
                         observed_metric={'goal': goal, 'cursor': list(cursor), 'still': still},

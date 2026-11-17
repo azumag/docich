@@ -1,0 +1,267 @@
+{
+  "schema": 1,
+  "date": "2026-11-17",
+  "method": "isolated local snes9x replay; source save and running game not modified",
+  "chapter": 11,
+  "game_date": "72-6",
+  "source_state_sha256": "76b2a817276cc6f093656df91d22175b8b48e1efd157248bbdc19a120caca1a0",
+  "owned": [
+    "アルマムーン",
+    "ゴンダル",
+    "マランマ"
+  ],
+  "frames": [
+    {
+      "file": "g1190-ch11-recall-home.png",
+      "png_sha256": "ace97044efa3afb356523910b674eb34578fbb18cee8189c9a7ed9ccaf5d8102",
+      "screen_kind": "world_map",
+      "cursor": [
+        121.0,
+        150.5
+      ],
+      "castle": "アルマムーン",
+      "next_input": "down"
+    },
+    {
+      "file": "g1190-ch11-recall-gondal.png",
+      "png_sha256": "88aaeede6fcbe60c82ee3dcc640d9e87f50e72935736478eaca8feeb590b53d4",
+      "screen_kind": "world_map",
+      "cursor": [
+        175.0,
+        150.5
+      ],
+      "castle": "ゴンダル",
+      "next_input": "down"
+    },
+    {
+      "file": "g1190-ch11-recall-maranma.png",
+      "png_sha256": "da376ff05898edc1305dff6300d4b3c812a763a5c00436b4637d9e02d69c0c76",
+      "screen_kind": "world_map",
+      "cursor": [
+        79.0,
+        126.5
+      ],
+      "castle": "マランマ",
+      "next_input": "a"
+    }
+  ],
+  "controls": {
+    "y_presses": 3,
+    "y_result": "world_map and cursor unchanged",
+    "left_result": "cursor unchanged",
+    "right_result": "cursor unchanged",
+    "down_cycle": [
+      "アルマムーン",
+      "ゴンダル",
+      "マランマ",
+      "アルマムーン"
+    ],
+    "up_cycle": [
+      "アルマムーン",
+      "マランマ",
+      "ゴンダル",
+      "アルマムーン"
+    ]
+  },
+  "comparison": [
+    {
+      "mode": "baseline",
+      "goal": "ゴンダル",
+      "direction_presses": 3,
+      "route": [
+        {
+          "cursor": [
+            121.0,
+            150.5
+          ],
+          "buttons": [
+            [
+              "right"
+            ]
+          ]
+        },
+        {
+          "cursor": [
+            121.0,
+            150.5
+          ],
+          "buttons": [
+            [
+              "right"
+            ]
+          ]
+        },
+        {
+          "cursor": [
+            121.0,
+            150.5
+          ],
+          "buttons": [
+            [
+              "down"
+            ]
+          ]
+        },
+        {
+          "cursor": [
+            175.0,
+            150.5
+          ],
+          "buttons": [
+            [
+              "a"
+            ],
+            null,
+            [
+              "a"
+            ]
+          ]
+        }
+      ],
+      "after_confirm_kind": "map"
+    },
+    {
+      "mode": "changed",
+      "goal": "ゴンダル",
+      "direction_presses": 1,
+      "route": [
+        {
+          "cursor": [
+            121.0,
+            150.5
+          ],
+          "buttons": [
+            [
+              "down"
+            ]
+          ]
+        },
+        {
+          "cursor": [
+            175.0,
+            150.5
+          ],
+          "buttons": [
+            [
+              "a"
+            ],
+            null,
+            [
+              "a"
+            ]
+          ]
+        }
+      ],
+      "after_confirm_kind": "map"
+    },
+    {
+      "mode": "baseline",
+      "goal": "マランマ",
+      "direction_presses": 3,
+      "route": [
+        {
+          "cursor": [
+            121.0,
+            150.5
+          ],
+          "buttons": [
+            [
+              "left"
+            ]
+          ]
+        },
+        {
+          "cursor": [
+            121.0,
+            150.5
+          ],
+          "buttons": [
+            [
+              "left"
+            ]
+          ]
+        },
+        {
+          "cursor": [
+            121.0,
+            150.5
+          ],
+          "buttons": [
+            [
+              "up"
+            ]
+          ]
+        },
+        {
+          "cursor": [
+            79.0,
+            126.5
+          ],
+          "buttons": [
+            [
+              "a"
+            ],
+            null,
+            [
+              "a"
+            ]
+          ]
+        }
+      ],
+      "after_confirm_kind": "map"
+    },
+    {
+      "mode": "changed",
+      "goal": "マランマ",
+      "direction_presses": 2,
+      "route": [
+        {
+          "cursor": [
+            121.0,
+            150.5
+          ],
+          "buttons": [
+            [
+              "down"
+            ]
+          ]
+        },
+        {
+          "cursor": [
+            175.0,
+            150.5
+          ],
+          "buttons": [
+            [
+              "down"
+            ]
+          ]
+        },
+        {
+          "cursor": [
+            79.0,
+            126.5
+          ],
+          "buttons": [
+            [
+              "a"
+            ],
+            null,
+            [
+              "a"
+            ]
+          ]
+        }
+      ],
+      "after_confirm_kind": "map"
+    }
+  ],
+  "limits": [
+    "local replay only; production runtime not operated",
+    "arrival at the destination was not checked",
+    "other chapters and incomplete flag readings retain the previous navigation"
+  ],
+  "baseline_commit": "829fe9638d1583ee684a0dbb404ede61bbf2d1d9",
+  "baseline_map_sha256": "b5be30a0e204221fef6b914e7e3e1941753be4eac6cd3362e3db37793cf66a46",
+  "changed_map_sha256": "d49050260505107c37c86dbe18ab6d0cc10e4d7272cebd89976d16bfbb82cb07"
+}
