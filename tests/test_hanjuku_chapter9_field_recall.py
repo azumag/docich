@@ -278,3 +278,25 @@ def test_a_hunt_sample_records_all_chart_cells(monkeypatch):
     recall_flow.camp_recall_step(MAP, mem, FRAME)
     record = next(r for r in mem['_records'] if r['decision'] == 'camp_hunt')
     assert len(record['observed_metric']['chart_all']) == 12
+
+
+def test_a_tent_with_no_camper_in_the_roster_is_not_recalled(monkeypatch):
+    """g1190 2026-11-18: cell 128,113 was recalled at every castle, never arrived.
+
+    The roster held no camp at all, so the tent-shaped sprite was not a camp.
+    """
+    monkeypatch.setattr(recall_flow, 'own_camps', lambda frame: [dict(CAMP)])
+    mem = _mem(tick=500, general_statuses={
+        'complete': True, 'tick': 450,
+        'statuses': {'どうし': {'location': 'castle', 'castle': 'アルマムーン'}}})
+    assert recall_flow.camp_recall_step(MAP, mem, FRAME) is None
+    assert 'recall' not in _flow(mem)
+    assert any(r.get('decision') == 'camp_sighting_no_camper' for r in mem['_records'])
+
+
+def test_a_tent_with_a_camper_in_the_roster_still_starts_the_recall(monkeypatch):
+    monkeypatch.setattr(recall_flow, 'own_camps', lambda frame: [dict(CAMP)])
+    mem = _mem(tick=500, general_statuses={
+        'complete': True, 'tick': 450,
+        'statuses': {'リーキ': {'location': 'camp'}}})
+    assert recall_flow.camp_recall_step(MAP, mem, FRAME) is not None
