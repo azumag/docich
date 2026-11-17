@@ -6,6 +6,7 @@ current battle state and returns a judgment or bookkeeping update; none of
 them reads the screen or produces pad input (see ``flows.battle``).
 """
 from __future__ import annotations
+from ..state import egg_memory
 from ..state.regions import world as _world, sorties as _sorties, plan as _plan_region
 
 from dataclasses import asdict
@@ -2326,7 +2327,11 @@ def _egg_quantities_unknown(mem):
     blocked.update(n for n, value in counts.items() if type(value) is int and value == 0)
     mem['egg_zero_owners'] = sorted(blocked)[:32]
     mem['egg_uses'] = {}
-    mem.pop('egg_memory', None)  # #4415: invalidated counts invalidate the read port too
+    # #4439: a receipt invalidates the counts, not the measured presence. The
+    # record keeps type/presence/tick so it still outranks an older 「卵なし」
+    # status row right after a payment; dropping it re-adopted that row and
+    # briefly removed the recovered general from the boss wave.
+    egg_memory.invalidate_uses(mem)
 
 
 def _own_egg_positive(mem, battle):

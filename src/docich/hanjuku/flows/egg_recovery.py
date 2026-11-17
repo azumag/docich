@@ -99,7 +99,11 @@ def _individual_egg_candidate(screen, mem, sub):
         actor, quantity = cells.get(32), cells.get(104)
         if (actor in (None, NAME, 'しゅじんこう') or actor in paid or not 47 < line.y <= 199
                 or general_max_hp(actor) is None or quantity not in ('0', '1')
-                or (quantity == '1' and (mem.get('egg_types') or {}).get(actor) in ('いっぱつエッグ', 'キングエッグ'))):
+                # #4439: the one-shot kind reads through the egg_memory port,
+                # so a measured newer observation (たまごなし included) decides
+                # instead of a stale flat egg_types mirror.
+                or (quantity == '1' and egg_memory.egg_type(mem, actor)
+                    in ('いっぱつエッグ', 'キングエッグ'))):
             continue
         candidates.append((int(quantity), line.y, actor))
     return min(candidates)[2] if candidates else None

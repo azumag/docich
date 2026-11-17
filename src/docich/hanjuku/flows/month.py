@@ -16,6 +16,7 @@ from ..decision_log import _record
 from .egg_recovery import MONTH_SUB_EXIT_KINDS, _egg_recovery_step, _individual_egg_selected
 from .shop import quantity_step
 from ..judgment.battle import _egg_quantities_unknown, _own_egg_empty
+from ..state import egg_memory
 from ..os_layer.commands import MENU_NAV_PRESS_LIMIT, guarded_menu_to, menu_to, pad
 from ..os_layer.readers import (RECRUIT_GOODBYE, RECRUIT_INTRO, STATUS_NAMES, _current, _month_dialog_body,
                                 _month_dialog_unread, _month_menu_quiet, _options, month_menu_ready)
@@ -1396,7 +1397,11 @@ def _finish_month_sub(screen, mem, shop) -> bool:
             if _own_egg_empty(mem, {'ally': actor}):
                 mem['egg_zero_owners'] = sorted(set(mem.get('egg_zero_owners') or []) | {actor})[:32]
             (mem.get('egg_uses') or {}).pop(actor, None)
-            (mem.get('egg_memory') or {}).pop(actor, None)
+            # #4439: the paid actor's count goes unknown, but the newer
+            # recovery-list presence must survive: dropping the record
+            # re-adopted an older 「卵なし」 status row and briefly removed the
+            # recovered general from the boss wave.
+            egg_memory.invalidate_uses(mem, actor)
             if actor in (mem.get('house_eggs') or {}):
                 mem['house_eggs'][actor]['uses'] = None
             mem['egg_recheck'] = [n for n in mem.get('egg_recheck') or [] if n != actor]

@@ -388,7 +388,9 @@ def _boss_egg_depleted(order, mem) -> bool:
     # g486: どうし left with 3 uses and lost to the Queen's Hydra after
     # the second card missed its input window. Chapter 1's source recommends
     # a fully recovered egg as the backup; do not invent a missing count.
-    uses = (mem.get('egg_uses') or {}).get(NAME)
+    # #4439: read through the egg_memory port, so a dated record and the live
+    # ledger agree instead of a stale flat mirror deciding alone.
+    uses = egg_memory.current_uses(mem, NAME)
     return (mem.get('chapter') == 1 and _sortie_general(order, mem) == NAME
             and _is_boss_order(order, mem) and type(uses) is int and 0 <= uses < 4)
 

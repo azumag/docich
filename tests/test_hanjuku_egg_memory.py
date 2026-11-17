@@ -118,3 +118,58 @@ def test_a_fresh_live_egg_observation_still_keeps_the_general():
     assert orders._holds_egg(mem, NAME) is True
     assert replan._boss_eggless(mem, NAME) is False
     assert NAME not in economy._depleted_eggs(mem)  # four uses is full
+
+
+def test_a_receipt_invalidates_counts_but_keeps_the_measured_presence():
+    # #4439: tick 900's status read eggless and tick 1000's recovery list
+    # showed the egg with one use. A paid ぜんかいふく must not erase the newer
+    # presence: dropping the whole record re-adopted the old 「卵なし」 row and
+    # briefly removed the recovered general from the boss wave (Devin review
+    # on #4418: the same castle's candidate list went empty after the
+    # aggregate receipt).
+    mem = memory(tick=900)
+    mem['tick'] = 1000
+    egg_memory.observe(mem, NAME, egg='スロットエッグ', uses=1, present=True,
+                       source=egg_memory.RECOVERY)
+    assert replan._boss_eggless(mem, NAME) is False
+    from docich.hanjuku.judgment.battle import _egg_quantities_unknown
+    _egg_quantities_unknown(mem)
+    assert replan._boss_eggless(mem, NAME) is False
+    assert orders._holds_egg(mem, NAME) is True
+    assert NAME not in economy._depleted_eggs(mem)  # restored, not a debt
+    rec = egg_memory.record(mem, NAME)
+    assert rec == {'egg': 'スロットエッグ', 'uses': None, 'present': True,
+                   'broken': False, 'observed_tick': 1000,
+                   'source': egg_memory.RECOVERY}
+
+
+def test_a_receipt_cannot_reinstate_a_measured_no_egg_general():
+    mem = memory()
+    egg_memory.observe(mem, NAME, egg=None, uses=None, present=False,
+                       source=egg_memory.STATUS)
+    from docich.hanjuku.judgment.battle import _egg_quantities_unknown
+    _egg_quantities_unknown(mem)
+    assert replan._boss_eggless(mem, NAME) is True  # presence survives, not forgotten
+    assert orders._holds_egg(mem, NAME) is False
+
+
+def test_invalidate_uses_scopes_to_one_paid_actor_and_tolerates_no_records():
+    from docich.hanjuku.judgment.battle import _egg_quantities_unknown
+    other = 'ココット'
+    mem = memory(tick=900)
+    mem['tick'] = 1000
+    egg_memory.observe(mem, NAME, egg='スロットエッグ', uses=1, present=True,
+                       source=egg_memory.RECOVERY)
+    egg_memory.observe(mem, other, egg='エラベルエッグ', uses=2, present=True,
+                       source=egg_memory.RECOVERY)
+    egg_memory.invalidate_uses(mem, NAME)
+    assert egg_memory.record(mem, NAME)['uses'] is None
+    assert egg_memory.record(mem, other) == {'egg': 'エラベルエッグ', 'uses': 2,
+                                             'present': True, 'broken': False,
+                                             'observed_tick': 1000,
+                                             'source': egg_memory.RECOVERY}
+    _egg_quantities_unknown(mem)  # the aggregate receipt invalidates everyone
+    assert egg_memory.record(mem, NAME)['uses'] is None
+    assert egg_memory.record(mem, other)['uses'] is None
+    assert orders._holds_egg(mem, NAME) and orders._holds_egg(mem, other)
+    egg_memory.invalidate_uses({}, NAME)  # no records: nothing to invalidate
