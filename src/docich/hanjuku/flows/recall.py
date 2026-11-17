@@ -657,7 +657,23 @@ def _no_camper_in_roster(mem):
         return False
     tick = cache.get('tick')
     now = mem.get('tick')
-    if type(tick) is not int or type(now) is not int or now - tick > CAMP_ROSTER_TRUST_TICKS:
+    if (type(tick) is not int or type(now) is not int
+            or not 0 <= now - tick <= CAMP_ROSTER_TRUST_TICKS):
+        return False
+    # A complete roster is evidence only for the current run and chapter.
+    # A sortie can invalidate a location without refreshing the roster tick.
+    from ..identity import run_identity
+    from ..os_layer.roster import PENDING_JOINS_KEY
+    identity = run_identity(mem.get('_run_identity'))
+    scope = cache.get('scope')
+    if (identity is None or cache.get('identity') != identity
+            or not isinstance(scope, list) or len(scope) != 2
+            or scope[0] != mem.get('chapter')
+            or not isinstance(cache.get('dirty', {}), dict)
+            or mem.get(PENDING_JOINS_KEY)):
+        return False
+    if any('location' in fields for fields in cache.get('dirty', {}).values()
+           if isinstance(fields, (list, tuple, set))):
         return False
     return not any(isinstance(row, dict) and row.get('location') == 'camp'
                    for row in statuses.values())
