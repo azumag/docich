@@ -872,6 +872,21 @@ def _carried_kit(mem, cur):
     return None if order is None else _deploy_cards(order, mem)
 
 
+def _confirmed_carried_kit(mem, cur):
+    """出撃時に確定した携行札の未使用残り。確定できない戦闘は None。
+
+    ``departure_binding`` は出撃確認で実際に読まれた携行札の確定記録であり、
+    チャートや予定札ではない。確定使用 (``kit_spent``) は ``_deploy_cards``
+    が差し引くため、返る一覧は「確定携行 − 確定使用」の差分だけを残す。
+    バインドが読めない・出撃が未確定の戦闘は、実メニューで確認するため None。
+    """
+    from ..strategy.execution import bound_fields
+    order = _order_for_step(mem, cur.get('step'))
+    if order is None or bound_fields(order, mem) is None:
+        return None
+    return _deploy_cards(order, mem)
+
+
 def _egg_inventory(mem, cur, kit):
     """Bounded display/decision rows for the observed cards (#2364).
 
