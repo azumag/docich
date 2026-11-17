@@ -640,45 +640,6 @@ def _cliff_detour_step(screen, mem, frame, state, marker):
     return [pad('down' if mdy > 0 else 'up', min(6, abs(mdy)))]
 
 
-CAMP_ROSTER_TRUST_TICKS = 600   # a complete roster this fresh knows who is camped
-
-
-def _no_camper_in_roster(mem):
-    """Nobody is camped according to a complete, recent general-status walk.
-
-    A tent-shaped sprite can be on the field with no camped general behind it
-    (g1190 2026-11-18: a sighting at cell 128,113 was recalled at every own
-    castle and never arrived, while the roster held no camp at all). Starting
-    a recall then only spends the month.
-    """
-    cache = mem.get('general_statuses') or {}
-    statuses = cache.get('statuses') if isinstance(cache, dict) else None
-    if not isinstance(statuses, dict) or cache.get('complete') is not True:
-        return False
-    tick = cache.get('tick')
-    now = mem.get('tick')
-    if (type(tick) is not int or type(now) is not int
-            or not 0 <= now - tick <= CAMP_ROSTER_TRUST_TICKS):
-        return False
-    # A complete roster is evidence only for the current run and chapter.
-    # A sortie can invalidate a location without refreshing the roster tick.
-    from ..identity import run_identity
-    from ..os_layer.roster import PENDING_JOINS_KEY
-    identity = run_identity(mem.get('_run_identity'))
-    scope = cache.get('scope')
-    if (identity is None or cache.get('identity') != identity
-            or not isinstance(scope, list) or len(scope) != 2
-            or scope[0] != mem.get('chapter')
-            or not isinstance(cache.get('dirty', {}), dict)
-            or mem.get(PENDING_JOINS_KEY)):
-        return False
-    if any('location' in fields for fields in cache.get('dirty', {}).values()
-           if isinstance(fields, (list, tuple, set))):
-        return False
-    return not any(isinstance(row, dict) and row.get('location') == 'camp'
-                   for row in statuses.values())
-
-
 def _camp_recall_step(screen: Screen, mem, frame, *, observed_camps=None):
     """Owner rule (2026-09-28): a camp (野営) seen on screen is recalled.
 
@@ -714,14 +675,10 @@ def _camp_recall_step(screen: Screen, mem, frame, *, observed_camps=None):
             return None     # the month-start scene would cut the destination picker
         camps = own_camps(frame) if observed_camps is None else observed_camps
         camps = _filter_recall_skip(mem, camps)
-        if camps and _no_camper_in_roster(mem):
-            now = int(mem.get('tick') or 0)
-            if now - int(_flow(mem).get('camp_phantom_tick') or 0) >= 100:
-                _flow(mem)['camp_phantom_tick'] = now
-                _record(mem, 'camp_sighting_no_camper',
-                        observed_metric={'camps': [list(c.get('target') or ()) for c in camps][:4]},
-                        reason='将軍名簿が完全かつ新しいが野営中の将軍がいないため、見えているテントは野営でないとみなす')
-            return None
+        # Owner 2026-11-18 02:2x: the roster is NOT evidence that a visible tent
+        # is empty. Four or five tents were on screen while every status row
+        # said nobody was camped, so a sighting is never dismissed by the
+        # roster (v1029's guard was removed).
         if not camps:
             # The field frames keep coming but no tent is visible: record a
             # throttled sample so the camera/roof situation is measurable
