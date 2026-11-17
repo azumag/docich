@@ -238,7 +238,7 @@ def test_shadow_and_a_senderless_trade_executor_create_no_intent(ws, harnesses,
     assert payload["cycle"] == "1"
     assert all(isinstance(value, str) for value in payload.values())
     assert ("skip", "-", NO_SENDER_REASON) in rig.state.dedupe
-    assert rig.state.dedupe[("skip", "-", NO_SENDER_REASON)] == 1
+    assert rig.state.dedupe[("skip", "-", NO_SENDER_REASON)] == sys.maxsize
 
 
 # ---- a3: a stop request after the first order ------------------------------------------
@@ -987,3 +987,34 @@ def test_the_submit_row_names_the_intent(ws, harnesses, monkeypatch):
     assert payload["intent_id"] != ""
     assert payload["reason"] == SubmitOutcome.ACKED.value
     assert payload["decision_key"] == plan.decision_key
+
+
+# ---- n6: the no-sender notice survives the dedupe prune --------------------------------
+def test_the_no_sender_notice_survives_dedupe_pruning(ws, harnesses, monkeypatch):
+    """The notice is pinned: a long run's prune must not let the row be written again."""
+    h = harnesses()
+    ps = decide_tests.policy_set_for("OAS/JPY")
+    decide_tests.store(h, ps)
+    rig = make_rig(ws, h, ps=ps, rules={"OAS/JPY": decide_tests.rule()}, sender=None)
+    monkeypatch.setattr(decide_module, "DEDUPE_MAX_ENTRIES", 3)
+    monkeypatch.setattr(decide_module, "DEDUPE_KEEP_CYCLES", 2)
+
+    key = ("skip", "-", NO_SENDER_REASON)
+    rig.state.cycle_number = 1
+    decide_and_act(rig.deps, rig.state, decide_tests.make_ctx(rig, mode="trade"))
+    assert len(skip_rows(h.ledger, NO_SENDER_REASON)) == 1
+    assert key in rig.state.dedupe
+
+    # Fill the dict past the small cap with low cycle numbers.  These values survive the
+    # cutoffs of cycles 2..4 and are pruned at cycle 5, so the prune runs while the notice
+    # key is far older than DEDUPE_KEEP_CYCLES.  The notice was recorded at cycle 1.
+    for index in range(4):
+        rig.state.dedupe[("skip", f"dummy-{index}", "stale_book")] = 2
+
+    for cycle in range(2, 11):
+        rig.state.cycle_number = cycle
+        decide_and_act(rig.deps, rig.state, decide_tests.make_ctx(rig, mode="trade"))
+
+    assert len(skip_rows(h.ledger, NO_SENDER_REASON)) == 1
+    assert key in rig.state.dedupe
+    assert rig.state.dedupe[key] == sys.maxsize

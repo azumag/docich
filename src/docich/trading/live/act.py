@@ -28,6 +28,7 @@ the process.
 """
 from __future__ import annotations
 
+import sys
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -54,8 +55,12 @@ class PlacementReport:
 
 
 def _record(deps: "CycleDeps", state: "CycleState", ctx: "CycleContext", action: str,
-            identity: str, reason: str, payload: dict) -> None:
-    """Write one live_decision once per dedupe key; a failure is swallowed, LeaseLost is not."""
+            identity: str, reason: str, payload: dict, *, pinned: bool = False) -> None:
+    """Write one live_decision once per dedupe key; a failure is swallowed, LeaseLost is not.
+
+    A ``pinned`` key is stored as ``sys.maxsize`` so the runner's dedupe pruning (which
+    deletes values below the cutoff) can never make it recordable again.
+    """
     key = (action, identity, reason)
     if key in state.dedupe:
         return
@@ -65,7 +70,7 @@ def _record(deps: "CycleDeps", state: "CycleState", ctx: "CycleContext", action:
         raise
     except Exception:
         return
-    state.dedupe[key] = state.cycle_number
+    state.dedupe[key] = sys.maxsize if pinned else state.cycle_number
 
 
 def _skip_payload(plan: "OrderPlan", reason: str, mode_text: str, cycle_text: str,
@@ -208,8 +213,9 @@ def decide_and_act(deps: "CycleDeps", state: "CycleState", ctx: "CycleContext") 
     if ctx.mode != "trade":
         return None
     if deps.executor.sender is None:
-        # There is no real sender yet.  One row for the whole process: the dedupe key has
-        # no cycle number on purpose, so the runner does not fill the log every cycle.
+        # There is no real sender yet.  One row for the whole process: the dedupe key is
+        # pinned (sys.maxsize, never pruned) so the runner's dedupe pruning cannot delete it
+        # and make the notice recordable again on a later cycle.
         _record(deps, state, ctx, "skip", "-", NO_SENDER_REASON, {
             "action": "skip",
             "side": "unknown",
@@ -219,7 +225,7 @@ def decide_and_act(deps: "CycleDeps", state: "CycleState", ctx: "CycleContext") 
             "mode": ctx.mode or "",
             "cycle": str(state.cycle_number),
             "blocks": ",".join(decisions.block_causes),
-        })
+        }, pinned=True)
         return None
     place_orders(deps, state, ctx, decisions)
     return None
