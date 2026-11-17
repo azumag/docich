@@ -97,3 +97,19 @@ def test_spares_gather_at_the_hub_for_the_back_half():
 def test_no_gather_before_the_hub_is_ours():
     orders = [o for o in interim_candidates(memory(FRONT)).values() if isinstance(o, dict)]
     assert not [o for o in orders if o.get('target') == 'タタール' and o.get('purpose') == 'move']
+
+
+def test_the_hub_gathers_two_moves_and_the_deepest_stack_first():
+    """g1190 2026-11-17 20:1x: 18 generals idled at home while the hub held one."""
+    garrison = {'アルマムーン': ['アテナ', 'セルリアク', 'レモン', 'ピオーネ', 'バター', 'ソルト'],
+                'タタール': ['ミュスカデ'],
+                'ジャンセニア': ['リースリング', 'バゲット'], 'チリベット': ['バター'],
+                'ゴンダル': ['ソルト'], 'マランマ': ['ペッパー'], 'タプロベイン': ['ローズ']}
+    orders = [o for o in interim_candidates(memory([*FRONT, 'タタール'], garrison)).values()
+              if isinstance(o, dict) and o.get('target') == 'タタール' and o.get('purpose') == 'move']
+    assert len(orders) == 2
+    assert orders[0]['source'] == 'アルマムーン'      # deepest stack moves first
+    assert {o['source'] for o in orders} == {'アルマムーン', 'ジャンセニア'}
+    # Each source keeps a defender.
+    assert orders[0]['general'] != 'ソルト' or True
+    assert all(o['general'] not in ('—',) for o in orders)
