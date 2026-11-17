@@ -22,7 +22,7 @@ LAND = FIXTURES / 'g1075-world-map-land-cursor.png'
 SEA = FIXTURES / 'g1075-world-map-sea-cursor.png'
 FADE = FIXTURES / 'g1075-world-map-fade.png'
 
-# Every saved Y view in the repository (chapters 1-4). No other PNG is one.
+# Every saved whole-island Y/R view in the repository. No other PNG is one.
 WORLD_VIEWS = {
     'g1075-world-map-land-cursor.png', 'g1075-world-map-sea-cursor.png',
     'g1075-world-map-ring-west-edge.png', 'g1075-world-map-ring-top-edge.png',
@@ -42,6 +42,9 @@ WORLD_VIEWS = {
     # gold frame's (57,40,16) reads as (56,40,16).
     'g1190-ch9-y-view-quantized.png',
     'g1190-ch9-y-view-flags.png',
+    # Isolated chapter-11 recall picker: the R ring cycles owned castles.
+    'g1190-ch11-recall-home.png', 'g1190-ch11-recall-gondal.png',
+    'g1190-ch11-recall-maranma.png',
 }
 
 
