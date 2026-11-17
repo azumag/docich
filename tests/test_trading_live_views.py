@@ -344,3 +344,104 @@ def test_the_new_views_do_not_write(h):
 
     assert len(h.ledger.events(limit=10**6)) == events_before
     assert views.fill_count(h.ledger) == fills_before
+
+
+# ---- g. repeated buys and repeated partial sells --------------------------------------------
+def test_position_cost_two_buys_at_different_prices_add_both_fees_and_keep_the_first_opened_at(h):
+    first = _intent(h, key="b1", amount="10", price="100", now=1000.0)
+    _order(h, first, order_id="o1", amount="10", price="100")
+    _fill(h, fill_id="f1", order_id="o1", symbol="OAS/JPY", side="buy", amount="10", price="100",
+          executed_at=1000.0, fee_amount="2", fee_currency="JPY")
+    _finish(h, first)
+
+    second = _intent(h, key="b2", amount="5", price="130", now=1100.0)
+    assert second.position_id == first.position_id
+    _order(h, second, order_id="o2", amount="5", price="130")
+    _fill(h, fill_id="f2", order_id="o2", symbol="OAS/JPY", side="buy", amount="5", price="130",
+          executed_at=1100.0, fee_amount="1", fee_currency="JPY")
+
+    basis = views.position_cost(h.ledger, first.position_id, D("0.0012"))
+    assert basis.net_base == D("15")
+    assert basis.cost == D("1653")                    # 1000 + 2 + 650 + 1
+    assert basis.avg_cost == D("110.2")               # 1653 / 15
+    assert basis.opened_at == 1000.0                  # the first buy's executed_at
+    assert basis == views.CostBasis(D("15"), D("1653"), D("110.2"), 1000.0)
+
+
+def test_position_cost_a_buy_after_a_partial_sell_adds_to_the_remaining_cost(h):
+    first = _intent(h, key="b1", amount="10", price="100", now=1000.0)
+    _order(h, first, order_id="o1", amount="10", price="100")
+    _fill(h, fill_id="f1", order_id="o1", symbol="OAS/JPY", side="buy", amount="10", price="100",
+          executed_at=1000.0, fee_amount="2", fee_currency="JPY")
+    _finish(h, first)
+
+    before_sell = views.position_cost(h.ledger, first.position_id, D("0.0012"))
+    assert before_sell == views.CostBasis(D("10"), D("1002"), D("100.2"), 1000.0)
+
+    sell = _intent(h, key="s1", side="sell", amount="4", price="110", now=1100.0)
+    _order(h, sell, order_id="o2", amount="4", price="110")
+    _fill(h, fill_id="f2", order_id="o2", symbol="OAS/JPY", side="sell", amount="4", price="110",
+          executed_at=1100.0, fee_amount="1", fee_currency="JPY")
+    _finish(h, sell, now=1101.0)
+
+    after_sell = views.position_cost(h.ledger, first.position_id, D("0.0012"))
+    assert after_sell.net_base == D("6")
+    assert after_sell.cost == D("601.2")              # 100.2 * 6, the quote fee is ignored
+    assert after_sell.avg_cost == D("100.2")
+    assert after_sell.opened_at == 1000.0
+    assert after_sell == views.CostBasis(D("6"), D("601.2"), D("100.2"), 1000.0)
+
+    second = _intent(h, key="b2", amount="4", price="120", now=1200.0)
+    assert second.position_id == first.position_id
+    _order(h, second, order_id="o3", amount="4", price="120")
+    _fill(h, fill_id="f3", order_id="o3", symbol="OAS/JPY", side="buy", amount="4", price="120",
+          executed_at=1200.0)
+
+    basis = views.position_cost(h.ledger, first.position_id, D("0.0012"))
+    assert basis.net_base == D("10")
+    assert basis.cost == D("1081.2")                  # 601.2 + 4 * 120
+    assert basis.avg_cost == D("108.12")              # 1081.2 / 10
+    assert basis.opened_at == 1000.0                  # still the first buy's executed_at
+    assert basis == views.CostBasis(D("10"), D("1081.2"), D("108.12"), 1000.0)
+
+
+def test_position_cost_two_partial_sells_keep_the_non_terminating_average(h):
+    buy = _intent(h, key="b1", amount="10", price="100", now=1000.0)
+    _order(h, buy, order_id="o1", amount="10", price="100")
+    _fill(h, fill_id="f1", order_id="o1", symbol="OAS/JPY", side="buy", amount="10", price="100",
+          executed_at=1000.0, fee_amount="0.5", fee_currency="OAS")
+    _finish(h, buy)
+
+    before_first = views.position_cost(h.ledger, buy.position_id, D("0.0012"))
+    assert before_first.net_base == D("9.5")
+    assert before_first.cost == D("1000")             # the base fee lowers only net_base
+    assert before_first.avg_cost == D("105.2631578947368421052631579")   # 1000 / 9.5
+    assert before_first.opened_at == 1000.0
+
+    first_sell = _intent(h, key="s1", side="sell", amount="3", price="110", now=1100.0)
+    _order(h, first_sell, order_id="o2", amount="3", price="110")
+    _fill(h, fill_id="f2", order_id="o2", symbol="OAS/JPY", side="sell", amount="3", price="110",
+          executed_at=1100.0, fee_amount="1", fee_currency="JPY")
+    _finish(h, first_sell, now=1101.0)
+
+    after_first = views.position_cost(h.ledger, buy.position_id, D("0.0012"))
+    assert after_first.net_base == D("6.5")
+    assert after_first.avg_cost == before_first.avg_cost == D("105.2631578947368421052631579")
+    assert after_first.cost == after_first.avg_cost * after_first.net_base
+    assert after_first.cost == D("684.2105263157894736842105264")
+    assert after_first.opened_at == 1000.0
+
+    before_second = views.position_cost(h.ledger, buy.position_id, D("0.0012"))
+    assert before_second == after_first
+
+    second_sell = _intent(h, key="s2", side="sell", amount="2", price="110", now=1200.0)
+    _order(h, second_sell, order_id="o3", amount="2", price="110")
+    _fill(h, fill_id="f3", order_id="o3", symbol="OAS/JPY", side="sell", amount="2", price="110",
+          executed_at=1200.0, fee_amount="1", fee_currency="JPY")
+
+    after_second = views.position_cost(h.ledger, buy.position_id, D("0.0012"))
+    assert after_second.net_base == D("4.5")
+    assert after_second.avg_cost == before_second.avg_cost == D("105.2631578947368421052631579")
+    assert after_second.cost == after_second.avg_cost * after_second.net_base
+    assert after_second.cost == D("473.6842105263157894736842106")
+    assert after_second.opened_at == 1000.0
