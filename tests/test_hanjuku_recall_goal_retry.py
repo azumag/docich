@@ -42,3 +42,22 @@ def test_every_failed_castle_keeps_the_original_goal():
     recall = {'target': [134, 120], 'origin': [500, 700]}
     mem['flow']['recall_goal_failures'] = {'134,120': {'アルマムーン': 2}}
     assert hanjuku_map._goal_after_failures(mem, flags, recall, 'アルマムーン') == 'アルマムーン'
+
+
+def test_missing_back_flags_never_redirect_across_gateway():
+    # Captures are known, but the latest flag frame only saw front castles.
+    mem = memory(['ジャンセニア', 'ゴンダル', 'タタール', 'クラボニア'])
+    mem['flow']['recall_goal_failures'] = {'140,114': {'クラボニア': 1}}
+    recall = {'target': [140, 114], 'origin': [236, 376]}
+    got = hanjuku_map._goal_after_failures(
+        mem, {'ジャンセニア': 'own', 'ゴンダル': 'own'}, recall, 'クラボニア')
+    assert got not in ('ジャンセニア', 'ゴンダル')
+
+
+def test_shared_hub_is_available_after_back_castle_failure():
+    mem = memory(['ジャンセニア', 'タタール', 'クラボニア'])
+    mem['flow']['recall_goal_failures'] = {'140,114': {'クラボニア': 1}}
+    recall = {'target': [140, 114], 'origin': [440, 452]}
+    got = hanjuku_map._goal_after_failures(
+        mem, {c: 'own' for c in mem['captured']}, recall, 'クラボニア')
+    assert got == 'タタール'
