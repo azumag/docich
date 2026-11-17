@@ -2167,11 +2167,14 @@ def _recall_goal(mem, flags=None):
     owned = _recall_owned(mem, chapter, sorted(c for c in _owned(mem) if c in cells
                                              and (flags is None or flags.get(c) == 'own')),
                           origin=state.get('origin'))
-    # Owner 2026-11-17 (later the same day): the hub is NOT a safe default.
-    # A general who retreated from a back-half castle stands in a hollow below
-    # the hub, and a direct recall to the hub walks into the cliff and sticks.
-    # The back half needs two legs — first to the middle of the back map, then
-    # to the hub — so the destination is left to the side-aware choice below.
+    # Owner 2026-11-18 02:3x: the shared hub is the destination again. The
+    # two-leg "step aside first" plan is dropped: what looked like a cliff
+    # problem was mostly the castle sprite being read as a camp (the recall
+    # never left the field). Returning to タタール keeps the army where the
+    # back-half waves start.
+    gate_hub = chart.gateway(chapter)
+    if gate_hub and gate_hub['hub'] in owned and state.get('target'):
+        return gate_hub['hub']
 
     hero = [c for c in owned if NAME in ((_world(mem).get('garrison') or {}).get(c) or ())]
     if not hero:

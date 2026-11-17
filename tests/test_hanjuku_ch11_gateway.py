@@ -209,17 +209,6 @@ def test_the_side_is_judged_without_the_y_map_flags():
     assert not set(got) & set(FRONT), got
 
 
-def test_an_unmeasured_camp_does_not_default_to_the_hub():
-    """Owner 2026-11-17: a direct recall to the hub sticks on the back cliff.
-
-    A general who retreated in the back half must first move to the middle of
-    the back map, then to the hub; the hub is not a safe default destination.
-    """
-    from docich.hanjuku.state.regions import flow as _flow
-    from docich.hanjuku.strategy.orders import _recall_goal
-    mem = memory([*FRONT, 'タタール', 'クラボニア'])
-    _flow(mem)['recall'] = {'target': [134, 120], 'stage': 'dest'}
-    assert _recall_goal(mem) != 'タタール'
 
 
 def test_without_the_hub_the_nearest_castle_is_used_again():
@@ -427,9 +416,10 @@ def test_a_retreating_general_returns_near_where_he_fought():
 
 
 def test_without_a_target_the_departure_still_locates_him():
+    # No hub owned, so the departure castle answers again.
     from docich.hanjuku.state.regions import flow as _flow
     from docich.hanjuku.strategy.orders import _recall_goal
-    mem = memory(['アルマムーン', 'タタール'])
+    mem = memory(['アルマムーン'])
     mem['sorties'] = {'S1': {'source': 'アルマムーン', 'target': None, 'status': 'en_route'}}
     _flow(mem)['recall'] = {'target': [134, 120], 'sorties': ['S1']}
     assert _recall_goal(mem) == 'アルマムーン'
@@ -455,3 +445,24 @@ def test_opposite_move_legs_are_not_both_planned():
     legs = {(o.get('source'), o.get('target')) for o in orders if o.get('purpose') == 'move'}
     for source, target in legs:
         assert (target, source) not in legs, legs
+
+
+def test_a_visible_camp_returns_to_the_shared_hub():
+    """Owner 2026-11-18 02:3x: make the hub return the rule again.
+
+    The two-leg plan is dropped (the "cliff" was mostly a castle sprite read as
+    a camp), so a camp sighting returns to タタール while it is ours.
+    """
+    from docich.hanjuku.state.regions import flow as _flow
+    from docich.hanjuku.strategy.orders import _recall_goal
+    mem = memory([*FRONT, 'タタール', 'クラボニア'])
+    _flow(mem)['recall'] = {'target': [134, 120], 'stage': 'dest'}
+    assert _recall_goal(mem) == 'タタール'
+
+
+def test_without_the_hub_the_recall_uses_the_nearest_castle():
+    from docich.hanjuku.state.regions import flow as _flow
+    from docich.hanjuku.strategy.orders import _recall_goal
+    mem = memory([*FRONT, 'クラボニア'])
+    _flow(mem)['recall'] = {'target': [134, 120], 'stage': 'dest'}
+    assert _recall_goal(mem) != 'タタール'
