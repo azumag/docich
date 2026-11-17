@@ -112,7 +112,16 @@ def _interim_source(mem, target, chart_order, owned, busy, allow_sole=False):
                       key=lambda c: (_distance(chapter, c, target), c))
     if arrivals:
         return arrivals[0], MOVE_ANY_GENERAL
-    staffed = sorted((c for c in owned if len(set(free[c])) >= need
+    def _hub_ready(c):
+        # The shared hub must keep two defenders while it sends: g1190
+        # 2026-11-17 lost タタール four times right after a sortie from it, and
+        # each loss cut the far half off until the next retake. A back-half
+        # target is exempt: the hub is the only castle that can send it.
+        if not gate or c != gate['hub'] or target in gate['back']:
+            return True
+        return len(set(free[c])) >= GATEWAY_HUB_GUARD
+
+    staffed = sorted((c for c in owned if len(set(free[c])) >= need and _hub_ready(c)
                       and _spares(free[c], unavailable_for_attack, sole) and c not in excluded),
                      key=lambda c: (_march_blocked(chapter, c, target, owned),
                                     _distance(chapter, c, target)))
@@ -233,6 +242,7 @@ MOVE_ANY_GENERAL = chart_adjust.PROBE_GENERAL   # move from an unread list: the 
 # defenders needs more than four (g1163 2026-11-10 08:00-10:00: しまばら kept
 # producing successor defenders while ながはま held eight spares).
 INTERIM_WAVE_LIMIT = 6
+GATEWAY_HUB_GUARD = 3        # the shared hub keeps two defenders while it sends
 HUB_GATHER_PER_PLAN = 2      # spare generals moved into a chapter's hub per plan
 ATTACK_MIN_HP_RATIO = 0.20   # measured HP/max below this is a wasted attack sortie
 # Owner 2026-11-05: the boss dies to volume, not strength. Half-ripe eggs are
