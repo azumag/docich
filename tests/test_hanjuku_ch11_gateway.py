@@ -324,3 +324,32 @@ def test_a_plan_whose_sources_are_owned_stays():
     mem = memory(['マランマ', 'ゴンダル'])
     stored = {'orders': [{'purpose': 'retake', 'source': 'アルマムーン', 'target': 'タタール'}]}
     assert _plan_has_foreign_source(mem, stored) is False
+
+
+def _hub_mem(garrison, lost=('ジャンセニア', 'クラボニア')):
+    mem = {'chapter': 11, 'month': '76-6', 'tick': 100,
+           'captured': ['アルマムーン', 'マランマ', 'ゴンダル', 'タタール'],
+           'lost': list(lost), 'egg_types': {}, 'egg_uses': {}, 'house_eggs': {}}
+    from docich.hanjuku.state.regions import world as _world
+    _world(mem)['garrison'] = dict(garrison)
+    return mem
+
+
+def test_a_thin_hub_does_not_send_at_a_front_target():
+    """g1190 2026-11-17: タタール fell four times right after a sortie from it."""
+    from docich.hanjuku.strategy.replan import _interim_source
+    mem = _hub_mem({'タタール': ['アテナ', 'レモン'],
+                    'マランマ': ['ミュスカデ', 'リースリング', 'バゲット']})
+    owned = {'アルマムーン', 'マランマ', 'ゴンダル', 'タタール'}
+    picked = _interim_source(mem, 'ジャンセニア', None, owned, set())
+    assert picked and picked[0] != 'タタール', picked
+
+
+def test_the_thin_hub_still_sends_into_the_back_half():
+    """It is the only castle that can reach the far half, so it is exempt."""
+    from docich.hanjuku.strategy.replan import _interim_source
+    mem = _hub_mem({'タタール': ['アテナ', 'レモン'],
+                    'マランマ': ['ミュスカデ', 'リースリング', 'バゲット']})
+    owned = {'アルマムーン', 'マランマ', 'ゴンダル', 'タタール'}
+    picked = _interim_source(mem, 'クラボニア', None, owned, set())
+    assert picked and picked[0] == 'タタール', picked
