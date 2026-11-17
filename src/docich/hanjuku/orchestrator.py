@@ -180,6 +180,11 @@ Y_JUMP_VIEW_KINDS = frozenset({'map', 'map_target', 'world_map'})
 CAMP_RECALL_SCENE_RESUMES = 2   # scenes may cut a recall twice before the camp is skipped
 UNKNOWN_HOLD_ADVANCE = 6      # identical unreadable frames before one A is sent
 UNKNOWN_BATTLE_ADVANCE = 10   # any unreadable frames inside a battle before one A
+# g1253 2026-11-16: an unclassified concert/dance screen sat on `unknown` and
+# took 23 A presses in one generation. One unchanged-digest episode gets at most
+# this many presses; after that stop pressing and leave the frozen screen to the
+# existing screen_stalled watch. A new digest starts a fresh episode.
+UNKNOWN_HOLD_BURST_MAX = 3
 
 
 def _recall_dialog_wanted(recall, screen, phase, mem) -> bool:
@@ -299,8 +304,8 @@ def map_unsteerable_nudge(screen, mem, kind, phase, streak, digest):
     return actions
 
 
-def unknown_hold_advance(screen, mem, actions, digest):
-    """Break a frozen unreadable screen with one A press.
+def unknown_hold_advance(screen, mem, actions, digest, phase=None):
+    """Break a frozen unreadable screen with a bounded burst of A presses.
 
     g1133 2026-11-05 logged 35 `situation_held` in half an hour: the bot sent no
     input while the screen stayed unknown. Many game screens need one button to
@@ -320,10 +325,20 @@ def unknown_hold_advance(screen, mem, actions, digest):
     observation looked new, no A was ever sent, and the 5-minute stasis latched
     screen_stalled. Keep the last two distinct digests and treat a repeat in
     that pair as the same screen; a genuinely changing screen still misses it.
+
+    g1253 2026-11-16: pressing A every five frames forever on an unclassified
+    concert/dance screen is blind play. An unchanged-digest episode now gets at
+    most UNKNOWN_HOLD_BURST_MAX presses; a new digest resets the budget and the
+    run's screen_stalled watch remains the final backstop.
     """
     watch = mem.get('unknown_hold_watch') or {}
     recent = [d for d in (watch.get('recent') or []) if isinstance(d, str)][:2]
     same = digest in recent
+    if not same:
+        # A digest outside the two-image blink pair starts a new episode: the
+        # A burst budget and its one-shot stop record both reset.
+        watch['presses'] = 0
+        watch['capped'] = False
     watch['n'] = (int(watch.get('n') or 0) + 1) if same else 1
     watch['recent'] = ([digest] + [d for d in recent if d != digest])[:2]
     watch['digest'] = digest
@@ -338,13 +353,29 @@ def unknown_hold_advance(screen, mem, actions, digest):
     if watch['n'] < limit and not (
             in_battle and watch['total'] >= UNKNOWN_BATTLE_ADVANCE):
         return actions
+    presses = int(watch.get('presses') or 0)
+    if presses >= UNKNOWN_HOLD_BURST_MAX:
+        # Further A presses would be blind input on a screen that never reacts.
+        # Record the stop once per episode so hold diagnostics can see it.
+        if not watch.get('capped'):
+            watch['capped'] = True
+            decision_log._record(
+                mem, 'situation_held', screen=screen.kind, phase=phase,
+                observed_metric={'kind': screen.kind, 'phase': phase,
+                                 'variant': mem.get('variant'),
+                                 'digest': digest[:16], 'presses': presses},
+                reason='読めない画面にAを複数回送っても変化しないため、これ以上の盲目的な入力を止める')
+        return actions
+    watch['presses'] = presses + 1
     watch['pressed'] = True
     watch['n'] = 0
     watch['total'] = 0
     decision_log._record(mem, 'unknown_hold_advance', screen=screen.kind,
                          observed_metric={'digest': digest[:16],
                                           'held': UNKNOWN_HOLD_ADVANCE,
-                                          'battle': in_battle},
+                                          'battle': in_battle,
+                                          'kind': screen.kind, 'phase': phase,
+                                          'variant': mem.get('variant')},
                          reason='読めない画面が同じままなので、Aを1回だけ送って進める')
     return [pad('a')]
 
@@ -1222,11 +1253,15 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
         plain_text = plain_text_hold(screen)
         if (kind in {'unknown'} or plain_text) and mem.get('chapter') \
                 and (phase not in {'transition', 'title', 'title_or_intro'} or mem.get('battle')):
+            hold_digest = frame.digest()
             if mem.get('held_phase')!=phase:
                 mem['held_phase']=phase
                 decision_log._record(mem,'situation_held',screen=kind,phase=phase,
+                               observed_metric={'kind': kind, 'phase': phase,
+                                                'variant': mem.get('variant'),
+                                                'digest': hold_digest[:16]},
                                reason='状況判定保留: 文字・カーソル・戦闘表示を読めない画面')
-            actions = unknown_hold_advance(screen, mem, actions, frame.digest())
+            actions = unknown_hold_advance(screen, mem, actions, hold_digest, phase)
         else:
             mem['held_phase']=None
             mem.pop('unknown_hold_watch', None)

@@ -93,3 +93,40 @@ def test_a_second_episode_presses_one_frame_earlier():
         waits += 1
         assert waits <= O.UNKNOWN_HOLD_ADVANCE
     assert waits <= O.UNKNOWN_HOLD_ADVANCE - 1
+
+
+def test_a_frozen_screen_stops_after_three_presses():
+    """g1253 2026-11-16: 23 A presses on one unreadable screen was blind play."""
+    mem = {'variant': 'chart_unavailable'}
+    outcomes = [O.unknown_hold_advance(screen(), mem, [], 'same', 'event')
+                for _ in range(O.UNKNOWN_HOLD_ADVANCE * 8)]
+    assert sum(out == [O.pad('a')] for out in outcomes) == O.UNKNOWN_HOLD_BURST_MAX
+    stops = [r for r in mem['_records'] if r['decision'] == 'situation_held']
+    assert len(stops) == 1   # the stop is recorded once per episode
+    assert stops[0]['observed_metric'] == {
+        'kind': 'unknown', 'phase': 'event', 'variant': 'chart_unavailable',
+        'digest': 'same'[:16], 'presses': O.UNKNOWN_HOLD_BURST_MAX}
+
+
+def test_a_new_digest_episode_gets_a_fresh_burst():
+    mem = {}
+    for _ in range(O.UNKNOWN_HOLD_ADVANCE * 5):
+        O.unknown_hold_advance(screen(), mem, [], 'first', 'event')
+    first = sum(1 for r in mem['_records'] if r['decision'] == 'unknown_hold_advance')
+    assert first == O.UNKNOWN_HOLD_BURST_MAX
+    for _ in range(O.UNKNOWN_HOLD_ADVANCE * 5):
+        O.unknown_hold_advance(screen(), mem, [], 'second', 'event')
+    total = sum(1 for r in mem['_records'] if r['decision'] == 'unknown_hold_advance')
+    assert total == 2 * O.UNKNOWN_HOLD_BURST_MAX
+    assert sum(1 for r in mem['_records'] if r['decision'] == 'situation_held') == 2
+
+
+def test_press_records_carry_hold_diagnostics():
+    mem = {'variant': 'chart_unavailable'}
+    for _ in range(O.UNKNOWN_HOLD_ADVANCE):
+        O.unknown_hold_advance(screen(), mem, [], 'frozen-frame', 'event')
+    rec = [r for r in mem['_records'] if r['decision'] == 'unknown_hold_advance'][-1]
+    assert rec['observed_metric']['kind'] == 'unknown'
+    assert rec['observed_metric']['phase'] == 'event'
+    assert rec['observed_metric']['variant'] == 'chart_unavailable'
+    assert rec['observed_metric']['digest'] == 'frozen-frame'[:16]
