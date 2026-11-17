@@ -7622,6 +7622,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v1029-phantom-camp",
             "hanjuku-chart-v1030-revert-phantom-camp",
             "hanjuku-chart-v1031-hub-recall-default",
+            "hanjuku-chart-v1032-gather-all-hub",
             "hanjuku-chart-v1020-recall-giveup",
             "hanjuku-chart-v1021-plan-invalid-source",
             "hanjuku-chart-v985-roster-lost",

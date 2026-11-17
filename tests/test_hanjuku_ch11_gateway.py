@@ -109,12 +109,13 @@ def test_the_hub_gathers_two_moves_and_the_deepest_stack_first():
                 'ゴンダル': ['ソルト'], 'マランマ': ['ペッパー'], 'タプロベイン': ['ローズ']}
     orders = [o for o in interim_candidates(memory([*FRONT, 'タタール'], garrison)).values()
               if isinstance(o, dict) and o.get('target') == 'タタール' and o.get('purpose') == 'move']
-    assert len(orders) == 2
+    # Owner 2026-11-18: the whole army gathers at the hub, not two spares.
+    assert len(orders) >= 4
     assert orders[0]['source'] == 'アルマムーン'      # deepest stack moves first
-    assert {o['source'] for o in orders} == {'アルマムーン', 'ジャンセニア'}
-    # Each source keeps a defender.
-    assert orders[0]['general'] != 'ソルト' or True
+    assert 'アルマムーン' in {o['source'] for o in orders}
+    # Each source keeps a defender and every mover is a named general.
     assert all(o['general'] not in ('—',) for o in orders)
+    assert len({o['general'] for o in orders}) == len(orders)
 
 
 def test_a_general_below_the_hp_floor_is_not_sent_to_attack():
@@ -467,3 +468,19 @@ def test_without_the_hub_the_recall_uses_the_nearest_castle():
     mem = memory([*FRONT, 'クラボニア'])
     _flow(mem)['recall'] = {'target': [134, 120], 'stage': 'dest'}
     assert _recall_goal(mem) != 'タタール'
+
+
+def test_an_owned_hub_gathers_the_whole_army():
+    """Owner 2026-11-18 02:4x: gather everyone at the hub (recruiting there)."""
+    from docich.hanjuku.strategy.replan import interim_candidates
+    from docich.hanjuku.state.regions import world as _world
+    mem = {'chapter': 11, 'month': '81-10', 'tick': 100,
+           'captured': ['マランマ', 'ゴンダル', 'チリベット', 'タプロベイン', 'ジャンセニア', 'タタール'],
+           'lost': ['ネペンテ'], 'egg_types': {}, 'egg_uses': {}, 'house_eggs': {}}
+    _world(mem)['garrison'] = {
+        'アルマムーン': ['どうし', 'g1', 'g2', 'g3', 'g4', 'g5', 'g6'],
+        'タプロベイン': ['t1', 't2', 't3'], 'タタール': ['h1'], 'マランマ': ['m1', 'm2'],
+        'ゴンダル': ['k1'], 'チリベット': ['c1'], 'ジャンセニア': ['j1']}
+    orders = [o for o in interim_candidates(mem).values() if isinstance(o, dict)]
+    to_hub = [o for o in orders if o.get('target') == 'タタール' and o.get('purpose') == 'move']
+    assert len(to_hub) >= 6, [o for o in orders][:8]
