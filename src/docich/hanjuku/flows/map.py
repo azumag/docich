@@ -252,6 +252,41 @@ def boss_sortie_menu_escape_step(mem, kind, actions):
     return [pad('b')]
 
 
+def _goal_after_failures(mem, flags, recall, goal):
+    """A destination that never accepted this camp's recall is replaced.
+
+    ``camp_recall_goal_failed`` counts (camp, castle) pairs whose A was sent and
+    never arrived. Keep the nearest castle that has not failed yet, so a silent
+    failure stops repeating every month (g1190 2026-11-17: リーキ -> アルマムーン
+    three times, the general still camped).
+    """
+    if not isinstance(goal, str):
+        return goal
+    camp = (recall or {}).get('target') if isinstance(recall, dict) else None
+    if not (isinstance(camp, (list, tuple)) and len(camp) == 2):
+        return goal
+    failures = (_flow(mem).get('recall_goal_failures') or {})
+    pair = failures.get(f'{int(camp[0])},{int(camp[1])}') if isinstance(failures, dict) else None
+    if not isinstance(pair, dict) or goal not in pair:
+        return goal
+    chapter = mem.get('chapter') or 0
+    cells = chart.castles(chapter) or {}
+    # Reuse the same reachable-side decision as the initial recall goal.
+    # Flag readings can omit owned castles; the strategy helper includes
+    # capture history and preserves the shared gateway hub.
+    from ..strategy.orders import _recall_owned
+    owned = _recall_owned(
+        mem, chapter,
+        sorted(c for c in _owned(mem) if c in cells
+               and (not isinstance(flags, dict) or flags.get(c) == 'own')),
+        origin=recall.get('origin') if isinstance(recall, dict) else None)
+    fresh = [c for c in owned if c not in pair]
+    if not fresh:
+        return goal
+    return min(fresh, key=lambda c: (
+        (cells[c][0] - cells[goal][0]) ** 2 + (cells[c][1] - cells[goal][1]) ** 2, c))
+
+
 def _picker_goal(mem, flags, recall):
     """The destination chosen for THIS picker episode, or a fresh choice.
 
@@ -383,6 +418,7 @@ def world_map_step(screen, mem, frame):
         # every general must gather at the last castle before the boss); never
         # replace it with the nearest-castle rule.
         goal = recall.get('gather') or _picker_goal(mem, flags, recall)
+        goal = _goal_after_failures(mem, flags, recall, goal)
         if goal is None:
             # The picker cannot aim and the hero's castle is the missing
             # position (g1163 2026-11-14 08:59/09:01, statuses null in ch.9).

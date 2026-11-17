@@ -1421,5 +1421,22 @@ def _recall_dispatch_step(screen, mem, state):
                 'interrupted': interrupted,
                 'general': state.get('general') if state.get('fort') else None}, resulting_event=status,
                 reason='帰還の本人・移動・到着を確認できず未確認として保持し、有限な操作を終了')
+        if status == 'arrival_unconfirmed':
+            # The same camp was sent at the same castle month after month
+            # (g1190 2026-11-17 21:1x: リーキ -> アルマムーン three times) and the
+            # general never moved. Remember the pair so the next attempt picks
+            # a different castle instead of repeating a silent failure.
+            camp = state.get('target')
+            goal = state.get('goal')
+            if (isinstance(camp, (list, tuple)) and len(camp) == 2
+                    and isinstance(goal, str) and goal):
+                failures = _flow(mem).setdefault('recall_goal_failures', {})
+                key = f'{int(camp[0])},{int(camp[1])}'
+                pair = failures.get(key) if isinstance(failures.get(key), dict) else {}
+                pair[goal] = int(pair.get(goal) or 0) + 1
+                failures[key] = pair
+                _record(mem, 'camp_recall_goal_failed', observed_metric={
+                    'camp': list(camp), 'goal': goal, 'count': pair[goal]},
+                    reason='同じ野営から同じ城への帰還が未確認のまま繰り返されるため、次回は別の城を試す')
         return [pad('b')] if screen.kind in ('world_map', 'map_target') else []
     return []
