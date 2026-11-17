@@ -295,6 +295,14 @@ def _recall_after_scene(mem, recall, kind, phase):
         # A recall that keeps being cut by scenes is not transient: give the
         # camp the usual failed skip instead of spending every month on it.
         _flow(mem).pop('recall', None)
+        # #4468: a scene cut is an interruption, not the recall's own failure.
+        # The marker is cleared at the head of every new request (so it cannot
+        # shorten an unrelated recall), which left the monthly task reading
+        # `interrupted=False` and spending RECALL_TASK_RETRIES on a recall whose
+        # A was never sent — unlike a battle cut, which gets a free retry via
+        # recall._mark_recall_interrupted. Stamp it at the abandonment point so
+        # post_month_status.wait_recall requeues without charging the budget.
+        _flow(mem)['recall_interrupted'] = int(mem.get('tick') or 0)
         from .flows.recall import _arm_recall_skip as _arm_skip
         _arm_skip(mem, recall)
         decision_log._record(mem, 'camp_recall_scene_abandoned', screen=kind, phase=phase,
