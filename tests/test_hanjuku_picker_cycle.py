@@ -16,6 +16,12 @@ ROOT = Path(__file__).resolve().parents[1]
 FIX = ROOT / 'tests/fixtures/hanjuku'
 
 
+
+def only_press(actions):
+    """The single pad button a picker step pressed (the hold varies by distance)."""
+    assert len(actions) == 1 and actions[0].get('type') == 'pad', actions
+    return actions[0]['buttons'][0]
+
 def image(name):
     frame = read_png(FIX / (name + '.png')).resized()
     screen = parse(frame, phase=classify(frame))
@@ -45,7 +51,7 @@ def test_real_two_hop_sequence_confirms_only_on_the_observed_goal():
     mem = memory()
     for name in ('g1190-ch11-recall-home', 'g1190-ch11-recall-gondal'):
         screen, frame = image(name)
-        assert flow.world_map_step(screen, mem, frame) == [pad('down')]
+        assert only_press(flow.world_map_step(screen, mem, frame)) == 'down'
         assert flow_state(mem)['recall']['stage'] == 'dest'
         assert not any(r['decision'] == 'camp_recall_requested' for r in mem['_records'])
     screen, frame = image('g1190-ch11-recall-maranma')
@@ -58,7 +64,7 @@ def test_real_two_hop_sequence_confirms_only_on_the_observed_goal():
 def test_a_horizontal_goal_uses_the_real_down_selection_in_one_press():
     mem = memory('ゴンダル')
     screen, frame = image('g1190-ch11-recall-home')
-    assert flow.world_map_step(screen, mem, frame) == [pad('down')]
+    assert only_press(flow.world_map_step(screen, mem, frame)) == 'down'
     screen, frame = image('g1190-ch11-recall-gondal')
     assert flow.world_map_step(screen, mem, frame) == [pad('a'), {'type': 'wait', 'ms': 700}, pad('a')]
 
@@ -67,7 +73,7 @@ def test_ignored_down_never_switches_to_an_ineffective_horizontal_axis():
     mem = memory()
     screen, frame = image('g1190-ch11-recall-home')
     for _ in range(flow.PICKER_STILL_LIMIT):
-        assert flow.world_map_step(screen, mem, frame) == [pad('down')]
+        assert only_press(flow.world_map_step(screen, mem, frame)) == 'down'
     assert flow.world_map_step(screen, mem, frame) == [pad('a'), {'type': 'wait', 'ms': 700}, pad('a')]
     recall = flow_state(mem)['recall']
     assert recall['goal'] == 'アルマムーン' and recall['picker_forced']
@@ -90,7 +96,7 @@ def test_unverified_cycle_context_keeps_the_existing_navigation(monkeypatch, cha
     else:
         monkeypatch.setattr(flow, 'world_cursor', lambda *_: (130, 130))
     monkeypatch.setattr(flow, 'world_flags', lambda *_: flags)
-    assert flow.world_map_step(screen, mem, frame) == [pad('left')]
+    assert only_press(flow.world_map_step(screen, mem, frame)) == 'left'
 
 
 def test_an_unmeasured_chapter_keeps_native_geometric_navigation():
@@ -99,5 +105,5 @@ def test_an_unmeasured_chapter_keeps_native_geometric_navigation():
     mem = {'chapter': 3, 'tick': 100, '_records': [],
            'captured': [c for c in flow.chart.castles(3) if c not in ('ボス', 'アルマムーン')],
            'recall': {'stage': 'dest', 'steps': 0, 'origin': [414, 504], 'origin_source': 'picker'}}
-    assert flow.world_map_step(screen, mem, frame) == [pad('down')]
+    assert only_press(flow.world_map_step(screen, mem, frame)) == 'down'
     assert flow_state(mem)['recall']['goal'] == 'メガパタ'
