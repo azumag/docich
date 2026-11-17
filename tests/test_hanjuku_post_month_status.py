@@ -1579,3 +1579,27 @@ def test_a_same_month_house_read_skips_the_individual_reopen():
     assert 'アテナ' not in post._house_freshly_read(mem)   # the location was not observed
     mem['house_eggs']['エピィ'] = {'location': 'castle', 'month': '2-6', 'observed_tick': 'x'}
     assert 'エピィ' not in post._house_freshly_read(mem)   # an unreadable tick is no evidence
+
+
+def test_a_long_unread_camp_row_is_measured_again():
+    """g1190 2026-11-17: マフィン stayed 'camp' in the cache for ~29,500 ticks.
+
+    The monthly walk re-read marching/unknown rows and castles it no longer
+    owns, but never a camp, so a general who walked home kept being recalled.
+    """
+    mem = memory(month='2-12')
+    mem['tick'] = 5000
+    mem['captured'] = ['アルマムーン']
+    mem['general_statuses'] = {
+        'scope': [1, '2-12'], 'complete': True, 'dirty': {}, 'tick': 4000,
+        'identity': receipts.run_identity(mem.get('_run_identity')),
+        'statuses': {
+            'マフィン': {'general': 'マフィン', 'location': 'camp', 'tick': 100,
+                         'location_observed': True, 'hp': 30, 'max_hp': 30},
+            'ブリー': {'general': 'ブリー', 'location': 'camp', 'tick': 4900,
+                      'location_observed': True, 'hp': 30, 'max_hp': 30},
+        }}
+    post.arm(mem)
+    state = mem['post_month_status']
+    assert 'マフィン' in state['dirty']
+    assert 'ブリー' not in state['dirty']

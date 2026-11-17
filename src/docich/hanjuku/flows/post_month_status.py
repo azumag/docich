@@ -65,6 +65,7 @@ CARRY_OVERDUE_MONTHS = 2
 # and リースリング were interrupted at 17:00/17:05 and stayed camped).  Retry
 # the same task a bounded number of times within this month; a dispatched
 # recall is never repeated.
+CAMP_ROW_STALE_TICKS = 600   # a camp measured longer ago than this is re-read
 RECALL_TASK_RETRIES = 2
 # A battle that took the foreground from an in-progress recall is not the
 # recall's own attempt; it is retried without spending the month's budget for
@@ -254,11 +255,20 @@ def arm(mem):
     # them here spent minutes per month re-reading data that was seconds old
     # (g1163 2026-11-09: the house pass ran at 09:55 and this walk at 09:58).
     freshly_read = _house_freshly_read(mem)
+    tick = mem.get('tick')
     for name, row in statuses.items():
         if name in freshly_read:
             continue
-        if (row.get('location') in ('march', 'unknown')
-                or row.get('location') == 'castle'
+        location = row.get('location')
+        observed = row.get('tick')
+        # A camp row never turns dirty on its own, yet the general may have
+        # walked home at any time: g1190 2026-11-17 kept マフィン camped in the
+        # cache for ~29,500 ticks while the recall flow re-requested the same
+        # camp every month. Re-read a camp that was last measured long ago.
+        camp_stale = (location == 'camp' and type(observed) is int
+                      and type(tick) is int and tick - observed >= CAMP_ROW_STALE_TICKS)
+        if (location in ('march', 'unknown') or camp_stale
+                or location == 'castle'
                    and (not row.get('castle') or row['castle'] not in owned)):
             stale.add(name)
     carry = [name for name, row in statuses.items()
