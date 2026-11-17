@@ -2099,13 +2099,20 @@ def _recall_owned(mem, chapter, owned, origin=None):
         # camped on the edge for good. Judge the side from the measured origin
         # and stay on it; the hub is the one castle both halves reach.
         hub = gate['hub']
-        back = [c for c in owned if c in gate['back'] or c == hub]
-        front = [c for c in owned if c in gate['front'] or c == hub]
+        back = [c for c in owned if c in gate['back']]
+        front = [c for c in owned if c in gate['front']]
         if back and front:
+            # The shared hub cannot identify which side the camp is on:
+            # including it in both distances makes a hub-adjacent camp tie.
             def _nearest(group):
                 return min(sum((cells[c][a] - origin[a]) ** 2 for a in (0, 1))
                            for c in group)
-            return sorted(back if _nearest(back) < _nearest(front) else front)
+            side = back if _nearest(back) < _nearest(front) else front
+            return sorted([*side, *([hub] if hub in owned else [])])
+        if back or front:
+            # Only one side has an owned castle; keep the shared hub as a
+            # reachable alternative without reintroducing the opposite side.
+            return sorted([*(back or front), *([hub] if hub in owned else [])])
     if (not road or not measured):
         return owned
     entry = min((c for c in road if c in cells),
