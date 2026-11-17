@@ -191,6 +191,77 @@ class ProjectionTests(unittest.TestCase):
         self.assertNotIn("PRIVATE", json.dumps(out))
         self.assertNotIn("DO-NOT-EMIT", json.dumps(out))
 
+    def test_boss_cell_projection_is_bounded_and_rendered(self):
+        payload = self.payload()
+        tactical = payload["diagnostics"]["hanjuku_tactical"]
+        tactical["chapter"] = 9
+        tactical["policy"]["boss_cell"] = {
+            "chapter": 9, "cell": [874, 637], "readings": 2,
+            "age_ticks": 12, "PRIVATE": "DO-NOT-EMIT",
+        }
+        out = self.status.project(payload)
+        self.assertEqual(out["boss_cell"], {
+            "chapter": 9, "cell": [874, 637], "readings": 2, "age_ticks": 12,
+        })
+        body = self.status.reply(out, {
+            "RUN_SHA": "c" * 40, "RUN_ID": "1", "RUN_ATTEMPT": "1",
+            "SOURCE_COMMENT_ID": "1",
+        })["body"]
+        self.assertIn("Moving boss cell: `measured=yes`", body)
+        self.assertIn("`cell=874,637`", body)
+        self.assertIn("`readings=2`", body)
+        self.assertIn("`age_ticks=12`", body)
+        self.assertNotIn("PRIVATE", json.dumps(out))
+        self.assertNotIn("DO-NOT-EMIT", body)
+
+    def test_boss_cell_from_world_region_and_invalid_values_fail_closed(self):
+        payload = self.payload()
+        policy = payload["diagnostics"]["hanjuku_tactical"]["policy"]
+        policy["world"] = {"boss_cell": {"chapter": 9, "cell": [874, 637],
+                                          "readings": 2, "age_ticks": 3}}
+        self.assertEqual(self.status.project(payload)["boss_cell"]["cell"], [874, 637])
+        policy["world"]["boss_cell"] = {
+            "chapter": "PRIVATE", "cell": ["X", 637], "readings": -1,
+            "age_ticks": "PRIVATE",
+        }
+        out = self.status.project(payload)
+        self.assertEqual(out["boss_cell"], {
+            "chapter": None, "cell": None, "readings": None, "age_ticks": None,
+        })
+        body = self.status.reply(out, {
+            "RUN_SHA": "c" * 40, "RUN_ID": "1", "RUN_ATTEMPT": "1",
+            "SOURCE_COMMENT_ID": "1",
+        })["body"]
+        self.assertIn("Moving boss cell: `measured=no`", body)
+        self.assertNotIn("PRIVATE", json.dumps(out))
+        self.assertNotIn("PRIVATE", body)
+
+    def test_recent_decisions_include_boss_cell_and_pursuit_tokens(self):
+        payload = self.payload()
+        tactical = payload["diagnostics"]["hanjuku_tactical"]
+        tactical["chapter"] = 9
+        tactical["policy"]["recent_decisions"] = [
+            {"decision": "boss_cell_measured", "reason": "PRIVATE_REASON"},
+            {"decision": "boss_pursuit_queued", "reason": "PRIVATE_REASON"},
+            {"decision": "boss_pursuit_redirected", "reason": "PRIVATE_REASON"},
+            {"decision": "boss_pursuit_unverified", "reason": "PRIVATE_REASON"},
+            {"decision": "PRIVATE_DECISION", "reason": "PRIVATE_REASON"},
+        ]
+        out = self.status.project(payload)
+        for name in ("boss_cell_measured", "boss_pursuit_queued",
+                     "boss_pursuit_redirected", "boss_pursuit_unverified"):
+            self.assertTrue(out["recent"][name], name)
+        self.assertFalse(out["recent"]["boss_roster_reprobe"])
+        body = self.status.reply(out, {
+            "RUN_SHA": "c" * 40, "RUN_ID": "1", "RUN_ATTEMPT": "1",
+            "SOURCE_COMMENT_ID": "1",
+        })["body"]
+        for name in ("boss_cell_measured", "boss_pursuit_queued",
+                     "boss_pursuit_redirected", "boss_pursuit_unverified"):
+            self.assertIn(f"`{name}=yes`", body)
+        self.assertIn("`boss_roster_reprobe=no`", body)
+        self.assertNotIn("PRIVATE", body)
+
     def test_compact_field_projects_boss_progress_without_names(self):
         payload = self.payload()
         tactical = payload["diagnostics"]["hanjuku_tactical"]

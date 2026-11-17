@@ -41,6 +41,14 @@ ROTATION_STATUSES = frozenset({
     "recovery_required", "failed",
 })
 RECENT_DECISIONS = (
+    # Chapter 9's moving boss: a fresh cell and a launched boss sortie are
+    # prerequisites for pursuit.  Without these tokens the fixed-signal line
+    # could not tell "no cell measured" from "pursuit ran but never reached
+    # the boss" (docich#4447).  The collector already projects these decisions.
+    "boss_cell_measured",
+    "boss_pursuit_queued",
+    "boss_pursuit_redirected",
+    "boss_pursuit_unverified",
     "boss_roster_reprobe",
     "boss_relaunch_stale_retry",
     "order_start",
@@ -113,6 +121,49 @@ def _region(policy, key):
     world = policy.get("world") if isinstance(policy.get("world"), dict) else {}
     value = world.get(key)
     return value if isinstance(value, dict) else {}
+
+
+def _cell_token(cell):
+    if not (isinstance(cell, (list, tuple)) and len(cell) == 2):
+        return "unknown"
+    return f"{cell[0]},{cell[1]}"
+
+
+def _boss_cell_line(cell):
+    """Fixed, bounded rendering of the Y-view boss-cell reading."""
+    if not isinstance(cell, dict) or cell.get("cell") is None:
+        return "Moving boss cell: `measured=no`"
+    return "Moving boss cell: " + ", ".join((
+        "`measured=yes`",
+        f"`chapter={_field_token(cell.get('chapter'))}`",
+        f"`cell={_cell_token(cell.get('cell'))}`",
+        f"`readings={_field_token(cell.get('readings'))}`",
+        f"`age_ticks={_field_token(cell.get('age_ticks'))}`",
+    ))
+
+
+def _compact_boss_cell(policy):
+    """The collector's Y-view boss reading as fixed bounded numbers.
+
+    Chapter 9 has no static boss cell: a sortie and a pursuit both require a
+    fresh measured cell.  The collector already emits it, so this reader only
+    has to keep chapter/cell/readings/age out of an unbounded or free-form
+    reply (docich#4447).
+    """
+    reading = _region(policy, "boss_cell")
+    if not reading:
+        return None
+    raw = reading.get("cell")
+    cell = None
+    if (isinstance(raw, (list, tuple)) and len(raw) == 2
+            and all(type(v) is int and 0 <= v <= 2047 for v in raw)):
+        cell = [raw[0], raw[1]]
+    return {
+        "chapter": _bounded_int(reading.get("chapter"), 1, 12),
+        "cell": cell,
+        "readings": _bounded_int(reading.get("readings"), 1, 64),
+        "age_ticks": _bounded_int(reading.get("age_ticks"), 0, 10_000_000),
+    }
 
 
 def _compact_field(policy, chapter, active_step):
@@ -273,6 +324,7 @@ def project(payload):
         "detail_reason": detail_reason,
         "active": active,
         "orders": projected_orders,
+        "boss_cell": _compact_boss_cell(policy),
         "field": field,
         "recent": recent_seen,
         "rotation": {
@@ -331,6 +383,7 @@ def reply(projected, env):
         )),
         "Boss orders: " + ", ".join(f"`{step}={value}`" for step, value in orders.items()),
         f"Active boss order: `{projected['active'] or 'none'}`",
+        _boss_cell_line(projected.get("boss_cell")),
         "Field: " + ", ".join(
             f"`{name}={_field_token(field.get(name))}`" for name in FIELD_TOKENS
         ),
