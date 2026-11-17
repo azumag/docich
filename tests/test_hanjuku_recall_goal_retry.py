@@ -61,3 +61,18 @@ def test_shared_hub_is_available_after_back_castle_failure():
     got = hanjuku_map._goal_after_failures(
         mem, {c: 'own' for c in mem['captured']}, recall, 'クラボニア')
     assert got == 'タタール'
+
+
+def test_the_alternative_does_not_depend_on_this_frames_flags():
+    """g1190 2026-11-17 22:0x: アルマムーン failed 5x while other castles were owned.
+
+    The Y-map flags named only アルマムーン, so the replacement list was empty and
+    the same silent failure repeated.
+    """
+    mem = memory(['マランマ', 'ゴンダル', 'チリベット'])
+    mem['captured'] = [*mem['captured'], 'アルマムーン']
+    recall = {'target': [134, 120], 'origin': [500, 700]}
+    mem['flow']['recall_goal_failures'] = {'134,120': {'アルマムーン': 5}}
+    got = hanjuku_map._goal_after_failures(mem, {'アルマムーン': 'own'}, recall, 'アルマムーン')
+    assert got != 'アルマムーン'
+    assert got in ('マランマ', 'ゴンダル', 'チリベット')
