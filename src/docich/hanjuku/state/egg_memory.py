@@ -90,6 +90,26 @@ def clear(mem):
     mem.pop(KEY, None)
 
 
+def current_uses(mem, general, rec=None):
+    """The lower of the dated record and the live ``egg_uses`` ledger.
+
+    Every observation writer mirrors its count into ``egg_uses``, but battle and
+    direct ledger updates can spend an egg without refreshing the record. The
+    lower value is the spent one, so reconciling this way keeps ``holds_egg``,
+    the wave and the recovery budget honest until the next observation. A
+    recovery raises both mirrors together, so it never creates a false low.
+    """
+    values = []
+    live = (mem.get('egg_uses') or {}).get(general)
+    if type(live) is int and 0 <= live <= 5:
+        values.append(live)
+    if rec is None:
+        rec = record(mem, general)
+    if rec is not None and type(rec.get('uses')) is int:
+        values.append(rec['uses'])
+    return min(values) if values else None
+
+
 def holds_egg(mem, general):
     """Whether a usable egg is held, from the newest observation.
 
@@ -98,7 +118,7 @@ def holds_egg(mem, general):
     """
     rec = record(mem, general)
     if rec is not None:
-        return (bool(rec.get('present')) and rec.get('uses') != 0
+        return (bool(rec.get('present')) and current_uses(mem, general, rec) != 0
                 and not rec.get('broken') and rec.get('egg') != ROTTEN)
     kind = (mem.get('egg_types') or {}).get(general)
     held = kind != ROTTEN if kind is not None else bool((GENERAL_EGGS.get(general) or (False,))[0])
@@ -119,7 +139,8 @@ def eggless(mem, general, status_row=None):
         return False
     rec = latest_at(mem, general, status_row.get('tick'))
     if rec is not None and (rec.get('present') and not rec.get('broken')
-                            and rec.get('egg') != ROTTEN and rec.get('uses') != 0):
+                            and rec.get('egg') != ROTTEN
+                            and current_uses(mem, general, rec) != 0):
         return False
     return True
 
@@ -133,8 +154,8 @@ def egg_rank(mem, general, status_row=None):
     row = status_row if isinstance(status_row, dict) else None
     rec = latest_at(mem, general, row.get('tick') if row else None)
     if rec is not None:
-        if (not rec.get('present') or rec.get('broken') or rec.get('uses') == 0
-                or rec.get('egg') == ROTTEN):
+        if (not rec.get('present') or rec.get('broken')
+                or current_uses(mem, general, rec) == 0 or rec.get('egg') == ROTTEN):
             return 2
         return 0 if isinstance(rec.get('egg'), str) and rec['egg'] else 1
     if row:
@@ -169,9 +190,12 @@ def depleted_egg_names(mem):
         if rec is not None:
             if not rec.get('present') or rec.get('broken'):
                 continue
-            egg, uses = rec.get('egg'), rec.get('uses')
+            # A recovery-screen record may have no egg name of its own; the
+            # flat type still decides whether this is a one-shot recovery.
+            egg = rec.get('egg') or types.get(name)
+            uses = current_uses(mem, name, rec)
         else:
-            egg, uses = types.get(name), counts.get(name)
+            egg, uses = types.get(name), current_uses(mem, name)
         full = 1 if egg in _ONE_SHOT else _FULL_USES
         if type(uses) is int and 0 <= uses < full:
             out.add(name)
