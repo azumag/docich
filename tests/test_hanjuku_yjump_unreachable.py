@@ -37,10 +37,42 @@ def test_a_different_residual_does_not_accumulate():
     assert nav.y_jump_unreachable(mem, 'オシロガ') is False
 
 
-def test_a_large_residual_is_left_to_the_moves():
+def test_a_repeated_large_residual_marks_the_goal():
+    # #4416 (g1190 第10話): the detected point stayed put at a large residual
+    # through all eight moves — the gate dropping readings where both axes
+    # exceed PX discarded them, and the order retried the identical failure
+    # until its budget ran out. A repeated large residual is the same stuck
+    # signature, so it counts.
+    mem = memory()
+    fail(mem, 'オシロガ', (-40.5, 45.0), 1000)
+    assert nav.y_jump_unreachable(mem, 'オシロガ') is False
+    fail(mem, 'オシロガ', (-40.5, 45.0), 1060)
+    assert nav.y_jump_unreachable(mem, 'オシロガ') is True
+
+
+def test_jittered_repeats_within_the_px_window_count():
+    # The incident readings drifted 3 px on one axis ([-40.5,45] then
+    # [-43.5,45]): identical read points quantise and jitter, so "same spot"
+    # is a window, not an exact match.
+    mem = memory()
+    fail(mem, 'オシロガ', (-40.5, 45.0), 1000)
+    fail(mem, 'オシロガ', (-43.5, 45.0), 1060)
+    assert nav.y_jump_unreachable(mem, 'オシロガ') is True
+
+
+def test_landings_beyond_the_px_window_reset():
+    mem = memory()
+    fail(mem, 'オシロガ', (-40.5, 45.0), 1000)
+    fail(mem, 'オシロガ', (-40.5, 38.0), 1060)
+    assert nav.y_jump_unreachable(mem, 'オシロガ') is False
+
+
+def test_a_single_large_residual_does_not_mark():
+    # One large residual can still be the moves simply running out — it only
+    # proves the goal is unreachable when the same landing repeats.
     mem = memory()
     fail(mem, 'オシロガ', (40.0, 30.0), 1000)
-    fail(mem, 'オシロガ', (40.0, 30.0), 1060)
+    fail(mem, 'オシロガ', (12.0, 30.0), 1060)
     assert nav.y_jump_unreachable(mem, 'オシロガ') is False
 
 
