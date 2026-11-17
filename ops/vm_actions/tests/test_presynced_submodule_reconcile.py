@@ -10,6 +10,7 @@ from pathlib import Path
 
 from ops.vm_actions.reconcile_presynced_submodule import (
     PROJECTION_UNKNOWN_CLASS_PER_PATH,
+    REASON_AB_GATE_REFUSED,
     REASON_PROJECTION_UNKNOWN_CLASS_BASE,
     REASON_PROJECTION_UNKNOWN_MASK_BASE,
     REASON_PROJECTION_UNKNOWN_STATE,
@@ -24,6 +25,7 @@ from ops.vm_actions.reconcile_presynced_submodule import (
     reconcile,
 )
 from ops.vm_actions import reconcile_presynced_submodule as presync_helper
+from ops.vm_actions.tests import _ab_gate_support
 
 
 class PresyncedSubmoduleReconcileTests(unittest.TestCase):
@@ -73,6 +75,25 @@ class PresyncedSubmoduleReconcileTests(unittest.TestCase):
         self._git(sub, "config", "user.name", "vmops tests")
         self._git(sub, "checkout", "--detach", "--quiet", self.new_sub)
         self.live.mkdir()
+        _ab_gate_support.install_clear_gate(self.live)
+
+    def test_active_ab_gate_refuses_before_any_live_write(self):
+        sentinel = self.live / "worker.sh"
+        sentinel.write_bytes(b"untouched sentinel\n")
+        _ab_gate_support.set_gate_rc(self.live, 1)
+        with self.assertRaises(ReconcileError) as caught:
+            _normalize_projection(self.sub_remote, self.old_sub, self.new_sub, self.live)
+        self.assertEqual(caught.exception.code, REASON_AB_GATE_REFUSED)
+        self.assertEqual(sentinel.read_bytes(), b"untouched sentinel\n")
+
+    def test_unknown_ab_gate_refuses_before_any_live_write(self):
+        (self.live / "strategy" / "ab_gate_on_merge.sh").unlink()
+        sentinel = self.live / "worker.sh"
+        sentinel.write_bytes(b"untouched sentinel\n")
+        with self.assertRaises(ReconcileError) as caught:
+            _normalize_projection(self.sub_remote, self.old_sub, self.new_sub, self.live)
+        self.assertEqual(caught.exception.code, REASON_AB_GATE_REFUSED)
+        self.assertEqual(sentinel.read_bytes(), b"untouched sentinel\n")
 
     def tearDown(self):
         self.tmp.cleanup()

@@ -7,6 +7,8 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+from ops.vm_actions.tests import _ab_gate_support
+
 ROOT = Path(__file__).resolve().parents[3]
 GATEWAY = ROOT / 'ops/vm_actions/gateway.py'
 
@@ -124,6 +126,7 @@ class DeployStateTransactionTests(unittest.TestCase):
                          intermediate=False, delete_file=False):
         live = self.base / 'soren-live'
         live.mkdir()
+        _ab_gate_support.install_clear_gate(live)
         (live / 'game.txt').write_text(live_text)
         (live / 'runtime.txt').write_text('runtime-live-mutated\n')
         (live / 'second.txt').write_text('second-v1\n')
@@ -178,6 +181,28 @@ class DeployStateTransactionTests(unittest.TestCase):
         bundle.parent.mkdir(parents=True, exist_ok=True)
         subprocess.run(['git', '-C', candidate, 'bundle', 'create', bundle, 'HEAD'], check=True)
         return live, subremote, old_parent, new_parent
+
+    def test_ab_gate_active_blocks_deploy_and_keeps_live_bytes(self):
+        live, _subremote, _old_parent, new_parent = self._projection_case()
+        _ab_gate_support.set_gate_rc(live, 1)
+        before = (live / 'game.txt').read_bytes()
+        with mock.patch.object(gw, 'OWNED_SUBMODULES', {'games/soviet_now': str(_subremote)}), \
+             self.assertRaisesRegex(ValueError, 'ab gate refused: active/active_ab'):
+            gw.deploy_git(self.cfg, 'docich', new_parent)
+        self.assertEqual((live / 'game.txt').read_bytes(), before)
+        # No deployment intent is left behind, so a normal retry is possible.
+        self.assertNotIn('deployment_intent', gw.read_json(gw.current_file(self.cfg, 'docich')))
+        markers = list((self.state / 'ab-gate').glob('*.json'))
+        self.assertTrue(markers)
+        self.assertEqual(json.loads(markers[-1].read_text())['outcome'], 'active')
+
+    def test_ab_gate_unknown_blocks_deploy(self):
+        live, _subremote, _old_parent, new_parent = self._projection_case()
+        (live / 'strategy' / 'ab_gate_on_merge.sh').unlink()
+        with mock.patch.object(gw, 'OWNED_SUBMODULES', {'games/soviet_now': str(_subremote)}), \
+             self.assertRaisesRegex(ValueError, 'ab gate refused: unknown/gate_missing'):
+            gw.deploy_git(self.cfg, 'docich', new_parent)
+        self.assertNotIn('deployment_intent', gw.read_json(gw.current_file(self.cfg, 'docich')))
 
     def test_projection_updates_only_changed_submodule_paths(self):
         live, subremote, _old_parent, new_parent = self._projection_case()

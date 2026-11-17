@@ -35,10 +35,18 @@ REASON_PROJECTION_UNSUPPORTED = 62
 REASON_PROJECTION_UNKNOWN_STATE = 63
 REASON_PROJECTION_MUTATION_FAILED = 64
 REASON_PROJECTION_POSTVERIFY_FAILED = 65
+REASON_AB_GATE_REFUSED = 66  # #4412: mirrors gateway.py AB_GATE_HELPER_RC
 
 # 71..85: mask of unknown paths in 2-4 path diffs. Else generic 63.
 REASON_PROJECTION_UNKNOWN_MASK_BASE = 70
 PROJECTION_UNKNOWN_MASK_MAX_PATHS = 4
+
+# #4412 A/B gate: this helper is loaded from the reviewed commit and run via
+# stdin, so it cannot import ops.vm_actions.ab_gate_preflight. Keep this block
+# in sync with that module. Minimal env: no AB_* override can force "clear".
+AB_GATE_SCRIPT_REL = "strategy/ab_gate_on_merge.sh"
+AB_GATE_ENV = {"PATH": "/usr/local/bin:/usr/bin:/bin", "LANG": "C.UTF-8"}
+AB_GATE_TIMEOUT = 20
 
 # 90+bit*3+class for one unknown: 0 absent, 1 unreviewed length, 2 same length.
 # Pruned .github/ files heal to old; other unknowns stay fail-closed.
@@ -342,7 +350,43 @@ def _set_projection(path, target):
         _atomic_projection_write(path, target["data"], target["mode"])
 
 
+def _assert_ab_gate_clear(destination):
+    """#4412: fail-closed before the first live projection byte write.
+
+    Mirrors ops/vm_actions/ab_gate_preflight.check(). A refusal is a numeric
+    ReconcileError so the VM-side log records it without leaking paths or env
+    values; gateway.py owns the durable refusal marker for this operation.
+    """
+    root = Path(destination)
+    script = root / AB_GATE_SCRIPT_REL
+    reason = None
+    if not root.is_dir():
+        reason = "root_missing"
+    elif not script.is_file() or not os.access(script, os.X_OK):
+        reason = "gate_missing"
+    else:
+        try:
+            proc = subprocess.run(
+                [str(script), "check"],
+                cwd=str(root), env=dict(AB_GATE_ENV),
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                timeout=AB_GATE_TIMEOUT,
+            )
+            rc = proc.returncode
+        except (OSError, subprocess.TimeoutExpired):
+            reason = "execution_error"
+        else:
+            if rc == 0:
+                return
+            reason = "active_ab" if rc == 1 else (
+                "unknown_state" if rc == 2 else f"unexpected_rc_{rc}")
+    print(f"ab-gate: refused reason={reason} (no live projection write)", file=sys.stderr)
+    raise ReconcileError(REASON_AB_GATE_REFUSED, f"ab gate refused: {reason}")
+
+
 def _normalize_projection(repo, old_sub, new_sub, destination):
+    _assert_ab_gate_clear(destination)
     plans = []
     verifies = []
     states = []
