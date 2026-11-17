@@ -90,6 +90,19 @@ def clear(mem):
     mem.pop(KEY, None)
 
 
+def egg_type(mem, general):
+    """The general's egg type from the newest observation, else the legacy type.
+
+    Readers that only care what kind of egg is equipped (for example the slot
+    reel vs Elabel picker decision) use this instead of poking ``egg_types``
+    directly, so a stale flat type cannot outlive a newer observation.
+    """
+    rec = record(mem, general)
+    if rec is not None:
+        return rec.get('egg')
+    return (mem.get('egg_types') or {}).get(general)
+
+
 def current_uses(mem, general, rec=None):
     """The lower of the dated record and the live ``egg_uses`` ledger.
 

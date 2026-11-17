@@ -87,6 +87,15 @@ def test_an_old_egg_type_without_an_observation_loses_to_the_measured_row():
     assert replan._boss_eggless(mem, NAME) is True
 
 
+def test_egg_type_read_prefers_the_record_but_keeps_the_legacy_fallback():
+    mem = memory()
+    mem['egg_types'][NAME] = 'スロットエッグ'
+    assert egg_memory.egg_type(mem, NAME) == 'スロットエッグ'  # no record yet
+    egg_memory.observe(mem, NAME, egg='エラベルエッグ', uses=4,
+                       source=egg_memory.STATUS)
+    assert egg_memory.egg_type(mem, NAME) == 'エラベルエッグ'
+
+
 def test_a_direct_egg_uses_spend_outlives_a_stale_observation_count():
     # The record is written by observation writers, but battle/ledger code can
     # spend an egg without refreshing it. _depleted_eggs must still budget the
