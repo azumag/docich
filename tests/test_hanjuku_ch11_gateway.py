@@ -531,7 +531,6 @@ def test_the_hero_hub_move_keeps_its_permission_through_the_plan_build():
     assert "'hero_hub_move': True" in src
 
 
-<<<<<<< HEAD
 def test_the_hero_may_leave_the_home_castle_alone():
     """Owner 2026-11-18 04:1x: 構わず主人公だけ移す (the home castle empties)."""
     from docich import hanjuku_chart_adjust as chart_adjust
