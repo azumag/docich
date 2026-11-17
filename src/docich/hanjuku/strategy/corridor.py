@@ -476,6 +476,16 @@ def orders(mem) -> list[dict]:
     # 2026-11-15 saw him stay there while the wave kept re-issuing moves
     # (g1190 ch9: the front stayed サヌト and the post タオ never received him).
     out = [order for _, order in (*attacks, *hero, *moves)]
+    # A thin front that attacks first is emptied, then sits waiting for a
+    # serial move sortie to refill it before the next attacker can leave —
+    # the attack→empty→refill→attack stall that makes the wave trickle out
+    # (owner 2026-11-18: sortie plans come out slowly). When the front is
+    # thin, run the move that refills it first so it stays non-empty and the
+    # next attacker is already stocked. Bounded: only front-bound moves jump
+    # the queue, and only while the front measures below FRONT_REFILL_MIN.
+    if front and _front_thin(mem, front):
+        out = ([o for o in out if o.get('purpose') == 'move' and o.get('target') == front]
+               + [o for o in out if not (o.get('purpose') == 'move' and o.get('target') == front)])
     # A capture moves the front one castle; the hero's castle has to follow on
     # that same capture. When no roster or departure names him, read one
     # castle list before the rear marches, so the next observation can move
