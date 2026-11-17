@@ -571,6 +571,29 @@ def _is_black_pixel(pixel) -> bool:
     return r <= 70 and g <= 70 and b <= 70
 
 
+def _blue_g_box_cursor(frame):
+    """The blue "G" box cursor: a solid ~11x11 blue square holding a white G.
+
+    Chapter 9's real cursor is this icon, ringed by thin gold corner brackets
+    too sparse for the gold test. Detect the dense blue body instead — the
+    blinking blue lake icon (~9 px) and pennant strips are far smaller, so a
+    size+density floor keeps them out (g1190: only the ~98-px G box qualifies).
+    """
+    best_box = None
+    for x0 in range(40, 220 - 12):
+        for y0 in range(40, 200 - 12):
+            inside = [(x, y) for x in range(x0, x0 + 12) for y in range(y0, y0 + 12)
+                      if _is_blue_pixel(frame.pixel(x, y))]
+            if len(inside) >= 40 and (best_box is None or len(inside) > len(best_box)):
+                best_box = inside
+    if not best_box:
+        return None
+    xs = [x for x, _ in best_box]; ys = [y for _, y in best_box]
+    if max(xs) - min(xs) >= 8 and max(ys) - min(ys) >= 8:
+        return ((min(xs) + max(xs)) / 2, (min(ys) + max(ys)) / 2)
+    return None
+
+
 def world_cursor(frame, chapter=None):
     """Centre of the Y view's cursor.
 
@@ -624,25 +647,14 @@ def world_cursor(frame, chapter=None):
     scored.sort(reverse=True)
     if scored and scored[0][0] >= 0.7:
         return (scored[0][2], scored[0][3])
+    # The blue "G" box cursor is not chapter 9's alone: the same icon steers
+    # the chapter-11 target jump (g1190 2026-11-18 03:13: the Y view showed it
+    # at (85,95) while world_cursor returned None, so every クラボニア jump
+    # aborted as unreadable).
+    blue_g = _blue_g_box_cursor(frame)
+    if blue_g is not None:
+        return blue_g
     if chapter == 9:
-        # Chapter 9's real cursor is the blue "G" box: a solid ~11x11 blue
-        # square holding a white G, ringed by thin gold corner brackets too
-        # sparse for the gold test above. Detect the dense blue body of the
-        # same icon instead — it is the cursor the jump steers. The blinking
-        # blue lake icon at (169, 116) is a tiny sparse dot (~9 px) and the
-        # pennant strips are smaller still, so a size+density floor keeps
-        # both out (g1190: jump frames show only the 98-px G box qualifying).
-        best_box = None
-        for x0 in range(40, 220 - 12):
-            for y0 in range(40, 200 - 12):
-                inside = [(x, y) for x in range(x0, x0 + 12) for y in range(y0, y0 + 12)
-                          if _is_blue_pixel(frame.pixel(x, y))]
-                if len(inside) >= 40 and (best_box is None or len(inside) > len(best_box)):
-                    best_box = inside
-        if best_box:
-            xs = [x for x, _ in best_box]; ys = [y for _, y in best_box]
-            if max(xs) - min(xs) >= 8 and max(ys) - min(ys) >= 8:
-                return ((min(xs) + max(xs)) / 2, (min(ys) + max(ys)) / 2)
         # Otherwise unreadable is safer than a false cursor.
         return None
     # 2. Blue-dotted black dashed ring. The white ring vote cannot see this
