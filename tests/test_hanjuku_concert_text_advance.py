@@ -102,3 +102,32 @@ def test_malformed_watch_state_restarts_safely():
                   {'key': 'text:x', 'count': 'x'}, {'key': 'text:x', 'count': True}, []):
         mem = {'event_text_watch': watch}
         assert event_text_advance(mem, 'event', 'text', 'text:x', []) is False
+
+
+def test_typewriter_reveal_counts_despite_planned_action():
+    # g1270 48-7 follow-up: the alternating concert/event holds each planned
+    # a pad (legacy default), so `not actions` never held and the count never
+    # even started. A line still typing counts while a planned action exists.
+    mem = {}
+    pad_action = [{'type': 'pad', 'buttons': ['a'], 'hold_ms': 100}]
+    assert event_text_advance(
+        mem, 'event', 'text', 'text:「お', []) is False
+    assert event_text_advance(
+        mem, 'concert', 'text', 'text:「おめにかかれて', pad_action) is False
+    assert event_text_advance(
+        mem, 'event', 'text', 'text:「おめにかかれてこうえいです', pad_action) is True
+
+
+def test_planned_action_on_stable_or_diverging_text_still_resets():
+    # Only a typewriter extension overrides `not actions`: a stable or a
+    # replaced line with a planned action resets as before.
+    mem = {}
+    pad_action = [{'type': 'pad', 'buttons': ['b'], 'hold_ms': 100}]
+    for _ in range(EVENT_TEXT_ADVANCE_MAX - 1):
+        event_text_advance(mem, 'event', 'text', 'text:おめにかかれて', [])
+    assert event_text_advance(
+        mem, 'event', 'text', 'text:おめにかかれて', pad_action) is False
+    assert 'event_text_watch' not in mem
+    assert event_text_advance(
+        mem, 'event', 'text', 'text:さようなら', pad_action) is False
+    assert 'event_text_watch' not in mem
