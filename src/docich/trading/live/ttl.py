@@ -13,11 +13,13 @@ trade alike -- whenever the executor HAS a sender.  With ``sender is None`` it d
 (the read-only executor refuses every cancel anyway, so no ledger read is even needed).
 
 The per-cycle cap (``MAX_CANCELS_PER_CYCLE``) keeps one bad cycle from spending the whole
-budget on cancels; expired orders beyond it are reported as ``deferred`` and picked up by the
-next cycle.  A cancel that returns without an error is a success; ``ValueError`` means the
-order became uncancelable between the read and the call (a fill won the race), which is
-silently ignored; any other exception is reported as ``cancel_failed:<Class>`` and retried on
-the next cycle.  ``LeaseLost`` always propagates.
+budget on cancels; expired orders beyond it are reported as ``deferred``.  To keep a cancel
+that never lands from holding the cap forever, the selection is ordered by the last cycle
+each intent was tried (``("cancel_try", intent_id)`` in ``state.dedupe``): never-tried orders
+first, then the least recently tried.  A cancel that returns without an error is a success;
+``ValueError`` means the order became uncancelable between the read and the call (a fill won
+the race), which is silently ignored; any other exception is reported as
+``cancel_failed:<Class>`` and retried on the next cycle.  ``LeaseLost`` always propagates.
 
 Every success and failure writes one ``live_decision`` row through
 ``record_live_event`` with string-only payloads, deduped by ``(action, intent_id, reason)``
@@ -79,17 +81,42 @@ def _record(deps: "CycleDeps", state: "CycleState", intent: "Intent", reason: st
     state.dedupe[key] = state.cycle_number
 
 
+def _forget_try_if_closed(deps: "CycleDeps", state: "CycleState", intent: "Intent") -> None:
+    """Drop a try marker once the order can no longer be listed as expired.
+
+    The marker only orders the next selection, and a closed order never enters that list.
+    A cancel that returned without error but left the intent open (OrderNotFound, an
+    ambiguous outcome) keeps its marker, so it stays behind the never-tried orders.
+    """
+    try:
+        current = deps.ledger.get_intent(intent.intent_id)
+    except LeaseLost:
+        raise
+    except Exception:
+        return                                   # keep the marker on doubt: it is harmless
+    if current is None or current.state not in ("ACKED", "PARTIALLY_FILLED"):
+        state.dedupe.pop(("cancel_try", intent.intent_id), None)
+
+
 def cancel_expired(deps: "CycleDeps", state: "CycleState", now: float) -> TtlReport:
     """Cancel up to ``MAX_CANCELS_PER_CYCLE`` open orders older than ``ORDER_TTL_S``."""
     if deps.executor.sender is None:
         return TtlReport(canceled=(), failed=(), deferred=0)
     expired = [intent for intent in deps.ledger.list_intents(states=("ACKED", "PARTIALLY_FILLED"))
                if intent.exchange_order_id and now - intent.created_at > ORDER_TTL_S]
-    taken = expired[:MAX_CANCELS_PER_CYCLE]
+    # A cancel that stays ACKED must not keep its created_at slot forever: the orders that
+    # were never tried go first, then the ones tried longest ago (original order among
+    # equals).  With no attempt remembered, this is the plain oldest-first list.
+    ordered = sorted(
+        enumerate(expired),
+        key=lambda pair: (state.dedupe.get(("cancel_try", pair[1].intent_id), 0), pair[0]),
+    )
+    taken = [intent for _, intent in ordered[:MAX_CANCELS_PER_CYCLE]]
     deferred = len(expired) - len(taken)
     canceled: list[str] = []
     failed: list[tuple[str, str]] = []
     for intent in taken:
+        state.dedupe[("cancel_try", intent.intent_id)] = state.cycle_number
         try:
             deps.executor.cancel(intent.intent_id)
         except LeaseLost:
@@ -104,4 +131,5 @@ def cancel_expired(deps: "CycleDeps", state: "CycleState", now: float) -> TtlRep
         else:
             canceled.append(intent.intent_id)
             _record(deps, state, intent, "ttl_expired", now)
+            _forget_try_if_closed(deps, state, intent)
     return TtlReport(canceled=tuple(canceled), failed=tuple(failed), deferred=deferred)

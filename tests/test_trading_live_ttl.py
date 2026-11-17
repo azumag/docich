@@ -937,3 +937,168 @@ def test_an_order_unknown_to_the_exchange_trips_data_anomaly(ws, harnesses, monk
     assert (rows[0]["action"], rows[0]["reason"], rows[0]["cycle"]) == (
         "cancel", "ttl_expired", "1")
     assert D(rows[0]["age_s"]) == D("46")
+
+
+# ---- p7: stuck orders must not starve the later ones ------------------------------------
+def test_stuck_orders_do_not_starve_the_later_ones(ws, harnesses):
+    """A cancel that stays ACKED must not defer later expired orders forever.
+
+    Seven ACKED orders are created one second apart.  In the first cycle the cancels of
+    b0..b4 never land (the real ledger stays ACKED), so the cap is spent on them and the two
+    never-tried orders are deferred.  The second cycle must try b5 and b6 first and only then
+    the least-recently-tried stuck orders; the third cycle must start with b3 and b4, the
+    orders that have waited longest by then, and this time their cancels land.  b0..b2 stay
+    stuck throughout.  Hand-derived call orders:
+
+        cycle 1: b0 b1 b2 b3 b4             (all never tried: original created_at order)
+        cycle 2: b5 b6 b0 b1 b2             (never tried, then last tried in cycle 1)
+        cycle 3: b3 b4 b0 b1 b2             (last tried in cycle 1, then cycle 2)
+    """
+    symbols = ("OAS/JPY", "XYM/JPY", "ZEC/JPY", "BTC/JPY", "ETH/JPY", "MONA/JPY",
+               "DOT/JPY")
+    h = harnesses(symbols=symbols)
+    intents = []
+    for index, symbol in enumerate(symbols):
+        intents.append(resting_buy(h, symbol=symbol, key=f"b{index}"))
+        h.clock.advance(1)                    # distinct created_at: the list is oldest first
+    h.clock.advance(53)
+    now = h.clock.seconds()
+
+    open_states = ("ACKED", "PARTIALLY_FILLED")
+    assert [item.intent_id for item in h.ledger.list_intents(states=open_states)] == [
+        item.intent_id for item in intents]
+
+    deps = deps_for(h, symbols=symbols)
+    state = CycleState(cycle_number=1)
+    stuck = {item.intent_id for item in intents[:5]}
+    calls: list[list[str]] = []
+    seen_markers: list[tuple[int, object]] = []
+    real_cancel = h.ex.cancel
+
+    def cancel_spy(intent_id):
+        calls[-1].append(intent_id)
+        # Read the marker as the call arrives: it must already show the current cycle.
+        seen_markers.append((state.cycle_number,
+                             state.dedupe.get(("cancel_try", intent_id))))
+        if intent_id in stuck:
+            raise RuntimeError("this cancel never lands")
+        return real_cancel(intent_id)
+
+    h.ex.cancel = cancel_spy
+
+    # Cycle 1: the cap is spent on the five oldest, which all fail and stay ACKED.
+    calls.append([])
+    first = cancel_expired(deps, state, now)
+    assert calls[0] == [item.intent_id for item in intents[:5]]
+    assert first == TtlReport(
+        canceled=(),
+        failed=tuple((item.intent_id, "cancel_failed:RuntimeError")
+                     for item in intents[:5]),
+        deferred=2)
+    assert [h.ledger.get_intent(item.intent_id).state for item in intents] == [
+        "ACKED"] * 7
+    stuck.difference_update(item.intent_id for item in intents[3:5])  # b3/b4 land next time
+
+    # Cycle 2: the two never-tried orders come first, then the three least recently tried.
+    state.cycle_number += 1
+    calls.append([])
+    second = cancel_expired(deps, state, now)
+    assert calls[1] == [intents[5].intent_id, intents[6].intent_id,
+                        intents[0].intent_id, intents[1].intent_id,
+                        intents[2].intent_id]
+    assert second == TtlReport(
+        canceled=(intents[5].intent_id, intents[6].intent_id),
+        failed=tuple((intents[index].intent_id, "cancel_failed:RuntimeError")
+                     for index in (0, 1, 2)),
+        deferred=2)
+    assert [h.ledger.get_intent(item.intent_id).state for item in intents] == [
+        "ACKED", "ACKED", "ACKED", "ACKED", "ACKED", "CANCELED", "CANCELED"]
+
+    # Cycle 3: b3 and b4 have waited since cycle 1, so they precede the cycle-2 failures.
+    state.cycle_number += 1
+    calls.append([])
+    third = cancel_expired(deps, state, now)
+    assert calls[2] == [intents[3].intent_id, intents[4].intent_id,
+                        intents[0].intent_id, intents[1].intent_id,
+                        intents[2].intent_id]
+    assert third == TtlReport(
+        canceled=(intents[3].intent_id, intents[4].intent_id),
+        failed=tuple((intents[index].intent_id, "cancel_failed:RuntimeError")
+                     for index in (0, 1, 2)),
+        deferred=0)
+    assert [h.ledger.get_intent(item.intent_id).state for item in intents] == [
+        "ACKED", "ACKED", "ACKED", "CANCELED", "CANCELED", "CANCELED", "CANCELED"]
+
+    # The try marker exists before every call and names the cycle of that call.
+    assert seen_markers == [(1, 1)] * 5 + [(2, 2)] * 5 + [(3, 3)] * 5
+    # The still-stuck orders remember the cycle of their latest attempt.
+    assert [state.dedupe.get(("cancel_try", item.intent_id)) for item in intents[:3]] == [
+        3, 3, 3]
+
+
+# ---- p7b: a cancel that returns but leaves the order open keeps its try marker -----------
+def test_a_cancel_that_returns_but_leaves_the_order_open_keeps_its_marker(ws, harnesses,
+                                                                          monkeypatch):
+    """A silent cancel (OrderNotFound swallowed, ambiguous outcome) must not spend the slot.
+
+    Seven expired ACKED orders b0..b6.  The cancels of b0..b4 return normally but leave their
+    intents ACKED (the executor swallowed OrderNotFound, or the outcome was ambiguous).  The
+    calls are reported as canceled, but their try markers must stay, so the next cycle tries
+    the never-tried b5/b6 first.  A real cancel closes the order (b5, CANCELED) and its marker
+    is dropped.  Hand-derived call orders:
+
+        cycle 1: b0 b1 b2 b3 b4             (all never tried: original created_at order)
+        cycle 2: b5 b6 b0 b1 b2             (never tried, then the cycle-1 silent cancels)
+    """
+    symbols = ("OAS/JPY", "XYM/JPY", "ZEC/JPY", "BTC/JPY", "ETH/JPY", "MONA/JPY",
+               "DOT/JPY")
+    h = harnesses(symbols=symbols)
+    intents = []
+    for index, symbol in enumerate(symbols):
+        intents.append(resting_buy(h, symbol=symbol, key=f"b{index}"))
+        h.clock.advance(1)                    # distinct created_at: the list is oldest first
+    h.clock.advance(53)
+    now = h.clock.seconds()
+
+    deps = deps_for(h, symbols=symbols)
+    state = CycleState(cycle_number=1)
+    silent = {item.intent_id for item in intents[:5]}
+    calls: list[list[str]] = []
+    real_cancel = h.ex.cancel
+
+    def cancel_spy(intent_id):
+        calls[-1].append(intent_id)
+        if intent_id in silent:
+            return None                       # the call returns, but the order stays ACKED
+        return real_cancel(intent_id)
+
+    monkeypatch.setattr(h.ex, "cancel", cancel_spy)
+
+    # Cycle 1: five calls return normally; the cap is spent but none of them closes.
+    calls.append([])
+    first = cancel_expired(deps, state, now)
+    assert calls[0] == [item.intent_id for item in intents[:5]]
+    assert first == TtlReport(
+        canceled=tuple(item.intent_id for item in intents[:5]), failed=(), deferred=2)
+    assert [h.ledger.get_intent(item.intent_id).state for item in intents] == ["ACKED"] * 7
+    # The marker must survive the silent success: the order is still open and still expired.
+    assert [state.dedupe.get(("cancel_try", item.intent_id)) for item in intents[:5]] == [
+        1, 1, 1, 1, 1]
+
+    # Cycle 2: the never-tried b5/b6 go first; the silent five are retried only after them.
+    state.cycle_number += 1
+    calls.append([])
+    second = cancel_expired(deps, state, now)
+    assert calls[1] == [intents[5].intent_id, intents[6].intent_id,
+                        intents[0].intent_id, intents[1].intent_id,
+                        intents[2].intent_id]
+    assert second == TtlReport(
+        canceled=(intents[5].intent_id, intents[6].intent_id,
+                  intents[0].intent_id, intents[1].intent_id, intents[2].intent_id),
+        failed=(), deferred=2)
+    assert [h.ledger.get_intent(item.intent_id).state for item in intents] == [
+        "ACKED", "ACKED", "ACKED", "ACKED", "ACKED", "CANCELED", "CANCELED"]
+    # b5 closed, so its marker is gone; the silent five keep theirs (b3/b4 from cycle 1).
+    assert ("cancel_try", intents[5].intent_id) not in state.dedupe
+    assert [state.dedupe.get(("cancel_try", item.intent_id)) for item in intents[:5]] == [
+        2, 2, 2, 1, 1]
