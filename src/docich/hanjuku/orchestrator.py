@@ -587,6 +587,32 @@ def field_fallback_actions(kind):
         return [pad('b')]
     return [pad('a')]                       # a message over the field: acknowledge
 BATTLE_MENU_HOLD_ADVANCE = 5   # identical readable command frames before one A
+# The command box's idle sprite and scroll arrows keep animating, so one
+# unchanged screen cycles through several full-frame digests (g1190
+# 2026-11-18 04:55-07:25 measured four). Keep a ring instead of the last two
+# or the bound restarts on every frame and the menu is never escaped.
+BATTLE_MENU_HOLD_RECENT = 6
+# A cursor parked on a grey (disabled) row ignores A. Move it up at most this
+# many times per unchanged battle-menu episode before the opposite button.
+BATTLE_MENU_CURSOR_NUDGES = 2
+
+
+def battle_menu_cursor_off_rows(screen):
+    """The command cursor sits beside a row the parser could not read.
+
+    g1190 2026-11-18 04:55-07:25: a castle-defence egg-battle box showed
+    もうこうげき / たまごをつかう with the knight cursor down by the grey
+    きりふだ row, and every A was a no-op for 2.5 h while the idle sprite kept
+    the digest changing. On the live saved state one ``up`` put the cursor on
+    the readable もうこうげき row and the next A opened the summoned monster's
+    skill box, so the battle resumed. Only the measured knight cursor and the
+    readable rows are evidence; an unreadable cursor (None) is not.
+    """
+    cursor = screen.menu_cursor
+    rows = [line for line in (screen.menu_rows or []) if type(line.y) is int]
+    if type(cursor) is not int or not rows:
+        return False
+    return not any(abs(cursor - line.y) <= 4 for line in rows)
 
 
 def battle_menu_hold_advance(screen, mem, actions, digest):
@@ -597,7 +623,11 @@ def battle_menu_hold_advance(screen, mem, actions, digest):
     changed, `unchanged_seconds` reached 300 s and screen_stalled ended the
     corner — five times in one hour. Repeating the same pad on an unchanged
     battle menu is not progress: after BATTLE_MENU_HOLD_ADVANCE identical
-    frames the opposite confirm (A) is sent once, and the count restarts.
+    frames the opposite confirm is sent once, and the count restarts.
+
+    A repeated A on a cursor parked off the readable rows (g1190 above) is a
+    different no-op: A is ignored, so the measured escape is one ``up`` to a
+    readable row. That nudge is bounded and only taken for A.
 
     An empty plan keeps its meaning (an orphan parent menu deliberately holds;
     see test_hanjuku_orphan_battle_menu), so only a single repeated pad is
@@ -614,20 +644,35 @@ def battle_menu_hold_advance(screen, mem, actions, digest):
         mem.pop('battle_menu_hold', None)
         return None
     watch = mem.get('battle_menu_hold') or {}
-    # A blinking cursor alternates two frames, exactly like the unreadable-screen
-    # escape learned in v673: comparing one digest would reset the bound on every
-    # frame and the menu would never be escaped. The last two distinct digests
-    # are one unchanged screen.
-    recent = [d for d in (watch.get('recent') or []) if isinstance(d, str)][:2]
+    # A blinking cursor cycles two or more frames, exactly like the
+    # unreadable-screen escape learned in v673: comparing one digest would
+    # reset the bound on every frame and the menu would never be escaped. Any
+    # digest of the recent ring is the same unchanged screen.
+    recent = [d for d in (watch.get('recent') or [])
+              if isinstance(d, str)][:BATTLE_MENU_HOLD_RECENT]
     same = (digest in recent) and watch.get('buttons') == list(buttons)
     watch['n'] = (int(watch.get('n') or 0) + 1) if same else 1
-    watch['recent'] = ([digest] + [d for d in recent if d != digest])[:2]
+    watch['recent'] = ([digest] + [d for d in recent
+                                   if d != digest])[:BATTLE_MENU_HOLD_RECENT]
     watch['digest'] = digest
     watch['buttons'] = list(buttons)
     mem['battle_menu_hold'] = watch
     if watch['n'] < BATTLE_MENU_HOLD_ADVANCE:
         return None
     watch['n'] = 0
+    nudges = watch.get('nudges')
+    nudges = nudges if type(nudges) is int and 0 <= nudges <= BATTLE_MENU_CURSOR_NUDGES else 0
+    if (buttons == ('a',) and nudges < BATTLE_MENU_CURSOR_NUDGES
+            and battle_menu_cursor_off_rows(screen)):
+        watch['nudges'] = nudges + 1
+        decision_log._record(mem, 'battle_menu_cursor_nudge', screen=screen.kind,
+                             observed_metric={'digest': digest[:16],
+                                              'cursor': screen.menu_cursor,
+                                              'rows': [line.y for line in screen.menu_rows],
+                                              'nudge': nudges + 1,
+                                              'limit': BATTLE_MENU_CURSOR_NUDGES},
+                             reason='カーソルが読めない行にあるためAが効かない。カーソルを上の行へ1回だけ動かす')
+        return [pad('up')]
     other = 'a' if buttons == ('b',) else 'b'
     decision_log._record(mem, 'battle_menu_hold_advance', screen=screen.kind,
                          observed_metric={'digest': digest[:16],
