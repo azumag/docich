@@ -51,7 +51,7 @@ def test_real_two_hop_sequence_confirms_only_on_the_observed_goal():
     mem = memory()
     for name in ('g1190-ch11-recall-home', 'g1190-ch11-recall-gondal'):
         screen, frame = image(name)
-        assert only_press(flow.world_map_step(screen, mem, frame)) == 'down'
+        assert flow.world_map_step(screen, mem, frame) == [pad('down')]
         assert flow_state(mem)['recall']['stage'] == 'dest'
         assert not any(r['decision'] == 'camp_recall_requested' for r in mem['_records'])
     screen, frame = image('g1190-ch11-recall-maranma')
@@ -64,7 +64,7 @@ def test_real_two_hop_sequence_confirms_only_on_the_observed_goal():
 def test_a_horizontal_goal_uses_the_real_down_selection_in_one_press():
     mem = memory('ゴンダル')
     screen, frame = image('g1190-ch11-recall-home')
-    assert only_press(flow.world_map_step(screen, mem, frame)) == 'down'
+    assert flow.world_map_step(screen, mem, frame) == [pad('down')]
     screen, frame = image('g1190-ch11-recall-gondal')
     assert flow.world_map_step(screen, mem, frame) == [pad('a'), {'type': 'wait', 'ms': 700}, pad('a')]
 
@@ -73,7 +73,7 @@ def test_ignored_down_never_switches_to_an_ineffective_horizontal_axis():
     mem = memory()
     screen, frame = image('g1190-ch11-recall-home')
     for _ in range(flow.PICKER_STILL_LIMIT):
-        assert only_press(flow.world_map_step(screen, mem, frame)) == 'down'
+        assert flow.world_map_step(screen, mem, frame) == [pad('down')]
     assert flow.world_map_step(screen, mem, frame) == [pad('a'), {'type': 'wait', 'ms': 700}, pad('a')]
     recall = flow_state(mem)['recall']
     assert recall['goal'] == 'アルマムーン' and recall['picker_forced']
