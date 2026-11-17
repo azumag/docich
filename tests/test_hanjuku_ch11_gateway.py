@@ -228,3 +228,32 @@ def test_without_the_hub_the_nearest_castle_is_used_again():
     _flow(mem)['recall'] = {'target': [134, 120], 'stage': 'dest'}
     from docich.hanjuku.strategy.orders import _recall_goal
     assert _recall_goal(mem) != 'タタール'
+
+
+def test_a_lost_hub_is_retaken_first_and_the_order_is_stable(monkeypatch):
+    """g1190 2026-11-17: タタール fell and the retake list put it last.
+
+    While the hub is the enemy's the far half cannot be held, so its retake
+    leads the list. The same input must also produce the same order every run.
+    """
+    from docich.hanjuku.strategy.replan import interim_candidates
+    # Production runs the mechanical conquest (no legacy speedrun chart);
+    # conftest enables the legacy chart for the chart machinery tests.
+    monkeypatch.delenv(chart.SPEEDRUN_CHART_ENV, raising=False)
+
+    def memory():
+        return {'chapter': 11, 'month': '71-12', 'tick': 100,
+                'captured': ['マランマ', 'ゴンダル'],
+                'lost': ['ネペンテ', 'タタール', 'ジャンセニア', 'タプロベイン', 'チリベット'],
+                'garrison': {'アルマムーン': ['エシャロット', 'フェデリーニ', 'アルテミス'],
+                             'ゴンダル': ['ゼウス'], 'マランマ': ['ヘスティア', 'ユイートル']},
+                'egg_types': {}, 'egg_uses': {}, 'house_eggs': {}}
+
+    def order():
+        return [(o.get('purpose'), o.get('target'))
+                for o in interim_candidates(memory()).values() if isinstance(o, dict)]
+
+    first, second = order(), order()
+    assert first == second, (first, second)
+    targets = [target for purpose, target in first if purpose in ('retake', 'attack')]
+    assert targets and targets[0] == 'タタール', targets

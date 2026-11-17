@@ -803,12 +803,18 @@ def interim_candidates(mem, allow_sole=False) -> dict:
                  for after in (order.get('after'),)
                  if isinstance(after, (list, tuple)) and len(after) == 2
                  and after[0] == 'captured' and after[1] in lost}
+    gateway = chart.gateway(chapter)
+    hub = gateway['hub'] if gateway else None
     if mechanical:
         # No chart chain to gate on: the home castle first, then nearest an owned castle.
         lost.sort(key=lambda c: (c != home,
+                                 c != hub,
                                  min((_distance(chapter, o, c) for o in owned), default=0), c))
     else:
-        lost.sort(key=lambda c: (c != home, c not in boss_gate))  # home first, then the boss gate
+        # home first, then the boss gate, then the chapter's shared hub: while
+        # the hub is the enemy's, the far half is unreachable (g1190
+        # 2026-11-17: タタール lost and four more castles followed).
+        lost.sort(key=lambda c: (c != home, c not in boss_gate, c != hub))
     targets = [c for c in (*lost, *chart_orders, *castles)
                if c in castles and c not in owned and not chart.is_boss_castle(c)]
     targets = list(dict.fromkeys(targets))
