@@ -657,6 +657,9 @@ def test_the_cycle_budget(ws, harnesses, monkeypatch):
     # re-run is call 3.
     h.clock.advance(-41)
     assert rig.clock() == NOW
+    # g7(b) fetches at NOW again: move the fixture book's timestamp to that fetch clock,
+    # otherwise the two-sided age check sees a book 41 s in the future and drops XYM/JPY.
+    rig.reader.books["XYM/JPY"] = book("XYM/JPY", ts=int(NOW * 1000))
     buy = opportunity("XYM/JPY", "buy", oid="buy-2")
     sell = opportunity("XYM/JPY", "sell", oid="exit-2")
     both = LiveSignals((buy,), (sell,), (), {})
@@ -1526,3 +1529,78 @@ def test_budget_drop_keeps_the_skips_of_the_first_sizing(ws, harnesses, monkeypa
     # The re-run sized no entries, so only the first result can report the OAS skip: this is
     # exactly that carried-over tuple, not something the re-run could have produced.
     assert built.result.skipped == real_skips[0]
+
+
+# ---- n1: the book age is two-sided ------------------------------------------------------
+def test_book_age_is_two_sided(ws, harnesses, monkeypatch):
+    """Up to 10 s of clock skew (a book from the future) is legal; > 10 s and > 15 s old are not."""
+    sampled_at = NOW
+    ts = int(sampled_at * 1000)
+    assert decide_module.BOOK_FUTURE_TOLERANCE_S == 10.0
+    assert decide_module.book_age_problem(sampled_at, ts) is None
+    assert decide_module.book_age_problem(sampled_at, ts + 10_000) is None
+    assert decide_module.book_age_problem(sampled_at, ts + 10_001) == "book_from_future"
+    assert decide_module.book_age_problem(sampled_at, ts - 15_000) is None
+    assert decide_module.book_age_problem(sampled_at, ts - 15_001) == "stale_book"
+
+    # Integration: a 10.001 s future book drops the entry AND the exit of its symbol.
+    h = harnesses()
+    ps = policy_set_for("OAS/JPY")
+    store(h, ps)
+    rig = make_rig(ws, h, ps=ps, rules={"OAS/JPY": rule()})
+    buy = opportunity("OAS/JPY", "buy", oid="buy-1")
+    sell = opportunity("OAS/JPY", "sell", oid="sell-1")
+    both = LiveSignals((buy,), (sell,), (), {})
+    monkeypatch.setattr(decide_module, "scan_live", lambda *a, **k: both)
+    rig.reader.books["OAS/JPY"] = book(ts=int(NOW * 1000) + 10_001)
+    built = build_decisions(rig.deps, CycleState(cycle_number=1), make_ctx(rig))
+    assert built.result is None
+    assert built.signals.entries == () and built.signals.exits == ()
+    rows = decision_rows(h.ledger)
+    assert [(row.payload["side"], row.payload["reason"]) for row in rows] == [
+        ("buy", "book_from_future"), ("sell", "book_from_future")]
+    assert not any(row.payload["action"] == "plan" for row in rows)
+
+    # Exactly 15 s old is still fresh (the boundary is exclusive).
+    rig.reader.books["OAS/JPY"] = book(ts=int(NOW * 1000) - 15_000)
+    monkeypatch.setattr(decide_module, "scan_live",
+                        lambda *a, **k: LiveSignals((buy,), (), (), {}))
+    before = len(decision_rows(h.ledger))
+    edge = build_decisions(rig.deps, CycleState(cycle_number=1), make_ctx(rig))
+    assert edge.result is not None and len(edge.result.buys) == 1
+    assert [row.payload["action"] for row in decision_rows(h.ledger)[before:]] == ["plan"]
+
+
+# ---- n2: the decision set exposes the final markets -------------------------------------
+def test_decision_set_exposes_the_final_markets(ws, harnesses, monkeypatch):
+    """The LAST field is the very markets mapping the real sizing call received."""
+    import dataclasses
+
+    h = harnesses(symbols=("OAS/JPY", "XYM/JPY"))
+    ps = policy_set_for("OAS/JPY", "XYM/JPY")
+    store(h, ps)
+    rules = {"OAS/JPY": rule(), "XYM/JPY": rule("XYM/JPY", tick="0")}
+    rig = make_rig(ws, h, ps=ps, rules=rules, symbols=("OAS/JPY", "XYM/JPY"))
+    entries = (opportunity("OAS/JPY", "buy", oid="buy-oas"),
+               opportunity("XYM/JPY", "buy", oid="buy-xym"))
+    monkeypatch.setattr(decide_module, "scan_live",
+                        lambda *a, **k: LiveSignals(entries, (), (), {}))
+    seen: list[dict] = []
+    real_size = decide_module.size_orders
+
+    def wrapper(signals_arg, policy_set_arg, markets_arg, held_arg, funds_arg, **kwargs):
+        seen.append(dict(markets_arg))
+        return real_size(signals_arg, policy_set_arg, markets_arg, held_arg, funds_arg,
+                         **kwargs)
+
+    monkeypatch.setattr(decide_module, "size_orders", wrapper)
+    built = build_decisions(rig.deps, rig.state, make_ctx(rig))
+
+    assert [field.name for field in dataclasses.fields(type(built))][-1] == "markets"
+    assert built.result is not None
+    assert [plan.symbol for plan in built.result.buys] == ["OAS/JPY"]
+    # XYM/JPY was dropped by the bad-market pre-filter, so the final map is OAS/JPY only.
+    assert list(built.markets) == ["OAS/JPY"]
+    assert built.markets == seen[-1]
+    assert built.markets["OAS/JPY"].book is rig.reader.books["OAS/JPY"]
+    assert built.markets["OAS/JPY"].last_close == D("100")

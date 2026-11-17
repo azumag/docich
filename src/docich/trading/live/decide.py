@@ -31,7 +31,7 @@ from __future__ import annotations
 
 import dataclasses
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Mapping
 
 from ..models import SkipDecision
 from .exchange import OrderBook
@@ -45,9 +45,24 @@ if TYPE_CHECKING:  # annotations only: keeps this module independent of the runn
     from .cycle import CycleContext, CycleDeps, CycleState
 
 BOOK_MAX_AGE_S = 15.0        # a book older than this is stale
+BOOK_FUTURE_TOLERANCE_S = 10.0  # legal clock skew: the signed-request window is 10 s
 CYCLE_BUDGET_S = 40.0        # buys are dropped when the cycle has run longer than this
 DEDUPE_KEEP_CYCLES = 200
 DEDUPE_MAX_ENTRIES = 5000
+
+
+def book_age_problem(fetched_at: float, exchange_ts_ms: int) -> str | None:
+    """Why a book cannot be used at ``fetched_at``, or None when its age is legal.
+
+    The age is signed: a book stamped in the future is legal up to the 10 s request
+    window the exchange signs for, beyond that it is ``book_from_future`` (clock skew).
+    """
+    age_ms = fetched_at * 1000 - exchange_ts_ms
+    if age_ms > BOOK_MAX_AGE_S * 1000:
+        return "stale_book"
+    if age_ms < -BOOK_FUTURE_TOLERANCE_S * 1000:
+        return "book_from_future"
+    return None
 
 
 @dataclass(frozen=True)
@@ -59,6 +74,7 @@ class DecisionSet:
     block_causes: tuple[str, ...]   # sorted causes of buys_blocked
     over_budget: bool
     record_failures: int            # record_live_event writes swallowed in this call
+    markets: Mapping[str, SymbolMarket]  # the FINAL markets the real sizing call used
 
 
 def _drop_symbol(signals: LiveSignals, symbol: str,
@@ -141,8 +157,9 @@ def build_decisions(deps: "CycleDeps", state: "CycleState", ctx: "CycleContext")
             skip_decisions.extend(dropped)
             continue
         fetched_at = deps.clock()  # the book is read now, not at the cycle start
-        if fetched_at * 1000 - book.exchange_ts_ms > BOOK_MAX_AGE_S * 1000:
-            current, dropped = _drop_symbol(current, symbol, "stale_book")
+        problem = book_age_problem(fetched_at, book.exchange_ts_ms)
+        if problem is not None:
+            current, dropped = _drop_symbol(current, symbol, problem)
             skip_decisions.extend(dropped)
             continue
         if book.symbol != symbol:
@@ -158,8 +175,9 @@ def build_decisions(deps: "CycleDeps", state: "CycleState", ctx: "CycleContext")
     # exits exactly as the first check does.
     sized_at = deps.clock()
     for symbol in sorted(tuple(books)):
-        if sized_at * 1000 - books[symbol].exchange_ts_ms > BOOK_MAX_AGE_S * 1000:
-            current, dropped = _drop_symbol(current, symbol, "stale_book")
+        problem = book_age_problem(sized_at, books[symbol].exchange_ts_ms)
+        if problem is not None:
+            current, dropped = _drop_symbol(current, symbol, problem)
             skip_decisions.extend(dropped)
             del books[symbol]
 
@@ -313,6 +331,7 @@ def build_decisions(deps: "CycleDeps", state: "CycleState", ctx: "CycleContext")
         block_causes=block_causes,
         over_budget=over_budget,
         record_failures=record_failures,
+        markets=markets,
     )
 
 
