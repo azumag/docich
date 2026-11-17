@@ -71,6 +71,13 @@ def _mark_lost(mem, general):
     if general not in lost:
         lost.append(general)
     mem['generals_lost'] = lost
+    # The castles whose garrison record still lists the general now are stale
+    # evidence (the march record's write-back, orders._expire_spent_sorties):
+    # only a listing somewhere else may later call him back home.
+    garrison = _world(mem).get('garrison') or {}
+    stale = sorted(c for c, residents in garrison.items()
+                   if isinstance(residents, list) and general in residents)
+    mem.setdefault('generals_lost_garrison', {})[general] = stale
 
 
 def track(mem):
@@ -94,9 +101,20 @@ def track(mem):
             wave.setdefault(general, {'step': step, 'launched': s.get('tick')})
     home = {g for residents in garrison.values()
             if isinstance(residents, list) for g in residents}
-    if home & lost:
-        # A name seen back in a castle garrison was a misread, not a loss.
-        mem['generals_lost'] = [g for g in (mem.get('generals_lost') or ()) if g not in home]
+    stale = mem.get('generals_lost_garrison') or {}
+    back = set()
+    for g in lost & home:
+        # A name seen back in a castle garrison was a misread, not a loss -
+        # unless only the castles that listed him when the roster walk found
+        # him absent still do (a march record's write-back, not a return).
+        castles = {c for c, residents in garrison.items()
+                   if isinstance(residents, list) and g in residents}
+        if castles - set(stale.get(g) or ()) or g not in stale:
+            back.add(g)
+    if back:
+        mem['generals_lost'] = [g for g in (mem.get('generals_lost') or ()) if g not in back]
+        for g in back:
+            stale.pop(g, None)
         lost = set(mem['generals_lost'])
     for general in list(wave):
         if (general in home and not _camped_since(mem, general, wave[general].get('launched'))) \

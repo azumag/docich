@@ -100,3 +100,26 @@ def test_general_back_in_a_garrison_is_removed_from_lost():
     mem['world'] = {'sorties': {}, 'garrison': {'イデ！': ['ポワソン']}}
     bp.track(mem)
     assert mem['generals_lost'] == []
+
+
+def test_a_write_back_garrison_listing_does_not_heal_a_lost_general():
+    # Devin review on #4414: the march record's write-back (orders.
+    # _expire_spent_sorties) leaves a camped general in the source garrison.
+    # The roster walk then marks him lost; the same stale listing must not
+    # call him back home on the next track().
+    mem = memory()
+    mem['world'] = {'sorties': {}, 'garrison': {'イデ！': ['ポワソン', 'ココット']}}
+    bp._mark_lost(mem, 'ポワソン')
+    assert mem['generals_lost_garrison'] == {'ポワソン': ['イデ！']}
+    bp.track(mem)
+    assert mem['generals_lost'] == ['ポワソン']
+    assert 'ポワソン' not in mem[bp.LIST_KEY]
+
+
+def test_a_listing_in_another_castle_still_heals_a_lost_general():
+    mem = memory()
+    mem['world'] = {'sorties': {}, 'garrison': {'イデ！': ['ポワソン']}}
+    bp._mark_lost(mem, 'ポワソン')
+    mem['world']['garrison'] = {'イデ！': [], 'イソ': ['ポワソン']}
+    bp.track(mem)
+    assert mem['generals_lost'] == []
