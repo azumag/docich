@@ -5,6 +5,7 @@ No game/provider I/O lives here. Only the existing recall sender owns dispatch.
 """
 from ..os_layer import roster as roster_receipts
 from ...hanjuku_egg_stock import observed_uses
+from ..state import egg_memory
 from ..state.regions import flow as _flow, journal as _journal, plan as _plan_region
 
 RETRY_TICKS = 30
@@ -440,6 +441,9 @@ def _observe_egg(mem, info):
     counts, types = mem.setdefault('egg_uses', {}), mem.setdefault('egg_types', {})
     changed = counts.get(actor) != uses or types.get(actor) != egg
     counts[actor], types[actor] = uses, egg
+    # #4415: a camp re-check is a dated observation, not an unstamped mirror.
+    egg_memory.observe(mem, actor, egg=egg, uses=uses, present=True,
+                       source=egg_memory.CAMP)
     if isinstance(mem.get('egg_recheck'), list):
         mem['egg_recheck'] = [name for name in mem['egg_recheck'] if name != actor]
     if changed:

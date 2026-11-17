@@ -1396,6 +1396,7 @@ def _finish_month_sub(screen, mem, shop) -> bool:
             if _own_egg_empty(mem, {'ally': actor}):
                 mem['egg_zero_owners'] = sorted(set(mem.get('egg_zero_owners') or []) | {actor})[:32]
             (mem.get('egg_uses') or {}).pop(actor, None)
+            (mem.get('egg_memory') or {}).pop(actor, None)
             if actor in (mem.get('house_eggs') or {}):
                 mem['house_eggs'][actor]['uses'] = None
             mem['egg_recheck'] = [n for n in mem.get('egg_recheck') or [] if n != actor]

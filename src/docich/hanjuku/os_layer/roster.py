@@ -321,7 +321,7 @@ def _purge_verified_departure(mem, name):
     for residents in (_world(mem).get('garrison') or {}).values():
         if isinstance(residents, list) and name in residents:
             residents.remove(name)
-    for key in ('house_eggs', 'egg_types', 'egg_uses'):
+    for key in ('house_eggs', 'egg_types', 'egg_uses', 'egg_memory'):
         if isinstance(mem.get(key), dict):
             mem[key].pop(name, None)
     for key in ('egg_recheck', PENDING_JOINS_KEY):

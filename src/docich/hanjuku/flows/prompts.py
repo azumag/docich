@@ -19,6 +19,7 @@ from ..os_layer.readers import (CASTLE_STATUS, STATUS_NAMES, _current, _egg_row,
                                 _is_general_trade_prompt, _is_goninja_prompt, _options,
                                 _summer_bonus_rows, _trade_named_general)
 from ..os_layer.world import _owned
+from ..state import egg_memory
 from ..strategy.campaign import (_enter_chapter, _repair_home_alias_failures, _repair_home_name_chapter,
                                  observe_chapter_castle)
 from ..strategy.economy import GONINJA_MIN_GOLD, _goninja_budget, _month_key
@@ -750,6 +751,10 @@ def observe_events(screen: Screen, mem):
         eggs = mem.setdefault('egg_uses', {})
         if row:
             mem.setdefault('egg_types', {})[row[0]] = row[1]
+            # #4415: the sortie row is a dated observation, unlike the flat
+            # egg_types mirror, so a stale egg type can no longer outrank it.
+            egg_memory.observe(mem, row[0], egg=row[1], uses=row[2],
+                               present=True, source=egg_memory.SORTIE)
             if row[0] in (mem.get('egg_recheck') or []):
                 mem['egg_recheck'].remove(row[0])
         if row and eggs.get(row[0]) != row[2]:

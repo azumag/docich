@@ -2311,6 +2311,7 @@ def _egg_quantities_unknown(mem):
     blocked.update(n for n, value in counts.items() if type(value) is int and value == 0)
     mem['egg_zero_owners'] = sorted(blocked)[:32]
     mem['egg_uses'] = {}
+    mem.pop('egg_memory', None)  # #4415: invalidated counts invalidate the read port too
 
 
 def _own_egg_positive(mem, battle):

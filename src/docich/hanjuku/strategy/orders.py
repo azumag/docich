@@ -9,7 +9,7 @@ from __future__ import annotations
 from copy import deepcopy
 
 from ... import hanjuku_chart as chart, hanjuku_chart_adjust as chart_adjust, hanjuku_reference as reference
-from ...hanjuku_egg_reference import GENERAL_EGGS, general_max_hp
+from ...hanjuku_egg_reference import general_max_hp
 from ..decision_log import _record, _tally
 from ..os_layer.world import (NAME, SORTIE_BUSY_TICKS, _en_route, _owned,
                               BOSS_ARRIVAL_LIMIT, MARCH_TICKS_PER_CELL,
@@ -19,6 +19,7 @@ from .kit import _deploy_cards, _is_boss_order
 from . import edition
 from . import routes
 from .execution import bound_fields, execution_claimed, execution_order
+from ..state import egg_memory
 from ..state.regions import world as _world, flow as _flow, journal as _journal, sorties as _sorties, plan as _plan_region
 
 
@@ -137,11 +138,8 @@ def _boss_comparable(mem, name):
 
 
 def _holds_egg(mem, name):
-    """An egg the sortie screen showed, else the roster's own (GENERAL_EGGS);
-    a rotten egg or a read count of 0 is none."""
-    kind = (mem.get('egg_types') or {}).get(name)
-    held = kind != 'くさってる' if kind is not None else bool((GENERAL_EGGS.get(name) or (False,))[0])
-    return held and (mem.get('egg_uses') or {}).get(name) != 0
+    """A usable egg from the newest observation (fallback: sortie/roster read)."""
+    return egg_memory.holds_egg(mem, name)
 
 
 def _boss_companion_unfit(mem, name):
@@ -1369,6 +1367,10 @@ def _expire_spent_sorties(mem):
                 garrison[source] = []
             if general not in garrison[source]:
                 garrison[source].append(general)
+            # #4415: this is bookkeeping, not a fresh roster read. Without
+            # dropping the page timestamp a write-back after a general was
+            # marked lost could be mistaken for his return (boss_pursuit.track).
+            (_world(mem).get('garrison_observed_at') or {}).pop(source, None)
             placed.add(general)
         if measured:
             ended += 1

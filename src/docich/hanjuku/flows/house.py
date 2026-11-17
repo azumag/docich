@@ -14,6 +14,7 @@ from ..os_layer import roster as receipts
 # World facts shared with the economy strategy live in the OS layer.
 from ..os_layer.world import HOUSE_VIEW, _castle_status_after_sortie, _repair_hp_ready
 from ..strategy import goals
+from ..state import egg_memory
 from ..state.regions import (world as _world, flow as _flow, journal as _journal,
                               sorties as _sorties, plan as _plan_region)
 
@@ -740,6 +741,10 @@ def _observe_status(screen, mem):
         if info['uses'] is not None:
             mem.setdefault('egg_uses', {})[name] = info['uses']
             mem.setdefault('egg_types', {})[name] = info['egg']
+        # #4415: record the no-egg reading too, with the observation tick, so a
+        # later boss-wave/recovery read can outrank an older remembered egg.
+        egg_memory.observe(mem, name, egg=info.get('egg'), uses=info.get('uses'),
+                           broken=info.get('broken') is True, source=egg_memory.STATUS)
         receipts.status_observed(mem, mem['house_eggs'][name])
         observe_hero_repair_status(info, mem)
         _record(mem, 'egg_seen', observed_metric=info, reason='将軍のステータスで卵の状態を確認')

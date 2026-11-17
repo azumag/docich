@@ -120,6 +120,29 @@ def test_a_listing_in_another_castle_still_heals_a_lost_general():
     mem = memory()
     mem['world'] = {'sorties': {}, 'garrison': {'イデ！': ['ポワソン']}}
     bp._mark_lost(mem, 'ポワソン')
+    # A real roster read after the loss, in a different castle: a genuine return.
     mem['world']['garrison'] = {'イデ！': [], 'イソ': ['ポワソン']}
+    lost_at = mem['generals_lost_at']['ポワソン']
+    mem['world']['garrison_observed_at'] = {'イソ': lost_at + 1}
     bp.track(mem)
     assert mem['generals_lost'] == []
+
+
+def test_a_write_back_after_the_loss_does_not_heal_it():
+    # Owner follow-up on #4414 (Devin review): if orders._expire_spent_sorties
+    # writes the general back into a garrison *after* the roster walk confirmed
+    # the loss, the page is bookkeeping, not a new observation. The old v994
+    # castle set alone could call it a different castle and clear the loss.
+    import time
+    mem = memory()
+    mem['world'] = {'sorties': {}, 'garrison': {'イデ！': ['ポワソン']}}
+    bp._mark_lost(mem, 'ポワソン')
+    at = mem['generals_lost_at']['ポワソン']
+    assert at <= time.time() and mem['generals_lost'] == ['ポワソン']
+    # The march record's write-back lands later, into a different castle, with
+    # no fresh page read (orders._expire_spent_sorties drops observed_at).
+    mem['world']['garrison'] = {'イデ！': [], 'イソ': ['ポワソン']}
+    mem['world']['garrison_observed_at'] = {'イデ！': at - 10}
+    bp.track(mem)
+    assert mem['generals_lost'] == ['ポワソン']
+    assert 'ポワソン' not in mem[bp.LIST_KEY]

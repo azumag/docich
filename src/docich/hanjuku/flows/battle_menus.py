@@ -11,6 +11,7 @@ from ..os_layer.screen import OKUNOTE_CHOICES, Screen
 from ... import hanjuku_chart as chart, hanjuku_experience as experience, hanjuku_reference as reference
 from ...hanjuku_egg_reference import general_max_hp
 from ..decision_log import _record
+from ..state import egg_memory
 from ..state.regions import plan as _plan_region
 from . import egg_bait
 from .battle import _card_battle_reading, _card_gate_close, _hero_retreat_open, _remember_general_for_summon
@@ -1569,7 +1570,7 @@ def egg_choice_step(screen: Screen, mem):
     flow = mem.get('egg_choice')
     actor = (mem.get('battle') or {}).get('ally')
     slot = ('ハズレ' in names
-            or (mem.get('egg_types') or {}).get(actor) == 'スロットエッグ'
+            or egg_memory.egg_type(mem, actor) == 'スロットエッグ'
             or (flow or {}).get('mode') == 'slot')
     if not slot and screen.menu_cursor not in (176, 192, 208):
         return []
