@@ -36,14 +36,14 @@ def test_short_normal_cursor_corrections_keep_the_same_holds_and_get_fast_feedba
     assert not any(a['buttons'] == ['a'] for a in actions)
 
 
-@pytest.mark.parametrize('change', ['target_marker', 'both_cursors', 'world_map', 'hand',
+@pytest.mark.parametrize('change', ['marker_on_map', 'both_cursors', 'world_map', 'hand',
                                    'search', 'clipped', 'ambiguous', 'enemy', 'long_hold'])
 def test_other_navigation_and_uncertain_roofs_keep_normal_cadence(roof, monkeypatch, change):
     mem = {}
     screen = view((90, 100))
     kinds = ('own',)
-    if change == 'target_marker':
-        screen = view((90, 100), marker=True)
+    if change == 'marker_on_map':
+        screen = view((90, 100), marker=True, kind='map')
     elif change == 'both_cursors':
         screen.marker = (90, 100)
     elif change == 'world_map':
@@ -130,18 +130,23 @@ def test_saved_map_pixels_supply_both_cursor_and_own_roof_without_a_new_input():
     assert entry.observation_interval_ms(observed, actions) == 500
 
 
-def test_orchestrator_stamps_fresh_evidence_and_discards_it_on_the_next_frame():
-    frame = read_png(FIX / 'resume-chapter-2-map.png')
+@pytest.mark.parametrize('name,kind,owner,expected', [
+    ('resume-chapter-2-map.png', 'map', 'own', [pad('right', 7), pad('down', 4)]),
+    ('g1075-target-marker-beside-rigua.png', 'map_target', 'enemy', [pad('down', 5)]),
+])
+def test_orchestrator_stamps_fresh_evidence_and_discards_it_on_the_next_frame(name, kind, owner, expected):
+    frame = read_png(FIX / name)
     # Control only which foreground owner handles the saved frame. Its
     # cursor, roofs, correction and the orchestrator's result are real code.
-    def own_roof(screen, mem, source):
-        return navigation._align_on_roof(screen, mem, source, ('own',), 'test:map')
+    def align_roof(screen, mem, source):
+        return navigation._align_on_roof(screen, mem, source, (owner,), 'test:map')
     with patch('docich.hanjuku.flows.map_registration.step', return_value=None), \
             patch('docich.hanjuku.flows.post_month_status.step', return_value=None), \
             patch('docich.hanjuku.flows.arrival_status.step', return_value=None), \
-            patch('docich.hanjuku.flows.house.step', side_effect=own_roof):
+            patch('docich.hanjuku.flows.house.step', side_effect=align_roof):
         actions, observed = decide(frame, {'step': 17, 'policy': {'chapter': 2}})
-    assert actions == [pad('right', 7), pad('down', 4)]
+    assert actions == expected
+    assert observed['map_cursor_feedback']['kind'] == observed['screen_kind'] == kind
     assert observed['map_cursor_feedback']['step'] == observed['step'] == 18
     assert '_map_cursor_feedback' not in observed['policy']
     assert entry.observation_interval_ms(observed, actions) == 500
