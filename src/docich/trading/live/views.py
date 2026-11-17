@@ -4,6 +4,9 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from decimal import Decimal
+from typing import Mapping
+
+from .ledger import Intent
 
 
 @dataclass(frozen=True)
@@ -156,3 +159,116 @@ def open_position_ids(ledger) -> list[str]:
     with ledger.read_cursor() as cur:
         return [row[0] for row in cur.execute("SELECT position_id FROM positions WHERE status='open' "
                                               "ORDER BY opened_at, position_id")]
+
+
+# -- L4b: read-only views (nothing below writes) ---------------------------------------------
+_INTENT_COLS_LITERAL = ("intent_id, decision_key, symbol, side, order_type, amount, price, policy_digest, "
+                        "position_id, rule_id, state, state_version, exchange_order_id, reason_code, "
+                        "client_order_id, created_at, updated_at")
+
+
+@dataclass(frozen=True)
+class CostBasis:
+    net_base: Decimal
+    cost: Decimal
+    avg_cost: Decimal
+    opened_at: float | None
+
+
+@dataclass(frozen=True)
+class EventRow:
+    event_id: int
+    occurred_at: float
+    entity_type: str | None
+    entity_id: str | None
+    payload: dict
+
+
+def intent_by_decision_key(ledger, decision_key: str) -> Intent | None:
+    """The intent recorded for a decision key, in any state (terminal ones included), else None."""
+    with ledger.read_cursor() as cur:
+        row = cur.execute(f"SELECT {_INTENT_COLS_LITERAL} FROM intents WHERE decision_key=?",
+                          (decision_key,)).fetchone()
+    return Intent(*row) if row else None
+
+
+def position_cost(ledger, position_id: str, max_fee_rate: Decimal | None) -> CostBasis:
+    """Average-cost basis of a position, rebuilt from its fills (a sell keeps the average price).
+
+    An unknown fee is estimated at ``max_fee_rate`` of the notional on a buy; without a rate the
+    cost cannot be bounded.
+    """
+    with ledger.read_cursor() as cur:
+        rows = cur.execute(
+            "SELECT symbol, side, amount, quote_notional, fee_status, fee_amount, fee_currency, executed_at "
+            "FROM fills WHERE position_id=? ORDER BY executed_at, fill_id", (position_id,)).fetchall()
+    net_base = Decimal(0)
+    cost = Decimal(0)
+    avg_cost = Decimal(0)
+    opened_at: float | None = None
+    for symbol, side, amount_text, notional_text, fee_status, fee_amount, fee_currency, executed_at in rows:
+        base = symbol.split("/")[0]
+        quote = symbol.split("/")[1]
+        amount = Decimal(amount_text)
+        notional = Decimal(notional_text)
+        if side == "buy":
+            if net_base <= 0:
+                opened_at = float(executed_at)
+            net_base += amount
+            if fee_status == "known" and fee_currency == base:
+                net_base -= Decimal(fee_amount)
+            cost += notional
+            if fee_status == "known" and fee_currency == quote:
+                cost += Decimal(fee_amount)
+            elif fee_status == "unknown":
+                if max_fee_rate is None:
+                    raise ValueError("max_fee_rate is required")
+                cost += max_fee_rate * notional
+            avg_cost = cost / net_base if net_base > 0 else Decimal(0)
+        else:
+            sold = amount
+            if fee_status == "known" and fee_currency == base:
+                sold += Decimal(fee_amount)
+            held_avg = avg_cost if net_base > 0 else Decimal(0)
+            net_base -= sold
+            cost = held_avg * net_base
+            avg_cost = held_avg
+            if net_base <= 0:
+                cost = Decimal(0)
+                avg_cost = Decimal(0)
+                opened_at = None
+    return CostBasis(net_base, cost, avg_cost, opened_at)
+
+
+def deployed_cost(ledger, max_fee_rates: Mapping[str, Decimal | None]) -> Decimal:
+    """Quote cost tied up in open positions (a symbol absent from the map is treated as unknown)."""
+    total = Decimal(0)
+    for position_id, symbol in open_positions(ledger):
+        total += position_cost(ledger, position_id, max_fee_rates.get(symbol)).cost
+    return total
+
+
+def open_positions(ledger) -> list[tuple[str, str]]:
+    """(position_id, symbol) of every open position, oldest first."""
+    with ledger.read_cursor() as cur:
+        return [(row[0], row[1]) for row in cur.execute(
+            "SELECT position_id, symbol FROM positions WHERE status='open' ORDER BY opened_at, position_id")]
+
+
+def events_of_kind(ledger, kind: str, *, after_event_id: int = 0, limit: int = 1000) -> list[EventRow]:
+    """Events of one kind, oldest first; ``payload`` is the inner payload, not the stored envelope."""
+    with ledger.read_cursor() as cur:
+        rows = cur.execute("SELECT event_id, occurred_at, entity_type, entity_id, payload FROM events "
+                           "WHERE kind=? AND event_id>? ORDER BY event_id LIMIT ?",
+                           (kind, int(after_event_id), int(limit))).fetchall()
+    out = []
+    for event_id, occurred_at, entity_type, entity_id, stored in rows:
+        try:
+            envelope = json.loads(stored)
+        except ValueError:
+            envelope = {}
+        inner = envelope.get("payload", {}) if isinstance(envelope, dict) else {}
+        if not isinstance(inner, dict):
+            inner = {}
+        out.append(EventRow(int(event_id), float(occurred_at), entity_type, entity_id, inner))
+    return out
