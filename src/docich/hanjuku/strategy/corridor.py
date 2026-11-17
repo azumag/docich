@@ -1089,12 +1089,7 @@ def _front_roster_stale(mem, castle) -> bool:
 
 def _front_thin(mem, castle) -> bool:
     """The castle the wave leaves from holds fewer than two measured residents."""
-    world = _world(mem)
-    garrison = world.get('garrison') or {}
-    names = garrison.get(castle) if isinstance(garrison, dict) else None
-    if not isinstance(names, list):
-        partial = world.get('garrison_partial') or {}
-        names = partial.get(castle) if isinstance(partial, dict) else None
+    names = _front_names(mem, castle)
     if not isinstance(names, list):
         return False                       # unread is not thin
     return len(names) < FRONT_REFILL_MIN
