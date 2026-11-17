@@ -386,9 +386,9 @@ def test_unknown_fee_blocks_buys_but_not_the_rest(harnesses):
                                 balance=snapshot(jpy_free="9000", free={"OAS": "10"}),
                                 policy_set=ps)
 
-    assert result.block_buys == ("fee_rate_unknown",)      # deduplicated across both failures
+    assert result.block_buys == ("balance_expectation_indeterminate", "fee_rate_unknown")      # deduplicated across both failures
     assert result.problems == (("OAS/JPY", "cost_basis_unavailable"),)
-    assert result.funds == Funds(D("10000"), D("0"), D("9000"))
+    assert result.funds == Funds(D("10000"), D("0"), D("0"))
     assert result.positions == {}
     assert result.held == {}
     assert result.open_buy_symbols == frozenset({"XYM/JPY"})
@@ -542,12 +542,12 @@ def test_unknown_fee_in_deployed_cost_alone_blocks_buys(h):
     result = build_cycle_inputs(h.ledger, rules=rules_for("OAS/JPY", fee=None),
                                 balance=snapshot(jpy_free="9000"), policy_set=ps)
 
-    assert result.block_buys == ("fee_rate_unknown",)
-    # The whole deployed cost falls back to 0; the ledger side still expects 10000 - 1000 = 9000.
-    assert result.funds == Funds(D("10000"), D("0"), D("9000"))
+    assert result.block_buys == ("balance_expectation_indeterminate", "fee_rate_unknown")
+    # The whole deployed cost falls back to 0; the JPY expectation is indeterminate (unknown fee, no max_fee_rate), so no quote is free.
+    assert result.funds == Funds(D("10000"), D("0"), D("0"))
     assert result.funds.capital == D("10000")
     assert result.funds.deployed == D("0")
-    assert result.funds.free_quote == D("9000")
+    assert result.funds.free_quote == D("0")
     assert result.problems == (("OAS/JPY", "cost_basis_unavailable"),)
     assert result.positions == {}
     assert result.held == {}
@@ -593,7 +593,8 @@ def test_unknown_fee_fill_uses_the_rules_max_fee_rate(h):
     # 1000 notional + 0.001 * 1000 estimated fee = 1001; 1001 / 10 = 100.1.
     assert result.block_buys == ()
     assert result.problems == ()
-    assert result.funds == Funds(D("10000"), D("1001"), D("9000"))
+    # free quote = min(9000, 10000 - 1000 - slack 1) = 8999 (an unknown fee may have cost up to 1 JPY)
+    assert result.funds == Funds(D("10000"), D("1001"), D("8999"))
     assert result.funds.deployed == D("1001")
     assert result.positions["OAS/JPY"] == views.CostBasis(D("10"), D("1001"), D("100.1"), 1000.0)
     assert result.held["OAS/JPY"] == HeldPosition(bought.position_id, D("10"), D("10"), digest)
@@ -764,3 +765,135 @@ def test_a_sell_under_the_current_digest_of_a_legacy_position_is_refused(h):
     assert str(refused.value) == "no open position under that policy"
     assert views.intent_by_decision_key(h.ledger, plan.decision_key) is None
     assert views.open_intent_symbols(h.ledger, "sell") == frozenset()
+
+
+# ---- L4b-5a-3 / bug 1: an unreliable expected balance must not free quote -------------------
+def test_missing_rules_for_a_traded_symbol_blocks_buys_and_zeroes_free_quote(h):
+    from docich.trading.live.balance import expected_balances
+
+    ps = policy_set_for((spec("exp-1"), "OLD/JPY"), (spec("exp-1"), "OAS/JPY"))
+    _store(h, ps)
+    old = _intent(h, ps, key="live1:old", symbol="OLD/JPY")
+    _observe(h, old, order_id="o-old")
+    _fill(h, fill_id="f-old", order_id="o-old", symbol="OLD/JPY", side="buy", amount="10",
+          price="100", executed_at=1000.0, fee_amount="1", fee_currency="JPY")
+    _finish(h, old)
+    _to_acked(h, _intent(h, ps, key="live1:acked"))
+
+    rules = rules_for("OAS/JPY")      # OLD/JPY deliberately has no rules in this cycle
+    cell = expected_balances(h.ledger, rules)["JPY"]
+    assert cell.indeterminate is True            # a fill of an unruled symbol proves nothing
+    assert cell.total == D("10000")              # OLD/JPY's 1001 spent is missing from it
+
+    result = build_cycle_inputs(h.ledger, rules=rules,
+                                balance=snapshot(jpy_free="9500"), policy_set=ps)
+
+    # The free side is 9500 and the ledger side 8998 after the ACKED buy's 1002 reserve;
+    # neither is trusted while the expectation misses OLD/JPY, so no quote is offered.
+    assert result.block_buys == ("balance_expectation_indeterminate",)
+    assert result.funds.capital == D("10000")
+    assert result.funds.free_quote == D("0")
+    # Deployed is still 1001 (OLD/JPY cost) + 1000 (open buy notional).
+    assert result.funds.deployed == D("2001")
+    # The rest of the inputs are still returned.
+    assert result.positions["OLD/JPY"] == views.CostBasis(D("10"), D("1001"), D("100.1"), 1000.0)
+    assert result.held["OLD/JPY"] == HeldPosition(old.position_id, D("10"), D("0"),
+                                                  ps.policy_for("OLD/JPY").digest)
+    assert result.open_buy_symbols == frozenset({"OAS/JPY"})
+
+
+def test_unknown_fee_slack_lowers_free_quote(h):
+    from docich.trading.live.balance import expected_balances
+
+    ps = policy_set_for((spec("exp-1"), "OAS/JPY"))
+    _store(h, ps)
+    bought = _intent(h, ps, key="live1:entry")
+    _observe(h, bought, order_id="o1")
+    _fill(h, fill_id="f1", order_id="o1", symbol="OAS/JPY", side="buy", amount="10",
+          price="100", executed_at=1000.0, fee_status="unknown")
+    _finish(h, bought)
+
+    rules = rules_for("OAS/JPY")                 # max_fee_rate 0.001, quote_unit 1
+    cell = expected_balances(h.ledger, rules)["JPY"]
+    assert (cell.total, cell.slack, cell.indeterminate) == (D("9000"), D("1"), False)
+
+    rich = build_cycle_inputs(h.ledger, rules=rules,
+                              balance=snapshot(jpy_free="9000", free={"OAS": "10"}),
+                              policy_set=ps)
+    assert rich.block_buys == ()
+    assert rich.funds.free_quote == D("8999")    # min(9000, 9000 - 1)
+
+    thin = build_cycle_inputs(h.ledger, rules=rules,
+                              balance=snapshot(jpy_free="8990", free={"OAS": "10"}),
+                              policy_set=ps)
+    assert thin.funds.free_quote == D("8990")    # the exchange free side is smaller
+
+
+def test_complete_rules_do_not_trigger_the_indeterminate_block(h):
+    ps = policy_set_for((spec("exp-1"), "OAS/JPY"))
+    _store(h, ps)
+    bought = _intent(h, ps, key="live1:entry")
+    _observe(h, bought, order_id="o1")
+    _fill(h, fill_id="f1", order_id="o1", symbol="OAS/JPY", side="buy", amount="10",
+          price="100", executed_at=1000.0, fee_amount="1", fee_currency="JPY")
+    _finish(h, bought)
+
+    result = build_cycle_inputs(h.ledger, rules=rules_for("OAS/JPY"),
+                                balance=snapshot(jpy_free="8999", free={"OAS": "10"}),
+                                policy_set=ps)
+
+    assert result.block_buys == ()
+    assert "balance_expectation_indeterminate" not in result.block_buys
+    assert result.funds == Funds(D("10000"), D("1001"), D("8999"))
+
+
+# ---- L4b-5a-3 / bug 2: a negative net capital must not stop the sells ----------------------
+def test_negative_net_deposits_do_not_stop_the_sells(h):
+    from docich.trading.live.ledger import Cashflow
+    from docich.trading.live.signals import LiveSignals
+    from docich.trading.live.sizing import size_orders
+
+    ps = policy_set_for((spec("exp-1"), "OAS/JPY"), (spec("exp-1"), "XYM/JPY"))
+    _store(h, ps)
+    bought = _intent(h, ps, key="live1:entry")
+    _observe(h, bought, order_id="o1")
+    _fill(h, fill_id="f1", order_id="o1", symbol="OAS/JPY", side="buy", amount="10",
+          price="100", executed_at=1000.0, fee_amount="1", fee_currency="JPY")
+    _finish(h, bought)
+    # The ledger allows withdrawing more than was deposited; the net capital is then -500.
+    h.ledger.record_cashflow(
+        h.lease,
+        Cashflow("cf-withdrawal", "withdrawal", "JPY", "10500", "owner_manual", 2000.0),
+        now=2000.0,
+    )
+
+    exits = (opportunity("OAS/JPY", "sell", oid="opp-sell"),)
+    cycle = build_cycle_inputs(h.ledger, rules=rules_for("OAS/JPY", "XYM/JPY"),
+                               balance=snapshot(jpy_free="0", free={"OAS": "10"}),
+                               policy_set=ps)
+
+    # Sizing runs first: before the fix the ledger's -500 itself is the failure (ValueError).
+    result = size_orders(
+        LiveSignals((opportunity("XYM/JPY", "buy", oid="opp-buy"),), exits, (), {}),
+        ps,
+        {"OAS/JPY": _sell_market()},
+        cycle.held,
+        cycle.funds,
+        now=NOW,
+        decided_keys=cycle.decided_keys,
+        open_buy_symbols=cycle.open_buy_symbols,
+        open_sell_symbols=cycle.open_sell_symbols,
+        legacy_position_symbols=cycle.legacy_position_symbols,
+        ambiguous_position_symbols=cycle.ambiguous_position_symbols,
+        sell_attempts=sell_attempts_for(h.ledger, exits, cycle.held, ps),
+        buys_blocked=bool(cycle.block_buys),
+    )
+
+    assert cycle.funds.capital == D("0")         # the ledger's -500 is floored for sizing
+    assert cycle.block_buys == ()
+    assert len(result.sells) == 1
+    assert result.sells[0].position_id == bought.position_id
+    assert (result.sells[0].amount, result.sells[0].price) == (D("10"), D("100"))
+    assert result.buys == ()
+    assert [(skip.symbol, skip.side, skip.reason_code) for skip in result.skipped] == [
+        ("XYM/JPY", "buy", "no_capital_recorded")]

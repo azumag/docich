@@ -19,6 +19,16 @@ and the affected symbol is reported in ``problems``; the rest of the inputs are 
 filled, so other symbols' sells can still be planned (a symbol whose cost basis is
 unavailable cannot be sold, only reported).
 
+The expected quote balance is only trusted when ``expected_balances`` can prove it: a fill
+of a symbol absent from ``rules`` makes every currency cell ``indeterminate``, so the free
+quote is set to 0 and buys are blocked with ``balance_expectation_indeterminate`` (the
+rest of the inputs are still returned).  Otherwise the cell's ``slack`` -- how far an
+unknown fee may have moved the total -- is subtracted from the ledger side, so the free
+quote stays on the safe side.  ``Funds.capital`` is the ledger's net cashflow floored at
+zero: withdrawing past the deposits can make the net negative, and sizing reports
+``no_capital_recorded`` for buys (sells are still planned) instead of refusing the whole
+cycle.
+
 ``sell_attempts_for`` counts, per exit opportunity, the decision keys of the attempts
 already recorded for that position.  The key carries the digest the position was entered
 under (falls back to the current policy digest only when the entry digest is unknown),
@@ -45,6 +55,7 @@ if TYPE_CHECKING:  # imported for annotations only: keeps this module light at i
 ZERO = Decimal(0)
 FEE_RATE_UNKNOWN = "fee_rate_unknown"
 COST_BASIS_UNAVAILABLE = "cost_basis_unavailable"
+BALANCE_EXPECTATION_INDETERMINATE = "balance_expectation_indeterminate"
 
 
 @dataclass(frozen=True)
@@ -88,10 +99,20 @@ def build_cycle_inputs(ledger: LiveLedger, *, rules: Mapping[str, MarketRules],
 
     expected = expected_balances(ledger, rules)
     jpy_expected = expected.get("JPY")
-    expected_jpy_total = ZERO if jpy_expected is None else jpy_expected.total
     jpy_free = _asset_free(balance, "JPY")
-    free_quote = max(ZERO, min(jpy_free, expected_jpy_total - exposure.reserved_quote))
-    funds = Funds(capital=capital, deployed=deployed + exposure.notional, free_quote=free_quote)
+    if jpy_expected is not None and jpy_expected.indeterminate:
+        # A fill of an unruled symbol may have moved JPY by any amount: the ledger total
+        # proves nothing, so no quote is free this cycle (sells are still planned).
+        free_quote = ZERO
+        block_buys.add(BALANCE_EXPECTATION_INDETERMINATE)
+    else:
+        expected_jpy_total = ZERO if jpy_expected is None else jpy_expected.total
+        slack = ZERO if jpy_expected is None else jpy_expected.slack
+        free_quote = max(
+            ZERO, min(jpy_free, expected_jpy_total - slack - exposure.reserved_quote)
+        )
+    funds = Funds(capital=max(ZERO, capital), deployed=deployed + exposure.notional,
+                  free_quote=free_quote)
 
     rows_by_symbol: dict[str, list[views.PositionRow]] = {}
     for row in views.open_position_rows(ledger):
