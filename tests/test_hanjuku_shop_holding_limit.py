@@ -311,3 +311,28 @@ def test_refusal_shop_snapshot_detaches_nested_purchase_row(ready):
     original_row[1] = 1
     assert metric['shop_state']['last_buy']['row'][1] == 60
     assert metric['shop_state']['want'][1] == 60
+
+
+def test_used_card_lowers_the_buy_deficit(ready):
+    """A spent copy opens hold_room so the next ask is the deficit, not a 99 probe."""
+    mem = ready
+    mem['card_stock'] = {'ノリウツール': 40}
+    b.note_card_used(mem, 'ノリウツール')
+    b.note_card_used(mem, 'ノリウツール')
+    assert b.held_estimate(mem, 'ノリウツール') == 38
+    assert b.hold_room(mem, 'ノリウツール') == 61
+
+
+def test_used_ledger_resets_on_a_panel_read(ready):
+    """A fresh panel read is the truth; the used-since-read count is dropped."""
+    mem = ready
+    mem['card_stock'] = {'ノリウツール': 40}
+    b.note_card_used(mem, 'ノリウツール')
+    mem['card_stock'] = {'ノリウツール': 40}
+    # A panel read of 40 overrides the used count (the copy is back in stock or
+    # the count was already reflected): the used ledger is cleared for it.
+    mem.setdefault('card_bought_since_read', {})
+    mem.setdefault('card_held_floor', {})
+    from docich.hanjuku.strategy.kit import _observe_card_stock
+    _observe_card_stock(mem, {'rows': [{'card': 'ノリウツール', 'stock': 40}]})
+    assert b.held_estimate(mem, 'ノリウツール') == 40
