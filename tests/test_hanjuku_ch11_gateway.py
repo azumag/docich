@@ -303,3 +303,24 @@ def test_a_partly_failed_camp_still_returns():
     mem['flow'] = {'recall_goal_failures': {'134,120': {'アルマムーン': 9}}}
     recall = {'target': [134, 120], 'origin': [640, 340]}
     assert hanjuku_map._recall_exhausted(mem, recall) is False
+
+
+def test_a_plan_that_names_a_lost_source_is_invalidated():
+    """g1190 2026-11-17: タタール fell while the plan still sortied from it.
+
+    The plan stayed adopted for 8,400 ticks and no order could launch.
+    """
+    from docich.hanjuku.strategy.replan import _plan_has_foreign_source
+    mem = memory(['マランマ', 'ゴンダル'])
+    stored = {'orders': [
+        {'purpose': 'retake', 'source': 'タタール', 'target': 'ネペンテ'},
+        {'purpose': 'move', 'source': 'アルマムーン', 'target': 'タタール'},
+    ]}
+    assert _plan_has_foreign_source(mem, stored) is True
+
+
+def test_a_plan_whose_sources_are_owned_stays():
+    from docich.hanjuku.strategy.replan import _plan_has_foreign_source
+    mem = memory(['マランマ', 'ゴンダル'])
+    stored = {'orders': [{'purpose': 'retake', 'source': 'アルマムーン', 'target': 'タタール'}]}
+    assert _plan_has_foreign_source(mem, stored) is False
