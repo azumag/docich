@@ -150,13 +150,28 @@ def event_text_advance(mem, phase, kind, key, actions, guarded=False):
     The counter lives in the policy memory, which the brain persists on every
     decision, so it survives the fresh per-observation subprocess. Any action,
     a phase/kind change, or a changed line resets it. A line still being
-    typed out keeps the count: the new text only extends the previous one.
+    typed out keeps the count and overrides the no-action requirement: the
+    new text only extends the previous one.
     """
     watch = mem.get('event_text_watch') or {}
     raw = watch.get('count') if isinstance(watch, dict) else None
+    # The dialogue typewriter extends the line every frame; another rule's
+    # generic confirm does not make it a different screen (g1270 48-7: the
+    # alternating concert/event holds each planned a pad, so the count never
+    # even started). Keep the last text key so a line still typing counts
+    # while a planned action exists.
+    last = mem.get('event_text_last')
+    typing = (isinstance(last, str) and isinstance(key, str)
+              and last.startswith('text:') and key.startswith('text:')
+              and len(key) > len(last) and key.startswith(last))
+    if kind == 'text' and isinstance(key, str) and key.startswith('text:'):
+        mem['event_text_last'] = key
+    else:
+        mem.pop('event_text_last', None)
     if guarded:
         count = 0
-    elif phase in EVENT_TEXT_ADVANCE_PHASES and kind == 'text' and not actions:
+    elif phase in EVENT_TEXT_ADVANCE_PHASES and kind == 'text' and (
+            not actions or typing):
         count = (raw + 1 if _same_event_line(watch, key)
                  and type(raw) is int and raw >= 0 else 1)
     else:

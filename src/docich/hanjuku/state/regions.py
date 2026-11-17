@@ -303,6 +303,7 @@ KEY_OWNERSHIP = {
     'equivalent_launch_miss': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 同等発進ミス手順状態
     'equivalent_sortie_cancels': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 同等出撃キャンセルガード手順状態
     'event_text_watch': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # イベント文面停滞監視の自己消去型
+    'event_text_last': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # タイプライター文字送り検出の直前文面キー
     'expect_menu': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # メニュー期待のナビ状態
     'flow': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 領域dict自体の防御的pop
     'general_list_hold': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 将軍リスト画面ホールド
