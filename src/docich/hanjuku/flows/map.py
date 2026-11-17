@@ -2386,7 +2386,15 @@ def _rollback_unverified_launch(mem, step, probe, markers, reason=None):
     observed = {'general': general, 'source': source, 'target': probe.get('target'),
                 'markers': [list(b) for b in markers], 'reads': probe.get('reads'),
                 'misses': misses[step]}
-    if misses[step] >= LAUNCH_MISS_LIMIT:
+    # A view that shows only the hero's own marker cannot distinguish a new
+    # unit mark, so "no marker" is not evidence that the launch failed
+    # (g1190 2026-11-18: タプロベイン→タタール failed twice on the same single
+    # marker while 12 generals stood at the source). Give the retry room
+    # instead of ending the month's order.
+    miss_limit = LAUNCH_MISS_LIMIT
+    if len(markers or ()) == 1:
+        miss_limit = LAUNCH_MISS_LIMIT * 3
+    if misses[step] >= miss_limit:
         _plan_region(mem).setdefault('orders', {})[step] = 'failed'
         drop_retired_step_context(mem)
         _record(mem, 'sortie_launch_failed', chart_step=step, general=general,
