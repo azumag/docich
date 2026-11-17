@@ -794,3 +794,48 @@ def test_open_position_rows_are_ordered_by_opened_at_not_by_id(harnesses):
     assert [row.opened_at for row in rows] == [1001.0, 1002.0, 1003.0, 1004.0,
                                                1005.0, 1006.0, 1007.0, 1008.0]
     assert [row.symbol for row in rows] == list(reversed(symbols))
+
+
+# ---- h1: currencies_with_history (opening-balance precheck) ---------------------------------
+def test_currencies_with_history_reads_cashflows_both_fill_sides_and_a_known_fee(harnesses):
+    h = harnesses(symbols=("OAS/JPY", "XRP/JPY"))       # the harness deposit is a JPY cashflow
+    oas = _intent(h, key="h1-oas")
+    _order(h, oas, order_id="h1-oas-order", amount="10", price="100")
+    _fill(h, fill_id="h1-oas-fill", order_id="h1-oas-order", symbol="OAS/JPY", side="buy",
+          amount="10", price="100", executed_at=1000.0, fee_amount="0.5", fee_currency="OAS")
+    xrp = _intent(h, key="h1-xrp", symbol="XRP/JPY")
+    _order(h, xrp, order_id="h1-xrp-order", amount="10", price="100")
+    _fill(h, fill_id="h1-xrp-fill", order_id="h1-xrp-order", symbol="XRP/JPY", side="buy",
+          amount="10", price="100", executed_at=1001.0, fee_status="unknown")
+
+    # JPY from the cashflow and both quotes, OAS and XRP from the bases, OAS also from its fee.
+    assert views.currencies_with_history(h.ledger) == frozenset({"JPY", "OAS", "XRP"})
+
+
+def test_currencies_with_history_of_an_empty_ledger_is_empty(ws):
+    ledger = ws.open_ledger()
+    try:
+        assert views.currencies_with_history(ledger) == frozenset()
+    finally:
+        ledger.close()
+
+
+def test_currencies_with_history_ignores_a_malformed_fill_symbol_without_raising(h):
+    intent = _intent(h, key="h1-malformed")
+    _order(h, intent, order_id="h1-malformed-order", amount="10", price="100")
+    # The ledger accepts the row; the view must ignore the symbol and still read the fee.
+    _fill(h, fill_id="h1-malformed-fill", order_id="h1-malformed-order", symbol="OASJPY",
+          side="buy", amount="10", price="100", executed_at=1000.0, fee_amount="0",
+          fee_currency="JPY")
+
+    assert views.currencies_with_history(h.ledger) == frozenset({"JPY"})
+
+
+def test_currencies_with_history_counts_a_fill_quote_with_no_cashflow(harnesses):
+    h = harnesses(opening=False)                          # no JPY cashflow at all
+    intent = _intent(h, key="h1-quote")
+    _order(h, intent, order_id="h1-quote-order", amount="10", price="100")
+    _fill(h, fill_id="h1-quote-fill", order_id="h1-quote-order", symbol="OAS/JPY", side="buy",
+          amount="10", price="100", executed_at=1000.0, fee_amount="0", fee_currency="OAS")
+
+    assert views.currencies_with_history(h.ledger) == frozenset({"OAS", "JPY"})

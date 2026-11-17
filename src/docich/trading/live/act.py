@@ -210,6 +210,7 @@ def place_orders(deps: "CycleDeps", state: "CycleState", ctx: "CycleContext",
 def decide_and_act(deps: "CycleDeps", state: "CycleState", ctx: "CycleContext") -> None:
     """The cycle hook: build (and record) the decisions, then place them in trade mode."""
     decisions = build_decisions(deps, state, ctx)
+    state.record_failures = decisions.record_failures
     if ctx.mode != "trade":
         return None
     if deps.executor.sender is None:

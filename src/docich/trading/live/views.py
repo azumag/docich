@@ -344,6 +344,26 @@ class OpenBuyExposure:
     reserved_quote: Decimal
 
 
+def currencies_with_history(ledger) -> frozenset[str]:
+    """Every upper-case currency the ledger has any history for: cashflows and fills.
+
+    A fill is history for both sides of its symbol and for its fee currency.  A symbol that is
+    not a well-formed ``BASE/QUOTE`` pair is ignored: this read must never raise.
+    """
+    seen: set[str] = set()
+    with ledger.read_cursor() as cur:
+        for (currency,) in cur.execute("SELECT currency FROM cashflows"):
+            seen.add(str(currency).upper())
+        for symbol, fee_currency in cur.execute("SELECT symbol, fee_currency FROM fills"):
+            parts = str(symbol).split("/")
+            if len(parts) == 2 and parts[0] and parts[1]:
+                seen.add(parts[0].upper())
+                seen.add(parts[1].upper())
+            if fee_currency is not None:
+                seen.add(str(fee_currency).upper())
+    return frozenset(seen)
+
+
 def open_buy_exposure(ledger, rules: Mapping[str, MarketRules]) -> OpenBuyExposure:
     """Remaining notional of every open buy and the quote it reserves (fee and unit included)."""
     marks = ",".join("?" for _ in _OPEN_INTENT_STATES)
