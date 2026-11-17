@@ -607,7 +607,7 @@ def battle_draw_hold_step(screen, mem, previous_kind, generic):
     return [{'type': 'wait', 'ms': 50}]
 
 
-def legacy_actions(frame: Frame, phase: str, state: dict) -> list[dict]:
+def legacy_actions(frame: Frame, phase: str, state: dict, mem: dict | None = None) -> list[dict]:
     """Reviewed v1 rules for screens without readable text or cursor.
 
     The v1 blind field route (confirm/left/right/up) is removed: map input
@@ -627,7 +627,8 @@ def legacy_actions(frame: Frame, phase: str, state: dict) -> list[dict]:
         return [pad('b' if picker else 'a')]
     if phase=='shop':
         return [pad('a' if shop_exit_confirmation(frame) else 'b')]
-    if phase=='title':
+    if phase=='title' or (phase=='title_or_intro'
+                          and isinstance(state.get('title_tries'), dict)):
         # Never press Start blind: a state that boots to the title must resume
         # the battery save (つづき) instead. g1190 2026-11-16 booted a saved
         # state that showed the title, Start began a new game and the whole
@@ -639,6 +640,19 @@ def legacy_actions(frame: Frame, phase: str, state: dict) -> list[dict]:
         tries['n'] = int(tries.get('n') or 0) + 1
         if tries['n'] <= TITLE_CONTINUE_TRIES:
             return [pad('down'), {'type': 'wait', 'ms': 200}, pad('a')]
+        # A run that already identified a chapter has progress worth keeping.
+        # Start on the title menu confirms はじめから, so falling through to it
+        # after the continue attempts fail would replace the battery save
+        # (g1190 2026-11-16). Hold and let the host restore instead; only a
+        # chapter-less cartridge (no save) may start a game here.
+        if mem is not None and type(mem.get('chapter')) is int:
+            if not tries.get('held'):
+                tries['held'] = True
+                decision_log._record(
+                    mem, 'title_continue_exhausted',
+                    observed_metric={'tries': tries['n'] - 1, 'chapter': mem['chapter']},
+                    reason='進行中の章があるためタイトルでつづきを再試行し尽くしてもSTARTを送らず、新規ゲームによる上書きを避ける')
+            return []
         return [pad('start')]
     if phase in {'field','field_menu','battle'}:
         # A readable battle panel goes through the risk-aware battle_flow.battle_step;
@@ -805,6 +819,12 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
     _journal(mem)['_departure_input']=departure_input
     mem['_experience']=experience if isinstance(experience, dict) else experience_module.empty()
     updated={**state,'phase':phase,'step':step,'phase_step':phase_step,'bot_version':BOT_VERSION}
+    if phase in ('field', 'field_menu', 'battle', 'battle_intro'):
+        # A title episode ends only when the run is back in the game world.
+        # g1190 2026-11-16: the counter survived the episode, so a later title
+        # return pressed Start without trying つづき at all. A title fade
+        # (title_or_intro) keeps the episode open instead of restarting it.
+        updated.pop('title_tries', None)
     updated['status_panel_feedback'] = None
     updated['map_cursor_feedback'] = None
     updated.pop('_records',None)
@@ -1260,7 +1280,7 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
         # 300 s input_stalled terminal (g1075 08:33). Bounded B, then retry.
         actions = menu_escape
     if actions is None:
-        actions=legacy_actions(frame,phase,updated)
+        actions=legacy_actions(frame,phase,updated,mem)
         draw_hold = battle_draw_hold_step(screen, mem, state.get('screen_kind'), actions)
         if draw_hold is not None:
             actions = draw_hold
@@ -1419,7 +1439,7 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
         # These recognized events must never borrow a scripted scene's blind A.
         actions=([pad('up')] if kind=='summer_bonus'
                  else [pad('b')] if kind=='month_menu' or event_confirmation
-                 else legacy_actions(frame,phase,updated))
+                 else legacy_actions(frame,phase,updated,mem))
         if kind == 'month_menu':
             # The legacy monthly A repeatedly opened the merchant from a
             # held background row. Cancel and re-read the menu instead; only
