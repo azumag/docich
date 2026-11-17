@@ -7597,6 +7597,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v1003-roster-resident",
             "hanjuku-chart-v1004-ch11-gateway",
             "hanjuku-chart-v1005-hub-gather",
+            "hanjuku-chart-v1006-hub-gather-rate",
             "hanjuku-chart-v985-roster-lost",
             "hanjuku-chart-v982-gbox",
             "hanjuku-chart-v984-roster-map-anchor",

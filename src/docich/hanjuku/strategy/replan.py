@@ -207,6 +207,7 @@ MOVE_ANY_GENERAL = chart_adjust.PROBE_GENERAL   # move from an unread list: the 
 # defenders needs more than four (g1163 2026-11-10 08:00-10:00: しまばら kept
 # producing successor defenders while ながはま held eight spares).
 INTERIM_WAVE_LIMIT = 6
+HUB_GATHER_PER_PLAN = 2      # spare generals moved into a chapter's hub per plan
 # Owner 2026-11-05: the boss dies to volume, not strength. Half-ripe eggs are
 # so weak that a strong general and a weak one remove about the same HP, so
 # every spare goes at the boss, from as many castles as possible (each keeps
@@ -1151,20 +1152,25 @@ def interim_candidates(mem, allow_sole=False) -> dict:
     if gate and gate['hub'] in owned and any(c not in owned for c in gate['back']):
         hub = gate['hub']
         hub_busy = busy | {g for o in moves for g in (o.get('general'),) if isinstance(g, str)}
-        for source in sorted((c for c in owned if c in gate['front'] and c != hub),
-                             key=lambda c: (_distance(chapter, c, hub), c)):
+        gather = []
+        for source in (c for c in owned if c in gate['front'] and c != hub):
             if source in heading:
                 continue
             free = [g for g in garrison.get(source) or () if g not in hub_busy]
             # Keep the castle defended: only a castle with a spare may send.
             spares = [g for g in _spares(free) if g != NAME]
-            if not spares:
-                continue
+            if spares:
+                gather.append((source, spares))
+        # The deepest stack goes first (g1190 2026-11-17 20:1x: 18 generals sat
+        # at the home castle while the hub held one, and the back-half waves
+        # could only start at the hub). Two moves per plan keep the month's
+        # sortie slots available for the attacks themselves.
+        gather.sort(key=lambda item: (-len(item[1]), _distance(chapter, item[0], hub), item[0]))
+        for source, spares in gather[:HUB_GATHER_PER_PLAN]:
             moves.append({'general': spares[0], 'target': hub, 'cards': [], 'source': source,
                           'after': None, 'purpose': 'move',
                           'note': f"暫定: 後半へ備えて{_general_label(spares[0])}を{source}から"
                                   f"中央の{hub}へ集める"})
-            break
     # A pending 四季王 site order with no companion needs an egg pair at one
     # castle: move a spare general to join a lone egg-holder (or the hero's
     # castle) so one can sortie while an egg-holder stays. g1075 held every
