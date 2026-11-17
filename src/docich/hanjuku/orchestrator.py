@@ -846,6 +846,7 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
     mem=_memory
     mem.pop('_map_registration_hold', None)
     mem.pop('_map_cursor_feedback', None)
+    mem.pop('_nav_hold_feedback', None)
     if phase != 'dialogue':
         mem.pop('trade_guard', None)  # release before an earlier foreground owner
     identity = hanjuku_roster.run_identity(run_identity)
@@ -889,6 +890,7 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
         updated.pop('title_tries', None)
     updated['status_panel_feedback'] = None
     updated['map_cursor_feedback'] = None
+    updated['nav_hold_feedback'] = None
     updated.pop('_records',None)
     updated.pop('_experience',None)
     screen=parse(frame,phase=phase)
@@ -1538,6 +1540,9 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
     map_feedback = mem.pop('_map_cursor_feedback', None)
     if map_feedback is not None:
         updated['map_cursor_feedback'] = {**map_feedback, 'step': step}
+    nav_feedback = mem.pop('_nav_hold_feedback', None)
+    if nav_feedback is not None:
+        updated['nav_hold_feedback'] = {**nav_feedback, 'step': step}
     _tally_observation(mem, kind, screen, actions)
     mem.pop('_adjusted',None)
     mem.pop('_interim',None)

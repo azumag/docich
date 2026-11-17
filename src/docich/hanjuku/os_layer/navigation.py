@@ -202,6 +202,10 @@ def nav_step(screen: Screen, mem, frame, goal, goal_name=None, step=None):
     mem['nav_last'] = {'screen': list(s), 'expected': expected, 'search': search,
                        'tick': int(mem.get('tick') or 0), 'kind': screen.kind}
     mem['nav_pressed'] = bool(actions)
+    # A measured directional hold: keep the short observation cycle so the
+    # walk does not idle ~1 s between steps (recall camp walk, G cursor).
+    if actions:
+        mem['_nav_hold_feedback'] = {'kind': screen.kind, 'actions': actions}
     return actions
 
 
@@ -611,6 +615,8 @@ def _y_jump_step(mem, frame):
     for d, neg, pos in ((dx, 'left', 'right'), (dy, 'up', 'down')):
         if abs(d) > Y_JUMP_TOL:
             actions.append(pad(pos if d > 0 else neg, min(56, max(1, round(abs(d) * 2)))))
+    if actions:
+        mem['_nav_hold_feedback'] = {'kind': 'world_map', 'actions': actions}
     return actions
 
 
@@ -665,6 +671,27 @@ def map_cursor_feedback(state, actions):
         return False
     expected = _short_roof_actions(reading.get('cursor'), reading.get('roof'), reading['kind'])
     return expected is not None and actions == expected
+
+
+def nav_hold_feedback(state, actions):
+    """One fresh observation of a measured directional nav hold.
+
+    Stamped only by nav_step and the Y-jump move loop, reset each observation,
+    and read back by the orchestrator. Lets the walk cadence stay short
+    (~500 ms) instead of idling ~1 s between holds.
+    """
+    reading = state.get('nav_hold_feedback')
+    if (not isinstance(reading, dict) or set(reading) != {'step', 'kind', 'actions'}
+            or type(state.get('step')) is not int or type(reading.get('step')) is not int
+            or reading['step'] != state['step']
+            or reading.get('kind') not in ('map', 'map_target', 'world_map')
+            or reading['kind'] != state.get('screen_kind')
+            or reading.get('actions') != actions):
+        return False
+    return all(isinstance(a, dict) and a.get('type') == 'pad'
+               and a.get('buttons') in (['left'], ['right'], ['up'], ['down'])
+               and type(a.get('hold_ms')) is int
+               for a in actions)
 
 
 def _align_on_roof(screen, mem, frame, kinds, key):
