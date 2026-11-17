@@ -341,6 +341,15 @@ def observation_interval_ms(state, actions=None):
         return 500
     policy=state.get('policy') or {}
     battle=policy.get('battle') or {}
+    if policy.get('y_jump') or policy.get('world_map_wait'):
+        # A world-map Y jump holds [] while the frame fades and moves the
+        # cursor with directional pads, neither of which is a readable menu
+        # for menu_navigation_feedback — so the whole open/move polls at
+        # 1500 ms. The jump recomputes dx/dy from the live cursor each frame
+        # and only confirms inside Y_JUMP_TOL, and a survey hold just waits
+        # for a readable frame — so re-reading sooner is safe and cuts the
+        # post-open wait the user sees.
+        return 500
     if state.get('screen_kind') == 'battle' and not battle and policy.get('battle_seen'):
         # g749 Quiche: the first complete HP17 panel still awaits the second
         # name reading. A 1500ms observation gap let HP fall to8 before B,
