@@ -205,3 +205,26 @@ def test_the_side_is_judged_without_the_y_map_flags():
     got = _recall_owned(mem, 11, flags_owned, origin=origin)
     assert 'クラボニア' in got or 'タタール' in got, got
     assert not set(got) & set(FRONT), got
+
+
+def test_an_unmeasured_camp_returns_to_the_shared_hub():
+    """Owner 2026-11-17 22:2x: the recall cursor walked at the cliff side.
+
+    With no measured camp cell the halves cannot be told apart, and the nearest
+    castle can lie across the chasm. The hub is the one castle both halves
+    reach, so it is the destination while the position is unknown.
+    """
+    from docich.hanjuku.state.regions import flow as _flow
+    mem = memory([*FRONT, 'タタール', 'クラボニア'])
+    _flow(mem)['recall'] = {'target': [134, 120], 'stage': 'dest'}
+    assert chart.gateway(11)['hub'] == 'タタール'
+    from docich.hanjuku.strategy.orders import _recall_goal
+    assert _recall_goal(mem) == 'タタール'
+
+
+def test_without_the_hub_the_nearest_castle_is_used_again():
+    from docich.hanjuku.state.regions import flow as _flow
+    mem = memory([*FRONT, 'クラボニア'])
+    _flow(mem)['recall'] = {'target': [134, 120], 'stage': 'dest'}
+    from docich.hanjuku.strategy.orders import _recall_goal
+    assert _recall_goal(mem) != 'タタール'

@@ -2153,6 +2153,15 @@ def _recall_goal(mem, flags=None):
     owned = _recall_owned(mem, chapter, sorted(c for c in _owned(mem) if c in cells
                                              and (flags is None or flags.get(c) == 'own')),
                           origin=state.get('origin'))
+    gate = chart.gateway(chapter)
+    if (gate and not state.get('origin') and state.get('target')
+            and gate['hub'] in owned):
+        # Without a measured camp cell the two halves cannot be told apart, and
+        # the nearest castle may lie across the chasm (owner 2026-11-17: the
+        # recall cursor walked at the cliff side). The hub is the one castle
+        # both halves can walk to, so it is the recall destination while the
+        # position is unknown.
+        return gate['hub']
     hero = [c for c in owned if NAME in ((_world(mem).get('garrison') or {}).get(c) or ())]
     if not hero:
         # The monthly status walk records the hero's own location. Use it only
