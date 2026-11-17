@@ -6,7 +6,7 @@
 
 - ドライバ: `tmp/hanjuku-local/core_driver.py`（リポジトリ外・未追跡）
 - ビューア: `tmp/hanjuku-local/viewer.py`（リポジトリ外・未追跡）
-- コア: `tmp/hanjuku-local/cores_161/snes9x_libretro.dylib`（ARM64 版は `cores_arm64/`）
+- コア: `tmp/hanjuku-local/cores_arm64/snes9x_libretro.dylib`（`cores_161/` は現行 state を読めない。§5.1）
 - ROM: `games/roms/hanjuku-hero.sfc`
 - 実行worktree: `.worktrees/hanjuku-local-main`（`HANJUKU_CODE_ROOT` で指定）
 
@@ -49,7 +49,7 @@ HANJUKU_CODE_ROOT=/Users/azumag/work/docich/.worktrees/hanjuku-local-main \
 HANJUKU_GENERATION=1190 \
 HANJUKU_SRAM_OUT=/Users/azumag/work/docich/tmp/hanjuku-local/saves/prod1190.srm \
 HANJUKU_INPROC=1 \
-HANJUKU_CORE=/Users/azumag/work/docich/tmp/hanjuku-local/cores_161/snes9x_libretro.dylib \
+HANJUKU_CORE=/Users/azumag/work/docich/tmp/hanjuku-local/cores_arm64/snes9x_libretro.dylib \
 HANJUKU_ROM=/Users/azumag/work/docich/games/roms/hanjuku-hero.sfc \
 HANJUKU_SAVE_EVERY=10 \
 HANJUKU_STATE=/Users/azumag/work/docich/tmp/hanjuku-local/states/prod1190.state \
@@ -187,6 +187,49 @@ HANJUKU_SRAM_IN=/Users/azumag/work/docich/tmp/hanjuku-local/saves/prod1190.srm \
 - **`.state.prev` に 1 世代前**があるので、そちらを `HANJUKU_STATE` に差し替えてロードする手もある。
 - 絶対にやってはいけない: タイトルで blind に START を連打して「はじめから」を選び、進行を消すこと
   （2026-11-16 の事故）。
+
+## 5.1 停止後の復帰手順（2026-11-17 実測）
+
+同じ日の復旧で踏んだ罠と、その順序。**この順でやらないとドライバは即終了する。**
+
+1. **コアを確認する**。`cores_161/` のコアでは現行の `.state` が読めない
+   （`retro_unserialize` が False）。`cores_arm64/snes9x_libretro.dylib` を使う。
+2. **古い terminal と停滞時計を消す**。`<runtime>/hanjuku_run.json` に
+   `terminal_reason` / `terminal_candidate` が残っていたり、`unchanged_since` が古いままだと、
+   1 観測目で `screen_stalled` になりドライバが終了する。編集前に `.bak-<日時>` へコピーし、
+   次の値を現在値（数値）へ戻す:
+   - `terminal_reason=null` / `terminal_candidate=null` / `terminal_evidence=null` / `terminal_at=0`
+   - `unchanged_since=now(monotonic)` / `unchanged_seconds=0`
+   - `frame_unchanged_since=now` / `frame_unchanged_seconds=0`
+   - `title_since=now` / `title_count=0` / `last_input_monotonic=now`
+   - `last_input_observations=observations`
+   - `playing=true`
+3. **runtime は `HANJUKU_CODE_ROOT` の中に置く**。外に置くと bot が
+   `invalid runtime`（`relative_to(ROOT)` が 3 要素でない）で判断不能になり、無入力のまま進む。
+4. **worktree 追随は run worktree の HEAD を detached で切り替える**。検証したい commit を
+   `.worktrees/hanjuku-local-main` で `git checkout --detach <sha>` してから再起動する。
+   `HANJUKU_CODE_ROOT` を別 worktree へ向けると 3. に当たる。
+
+### タイトルに落ちた state からの復帰（実測した入力列）
+
+タイトル画面の文字は `スクウェア19921992` だけで、メニュー項目は画像（読めない）。
+**中身のある `.srm` があれば**次の入力列でロードできる（実測: セーブ1 = だい11わ 57ねん9のつき）:
+
+| 入力 | 画面 |
+|---|---|
+| Start | メニュー（NEWGAME 等） |
+| A | `どれをロードなされますかな?` ＋ `ーセーブ1ーだい11わ …` |
+| A | `このデータをロードするのですな? うむッ! / いかんッ!` |
+| A | 遷移（画面は空） |
+| A | 先発隊ピッカー `…どのしょうぐんを せんぱつたいに くわえますか` ＝ **ロード完了** |
+
+- 再開前に **`.srm` が非ゼロか**必ず確認する。`prod1190.srm` は 8192 バイトすべてゼロで、
+  「セーブがある」と誤認しやすい（有効な例: `g1190-ch9run.srm` は `HAN2…` で非ゼロ）。
+- `.srm` が全ゼロだと同じ A が NEWGAME を確定し、導入文
+  `ひとりのゆうしゃが でんせつのけんを てに …` と名前入力へ進む（＝新規ゲーム）。
+- ドライバの `HANJUKU_LOAD_FLOW=1` はこの実測列（Start→A×5）を送り、各確定後に画面を読む。
+  新規ゲームの導入文や名前入力を検出したら **その場で停止してバッテリーSRAMを書き戻さない**（exit 3）。
+  先発隊ピッカー／`HP` 行を確認したらロード成功として本ループへ入る。タイトルメニューのままなら exit 2。
 
 ## 6. 既知の注意点・落とし穴
 
