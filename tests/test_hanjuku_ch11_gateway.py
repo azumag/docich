@@ -171,3 +171,18 @@ def test_an_unmeasured_camp_keeps_every_castle():
     from docich.hanjuku.strategy.orders import _recall_owned
     owned = sorted([*FRONT, 'タタール', 'クラボニア'])
     assert _recall_owned({}, 11, owned, origin=None) == owned
+
+
+def test_hub_adjacent_back_camp_does_not_switch_to_front_after_hub_failure():
+    """Devin review: a shared hub must not make the two sides tie."""
+    from docich.hanjuku.strategy.orders import _recall_owned
+    owned = sorted([*FRONT, 'タタール', 'クラボニア'])
+    got = _recall_owned({}, 11, owned, origin=[440, 452])
+    assert 'クラボニア' in got
+    assert 'タタール' in got
+    assert not set(got) & set(FRONT), got
+
+
+def test_only_hub_owned_keeps_hub_as_recall_target():
+    from docich.hanjuku.strategy.orders import _recall_owned
+    assert _recall_owned({}, 11, ['タタール'], origin=[440, 452]) == ['タタール']
