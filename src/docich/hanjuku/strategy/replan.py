@@ -1379,6 +1379,19 @@ def interim_candidates(mem, allow_sole=False) -> dict:
     # behind the whole retake/move queue — listing attacks last starved it.
     waves = [o for o in sorties['attack'] if chart.is_boss_castle(o.get('target'))]
     attacks = [o for o in sorties['attack'] if not chart.is_boss_castle(o.get('target'))]
+    # Staging and staffing can name the same leg in both directions (g1190
+    # 2026-11-18 79-9: move ジャンセニア→タプロベイン and move タプロベイン→ジャンセニア
+    # in one plan). They cancel out and spend two sortie slots, so keep the
+    # first direction only.
+    pairs = set()
+    unique_moves = []
+    for move_order in moves:
+        key = (move_order.get('source'), move_order.get('target'))
+        if (key[1], key[0]) in pairs:
+            continue
+        pairs.add(key)
+        unique_moves.append(move_order)
+    moves = unique_moves
     lead = [*known_retakes, *moves, *unread_retakes]
     # A lost hub leaves the army at home; the staging move leads so the next
     # month's wave starts from a castle near the hub instead of the home
@@ -1395,6 +1408,12 @@ def interim_candidates(mem, allow_sole=False) -> dict:
         front, tail = lead[:1], lead[1:]
     for order in (*front, *staffing, *waves, *boss_wave_orders, *tail,
                   *attacks, *stage_more, *rotation, *wave_orders):
+        if order.get('purpose') == 'move':
+            leg = (order.get('source'), order.get('target'))
+            if (leg[1], leg[0]) in pairs:
+                # The opposite leg is already planned: the two cancel out.
+                continue
+            pairs.add(leg)
         # A generic source-list probe at a measured one-general castle is
         # not a feasible sortie. Only an arrival or a new joiner expected at
         # the hero's castle justifies opening that singleton, and even then

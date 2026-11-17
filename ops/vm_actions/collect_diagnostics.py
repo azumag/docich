@@ -7618,6 +7618,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v1025-stage-rate",
             "hanjuku-chart-v1026-recall-from-target",
             "hanjuku-chart-v1027-launch-evidence",
+            "hanjuku-chart-v1028-move-dedup",
             "hanjuku-chart-v1020-recall-giveup",
             "hanjuku-chart-v1021-plan-invalid-source",
             "hanjuku-chart-v985-roster-lost",

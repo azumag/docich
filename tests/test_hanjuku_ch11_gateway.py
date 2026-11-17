@@ -433,3 +433,25 @@ def test_without_a_target_the_departure_still_locates_him():
     mem['sorties'] = {'S1': {'source': 'アルマムーン', 'target': None, 'status': 'en_route'}}
     _flow(mem)['recall'] = {'target': [134, 120], 'sorties': ['S1']}
     assert _recall_goal(mem) == 'アルマムーン'
+
+
+def test_opposite_move_legs_are_not_both_planned():
+    """g1190 2026-11-18 79-9: move ジャンセニア→タプロベイン and the reverse.
+
+    Both legs cancel out and spend two sortie slots, so the plan keeps one
+    direction only.
+    """
+    from docich.hanjuku.strategy.replan import interim_candidates
+    from docich.hanjuku.state.regions import world as _world
+    mem = {'chapter': 11, 'month': '79-9', 'tick': 100,
+           'captured': ['マランマ', 'ゴンダル', 'チリベット', 'タプロベイン', 'ジャンセニア'],
+           'lost': ['ネペンテ', 'タタール'], 'egg_types': {}, 'egg_uses': {}, 'house_eggs': {}}
+    _world(mem)['garrison'] = {
+        'タプロベイン': ['どうし'] + [f'g{i}' for i in range(17)],
+        'ジャンセニア': ['シャルドネ', 'バゲット'],
+        'アルマムーン': ['ゼウス'], 'ゴンダル': ['カシュー'], 'チリベット': ['ヘパイストス'],
+        'マランマ': ['ヘスティア']}
+    orders = [o for o in interim_candidates(mem).values() if isinstance(o, dict)]
+    legs = {(o.get('source'), o.get('target')) for o in orders if o.get('purpose') == 'move'}
+    for source, target in legs:
+        assert (target, source) not in legs, legs
