@@ -79,6 +79,17 @@ class AbGatePreflightTests(unittest.TestCase):
         }):
             self.assertEqual(self._check(), gate.CLEAR)
 
+    def test_gateway_exposes_stable_ab_gate_rejection_reason(self):
+        from ops.vm_actions import gateway
+        self.assertEqual(
+            gateway.reason_code(ValueError("ab gate refused")),
+            "ab_gate_refused",
+        )
+        self.assertEqual(
+            gateway.reason_code(ValueError("other rejection")),
+            "operation_rejected",
+        )
+
     def test_gate_output_is_never_copied_into_log_or_marker(self):
         self.script.write_text(
             "#!/usr/bin/env bash\necho SYNTHETIC_SECRET_VALUE >&2\nexit 1\n",
