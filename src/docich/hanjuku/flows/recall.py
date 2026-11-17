@@ -700,8 +700,8 @@ def _camp_recall_step(screen: Screen, mem, frame, *, observed_camps=None):
         camps = _filter_recall_skip(mem, camps)
         if camps and _no_camper_in_roster(mem):
             now = int(mem.get('tick') or 0)
-            if now - int(mem.get('camp_phantom_tick') or 0) >= 100:
-                mem['camp_phantom_tick'] = now
+            if now - int(_flow(mem).get('camp_phantom_tick') or 0) >= 100:
+                _flow(mem)['camp_phantom_tick'] = now
                 _record(mem, 'camp_sighting_no_camper',
                         observed_metric={'camps': [list(c.get('target') or ()) for c in camps][:4]},
                         reason='将軍名簿が完全かつ新しいが野営中の将軍がいないため、見えているテントは野営でないとみなす')
