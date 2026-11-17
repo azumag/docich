@@ -255,3 +255,29 @@ def test_a_lost_hub_is_retaken_first_and_the_order_is_stable(monkeypatch):
     assert first == second, (first, second)
     targets = [target for purpose, target in first if purpose in ('retake', 'attack')]
     assert targets and targets[0] == 'タタール', targets
+
+
+def test_a_back_half_sortie_source_keeps_the_recall_in_the_back_half():
+    """The picker's ▲ is ambiguous; the departure castle still says the side.
+
+    Owner 2026-11-17: a general who retreated from a back-half castle stands in
+    a hollow under the hub, so a front-half destination walks into the cliff.
+    """
+    from docich.hanjuku.state.regions import flow as _flow
+    from docich.hanjuku.strategy.orders import _recall_owned
+    mem = memory([*FRONT, 'タタール', 'クラボニア'])
+    mem['sorties'] = {'S1': {'source': 'クラボニア', 'target': 'タタール'}}
+    _flow(mem)['recall'] = {'target': [134, 120], 'sorties': ['S1']}
+    got = _recall_owned(mem, 11, sorted([*FRONT, 'タタール', 'クラボニア']), origin=None)
+    assert 'クラボニア' in got
+    assert not set(got) & set(FRONT), got
+
+
+def test_a_front_half_sortie_source_does_not_restrict_the_recall():
+    from docich.hanjuku.state.regions import flow as _flow
+    from docich.hanjuku.strategy.orders import _recall_owned
+    mem = memory([*FRONT, 'タタール', 'クラボニア'])
+    mem['sorties'] = {'S1': {'source': 'ゴンダル', 'target': 'クラボニア'}}
+    _flow(mem)['recall'] = {'target': [134, 120], 'sorties': ['S1']}
+    owned = sorted([*FRONT, 'タタール', 'クラボニア'])
+    assert _recall_owned(mem, 11, owned, origin=None) == owned
