@@ -517,3 +517,15 @@ def test_the_hero_hub_move_is_startable_but_a_hero_sortie_is_not():
               'after': None, 'purpose': 'attack', 'note': 'x'}
     assert chart_adjust.startable(move, sit) is None
     assert chart_adjust.startable(attack, sit) == 'hero_not_dispatchable'
+
+
+def test_the_hero_hub_move_keeps_its_permission_through_the_plan_build():
+    """g1190 2026-11-18: the hero stayed home while the plan named only attacks.
+
+    The plan rebuild copies known fields into each order; dropping the
+    hero_hub_move flag made startable() reject the move again.
+    """
+    import inspect
+    from docich.hanjuku.strategy import replan
+    src = inspect.getsource(replan._mechanical_chart)
+    assert "'hero_hub_move': True" in src
