@@ -107,7 +107,9 @@ def test_hero_guard_is_lifted_only_on_chapter_nine():
         assert chart_adjust.hero_guard_short(names, 'ゼウス') is False
         assert chart_adjust.hero_guard_short(names, 'ヴィーナス') is False
     with chart.map_context({'chapter': 5}):
-        assert chart_adjust.hero_guard_short(names, 'ゼウス') is True
+        # Owner 2026-11-17: the hero alone satisfies the guard everywhere now,
+        # not only on chapter 9's road.
+        assert chart_adjust.hero_guard_short(names, 'ゼウス') is False
     assert chart.guard_free(9) and not chart.guard_free(5)
 
 

@@ -38,7 +38,9 @@ CARD_NAMES = frozenset({
 # when the hero falls. An off-chart order leaves this many other generals
 # with the hero; the hero leaving is a separate decision. With a single
 # castle of ours the hero may be left alone, or nothing could ever attack.
-HERO_CASTLE_GUARD = 2
+# Owner (2026-11-17): 城はしゅじんこうでも一人残して出撃できるように -- the
+# hero alone now satisfies the guard, so every other general may sortie.
+HERO_CASTLE_GUARD = 0
 
 
 def hero_guard_short(names, general, unavailable=(), *, sole_castle=False) -> bool:
@@ -46,9 +48,10 @@ def hero_guard_short(names, general, unavailable=(), *, sole_castle=False) -> bo
 
     ``names`` is one castle's general list; ``unavailable`` (marching, location
     unknown) never guards. A general not in the list (a spare picked on the
-    real list) still takes one of the others. Owner 2026-11-06: the guard is
-    never lifted, not even for our only castle — an emptied castle falls to
-    the next enemy and ends the game.
+    real list) still takes one of the others. Owner 2026-11-17: the hero
+    alone satisfies the guard (しゅじんこう一人残して出撃可), so this stays
+    False while the hero stays; an emptied castle — the hero leaving too —
+    is still a separate rule, since an empty castle falls to the next enemy.
     """
     if chart.guard_free():
         return False        # chapter 9's road: rear castles sit behind the front

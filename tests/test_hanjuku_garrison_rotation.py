@@ -47,10 +47,11 @@ def test_a_surplus_rear_general_moves_to_the_front():
                   'ゴーメン': ['アポロン'],
                   'アルマムーン': ['どうし', 'ゼウス', 'アルテミス']})
     moves = rotation(mem)
-    assert [(o['source'], o['target']) for o in moves] == [('ナキューメラ', 'キカンドン')]
+    # Owner 2026-11-17: the hero alone satisfies the guard, so the home castle
+    # can spare a general too (アルマムーン stays どうし + one companion).
+    assert [(o['source'], o['target']) for o in moves] == [('アルマムーン', 'キカンドン')]
     assert moves[0]['garrison_rotate'] is True and moves[0]['purpose'] == 'move'
-    # 余剰を出す城は1人残す（2人 -> 1人）。
-    assert len(_world(mem)['garrison']['ナキューメラ']) - 1 == 1
+    assert len(_world(mem)['garrison']['アルマムーン']) - 1 == 2
 
 
 def test_a_far_rear_castle_never_sends_its_last_defender():
@@ -58,18 +59,21 @@ def test_a_far_rear_castle_never_sends_its_last_defender():
                   'ゴーメン': ['アポロン'],
                   'アルマムーン': ['どうし', 'ゼウス', 'アルテミス']})
     moves = rotation(mem)
-    assert moves == []
     # 最前線の人数を増やすためでも、遠い城の最後の守備将軍は出さない。
+    # 主人公1人を残せる本城だけが余剰を送れる（Owner 2026-11-17）。
+    assert moves and all(o['source'] != 'ゴーメン' for o in moves)
 
 
-def test_the_home_castle_never_loses_its_guard():
+def test_the_home_castle_may_send_surplus_leaving_the_hero_alone():
     mem = memory({'キカンドン': ['アテナ'],
                   'カストーラ': ['レモン'],
                   'ナキューメラ': ['ソーピニヨン'],
                   'ゴーメン': ['アポロン'],
                   'アルマムーン': ['どうし', 'ゼウス', 'アルテミス']})
-    # 本城は3人で目標1人を上回るが、主人公の隣に2人残せないので送らない。
-    assert all(o['source'] != 'アルマムーン' for o in rotation(mem))
+    # 本城は3人で目標1人を上回る。Owner 2026-11-17: 主人公一人を残して将軍を
+    # 出せるので、余剰の将軍は本城からも送られる（主人公自身は送らない）。
+    assert any(o['source'] == 'アルマムーン' and o['general'] != 'どうし'
+               for o in rotation(mem))
 
 
 def test_an_unread_transfer_holds_the_target_until_its_list_is_read():

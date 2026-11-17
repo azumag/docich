@@ -79,12 +79,13 @@ def _order_hero_alternatives(order, mem, names, relaxed=True):
             # Owner 2026-10-30 (定常的にボス城へ進行): strict guards may leave
             # no sortie-able general even at the hero's castle - g1075 held
             # every site order pending for an hour while a lone egg-holder
-            # guarded each castle. An egg-holder still goes when the hero
-            # keeps one other general beside him. Only the hero's castle
-            # relaxes: an egg-less guard elsewhere lost アルカ to a summon.
+            # guarded each castle. An egg-holder still goes while the hero
+            # stays. Only the hero's castle relaxes: an egg-less guard
+            # elsewhere lost アルカ to a summon.
+            # Owner 2026-11-17 (しゅじんこう一人残し): the hero alone now
+            # satisfies the guard, so no extra general need stay beside him.
             candidates = [g for g in _hero_alternatives(mem, names)
-                          if g in present and _holds_egg(mem, g)
-                          and len(present - {g, NAME}) >= 1]
+                          if g in present and _holds_egg(mem, g)]
     # g706's selected シェーブル (27 HP, combat 4) entered a long road egg
     # fight; the isolated-tested hero has 90 HP/combat 14. Keep companions
     # with comparable primary stats, using the existing strength-gap rules.
