@@ -605,7 +605,8 @@ class CornerRotationManager:
             self._manual_queue_path.unlink()
             return None
 
-    def queue_manual(self, game, *, trigger_at=None, resume_latest=False, new_game=False):
+    def queue_manual(self, game, *, trigger_at=None, resume_latest=False, new_game=False,
+                     resume_from=None):
         """Queue one owner request, optionally with a not-before trigger.
 
         Immediate requests preserve the existing behavior. A future trigger is
@@ -615,6 +616,11 @@ class CornerRotationManager:
         """
         if type(resume_latest) is not bool or (resume_latest and (game != 'hanjuku-hero' or trigger_at is not None)):
             raise RotationError('invalid resume request', reason_code='invalid_value')
+        if resume_from is not None and (
+                game != 'hanjuku-hero' or not isinstance(resume_from, str)
+                or resume_latest or new_game or trigger_at is not None
+                or not resume_from.startswith('g')):
+            raise RotationError('invalid explicit resume request', reason_code='invalid_value')
         if type(new_game) is not bool or (new_game and (
                 game != 'hanjuku-hero' or resume_latest or trigger_at is not None)):
             raise RotationError('invalid new game request', reason_code='invalid_value')
@@ -703,13 +709,16 @@ class CornerRotationManager:
                     queued['new_game'] = True
                 if requested_trigger is not None:
                     queued["trigger_at"] = requested_trigger
-                if resume_latest:
+                if resume_from is not None:
+                    queued['resume_from'] = resume_from
+                if resume_latest or resume_from is not None:
                     from .hanjuku_resume import prepare, recover_prepared
                     from .config import load_game
-                    queued = recover_prepared(self.g, chosen) or dict(queued, resume_latest=True)
+                    queued = recover_prepared(self.g, chosen) or dict(
+                        queued, resume_latest=resume_latest or resume_from is not None)
                     prepare(self.g, load_game(self.g, game), queued)
                 atomic_write_json(self._manual_queue_path, queued)
-            if resume_latest:
+            if resume_latest or resume_from is not None:
                 from .hanjuku_resume import publish
                 publish(self.g, queued)
             result = {"status": ("scheduled" if requested_trigger is not None

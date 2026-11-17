@@ -62,12 +62,18 @@ def _start_mode(record):
     return mode
 
 
-def _latest_boundary(g, game, *, explicit_resume=False, _before_generation=None):
+def _latest_boundary(g, game, *, explicit_resume=False, _before_generation=None,
+                     _only_runtime_id=None):
     """Order runs by generation, then prove the latest run's reached boundary.
 
     Unknown or incomplete newer progress never authorizes a rewind or a new
     game. Only explicit resume after an authorized unsaved manual stop may
     inspect an earlier generation, with the same boundary/save verification.
+
+    ``_only_runtime_id`` narrows the candidate set to one named runtime — the
+    operator's explicit resume target — while keeping the same boundary,
+    identity and checkpoint verification. A named runtime that fails those
+    checks still fails closed; it is never skipped for the next-oldest.
     """
     from . import hanjuku_run
     from .adapters.retroarch import resolve_rom
@@ -121,6 +127,9 @@ def _latest_boundary(g, game, *, explicit_resume=False, _before_generation=None)
     if _before_generation is not None:
         choices = {runtime: generation for runtime, generation in choices.items()
                    if generation < _before_generation}
+    if _only_runtime_id is not None:
+        choices = {runtime: generation for runtime, generation in choices.items()
+                   if runtime.name == _only_runtime_id}
     if not choices:
         return None
     latest = max(choices.values())
@@ -337,15 +346,19 @@ def prepare(g, game, queued):
             return  # a verified retry must not select from its own new run
         # Explicit new games boot in the new generation's isolated save dirs.
         # Do not read, copy, delete or overwrite any previous run's save bytes.
+        resume_from = queued.get('resume_from')
+        explicit = queued.get('resume_latest') is True or resume_from is not None
         selection = (dict(mode='fresh', source_boundary=None) if new_game else
-                     _latest_boundary(g, game, explicit_resume=queued.get('resume_latest') is True))
-        if selection is None and queued.get('resume_latest') is True:
+                     _latest_boundary(g, game, explicit_resume=explicit,
+                                      _only_runtime_id=resume_from))
+        if selection is None and (queued.get('resume_latest') is True
+                                  or resume_from is not None):
             raise AdapterError('no remaining checkpoint')
         selection = selection or dict(mode='fresh', source_boundary=None)
         request = dict(schema=1, status='prepared', start_policy=START_POLICY,
             start_mode=selection['mode'], source_boundary=selection['source_boundary'],
-            dispatch_source=queued.get('source', 'manual' if queued.get('resume_latest') is True else 'automatic'),
-            explicit_resume=queued.get('resume_latest') is True,
+            dispatch_source=queued.get('source', 'manual' if explicit else 'automatic'),
+            explicit_resume=explicit,
             request_id=queued['request_id'], corner=queued['corner'],
             selected_at=queued['selected_at'])
         if new_game:
