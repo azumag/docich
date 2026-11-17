@@ -18,7 +18,7 @@ from .battle import _card_battle_reading, _card_gate_close, _hero_retreat_open, 
 from ..judgment.battle import (BEHIND_EGG_RATIO_TENTHS, CARD_ANNOUNCE_LIMIT, CARD_LIST_CURSOR_LIMIT,
                                OKUNOTE_MAX_SELF_DAMAGE, SURVIVAL_CARDS, _available_rare_tactic, _battle_labels,
                                _behind, _card_damage_gate, _card_gate_alternatives, _card_gate_choice,
-                               _card_gate_refused, _card_use_unclassified, _command_open_wait, _critical_safe_card,
+                               _card_gate_refused, _card_use_unclassified, _command_open_wait, _confirmed_carried_kit, _critical_safe_card,
                                DEFENDER_EGG_OPEN_LIMIT, DEFENDER_SUMMON_SCROLL_LIMIT, EGG_WALL_DAMAGE,
                                _critical_survival_needed, _defender_egg_window, _defender_last_resort, _defender_summon_preempt,
                                _defender_summon_last_resort,
@@ -392,6 +392,23 @@ def _survival_menu(screen, mem, cur):
     final_read = ('きりふだ' in labels and rescue['cards_checked'] >= 3
                   and not rescue.get('cards_exhausted') and not rescue.get('final_card_read')
                   and attempted and attempted[-1] in (cur.get('cards_unclassified') or []))
+    # 携行が出撃確定で読めているなら、実メニューを開いて同じ一覧を再確認する
+    # 必要はない (#4431)。確定携行−確定使用の差分が空、または残りの全てが
+    # 選択ゲートを通らない (一覧実読みが必要な制御札を除く) なら、開いても
+    # 使える札は無いとメモリで確定できる。確定できない出撃や未読の実一覧は
+    # 従来通りメニューを開いて確認する。
+    if ('きりふだ' in labels and not rescue.get('cards_exhausted')
+            and not rescue.get('listed_cards')):
+        confirmed_kit = _confirmed_carried_kit(mem, cur)
+        if confirmed_kit is not None and all(
+                not _card_damage_gate(mem, cur, c, listed_cards=confirmed_kit)['allowed']
+                and not _card_damage_gate(mem, cur, c, listed_cards=confirmed_kit)['needs_live_list']
+                for c in confirmed_kit):
+            rescue['cards_exhausted'] = True
+            _record(mem, 'battle_card_menu_skipped_confirmed_kit', **_battle_labels(cur),
+                    observed_metric={'confirmed_kit': list(confirmed_kit),
+                                     'melee_balance': _melee_balance(cur)},
+                    reason='出撃確定の携行札と確定使用の差分から使える切り札が無いと分かるため、携行確認のためだけの実メニュー開放を省く')
     if (critical or rescue.get('egg_priority')) and egg_ready and not safe_card:
         label = 'たまごをつかう'
     elif ('きりふだ' in labels and (safe_card or not rescue.get('cards_exhausted'))
