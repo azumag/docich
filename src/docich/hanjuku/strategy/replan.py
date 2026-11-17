@@ -245,6 +245,7 @@ INTERIM_WAVE_LIMIT = 6
 GATEWAY_HUB_GUARD = 3        # the shared hub keeps two defenders while it sends
 STAGE_LOST_HUB_PER_PLAN = 4  # spares moved forward while the hub is the enemy's
 HUB_GATHER_PER_PLAN = 2      # spare generals moved into a chapter's hub per plan
+HUB_GATHER_ALL_PER_PLAN = 8  # owner 2026-11-18: gather the whole army at the hub
 ATTACK_MIN_HP_RATIO = 0.20   # measured HP/max below this is a wasted attack sortie
 # Owner 2026-11-05: the boss dies to volume, not strength. Half-ripe eggs are
 # so weak that a strong general and a weak one remove about the same HP, so
@@ -1231,8 +1232,12 @@ def interim_candidates(mem, allow_sole=False) -> dict:
         # 2026-11-18) and every retake marches the island; stage more per plan
         # so the front castle can start sending its own sorties sooner. One
         # source may contribute several spares — the home stack is the donor.
-        stage_limit = STAGE_LOST_HUB_PER_PLAN if stage_lost_hub else HUB_GATHER_PER_PLAN
-        per_source = STAGE_LOST_HUB_PER_PLAN if stage_lost_hub else 1
+        # Owner 2026-11-18 02:4x: once the hub is ours, gather the WHOLE army
+        # there (recruiting at the hub as well), instead of two spares a plan.
+        if stage_lost_hub:
+            stage_limit, per_source = STAGE_LOST_HUB_PER_PLAN, STAGE_LOST_HUB_PER_PLAN
+        else:
+            stage_limit, per_source = HUB_GATHER_ALL_PER_PLAN, HUB_GATHER_ALL_PER_PLAN
         staged = 0
         for source, spares in gather:
             for general in spares[:per_source]:
