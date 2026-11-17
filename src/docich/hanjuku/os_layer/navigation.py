@@ -614,10 +614,26 @@ def _y_jump_step(mem, frame):
     actions = []
     for d, neg, pos in ((dx, 'left', 'right'), (dy, 'up', 'down')):
         if abs(d) > Y_JUMP_TOL:
-            actions.append(pad(pos if d > 0 else neg, min(56, max(1, round(abs(d) * 2)))))
+            actions.append(pad(pos if d > 0 else neg, _jump_hold_frames(d)))
     if actions:
         mem['_nav_hold_feedback'] = {'kind': 'world_map', 'actions': actions}
     return actions
+
+
+def _jump_hold_frames(delta):
+    """Frames to hold toward the goal, finer near it.
+
+    The old ``abs(delta) * 2`` assumed half a view pixel per frame. Near the
+    castle that overshot: the cursor reached the goal, the held press carried
+    it past, and the next read steered it the other way (owner 2026-11-18:
+    「合うのに、そのあと明後日の方向に移動し、出撃が決定されないまま終わっている」).
+    Close range now uses a slower rate so the next observation can settle on
+    the castle; the far approach keeps the fast scale.
+    """
+    size = abs(delta)
+    if size <= 32:
+        return max(1, min(20, round(size)))
+    return min(56, max(1, round(size * 2)))
 
 
 SELECT_AFTER = 2               # unanchored map frames before SELECT re-places the cursor
