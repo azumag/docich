@@ -25,7 +25,8 @@ from ..judgment.battle import (BEHIND_EGG_RATIO_TENTHS, CARD_ANNOUNCE_LIMIT, CAR
                                _egg_before_retreat, _egg_rescue_pending, _egg_drop_evidence, _hero_retreat_needed, _hold_melee_egg, _melee_balance,
                                _healthy_melee_margin_evidence, _melee_continuation_evidence,
                                _stale_army_melee_hold,
-                               _migrate_card_evidence, _one_hit_lethal, _own_egg_empty, _own_egg_needed, _own_egg_positive,
+                               _dying_with_egg, _migrate_card_evidence, _one_hit_lethal, _own_egg_empty,
+                               _own_egg_needed, _own_egg_positive,
                                _survival_needed, _survival_state, _watch_card_melee, _watch_egg_drop,
                                _wounded_summoner, _summoner_return_risk, _rescue_rearm)
 from ..judgment.events import (BALLOON_FINCH_MAX_HP, _MONSTER_SKILLS, _monster_effectful, _monster_heal,
@@ -409,7 +410,7 @@ def _survival_menu(screen, mem, cur):
                     observed_metric={'confirmed_kit': list(confirmed_kit),
                                      'melee_balance': _melee_balance(cur)},
                     reason='出撃確定の携行札と確定使用の差分から使える切り札が無いと分かるため、携行確認のためだけの実メニュー開放を省く')
-    if (critical or rescue.get('egg_priority')) and egg_ready and not safe_card:
+    if (critical or _dying_with_egg(mem, cur) or rescue.get('egg_priority')) and egg_ready and not safe_card:
         label = 'たまごをつかう'
     elif ('きりふだ' in labels and (safe_card or not rescue.get('cards_exhausted'))
             and rescue['cards_checked'] < 3) or final_read:

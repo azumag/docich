@@ -2342,6 +2342,25 @@ def _own_egg_positive(mem, battle):
     return uses is not None and uses > 0
 
 
+def _dying_with_egg(mem, battle):
+    """この将軍が次の1〜2撃で倒れる見込みで、確定した卵が残っているか。
+
+    HP が敵の半分以下 (ally*10 <= enemy*5) の将軍は、開幕切り札を消費して
+    いる間に倒れて卵を撃てない。卵の変身だけが生存を保つため、切り札より
+    先に卵を選ぶ根拠とする (owner 2026-12: キッシュ 26 vs カペリーニ 63 が
+    切り札を消費して卵を使わず敗北)。確定回数の無い卵は fail-closed で
+    扱わず、未読なら従来の切り札優先のまま残す。
+    """
+    if not isinstance(battle, dict):
+        return False
+    hp, enemy = battle.get('ally_hp'), battle.get('enemy_hp')
+    if not (type(hp) is int and type(enemy) is int and hp > 0 and enemy > 0):
+        return False
+    if hp * 10 > enemy * 5:  # ally at or above half the enemy's HP: not dying
+        return False
+    return _own_egg_positive(mem, battle) and not _own_egg_empty(mem, battle)
+
+
 def _own_egg_needed(mem, battle, general_reading=None):
     """自軍の卵の必要性を現在HP・兵士数・両将軍の戦闘値で判定する。
 
