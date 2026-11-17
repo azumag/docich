@@ -7633,6 +7633,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v1020-recall-giveup",
             "hanjuku-chart-v1021-plan-invalid-source",
             "hanjuku-chart-v1041-egg-receipt-presence",
+            "hanjuku-chart-v1043-recall-picker-evidence",
             "hanjuku-chart-v985-roster-lost",
             "hanjuku-chart-v982-gbox",
             "hanjuku-chart-v984-roster-map-anchor",
@@ -13136,6 +13137,7 @@ HANJUKU_CAMP_DECISIONS = frozenset({
     'camp_found', 'camp_enter', 'camp_menu_not_opened', 'camp_menu_unread',
     'camp_position_unconfirmed', 'camp_recall_aborted', 'camp_recall_skipped',
     'camp_recall_unconfirmed', 'camp_recall_requested', 'camp_recall_input_sent',
+    'camp_recall_picker_not_open', 'camp_recall_scene_abandoned',
     'hero_recall_skipped', 'retreat_recheck_pending', 'retreat_recheck_unconfirmed',
     'retreat_recheck_invalidated', 'camp_fort_sortie', 'camp_hp_observation',
 })

@@ -9,7 +9,7 @@ from ..os_layer.commands import fort_list_batch, menu_to, pad
 from ..os_layer.navigation import _start_y_jump
 from ..os_layer.readers import _current, _cursor, _options, fort_list_open, is_camp_menu, is_fort_menu
 from ..os_layer.world import NAME
-from ..strategy.orders import _fort_recall_goal, _recall_goal
+from ..strategy.orders import _fort_recall_goal, _recall_goal, _recall_owned
 from ..state.regions import flow as _flow, journal as _journal
 
 
@@ -31,6 +31,33 @@ MENU_REOPEN_LIMIT = 3          # presses again per recall
 DOME_SCREEN_WAIT = 6           # other-screen observations after A on a dome before B
 BOSS_RETRY_TICKS = 120         # first wait before a camp is sent at the moving boss again
 BOSS_JUMP_LIMIT = 2            # Y jumps to the boss per redirect
+
+# #4468: a field general's blue G badge is the very same square as the real
+# いどう destination marker. On g1190 2026-11-17 the recall read a bare field
+# as 'map_target' (the G on an army sprite) and sent its A with no picker open;
+# the following `camp_recall_unconfirmed` was the silent failure. The badge
+# carries a red flag on a pole right above the square; the genuine marker has
+# a yellow/black border and no flag. Measured on all eight marker fixtures:
+# 16 flag-red pixels above the badge, 0 above every genuine marker. Requiring
+# this negative evidence before A keeps the confirmation on a real picker.
+BADGE_FLAG_MIN = 6
+
+
+def _picker_marker(screen, frame):
+    """The destination marker, or None when it is a field general's G badge."""
+    marker = screen.marker
+    if not marker or not isinstance(frame, Frame):
+        return marker
+    x, y = marker
+    reds = 0
+    for yy in range(max(0, y - 10), y):
+        for xx in range(max(0, x - 3), min(frame.width, x + 18)):
+            r, g, b = frame.pixel(xx, yy)
+            if r >= 190 and g <= 110 and b <= 110:
+                reds += 1
+                if reds >= BADGE_FLAG_MIN:
+                    return None
+    return marker
 
 
 def boss_phase(mem) -> bool:
@@ -353,6 +380,38 @@ def _bind_camp_origin(mem, state, candidates):
     state['origin'] = [world[0] + target[0] - screen[0],
                        world[1] + target[1] - screen[1]]
     state['origin_source'] = 'visible_roof'
+
+
+def _visible_recall_candidates(mem, state, frame):
+    """Visible own castles the camp may be recalled to on this chapter.
+
+    Even a blocked roof is a measured camera anchor for the ordinary picker,
+    so bind the origin from every candidate before filtering. #4468 extends
+    the field shortcut to gateway chapters; v1010/v1011's side judgement must
+    still keep a camp on its own half of the impassable cliff (plus the shared
+    hub). With no measured origin _recall_owned keeps all owned castles, so a
+    weak camera falls back to the whole-island picker rather than guessing a
+    side.
+    """
+    candidates = _visible_own_candidates(mem, frame)
+    _bind_camp_origin(mem, state, candidates)
+    chapter = mem.get('chapter') or 0
+    gate = chart.gateway(chapter)
+    if gate:
+        from ..os_layer.world import _owned
+        cells = chart.castles(chapter) or {}
+        allowed = _recall_owned(mem, chapter,
+                                sorted(c for c in _owned(mem) if c in cells),
+                                origin=state.get('origin'))
+        candidates = [c for c in candidates if c['castle'] in allowed]
+        # DSH #4480: the shared hub is reachable from both halves only in
+        # principle. A back-half camp sits in the hollow below タタール and a
+        # direct march walks into the cliff (v1017), so a same-side castle must
+        # win regardless of the roof scan order. A hub-only view is left to the
+        # ordinary picker instead of forcing that unsafe shortcut.
+        side = [c for c in candidates if c['castle'] != gate['hub']]
+        candidates = side or []
+    return candidates
 
 
 def _visible_move_dest_step(screen, mem, frame, state):
@@ -1043,15 +1102,16 @@ def _camp_recall_step(screen: Screen, mem, frame, *, observed_camps=None):
             return []              # the window is still fading in
         state.pop('menu_map_waits', None)
 
-        if mem.get('chapter') == 9 and not (state.get('boss') or state.get('boss_move')):
+        chapter = mem.get('chapter') or 0
+        visible_route = chapter == 9 or chart.gateway(chapter)
+        if visible_route and not (state.get('boss') or state.get('boss_move')):
             # Owner 2026-11-15 measured this on the chapter-9 corridor camp:
             # the field いどう lets the visible castle be picked where it
-            # stands. Other chapters keep the measured きかん picker flow.
-            candidates = _visible_own_candidates(mem, frame)
-            # Even a blocked roof is a measured camera anchor: it lets the
-            # きかん picker aim at another castle instead of confirming the
-            # camp's own (empty) marker every month.
-            _bind_camp_origin(mem, state, candidates)
+            # stands. #4468 extends it to gateway chapters (chapter 11): the
+            # whole-island picker needed several 1-hop observations to walk the
+            # ring to the goal, and a month scene closed it before the A.
+            # Other chapters keep the measured きかん picker flow.
+            candidates = _visible_recall_candidates(mem, state, frame)
             if state.get('gather'):
                 # Gathering at the last castle: never divert to the nearest
                 # visible castle, only to the gather target itself.
@@ -1113,7 +1173,18 @@ def _camp_recall_step(screen: Screen, mem, frame, *, observed_camps=None):
                 mem['uncertain'] = True
                 _hold_after_picker(mem, state)
             return [pad('b')] if screen.kind == 'world_map' else []
-        marker = screen.marker
+        marker = _picker_marker(screen, frame)
+        if screen.marker and not marker:
+            # #4468: the blue G belongs to a field general, not an open picker.
+            # Never send the recall A here — there is no destination to confirm
+            # — and leave the input to the ordinary field policy (no blind B on
+            # a screen whose kind came only from this badge).
+            _flow(mem).pop('recall', None)
+            mem['uncertain'] = True
+            _record(mem, 'camp_recall_picker_not_open', chart_step=None,
+                    observed_metric={'marker': list(screen.marker), 'stage': 'dest'},
+                    reason='青いGはフィールド将軍のバッジで行き先ピッカーが開いていないため、帰還Aを送らず中断する')
+            return []
         if state.get('boss'):
             return _boss_redirect_dest_step(screen, mem, frame, state, marker)
         if state.get('boss_move'):
