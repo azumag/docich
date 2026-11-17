@@ -61,6 +61,7 @@ def _rich_card(shop, name):
 # what is already held is refused and, before #3589, froze the bot.
 HOLD_CAP = 99
 SINCE_READ = 'card_bought_since_read'   # copies bought after the last panel read
+CARD_USED = 'card_used_since_read'      # copies spent since the last panel read
 HELD_FLOOR = 'card_held_floor'          # holding proved by a merchant refusal
 
 
@@ -70,20 +71,30 @@ def _count(table, name):
 
 
 def held_estimate(mem, name):
-    """Copies of ``name`` held now: last panel read + purchases since, never below a refusal's proof.
+    """Copies of ``name`` held now: last panel read + purchases since - spent, never below a refusal's proof.
 
     The panel is only read on a sortie, so merchant purchases do not show in
     ``card_stock`` for a while; counting them here keeps a second visit from
-    asking for a full 99 on top of them.
+    asking for a full 99 on top of them. A card used in battle is consumed, so
+    its count drops the moment it is spent — the buy then asks for only the
+    deficit instead of re-probing a full 99 and backing off on refusals.
     """
     stock = _count(mem.get('card_stock'), name)
-    return max(stock + _count(mem.get(SINCE_READ), name), _count(mem.get(HELD_FLOOR), name))
+    net = stock + _count(mem.get(SINCE_READ), name) - _count(mem.get(CARD_USED), name)
+    return max(net, _count(mem.get(HELD_FLOOR), name), 0)
 
 
 def note_card_bought(mem, name, qty):
     if type(qty) is int and qty > 0 and isinstance(name, str):
         ledger = mem.setdefault(SINCE_READ, {})
         ledger[name] = min(_count(ledger, name) + qty, 10 ** 4)
+
+
+def note_card_used(mem, name):
+    """Record one copy of ``name`` consumed so the next buy asks only the deficit."""
+    if isinstance(name, str) and name:
+        ledger = mem.setdefault(CARD_USED, {})
+        ledger[name] = min(_count(ledger, name) + 1, 10 ** 4)
 
 
 def hold_room(mem, name):

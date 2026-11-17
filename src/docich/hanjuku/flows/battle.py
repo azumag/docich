@@ -39,6 +39,7 @@ from ..os_layer.commands import _human_menu_open, pad
 from ..os_layer.readers import STATUS_NAMES
 from ..os_layer.world import NAME, CAPTURE_READ_DELAY, garrison_lost
 from ..strategy.campaign import _castle_label, observe_chapter_castle, observe_chapter_general
+from ..strategy.bargains import note_card_used
 from ..strategy.kit import _is_boss_order
 from ..strategy.execution import bound_fields
 from ..strategy.orders import (LONG_MARCH_TICKS, SITE_LATE_ENTRY_TICKS, _bind_sortie,
@@ -1439,6 +1440,9 @@ def battle_end(mem, next_kind, *, defense_continues=False, actor_continues=False
     stats[{'win': 'wins', 'loss': 'losses'}.get(outcome, 'unclassified')] += 1
     confirmed = len(cur.get('cards_used', []))
     stats['cards_confirmed'] = stats.get('cards_confirmed', 0) + confirmed
+    if cur.get('card_consumption_complete') is True:
+        for _used_name in cur.get('cards_used', []):
+            note_card_used(mem, _used_name)
     if stats.get('cards_used') is not None and cur.get('card_consumption_complete') is True:
         stats['cards_used'] += confirmed
     else:

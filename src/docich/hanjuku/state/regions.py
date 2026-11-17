@@ -110,6 +110,7 @@ KEY_OWNERSHIP = {
     'camp_status_seen': {'region': WORLD, 'lifetime': 'chapter', 'migrated': False},  # 観測済み野営ステータス
     'captured': {'region': WORLD, 'lifetime': 'chapter', 'migrated': False},  # 捕獲城の観測事実
     'card_bought_since_read': {'region': WORLD, 'lifetime': 'chapter', 'migrated': False},  # 最終パネル読み以降の購入枚数台帳
+    'card_used_since_read': {'region': WORLD, 'lifetime': 'chapter', 'migrated': False},  # 最終パネル読み以降の使用枚数台帳
     'card_bought_unseen': {'region': WORLD, 'lifetime': 'chapter', 'migrated': False},  # 未確認購入カード台帳
     'card_held_floor': {'region': WORLD, 'lifetime': 'chapter', 'migrated': False},  # 商人拒否で証明された所持下限台帳
     'card_stock': {'region': WORLD, 'lifetime': 'chapter', 'migrated': False},  # 観測した所持カード枚数
