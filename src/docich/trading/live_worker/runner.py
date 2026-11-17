@@ -14,7 +14,7 @@ Exit codes (module constants)::
     EXIT_CLOCK = 4        the exchange reader reports a clock-skew failure
     EXIT_LEASE_HELD = 5   another worker holds the writer lease (no status is written)
     EXIT_CODE_CHANGED = 6 the code revision changed under the running worker
-    EXIT_LEASE_LOST = 7   the writer lease was lost during a cycle
+    EXIT_LEASE_LOST = 7   the writer lease was lost during startup or a cycle (no status is written)
     EXIT_RETRYABLE = 8    startup could not complete for a transient or unclassified reason;
                           safe to restart (systemd does not restart 2, 3 or 5)
 
@@ -232,11 +232,20 @@ def run_worker(*, state_dir, open_reader, make_market_data, revision, clock, sto
         try:
             balance = reader.fetch_balance()
             currencies = executor.watched_currencies()
-        except Exception:
+        except Exception as exc:
+            kind = _reader_kind(exc)
+            if kind is None:
+                try:
+                    kind = getattr(reader.health(), "last_error_kind", None)
+                except Exception:
+                    kind = None
+            code = (EXIT_AUTH if kind == "auth" else
+                    EXIT_CLOCK if kind == "clock" else EXIT_RETRYABLE)
+            reason = kind if kind in ("auth", "clock") else BALANCE_UNAVAILABLE_AT_START
             _status(state_dir, clock, _fields(
-                phase="exited", started_at=started_at, exit_code=EXIT_RETRYABLE,
-                reason=BALANCE_UNAVAILABLE_AT_START, rev=rev, digest=ps.digest))
-            return EXIT_RETRYABLE
+                phase="exited", started_at=started_at, exit_code=code, reason=reason,
+                rev=rev, digest=ps.digest))
+            return code
 
         missing = _opening_balance_missing(balance, currencies, ledger)
         if missing:
@@ -250,9 +259,8 @@ def run_worker(*, state_dir, open_reader, make_market_data, revision, clock, sto
         try:
             reconcile.on_startup(executor)
         except LeaseLost:
-            _status(state_dir, clock, _fields(
-                phase="exited", started_at=started_at, exit_code=EXIT_LEASE_LOST,
-                reason="lease_lost", rev=rev, digest=ps.digest))
+            # The lease may already be gone: write no status at all (the new owner owns the
+            # file); release is best effort in the finally.
             return EXIT_LEASE_LOST
         except Exception as exc:
             _status(state_dir, clock, _fields(
@@ -262,7 +270,13 @@ def run_worker(*, state_dir, open_reader, make_market_data, revision, clock, sto
             return EXIT_RETRYABLE
 
         # 9. the cycle loop ---------------------------------------------------------------
-        market_data = make_market_data(reader)
+        try:
+            market_data = make_market_data(reader)
+        except Exception as exc:
+            _status(state_dir, clock, _fields(
+                phase="exited", started_at=started_at, exit_code=EXIT_RETRYABLE,
+                reason=f"market_data_failed:{type(exc).__name__}", rev=rev, digest=ps.digest))
+            return EXIT_RETRYABLE
         deps = CycleDeps(ledger=ledger, lease=lease, executor=executor, reader=reader,
                          market_data=market_data, gate=gate, policy_set=ps,
                          symbols=executor.symbols, clock=clock,
@@ -292,6 +306,11 @@ def run_worker(*, state_dir, open_reader, make_market_data, revision, clock, sto
 
             report = run_cycle(deps, state)
             last_report = report
+            if report.outcome is CycleOutcome.EXIT_LEASE_LOST:
+                # The lease may already be gone: write nothing at all (neither "running" nor
+                # "exited"): the status file now belongs to the worker that took over.
+                # Release is best effort in the finally.
+                return EXIT_LEASE_LOST
             _status(state_dir, clock, _fields(
                 phase="running", started_at=started_at, report=report, state=state,
                 rev=rev, digest=ps.digest))
@@ -311,12 +330,6 @@ def run_worker(*, state_dir, open_reader, make_market_data, revision, clock, sto
                     phase="exited", started_at=started_at, exit_code=EXIT_CLOCK,
                     report=report, state=state, rev=rev, digest=ps.digest))
                 return EXIT_CLOCK
-            if report.outcome is CycleOutcome.EXIT_LEASE_LOST:
-                # The lease may already be gone: release is best effort in the finally.
-                _status(state_dir, clock, _fields(
-                    phase="exited", started_at=started_at, exit_code=EXIT_LEASE_LOST,
-                    report=report, state=state, rev=rev, digest=ps.digest))
-                return EXIT_LEASE_LOST
 
             # CONTINUE / CYCLE_FAILED: wait in at most SLEEP_SLICE_S slices.
             wait = next_wait(float(interval_s), state.consecutive_failures)

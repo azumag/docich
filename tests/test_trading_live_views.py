@@ -839,3 +839,54 @@ def test_currencies_with_history_counts_a_fill_quote_with_no_cashflow(harnesses)
           amount="10", price="100", executed_at=1000.0, fee_amount="0", fee_currency="OAS")
 
     assert views.currencies_with_history(h.ledger) == frozenset({"OAS", "JPY"})
+
+
+# ---- F1: an intent that may have reached the exchange is opening-balance history -------------
+@pytest.mark.parametrize("state", ["SUBMITTING", "UNKNOWN_SUBMISSION", "ACKED"])
+def test_f1_currencies_with_history_counts_a_sent_intent_with_no_fills(harnesses, state):
+    h = harnesses(opening=False, symbols=("OAS/JPY",))
+    intent = _intent(h, key=f"f1-{state.lower()}")
+    h.ledger.transition_intent(h.lease, intent.intent_id, expected_state="PLANNED",
+                               to_state="SUBMITTING", now=1001.0)
+    if state == "UNKNOWN_SUBMISSION":
+        h.ledger.transition_intent(h.lease, intent.intent_id, expected_state="SUBMITTING",
+                                   to_state="UNKNOWN_SUBMISSION", now=1002.0)
+    elif state == "ACKED":
+        h.ledger.transition_intent(h.lease, intent.intent_id, expected_state="SUBMITTING",
+                                   to_state="ACKED", now=1002.0)
+
+    assert h.ledger.get_intent(intent.intent_id).state == state
+    assert views.all_fills(h.ledger) == []          # the exchange holds the base, the ledger no fill
+    assert views.currencies_with_history(h.ledger) == frozenset({"OAS", "JPY"})
+
+
+def test_f1_currencies_with_history_ignores_intents_that_never_reached_the_exchange(harnesses):
+    h = harnesses(opening=False, symbols=("AAA/JPY", "XRP/JPY", "BBB/JPY", "CCC/JPY"))
+    planned = _intent(h, key="f1-planned", symbol="AAA/JPY")
+
+    abandoned = _intent(h, key="f1-abandoned", symbol="XRP/JPY", now=1001.0)
+    h.ledger.transition_intent(h.lease, abandoned.intent_id, expected_state="PLANNED",
+                               to_state="ABANDONED", now=1002.0)
+
+    rejected = _intent(h, key="f1-rejected", symbol="BBB/JPY", now=1003.0)
+    h.ledger.transition_intent(h.lease, rejected.intent_id, expected_state="PLANNED",
+                               to_state="SUBMITTING", now=1004.0)
+    h.ledger.transition_intent(h.lease, rejected.intent_id, expected_state="SUBMITTING",
+                               to_state="REJECTED", now=1005.0, reason_code="rejected")
+
+    not_created = _intent(h, key="f1-not-created", symbol="CCC/JPY", now=1006.0)
+    h.ledger.transition_intent(h.lease, not_created.intent_id, expected_state="PLANNED",
+                               to_state="SUBMITTING", now=1007.0)
+    h.ledger.transition_intent(h.lease, not_created.intent_id, expected_state="SUBMITTING",
+                               to_state="UNKNOWN_SUBMISSION", now=1008.0)
+    h.ledger.transition_intent(h.lease, not_created.intent_id,
+                               expected_state="UNKNOWN_SUBMISSION", to_state="NOT_CREATED",
+                               now=1009.0, evidence="F1 hand derivation: no such order")
+
+    assert h.ledger.get_intent(planned.intent_id).state == "PLANNED"
+    assert h.ledger.get_intent(abandoned.intent_id).state == "ABANDONED"
+    assert h.ledger.get_intent(rejected.intent_id).state == "REJECTED"
+    assert h.ledger.get_intent(not_created.intent_id).state == "NOT_CREATED"
+    # Four symbols, no cashflow, no fill: none of these intents may add a currency.
+    assert views.currencies_with_history(h.ledger) == frozenset()
+    assert "XRP" not in views.currencies_with_history(h.ledger)   # the abandoned one

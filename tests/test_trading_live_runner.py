@@ -585,10 +585,13 @@ def test_r6_a_lost_lease_during_a_cycle_is_exit_7(ws):
     got, sleeps, times = run(prepared, stop_requested=lambda: False)
 
     assert got == runner_module.EXIT_LEASE_LOST
+    # A worker that lost the lease writes no status at all: the file still holds the
+    # "starting" write made right after the lease was acquired, with no exit fields.
     status = read_status(ws)
-    assert status["phase"] == "exited"
-    assert status["exit_code"] == runner_module.EXIT_LEASE_LOST
-    assert status["reason"] == "lease_lost"
+    assert status["phase"] == "starting"
+    assert "exit_code" not in status
+    assert "reason" not in status
+    assert "cycle" not in status
     assert "lease_lost" in safety_trips(ws)
     # The lock was replaced; the best-effort release must not have raised out of the runner.
 
@@ -1241,3 +1244,247 @@ def test_h6_the_first_status_after_the_lease_is_starting(ws, monkeypatch):
     assert status["phase"] == "exited"
     assert status["reason"] == "auth"
     acquire_again(ws)
+
+
+# ---- F1: an intent that may have reached the exchange lets the balance precheck proceed -----
+def record_unknown_submission(ws, prepared, *, symbol="OAS/JPY", key="f1-unknown"):
+    """The ledger a crash between send and record leaves: a SUBMITTING intent moved to UNKNOWN."""
+    from docich.trading.live.ledger import IntentRequest
+
+    ledger = ws.open_ledger(now=WORKER_NOW)
+    lease = acquire_writer_lease(ledger, ws.layout, now=WORKER_NOW)
+    try:
+        intent = ledger.create_intent(lease, IntentRequest(
+            decision_key=key, symbol=symbol, side="buy", order_type="limit", amount="3",
+            price="100", policy_digest=prepared.ps.policy_for(symbol).digest,
+            rule_id="entry-1"), now=WORKER_NOW)
+        ledger.transition_intent(lease, intent.intent_id, expected_state="PLANNED",
+                                 to_state="SUBMITTING", now=WORKER_NOW)
+        ledger.transition_intent(lease, intent.intent_id, expected_state="SUBMITTING",
+                                 to_state="UNKNOWN_SUBMISSION", now=WORKER_NOW)
+    finally:
+        release_writer_lease(ledger, lease, now=WORKER_NOW)
+        ledger.close()
+    return intent
+
+
+def test_f1_an_unknown_submission_intent_is_opening_balance_history(ws, monkeypatch):
+    # The exchange holds 3 OAS from the send, but the ledger has no fill: only the intent.
+    prepared = prepare(ws, coins={"OAS": "3"}, cashflows={"JPY": "10000"})
+    record_unknown_submission(ws, prepared)
+
+    ledger = LiveLedger.open_readonly(ws.layout)
+    try:
+        assert views.currencies_with_history(ledger) == frozenset({"OAS", "JPY"})
+    finally:
+        ledger.close()
+    assert prepared.reader.fetch_balance().assets["OAS"].total == D("3")
+
+    startups = []
+    monkeypatch.setattr(runner_module.reconcile, "on_startup",
+                        lambda executor: startups.append(1))
+
+    code, sleeps, times = run(prepared, stop_requested=lambda: True)
+
+    assert code == runner_module.EXIT_OK
+    assert startups == [1]                    # the precheck did not go inert: reconcile was reached
+    assert sleeps == []
+    status = read_status(ws)
+    assert status["phase"] == "exited"
+    assert status["exit_code"] == 0
+    assert status["cycle"] == 1
+    assert "inert_reason" not in status
+    assert intent_count(ws) == 1
+
+
+# ---- F2: a market-data factory failure is retryable, not a runner error ---------------------
+def test_f2_a_market_data_failure_is_retryable_and_skips_the_cycle(ws, monkeypatch):
+    prepared = prepare(ws, cashflows={"JPY": "10000"})
+    cycles = []
+    real_cycle = runner_module.run_cycle
+
+    def cycle_spy(deps, state):
+        cycles.append(1)
+        return real_cycle(deps, state)
+
+    def make_market_data(reader):
+        raise OSError("market data down")
+
+    monkeypatch.setattr(runner_module, "run_cycle", cycle_spy)
+
+    code, sleeps, times = run(prepared, make_market_data=make_market_data,
+                              stop_requested=lambda: True)
+
+    assert code == runner_module.EXIT_RETRYABLE
+    assert cycles == []
+    assert sleeps == []
+    status = read_status(ws)
+    assert status["phase"] == "exited"
+    assert status["exit_code"] == 8
+    assert status["reason"] == "market_data_failed:OSError"
+    assert intent_count(ws) == 0
+    assert prepared.mock.submissions == []
+    acquire_again(ws)
+
+
+# ---- F3: the startup balance failure is classified like every other reader failure ----------
+@pytest.mark.parametrize("exc_kind,health_kind,code,reason", [
+    ("auth", None, runner_module.EXIT_AUTH, "auth"),
+    ("auth", "clock", runner_module.EXIT_AUTH, "auth"),          # the exception's kind wins
+    (None, "clock", runner_module.EXIT_CLOCK, "clock"),
+    (None, "network", runner_module.EXIT_RETRYABLE, "balance_unavailable_at_start"),
+])
+def test_f3_a_balance_failure_at_start_is_classified(ws, exc_kind, health_kind, code, reason):
+    prepared = prepare(ws, cashflows={"JPY": "10000"})
+    prepared.reader.balance_error = (ReaderFailure(exc_kind) if exc_kind is not None
+                                     else RuntimeError("balance down"))
+    if health_kind is not None:
+        prepared.reader.health_value = Health(health_kind, 0)
+
+    got, sleeps, times = run(prepared, stop_requested=lambda: True)
+
+    assert got == code
+    assert sleeps == []
+    assert times == [WORKER_NOW]
+    status = read_status(ws)
+    assert status["phase"] == "exited"
+    assert status["exit_code"] == code
+    assert status["reason"] == reason
+    assert intent_count(ws) == 0
+    acquire_again(ws)
+
+
+def test_f3_a_failing_health_read_at_the_balance_failure_is_unknown(ws):
+    prepared = prepare(ws, cashflows={"JPY": "10000"})
+    prepared.reader.balance_error = RuntimeError("balance down")
+    prepared.reader.health_error = RuntimeError("health down")
+
+    got, sleeps, times = run(prepared, stop_requested=lambda: True)
+
+    assert got == runner_module.EXIT_RETRYABLE
+    status = read_status(ws)
+    assert status["phase"] == "exited"
+    assert status["exit_code"] == 8
+    assert status["reason"] == "balance_unavailable_at_start"
+    acquire_again(ws)
+
+
+# ---- F4: a worker that lost the lease writes no status --------------------------------------
+def _status_spy(monkeypatch):
+    calls = []
+    real_write = runner_module.write_status
+
+    def spy(state_dir, fields, *, now):
+        calls.append(dict(fields))
+        return real_write(state_dir, fields, now=now)
+
+    monkeypatch.setattr(runner_module, "write_status", spy)
+    return calls
+
+
+def test_f4_a_lost_lease_during_a_cycle_writes_no_running_or_exited_status(ws, monkeypatch):
+    prepared = prepare(ws, cashflows={"JPY": "10000"})
+    calls = _status_spy(monkeypatch)
+    cycles = []
+    real_cycle = runner_module.run_cycle
+
+    def cycle_spy(deps, state):
+        cycles.append(1)
+        if len(cycles) == 2:                  # cycle 1 completed and wrote its "running" status
+            lose_lease(ws)
+        return real_cycle(deps, state)
+
+    monkeypatch.setattr(runner_module, "run_cycle", cycle_spy)
+
+    got, sleeps, times = run(prepared, stop_requested=lambda: False)
+
+    assert got == runner_module.EXIT_LEASE_LOST
+    assert len(cycles) == 2
+    assert [fields["phase"] for fields in calls] == ["starting", "running"]
+    assert calls[-1]["phase"] == "running"
+    assert all(fields["phase"] != "exited" for fields in calls)
+    assert all(fields.get("outcome") != "exit_lease_lost" for fields in calls)
+
+
+def test_f4_a_lost_lease_during_on_startup_writes_no_exited_status(ws, monkeypatch):
+    prepared = prepare(ws, cashflows={"JPY": "10000"})
+    calls = _status_spy(monkeypatch)
+
+    def startup(executor):
+        raise LeaseLost("lease gone")
+
+    monkeypatch.setattr(runner_module.reconcile, "on_startup", startup)
+
+    got, sleeps, times = run(prepared, stop_requested=lambda: True)
+
+    assert got == runner_module.EXIT_LEASE_LOST
+    assert [fields["phase"] for fields in calls] == ["starting"]
+    assert all(fields["phase"] != "exited" for fields in calls)
+    assert all(fields.get("outcome") != "exit_lease_lost" for fields in calls)
+
+
+# ---- F5: a swallowed no-sender notice is counted in record_failures -------------------------
+def _capture_cycle_states(monkeypatch):
+    states = []
+    real_cycle = runner_module.run_cycle
+
+    def cycle_spy(deps, state):
+        report = real_cycle(deps, state)
+        states.append(state)
+        return report
+
+    monkeypatch.setattr(runner_module, "run_cycle", cycle_spy)
+    return states
+
+
+def _live_decision_rows(ws):
+    ledger = LiveLedger.open_readonly(ws.layout)
+    try:
+        return [event.payload for event in views.events_of_kind(ledger, "live_decision")]
+    finally:
+        ledger.close()
+
+
+def test_f5_a_swallowed_no_sender_write_counts_one_record_failure(ws, monkeypatch):
+    prepared = prepare(ws, cashflows={"JPY": "10000"})
+    states = _capture_cycle_states(monkeypatch)
+    real_record = LiveLedger.record_live_event
+    attempts = []
+
+    def record(self, lease, kind, payload, *, now):
+        if payload.get("reason") == NO_SENDER:
+            attempts.append(payload)
+            raise RuntimeError("record down")
+        return real_record(self, lease, kind, payload, now=now)
+
+    monkeypatch.setattr(LiveLedger, "record_live_event", record)
+
+    # Cycle 1 fails the notice write; cycle 2 tries again (a failed write is not deduped).
+    code, sleeps, times = run(prepared, stop_requested=lambda: len(states) >= 2)
+
+    assert code == runner_module.EXIT_OK
+    assert len(states) == 2
+    assert states[-1].record_failures == 1
+    assert len(attempts) == 2
+    status = read_status(ws)
+    assert status["phase"] == "exited"
+    assert status["record_failures"] == 1
+    assert status["cycle"] == 2
+    assert [row for row in _live_decision_rows(ws) if row.get("reason") == NO_SENDER] == []
+
+
+def test_f5_a_written_no_sender_notice_counts_no_record_failure(ws, monkeypatch):
+    prepared = prepare(ws, cashflows={"JPY": "10000"})
+    states = _capture_cycle_states(monkeypatch)
+
+    code, sleeps, times = run(prepared, stop_requested=lambda: len(states) >= 1)
+
+    assert code == runner_module.EXIT_OK
+    assert len(states) == 1
+    assert states[-1].record_failures == 0
+    status = read_status(ws)
+    assert status["phase"] == "exited"
+    assert status["record_failures"] == 0
+    assert status["cycle"] == 1
+    rows = _live_decision_rows(ws)
+    assert [row["reason"] for row in rows if row.get("reason") == NO_SENDER] == [NO_SENDER]
