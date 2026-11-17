@@ -1504,17 +1504,19 @@ def _defense_card_kit_read(screen, mem, cur, flow, names):
     cur.setdefault('defense_egg_kit_read', {'opens': 1})
     flow['list_ticks'] = int(flow.get('list_ticks') or 0) + 1
     scope = {k: cur.get(k) for k in ('enemy', 'ally', 'start_enemy_hp', 'start_ally_hp')}
-    if not names:
-        if flow['list_ticks'] <= DEFENSE_MENU_READ_LIMIT:
-            return []
-        cur['defense_card_menu'] = {**scope, 'cards': [], 'readings': flow['list_ticks']}
-        _defense_kit_read_unread(mem, cur, '実一覧が空/未読のため携行不明')
+    # Only a pair of matching readable observations within the bounded window
+    # can establish the kit. A late first sighting must remain fail-closed.
+    if flow['list_ticks'] > DEFENSE_MENU_READ_LIMIT:
+        _defense_kit_read_unread(mem, cur, '読取上限までに一致する実一覧を確認できない')
         return [pad('b'), pad('b')]
+    if not names:
+        flow.pop('kit_names', None)
+        return []
     cards = list(dict.fromkeys(names))
     previous = flow.get('kit_names')
     flow['kit_names'] = cards
-    if previous != cards and flow['list_ticks'] <= DEFENSE_MENU_READ_LIMIT:
-        return []          # require a stable readable list before using it
+    if previous != cards:
+        return []          # require two consecutive agreeing readable lists
     cur['defense_card_menu'] = {**scope, 'cards': cards, 'readings': flow['list_ticks']}
     cur['defense_egg_kit_read']['read_done'] = True
     cur['card_flow'] = None
