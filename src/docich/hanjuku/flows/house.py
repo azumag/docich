@@ -102,6 +102,7 @@ CARRY_LOCATIONS = frozenset({'いまこちらにむかっております'})
 LEVEL_STATUS_WAIT = 12   # observations allowed for the two country-status pages
 LEVEL_REPRESS_EVERY = 3  # observations between A presses on the unopened ステータス row
 LEVEL_UNREAD_LIMIT = 2   # unread months in a chapter before the page is left alone
+COUNT_RETRY_LIMIT = 1    # status re-opens per visit when the level read left the count unread
 INTERRUPTION_RETRIES = 2
 OPEN_ALIGN_KEYS = {'castle_open': 'HOUSE:source', 'income_open': 'HOUSE:income'}
 # Conservative route envelope, in whole-map view pixels (8 = 64 field pixels).
@@ -1614,6 +1615,19 @@ def _step_once(screen, mem, frame):
                     if actions == [pad('a')]:
                         state['level_checked'] = True
                         _phase(state, 'level_status')
+                    return actions
+                from ..os_layer.roster import country_count
+                if (country_count(mem, 'generals') is None
+                        and int(state.get('count_retry') or 0) < COUNT_RETRY_LIMIT):
+                    # 半熟レベルの頁へ直接開いた等で1頁目の将軍数を拾えないまま
+                    # ではないか、同じ訪問でステータスを開き直して読む。
+                    state['count_retry'] = int(state.get('count_retry') or 0) + 1
+                    actions = _choose(screen, 'ステータス')
+                    if actions == [pad('a')]:
+                        state['counts_unread_logged'] = False
+                        _phase(state, 'level_status')
+                        _record(mem, 'country_count_reopen',
+                                reason='半熟レベルは読めたが1頁目の将軍数が未読のため、同じ訪問でステータスを開き直す')
                     return actions
                 _phase(state, 'leave_roster')
                 return [pad('b')]

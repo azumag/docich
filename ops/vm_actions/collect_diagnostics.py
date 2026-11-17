@@ -7633,6 +7633,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v1040-plan-drop-foreign",
             "hanjuku-chart-v1044-recall-picker-tempo",
             "hanjuku-chart-v1046-back-half-relay",
+            "hanjuku-chart-v1101-level-visit-count",
             "hanjuku-chart-v1020-recall-giveup",
             "hanjuku-chart-v1021-plan-invalid-source",
             "hanjuku-chart-v1041-egg-receipt-presence",
