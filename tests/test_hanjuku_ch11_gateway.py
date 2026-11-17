@@ -551,7 +551,6 @@ def test_the_hero_may_leave_the_home_castle_alone():
     assert hero and hero[0].get('target') == 'タタール', orders
     sit = replan._adjust_situation(mem)
     assert chart_adjust.startable(hero[0], sit) is None
-=======
 def test_the_recall_picker_holds_proportionally_to_the_distance():
     """Owner 2026-11-18: 帰還のカーソル移動が遅すぎて進行を阻害している.
 
@@ -563,4 +562,3 @@ def test_the_recall_picker_holds_proportionally_to_the_distance():
     assert _picker_hold_frames(8) == 8
     assert _picker_hold_frames(60) == 56
     assert _picker_hold_frames(120) == 56
->>>>>>> 5e99365db0 (perf(hanjuku): 帰還先ピッカーのカーソルを距離に応じて速く動かす (v1038))
