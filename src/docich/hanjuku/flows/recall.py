@@ -456,6 +456,22 @@ def _relay_target(mem, state):
     return {'cell': relay, 'hub': gate['hub']}
 
 
+def _visible_move_or_relay(mem, state, visible):
+    """A visible camp move, unless the visible castle is across the cliff.
+
+    For a back-half camp with no own back-half castle, every visible own
+    castle (home and hub included) is on the far side of the impassable
+    cliff, so the いどう would walk into it. Return the relay instead;
+    ``None`` visible or an owned back-half castle keeps the ordinary move.
+    """
+    if visible is None:
+        return None, None
+    relay = _relay_target(mem, state)
+    if relay is None:
+        return visible, None
+    return None, relay
+
+
 def _visible_move_dest_step(screen, mem, frame, state):
     """Steer the field cursor onto the visible own castle, then confirm.
 
@@ -1191,11 +1207,26 @@ def _camp_recall_step(screen: Screen, mem, frame, *, observed_camps=None):
                             reason='集結先の最後の城が画面上に見えているため、いどうで集結先へ送る')
             else:
                 visible = _visible_own_castle(mem, frame, candidates)
+                # A back-half camp with no own back-half castle has nothing it
+                # can reach on its screen: every visible own castle (home and
+                # hub included) is across the cliff. g1190 2026-11-18 08:27:
+                # the camp at (140,112) picked アルマムーン by いどう and could
+                # not cross — the same 117-failure hollow #4520 relays away
+                # from. Let the relay below own that camp instead of the
+                # visible move; an owned back-half castle keeps the move.
+                visible, relay = _visible_move_or_relay(mem, state, visible)
                 if visible is not None:
                     state['move_visible'] = visible
                     _record(mem, 'camp_recall_visible_move',
                             observed_metric={'castle': visible['castle'], 'world': visible['world']},
                             reason='画面上に自軍城が見えているため、全島ピッカーではなくいどうで可視城へ帰還する')
+                elif visible is not None:
+                    _record(mem, 'camp_recall_relay_over_visible',
+                            observed_metric={'castle': visible['castle'],
+                                             'world': visible['world'],
+                                             'relay': list(relay['cell']),
+                                             'camp': list(state.get('target') or ())},
+                            reason='可視城が崖の向こうにあるため、いどう先を後半中央の中継セルへ切り替える')
                 elif candidates:
                     _record(mem, 'camp_recall_visible_blocked',
                             observed_metric={'castles': [c['castle'] for c in candidates],
