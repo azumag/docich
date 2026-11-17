@@ -529,3 +529,24 @@ def test_the_hero_hub_move_keeps_its_permission_through_the_plan_build():
     from docich.hanjuku.strategy import replan
     src = inspect.getsource(replan._mechanical_chart)
     assert "'hero_hub_move': True" in src
+
+
+def test_the_hero_may_leave_the_home_castle_alone():
+    """Owner 2026-11-18 04:1x: 構わず主人公だけ移す (the home castle empties)."""
+    from docich import hanjuku_chart_adjust as chart_adjust
+    from docich.hanjuku.strategy import replan
+    from docich.hanjuku.strategy.replan import interim_candidates
+    from docich.hanjuku.state.regions import world as _world
+    mem = {'chapter': 11, 'month': '85-7', 'tick': 100,
+           'captured': ['マランマ', 'ゴンダル', 'チリベット', 'タプロベイン', 'ジャンセニア',
+                        'タタール', 'ネペンテ', 'トリフェ'],
+           'lost': ['アエンタール', 'クラボニア'], 'egg_types': {}, 'egg_uses': {}, 'house_eggs': {}}
+    _world(mem)['garrison'] = {'アルマムーン': ['どうし'], 'タタール': ['h1', 'h2', 'h3'],
+                               'マランマ': ['m1'], 'ゴンダル': ['k1'], 'チリベット': ['c1'],
+                               'タプロベイン': ['t1'], 'ジャンセニア': ['j1'],
+                               'ネペンテ': ['n1'], 'トリフェ': ['r1']}
+    orders = [o for o in interim_candidates(mem).values() if isinstance(o, dict)]
+    hero = [o for o in orders if o.get('general') == 'どうし']
+    assert hero and hero[0].get('target') == 'タタール', orders
+    sit = replan._adjust_situation(mem)
+    assert chart_adjust.startable(hero[0], sit) is None
