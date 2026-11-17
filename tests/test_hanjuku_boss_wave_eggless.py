@@ -59,3 +59,14 @@ def test_a_remembered_egg_type_keeps_the_general():
     mem['egg_types'] = {'アマンディーヌ': 'スロットエッグ'}
     attacks = [a for a in boss_attacks(mem) if a['source'] == SOURCE]
     assert attacks and attacks[0]['general'] == 'アマンディーヌ'
+
+
+def test_a_stale_egg_type_still_keeps_an_eggless_row_a_candidate():
+    # Known limit (Devin review on #4414, follow-up issue): egg_types is
+    # written only when an egg shows and never cleared, and other writers
+    # (the sortie screen, camp recheck) carry no timestamp, so a measured
+    # "no egg" row cannot be ranked against it. The conservative reading keeps
+    # the general a candidate - the behaviour before the eggless rule.
+    mem = memory(['アマンディーヌ', 'ヘラ'], {'アマンディーヌ': row(None), 'ヘラ': row(None)})
+    mem['egg_types'] = {'アマンディーヌ': 'スロットエッグ', 'ヘラ': 'スロットエッグ'}
+    assert [a for a in boss_attacks(mem) if a['source'] == SOURCE]
