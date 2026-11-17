@@ -187,8 +187,9 @@ class DeployStateTransactionTests(unittest.TestCase):
         _ab_gate_support.set_gate_rc(live, 1)
         before = (live / 'game.txt').read_bytes()
         with mock.patch.object(gw, 'OWNED_SUBMODULES', {'games/soviet_now': str(_subremote)}), \
-             self.assertRaisesRegex(ValueError, 'ab gate refused: active/active_ab'):
+             self.assertRaisesRegex(ValueError, 'ab gate refused') as caught:
             gw.deploy_git(self.cfg, 'docich', new_parent)
+        self.assertEqual(gw.reason_code(caught.exception), 'ab_gate_refused')
         self.assertEqual((live / 'game.txt').read_bytes(), before)
         # No deployment intent is left behind, so a normal retry is possible.
         self.assertNotIn('deployment_intent', gw.read_json(gw.current_file(self.cfg, 'docich')))
@@ -200,8 +201,9 @@ class DeployStateTransactionTests(unittest.TestCase):
         live, _subremote, _old_parent, new_parent = self._projection_case()
         (live / 'strategy' / 'ab_gate_on_merge.sh').unlink()
         with mock.patch.object(gw, 'OWNED_SUBMODULES', {'games/soviet_now': str(_subremote)}), \
-             self.assertRaisesRegex(ValueError, 'ab gate refused: unknown/gate_missing'):
+             self.assertRaisesRegex(ValueError, 'ab gate refused') as caught:
             gw.deploy_git(self.cfg, 'docich', new_parent)
+        self.assertEqual(gw.reason_code(caught.exception), 'ab_gate_refused')
         self.assertNotIn('deployment_intent', gw.read_json(gw.current_file(self.cfg, 'docich')))
 
     def test_projection_updates_only_changed_submodule_paths(self):
