@@ -271,19 +271,15 @@ def _goal_after_failures(mem, flags, recall, goal):
         return goal
     chapter = mem.get('chapter') or 0
     cells = chart.castles(chapter) or {}
-    owned = [c for c in _owned(mem) if c in cells
-             and (not isinstance(flags, dict) or flags.get(c) == 'own')]
-    gate = chart.gateway(chapter)
-    if gate and isinstance(recall.get('origin'), (list, tuple)):
-        origin = recall['origin']
-        if len(origin) == 2 and all(type(v) is int for v in origin):
-            back = [c for c in owned if c in gate['back']]
-            front = [c for c in owned if c in gate['front']]
-            if back and front:
-                def _near(group):
-                    return min(sum((cells[c][a] - origin[a]) ** 2 for a in (0, 1))
-                               for c in group)
-                owned = back if _near(back) < _near(front) else front
+    # Reuse the same reachable-side decision as the initial recall goal.
+    # Flag readings can omit owned castles; the strategy helper includes
+    # capture history and preserves the shared gateway hub.
+    from ..strategy.orders import _recall_owned
+    owned = _recall_owned(
+        mem, chapter,
+        sorted(c for c in _owned(mem) if c in cells
+               and (not isinstance(flags, dict) or flags.get(c) == 'own')),
+        origin=recall.get('origin') if isinstance(recall, dict) else None)
     fresh = [c for c in owned if c not in pair]
     if not fresh:
         return goal
