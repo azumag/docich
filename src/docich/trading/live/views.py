@@ -192,6 +192,14 @@ def intent_by_decision_key(ledger, decision_key: str) -> Intent | None:
     return Intent(*row) if row else None
 
 
+def _fill_order(fill_id: str, executed_at: float) -> tuple[float, int, int, str]:
+    """Order fills at one executed_at by numeric trade id; ids without a numeric tail follow, by text."""
+    tail = fill_id.rsplit(":", 1)[-1]
+    if tail.isascii() and tail.isdigit():
+        return (executed_at, 0, int(tail), fill_id)
+    return (executed_at, 1, 0, fill_id)
+
+
 def position_cost(ledger, position_id: str, max_fee_rate: Decimal | None) -> CostBasis:
     """Average-cost basis of a position, rebuilt from its fills (a sell keeps the average price).
 
@@ -200,8 +208,9 @@ def position_cost(ledger, position_id: str, max_fee_rate: Decimal | None) -> Cos
     """
     with ledger.read_cursor() as cur:
         rows = cur.execute(
-            "SELECT symbol, side, amount, quote_notional, fee_status, fee_amount, fee_currency, executed_at "
-            "FROM fills WHERE position_id=? ORDER BY executed_at, fill_id", (position_id,)).fetchall()
+            "SELECT fill_id, symbol, side, amount, quote_notional, fee_status, fee_amount, fee_currency, executed_at "
+            "FROM fills WHERE position_id=? ORDER BY executed_at", (position_id,)).fetchall()
+    rows = [row[1:] for row in sorted(rows, key=lambda row: _fill_order(row[0], row[8]))]
     net_base = Decimal(0)
     cost = Decimal(0)
     avg_cost = Decimal(0)

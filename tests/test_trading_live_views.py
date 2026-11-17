@@ -445,3 +445,79 @@ def test_position_cost_two_partial_sells_keep_the_non_terminating_average(h):
     assert after_second.cost == after_second.avg_cost * after_second.net_base
     assert after_second.cost == D("473.6842105263157894736842106")
     assert after_second.opened_at == 1000.0
+
+
+# ---- h. fills at one executed_at: numeric trade ids, then text ids ---------------------------
+def test_position_cost_orders_same_timestamp_fills_by_numeric_trade_id(h):
+    first = _intent(h, key="b1", amount="10", price="100", now=999.0)
+    _order(h, first, order_id="o1", amount="10", price="100")
+    _fill(h, fill_id="OAS/JPY:8", order_id="o1", symbol="OAS/JPY", side="buy", amount="10", price="100",
+          executed_at=999.0)
+    _finish(h, first)
+
+    second = _intent(h, key="b2", amount="10", price="200", now=1000.0)
+    assert second.position_id == first.position_id
+    _order(h, second, order_id="o2", amount="10", price="200")
+    _fill(h, fill_id="OAS/JPY:9", order_id="o2", symbol="OAS/JPY", side="buy", amount="10", price="200",
+          executed_at=1000.0)
+    _finish(h, second)
+
+    sell = _intent(h, key="s1", side="sell", amount="10", price="150", now=1001.0)
+    _order(h, sell, order_id="o3", amount="10", price="150")
+    _fill(h, fill_id="OAS/JPY:10", order_id="o3", symbol="OAS/JPY", side="sell", amount="10", price="150",
+          executed_at=1000.0)
+
+    basis = views.position_cost(h.ledger, first.position_id, D("0.0012"))
+    assert (basis.net_base, basis.cost, basis.avg_cost, basis.opened_at) == (
+        D("10"), D("1500"), D("150"), 999.0)
+
+
+def test_position_cost_orders_a_99_to_100_crossing_numerically(h):
+    buy = _intent(h, key="b1", amount="10", price="100", now=1000.0)
+    _order(h, buy, order_id="o1", amount="10", price="100")
+    _fill(h, fill_id="OAS/JPY:99", order_id="o1", symbol="OAS/JPY", side="buy", amount="10", price="100",
+          executed_at=1000.0)
+    _finish(h, buy)
+
+    sell = _intent(h, key="s1", side="sell", amount="4", price="120", now=1001.0)
+    _order(h, sell, order_id="o2", amount="4", price="120")
+    _fill(h, fill_id="OAS/JPY:100", order_id="o2", symbol="OAS/JPY", side="sell", amount="4", price="120",
+          executed_at=1000.0)
+
+    basis = views.position_cost(h.ledger, buy.position_id, D("0.0012"))
+    assert (basis.net_base, basis.cost, basis.avg_cost, basis.opened_at) == (
+        D("6"), D("600"), D("100"), 1000.0)
+
+
+def test_position_cost_orders_ids_without_a_numeric_tail_by_text(h):
+    buy = _intent(h, key="b1", amount="10", price="100", now=1000.0)
+    _order(h, buy, order_id="o1", amount="10", price="100")
+    _fill(h, fill_id="fa", order_id="o1", symbol="OAS/JPY", side="buy", amount="10", price="100",
+          executed_at=1000.0)
+    _finish(h, buy)
+
+    sell = _intent(h, key="s1", side="sell", amount="4", price="120", now=1001.0)
+    _order(h, sell, order_id="o2", amount="4", price="120")
+    _fill(h, fill_id="fb", order_id="o2", symbol="OAS/JPY", side="sell", amount="4", price="120",
+          executed_at=1000.0)
+
+    basis = views.position_cost(h.ledger, buy.position_id, D("0.0012"))
+    assert (basis.net_base, basis.cost, basis.avg_cost, basis.opened_at) == (
+        D("6"), D("600"), D("100"), 1000.0)
+
+
+def test_position_cost_orders_ids_without_a_numeric_tail_even_when_the_sell_is_first(h):
+    buy = _intent(h, key="b1", amount="10", price="100", now=1000.0)
+    _order(h, buy, order_id="o1", amount="10", price="100")
+    _fill(h, fill_id="fb", order_id="o1", symbol="OAS/JPY", side="buy", amount="10", price="100",
+          executed_at=1000.0)
+    _finish(h, buy)
+
+    sell = _intent(h, key="s1", side="sell", amount="4", price="120", now=1001.0)
+    _order(h, sell, order_id="o2", amount="4", price="120")
+    _fill(h, fill_id="fa", order_id="o2", symbol="OAS/JPY", side="sell", amount="4", price="120",
+          executed_at=1000.0)
+
+    basis = views.position_cost(h.ledger, buy.position_id, D("0.0012"))
+    assert (basis.net_base, basis.cost, basis.avg_cost, basis.opened_at) == (
+        D("6"), D("1000"), D("166.6666666666666666666666667"), 1000.0)
