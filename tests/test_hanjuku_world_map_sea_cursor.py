@@ -45,6 +45,7 @@ WORLD_VIEWS = {
     # Isolated chapter-11 recall picker: the R ring cycles owned castles.
     'g1190-ch11-recall-home.png', 'g1190-ch11-recall-gondal.png',
     'g1190-ch11-recall-maranma.png',
+    'ch11-recall-picker-tempo-jansenia.png',
 }
 
 

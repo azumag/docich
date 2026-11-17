@@ -241,6 +241,7 @@ KEY_OWNERSHIP = {
     '_map_registration_hold': {'region': FLOW, 'lifetime': 'procedure', 'migrated': False},  # decide冒頭で毎回popされる一時ホールド
     '_map_cursor_feedback': {'region': FLOW, 'lifetime': 'procedure', 'migrated': False},  # 現観測の屋根補正証拠。decide冒頭で破棄し末尾で取り出す
     '_nav_hold_feedback': {'region': FLOW, 'lifetime': 'procedure', 'migrated': False},  # 現観測の方向ホールド証拠。decide冒頭で破棄し末尾で取り出す
+    '_menu_navigation_feedback': {'region': FLOW, 'lifetime': 'procedure', 'migrated': False},  # 実測Rピッカーの現観測だけに束縛する周期用証拠
     'align_offset': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # ナビゲーションのアライン補正セッション状態
     'align_stall': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # ナビゲーション停滞検出
     'align_steps': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # アラインstep数(ナビセッション)

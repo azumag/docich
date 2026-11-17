@@ -855,6 +855,7 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
     mem.pop('_map_registration_hold', None)
     mem.pop('_map_cursor_feedback', None)
     mem.pop('_nav_hold_feedback', None)
+    mem.pop('_menu_navigation_feedback', None)
     if phase != 'dialogue':
         mem.pop('trade_guard', None)  # release before an earlier foreground owner
     identity = hanjuku_roster.run_identity(run_identity)
@@ -1545,6 +1546,9 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
     updated['no_input_streak']=streak
     updated['no_input_frames']=[hold_key]+[d for d in frozen if d!=hold_key][:1]
     updated['screen_kind']=kind
+    menu_feedback = mem.pop('_menu_navigation_feedback', None)
+    if menu_feedback is not None:
+        updated['menu_navigation_reading'] = {**menu_feedback, 'step': step}
     map_feedback = mem.pop('_map_cursor_feedback', None)
     if map_feedback is not None:
         updated['map_cursor_feedback'] = {**map_feedback, 'step': step}

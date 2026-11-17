@@ -27,6 +27,7 @@ def valid_context(kind, menu):
             or (kind == 'month_menu' and menu == 'soldier_quantity')
             or (kind == 'shop_quantity' and menu == 'merchant_quantity')
             or (kind == 'shop_list' and menu == 'merchant_list')
+            or (kind == 'world_map' and menu == 'recall_castles')
             or (kind == 'starter_list' and menu == 'starter_upper'))
 
 
