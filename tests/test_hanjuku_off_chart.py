@@ -236,7 +236,9 @@ def test_a_lone_general_is_never_pulled_out_of_the_home_castle():
            'garrison': {'アルマムーン': ['どうし', 'ゼウス'], 'キカンドン': [],
                         'ゴーメン': ['ココット']}}
     moves = [c for c in policy.interim_candidates(mem).values() if c['purpose'] == 'move']
-    assert all(c['source'] != 'アルマムーン' for c in moves)
+    # Owner 2026-11-17: the hero alone satisfies the guard, so the home castle
+    # may donate its spare while the hero stays.
+    assert any(c['source'] == 'アルマムーン' and c['general'] == 'ゼウス' for c in moves)
     # A lone general is never pulled out of its castle. An unread list may
     # only be used after a specific probe is due; no named donor is assumed.
     _world(mem)['garrison']['アルマムーン'] = ['ゼウス']
@@ -484,7 +486,8 @@ def test_a_roof_under_the_cursor_confirms_the_source(monkeypatch):
 def test_moves_come_before_attacks_and_staff_an_empty_home_castle():
     """g407 01:40: home empty, キカンドン held どうし+ゼウス; moves were listed last and never ran.
 
-    v305: the hero keeps two others, so キカンドン holds two more spares here.
+    Owner 2026-11-17: the hero alone satisfies the guard, so キカンドン spares
+    every non-hero general here — extra retakes for the lost castle follow.
     """
     mem = {'chapter': 1, 'orders': {}, '_records': [],
            'captured': ['キカンドン', 'ジョンリギ'], 'lost': ['ナキューメラ'],
@@ -494,7 +497,7 @@ def test_moves_come_before_attacks_and_staff_an_empty_home_castle():
     candidates = policy.interim_candidates(mem)
     purposes = [c['purpose'] for c in candidates.values()]
     assert purposes[0] == 'retake' and purposes[1] == 'move'
-    assert set(purposes[2:]) == {'attack'}
+    assert set(purposes[2:]) == {'attack', 'retake'}
     move = candidates['move_2']
     # #3266: ゼウス is already booked by the retake and クミン/タルタル by the attacks.
     assert (move['general'], move['source'], move['target']) == ('ジェラート', 'キカンドン', 'アルマムーン')
@@ -597,14 +600,17 @@ def test_a_move_from_an_unread_castle_sends_a_non_hero_and_keeps_one_behind():
     assert actions and actions[0]['buttons'] in (['down'], ['a'])
 
 
-def test_a_move_never_leaves_the_hero_with_fewer_than_two_others():
-    """v305 (owner 2026-10-29): the game ends when the hero's castle falls on him."""
+def test_a_move_may_leave_the_hero_alone():
+    """Owner 2026-11-17: しゅじんこう一人残して出撃できる -- the hero alone
+    satisfies the castle guard, so the move proceeds."""
     mem = _move_memory()
-    assert policy.deploy_step(_move_list([chart.HERO, 'キャラウェイ', 'ココット']), mem) == [
-        policy.pad('b'), policy.pad('b')]
-    assert _plan_region(mem)['orders']['I:m:1'] == 'failed'
-    assert decisions(mem, 'sortie_held_hero_guard')
-    assert not _plan_region(mem).get('general_override', {}).get('I:m:1')
+    mem['general_list_scan'] = {'step': 'I:m:1', 'castle': 'ジョンリギ', 'end': 'wrapped',
+                                'names': [chart.HERO, 'キャラウェイ', 'ココット'],
+                                'tick': mem.get('tick') or 0}
+    actions = policy.deploy_step(_move_list([chart.HERO, 'キャラウェイ', 'ココット']), mem)
+    assert _plan_region(mem)['general_override']['I:m:1'] == 'キャラウェイ'
+    assert actions != [policy.pad('b'), policy.pad('b')]
+    assert not decisions(mem, 'sortie_held_hero_guard')
 
 
 def test_a_move_from_a_castle_with_one_general_is_cancelled_and_remembered():

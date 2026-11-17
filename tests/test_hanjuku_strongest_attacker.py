@@ -42,11 +42,13 @@ def test_the_interim_attack_sends_the_strongest_spare():
     assert general == 'ポセイドン'
 
 
-def test_the_choice_keeps_the_hero_castle_guard():
+def test_the_choice_may_leave_the_hero_alone():
     mem = memory()
     _world(mem)['garrison'][chart.home_castle(1)] = ['どうし', 'ビシソワーズ', 'ポセイドン']
-    # hero + 2 others: sending one leaves only one beside the hero, so none is sent.
-    assert p._interim_source(mem, 'スペンソニア', None, p._owned(mem), set()) is None
+    # Owner 2026-11-17: the hero alone satisfies the guard, so the strongest
+    # spare goes even when the hero is left alone.
+    source, general = p._interim_source(mem, 'スペンソニア', None, p._owned(mem), set())
+    assert (source, general) == (chart.home_castle(1), 'ポセイドン')
     _world(mem)['garrison'][chart.home_castle(1)].append('ミルフィーユ')
     source, general = p._interim_source(mem, 'スペンソニア', None, p._owned(mem), set())
     assert general == 'ポセイドン'

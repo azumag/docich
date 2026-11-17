@@ -395,9 +395,9 @@ def test_lost_castle_gating_the_boss_path_is_retaken_first():
     retakes = [c['target'] for c in cands if c.get('purpose') == 'retake']
     assert retakes[:2] == ['バスカビル', 'アイアイエー']
     # #3266: a general planned for one sortie is busy for the rest of the plan.
-    # アルマムーン can spare two here (hero + HERO_CASTLE_GUARD stay), so the
-    # remaining lost castles wait for the next plan rather than reusing them.
-    assert set(retakes) == {'バスカビル', 'アイアイエー'}
+    # Owner 2026-11-17: the hero alone satisfies the castle guard, so
+    # アルマムーン can spare all four non-hero generals in one plan.
+    assert set(retakes) == {'バスカビル', 'アイアイエー', 'オトラント', 'ボッサール'}
 
 
 def test_boss_gate_ordering_is_scoped_to_lost_castles():

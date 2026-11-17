@@ -52,4 +52,7 @@ def test_last_month_roster_does_not_retire_the_chart_general():
 def test_a_read_hero_castle_still_decides_as_measured():
     mem = memory()
     _world(mem)['garrison'][HOME] = ['どうし', 'アンディーブ', 'タピオカ']
-    assert retakes(mem) == []          # the hero keeps two others (owner 2026-10-29)
+    # Owner 2026-11-17: the hero alone satisfies the guard, so a read list may
+    # send either companion (the hero himself is never dispatched).
+    got = retakes(mem)
+    assert got and all(o['source'] == HOME and o['general'] != 'どうし' for o in got)

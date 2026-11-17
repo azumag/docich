@@ -43,10 +43,11 @@ def test_the_strongest_companion_of_every_read_list_goes():
     assert orders._order_hero_alternatives(site_order(), mem, _world(mem)['garrison'][HOME])[:2] == ['ゼウス', 'アポロン']
 
 
-def test_a_read_heros_castle_without_a_strong_spare_falls_back_to_the_best_read_list():
+def test_a_read_heros_castle_may_send_a_spare_leaving_the_hero_alone():
     mem = memory(ミヒラギアン=['アルテミス', 'ブカティーニ'])
-    _world(mem)['garrison'][HOME] = [chart.HERO, 'ゼウス', 'ココット']      # ゼウス would leave one guard
-    assert orders._boss_companion_source(site_order(), mem) == 'ミヒラギアン'
+    _world(mem)['garrison'][HOME] = [chart.HERO, 'ゼウス', 'ココット']
+    # Owner 2026-11-17: the hero alone satisfies the guard, so ゼウス goes.
+    assert orders._boss_companion_source(site_order(), mem) == HOME
 
 
 def test_a_lone_general_never_leaves_its_castle_for_a_site():
@@ -64,8 +65,12 @@ def test_a_lone_general_never_leaves_its_castle_for_a_site():
     mem = memory()
     _world(mem)['garrison'][HOME] = [chart.HERO, 'ゼウス', 'ココット']
     assert orders._boss_companion_source(site_order(), mem) == HOME
-    # A lone hero still holds his castle: nobody else remains to defend.
+    # Owner 2026-11-17: a single companion may leave the hero alone; the hero
+    # himself stays to defend.
     _world(mem)['garrison'][HOME] = [chart.HERO, 'ゼウス']
+    assert orders._boss_companion_source(site_order(), mem) == HOME
+    # But the hero alone with nobody to send still has no companion source.
+    _world(mem)['garrison'][HOME] = [chart.HERO]
     assert orders._boss_companion_source(site_order(), mem) is None
     assert not orders._ready(site_order(), mem)
 
