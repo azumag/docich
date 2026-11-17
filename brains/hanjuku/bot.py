@@ -29,7 +29,7 @@ from docich.hanjuku.os_layer.phase import classify
 from docich.hanjuku_run import append_log
 from docich import hanjuku_run
 from docich.hanjuku.os_layer.commands import menu_navigation_feedback, status_panel_feedback
-from docich.hanjuku.os_layer.navigation import map_cursor_feedback
+from docich.hanjuku.os_layer.navigation import map_cursor_feedback, nav_hold_feedback
 
 BOT_STATE_LIMIT = 256 * 1024   # the bot's own memory file, not a boundary record
 
@@ -329,7 +329,7 @@ def observation_interval_ms(state, actions=None):
     Keep the existing allowed 500 ms cycle across card-menu fades too.
     """
     if (menu_navigation_feedback(state, actions) or status_panel_feedback(state, actions)
-            or map_cursor_feedback(state, actions)):
+            or map_cursor_feedback(state, actions) or nav_hold_feedback(state, actions)):
         return 500
     policy = state.get('policy') or {}
     hold = policy.get('world_map_skull_hold') or {}
