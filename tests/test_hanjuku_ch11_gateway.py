@@ -484,3 +484,36 @@ def test_an_owned_hub_gathers_the_whole_army():
     orders = [o for o in interim_candidates(mem).values() if isinstance(o, dict)]
     to_hub = [o for o in orders if o.get('target') == 'タタール' and o.get('purpose') == 'move']
     assert len(to_hub) >= 6, [o for o in orders][:8]
+
+
+def test_the_hero_moves_to_the_hub_to_recruit_there():
+    """Owner 2026-11-18 02:4x: move どうし to タタール and recruit there."""
+    from docich.hanjuku.strategy.replan import interim_candidates
+    from docich.hanjuku.state.regions import world as _world
+    mem = {'chapter': 11, 'month': '81-10', 'tick': 100,
+           'captured': ['マランマ', 'ゴンダル', 'チリベット', 'タプロベイン', 'ジャンセニア', 'タタール'],
+           'lost': ['ネペンテ'], 'egg_types': {}, 'egg_uses': {}, 'house_eggs': {}}
+    _world(mem)['garrison'] = {'アルマムーン': ['どうし', 'g1', 'g2'], 'タタール': ['h1'],
+                               'マランマ': ['m1'], 'ゴンダル': ['k1'], 'チリベット': ['c1'],
+                               'タプロベイン': ['t1'], 'ジャンセニア': ['j1']}
+    orders = [o for o in interim_candidates(mem).values() if isinstance(o, dict)]
+    first = orders[0]
+    assert first.get('general') == 'どうし' and first.get('target') == 'タタール', first
+    assert first.get('purpose') == 'move' and first.get('hero_hub_move') is True
+
+
+def test_the_hero_hub_move_is_startable_but_a_hero_sortie_is_not():
+    from docich import hanjuku_chart_adjust as chart_adjust
+    from docich.hanjuku.strategy import replan
+    from docich.hanjuku.state.regions import world as _world
+    mem = {'chapter': 11, 'month': '81-10', 'tick': 100,
+           'captured': ['マランマ', 'タタール'],
+           'lost': ['ネペンテ'], 'egg_types': {}, 'egg_uses': {}, 'house_eggs': {}}
+    _world(mem)['garrison'] = {'アルマムーン': ['どうし', 'g1'], 'タタール': ['h1']}
+    sit = replan._adjust_situation(mem)
+    move = {'general': 'どうし', 'target': 'タタール', 'cards': [], 'source': 'アルマムーン',
+            'after': None, 'purpose': 'move', 'hero_hub_move': True, 'note': 'x'}
+    attack = {'general': 'どうし', 'target': 'ネペンテ', 'cards': [], 'source': 'アルマムーン',
+              'after': None, 'purpose': 'attack', 'note': 'x'}
+    assert chart_adjust.startable(move, sit) is None
+    assert chart_adjust.startable(attack, sit) == 'hero_not_dispatchable'

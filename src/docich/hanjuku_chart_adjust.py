@@ -208,7 +208,10 @@ def startable(order, request) -> str | None:
     if source in lost:
         return 'source_lost'
     if general == chart.HERO and not (order.get('purpose') == 'move'
-                                      and chart.guard_free(request.get('chapter'))):
+                                      and (chart.guard_free(request.get('chapter'))
+                                           # Owner 2026-11-18: the hero moves to
+                                           # the chapter-11 hub to recruit there.
+                                           or order.get('hero_hub_move') is True)):
         # Chapter 9 walks the hero toward the front so recruits join there
         # (owner 2026-11-11); he still never attacks.
         return 'hero_not_dispatchable'

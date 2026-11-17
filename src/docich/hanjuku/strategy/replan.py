@@ -1232,6 +1232,14 @@ def interim_candidates(mem, allow_sole=False) -> dict:
         # 2026-11-18) and every retake marches the island; stage more per plan
         # so the front castle can start sending its own sorties sooner. One
         # source may contribute several spares — the home stack is the donor.
+        # Owner 2026-11-18 02:4x: the hero moves to the hub so recruiting
+        # happens where the army is (new generals join the hub directly).
+        if not stage_lost_hub and NAME in (garrison.get(home) or ()) \
+                and NAME not in (garrison.get(gate['hub']) or ()):
+            moves.insert(0, {'general': NAME, 'target': gate['hub'], 'cards': [],
+                             'source': home, 'after': None, 'purpose': 'move',
+                             'hero_hub_move': True,
+                             'note': f"暫定: 主人公を{gate['hub']}へ移して将軍募集の拠点にする"})
         # Owner 2026-11-18 02:4x: once the hub is ours, gather the WHOLE army
         # there (recruiting at the hub as well), instead of two spares a plan.
         if stage_lost_hub:
