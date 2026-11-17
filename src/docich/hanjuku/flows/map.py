@@ -593,7 +593,10 @@ def world_map_step(screen, mem, frame):
             # a pixel at a time (owner 2026-11-18: 帰還のカーソル移動が遅すぎて
             # 進行を阻害している). Hold proportionally to what is left; the next
             # observation re-reads the cursor and corrects any overshoot.
-            span = max(abs(dx), abs(dy))
+            if cycle_picker:
+                # Each tap selects a whole castle; holding can skip the goal.
+                return [pad(press)]
+            span = abs(dx) if press in ('left', 'right') else abs(dy)
             return [pad(press, _picker_hold_frames(span))]
         return _request_recall(mem, recall, goal,
                                [pad('a'), {'type': 'wait', 'ms': 700}, pad('a')])
