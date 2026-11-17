@@ -1140,6 +1140,26 @@ def corridor_next(chapter, owned):
     return next((c for c in corridor(chapter) if c not in owned), None)
 
 
+# Chapter 11 (owner 2026-11-17): the back half of the map cannot be reached
+# from the front castles. Every back-half castle is entered through the
+# central hub タタール, so attacking one while the hub is the enemy's marches an
+# army into terrain it cannot cross (g1190 2026-11-17: ゴンダル/マランマ/
+# アルマムーンから トリフェ/ネペンテ へ出撃を繰り返し、いずれも戻っていた).
+GATEWAYS = {
+    11: {
+        'hub': 'タタール',
+        'front': ('アルマムーン', 'チリベット', 'タプロベイン',
+                  'ジャンセニア', 'ゴンダル', 'マランマ'),
+        'back': ('クラボニア', 'トリフェ', 'アエンタール', 'ネペンテ'),
+    },
+}
+
+
+def gateway(chapter):
+    """The chapter's central hub and the castle halves it separates, else None."""
+    return GATEWAYS.get(chapter)
+
+
 GUARD_FREE_CHAPTERS = frozenset({9})
 
 
