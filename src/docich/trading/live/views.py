@@ -4,9 +4,12 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from decimal import Decimal
-from typing import Mapping
+from typing import TYPE_CHECKING, Mapping
 
 from .ledger import Intent
+
+if TYPE_CHECKING:  # imported for annotations only: keeps this module light at import time
+    from .exchange import MarketRules
 
 
 @dataclass(frozen=True)
@@ -281,3 +284,92 @@ def events_of_kind(ledger, kind: str, *, after_event_id: int = 0, limit: int = 1
             inner = {}
         out.append(EventRow(int(event_id), float(occurred_at), entity_type, entity_id, inner))
     return out
+
+
+# -- L4b-5: sizing/reconcile views (nothing below writes) -------------------------------------
+_OPEN_INTENT_STATES = ("PLANNED", "SUBMITTING", "UNKNOWN_SUBMISSION", "ACKED", "PARTIALLY_FILLED")
+
+
+@dataclass(frozen=True)
+class PositionRow:
+    position_id: str
+    symbol: str
+    entry_policy_digest: str
+    opened_at: float
+
+
+def open_position_rows(ledger) -> list[PositionRow]:
+    """Every open position, oldest first, with the digest it was entered under."""
+    with ledger.read_cursor() as cur:
+        rows = cur.execute("SELECT position_id, symbol, entry_policy_digest, opened_at FROM positions "
+                           "WHERE status='open' ORDER BY opened_at, position_id").fetchall()
+    return [PositionRow(row[0], row[1], row[2], float(row[3])) for row in rows]
+
+
+def open_intent_symbols(ledger, side: str) -> frozenset[str]:
+    """Symbols with an intent of ``side`` in an OPEN state (the ledger's one-per-side set)."""
+    if side not in ("buy", "sell"):
+        raise ValueError("side must be 'buy' or 'sell'")
+    marks = ",".join("?" for _ in _OPEN_INTENT_STATES)
+    with ledger.read_cursor() as cur:
+        rows = cur.execute(f"SELECT DISTINCT symbol FROM intents WHERE side=? AND state IN ({marks})",
+                           (side, *_OPEN_INTENT_STATES)).fetchall()
+    return frozenset(row[0] for row in rows)
+
+
+def decision_keys(ledger, prefix: str) -> list[str]:
+    """Every recorded decision key starting with ``prefix`` (an exact prefix test, never LIKE)."""
+    if not isinstance(prefix, str) or not prefix:
+        raise ValueError("prefix must be a non-empty str")
+    with ledger.read_cursor() as cur:
+        rows = cur.execute("SELECT decision_key FROM intents WHERE substr(decision_key, 1, ?) = ? "
+                           "ORDER BY decision_key", (len(prefix), prefix)).fetchall()
+    return [row[0] for row in rows]
+
+
+def capital_quote(ledger, currency: str = "JPY") -> Decimal:
+    """Deposits plus signed adjustments minus withdrawals of ``currency`` (as balance does)."""
+    total = Decimal(0)
+    with ledger.read_cursor() as cur:
+        rows = cur.execute("SELECT kind, amount FROM cashflows WHERE currency=?", (currency,)).fetchall()
+    for kind, amount in rows:
+        value = Decimal(amount)
+        total += -value if kind == "withdrawal" else value
+    return total
+
+
+@dataclass(frozen=True)
+class OpenBuyExposure:
+    notional: Decimal
+    reserved_quote: Decimal
+
+
+def open_buy_exposure(ledger, rules: Mapping[str, MarketRules]) -> OpenBuyExposure:
+    """Remaining notional of every open buy and the quote it reserves (fee and unit included)."""
+    marks = ",".join("?" for _ in _OPEN_INTENT_STATES)
+    with ledger.read_cursor() as cur:
+        rows = cur.execute(f"SELECT {_INTENT_COLS_LITERAL} FROM intents WHERE side='buy' "
+                           f"AND state IN ({marks})", _OPEN_INTENT_STATES).fetchall()
+    notional = Decimal(0)
+    reserved_quote = Decimal(0)
+    for row in rows:
+        intent = Intent(*row)
+        if intent.price is None:
+            raise ValueError(f"open buy intent {intent.intent_id} has no price")
+        amount = Decimal(intent.amount)
+        if intent.state in ("PLANNED", "SUBMITTING", "UNKNOWN_SUBMISSION"):
+            # The order may already exist on the exchange: reserve the whole amount.
+            remaining = amount
+        else:  # ACKED / PARTIALLY_FILLED: the fills of its order are already done
+            filled = Decimal(0)
+            if intent.exchange_order_id is not None:
+                filled = sum((fill.amount for fill in fills_for_order(ledger, intent.exchange_order_id)),
+                             Decimal(0))
+            remaining = max(Decimal(0), amount - filled)
+        rule = rules.get(intent.symbol)
+        if rule is None or rule.max_fee_rate is None:
+            raise ValueError(f"fee rate unknown for {intent.symbol}")
+        value = remaining * Decimal(intent.price)
+        notional += value
+        reserved_quote += value * (1 + abs(rule.max_fee_rate)) + rule.quote_unit
+    return OpenBuyExposure(notional, reserved_quote)

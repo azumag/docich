@@ -9,7 +9,14 @@ clock (``now`` is a parameter), no file writes and no module-level mutable state
 caller does the ledger lookups and passes plain values in: ``decided_keys`` is the set of
 decisions the executor already handled, and ``open_buy_symbols`` / ``open_sell_symbols``
 are the symbols with an open intent on that side (the ledger allows at most one open
-intent per (symbol, side)), so a second order there is skipped.
+intent per (symbol, side)), so a second order there is skipped.  ``legacy_position_symbols``
+are the symbols with an open position entered under another policy digest, so a new buy
+there would open a second position (only buys are skipped); ``ambiguous_position_symbols``
+are the symbols with two or more open positions, so nothing at all is planned for them.
+
+A sell carries the digest its position was entered under (``HeldPosition.entry_policy_digest``)
+when the caller supplies it, else the current policy digest; the decision key uses that
+digest, because the ledger's ``sell_uses_entry_policy`` trigger refuses any other one.
 
 ``markets``' order books (``OrderBook``) must already be freshness-filtered by the caller;
 this module does not judge freshness.
@@ -58,6 +65,8 @@ SKIP_CODES = frozenset({
     "book_far_from_signal",
     "total_cap_exhausted",
     "insufficient_funds",
+    "legacy_position_open",
+    "ambiguous_position",
 })
 
 
@@ -96,6 +105,7 @@ class HeldPosition:
     position_id: str
     net_base: Decimal                   # ledger quantity (views.CostBasis.net_base)
     free_base: Decimal                  # exchange free balance of the base currency
+    entry_policy_digest: str | None = None  # the digest the position was entered under, if known
 
 
 @dataclass(frozen=True)
@@ -269,6 +279,8 @@ def size_orders(
     decided_keys: AbstractSet[str] = frozenset(),
     open_buy_symbols: AbstractSet[str] = frozenset(),
     open_sell_symbols: AbstractSet[str] = frozenset(),
+    legacy_position_symbols: AbstractSet[str] = frozenset(),
+    ambiguous_position_symbols: AbstractSet[str] = frozenset(),
     sell_attempts: Mapping[str, int] | None = None,
     buys_blocked: bool = False,
     settings: SizingSettings = SizingSettings(),
@@ -287,6 +299,9 @@ def size_orders(
         free_base = _decimal(position.free_base, f"held[{symbol}].free_base")
         if net_base < 0 or free_base < 0:
             raise ValueError(f"held[{symbol}] amounts must be non-negative")
+        entry_digest = position.entry_policy_digest
+        if entry_digest is not None and (not isinstance(entry_digest, str) or not entry_digest):
+            raise ValueError(f"held[{symbol}].entry_policy_digest must be a non-empty str or None")
         positions[symbol] = position
 
     last_closes: dict[str, Decimal] = {}
@@ -326,6 +341,9 @@ def size_orders(
         if policy is None:
             skipped.append(_skip(opportunity, "no_policy", "sell"))
             continue
+        if symbol in ambiguous_position_symbols:
+            skipped.append(_skip(opportunity, "ambiguous_position", "sell"))
+            continue
         position = positions.get(symbol)
         if position is None:
             skipped.append(_skip(opportunity, "no_position", "sell"))
@@ -345,8 +363,12 @@ def size_orders(
             continue
         # A sell whose decision was already handled must not be planned again; the key
         # includes the attempt number, so a retry with a fresh attempt still goes through.
+        # The ledger's sell_uses_entry_policy trigger requires the digest the position was
+        # entered under, so both the plan and its key use that digest when it is known.
+        digest_used = (position.entry_policy_digest
+                       if position.entry_policy_digest is not None else policy.digest)
         decision_key = (
-            f"live1:{policy.digest[:16]}:{opportunity.opportunity_id}:"
+            f"live1:{digest_used[:16]}:{opportunity.opportunity_id}:"
             f"{position.position_id[:8]}:a{attempts}"
         )
         if decision_key in decided_keys:
@@ -405,7 +427,7 @@ def size_orders(
             amount=amount,
             price=limit,
             order_type="limit",
-            policy_digest=policy.digest,
+            policy_digest=digest_used,
             rule_id=_rule_id(opportunity),
             position_id=position.position_id,
             required_quote=ZERO,
@@ -437,6 +459,12 @@ def size_orders(
         decision_key = f"live1:{policy.digest[:16]}:{opportunity.opportunity_id}"
         if decision_key in decided_keys:
             skipped.append(_skip(opportunity, "already_decided", "buy"))
+            continue
+        if symbol in ambiguous_position_symbols:
+            skipped.append(_skip(opportunity, "ambiguous_position", "buy"))
+            continue
+        if symbol in legacy_position_symbols:
+            skipped.append(_skip(opportunity, "legacy_position_open", "buy"))
             continue
         if symbol in open_buy_symbols or symbol in planned_buy_symbols:
             skipped.append(_skip(opportunity, "open_buy_exists", "buy"))

@@ -521,3 +521,276 @@ def test_position_cost_orders_ids_without_a_numeric_tail_even_when_the_sell_is_f
     basis = views.position_cost(h.ledger, buy.position_id, D("0.0012"))
     assert (basis.net_base, basis.cost, basis.avg_cost, basis.opened_at) == (
         D("6"), D("1000"), D("166.6666666666666666666666667"), 1000.0)
+
+
+# ---- L4b-5: sizing/reconcile views ----------------------------------------------------------
+def _to_acked(h, intent, *, now=1001.0, order_id=None):
+    h.ledger.transition_intent(h.lease, intent.intent_id, expected_state="PLANNED",
+                               to_state="SUBMITTING", now=now)
+    return h.ledger.transition_intent(h.lease, intent.intent_id, expected_state="SUBMITTING",
+                                      to_state="ACKED", now=now, exchange_order_id=order_id)
+
+
+def _rules(symbol="OAS/JPY", *, fee="0.001", quote_unit="1"):
+    from test_trading_live_support import market_rules
+    return market_rules(symbol, max_fee_rate=None if fee is None else D(fee), quote_unit=D(quote_unit))
+
+
+def _observe(h, intent, *, order_id, amount, price, status="FULLY_FILLED", executed="0"):
+    h.ledger.record_order_observation(
+        h.lease,
+        OrderObservation(exchange_order_id=order_id, intent_id=intent.intent_id, symbol=intent.symbol,
+                         side=intent.side, order_type="limit", amount=amount, status=status,
+                         executed_amount=executed, remaining_amount=str(D(amount) - D(executed)),
+                         price=price),
+        now=1000.0)
+
+
+def test_open_position_rows_lists_open_positions_with_entry_digests(harnesses):
+    h = harnesses(symbols=("OAS/JPY", "XYM/JPY", "BTC/JPY", "DDD/JPY"))
+    xym = _intent(h, key="xym", symbol="XYM/JPY", now=2000.0)
+    oas = _intent(h, key="oas", symbol="OAS/JPY", now=1000.0)
+    btc = _intent(h, key="btc", symbol="BTC/JPY", now=1500.0)
+    _finish(h, btc)
+    h.ledger.close_position(h.lease, btc.position_id, now=2500.0)
+
+    dust = _intent(h, key="dust", symbol="DDD/JPY", amount="0.5", price="100", now=1200.0)
+    _observe(h, dust, order_id="o-dust", amount="0.5", price="100", executed="0.5")
+    _fill(h, fill_id="f-dust", order_id="o-dust", symbol="DDD/JPY", side="buy", amount="0.5",
+          price="100", executed_at=1200.0)
+    _finish(h, dust)
+    h.ledger.mark_residual_inventory(h.lease, dust.position_id, now=2600.0,
+                                     min_amount=D("1"), amount_step=D("1"))
+
+    rows = views.open_position_rows(h.ledger)
+    assert rows == [
+        views.PositionRow(oas.position_id, "OAS/JPY", h.ps.policy_for("OAS/JPY").digest, 1000.0),
+        views.PositionRow(xym.position_id, "XYM/JPY", h.ps.policy_for("XYM/JPY").digest, 2000.0),
+    ]
+    assert rows[0].entry_policy_digest != rows[1].entry_policy_digest
+    assert [row.position_id for row in rows] == views.open_position_ids(h.ledger)
+
+
+def test_open_intent_symbols_only_open_intents_of_that_side(harnesses):
+    h = harnesses(symbols=("AAA/JPY", "BBB/JPY", "CCC/JPY", "DDD/JPY", "EEE/JPY"))
+    _intent(h, key="a", symbol="AAA/JPY")
+    _to_acked(h, _intent(h, key="b", symbol="BBB/JPY"))
+    _finish(h, _intent(h, key="c", symbol="CCC/JPY"))
+
+    d_buy = _intent(h, key="d-buy", symbol="DDD/JPY")
+    _finish(h, d_buy)
+    _to_acked(h, _intent(h, key="d-sell", side="sell", symbol="DDD/JPY", now=1100.0), now=1101.0)
+
+    e_buy = _intent(h, key="e-buy", symbol="EEE/JPY")
+    _finish(h, e_buy)
+    e_sell = _to_acked(h, _intent(h, key="e-sell", side="sell", symbol="EEE/JPY", now=1100.0),
+                       now=1101.0)
+    h.ledger.transition_intent(h.lease, e_sell.intent_id, expected_state="ACKED",
+                               to_state="CANCELED", now=1102.0)
+
+    assert views.open_intent_symbols(h.ledger, "buy") == frozenset({"AAA/JPY", "BBB/JPY"})
+    assert views.open_intent_symbols(h.ledger, "sell") == frozenset({"DDD/JPY"})
+    with pytest.raises(ValueError):
+        views.open_intent_symbols(h.ledger, "hold")
+
+
+def test_decision_keys_uses_an_exact_prefix_not_like(harnesses):
+    h = harnesses(symbols=("OAS/JPY", "XYM/JPY", "BTC/JPY"))
+    _intent(h, key="live1:snapback_harvest_v25:x", symbol="OAS/JPY")
+    _intent(h, key="live1:snapbackXharvest_v25:y", symbol="XYM/JPY")
+    _intent(h, key="live1:other:z", symbol="BTC/JPY")
+
+    assert views.decision_keys(h.ledger, "live1:snapback_harvest") == [
+        "live1:snapback_harvest_v25:x"
+    ]
+    assert views.decision_keys(h.ledger, "live1:%") == []
+    with pytest.raises(ValueError):
+        views.decision_keys(h.ledger, "")
+    everything = views.decision_keys(h.ledger, "live1:")
+    assert everything == [
+        "live1:other:z",
+        "live1:snapbackXharvest_v25:y",
+        "live1:snapback_harvest_v25:x",
+    ]
+    assert everything == sorted(everything)
+
+
+def test_capital_quote_sums_deposits_withdrawals_and_signed_adjustments(harnesses):
+    from docich.trading.live.ledger import Cashflow
+
+    h = harnesses(opening=False)
+    assert views.capital_quote(h.ledger) == D("0")
+    assert views.capital_quote(h.ledger, "BTC") == D("0")
+
+    h.deposit("JPY", "1000")
+    h.deposit("BTC", "5")
+    h.ledger.record_cashflow(
+        h.lease, Cashflow("w1", "withdrawal", "JPY", "200", "owner_manual", 1001.0), now=1001.0)
+    h.ledger.record_cashflow(
+        h.lease, Cashflow("a1", "adjustment", "JPY", "-50", "owner_manual", 1002.0), now=1002.0)
+    h.ledger.record_cashflow(
+        h.lease, Cashflow("a2", "adjustment", "JPY", "10", "owner_manual", 1003.0), now=1003.0)
+
+    assert views.capital_quote(h.ledger) == D("760")
+    assert views.capital_quote(h.ledger, "JPY") == D("760")
+    assert views.capital_quote(h.ledger, "BTC") == D("5")
+    assert views.capital_quote(h.ledger, "ETH") == D("0")
+
+
+def test_open_buy_exposure_acked_buy_without_fills(h):
+    intent = _intent(h, key="acked")
+    _to_acked(h, intent)
+
+    assert views.open_buy_exposure(h.ledger, {"OAS/JPY": _rules()}) == views.OpenBuyExposure(
+        D("1000"), D("1002.000"))
+
+
+def test_open_buy_exposure_partially_filled_buy_uses_the_remaining_amount(h):
+    intent = _intent(h, key="partial")
+    _observe(h, intent, order_id="o1", amount="10", price="100", status="PARTIALLY_FILLED",
+             executed="4")
+    _to_acked(h, intent, order_id="o1")
+    _fill(h, fill_id="f1", order_id="o1", symbol="OAS/JPY", side="buy", amount="4", price="100",
+          executed_at=1000.0)
+    h.ledger.transition_intent(h.lease, intent.intent_id, expected_state="ACKED",
+                               to_state="PARTIALLY_FILLED", now=1002.0)
+
+    assert h.ledger.get_intent(intent.intent_id).exchange_order_id == "o1"
+    assert views.open_buy_exposure(h.ledger, {"OAS/JPY": _rules()}) == views.OpenBuyExposure(
+        D("600"), D("601.6"))
+
+
+def test_open_buy_exposure_planned_buy_reserves_the_full_amount(h):
+    _intent(h, key="planned")
+
+    assert views.open_buy_exposure(h.ledger, {"OAS/JPY": _rules()}) == views.OpenBuyExposure(
+        D("1000"), D("1002"))
+
+
+def test_open_buy_exposure_sums_open_buys_on_two_symbols(harnesses):
+    h = harnesses(symbols=("OAS/JPY", "XYM/JPY"))
+    oas = _intent(h, key="oas", symbol="OAS/JPY")
+    _to_acked(h, oas)
+    _intent(h, key="xym", symbol="XYM/JPY")
+
+    rules = {"OAS/JPY": _rules("OAS/JPY"),
+             "XYM/JPY": _rules("XYM/JPY", fee="0.002", quote_unit="2")}
+    assert views.open_buy_exposure(h.ledger, rules) == views.OpenBuyExposure(
+        D("2000"), D("2006"))
+
+
+def test_open_buy_exposure_ignores_terminal_and_sell_intents(harnesses):
+    h = harnesses(symbols=("OAS/JPY", "XYM/JPY", "BTC/JPY"))
+    _finish(h, _intent(h, key="filled-buy", symbol="OAS/JPY"))
+
+    canceled = _intent(h, key="canceled-buy", symbol="XYM/JPY")
+    _to_acked(h, canceled)
+    h.ledger.transition_intent(h.lease, canceled.intent_id, expected_state="ACKED",
+                               to_state="CANCELED", now=1002.0)
+
+    btc_buy = _intent(h, key="btc-buy", symbol="BTC/JPY")
+    _finish(h, btc_buy)
+    _to_acked(h, _intent(h, key="btc-sell", side="sell", symbol="BTC/JPY", now=1100.0),
+              now=1101.0)
+
+    rules = {symbol: _rules(symbol) for symbol in ("OAS/JPY", "XYM/JPY", "BTC/JPY")}
+    assert views.open_buy_exposure(h.ledger, rules) == views.OpenBuyExposure(D("0"), D("0"))
+
+
+def test_open_buy_exposure_requires_a_known_fee_rate(h):
+    _to_acked(h, _intent(h, key="acked"))
+
+    with pytest.raises(ValueError, match="fee rate unknown for OAS/JPY"):
+        views.open_buy_exposure(h.ledger, {})
+    with pytest.raises(ValueError, match="fee rate unknown for OAS/JPY"):
+        views.open_buy_exposure(h.ledger, {"OAS/JPY": _rules(fee=None)})
+
+
+def test_open_buy_exposure_of_an_empty_ledger_is_zero(h):
+    assert views.open_buy_exposure(h.ledger, {}) == views.OpenBuyExposure(D("0"), D("0"))
+
+
+def test_the_l4b5_views_do_not_write(h):
+    intent = _intent(h, key="snapback_harvest_v25:k1")
+    _observe(h, intent, order_id="o1", amount="10", price="100", status="PARTIALLY_FILLED",
+             executed="4")
+    _to_acked(h, intent, order_id="o1")
+    _fill(h, fill_id="f1", order_id="o1", symbol="OAS/JPY", side="buy", amount="4", price="100",
+          executed_at=1000.0)
+
+    events_before = h.ledger.events(limit=10**6)
+    fills_before = views.fill_count(h.ledger)
+    intent_before = views.intent_by_decision_key(h.ledger, intent.decision_key)
+
+    rows = views.open_position_rows(h.ledger)
+    assert rows and rows[0].position_id == intent.position_id
+    assert views.open_intent_symbols(h.ledger, "buy") == frozenset({"OAS/JPY"})
+    assert views.decision_keys(h.ledger, "snapback_harvest_v25") == ["snapback_harvest_v25:k1"]
+    assert views.capital_quote(h.ledger) == D("10000")
+    assert views.open_buy_exposure(h.ledger, {"OAS/JPY": _rules()}) == views.OpenBuyExposure(
+        D("600"), D("601.6"))
+
+    assert h.ledger.events(limit=10**6) == events_before
+    assert views.fill_count(h.ledger) == fills_before
+    assert views.intent_by_decision_key(h.ledger, intent.decision_key) == intent_before
+
+
+# ---- L4b-5 mutation gaps: unknown submission, negative fee rate, opened_at order -------------
+def test_open_intent_symbols_and_exposure_count_an_unknown_submission(harnesses):
+    h = harnesses(symbols=("AAA/JPY", "BBB/JPY", "CCC/JPY"))
+    rules = {symbol: _rules(symbol) for symbol in ("AAA/JPY", "BBB/JPY", "CCC/JPY")}
+
+    unknown = _intent(h, key="unknown-buy", symbol="AAA/JPY")
+    h.ledger.transition_intent(h.lease, unknown.intent_id, expected_state="PLANNED",
+                               to_state="SUBMITTING", now=1001.0)
+    h.ledger.transition_intent(h.lease, unknown.intent_id, expected_state="SUBMITTING",
+                               to_state="UNKNOWN_SUBMISSION", now=1002.0)
+
+    assert h.ledger.get_intent(unknown.intent_id).state == "UNKNOWN_SUBMISSION"
+    assert "AAA/JPY" in views.open_intent_symbols(h.ledger, "buy")
+    assert views.open_buy_exposure(h.ledger, rules) == views.OpenBuyExposure(D("1000"), D("1002"))
+
+    opened = _intent(h, key="opened-buy", symbol="BBB/JPY")
+    _finish(h, opened)
+    sell = _intent(h, key="unknown-sell", side="sell", symbol="BBB/JPY", now=1100.0)
+    h.ledger.transition_intent(h.lease, sell.intent_id, expected_state="PLANNED",
+                               to_state="SUBMITTING", now=1101.0)
+    h.ledger.transition_intent(h.lease, sell.intent_id, expected_state="SUBMITTING",
+                               to_state="UNKNOWN_SUBMISSION", now=1102.0)
+
+    assert h.ledger.get_intent(sell.intent_id).state == "UNKNOWN_SUBMISSION"
+    assert views.open_intent_symbols(h.ledger, "sell") == frozenset({"BBB/JPY"})
+    assert views.open_buy_exposure(h.ledger, rules) == views.OpenBuyExposure(D("1000"), D("1002"))
+
+    submitting = _intent(h, key="submitting-buy", symbol="CCC/JPY", now=1200.0)
+    h.ledger.transition_intent(h.lease, submitting.intent_id, expected_state="PLANNED",
+                               to_state="SUBMITTING", now=1201.0)
+
+    assert views.open_intent_symbols(h.ledger, "buy") == frozenset({"AAA/JPY", "CCC/JPY"})
+    assert views.open_buy_exposure(h.ledger, rules) == views.OpenBuyExposure(D("2000"), D("2004"))
+
+
+def test_open_buy_exposure_uses_the_absolute_value_of_a_negative_fee_rate(h):
+    _to_acked(h, _intent(h, key="acked"))
+
+    negative = views.open_buy_exposure(h.ledger, {"OAS/JPY": _rules(fee="-0.001", quote_unit="1")})
+    assert negative == views.OpenBuyExposure(D("1000"), D("1002"))
+    assert negative == views.open_buy_exposure(h.ledger, {"OAS/JPY": _rules(fee="0.001")})
+
+
+def test_open_position_rows_are_ordered_by_opened_at_not_by_id(harnesses):
+    symbols = ("AAA/JPY", "BBB/JPY", "CCC/JPY", "DDD/JPY",
+               "EEE/JPY", "FFF/JPY", "GGG/JPY", "HHH/JPY")
+    h = harnesses(symbols=symbols)
+
+    created = []
+    for index, symbol in enumerate(symbols):
+        now = 1008.0 - index                      # strictly descending in creation order
+        created.append((_intent(h, key=f"p{index}", symbol=symbol, now=now), symbol, now))
+
+    rows = views.open_position_rows(h.ledger)
+    assert rows == [views.PositionRow(intent.position_id, symbol, h.ps.policy_for(symbol).digest, now)
+                    for intent, symbol, now in reversed(created)]
+    assert [row.opened_at for row in rows] == [1001.0, 1002.0, 1003.0, 1004.0,
+                                               1005.0, 1006.0, 1007.0, 1008.0]
+    assert [row.symbol for row in rows] == list(reversed(symbols))

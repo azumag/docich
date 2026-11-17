@@ -1080,8 +1080,9 @@ def test_skip_codes_are_the_documented_closed_set():
         "book_empty", "book_off_tick", "depth_insufficient", "buys_blocked_safety",
         "already_decided", "open_buy_exists", "no_capital_recorded", "fee_rate_unknown",
         "book_far_from_signal", "total_cap_exhausted", "insufficient_funds", "open_sell_exists",
+        "legacy_position_open", "ambiguous_position",
     })
-    assert len(SKIP_CODES) == 21
+    assert len(SKIP_CODES) == 23
     assert isinstance(SKIP_CODES, frozenset)
 
 
@@ -1694,3 +1695,153 @@ def test_min_amount_below_the_step_behaves_like_one_step():
     assert result.skipped == ()
     assert len(result.sells) == 1
     assert (result.sells[0].amount, result.sells[0].price) == (D("0.01"), D("100"))
+
+
+# ---- (q) L4b-5: legacy/ambiguous positions and the entry-policy digest of a sell --------
+
+
+def test_legacy_position_blocks_only_buys():
+    ps = policy_set_for((spec("exp-1"), "AAA/JPY"), (spec("exp-1"), "BBB/JPY"))
+    policy = ps.policies["AAA/JPY"]
+    marks = {
+        "AAA/JPY": market("AAA/JPY", last_close="100", step="1", minamt="1", tick="1", fee="0.001",
+                          asks=(("100", "10"),), bids=(("100", "10"),)),
+        "BBB/JPY": market("BBB/JPY", last_close="100", step="1", minamt="1", tick="1", fee="0.001",
+                          asks=(("100", "10"),)),
+    }
+    held = {"AAA/JPY": HeldPosition("pos-aaa", D("5"), D("5"))}
+    entry = opportunity("AAA/JPY", "buy", oid="entry-aaa", score="0.9")
+    other = opportunity("BBB/JPY", "buy", oid="entry-bbb", score="0.8")
+    exit_ = opportunity("AAA/JPY", "sell", oid="exit-aaa", score="0.5",
+                        strategy_id="lab:exp-1:exit-1")
+
+    result = size_orders(
+        live_signals(entries=(entry, other), exits=(exit_,)), ps, marks, held,
+        funds("1000", "0", "1000"), now=NOW, legacy_position_symbols={"AAA/JPY"},
+    )
+
+    assert [plan.opportunity_id for plan in result.buys] == ["entry-bbb"]
+    assert [plan.opportunity_id for plan in result.sells] == ["exit-aaa"]
+    assert [(skip.opportunity_id, str(skip.reason_code), skip.side) for skip in result.skipped] == [
+        ("entry-aaa", "legacy_position_open", "buy")
+    ]
+
+    expired = size_orders(
+        live_signals(entries=(opportunity("AAA/JPY", "buy", oid="expired", expires_at=NOW),)),
+        ps, marks, held, funds("1000", "0", "1000"), now=NOW,
+        legacy_position_symbols={"AAA/JPY"},
+    )
+    assert codes(expired) == ["expired"]
+
+    decided = size_orders(
+        live_signals(entries=(entry,)), ps, marks, held, funds("1000", "0", "1000"), now=NOW,
+        decided_keys={f"live1:{policy.digest[:16]}:entry-aaa"},
+        legacy_position_symbols={"AAA/JPY"},
+    )
+    assert codes(decided) == ["already_decided"]
+
+    both = size_orders(
+        live_signals(entries=(entry,)), ps, marks, held, funds("1000", "0", "1000"), now=NOW,
+        legacy_position_symbols={"AAA/JPY"}, open_buy_symbols={"AAA/JPY"},
+    )
+    assert codes(both) == ["legacy_position_open"]
+
+
+def test_ambiguous_position_blocks_both_sides():
+    ps = policy_set_for((spec("exp-1"), "AAA/JPY"), (spec("exp-1"), "BBB/JPY"))
+    marks = {
+        "AAA/JPY": market("AAA/JPY", last_close="100", step="1", minamt="1", tick="1", fee="0.001",
+                          asks=(("100", "10"),), bids=(("100", "10"),)),
+    }
+    ambiguous = {"AAA/JPY", "DDD/JPY"}
+
+    buy = size_orders(
+        live_signals(entries=(opportunity("AAA/JPY", "buy", oid="buy-aaa"),)), ps, marks, {},
+        funds("1000", "0", "1000"), now=NOW, ambiguous_position_symbols=ambiguous,
+    )
+    assert buy.buys == ()
+    assert codes(buy) == ["ambiguous_position"]
+    assert buy.skipped[0].side == "buy"
+    assert buy.residual_position_ids == ()
+    assert buy.headroom_left == D("1000")
+
+    sell = size_orders(
+        live_signals(exits=(opportunity("AAA/JPY", "sell", oid="sell-aaa"),)), ps, marks, {},
+        funds("1000", "0", "1000"), now=NOW, ambiguous_position_symbols=ambiguous,
+    )
+    assert sell.sells == ()
+    assert codes(sell) == ["ambiguous_position"]
+    assert sell.skipped[0].side == "sell"
+    assert sell.residual_position_ids == ()
+    assert sell.headroom_left == D("1000")
+
+    expired = size_orders(
+        live_signals(exits=(opportunity("AAA/JPY", "sell", oid="expired", expires_at=NOW),)),
+        ps, marks, {}, funds("1000", "0", "1000"), now=NOW,
+        ambiguous_position_symbols=ambiguous,
+    )
+    assert codes(expired) == ["expired"]
+
+    no_policy = size_orders(
+        live_signals(exits=(opportunity("DDD/JPY", "sell", oid="no-policy"),)), ps, marks, {},
+        funds("1000", "0", "1000"), now=NOW, ambiguous_position_symbols=ambiguous,
+    )
+    assert codes(no_policy) == ["no_policy"]
+
+    both = size_orders(
+        live_signals(entries=(opportunity("AAA/JPY", "buy", oid="both"),)), ps, marks, {},
+        funds("1000", "0", "1000"), now=NOW,
+        legacy_position_symbols={"AAA/JPY"}, ambiguous_position_symbols={"AAA/JPY"},
+    )
+    assert codes(both) == ["ambiguous_position"]
+
+
+def test_sell_uses_the_entry_policy_digest_when_given():
+    ps = policy_set_for((spec("exp-1"), "OAS/JPY"))
+    policy = ps.policies["OAS/JPY"]
+    mark = market("OAS/JPY", step="1", minamt="1", tick="1", bids=(("100", "50"),))
+    exit_ = opportunity("OAS/JPY", "sell", oid="opp-1", strategy_id="lab:exp-1:exit-1")
+    entry_digest = "e" * 64
+    held = {"OAS/JPY": HeldPosition("pos-aaa", D("10"), D("10"), entry_digest)}
+    key0 = "live1:" + "e" * 16 + ":opp-1:pos-aaa:a0"
+
+    result = size_orders(
+        live_signals(exits=(exit_,)), ps, {"OAS/JPY": mark}, held,
+        funds("5000", "2000", "5000"), now=NOW,
+    )
+    assert result.skipped == ()
+    plan = result.sells[0]
+    assert plan.policy_digest == entry_digest == "e" * 64
+    assert plan.decision_key == key0
+    assert plan.intent_request().policy_digest == entry_digest
+
+    retried = size_orders(
+        live_signals(exits=(exit_,)), ps, {"OAS/JPY": mark}, held,
+        funds("5000", "2000", "5000"), now=NOW, sell_attempts={"opp-1": 2},
+    )
+    assert retried.sells[0].decision_key == "live1:" + "e" * 16 + ":opp-1:pos-aaa:a2"
+
+    decided = size_orders(
+        live_signals(exits=(exit_,)), ps, {"OAS/JPY": mark}, held,
+        funds("5000", "2000", "5000"), now=NOW, decided_keys={key0},
+    )
+    assert decided.sells == ()
+    assert codes(decided) == ["already_decided"]
+
+    without_digest = size_orders(
+        live_signals(exits=(exit_,)), ps, {"OAS/JPY": mark},
+        {"OAS/JPY": HeldPosition("pos-aaa", D("10"), D("10"))},
+        funds("5000", "2000", "5000"), now=NOW,
+    )
+    assert without_digest.sells[0].policy_digest == policy.digest
+    assert without_digest.sells[0].decision_key == (
+        "live1:" + policy.digest[:16] + ":opp-1:pos-aaa:a0"
+    )
+
+    for bad in ("", 5):
+        with pytest.raises(ValueError, match="entry_policy_digest"):
+            size_orders(
+                live_signals(exits=(exit_,)), ps, {"OAS/JPY": mark},
+                {"OAS/JPY": HeldPosition("pos-aaa", D("10"), D("10"), bad)},
+                funds("5000", "2000", "5000"), now=NOW,
+            )
