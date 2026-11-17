@@ -2206,14 +2206,22 @@ def _recall_goal(mem, flags=None):
     # origin が束縛できない場合は、帰還する本人の出撃元を代理の現在地として
     # 距離判定へ使う（issue #2907 の方向 b）。出撃元が自軍城でなくなって
     # いても座標は有効なので、そこへ最も近い自軍城を選べる。
-    sources = [cells[s] for s in
-               ((_sorties(mem).get(step) or {}).get('source')
-                 for step in (state.get('sorties') or ()))
-               if s in cells]
-    if sources:
-        # 複数の出撃元を持つ場合は合計距離が最小の城（重心に近い）を選ぶ。
+    positions = []
+    for step in (state.get('sorties') or ()):
+        row = _sorties(mem).get(step) or {}
+        # The castle he fought at locates a retreating general better than the
+        # castle he left: g1190 2026-11-18 marched from アルマムーン to the front,
+        # retreated, and the departure-only proxy sent him all the way home
+        # every month (staging then had to push him out again).
+        cell = cells.get(row.get('target') or row.get('planned_target'))
+        if cell is None:
+            cell = cells.get(row.get('source'))
+        if cell is not None:
+            positions.append(cell)
+    if positions:
+        # 複数の位置を持つ場合は合計距離が最小の城（重心に近い）を選ぶ。
         return min(owned, key=lambda c: _rank(
-            c, sum(sum((cells[c][a] - o[a]) ** 2 for a in (0, 1)) for o in sources))) if owned else None
+            c, sum(sum((cells[c][a] - o[a]) ** 2 for a in (0, 1)) for o in positions))) if owned else None
     if hero_castle:
         return hero_castle
     return owned[0] if len(owned) == 1 else None
