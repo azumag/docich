@@ -13,6 +13,21 @@ import re
 import sys
 
 STEPS = ("4-B1", "4-B2", "4-B3", "4-B4")
+
+
+def boss_steps(chapter):
+    """Boss order steps for the chapter the run is actually on.
+
+    The live status used to print chapter 4's steps for every run, so a chapter
+    9 game reported ``4-B1=unknown …`` no matter what its plan held (measured
+    2026-11-17 on production, chapter 9). Keep the legacy tuple when the
+    chapter is unknown so old records still render.
+    """
+    if isinstance(chapter, int) and not isinstance(chapter, bool) and 1 <= chapter <= 12:
+        return tuple(f"{chapter}-B{i}" for i in range(1, 5))
+    return STEPS
+
+
 ORDER_STATES = frozenset({"pending", "launched_unconfirmed", "launched", "done", "failed"})
 TACTICAL_STATUSES = frozenset({"ok", "unsupported_chapter", "unavailable", "identity_changed", "output_omitted"})
 # Fixed tokens the diagnostics budget keeps beside a reduced tactical section.
@@ -212,13 +227,14 @@ def project(payload):
     policy = tactical.get("policy") if isinstance(tactical.get("policy"), dict) else {}
     orders = policy.get("orders") if isinstance(policy.get("orders"), dict) else {}
 
+    steps = boss_steps(chapter)
     projected_orders = {}
-    for step in STEPS:
+    for step in steps:
         value = orders.get(step)
         projected_orders[step] = value if value in ORDER_STATES else "unknown"
 
     raw_active = policy.get("active")
-    active = raw_active if raw_active in STEPS else None
+    active = raw_active if raw_active in steps else None
     if (active is None and isinstance(raw_active, str) and chapter is not None
             and CHAPTER_BOSS_STEP.fullmatch(raw_active)
             and raw_active.startswith(f"{chapter}-B")):
@@ -313,7 +329,7 @@ def reply(projected, env):
             f"`error_kind={rotation['error_kind']}`",
             f"`active_hanjuku={_bool_token(rotation['active_hanjuku'])}`",
         )),
-        "Boss orders: " + ", ".join(f"`{step}={orders[step]}`" for step in STEPS),
+        "Boss orders: " + ", ".join(f"`{step}={value}`" for step, value in orders.items()),
         f"Active boss order: `{projected['active'] or 'none'}`",
         "Field: " + ", ".join(
             f"`{name}={_field_token(field.get(name))}`" for name in FIELD_TOKENS
