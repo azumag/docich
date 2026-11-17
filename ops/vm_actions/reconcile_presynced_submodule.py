@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import hashlib
+import json
 import os
 import re
 import stat
@@ -350,6 +351,40 @@ def _set_projection(path, target):
         _atomic_projection_write(path, target["data"], target["mode"])
 
 
+def _ab_state_verdict(root):
+    """Self-contained mirror of ab_gate_preflight._independent_verdict.
+
+    A legacy gate can report clear for a malformed ab_state.json, so validate
+    the state here too. Returns (active, reason) or None.
+    """
+    state = root / "tmp" / "state"
+    try:
+        raw = (state / "ab_state.json").read_bytes()
+    except FileNotFoundError:
+        raw = None
+    except OSError:
+        return True, "state_unreadable"
+    if raw:
+        try:
+            data = json.loads(raw.decode("utf-8"))
+        except (ValueError, UnicodeDecodeError):
+            return True, "state_invalid"
+        if (isinstance(data, dict) and (data.get("a_hash") or data.get("b_hash"))
+                and not (state / "ab_abort").exists()):
+            return True, "active_ab"
+    try:
+        env = (root / ".env").read_bytes()[:1 << 20]
+    except FileNotFoundError:
+        env = b""
+    except OSError:
+        return True, "env_unreadable"
+    if re.search(rb"^REGRESSION_DISABLED=(?:1|true|TRUE)", env, re.M):
+        return True, "env_gate_enabled"
+    if (state / "improve_daemon.paused").exists():
+        return True, "improve_paused"
+    return None
+
+
 def _assert_ab_gate_clear(destination):
     """#4412: fail-closed before the first live projection byte write.
 
@@ -360,7 +395,10 @@ def _assert_ab_gate_clear(destination):
     root = Path(destination)
     script = root / AB_GATE_SCRIPT_REL
     reason = None
-    if not root.is_dir():
+    state_verdict = None if not root.is_dir() else _ab_state_verdict(root)
+    if state_verdict is not None:
+        reason = state_verdict[1]
+    elif not root.is_dir():
         reason = "root_missing"
     elif not script.is_file() or not os.access(script, os.X_OK):
         reason = "gate_missing"
@@ -420,6 +458,9 @@ def _normalize_projection(repo, old_sub, new_sub, destination):
     if 2 in states:
         raise ReconcileError(_projection_unknown_reason(states, unknowns), "unknown projection content")
 
+    # #4412: re-check immediately before the first live byte is written. The
+    # experiment may have started while the plan above was being built.
+    _assert_ab_gate_clear(destination)
     applied = []
     try:
         for path, old_meta, original_live in plans:

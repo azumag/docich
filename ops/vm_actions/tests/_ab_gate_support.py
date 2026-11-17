@@ -37,3 +37,33 @@ def set_gate_rc(root, rc):
     state = root / "tmp" / "state"
     state.mkdir(parents=True, exist_ok=True)
     (state / "fake_gate_rc").write_text(str(rc), encoding="utf-8")
+
+
+def install_counting_gate(root, first_rc=0, later_rc=1):
+    """Gate whose verdict changes after the first call (TOCTOU simulation)."""
+    root = Path(root)
+    script = root / "strategy" / "ab_gate_on_merge.sh"
+    script.parent.mkdir(parents=True, exist_ok=True)
+    (root / "tmp" / "state").mkdir(parents=True, exist_ok=True)
+    script.write_text(
+        "#!/usr/bin/env bash\n"
+        "set -u\n"
+        'c="tmp/state/fake_gate_count"\n'
+        "n=0\n"
+        '[ -r "$c" ] && n=$(cat "$c")\n'
+        "n=$((n+1))\n"
+        'echo "$n" > "$c"\n'
+        f'if [ "$n" -le 1 ]; then exit {first_rc}; fi\n'
+        f"exit {later_rc}\n",
+        encoding="utf-8",
+    )
+    script.chmod(0o755)
+    return script
+
+
+def write_raw_state(root, text):
+    """Write a raw ab_state.json to exercise independent state validation."""
+    root = Path(root)
+    state = root / "tmp" / "state"
+    state.mkdir(parents=True, exist_ok=True)
+    (state / "ab_state.json").write_text(text, encoding="utf-8")

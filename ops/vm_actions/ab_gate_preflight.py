@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import time
 from pathlib import Path
@@ -84,6 +85,49 @@ def _refuse(outcome, reason, marker, log, operation):
     raise GateRefused(outcome, reason)
 
 
+def _independent_verdict(root):
+    """Check the A/B state directly, without trusting the gate's version.
+
+    Older soviet_now gate scripts (df9b8b99, still shippable to the live
+    projection) swallow a malformed ``ab_state.json`` and return 0, so a bare
+    ``clear`` from the script cannot be trusted. Reproduce the gate's state
+    signals here and fail closed on anything indeterminate. Returns
+    ``(outcome, reason)`` or None when nothing is active or unreadable.
+    """
+    state = root / 'tmp' / 'state'
+    abort = state / 'ab_abort'
+    path = state / 'ab_state.json'
+    try:
+        raw = path.read_bytes()
+    except FileNotFoundError:
+        raw = None
+    except OSError:
+        return (UNKNOWN, 'state_unreadable')
+    if raw:
+        try:
+            data = json.loads(raw.decode('utf-8'))
+        except (ValueError, UnicodeDecodeError):
+            return (UNKNOWN, 'state_invalid')
+        if isinstance(data, dict) and (data.get('a_hash') or data.get('b_hash')) \
+                and not abort.exists():
+            return (ACTIVE, 'active_ab')
+    try:
+        env = (root / '.env').read_bytes()[:1 << 20]
+    except FileNotFoundError:
+        env = b''
+    except OSError:
+        return (UNKNOWN, 'env_unreadable')
+    if re.search(rb'^REGRESSION_DISABLED=(?:1|true|TRUE)', env, re.M):
+        return (ACTIVE, 'env_gate_enabled')
+    if (state / 'improve_daemon.paused').exists():
+        return (ACTIVE, 'improve_paused')
+    # An arm selected in the operator's environment is an active signal too;
+    # never let env scrubbing of the redirect knobs hide it.
+    if os.environ.get('SOREN_AB_ALT_STRATEGY'):
+        return (ACTIVE, 'active_ab')
+    return None
+
+
 def check(projection_root, *, marker=None, log=None, operation='n/a'):
     """Return CLEAR, or raise GateRefused.
 
@@ -93,6 +137,9 @@ def check(projection_root, *, marker=None, log=None, operation='n/a'):
     root = Path(projection_root)
     if not root.is_dir():
         return _refuse(UNKNOWN, 'root_missing', marker, log, operation)
+    verdict = _independent_verdict(root)
+    if verdict is not None:
+        return _refuse(verdict[0], verdict[1], marker, log, operation)
     script = root / GATE_SCRIPT_REL
     if not script.is_file() or not os.access(script, os.X_OK):
         return _refuse(UNKNOWN, 'gate_missing', marker, log, operation)

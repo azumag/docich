@@ -69,15 +69,34 @@ class AbGatePreflightTests(unittest.TestCase):
         # must not be able to redirect state or force a clear verdict.
         self.script.write_text(
             '#!/usr/bin/env bash\n[ -z "${AB_STATE_FILE:-}" ] || exit 1\n'
-            '[ -z "${SOREN_AB_ALT_STRATEGY:-}" ] || exit 1\nexit 0\n',
+            '[ -z "${AB_ENV_FILE:-}" ] || exit 1\nexit 0\n',
             encoding="utf-8",
         )
         self.script.chmod(0o755)
         with mock.patch.dict(os.environ, {
             "AB_STATE_FILE": "/tmp/synthetic-clear.json",
-            "SOREN_AB_ALT_STRATEGY": "synthetic-arm",
+            "AB_ENV_FILE": "/tmp/synthetic-clear.env",
         }):
             self.assertEqual(self._check(), gate.CLEAR)
+
+    def test_old_gate_returning_clear_cannot_hide_invalid_state(self):
+        # A legacy gate (df9b8b99) swallows malformed JSON and exits 0, but the
+        # independent state check must still treat it as indeterminate.
+        self.script.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
+        self.script.chmod(0o755)
+        _ab_gate_support.write_raw_state(self.root, "{invalid json")
+        with self.assertRaises(gate.GateRefused) as caught:
+            self._check()
+        self.assertEqual(caught.exception.outcome, gate.UNKNOWN)
+        self.assertEqual(caught.exception.reason, "state_invalid")
+
+    def test_old_gate_returning_clear_cannot_hide_active_ab(self):
+        self.script.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
+        self.script.chmod(0o755)
+        _ab_gate_support.write_raw_state(self.root, '{"a_hash": "synthetic"}')
+        with self.assertRaises(gate.GateRefused) as caught:
+            self._check()
+        self.assertEqual(caught.exception.outcome, gate.ACTIVE)
 
     def test_gateway_exposes_stable_ab_gate_rejection_reason(self):
         from ops.vm_actions import gateway

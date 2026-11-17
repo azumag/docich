@@ -86,6 +86,28 @@ class PresyncedSubmoduleReconcileTests(unittest.TestCase):
         self.assertEqual(caught.exception.code, REASON_AB_GATE_REFUSED)
         self.assertEqual(sentinel.read_bytes(), b"untouched sentinel\n")
 
+    def test_legacy_clear_gate_cannot_hide_invalid_ab_state(self):
+        # The installed clear gate reports 0, but a malformed ab_state.json
+        # must still be treated as indeterminate by the helper's own check.
+        sentinel = self.live / "worker.sh"
+        sentinel.write_bytes(b"new\n")
+        _ab_gate_support.write_raw_state(self.live, "{invalid json")
+        with self.assertRaises(ReconcileError) as caught:
+            _normalize_projection(self.sub_remote, self.old_sub, self.new_sub, self.live)
+        self.assertEqual(caught.exception.code, REASON_AB_GATE_REFUSED)
+        self.assertEqual(sentinel.read_bytes(), b"new\n")
+
+    def test_gate_is_rechecked_before_first_live_write(self):
+        # An A/B that starts while the projection plan is built must still
+        # stop the write (the gate is checked again just before it).
+        sentinel = self.live / "worker.sh"
+        sentinel.write_bytes(b"new\n")
+        _ab_gate_support.install_counting_gate(self.live, first_rc=0, later_rc=1)
+        with self.assertRaises(ReconcileError) as caught:
+            _normalize_projection(self.sub_remote, self.old_sub, self.new_sub, self.live)
+        self.assertEqual(caught.exception.code, REASON_AB_GATE_REFUSED)
+        self.assertEqual(sentinel.read_bytes(), b"new\n")
+
     def test_unknown_ab_gate_refuses_before_any_live_write(self):
         (self.live / "strategy" / "ab_gate_on_merge.sh").unlink()
         sentinel = self.live / "worker.sh"

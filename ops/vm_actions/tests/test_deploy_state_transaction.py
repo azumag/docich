@@ -197,6 +197,26 @@ class DeployStateTransactionTests(unittest.TestCase):
         self.assertTrue(markers)
         self.assertEqual(json.loads(markers[-1].read_text())['outcome'], 'active')
 
+    def test_ab_gate_invalid_state_blocks_deploy_with_legacy_gate(self):
+        live, subremote, _old_parent, new_parent = self._projection_case()
+        _ab_gate_support.write_raw_state(live, '{invalid json')
+        before = (live / 'game.txt').read_bytes()
+        with mock.patch.object(gw, 'OWNED_SUBMODULES', {'games/soviet_now': str(subremote)}), \
+             self.assertRaisesRegex(ValueError, 'ab gate refused') as caught:
+            gw.deploy_git(self.cfg, 'docich', new_parent)
+        self.assertEqual(gw.reason_code(caught.exception), 'ab_gate_refused')
+        self.assertEqual((live / 'game.txt').read_bytes(), before)
+
+    def test_ab_gate_is_rechecked_before_first_live_write(self):
+        live, subremote, _old_parent, new_parent = self._projection_case()
+        before = (live / 'game.txt').read_bytes()
+        refusal = gw.ab_gate.GateRefused(gw.ab_gate.ACTIVE, 'active_ab')
+        with mock.patch.object(gw, 'OWNED_SUBMODULES', {'games/soviet_now': str(subremote)}), \
+             mock.patch.object(gw.ab_gate, 'check', side_effect=[gw.ab_gate.CLEAR, refusal]):
+            with self.assertRaisesRegex(ValueError, 'ab gate refused'):
+                gw.deploy_git(self.cfg, 'docich', new_parent)
+        self.assertEqual((live / 'game.txt').read_bytes(), before)
+
     def test_ab_gate_unknown_blocks_deploy(self):
         live, _subremote, _old_parent, new_parent = self._projection_case()
         (live / 'strategy' / 'ab_gate_on_merge.sh').unlink()

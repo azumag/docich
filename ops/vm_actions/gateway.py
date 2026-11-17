@@ -1035,6 +1035,9 @@ def deploy_git(cfg,repo,sha):
         sync_owned_submodules(root)
         projection_plans,remaining=_plan_projections(
             cfg,repo,root,projection_base,sha,state.get("pending_repairs", []))
+        # #4412: re-check right before the first live byte write. An A/B may
+        # have started while the bundle import/checkout/plan was in progress.
+        _enforce_ab_gate(cfg, repo, 'deploy-'+sha[:12]+'-apply')
         for changes in projection_plans:
             applied.append(changes)
             _apply_projection(changes)
