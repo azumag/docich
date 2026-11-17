@@ -71,7 +71,9 @@ def test_an_incomplete_following_flag_read_drops_the_previous_fast_feedback(monk
     flags.pop('ネペンテ')
     monkeypatch.setattr(flow, 'world_flags', lambda *_: flags)
     actions = flow.world_map_step(screen, mem, frame)
-    assert actions == [pad('left')]
+    # A non-cycle pick now holds proportionally to the remaining span (v1039);
+    # the incomplete flag read still drops the previous fast feedback.
+    assert actions == [pad('left', 56)]
     assert mem.get('_menu_navigation_feedback') is None
     assert entry.observation_interval_ms(state(mem), actions) == 1500
 
