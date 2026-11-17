@@ -293,3 +293,33 @@ def test_a_step_still_referenced_by_a_walking_march_keeps_its_context():
     limit = 1024
     out = state_budget.compact_state(state, limit)
     assert step in out['policy']['plan']['order_context']
+
+
+def test_compaction_logs_the_dropped_caches_with_size_and_source(capsys):
+    """#4422: a lost cache must be attributable without before/after inference."""
+    state = _state(
+        obs_cost={f'k{i}': i for i in range(2000)},
+        general_statuses={f'g{i}': i for i in range(500)},
+        house_eggs={f'e{i}': i for i in range(500)},
+        plan={'orders': {'S:1': 'pending'}},
+    )
+    before = state_budget.size(state)
+    out = state_budget.compact_state(state, 4096)
+    lines = [line for line in capsys.readouterr().err.splitlines()
+             if state_budget.DROP_LOG_TAG in line]
+    assert len(lines) == 1
+    line = lines[0]
+    assert 'source=compact_state' in line
+    assert 'reason=size_over_limit' in line
+    assert f'before_bytes={before}' in line
+    assert 'after_bytes=' in line
+    for key in ('obs_cost', 'general_statuses', 'house_eggs'):
+        assert key in line
+    # The live order survives and is not reported as a removal.
+    assert 'S:1' not in line
+    assert out['policy']['plan']['orders'] == {'S:1': 'pending'}
+
+
+def test_no_drop_log_is_emitted_when_the_record_fits(capsys):
+    state_budget.compact_state(_state(tick=1), state_budget.OVERSIZED_READ_LIMIT)
+    assert state_budget.DROP_LOG_TAG not in capsys.readouterr().err
