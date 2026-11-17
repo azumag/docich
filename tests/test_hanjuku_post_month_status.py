@@ -1519,6 +1519,34 @@ def test_recall_task_retry_is_bounded():
     assert state['stage'] == 'process'
 
 
+def test_a_battle_interruption_does_not_spend_the_recall_retry_budget():
+    """g1190 2026-11-17: two battle interruptions dropped a full-HP camper.
+
+    The recall A was never sent (`recall_interrupted` is set by recall.py when a
+    battle takes the foreground), yet `post_month_recall_requeued` consumed the
+    month's two retries and the general stayed out for ~5200 ticks.
+    """
+    from docich.hanjuku.state.regions import flow as _flow
+    mem = memory(month='2-12')
+    state = _wait_recall_state(mem)
+    state['recall_task_retries'] = {'ヴィーナス': post.RECALL_TASK_RETRIES}
+    _flow(mem).pop('recall', None)
+    _flow(mem)['recall_interrupted'] = mem['tick']
+    assert post.step(Screen([], None, '', kind='map'), mem, None) == []
+    assert state['tasks'] == [{'kind': 'recall', 'name': 'ヴィーナス'}]
+    assert state['recall_task_retries'] == {'ヴィーナス': post.RECALL_TASK_RETRIES}
+    record = [r for r in mem['_records']
+              if r['decision'] == 'post_month_recall_requeued'][-1]
+    assert record['observed_metric']['battle_interrupt'] is True
+    # Without an interruption marker the budget is still enforced.
+    _flow(mem).pop('recall_interrupted', None)
+    state['tasks'] = []
+    state['recall_task_retries'] = {'ヴィーナス': post.RECALL_TASK_RETRIES}
+    assert post.step(Screen([], None, '', kind='map'), mem, None) == []
+    assert state['tasks'] == []
+    assert state['stage'] == 'process'
+
+
 def test_a_static_unresolvable_marker_is_not_re_read_for_every_general():
     """g1163 2026-11-09: box [59,120,64,125] repeated for twenty generals."""
     state = {}
