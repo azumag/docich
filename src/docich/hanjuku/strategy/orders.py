@@ -2092,6 +2092,20 @@ def _recall_owned(mem, chapter, owned, origin=None):
     measured = (isinstance(origin, (list, tuple)) and len(origin) == 2
                 and all(type(v) is int for v in origin))
     gate = chart.gateway(chapter)
+    if gate and owned and not measured:
+        # The picker's ▲ is usually ambiguous, so the camp cell stays unknown
+        # (owner 2026-11-17: the ring was steered at the cliff). The castles the
+        # recalled general sortied from say which half he is in: a back-half
+        # departure means a back-half camp.
+        state = _flow(mem).get('recall') or {}
+        sources = [( _sorties(mem).get(step) or {}).get('source')
+                   for step in (state.get('sorties') or ())]
+        back_only = [s for s in sources if s in gate['back']]
+        front_only = [s for s in sources if s in gate['front']]
+        if back_only and not front_only:
+            back = [c for c in owned if c in gate['back']]
+            if back:
+                return sorted(back)
     if gate and owned and measured:
         # The halves of a gateway chapter are split by an impassable cliff
         # (owner 2026-11-17, chapter 11): a general who retreated in the back
