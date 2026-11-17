@@ -408,3 +408,28 @@ def test_an_owned_hub_keeps_the_ordinary_gather():
     from docich.hanjuku.strategy.replan import interim_candidates
     orders = [o for o in interim_candidates(_attrition_mem(hub_owned=True)).values() if isinstance(o, dict)]
     assert orders and orders[0].get('purpose') != 'move' or orders[0].get('target') == 'タタール', orders[:3]
+
+
+def test_a_retreating_general_returns_near_where_he_fought():
+    """g1190 2026-11-18: marched from home to the front, retreated, sent home.
+
+    The departure castle alone located him at アルマムーン, so every retreat
+    crossed the island and staging had to push him out again. The castle he
+    fought at locates him at the front.
+    """
+    from docich.hanjuku.state.regions import flow as _flow
+    from docich.hanjuku.strategy.orders import _recall_goal
+    mem = memory(['アルマムーン', 'タタール'])
+    mem['sorties'] = {'S1': {'source': 'アルマムーン', 'target': 'クラボニア',
+                             'status': 'en_route'}}
+    _flow(mem)['recall'] = {'target': [134, 120], 'sorties': ['S1']}
+    assert _recall_goal(mem) == 'タタール'
+
+
+def test_without_a_target_the_departure_still_locates_him():
+    from docich.hanjuku.state.regions import flow as _flow
+    from docich.hanjuku.strategy.orders import _recall_goal
+    mem = memory(['アルマムーン', 'タタール'])
+    mem['sorties'] = {'S1': {'source': 'アルマムーン', 'target': None, 'status': 'en_route'}}
+    _flow(mem)['recall'] = {'target': [134, 120], 'sorties': ['S1']}
+    assert _recall_goal(mem) == 'アルマムーン'
