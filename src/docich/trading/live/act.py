@@ -12,8 +12,8 @@ Known consequence for the owner (to be confirmed before phase E): sell proceeds 
 investment headroom but never the free quote. If a limit sell does not fill, the buys that
 used its headroom stay placed, so deployed can exceed C by that sell's notional until a
 later exit fills. Buys are still capped by the free quote (no buy can spend JPY that is not
-in the account), and the signed headroom blocks every new buy while deployed is above C. A
-TTL cancel of the unfilled sell (T5b-2c) withdraws the sell but does NOT end the overshoot.
+in the account), and the signed headroom blocks every new buy while deployed is above C. The
+TTL cancel of an unfilled order (ttl.py) withdraws the order but does NOT end the overshoot.
 
 Placement order is fixed: every sell, then every buy (never interleaved).  A buy whose
 symbol has a sell plan in the same cycle is never placed.  A buy is also dropped once the
