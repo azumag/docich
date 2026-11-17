@@ -1,0 +1,24 @@
+"""Resume-pending unknown screens may still get the bounded advance (v998+).
+
+g1262 resumed a chapter-9 mid-battle save: the restored screen never resolved
+a chapter, `resume_chapter_pending` stayed set, and the unknown-screen advance
+required `mem['chapter']`, so the run produced no recovery input and ended in
+`screen_stalled`. A pending resume is still a real run: the bounded A applies.
+"""
+from test_hanjuku_chart_bot import Canvas
+from docich.hanjuku import orchestrator as O
+from docich.hanjuku.orchestrator import decide
+from docich.hanjuku.os_layer.screen import parse
+
+
+def test_chapterless_unknown_resume_still_advances():
+    frame = Canvas().frame()
+    assert parse(frame).kind == 'unknown'
+    mem = {'name': {'done': True}, 'resume_chapter_pending': True}
+    pressed = []
+    for _ in range(O.UNKNOWN_HOLD_ADVANCE + 2):
+        actions, state = decide(frame, {'policy': mem})
+        mem = state['policy']
+        if actions == [O.pad('a')]:
+            pressed.append(True)
+    assert pressed, 'resume_chapter_pending の unknown 画面で有界 A 前進が出ない'

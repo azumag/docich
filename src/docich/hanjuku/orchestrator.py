@@ -1252,7 +1252,8 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
         if close_hold is not None:
             actions = close_hold
         plain_text = plain_text_hold(screen)
-        if (kind in {'unknown'} or plain_text) and mem.get('chapter') \
+        if (kind in {'unknown'} or plain_text) \
+                and (mem.get('chapter') or mem.get('resume_chapter_pending')) \
                 and (phase not in {'transition', 'title', 'title_or_intro'} or mem.get('battle')):
             hold_digest = frame.digest()
             if mem.get('held_phase')!=phase:
