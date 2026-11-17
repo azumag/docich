@@ -80,6 +80,27 @@ def latest_at(mem, general, tick=None):
     return rec
 
 
+def invalidate_uses(mem, general=None):
+    """Drop only the remaining count a recovery receipt can change.
+
+    A paid ぜんかいふく or the game's 「たまごはありませんぞ」 answer makes every
+    observed count unknown without saying whose egg was restored, but a
+    payment cannot create an egg, give one to an eggless general or fix a
+    broken one. The record keeps its type, presence, broken flag and
+    observation tick, so it still outranks an older 「卵なし」 status row right
+    after the payment and the boss wave keeps the recovered general until
+    the next observation (#4439). ``general`` limits the invalidation to one
+    paid actor.
+    """
+    records = mem.get(KEY)
+    if not isinstance(records, dict):
+        return
+    for name, rec in (records.items() if general is None
+                      else ((general, records.get(general)),)):
+        if isinstance(rec, dict):
+            rec['uses'] = None
+
+
 def forget(mem, general):
     """Drop one general's egg record (roster invalidation / bulk receipt)."""
     (mem.get(KEY) or {}).pop(general, None)

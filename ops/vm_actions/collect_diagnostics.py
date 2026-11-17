@@ -7632,6 +7632,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v1040-plan-drop-foreign",
             "hanjuku-chart-v1020-recall-giveup",
             "hanjuku-chart-v1021-plan-invalid-source",
+            "hanjuku-chart-v1041-egg-receipt-presence",
             "hanjuku-chart-v985-roster-lost",
             "hanjuku-chart-v982-gbox",
             "hanjuku-chart-v984-roster-map-anchor",
