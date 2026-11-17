@@ -2167,14 +2167,18 @@ def _recall_goal(mem, flags=None):
     owned = _recall_owned(mem, chapter, sorted(c for c in _owned(mem) if c in cells
                                              and (flags is None or flags.get(c) == 'own')),
                           origin=state.get('origin'))
-    # Owner 2026-11-18 02:3x: the shared hub is the destination again. The
-    # two-leg "step aside first" plan is dropped: what looked like a cliff
-    # problem was mostly the castle sprite being read as a camp (the recall
-    # never left the field). Returning to タタール keeps the army where the
-    # back-half waves start.
+    # Owner 2026-11-18 02:3x: a general who sortied into the back half must
+    # come back through the shared hub, always and first. The two-leg plan is
+    # dropped: what looked like a cliff problem was mostly the castle sprite
+    # being read as a camp (the recall never left the field). Returning to
+    # タタール keeps him where the back-half waves start.
     gate_hub = chart.gateway(chapter)
-    if gate_hub and gate_hub['hub'] in owned and state.get('target'):
-        return gate_hub['hub']
+    if gate_hub and gate_hub['hub'] in owned:
+        for step in (state.get('sorties') or ()):
+            row = _sorties(mem).get(step) or {}
+            target = row.get('target') or row.get('planned_target')
+            if target in gate_hub['back']:
+                return gate_hub['hub']
 
     hero = [c for c in owned if NAME in ((_world(mem).get('garrison') or {}).get(c) or ())]
     if not hero:

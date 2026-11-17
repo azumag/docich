@@ -447,16 +447,13 @@ def test_opposite_move_legs_are_not_both_planned():
         assert (target, source) not in legs, legs
 
 
-def test_a_visible_camp_returns_to_the_shared_hub():
-    """Owner 2026-11-18 02:3x: make the hub return the rule again.
-
-    The two-leg plan is dropped (the "cliff" was mostly a castle sprite read as
-    a camp), so a camp sighting returns to タタール while it is ours.
-    """
+def test_a_general_who_sortied_into_the_back_half_returns_to_the_hub():
+    """Owner 2026-11-18 02:3x: back-half veterans always come back through タタール."""
     from docich.hanjuku.state.regions import flow as _flow
     from docich.hanjuku.strategy.orders import _recall_goal
     mem = memory([*FRONT, 'タタール', 'クラボニア'])
-    _flow(mem)['recall'] = {'target': [134, 120], 'stage': 'dest'}
+    mem['sorties'] = {'S1': {'source': 'タタール', 'target': 'クラボニア', 'status': 'en_route'}}
+    _flow(mem)['recall'] = {'target': [134, 120], 'sorties': ['S1']}
     assert _recall_goal(mem) == 'タタール'
 
 
