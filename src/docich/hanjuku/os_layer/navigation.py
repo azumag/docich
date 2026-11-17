@@ -454,10 +454,10 @@ def _want_y_jump(mem, order, name, mode) -> bool:
 
 
 Y_JUMP_UNREACHABLE_TICKS = 1800   # a goal the view cannot align is skipped this long
-Y_JUMP_UNREACHABLE_PX = 6         # a residual this size repeats exactly
+Y_JUMP_UNREACHABLE_PX = 6         # landings within this per-axis distance are the same spot
 
 
-def _note_unreachable_goal(mem, goal, residual):
+def _note_unreachable_goal(mem, goal, residual, step=None):
     """Remember a goal the Y view cannot put the cursor on.
 
     g1163 2026-11-12 08:29-08:31: every attempt for the same castle ended with
@@ -465,22 +465,32 @@ def _note_unreachable_goal(mem, goal, residual):
     costing a Y open, eight moves and a close. A new order step resets the
     per-step budget, so only the goal itself can carry the memory.
 
-    Two failures at (or inside) the same small residual is a property of the
-    view, not bad luck: more moves cannot fix it, so the normal navigation gets
-    the target back until the mark ages out.
+    Two failures at (or near) the same residual is a property of the view, not
+    bad luck: more moves cannot fix it, so the normal navigation gets the
+    target back until the mark ages out.
+
+    #4416 (g1190 第10話): the same signature at a LARGE residual — the read
+    sat at [-40.5, +45.0] / [-43.5, +45.0] while all eight moves ran, so the
+    earlier gate (drop when both axes exceed PX) discarded every reading, the
+    mark never formed, and the order retried the identical failure until its
+    budget ran out (~6.5 min). Any repeated residual — small or large — now
+    counts, and the jitter between identical reads is absorbed by the PX
+    window.
     """
     if residual is None:
         return
     dx, dy = residual
-    if abs(dx) > Y_JUMP_UNREACHABLE_PX and abs(dy) > Y_JUMP_UNREACHABLE_PX:
-        return
     seen = mem.setdefault('y_jump_unreachable', {})
     entry = seen.get(goal) if isinstance(seen.get(goal), dict) else {}
-    same = (entry and abs(entry.get('residual', [999, 999])[0] - dx) <= 1
-            and abs(entry.get('residual', [999, 999])[1] - dy) <= 1)
+    same = (entry and abs(entry.get('residual', [999, 999])[0] - dx) <= Y_JUMP_UNREACHABLE_PX
+            and abs(entry.get('residual', [999, 999])[1] - dy) <= Y_JUMP_UNREACHABLE_PX)
     count = (int(entry.get('count') or 0) + 1) if same else 1
     seen[goal] = {'count': count, 'residual': [round(dx, 1), round(dy, 1)],
                   'tick': int(mem.get('tick') or 0)}
+    if count == 2:
+        _record(mem, 'y_jump_unreachable', chart_step=step, target=goal,
+                observed_metric={'residual': [round(dx, 1), round(dy, 1)]},
+                reason='全体マップのジャンプが同じ残余で繰り返し閉じたため、この城へのY経路を休止して別経路へ切替える')
 
 
 def y_jump_unreachable(mem, goal):
@@ -572,7 +582,7 @@ def _y_jump_step(mem, frame):
                 observed_metric={'world_cursor': list(cursor), 'residual': [round(dx, 1), round(dy, 1)],
                                  'moves': jump['moves']},
                 reason='全体マップのカーソルが目的の城に合わないため決定せず閉じる')
-        _note_unreachable_goal(mem, jump['goal'], (dx, dy))
+        _note_unreachable_goal(mem, jump['goal'], (dx, dy), step=jump.get('step'))
         return _close_target_jump(mem, jump)
     if (abs(dx) <= Y_JUMP_TOL and abs(dy) <= Y_JUMP_TOL) or jump['moves'] >= Y_JUMP_MOVES:
         mem.pop('y_jump', None)
