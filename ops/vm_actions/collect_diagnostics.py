@@ -7608,6 +7608,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v1014-goal-retry-flags",
             "hanjuku-chart-v1015-recall-to-hub",
             "hanjuku-chart-v1016-hub-retake-order",
+            "hanjuku-chart-v1017-revert-hub-recall",
             "hanjuku-chart-v985-roster-lost",
             "hanjuku-chart-v982-gbox",
             "hanjuku-chart-v984-roster-map-anchor",
