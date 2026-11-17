@@ -301,7 +301,7 @@ def test_the_use_egg_regression_is_not_vacuous(monkeypatch):
         value = real(screen, mem, label, **kw)
         if isinstance(value, dict) and value.get('buttons') == ['b']:
             calls['n'] += 1
-            return [value]  # the exact pre-fix return shape
+            return [[value]]  # the nested shape the driver must still reject
         return value
 
     monkeypatch.setattr(battle_menus, '_battle_menu_move', pre_fix)

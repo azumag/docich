@@ -560,7 +560,7 @@ def test_hero_retreat_opens_before_chart_and_selects_only_visible_retreat(monkey
     assert mem['battle']['hero_retreat']['opens']==1
     assert not mem['battle'].get('card_flow')
     actions,state=decide(command_frame(),{'policy':mem})
-    assert actions==[p.pad('down')]
+    assert actions==[p.pad('down'),{'type':'wait','ms':60},p.pad('down')]
     actions,state=decide(command_frame(cursor=1),state)
     assert actions==[p.pad('down')]
     actions,state=decide(command_frame(cursor=2),state)
