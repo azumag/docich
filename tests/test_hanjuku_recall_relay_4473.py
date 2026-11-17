@@ -134,3 +134,24 @@ def test_the_relay_stage_routes_to_the_field_move(monkeypatch):
     monkeypatch.setattr('docich.hanjuku.os_layer.navigation.nav_step',
                         lambda *_: 'right')
     assert r._camp_recall_step(MAP, mem, FRAME) == [pad('right')]
+
+
+def test_a_visible_castle_across_the_cliff_yields_to_the_relay():
+    """g1190 2026-11-18 08:27: (140,112) → アルアマーン by いどう could not cross."""
+    mem = memory()
+    visible = {'castle': 'アルマムーン', 'world': [472, 848]}
+    move, relay = r._visible_move_or_relay(mem, _flow(mem)['recall'], visible)
+    assert move is None
+    assert relay == {'cell': [508, 264], 'hub': 'タタール'}
+
+
+def test_a_visible_move_stays_when_a_back_half_castle_is_ours():
+    mem = memory(back_owned=['トリフェ'])
+    visible = {'castle': 'トリフェ', 'world': [600, 200]}
+    move, relay = r._visible_move_or_relay(mem, _flow(mem)['recall'], visible)
+    assert move == visible and relay is None
+
+
+def test_no_visible_castle_keeps_the_existing_flow():
+    mem = memory()
+    assert r._visible_move_or_relay(mem, _flow(mem)['recall'], None) == (None, None)
