@@ -1,0 +1,153 @@
+"""docich#4535: a battery-save rollback must leave a record.
+
+ローカル第11話 (2026-11-18): 崖側将軍の帰還失敗でゲームオーバーになり、タイトル
+復帰がセーブ1 (だい11わ 58ねん9のつき) をロードして月が 60-4 → 58-4 に、保持城も
+タプロベインのみに戻った。ボットは画面を読み直して追従したが、ロールバック自体は
+どこにも記録されなかった。同一章で月が大きく逆行したら progress_regressed を
+1回、タイトル経由のロードでは resume_from_save を記録する (記録のみ・操作は変えない)。
+"""
+from pathlib import Path
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
+
+import pytest
+
+from docich.hanjuku.flows.prompts import observe_events
+from docich.hanjuku.orchestrator import _load_save_label, decide
+from docich.hanjuku.os_layer.screen import Screen
+from docich.hanjuku_pixels import read_png
+
+FIXTURES = Path(__file__).resolve().parent / 'fixtures' / 'hanjuku'
+
+
+def month_screen(year, month, chapter=None, gold=100):
+    header = {'year': year, 'month': month, 'gold': gold}
+    if chapter is not None:
+        header['chapter'] = chapter
+    return Screen(lines=[], hand=None, text='', kind='map', header=header)
+
+
+def chapter_11_memory(**extra):
+    mem = {'chapter': 11, 'month': '60-4', 'tick': 1,
+           'captured': ['タプロベイン', 'チリベット', 'マランマ', 'タタール'],
+           'lost': []}
+    mem.update(extra)
+    return mem
+
+
+def regressions(mem):
+    return [r for r in mem.get('_records', ())
+            if r.get('decision') == 'progress_regressed']
+
+
+def test_a_same_chapter_month_regress_is_recorded_once():
+    mem = chapter_11_memory()
+    observe_events(month_screen(58, 4, chapter=11), mem, previous_phase='title')
+    rec = regressions(mem)
+    assert len(rec) == 1
+    metric = rec[0]['observed_metric']
+    assert metric['month_before'] == '60-4' and metric['month_after'] == '58-4'
+    assert metric['captured'] == sorted(
+        ['タプロベイン', 'チリベット', 'マランマ', 'タタール'])
+    assert metric['lost'] == [] and metric['home_lost'] is False
+    assert metric['previous_phase'] == 'title'
+    assert mem['month'] == '58-4'          # the bot still follows the screen
+
+
+def test_a_normal_month_advance_records_no_regress():
+    mem = chapter_11_memory()
+    observe_events(month_screen(60, 5, chapter=11), mem)
+    assert not regressions(mem) and mem['month'] == '60-5'
+
+
+@pytest.mark.parametrize('new_month', ['60-3', '60-2'])
+def test_a_small_backward_read_is_header_flicker_not_a_regress(new_month):
+    year, month = map(int, new_month.split('-'))
+    mem = chapter_11_memory()
+    observe_events(month_screen(year, month, chapter=11), mem)
+    assert not regressions(mem)
+
+
+def test_a_three_month_regress_is_over_the_bound():
+    mem = chapter_11_memory()
+    observe_events(month_screen(60, 1, chapter=11), mem)
+    assert len(regressions(mem)) == 1
+
+
+def test_a_chapter_change_is_not_a_regress():
+    mem = chapter_11_memory()
+    observe_events(month_screen(1, 1, chapter=12), mem)
+    assert not regressions(mem) and mem['chapter'] == 12
+
+
+def test_the_same_regress_is_not_recorded_twice():
+    mem = chapter_11_memory()
+    observe_events(month_screen(58, 4, chapter=11), mem)
+    observe_events(month_screen(60, 4, chapter=11), mem)   # forward again
+    observe_events(month_screen(58, 4, chapter=11), mem)   # the same rollback
+    assert len(regressions(mem)) == 1
+    observe_events(month_screen(60, 4, chapter=11), mem)
+    observe_events(month_screen(57, 9, chapter=11), mem)   # a different rollback
+    assert len(regressions(mem)) == 2
+
+
+def test_an_unreadable_month_key_is_not_a_regress():
+    mem = chapter_11_memory(month='unreadable')
+    observe_events(month_screen(58, 4, chapter=11), mem)
+    assert not regressions(mem)
+
+
+def test_the_save_row_names_its_slot_chapter_and_date():
+    label = _load_save_label(
+        'どれをロードなされますかな? ーセーブ1ー だい11わ 58ねん9のつき')
+    assert label == {'save_slot': 1, 'save_chapter': 11, 'save_month': '58-9',
+                     'save_label': 'だい11わ 58ねん9のつき'}
+
+
+def test_an_unreadable_save_row_leaves_the_fields_empty():
+    label = _load_save_label('ロードなされますかな')
+    assert label == {'save_slot': None, 'save_chapter': None,
+                     'save_month': None, 'save_label': None}
+
+
+def _decide_on(fixture, state):
+    return decide(read_png(FIXTURES / fixture).resized(), state)
+
+
+def test_a_title_return_then_load_records_resume_from_save_once():
+    state = {'step': 1,
+             'policy': {'name': {'done': True}, 'chapter': 11, 'month': '60-4',
+                        'captured': ['タプロベイン'], 'lost': ['チリベット']}}
+    _, state = _decide_on('g1190-title-after-chapter.png', state)
+    assert state['policy'].get('title_episode') is True
+    actions, state = _decide_on('g1190-load-screen.png', state)
+    assert actions == [{'type': 'pad', 'buttons': ['a'], 'hold_ms': 100}]
+    rec = [r for r in state['_records'] if r['decision'] == 'resume_from_save']
+    assert len(rec) == 1
+    metric = rec[0]['observed_metric']
+    assert metric['save_chapter'] == 9       # the fixture's だい9わ slot
+    assert metric['month_before'] == '60-4'  # the run's pre-rollback month
+    assert metric['captured'] == ['タプロベイン']
+    assert metric['lost'] == ['チリベット']
+    assert 'title_episode' not in state['policy']
+    # The same screen persisting does not record the resume again.
+    _, state = _decide_on('g1190-load-screen.png', state)
+    assert not [r for r in state['_records'] if r['decision'] == 'resume_from_save']
+
+
+def test_a_load_screen_without_a_title_episode_stays_unrecorded():
+    state = {'policy': {'name': {'done': True}, 'chapter': 9}}
+    _, state = _decide_on('g1190-load-screen.png', state)
+    assert not [r for r in state['_records'] if r['decision'] == 'resume_from_save']
+    assert [r for r in state['_records'] if r['decision'] == 'load_screen_confirm']
+
+
+def test_gameplay_ends_the_title_episode():
+    state = {'policy': {'name': {'done': True}, 'chapter': 9}}
+    _, state = _decide_on('g1190-title-after-chapter.png', state)
+    assert state['policy'].get('title_episode') is True
+    _, state = _decide_on('g1190-ch9-desert-field.png', state)
+    assert 'title_episode' not in state['policy']
+    _, state = _decide_on('g1190-load-screen.png', state)
+    assert not [r for r in state['_records'] if r['decision'] == 'resume_from_save']
