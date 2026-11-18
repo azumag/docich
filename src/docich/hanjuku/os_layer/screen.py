@@ -1242,6 +1242,10 @@ def classify_text(s: Screen) -> str:
         return 'barrier_removed'
     if 'なまえのかきとり' in t:
         return 'name_entry'
+    if 'パスワードヲ' in t and 'イレテクダサイ' in t:
+        # Chapter clear: the word list on the right is entered in the story's
+        # order (g1190 2026-11-18 62-2: the bot pressed B there for 20 minutes).
+        return 'password_entry'
     if 'きりふだセレクト' in t:
         return 'card_select'
     if 'しょうぐん' in t and 'かいこに' in t:

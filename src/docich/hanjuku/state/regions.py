@@ -289,6 +289,7 @@ KEY_OWNERSHIP = {
     'chapter_probe': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 章確認プローブ手順状態
     'chikujou_leftover': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 築城残りテキスト処理の手順状態
     'concert_picker_watch': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # コンサートpicker停滞監視の自己消去型
+    'password_entry_seen': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 章クリアのパスワード画面を検出した記録
     'cursor_card_downs': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # カード選択カーソル下移動の手順状態
     'cursor_pick_downs': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 同上
     'cursor_still': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # カーソル停滞検出
