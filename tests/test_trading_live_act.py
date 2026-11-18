@@ -705,6 +705,7 @@ def test_the_hook_through_run_cycle(ws, harnesses, monkeypatch):
     shadow = run_cycle(rig.deps, rig.state)
     assert shadow.mode == "shadow" and shadow.outcome is CycleOutcome.CONTINUE
     assert all_intents(h.ledger) == []
+    assert len(views.events_of_kind(h.ledger, "shadow_fill")) == 1
 
     # Trade: the hook places the buy through the mock sender.
     ws.write_control(mode="trade")

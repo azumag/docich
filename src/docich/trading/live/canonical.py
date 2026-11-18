@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Mapping
 from decimal import Decimal, InvalidOperation
 
 
@@ -36,6 +37,11 @@ def sha256_hex(data: bytes) -> str:
 def is_sha256_hex(value: object) -> bool:
     return (isinstance(value, str) and len(value) == 64
             and all(ch in "0123456789abcdef" for ch in value))
+
+
+def confirmation_token(content: Mapping[str, str], ledger_id: str) -> str:
+    """The short operator confirmation token bound to the content and the ledger id."""
+    return sha256_hex(canonical_json({**dict(content), "ledger_id": ledger_id}))[:10]
 
 
 def decimal_text(value: object, *, name: str, allow_zero: bool = False,

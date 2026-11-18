@@ -1,4 +1,4 @@
-"""Read-only LIVE snapshot for the WebUI and the owner's one LIVE mutation.
+"""Read-only LIVE snapshot, the owner's switch, and the initial-policy setup.
 
 The WebUI runs on the same host as the LIVE worker and already has the LIVE state dir as
 ``g.state_dir``.  This module joins three allow-listed sources:
@@ -8,8 +8,10 @@ The WebUI runs on the same host as the LIVE worker and already has the LIVE stat
 * the LIVE ledger, opened read-only (the same way ``live_owner/cli.py status`` does).
 
 ``live_snapshot`` never raises and never includes a path, file content, order/fill id,
-API key or an unwatched asset's balance.  ``set_control`` is the only writer here; it
-validates the switch first and writes the one control file through ``control.write_control``.
+API key or an unwatched asset's balance.  ``set_control`` validates the switch first and
+writes the one control file through ``control.write_control``.  The initial-policy
+export/preview only read PAPER history and the ledger; ``initial_activate`` is the one
+initial-policy writer and requires a previewed token plus the writer lease.
 """
 from __future__ import annotations
 
@@ -19,7 +21,9 @@ import os
 import stat
 
 from .trading.live import control
+from .trading.live import initial as live_initial
 from .trading.live.cycle import next_wait
+from .trading.live.initial import InitialSetupError
 from .trading.live.ledger import LiveLedger
 from .trading.live.overview import live_overview
 from .trading.live.paths import live_layout
@@ -223,6 +227,28 @@ def live_snapshot(state_dir, *, now: float) -> dict:
     }
 
 
+def initial_export(state_dir) -> dict:
+    """Read-only initial-policy export from the authoritative PAPER history."""
+    return live_initial.export_history(state_dir)
+
+
+def initial_preview(state_dir, *, source: str, snapshot: str | None, experiment_digest: str | None,
+                    operator: str | None, note: str | None) -> dict:
+    """Validate and tokenize a candidate.  This never writes the ledger or control."""
+    return live_initial.preview_policy(state_dir, source=source, snapshot=snapshot,
+                                       experiment_digest=experiment_digest,
+                                       operator=operator, note=note)
+
+
+def initial_activate(state_dir, *, source: str, snapshot: str | None, experiment_digest: str | None,
+                     operator: str | None, note: str | None, confirm: str | None,
+                     now: float) -> dict:
+    """Confirm a previewed initial activation; only this path writes the ledger."""
+    return live_initial.activate_policy(state_dir, source=source, snapshot=snapshot,
+                                        experiment_digest=experiment_digest,
+                                        operator=operator, note=note, confirm=confirm, now=now)
+
+
 def set_control(state_dir, *, state: str, mode: str, confirm: str | None, actor: str,
                 now: float) -> dict:
     """Validate and write the owner's switch; return ``describe_control`` after the write.
@@ -245,4 +271,5 @@ def set_control(state_dir, *, state: str, mode: str, confirm: str | None, actor:
     return control.describe_control(state_dir, now=now)
 
 
-__all__ = ["live_snapshot", "set_control"]
+__all__ = ["live_snapshot", "set_control", "initial_export", "initial_preview",
+           "initial_activate", "InitialSetupError"]

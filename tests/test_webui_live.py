@@ -1,4 +1,4 @@
-"""WebUI LIVE snapshot and owner switch (Issue #3623, PR-C).
+"""WebUI LIVE snapshot, owner switch, and initial-policy setup (Issue #3623).
 
 The snapshot tests use the real LIVE ledger/control/status files in a temp state dir; the
 HTTP tests use the same real ``ThreadingHTTPServer`` fixture as ``tests/test_webui.py``.
@@ -9,18 +9,30 @@ from __future__ import annotations
 import hashlib
 import http.client
 import json
+import os
+import shutil
 import stat
+import subprocess
 import sys
 import tempfile
 import threading
 import time
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from docich import config, webui  # noqa: E402
+from docich.trading.live import control as live_control  # noqa: E402
+from docich.trading.live import initial as live_initial  # noqa: E402
+from docich.trading.live import lease as live_lease  # noqa: E402
+from docich.trading.live import policy as live_policy  # noqa: E402
+from docich.trading.live.canonical import canonical_json  # noqa: E402
+from docich.trading.live.ledger import LiveLedger  # noqa: E402
 from docich.trading.live.paths import live_layout  # noqa: E402
+from docich.trading.strategy_lab import experiment_from_mapping  # noqa: E402
 from docich.trading.live_worker.status import (  # noqa: E402
     ALLOWED_KEYS, status_path, write_status,
 )
@@ -31,11 +43,12 @@ from _webui_http_fixture import (  # noqa: E402
     shutdown_test_server as _shutdown_test_server,
     tracking_server_class as _tracking_server_class,
 )
-from test_trading_live_support import Workspace  # noqa: E402
+from test_trading_live_support import Workspace, synthetic_mapping  # noqa: E402
 
 NOW = 1_800_000_000.0
 ROOT = Path(__file__).resolve().parents[1]
 SNAPSHOT_KEYS = {"control", "status", "worker_alive", "ledger_present", "overview"}
+_CONFIRM_UNSET = object()
 
 
 class TestLiveSnapshot(unittest.TestCase):
@@ -269,6 +282,20 @@ def _make_global(repo_root: Path) -> config.GlobalConfig:
     return config.load_global(repo_root)
 
 
+INITIAL_ID = "snapback_harvest_v25"
+
+
+def _initial_mapping(**changes):
+    mapping = synthetic_mapping()
+    mapping["experiment_id"] = INITIAL_ID
+    mapping.update(changes)
+    return mapping
+
+
+def _initial_spec(**changes):
+    return experiment_from_mapping(_initial_mapping(**changes))
+
+
 class TestLiveHttp(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -315,6 +342,512 @@ class TestLiveHttp(unittest.TestCase):
         self.client.request(method, path, body=body, headers=hdrs)
         res = self.client.getresponse()
         return res.status, json.loads(res.read().decode("utf-8"))
+
+    # ---- initial policy setup -------------------------------------------------
+    def _history(self, entries):
+        trading = self.g.state_dir / "trading"
+        trading.mkdir(parents=True, exist_ok=True)
+        path = trading / "paper_strategy_evaluation_history.json"
+        path.write_text(json.dumps({"schema_version": 1, "entries": entries}), encoding="utf-8")
+        return path
+
+    def _initial_history(self, mapping=None):
+        mapping = _initial_mapping() if mapping is None else mapping
+        return self._history([{"experiment_id": INITIAL_ID, "experiment": mapping}])
+
+    def _state_bytes(self):
+        return {str(path.relative_to(self.g.state_dir)): path.read_bytes()
+                for path in self.g.state_dir.rglob("*") if path.is_file()}
+
+    def _preview_initial(self, *, source="history", snapshot=None, digest=None):
+        body = {"source": source, "operator": "owner", "note": "initial setup"}
+        if snapshot is not None:
+            body["snapshot"] = snapshot
+        if digest is not None:
+            body["experiment_digest"] = digest
+        return self._request("POST", "/api/live/initial-policy/preview", body)
+
+    def _confirm_initial(self, preview, *, source="history", snapshot=None, digest=None,
+                         confirm=_CONFIRM_UNSET):
+        body = {"source": source, "operator": "owner", "note": "initial setup",
+                "confirm": preview["token"] if confirm is _CONFIRM_UNSET else confirm}
+        if snapshot is not None:
+            body["snapshot"] = snapshot
+        if digest is not None:
+            body["experiment_digest"] = digest
+        return self._request("POST", "/api/live/initial-policy/activate", body)
+
+    def _activation_rows(self):
+        ledger = LiveLedger.open_readonly(live_layout(self.g.state_dir))
+        try:
+            with ledger.read_cursor() as cur:
+                return cur.execute("SELECT reason FROM policy_activations ORDER BY activation_id").fetchall()
+        finally:
+            ledger.close()
+
+    def _ledger_counts(self):
+        ledger = LiveLedger.open_readonly(live_layout(self.g.state_dir))
+        try:
+            with ledger.read_cursor() as cur:
+                return {
+                    "activations": cur.execute("SELECT COUNT(*) FROM policy_activations").fetchone()[0],
+                    "events": cur.execute("SELECT COUNT(*) FROM events").fetchone()[0],
+                    "policy_sets": cur.execute("SELECT COUNT(*) FROM policy_sets").fetchone()[0],
+                }
+        finally:
+            ledger.close()
+
+    def _import_candidate(self, mapping):
+        spec = experiment_from_mapping(mapping)
+        return (canonical_json(live_policy.experiment_payload(spec)).decode(),
+                live_policy.experiment_digest(spec))
+
+    def test_initial_export_is_canonical_and_excludes_activated_at(self):
+        mapping = _initial_mapping(activated_at=123.0)
+        self._history([
+            {"experiment_id": "newer_v99", "experiment": synthetic_mapping()},
+            {"experiment_id": INITIAL_ID, "experiment": mapping},
+        ])
+        spec = experiment_from_mapping(mapping)
+        status, data = self._request("GET", "/api/live/initial-policy/export")
+        self.assertEqual(status, 200, data)
+        self.assertEqual(data["experiment_id"], INITIAL_ID)
+        self.assertEqual(data["experiment_digest"], live_policy.experiment_digest(spec))
+        self.assertEqual(len(data["experiment_digest"]), 64)
+        self.assertEqual(data["symbols"], list(live_policy.INITIAL_SYMBOLS))
+        self.assertEqual(json.loads(data["snapshot"]), live_policy.experiment_payload(spec))
+        self.assertEqual(data["snapshot"], canonical_json(live_policy.experiment_payload(spec)).decode())
+        self.assertNotIn("activated_at", data["snapshot"])
+        self.assertFalse((self.g.state_dir / "trading-live").exists())
+
+    def test_initial_preview_and_confirm_activate_without_control_change(self):
+        self._initial_history()
+        live_control.write_control(self.g.state_dir, state="off", mode="shadow",
+                                   updated_by="owner", now=NOW)
+        control_path = live_layout(self.g.state_dir).control_path
+        before = control_path.read_bytes()
+        status, preview = self._preview_initial()
+        self.assertEqual(status, 200, preview)
+        self.assertRegex(preview["token"], r"^[0-9a-f]{10}$")
+        self.assertFalse(preview["already_active"])
+        self.assertFalse(live_layout(self.g.state_dir).ledger_path.exists())
+        status, result = self._confirm_initial(preview)
+        self.assertEqual(status, 200, result)
+        self.assertTrue(result["activated"])
+        self.assertEqual(result["reason"], "owner_initial")
+        spec = _initial_spec()
+        ps = live_policy.build_policy_set(spec, live_policy.INITIAL_SYMBOLS)
+        self.assertEqual(result["policy_set_digest"], ps.digest)
+        self.assertEqual(self._activation_rows(), [("owner_initial",)])
+        self.assertEqual(control_path.read_bytes(), before)
+        self.assertFalse(live_control.describe_control(self.g.state_dir, now=NOW)["state"] == "on")
+        self.assertFalse((live_layout(self.g.state_dir).root / "live_status.json").exists())
+
+    def test_initial_repeat_same_policy_is_a_safe_no_op(self):
+        self._initial_history()
+        _, preview = self._preview_initial()
+        status, _ = self._confirm_initial(preview)
+        self.assertEqual(status, 200)
+        _, again = self._preview_initial()
+        self.assertTrue(again["already_active"])
+        status, result = self._confirm_initial(again)
+        self.assertEqual(status, 200, result)
+        self.assertFalse(result["activated"])
+        self.assertTrue(result["already_active"])
+        self.assertEqual(self._activation_rows(), [("owner_initial",)])
+
+    def test_initial_lost_response_retry_after_a_new_ledger_is_already_active(self):
+        self._initial_history()
+        status, preview = self._preview_initial()
+        self.assertEqual(status, 200, preview)
+        self.assertFalse(preview["ledger_present"])
+        status, first = self._confirm_initial(preview)
+        self.assertEqual(status, 200, first)
+        self.assertTrue(first["activated"])
+        counts = self._ledger_counts()
+        # The same token was previewed before the ledger existed.  The first success
+        # changed both the ledger id and the active digest; the lost response/second
+        # click must still be an idempotent success with no extra write.
+        status, retry = self._confirm_initial(preview)
+        self.assertEqual(status, 200, retry)
+        self.assertFalse(retry["activated"])
+        self.assertTrue(retry["already_active"])
+        self.assertEqual(self._ledger_counts(), counts)
+        status, data = self._confirm_initial(preview, confirm="0" * 10)
+        self.assertEqual((status, data["error"]), (409, "stale_preview"))
+        self.assertEqual(self._ledger_counts(), counts)
+
+    def test_initial_retry_after_an_existing_empty_ledger_is_already_active(self):
+        self._initial_history()
+        layout = live_layout(self.g.state_dir)
+        LiveLedger.open(layout, paper_dir=self.g.state_dir / "trading", now=NOW).close()
+        status, preview = self._preview_initial()
+        self.assertEqual(status, 200, preview)
+        self.assertTrue(preview["ledger_present"])
+        status, first = self._confirm_initial(preview)
+        self.assertEqual(status, 200, first)
+        counts = self._ledger_counts()
+        status, retry = self._confirm_initial(preview)
+        self.assertEqual(status, 200, retry)
+        self.assertTrue(retry["already_active"])
+        self.assertFalse(retry["activated"])
+        self.assertEqual(self._ledger_counts(), counts)
+
+    def test_initial_stale_preview_after_an_empty_ledger_appears(self):
+        self._initial_history()
+        _, preview = self._preview_initial()
+        layout = live_layout(self.g.state_dir)
+        LiveLedger.open(layout, paper_dir=self.g.state_dir / "trading", now=NOW).close()
+        status, data = self._confirm_initial(preview)
+        self.assertEqual((status, data["error"]), (409, "stale_preview"))
+        self.assertEqual(self._activation_rows(), [])
+        status, fresh = self._preview_initial()
+        self.assertEqual(status, 200, fresh)
+        self.assertTrue(fresh["ledger_present"])
+        status, result = self._confirm_initial(fresh)
+        self.assertEqual(status, 200, result)
+        self.assertTrue(result["activated"])
+
+    def test_initial_activation_race_with_a_competing_empty_ledger_is_stale(self):
+        self._initial_history()
+        _, preview = self._preview_initial()
+        self.assertFalse(preview["ledger_present"])
+        layout = live_layout(self.g.state_dir)
+        original_open = LiveLedger.open
+        observed = {}
+
+        def competing_open(path, *, paper_dir, now, require_new=False):
+            if not observed:
+                # Another process creates an empty ledger after the activation's
+                # existence check but before its sqlite open.
+                competing = original_open(path, paper_dir=paper_dir, now=now)
+                competing.close()
+                observed["bytes"] = path.ledger_path.read_bytes()
+                observed["mode"] = stat.S_IMODE(path.ledger_path.stat().st_mode)
+            return original_open(path, paper_dir=paper_dir, now=now,
+                                 require_new=require_new)
+
+        with mock.patch.object(LiveLedger, "open", new=competing_open):
+            status, data = self._confirm_initial(preview)
+        self.assertEqual((status, data["error"]), (409, "stale_preview"))
+        # The contested path is left in place and untouched.
+        self.assertTrue(layout.ledger_path.is_file())
+        self.assertEqual(layout.ledger_path.read_bytes(), observed["bytes"])
+        self.assertEqual(observed["mode"], 0o600)
+        self.assertEqual(self._activation_rows(), [])
+
+    def test_initial_rejects_non_string_fields_and_non_ascii_tokens(self):
+        self._initial_history()
+        cases = (
+            ({"source": "history", "operator": 123, "note": "n"}, "operator_invalid"),
+            ({"source": "history", "operator": ["owner"], "note": "n"}, "operator_invalid"),
+            ({"source": "history", "operator": "owner", "note": 123}, "note_invalid"),
+            ({"source": "history", "operator": "owner", "note": {"text": "n"}}, "note_invalid"),
+        )
+        for body, code in cases:
+            status, data = self._request("POST", "/api/live/initial-policy/preview", body)
+            self.assertEqual((status, data["error"]), (400, code), body)
+        status, data = self._preview_initial(source="import", snapshot=123, digest="0" * 64)
+        self.assertEqual((status, data["error"]), (400, "snapshot_invalid"))
+        status, data = self._preview_initial(source="import", snapshot="{}", digest=123)
+        self.assertEqual((status, data["error"]), (400, "digest_invalid"))
+        _, preview = self._preview_initial()
+        for bad in ("0" * 9, "0" * 11, "G" * 10, "é" * 10, 123, None, ["0" * 10]):
+            status, data = self._confirm_initial(preview, confirm=bad)
+            self.assertEqual((status, data["error"]), (409, "stale_preview"), bad)
+        self.assertFalse(live_layout(self.g.state_dir).ledger_path.exists())
+        status, result = self._confirm_initial(preview)
+        self.assertEqual(status, 200, result)
+
+    def test_initial_import_fallback_must_match_the_history_digest(self):
+        approved = _initial_mapping(thesis="owner approved")
+        self._initial_history(approved)
+        approved_snapshot, approved_digest = self._import_candidate(approved)
+        different = _initial_mapping(thesis="different proposal")
+        different_snapshot, different_digest = self._import_candidate(different)
+        status, data = self._preview_initial(source="import", snapshot=different_snapshot,
+                                             digest=different_digest)
+        self.assertEqual((status, data["error"]), (409, "import_mismatch"))
+        status, data = self._preview_initial(source="import", snapshot=approved_snapshot,
+                                             digest=approved_digest)
+        self.assertEqual(status, 200, data)
+        # Corrupt or ambiguous history must not be bypassed by the import fallback.
+        history = self.g.state_dir / "trading" / "paper_strategy_evaluation_history.json"
+        history.write_text("{not-json", encoding="utf-8")
+        status, data = self._preview_initial(source="import", snapshot=approved_snapshot,
+                                             digest=approved_digest)
+        self.assertEqual((status, data["error"]), (400, "history_invalid"))
+        self._history([
+            {"experiment_id": INITIAL_ID, "experiment": approved},
+            {"experiment_id": INITIAL_ID, "experiment": different},
+        ])
+        status, data = self._preview_initial(source="import", snapshot=approved_snapshot,
+                                             digest=approved_digest)
+        self.assertEqual((status, data["error"]), (409, "candidate_ambiguous"))
+        self.assertFalse(live_layout(self.g.state_dir).ledger_path.exists())
+
+    def test_initial_downloaded_snapshot_and_separate_digest_round_trip_via_import(self):
+        self._initial_history()
+        status, exported = self._request("GET", "/api/live/initial-policy/export")
+        self.assertEqual(status, 200, exported)
+        download = Path(self.tmp.name) / "downloaded-initial.json"
+        download.write_text(exported["snapshot"], encoding="utf-8")
+        downloaded = download.read_text(encoding="utf-8")
+        parsed = json.loads(downloaded)
+        self.assertEqual(parsed, live_policy.experiment_payload(_initial_spec()))
+        self.assertNotIn("snapshot", parsed)  # the downloaded file is the snapshot itself
+        history = self.g.state_dir / "trading" / "paper_strategy_evaluation_history.json"
+        history.unlink()
+        status, preview = self._preview_initial(source="import", snapshot=downloaded,
+                                                digest=exported["experiment_digest"])
+        self.assertEqual(status, 200, preview)
+        status, result = self._confirm_initial(preview, source="import", snapshot=downloaded,
+                                               digest=exported["experiment_digest"])
+        self.assertEqual(status, 200, result)
+        self.assertTrue(result["activated"])
+        counts = self._ledger_counts()
+        status, retry = self._confirm_initial(preview, source="import", snapshot=downloaded,
+                                              digest=exported["experiment_digest"])
+        self.assertEqual(status, 200, retry)
+        self.assertTrue(retry["already_active"])
+        self.assertFalse(retry["activated"])
+        self.assertEqual(self._ledger_counts(), counts)
+
+    def test_initial_concurrent_different_imports_never_overwrite(self):
+        first = _initial_mapping(thesis="contender A")
+        second = _initial_mapping(thesis="contender B")
+        first_snapshot, first_digest = self._import_candidate(first)
+        second_snapshot, second_digest = self._import_candidate(second)
+        status, first_preview = self._preview_initial(source="import", snapshot=first_snapshot,
+                                                      digest=first_digest)
+        self.assertEqual(status, 200, first_preview)
+        status, second_preview = self._preview_initial(source="import", snapshot=second_snapshot,
+                                                       digest=second_digest)
+        self.assertEqual(status, 200, second_preview)
+        barrier = threading.Barrier(2)
+
+        def contender(preview, snapshot, digest):
+            barrier.wait(timeout=5)
+            try:
+                return live_initial.activate_policy(
+                    self.g.state_dir, source="import", snapshot=snapshot,
+                    experiment_digest=digest, operator="owner", note="initial setup",
+                    confirm=preview["token"], now=NOW)
+            except live_initial.InitialSetupError as exc:
+                return exc.code
+
+        previous_umask = os.umask(0o022)
+        try:
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                futures = [pool.submit(contender, first_preview, first_snapshot, first_digest),
+                           pool.submit(contender, second_preview, second_snapshot, second_digest)]
+                results = [future.result(timeout=10) for future in futures]
+        finally:
+            os.umask(previous_umask)
+        winners = [result for result in results
+                   if isinstance(result, dict) and result.get("activated")]
+        self.assertEqual(len(winners), 1, results)
+        self.assertEqual(self._activation_rows(), [("owner_initial",)])
+        ledger = LiveLedger.open_readonly(live_layout(self.g.state_dir))
+        try:
+            active = ledger.active_policy_set_digest()
+        finally:
+            ledger.close()
+        self.assertEqual(active, winners[0]["policy_set_digest"])
+        for result in results:
+            if isinstance(result, str):
+                self.assertIn(result, {"already_active", "active_policy_conflict",
+                                       "lease_held", "stale_preview",
+                                       "ledger_unavailable", "activation_refused"}, results)
+
+    def test_initial_mutations_enforce_csrf_origin_and_operator_identity(self):
+        self._initial_history()
+        _, preview = self._preview_initial()
+        preview_body = {"source": "history", "operator": "owner", "note": "initial setup"}
+        activate_body = {**preview_body, "confirm": preview["token"]}
+        for path, body in (("/api/live/initial-policy/preview", preview_body),
+                           ("/api/live/initial-policy/activate", activate_body)):
+            status, data = self._request("POST", path, body,
+                                         headers={"Origin": "https://evil.example"})
+            self.assertEqual((status, data["error"]), (403, "invalid_origin"), data)
+            self.assertNotIn(str(self.g.state_dir), json.dumps(data))
+        status, data = self._request("POST", "/api/live/initial-policy/activate",
+                                     activate_body, csrf=False)
+        self.assertEqual((status, data["error"]), (403, "csrf_missing"), data)
+        self.g.webui.read_only_token = "viewer-secret"
+        try:
+            status, data = self._request(
+                "POST", "/api/live/initial-policy/activate", activate_body,
+                headers={"Authorization": "Bearer viewer-secret"})
+        finally:
+            self.g.webui.read_only_token = ""
+        self.assertEqual((status, data["error"]), (403, "read_only"), data)
+        self.assertFalse(live_layout(self.g.state_dir).ledger_path.exists())
+
+    def test_initial_reads_only_the_configured_paper_dir_and_rejects_symlinks(self):
+        wrong = self.g.state_dir / "paper_strategy_evaluation_history.json"
+        wrong.write_text(json.dumps({"schema_version": 1, "entries": [
+            {"experiment_id": INITIAL_ID, "experiment": _initial_mapping()}]}), encoding="utf-8")
+        status, data = self._request("GET", "/api/live/initial-policy/export")
+        self.assertEqual((status, data["error"]), (404, "history_missing"))
+        self.assertFalse((self.g.state_dir / "trading").exists())
+        self.assertFalse((self.g.state_dir / "trading-live").exists())
+        real = Path(self.tmp.name) / "real-paper"
+        real.mkdir()
+        (self.g.state_dir / "trading").mkdir()
+        (self.g.state_dir / "trading").rmdir()
+        (self.g.state_dir / "trading").symlink_to(real, target_is_directory=True)
+        status, data = self._request("GET", "/api/live/initial-policy/export")
+        self.assertEqual((status, data["error"]), (400, "history_unreadable"))
+
+    def test_initial_stale_preview_is_refused_after_the_candidate_changes(self):
+        self._initial_history()
+        _, preview = self._preview_initial()
+        status, data = self._confirm_initial(preview, confirm="0" * 10)
+        self.assertEqual((status, data["error"]), (409, "stale_preview"))
+        changed = _initial_mapping(thesis="changed after the operator preview")
+        self._initial_history(changed)
+        status, data = self._confirm_initial(preview)
+        self.assertEqual(status, 409, data)
+        self.assertEqual(data["error"], "stale_preview")
+        self.assertFalse(live_layout(self.g.state_dir).ledger_path.exists())
+
+    def test_initial_missing_unsupported_ambiguous_and_invalid_are_refused(self):
+        status, data = self._request("GET", "/api/live/initial-policy/export")
+        self.assertEqual((status, data["error"]), (404, "history_missing"))
+
+        self._history([])
+        status, data = self._request("GET", "/api/live/initial-policy/export")
+        self.assertEqual((status, data["error"]), (404, "candidate_missing"))
+
+        self._history([{"experiment_id": "synthetic_v1", "experiment": synthetic_mapping()}])
+        status, data = self._request("GET", "/api/live/initial-policy/export")
+        self.assertEqual((status, data["error"]), (404, "candidate_unsupported"))
+
+        self._history([
+            {"experiment_id": INITIAL_ID, "experiment": _initial_mapping()},
+            {"experiment_id": INITIAL_ID, "experiment": _initial_mapping(thesis="another winner")},
+        ])
+        status, data = self._request("GET", "/api/live/initial-policy/export")
+        self.assertEqual((status, data["error"]), (409, "candidate_ambiguous"))
+
+        broken = _initial_mapping()
+        broken["unknown_key"] = 1
+        self._history([{"experiment_id": INITIAL_ID, "experiment": broken}])
+        status, data = self._request("GET", "/api/live/initial-policy/export")
+        self.assertEqual((status, data["error"]), (400, "candidate_invalid"))
+
+    def test_initial_import_uses_the_supplied_digest_and_checks_the_id(self):
+        spec = _initial_spec(activated_at=999.0)
+        snapshot = canonical_json(live_policy.experiment_payload(spec)).decode()
+        digest = live_policy.experiment_digest(spec)
+        status, preview = self._preview_initial(source="import", snapshot=snapshot, digest=digest)
+        self.assertEqual(status, 200, preview)
+        status, result = self._confirm_initial(preview, source="import", snapshot=snapshot, digest=digest)
+        self.assertEqual(status, 200, result)
+        self.assertTrue(result["activated"])
+        self.assertEqual(self._activation_rows(), [("owner_initial",)])
+
+        wrong_id = synthetic_mapping()
+        status, data = self._preview_initial(source="import", snapshot=json.dumps(wrong_id),
+                                             digest=live_policy.experiment_digest(experiment_from_mapping(wrong_id)))
+        self.assertEqual((status, data["error"]), (400, "candidate_unsupported"))
+        status, data = self._preview_initial(source="import", snapshot=snapshot, digest="0" * 64)
+        self.assertEqual((status, data["error"]), (400, "digest_mismatch"))
+        status, data = self._preview_initial(source="import", snapshot=snapshot, digest=digest.upper())
+        self.assertEqual((status, data["error"]), (400, "digest_invalid"))
+        status, data = self._preview_initial(source="import", snapshot=" " * (live_initial.MAX_SNAPSHOT_BYTES + 1),
+                                             digest=digest)
+        self.assertEqual((status, data["error"]), (400, "snapshot_too_large"))
+        broken = _initial_mapping()
+        broken["unknown_key"] = 1
+        status, data = self._preview_initial(source="import", snapshot=json.dumps(broken), digest=digest)
+        self.assertEqual((status, data["error"]), (400, "snapshot_invalid"))
+
+    def test_initial_existing_different_active_policy_is_not_overwritten(self):
+        self._initial_history()
+        _, preview = self._preview_initial()
+        other_spec = experiment_from_mapping({"schema_version": 1, "experiment_id": "other_v1",
+                                              "name": "other", "thesis": "other",
+                                              "entry_rules": synthetic_mapping()["entry_rules"],
+                                              "exit_rules": synthetic_mapping()["exit_rules"],
+                                              "max_pair_correlation": "0.35", "activated_at": 1.0})
+        other = live_policy.build_policy_set(other_spec, live_policy.INITIAL_SYMBOLS)
+        layout = live_layout(self.g.state_dir)
+        ledger = LiveLedger.open(layout, paper_dir=self.g.state_dir / "trading", now=NOW)
+        writer = live_lease.acquire_writer_lease(ledger, layout, now=NOW)
+        try:
+            ledger.record_owner_activation(writer, other, operator="owner", note="existing", now=NOW)
+        finally:
+            live_lease.release_writer_lease(ledger, writer, now=NOW)
+            ledger.close()
+        status, data = self._confirm_initial(preview)
+        self.assertEqual(status, 409, data)
+        self.assertEqual(data["error"], "stale_preview")
+        status, data = self._preview_initial()
+        self.assertEqual(status, 409, data)
+        self.assertEqual(data["error"], "active_policy_conflict")
+        self.assertEqual(self._activation_rows(), [("owner_initial",)])
+        ledger = LiveLedger.open_readonly(layout)
+        try:
+            self.assertEqual(ledger.active_policy_set_digest(), other.digest)
+        finally:
+            ledger.close()
+
+    def test_initial_activation_refuses_a_writer_lease(self):
+        self._initial_history()
+        layout = live_layout(self.g.state_dir)
+        ledger = LiveLedger.open(layout, paper_dir=self.g.state_dir / "trading", now=NOW)
+        try:
+            _, preview = self._preview_initial()
+            writer = live_lease.acquire_writer_lease(ledger, layout, now=NOW)
+            try:
+                status, data = self._confirm_initial(preview)
+            finally:
+                live_lease.release_writer_lease(ledger, writer, now=NOW)
+            self.assertEqual(status, 409, data)
+            self.assertEqual(data["error"], "lease_held")
+            with ledger.read_cursor() as cur:
+                self.assertEqual(cur.execute("SELECT COUNT(*) FROM policy_activations").fetchone()[0], 0)
+        finally:
+            ledger.close()
+
+    def test_initial_preview_requires_csrf_and_writes_nothing(self):
+        self._initial_history()
+        before = self._state_bytes()
+        self.client.request("POST", "/api/live/initial-policy/preview",
+                            body=json.dumps({"source": "history", "operator": "owner", "note": "n"}).encode(),
+                            headers={"Content-Type": "application/json"})
+        res = self.client.getresponse()
+        data = json.loads(res.read().decode("utf-8"))
+        self.assertEqual(res.status, 403, data)
+        self.assertEqual(data["error"], "csrf_missing")
+        self.assertEqual(self._state_bytes(), before)
+
+    def test_initial_viewer_is_blocked_and_reads_do_not_write(self):
+        before = self._state_bytes()
+        self.g.webui.read_only_token = "viewer-secret"
+        try:
+            status, data = self._request("GET", "/api/live/initial-policy/export",
+                                         headers={"Authorization": "Bearer viewer-secret"})
+            self.assertEqual(status, 403, data)
+            status, data = self._request("POST", "/api/live/initial-policy/preview",
+                                         {"source": "history", "operator": "owner", "note": "n"},
+                                         headers={"Authorization": "Bearer viewer-secret"})
+            self.assertEqual(status, 403, data)
+        finally:
+            self.g.webui.read_only_token = ""
+        self.assertEqual(self._state_bytes(), before)
+
+        self._initial_history()
+        before = self._state_bytes()
+        status, data = self._request("GET", "/api/live/initial-policy/export")
+        self.assertEqual(status, 200, data)
+        status, data = self._request("POST", "/api/live/initial-policy/preview",
+                                     {"source": "history", "operator": "owner", "note": "initial setup"})
+        self.assertEqual(status, 200, data)
+        self.assertEqual(self._state_bytes(), before)
+        self.assertFalse((self.g.state_dir / "trading-live").exists())
 
     def test_get_live_with_operator_auth(self):
         self.g.webui.token = "operator-secret"
@@ -399,6 +932,143 @@ class TestLiveHttp(unittest.TestCase):
 
 
 class TestLiveFrontend(unittest.TestCase):
+    def _html(self):
+        return (ROOT / "src/docich/webui_resources/index.html").read_text(encoding="utf-8")
+
+    def _live_script(self):
+        html = self._html()
+        self.assertIn("// webui-live:start", html)
+        self.assertIn("// webui-live:end", html)
+        return html.split("// webui-live:start", 1)[1].split("// webui-live:end", 1)[0]
+
+    def _run_node(self, script):
+        if shutil.which("node") is None:
+            self.skipTest("JS 挙動検証には node が必要 (CI runner には同梱)")
+        completed = subprocess.run(["node", "-e", script], capture_output=True,
+                                   text=True, timeout=15, check=False)
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        return json.loads(completed.stdout)
+
+    def test_initial_digest_prefix_survives_overview_polls(self):
+        full = "a" * 64
+        experiment = "b" * 64
+        script = r"""
+const elements={};
+function fakeEl(){return {textContent:"",innerHTML:"",disabled:false,style:{},value:"",className:""};}
+const document={
+  getElementById(id){return elements[id]||(elements[id]=fakeEl());},
+  querySelector(){return fakeEl();},
+};
+const $=()=>fakeEl();
+const esc=x=>String(x);
+const fmtTime=x=>String(x);
+const READ_ONLY=false;
+__SNIPPET__
+const full=__FULL__;
+const experiment=__EXPERIMENT__;
+LIVE_INITIAL.token="token-1";
+liveInitialRender({source:"history",snapshot:"{}",experiment_digest:experiment,
+  policy_set_digest:full,active_policy_set_digest:full,symbols:["OAS/JPY"]});
+const overview={ledger_readable:true,policy:{digest:full.slice(0,12),symbols:["OAS/JPY"]},
+  safety:{trips:[]},pnl:{},positions:[],recent_fills:[],opening:[]};
+renderLive({control:{},status:null,ledger_present:true,overview});
+renderLive({control:{},status:null,ledger_present:true,overview});
+const out={
+  token_after_polls:LIVE_INITIAL.token,
+  msg_after_polls:document.getElementById("live-initial-msg").textContent,
+  policy_display:elements["live-initial-policy-digest"].textContent,
+  experiment_display:elements["live-initial-digest"].textContent,
+  active_display:elements["live-initial-active"].textContent,
+};
+LIVE_INITIAL.token="token-2";
+LIVE_INITIAL.activeDigest=null;
+renderLive({control:{},status:null,ledger_present:false,
+  overview:{policy:{digest:null,symbols:[]},safety:{trips:[]},pnl:{},
+    positions:[],recent_fills:[],opening:[]}});
+out.null_token=LIVE_INITIAL.token;
+out.null_msg=document.getElementById("live-initial-msg").textContent;
+LIVE_INITIAL.token="token-3";
+LIVE_INITIAL.activeDigest=full;
+renderLive({control:{},status:null,ledger_present:true,
+  overview:{...overview,policy:{digest:"0123456789ab",symbols:[]}}});
+out.mismatch_token=LIVE_INITIAL.token;
+out.mismatch_msg=document.getElementById("live-initial-msg").textContent;
+process.stdout.write(JSON.stringify(out));
+"""
+        script = (script.replace("__SNIPPET__", self._live_script())
+                  .replace("__FULL__", json.dumps(full))
+                  .replace("__EXPERIMENT__", json.dumps(experiment)))
+        out = self._run_node(script)
+        self.assertEqual(out["token_after_polls"], "token-1")
+        self.assertEqual(out["msg_after_polls"], "")
+        self.assertEqual(out["policy_display"], full)
+        self.assertEqual(out["experiment_display"], experiment)
+        self.assertEqual(out["active_display"], full[:12] + " (1 symbols)")
+        self.assertEqual(out["null_token"], "token-2")
+        self.assertEqual(out["null_msg"], "")
+        self.assertIsNone(out["mismatch_token"])
+        self.assertIn("有効な policy が変わった", out["mismatch_msg"])
+
+    def test_api_error_code_selects_the_initial_message_and_clears_stale_preview(self):
+        html = self._html()
+        api_body = html.split("async function api(path, opts={}){", 1)[1].split(
+            "\nfunction chainKeys(){", 1)[0]
+        script = r"""
+const out={};
+async function fetchCsrfToken(){return null;}
+const sessionStorage={getItem(){return null;},removeItem(){}};
+function showLogin(){}
+function fakeResponse(status,body){
+  return {status,ok:false,text:async()=>JSON.stringify(body),
+    clone(){return this;},json:async()=>body};
+}
+globalThis.fetch=async()=>fakeResponse(409,{error:"stale_preview",
+  detail:"確認後に候補・台帳・有効方針が変わったため、もう一度確認してください。"});
+async function api(path, opts={}){__API_BODY__
+__SNIPPET__
+(async()=>{
+  let stale;
+  try{await api("/api/live/initial-policy/activate",{method:"POST"});}catch(e){stale=e;}
+  out.api_code=stale.code;
+  out.api_message=stale.message;
+  out.ui_message=liveInitialErrorText(stale);
+  out.ui_clears=liveInitialClearsToken(stale);
+
+  globalThis.fetch=async()=>fakeResponse(400,{error:"digest_invalid",
+    detail:"digest は 64 文字の小文字 hex で指定してください。"});
+  let other;
+  try{await api("/api/live/initial-policy/preview",{method:"POST"});}catch(e){other=e;}
+  out.other_code=other.code;
+  out.other_message=liveInitialErrorText(other);
+  out.other_clears=liveInitialClearsToken(other);
+
+  out.legacy_message=liveInitialErrorText(new Error("409 /api/live: stale_preview"));
+  out.legacy_clears=liveInitialClearsToken(new Error("409 /api/live: stale_preview"));
+  process.stdout.write(JSON.stringify(out));
+})();
+"""
+        script = (script.replace("__API_BODY__", api_body)
+                  .replace("__SNIPPET__", self._live_script()))
+        out = self._run_node(script)
+        self.assertEqual(out["api_code"], "stale_preview")
+        self.assertEqual(
+            out["api_message"],
+            "409 /api/live/initial-policy/activate: "
+            "確認後に候補・台帳・有効方針が変わったため、もう一度確認してください。")
+        self.assertIn("確認後に候補", out["api_message"])
+        self.assertEqual(
+            out["ui_message"],
+            "確認後に候補・台帳・有効方針が変わったため、もう一度確認してください。")
+        self.assertTrue(out["ui_clears"])
+        self.assertEqual(out["other_code"], "digest_invalid")
+        self.assertEqual(
+            out["other_message"], "digest は 64 文字の小文字 hex で指定してください。")
+        self.assertFalse(out["other_clears"])
+        self.assertEqual(
+            out["legacy_message"],
+            "確認後に候補・台帳・有効方針が変わったため、もう一度確認してください。")
+        self.assertTrue(out["legacy_clears"])
+
     def test_live_tab_panel_and_manifest_are_pinned(self):
         html = (ROOT / "src/docich/webui_resources/index.html").read_text(encoding="utf-8")
         nav = html.split('<nav id="tabs">', 1)[1].split("</nav>", 1)[0]
@@ -411,6 +1081,12 @@ class TestLiveFrontend(unittest.TestCase):
             "live-off", "live-trade-confirm", "live-refresh", "live-pnl-total",
             "live-pnl-round-trips", "live-pnl-win-rate", "live-pnl-symbols",
             "live-positions", "live-fills", "live-opening",
+            "live-initial-load", "live-initial-download", "live-initial-preview",
+            "live-initial-import-json", "live-initial-import-digest",
+            "live-initial-import-preview", "live-initial-confirm",
+            "live-initial-experiment", "live-initial-digest", "live-initial-policy-digest",
+            "live-initial-active", "live-initial-json", "live-initial-operator",
+            "live-initial-note", "live-initial-msg",
         ):
             self.assertIn(f'id="{element_id}"', html)
 
@@ -428,6 +1104,10 @@ class TestLiveFrontend(unittest.TestCase):
         self.assertIn("約定による純収支", panel)
         self.assertIn("未決済の買い", panel)
         self.assertNotIn("realized", panel)
+        self.assertIn("activeDigest", script)
+        self.assertNotIn("activePrefix", script)
+        self.assertIn("confirmBtn.disabled=true", script)
+        self.assertIn("import_mismatch", script)
         self.assertIn("pollGate(\"live\",loadLive)", html)
         self.assertIn('tab==="live"', html)
 

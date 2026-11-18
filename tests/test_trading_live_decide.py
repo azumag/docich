@@ -22,6 +22,7 @@ from pathlib import Path
 import pytest
 
 from docich.trading.live import decide as decide_module
+from docich.trading.live.act import decide_and_act as act_decide
 from docich.trading.live import views
 from docich.trading.live.cycle import CycleContext, CycleDeps, CycleOutcome, CycleState
 from docich.trading.live.decide import build_decisions, decide_and_act
@@ -796,11 +797,13 @@ def test_decide_and_act_through_run_cycle(ws, harnesses, monkeypatch):
     assert monitor.outcome is CycleOutcome.CONTINUE and monitor.mode is None
     assert decision_rows(h.ledger) == []
 
-    # shadow: decide_and_act records one plan
+    # shadow: the normal ACT hook records one plan and one simulated fill
     ws.write_control(mode="shadow")
+    rig.deps = CycleDeps(**{**rig.deps_kwargs, "decide": act_decide})
     shadow = run_cycle(rig.deps, rig.state)
     assert shadow.mode == "shadow"
     assert len(decision_rows(h.ledger)) == 1
+    assert len(views.events_of_kind(h.ledger, "shadow_fill")) == 1
 
     # the default CycleDeps (no decide argument) keeps the no-op placeholder
     default_deps = CycleDeps(**{key: value for key, value in rig.deps_kwargs.items()

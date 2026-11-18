@@ -18,7 +18,8 @@ Mutation defense (issue #42): PUT/POST/DELETE には Host/Origin allowlist・
 LIVE タブ: GET /api/live は制御ファイル・worker status・台帳の読み取り専用 view を返し、
 POST /api/live/control は owner のオン/オフと shadow/trade を切り替える (trade で ON に
 するときだけ body の confirm="TRADE" を要求する)。POST は上の mutation guard をそのまま
-通り、viewer/read-only は guard が拒否する。
+通り、viewer/read-only は guard が拒否する。初期方針の export/preview は読み取り専用で、
+activate だけが preview token と writer lease を要求して台帳へ owner_initial を記録する。
 State: soren_root = ELOOP_LIB_DIR 相当 (games/soviet_now or /home/ubuntu/soren)。
 """
 from __future__ import annotations
@@ -78,7 +79,8 @@ from .runtime_backend import (
 )
 from . import stream_pause
 from .stream_identity import runner_kind
-from .webui_live import live_snapshot, set_control
+from .webui_live import (InitialSetupError, initial_activate, initial_export,
+                         initial_preview, live_snapshot, set_control)
 
 # --- allowlist / validation --------------------------------------------------
 
@@ -716,6 +718,18 @@ CONFIRM_REQUIRED_PATHS = {("POST", "/api/workers"), ("POST", "/api/stream"), ("P
 # POST /api/live/control is deliberately not in the set above: its confirmation value is
 # the literal "TRADE" (validated by webui_live.set_control), not confirm:true.  It still
 # goes through _guard_mutation() like every other mutation.
+
+# The initial-policy preview and activation are operator-only POSTs.  They share the
+# existing Host/Origin/CSRF/auth/read-only guard; only the activation writes the ledger.
+_INITIAL_ERROR_STATUS = {
+    "history_missing": 404, "candidate_missing": 404, "candidate_unsupported": 404,
+    "candidate_ambiguous": 409, "import_mismatch": 409, "active_policy_conflict": 409,
+    "stale_preview": 409, "lease_held": 409, "ledger_unavailable": 409,
+    "activation_refused": 409,
+}
+# A pasted snapshot with another experiment id is an input error; the same history
+# condition is a missing resource on the read-only export.
+_INITIAL_IMPORT_INPUT_ERROR = "candidate_unsupported"
 
 
 def _make_csrf_token(secret: bytes, ttl: int = CSRF_TTL_SEC, now: int | None = None) -> str:
@@ -3699,6 +3713,8 @@ class _Handler(BaseHTTPRequestHandler):
                 status = self._handle_get_corners()
             elif path == "/api/live":
                 status = self._handle_get_live()
+            elif path == "/api/live/initial-policy/export":
+                status = self._handle_get_live_initial_export()
             elif path == "/api/special-corner":
                 status = self._handle_get_special_corner()
             elif path == "/api/special-corner/settings":
@@ -3825,6 +3841,10 @@ class _Handler(BaseHTTPRequestHandler):
                 status = self._handle_post_corners()
             elif parsed.path == "/api/live/control":
                 status = self._handle_post_live_control()
+            elif parsed.path == "/api/live/initial-policy/preview":
+                status = self._handle_post_live_initial_preview()
+            elif parsed.path == "/api/live/initial-policy/activate":
+                status = self._handle_post_live_initial_activate()
             elif parsed.path == "/api/special-corner/end":
                 status = self._handle_post_special_corner_end()
             elif parsed.path == "/api/special-corner/receiver":
@@ -4847,6 +4867,96 @@ class _Handler(BaseHTTPRequestHandler):
             self._send_error_json(500, "live_snapshot_failed", type(exc).__name__)
             return 500
         self._send_json(200, snapshot)
+        return 200
+
+    def _handle_get_live_initial_export(self) -> int:
+        """Read-only export of the owner-approved initial policy from PAPER history."""
+        if self._identity() != "operator":
+            self._send_error_json(403, "read_only", "operator identity required")
+            return 403
+        try:
+            result = initial_export(self.g.state_dir)
+        except InitialSetupError as exc:
+            return self._send_initial_error(exc)
+        except Exception:
+            self._send_error_json(500, "initial_policy_failed", "初期方針を取得できません")
+            return 500
+        self._send_json(200, result)
+        return 200
+
+    def _live_initial_body(self) -> tuple[dict | None, int]:
+        body, err = self._read_body()
+        if err:
+            return None, err
+        try:
+            data = json.loads(body.decode("utf-8"))
+        except Exception:
+            self._send_error_json(400, "invalid_json", "body must be a JSON object")
+            return None, 400
+        if not isinstance(data, dict):
+            self._send_error_json(400, "validation_error", "body must be a JSON object")
+            return None, 400
+        if data.get("source") not in ("history", "import"):
+            self._send_error_json(400, "source_invalid", "source は history または import です")
+            return None, 400
+        return data, 0
+
+    def _send_initial_error(self, exc: InitialSetupError, *, post: bool = False,
+                            source: object = None) -> int:
+        if post and source == "import" and exc.code == _INITIAL_IMPORT_INPUT_ERROR:
+            status = 400
+        else:
+            status = _INITIAL_ERROR_STATUS.get(exc.code, 400)
+        self._send_error_json(status, exc.code, exc.message)
+        return status
+
+    def _handle_post_live_initial_preview(self) -> int:
+        """Validate a candidate and issue a token; nothing is written."""
+        data, err = self._live_initial_body()
+        if err:
+            return err
+        try:
+            result = initial_preview(
+                self.g.state_dir,
+                source=data["source"],
+                snapshot=data.get("snapshot"),
+                experiment_digest=data.get("experiment_digest"),
+                operator=data.get("operator"),
+                note=data.get("note"),
+            )
+        except InitialSetupError as exc:
+            return self._send_initial_error(exc, post=True, source=data["source"])
+        except Exception:
+            self._send_error_json(500, "initial_policy_failed", "初期方針を確認できません")
+            return 500
+        self._send_json(200, result)
+        return 200
+
+    def _handle_post_live_initial_activate(self) -> int:
+        """Confirm a previewed initial activation (the only initial-policy writer)."""
+        data, err = self._live_initial_body()
+        if err:
+            return err
+        try:
+            result = initial_activate(
+                self.g.state_dir,
+                source=data["source"],
+                snapshot=data.get("snapshot"),
+                experiment_digest=data.get("experiment_digest"),
+                operator=data.get("operator"),
+                note=data.get("note"),
+                confirm=data.get("confirm"),
+                now=time.time(),
+            )
+        except InitialSetupError as exc:
+            return self._send_initial_error(exc, post=True, source=data["source"])
+        except Exception:
+            self._send_error_json(500, "initial_policy_failed", "初期方針を記録できません")
+            return 500
+        _log_authz_event(self.soren_root, "POST", "/api/live/initial-policy/activate",
+                         self._identity(), "allow",
+                         "live_initial_activated" if result.get("activated") else "live_initial_repeat")
+        self._send_json(200, result)
         return 200
 
     def _handle_post_live_control(self) -> int:

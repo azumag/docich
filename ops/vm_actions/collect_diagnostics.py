@@ -7670,6 +7670,8 @@ def _project_corner_state(data):
             "hanjuku-chart-v1133-camp-revisit-aimed",
             "hanjuku-chart-v1141-corridor-revisit",
             "hanjuku-chart-v1144-general-jump",
+            "hanjuku-chart-v1145-general-self-jump",
+            "hanjuku-chart-v1146-general-jump-map",
             "hanjuku-chart-v1020-recall-giveup",
             "hanjuku-chart-v1021-plan-invalid-source",
             "hanjuku-chart-v1041-egg-receipt-presence",

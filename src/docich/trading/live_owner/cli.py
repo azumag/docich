@@ -8,6 +8,7 @@
     python -m docich.trading.live_owner --state-dir <dir> unknown list|show|resolve ...
     python -m docich.trading.live_owner --state-dir <dir> trip list
     python -m docich.trading.live_owner --state-dir <dir> trip clear --reason ... --confirm ...
+    python -m docich.trading.live_owner --state-dir <dir> shadow summary|report|status
 
 The writers (``cashflow add``, ``activate``) print a token first and act only when the owner
 repeats it; ``control on|off`` writes the small switch file directly.  ``unknown resolve`` and ``trip clear`` do the same; ``unknown resolve`` records the
@@ -31,11 +32,13 @@ from typing import Callable, TextIO
 
 from ..live import control as live_control, executor as live_executor
 from ..live import ingest as live_ingest, lease as live_lease
-from ..live import policy as live_policy, reconcile as live_reconcile, safety, views as live_views
-from ..live.canonical import canonical_json, sha256_hex
+from ..live import policy as live_policy, reconcile as live_reconcile, safety
+from ..live import shadow as live_shadow, shadow_report as live_shadow_report
+from ..live import views as live_views
+from ..live.canonical import canonical_json, confirmation_token, sha256_hex
 from ..live.enable import EnableReason, EnableResult
 from ..live.exchange import ExchangeError, OrderNotFound, dec, dec_text
-from ..live.ledger import Cashflow, LiveLedger, LiveLedgerError
+from ..live.ledger import Cashflow, LiveLedger, LiveLedgerError, read_ledger_id
 from ..live.paths import LiveLayout, live_layout
 from ..live.policy import INITIAL_SYMBOLS
 
@@ -118,7 +121,7 @@ def _content(kind: str, currency: str, amount: Decimal, when: datetime, operator
 
 
 def _token(content: dict[str, str], ledger_id: str) -> str:
-    return sha256_hex(canonical_json({**content, "ledger_id": ledger_id}))[:10]
+    return confirmation_token(content, ledger_id)
 
 
 def _cashflow_id(content: dict[str, str]) -> str:
@@ -127,15 +130,7 @@ def _cashflow_id(content: dict[str, str]) -> str:
 
 def _ledger_id(layout: LiveLayout) -> str:
     """The ledger's own id, or ``no-ledger`` when there is none (nothing is created here)."""
-    if not layout.ledger_path.is_file():
-        return "no-ledger"
-    ledger = LiveLedger.open_readonly(layout)
-    try:
-        with ledger.read_cursor() as cur:
-            row = cur.execute("SELECT value FROM meta WHERE key='ledger_id'").fetchone()
-    finally:
-        ledger.close()
-    return row[0] if row else "no-ledger"
+    return read_ledger_id(layout)
 
 
 # ---- subcommands (read-only) -----------------------------------------------------------------
@@ -150,6 +145,7 @@ def _status(args, out: TextIO) -> int:
     if not layout.ledger_path.is_file():
         print("ledger: not created", file=out)
         return EXIT_OK
+    shadow_line = "shadow: unreadable"
     ledger = LiveLedger.open_readonly(layout)
     try:
         digest = ledger.active_policy_set_digest()
@@ -159,6 +155,14 @@ def _status(args, out: TextIO) -> int:
             cashflows = cur.execute("SELECT COUNT(*) FROM cashflows").fetchone()[0]
             events = cur.execute("SELECT COUNT(*) FROM events").fetchone()[0]
         state = safety.read_safety_state(ledger)
+        try:
+            evidence, plans, fills, shadow_positions = live_shadow_report.shadow_counts(ledger)
+        except Exception:
+            pass
+        else:
+            shadow_line = (
+                f"shadow: evidence plans={plans} fills={fills} positions={shadow_positions}"
+                if evidence else "shadow: no evidence")
     finally:
         ledger.close()
     print("ledger: ok", file=out)
@@ -170,6 +174,7 @@ def _status(args, out: TextIO) -> int:
     print(f"unknown_submissions: {state.unresolved_unknown_submissions}", file=out)
     print(f"cashflows: {cashflows}", file=out)
     print(f"events: {events}", file=out)
+    print(shadow_line, file=out)
     return EXIT_OK
 
 
@@ -443,6 +448,8 @@ def _record_trip_clear(args, out: TextIO, clock: Callable[[], float],
 
 
 # ---- activate (the owner's policy set activation) --------------------------------------------
+# This owner CLI deliberately keeps its general owner_initial/owner_manual behavior.  The
+# WebUI initial setup is stricter (initial only, never replaces a different active policy).
 def _short(exc: BaseException) -> str:
     """One short line of an exception's message (never a file's content)."""
     text = " ".join(str(exc).split())
@@ -926,6 +933,28 @@ def _resolve_not_created(args, out, clock, ex, ledger, intent, lo_ms, hi_ms, ope
     return EXIT_OK
 
 
+# ---- shadow comparison (read-only) ----------------------------------------------------------
+def _shadow_summary(args, out: TextIO) -> int:
+    """Read-only shadow plans/fills and the actual on-disk PAPER comparison."""
+    layout = live_layout(args.state_dir)
+    if not layout.ledger_path.is_file():
+        print("ledger: not created", file=out)
+        return EXIT_OK
+    ledger = LiveLedger.open_readonly(layout)
+    try:
+        paper_path = Path(args.state_dir) / "trading" / "paper.sqlite3"
+        paper = live_shadow_report.read_paper_fills(paper_path)
+        try:
+            comparison = live_shadow_report.build_shadow_comparison(ledger, paper=paper)
+        except live_shadow.ShadowBookError:
+            print("refused: the shadow event stream cannot be read", file=out)
+            return EXIT_REFUSED
+    finally:
+        ledger.close()
+    print(live_shadow_report.render_shadow_report(comparison), file=out)
+    return EXIT_OK
+
+
 # ---- argument parsing and dispatch -----------------------------------------------------------
 def _build_parser(out: TextIO) -> argparse.ArgumentParser:
     parser = _Parser(prog="python -m docich.trading.live_owner", stream=out,
@@ -991,6 +1020,12 @@ def _build_parser(out: TextIO) -> argparse.ArgumentParser:
     clear.add_argument("--note", required=True)
     clear.add_argument("--evidence", required=True, help="what the owner checked (20..400 characters)")
     clear.add_argument("--confirm", help="the token printed by the preview")
+    shadow = commands.add_parser("shadow", stream=out,
+                                 help="read-only shadow simulation and PAPER comparison")
+    shadows = shadow.add_subparsers(dest="shadow_command", required=False)
+    for name in ("summary", "report", "status"):
+        shadows.add_parser(name, stream=out,
+                           help="read-only plans/fills/positions and missing evidence")
     return parser
 
 
@@ -1029,6 +1064,8 @@ def main(argv: list[str] | None = None, *, out: TextIO | None = None, clock: Cal
         if args.trip_command == "list":
             return _trip_list(args, out, is_tty)
         return _trip_clear(args, out, clock, is_tty)
+    if args.command == "shadow":
+        return _shadow_summary(args, out)
     if args.cashflow_command == "list":
         return _cashflow_list(args, out, is_tty)
     return _cashflow_add(args, out, clock, is_tty)
