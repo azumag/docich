@@ -169,7 +169,9 @@ def _soldier_target(mem, shop, header):
            max(shop.get('reserve', 0), EGG_RECOVER_COST * len(_egg_recovery_targets(mem))))
     held = (egg + repair + shop.get('recruit_reserve', 0)
             + sum(KNOWN_PRICES[name] * qty for name, qty in cards))
-    key = _month_key(header) if header else None
+    key = (_month_key(header) if isinstance(header, dict)
+           and header.get('year') is not None
+           and header.get('month') is not None else None)
     count = mem.get('soldiers_seen')
     known = (key is not None and mem.get('soldiers_seen_key') == key
              and type(count) is int and count >= 0)
@@ -224,7 +226,9 @@ def _collapsed_army(mem, shop, header, target):
     the house repair money stays back, the same rule the low-army refill
     follows for twenty or fewer).
     """
-    key = _month_key(header) if header else None
+    key = (_month_key(header) if isinstance(header, dict)
+           and header.get('year') is not None
+           and header.get('month') is not None else None)
     count = mem.get('soldiers_seen')
     return (key is not None and isinstance(shop, dict) and key == shop.get('key')
             and mem.get('soldiers_seen_key') == key
@@ -244,7 +248,9 @@ def _limit_soldier_refill(mem, shop, header, *, payment=False):
             or mem.get('month_sub')):
         return
     target = _soldier_target(mem, shop, header)
-    key = _month_key(header) if header else None
+    key = (_month_key(header) if isinstance(header, dict)
+           and header.get('year') is not None
+           and header.get('month') is not None else None)
     count = mem.get('soldiers_seen')
     known = (key is not None and key == shop.get('key')
              and mem.get('soldiers_seen_key') == key
