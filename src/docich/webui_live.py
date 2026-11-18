@@ -23,16 +23,17 @@ from .trading.live.cycle import next_wait
 from .trading.live.ledger import LiveLedger
 from .trading.live.overview import live_overview
 from .trading.live.paths import live_layout
-from .trading.live_worker.status import ALLOWED_KEYS, status_path
+from .trading.live_worker.status import (
+    ALLOWED_KEYS, DEFAULT_INTERVAL_MS, MAX_INTERVAL_MS, MIN_INTERVAL_MS, status_path,
+)
 
 MAX_STATUS_BYTES = 64 * 1024
 # The runner writes one status per cycle, at the end of the cycle, and then sleeps for
-# ``next_wait``.  The cycle interval is not part of the status allow-list, so the UI uses
-# the runner's default 60 s interval as the supported base of that bounded wait.  A clean
-# running status is fresh for 180 s (3 x the default cycle); a retrying one additionally
-# gets its bounded retry wait (up to 300 s) before it is considered stale.
-WORKER_STALE_AFTER_S = 180
-WORKER_CYCLE_INTERVAL_S = 60.0
+# ``next_wait``.  New statuses carry the actual interval as whole ``interval_ms``; a clean
+# running status is fresh for 3 x that interval.  A retrying one additionally gets the
+# runner's bounded retry wait before it is considered stale.  Statuses written before
+# ``interval_ms`` existed (or with a malformed one) fall back to the legacy 60 s / 180 s.
+WORKER_CYCLE_INTERVAL_S = DEFAULT_INTERVAL_MS / 1000.0
 # A status written by these phases describes a worker that is still on its way to its
 # terminal state.  ``inert`` and ``exited`` are terminal even when freshly written.
 WORKER_ACTIVE_PHASES = frozenset({"starting", "running", "stopping"})
@@ -107,14 +108,28 @@ def _read_status(state_dir) -> dict | None:
     return view
 
 
+def _status_interval_s(status: dict) -> float:
+    """The configured cycle interval recorded by the runner, or the legacy 60 s.
+
+    ``interval_ms`` is allow-listed as an int in the CLI's 30..3600 s range.  Anything
+    else (an old status without the key, a float, an out-of-range value) falls back to the
+    old 60 s base, keeping the legacy 180 s freshness bound.
+    """
+    value = status.get("interval_ms")
+    if type(value) is int and MIN_INTERVAL_MS <= value <= MAX_INTERVAL_MS:
+        return value / 1000.0
+    return float(WORKER_CYCLE_INTERVAL_S)
+
+
 def _worker_alive(status: dict | None, *, now: float) -> bool:
     """Whether ``status`` describes a worker that may still be running.
 
     Phase is part of the contract: a freshly written ``inert`` or ``exited`` status is a
-    finished worker, not a live one.  For ``running`` the runner's own bounded retry wait
-    (derived from the allow-listed ``consecutive_failures``) extends the age bound, because
-    the status is written before that sleep.  A missing/future timestamp and an unknown
-    phase stay false: those cannot prove liveness and must not hide a crash.
+    finished worker, not a live one.  A clean running status is fresh for 3 x its recorded
+    interval; for ``running`` the runner's own bounded retry wait (derived from the
+    allow-listed ``consecutive_failures``) extends that bound, because the status is written
+    before that sleep.  A missing/future timestamp and an unknown phase stay false: those
+    cannot prove liveness and must not hide a crash.
     """
     if not isinstance(status, dict):
         return False
@@ -134,12 +149,13 @@ def _worker_alive(status: dict | None, *, now: float) -> bool:
     age = current - moment
     if age < 0:                              # a future timestamp is not fresh proof
         return False
-    stale_after = float(WORKER_STALE_AFTER_S)
+    interval_s = _status_interval_s(status)
+    stale_after = interval_s * 3.0
     if phase == "running":
         failures = status.get("consecutive_failures")
         if type(failures) is int and failures > 0:
             try:
-                retry_wait = float(next_wait(WORKER_CYCLE_INTERVAL_S, failures))
+                retry_wait = float(next_wait(interval_s, failures))
             except (OverflowError, TypeError, ValueError):
                 retry_wait = 0.0
             if math.isfinite(retry_wait) and retry_wait > 0:
@@ -174,7 +190,8 @@ def live_snapshot(state_dir, *, now: float) -> dict:
 
     ``worker_alive`` is true only for an active phase (``starting``, ``running`` or
     ``stopping``) whose ``written_at`` is not in the future and is younger than the
-    phase's bound: 180 s normally, plus the runner's bounded retry wait for ``running``
+    phase's bound: 3 x the status's ``interval_ms`` (legacy statuses without it keep the
+    old 60 s / 180 s bound), plus the runner's bounded retry wait for ``running``
     (derived from the allow-listed ``consecutive_failures``).  Terminal ``inert`` and
     ``exited`` statuses are never alive, however recently they were written.  A missing
     ledger or status file is reported as ``ledger_present: false`` / ``status: null``;

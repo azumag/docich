@@ -102,6 +102,50 @@ class TestLiveSnapshot(unittest.TestCase):
         self.assertFalse(live_snapshot(self.ws.state, now=NOW + 180)["worker_alive"])
         self.assertFalse(live_snapshot(self.ws.state, now=NOW + 181)["worker_alive"])
 
+    def test_worker_alive_uses_the_configured_600s_interval(self):
+        self.ws.write_control(state="off", mode="shadow", updated_by="owner", now=NOW)
+        write_status(self.ws.state, {"phase": "running", "interval_ms": 600_000}, now=NOW)
+
+        # 3 x 600 s replaces the legacy 3 x 60 s bound.
+        self.assertTrue(live_snapshot(self.ws.state, now=NOW + 1799)["worker_alive"])
+        self.assertFalse(live_snapshot(self.ws.state, now=NOW + 1800)["worker_alive"])
+
+        # A retrying 600 s worker keeps the runner's next_wait(600, 4) = 600 s window.
+        write_status(self.ws.state, {"phase": "running", "interval_ms": 600_000,
+                                     "consecutive_failures": 4}, now=NOW)
+        self.assertTrue(live_snapshot(self.ws.state, now=NOW + 2399)["worker_alive"])
+        self.assertFalse(live_snapshot(self.ws.state, now=NOW + 2400)["worker_alive"])
+
+    def test_worker_alive_bounds_a_malformed_interval_ms_to_the_legacy_180s(self):
+        self.ws.write_control(state="off", mode="shadow", updated_by="owner", now=NOW)
+        path = status_path(self.ws.state)
+        for interval_ms in (600_000.0, 29_999, 3_600_001, 10**100, True):
+            with self.subTest(interval_ms=repr(interval_ms)):
+                path.write_text(json.dumps({
+                    "phase": "running", "written_at": int(NOW),
+                    "interval_ms": interval_ms,
+                }), encoding="utf-8")
+                self.assertTrue(live_snapshot(self.ws.state, now=NOW + 179)["worker_alive"])
+                self.assertFalse(live_snapshot(self.ws.state, now=NOW + 180)["worker_alive"])
+
+    def test_a_legacy_updated_at_conversion_never_raises(self):
+        self.ws.write_control(state="off", mode="shadow", updated_by="owner", now=NOW)
+        path = status_path(self.ws.state)
+        for alias in (10**4000, float("nan"), "not-a-number", ["1"], None):
+            with self.subTest(alias=repr(alias)[:20]):
+                path.write_text(json.dumps({"phase": "running", "updated_at": alias}),
+                                encoding="utf-8")
+                snapshot = live_snapshot(self.ws.state, now=NOW)
+                self.assertFalse(snapshot["worker_alive"])
+                self.assertIsNone((snapshot["status"] or {}).get("written_at"))
+
+        # A readable numeric alias still anchors the age, as before.
+        path.write_text(json.dumps({"phase": "running", "updated_at": int(NOW)}),
+                        encoding="utf-8")
+        snapshot = live_snapshot(self.ws.state, now=NOW)
+        self.assertTrue(snapshot["worker_alive"])
+        self.assertEqual(snapshot["status"]["written_at"], int(NOW))
+
     def test_worker_alive_requires_an_active_phase_and_a_non_future_timestamp(self):
         self.ws.write_control(state="off", mode="shadow", updated_by="owner", now=NOW)
 
@@ -379,6 +423,9 @@ class TestLiveFrontend(unittest.TestCase):
                       "停止または応答なし", "終了 (code ", "待機 ("):
             self.assertIn(label, script)
         self.assertIn("ラウンドトリップと勝率", panel)
+        self.assertIn("約定による純収支", panel)
+        self.assertIn("未決済の買い", panel)
+        self.assertNotIn("realized", panel)
         self.assertIn("pollGate(\"live\",loadLive)", html)
         self.assertIn('tab==="live"', html)
 

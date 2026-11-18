@@ -8,17 +8,19 @@ Money is handled as :class:`~decimal.Decimal` and only converted to ``str`` at t
 boundary.  The returned document contains no order ids, fill ids, intent ids, position
 ids, raw ledger rows, API keys or balances of assets the worker does not watch.
 
-P&L is the cash result of the recorded fills, exactly::
+The ``pnl`` view is the net cash result of all recorded fills (the contract calls the
+formula "P&L"; the UI labels it 約定による純収支), exactly::
 
     per symbol = sum(sell notional - buy notional - known fee)
 
-A fee paid in the pair's base currency is converted at that fill's price; a fee paid in
-the quote currency is subtracted directly.  A fill whose fee status is not ``known`` has
-its fee treated as zero and is counted in ``pnl.fee_unknown_fills`` (also stated by
-``pnl.unknown_fee_treatment``).  A known fee in a third currency cannot be valued here:
-it is also treated as zero and counted in ``pnl.fee_other_currency_fills``.  An open
-position's buy therefore makes the figure negative until it is sold; this view is not a
-mark-to-market valuation.
+It is deliberately a cash-flow view, not a completed-trade profit/loss figure: open buys
+are included too, so an open position's buy lowers the total until it is sold.  It is also
+not a mark-to-market valuation.  A fee paid in the pair's base currency is converted at that fill's price; a
+fee paid in the quote currency is subtracted directly.  A fill whose fee status is not
+``known`` has its fee treated as zero and is counted in ``pnl.fee_unknown_fills`` (also
+stated by ``pnl.unknown_fee_treatment``).  A known fee in a third currency cannot be
+valued here: it is also treated as zero and counted in
+``pnl.fee_other_currency_fills``.
 
 Open-position cost basis comes from :func:`views.position_cost` with a zero fee rate,
 because this read-only view has no market metadata to bound an unknown fee.  The
@@ -28,9 +30,10 @@ Round trips are positions whose status is ``closed`` *and* whose own recorded fi
 contain a funded buy and a funded sell; a position closed without a completed buy/sell
 trip (for example an unfilled buy that was cancelled) is not a round trip and never
 enters the win denominator.  A round trip wins when those fills have a positive cash
-result under the same formula.  The P&L figures still include every recorded fill, so a
-buy-only closed position keeps its realized loss even though it is not a round trip.
-``since`` is the first fill's ``executed_at`` or ``None`` when there are no fills.
+result under the same formula.  The cash-result figures still include every recorded
+fill, so a buy-only closed position keeps its cash-result loss even though it is not a
+round trip.  ``since`` is the first fill's ``executed_at`` or ``None`` when there are no
+fills.
 """
 from __future__ import annotations
 

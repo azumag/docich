@@ -127,6 +127,7 @@ L1 は、本番(LIVE)の売買の**土台だけ**で、動作しない。どの�
 - 使用可能な買い資金 F は取引所の free JPY(0 未満にしない)。口座全体の JPY を使ってよい。取引所への入金は台帳に書かなくても次のサイクルの C を増やす。
 - 期首残高: worker が起動時に、監視通貨(銘柄の base/quote)ごとに、台帳履歴(cashflow・約定・手数料通貨・取引所に届いた可能性のある intent)が無く、取引所の total が正で、2回の残高読みが一致する場合に `auto_opening:<CCY>` の deposit を1件記録する(source `exchange_history`)。dust も同じ。読みが食い違えば次の機会に再試行する。オーナーは期首残高のために `cashflow add` を実行しない。後からの入出金は自動記録せず、残高の警告としてだけ現れる。
 - 残高の不一致は**停止しない**。2回の安定した照合で確認できた不一致の通貨数を `balance_warnings` として status に出す(0以上の整数)。金額・残高そのものは status に書かない。不一致でも買い・売りは止まらない。
+- status(`live_status.json`)は実際の周期を `interval_ms`(30,000〜3,600,000 の整数)として残す。CLI の `--interval` は30〜3600秒で、ミリ秒に丸めることで 600.5 秒のような端数も失わない。WebUI は running status の鮮度を **3×`interval_ms`** とし、連続失敗時は `next_wait` の再試行待ち(interval 以上、interval が300秒以下なら300秒で頭打ち)を加える。`interval_ms` が無い旧 status や範囲外・非整数の値は、従来の60秒 / 180秒へフォールバックする。running status は cycle の終了時に書き、**lease を失った後は running も exited も書かない**。
 - 起動時の残高取得や自動記録が失敗しても inert にならず、終了もしない。周期ループで再試行する。inert になるのは方針セットが無い場合だけ(`no_active_policy_set`)。
 
 ## L1 でやらないこと

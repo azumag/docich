@@ -196,8 +196,8 @@ def test_a_closed_unfilled_buy_is_not_a_round_trip(h):
 
 
 def test_a_closed_buy_without_a_sell_is_not_a_round_trip_but_keeps_its_pnl(h):
-    # A funded buy that never got a sell is a realized loss in the P&L, but it is not a
-    # round trip: it must not join the win denominator either.
+    # A funded buy that never got a sell lowers the cash-result total (open buys are in
+    # the formula), but it is not a round trip: it must not join the win denominator.
     buy = _intent(h, key="buy-only", amount="10", price="100")
     _order(h, buy, order_id="buy-only-order")
     _fill(h, fill_id="buy-only-fill", order_id="buy-only-order", symbol="OAS/JPY",
