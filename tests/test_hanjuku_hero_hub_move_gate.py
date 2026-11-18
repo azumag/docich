@@ -131,3 +131,17 @@ def test_a_hero_confirmed_elsewhere_is_not_moved(monkeypatch):
                   HUB: ['h1', 'h2']})
     assert not hero_moves(mem)
     assert not skipped(mem)
+
+
+def test_rejected_full_chart_keeps_hero_move_for_interim(monkeypatch):
+    """An oversized full plan must not consume the month's only hero move."""
+    monkeypatch.delenv(chart.SPEEDRUN_CHART_ENV, raising=False)
+    mem = memory({'アルマムーン': ['どうし'] + [f'g{i}' for i in range(12)],
+                  HUB: [f'h{i}' for i in range(8)]})
+    assert len(orders(mem)) > 16
+    state = mem.setdefault('chart_adjust', {})
+    replan._mechanical_chart(mem, state, 'test-request', 'test-digest')
+    assert not _plan_region(mem).get('chart_plan')
+    assert state['interim_order']['hero_hub_move'] is True
+    assert state['interim_order']['general'] == 'どうし'
+    assert mem['hero_hub_move_eval']['planned'] is True
