@@ -7659,6 +7659,8 @@ def _project_corner_state(data):
             "hanjuku-chart-v1124-quantity-confirm",
             "hanjuku-chart-v1130-road-defeat-settle",
             "hanjuku-chart-v1140-plan-starve-rearm",
+            "hanjuku-chart-v1141-chikujou-prompt",
+            "hanjuku-chart-v1142-chikujou-prompt",
             "hanjuku-chart-v1131-dead-general-order",
             "hanjuku-chart-v1132-dead-general-order",
             "hanjuku-chart-v1133-plan-starve-rearm",
