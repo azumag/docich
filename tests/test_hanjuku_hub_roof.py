@@ -1,0 +1,60 @@
+"""The gateway hub's cell can be confirmed from a roof of either tone (#4551).
+
+Every アルマムーン→タタール move died on target_not_under_marker while the
+map estimate was sound; the hub's flag is drawn apart from the ordinary
+castle rows, so the owner tone the other castles carry may not be readable.
+The hub is unique, and the cell match still bounds the marker to its chart
+cell, so any roof tone beside the marker backs it.
+"""
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
+
+from docich import hanjuku_chart as chart
+from docich.hanjuku.flows import map as m
+from docich.hanjuku.os_layer.screen import Screen
+from docich.hanjuku.os_layer.commands import pad
+
+SCREEN = Screen([], None, '', kind='map_target')
+
+
+def memory():
+    hub = chart.gateway(11)['hub']
+    return {'chapter': 11, 'tick': 100, '_records': [], 'cursor': list(chart.castles(11)[hub]),
+            'captured': [hub], 'world': {'garrison': {}},
+            'uncertain': False}
+
+
+def test_the_hub_accepts_a_roof_with_the_other_tone(monkeypatch):
+    hub = chart.gateway(11)['hub']
+    cell = chart.castles(11)[hub]
+    monkeypatch.setattr(m, '_cursor', lambda *_: (100, 60))
+    monkeypatch.setattr(m, 'castle_roofs',
+                        lambda *_: [{'kind': 'enemy', 'target': (101, 61), 'clipped': False}])
+    mem = memory()
+    order = {'step': 's1', 'target': hub}
+    assert m._cell_match_evidence(SCREEN, mem, order, object()) is True
+    assert m._unverified_target(SCREEN, mem, order, object()) == [pad('a')]
+
+
+def test_an_ordinary_castle_still_needs_its_owners_tone(monkeypatch):
+    other = 'トリフェ'
+    monkeypatch.setattr(m, '_cursor', lambda *_: (100, 60))
+    monkeypatch.setattr(m, 'castle_roofs',
+                        lambda *_: [{'kind': 'enemy', 'target': (101, 61), 'clipped': False}])
+    mem = memory()
+    mem['cursor'] = list(chart.castles(11)[other])
+    mem['captured'] = [other, chart.gateway(11)['hub']]   # owned: wants the own tone
+    order = {'step': 's2', 'target': other}
+    assert m._cell_match_evidence(SCREEN, mem, order, object()) is False
+
+
+def test_the_hub_still_needs_a_roof_beside_the_marker(monkeypatch):
+    hub = chart.gateway(11)['hub']
+    monkeypatch.setattr(m, '_cursor', lambda *_: (100, 60))
+    monkeypatch.setattr(m, 'castle_roofs',
+                        lambda *_: [{'kind': 'enemy', 'target': (200, 200), 'clipped': False}])
+    mem = memory()
+    order = {'step': 's3', 'target': hub}
+    assert m._cell_match_evidence(SCREEN, mem, order, object()) is False

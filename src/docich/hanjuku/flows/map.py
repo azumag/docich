@@ -2650,7 +2650,14 @@ def _cell_match_evidence(screen, mem, order, frame) -> bool:
         # only evidence either landing can carry.
         return not mem.get('uncertain')
     want = 'own' if order['target'] in _owned(mem) else 'enemy'
-    return any(r['kind'] == want and not r.get('clipped')
+    gate = chart.gateway(mem.get('chapter') or 0)
+    # The gateway hub is the one castle both halves share and its flag is
+    # drawn apart from the ordinary castle rows (#4551: every アルマムーン→
+    # タタール move died on target_not_under_marker while the map/y jump
+    # estimate was sound). Its roof is still the landmark the cell match
+    # stands on, so any owner tone beside the marker backs the hub cell.
+    hub_target = bool(gate and order['target'] == gate.get('hub'))
+    return any((r['kind'] == want or hub_target) and not r.get('clipped')
                and abs(r['target'][0] - s[0]) <= CELL_EVIDENCE_ROOF_PX
                and abs(r['target'][1] - s[1]) <= CELL_EVIDENCE_ROOF_PX
                for r in castle_roofs(frame))
@@ -2691,6 +2698,12 @@ def _unverified_target(screen, mem, order, frame=None):
         mem.pop('anchor', None)
         _record(mem, 'target_not_under_marker', chart_step=step, target=order['target'],
                 observed_metric={'cursor': mem.get('cursor'), 'marker': list(_cursor(screen) or ()),
+                                 'want': ('own' if order['target'] in _owned(mem) else 'enemy'),
+                                 'roofs': ([{'kind': r.get('kind'),
+                                             'target': list(r.get('target') or ()),
+                                             'clipped': bool(r.get('clipped'))}
+                                            for r in castle_roofs(frame)][:8]
+                                           if frame is not None else None),
                                  'misses': misses[step]},
                 reason='出撃先マーカーの位置に目的の城の屋根が無いため決定せず位置を取り直す')
         return []
