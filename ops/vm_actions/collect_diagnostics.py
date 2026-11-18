@@ -7658,6 +7658,8 @@ def _project_corner_state(data):
             "hanjuku-chart-v1123-boss-gate-revert",
             "hanjuku-chart-v1124-quantity-confirm",
             "hanjuku-chart-v1130-road-defeat-settle",
+            "hanjuku-chart-v1131-dead-general-order",
+            "hanjuku-chart-v1132-dead-general-order",
             "hanjuku-chart-v1125-camp-boss-wave",
             "hanjuku-chart-v1131-camp-open-field",
             "hanjuku-chart-v1020-recall-giveup",
