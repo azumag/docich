@@ -1,0 +1,44 @@
+"""Repeated failed reanchors must back off, not loop every cooldown.
+
+g1190 2026-11-19 run 3: from the chapter start to 58-7 the map flow recorded
+14 cursor_reanchor_failed and 14 cursor_still_search while order_start stayed
+0; the reanchor retried every CASTLE_JUMP_COOLDOWN and the plan never ran.
+"""
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
+
+from docich.hanjuku.flows import map as m
+from docich.hanjuku.os_layer.screen import Screen
+
+
+def memory():
+    return {'chapter': 11, 'tick': 1000, 'nav_search': True, '_records': [],
+            'castle_jump': {'mode': 'reanchor', 'step': None, 'source': 'アルマムーン',
+                            'phase': 'menu', 'age': 2, 'total': 2, 'tick': 1000,
+                            'menu_presses': 1, 'selects': 0, 'scrolls': 0, 'waits': 0},
+            'captured': []}
+
+
+def test_three_failures_back_the_reanchor_off(monkeypatch):
+    mem = memory()
+    screen = Screen([], None, '', kind='main_menu')
+    for i in range(m.REANCHOR_FAILURE_LIMIT):
+        mem['tick'] = 1000 + i
+        mem['castle_jump'] = {'mode': 'reanchor', 'step': None, 'source': 'アルマムーン',
+                              'phase': 'menu', 'age': 2, 'total': 2, 'tick': 1000 + i,
+                              'menu_presses': 1, 'selects': 0, 'scrolls': 0, 'waits': 0}
+        m._end_castle_jump(screen, mem, 'test')
+    skip = mem.get('castle_jump_skip') or {}
+    assert skip.get('mode') == 'reanchor'
+    assert skip.get('tick') >= mem['tick'] + m.REANCHOR_FAILURE_BACKOFF
+    assert any(r.get('decision') == 'cursor_reanchor_suppressed' for r in mem['_records'])
+
+
+def test_the_loop_is_skipped_during_the_backoff(monkeypatch):
+    mem = memory()
+    mem['castle_jump'] = None
+    mem['castle_jump_skip'] = {'mode': 'reanchor', 'step': None,
+                               'tick': mem['tick'] + m.REANCHOR_FAILURE_BACKOFF}
+    assert m._start_reanchor_jump(mem) is None
