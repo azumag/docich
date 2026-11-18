@@ -152,6 +152,8 @@ KEY_OWNERSHIP = {
     'map_discovery': {'region': WORLD, 'lifetime': 'chapter', 'migrated': False},  # 実測地図発見データ
     'monster_ally_max_hp': {'region': WORLD, 'lifetime': 'chapter', 'migrated': False},  # 観測した味方モンスター最大HP
     'month': {'region': WORLD, 'lifetime': 'chapter', 'migrated': False},  # 観測した月
+    'month_chapter': {'region': WORLD, 'lifetime': 'chapter', 'migrated': False},  # monthを観測した章 (#4535)
+    'progress_regressed': {'region': WORLD, 'lifetime': 'chapter', 'migrated': False},  # 同一章の月逆行を[章,旧月,新月]単位で重複記録しないマーカー (#4535)
     'month_start_tick': {'region': WORLD, 'lifetime': 'run', 'migrated': False},  # 月の開始tick(v802)
     'month_durations': {'region': WORLD, 'lifetime': 'run', 'migrated': False},  # 直近の月の長さ(v802)
     'moving_boss': {'region': WORLD, 'lifetime': 'chapter', 'migrated': False},  # 移動ボス観測(リセット登録のみ)
@@ -197,6 +199,7 @@ KEY_OWNERSHIP = {
     'chart_edition': {'region': PLAN, 'lifetime': 'run', 'migrated': False},  # 新規ゲーム開始時にピンされるチャート版
     'chart_plan_tick': {'region': PLAN, 'lifetime': 'chapter', 'migrated': False},  # チャート計画の策定tick
     'corridor_drained': {'region': PLAN, 'lifetime': 'chapter', 'migrated': False},  # chapter9 corridorの枯渇管理(定数DRAINED経由)
+    'hero_hub_move_eval': {'region': PLAN, 'lifetime': 'chapter', 'migrated': False},  # 主人公ハブ移動の月次評価簿記(#4546)
     'hero_locate': {'region': PLAN, 'lifetime': 'chapter', 'migrated': False},  # chapter9 主人公の所在確認の予算・発行済み指示(v843)
     'corridor_probe': {'region': PLAN, 'lifetime': 'chapter', 'migrated': False},  # chapter9 corridorの城一覧確認予算(v707)
     'front_guard_hold': {'region': PLAN, 'lifetime': 'chapter', 'migrated': False},  # chapter9 前線1人の待ち時計(v735)
@@ -369,6 +372,7 @@ KEY_OWNERSHIP = {
     'month_nav': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 月ナビ(リセット登録のみ)
     'month_roster_scan': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 月roster走査手順状態
     'month_status_complete': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 月ステータス完了フラグ
+    'month_sorties': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 当月の敵城向け出撃成立数(#4642の月一出撃床)
     'month_sub': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 月サブ状態
     'month_text_advance': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 月テキスト送り手順状態
     'month_blind_nav': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 月メニュー盲操作の試行回数
@@ -411,6 +415,8 @@ KEY_OWNERSHIP = {
     'select_focus_tick': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 同上のtick
     'select_tick': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # SELECT tick管理
     'select_used': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # SELECT使用済み
+    'scene_hold_forced': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 場面ホールド強制応答の自己消去型(#4632)
+    'scene_hold_watch': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 場面の読めない画面の停滞監視(#4632)
     'semantic_stall_watch': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 意味的停滞観測の自己消去型カウンタ(#4528)
     'sortie_actor_miss': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 出撃者ミス手順状態
     'sortie_confirm_blind': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 出撃確認ブラインド手順状態
@@ -435,6 +441,7 @@ KEY_OWNERSHIP = {
     'world_map_tick': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 同上tick
     'world_map_wait': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 同上待機
     'world_map_skull_hold': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 第9話ボス位置のY再観測保持
+    'yes_no_unread': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 選択位置の読めない確認画面の有限ホールド(#4632)
     'y_jump': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # Yジャンプナビ
     'y_jump_last': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # Yジャンプナビゲーション状態
     'y_jump_return': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 同上復帰
@@ -464,6 +471,7 @@ KEY_OWNERSHIP = {
     'resume_chapter_pending': {'region': JOURNAL, 'lifetime': 'run', 'migrated': False},  # 復元注入の章未確定フラグ
     'resume_egg_ritual': {'region': JOURNAL, 'lifetime': 'run', 'migrated': False},  # 復元注入の卵儀式再開フラグ
     'resume_sortie_cancel': {'region': JOURNAL, 'lifetime': 'run', 'migrated': False},  # 復元注入の出撃キャンセル再開フラグ
+    'title_episode': {'region': JOURNAL, 'lifetime': 'run', 'migrated': False},  # タイトル観測中の復帰エピソード (resume_from_save の根拠, #4535)
 }
 
 _REGION_KEY = {WORLD: 'world', PLAN: 'plan', FLOW: 'flow', JOURNAL: 'journal'}

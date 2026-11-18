@@ -68,6 +68,7 @@ def _live_melee(cur):
             or cur.get('enemy') in chart.BOSSES.values()
             or cur.get('enemy') in reference.BOSS_GENERALS
             or cur.get('egg_battle') or cur.get('card_summon_observed')
+            or cur.get('enemy_summon_observed')
             or cur.get('card_hp_unread') or cur.get('card_context_unclassified')
             or cur.get('card_soldiers_current') is not True
             or cur.get('card_flow') or cur.get('event_duel')):
@@ -147,6 +148,7 @@ def _hopeless_attack_melee(cur, balance):
             or cur.get('enemy') in chart.BOSSES.values()
             or cur.get('enemy') in reference.BOSS_GENERALS
             or cur.get('egg_battle') or cur.get('card_summon_observed')
+            or cur.get('enemy_summon_observed')
             or cur.get('card_hp_unread') or cur.get('card_context_unclassified')
             or cur.get('event_duel') or (cur.get('hero_retreat') or {}).get('selected')
             or not _resources_exhausted(cur)):

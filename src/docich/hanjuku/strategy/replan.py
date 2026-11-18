@@ -694,10 +694,16 @@ def _garrison_rotation(mem, owned, busy, heading, taken=()):
         return []
     garrison = _world(mem).get('garrison') or {}
     unavailable = set(busy) | set(_world(mem).get('general_location_unknown') or ())
-    free = {c: [g for g in garrison.get(c) or () if g not in unavailable] for c in plan}
+    # ``_known_residents`` covers a castle whose full-page read aged out of
+    # ``garrison`` but still holds partial-resident evidence — the same pool
+    # ``_interim_source`` counts. Treating that row as empty froze the only
+    # spare castle out of every donation (docich#4642 follow-up: the home
+    # roster read at tick ~31892 vanished by ~32951 and no move was minted).
+    free = {c: [g for g in _known_residents(mem, garrison, c) or ()
+                if g not in unavailable] for c in plan}
     sole = len(plan) == 1
     claimed = set(taken) | set(heading)
-    used = set()
+    donated = {}
     out = []
     # The thinnest castle first: a castle holding one defender loses it (and
     # the castle) to the first enemy stack (g1163 chapter 8 2026-11-09 21:33:
@@ -722,24 +728,33 @@ def _garrison_rotation(mem, owned, busy, heading, taken=()):
         donors = []
         for source in sorted(plan, key=lambda c: (-plan[c][0],
                                                   _distance(chapter, c, target), c)):
-            if source == target or source in used:
+            if source == target:
                 continue
             source_distance, _source_want, source_floor = plan[source]
             if source_distance <= distance or not routes.allowed(mem, source, target):
                 continue
+            # One donor may staff several targets in the same plan (docich#4642:
+            # the single-donation rule let one spare castle send at most one
+            # general a month, so every frontier castle stayed at one defender
+            # and no attack source ever opened). Generals already committed to
+            # another target this plan are subtracted before the floor check.
+            sent = donated.get(source) or set()
+            available = [g for g in free[source] if g not in sent]
             # Even a rear-castle floor of zero cannot override the actual
-            # game's minimum two-general requirement for a departure.
-            if (garrison.get(source) is None or len(set(free[source])) < 2
-                    or len(free[source]) - 1 < source_floor):
+            # game's minimum two-general requirement for a departure. A
+            # castle whose list was never read at all cannot be counted.
+            if (_known_residents(mem, garrison, source) is None
+                    or len(set(available)) < 2
+                    or len(available) - 1 < source_floor):
                 continue
-            spares = [g for g in _spares(free[source]) if g != NAME]
+            spares = [g for g in _spares(available) if g != NAME]
             if not spares:
                 continue
             general = sorted(spares, key=lambda g: _defense_score(mem, g),
                              reverse=True)[0]
             # A castle already above its own target donates first; rear
             # castles may thin down to one, but never dispatch their last.
-            surplus = 1 if len(free[source]) > _source_want else 0
+            surplus = 1 if len(available) > _source_want else 0
             donors.append((surplus, source_distance,
                            -_distance(chapter, source, target), source, general))
         if not donors:
@@ -749,12 +764,108 @@ def _garrison_rotation(mem, owned, busy, heading, taken=()):
                     'source': source, 'after': None, 'purpose': 'move',
                     'garrison_rotate': True,
                     'note': f'暫定: 敵城に近い{target}を厚くするため{_general_label(general)}を{source}から移動'})
-        used.add(source)
+        donated.setdefault(source, set()).add(general)
         claimed.add(target)
     return out
 
 
 INTERIM_CARDS = ('イッテツーン', 'イッテツーン')   # same opener as a lost melee's retry
+
+# Generals the hub's latest complete roster must show before the hero joins
+# it: a confirmed staffed hub, so he is never dropped into an unmeasured one.
+HERO_HUB_MOVE_MIN = 1
+
+
+def _hero_hub_move_pending(mem):
+    """A stored/interim order already carries the hero's hub move."""
+    plan = (_plan_region(mem).get('chart_plan') or {}).get('orders') or ()
+    if any(isinstance(o, dict) and o.get('hero_hub_move') is True for o in plan):
+        return True
+    interim = (mem.get('chart_adjust') or {}).get('interim_order')
+    return isinstance(interim, dict) and interim.get('hero_hub_move') is True
+
+
+def _note_hero_hub_move(mem):
+    """The month's hero-hub move is now planned: no second one this month.
+
+    Only the issuance paths (an adopted/interim order, or a stored row that
+    regained the flag) mark this; ``interim_candidates`` is also evaluated
+    just to test whether any candidate exists, and that read must not spend
+    the month's move before a real plan can carry it.
+    """
+    book = mem.get('hero_hub_move_eval')
+    if not isinstance(book, dict):
+        book = mem['hero_hub_move_eval'] = {}
+    if book.get('month') != mem.get('month'):
+        book.clear()
+        book.update({'month': mem.get('month'), 'planned': False, 'skipped': []})
+    book['planned'] = True
+
+
+def _hero_hub_move(mem, owned, garrison, busy, gate, home):
+    """The once-a-month order that carries the hero to the gateway hub.
+
+    Owner 2026-11-18 02:4x: recruits join the hero's castle, so the army
+    gathers at the hub only once he stands there. docich#4546 (g1190 62-9):
+    タタール was retaken and held six generals while どうし stayed home and
+    the held decision left no trace — only gather orders ever started.
+
+    The move fires only on complete rosters: a page (``garrison_partial``)
+    proves the names on it, never who else stands there, so a month whose
+    evidence is partial holds the order instead of guessing. Every held
+    evaluation is recorded once a month as ``hero_hub_move_skipped``:
+    ``partial 名簿`` when the complete rosters cannot prove the
+    preconditions (the hero at home, a staffed hub), ``計画競合`` when the
+    month already planned the move or the hero is marching.
+    """
+    hub = gate['hub']
+    if hub not in owned:
+        return None
+    book = mem.get('hero_hub_move_eval')
+    if not isinstance(book, dict):
+        book = mem['hero_hub_move_eval'] = {}
+    if book.get('month') != mem.get('month'):
+        book.clear()
+        book.update({'month': mem.get('month'), 'planned': False, 'skipped': []})
+    skipped_list = book.setdefault('skipped', [])
+    if not isinstance(skipped_list, list):
+        skipped_list = book['skipped'] = []
+
+    def hold(skip_reason, detail, **observed):
+        if skip_reason not in skipped_list:
+            skipped_list.append(skip_reason)
+            _record(mem, 'hero_hub_move_skipped', chart_step=None,
+                    skip_reason=skip_reason,
+                    observed_metric={'month': mem.get('month'), 'hub': hub, **observed},
+                    reason=detail)
+        return None
+
+    home_roster = garrison.get(home)
+    hub_roster = garrison.get(hub)
+    if isinstance(hub_roster, (list, tuple)) and NAME in hub_roster:
+        return None            # the latest complete roster already places him at the hub
+    if not (isinstance(home_roster, (list, tuple)) and NAME in home_roster):
+        # A complete home read that misses him places him elsewhere; a page or
+        # an unread list proves nothing, so an unproven hero is held, not fired.
+        if (isinstance(home_roster, (list, tuple))
+                and NAME not in (_partial_residents(mem, home) or ())
+                and NAME not in (_world(mem).get('general_location_unknown') or ())):
+            return None        # confirmed elsewhere by a complete roster
+        return hold('partial 名簿',
+                    '直近の完全な名簿で主人公の本城在城を確認できないため主人公のハブ移動を保留する',
+                    castle=home)
+    if not isinstance(hub_roster, (list, tuple)) or len(hub_roster) < HERO_HUB_MOVE_MIN:
+        return hold('partial 名簿',
+                    f'ハブの駐留将軍を直近の完全な名簿で{HERO_HUB_MOVE_MIN}人以上確認できないため'
+                    '主人公のハブ移動を保留する',
+                    hub_count=len(hub_roster) if isinstance(hub_roster, (list, tuple)) else None)
+    if book.get('planned') or _hero_hub_move_pending(mem):
+        return hold('計画競合', '当月の主人公ハブ移動が既に計画されているため再計画しない')
+    if NAME in busy:
+        return hold('計画競合', '主人公が他の指示で行軍中のため主人公のハブ移動を保留する')
+    return {'general': NAME, 'target': hub, 'cards': [], 'source': home,
+            'after': None, 'purpose': 'move', 'hero_hub_move': True,
+            'note': f"暫定: 主人公を{hub}へ移して将軍募集の拠点にする"}
 
 
 def interim_candidates(mem, allow_sole=False) -> dict:
@@ -1234,12 +1345,14 @@ def interim_candidates(mem, allow_sole=False) -> dict:
         # source may contribute several spares — the home stack is the donor.
         # Owner 2026-11-18 02:4x: the hero moves to the hub so recruiting
         # happens where the army is (new generals join the hub directly).
-        if not stage_lost_hub and NAME in (garrison.get(home) or ()) \
-                and NAME not in (garrison.get(gate['hub']) or ()):
-            moves.insert(0, {'general': NAME, 'target': gate['hub'], 'cards': [],
-                             'source': home, 'after': None, 'purpose': 'move',
-                             'hero_hub_move': True,
-                             'note': f"暫定: 主人公を{gate['hub']}へ移して将軍募集の拠点にする"})
+        # docich#4546 (62-9): the hub was retaken and held six generals while
+        # どうし stayed home and only gathers started — the move now waits on
+        # the latest complete rosters, fires once a month, and records every
+        # hold (``hero_hub_move_skipped``).
+        if not stage_lost_hub:
+            hero_move = _hero_hub_move(mem, owned, garrison, busy, gate, home)
+            if hero_move is not None:
+                moves.insert(0, hero_move)
         # Owner 2026-11-18 02:4x: once the hub is ours, gather the WHOLE army
         # there (recruiting at the hub as well), instead of two spares a plan.
         if stage_lost_hub:
@@ -1592,6 +1705,8 @@ def _mechanical_interim(mem, state, rid, digest, allow_sole=False):
     state['interim_count'] = state.get('interim_count', 0) + 1
     step = f"{chart_adjust.INTERIM_PREFIX}{rid[:6]}:{state['interim_count']}"
     state['interim_order'] = {**order, 'step': step}
+    if order.get('hero_hub_move') is True:
+        _note_hero_hub_move(mem)
     _record(mem, 'chart_interim_order', chart_step=step, strategy_variant='chart_interim_mechanical',
             request_id=rid, choice=label, confidence=None, general=order['general'],
             source=order['source'], target=order['target'], purpose=order.get('purpose'),
@@ -1753,7 +1868,8 @@ def _grant_stored_hero_permission(mem, stored):
 
 def _mechanical_chart(mem, state, rid, digest):
     """Construct and adopt a full chart mechanically (no LLM answer)."""
-    _grant_stored_hero_permission(mem, _plan_region(mem).get('chart_plan') or {})
+    if _grant_stored_hero_permission(mem, _plan_region(mem).get('chart_plan') or {}):
+        _note_hero_hub_move(mem)    # the month's hero move already lives in the stored plan
     if _plan_pending(mem):
         return
     allow_sole = False   # no castle is ever emptied (owner 2026-11-06)
@@ -1822,6 +1938,8 @@ def _mechanical_chart(mem, state, rid, digest):
             and [o['step'] for o in orders] == previous_local):
         _carry_hero_permission(stored, orders)
         _plan_region(mem)['chart_plan'] = stored
+        if any(o.get('hero_hub_move') is True for o in stored.get('orders') or ()):
+            _note_hero_hub_move(mem)
         mem.setdefault('chart_plan_tick', int(mem.get('tick') or 0))
         state.pop('interim_order', None)
         return
@@ -1833,8 +1951,15 @@ def _mechanical_chart(mem, state, rid, digest):
     except ValueError:
         _mechanical_interim(mem, state, rid, digest, allow_sole=allow_sole)
         return
-    validated = dict(validated, request_digest=digest)
+    # Validation deliberately drops internal-only permissions. Restore the
+    # trusted mechanical permission by local step, never from external plans.
+    hero_steps = {o['step'] for o in orders if o.get('hero_hub_move') is True}
+    validated = dict(validated, request_digest=digest, orders=[
+        {**o, **({'hero_hub_move': True} if o['step'] in hero_steps else {})}
+        for o in validated['orders']])
     _adopt_plan(mem, validated, rid)
+    if hero_steps:
+        _note_hero_hub_move(mem)
 
 
 def _mechanical_step(order, used, mem=None):
@@ -2139,7 +2264,12 @@ def _drop_stale_plan(mem):
     if now - adopted < PLAN_STALE_TICKS:
         return
     status = _plan_region(mem).get('orders') or {}
-    if any(status.get(o.get('step')) not in (None, 'pending') for o in plan['orders']):
+    # docich#4642: an all-failed (or completed) plan must rebuild the same
+    # way an all-pending one does — only a march still in flight keeps it.
+    live = {s.get('step') for s in (_world(mem).get('sorties') or {}).values()
+            if isinstance(s, dict) and s.get('status') in ('en_route', 'launched_unconfirmed')}
+    if any(o.get('step') in live or status.get(o.get('step')) == 'launched_unconfirmed'
+           for o in plan['orders']):
         return
     _plan_region(mem)['chart_plan'] = None
     mem.pop('chart_plan_tick', None)

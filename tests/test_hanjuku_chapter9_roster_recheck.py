@@ -1,0 +1,85 @@
+"""A stale-roster attack re-judges the pair wait on the fresh list (#4498).
+
+g1270 ch9 corridor: ``front_roster_stale`` fired 290 times. The bypass
+exists to *read* the front's resident list again, yet the cursor pick sent
+the lone resident anyway — the front emptied and the supply moves
+serialised behind dead sorties (``order_start`` gaps of 150/178/261
+observations). A ``front_roster_recheck`` order that still finds fewer than
+``_keep + 2`` residents closes without sending; the bounds the planner
+already owns (nearly dead defender, expired wait) still march.
+"""
+from docich import hanjuku_chart as chart
+from docich import hanjuku_policy as policy
+
+from test_hanjuku_off_chart import _move_list
+from docich.hanjuku.state.regions import plan as _plan_region, world as _world
+from docich.hanjuku.strategy import corridor
+
+ROAD = chart.corridor(9)
+A, B, C, D = ROAD[0], ROAD[1], ROAD[2], ROAD[3]
+
+
+def _memory(residents=('ローズマリー', 'ベーグル'), tick=5000):
+    """A repelled front C whose last roster read is stale.
+
+    The corridor mints the attack with ``front_roster_recheck`` so the sortie
+    re-judges the pair wait on the live list instead of always sending.
+    """
+    mem = {'chapter': 9, 'tick': tick, 'month': '36-6',
+           'captured': [B, C], 'lost': [], 'orders': {}, 'picked': [],
+           'world': {'garrison': {A: ['リーキ'], B: ['ベーグル'], C: list(residents)},
+                     'garrison_tick': {C: tick - corridor.FRONT_ROSTER_STALE_TICKS - 1},
+                     'sorties': {}, 'launched_orders': {}},
+           'sortie_history': [{'target': D, 'outcome': 'lost', 'enemy_hp': 39,
+                               'tick': tick - 100}],
+           '_records': []}
+    with chart.map_context(mem):
+        order = next(o for o in corridor.orders(mem)
+                     if o.get('purpose') == 'attack' and o.get('front_roster_recheck'))
+    _plan_region(mem)['active'] = order['step']
+    return mem
+
+
+def _step(mem, names):
+    with chart.map_context(mem):
+        return policy.deploy_step(_move_list(names), mem)
+
+
+def decided(mem, name):
+    return [r for r in mem['_records'] if r.get('decision') == name]
+
+
+def test_a_thin_front_closes_the_sortie_and_waits_for_the_pair():
+    mem = _memory()
+    step = _plan_region(mem)['active']
+    actions = _step(mem, ['ローズマリー', 'ベーグル'])
+    assert actions == [policy.pad('b'), policy.pad('b')]
+    assert decided(mem, 'front_mass_confirmed')
+    assert _plan_region(mem)['orders'][step] == 'done'
+    # the fresh read is recorded, so the next plan holds the attack and
+    # runs the refill moves instead of feeding the defender again
+    assert _world(mem)['garrison'][C] == ['ローズマリー', 'ベーグル']
+    with chart.map_context(mem):
+        assert not [o for o in corridor.orders(mem)
+                    if o.get('purpose') == 'attack' and o.get('source') == C]
+    assert decided(mem, 'front_wait_mass')
+
+
+def test_a_pair_ready_front_still_sends():
+    mem = _memory()
+    assert _step(mem, ['ローズマリー', 'ベーグル', 'キャロット']) == [policy.pad('a')]
+
+
+def test_an_expired_pair_wait_still_sends():
+    """The recheck keeps the bound the planner owns."""
+    mem = _memory()
+    mem['front_mass_hold'] = {C: mem['tick'] - corridor.FRONT_MASS_WAIT - 1}
+    mem['front_mass_count'] = {C: 2}
+    assert _step(mem, ['ローズマリー', 'ベーグル']) == [policy.pad('a')]
+    assert decided(mem, 'front_mass_timeout')
+
+
+def test_a_nearly_dead_defender_is_still_finished():
+    mem = _memory()
+    mem['castle_defenders'] = {D: {'hp': 5, 'general': 'マサラ'}}
+    assert _step(mem, ['ローズマリー', 'ベーグル']) == [policy.pad('a')]

@@ -335,7 +335,11 @@ def _monthly_reanchor(stage, **fields):
     from docich.hanjuku.flows import post_month_status as post
 
     mem = _memory()
-    mem.update(month='2-6', nav_search=True, uncertain=True)
+    mem.update(month='2-6', nav_search=True, uncertain=True,
+               # The monthly scan only keeps the field while the month has a
+               # launch behind it (docich#4642); this fixture tests recovery.
+               month_sorties={'scope': [mem.get('chapter'), '2-6'],
+                              'launches': 1})
     post.arm(mem)
     state = mem['post_month_status']
     state.update(stage=stage, **fields)

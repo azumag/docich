@@ -950,11 +950,31 @@ def _release_stale_active(mem):
     step = _plan_region(mem).get('active')
     if not step:
         return False
-    plan = _plan_region(mem).get('chart_plan') or {}
-    plan_steps = {o.get('step') for o in plan.get('orders') or ()}
     launched = _world(mem).get('launched_orders') or {}
     status = (_plan_region(mem).get('orders') or {}).get(step)
-    if not plan_steps or step in plan_steps or step in launched or status is not None:
+    if step in launched or status is not None:
+        return False
+    from ..strategy import corridor
+    if corridor.mechanical(mem) and corridor._pair(step) is not None:
+        # Chapter 9's march rebuilds its order list on every call, so an
+        # adopted ``chart_plan`` never owns its steps: the corridor itself is
+        # the plan, and a step it still mints is live. g1270 (#4498) released
+        # every unlaunched march order on the next map frame, and the release
+        # + order-start backoff cycle (~13 obs per map step) was the measured
+        # 150-261 obs stall between sorties from different castles.
+        live = {o.get('step') for o in corridor.orders(mem)}
+        if step in live or _plan_region(mem).get('active') != step:
+            return False
+        _plan_region(mem)['active'] = None
+        mem['picked'] = []
+        _drop_jump_state(mem, step)
+        _record(mem, 'stale_active_released', chart_step=step,
+                observed_metric={'live_steps': sorted(live)[:8]},
+                reason='第9話の進軍計画がこの指示をもう発行していないため解放し、現在の計画から選び直す')
+        return True
+    plan = _plan_region(mem).get('chart_plan') or {}
+    plan_steps = {o.get('step') for o in plan.get('orders') or ()}
+    if not plan_steps or step in plan_steps:
         return False
     _plan_region(mem)['active'] = None
     mem['picked'] = []
@@ -2573,6 +2593,7 @@ def _probe_launch_markers(mem, markers):
                 or _marker_near_castle(mem, b, probe.get('target'))]
         if near or (baseline and fresh):
             sortie['launch_confirmed'] = True
+            _note_sortie_launch(mem, sortie)
             probes.pop(step, None)
             _record(mem, 'sortie_launch_confirmed', chart_step=step,
                     general=probe.get('general'),
@@ -2599,6 +2620,29 @@ def _probe_launch_markers(mem, markers):
                                      'reads': probe['reads']},
                     resulting_event='roster_pending',
                     reason='全体マップに部隊▲が現れないため、出撃元の将軍一覧で出撃の成立を確認する')
+
+
+def _month_sorties(mem):
+    """Launch ledger for the current game month (docich#4642).
+
+    The monthly roster/status scan and its battle resumes can hold the field
+    for so long that whole months pass with no sortie. ``launches`` counts
+    confirmed departures toward enemy castles within the month so the scan
+    can yield the map until the first one is out.
+    """
+    ms = mem.setdefault('month_sorties', {})
+    scope = [mem.get('chapter'), mem.get('month')]
+    if ms.get('scope') != scope:
+        ms['scope'] = scope
+        ms['launches'] = 0
+    return ms
+
+
+def _note_sortie_launch(mem, row):
+    # A move into our own castle is a transfer, not a 出撃 toward the enemy.
+    if (row or {}).get('purpose') == 'move':
+        return
+    _month_sorties(mem)['launches'] = int(_month_sorties(mem).get('launches') or 0) + 1
 
 
 def settle_launch_probes_from_roster(mem, castle, generals, *, complete=True):
@@ -2634,6 +2678,7 @@ def settle_launch_probes_from_roster(mem, castle, generals, *, complete=True):
         if isinstance(sortie, dict):
             sortie['launch_confirmed'] = True
             sortie.pop('launch_kept', None)
+        _note_sortie_launch(mem, sortie if isinstance(sortie, dict) else probe)
         # The launch is confirmed: the equivalent-order miss budget it may
         # have accrued belongs to a failed attempt, not to this one.
         for key, row in list((mem.get('equivalent_launch_miss') or {}).items()):

@@ -12,8 +12,14 @@ from docich.hanjuku.state.regions import world as _world, plan as _plan_region
 
 
 def memory(**fields):
+    # The monthly scan yields the field while the month has no confirmed
+    # sortie and a startable order exists (docich#4642). These tests are about
+    # the scan itself, so the month starts with one launch behind it; the
+    # deferral has its own test below.
     return {'chapter': 1, 'month': '2-6', 'tick': 100, 'gold': 250,
-            '_records': [], **fields}
+            '_records': [],
+            'month_sorties': {'scope': [1, '2-6'], 'launches': 1},
+            **fields}
 
 
 def test_month_exit_arms_one_scoped_roster_first_owner():
@@ -25,6 +31,22 @@ def test_month_exit_arms_one_scoped_roster_first_owner():
     previous = mem['post_month_status']
     post.arm(mem)
     assert mem['post_month_status'] is previous
+
+
+def test_map_yields_to_a_startable_order_until_the_month_has_a_launch():
+    """docich#4642: a month with no sortie hands the field to the sortie plan."""
+    mem = memory(month_sorties={'scope': [1, '2-6'], 'launches': 0})
+    post.arm(mem)
+    state = mem['post_month_status']
+    field = Screen([], None, '', kind='map')
+    assert post.step(field, mem, None) is None
+    assert state['stage'] == 'await_map'
+    assert state['floor_yields'] == 1
+    assert any(r['decision'] == 'post_month_sortie_floor' for r in mem['_records'])
+    # The deferral is bounded: once the cap is spent the scan takes the map.
+    state['floor_yields'] = post.SORTIE_FLOOR_YIELDS
+    assert post.step(field, mem, None) == [pad('x')]
+    assert state['stage'] == 'open_menu'
 
 
 def test_individual_statuses_are_read_before_any_repair_or_recall():

@@ -7,7 +7,7 @@ change none of those, so the same plan sat there. The drop is counted, not
 recorded: the planner also runs on copies where no state signature survives.
 """
 from docich.hanjuku.strategy import replan
-from docich.hanjuku.state.regions import plan as _plan_region
+from docich.hanjuku.state.regions import plan as _plan_region, world as _world
 
 
 def plan(steps=('M1',)):
@@ -49,9 +49,27 @@ def test_a_plan_with_a_started_order_is_kept():
     mem['tick'] = 1000 + replan.PLAN_STALE_TICKS
     step = _plan_region(mem)['chart_plan']['orders'][0]['step']
     _plan_region(mem)['orders'] = {step: 'launched'}
+    _world(mem)['sorties'] = {'1': {'step': step, 'status': 'en_route'}}
     replan._drop_stale_plan(mem)
     assert _plan_region(mem)['chart_plan'] is not None
     assert stale_tally(mem) == 0
+
+
+def test_a_launched_order_with_no_march_in_flight_is_dropped():
+    """docich#4642: a plan whose orders all died must rebuild.
+
+    A 'launched' status alone proved nothing: the launch marker can be missed
+    and the order then sits in the plan forever, which is what starved the
+    sortie planner for whole months. Only a march still walking keeps it.
+    """
+    mem = memory(1000)
+    replan._adopt_plan(mem, plan(), 'abcd1234abcd1234')
+    mem['tick'] = 1000 + replan.PLAN_STALE_TICKS
+    step = _plan_region(mem)['chart_plan']['orders'][0]['step']
+    _plan_region(mem)['orders'] = {step: 'launched'}
+    replan._drop_stale_plan(mem)
+    assert _plan_region(mem)['chart_plan'] is None
+    assert stale_tally(mem) == 1
 
 
 def test_a_plan_without_an_adoption_tick_is_left_alone():

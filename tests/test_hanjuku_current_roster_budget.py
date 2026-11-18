@@ -174,7 +174,10 @@ def test_known_full_six_gold_payroll_does_not_hold_cash_before_or_at_editor(gold
     assert shop['soldiers'] == min(50, expected)
     shop.update(soldiers=99, soldiers_done=False)
     economy._limit_soldier_refill(mem, shop, h, payment=True)
-    assert shop['soldiers'] == min(50, expected)
+    # #4555: the fixture's measured army is collapsed (0 <= 50/2), so at
+    # payment every hold except the house repair money waits and the refill
+    # may use the month's balance.
+    assert shop['soldiers'] == min(50, gold - economy._house_repair_reserve(shop))
 
 
 def test_complete_large_bill_keeps_the_shortfall_floor_and_every_other_reserve():

@@ -69,6 +69,14 @@ BIJIN_GUARD_OBSERVATIONS = 40   # ~60 s: her speech and its choice
 # with the cheapest non-house item (at most 100G) instead of stalling the run.
 BIJIN_GUARD_HOLD_MAX = 40
 BIJIN_GIFT_HOLD_MAX = 40
+# docich#4632: a readable yes/no (うむッ!/いかんッ!) whose hand or row position
+# stays unreadable must not hold the corner: the g1190 concert invitation sat
+# 107 observations with no input while the orange hand blended into the scene.
+# After this many held observations the prompt is answered with the measured
+# default anyway (unclassified prompts accept; reviewed prompts keep their
+# computed choice row).
+YES_NO_UNREAD_BOUND = 12       # ~18 s: well inside the 120-obs input stall
+YES_NO_FORCED_MAX = 4          # forced presses per unchanged prompt episode
 # 実機の断り行は標準の いかんッ! とは限らない（倒転王国 monthlyevent.html の
 # うんデヘヘ！/けえんな！）。かな書きの揺れ（けーんな）も候補に含める。
 BIJIN_DECLINE_TOKENS = ('いかんッ', 'けえんな', 'けーんな')
@@ -559,18 +567,59 @@ def yes_no_step(screen: Screen, mem):
     else:
         choice, reason, variant = 'うむッ!', '未分類の確認は既定で進行', 'unclassified_prompt'
     move = menu_to(screen, choice)
+    hold = mem.get('yes_no_unread')
+    if not isinstance(hold, dict):
+        hold = None
+    key = f'{choice}:{text[-40:]}'
     if move == 'here':
+        mem.pop('yes_no_unread', None)
         if variant == 'chapter_end_save':
             _arm_chapter_end_save(mem)
         _record(mem, 'prompt', choice=choice, prompt=text[-40:], reason=reason,
                 strategy_variant=variant, observed_metric=metric)
         return [pad('a')]
-    if move is None:
+    if move is not None:
+        # The cursor moved off the game's default (upper) row toward the
+        # computed choice, so a later forced answer may confirm that row
+        # directly instead of walking again.
+        mem['yes_no_unread'] = {'key': key, 'held': 0, 'moved': True, 'forced': 0}
+        return [move]
+    same = hold is not None and hold.get('key') == key
+    held = (int(hold.get('held') or 0) + 1) if same else 1
+    moved = bool(hold.get('moved')) if same else False
+    forced = int(hold.get('forced') or 0) if same else 0
+    if held <= YES_NO_UNREAD_BOUND or forced >= YES_NO_FORCED_MAX:
+        mem['yes_no_unread'] = {'key': key, 'held': held, 'moved': moved, 'forced': forced}
         _record(mem, 'situation_held', screen=screen.kind,
                 observed_metric={'choice': choice, 'hand_visible': screen.hand is not None,
+                                 'held_observations': held,
                                  **({'prompt_metric': metric} if metric else {})},
                 reason='確認画面の選択位置を読めないため決定せず再観測')
-    return [move] if move else []
+        return []
+    if choice != 'うむッ!' and not moved:
+        # Walk the cursor toward the lower (decline) row first: the game opens
+        # these prompts on the upper row and no input was sent during the
+        # hold, so one down lands on the measured refusal row.
+        mem['yes_no_unread'] = {'key': key, 'held': held, 'moved': True,
+                                'forced': forced + 1}
+        _record(mem, 'yes_no_forced_move', screen=screen.kind, choice=choice,
+                observed_metric={'held_observations': held,
+                                 'hand_visible': screen.hand is not None,
+                                 **({'prompt_metric': metric} if metric else {})},
+                reason='選択肢は読めるが選択位置を確定できないまま保留上限を超えたため、下の行へ1回だけ動かして再観測')
+        return [pad('down')]
+    mem['yes_no_unread'] = {'key': key, 'held': held, 'moved': moved,
+                            'forced': forced + 1}
+    if variant == 'chapter_end_save':
+        _arm_chapter_end_save(mem)
+    _record(mem, 'yes_no_forced_answer', screen=screen.kind, choice=choice,
+            strategy_variant=variant, prompt=text[-40:],
+            observed_metric={'held_observations': held,
+                             'hand_visible': screen.hand is not None,
+                             'moved': moved,
+                             **({'prompt_metric': metric} if metric else {})},
+            reason='選択肢が読める確認画面の選択位置を長時間確定できないため、既定応答をAで決定して停滞を解消する')
+    return [pad('a')]
 
 
 def _summer_bonus_choice_band(screen: Screen) -> bool:
@@ -745,7 +794,64 @@ def _settle_road_defeats(mem):
                     reason='道中敗北の記録があるため、行軍を決着済みとして片付ける')
 
 
-def observe_events(screen: Screen, mem):
+# docich#4535: a battery-save load after a title return (game over) silently
+# rewinds the run's month and castle holdings. The bot re-reads the screen and
+# follows, so nothing recorded the rollback itself (local chapter 11,
+# 60-4 -> 58-4 on 2026-11-18). A same-chapter month reading that drops by more
+# than this many months is logged once per (chapter, before, after) rollback
+# as progress_regressed; smaller backward reads are header flicker, and a
+# month observed under another chapter is not this chapter's regression.
+MONTH_REGRESS_MIN = 2
+
+
+def _month_ordinal(key):
+    """Sequential index of a 'year-month' key, or None when it cannot be read."""
+    if not isinstance(key, str):
+        return None
+    year, sep, month = key.partition('-')
+    if not sep:
+        return None
+    try:
+        year, month = int(year), int(month)
+    except ValueError:
+        return None
+    if year < 1 or not 1 <= month <= 12:
+        return None
+    return year * 12 + month
+
+
+def _observe_progress_regress(mem, month_before, month_after, chapter_before,
+                              previous_phase):
+    """Record a same-chapter month rollback once (docich#4535).
+
+    ``mem['captured']``/``mem['lost']`` still hold the pre-rollback view at
+    this point, so the record keeps the holdings the load rewound.
+    """
+    if chapter_before is None or mem.get('chapter') != chapter_before:
+        return   # a chapter transition or an undecided chapter is not a regression
+    month_chapter = mem.get('month_chapter')
+    if month_chapter is not None and month_chapter != chapter_before:
+        # The save row's だいNわ can retarget mem['chapter'] without a chapter
+        # transition, so a month observed under another chapter must not be
+        # compared against this chapter's header (cross-chapter load).
+        return
+    before, after = _month_ordinal(month_before), _month_ordinal(month_after)
+    if before is None or after is None or before <= after + MONTH_REGRESS_MIN:
+        return
+    key = [chapter_before, month_before, month_after]
+    if mem.get('progress_regressed') == key:
+        return   # a flickering header must not log the same rollback twice
+    mem['progress_regressed'] = key
+    _record(mem, 'progress_regressed',
+            observed_metric={'month_before': month_before, 'month_after': month_after,
+                             'captured': sorted(mem.get('captured') or ()),
+                             'lost': sorted(mem.get('lost') or ()),
+                             'home_lost': bool(mem.get('home_lost')),
+                             'previous_phase': previous_phase},
+            reason='同一章で月が大きく逆行したため、タイトル復帰のセーブロード等による進行ロールバックとして記録する')
+
+
+def observe_events(screen: Screen, mem, previous_phase=None):
     """Record chart-relevant facts that need no input (month header, harvest)."""
     _settle_road_defeats(mem)
     _repair_home_name_chapter(mem)
@@ -786,13 +892,17 @@ def observe_events(screen: Screen, mem):
                     reason='出撃画面のたまご行から卵の残り使用回数を記録')
     header = screen.header
     if header:
+        month_before, chapter_before = mem.get('month'), mem.get('chapter')
         chapter = header.get('chapter')
         if chapter and chapter != mem.get('chapter'):
             _enter_chapter(mem, chapter, reason='画面の章表示を確認し、前章の座標・出撃・購入状態を初期化')
         key = _month_key(header)
         if mem.get('month') != key:
+            _observe_progress_regress(mem, month_before, key, chapter_before,
+                                      previous_phase)
             previous = mem.get('month_start_tick')
             mem['month'] = key
+            mem['month_chapter'] = mem.get('chapter')
             mem['gold'] = header['gold']
             now = int(mem.get('tick') or 0)
             mem['month_start_tick'] = now
