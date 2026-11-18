@@ -646,6 +646,7 @@ def world_map_step(screen, mem, frame):
                          int(round((y_cursor[1] - y_offset[1]) * 8))]
         mem['uncertain'] = False
         mem.pop('anchor', None)
+        mem.pop('y_anchor_attempts', None)
         _record(mem, 'world_anchor_from_yview',
                 observed_metric={'cursor': list(y_cursor),
                                  'world': list(mem['cursor'])},
@@ -974,6 +975,19 @@ def _watch_cursor_still(mem):
     if (watch['n'] < CURSOR_STILL_LIMIT or mem.get('nav_search')
             or mem.get('castle_jump') or (mem.get('anchor') and not mem.get('uncertain'))):
         return False
+    # Prefer the Y view's own-position cursor before the castle-list jump: it
+    # anchors the field cell directly, while the X reanchor needs アルマムーン
+    # to be on the visible list and looped when it was not (g1190 2026-11-19
+    # run 3/4: cursor_still_search repeated and no sortie ever started — #4611).
+    attempts = int(mem.get('y_anchor_attempts') or 0)
+    if attempts < Y_ANCHOR_ATTEMPTS:
+        mem['y_anchor_attempts'] = attempts + 1
+        mem['y_anchor_due'] = True
+        _record(mem, 'cursor_still_yview',
+                observed_metric={'cursor': list(cursor), 'still': watch['n'],
+                                 'attempt': attempts + 1},
+                reason='現在地の推定が動かないため、全体マップ（Y）の自位置カーソルから座標を再確定する')
+        return True
     mem['nav_search'] = True
     mem.pop('nav_search_leg', None)
     mem.pop('anchor', None)
@@ -1006,6 +1020,7 @@ CASTLE_JUMP_SCROLL_LIMIT = 16   # list scrolls while looking for the source
 CASTLE_JUMP_SCROLL_PROOF = 2    # extra taps issued once the hand is on the last row
 CASTLE_JUMP_SCROLL_STALL = 2    # unchanged list readings before the Y route takes over
 CASTLE_JUMP_COOLDOWN = 40       # observations before retrying a failed source
+Y_ANCHOR_ATTEMPTS = 2            # Y-view re-anchors before the castle-list jump
 REANCHOR_FAILURE_LIMIT = 3      # consecutive failed reanchors before backing off
 REANCHOR_FAILURE_BACKOFF = 600  # observations a tripped reanchor stays quiet
 CASTLE_JUMP_FAR = 48            # same distance gate as the Y jump (map px)
@@ -1863,6 +1878,10 @@ def map_step(screen: Screen, mem, frame):
         # with `nav_last` null). Counted, not recorded, so it stays cheap.
         _tally(mem, 'map_no_cursor')
     _watch_cursor_still(mem)
+    if mem.pop('y_anchor_due', False) and not mem.get('menu_miss'):
+        # A menu-miss hold already has its own bounded Y-jump escape; only a
+        # plain frozen cursor asks for the Y view here.
+        return [pad('y')]
     if not _cursor(screen) and not screen.header and not screen.text:
         # #3721: a chapter transition parks on a map with no HUD, text or
         # cursor until A advances the intermission (g1153: 174 s of no

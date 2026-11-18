@@ -21,10 +21,23 @@ def test_a_moving_estimate_never_starts_the_search():
 
 
 def test_a_frozen_estimate_starts_the_search_once():
+    """The Y view anchors first; the castle-list search follows after it.
+
+    g1190 2026-11-19 run 3/4: the castle-list jump (nav_search) looped without
+    anchoring, so a frozen estimate now asks for the Y view twice before the
+    castle-list search starts (v1150).
+    """
     mem = memory()
     for _ in range(M.CURSOR_STILL_LIMIT - 1):
         assert M._watch_cursor_still(mem) is False
     assert M._watch_cursor_still(mem) is True
+    assert mem['y_anchor_due'] is True
+    assert mem['_records'][-1]['decision'] == 'cursor_still_yview'
+    # The frozen estimate keeps asking until the Y attempts are spent, then the
+    # castle-list search starts.
+    for _ in range(M.Y_ANCHOR_ATTEMPTS):
+        mem.pop('y_anchor_due', None)
+        M._watch_cursor_still(mem)
     assert mem['nav_search'] is True
     assert mem['_records'][-1]['decision'] == 'cursor_still_search'
     mem['cursor'] = [1, 1]
