@@ -694,7 +694,13 @@ def _garrison_rotation(mem, owned, busy, heading, taken=()):
         return []
     garrison = _world(mem).get('garrison') or {}
     unavailable = set(busy) | set(_world(mem).get('general_location_unknown') or ())
-    free = {c: [g for g in garrison.get(c) or () if g not in unavailable] for c in plan}
+    # ``_known_residents`` covers a castle whose full-page read aged out of
+    # ``garrison`` but still holds partial-resident evidence — the same pool
+    # ``_interim_source`` counts. Treating that row as empty froze the only
+    # spare castle out of every donation (docich#4642 follow-up: the home
+    # roster read at tick ~31892 vanished by ~32951 and no move was minted).
+    free = {c: [g for g in _known_residents(mem, garrison, c) or ()
+                if g not in unavailable] for c in plan}
     sole = len(plan) == 1
     claimed = set(taken) | set(heading)
     donated = {}
@@ -735,8 +741,10 @@ def _garrison_rotation(mem, owned, busy, heading, taken=()):
             sent = donated.get(source) or set()
             available = [g for g in free[source] if g not in sent]
             # Even a rear-castle floor of zero cannot override the actual
-            # game's minimum two-general requirement for a departure.
-            if (garrison.get(source) is None or len(set(available)) < 2
+            # game's minimum two-general requirement for a departure. A
+            # castle whose list was never read at all cannot be counted.
+            if (_known_residents(mem, garrison, source) is None
+                    or len(set(available)) < 2
                     or len(available) - 1 < source_floor):
                 continue
             spares = [g for g in _spares(available) if g != NAME]
