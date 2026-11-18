@@ -1665,6 +1665,26 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
         else:
             mem['held_phase']=None
             mem.pop('unknown_hold_watch', None)
+    if (kind == 'battle_menu' and 'もうこうげき' in (screen.text or '')
+            and (not actions or actions == [pad('b')])):
+        # A readable battle command menu with no planned action was treated as
+        # an orphan parent menu and held forever (g1190 2026-11-19 67-6: the
+        # ソーピニヨン/ドラゴンフライ menu sat with 32 retreat_recheck_unconfirmed
+        # records and no A). The measured default is the normal attack on the
+        # hand's row: A.
+        decision_log._record(mem, 'battle_menu_attack', screen=kind,
+                             observed_metric={'text': (screen.text or '')[:40]},
+                             reason='戦闘コマンドの手が もうこうげき にあるため、計画が空でもAで通常攻撃へ進む')
+        actions = [pad('a')]
+        updated.update(screen_kind=kind, no_input_streak=0, no_input_frames=[])
+        for key in ('_adjusted', '_interim', '_card_scroll_input'):
+            mem.pop(key, None)
+        _journal(mem).pop('_departure_input', None)
+        _journal(mem).pop('_recall_inputs', None)
+        updated['_records'] = mem.pop('_records')
+        updated['_experience'] = mem.pop('_experience', None)
+        updated['policy'] = mem
+        return actions, updated
     actions=battle_menus_flow.summon_dialogue_pace(screen,mem,phase,kind,actions,frame.digest())
     hold_escape = battle_menu_hold_advance(screen, mem, actions, frame.digest())
     if hold_escape is not None:

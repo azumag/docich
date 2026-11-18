@@ -76,7 +76,12 @@ def orphan_battle_menu_step(screen, mem):
     """
     flow = mem.get('orphan_battle_menu')
     restored = isinstance(mem.get('resume_battle_menu'), dict)
-    if mem.get('battle'):
+    if mem.get('battle') and screen.battle is not None:
+        # A live battle record defers to battle_step only when the current
+        # panel is readable. A command menu whose HP panel cannot be read
+        # (screen.battle None) returns no action there either, so the orphan
+        # path still owns it — otherwise the menu held to screen_stalled
+        # (g1190 ch9 2026-11-16 きりふだ/たいきゃく, battle ブラウニー HP5).
         mem.pop('orphan_battle_menu', None)
         mem.pop('resume_battle_menu', None)
         return None
