@@ -76,6 +76,13 @@ BIJIN_GIFT_HOLD_MAX = 40
 # default anyway (unclassified prompts accept; reviewed prompts keep their
 # computed choice row).
 YES_NO_UNREAD_BOUND = 12       # ~18 s: well inside the 120-obs input stall
+# docich#4650: a prompt the classifier could not name keeps the game's own
+# default (accept) and these prompts open on the upper row, so A is already
+# the wanted answer without locating the hand. Waiting the full unread bound
+# burned ~17 s per concert invitation on the fresh chapter-1 run
+# (g1190 2026-11-19: three 17 s holds in 20 minutes). A short settle still
+# lets a mid-transition frame resolve before the press.
+YES_NO_ACCEPT_SETTLE = 3
 YES_NO_FORCED_MAX = 4          # forced presses per unchanged prompt episode
 # 実機の断り行は標準の いかんッ! とは限らない（倒転王国 monthlyevent.html の
 # うんデヘヘ！/けえんな！）。かな書きの揺れ（けーんな）も候補に含める。
@@ -588,7 +595,10 @@ def yes_no_step(screen: Screen, mem):
     held = (int(hold.get('held') or 0) + 1) if same else 1
     moved = bool(hold.get('moved')) if same else False
     forced = int(hold.get('forced') or 0) if same else 0
-    if held <= YES_NO_UNREAD_BOUND or forced >= YES_NO_FORCED_MAX:
+    settle = (YES_NO_ACCEPT_SETTLE
+              if variant == 'unclassified_prompt' and choice == 'うむッ!'
+              else YES_NO_UNREAD_BOUND)
+    if held <= settle or forced >= YES_NO_FORCED_MAX:
         mem['yes_no_unread'] = {'key': key, 'held': held, 'moved': moved, 'forced': forced}
         _record(mem, 'situation_held', screen=screen.kind,
                 observed_metric={'choice': choice, 'hand_visible': screen.hand is not None,
