@@ -697,7 +697,7 @@ def _garrison_rotation(mem, owned, busy, heading, taken=()):
     free = {c: [g for g in garrison.get(c) or () if g not in unavailable] for c in plan}
     sole = len(plan) == 1
     claimed = set(taken) | set(heading)
-    used = set()
+    donated = {}
     out = []
     # The thinnest castle first: a castle holding one defender loses it (and
     # the castle) to the first enemy stack (g1163 chapter 8 2026-11-09 21:33:
@@ -722,24 +722,31 @@ def _garrison_rotation(mem, owned, busy, heading, taken=()):
         donors = []
         for source in sorted(plan, key=lambda c: (-plan[c][0],
                                                   _distance(chapter, c, target), c)):
-            if source == target or source in used:
+            if source == target:
                 continue
             source_distance, _source_want, source_floor = plan[source]
             if source_distance <= distance or not routes.allowed(mem, source, target):
                 continue
+            # One donor may staff several targets in the same plan (docich#4642:
+            # the single-donation rule let one spare castle send at most one
+            # general a month, so every frontier castle stayed at one defender
+            # and no attack source ever opened). Generals already committed to
+            # another target this plan are subtracted before the floor check.
+            sent = donated.get(source) or set()
+            available = [g for g in free[source] if g not in sent]
             # Even a rear-castle floor of zero cannot override the actual
             # game's minimum two-general requirement for a departure.
-            if (garrison.get(source) is None or len(set(free[source])) < 2
-                    or len(free[source]) - 1 < source_floor):
+            if (garrison.get(source) is None or len(set(available)) < 2
+                    or len(available) - 1 < source_floor):
                 continue
-            spares = [g for g in _spares(free[source]) if g != NAME]
+            spares = [g for g in _spares(available) if g != NAME]
             if not spares:
                 continue
             general = sorted(spares, key=lambda g: _defense_score(mem, g),
                              reverse=True)[0]
             # A castle already above its own target donates first; rear
             # castles may thin down to one, but never dispatch their last.
-            surplus = 1 if len(free[source]) > _source_want else 0
+            surplus = 1 if len(available) > _source_want else 0
             donors.append((surplus, source_distance,
                            -_distance(chapter, source, target), source, general))
         if not donors:
@@ -749,7 +756,7 @@ def _garrison_rotation(mem, owned, busy, heading, taken=()):
                     'source': source, 'after': None, 'purpose': 'move',
                     'garrison_rotate': True,
                     'note': f'暫定: 敵城に近い{target}を厚くするため{_general_label(general)}を{source}から移動'})
-        used.add(source)
+        donated.setdefault(source, set()).add(general)
         claimed.add(target)
     return out
 

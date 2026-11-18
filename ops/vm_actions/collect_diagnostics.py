@@ -7685,6 +7685,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v1157-discharge-removal-skip",
             "hanjuku-chart-v1158-sortie-month-floor",
             "hanjuku-chart-v1159-dead-plan-rearm",
+            "hanjuku-chart-v1160-frontier-multi-fill",
             "hanjuku-chart-v1020-recall-giveup",
             "hanjuku-chart-v1021-plan-invalid-source",
             "hanjuku-chart-v1041-egg-receipt-presence",
