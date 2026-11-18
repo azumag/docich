@@ -604,6 +604,28 @@ FORBIDDEN_MODULES = frozenset({
 FORBIDDEN_PATHS = ("docich.trading.exchanges", "docich.trading.live_owner.cli",
                    "docich.trading.worker", "docich.trading.slot_runtime")
 
+# ``__main__.py`` is the one process entry point: it may install the stop handlers and reach the
+# real (read-only) exchange layer.  Every other live_worker module keeps the full ban above.
+MAIN_ALLOWED_IMPORTS = frozenset({
+    "signal", "time",
+    "docich.trading.exchanges.bitbank_live.factory",
+    "docich.trading.exchanges.bitbank_ccxt",
+    "docich.trading.market_data",
+    "docich.trading.live.policy",
+})
+
+
+def _main_allowed(name: str) -> bool:
+    return any(name == allowed or name.startswith(allowed + ".")
+               for allowed in MAIN_ALLOWED_IMPORTS)
+
+
+def _forbidden_for(filename: str, name: str) -> bool:
+    """``_forbidden`` with the entry point's narrow import exception."""
+    if not _forbidden(name):
+        return False
+    return not (filename == "__main__.py" and _main_allowed(name))
+
 
 def _resolved_import(module: str | None, level: int) -> str:
     """Resolve a relative import against ``docich.trading.live_worker`` (the module's package)."""
@@ -623,14 +645,14 @@ def test_r9_no_live_worker_module_imports_a_forbidden_module_or_exits():
                 for alias in node.names:
                     offenders.extend(
                         (path.name, name) for name in [alias.name]
-                        if _forbidden(name))
+                        if _forbidden_for(path.name, name))
             elif isinstance(node, ast.ImportFrom):
                 resolved = _resolved_import(node.module, node.level)
-                if _forbidden(resolved):
+                if _forbidden_for(path.name, resolved):
                     offenders.append((path.name, resolved))
                 for alias in node.names:
                     joined = f"{resolved}.{alias.name}" if resolved else alias.name
-                    if _forbidden(joined):
+                    if _forbidden_for(path.name, joined):
                         offenders.append((path.name, joined))
             elif isinstance(node, ast.Call):
                 func = node.func
@@ -638,7 +660,11 @@ def test_r9_no_live_worker_module_imports_a_forbidden_module_or_exits():
                     offenders.append((path.name, func.id))
                 elif isinstance(func, ast.Attribute):
                     owner = getattr(func.value, "id", None)
-                    if (owner, func.attr) in {("sys", "exit"), ("os", "_exit")}:
+                    # The entry point must exit with the runner's code: sys.exit is allowed in
+                    # __main__.py only.  A bare exit()/quit() and os._exit() stay forbidden.
+                    entrypoint_exit = (path.name == "__main__.py" and owner == "sys"
+                                       and func.attr == "exit")
+                    if (owner, func.attr) in {("sys", "exit"), ("os", "_exit")} and not entrypoint_exit:
                         offenders.append((path.name, f"{owner}.{func.attr}"))
     assert offenders == []
 
@@ -652,6 +678,32 @@ def _forbidden(name: str) -> bool:
     if any(name == path or name.startswith(path + ".") for path in FORBIDDEN_PATHS):
         return True
     return False
+
+
+def _imported_names(path: Path) -> list[str]:
+    """Every import target in ``path``: resolved relative imports and from-import members."""
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    names: list[str] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            names.extend(alias.name for alias in node.names)
+        elif isinstance(node, ast.ImportFrom):
+            resolved = _resolved_import(node.module, node.level)
+            names.append(resolved)
+            names.extend(f"{resolved}.{alias.name}" if resolved else alias.name
+                         for alias in node.names)
+    return names
+
+
+def test_r9_main_imports_only_the_allowed_modules_and_no_other_module_imports_signal():
+    directory = Path(runner_module.__file__).parent
+    main_imports = _imported_names(directory / "__main__.py")
+    assert [name for name in main_imports if _forbidden(name) and not _main_allowed(name)] == []
+    for path in sorted(directory.glob("*.py")):
+        if path.name == "__main__.py":
+            continue
+        imports = _imported_names(path)
+        assert not [name for name in imports if "signal" in name.split(".")], path.name
 
 
 def test_r9_the_cycle_deps_carry_the_real_decide_hook_and_the_policy_symbols(ws, monkeypatch):

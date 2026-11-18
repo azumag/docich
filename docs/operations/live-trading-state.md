@@ -129,6 +129,7 @@ L1 は、本番(LIVE)の売買の**土台だけ**で、動作しない。どの�
 - 残高の不一致は**停止しない**。2回の安定した照合で確認できた不一致の通貨数を `balance_warnings` として status に出す(0以上の整数)。金額・残高そのものは status に書かない。不一致でも買い・売りは止まらない。
 - status(`live_status.json`)は実際の周期を `interval_ms`(30,000〜3,600,000 の整数)として残す。CLI の `--interval` は30〜3600秒で、ミリ秒に丸めることで 600.5 秒のような端数も失わない。WebUI は running status の鮮度を **3×`interval_ms`** とし、連続失敗時は `next_wait` の再試行待ち(interval 以上、interval が300秒以下なら300秒で頭打ち)を加える。`interval_ms` が無い旧 status や範囲外・非整数の値は、従来の60秒 / 180秒へフォールバックする。running status は cycle の終了時に書き、**lease を失った後は running も exited も書かない**。
 - 起動時の残高取得や自動記録が失敗しても inert にならず、終了もしない。周期ループで再試行する。inert になるのは方針セットが無い場合だけ(`no_active_policy_set`)。
+- 常駐化(systemd user unit)のテンプレートと終了コードの扱いは [live-worker-systemd.md](live-worker-systemd.md)。ユニットのインストール・enable はオーナーの作業で、`sender=None` の間は発注経路が無い。
 
 ## L1 でやらないこと
 

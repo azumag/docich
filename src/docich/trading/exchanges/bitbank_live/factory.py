@@ -56,24 +56,28 @@ def open_bitbank_reader(state_dir, *, symbols: Sequence[str], clock: Callable[[]
                         max_ahead_s: float = MAX_LOCAL_AHEAD_S, max_behind_s: float = MAX_LOCAL_BEHIND_S,
                         probes: int = CLOCK_PROBES) -> BitbankReader:
     if not symbols:
-        raise ReaderUnavailable("no symbols")
+        raise ReaderUnavailable("no symbols", kind="config")
     try:
         credentials = load_credentials(state_dir, source=source)
     except CredentialsUnavailable as exc:
-        raise ReaderUnavailable(f"credentials: {exc.reason.value}") from None
+        raise ReaderUnavailable(f"credentials: {exc.reason.value}", kind="config") from None
     try:
         transport = (transport_factory or CcxtReadTransport)(credentials)
     except ReaderUnavailable:
         raise
     except Exception as exc:
-        raise ReaderUnavailable(f"transport: {type(exc).__name__}") from None
+        raise ReaderUnavailable(f"transport: {type(exc).__name__}", kind="config") from None
     del credentials
     reader = BitbankReader(transport, symbols=symbols, clock=clock)       # ReaderUnavailable passes through
     try:
         low, high = clock_bounds(transport, symbols[0], probes=probes)
-    except (ExchangeError, ValueError) as exc:
-        raise ReaderUnavailable(f"clock check failed ({type(exc).__name__}/{getattr(exc, 'health_kind', '-')})") from None
+    except ExchangeError as exc:
+        health_kind = getattr(exc, "health_kind", None)
+        kind = health_kind if health_kind in ("auth", "clock") else None
+        raise ReaderUnavailable(f"clock check failed ({type(exc).__name__}/{health_kind})", kind=kind) from None
+    except ValueError as exc:
+        raise ReaderUnavailable(f"clock check failed ({type(exc).__name__})", kind="clock") from None
     problem = judge_clock(low, high, max_ahead_s=max_ahead_s, max_behind_s=max_behind_s)
     if problem:
-        raise ReaderUnavailable(f"clock: {problem}")
+        raise ReaderUnavailable(f"clock: {problem}", kind="clock")
     return reader
