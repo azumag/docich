@@ -12,6 +12,14 @@ LIVE ワーカーを常駐させるための **user unit のテンプレート**
 - 状態ファイルは `<state>/trading-live/live_status.json`(0600、原子的に置き換え)。
   残高・金額・注文 ID・キーは入らない。
 
+## CI のスモークテスト
+
+GitHub-hosted の `trading-regressions` ジョブは、この文書の fenced `ini` テンプレートを
+`tests/helpers/live_worker_systemd_smoke.py` で読み、ランナーの一時的な user manager に
+一意な名前の unit を置いて、キー無しの起動経路を検証する。終了コード `2` /
+`phase: exited` / `reason: config` と、`NRestarts=0`・`RestartPreventExitStatus=2` に
+よる再起動抑止を確認する。`enable`・`loginctl enable-linger`・キー・外部接続は使わない。
+
 ## ユニット(テンプレート)
 
 `~/.config/systemd/user/docich-live-worker.service` などに置く。`<...>` はオーナーが埋める。
@@ -78,13 +86,23 @@ WantedBy=default.target
 `4` の再起動が続く場合は `StartLimitBurst` で止まる。時計を直してから
 `systemctl --user reset-failed` → 起動し直す(オーナーの作業)。
 
+全銘柄の公開データ欠損が `CycleConfig.market_gap_exit_s`(既定 1800 秒 = 30 分)を
+超えた場合も `8` で終わり、`Restart=on-failure` と `RestartSec=30` で再起動する。
+この再起動間隔は約 30 分 + 30 秒なので、`StartLimitIntervalSec=300`(5 分)の窓には
+1 回しか入らず、`StartLimitBurst=5` に達しない。データ障害が続く限り 30 分ごとに
+再起動を繰り返すため、`NRestarts` と `live_status.json` の `market_gap_scope=all` /
+`market_all_stale_seconds` を監視し、必要ならオーナーが
+`systemctl --user stop docich-live-worker.service` で止める。ユニットの設定は変更しない。
+
 ## このワーカーができないこと(安全側の固定)
 
 - `runner.py` は `OrderExecutor(..., sender=None, ...)` を組み立て、送信できる種別は
   `SENDER_KINDS_ALLOWED = {"mock"}` のまま。**有効化しても発注経路は無い**。取引所層は
   読み取り専用(`submit_order`/`cancel_order` を持たない)。
-- 最初の有効な方針セットの有効化は**オーナーが `python -m docich.trading.live_owner
-  --state-dir <state> activate ...` で行う手動の作業**。方針セットが無いワーカーは inert
+- 最初の有効な方針セットの有効化は**オーナーの手動の作業**。WebUI の LIVE タブ
+  「初期方針のセットアップ」で export → preview → activate する(通常の経路)。任意の
+  スナップショットを CLI で記録する場合は `python -m docich.trading.live_owner
+  --state-dir <state> activate ...` を使う。方針セットが無いワーカーは inert
   (`phase: inert`, `reason: no_active_policy_set`)で終了コード `0`。
 - ON/OFF と `shadow`/`trade` は制御ファイル
   `<state>/trading-live/owner/live_control.json`。WebUI の LIVE タブ、または
