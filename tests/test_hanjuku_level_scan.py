@@ -283,6 +283,10 @@ def test_the_visit_reopens_status_when_the_level_read_left_the_count_unread():
     assert house.step(parse(main), mem, main) == []   # leave_status → open_roster
     assert mem['house']['phase'] == 'open_roster'
     # Count still unread → the visit re-opens ステータス instead of leaving.
+    general = _main_on('しょうぐん')
+    assert house.step(parse(general), mem, general) == [p.pad('down')]
+    assert mem['house'].get('count_retry', 0) == 0
+    assert mem['house']['phase'] == 'open_roster'
     assert house.step(parse(main), mem, main) == [p.pad('a')]
     assert mem['house']['phase'] == 'level_status'
     assert mem['house']['count_retry'] == 1

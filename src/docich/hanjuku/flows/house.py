@@ -1621,9 +1621,9 @@ def _step_once(screen, mem, frame):
                         and int(state.get('count_retry') or 0) < COUNT_RETRY_LIMIT):
                     # 半熟レベルの頁へ直接開いた等で1頁目の将軍数を拾えないまま
                     # ではないか、同じ訪問でステータスを開き直して読む。
-                    state['count_retry'] = int(state.get('count_retry') or 0) + 1
                     actions = _choose(screen, 'ステータス')
                     if actions == [pad('a')]:
+                        state['count_retry'] = int(state.get('count_retry') or 0) + 1
                         state['counts_unread_logged'] = False
                         _phase(state, 'level_status')
                         _record(mem, 'country_count_reopen',
