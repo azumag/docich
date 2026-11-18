@@ -1613,7 +1613,11 @@ def general_jump_step(screen, mem, frame):
         # The camp recall's corridor-view trigger only runs while its flow
         # owns a camp frame; on a plain held field there is no such owner,
         # so arm the jump here whenever an overdue boss march sits camped
-        # out of the cursor's reach.
+        # out of the cursor's reach. The X menu only opens from the field,
+        # so a month/menu frame must not arm it: arming there fires
+        # 'unexpected_menu' and retries every observation.
+        if screen.kind != 'map':
+            return None
         boss_castle = getattr(chart, 'boss_castle', None)
         boss_target = boss_castle(mem.get('chapter') or 0) if boss_castle else None
         if boss_target is None:
