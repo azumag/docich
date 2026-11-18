@@ -213,6 +213,13 @@ ON/OFF、`trade`、control ファイル、worker は変更しない。
   `shadow: no evidence` と表示する。`live_owner status` にも shadow の有無と件数だけを出す
   (金額・ID は出さない)。
 
+## L4b-2: 公開市場データの欠損検知(Issue #4586)
+
+- 周の手順 8 の銘柄ごとの stale を `CycleState.market_gap` が周期をまたいで追跡する。`stale_since` は各銘柄の連続欠損が始まった時刻を保持し、新鮮なフレームが取れた時点で消える(復帰)。`all_stale_since` / `all_stale_cycles` は全銘柄が連続して欠損している期間と周数を数える。フレーム取得に到らなかった周(stop・lease 喪失・step 失敗・cycle error)は欠損の継続とも復帰ともみなさず、追跡を変えない。
+- status には `market_gap_scope`(`none`/`partial`/`all`)、`market_stale_count`、`market_gap_since`/`market_gap_seconds`(最古の継続欠損の開始時刻と秒数)、`market_all_stale_since`/`market_all_stale_seconds`/`market_all_stale_cycles` を出す。`stale_symbols` が欠損中の銘柄一覧。
+- exit 8 と再試行の条件(決定): **一部欠損は永遠に再試行し、終了しない**。全銘柄の連続欠損が `CycleConfig.market_gap_exit_s`(既定 1800 秒、仮の値・オーナー確認待ち)を超えたら `EXIT_MARKET_DATA` を返し、runner が終了コード 8(再起動可)で終わる。`None` で終了しない観測専用にできる。判定はモードに依らない(monitor でもデータ源が死んでいれば同じ条件)。reader 不健康の周は従来どおり `reader_unhealthy` の失敗周で、gap 終了とは別扱い。
+- 未決: 閾値の実値、取引所側障害で再起動が繰り返されるときの上限(systemd の StartLimit 任せでよいか)、単一銘柄の恒常的欠損(上場廃止等)を別途扱うか。
+
 ## L1 でやらないこと
 
 APIキー・取引所への接続・ワーカー・通知・昇格の適用。いずれも後続の PR で、PR ごとにオーナーの確認を取る。実注文(E)と常駐(F)は、オーナーの明示承認と、取引所の API キーの発行(出金権限なし)が前提。
