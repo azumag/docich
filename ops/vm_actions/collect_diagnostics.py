@@ -7696,6 +7696,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v1165-battle-card-selection",
             "hanjuku-chart-v1167-battle-card-selection",
             "hanjuku-chart-v1168-open-menu-retry",
+            "hanjuku-chart-v1169-menu-blind-nav",
             "hanjuku-chart-v1158-progress-regress",
             "hanjuku-chart-v1161-refill-collapse",
             "hanjuku-chart-v1160-chapter-probe-field",

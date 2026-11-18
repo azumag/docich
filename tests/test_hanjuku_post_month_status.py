@@ -1665,3 +1665,17 @@ def test_a_new_stage_restores_the_open_budget():
     for _ in range(3):
         got.append(post.step(field, mem, None))
     assert got[-1] == [pad('x')]
+
+
+def test_a_handless_main_menu_walks_to_shougun_deterministically():
+    # docich#4655: a missed hand on the menu must not leave the scan idle.
+    mem = memory()
+    post.arm(mem)
+    state = mem['post_month_status']
+    state.update(stage='open_menu')
+    menu = Screen([], None, 'ステータス', kind='main_menu')
+    got = [post.step(menu, mem, None) for _ in range(9)]
+    assert got[:post.MAIN_MENU_BLIND_UPS] == [[pad('up')]] * post.MAIN_MENU_BLIND_UPS
+    assert got[post.MAIN_MENU_BLIND_UPS] == [pad('down')]
+    assert got[post.MAIN_MENU_BLIND_UPS + 1] == [pad('a')]
+    assert state['stage'] == 'roster'
