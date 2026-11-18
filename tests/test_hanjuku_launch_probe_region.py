@@ -1,0 +1,18 @@
+"""The launch probe must outlive the deploy transaction.
+
+g1190 2026-11-19 run 5: the probe lived in the FLOW procedure region and was
+gone once the deploy ended, so three phantom launches sat for five months with
+no departure survey (#4626).
+"""
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
+
+from docich.hanjuku.state import regions
+
+
+def test_the_launch_probe_is_a_world_fact():
+    spec = regions.KEY_OWNERSHIP['launch_probe']
+    assert spec['region'] is regions.WORLD
+    assert spec['lifetime'] == 'chapter'
