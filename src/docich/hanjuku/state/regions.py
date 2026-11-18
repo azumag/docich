@@ -297,6 +297,7 @@ KEY_OWNERSHIP = {
     'reanchor_failures': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 再アンカー連続失敗の抑制カウンタ
     'y_anchor_attempts': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # Yビュー再アンカーの試行回数
     'y_anchor_due': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 次の map 観測でYを押す印
+    'goal_expired': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 期限切れ目標の再登録抑止
     'cursor_card_downs': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # カード選択カーソル下移動の手順状態
     'cursor_pick_downs': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 同上
     'cursor_still': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # カーソル停滞検出

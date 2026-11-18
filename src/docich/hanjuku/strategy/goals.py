@@ -21,6 +21,8 @@ from ..os_layer.world import SORTIE_BUSY_TICKS, _owned
 
 
 GOAL_LIMIT = 24            # bounded ledger; the fact stores stay the fallback
+GOAL_STALE_TICKS = 3600    # observations a never-attempted goal may sit queued
+GOAL_EXPIRED_COOLDOWN = 7200  # observations an expired goal stays out after that
 STARVE_ATTEMPTS = 6        # deferral outcomes per goal before a starved record
 MAP_IDLE_WINDOW = 2        # observations a "nothing to sortie" reading stays current
 
@@ -146,13 +148,41 @@ def refresh(mem):
     resolution record when it has a history worth closing. Newly observed
     wants append behind the existing queue.
     """
-    wanted = _wanted(mem)
-    goals = _goals(mem)
     tick = int(mem.get('tick') or 0)
+    # A want whose goal never attempts anything keeps the field busy for
+    # months while the sortie plan waits (g1190 2026-11-19 run 4: egg_recover
+    # queued at tick 47685 with attempts 0, 0 captures to 62-x -- #4618). Such
+    # a goal expires; the fact re-queues it only after a cooldown so ordinary
+    # play can serve it in the meantime.
+    expired = mem.get('goal_expired')
+    expired = expired if isinstance(expired, dict) else {}
+    expired = {key: until for key, until in expired.items()
+               if type(until) is int and until > tick}
+    if expired:
+        mem['goal_expired'] = expired
+    else:
+        mem.pop('goal_expired', None)
+    expired_any = False
+    wanted = {key: spec for key, spec in _wanted(mem).items()
+              if key not in expired}
+    goals = _goals(mem)
     kept, resolved = [], []
     for goal in goals:
-        spec = wanted.pop(_key(goal), None)
+        key = _key(goal)
+        spec = wanted.pop(key, None)
         if spec is not None:
+            queued = goal.get('queued')
+            if (not goal.get('attempts') and type(queued) is int
+                    and tick - queued >= GOAL_STALE_TICKS):
+                expired[key] = tick + GOAL_EXPIRED_COOLDOWN
+                mem['goal_expired'] = expired
+                expired_any = True
+                _record(mem, 'goal_expired', chart_step=None,
+                        observed_metric={'goal': _summary(goal),
+                                         'queued_for': tick - queued,
+                                         'cooldown': GOAL_EXPIRED_COOLDOWN},
+                        reason='試行されないまま期限を過ぎた目標を台帳から外し、通常プレイで達成できるよう一定期間再登録しない')
+                continue
             if spec.get('targets') is not None:
                 goal['targets'] = spec['targets']
             kept.append(goal)
@@ -182,7 +212,7 @@ def refresh(mem):
                     reason='目標台帳が上限のため新しい未達目標を登録できない。事実は各元データに残る')
     else:
         mem.pop('goals_overflow', None)
-    if resolved or new_items:
+    if resolved or new_items or expired_any:
         mem['goals'] = kept
 
 
