@@ -428,6 +428,7 @@ KEY_OWNERSHIP = {
     'unanchored': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 未アンカーナビ状態
     'uncertain': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 不確実ナビフラグ
     'unknown_hold_watch': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 不明画面停滞監視の自己消去型
+    'unscoped_refill_hold': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 章未確認の兵士補充エディタ保留回数(打ち切り用)
     'unverified': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 未検証ナビ状態
     'world_map_close': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 全体マップ閉鎖手順
     'world_map_due': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 全体マップ期限
