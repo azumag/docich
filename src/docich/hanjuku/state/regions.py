@@ -412,6 +412,8 @@ KEY_OWNERSHIP = {
     'select_focus_tick': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 同上のtick
     'select_tick': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # SELECT tick管理
     'select_used': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # SELECT使用済み
+    'scene_hold_forced': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 場面ホールド強制応答の自己消去型(#4632)
+    'scene_hold_watch': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 場面の読めない画面の停滞監視(#4632)
     'semantic_stall_watch': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 意味的停滞観測の自己消去型カウンタ(#4528)
     'sortie_actor_miss': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 出撃者ミス手順状態
     'sortie_confirm_blind': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 出撃確認ブラインド手順状態
@@ -436,6 +438,7 @@ KEY_OWNERSHIP = {
     'world_map_tick': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 同上tick
     'world_map_wait': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 同上待機
     'world_map_skull_hold': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 第9話ボス位置のY再観測保持
+    'yes_no_unread': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 選択位置の読めない確認画面の有限ホールド(#4632)
     'y_jump': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # Yジャンプナビ
     'y_jump_last': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # Yジャンプナビゲーション状態
     'y_jump_return': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 同上復帰
