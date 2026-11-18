@@ -229,6 +229,14 @@ def pad(button, ms=100):
     return {'type':'pad','buttons':[button],'hold_ms':ms}
 
 
+def _is_quantity_confirm(kind, text):
+    """The purchase confirmation overlays the shop quantity menu."""
+    text = text or ''
+    return (kind in ('shop_quantity', 'shop_quantity_prompt', 'month_menu')
+            and 'よろしいでっか' in text
+            and 'うむッ' in text and 'いかんッ' in text)
+
+
 def _recall_owns_dialog(kind, recall_dialog, ch9_field_recall):
     """A camp recall never takes the August vacation/bonus choice.
 
@@ -1033,6 +1041,24 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
     # visible to this observation's idle-time scheduling.
     goals.refresh(mem)
     kind=screen.kind
+    if _is_quantity_confirm(kind, screen.text):
+        # The purchase confirmation (「1こで50Gになりまんな! よろしでっか?」)
+        # overlays the quantity menu; the quantity step waits on its own
+        # overlay and never answers it (g1190 2026-11-18 63-5: the frame was
+        # static for minutes with うむッ!/いかんッ! waiting).
+        decision_log._record(mem, 'quantity_confirm_accept', screen=kind,
+                             observed_metric={'text': (screen.text or '')[:60]},
+                             reason='数量の購入確認（よろしでっか?/うむッ!）は手が うむッ! にあるためAで確定する')
+        actions = [pad('a')]
+        updated.update(screen_kind=kind, no_input_streak=0, no_input_frames=[])
+        for key in ('_adjusted', '_interim', '_card_scroll_input'):
+            mem.pop(key, None)
+        _journal(mem).pop('_departure_input', None)
+        _journal(mem).pop('_recall_inputs', None)
+        updated['_records'] = mem.pop('_records')
+        updated['_experience'] = mem.pop('_experience', None)
+        updated['policy'] = mem
+        return actions, updated
     if kind == 'summer_bonus':
         # The August vacation/bonus question owns the foreground: a stale
         # camp recall or the concert hold otherwise answers it with a hold
