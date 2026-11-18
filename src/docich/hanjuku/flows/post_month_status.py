@@ -21,6 +21,8 @@ MAX_STEPS = 900
 # docich#4653: menu-open retries per stage entry and the read interval between them.
 OPEN_RETRY_EVERY = 3
 OPEN_MENU_TRIES = 8
+# docich#4655: ups that reach the main menu's top row from any position.
+MAIN_MENU_BLIND_UPS = 6
 MAX_SCAN = receipts.MAX_GENERALS
 MENU_RETRIES = 4
 STATUS_RETRIES = 12
@@ -1470,7 +1472,26 @@ def step(screen, mem, frame):
         _stage(state, 'task_select', seeks=0)
         stage = 'task_select'
     if stage == 'open_menu':
-        if screen.kind == 'main_menu' and screen.hand:
+        if screen.kind == 'main_menu' and not screen.hand:
+            # docich#4655: the hand is a small blinking sprite and misses on
+            # some menu frames. Returning [] there let another owner open and
+            # close the same menu, so the scan reopened it forever (the live
+            # cycle was map[X] main_menu[down] main_menu[down] [B] map[X]).
+            # Walk deterministically instead: up x6 reaches the top row
+            # (ステータス) from anywhere in this menu, then one down is
+            # しょうぐん. Bounded, and only on a classified main menu.
+            blind = state.get('menu_blind')
+            blind = blind if type(blind) is int and blind >= 0 else 0
+            state['menu_blind'] = blind + 1
+            if blind < MAIN_MENU_BLIND_UPS:
+                return [pad('up')]
+            if blind == MAIN_MENU_BLIND_UPS:
+                return [pad('down')]
+            state.pop('menu_blind', None)
+            _stage(state, 'roster')
+            return [pad('a')]
+        if screen.kind == 'main_menu':
+            state.pop('menu_blind', None)
             direction = menu_to(screen, 'しょうぐん')
             if direction == 'here':
                 _stage(state, 'roster')
