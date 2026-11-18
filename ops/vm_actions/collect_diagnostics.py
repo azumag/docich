@@ -7641,6 +7641,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v1106-relay-vs-recheck",
             "hanjuku-chart-v1107-quote-decline",
             "hanjuku-chart-v1108-phase-a-escape",
+            "hanjuku-chart-v1109-recheck-backoff",
             "hanjuku-chart-v1020-recall-giveup",
             "hanjuku-chart-v1021-plan-invalid-source",
             "hanjuku-chart-v1041-egg-receipt-presence",
