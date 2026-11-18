@@ -104,7 +104,9 @@ jobs:
       - name: Install system dependencies
         # Hosted images usually already provide both binaries. Avoid a network
         # package-index refresh in that case, but keep fresh images supported.
-        # The Hanjuku suite never starts ffmpeg, and installing it can take 100 s.
+        # The Hanjuku suite never starts ffmpeg, and installing it can take 100 s
+        # on a fast mirror — over 300 s on a slow one, so the install gets a
+        # 600 s bound and the same three attempts as the index refresh.
         if: needs.test-scope.outputs.suite != 'hanjuku'
         run: |
           if ! command -v ffmpeg >/dev/null 2>&1 || ! command -v ffprobe >/dev/null 2>&1; then
@@ -128,7 +130,16 @@ jobs:
               fi
               sleep 10
             done
-            timeout 300 sudo apt-get install -y ffmpeg
+            for i in 1 2 3; do
+              if timeout 600 sudo apt-get install -y ffmpeg; then
+                break
+              fi
+              if [ "$i" = 3 ]; then
+                echo 'apt-get install failed 3 times; giving up' >&2
+                exit 1
+              fi
+              sleep 10
+            done
           fi
           ffmpeg -version >/dev/null
           ffprobe -version >/dev/null

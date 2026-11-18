@@ -223,15 +223,19 @@ def test_every_apt_call_is_bounded_and_the_index_refresh_is_retried():
     # (#4624). Every apt call carries a bound, and the index refresh gets
     # three bounded attempts before the step fails fast.
     assert 'timeout 120 sudo apt-get update' in step
-    assert 'timeout 300 sudo apt-get install -y ffmpeg' in step
+    assert 'timeout 600 sudo apt-get install -y ffmpeg' in step
     assert 'for i in 1 2 3' in step
+    assert 'apt-get install failed 3 times' in step
 
 
 @pytest.mark.skipif(os.name != 'posix' or not Path('/bin/bash').exists(), reason='bash required')
 def test_system_setup_propagates_package_errors(tmp_path):
     result, commands = _run_setup(tmp_path, fail='install')
-    assert result.returncode == 42
-    assert commands == ['sudo apt-get update', 'sudo apt-get install -y ffmpeg']
+    # A failing install is retried three times, then the step fails fast (#4624:
+    # a single 300 s bound killed a slow-but-working mirror in CI).
+    assert result.returncode == 1
+    assert commands == ['sudo apt-get update'] + ['sudo apt-get install -y ffmpeg'] * 3
+    assert 'apt-get install failed 3 times' in result.stderr
 
 
 @pytest.mark.skipif(os.name != 'posix' or not Path('/bin/bash').exists(), reason='bash required')
