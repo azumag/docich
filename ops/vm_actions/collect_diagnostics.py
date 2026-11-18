@@ -7635,6 +7635,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v1046-back-half-relay",
             "hanjuku-chart-v1101-level-visit-count",
             "hanjuku-chart-v1102-level-visit-count",
+            "hanjuku-chart-v1103-relay-from-picker",
             "hanjuku-chart-v1020-recall-giveup",
             "hanjuku-chart-v1021-plan-invalid-source",
             "hanjuku-chart-v1041-egg-receipt-presence",

@@ -472,6 +472,37 @@ def _visible_move_or_relay(mem, state, visible):
     return None, relay
 
 
+def relay_from_picker(mem, state):
+    """Re-aim a picker-opened recall at the relay once the origin is measured.
+
+    g1190 2026-11-18 08:45-08:56 (#4533): a back-half camp has no own roof on
+    screen, so ``_observe_recall_origin`` cannot bind its world cell and the
+    relay never starts. The whole-island picker then binds the unique army ▲
+    (``origin_source='picker'``) only after きかん was already chosen, and the
+    confirm recalled the general at a front-half castle across the cliff —
+    ten unconfirmed tries from one camp. When that measured origin turns out
+    to need the relay, close the picker and return to the camp menu so the
+    ordinary menu step can choose いどう instead.
+    """
+    if state.get('origin') is None or state.get('relay'):
+        return None
+    relay = _relay_target(mem, state)
+    if relay is None:
+        return None
+    state['relay'] = relay
+    state['move_visible'] = {'cell': list(relay['cell']), 'relay': True}
+    state['stage'] = 'menu'
+    state['steps'] = 0
+    state.pop('goal', None)
+    state.pop('destination_selected', None)
+    _record(mem, 'camp_recall_relay_from_picker',
+            observed_metric={'origin': list(state['origin']),
+                             'relay': list(relay['cell']),
+                             'camp': list(state.get('target') or ())},
+            reason='ピッカーで測った現在地が後半にあるため、崖の向こうの城ではなく中継セルへいどうする')
+    return relay
+
+
 def _visible_move_dest_step(screen, mem, frame, state):
     """Steer the field cursor onto the visible own castle, then confirm.
 
