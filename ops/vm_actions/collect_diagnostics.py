@@ -7687,6 +7687,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v1159-dead-plan-rearm",
             "hanjuku-chart-v1160-frontier-multi-fill",
             "hanjuku-chart-v1161-frontier-multi-fill",
+            "hanjuku-chart-v1162-unstartable-plan-rearm",
             "hanjuku-chart-v1020-recall-giveup",
             "hanjuku-chart-v1021-plan-invalid-source",
             "hanjuku-chart-v1041-egg-receipt-presence",

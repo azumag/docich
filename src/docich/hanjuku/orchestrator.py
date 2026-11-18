@@ -320,9 +320,19 @@ def plan_starved_rearm(mem, phase, kind):
     # 2026-11-19: the plan's only order was a 'failed' retake and months
     # 4-12..5-3 passed with zero sorties while this guard kept the plan.
     status = plan.get('orders') or {}
-    if any(status.get(o.get('step')) in (None, 'pending')
-           for o in (plan.get('chart_plan') or {}).get('orders') or ()):
-        return False
+    pending = [o for o in (plan.get('chart_plan') or {}).get('orders') or ()
+               if status.get(o.get('step')) in (None, 'pending')]
+    if pending:
+        # A pending order that can never start is dead the same way a failed
+        # one is (docich#4642 follow-up, g1190 5-12..6-5: the only order named
+        # a general the vanished source roster could not confirm, so
+        # startable refused it for six months while 'pending' kept this
+        # rearm from rebuilding). Keep the plan only if some pending order
+        # is startable in the current situation.
+        from .strategy import replan
+        situation = replan._adjust_situation(mem)
+        if any(replan.chart_adjust.startable(o, situation) is None for o in pending):
+            return False
     if not mem.get('chapter'):
         return False
     tick, last = mem.get('tick'), mem.get('chart_plan_tick')
