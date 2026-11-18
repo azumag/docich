@@ -15,8 +15,9 @@ formula "P&L"; the UI labels it 約定による純収支), exactly::
 
 It is deliberately a cash-flow view, not a completed-trade profit/loss figure: open buys
 are included too, so an open position's buy lowers the total until it is sold.  It is also
-not a mark-to-market valuation.  A fee paid in the pair's base currency is converted at that fill's price; a
-fee paid in the quote currency is subtracted directly.  A fill whose fee status is not
+not a mark-to-market valuation.  A fee paid in the pair's base currency is converted at
+that fill's price; a fee paid in the quote currency is subtracted directly.  A fill whose
+fee status is not
 ``known`` has its fee treated as zero and is counted in ``pnl.fee_unknown_fills`` (also
 stated by ``pnl.unknown_fee_treatment``).  A known fee in a third currency cannot be
 valued here: it is also treated as zero and counted in
@@ -95,7 +96,7 @@ def _fill_fee_quote(fill: views.FillRow) -> tuple[Decimal, bool, bool]:
 
 
 def _fill_pnl(fill: views.FillRow) -> tuple[Decimal, bool, bool]:
-    """(cash P&L of one fill, fee unknown, fee in another currency)."""
+    """(cash result of one fill, fee unknown, fee in another currency)."""
     notional = Decimal(fill.quote_notional)
     signed = notional if fill.side == "sell" else -notional
     fee, unknown, other = _fill_fee_quote(fill)
@@ -126,7 +127,7 @@ def live_overview(ledger, *, now: float) -> dict:
 
     ``now`` is accepted for a uniform caller signature; nothing here is time relative.
     A ledger passed as ``None`` or one whose reads fail returns ``ledger_readable: false``
-    with empty collections and zero P&L.
+    with empty collections and zero cash result.
     """
     del now  # the overview is a pure function of the ledger's recorded facts
     try:
@@ -142,7 +143,7 @@ def live_overview(ledger, *, now: float) -> dict:
             fee_other += 1 if other else 0
 
         # Closed positions, the fills that belong to them, and their own cash result
-        # (same formula as the symbol P&L).  The round-trip denominator is not every
+        # (same formula as the symbol cash result).  The round-trip denominator is not every
         # closed row: an unfilled buy that was cancelled closes a row with no fills.
         with ledger.read_cursor() as cur:
             closed_ids = [row[0] for row in

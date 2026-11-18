@@ -34,6 +34,7 @@ MAX_STATUS_BYTES = 64 * 1024
 # runner's bounded retry wait before it is considered stale.  Statuses written before
 # ``interval_ms`` existed (or with a malformed one) fall back to the legacy 60 s / 180 s.
 WORKER_CYCLE_INTERVAL_S = DEFAULT_INTERVAL_MS / 1000.0
+WORKER_STALE_AFTER_S = 180                   # legacy statuses without interval_ms
 # A status written by these phases describes a worker that is still on its way to its
 # terminal state.  ``inert`` and ``exited`` are terminal even when freshly written.
 WORKER_ACTIVE_PHASES = frozenset({"starting", "running", "stopping"})

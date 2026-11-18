@@ -98,7 +98,7 @@ def _interval_ms(interval_s) -> int | None:
         if not math.isfinite(value):
             return None
         return int(math.ceil(value * 1000.0))
-    except (OverflowError, TypeError, ValueError):
+    except Exception:
         return None
 
 

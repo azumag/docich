@@ -169,7 +169,9 @@ class TestLiveSnapshot(unittest.TestCase):
         self.assertFalse(live_snapshot(self.ws.state, now=NOW)["worker_alive"])
         # A malformed phase shape is not an active phase and must not raise.
         write_status(self.ws.state, {"phase": ["running"]}, now=NOW)
-        self.assertFalse(live_snapshot(self.ws.state, now=NOW)["worker_alive"])
+        malformed = live_snapshot(self.ws.state, now=NOW)
+        self.assertEqual(malformed["status"]["phase"], ["running"])
+        self.assertFalse(malformed["worker_alive"])
 
     def test_worker_alive_allows_the_bounded_retry_wait_for_a_running_worker(self):
         self.ws.write_control(state="off", mode="shadow", updated_by="owner", now=NOW)

@@ -263,8 +263,8 @@ input:checked+.slider:before{transform:translateX(20px)}
 <div class="card kpi"><h3>ラウンドトリップ</h3><div class="val" id="live-pnl-round-trips">-</div><div class="subk" id="live-pnl-wins">-</div></div>
 <div class="card kpi"><h3>勝率</h3><div class="val" id="live-pnl-win-rate">-</div><div class="subk" id="live-pnl-fee-unknown">-</div></div>
 </div>
-<p class="help">合計は記録済み fill の (売却代金 - 購入代金 - 既知の手数料) による純収支 (JPY) です。未決済の買いも含み、売るまで合計を押し下げます。確定損益や含み損益の評価ではありません。手数料不明の fill は 0 円として数えます。ラウンドトリップと勝率は、買いと売りが両方成立して完了したポジションだけを数えます (約定なしで取り消した買いや買いだけのポジションは含めません)。</p>
-<div class="table-wrap"><table><thead><tr><th>symbol</th><th>約定による純収支 (JPY)</th></tr></thead><tbody id="live-pnl-symbols"></tbody></table></div>
+<p class="help">約定による純収支（JPY）は、記録済み fill の (売却代金 - 購入代金 - 既知の手数料) による合計です。未決済の買いも含み、売るまで合計を押し下げます。確定損益や含み損益の評価ではありません。手数料不明の fill は 0 円として数えます。ラウンドトリップと勝率は、買いと売りが両方成立して完了したポジションだけを数えます (約定なしで取り消した買いや買いだけのポジションは含めません)。</p>
+<div class="table-wrap"><table><thead><tr><th>symbol</th><th>約定による純収支（JPY）</th></tr></thead><tbody id="live-pnl-symbols"></tbody></table></div>
 </div>
 <div class="card"><h3>オープンポジション</h3>
 <div class="table-wrap"><table><thead><tr><th>symbol</th><th>net base</th><th>平均取得単価</th><th>cost (JPY)</th><th>entry policy</th><th>opened</th></tr></thead><tbody id="live-positions"></tbody></table></div>
