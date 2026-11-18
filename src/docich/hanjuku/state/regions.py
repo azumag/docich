@@ -406,6 +406,7 @@ KEY_OWNERSHIP = {
     'select_focus_tick': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 同上のtick
     'select_tick': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # SELECT tick管理
     'select_used': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # SELECT使用済み
+    'semantic_stall_watch': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 意味的停滞観測の自己消去型カウンタ(#4528)
     'sortie_actor_miss': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 出撃者ミス手順状態
     'sortie_confirm_blind': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 出撃確認ブラインド手順状態
     'sortie_confirm_miss': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 出撃確認ミス

@@ -1296,6 +1296,16 @@ def classify_text(s: Screen) -> str:
         # おくのてが見える。おくのてだけの救済メニューや敵将軍の左箱 (x40) と
         # 誤認しないよう、両行が自軍の箱位置 x176 のときだけ認める (v362)。
         return 'egg_battle_menu'
+    if s.mixed_item_box and s.egg_rows:
+        # g1190 2026-11-18 04:55-07:25: a castle-defence summon battle shows the
+        # egg-battle box (もうこうげき / たまごをつかう / grey きりふだ) over the
+        # live monster panel. The pixel read sets mixed_item_box, which used to
+        # fall through to battle_menu here -- before the egg rules below could
+        # run -- so a generic A hit the grey row for 2.5 h. The stacked ally and
+        # enemy HP rows (egg_rows) prove a summon turn, not a kit-read box with
+        # no monster (the #4456 defense box keeps its battle_menu owner). Route
+        # it to the egg battle owner, which already nudges an unread cursor up.
+        return 'egg_battle_menu'
     if _human_commands(s) or s.hidden_battle_commands or s.disabled_item_box or s.mixed_item_box:
         return 'battle_menu'
     if _partial_human_commands(s):
