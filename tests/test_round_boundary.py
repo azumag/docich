@@ -227,45 +227,86 @@ def test_boundary_timeout_override_extends_request_deadline():
     override, only the boundary wait is extended (canonical deadline_at
     included); a boundary ack arriving after the request deadline still
     commits the switch.
+
+    docich#4485: the previous 0.6s request / 3s override / ``sleep(0.8)``
+    version measured the deadline from *before* the worker thread started
+    and gave the post-ack steps only the sub-second budget left when the
+    wait began.  On a loaded runner the thread-per-adapter-call fixture
+    consumed that budget before ``readiness`` and the switch returned
+    ``rolled_back`` (receipt error_code ``timeout`` / ``quiesce_failed``).
+    The production deadline restore is intentional; this test just needs
+    a request budget that survives scheduling jitter and an ack gate tied
+    to the *actual* request deadline instead of a fixed wall-clock sleep.
     """
+    import datetime as _dt
+
     with tempfile.TemporaryDirectory() as tmp:
         state_dir = Path(tmp) / "run"
-        factory = BoundaryFactory(boundary_timeout_s=3.0)
+        request_timeout_s = 2.0
+        boundary_override_s = 5.0
+        factory = BoundaryFactory(boundary_timeout_s=boundary_override_s)
         store, coordinator = _coordinator(factory, state_dir)
         _assert_started(coordinator)
         old = factory.adapters[("nethack", 1)]
         request_id = str(uuid.uuid4())
         result_box = []
+        switch_started: list[float] = []
 
-        worker = threading.Thread(
-            target=lambda: result_box.append(
-                coordinator.switch("robots", request_id=request_id, timeout_s=0.6)
+        def run_switch() -> None:
+            # ``_execute`` derives its monotonic deadline when the switch is
+            # actually entered, so record that instant here.  The ack gate
+            # below is then relative to the real request deadline, not to
+            # worker-thread startup scheduling.
+            switch_started.append(time.monotonic())
+            result_box.append(
+                coordinator.switch(
+                    "robots", request_id=request_id, timeout_s=request_timeout_s
+                )
             )
-        )
-        started = time.monotonic()
+
+        worker = threading.Thread(target=run_switch)
         worker.start()
         _wait_for_phase(store, "draining")
-        assert old.boundary_entered.wait(1.0)
-        # The canonical deadline was extended beyond the 0.6s request: the
-        # waiter would otherwise already have been cancelled.
-        import datetime as _dt
+        assert old.boundary_entered.wait(2.0)
+        assert switch_started, "switch worker did not enter"
 
+        # The canonical deadline was extended beyond the request deadline:
+        # the waiter would otherwise already have been cancelled.
         state, _ = store.canonical.load()
         extended = _dt.datetime.fromisoformat(
             state["deadline_at"].replace("Z", "+00:00")
         )
         request_deadline = _dt.datetime.fromtimestamp(
-            started + 0.6, tz=_dt.timezone.utc
+            switch_started[0] + request_timeout_s, tz=_dt.timezone.utc
         )
-        assert extended > request_deadline + _dt.timedelta(seconds=1.0)
+        assert extended > request_deadline + _dt.timedelta(seconds=0.5), (
+            state["deadline_at"],
+            request_deadline.isoformat(),
+        )
 
-        # Ack arrives after the original request deadline: still commits.
-        time.sleep(0.8)
+        # Synchronization condition this contract needs: release the ack
+        # only after the *actual* request deadline has elapsed.  Without
+        # the override the boundary wait would already have timed out; with
+        # it the late ack must still commit.  A deadline-derived wait (with
+        # a small margin) replaces the old fixed sleep so a slow runner
+        # cannot move the ack to the wrong side of the deadline.
+        ack_wait_s = (
+            switch_started[0] + request_timeout_s + 0.1 - time.monotonic()
+        )
+        assert ack_wait_s < boundary_override_s, (
+            "scheduler stall pushed the ack past the override window",
+            ack_wait_s,
+        )
+        time.sleep(max(ack_wait_s, 0.0))
         old.boundary_release.set()
         worker.join(5.0)
         assert not worker.is_alive()
-        assert result_box[0].status == "succeeded"
-        assert time.monotonic() - started > 0.6
+        assert result_box[0].status == "succeeded", (
+            result_box[0].error_code,
+            result_box[0].detail,
+            store.receipts.load(request_id),
+        )
+        assert time.monotonic() - switch_started[0] > request_timeout_s
 
 
 def test_boundary_timeout_override_respects_explicit_hard_cap():
