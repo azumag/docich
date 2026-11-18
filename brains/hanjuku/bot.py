@@ -45,6 +45,11 @@ CHART_DECISIONS=frozenset({
     'chart_edition_pinned',
 })
 
+# docich#4547 (3): sortie_* march outcomes vanish from the decisions log when
+# its tail rotates (4 MiB); mirror every sortie record into the events log so
+# the reinforcement/march audit survives.
+SORTIE_EVENT_PREFIX='sortie_'
+
 # Only records that explain this observation's planned input/hold may override
 # the active battle. Observation, migration and result records are not actions.
 INPUT_CONTEXT_DECISIONS=frozenset({
@@ -244,6 +249,14 @@ def persist(runtime: Path, state: dict, records: list, obs_meta: dict, *, action
             append_log(runtime,'hanjuku_chart_decisions',
                        chart_decision_summary(record,now=now,identity=identity,
                                               decision_id=decision_id))
+        if str(record.get('decision') or '').startswith(SORTIE_EVENT_PREFIX):
+            append_log(runtime,'hanjuku_events',{
+                'schema':1,'event':'sortie_decision','at':now,
+                'decision_id':decision_id,**identity,
+                **{k: record.get(k) for k in
+                   ('decision','chart_step','general','source','target',
+                    'purpose','outcome','reason','resulting_event','resulting_stage')
+                   if record.get(k) is not None}})
     # The fresh command process hot-loads the producer/worker launcher. No
     # fixed template candidates are emitted, including as an AI fallback.
     try:

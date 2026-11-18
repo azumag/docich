@@ -563,6 +563,70 @@ def test_the_recall_picker_holds_proportionally_to_the_distance():
     assert _picker_hold_frames(120) == 56
 
 
+def _thin_hub_mem(hub_defenders=1):
+    """Hub retaken but thinly held: front castles staffed, home stacked far away."""
+    from docich.hanjuku.state.regions import world as _world
+    mem = {'chapter': 11, 'month': '85-7', 'tick': 100,
+           'captured': ['タタール', 'マランマ', 'タプロベイン'],
+           'lost': ['ネペンテ', 'ジャンセニア'],
+           'egg_types': {}, 'egg_uses': {}, 'house_eggs': {}}
+    # No hero in the fixture: his own once-a-month hub move would take the
+    # promoted slot and mask the gather-ordering behaviour under test.
+    _world(mem)['garrison'] = {
+        'アルマムーン': ['アテナ', 'レモン', 'ピオーネ', 'バゲット', 'バター', 'ミュスカデ2'],
+        'マランマ': ['ヘスティア', 'カイン'],
+        'タプロベイン': ['ヘパイストス', 'ミュスカデ'],
+        'タタール': ['ゼウス', 'ヘラ', 'ココット'][:hub_defenders]}
+    return mem
+
+
+def test_the_thin_hub_pulls_reinforcement_from_the_nearest_castle_first():
+    """#4547 (1): the distant home stack goes first today and arrives too late.
+
+    With the hub at one defender the gather must rank by march distance, so
+    タプロベイン (the front castle nearest タタール) sends before アルマムーン,
+    whose six-general stack sits twice as far.
+    """
+    from docich.hanjuku.strategy.replan import interim_candidates
+    orders = [o for o in interim_candidates(_thin_hub_mem()).values() if isinstance(o, dict)]
+    hub_moves = [o for o in orders if o.get('purpose') == 'move' and o.get('target') == 'タタール']
+    assert hub_moves, orders
+    assert hub_moves[0].get('source') == 'タプロベイン', hub_moves[:3]
+
+
+def test_the_thin_hub_promotes_reinforcement_over_the_front_attacks():
+    """#4547 (2) / #4495 (2): garrison 1-2 → one reinforcement leads the plan.
+
+    Without the promotion the first candidate is a retake of ネペンテ or
+    ジャンセニア and the hub falls again before its move runs.
+    """
+    from docich.hanjuku.strategy.replan import interim_candidates
+    orders = [o for o in interim_candidates(_thin_hub_mem()).values() if isinstance(o, dict)]
+    first = orders[0]
+    assert first.get('purpose') == 'move', first
+    assert first.get('target') == 'タタール', first
+    assert first.get('hub_first') is True, first
+
+
+def test_the_thin_hub_promotes_only_once_a_month():
+    """#4547 (2): 月次で1回 — the month's promotion is spent by issuance."""
+    from docich.hanjuku.strategy import replan
+    mem = _thin_hub_mem()
+    replan._note_hub_reinforce(mem)
+    orders = [o for o in replan.interim_candidates(mem).values() if isinstance(o, dict)]
+    assert not any(o.get('hub_first') is True for o in orders)
+
+
+def test_a_staffed_hub_keeps_the_deepest_stack_gather():
+    """The distance ordering applies only while the hub is undermanned."""
+    from docich.hanjuku.strategy.replan import interim_candidates
+    orders = [o for o in interim_candidates(_thin_hub_mem(hub_defenders=3)).values()
+              if isinstance(o, dict)]
+    hub_moves = [o for o in orders if o.get('purpose') == 'move' and o.get('target') == 'タタール']
+    assert hub_moves and hub_moves[0].get('source') == 'アルマムーン', hub_moves[:3]
+    assert not any(o.get('hub_first') is True for o in orders)
+
+
 def test_a_stored_plan_with_a_lost_source_is_dropped_at_dispatch():
     """g1190 2026-11-18 05:1x: the plan kept タタール→クラボニア after タタール fell.
 
