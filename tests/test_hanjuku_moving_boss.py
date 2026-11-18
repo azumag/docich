@@ -116,9 +116,22 @@ def test_the_boss_order_is_locked_without_a_measured_cell():
     mem = {'chapter': 9, 'tick': 10}
     assert orders._boss_target_unlocked(boss_order(), mem) is False
     chart.set_boss_cell(9, (500, 600))
-    assert orders._boss_target_unlocked(boss_order(), mem) is True
+    assert orders._boss_target_unlocked(boss_order(), mem) is False
     chart.set_boss_cell(9, None)
     assert orders._boss_target_unlocked(boss_order(), mem) is False
+
+
+def test_the_boss_order_unlocks_only_near_an_owned_castle():
+    # イソ (504,640) sits 44 from (500,600); ドンドン (360,384) is 356 away.
+    mem = {'chapter': 9, 'tick': 10}
+    chart.set_boss_cell(9, (500, 600))
+    try:
+        mem['captured'] = ['ドンドン']
+        assert orders._boss_target_unlocked(boss_order(), mem) is False
+        mem['captured'] = ['イソ']
+        assert orders._boss_target_unlocked(boss_order(), mem) is True
+    finally:
+        chart.set_boss_cell(9, None)
 
 
 def test_two_equal_y_view_readings_record_the_cell():
