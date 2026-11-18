@@ -34,6 +34,12 @@ from .version import BOT_VERSION
 # screen-stall terminal (hanjuku_run.STALL_SECONDS) that ends the run while
 # nothing is being pressed.
 NO_INPUT_HOLD_MAX = 100
+# docich#4650: the shop's closing confirmation is a two-row yes/no the shop
+# flow itself answers with A (its measured default row). When that screen is
+# observed outside the shop owner, the no-input backstop waited
+# NO_INPUT_HOLD_MAX first -- 150 s in production -- for a key that has no
+# alternative. Answer it after a short settle; guarded screens keep the hold.
+SHOP_EXIT_HOLD_MAX = 4
 # A battle command menu owns the screen: it is a decision point, not a scene.
 # The g1190 chapter-9 attacks froze on one for 101 observations (minutes) before
 # the generic fallback pressed one key. Bound the battle menu's no-input wait
@@ -196,6 +202,26 @@ def event_text_advance(mem, phase, kind, key, actions, guarded=False):
 # to a pending unconfirmed choice.
 SCENE_UNKNOWN_ADVANCE = 6
 SCENE_UNKNOWN_ADVANCE_MAX = 3
+
+
+def shop_exit_unowned_input(kind, streak, *, guarded=False, army_owned=False,
+                            map_registration_hold=False,
+                            orphan_battle_menu=False):
+    '''docich#4650: the key an unowned shop closing confirmation should get.
+
+    Returns ''a'' past a short settle and None otherwise. The shop flow answers
+    this confirmation with A whenever it owns the screen; the no-input backstop
+    is the only thing that reaches it otherwise, and it waited
+    NO_INPUT_HOLD_MAX observations (~150 s at the production 1.5 s cadence) for
+    a key with no alternative. Every guarded scene (duel/trade/beauty hold, a
+    running march or battle, the army-count ownership, a map registration hold
+    and an orphaned battle menu) stays fail-closed.
+    '''
+    if kind != 'shop_exit_confirm' or streak <= SHOP_EXIT_HOLD_MAX:
+        return None
+    if guarded or army_owned or map_registration_hold or orphan_battle_menu:
+        return None
+    return 'a'
 
 
 def scene_hold_advance(mem, phase, kind, digest, actions, guarded, *,
@@ -2088,6 +2114,19 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
                                  'gold': (screen.header or {}).get('gold')},
                 reason='強制解雇画面に残った兵数確認・補充の所有を、残高非負または停滞超過で開放し退出可能にする')
         army_owned = False
+    if not actions:
+        hint = shop_exit_unowned_input(
+            kind, streak,
+            guarded=(trade_guard_hold or bijin_guard_hold or bounded_wait
+                     or event_guarded),
+            army_owned=army_owned,
+            map_registration_hold=bool(mem.get('_map_registration_hold')),
+            orphan_battle_menu=isinstance(mem.get('orphan_battle_menu'), dict))
+        if hint:
+            decision_log._record(mem, 'shop_exit_unowned_confirm', screen=kind,
+                phase=phase, observed_metric={'streak': streak},
+                reason='商店の退出確認を所有者なしで検出したため、既定のAで閉じて再観測する')
+            actions = [pad(hint)]
     if (not actions and streak>hold_max and not trade_guard_hold and not bijin_guard_hold
             and not (kind == 'gift_request' and mem.get('bijin_gift_hold') is True)
             and not (sortie_cancel_hold or (kind == 'sortie_confirm'

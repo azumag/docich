@@ -7692,6 +7692,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v1163-resolved-source-gate",
             "hanjuku-chart-v1164-integration",
             "hanjuku-chart-v1165-yesno-accept-settle",
+            "hanjuku-chart-v1166-shop-exit-unowned",
             "hanjuku-chart-v1158-progress-regress",
             "hanjuku-chart-v1161-refill-collapse",
             "hanjuku-chart-v1160-chapter-probe-field",
