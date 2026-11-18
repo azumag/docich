@@ -228,6 +228,27 @@ def pad(button, ms=100):
     return {'type':'pad','buttons':[button],'hold_ms':ms}
 
 
+def concert_b_instruction_step(phase, kind, screen, mem, digest):
+    """Let a screen that names its own exit key close with B.
+
+    g1190 2026-11-18 62-10: the music picker 「00〜37の きょくばんを しじして
+    ください。Bボタンで しゅうりょうできます」 sat while the concert picker
+    escape had already spent its B budget on an earlier concert sub-screen and
+    forced A forever (screen_stalled). An explicit 「Bボタンで しゅうりょう」
+    overrides that budget.
+    """
+    text = screen.text or ''
+    if phase != 'concert' or 'Bボタンで' not in text or 'しゅうりょう' not in text:
+        return None
+    watch = mem.get('concert_picker_watch') or {}
+    if not (isinstance(watch, dict) and watch.get('instruction_seen')):
+        decision_log._record(mem, 'concert_picker_b_instruction', screen=kind, phase=phase,
+                             observed_metric={'frame_sha256': digest},
+                             reason='画面がBボタンで終了と明示しているため、B上限に達していてもBで閉じる')
+    mem['concert_picker_watch'] = {'b_count': 0, 'exhausted': False, 'instruction_seen': True}
+    return [pad('b')]
+
+
 def _battle_draw_scope(mem):
     """Identity of the live battle whose panel/menu transition is unreadable."""
     cur = mem.get('battle') or {}
@@ -1483,7 +1504,10 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
     # with A until the phase actually changes; never re-arm on a new digest.
     digest=frame.digest()
     picker_watch=mem.get('concert_picker_watch') or {}
-    if phase!='concert':
+    instruction = concert_b_instruction_step(phase, kind, screen, mem, digest)
+    if instruction is not None:
+        actions = instruction
+    elif phase!='concert':
         mem.pop('concert_picker_watch',None)
     else:
         b_count=int(picker_watch.get('b_count') or 0)
