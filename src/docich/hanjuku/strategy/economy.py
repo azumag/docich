@@ -1349,11 +1349,29 @@ def _no_empty_egg_to_recover(mem):
     return bool(targets) and all(type(uses.get(name)) is int and uses[name] >= 1 for name in targets)
 
 
+def _severe_recruit_shortage(mem):
+    """At most half the roster target remains on the measured (lower) count."""
+    shortage = _recruit_shortage(mem)
+    if not isinstance(shortage, dict):
+        return False
+    count, target = shortage.get('count_lower_bound'), shortage.get('target')
+    return (type(count) is int and type(target) is int and target > 0
+            and count * 2 <= target)
+
+
 def _recruit_egg_ready(mem, shop):
-    """The menu and each unpaid dialogue share the same recovery permission."""
+    """The menu and each unpaid dialogue share the same recovery permission.
+
+    A collapsed army outranks the egg question: the priority flag is set by
+    ``_prioritise_recruit``, which returns early while a month is already
+    deferred_egg, so after mass casualties the roster never regrew (g1190
+    2026-11-18 64-10: three generals, 9999G, recruit deferred_egg every
+    month). A measured count at or below half the target releases that gate.
+    """
     if shop.get('egg') in ('done', 'not_needed'):
         return True
-    return (shop.get('egg') == 'skipped' and bool(shop.get('recruit_priority'))
+    return (shop.get('egg') == 'skipped'
+            and (bool(shop.get('recruit_priority')) or _severe_recruit_shortage(mem))
             and _no_empty_egg_to_recover(mem)
             and not set(_egg_recovery_targets(mem)).intersection(mem.get('egg_recheck') or []))
 
