@@ -244,6 +244,48 @@ def _interim_source(mem, target, chart_order, owned, busy, allow_sole=False):
     return None
 
 
+def _hub_reinforce_pending(mem):
+    """A promoted hub reinforcement is already queued or marching.
+
+    Mirrors ``_hero_hub_move_pending``: the stored plan (or the live interim
+    order) still carries an order flagged ``hub_first`` whose step has not
+    reached a terminal status. A launched or failed step frees the month's
+    promotion for the next thin-hub plan.
+    """
+    status = _plan_region(mem).get('orders') or {}
+    for order in (_plan_region(mem).get('chart_plan') or {}).get('orders') or ():
+        if (isinstance(order, dict) and order.get('hub_first') is True
+                and status.get(order.get('step')) not in ('launched', 'failed')):
+            return True
+    interim = (mem.get('chart_adjust') or {}).get('interim_order')
+    return isinstance(interim, dict) and interim.get('hub_first') is True
+
+
+def _note_hub_reinforce(mem):
+    """The month's promoted hub reinforcement is now planned (docich#4547).
+
+    Only the issuance paths (an adopted/interim order, or a stored row that
+    regained the flag) mark this; ``interim_candidates`` is also evaluated
+    just to test whether any candidate exists, and that read must not spend
+    the month's promotion before a real plan can carry it.
+    """
+    book = mem.get('hub_reinforce_eval')
+    if not isinstance(book, dict):
+        book = mem['hub_reinforce_eval'] = {}
+    if book.get('month') != mem.get('month'):
+        book.clear()
+        book.update({'month': mem.get('month'), 'planned': False})
+    book['planned'] = True
+
+
+def _hub_reinforce_available(mem):
+    """True while this month's promoted reinforcement has not been spent."""
+    book = mem.get('hub_reinforce_eval')
+    return (not isinstance(book, dict)
+            or book.get('month') != mem.get('month')
+            or not book.get('planned'))
+
+
 MOVE_ANY_GENERAL = chart_adjust.PROBE_GENERAL   # move from an unread list: the spare is picked there
 # Extra sorties to the first target when spares allow. A castle with several
 # defenders needs more than four (g1163 2026-11-10 08:00-10:00: しまばら kept
@@ -253,6 +295,7 @@ GATEWAY_HUB_GUARD = 3        # the shared hub keeps two defenders while it sends
 STAGE_LOST_HUB_PER_PLAN = 4  # spares moved forward while the hub is the enemy's
 HUB_GATHER_PER_PLAN = 2      # spare generals moved into a chapter's hub per plan
 HUB_GATHER_ALL_PER_PLAN = 8  # owner 2026-11-18: gather the whole army at the hub
+HUB_REINFORCE_MAX = 2        # a hub holding this few is undermanned (#4495/#4547)
 ATTACK_MIN_HP_RATIO = 0.20   # measured HP/max below this is a wasted attack sortie
 ATTACK_MIN_HP_ABS = 20       # docich#4668: floor when max HP is unread
 # Owner 2026-11-05: the boss dies to volume, not strength. Half-ripe eggs are
@@ -808,6 +851,9 @@ def _note_hero_hub_move(mem):
         book.clear()
         book.update({'month': mem.get('month'), 'planned': False, 'skipped': []})
     book['planned'] = True
+    # The hero's hub move is itself the month's reinforcement: it also spends
+    # the promoted-gather slot so a thin hub never gets both (docich#4547).
+    _note_hub_reinforce(mem)
 
 
 def _hero_hub_move(mem, owned, garrison, busy, gate, home):
@@ -1342,11 +1388,22 @@ def interim_candidates(mem, allow_sole=False) -> dict:
             spares = [g for g in _spares(free) if g != NAME]
             if spares:
                 gather.append((source, spares))
-        # The deepest stack goes first (g1190 2026-11-17 20:1x: 18 generals sat
-        # at the home castle while the hub held one, and the back-half waves
-        # could only start at the hub). Two moves per plan keep the month's
-        # sortie slots available for the attacks themselves.
-        gather.sort(key=lambda item: (-len(item[1]), _distance(chapter, item[0], hub), item[0]))
+        # docich#4547 (1): right after the retake the hub holds a guard or
+        # two — the far home stack arrives after the next enemy attack, so
+        # the nearest front castles send their spares first (chapter 11 lost
+        # タタール again and again before the home march arrived).
+        hub_roster = garrison.get(gate['hub'])
+        undermanned = (not stage_lost_hub
+                       and isinstance(hub_roster, (list, tuple))
+                       and 0 < len(set(hub_roster)) <= HUB_REINFORCE_MAX)
+        if undermanned:
+            gather.sort(key=lambda item: (_distance(chapter, item[0], hub), item[0]))
+        else:
+            # The deepest stack goes first (g1190 2026-11-17 20:1x: 18 generals sat
+            # at the home castle while the hub held one, and the back-half waves
+            # could only start at the hub). Two moves per plan keep the month's
+            # sortie slots available for the attacks themselves.
+            gather.sort(key=lambda item: (-len(item[1]), _distance(chapter, item[0], hub), item[0]))
         # While the hub is lost the army sits at home (19 generals on
         # 2026-11-18) and every retake marches the island; stage more per plan
         # so the front castle can start sending its own sorties sooner. One
@@ -1357,10 +1414,19 @@ def interim_candidates(mem, allow_sole=False) -> dict:
         # どうし stayed home and only gathers started — the move now waits on
         # the latest complete rosters, fires once a month, and records every
         # hold (``hero_hub_move_skipped``).
+        hero_move = None
         if not stage_lost_hub:
             hero_move = _hero_hub_move(mem, owned, garrison, busy, gate, home)
             if hero_move is not None:
                 moves.insert(0, hero_move)
+        # docich#4547 (2): while the hub is undermanned, one reinforcement
+        # move a month is promoted ahead of the front attacks — but only
+        # issuance marks the month spent (``_note_hub_reinforce``), never a
+        # candidates-only evaluation. The hero's own once-a-month hub move is
+        # itself the month's reinforcement, so it does not double up.
+        promoted = (undermanned and hero_move is None
+                    and _hub_reinforce_available(mem)
+                    and not _hub_reinforce_pending(mem))
         # Owner 2026-11-18 02:4x: once the hub is ours, gather the WHOLE army
         # there (recruiting at the hub as well), instead of two spares a plan.
         if stage_lost_hub:
@@ -1368,15 +1434,19 @@ def interim_candidates(mem, allow_sole=False) -> dict:
         else:
             stage_limit, per_source = HUB_GATHER_ALL_PER_PLAN, HUB_GATHER_ALL_PER_PLAN
         staged = 0
+        marked = False
         for source, spares in gather:
             for general in spares[:per_source]:
                 if staged >= stage_limit:
                     break
+                hub_first = promoted and not marked
                 moves.append({'general': general, 'target': hub, 'cards': [], 'source': source,
                               'after': None, 'purpose': 'move',
                               **({'stage_first': True} if stage_lost_hub else {}),
+                              **({'hub_first': True} if hub_first else {}),
                               'note': f"暫定: 後半へ備えて{_general_label(general)}を{source}から"
                                       f"中央の{hub}へ集める"})
+                marked = marked or hub_first
                 staged += 1
             if staged >= stage_limit:
                 break
@@ -1531,11 +1601,15 @@ def interim_candidates(mem, allow_sole=False) -> dict:
     # month's wave starts from a castle near the hub instead of the home
     # castle (g1190 2026-11-18, #4495).
     stage_first = [o for o in moves if o.get('stage_first')]
+    # docich#4547 (2): a hub holding only a guard gets one promoted
+    # reinforcement a month, ahead of the front attacks (the two promotion
+    # kinds are exclusive: hub_first requires the hub to be ours).
+    promoted = stage_first or [o for o in moves if o.get('hub_first')]
     # A stalled retake no longer gates the boss, so the boss wave leads: the
     # failing retake would otherwise take the front slot every cycle.
-    if stage_first and not retakes_stalled:
-        front = stage_first[:1]
-        tail = [o for o in lead if o is not stage_first[0]]
+    if promoted and not retakes_stalled:
+        front = promoted[:1]
+        tail = [o for o in lead if o is not promoted[0]]
     elif retakes_stalled:
         front, tail = [], lead
     else:
@@ -1715,6 +1789,8 @@ def _mechanical_interim(mem, state, rid, digest, allow_sole=False):
     state['interim_order'] = {**order, 'step': step}
     if order.get('hero_hub_move') is True:
         _note_hero_hub_move(mem)
+    if order.get('hub_first') is True:
+        _note_hub_reinforce(mem)
     _record(mem, 'chart_interim_order', chart_step=step, strategy_variant='chart_interim_mechanical',
             request_id=rid, choice=label, confidence=None, general=order['general'],
             source=order['source'], target=order['target'], purpose=order.get('purpose'),
@@ -1929,6 +2005,9 @@ def _mechanical_chart(mem, state, rid, digest):
             # rejects the move as hero_not_dispatchable (g1190 2026-11-18:
             # the hero stayed at home while the plan named only attacks).
             **({'hero_hub_move': True} if order.get('hero_hub_move') is True else {}),
+            # The promoted hub reinforcement keeps its flag so a later replan
+            # does not mint a second promoted move while this one is queued.
+            **({'hub_first': True} if order.get('hub_first') is True else {}),
         })
     _suppress_recent_failures(mem, orders)
     # Failed steps the plan still offers are retried after their bounded
@@ -1948,6 +2027,8 @@ def _mechanical_chart(mem, state, rid, digest):
         _plan_region(mem)['chart_plan'] = stored
         if any(o.get('hero_hub_move') is True for o in stored.get('orders') or ()):
             _note_hero_hub_move(mem)
+        if any(o.get('hub_first') is True for o in stored.get('orders') or ()):
+            _note_hub_reinforce(mem)
         mem.setdefault('chart_plan_tick', int(mem.get('tick') or 0))
         state.pop('interim_order', None)
         return
@@ -1962,12 +2043,17 @@ def _mechanical_chart(mem, state, rid, digest):
     # Validation deliberately drops internal-only permissions. Restore the
     # trusted mechanical permission by local step, never from external plans.
     hero_steps = {o['step'] for o in orders if o.get('hero_hub_move') is True}
+    hub_first_steps = {o['step'] for o in orders if o.get('hub_first') is True}
     validated = dict(validated, request_digest=digest, orders=[
-        {**o, **({'hero_hub_move': True} if o['step'] in hero_steps else {})}
+        {**o,
+         **({'hero_hub_move': True} if o['step'] in hero_steps else {}),
+         **({'hub_first': True} if o['step'] in hub_first_steps else {})}
         for o in validated['orders']])
     _adopt_plan(mem, validated, rid)
     if hero_steps:
         _note_hero_hub_move(mem)
+    if hub_first_steps:
+        _note_hub_reinforce(mem)
 
 
 def _mechanical_step(order, used, mem=None):
