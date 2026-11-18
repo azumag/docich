@@ -186,6 +186,109 @@ def event_text_advance(mem, phase, kind, key, actions, guarded=False):
     return advance
 
 
+# docich#4632: an unreadable scripted-scene frame (kind 'unknown' in a
+# concert/event/dialogue phase) held by a foreground owner got no input until
+# NO_INPUT_HOLD_MAX, and a fade or animation restarted even that streak: the
+# g1190 throne chant sat 57 observations and the Sugiyama concert invite 107.
+# Give an unchanged scene the same bounded A unknown_hold_advance gives a
+# claimed screen; a different image still waits. Guarded purchase/trade
+# prompts keep their fail-closed contract: neither helper sends a blind key
+# to a pending unconfirmed choice.
+SCENE_UNKNOWN_ADVANCE = 6
+SCENE_UNKNOWN_ADVANCE_MAX = 3
+
+
+def scene_hold_advance(mem, phase, kind, digest, actions, guarded):
+    """Bounded A for an unreadable scripted-scene frame an owner keeps held."""
+    if (guarded or actions or kind != 'unknown'
+            or phase not in EVENT_TEXT_ADVANCE_PHASES):
+        mem.pop('scene_hold_watch', None)
+        return None
+    watch = mem.get('scene_hold_watch')
+    if not isinstance(watch, dict):
+        watch = {}
+    recent = [d for d in (watch.get('recent') or []) if isinstance(d, str)][:2]
+    same = digest in recent
+    watch['n'] = int(watch.get('n') or 0) + 1 if same else 1
+    watch['recent'] = ([digest] + [d for d in recent if d != digest])[:2]
+    if not same:
+        watch['presses'] = 0
+    mem['scene_hold_watch'] = watch
+    if watch['n'] < SCENE_UNKNOWN_ADVANCE:
+        return None
+    presses = int(watch.get('presses') or 0)
+    if presses >= SCENE_UNKNOWN_ADVANCE_MAX:
+        return None
+    watch['presses'] = presses + 1
+    watch['n'] = 0
+    decision_log._record(mem, 'scene_hold_advance', screen=kind, phase=phase,
+                         observed_metric={'press': presses + 1,
+                                          'frame_sha256': digest},
+                         reason='場面の読めない画面を所有者が入力なしに保留し続けているため、同一画像の確認のうえAを1回送って進める')
+    return [pad('a')]
+
+
+# docich#4632: a scripted concert/event scene a foreground owner keeps
+# holding past this many observations gets a forced response: the reviewed
+# phase-default A. Guarded holds (a pending unconfirmed trade/beauty choice),
+# bounded transactions (house/month_sub/recall/map registration/...) and
+# battles own their answers and are excluded; an observation that already
+# planned an input keeps the episode but does not grow the hold count.
+SCENE_HOLD_PHASES = frozenset({'concert', 'event'})
+SCENE_HOLD_FORCE_MAX = 40      # ~60 s of held scene frames -> forced response
+SCENE_HOLD_FORCE_SEQUENCES = 3 # forced responses per unchanged episode
+
+
+def scene_hold_forced_step(screen, mem, phase, kind, actions, *, guarded, blocked):
+    """Force a reviewed response on a scripted scene held too long.
+
+    ``guarded`` marks a hold that may sit on a pending unconfirmed choice
+    (trade guard / beauty guard): those never get a blind key from here and
+    do not grow the count either. ``blocked`` marks screens an active bounded
+    transaction or a battle still owns. The watch keys on the screen text
+    (kind for unreadable frames) -- not the phase or frame digest -- so the
+    reported concert/event phase flicker and a fading scene still count as
+    one episode.
+    """
+    if (phase not in SCENE_HOLD_PHASES or blocked
+            or kind not in ('text', 'unknown', 'yes_no')):
+        mem.pop('scene_hold_forced', None)
+        return None
+    prev = mem.get('scene_hold_forced')
+    if not isinstance(prev, dict):
+        prev = {}
+    key = [kind, (screen.text or '')[:24]]
+    if prev.get('key') != key:
+        prev = {}
+    watch = {'key': key,
+             'n': int(prev.get('n') or 0),
+             'sequences': int(prev.get('sequences') or 0),
+             'exhausted': bool(prev.get('exhausted'))}
+    mem['scene_hold_forced'] = watch
+    if actions or guarded:
+        return None
+    watch['n'] += 1
+    if watch['n'] < SCENE_HOLD_FORCE_MAX:
+        return None
+    if watch['sequences'] >= SCENE_HOLD_FORCE_SEQUENCES:
+        if not watch['exhausted']:
+            watch['exhausted'] = True
+            decision_log._record(mem, 'scene_hold_forced_exhausted',
+                                 screen=kind, phase=phase,
+                                 observed_metric={'sequences': watch['sequences'],
+                                                  'text': (screen.text or '')[:40]},
+                                 reason='場面の強制応答を上限まで送っても画面が変わらないため、これ以上の盲入力を止める')
+        return None
+    watch['n'] = 0
+    watch['sequences'] += 1
+    decision_log._record(mem, 'scene_hold_forced', screen=kind, phase=phase,
+                         observed_metric={'sequence': watch['sequences'],
+                                          'held_observations': SCENE_HOLD_FORCE_MAX,
+                                          'text': (screen.text or '')[:40]},
+                         reason='場面の保留が閾値を超えたため、フェーズ既定の応答をAで決定して停滞を解消する')
+    return [pad('a')]
+
+
 PHASE_A_ESCAPE_MAX = 10   # identical readable screens holding the default A
 
 
@@ -1818,6 +1921,18 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
     bounded_wait=(any(_flow(mem).get(k) for k in ('recall','sortie_attempt'))
                   or any(mem.get(k) for k in ('house','month_sub','y_jump',
                                            'resume_egg_ritual')))
+    # docich#4632: a scripted scene an owner holds with no input is nudged
+    # after a few unchanged frames, and a hold that outlives the long bound
+    # gets a forced answer. Guarded choices stay fail-closed: no blind key.
+    advance = scene_hold_advance(mem, phase, kind, digest, actions, event_guarded)
+    if advance is not None:
+        actions = advance
+    forced = scene_hold_forced_step(
+        screen, mem, phase, kind, actions, guarded=event_guarded,
+        blocked=(bounded_wait or bool(mem.get('battle'))
+                 or bool(mem.get('_map_registration_hold'))))
+    if forced is not None:
+        actions = forced
     semantic_stall_observe(mem, phase, kind, screen, guarded=bounded_wait)
     if (not actions and not bounded_wait
             and not mem.get('_map_registration_hold')):
