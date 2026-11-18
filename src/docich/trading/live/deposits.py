@@ -22,8 +22,10 @@ Every row the exchange reports is classified, never guessed:
                         (a repeat read; nothing is written).
 - ``conflict``        -- the record id exists with different content; left alone, counted.
 - ``already_counted`` -- an owner-recorded deposit of the same currency, amount and time
-                        already covers it, one owner cashflow per deposit (Issue #4617);
-                        ingesting it again would double count.
+                        already covers it, one owner cashflow per deposit (Issue #4617); the
+                        time may be either when it was found or when it was credited, so a
+                        slow transfer spanning the opening still matches; ingesting it again
+                        would double count.
 - ``recorded``        -- a new ledger cashflow with ``source='exchange_history'``.
 
 ``DepositPage.complete`` False is kept on the per-currency result and in the
@@ -162,8 +164,14 @@ def _check_currency(ex, currency: str, rows: list[views.CashflowRow]) -> Deposit
             # One owner cashflow covers one deposit (Issue #4617): the records arrive in a
             # deterministic order, so consuming the first matching cashflow replays the same
             # assignment after a restart and a second equal deposit is recorded, not absorbed.
+            # The owner may have stamped the cashflow with either the instant the exchange found
+            # the money or the instant it hit the balance.  Those can be days apart for a slow
+            # transfer that spans the opening, so accept either as the match; a credit time the
+            # exchange did not report is simply skipped (#4617 Devin review).
             match = next((i for i, row in enumerate(available)
-                          if row.amount == record.amount and abs(row.occurred_at - occurred_s) <= MATCH_WINDOW_S),
+                          if row.amount == record.amount
+                          and any(t is not None and abs(row.occurred_at - t) <= MATCH_WINDOW_S
+                                  for t in (occurred_s, credit_s))),
                          None)
             if match is not None:
                 available.pop(match)

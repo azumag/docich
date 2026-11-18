@@ -255,6 +255,33 @@ def test_a_deposit_found_before_the_opening_but_credited_after_it_is_not_baselin
         h.close()
 
 
+def test_a_slow_cross_opening_deposit_entered_at_credit_time_is_not_counted_twice(ws):
+    h = _harness(ws)
+    try:
+        # The exchange saw the money four days before the books opened but only credited it two
+        # minutes after (past the baseline margin, so it is a real deposit).  The owner, seeing
+        # the money arrive, wrote it up at the credit time.  Matching on the found time alone
+        # would be four days off and record it a second time, leaving a permanent balance warning
+        # (#4617 Devin review).
+        h.advance(120)
+        base_ms = 1_700_000_000_000
+        h.mock.external_deposit("JPY", "5000", occurred_ms=base_ms - 4 * 86400 * 1000,
+                                confirmed_ms=base_ms + 120_000, uid="slow")
+        h.deposit("JPY", "5000")                                   # owner entry at the credit time
+        checks = deposits.run(h.ex)
+        assert checks["JPY"].already_counted == 1 and checks["JPY"].recorded == 0
+        assert len(views.cashflow_rows(h.ledger)) == 2             # opening + owner, no duplicate
+        assert _check(h).proven(["JPY"])
+        h.crash()                                                   # the same match replays after a restart
+        reconcile.on_startup(h.ex)
+        checks = deposits.run(h.ex)
+        assert (checks["JPY"].already_counted, checks["JPY"].duplicate, checks["JPY"].recorded) == (1, 0, 0)
+        assert len(views.cashflow_rows(h.ledger)) == 2
+        assert _check(h).proven(["JPY"])
+    finally:
+        h.close()
+
+
 def test_a_deposit_with_no_reported_credit_time_is_not_guessed_into_the_baseline(ws):
     h = _harness(ws)
     try:
