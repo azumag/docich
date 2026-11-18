@@ -198,9 +198,15 @@ SCENE_UNKNOWN_ADVANCE = 6
 SCENE_UNKNOWN_ADVANCE_MAX = 3
 
 
-def scene_hold_advance(mem, phase, kind, digest, actions, guarded):
-    """Bounded A for an unreadable scripted-scene frame an owner keeps held."""
-    if (guarded or actions or kind != 'unknown'
+def scene_hold_advance(mem, phase, kind, digest, actions, guarded, *,
+                       blocked=False):
+    """Bounded A for an unreadable scripted-scene frame an owner keeps held.
+
+    Like scene_hold_forced_step, ``blocked`` marks screens an active bounded
+    transaction or a battle still owns: those keep their own answer budget
+    and get no blind key from here either.
+    """
+    if (guarded or blocked or actions or kind != 'unknown'
             or phase not in EVENT_TEXT_ADVANCE_PHASES):
         mem.pop('scene_hold_watch', None)
         return None
@@ -1924,13 +1930,15 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
     # docich#4632: a scripted scene an owner holds with no input is nudged
     # after a few unchanged frames, and a hold that outlives the long bound
     # gets a forced answer. Guarded choices stay fail-closed: no blind key.
-    advance = scene_hold_advance(mem, phase, kind, digest, actions, event_guarded)
+    scene_blocked = (bounded_wait or bool(mem.get('battle'))
+                     or bool(mem.get('_map_registration_hold')))
+    advance = scene_hold_advance(mem, phase, kind, digest, actions,
+                                 event_guarded, blocked=scene_blocked)
     if advance is not None:
         actions = advance
     forced = scene_hold_forced_step(
         screen, mem, phase, kind, actions, guarded=event_guarded,
-        blocked=(bounded_wait or bool(mem.get('battle'))
-                 or bool(mem.get('_map_registration_hold'))))
+        blocked=scene_blocked)
     if forced is not None:
         actions = forced
     semantic_stall_observe(mem, phase, kind, screen, guarded=bounded_wait)
