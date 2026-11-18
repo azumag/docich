@@ -774,6 +774,32 @@ def battle_menu_hold_advance(screen, mem, actions, digest):
         return None
     if (not isinstance(actions, list) or len(actions) != 1
             or not isinstance(actions[0], dict) or actions[0].get('type') != 'pad'):
+        # An empty plan on a *readable* command menu is the same no-op class:
+        # the menu waits for a confirm that nothing sends (g1190 2026-11-19
+        # 64-2: the エピィ/ラン�プキン menu held until input_stalled). Count the
+        # unchanged frame ring and send the measured default (A on もうこうげき)
+        # after the bound; an unreadable menu keeps its reviewed hold.
+        if (isinstance(actions, list) and not actions
+                and 'もうこうげき' in (screen.text or '')
+                and 'たまごをつかう' in (screen.text or '')):
+            watch = mem.get('battle_menu_hold') or {}
+            recent = [d for d in (watch.get('recent') or [])
+                      if isinstance(d, str)][:BATTLE_MENU_HOLD_RECENT]
+            same = (digest in recent) and watch.get('buttons') == []
+            watch['n'] = (int(watch.get('n') or 0) + 1) if same else 1
+            watch['recent'] = ([digest] + [d for d in recent
+                                           if d != digest])[:BATTLE_MENU_HOLD_RECENT]
+            watch['digest'] = digest
+            watch['buttons'] = []
+            mem['battle_menu_hold'] = watch
+            if watch['n'] >= BATTLE_MENU_HOLD_ADVANCE:
+                watch['n'] = 0
+                decision_log._record(mem, 'battle_menu_empty_hold_advance', screen=screen.kind,
+                                     observed_metric={'digest': digest[:16],
+                                                      'held': BATTLE_MENU_HOLD_ADVANCE},
+                                     reason='読める戦闘コマンドに計画が無いまま固定したため、実測の既定（もうこうげき）でAを1回送る')
+                return [pad('a')]
+            return None
         mem.pop('battle_menu_hold', None)
         return None
     buttons = tuple(actions[0].get('buttons') or ())
