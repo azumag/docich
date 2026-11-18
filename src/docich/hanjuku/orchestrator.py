@@ -237,6 +237,42 @@ def _is_quantity_confirm(kind, text):
             and 'うむッ' in text and 'いかんッ' in text)
 
 
+PLAN_STARVE_TICKS = 900   # observations (~15 min) of a plan that cannot rebuild
+
+
+def plan_starved_rearm(mem, phase, kind):
+    """Rebuild the field plan while battles/menus keep the map flow away.
+
+    next_order only runs on a map observation; a siege month therefore left
+    the plan at its old tick for an hour and order_start at 0 while the
+    back-half castles stayed enemy (g1190 2026-11-18 65-10..66-10 — #4584).
+    """
+    if kind in ('map', 'map_target', 'world_map') or phase in ('title', 'title_or_intro'):
+        return False
+    plan = mem.get('plan') or {}
+    if plan.get('active') or (plan.get('chart_plan') or {}).get('orders'):
+        return False
+    if not mem.get('chapter'):
+        return False
+    tick, last = mem.get('tick'), mem.get('chart_plan_tick')
+    if type(tick) is not int or type(last) is not int or tick - last < PLAN_STARVE_TICKS:
+        return False
+    live = [s for s in ((mem.get('world') or {}).get('sorties') or {}).values()
+            if isinstance(s, dict) and s.get('status') in ('en_route', 'launched_unconfirmed')]
+    if live:
+        return False   # a march still walking keeps the plan's reservation
+    from .strategy import replan
+    try:
+        replan._off_chart(mem)
+    except Exception:
+        return False
+    mem['chart_plan_tick'] = tick
+    decision_log._record(mem, 'plan_starved_rearm', screen=kind, phase=phase,
+                         observed_metric={'stale_ticks': tick - last},
+                         reason='戦闘や月次が続いてフィールド計画が止まっているため、待機中に計画を組み直す')
+    return True
+
+
 def _recall_owns_dialog(kind, recall_dialog, ch9_field_recall):
     """A camp recall never takes the August vacation/bonus choice.
 
@@ -1035,6 +1071,7 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
         screen.kind='summer_bonus'
     observe_jump_foreground(screen, mem)
     prompts_flow.observe_events(screen,mem)
+    plan_starved_rearm(mem, phase, screen.kind)
     map_flow.observe_sortie_transition(screen,mem,state.get('screen_kind'))
     # Reconcile the deferred-goal ledger with the facts this observation just
     # updated, before any owner runs: an interrupted or deferred want must be
