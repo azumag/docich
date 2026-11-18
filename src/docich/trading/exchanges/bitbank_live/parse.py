@@ -277,13 +277,33 @@ def fill_from(trade: object, symbols_by_pair: Mapping[str, str], rates_by_symbol
         executed_at_ms=ms_value(_field(trade, "executed_at", "executed_at"), "executed_at"), raw=clean_raw(trade))
 
 
+def _confirmed_at_ms(row: object) -> int | None:
+    """bitbank's ``confirmed_at`` (Issue #4617): the instant the money hit the balance.
+
+    ``0``/absent is what the exchange reports while a deposit is still in flight (and what an
+    adapter without the field looks like), so it is not a timestamp: None, and the classifier
+    cannot prove the deposit was inside the opening snapshot.  A present but malformed value is
+    refused, not guessed, like every other field.
+    """
+    if not isinstance(row, Mapping) or "confirmed_at" not in row:
+        return None
+    value = row["confirmed_at"]
+    if value is None or value == 0 or value == "0":
+        return None
+    return ms_value(value, "confirmed_at")
+
+
 def deposit_from(row: object) -> DepositRecord:
     """One ``deposit_history`` row (Issue #4587).
 
     ``uuid`` is the exchange's own stable id and becomes the deterministic record id, so a re-read
     after a restart is a no-op.  ``found_at`` is when the exchange first saw the deposit; only a
     ``DONE`` status means the money is in the balance (``FOUND``/``CONFIRMED`` are still in flight
-    and are reported but never credited).
+    and are reported but never credited).  ``confirmed_at`` is when it *credited* the balance —
+    the instant a deposit's baseline membership is judged on (Issue #4617): a deposit found before
+    the opening but credited after it is not part of the opening snapshot.  ``0``/absent means the
+    exchange has not credited it (or does not report the instant): nothing is then provable, so
+    the record carries None and the classifier keeps the money on the counted side.
     """
     asset = text_value(_field(row, "asset", "asset"), "asset")
     status = text_value(_field(row, "status", "status"), "status")
@@ -292,4 +312,5 @@ def deposit_from(row: object) -> DepositRecord:
         record_id=f"bitbank:deposit:{uid}", currency=asset.upper(),
         amount=dec_str(_field(row, "amount", "amount"), "amount", positive=True),
         status=status, credited=status == "DONE",
-        occurred_at_ms=ms_value(_field(row, "found_at", "found_at"), "found_at"), raw=clean_raw(row))
+        occurred_at_ms=ms_value(_field(row, "found_at", "found_at"), "found_at"),
+        confirmed_at_ms=_confirmed_at_ms(row), raw=clean_raw(row))

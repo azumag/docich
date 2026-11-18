@@ -9,16 +9,23 @@ is a no-op.
 
 Every row the exchange reports is classified, never guessed:
 
-- ``baseline``        -- at or just after the currency's baseline (the recorded opening
-                        balance, else the ledger's own creation): part of the opening
-                        snapshot, so counting it again would double count.
+- ``baseline``        -- credited at or just before the currency's baseline (the recorded opening
+                        balance, else the ledger's own creation): part of the opening snapshot, so
+                        counting it again would double count.  Judged on ``confirmed_at`` (the
+                        balance-credit instant, Issue #4617), never on ``found_at``: a deposit seen
+                        before the opening but credited after it is *not* in the snapshot.  Without
+                        a credit instant nothing is provable, so the deposit stays on the counted
+                        side.
 - ``pending``         -- the exchange has not credited it yet (bitbank ``FOUND`` /
                         ``CONFIRMED``): nothing is written; it may simply be balance lag.
 - ``duplicate``       -- the exact record id already exists with the same content
                         (a repeat read; nothing is written).
 - ``conflict``        -- the record id exists with different content; left alone, counted.
 - ``already_counted`` -- an owner-recorded deposit of the same currency, amount and time
-                        already covers it; ingesting it again would double count.
+                        already covers it, one owner cashflow per deposit (Issue #4617); the
+                        time may be either when it was found or when it was credited, so a
+                        slow transfer spanning the opening still matches; ingesting it again
+                        would double count.
 - ``recorded``        -- a new ledger cashflow with ``source='exchange_history'``.
 
 ``DepositPage.complete`` False is kept on the per-currency result and in the
@@ -72,10 +79,21 @@ class DepositCheck:
 
 def _baseline_s(rows: list[views.CashflowRow], ledger, currency: str) -> float:
     """The instant the books for ``currency`` started: the recorded opening balance, else
-    the ledger's own creation.  Deposits at/before it (within the skew margin) are part of
-    that snapshot."""
+    the ledger's own creation.  Deposits *credited* at/before it (within the skew margin)
+    are part of that snapshot (Issue #4617: credited, not merely seen -- ``found_at`` can
+    predate the opening by hours while the money arrives after it)."""
     opening = next((row for row in rows if row.cashflow_id == f"{OPENING_ID_PREFIX}{currency}"), None)
     return opening.occurred_at if opening is not None else views.ledger_created_at(ledger)
+
+
+def _credit_s(record: DepositRecord) -> float | None:
+    """When the exchange says the money hit the balance (Issue #4617).
+
+    ``confirmed_at_ms`` when the exchange reports it; None when it does not, so nothing about
+    the deposit's place relative to the opening snapshot is provable and it stays on the
+    counted side instead of being guessed into the baseline.
+    """
+    return None if record.confirmed_at_ms is None else ms_to_seconds(record.confirmed_at_ms)
 
 
 def _same(row: views.CashflowRow, record: DepositRecord, occurred_s: float) -> bool:
@@ -117,8 +135,12 @@ def _check_currency(ex, currency: str, rows: list[views.CashflowRow]) -> Deposit
         return DepositCheck(currency=currency, complete=False, error=type(exc).__name__)
     baseline_s = _baseline_s(rows, ex.ledger, currency)
     by_id = {row.cashflow_id: row for row in rows}
-    manual = [row for row in rows if row.kind == "deposit" and row.currency == currency
-              and row.source == "owner_manual"]
+    # Owner-recorded deposits, in a deterministic order, that one exchange deposit each may
+    # consume (Issue #4617): matching is one-to-one, so two equal deposits with one owner
+    # cashflow leave the second deposit to be recorded, not silently absorbed.
+    available = sorted((row for row in rows if row.kind == "deposit" and row.currency == currency
+                        and row.source == "owner_manual"),
+                       key=lambda row: (row.occurred_at, row.cashflow_id))
     counts = {"baseline": 0, "pending": 0, "duplicate": 0, "already_counted": 0,
               "conflict": 0, "recorded": 0}
     error = None
@@ -130,16 +152,28 @@ def _check_currency(ex, currency: str, rows: list[views.CashflowRow]) -> Deposit
                 counts["pending"] += 1
                 continue
             occurred_s = ms_to_seconds(record.occurred_at_ms)
-            if occurred_s <= baseline_s + BASELINE_MARGIN_S:
+            credit_s = _credit_s(record)
+            if credit_s is not None and credit_s <= baseline_s + BASELINE_MARGIN_S:
                 counts["baseline"] += 1
                 continue
             existing = by_id.get(record.record_id)
             if existing is not None:
                 counts["duplicate" if _same(existing, record, occurred_s) else "conflict"] += 1
                 continue
-            covered = any(row.amount == record.amount and abs(row.occurred_at - occurred_s) <= MATCH_WINDOW_S
-                          for row in manual)
-            if covered:
+            # One owner cashflow covers one deposit (Issue #4617): the records arrive in a
+            # deterministic order, so consuming the first matching cashflow replays the same
+            # assignment after a restart and a second equal deposit is recorded, not absorbed.
+            # The owner may have stamped the cashflow with either the instant the exchange found
+            # the money or the instant it hit the balance.  Those can be days apart for a slow
+            # transfer that spans the opening, so accept either as the match; a credit time the
+            # exchange did not report is simply skipped (#4617 Devin review).
+            match = next((i for i, row in enumerate(available)
+                          if row.amount == record.amount
+                          and any(t is not None and abs(row.occurred_at - t) <= MATCH_WINDOW_S
+                                  for t in (occurred_s, credit_s))),
+                         None)
+            if match is not None:
+                available.pop(match)
                 counts["already_counted"] += 1
                 continue
             try:

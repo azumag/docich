@@ -194,7 +194,11 @@ class DepositRecord:
     (``<exchange>:deposit:<exchange's own id>``), so a restart re-read is a no-op.
     ``status`` is the exchange's own word; ``credited`` is True only when the exchange
     says the money is in the balance (bitbank: ``DONE`` -- ``FOUND``/``CONFIRMED`` may
-    still be in flight and are never counted).
+    still be in flight and are never counted).  ``occurred_at_ms`` is when the exchange
+    first *saw* the deposit (bitbank ``found_at``); ``confirmed_at_ms`` is when it
+    actually credited the balance (bitbank ``confirmed_at``, None while in flight or when
+    the exchange does not report it).  Only the latter proves whether the money was
+    inside the opening snapshot, so the baseline classifier must use it.
     """
     record_id: str
     currency: str               # upper-case currency code
@@ -202,6 +206,7 @@ class DepositRecord:
     status: str
     credited: bool
     occurred_at_ms: int
+    confirmed_at_ms: int | None = None
     raw: Mapping | None = None
 
 
