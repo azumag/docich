@@ -35,15 +35,26 @@ PHASES = ("starting", "running", "inert", "stopping", "exited")
 PHASE_SET = frozenset(PHASES)
 
 # The complete set of keys that may appear in the status file.  ``schema_version`` and
-# ``written_at`` are generated here; a caller cannot override them.
+# ``written_at`` are generated here; a caller cannot override them.  The ``market_*``
+# keys are the Issue #4586 public-frame gap view: scope (none/partial/all), how many
+# symbols, since when (epoch) and for how long (seconds); durations are derived at write
+# time from the *_since epochs the cycle reports.
 ALLOWED_KEYS = frozenset({
     "schema_version", "written_at", "started_at", "pid", "phase", "cycle", "mode",
     "outcome", "reason", "blocks", "fresh_symbols", "stale_symbols",
     "consecutive_failures", "record_failures", "ttl_deferred", "ttl_failed",
     "balance_warnings", "control_state", "control_mode", "policy_set_digest", "inert_reason",
     "exit_code", "interval_ms",
+    "market_gap_scope", "market_stale_count",
+    "market_gap_since", "market_gap_seconds",
+    "market_all_stale_since", "market_all_stale_seconds", "market_all_stale_cycles",
 })
 TRUNCATED_KEYS = frozenset({"policy_set_digest"})
+GAP_SCOPES = frozenset({"none", "partial", "all"})
+NON_NEGATIVE_KEYS = frozenset({
+    "balance_warnings", "market_stale_count", "market_gap_since", "market_gap_seconds",
+    "market_all_stale_since", "market_all_stale_seconds", "market_all_stale_cycles",
+})
 ALLOWED_PHASES = PHASE_SET
 _HEX = frozenset("0123456789abcdef")
 _DROP = object()
@@ -68,9 +79,11 @@ def _clean_value(key: str, value: object) -> object:
             return value if value in ("on", "off", "unknown") else _DROP
         if key == "control_mode":
             return value if value in ("shadow", "trade") else _DROP
+        if key == "market_gap_scope":
+            return value if value in GAP_SCOPES else _DROP
         return value
     if type(value) is int:                       # bool is not an int here
-        if key == "balance_warnings" and value < 0:
+        if key in NON_NEGATIVE_KEYS and value < 0:
             return _DROP
         if key == "interval_ms" and not MIN_INTERVAL_MS <= value <= MAX_INTERVAL_MS:
             return _DROP

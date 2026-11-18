@@ -16,8 +16,10 @@ Exit codes (module constants)::
     EXIT_LEASE_HELD = 5   another worker holds the writer lease (no status is written)
     6                     unused (was: code revision changed)
     EXIT_LEASE_LOST = 7   the writer lease was lost during startup or a cycle (no status is written)
-    EXIT_RETRYABLE = 8    startup could not complete for a transient or unclassified reason;
-                          safe to restart (systemd does not restart 2, 3 or 5)
+    EXIT_RETRYABLE = 8    startup could not complete for a transient or unclassified reason,
+                          or public market data stayed unusable for EVERY symbol longer than
+                          ``CycleConfig.market_gap_exit_s`` (Issue #4586); safe to restart
+                          (systemd does not restart 2, 3 or 5)
 
 Startup order is fixed: ledger -> lease -> reader -> active policy set -> executor ->
 ``reconcile.on_startup`` -> ``opening.record_auto_opening`` -> the cycle loop.  An INERT
@@ -67,12 +69,33 @@ def _safe_now(clock, default: float = 0.0) -> float:
         return float(default)
 
 
+def _gap_seconds(fields: dict, now: float) -> None:
+    """Fill the ``*_seconds`` companions of the ``*_since`` epochs the report carried.
+
+    A status helper must never raise: a ``*_since`` value that cannot be subtracted
+    leaves the companion ``None`` instead of breaking the status write.
+    """
+    for since_key, seconds_key in (("market_gap_since", "market_gap_seconds"),
+                                   ("market_all_stale_since", "market_all_stale_seconds")):
+        if since_key not in fields:
+            continue
+        since = fields[since_key]
+        seconds: int | None = None
+        if since is not None:
+            try:
+                seconds = max(0, _as_int(now - since))
+            except Exception:
+                seconds = None
+        fields[seconds_key] = seconds
+
+
 def _status(state_dir, clock, fields: dict) -> None:
     """Write one status; a clock failure or a status failure never escapes."""
     try:
         now = float(clock())
     except Exception:
         now = 0.0
+    _gap_seconds(fields, now)
     try:
         write_status(state_dir, fields, now=now)
     except Exception:
@@ -128,6 +151,17 @@ def _fields(*, phase: str, started_at: float, interval_ms: int | None = None,
             "control_mode": report.control_mode,
             "balance_warnings": max(0, _as_int(report.balance_warnings)),
         })
+        gap = getattr(report, "market_gap", None)
+        if gap is not None:
+            fields.update({
+                "market_gap_scope": gap.scope,
+                "market_stale_count": _as_int(gap.stale_count),
+                "market_gap_since": (None if gap.gap_since is None
+                                     else _as_int(gap.gap_since)),
+                "market_all_stale_since": (None if gap.all_stale_since is None
+                                           else _as_int(gap.all_stale_since)),
+                "market_all_stale_cycles": _as_int(gap.all_stale_cycles),
+            })
         if reason is not None:
             fields["reason"] = reason
     else:
@@ -340,6 +374,14 @@ def run_worker(*, state_dir, open_reader, make_market_data, clock, stop_requeste
                     phase="exited", started_at=started_at, exit_code=EXIT_CLOCK,
                     report=report, state=state, digest=ps.digest))
                 return EXIT_CLOCK
+            if report.outcome is CycleOutcome.EXIT_MARKET_DATA:
+                # Issue #4586: the whole public book stayed unusable past the configured
+                # threshold.  The status still carries the gap fields so the exit shows
+                # the scope and duration, then the process asks for a retryable restart.
+                _status(state_dir, clock, _fields(
+                    phase="exited", started_at=started_at, exit_code=EXIT_RETRYABLE,
+                    report=report, state=state, digest=ps.digest))
+                return EXIT_RETRYABLE
 
             # CONTINUE / CYCLE_FAILED: wait in at most SLEEP_SLICE_S slices.
             wait = next_wait(float(interval_s), state.consecutive_failures)

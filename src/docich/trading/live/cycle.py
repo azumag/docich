@@ -13,8 +13,16 @@ runs (so the eventual implementation can plan/send through it), the cycle state 
 per-cycle context.
 
 There are no exits here: ``run_cycle`` returns a ``CycleOutcome``; the runner maps
-outcomes to exit codes (auth -> 3, clock -> 4, lease lost -> 7) in a later task.  Nothing
-in this module ends the process, imports an exchange adapter, or reaches the network.
+outcomes to exit codes (auth -> 3, clock -> 4, lease lost -> 7, a sustained all-symbol
+public-frame gap -> 8).  Nothing in this module ends the process, imports an exchange
+adapter, or reaches the network.
+
+Issue #4586: step 8's per-symbol stale list is folded into ``state.market_gap``, which
+keeps *when* each symbol's continuous staleness began and whether the gap covers every
+configured symbol.  A partial gap (at least one fresh symbol) is observed and retried
+forever; an all-symbol gap that outlasts ``CycleConfig.market_gap_exit_s`` reports
+``EXIT_MARKET_DATA``.  The decision is mode-independent: a monitor worker whose data
+source is dead has the same broken observation as a trade worker.
 """
 from __future__ import annotations
 
@@ -39,6 +47,7 @@ RULES_UNAVAILABLE = "rules_unavailable"
 BALANCE_UNAVAILABLE = "balance_unavailable"
 READER_UNHEALTHY = "reader_unhealthy"
 LEASE_LOST_REASON = "lease_lost"
+MARKET_DATA_GAP = "market_data_gap"
 
 
 class CycleOutcome(str, Enum):
@@ -48,6 +57,7 @@ class CycleOutcome(str, Enum):
     EXIT_AUTH = "exit_auth"
     EXIT_CLOCK = "exit_clock"
     EXIT_LEASE_LOST = "exit_lease_lost"
+    EXIT_MARKET_DATA = "exit_market_data"
 
 
 class CycleReader(Protocol):
@@ -72,10 +82,21 @@ class MarketData(Protocol):
 class CycleConfig:
     rules_reload_every: int = 10          # cycles; must be >= 1
     max_consecutive_reader_failures: int = 3
+    # Issue #4586: a continuous gap of usable public frames across EVERY configured symbol
+    # is invisible to the private reader's own health (the balance read still succeeds).
+    # After the gap has lasted this many seconds the cycle reports EXIT_MARKET_DATA, which
+    # the runner maps to exit code 8 (retryable): a restart rebuilds the market-data
+    # client, and a persistent exchange-side outage ends as a visibly failed unit instead
+    # of a worker that runs blind forever.  ``None`` disables the exit (report-only).
+    # A partial gap (some symbols fresh) NEVER triggers the exit; the value itself is a
+    # provisional default, pending owner confirmation.
+    market_gap_exit_s: float | None = 1800.0
 
     def __post_init__(self) -> None:
         if self.rules_reload_every < 1:
             raise ValueError("rules_reload_every must be at least 1")
+        if self.market_gap_exit_s is not None and not self.market_gap_exit_s > 0:
+            raise ValueError("market_gap_exit_s must be positive or None")
 
 
 def _decide_and_act(deps: "CycleDeps", state: "CycleState", ctx: "CycleContext") -> None:
@@ -111,12 +132,75 @@ class CycleDeps:
             raise ValueError("reader must be the same object the executor wraps")
 
 
+@dataclass(frozen=True)
+class MarketGapReport:
+    """One cycle's view of the public-frame gap (Issue #4586): scope, since when, for how
+    many cycles the whole book has been stale.  All epochs are the cycle clock's seconds."""
+
+    scope: str = "none"                 # "none" | "partial" | "all"
+    stale_count: int = 0                # how many configured symbols are currently stale
+    gap_since: float | None = None      # the oldest continuous staleness still active
+    all_stale_since: float | None = None  # when the current all-symbol gap began
+    all_stale_cycles: int = 0           # consecutive cycles with every symbol stale
+
+
+@dataclass
+class MarketGap:
+    """Cross-cycle tracking of public-frame gaps (Issue #4586).
+
+    ``stale_since`` remembers when each symbol's continuous staleness began: an entry is
+    born on the first cycle the symbol was seen stale and dies on the first cycle it was
+    fresh again (a recovery).  ``all_stale_*`` describe the current run of cycles in which
+    every configured symbol was stale -- the state the private reader's own health cannot
+    see, because the balance read keeps succeeding.
+    """
+
+    stale_since: dict[str, float] = field(default_factory=dict)
+    all_stale_since: float | None = None
+    all_stale_cycles: int = 0
+
+    def update(self, *, symbols, stale, now: float) -> None:
+        """Fold one cycle's stale list into the cross-cycle view.
+
+        Called only when the frame fetch of step 8 actually ran: a cycle that ended
+        earlier (stop, lease, step failure, cycle error) is neither evidence of a
+        continuing gap nor of a recovery, and leaves the tracker untouched.
+        """
+        stale_set = set(stale)
+        for symbol in tuple(self.stale_since):
+            if symbol not in stale_set:
+                del self.stale_since[symbol]                 # this symbol recovered
+        for symbol in stale_set:
+            self.stale_since.setdefault(symbol, float(now))  # keep the first sighting
+        if symbols and stale_set >= set(symbols):
+            if self.all_stale_since is None:
+                self.all_stale_since = float(now)            # the whole book went blind now
+            self.all_stale_cycles += 1
+        else:
+            self.all_stale_since = None
+            self.all_stale_cycles = 0
+
+    def report(self) -> "MarketGapReport":
+        scope = ("all" if self.all_stale_since is not None
+                 else "partial" if self.stale_since else "none")
+        return MarketGapReport(scope=scope, stale_count=len(self.stale_since),
+                               gap_since=min(self.stale_since.values(), default=None),
+                               all_stale_since=self.all_stale_since,
+                               all_stale_cycles=self.all_stale_cycles)
+
+    def exit_due(self, now: float, exit_s: float | None) -> bool:
+        """True while an all-symbol gap has lasted at least ``exit_s`` seconds."""
+        return (exit_s is not None and self.all_stale_since is not None
+                and float(now) - self.all_stale_since >= exit_s)
+
+
 @dataclass
 class CycleState:
     """Mutable state owned by the runner; survives across cycles."""
 
     cycle_number: int = 0
     consecutive_failures: int = 0
+    market_gap: MarketGap = field(default_factory=MarketGap)
     last_worker_state: tuple | None = None
     dedupe: dict = field(default_factory=dict)   # reserved for task 5b-2; lost on restart on purpose
     ttl_deferred: int = 0                        # per-cycle TTL facts: reset at the top of every cycle
@@ -154,6 +238,7 @@ class CycleReport:
     control_state: str
     control_mode: str | None
     balance_warnings: int = 0
+    market_gap: MarketGapReport = field(default_factory=MarketGapReport)
 
 
 def _control_state(enable: "EnableResult | None") -> str:
@@ -173,7 +258,8 @@ def _report(outcome: CycleOutcome, state: CycleState, mode: str | None, reason: 
                        fresh_symbols=tuple(sorted(fresh)), stale_symbols=tuple(sorted(stale)),
                        control_state=_control_state(enable),
                        control_mode=None if enable is None else enable.mode,
-                       balance_warnings=max(0, int(state.balance_warnings)))
+                       balance_warnings=max(0, int(state.balance_warnings)),
+                       market_gap=state.market_gap.report())
 
 
 def _lease_lost(deps: CycleDeps, state: CycleState, mode: str | None, now: float, detail: str,
@@ -345,6 +431,12 @@ def _run_cycle(deps: CycleDeps, state: CycleState) -> CycleReport:
         else:
             stale.append(symbol)
 
+    # 8b. cross-cycle gap tracking (Issue #4586): which symbols have stayed stale since
+    # when, and whether the gap covers every symbol.  Only reached when the fetch ran;
+    # an early exit above leaves the tracker untouched, which is correct: nothing was
+    # observed about the frames this cycle.
+    state.market_gap.update(symbols=deps.symbols, stale=stale, now=now)
+
     # 9. persisted safety latch, then the decision hook (monitor mode never decides)
     safety = read_safety_state(deps.ledger)
     if mode in ("shadow", "trade"):
@@ -380,6 +472,14 @@ def _run_cycle(deps: CycleDeps, state: CycleState) -> CycleReport:
         outcome = CycleOutcome.CYCLE_FAILED
         reason = READER_UNHEALTHY
         state.consecutive_failures += 1
+    elif state.market_gap.exit_due(now, deps.config.market_gap_exit_s):
+        # Issue #4586: every symbol has been stale for at least market_gap_exit_s seconds
+        # while the private reader stayed healthy -- the worker decides blind.  Retry was
+        # already exhausted over the gap; the runner maps this to exit 8 so a restart can
+        # rebuild the market-data client (a partial gap NEVER reaches this branch).
+        outcome = CycleOutcome.EXIT_MARKET_DATA
+        reason = MARKET_DATA_GAP
+        state.consecutive_failures = 0
     else:
         outcome = CycleOutcome.CONTINUE
         reason = None
