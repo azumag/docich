@@ -100,7 +100,7 @@ def _state_dir_ok(value: str) -> bool:
     """An absolute path whose parent exists (the path itself may be created by the ledger)."""
     if not os.path.isabs(value):
         return False
-    parent = os.path.dirname(value)
+    parent = os.path.dirname(os.path.normpath(value))
     if not parent or not os.path.isdir(parent):
         return False
     return os.path.isdir(value) if os.path.exists(value) else True
