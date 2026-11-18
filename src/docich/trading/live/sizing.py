@@ -17,6 +17,8 @@ are the symbols with two or more open positions, so nothing at all is planned fo
 A sell carries the digest its position was entered under (``HeldPosition.entry_policy_digest``)
 when the caller supplies it, else the current policy digest; the decision key uses that
 digest, because the ledger's ``sell_uses_entry_policy`` trigger refuses any other one.
+``decision_prefix`` defaults to the real ``live1`` namespace; shadow mode passes
+``shadow1`` so its decision keys can never collide with a real intent.
 
 ``markets``' order books (``OrderBook``) must already be freshness-filtered by the caller;
 this module does not judge freshness.
@@ -284,8 +286,11 @@ def size_orders(
     sell_attempts: Mapping[str, int] | None = None,
     buys_blocked: bool = False,
     settings: SizingSettings = SizingSettings(),
+    decision_prefix: str = "live1",
 ) -> SizingResult:
     # ---- input validation: exact Decimals only -----------------------------------------
+    if not isinstance(decision_prefix, str) or not decision_prefix or ":" in decision_prefix:
+        raise ValueError("decision_prefix must be a non-empty string without ':'")
     capital = _decimal(funds.capital, "funds.capital")
     deployed = _decimal(funds.deployed, "funds.deployed")
     free_quote = _decimal(funds.free_quote, "funds.free_quote")
@@ -368,7 +373,7 @@ def size_orders(
         digest_used = (position.entry_policy_digest
                        if position.entry_policy_digest is not None else policy.digest)
         decision_key = (
-            f"live1:{digest_used[:16]}:{opportunity.opportunity_id}:"
+            f"{decision_prefix}:{digest_used[:16]}:{opportunity.opportunity_id}:"
             f"{position.position_id[:8]}:a{attempts}"
         )
         if decision_key in decided_keys:
@@ -456,7 +461,7 @@ def size_orders(
         if policy is None:
             skipped.append(_skip(opportunity, "no_policy", "buy"))
             continue
-        decision_key = f"live1:{policy.digest[:16]}:{opportunity.opportunity_id}"
+        decision_key = f"{decision_prefix}:{policy.digest[:16]}:{opportunity.opportunity_id}"
         if decision_key in decided_keys:
             skipped.append(_skip(opportunity, "already_decided", "buy"))
             continue

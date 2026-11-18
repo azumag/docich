@@ -124,7 +124,8 @@ _TRANSITIONS = {
 }
 _OPEN_STATES = ("PLANNED", "SUBMITTING", "UNKNOWN_SUBMISSION", "ACKED", "PARTIALLY_FILLED")
 
-LIVE_EVENT_KINDS = frozenset({"live_decision", "shadow_fill", "worker_state"})
+LIVE_EVENT_KINDS = frozenset({"live_decision", "shadow_fill", "shadow_residual",
+                              "worker_state"})
 
 
 class LiveLedgerError(RuntimeError):

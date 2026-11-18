@@ -1,9 +1,10 @@
 """The trade-mode order path: sized plans become intents through the executor (L4b-5b-2b).
 
-``decide_and_act`` is the hook the runner will pass to ``cycle.run_cycle``: it builds and
-records the cycle's decisions (``decide.build_decisions``) and, in TRADE mode only, places
-the sized plans through ``OrderExecutor.plan``/``submit``.  This is the only module that
-calls ``executor.plan``/``executor.submit``; shadow and monitor never reach it.  With
+``decide_and_act`` is the hook the runner will pass to ``cycle.run_cycle``.  In SHADOW mode
+it delegates to ``shadow.decide_and_act`` (simulated fills only); in TRADE mode it builds
+and records the cycle's decisions (``decide.build_decisions``) and places the sized plans
+through ``OrderExecutor.plan``/``submit``.  This is the only module that calls
+``executor.plan``/``executor.submit``; monitor never reaches it.  With
 ``deps.executor.sender is None`` nothing is planned: one ``trade_unavailable_no_sender``
 decision is recorded per process and the cycle moves on.  There is no real sender yet:
 ``executor.SENDER_KINDS_ALLOWED`` is mock-only.
@@ -211,7 +212,11 @@ def place_orders(deps: "CycleDeps", state: "CycleState", ctx: "CycleContext",
 
 
 def decide_and_act(deps: "CycleDeps", state: "CycleState", ctx: "CycleContext") -> None:
-    """The cycle hook: build (and record) the decisions, then place them in trade mode."""
+    """The cycle hook: shadow simulates; trade builds decisions and places them."""
+    if ctx.mode == "shadow":
+        from . import shadow
+        shadow.decide_and_act(deps, state, ctx)
+        return None
     decisions = build_decisions(deps, state, ctx)
     state.record_failures = decisions.record_failures
     if ctx.mode != "trade":

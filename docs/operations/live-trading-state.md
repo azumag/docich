@@ -131,6 +131,56 @@ L1 は、本番(LIVE)の売買の**土台だけ**で、動作しない。どの�
 - 起動時の残高取得や自動記録が失敗しても inert にならず、終了もしない。周期ループで再試行する。inert になるのは方針セットが無い場合だけ(`no_active_policy_set`)。
 - 常駐化(systemd user unit)のテンプレートと終了コードの扱いは [live-worker-systemd.md](live-worker-systemd.md)。ユニットのインストール・enable はオーナーの作業で、`sender=None` の間は発注経路が無い。
 
+## L4c: shadow の模擬保有・資金・約定(Issue #3623)
+
+`src/docich/trading/live/shadow.py` は **shadow モード専用**の模擬執行である。ワーカーの通常の
+`act.decide_and_act` フックから呼ばれ、`trade` / `monitor` の経路と実 state には触れない。
+
+- 模擬状態は既存のハッシュ連鎖 LIVE イベントの `shadow_fill` だけから `ShadowBook` として
+  投影する。実際の intent / order / fill / position 行、および実ポジション・実 decision key は
+  模擬ポジションや模擬 decision key の種にしない。`shadow_fill` は実注文の `fills` テーブルにも
+  実ポジションにも書かない。実 dust を `residual_inventory` にすることもない。
+- 資金の基準は毎サイクル取り直す取引所の現在の資本(JPY total + 実オープンポジション原価)で、
+  これに ShadowBook の模擬 quote キャッシュ差分と模擬ポジション原価を足す。使用可能 quote は
+  実際の free JPY に模擬キャッシュ差分を足したもの。買いの代金・手数料はここから一度だけ引き、
+  売却代金・実現損益はここに戻す。現物の free を超えて買わず、模擬在庫を超えて売らない。
+- 発注計画は通常の純粋な scan / size 経路(同じ policy、market rules、`DecisionSet.markets` の
+  検査済み板)で作る。約定は板の価格制限内の VWAP で、買いは limit 以下の ask、売りは limit 以上の
+  bid を深さの分だけ消費する。数量は実際の amount step に切り下げ、可視 depth・模擬在庫・
+  模擬 quote のどれかが尽きたら partial で止める。`levels_used` は切り下げ後の数量が実際に
+  触れた level 数だけを数え、VWAP と fee はその数量の notional から計算する。板がない/薄い場合は
+  fill を作らず skip を記録する。手数料は market rules の `max_fee_rate` を quote 建てで使う
+  (不明なら fill しない)。同じ signal の partial 売りが同じ板・同じ bar の表示 depth を
+  二度消費しないよう、fill の `book_ts_ms`/`bar_ts_ms` を durable な印として replay 後も保持する。
+  板または bar が更新されれば新しい attempt として扱う。
+- `shadow_fill` の payload は文字列と整数だけである。full policy digest、entry position id、
+  symbol/side、計画数量・価格、模擬数量・notional・VWAP・fee、fee rate/currency、decision key、
+  opportunity/signal、experiment digest、bar の時刻と timeframe、板の時刻、levels used を持つ。
+  decision key は `shadow1:` 名前空間で、実 `live1:` と衝突しない。fill id は decision key から
+  決定的に作る。position id は `position_id[:8]` を使う売り sizing のため、先頭 8 文字が
+  ハッシュ由来の値になる。
+- 再起動時はイベントを event id の小さい順に bounded page で全件 replay する。プロセス内では
+  `CycleState.shadow_book` に投影を保持し、最後に見た event id 以降だけを読む。別 seed 行はなく、
+  取引所資本は毎サイクル読み直す。モードを trade に変えても shadow イベントは消さず、shadow に
+  戻すと続きから投影する。同じ fill id の再送は同一内容なら無視し、異なる内容なら fail-closed。
+- 書き込みは event append が先、メモリ上の ShadowBook への適用が後である。append 後・適用前に
+  落ちても、次回の replay がその 1 件を適用する。append が失敗した場合は event も book も変えず、
+  次のサイクルで再試行する。`LeaseLost` はそのまま伝播する。
+- 読み取り専用の比較は
+  `python -m docich.trading.live_owner --state-dir <state> shadow summary`(別名 `report` /
+  `status`)で行う。`shadow_report` が実 PAPER schema(`paper_fills` の `signal_context` TEXT)を
+  `path.as_uri()` + `mode=ro` で読み、shadow の plan/fill/position 数、planned と fill の
+  突き合わせ、PAPER との symbol/side/opportunity/strategy/bar の一致、
+  `experiment_digest` 同士の一致、欠けている証拠(`shadow_fill` / `shadow_plan` /
+  `paper_ledger` / `paper_table` / `paper_read` / `paper_fill` / `paper_digest` /
+  `shadow_digest`)を出す。LIVE の per-symbol `policy_digest` は PAPER との比較に使わない。
+  PAPER の missing / no table / read error と valid empty は区別し、identity・strategy・
+  observation window が曖昧または不一致の候補は verified にしない。verified のときは
+  amount/price/fee の差を出し、fee 証拠が無ければ `unavailable` とする。trade モードの
+  decision は比較から除く。shadow の plan/fill が無いときは「0 件の一致」ではなく
+  `shadow: no evidence` と表示する。`live_owner status` にも shadow の有無と件数だけを出す
+  (金額・ID は出さない)。
+
 ## L1 でやらないこと
 
 APIキー・取引所への接続・ワーカー・通知・昇格の適用。いずれも後続の PR で、PR ごとにオーナーの確認を取る。実注文(E)と常駐(F)は、オーナーの明示承認と、取引所の API キーの発行(出金権限なし)が前提。
