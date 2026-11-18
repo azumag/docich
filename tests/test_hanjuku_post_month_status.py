@@ -1625,3 +1625,43 @@ def test_a_long_unread_camp_row_is_measured_again():
     state = mem['post_month_status']
     assert 'マフィン' in state['dirty']
     assert 'ブリー' not in state['dirty']
+
+
+def test_open_menu_retries_x_past_the_old_read_gate():
+    # docich#4653: reads 3/6 are not the only chance to open the menu.
+    mem = memory()
+    post.arm(mem)
+    state = mem['post_month_status']
+    # step() advances phase_reads before the stage code reads it.
+    state.update(stage='open_menu', phase_reads=8)
+    field = Screen([], None, '', kind='map')
+    assert post.step(field, mem, None) == [pad('x')]
+    assert state['open_tries'] == 1
+    assert any(r['decision'] == 'post_month_open_retry' for r in mem['_records'])
+
+
+def test_open_menu_retries_are_bounded_per_stage():
+    mem = memory()
+    post.arm(mem)
+    state = mem['post_month_status']
+    state.update(stage='open_menu', phase_reads=0)
+    field = Screen([], None, '', kind='map')
+    pressed = 0
+    for _ in range(40):
+        if post.step(field, mem, None) == [pad('x')]:
+            pressed += 1
+    assert pressed == post.OPEN_MENU_TRIES
+
+
+def test_a_new_stage_restores_the_open_budget():
+    mem = memory()
+    post.arm(mem)
+    state = mem['post_month_status']
+    state.update(stage='open_menu', phase_reads=3, open_tries=post.OPEN_MENU_TRIES)
+    field = Screen([], None, '', kind='map')
+    assert post.step(field, mem, None) == []
+    post._stage(state, 'open_menu')
+    got = []
+    for _ in range(3):
+        got.append(post.step(field, mem, None))
+    assert got[-1] == [pad('x')]
