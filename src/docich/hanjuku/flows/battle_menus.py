@@ -215,6 +215,25 @@ def _emit_moves(move):
     return [move] if isinstance(move, dict) else []
 
 
+def _command_rows_to(screen, label):
+    """One step towards a command row read in ``menu_rows``.
+
+    ``_battle_menu_to`` reads ``screen.lines``, but a defence summon box parses
+    its command rows into ``menu_rows`` (disabled grey rows are excluded from
+    the readable text). Move from the measured knight cursor so a grey row is
+    never confirmed and no starting row is assumed. ``'here'`` means confirm,
+    a pad dict means one step, ``None`` means an unreadable cursor/target.
+    """
+    targets = [line.y for line in (screen.menu_rows or [])
+               if any(word == label for _, word in line.spans())]
+    if screen.menu_cursor is None or not targets:
+        return None
+    y = min(targets, key=lambda row: abs(row - screen.menu_cursor))
+    if y == screen.menu_cursor:
+        return 'here'
+    return pad('down' if y > screen.menu_cursor else 'up')
+
+
 def _battle_menu_move(screen, mem, label, *, key='battle_menu_move'):
     """One command-box step that never repeats a press on an identical frame.
 
@@ -1992,8 +2011,6 @@ _ENEMY_COMMAND_SETTLE_CANCEL_PERIOD = 12
 # 4-row command box needs at most 3 ups to re-park on its top row; beyond
 # this bound the bot holds instead of confirming an unobserved row.
 EGG_ATTACK_UNREAD_UP_LIMIT = 6
-# #4528: the same bounded nudge for the egg-use branch of an egg battle box.
-EGG_USE_UNREAD_UP_LIMIT = 2
 
 
 def _enemy_command_wait(mem, key, scope, decision, metric, wait_reason,
@@ -2348,29 +2365,16 @@ def egg_battle_step(screen: Screen, mem):
         if move:
             return _emit_moves(move)
         # Hand present but the label is unreadable: keep moving like no-hand.
-    # g1190 2026-11-18: the defence summon box (mixed_item_box) leaves the
-    # knight on the grey きりふだ row, outside the readable rows. Blindly
-    # confirming there is a no-op for 2.5 h. Move one bounded step up when the
-    # measured cursor is off every readable row, and never confirm an
-    # unreadable cursor. A normal egg battle box keeps its reviewed down/down
-    # walk -- a monster box with no visible knight is not a stalled defence.
+    # g1190 2026-11-18: the defence summon box (mixed_item_box) parses its
+    # command rows into menu_rows and leaves the knight on the grey きりふだ
+    # row. Walk from that measured cursor to the egg row and confirm only when
+    # actually there; an unreadable cursor/target is held, never blind-A'd.
+    # A normal egg battle box keeps its reviewed down/down walk.
     if screen.mixed_item_box:
-        cursor = screen.menu_cursor
-        readable_rows = [line for line in (screen.menu_rows or []) if type(line.y) is int]
-        if cursor is None:
-            return []
-        if readable_rows and not any(abs(cursor - line.y) <= 4 for line in readable_rows):
-            nudges = mem.get('egg_use_unread_ups')
-            nudges = nudges if type(nudges) is int and 0 <= nudges < EGG_USE_UNREAD_UP_LIMIT else 0
-            if nudges >= EGG_USE_UNREAD_UP_LIMIT:
-                return []
-            mem['egg_use_unread_ups'] = nudges + 1
-            _record(mem, 'battle_egg_use_unread_cursor', observed_metric={
-                'cursor': cursor, 'rows': [line.y for line in readable_rows],
-                'up_attempt': nudges + 1, 'limit': EGG_USE_UNREAD_UP_LIMIT},
-                reason='カーソルが読めない行にあるため卵を確定せず、上の読めた行へ1回だけ動かす')
-            return [pad('up')]
-    mem.pop('egg_use_unread_ups', None)
+        move = _command_rows_to(screen, 'たまごをつかう')
+        if move == 'here':
+            return [pad('a')]
+        return _emit_moves(move)
     # No hand (or unreadable hand): walk down twice from こうげき to たまご.
     stage = int(mem.get('egg_menu_stage') or 0)
     if stage < 2:
