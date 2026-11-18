@@ -122,6 +122,11 @@ corners = [
   # 2026-10-24 オーナー指示により manual_only を解除し、rolling rotation の
   # 自動抽選対象へ戻す。WebUI からの手動予約も引き続き可能。
   { id = "communist-law-simulator", adapter = "lawsim", game = "lawsim-view", enabled = true, audio_enabled = true },
+  # チャート解説コーナー (#659): corner_659.py が決定論的に生成した音声原稿・
+  # 注文実況・約定時シグナル・アニメーションを loopback HTML view で配信する。
+  # 自動抽選は owner 承認前のため manual_only。音声は将来の読み上げ用 opt-in
+  # で、既定は false。外部API取得 (fetch_on_start) は行わない。
+  { id = "chart-659", adapter = "chart", game = "chart-659", enabled = true, manual_only = true, live_eligible = false, audio_enabled = false },
 ]
 
 [nethack_corner]
