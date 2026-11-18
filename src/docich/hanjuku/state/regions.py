@@ -296,6 +296,7 @@ KEY_OWNERSHIP = {
     'chapter_probe': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 章確認プローブ手順状態
     'chikujou_leftover': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 築城残りテキスト処理の手順状態
     'concert_picker_watch': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # コンサートpicker停滞監視の自己消去型
+    'password_entry': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # パスワード語リスト掃引の手順状態
     'password_entry_seen': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 章クリアのパスワード画面を検出した記録
     'chikujou_prompt_key': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 築城プロンプトの記録キー
     'reanchor_failures': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 再アンカー連続失敗の抑制カウンタ
