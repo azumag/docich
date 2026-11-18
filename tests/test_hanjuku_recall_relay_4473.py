@@ -155,3 +155,35 @@ def test_a_visible_move_stays_when_a_back_half_castle_is_ours():
 def test_no_visible_castle_keeps_the_existing_flow():
     mem = memory()
     assert r._visible_move_or_relay(mem, _flow(mem)['recall'], None) == (None, None)
+
+
+def test_a_picker_measured_back_half_origin_switches_to_the_relay():
+    """#4533: the camp has no own roof; the picker's unique ▲ binds the origin."""
+    mem = memory()
+    state = _flow(mem)['recall']
+    state['stage'] = 'dest'
+    state['origin'] = [638, 348]          # measured from the picker's army ▲
+    state['origin_source'] = 'picker'
+    relay = r.relay_from_picker(mem, state)
+    assert relay == {'cell': [508, 264], 'hub': 'タタール'}
+    assert state['stage'] == 'menu'
+    assert state['move_visible'] == {'cell': [508, 264], 'relay': True}
+    assert any(x['decision'] == 'camp_recall_relay_from_picker' for x in mem['_records'])
+
+
+def test_a_picker_origin_on_the_front_half_keeps_the_recall():
+    mem = memory()
+    state = _flow(mem)['recall']
+    state['stage'] = 'dest'
+    state.pop('camp_world', None)         # #4533: no roof measured the camp
+    state['origin'] = [638, 700]
+    assert r.relay_from_picker(mem, state) is None
+    assert 'relay' not in state and state['stage'] == 'dest'
+
+
+def test_a_picker_switch_happens_only_once():
+    mem = memory()
+    state = _flow(mem)['recall']
+    state['origin'] = [638, 348]
+    assert r.relay_from_picker(mem, state) is not None
+    assert r.relay_from_picker(mem, state) is None       # already aimed

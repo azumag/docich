@@ -16,6 +16,7 @@ from ..version import BOT_VERSION
 from .deploy import (_cancel_broken_hero_sortie, _deploy_context, _deploy_input, _hold_deploy,
                             _hold_guarded_sortie, _hold_locked_boss, _hold_unrouted_sortie)
 from .recall import (MENU_HOLD_LIMIT, RECALL_LIMIT, _hold_after_picker, _recall_dispatch_step, _request_recall,
+                    relay_from_picker,
                             camp_recall_step)
 from ..os_layer.commands import VISIBLE_LIST_RELEASE_MS, castle_list_batch, menu_to, pad
 from ..os_layer.navigation import (Y_JUMP_LIMIT, Y_JUMP_OFFSET, Y_JUMP_TOL, _align_on_roof, _drop_stale_y_jump, _start_y_jump,
@@ -457,6 +458,10 @@ def world_map_step(screen, mem, frame):
             picked = _picker_origin(chapter, frame)
             if picked is not None:
                 recall.update(origin=picked, origin_source='picker')
+        if relay_from_picker(mem, recall) is not None:
+            # The picker just proved the camp stands in the back half; the
+            # きかん it opened would confirm a castle across the cliff.
+            return [pad('b')]
         # A boss-phase gather names its castle explicitly (owner 2026-11-15:
         # every general must gather at the last castle before the boss); never
         # replace it with the nearest-castle rule.
