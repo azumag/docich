@@ -975,7 +975,7 @@ renderLive({control:{},status:null,ledger_present:true,overview});
 renderLive({control:{},status:null,ledger_present:true,overview});
 const out={
   token_after_polls:LIVE_INITIAL.token,
-  msg_after_polls:elements["live-initial-msg"].textContent,
+  msg_after_polls:document.getElementById("live-initial-msg").textContent,
   policy_display:elements["live-initial-policy-digest"].textContent,
   experiment_display:elements["live-initial-digest"].textContent,
   active_display:elements["live-initial-active"].textContent,
@@ -986,13 +986,13 @@ renderLive({control:{},status:null,ledger_present:false,
   overview:{policy:{digest:null,symbols:[]},safety:{trips:[]},pnl:{},
     positions:[],recent_fills:[],opening:[]}});
 out.null_token=LIVE_INITIAL.token;
-out.null_msg=elements["live-initial-msg"].textContent;
+out.null_msg=document.getElementById("live-initial-msg").textContent;
 LIVE_INITIAL.token="token-3";
 LIVE_INITIAL.activeDigest=full;
 renderLive({control:{},status:null,ledger_present:true,
   overview:{...overview,policy:{digest:"0123456789ab",symbols:[]}}});
 out.mismatch_token=LIVE_INITIAL.token;
-out.mismatch_msg=elements["live-initial-msg"].textContent;
+out.mismatch_msg=document.getElementById("live-initial-msg").textContent;
 process.stdout.write(JSON.stringify(out));
 """
         script = (script.replace("__SNIPPET__", self._live_script())
@@ -1024,7 +1024,7 @@ function fakeResponse(status,body){
 }
 globalThis.fetch=async()=>fakeResponse(409,{error:"stale_preview",
   detail:"確認後に候補・台帳・有効方針が変わったため、もう一度確認してください。"});
-async function api(path, opts={}){__API_BODY__}
+async function api(path, opts={}){__API_BODY__
 __SNIPPET__
 (async()=>{
   let stale;
