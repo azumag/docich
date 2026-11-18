@@ -333,3 +333,104 @@ def test_full_roster_discharge_budget_is_finite():
     verified = [r for r in state['_records'] if r['decision'] == 'discharge_verified']
     assert [r['general'] for r in verified] == ['ミント']
     assert verified[0]['observed_metric']['basis'] == 'complete_list_removal'
+
+
+# ----------------------------------------------------------------- #4633
+# g1190 ch1fresh (2ねん8のつき, -6G): the removal verify for ビーツ held while
+# an unpaid refill (stage 'measured' + refill_requested, no receipt) owned the
+# screen, so the no-input fallback's exit B was vetoed too.
+IDENTITY4633 = {'game': 'hanjuku-hero', 'runtime_id': 'g1190-4633',
+                'generation': 1190, 'lease_id': '4633'}
+
+
+def _reported_discharge_state(frame, *, streak=0, jump_hold=False):
+    """The issue #4633 saved state: removal_held + refill ownership."""
+    mem = {'chapter': 1, 'month': '2-8', 'orders': {}, 'picked': [],
+           'discharge': {'key': '2-8', 'pending_target': 'ビーツ',
+                         'phase': 'scan', 'presses': 2, 'removal_held': True},
+           'army_count_check': {'scope': [IDENTITY4633, 1, '2-8'],
+                                'stage': 'measured', 'refill_requested': True},
+           'shop': {'key': '2-8', 'soldiers': 4, 'soldiers_done': False}}
+    if jump_hold:
+        # An earlier owner answering [] keeps army_count_pending_step (and
+        # discharge_step) off the frame, exactly how the ownership survived.
+        mem['general_jump'] = {'general': 'タルタル', 'phase': 'confirm',
+                               'age': 0, 'total': 0, 'scrolls': 0,
+                               'menu_presses': 0}
+    return {'policy': mem, 'no_input_streak': streak,
+            'no_input_frames': [frame.digest()]}
+
+
+def test_4633_held_removal_is_bounded_and_picks_the_next_weakest():
+    names = ['タルタル', 'ガルバンゾー', 'アルテミス', 'ガスパチョ', 'ビーツ']
+    frame = discharge_frame(names, 4)
+    state = _reported_discharge_state(frame)
+    for _ in range(8):  # DISCHARGE_REMOVAL_LIMIT identical held observations
+        actions, state = decide(frame, state, run_identity=IDENTITY4633)
+        assert actions == []
+    discharge = state['policy']['discharge']
+    assert 'ビーツ' in discharge['failed_targets']
+    assert 'pending_target' not in discharge
+    failed = [r for r in state['_records']
+              if r['decision'] == 'discharge_removal_failed']
+    assert failed and failed[0]['general'] == 'ビーツ'
+    # The interrupted count/refill released on the first observation and the
+    # flow advances to the next weakest (タルタル) instead of holding.
+    assert state['policy']['shop']['soldiers_done'] is True
+    actions, state = decide(frame, state, run_identity=IDENTITY4633)
+    assert actions == [p.pad('up')]
+    actions, state = decide(discharge_frame(names, 0), state,
+                            run_identity=IDENTITY4633)
+    assert actions == [p.pad('a')]
+    record = state['_records'][-1]
+    assert record['decision'] == 'discharge_general'
+    assert record['general'] == 'タルタル'
+
+
+def test_4633_stall_releases_the_owned_check_and_the_fallback_sends_b():
+    # The issue's exact saved state: no_input_streak was 58 and growing while
+    # removal_held and the unpaid refill each vetoed every exit path. Past the
+    # bound the release fires once and the fallback B leaves the screen.
+    names = ['タルタル', 'ガルバンゾー', 'アルテミス', 'ガスパチョ', 'ビーツ']
+    frame = discharge_frame(names, 4)
+    state = _reported_discharge_state(frame, streak=58, jump_hold=True)
+    for _ in range(48):  # jump budget (48) outlasts the no-input bound (100)
+        actions, state = decide(frame, state, run_identity=IDENTITY4633)
+        if actions:
+            break
+    assert actions == [p.pad('b')]
+    assert state['no_input_streak'] == 0
+    assert any(r['decision'] == 'discharge_army_count_release'
+               for r in state['_records'])
+    assert any(r['decision'] == 'no_input_fallback' for r in state['_records'])
+    check = state['policy']['army_count_check']
+    assert check['stage'] == 'unverified'
+    assert state['policy']['shop']['soldiers_done'] is True
+    assert not state['policy']['shop'].get('soldier_receipt')
+
+
+def test_4633_paid_up_balance_releases_the_check_without_a_stall():
+    # 残高非負: the header gold parses, so the ownership releases on the spot
+    # even while an earlier owner still holds the screen at streak 0.
+    names = ['タルタル', 'ガルバンゾー', 'アルテミス', 'ガスパチョ', 'ビーツ']
+    frame = discharge_frame(names, 4, gold='32G')
+    state = _reported_discharge_state(frame, jump_hold=True)
+    actions, out = decide(frame, state, run_identity=IDENTITY4633)
+    assert actions == []
+    assert any(r['decision'] == 'discharge_army_count_release'
+               for r in out['_records'])
+    check = out['policy']['army_count_check']
+    assert check['stage'] == 'unverified'
+    assert out['policy']['shop']['soldiers_done'] is True
+
+
+def test_4633_paid_up_discharge_verifies_and_exits_with_b():
+    names = ['タルタル', 'ガルバンゾー', 'アルテミス', 'ガスパチョ', 'ビーツ']
+    frame = discharge_frame(names, 4, gold='32G')
+    state = _reported_discharge_state(frame)
+    actions, out = decide(frame, state, run_identity=IDENTITY4633)
+    assert actions == [p.pad('b')]
+    verified = [r for r in out['_records'] if r['decision'] == 'discharge_verified']
+    assert [r['general'] for r in verified] == ['ビーツ']
+    assert verified[0]['observed_metric']['basis'] == 'balance_nonnegative'
+    assert not any(r['decision'] == 'discharge_general' for r in out['_records'])
