@@ -55,22 +55,25 @@ class PlacementReport:
 
 
 def _record(deps: "CycleDeps", state: "CycleState", ctx: "CycleContext", action: str,
-            identity: str, reason: str, payload: dict, *, pinned: bool = False) -> None:
+            identity: str, reason: str, payload: dict, *, pinned: bool = False) -> bool:
     """Write one live_decision once per dedupe key; a failure is swallowed, LeaseLost is not.
 
-    A ``pinned`` key is stored as ``sys.maxsize`` so the runner's dedupe pruning (which
-    deletes values below the cutoff) can never make it recordable again.
+    Returns True when the row is present afterwards (written now, or already deduped) and False
+    when the write failed and was swallowed.  A ``pinned`` key is stored as ``sys.maxsize`` so
+    the runner's dedupe pruning (which deletes values below the cutoff) can never make it
+    recordable again.
     """
     key = (action, identity, reason)
     if key in state.dedupe:
-        return
+        return True
     try:
         deps.ledger.record_live_event(deps.lease, "live_decision", payload, now=ctx.now)
     except LeaseLost:
         raise
     except Exception:
-        return
+        return False
     state.dedupe[key] = sys.maxsize if pinned else state.cycle_number
+    return True
 
 
 def _skip_payload(plan: "OrderPlan", reason: str, mode_text: str, cycle_text: str,
@@ -210,13 +213,14 @@ def place_orders(deps: "CycleDeps", state: "CycleState", ctx: "CycleContext",
 def decide_and_act(deps: "CycleDeps", state: "CycleState", ctx: "CycleContext") -> None:
     """The cycle hook: build (and record) the decisions, then place them in trade mode."""
     decisions = build_decisions(deps, state, ctx)
+    state.record_failures = decisions.record_failures
     if ctx.mode != "trade":
         return None
     if deps.executor.sender is None:
         # There is no real sender yet.  One row for the whole process: the dedupe key is
         # pinned (sys.maxsize, never pruned) so the runner's dedupe pruning cannot delete it
         # and make the notice recordable again on a later cycle.
-        _record(deps, state, ctx, "skip", "-", NO_SENDER_REASON, {
+        if not _record(deps, state, ctx, "skip", "-", NO_SENDER_REASON, {
             "action": "skip",
             "side": "unknown",
             "symbol": "-",
@@ -225,7 +229,8 @@ def decide_and_act(deps: "CycleDeps", state: "CycleState", ctx: "CycleContext") 
             "mode": ctx.mode or "",
             "cycle": str(state.cycle_number),
             "blocks": ",".join(decisions.block_causes),
-        }, pinned=True)
+        }, pinned=True):
+            state.record_failures += 1
         return None
     place_orders(deps, state, ctx, decisions)
     return None

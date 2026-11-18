@@ -344,6 +344,43 @@ class OpenBuyExposure:
     reserved_quote: Decimal
 
 
+# Intents in these states provably never reached the exchange: they are not exchange history.
+_INTENT_STATES_NEVER_SENT = frozenset({"PLANNED", "ABANDONED", "REJECTED", "NOT_CREATED"})
+
+
+def currencies_with_history(ledger) -> frozenset[str]:
+    """Every upper-case currency the ledger has any history for: cashflows, fills and intents.
+
+    A fill is history for both sides of its symbol and for its fee currency.  An intent is
+    history for both sides of its symbol once it may have reached the exchange: every state
+    except PLANNED, ABANDONED, REJECTED and NOT_CREATED.  That is an exclusion list, so a new
+    state counts by default; it recovers a fill the exchange holds after a crash between send
+    and record, when the ledger has only the intent.  A symbol that is not a well-formed
+    ``BASE/QUOTE`` pair is ignored: this read must never raise.
+    """
+    seen: set[str] = set()
+
+    def add_symbol(symbol) -> None:
+        parts = str(symbol).split("/")
+        if len(parts) == 2 and parts[0] and parts[1]:
+            seen.add(parts[0].upper())
+            seen.add(parts[1].upper())
+
+    with ledger.read_cursor() as cur:
+        for (currency,) in cur.execute("SELECT currency FROM cashflows"):
+            seen.add(str(currency).upper())
+        for symbol, fee_currency in cur.execute("SELECT symbol, fee_currency FROM fills"):
+            add_symbol(symbol)
+            if fee_currency is not None:
+                seen.add(str(fee_currency).upper())
+        marks = ",".join("?" for _ in _INTENT_STATES_NEVER_SENT)
+        states = tuple(sorted(_INTENT_STATES_NEVER_SENT))
+        for (symbol,) in cur.execute(f"SELECT symbol FROM intents WHERE state NOT IN ({marks})",
+                                     states):
+            add_symbol(symbol)
+    return frozenset(seen)
+
+
 def open_buy_exposure(ledger, rules: Mapping[str, MarketRules]) -> OpenBuyExposure:
     """Remaining notional of every open buy and the quote it reserves (fee and unit included)."""
     marks = ",".join("?" for _ in _OPEN_INTENT_STATES)

@@ -119,6 +119,9 @@ class CycleState:
     consecutive_failures: int = 0
     last_worker_state: tuple | None = None
     dedupe: dict = field(default_factory=dict)   # reserved for task 5b-2; lost on restart on purpose
+    ttl_deferred: int = 0                        # per-cycle TTL facts: reset at the top of every cycle
+    ttl_failed: int = 0
+    record_failures: int = 0
 
 
 @dataclass
@@ -209,6 +212,10 @@ def _health_failures(health: object) -> int:
 def _run_cycle(deps: CycleDeps, state: CycleState) -> CycleReport:
     """Run steps 0-9 and 14 of one cycle; ``run_cycle`` contains any exception escaping here."""
     state.cycle_number += 1
+    # These are per-cycle facts, never stale: clear them before any step can fill them.
+    state.ttl_deferred = 0
+    state.ttl_failed = 0
+    state.record_failures = 0
     cycle_number = state.cycle_number
     now = float(deps.clock())
 
@@ -253,7 +260,9 @@ def _run_cycle(deps: CycleDeps, state: CycleState) -> CycleReport:
 
     # 5. withdraw open orders older than the TTL (only when the executor has a sender)
     try:
-        cancel_expired(deps, state, now)
+        report = cancel_expired(deps, state, now)
+        state.ttl_deferred = report.deferred
+        state.ttl_failed = len(report.failed)
     except LeaseLost as exc:
         return _lease_lost(deps, state, mode, now, str(exc))
 
