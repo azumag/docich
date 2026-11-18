@@ -429,6 +429,7 @@ def _signal_at(
     execution: Execution,
     prev_price: float | None,
     cooldown_until: float,
+    last_side: SignalSide | None = None,
 ) -> tuple[JudgmentSignal | None, float]:
     """1約定ごとの判断シグナルを作成する。
 
@@ -476,7 +477,7 @@ def _signal_at(
     }[side]
 
     # クールダウン中の同方向シグナルは保有に落とす（連発抑制）。
-    if execution.timestamp < cooldown_until and side != SignalSide.HOLD:
+    if execution.timestamp < cooldown_until and side == last_side and side != SignalSide.HOLD:
         side = SignalSide.HOLD
         strength = SignalStrength.WEAK
         reason = "クールダウン中のため保有に留保"
@@ -507,10 +508,13 @@ def compute_signals(
     signals: list[JudgmentSignal] = []
     cooldown_until = 0.0
     prev_price: float | None = None
+    last_side: SignalSide | None = None
     for execution in executions:
-        signal, cooldown_until = _signal_at(candles, execution, prev_price, cooldown_until)
+        signal, cooldown_until = _signal_at(candles, execution, prev_price, cooldown_until, last_side)
         if signal is not None:
             signals.append(signal)
+            if signal.side != SignalSide.HOLD:
+                last_side = signal.side
         prev_price = execution.price
     return tuple(signals[:MAX_EXECUTIONS])
 
@@ -543,7 +547,7 @@ def build_audio_script(
     """チャート概況とシグナル概要の音声解説原稿を生成する。"""
     candles = tuple(snapshot.candles)
     closes = _closes(candles)
-    latest = closes[-1] if closes else 0.0
+    latest = max(candles, key=lambda c: c.timestamp).close if candles else 0.0
     high = max((c.high for c in candles), default=0.0)
     low = min((c.low for c in candles), default=0.0)
     volume = sum(c.volume for c in candles)
@@ -643,7 +647,7 @@ def build_animation_frames(
     )
     if not events and snapshot.candles:
         # 約定がない場合は最新足を1フレームだけ出す。
-        events = [snapshot.candles[-1]]  # type: ignore[list-item]
+        events = [max(snapshot.candles, key=lambda c: c.timestamp)]  # type: ignore[list-item]
 
     frames: list[AnimationFrame] = []
     base = clock()
@@ -714,16 +718,28 @@ class AnimationPlayer:
     ) -> int:
         """フレームを順に再生し、再生したフレーム数を返す。
 
-        各フレームの ``scheduled_at`` まで ``sleep`` で待機し、
+        先頭の ``scheduled_at`` を再生開始時刻に対応させ、相対間隔と fps を守り、
         指定の ``deadline`` を超えたら打ち切る（負荷・同期抑制）。
         """
         count = 0
+        start = self._clock()
+        first_scheduled = None
+        last_drawn = None
         for frame in frames:
-            if deadline is not None and self._clock() >= deadline:
+            now = self._clock()
+            if first_scheduled is None:
+                first_scheduled = frame.scheduled_at
+            target = start + (frame.scheduled_at - first_scheduled)
+            if last_drawn is not None:
+                target = max(target, last_drawn + 1.0 / self.fps)
+            if deadline is not None and max(now, target) >= deadline:
                 break
-            wait = frame.scheduled_at - self._clock()
+            wait = target - now
             if wait > 0:
                 self._sleep(wait)
+            last_drawn = self._clock()
+            if deadline is not None and last_drawn >= deadline:
+                break
             on_frame(frame)
             self.played.append(frame)
             count += 1
