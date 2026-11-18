@@ -1936,9 +1936,14 @@ def _mechanical_chart(mem, state, rid, digest):
     except ValueError:
         _mechanical_interim(mem, state, rid, digest, allow_sole=allow_sole)
         return
-    validated = dict(validated, request_digest=digest)
+    # Validation deliberately drops internal-only permissions. Restore the
+    # trusted mechanical permission by local step, never from external plans.
+    hero_steps = {o['step'] for o in orders if o.get('hero_hub_move') is True}
+    validated = dict(validated, request_digest=digest, orders=[
+        {**o, **({'hero_hub_move': True} if o['step'] in hero_steps else {})}
+        for o in validated['orders']])
     _adopt_plan(mem, validated, rid)
-    if any(o.get('hero_hub_move') is True for o in validated['orders']):
+    if hero_steps:
         _note_hero_hub_move(mem)
 
 
