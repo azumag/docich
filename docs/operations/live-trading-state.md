@@ -53,6 +53,37 @@ L1 は、本番(LIVE)の売買の**土台だけ**で、動作しない。どの�
 - 確かめるには `python -m docich.trading.live.policy digest <file>`(digest を表示するだけ)。
 - 保有中のポジションは、入ったときの方針の売りルールを保つ(台帳のトリガーが、別の方針での売りを拒否する)。
 
+## 初期方針のセットアップ (WebUI、取引の有効化とは別)
+
+LIVE タブの「初期方針のセットアップ」は、PAPER の `paper_strategy_evaluation_history.json` の
+`entries[].experiment` からオーナー承認済みの初期方針(`snapback_harvest_v25`)を読み、
+`INITIAL_SYMBOLS` の11銘柄の policy set として台帳へ `owner_initial` で記録する。LIVE の
+ON/OFF、`trade`、control ファイル、worker は変更しない。
+
+- `GET /api/live/initial-policy/export`: 読み取り専用。履歴の候補を厳密に検証し、
+  `activated_at` を除く canonical snapshot JSON と full 64-hex `experiment_digest` を返す。
+  ディレクトリは設定済み `state_dir/trading` だけを使い、パスは受け取らない。UI の
+  ダウンロード名には full digest が入る。
+- `POST /api/live/initial-policy/preview`: 読み取り専用。operator/note を文字列として検証し、
+  候補を再読込して、現在の有効 policy・台帳 ID に結び付いた確認 token を返す。ledger も
+  control も作らない。
+- `POST /api/live/initial-policy/activate`: プレビュー token（10 文字の小文字 hex のみ）を
+  検証し、writer lease の下で候補と有効 policy を**再読込**してから `owner_initial` を記録する。
+  候補が変わった場合・別の有効 policy がある場合は拒否する。同じ policy set が既に有効なら、
+  operator/note と token を検証したうえで何も書かず `already_active` を返す。初回成功が
+  台帳を作成した場合でも、同じ preview の再送（応答喪失・二重クリック）は `already_active`
+  として扱う。別の contender が先に有効化した場合は、writer lease と再読込により上書きしない。
+  初回 preview の後に空の台帳ができていた場合（失敗した試行や別プロセス）は token が台帳 ID に
+  結び付かないため、書き込まず `stale_preview` として再プレビューを求める。
+- 履歴が 20 件から消えている場合は、以前にエクスポートした canonical JSON と、それとは
+  独立に保管した full digest を UI に貼り付ける。同じ厳密パーサ・64 KiB 上限・
+  experiment ID 検査を通る。**履歴に候補がある場合は full canonical digest が一致するときだけ**
+  受け付け、別の `snapback_harvest_v25` を ID だけで受け入れない。履歴が壊れている・候補が
+  曖昧な場合はフォールバックせず拒否する。
+- 既存の operator 認証・viewer/read-only 拒否・CSRF・Origin/Host 検査を通る。
+  GET は状態を変更しない。UI は送信中に確認ボタンを無効化し、エラーは固定コードだけを
+  表示する。パス・台帳の生値・キー・token は表示しない。
+
 ## 安全停止
 
 止める理由は6つ定義してある。コードが自動で止めるのは、未知の注文(`record_order_observation`)、手数料の未取得と約定の矛盾(`record_fill`)、書き込み権の喪失(`lease_lost`)、データ異常(`ingest.anomaly`)の4つ。`balance_mismatch` と `enable_missing` は旧行の互換のために列挙だけ残しており、**新しくは誰も書かない**(残高の不一致は停止ではなく警告。オーナー決定 2026-11-18)。止まっている間は、新規の買いの送信だけを拒否する。売り(手じまい)は送れる(オーナー決定 2026-11-16)。二重売りは、同じ銘柄・同じ向きの未完了の注文を1件に制限する台帳の索引が防ぐ(結果不明の売りが残っていれば、2つ目の売りは作れない)。結果不明の買いは売りを止めない(約定していても保有が増えるだけ)。照合と監視は止まっていても続ける。オン/オフの制御ファイルはこれとは別で、OFF は買いも売りも止めるが、安全停止ではないので trip も解除操作も要らない。**安全停止の解除は人だけ**。コードから解除を呼ぶ処理は無く、テストで確かめている。
@@ -111,7 +142,8 @@ L1 は、本番(LIVE)の売買の**土台だけ**で、動作しない。どの�
 - `python -m docich.trading.live_owner --state-dir <state> status`: **読み取り専用**。台帳が無ければ `ledger: not created` の1行だけで、ディレクトリもファイルも作らない。あれば有効な方針ダイジェストの先頭12桁(無ければ `none`)、状態ごとの意図数(0件の状態は出さない)、未決済・`residual_inventory` のポジション数、安全停止の理由(無ければ `none`)、UNKNOWN_SUBMISSION の数、cashflow 数、event 数を出す。金額と注文 ID は出さない。
 - `python -m docich.trading.live_owner --state-dir <state> cashflow list`: **読み取り専用**。1行1件で id・kind・通貨・時刻(ISO)・source を出し、金額は**端末(TTY)のときだけ**表示する。それ以外は `amount: hidden`。台帳が無ければ status と同じ1行。
 - `python -m docich.trading.live_owner --state-dir <state> cashflow add --kind {deposit,withdrawal,adjustment} --currency CUR --amount DEC --occurred-at ISO8601 --operator NAME --note TEXT [--confirm TOKEN] [--allow-repeat]`: 入出金・調整の記録。**期首残高のためにオーナーが実行する必要は無い**(ワーカーが `auto_opening:<CCY>` として自動記録する)。**二段確認**: `--confirm` 無しは正規化した内容と token を出すだけで、何も書かず・LIVE ディレクトリも作らない。`--confirm TOKEN` で同じ引数から token を再計算し、一致したときだけ writer lease を取って記録する。preview は、その confirm が台帳を作るのか既存の台帳に書くのかも `ledger: will be created` / `ledger: exists` の1行で示す。token は内容と台帳 ID のハッシュなので、台帳ができた後は preview を取り直す。同じ id は `already recorded`、同じ (kind, 通貨, 金額) は `--allow-repeat` が無ければ拒否。
-- `python -m docich.trading.live_owner --state-dir <state> activate --snapshot PATH --experiment-digest HEX64 --operator NAME --note TEXT [--confirm TOKEN]`: 実験スナップショットから11銘柄の方針セットを作り、そのオーナー有効化を台帳へ記録する。制御ファイルも git の revision も**必要ない**。**二段確認**: `--confirm` 無しは `ledger` / `policy_set` / `experiment` / `mode`(制御ファイルの参考表示。無ければ `none`)/ `operator` / token を出すだけで何も書かない。`--confirm TOKEN` で token を再計算して一致したときだけ writer lease を取り、`record_owner_activation` を呼ぶ(方針セットの digest だけを記録し、`enable_digest` は None)。終了コードは上と同じ(0/1/2/5)。**src の中でオーナー有効化を記録する唯一の場所**。
+- `python -m docich.trading.live_owner --state-dir <state> activate --snapshot PATH --experiment-digest HEX64 --operator NAME --note TEXT [--confirm TOKEN]`: 実験スナップショットから11銘柄の方針セットを作り、そのオーナー有効化を台帳へ記録する。制御ファイルも git の revision も**必要ない**。**二段確認**: `--confirm` 無しは `ledger` / `policy_set` / `experiment` / `mode`(制御ファイルの参考表示。無ければ `none`)/ `operator` / token を出すだけで何も書かない。`--confirm TOKEN` で token を再計算して一致したときだけ writer lease を取り、`record_owner_activation` を呼ぶ(方針セットの digest だけを記録し、`enable_digest` は None)。終了コードは上と同じ(0/1/2/5)。この CLI は従来どおり任意のスナップショットを `owner_initial` / `owner_manual` として記録できる。
+  WebUI の初期セットアップは別経路で、`owner_initial` のみを扱い、別の有効方針を上書きしない。
 - `python -m docich.trading.live_owner --state-dir <state> control status|on|off [--mode shadow|trade] [--yes-trade] --operator NAME`: オン/オフ制御ファイルの読み書き。`status` は読み取り専用。`on` は `--mode` を省くと既存の `mode`(読めなければ `shadow`)を保ち、`--mode trade` は `--yes-trade` が無ければ拒否する。`off` は `mode` を保ったまま `state` を `off` にする。無い `trading-live` / `owner` は 0700 で作り、ファイルは 0600 で原子的に置き換える。writer lease は要らない。
 - `python -m docich.trading.live_owner --state-dir <state> unknown list`: **読み取り専用**(取引所にも触れない)。UNKNOWN_SUBMISSION の意図を1行ずつ、**完全な intent id**・銘柄・売買・注文種別・経過秒数で出す(そのまま `show`/`resolve --intent` に渡せる)。金額と価格は TTY のときだけ(それ以外は `amount: hidden` / `price: hidden`)。無ければ `unknown_submissions: none`。
 - `python -m docich.trading.live_owner --state-dir <state> unknown show --intent ID`: **読み取り専用**(writer lease を取らない)。解決に使う時間窓(`submitted_at` ± `skew_margin_s`)、未約定一覧と**約定履歴**が完全か、候補(台帳が意図に結び付けていない注文。**未約定一覧と、窓の開始以降の約定履歴の両方**から集める。約定履歴にしか無い注文は id で照会する)と一致数(`matching`)、台帳が既に注文を持っているか(`ledger_order`)、`settle_s` を過ぎたかを出す。取引所の注文 ID は TTY のときだけ。

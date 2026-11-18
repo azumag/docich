@@ -26,6 +26,7 @@ LIVE_SCHEMA_VERSION = 1
 FAULT_HOOK: Callable[[str], None] | None = None  # tests only
 
 _ZERO_HASH = "0" * 64
+NO_LEDGER = "no-ledger"
 
 _DDL = """
 BEGIN;
@@ -403,10 +404,13 @@ class LiveLedger:
             row = cur.execute("SELECT set_digest FROM policy_activations ORDER BY activation_id DESC LIMIT 1").fetchone()
         return row[0] if row else None
 
-    def _activate(self, lease, ps, *, reason, actor, evidence_digest, enable_digest, note, now) -> None:
+    def _activate(self, lease, ps, *, reason, actor, evidence_digest, enable_digest, note, now,
+                  require_empty: bool = False) -> None:
         self.store_policy_set(lease, ps, now=now)
         with self._tx(lease) as cur:
             prev = cur.execute("SELECT set_digest FROM policy_activations ORDER BY activation_id DESC LIMIT 1").fetchone()
+            if require_empty and prev is not None:
+                raise LiveLedgerError("an active policy set already exists")
             if reason in ("promotion", "rollback") and cur.execute(
                     "SELECT 1 FROM policy_activations WHERE reason='owner_initial'").fetchone() is None:
                 raise LiveLedgerError("no owner_initial activation recorded")
@@ -433,6 +437,18 @@ class LiveLedger:
         first = self.active_policy_set_digest() is None
         self._activate(lease, ps, reason="owner_initial" if first else "owner_manual", actor="owner",
                        evidence_digest=None, enable_digest=None, note=f"{operator}: {note}"[:500], now=now)
+
+    def record_initial_activation(self, lease, ps: LivePolicySet, *, operator: str, note: str,
+                                  now: float) -> None:
+        """HUMAN-ONLY: the first activation; never replaces a different active policy."""
+        if not operator or not note:
+            raise ValueError("operator and note are required")
+        with self._tx(lease) as cur:
+            if cur.execute("SELECT 1 FROM policy_activations LIMIT 1").fetchone() is not None:
+                raise LiveLedgerError("an active policy set already exists")
+        self._activate(lease, ps, reason="owner_initial", actor="owner", evidence_digest=None,
+                       enable_digest=None, note=f"{operator}: {note}"[:500], now=now,
+                       require_empty=True)
 
     def record_activation(self, lease, ps: LivePolicySet, *, reason: str, evidence_digest: str, now: float) -> None:
         if reason not in ("promotion", "rollback"):
@@ -724,6 +740,19 @@ class LiveLedger:
             cur.execute("UPDATE safety_trips SET cleared_at=?, cleared_by=?, clear_note=?, clear_evidence=? "
                         "WHERE trip_id=?", (float(now), operator, note[:500], evidence[:500], row[0]))
             self._emit(cur, "safety_cleared", "safety", reason.value, {"operator": operator}, now)
+
+
+def read_ledger_id(layout: LiveLayout) -> str:
+    """The ledger's own id, or ``NO_LEDGER`` when there is none (nothing is created here)."""
+    if not layout.ledger_path.is_file():
+        return NO_LEDGER
+    ledger = LiveLedger.open_readonly(layout)
+    try:
+        with ledger.read_cursor() as cur:
+            row = cur.execute("SELECT value FROM meta WHERE key='ledger_id'").fetchone()
+    finally:
+        ledger.close()
+    return row[0] if row else NO_LEDGER
 
 
 def canonical_json_text(obj: object) -> str:

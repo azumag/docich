@@ -257,6 +257,40 @@ input:checked+.slider:before{transform:translateX(20px)}
 </div>
 <p class="help">OFF は買いも売りも止め、解除に人間の安全クリアは不要です。trade で ON にするときだけ、隣の欄に TRADE と入力してください（ブラウザのダイアログは使いません）。viewer / read-only は操作できません。</p>
 </div>
+<div class="card"><h3>初期方針のセットアップ <span class="badge warn">取引の有効化ではありません</span></h3>
+<p class="desc">PAPER の評価履歴にあるオーナー承認済みの初期方針を、LIVE 台帳へ <code>owner_initial</code> として記録します。LIVE の ON/OFF、trade、worker、control ファイルは変更しません。確認（プレビュー）では何も書き込まず、下の「台帳に記録」だけが書き込みます。</p>
+<div class="grid2">
+<div>
+<h4>評価履歴から</h4>
+<div class="actions">
+<button class="btn" id="live-initial-load">履歴を読み取る</button>
+<button class="btn" id="live-initial-download" data-keep-disabled="1" disabled>JSON をダウンロード</button>
+<button class="btn" id="live-initial-preview" data-keep-disabled="1" disabled>この方針を確認</button>
+</div>
+<div class="kv">
+<dt>experiment</dt><dd class="mono" id="live-initial-experiment">-</dd>
+<dt>experiment digest</dt><dd class="mono" id="live-initial-digest" style="word-break:break-all">-</dd>
+<dt>policy set digest</dt><dd class="mono" id="live-initial-policy-digest" style="word-break:break-all">-</dd>
+<dt>有効な policy</dt><dd class="mono" id="live-initial-active">-</dd>
+</div>
+<details><summary>canonical snapshot JSON</summary><textarea id="live-initial-json" readonly rows="10" style="width:100%;font-family:monospace;font-size:11px"></textarea></details>
+</div>
+<div>
+<h4>エクスポート済み JSON のインポート</h4>
+<p class="help">履歴から候補が消えている場合のフォールバックです。履歴に候補があるときは、full digest がその候補と一致する場合だけ受け付けます。canonical JSON と、それとは独立に保管した full digest（64文字）を貼り付けてください。</p>
+<textarea id="live-initial-import-json" rows="8" style="width:100%;font-family:monospace;font-size:11px" placeholder='{"schema_version":1,...}'></textarea>
+<input id="live-initial-import-digest" maxlength="64" autocomplete="off" placeholder="experiment digest (64 hex)" style="width:100%;margin-top:6px;font-family:monospace"/>
+<div class="actions"><button class="btn" id="live-initial-import-preview">インポート内容を確認</button></div>
+</div>
+</div>
+<div class="actions">
+<input id="live-initial-operator" maxlength="200" value="owner" placeholder="operator" style="width:150px"/>
+<input id="live-initial-note" maxlength="200" value="初期方針のセットアップ" placeholder="note" style="width:240px"/>
+<button class="btn primary" id="live-initial-confirm" data-keep-disabled="1" disabled>確認した初期方針を台帳に記録</button>
+</div>
+<div id="live-initial-msg" class="help">履歴を読み取るか、エクスポート済み JSON を確認してください。</div>
+<p class="help">同じ policy set が既に有効なら何も書きません。別の有効な方針がある場合は上書きしません。確認 token は台帳 ID と有効な policy に結び付きます。初回のプレビュー後に空の台帳ができた場合（失敗した試行や別プロセス）は、もう一度「この方針を確認」でプレビューしてください。記録成功後の同じ確認は already_active として扱います。viewer / read-only は実行できません。LIVE worker が writer lease を保持している間は記録できません。</p>
+</div>
 <div class="card"><h3>約定による純収支</h3>
 <div class="grid2">
 <div class="card kpi"><h3>純収支 (JPY)</h3><div class="val" id="live-pnl-total">-</div><div class="subk" id="live-pnl-since">-</div></div>
@@ -806,7 +840,7 @@ async function saveTwitchAds(){
   }catch(e){ toast(String(e),5000); }
 }
 function applyReadOnly(){
-  $$("main button").forEach(b=>{ b.disabled = READ_ONLY && b.id !== "backoff-refresh" && b.id !== "stats-refresh" && b.id !== "health-refresh" && b.id !== "chains-reload" && b.id !== "backoff-reload" && b.id !== "peak-reload" && b.id !== "prediction-refresh" && b.id !== "stream-refresh" && b.id !== "stream-settings-reload" && b.id !== "live-refresh"; });
+  $$("main button").forEach(b=>{ if(b.dataset && b.dataset.keepDisabled==="1") return; b.disabled = READ_ONLY && b.id !== "backoff-refresh" && b.id !== "stats-refresh" && b.id !== "health-refresh" && b.id !== "chains-reload" && b.id !== "backoff-reload" && b.id !== "peak-reload" && b.id !== "prediction-refresh" && b.id !== "stream-refresh" && b.id !== "stream-settings-reload" && b.id !== "live-refresh"; });
   $$("main input, main textarea, main select").forEach(el=>{ if(READ_ONLY) el.disabled=true; else el.disabled=false; });
   // disable chain inherit etc will be handled in render
 }
@@ -2192,6 +2226,7 @@ async function loadCorners(){
 // webui-loader:loadCorners:end
 // webui-live:start
 let LIVE_VIEW={};
+let LIVE_INITIAL={source:null,snapshot:null,digest:null,token:null,activeDigest:null};
 function liveText(id,text){
   const el=document.getElementById(id);
   if(el) el.textContent=String(text==null?"":text);
@@ -2252,6 +2287,13 @@ function renderLive(d){
   liveText("live-trips",trips.length?trips.join(", "):"なし");
   const policy=overview.policy||{};
   liveText("live-policy",policy.digest?`${policy.digest} (${(policy.symbols||[]).join(", ")||"symbol なし"})`:"なし");
+  const currentDigest=policy.digest||"none";
+  if(LIVE_INITIAL.token && LIVE_INITIAL.activeDigest!==currentDigest){
+    liveInitialClearToken();
+    liveInitialMsg("有効な policy が変わった可能性があります。もう一度「この方針を確認」を押してください。",true);
+  }
+  LIVE_INITIAL.activeDigest=currentDigest;
+  liveText("live-initial-active",policy.digest?`${String(policy.digest).slice(0,12)} (${(policy.symbols||[]).length||0} symbols)`:"なし");
   liveText("live-ledger",!d?"未接続":(!LIVE_VIEW.ledger_present?"台帳なし":(overview.ledger_readable?"読取OK":"台帳を読めません")));
 
   const pnl=overview.pnl||{};
@@ -2312,6 +2354,146 @@ async function liveControl(state,mode){
   }catch(e){
     liveText("live-msg",String(e));
   }
+}
+function liveInitialMsg(text,bad){
+  const el=document.getElementById("live-initial-msg");
+  if(!el) return;
+  el.textContent=String(text||"");
+  el.style.color=bad?"var(--bad)":"";
+}
+function liveInitialErrorText(e){
+  const s=String(e||"");
+  const known={
+    history_missing:"PAPER の評価履歴が見つかりません。エクスポート済み JSON をインポートしてください。",
+    history_unreadable:"PAPER の評価履歴を安全に読めません。",
+    history_invalid:"PAPER の評価履歴の形式が不正です。",
+    candidate_missing:"初期方針の候補が評価履歴にありません。",
+    candidate_unsupported:"オーナー承認済みの初期方針以外の実験だけが履歴にあります。",
+    candidate_ambiguous:"同じ初期方針 ID で異なる内容が複数あります。一意に決められません。",
+    candidate_invalid:"初期方針の候補が厳密な検証に通りません。",
+    snapshot_invalid:"スナップショットが厳密な検証に通りません。",
+    snapshot_too_large:"スナップショットが大きすぎます。",
+    digest_invalid:"digest は 64 文字の小文字 hex で指定してください。",
+    digest_mismatch:"スナップショットと digest が一致しません。",
+    import_mismatch:"評価履歴にある初期方針とインポート内容が一致しません。",
+    policy_invalid:"初期方針のポリシーを作れません。",
+    operator_invalid:"operator は 1..200 文字で指定してください。",
+    note_invalid:"note は 1..200 文字で指定してください。",
+    source_invalid:"取得元の指定が不正です。",
+    stale_preview:"確認後に候補・台帳・有効方針が変わったため、もう一度確認してください。",
+    active_policy_conflict:"別の有効な方針があるため、初期セットアップでは上書きしません。",
+    lease_held:"LIVE worker が writer lease を保持しています。停止してから再実行してください。",
+    ledger_unavailable:"LIVE 台帳を安全に読めません。",
+    activation_refused:"台帳が初期方針の有効化を拒否しました。",
+  };
+  for(const [code,text] of Object.entries(known)) if(s.includes(code)) return text;
+  return "初期方針の操作に失敗しました。";
+}
+function liveInitialRender(d){
+  LIVE_INITIAL.source=d.source||null;
+  LIVE_INITIAL.snapshot=d.snapshot||null;
+  LIVE_INITIAL.digest=d.experiment_digest||null;
+  liveText("live-initial-experiment",d.experiment_id||"-");
+  liveText("live-initial-digest",d.experiment_digest||"-");
+  liveText("live-initial-policy-digest",d.policy_set_digest||"-");
+  if(Object.prototype.hasOwnProperty.call(d,"active_policy_set_digest")){
+    LIVE_INITIAL.activeDigest=d.active_policy_set_digest||"none";
+    liveText("live-initial-active",d.active_policy_set_digest?`${String(d.active_policy_set_digest).slice(0,12)} (${(d.symbols||[]).length} symbols)`:"なし");
+  }
+  const ta=document.getElementById("live-initial-json");
+  if(ta) ta.value=d.snapshot||"";
+  const download=document.getElementById("live-initial-download");
+  if(download) download.disabled=READ_ONLY||!LIVE_INITIAL.snapshot;
+  const preview=document.getElementById("live-initial-preview");
+  if(preview) preview.disabled=READ_ONLY||!LIVE_INITIAL.snapshot;
+  const confirm=document.getElementById("live-initial-confirm");
+  if(confirm) confirm.disabled=READ_ONLY||!LIVE_INITIAL.token;
+}
+function liveInitialClearToken(){
+  LIVE_INITIAL.token=null;
+  const confirm=document.getElementById("live-initial-confirm");
+  if(confirm) confirm.disabled=true;
+}
+async function liveInitialLoad(){
+  if(READ_ONLY){ liveInitialMsg("read-only のため初期方針を読み取れません。",true); return; }
+  liveInitialMsg("評価履歴を読み取り中…",false);
+  try{
+    const d=await api("/api/live/initial-policy/export");
+    liveInitialClearToken();
+    liveInitialRender(d);
+    liveInitialMsg("評価履歴から読み取りました。内容を確認して「この方針を確認」を押してください。",false);
+  }catch(e){
+    liveInitialClearToken();
+    liveInitialMsg(liveInitialErrorText(e),true);
+  }
+}
+async function liveInitialPreview(source){
+  if(READ_ONLY){ liveInitialMsg("read-only のため初期方針を確認できません。",true); return; }
+  const operator=(document.getElementById("live-initial-operator")?.value||"").trim();
+  const note=(document.getElementById("live-initial-note")?.value||"").trim();
+  if(!operator||!note){ liveInitialMsg("operator と note を入力してください。",true); return; }
+  const body={source,operator,note};
+  if(source==="import"){
+    const snapshot=document.getElementById("live-initial-import-json")?.value||"";
+    const digest=(document.getElementById("live-initial-import-digest")?.value||"").trim();
+    if(!snapshot.trim()||!digest){ liveInitialMsg("canonical JSON と full digest を入力してください。",true); return; }
+    body.snapshot=snapshot;
+    body.experiment_digest=digest;
+  }
+  liveInitialClearToken();
+  liveInitialMsg("確認中…",false);
+  try{
+    const d=await api("/api/live/initial-policy/preview",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
+    LIVE_INITIAL.token=d.token;
+    liveInitialRender(d);
+    const confirm=document.getElementById("live-initial-confirm");
+    if(confirm) confirm.disabled=READ_ONLY||!d.token;
+    liveInitialMsg(d.already_active?"同じ policy set が既に有効です。記録しても変更はありません。":"確認しました。内容を確認して「確認した初期方針を台帳に記録」を押してください。",false);
+  }catch(e){
+    liveInitialClearToken();
+    liveInitialMsg(liveInitialErrorText(e),true);
+  }
+}
+async function liveInitialConfirm(){
+  if(READ_ONLY){ liveInitialMsg("read-only のため初期方針を記録できません。",true); return; }
+  if(!LIVE_INITIAL.token){ liveInitialMsg("先に「この方針を確認」でプレビューしてください。",true); return; }
+  const operator=(document.getElementById("live-initial-operator")?.value||"").trim();
+  const note=(document.getElementById("live-initial-note")?.value||"").trim();
+  const confirmBtn=document.getElementById("live-initial-confirm");
+  if(confirmBtn) confirmBtn.disabled=true;
+  const body={source:LIVE_INITIAL.source,operator,note,confirm:LIVE_INITIAL.token};
+  if(LIVE_INITIAL.source==="import"){
+    body.snapshot=document.getElementById("live-initial-import-json")?.value||"";
+    body.experiment_digest=(document.getElementById("live-initial-import-digest")?.value||"").trim();
+  }
+  liveInitialMsg("記録中…",false);
+  try{
+    const d=await api("/api/live/initial-policy/activate",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
+    liveInitialClearToken();
+    if(d.already_active){
+      liveInitialMsg("同じ policy set が既に有効です。台帳への追加書き込みはありません。",false);
+    }else{
+      liveInitialMsg("初期方針を owner_initial として記録しました。LIVE の ON/OFF・trade・worker は変更していません。",false);
+    }
+    await loadLive();
+  }catch(e){
+    if(/stale_preview|active_policy_conflict|lease_held/.test(String(e))) liveInitialClearToken();
+    liveInitialMsg(liveInitialErrorText(e),true);
+  }finally{
+    if(confirmBtn) confirmBtn.disabled=READ_ONLY||!LIVE_INITIAL.token;
+  }
+}
+function liveInitialDownload(){
+  if(!LIVE_INITIAL.snapshot) return;
+  const blob=new Blob([LIVE_INITIAL.snapshot],{type:"application/json"});
+  const url=URL.createObjectURL(blob);
+  const a=document.createElement("a");
+  a.href=url;
+  a.download=`live-initial-${String(LIVE_INITIAL.digest||"policy")}.json`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(()=>URL.revokeObjectURL(url),1000);
 }
 // webui-live:end
 function renderCornerCatalogMessage(message){
@@ -3419,6 +3601,16 @@ document.addEventListener("DOMContentLoaded",()=>{
     const mode=(LIVE_VIEW&&LIVE_VIEW.control&&LIVE_VIEW.control.mode)||"shadow";
     liveControl("off",mode);
   };
+  const liLoad=document.getElementById("live-initial-load");
+  if(liLoad) liLoad.onclick=()=>liveInitialLoad();
+  const liPreview=document.getElementById("live-initial-preview");
+  if(liPreview) liPreview.onclick=()=>liveInitialPreview("history");
+  const liImport=document.getElementById("live-initial-import-preview");
+  if(liImport) liImport.onclick=()=>liveInitialPreview("import");
+  const liConfirm=document.getElementById("live-initial-confirm");
+  if(liConfirm) liConfirm.onclick=()=>liveInitialConfirm();
+  const liDownload=document.getElementById("live-initial-download");
+  if(liDownload) liDownload.onclick=()=>liveInitialDownload();
   // stream
   const stStart=document.getElementById("stream-start");  if(stStart) stStart.onclick=()=>streamAction("start");
   const stStop=document.getElementById("stream-stop");

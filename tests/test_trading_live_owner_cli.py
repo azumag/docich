@@ -476,6 +476,15 @@ def test_activate_preview_creates_no_ledger(workspace, tmp_path):
     assert _listing(workspace.state) == before and not workspace.layout.ledger_path.exists()
 
 
+def test_ledger_id_keeps_following_a_symlinked_ledger(workspace):
+    ledger = LiveLedger.open(workspace.layout, paper_dir=workspace.paper, now=NOW)
+    ledger.close()
+    real = workspace.state / "live-real.sqlite3"
+    workspace.layout.ledger_path.rename(real)
+    workspace.layout.ledger_path.symlink_to(real)
+    assert cli._ledger_id(live_layout(workspace.state)) != "no-ledger"
+
+
 def test_activate_confirm_records_the_activation_and_the_ledger_accepts_a_repeat(workspace, tmp_path):
     ps = policy_set(live_policy.INITIAL_SYMBOLS)
     snapshot, digest = _snapshot(tmp_path)

@@ -32,10 +32,10 @@ from typing import Callable, TextIO
 from ..live import control as live_control, executor as live_executor
 from ..live import ingest as live_ingest, lease as live_lease
 from ..live import policy as live_policy, reconcile as live_reconcile, safety, views as live_views
-from ..live.canonical import canonical_json, sha256_hex
+from ..live.canonical import canonical_json, confirmation_token, sha256_hex
 from ..live.enable import EnableReason, EnableResult
 from ..live.exchange import ExchangeError, OrderNotFound, dec, dec_text
-from ..live.ledger import Cashflow, LiveLedger, LiveLedgerError
+from ..live.ledger import Cashflow, LiveLedger, LiveLedgerError, read_ledger_id
 from ..live.paths import LiveLayout, live_layout
 from ..live.policy import INITIAL_SYMBOLS
 
@@ -118,7 +118,7 @@ def _content(kind: str, currency: str, amount: Decimal, when: datetime, operator
 
 
 def _token(content: dict[str, str], ledger_id: str) -> str:
-    return sha256_hex(canonical_json({**content, "ledger_id": ledger_id}))[:10]
+    return confirmation_token(content, ledger_id)
 
 
 def _cashflow_id(content: dict[str, str]) -> str:
@@ -127,15 +127,7 @@ def _cashflow_id(content: dict[str, str]) -> str:
 
 def _ledger_id(layout: LiveLayout) -> str:
     """The ledger's own id, or ``no-ledger`` when there is none (nothing is created here)."""
-    if not layout.ledger_path.is_file():
-        return "no-ledger"
-    ledger = LiveLedger.open_readonly(layout)
-    try:
-        with ledger.read_cursor() as cur:
-            row = cur.execute("SELECT value FROM meta WHERE key='ledger_id'").fetchone()
-    finally:
-        ledger.close()
-    return row[0] if row else "no-ledger"
+    return read_ledger_id(layout)
 
 
 # ---- subcommands (read-only) -----------------------------------------------------------------
@@ -443,6 +435,8 @@ def _record_trip_clear(args, out: TextIO, clock: Callable[[], float],
 
 
 # ---- activate (the owner's policy set activation) --------------------------------------------
+# This owner CLI deliberately keeps its general owner_initial/owner_manual behavior.  The
+# WebUI initial setup is stricter (initial only, never replaces a different active policy).
 def _short(exc: BaseException) -> str:
     """One short line of an exception's message (never a file's content)."""
     text = " ".join(str(exc).split())

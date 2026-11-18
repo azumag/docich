@@ -26,14 +26,15 @@ class LivePolicyError(ValueError):
     pass
 
 
-def _payload_without_activation(spec: StrategyExperiment) -> dict:
+def experiment_payload(spec: StrategyExperiment) -> dict:
+    """The executable payload used by the digest (``activated_at`` is metadata)."""
     payload = experiment_to_payload(spec)
     payload.pop("activated_at", None)
     return payload
 
 
 def experiment_digest(spec: StrategyExperiment) -> str:
-    return sha256_hex(canonical_json(_payload_without_activation(spec)))
+    return sha256_hex(canonical_json(experiment_payload(spec)))
 
 
 def _read_snapshot_file(path: Path) -> dict:
@@ -54,7 +55,7 @@ def _read_snapshot_file(path: Path) -> dict:
     return data
 
 
-def _strict_experiment(data: Mapping) -> StrategyExperiment:
+def strict_experiment(data: Mapping) -> StrategyExperiment:
     """Build the experiment and require the input to round-trip exactly.
 
     ``experiment_from_mapping`` silently trims ids, fills defaults and accepts
@@ -65,7 +66,7 @@ def _strict_experiment(data: Mapping) -> StrategyExperiment:
     except (StrategyLabError, TradingValidationError, TypeError, ValueError) as exc:
         raise LivePolicyError(f"invalid experiment: {exc}") from exc
     given = {key: value for key, value in data.items() if key != "activated_at"}
-    if given != _payload_without_activation(spec):
+    if given != experiment_payload(spec):
         raise LivePolicyError("snapshot does not round-trip (unknown keys or lossy fields)")
     return spec
 
@@ -73,7 +74,7 @@ def _strict_experiment(data: Mapping) -> StrategyExperiment:
 def load_experiment_snapshot(path, *, expected_digest: str) -> StrategyExperiment:
     if not is_sha256_hex(expected_digest):
         raise LivePolicyError("expected digest must be 64 lowercase hex chars")
-    spec = _strict_experiment(_read_snapshot_file(Path(path)))
+    spec = strict_experiment(_read_snapshot_file(Path(path)))
     if experiment_digest(spec) != expected_digest:
         raise LivePolicyError("experiment digest mismatch")
     return spec
@@ -89,7 +90,7 @@ class LivePolicy:
 
     def payload(self) -> dict:
         return {"symbol": self.symbol, "experiment_digest": self.experiment_digest,
-                "experiment": _payload_without_activation(self.experiment),
+                "experiment": experiment_payload(self.experiment),
                 "max_opportunity_fraction": format(self.max_opportunity_fraction, "f"),
                 "digest": self.digest}
 
@@ -108,13 +109,13 @@ def build_policy(spec: StrategyExperiment, symbol: str) -> LivePolicy:
     if not Decimal("0") < fraction <= MAX_FRACTION:
         raise LivePolicyError("max_opportunity_fraction out of range")
     exp_digest = experiment_digest(spec)
-    digest = _policy_digest(symbol, exp_digest, _payload_without_activation(spec), fraction)
+    digest = _policy_digest(symbol, exp_digest, experiment_payload(spec), fraction)
     return LivePolicy(symbol, spec, exp_digest, fraction, digest)
 
 
 def policy_from_payload(payload: Mapping) -> LivePolicy:
     try:
-        spec = _strict_experiment(payload["experiment"])
+        spec = strict_experiment(payload["experiment"])
         policy = build_policy(spec, str(payload["symbol"]))
     except (KeyError, TypeError, CanonicalError) as exc:
         raise LivePolicyError("policy payload is malformed") from exc
@@ -161,7 +162,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("command", choices=["digest"])
     parser.add_argument("file")
     args = parser.parse_args(argv)
-    spec = _strict_experiment(_read_snapshot_file(Path(args.file)))
+    spec = strict_experiment(_read_snapshot_file(Path(args.file)))
     print(experiment_digest(spec))
     return 0
 
