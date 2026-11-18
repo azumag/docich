@@ -367,6 +367,57 @@ def _recall_picker_cycles(chapter, flags, nearby, goal):
             and all(flags.get(name) in ('own', 'enemy') for name in castles))
 
 
+
+UNVERIFIED_LAUNCH_LIMIT = 3   # Y-view observations without the unit before rearm
+
+
+def _settle_unverified_launches(mem, markers):
+    """Return a launch with no visible unit and no march record to pending.
+
+    A sent A plus a closed picker is not proof the unit left (g1097), and the
+    per-sortie ``launch_probe`` lives in the procedure region, so it is gone
+    once the deploy ends (g1190 2026-11-19 run 5: three ``launched`` castles
+    for five months while the Y view showed a single unit — #4626). The world
+    map is the measured ground truth: when fewer units are drawn than there
+    are launches, a launch without a march record misses again, and after
+    UNVERIFIED_LAUNCH_LIMIT such views it goes back to pending so the plan can
+    pick it again next month.
+    """
+    launched = _world(mem).get('launched_orders') or {}
+    if not launched:
+        mem.pop('launch_unverified', None)
+        return
+    if not markers:
+        return          # an unread world map proves nothing
+    sorties = _sorties(mem)
+    watch = mem.get('launch_unverified')
+    watch = watch if isinstance(watch, dict) else {}
+    if len(markers) >= len(launched):
+        mem['launch_unverified'] = {}
+        return
+    changed = False
+    for step in list(launched):
+        if step in sorties:
+            watch.pop(step, None)
+            continue
+        watch[step] = int(watch.get(step) or 0) + 1
+        if watch[step] < UNVERIFIED_LAUNCH_LIMIT:
+            continue
+        watch.pop(step, None)
+        launched.pop(step, None)
+        status = _plan_region(mem).setdefault('orders', {})
+        if status.get(step) not in ('failed',):
+            status[step] = 'pending'
+        _record(mem, 'sortie_unverified_rearmed', chart_step=step,
+                observed_metric={'units': len(markers), 'launched': len(launched) + 1,
+                                 'limit': UNVERIFIED_LAUNCH_LIMIT},
+                reason='全城マップにユニットが見えず行軍記録も無いままの出撃を指示待ちへ戻し、次月に選び直す')
+        changed = True
+    if watch:
+        mem['launch_unverified'] = watch
+    else:
+        mem.pop('launch_unverified', None)
+
 def world_map_step(screen, mem, frame):
     """Read every castle's owner from the Y view, then close it with Y
     (or, while a Y jump is running, steer its cursor to the goal castle)."""
@@ -646,6 +697,7 @@ def world_map_step(screen, mem, frame):
                          int(round((y_cursor[1] - y_offset[1]) * 8))]
         mem['uncertain'] = False
         mem.pop('anchor', None)
+        mem.pop('y_anchor_attempts', None)
         _record(mem, 'world_anchor_from_yview',
                 observed_metric={'cursor': list(y_cursor),
                                  'world': list(mem['cursor'])},
@@ -660,6 +712,7 @@ def world_map_step(screen, mem, frame):
         _apply_skull_boss(mem, frame)
     markers = world_markers(frame)
     _probe_launch_markers(mem, markers)
+    _settle_unverified_launches(mem, markers)
     mem['_world_units_prev'] = [list(b) for b in markers]
     if markers:
         _record(mem, 'world_map_units', observed_metric={'count': len(markers),
@@ -854,6 +907,10 @@ def _order_start_due(mem, step):
     started = mem.setdefault('order_start_tick', {})
     last = started.get(step)
     if last is not None and now - int(last) < ORDER_START_BACKOFF:
+        # Counted, not recorded: a held frame that never reaches the plan is
+        # invisible today (g1190 2026-11-19 run 5: 66 map plans with no
+        # decision and no order_start — #4622).
+        _tally(mem, 'order_start_backoff')
         return False
     started[step] = now
     for stale in list(started)[:-40]:      # del on the temporary list is a no-op
@@ -974,6 +1031,19 @@ def _watch_cursor_still(mem):
     if (watch['n'] < CURSOR_STILL_LIMIT or mem.get('nav_search')
             or mem.get('castle_jump') or (mem.get('anchor') and not mem.get('uncertain'))):
         return False
+    # Prefer the Y view's own-position cursor before the castle-list jump: it
+    # anchors the field cell directly, while the X reanchor needs アルマムーン
+    # to be on the visible list and looped when it was not (g1190 2026-11-19
+    # run 3/4: cursor_still_search repeated and no sortie ever started — #4611).
+    attempts = int(mem.get('y_anchor_attempts') or 0)
+    if attempts < Y_ANCHOR_ATTEMPTS:
+        mem['y_anchor_attempts'] = attempts + 1
+        mem['y_anchor_due'] = True
+        _record(mem, 'cursor_still_yview',
+                observed_metric={'cursor': list(cursor), 'still': watch['n'],
+                                 'attempt': attempts + 1},
+                reason='現在地の推定が動かないため、全体マップ（Y）の自位置カーソルから座標を再確定する')
+        return True
     mem['nav_search'] = True
     mem.pop('nav_search_leg', None)
     mem.pop('anchor', None)
@@ -1006,6 +1076,9 @@ CASTLE_JUMP_SCROLL_LIMIT = 16   # list scrolls while looking for the source
 CASTLE_JUMP_SCROLL_PROOF = 2    # extra taps issued once the hand is on the last row
 CASTLE_JUMP_SCROLL_STALL = 2    # unchanged list readings before the Y route takes over
 CASTLE_JUMP_COOLDOWN = 40       # observations before retrying a failed source
+Y_ANCHOR_ATTEMPTS = 2            # Y-view re-anchors before the castle-list jump
+REANCHOR_FAILURE_LIMIT = 3      # consecutive failed reanchors before backing off
+REANCHOR_FAILURE_BACKOFF = 600  # observations a tripped reanchor stays quiet
 CASTLE_JUMP_FAR = 48            # same distance gate as the Y jump (map px)
 # The orange hand of the main menu and of the しろ list blinks, so whole frames
 # are captured with no cursor sprite drawn. g1139 2026-11-07 lost five jumps
@@ -1233,6 +1306,22 @@ def _end_castle_jump(screen, mem, why):
         _record(mem, 'cursor_reanchor_failed', target=jump.get('source'),
                 screen=screen.kind, observed_metric=metric,
                 reason='アルマムーンへのSELECT復旧が成立しないため、再試行を制限して従来の探索へ戻る')
+        # A reanchor that keeps failing is a loop, not a repair: the map flow
+        # never leaves it to dispatch the plan (g1190 2026-11-19 run 3:
+        # 14 cursor_reanchor_failed and 14 cursor_still_search with no sortie
+        # from the chapter start to 58-7). Back off for a long window so the
+        # normal navigation can run instead of retrying every cooldown.
+        fails = mem.get('reanchor_failures') or {}
+        n = int(fails.get('n') or 0) + 1
+        if n >= REANCHOR_FAILURE_LIMIT:
+            mem['reanchor_failures'] = {'n': 0, 'tick': int(mem.get('tick') or 0)}
+            mem['castle_jump_skip'] = {'mode': 'reanchor', 'step': None,
+                                       'tick': int(mem.get('tick') or 0) + REANCHOR_FAILURE_BACKOFF}
+            _record(mem, 'cursor_reanchor_suppressed',
+                    observed_metric={'failures': n, 'backoff': REANCHOR_FAILURE_BACKOFF},
+                    reason='再アンカーが続けて失敗するため長時間休止し、通常のナビゲーションへ戻す')
+        else:
+            mem['reanchor_failures'] = {'n': n, 'tick': int(mem.get('tick') or 0)}
     else:
         _record(mem, 'castle_jump_failed', chart_step=jump.get('step'), target=jump.get('source'),
                 screen=screen.kind, observed_metric=metric,
@@ -1845,6 +1934,10 @@ def map_step(screen: Screen, mem, frame):
         # with `nav_last` null). Counted, not recorded, so it stays cheap.
         _tally(mem, 'map_no_cursor')
     _watch_cursor_still(mem)
+    if mem.pop('y_anchor_due', False) and not mem.get('menu_miss'):
+        # A menu-miss hold already has its own bounded Y-jump escape; only a
+        # plain frozen cursor asks for the Y view here.
+        return [pad('y')]
     if not _cursor(screen) and not screen.header and not screen.text:
         # #3721: a chapter transition parks on a map with no HUD, text or
         # cursor until A advances the intermission (g1153: 174 s of no
@@ -1979,6 +2072,7 @@ def map_step(screen: Screen, mem, frame):
             goals.note_map_idle(mem)
             return []           # nothing charted: let real time advance
         if not _order_start_due(mem, order['step']):
+            _tally(mem, 'map_hold_order_due')
             return []
         # Issue #3326 (34 stage 4): a same-signature retry inside
         # SORTIE_RETRY_DEFER_GAP of a cancel at the same (target, purpose)

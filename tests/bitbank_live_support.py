@@ -51,6 +51,13 @@ def trade_row(**kw):
     return row
 
 
+def deposit_row(**kw):
+    row = {"uuid": "dep-uuid-1", "asset": "jpy", "network": "", "amount": "5000", "txid": None,
+           "status": "DONE", "category": "NORMAL", "found_at": T0 + 2000, "confirmed_at": T0 + 3000}
+    row.update(kw)
+    return row
+
+
 def depth_payload():
     return {"asks": [["101", "5"], ["102", "7"]], "bids": [["100", "4"], ["99", "9"]], "timestamp": T0}
 
@@ -87,7 +94,8 @@ class FakeTransport:
 
 def default_script(**over):
     script = {"pairs": pairs_payload(), "assets": assets_payload(), "depth": depth_payload(),
-              "order": order_row(), "active_orders": {"orders": []}, "trade_history": {"trades": []}}
+              "order": order_row(), "active_orders": {"orders": []}, "trade_history": {"trades": []},
+              "deposit_history": {"deposits": []}}
     script.update(over)
     return script
 

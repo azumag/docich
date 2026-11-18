@@ -132,7 +132,7 @@ _TRANSITIONS = {
 _OPEN_STATES = ("PLANNED", "SUBMITTING", "UNKNOWN_SUBMISSION", "ACKED", "PARTIALLY_FILLED")
 
 LIVE_EVENT_KINDS = frozenset({"live_decision", "shadow_fill", "shadow_residual",
-                              "worker_state"})
+                              "worker_state", "cashflow_check"})
 
 
 class LiveLedgerError(RuntimeError):

@@ -11,8 +11,8 @@ from dataclasses import dataclass
 from decimal import Decimal
 from typing import Mapping
 
-from ...live.exchange import (AssetBalance, BalanceSnapshot, ExchangeDataError, FeeInfo, FeeStatus, Fill,
-                              MarketRules, OrderBook, OrderSnapshot, OrderStatus, dec)
+from ...live.exchange import (AssetBalance, BalanceSnapshot, DepositRecord, ExchangeDataError, FeeInfo,
+                              FeeStatus, Fill, MarketRules, OrderBook, OrderSnapshot, OrderStatus, dec)
 
 _ZERO = Decimal(0)
 _JSON_SCALARS = (str, int, bool, type(None))
@@ -54,6 +54,13 @@ def id_text(value: object, name: str) -> str:
     if isinstance(value, str) and value.isdigit():
         return value
     raise _bad(name)
+
+
+def text_value(value: object, name: str) -> str:
+    """A non-empty string field (uuid, asset, status): never empty, never guessed."""
+    if not isinstance(value, str) or not value:
+        raise _bad(name)
+    return value
 
 
 def clean_raw(obj: object, name: str = "raw") -> object:
@@ -268,3 +275,21 @@ def fill_from(trade: object, symbols_by_pair: Mapping[str, str], rates_by_symbol
         fee=fee_from_trade(trade, rates_by_symbol.get(symbol)),
         maker_taker=role if role in ("maker", "taker") else "unknown",
         executed_at_ms=ms_value(_field(trade, "executed_at", "executed_at"), "executed_at"), raw=clean_raw(trade))
+
+
+def deposit_from(row: object) -> DepositRecord:
+    """One ``deposit_history`` row (Issue #4587).
+
+    ``uuid`` is the exchange's own stable id and becomes the deterministic record id, so a re-read
+    after a restart is a no-op.  ``found_at`` is when the exchange first saw the deposit; only a
+    ``DONE`` status means the money is in the balance (``FOUND``/``CONFIRMED`` are still in flight
+    and are reported but never credited).
+    """
+    asset = text_value(_field(row, "asset", "asset"), "asset")
+    status = text_value(_field(row, "status", "status"), "status")
+    uid = text_value(_field(row, "uuid", "uuid"), "uuid")
+    return DepositRecord(
+        record_id=f"bitbank:deposit:{uid}", currency=asset.upper(),
+        amount=dec_str(_field(row, "amount", "amount"), "amount", positive=True),
+        status=status, credited=status == "DONE",
+        occurred_at_ms=ms_value(_field(row, "found_at", "found_at"), "found_at"), raw=clean_raw(row))

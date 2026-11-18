@@ -19,14 +19,15 @@ from decimal import ROUND_HALF_UP, Decimal
 from pathlib import Path
 from typing import Callable, Mapping
 
-from .exchange import (AssetBalance, BalanceSnapshot, CancelKind, CancelOutcome, Capabilities, ExchangeAmbiguous,
-                       ExchangeDataError, ExchangeRejected, FeeInfo, FeeStatus, Fill, FillPage, MarketRules,
-                       OrderBook, OrderNotFound, OrderPage, OrderRequest, OrderSnapshot, OrderStatus)
+from .exchange import (AssetBalance, BalanceSnapshot, CancelKind, CancelOutcome, Capabilities, DepositPage,
+                       DepositRecord, ExchangeAmbiguous, ExchangeDataError, ExchangeRejected, FeeInfo, FeeStatus,
+                       Fill, FillPage, MarketRules, OrderBook, OrderNotFound, OrderPage, OrderRequest,
+                       OrderSnapshot, OrderStatus)
 
 _ZERO = Decimal(0)
 _OPEN = ("UNFILLED", "PARTIALLY_FILLED", "INACTIVE")
 _READ_OPS = ("fetch_order", "fetch_order_by_client_id", "fetch_open_orders", "fetch_fills",
-             "fetch_balance", "fetch_order_book")
+             "fetch_balance", "fetch_order_book", "fetch_deposits")
 
 
 @dataclass(frozen=True)
@@ -103,6 +104,16 @@ class _FillRec:
     delay: int = 0
 
 
+@dataclass
+class _DepositRec:
+    """A deposit in the exchange's own history (the owner's transfer in, #4587)."""
+    record_id: str
+    currency: str
+    amount: Decimal
+    status: str                   # an exchange word; only DONE is credited
+    occurred_at_ms: int
+
+
 def _enc(obj):
     if isinstance(obj, Decimal):
         return {"$d": str(obj)}
@@ -138,6 +149,7 @@ class MockExchange:
         self.submissions: list[dict] = []
         self._orders: dict[str, _Order] = {}
         self._fills: list[_FillRec] = []
+        self._deposits: list[_DepositRec] = []
         self._totals: dict[str, Decimal] = {k.upper(): Decimal(v) for k, v in balances.items()}
         self._books: dict[str, dict[str, list[list[Decimal]]]] = {}
         self._order_seq = int(order_id_start)
@@ -451,6 +463,19 @@ class MockExchange:
                                 first.executed_at_ms, first.raw))
         return FillPage(tuple(out), complete)
 
+    def fetch_deposits(self, currency: str, *, since_ms: int) -> DepositPage:
+        fault = self._read_fault("fetch_deposits")
+        if not self._caps.deposit_history:
+            raise ExchangeDataError("this exchange has no deposit history")
+        rows = [d for d in self._deposits if d.currency == currency and d.occurred_at_ms >= since_ms]
+        rows.sort(key=lambda d: (d.occurred_at_ms, d.record_id))
+        records = [DepositRecord(record_id=d.record_id, currency=d.currency, amount=d.amount,
+                                 status=d.status, credited=d.status == "DONE",
+                                 occurred_at_ms=d.occurred_at_ms) for d in rows]
+        if fault is not None and fault.kind == "TRUNCATED_PAGE":
+            return DepositPage(tuple(records[:-1]), complete=False)
+        return DepositPage(tuple(records), complete=True)
+
     # ------------------------------------------------------------------ test-only controls
     def set_book(self, symbol: str, *, bids=(), asks=()) -> None:
         self._market(symbol)
@@ -487,6 +512,22 @@ class MockExchange:
         self._persist()
         return o.eid
 
+    def external_deposit(self, currency: str, amount, *, status: str = "DONE",
+                         occurred_ms: int | None = None, uid: str | None = None, credit: bool = True) -> str:
+        """A deposit the bot did not record (the owner's transfer in): in the exchange's history and —
+        with ``credit`` — in the balance, but in no ledger.  ``status`` is the exchange's word;
+        only DONE is credited.  Returns the deterministic record id the reader will report."""
+        currency = currency.upper()
+        uid = uid or f"dep-{len(self._deposits) + 1}"
+        record = _DepositRec(record_id=f"mock:deposit:{uid}", currency=currency, amount=Decimal(amount),
+                             status=status,
+                             occurred_at_ms=self._now() if occurred_ms is None else int(occurred_ms))
+        self._deposits.append(record)
+        if credit:
+            self._totals[currency] = self._totals.get(currency, _ZERO) + record.amount
+        self._persist()
+        return record.record_id
+
     def adjust_balance(self, currency: str, delta) -> None:
         currency = currency.upper()
         self._totals[currency] = self._totals.get(currency, _ZERO) + Decimal(delta)
@@ -514,6 +555,7 @@ class MockExchange:
     # ------------------------------------------------------------------ persistence
     def _state(self) -> dict:
         return {"orders": [asdict(o) for o in self._orders.values()], "fills": [asdict(f) for f in self._fills],
+                "deposits": [asdict(d) for d in self._deposits],
                 "totals": self._totals, "books": self._books, "order_seq": self._order_seq,
                 "trade_seq": self._trade_seq, "submissions": self.submissions, "skew_ms": self._skew_ms}
 
@@ -534,6 +576,7 @@ class MockExchange:
         state = _dec(json.loads(self._state_path.read_text(encoding="utf-8")))
         self._orders = {o["eid"]: _Order(**o) for o in state["orders"]}
         self._fills = [_FillRec(**f) for f in state["fills"]]
+        self._deposits = [_DepositRec(**d) for d in state.get("deposits", [])]
         self._totals = state["totals"]
         self._books = state["books"]
         self._order_seq = state["order_seq"]

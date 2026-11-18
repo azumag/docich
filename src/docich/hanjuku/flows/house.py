@@ -1443,6 +1443,13 @@ def _step_once(screen, mem, frame):
         else:
             mem['recruit_field_scan_attempts']['count'] = field_count + 1
             receipts.begin(mem, state)
+            # Mark this month's field scan when it starts, not only when it
+            # finishes: a scan that never completes otherwise re-opens on
+            # every map frame and starves the sortie plan (g1190 2026-11-19
+            # run 3: scan_started every month, order_start 0, 0 captures to
+            # 59-x — #4613). A failed scan keeps its monthly slot; the next
+            # month starts a fresh one.
+            mem['house_field_scan'] = {'scope': scope, 'tick': int(mem.get('tick') or 0)}
         _record(mem, 'scan_started', reason=('月一の国ステータスで将軍数・兵士数・半熟レベルを確認'
                                           if monthly else '実一覧で将軍の卵状態を確認'))
         return ([pad('a')] if move == 'here' else [move] if move else []) if monthly else [pad('x')]

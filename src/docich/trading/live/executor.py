@@ -20,7 +20,7 @@ from decimal import Decimal
 from enum import Enum
 from typing import Callable
 
-from . import fence, reconcile, views
+from . import deposits, fence, reconcile, views
 from .balance import BalanceMonitor, stable_check
 from .exchange import (Guarded, ExchangeAmbiguous, ExchangeDataError, ExchangeError, ExchangeReader, ExchangeRejected,
                        MarketRules, OrderNotFound, OrderRequest, OrderSender, make_client_order_id)
@@ -51,6 +51,7 @@ class StepReport:
     refreshed: int = 0
     swept: bool = False
     balance_checked: bool = False
+    deposits: dict = field(default_factory=dict)   # per-currency DepositCheck from deposits.run (#4587)
 
 
 class OrderExecutor:
@@ -200,6 +201,8 @@ class OrderExecutor:
         self._steps += 1
         if self._steps == 1 or self._steps % max(1, self.config.sweep_every) == 0:
             report.swept = reconcile.sweep(self)
+        if self._steps == 1 or self._steps % max(1, self.config.cashflow_every) == 0:
+            report.deposits = deposits.run(self)
         self.ingest.close_flat_positions()
         report.balance_checked = self.check_balance()
         return report

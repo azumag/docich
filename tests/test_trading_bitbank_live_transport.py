@@ -125,16 +125,16 @@ def test_endpoint_tables_are_exactly_the_fixed_reads():
     assert dict(tr.ENDPOINTS) == {
         "pairs": "marketsGetSpotPairs", "depth": "publicGetPairDepth", "assets": "privateGetUserAssets",
         "order": "privateGetUserSpotOrder", "active_orders": "privateGetUserSpotActiveOrders",
-        "trade_history": "privateGetUserSpotTradeHistory"}
-    assert dict(tr.CHECK_ONLY_ENDPOINTS) == {"deposit_history": "privateGetUserDepositHistory",
-                                             "spot_status": "privateGetSpotStatus"}
+        "trade_history": "privateGetUserSpotTradeHistory",
+        "deposit_history": "privateGetUserDepositHistory"}
+    assert dict(tr.CHECK_ONLY_ENDPOINTS) == {"spot_status": "privateGetSpotStatus"}
     for name in list(tr.ENDPOINTS.values()) + list(tr.CHECK_ONLY_ENDPOINTS.values()):
         assert "Get" in name and "Post" not in name        # the implicit method names say GET
 
 
 def test_an_unknown_endpoint_name_is_a_violation_not_a_lookup():
     transport, ex, _ = make()
-    for bad in ("create_order", "privatePostUserSpotOrder", "", "deposit_history"):
+    for bad in ("create_order", "privatePostUserSpotOrder", "", "withdrawal_history"):
         with pytest.raises(tr.ReadOnlyViolation):
             transport.get(bad, {})
     assert ex.fetched == []
