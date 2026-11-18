@@ -32,6 +32,49 @@ def _merchant_quote_decline(screen, mem, shop, want, reason):
     return [pad('b')]
 
 
+QUOTE_STALL_LIMIT = 4      # identical visible quotes before the decline is forced
+
+
+def _quote_prompt_visible(screen):
+    """The merchant's price confirmation is on screen (うむッ!/いかんッ!)."""
+    text = screen.text or ''
+    return (re.search(r'\d+こで\d+Gになりまんな', ''.join(text.split())) is not None
+            and 'うむッ' in text and 'いかんッ' in text)
+
+
+def _quote_stall_watch(shop, screen):
+    """True once the same visible quote has survived QUOTE_STALL_LIMIT reads.
+
+    g1190 2026-11-18 10:26: a quote with no planned purchase kept pressing B,
+    which does not close this confirmation; A/B alternated until screen_stalled
+    ended the run. A single read still returns B (unread positions stay safe).
+    """
+    if not _quote_prompt_visible(screen):
+        return False
+    key = ''.join((screen.text or '').split())[:80]
+    watch = shop.get('quote_stall') if isinstance(shop, dict) else None
+    n = int(watch.get('n') or 0) + 1 if isinstance(watch, dict) and watch.get('key') == key else 1
+    if isinstance(shop, dict):
+        shop['quote_stall'] = {'key': key, 'n': n}
+    return n >= QUOTE_STALL_LIMIT
+
+
+def _quote_stall_decline(screen, mem, shop, want, reason):
+    """Select いかんッ! for a stalled quote; fall back to the old no-op B."""
+    if isinstance(shop, dict):
+        shop.pop('quote_stall', None)
+    row = want if isinstance(want, list) and len(want) == 3 else [None, 0, 0]
+    _record(mem, 'buy_skip', card=row[0], qty=row[1], price=row[2],
+            gold=(screen.header or {}).get('gold'), deviation_reason=reason,
+            reason='同じ値段確認が続きBでは閉じないため、いかんッ!を選んで購入を見送る')
+    move = menu_to(screen, 'いかんッ!')
+    if move and move != 'here':
+        return [move]
+    if move == 'here':
+        return [pad('a')]
+    return [pad('b')]
+
+
 def _record_shop_exit(mem, shop, screen, reason, *, listed=None):
     """Record a merchant-list exit that spends nothing (diagnostic, no behavior change)."""
     items = (shop or {}).get('items') or []
@@ -468,10 +511,14 @@ def quantity_step(screen: Screen, mem, soldiers=False):
                     shop['want'] = None
                     return [pad('a')]
                 return [move] if move else []
+            if _quote_stall_watch(shop, screen):
+                return _quote_stall_decline(screen, mem, shop, want, 'quote_stall')
             return [pad('b')]
     if value is None or not screen.hand:
         return []
     if not target:
+        if _quote_stall_watch(shop, screen):
+            return _quote_stall_decline(screen, mem, shop, want, 'quote_stall_no_target')
         return [pad('b')]
     # Digit editor: hand x>=200 is the ones digit, a smaller x the tens digit.
     ones_selected = screen.hand[0] >= 200
