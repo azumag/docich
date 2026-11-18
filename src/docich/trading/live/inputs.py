@@ -152,13 +152,17 @@ def build_cycle_inputs(ledger: LiveLedger, *, rules: Mapping[str, MarketRules],
 
 def sell_attempts_for(ledger: LiveLedger, exits: Sequence[Opportunity],
                       held: Mapping[str, HeldPosition],
-                      policy_set: LivePolicySet) -> dict[str, int]:
+                      policy_set: LivePolicySet, *,
+                      decision_prefix: str = "live1") -> dict[str, int]:
     """Attempts already recorded per exit opportunity, keyed by ``opportunity_id``.
 
     Only exits whose symbol is in ``held`` are counted; an exit with no recorded attempt
     maps to 0.  The key uses the digest the position was entered under, because the
-    ledger refuses a sell under any other one.
+    ledger refuses a sell under any other one.  ``decision_prefix`` keeps the shadow
+    namespace separate from the real ``live1`` intents.
     """
+    if not isinstance(decision_prefix, str) or not decision_prefix or ":" in decision_prefix:
+        raise ValueError("decision_prefix must be a non-empty string without ':'")
     attempts: dict[str, int] = {}
     for opportunity in exits:
         position = held.get(opportunity.symbol)
@@ -170,7 +174,7 @@ def sell_attempts_for(ledger: LiveLedger, exits: Sequence[Opportunity],
             if policy is None:
                 continue
             digest_used = policy.digest
-        prefix = (f"live1:{digest_used[:16]}:{opportunity.opportunity_id}:"
+        prefix = (f"{decision_prefix}:{digest_used[:16]}:{opportunity.opportunity_id}:"
                   f"{position.position_id[:8]}:a")
         count = 0
         for key in views.decision_keys(ledger, prefix):

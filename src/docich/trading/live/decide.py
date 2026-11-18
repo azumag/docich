@@ -24,8 +24,10 @@ A failure to record a decision (other than ``LeaseLost``) is swallowed and count
 cycle, but the caller must be able to see how many writes were lost.  ``LeaseLost`` always
 propagates and is not counted.
 
-Shadow records decisions but is NOT ledger-read-only: ``mark_residual_inventory`` closes
-dust positions in shadow as well as in trade, so both modes see the same ledger state.
+This module remains the real-input decision builder.  Shadow mode calls it with injected
+simulated inputs, a separate dedupe map and ``mark_residual=False`` from
+``shadow.decide_and_act``; it never reads real intents for simulated positions or
+decision keys and never marks a real position residual.
 """
 from __future__ import annotations
 
@@ -117,6 +119,9 @@ def _payload(plan, mode_text: str, cycle_text: str, blocks_text: str) -> dict:
         "opportunity_id": plan.opportunity_id,
         "reason": plan.reason_code,
         "decision_key": plan.decision_key,
+        "position_id": plan.position_id or "",
+        "policy_digest": plan.policy_digest,
+        "rule_id": plan.rule_id,
         "amount": format(plan.amount, "f"),
         "price": format(plan.price, "f"),
         "required_quote": format(plan.required_quote, "f"),
@@ -128,11 +133,30 @@ def _payload(plan, mode_text: str, cycle_text: str, blocks_text: str) -> dict:
     }
 
 
-def build_decisions(deps: "CycleDeps", state: "CycleState", ctx: "CycleContext") -> DecisionSet:
-    """Build, filter, size and record one cycle's decisions; never plans or sends an order."""
+def build_decisions(deps: "CycleDeps", state: "CycleState", ctx: "CycleContext", *,
+                    inputs: CycleInputs | None = None, dedupe: dict | None = None,
+                    decision_prefix: str = "live1",
+                    mark_residual: bool = True,
+                    sell_attempts: Mapping[str, int] | None = None) -> DecisionSet:
+    """Build, filter, size and record one cycle's decisions; never plans or sends an order.
+
+    The default arguments are the real trade path: inputs from the LIVE ledger, the
+    ``live1:`` decision namespace, and residual marking of real dust.  Shadow mode passes
+    its own simulated inputs/book, a process-local dedupe map and ``mark_residual=False``;
+    this is the only way a shadow projection reaches the pure scan/size code.
+    """
     rules = deps.executor.rules()
-    inputs = build_cycle_inputs(deps.ledger, rules=rules, balance=ctx.balance,
-                                policy_set=deps.policy_set)
+    if inputs is None:
+        inputs = build_cycle_inputs(deps.ledger, rules=rules, balance=ctx.balance,
+                                    policy_set=deps.policy_set)
+    keys = state.dedupe if dedupe is None else dedupe
+
+    def attempts_for(exits):
+        if sell_attempts is not None:
+            return sell_attempts
+        return sell_attempts_for(deps.ledger, exits, inputs.held, deps.policy_set,
+                                 decision_prefix=decision_prefix)
+
     signals = scan_live(ctx.frames, inputs.positions, deps.policy_set, now=ctx.now)
 
     skip_decisions: list[SkipDecision] = list(signals.skipped)
@@ -218,10 +242,11 @@ def build_decisions(deps: "CycleDeps", state: "CycleState", ctx: "CycleContext")
             ambiguous_position_symbols=inputs.ambiguous_position_symbols,
             sell_attempts=attempts,
             buys_blocked=buys_blocked,
+            decision_prefix=decision_prefix,
         )
 
     # ---- bad-market pre-filter: one invalid market makes the whole call raise ---------
-    attempts = sell_attempts_for(deps.ledger, current.exits, inputs.held, deps.policy_set)
+    attempts = attempts_for(current.exits)
     for symbol in sorted(tuple(markets)):
         try:
             # The dry run only validates this symbol's market inputs.  It records nothing.
@@ -233,8 +258,7 @@ def build_decisions(deps: "CycleDeps", state: "CycleState", ctx: "CycleContext")
 
     # ---- the real sizing call ----------------------------------------------------------
     if current.entries or current.exits:
-        attempts = sell_attempts_for(deps.ledger, current.exits, inputs.held,
-                                     deps.policy_set)
+        attempts = attempts_for(current.exits)
         result = call_size(current, markets, attempts)
     else:
         result = None
@@ -248,14 +272,13 @@ def build_decisions(deps: "CycleDeps", state: "CycleState", ctx: "CycleContext")
         # Re-size without the buy opportunities: dropping only the plan tuples would leave
         # free_quote_left/headroom_left (and the residual ids) reflecting buys that are not
         # kept.  The sells are the same, and the first result's skips are kept as-is.
-        rerun_attempts = sell_attempts_for(deps.ledger, current.exits, inputs.held,
-                                           deps.policy_set)
+        rerun_attempts = attempts_for(current.exits)
         rerun = call_size(dataclasses.replace(current, entries=()), markets,
                           rerun_attempts)
         result = dataclasses.replace(rerun, skipped=result.skipped)
 
-    # ---- dust positions become residual inventory --------------------------------------
-    if result is not None:
+    # ---- dust positions become residual inventory (never for a simulated book) ---------
+    if mark_residual and result is not None:
         held_by_position = {position.position_id: symbol
                             for symbol, position in inputs.held.items()}
         for position_id in result.residual_position_ids:
@@ -285,7 +308,7 @@ def build_decisions(deps: "CycleDeps", state: "CycleState", ctx: "CycleContext")
     def record(action: str, identity: str, reason: str, payload: dict) -> None:
         nonlocal record_failures
         key = (action, identity, reason)
-        if key in state.dedupe:
+        if key in keys:
             return
         try:
             deps.ledger.record_live_event(deps.lease, "live_decision", payload, now=ctx.now)
@@ -295,7 +318,7 @@ def build_decisions(deps: "CycleDeps", state: "CycleState", ctx: "CycleContext")
             # a decision that could not be written does not stop the cycle, but is counted
             record_failures += 1
             return
-        state.dedupe[key] = state.cycle_number
+        keys[key] = state.cycle_number
 
     plans = () if result is None else result.sells + result.buys
     for plan in plans:
@@ -318,10 +341,10 @@ def build_decisions(deps: "CycleDeps", state: "CycleState", ctx: "CycleContext")
             "blocks": blocks_text,
         })
 
-    if len(state.dedupe) > DEDUPE_MAX_ENTRIES:
+    if len(keys) > DEDUPE_MAX_ENTRIES:
         cutoff = state.cycle_number - DEDUPE_KEEP_CYCLES
-        for key in [key for key, value in state.dedupe.items() if value < cutoff]:
-            del state.dedupe[key]
+        for key in [key for key, value in keys.items() if value < cutoff]:
+            del keys[key]
 
     return DecisionSet(
         inputs=inputs,
@@ -336,6 +359,6 @@ def build_decisions(deps: "CycleDeps", state: "CycleState", ctx: "CycleContext")
 
 
 def decide_and_act(deps: "CycleDeps", state: "CycleState", ctx: "CycleContext") -> None:
-    """The cycle hook: build (and record) the decisions; this task places no order."""
+    """Build and record the decisions; the normal shadow branch lives in ``act``."""
     build_decisions(deps, state, ctx)
     return None
