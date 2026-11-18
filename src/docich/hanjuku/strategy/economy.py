@@ -1033,6 +1033,22 @@ def _prioritise_recruit(mem, shop, gold):
         shop.pop('recruit_measured_budget', None)
         _record(mem, 'recruit_cash_rechecked', month=shop.get('key'),
                 reason='同じ月の募集保留を実際の残金・兵士・修理予約で再判定して再開する')
+    # The army pass can finish inside the same monthly visit. An older
+    # deferred_army must no longer cancel recruitment once the soldiers are
+    # enough (g1190 2026-11-18 65-7: the fallback refilled to SOLDIER_ENOUGH
+    # and the recruit stayed deferred_army until the month ended, so the
+    # collapsed roster never regrew).
+    if (shop.get('recruit') == 'deferred_army'
+            and _recruit_shortage(mem) is not None
+            and ((type(mem.get('soldiers_seen')) is int
+                  and mem['soldiers_seen'] >= SOLDIER_ENOUGH)
+                 or shop.get('soldiers_done') is True)):
+        shop['recruit'] = 'pending'
+        shop.pop('recruit_measured_budget', None)
+        _record(mem, 'recruit_army_rechecked', month=shop.get('key'),
+                observed_metric={'soldiers': mem.get('soldiers_seen'),
+                                 'enough': SOLDIER_ENOUGH},
+                reason='兵士補充が完了したため、同じ月の募集保留を再計画する')
     # Recovery may finish later in this *same* monthly visit. An older
     # deferred_egg must no longer cancel recruitment after a verified
     # recovery/no-recovery result; the normal cash/shortage gates still apply.

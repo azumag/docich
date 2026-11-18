@@ -7646,6 +7646,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v1111-concert-b",
             "hanjuku-chart-v1112-hub-roof",
             "hanjuku-chart-v1113-recruit-shortage",
+            "hanjuku-chart-v1114-army-recheck",
             "hanjuku-chart-v1020-recall-giveup",
             "hanjuku-chart-v1021-plan-invalid-source",
             "hanjuku-chart-v1041-egg-receipt-presence",
