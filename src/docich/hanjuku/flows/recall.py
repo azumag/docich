@@ -934,6 +934,27 @@ def _camp_recall_step(screen: Screen, mem, frame, *, observed_camps=None):
         # is empty. Four or five tents were on screen while every status row
         # said nobody was camped, so a sighting is never dismissed by the
         # roster (v1029's guard was removed).
+        if camps and camp_stays(mem) and isinstance(frame, Frame) and castle_roofs(frame):
+            # A corridor view keeps field camps beside their roofs: every one
+            # of them is left camped by ``camp_stays`` and none can be the
+            # boss-march foothold. Drive the cursor to an overdue boss
+            # sortie's aimed cell instead, to re-detect the stale-landed
+            # tent in the boss's roam band.
+            boss_target = chart.boss_castle(mem.get('chapter') or 0)
+            aimed = next((list(s['aimed_cell']) for s in _sorties(mem).values()
+                          if isinstance(s, dict) and s.get('target') == boss_target
+                          and s.get('status') == 'overdue'
+                          and _camp_target(s.get('aimed_cell'))), None)
+            if aimed:
+                from ..os_layer.navigation import nav_step
+                move = nav_step(screen, mem, frame, aimed)
+                if move == 'arrived':
+                    return []
+                if move in ('up', 'down', 'left', 'right'):
+                    _record(mem, 'camp_revisit',
+                            observed_metric={'camp_world': aimed, 'move': move},
+                            reason='回廊ビューの野営は全部野営停止のため、期限切れボス行軍の照準セルへカーソルを寄せてテントを再発見する')
+                    return [pad(move)]
         if not camps:
             # The field frames keep coming but no tent is visible: record a
             # throttled sample so the camera/roof situation is measurable
