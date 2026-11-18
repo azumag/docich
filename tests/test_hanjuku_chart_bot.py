@@ -1378,15 +1378,20 @@ def test_unconfirmed_card_flow_is_bounded_after_return_to_battle(stage):
     cur = mem['battle']
     cur['card_flow'] = {'card': 'クースカン', 'stage': stage}
     # The opening stage keeps asking the panel for the menu it never got
-    # (g462 17:59:29); every other stage is already past the menu ask and
-    # gives up as soon as the second observation carries no receipt.
-    for _ in range(policy.CARD_MENU_OPEN_RETRIES + 1 if stage == 'menu' else 2):
+    # (g462 17:59:29); the list stages tolerate the picker box's bounded
+    # draw frames (#4645), and the announced card gives up as soon as the
+    # second observation carries no receipt.
+    limit = (policy.CARD_MENU_OPEN_RETRIES + 1 if stage == 'menu'
+             else policy.CARD_LIST_OPEN_WAITS if stage in ('down', 'list') else 2)
+    for _ in range(limit):
         policy.battle_step(screen, mem)
     assert cur['card_flow'] is None
     assert cur['cards_used'] == []
     assert cur['cards_unclassified'] == []
     assert not mem.get('kit_spent')
-    assert mem['_records'][-1]['decision'] == 'battle_card_open_unclassified'
+    record = mem['_records'][-1]
+    assert record['decision'] == 'battle_card_open_unclassified'
+    assert record['observed_metric']['stage'] == stage
 
 def test_hp_defeat_followed_by_living_hero_does_not_count_a_general_loss():
     from docich.hanjuku_screen import Screen
