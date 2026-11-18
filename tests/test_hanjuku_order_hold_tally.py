@@ -1,0 +1,19 @@
+"""Map frames that never reach the plan leave a counted reason.
+
+g1190 2026-11-19 run 5: 66 map action_plans in twenty minutes produced no
+decision and no order_start; the backoff (or another hold) was invisible.
+"""
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
+
+from docich.hanjuku.flows import map as m
+
+
+def test_the_backoff_is_counted_not_recorded():
+    mem = {'tick': 100, '_records': [], 'order_start_tick': {'S1': 100}}
+    assert m._order_start_due(mem, 'S1') is False
+    tallies = mem.get('tally') or {}
+    assert tallies.get('order_start_backoff') == 1
+    assert mem['_records'] == []

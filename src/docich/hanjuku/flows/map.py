@@ -855,6 +855,10 @@ def _order_start_due(mem, step):
     started = mem.setdefault('order_start_tick', {})
     last = started.get(step)
     if last is not None and now - int(last) < ORDER_START_BACKOFF:
+        # Counted, not recorded: a held frame that never reaches the plan is
+        # invisible today (g1190 2026-11-19 run 5: 66 map plans with no
+        # decision and no order_start — #4622).
+        _tally(mem, 'order_start_backoff')
         return False
     started[step] = now
     for stale in list(started)[:-40]:      # del on the temporary list is a no-op
@@ -2016,6 +2020,7 @@ def map_step(screen: Screen, mem, frame):
             goals.note_map_idle(mem)
             return []           # nothing charted: let real time advance
         if not _order_start_due(mem, order['step']):
+            _tally(mem, 'map_hold_order_due')
             return []
         # Issue #3326 (34 stage 4): a same-signature retry inside
         # SORTIE_RETRY_DEFER_GAP of a cancel at the same (target, purpose)
