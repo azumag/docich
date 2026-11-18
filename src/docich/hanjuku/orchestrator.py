@@ -1047,6 +1047,25 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
         updated['_experience'] = mem.pop('_experience', None)
         updated['policy'] = mem
         return [pad('a')], updated
+    if kind == 'password_entry':
+        # Chapter clear: the right-hand word list is entered in the story's
+        # order. A/B/START never advance this screen (g1190 2026-11-18 62-2:
+        # the shop phase pressed B for 20 minutes while the frame stayed
+        # static). Hold and record it instead of spamming a key.
+        if not mem.get('password_entry_seen'):
+            mem['password_entry_seen'] = True
+            decision_log._record(mem, 'password_entry_seen', screen=kind,
+                                 observed_metric={'text': (screen.text or '')[:120]},
+                                 reason='章クリアのパスワード入力を検出。単語リストを順に入力するため保留する')
+        updated.update(screen_kind=kind, no_input_streak=0, no_input_frames=[])
+        for key in ('_adjusted', '_interim', '_card_scroll_input'):
+            mem.pop(key, None)
+        _journal(mem).pop('_departure_input', None)
+        _journal(mem).pop('_recall_inputs', None)
+        updated['_records'] = mem.pop('_records')
+        updated['_experience'] = mem.pop('_experience', None)
+        updated['policy'] = mem
+        return [], updated
     from .os_layer.commands import menu_navigation_reading
     navigation = menu_navigation_reading(screen)
     updated['menu_navigation_reading'] = {**navigation, 'step': step} if navigation else None

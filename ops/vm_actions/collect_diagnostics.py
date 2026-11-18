@@ -7651,6 +7651,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v1116-boss-relaunch-free",
             "hanjuku-chart-v1117-hero-hub-move",
             "hanjuku-chart-v1118-boss-chase-camp",
+            "hanjuku-chart-v1119-password-entry",
             "hanjuku-chart-v1020-recall-giveup",
             "hanjuku-chart-v1021-plan-invalid-source",
             "hanjuku-chart-v1041-egg-receipt-presence",
