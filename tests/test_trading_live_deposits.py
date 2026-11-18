@@ -238,6 +238,80 @@ def test_the_step_reconciles_and_the_report_carries_the_classification(ws):
         h.close()
 
 
+def test_a_deposit_found_before_the_opening_but_credited_after_it_is_not_baseline(ws):
+    h = _harness(ws)
+    try:
+        # The exchange saw the deposit five minutes before the books opened, but the money only
+        # hit the balance two minutes after (found_at before, confirmed_at after the baseline).
+        # It is not part of the opening snapshot, so it is recorded, not absorbed by it (#4617).
+        h.advance(120)
+        h.mock.external_deposit("JPY", "5000", occurred_ms=1_700_000_000_000 - 300_000,
+                                confirmed_ms=1_700_000_000_000 + 120_000, uid="cross")
+        checks = deposits.run(h.ex)
+        assert checks["JPY"].baseline == 0 and checks["JPY"].recorded == 1
+        assert len(views.cashflow_rows(h.ledger)) == 2
+        assert _check(h).proven(["JPY"])
+    finally:
+        h.close()
+
+
+def test_a_deposit_with_no_reported_credit_time_is_not_guessed_into_the_baseline(ws):
+    h = _harness(ws)
+    try:
+        # An exchange that says DONE but reports no confirmed_at: nothing proves the money was
+        # inside the opening snapshot, so the safe side is to count it (#4617).
+        h.advance(120)
+        h.mock.external_deposit("JPY", "5000", occurred_ms=1_700_000_000_000 - 300_000,
+                                confirmed_ms=0, uid="nograded")
+        checks = deposits.run(h.ex)
+        assert checks["JPY"].baseline == 0 and checks["JPY"].recorded == 1
+        assert len(views.cashflow_rows(h.ledger)) == 2
+        assert _check(h).proven(["JPY"])
+    finally:
+        h.close()
+
+
+def test_one_owner_cashflow_covers_one_deposit_not_every_equal_one(ws):
+    h = _harness(ws)
+    try:
+        # Two equal deposits three seconds apart, one owner cashflow: the earlier one is covered,
+        # the later one is a real deposit the books do not count yet and is recorded (#4617).
+        h.advance(120)
+        now_ms = h.clock.ms
+        h.mock.external_deposit("JPY", "5000", occurred_ms=now_ms, uid="first")
+        h.mock.external_deposit("JPY", "5000", occurred_ms=now_ms + 3000, uid="second")
+        h.deposit("JPY", "5000")                                    # the owner wrote one of them up
+        checks = deposits.run(h.ex)
+        assert checks["JPY"].already_counted == 1 and checks["JPY"].recorded == 1
+        assert len(views.cashflow_rows(h.ledger)) == 3              # opening + owner + the second
+        assert _check(h).proven(["JPY"])
+        h.crash()                                                   # the same assignment replays
+        reconcile.on_startup(h.ex)
+        checks = deposits.run(h.ex)
+        assert (checks["JPY"].already_counted, checks["JPY"].duplicate, checks["JPY"].recorded) == (1, 1, 0)
+        assert len(views.cashflow_rows(h.ledger)) == 3
+        assert _check(h).proven(["JPY"])
+    finally:
+        h.close()
+
+
+def test_two_owner_cashflows_cover_two_equal_deposits_in_a_deterministic_order(ws):
+    h = _harness(ws)
+    try:
+        h.advance(120)
+        now_ms = h.clock.ms
+        h.mock.external_deposit("JPY", "5000", occurred_ms=now_ms, uid="first")
+        h.mock.external_deposit("JPY", "5000", occurred_ms=now_ms + 3000, uid="second")
+        h.deposit("JPY", "5000")
+        h.deposit("JPY", "5000")
+        checks = deposits.run(h.ex)
+        assert checks["JPY"].already_counted == 2 and checks["JPY"].recorded == 0
+        assert len(views.cashflow_rows(h.ledger)) == 3              # opening + the two owner rows
+        assert _check(h).proven(["JPY"])
+    finally:
+        h.close()
+
+
 def test_one_pass_distinguishes_baseline_duplicate_pending_and_a_cut_page(ws):
     h = _harness(ws)
     try:

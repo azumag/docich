@@ -112,6 +112,7 @@ class _DepositRec:
     amount: Decimal
     status: str                   # an exchange word; only DONE is credited
     occurred_at_ms: int
+    confirmed_at_ms: int = 0      # when the money hit the balance; 0 = no credit time reported
 
 
 def _enc(obj):
@@ -471,7 +472,8 @@ class MockExchange:
         rows.sort(key=lambda d: (d.occurred_at_ms, d.record_id))
         records = [DepositRecord(record_id=d.record_id, currency=d.currency, amount=d.amount,
                                  status=d.status, credited=d.status == "DONE",
-                                 occurred_at_ms=d.occurred_at_ms) for d in rows]
+                                 occurred_at_ms=d.occurred_at_ms,
+                                 confirmed_at_ms=d.confirmed_at_ms or None) for d in rows]
         if fault is not None and fault.kind == "TRUNCATED_PAGE":
             return DepositPage(tuple(records[:-1]), complete=False)
         return DepositPage(tuple(records), complete=True)
@@ -513,15 +515,20 @@ class MockExchange:
         return o.eid
 
     def external_deposit(self, currency: str, amount, *, status: str = "DONE",
-                         occurred_ms: int | None = None, uid: str | None = None, credit: bool = True) -> str:
+                         occurred_ms: int | None = None, uid: str | None = None, credit: bool = True,
+                         confirmed_ms: int | None = None) -> str:
         """A deposit the bot did not record (the owner's transfer in): in the exchange's history and —
         with ``credit`` — in the balance, but in no ledger.  ``status`` is the exchange's word;
-        only DONE is credited.  Returns the deterministic record id the reader will report."""
+        only DONE is credited.  ``confirmed_ms`` is when the money hit the balance; by default the
+        instant it was seen (found), and 0 models an exchange that reports no credit instant.
+        Returns the deterministic record id the reader will report."""
         currency = currency.upper()
         uid = uid or f"dep-{len(self._deposits) + 1}"
+        occurred_at_ms = self._now() if occurred_ms is None else int(occurred_ms)
         record = _DepositRec(record_id=f"mock:deposit:{uid}", currency=currency, amount=Decimal(amount),
                              status=status,
-                             occurred_at_ms=self._now() if occurred_ms is None else int(occurred_ms))
+                             occurred_at_ms=occurred_at_ms,
+                             confirmed_at_ms=occurred_at_ms if confirmed_ms is None else int(confirmed_ms))
         self._deposits.append(record)
         if credit:
             self._totals[currency] = self._totals.get(currency, _ZERO) + record.amount

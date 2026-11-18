@@ -282,6 +282,22 @@ def test_deposits_are_read_per_currency_cut_by_since_and_flagged_by_status():
     assert page.complete and calls(transport, "deposit_history")[-1] == {"asset": "jpy", "count": 100}
 
 
+def test_a_deposit_carries_the_credit_instant_and_tolerates_one_that_is_absent():
+    rows = [deposit_row(uuid="u1", status="DONE", confirmed_at=T0 + 5000),
+            deposit_row(uuid="u2", status="CONFIRMED", confirmed_at=0),
+            deposit_row(uuid="u3", status="DONE", confirmed_at=None),
+            deposit_row(uuid="u4", status="DONE")]
+    rows[3].pop("confirmed_at")                                # no confirmed_at at all
+    reader, transport = make(default_script(deposit_history={"deposits": rows}))
+    page = reader.fetch_deposits("JPY", since_ms=0)
+    stamps = [r.confirmed_at_ms for r in page.deposits]
+    assert stamps == [T0 + 5000, None, None, None]
+    assert page.complete and calls(transport, "deposit_history")[-1] == {"asset": "jpy", "count": 100}
+    reader, _ = make(default_script(deposit_history={"deposits": [deposit_row(uuid="x", confirmed_at="soon")]}))
+    with pytest.raises(ExchangeDataError):
+        reader.fetch_deposits("JPY", since_ms=0)                       # malformed: refused, not guessed
+
+
 def test_a_full_deposit_page_may_be_cut_so_it_is_not_complete():
     rows = [deposit_row(uuid=f"u{i}", found_at=T0 + i) for i in range(3)]
     reader, _ = make(default_script(deposit_history={"deposits": rows}), deposit_count=3)
