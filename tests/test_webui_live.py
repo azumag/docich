@@ -45,6 +45,7 @@ from test_trading_live_support import Workspace, synthetic_mapping  # noqa: E402
 NOW = 1_800_000_000.0
 ROOT = Path(__file__).resolve().parents[1]
 SNAPSHOT_KEYS = {"control", "status", "worker_alive", "ledger_present", "overview"}
+_CONFIRM_UNSET = object()
 
 
 class TestLiveSnapshot(unittest.TestCase):
@@ -363,9 +364,10 @@ class TestLiveHttp(unittest.TestCase):
             body["experiment_digest"] = digest
         return self._request("POST", "/api/live/initial-policy/preview", body)
 
-    def _confirm_initial(self, preview, *, source="history", snapshot=None, digest=None, confirm=None):
+    def _confirm_initial(self, preview, *, source="history", snapshot=None, digest=None,
+                         confirm=_CONFIRM_UNSET):
         body = {"source": source, "operator": "owner", "note": "initial setup",
-                "confirm": preview["token"] if confirm is None else confirm}
+                "confirm": preview["token"] if confirm is _CONFIRM_UNSET else confirm}
         if snapshot is not None:
             body["snapshot"] = snapshot
         if digest is not None:
