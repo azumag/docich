@@ -784,23 +784,6 @@ class LiveLedger:
                 raise LiveLedgerError(f"cashflow rejected: {exc}") from exc
             self._emit(cur, "cashflow_recorded", "cashflow", flow.cashflow_id, {"kind": flow.kind}, now)
 
-    def record_enable_observation(self, lease, result: EnableResult, *, now: float) -> None:
-        """Remember that the gate was open once; trip ENABLE_MISSING if it later closes.
-
-        Never enabled -> nothing is written (a fresh install must stay inert).
-        """
-        if lease is None:
-            raise ValueError("a writer lease is required")
-        with self._tx(lease) as cur:
-            seen = cur.execute("SELECT 1 FROM events WHERE kind='enable_seen' LIMIT 1").fetchone()
-            if result.enabled:
-                if not seen:
-                    self._emit(cur, "enable_seen", "enable", result.file_sha256, {"mode": result.mode}, now)
-            elif seen and safety.insert_trip(cur, SafetyReason.ENABLE_MISSING,
-                                             ",".join(r.value for r in result.reasons), now):
-                self._emit(cur, "safety_trip", "safety", SafetyReason.ENABLE_MISSING.value,
-                           {"reasons": [r.value for r in result.reasons]}, now)
-
     # -- safety (see safety.py) ----------------------------------------------
     def trip_safety(self, reason: SafetyReason, *, detail: str, now: float) -> bool:
         with self._tx_admin() as cur:

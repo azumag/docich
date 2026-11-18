@@ -17,7 +17,6 @@ from decimal import Decimal as D
 
 import pytest
 
-from docich.trading.live.enable import EnableResult
 from docich.trading.live.lease import LeaseLost, release_writer_lease
 from docich.trading.live.ledger import Cashflow, FillRecord, OrderObservation
 from docich.trading.live.safety import SafetyReason
@@ -68,12 +67,6 @@ def _snapshot(ledger):
                 for name in _TABLES}
 
 
-def _enable(h):
-    """A gate result that would pass every check except the lease."""
-    return EnableResult(True, (), mode="trade", file_sha256="a" * 64,
-                        policy_set_digest=h.ps.digest)
-
-
 def _seed(h):
     """One PLANNED intent (its position) + one order row, through public writers."""
     intent = h.ledger.create_intent(h.lease, h.req(key="seed"), now=NOW)
@@ -96,7 +89,7 @@ def _writers(h, intent, obs, fill, flow):
     The arguments are chosen so that only the lease check can refuse the call:
     nothing else about them is invalid.
     """
-    ledger, ps, enable = h.ledger, h.ps, _enable(h)
+    ledger, ps = h.ledger, h.ps
     return {
         "release_lease_row": lambda lease: ledger.release_lease_row(lease, now=NOW),
         "store_policy_set": lambda lease: ledger.store_policy_set(lease, ps, now=NOW),
@@ -120,8 +113,6 @@ def _writers(h, intent, obs, fill, flow):
             lease, obs, now=NOW),
         "record_fill": lambda lease: ledger.record_fill(lease, fill, now=NOW),
         "record_cashflow": lambda lease: ledger.record_cashflow(lease, flow, now=NOW),
-        "record_enable_observation": lambda lease: ledger.record_enable_observation(
-            lease, enable, now=NOW),
     }
 
 
@@ -129,7 +120,7 @@ _WRITER_NAMES = sorted(
     "release_lease_row store_policy_set record_owner_activation record_activation "
     "create_intent mark_submitting transition_intent mark_in_flight_unknown "
     "close_position mark_residual_inventory record_live_event "
-    "record_order_observation record_fill record_cashflow record_enable_observation".split())
+    "record_order_observation record_fill record_cashflow".split())
 
 
 # ---- a. lease=None: every writer refuses before doing any work --------------------
@@ -244,7 +235,6 @@ def test_the_real_lease_still_carries_every_write(h):
     h.ledger.record_order_observation(h.lease, obs, now=NOW + 3)  # last_seen_at moves
     h.ledger.record_fill(h.lease, fill, now=NOW)
     h.ledger.record_cashflow(h.lease, flow, now=NOW)
-    h.ledger.record_enable_observation(h.lease, _enable(h), now=NOW)
     h.ledger.record_live_event(h.lease, "live_decision", {"probe": 1}, now=NOW)
     h.ledger.store_policy_set(h.lease, h.ps, now=NOW)
 
