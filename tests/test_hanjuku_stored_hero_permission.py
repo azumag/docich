@@ -1,0 +1,48 @@
+"""A pending stored plan must gain the hero-hub permission before deploy.
+
+g1190 2026-11-18 15:19-15:25 (#4546): the plan stayed pending all month, so
+_mechanical_chart returned before any rebuild; the stored order
+A:b38abb1c:Ma4237a reached the deploy flow without hero_hub_move and
+_move_general_pick kept sending other generals to タタール while どうし stayed
+home.
+"""
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
+
+from docich import hanjuku_chart as chart
+from docich.hanjuku.strategy import replan
+
+
+def memory(target=None):
+    gate = chart.gateway(11)
+    return {'chapter': 11, '_records': [],
+            'captured': list(chart.gateway(11)['front']) + [gate['hub']],
+            'world': {'garrison': {gate['hub']: ['キール'], 'アルマムーン': [replan.NAME, 'エピィ']}}}
+
+
+def plan(target=None):
+    gate = chart.gateway(11)
+    return {'source': 'mechanical', 'orders': [
+        {'local_step': 'Ma4237a', 'step': 'A:x:Ma4237a', 'general': replan.NAME,
+         'source': 'アルマムーン', 'target': gate['hub'], 'purpose': 'move',
+         'note': '暫定: 主人公をタタールへ移して将軍募集の拠点にする'},
+        {'local_step': 'M1', 'step': 'A:x:M1', 'general': 'エピィ',
+         'source': 'アルマムーン', 'target': gate['hub'], 'purpose': 'move'}]}
+
+
+def test_the_stored_hero_move_gains_the_permission():
+    mem = memory()
+    stored = plan()
+    assert replan._grant_stored_hero_permission(mem, stored) is True
+    assert stored['orders'][0]['hero_hub_move'] is True
+    assert 'hero_hub_move' not in stored['orders'][1]
+
+
+def test_a_plan_without_the_hub_owned_is_untouched():
+    mem = memory()
+    mem['captured'] = []
+    stored = plan()
+    assert replan._grant_stored_hero_permission(mem, stored) is False
+    assert 'hero_hub_move' not in stored['orders'][0]

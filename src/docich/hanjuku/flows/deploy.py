@@ -872,7 +872,13 @@ def _move_general_pick(screen, mem, order):
     general = _plan_region(mem).get('general_override', {}).get(order['step'])
     if general not in spare:
         planned = order.get('general')
-        if planned in spare and (planned != NAME or road_walk):
+        # The hero may leave for the gateway hub: ``hero_hub_move`` is the
+        # owner's exception (recruiting happens at the hero's castle, so the
+        # hub only grows when he stands there). Without this the pick fell back
+        # to another general and the hero never arrived (g1190 2026-11-18
+        # 15:12: the order named どうし and ラビオリ departed instead — #4546).
+        if planned in spare and (planned != NAME or road_walk
+                                 or order.get('hero_hub_move') is True):
             general = planned
             reason = '計画が名指しした将軍をそのまま移動させる'
         else:

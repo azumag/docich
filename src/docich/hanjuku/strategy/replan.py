@@ -1708,8 +1708,52 @@ def _plan_has_foreign_source(mem, stored):
     return False
 
 
+def _carry_hero_permission(stored, orders):
+    """Give a kept plan the hero-hub permission the rebuild now carries.
+
+    The stored plan's orders are reused while their local steps match, so a
+    flag added after they were adopted never reached the deploy flow (g1190
+    2026-11-18 15:19: the kept hero order still lacked ``hero_hub_move`` and
+    ``_move_general_pick`` refused the hero, sending ロックフォール instead —
+    the hub never got its recruiting base, #4546).
+    """
+    granted = {o.get('local_step') or o.get('step') for o in orders
+               if o.get('hero_hub_move') is True}
+    changed = False
+    for row in stored.get('orders') or ():
+        if (isinstance(row, dict) and row.get('local_step') in granted
+                and row.get('hero_hub_move') is not True):
+            row['hero_hub_move'] = True
+            changed = True
+    return changed
+
+
+def _grant_stored_hero_permission(mem, stored):
+    """Restore the hero-hub permission on a plan adopted before it existed.
+
+    A pending plan keeps ``_mechanical_chart`` on its early return all month,
+    so a stored order can reach the deploy flow without ``hero_hub_move``;
+    ``_move_general_pick`` then refuses the hero (g1190 2026-11-18 15:19-15:25:
+    step A:b38abb1c:Ma4237a kept sending ロックフォール/チキータ/タピオカ to
+    タタール while どうし stayed home — #4546). The only plan that names the
+    hero for a move to the gateway hub is that owner's move.
+    """
+    gate = chart.gateway(mem.get('chapter') or 0)
+    if not gate or not isinstance(stored, dict) or gate['hub'] not in _owned(mem):
+        return False
+    changed = False
+    for row in stored.get('orders') or ():
+        if (isinstance(row, dict) and row.get('general') == NAME
+                and row.get('purpose') == 'move' and row.get('target') == gate['hub']
+                and row.get('hero_hub_move') is not True):
+            row['hero_hub_move'] = True
+            changed = True
+    return changed
+
+
 def _mechanical_chart(mem, state, rid, digest):
     """Construct and adopt a full chart mechanically (no LLM answer)."""
+    _grant_stored_hero_permission(mem, _plan_region(mem).get('chart_plan') or {})
     if _plan_pending(mem):
         return
     allow_sole = False   # no castle is ever emptied (owner 2026-11-06)
@@ -1776,6 +1820,7 @@ def _mechanical_chart(mem, state, rid, digest):
     if (stored.get('source') == 'mechanical' and previous_local
             and None not in previous_local
             and [o['step'] for o in orders] == previous_local):
+        _carry_hero_permission(stored, orders)
         _plan_region(mem)['chart_plan'] = stored
         mem.setdefault('chart_plan_tick', int(mem.get('tick') or 0))
         state.pop('interim_order', None)
