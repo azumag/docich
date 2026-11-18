@@ -12,8 +12,8 @@ from .os_layer.pixels import Frame
 from . import decision_log
 from .flows import (battle as battle_flow, battle_menus as battle_menus_flow,
                     deploy as deploy_flow, egg_recovery as egg_recovery_flow, map as map_flow,
-                    month as month_flow, name as name_flow, prompts as prompts_flow,
-                    recall as recall_flow, shop as shop_flow)
+                    month as month_flow, name as name_flow, password as password_flow,
+                    prompts as prompts_flow, recall as recall_flow, shop as shop_flow)
 from .judgment import battle as battle_judgment
 from .strategy import campaign, edition, goals
 from .os_layer import readers
@@ -1267,24 +1267,24 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
         updated['policy'] = mem
         return [pad('a')], updated
     if kind == 'password_entry':
-        # Chapter clear: the right-hand word list is entered in the story's
-        # order. A/B/START never advance this screen (g1190 2026-11-18 62-2:
-        # the shop phase pressed B for 20 minutes while the frame stayed
-        # static). Hold and record it instead of spamming a key.
+        # Chapter clear door: sweep the word list top-down and enter every
+        # word. 実機プローブで A+down の全語掃引が扉を開くことを確認した
+        # (g1190 2026-11-19, #4564)。単に A/B/START を押しても進まない。
         if not mem.get('password_entry_seen'):
             mem['password_entry_seen'] = True
             decision_log._record(mem, 'password_entry_seen', screen=kind,
                                  observed_metric={'text': (screen.text or '')[:120]},
-                                 reason='章クリアのパスワード入力を検出。単語リストを順に入力するため保留する')
+                                 reason='章クリアのパスワード入力を検出。単語リストを掃引して全語入力する')
         updated.update(screen_kind=kind, no_input_streak=0, no_input_frames=[])
         for key in ('_adjusted', '_interim', '_card_scroll_input'):
             mem.pop(key, None)
         _journal(mem).pop('_departure_input', None)
         _journal(mem).pop('_recall_inputs', None)
+        actions = password_flow.password_step(screen, mem)
         updated['_records'] = mem.pop('_records')
         updated['_experience'] = mem.pop('_experience', None)
         updated['policy'] = mem
-        return [], updated
+        return actions, updated
     from .os_layer.commands import menu_navigation_reading
     navigation = menu_navigation_reading(screen)
     updated['menu_navigation_reading'] = {**navigation, 'step': step} if navigation else None
