@@ -7709,6 +7709,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v1179-attack-hp-floor",
             "hanjuku-chart-v1180-scan-retry-visits",
             "hanjuku-chart-v1181-scan-open-giveup",
+            "hanjuku-chart-v1182-hub-reinforce-near",
             "hanjuku-chart-v1158-progress-regress",
             "hanjuku-chart-v1161-refill-collapse",
             "hanjuku-chart-v1160-chapter-probe-field",
