@@ -204,7 +204,8 @@ def phase_a_escape_step(mem, phase, kind, text, actions):
     confirm = (isinstance(actions, list) and len(actions) == 1
                and isinstance(actions[0], dict) and actions[0].get('type') == 'pad'
                and actions[0].get('buttons') == ['a'])
-    if not confirm or kind not in ('text', 'month_menu'):
+    if (not confirm or kind != 'text' or mem.get('battle')
+            or phase not in ('dialogue', 'month_menu', 'event')):
         mem.pop('phase_a_escape', None)
         return None
     key = f'{phase}:{kind}:{(text or "")[:60]}'

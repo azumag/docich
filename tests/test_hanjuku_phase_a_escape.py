@@ -41,7 +41,10 @@ def test_other_actions_reset_the_count():
     assert O.phase_a_escape_step(mem, 'dialogue', 'text', TEXT, [O.pad('a')]) is None
 
 
-def test_other_kinds_are_not_escaped_here():
+def test_other_kinds_and_battle_text_are_not_escaped_here():
     mem = {}
     for _ in range(O.PHASE_A_ESCAPE_MAX * 2):
         assert O.phase_a_escape_step(mem, 'field', 'map', TEXT, [O.pad('a')]) is None
+    battle = {'battle': {'ally': 'x'}}
+    for _ in range(O.PHASE_A_ESCAPE_MAX * 2):
+        assert O.phase_a_escape_step(battle, 'dialogue', 'text', TEXT, [O.pad('a')]) is None
