@@ -7691,6 +7691,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v1162-unstartable-plan-rearm",
             "hanjuku-chart-v1163-resolved-source-gate",
             "hanjuku-chart-v1164-integration",
+            "hanjuku-chart-v1165-battle-card-selection",
             "hanjuku-chart-v1158-progress-regress",
             "hanjuku-chart-v1161-refill-collapse",
             "hanjuku-chart-v1160-chapter-probe-field",
