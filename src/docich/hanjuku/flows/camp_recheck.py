@@ -778,6 +778,17 @@ def interrupt(screen, mem):
     state = _flow(mem).get('recall') or {}
     if (state.get('retreat_recheck') or state.get('anonymous_recheck')) and (
             mem.get('battle') or mem.get('month_sub') or not owns_dialog(screen, mem)):
+        general, tick = state.get('general'), mem.get('tick')
+        row = _scope(mem).get(general) if isinstance(general, str) else None
+        if (isinstance(row, dict) and type(tick) is int
+                and type(row.get('retry_after')) is int
+                and tick < row['retry_after']):
+            # This screen never carries the named general's own UI and the
+            # defer clock has already moved past it: do not take the
+            # foreground. g1190 2026-11-18 11:12-11:13: 19 defers on one
+            # castle menu kept the month flow from leaving the menu while the
+            # hub stayed enemy (447 observations, 3132 holds).
+            return False
         _defer(mem, state, '戦闘や別メニューの割込みで本人UIを失ったため再観測へ戻す')
         return True
     return False
