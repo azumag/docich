@@ -558,6 +558,7 @@ def quantity_step(screen: Screen, mem, soldiers=False):
 
 # ---------------------------------------------------------------- prompts
 DISCHARGE_LIMIT = 32             # at most the full roster, one confirmed removal at a time
+DISCHARGE_REMOVAL_LIMIT = 8      # failed removal verify before trying the next weakest
 DISCHARGE_SCAN_LIMIT = 20        # preserve the existing bounded cursor walk
 DISCHARGE_EXIT_LIMIT = 4         # B presses per month once the balance is paid up
 
@@ -726,6 +727,21 @@ def discharge_step(screen: Screen, mem, frame=None):
                             strategy_variant='discharge_removal_unverified',
                             observed_metric={'month': key, 'target': pending},
                             reason='前の解雇対象が候補一覧に残るため、成立未確認として決定入力を重ねない')
+                held_count = int(state.get('removal_observations') or 0) + 1
+                state['removal_observations'] = held_count
+                if held_count >= DISCHARGE_REMOVAL_LIMIT:
+                    failed = [n for n in (state.get('failed_targets') or []) if isinstance(n, str)]
+                    if pending not in failed:
+                        failed.append(pending)
+                    state['failed_targets'] = failed
+                    _record(mem, 'discharge_removal_failed', general=pending,
+                            strategy_variant='discharge_removal_unverified',
+                            observed_metric={'month': key, 'target': pending,
+                                             'removal_observations': held_count},
+                            reason='解雇要求後も対象が一覧に残るため、不成立として別の候補へ進む')
+                    state.pop('pending_target', None)
+                    state.pop('removal_held', None)
+                    state.pop('removal_observations', None)
                 for field in ('scan', 'moved', 'moves'):
                     state.pop(field, None)
                 state['phase'] = 'scan'
@@ -742,7 +758,9 @@ def discharge_step(screen: Screen, mem, frame=None):
                         observed_metric={'month': key, 'presses': state['presses']},
                         reason='解雇画面で上限回数まで決定しても抜けないため入力を保留')
             return []
-        target, evidence = weakest_general(scan)
+        failed = {n for n in (state.get('failed_targets') or []) if isinstance(n, str)}
+        candidates = [n for n in scan if n not in failed] if failed else scan
+        target, evidence = weakest_general(candidates)
         if target is None:
             if not state.get('unresolved'):
                 state['unresolved'] = True
