@@ -18,6 +18,9 @@ from . import house, recall as recall_flow, map_registration
 from copy import deepcopy
 
 MAX_STEPS = 900
+# docich#4653: menu-open retries per stage entry and the read interval between them.
+OPEN_RETRY_EVERY = 3
+OPEN_MENU_TRIES = 8
 MAX_SCAN = receipts.MAX_GENERALS
 MENU_RETRIES = 4
 STATUS_RETRIES = 12
@@ -405,11 +408,32 @@ def arm(mem):
                  '既知の帰還・修理タスクのみ実行する'))
 
 
+def _open_retry_due(state):
+    '''docich#4653: should this read (re)send the menu-open key?
+
+    The monthly scan used to open its menu only on map reads 3 and 6. A
+    sortie-floor deferral (#4642) or a transition frame could consume both,
+    after which the scan returned [] forever (g1190 ch1 4-x: stage stayed
+    open_menu past phase_reads 19 with the field idling). Retry every third
+    read, bounded per stage entry; _stage resets the budget.
+    '''
+    reads = state.get('phase_reads')
+    if type(reads) is not int or reads < 3 or reads % OPEN_RETRY_EVERY:
+        return False
+    tries = state.get('open_tries')
+    tries = tries if type(tries) is int and tries >= 0 else 0
+    if tries >= OPEN_MENU_TRIES:
+        return False
+    state['open_tries'] = tries + 1
+    return True
+
+
 def _stage(state, name, **fields):
     if name != 'roster_next':
         state.pop('close_probe_pending', None)
     if name not in {'status', 'roster_next'}:
         state.pop('status_return', None)
+    state.pop('open_tries', None)
     state.update(stage=name, phase_reads=0, **fields)
 
 
@@ -1452,7 +1476,12 @@ def step(screen, mem, frame):
                 _stage(state, 'roster')
                 return [pad('a')]
             return [direction] if direction else []
-        if screen.kind == 'map' and state['phase_reads'] in (3, 6):
+        if screen.kind == 'map' and _open_retry_due(state):
+            if int(state.get('phase_reads') or 0) > 6:
+                _log(mem, 'post_month_open_retry', screen=screen.kind,
+                     observed_metric={'phase_reads': state['phase_reads'],
+                                      'open_tries': state.get('open_tries')},
+                     reason='月次確認のメニューを開くXが所定の読み取り位置を過ぎても済んでいないため、再試行する')
             return [pad('x')]
         return []
     if stage == 'roster':
@@ -1658,7 +1687,12 @@ def step(screen, mem, frame):
                 _stage(state, 'task_select', seeks=0)
                 return [pad('a')]
             return [direction] if direction else []
-        if screen.kind == 'map' and state['phase_reads'] in (3, 6):
+        if screen.kind == 'map' and _open_retry_due(state):
+            if int(state.get('phase_reads') or 0) > 6:
+                _log(mem, 'post_month_open_retry', screen=screen.kind,
+                     observed_metric={'phase_reads': state['phase_reads'],
+                                      'open_tries': state.get('open_tries')},
+                     reason='月次確認のメニューを開くXが所定の読み取り位置を過ぎても済んでいないため、再試行する')
             return [pad('x')]
         return []
     if stage == 'task_select':
@@ -1764,7 +1798,7 @@ def step(screen, mem, frame):
         if screen.kind in ('castle_menu', 'castle_info'):
             _stage(state, 'locate_info')
             return []
-        if screen.kind == 'map' and state['phase_reads'] in (3, 6):
+        if screen.kind == 'map' and _open_retry_due(state):
             # The first A may have been swallowed while SELECT closed the
             # roster; press again only on a confirmed map, boundedly.
             return [pad('a')]
