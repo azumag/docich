@@ -298,6 +298,7 @@ KEY_OWNERSHIP = {
     'y_anchor_attempts': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # Yビュー再アンカーの試行回数
     'y_anchor_due': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 次の map 観測でYを押す印
     'goal_expired': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 期限切れ目標の再登録抑止
+    'launch_unverified': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 行軍未確認の出撃カウンタ
     'cursor_card_downs': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # カード選択カーソル下移動の手順状態
     'cursor_pick_downs': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 同上
     'cursor_still': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # カーソル停滞検出
