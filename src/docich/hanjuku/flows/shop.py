@@ -574,6 +574,7 @@ def quantity_step(screen: Screen, mem, soldiers=False):
 # ---------------------------------------------------------------- prompts
 DISCHARGE_LIMIT = 32             # at most the full roster, one confirmed removal at a time
 DISCHARGE_REMOVAL_LIMIT = 8      # failed removal verify before trying the next weakest
+DISCHARGE_UNVERIFIED_LIMIT = 8   # unreadable list/cursor reads before confirming at the cursor
 DISCHARGE_SCAN_LIMIT = 20        # preserve the existing bounded cursor walk
 DISCHARGE_EXIT_LIMIT = 4         # B presses per month once the balance is paid up
 UNSCOPED_REFILL_LIMIT = 32       # holds before cancelling an unscoped refill editor
@@ -702,7 +703,52 @@ def discharge_step(screen: Screen, mem, frame=None):
                     observed_metric={'month': key, 'selected': screen.selected,
                                      'names': names},
                     reason='解雇候補の名前またはカーソルを読めないため最弱将軍を確定せず入力を保留')
-        return []
+        observations = int(state.get('unverified_observations') or 0) + 1
+        state['unverified_observations'] = observations
+        if observations < DISCHARGE_UNVERIFIED_LIMIT:
+            return []
+        # 強制解雇はBでキャンセルできないため、読めないままの無界保留は
+        # no_input_fallback のBを空打ちして月だけが進む (issue #4641 実測:
+        # ch1 年4月 -4G で62〜84+連続保留)。上限でカーソル位置をAで確認し、
+        # カウントは次の未読連続へ再武装する。カーソルが既知の将軍名を指す
+        # なら成立検証の対象にし、読めなければ対象不明の確認として記録する。
+        state['unverified_observations'] = 0
+        if state['presses'] >= DISCHARGE_LIMIT:
+            if not state.get('held'):
+                state['held'] = True
+                _record(mem, 'situation_held', screen=screen.kind, strategy_variant='discharge_limit',
+                        observed_metric={'month': key, 'presses': state['presses']},
+                        reason='解雇画面で上限回数まで決定しても抜けないため入力を保留')
+            return []
+        state['presses'] = int(state['presses']) + 1
+        selected = screen.selected
+        chosen = selected if (isinstance(selected, str)
+                              and fixed_wage(selected) is not None) else None
+        known = [n for n in (state.get('scan') or []) if isinstance(n, str)]
+        weakest, _ranking = weakest_general(known) if known else (None, None)
+        metric = {'month': key, 'presses': state['presses'], 'selected': selected,
+                  'names': names, 'unverified_observations': observations,
+                  'basis': ('weakest_known' if chosen is not None and chosen == weakest
+                            else 'cursor_named' if chosen is not None else 'cursor_unread'),
+                  'hand': list(screen.hand) if screen.hand else None}
+        if chosen is None:
+            _record(mem, 'discharge_unverified_confirm',
+                    strategy_variant='unverified_cursor',
+                    observed_metric=metric,
+                    reason='候補・カーソルを読めないまま上限に達しBでは抜けないため、カーソル位置をAで確認する。対象は未読')
+            return [pad('a')]
+        if state.get('pending_target') is None:
+            state['pending_target'] = chosen
+        for field in ('scan', 'moved', 'moves'):
+            state.pop(field, None)
+        state['phase'] = 'after'
+        _record(mem, 'discharge_general', general=chosen,
+                strategy_variant='unverified_cursor',
+                observed_metric=metric,
+                reason='候補一覧を読めないまま上限に達したため、カーソル位置の既知候補を確認する。成立は未確認')
+        return [pad('a')]
+    state.pop('unverified', None)
+    state.pop('unverified_observations', None)
     selected = screen.selected
     scan = [n for n in (state.get('scan') or []) if isinstance(n, str)]
     scan = list(dict.fromkeys([*scan, *names]))
