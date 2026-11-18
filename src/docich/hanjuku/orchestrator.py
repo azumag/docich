@@ -189,7 +189,7 @@ def event_text_advance(mem, phase, kind, key, actions, guarded=False):
 PHASE_A_ESCAPE_MAX = 10   # identical readable screens holding the default A
 
 
-def phase_a_escape_step(mem, phase, kind, text, actions):
+def phase_a_escape_step(mem, phase, kind, text, actions, *, step=None):
     """Break a phase-default A that the same readable screen keeps ignoring.
 
     g1190 2026-11-18 10:40 (#4543): the ちくじょう castle list
@@ -208,19 +208,20 @@ def phase_a_escape_step(mem, phase, kind, text, actions):
             or phase not in ('dialogue', 'month_menu', 'event')):
         mem.pop('phase_a_escape', None)
         return None
-    key = f'{phase}:{kind}:{(text or "")[:60]}'
+    key = f'{phase}:{kind}:{text or ""}'
     watch = mem.get('phase_a_escape') or {}
     n = (int(watch.get('n') or 0) + 1
-         if isinstance(watch, dict) and watch.get('key') == key else 1)
+         if isinstance(watch, dict) and watch.get('key') == key
+         and (step is None or watch.get('step') == step - 1) else 1)
     if n >= PHASE_A_ESCAPE_MAX:
-        mem['phase_a_escape'] = {'key': key, 'n': 0}
+        mem['phase_a_escape'] = {'key': key, 'n': 0, 'step': step}
         decision_log._record(mem, 'phase_a_escape', screen=kind, phase=phase,
                              observed_metric={'identical_observations': n,
                                               'limit': PHASE_A_ESCAPE_MAX,
                                               'text': (text or '')[:40]},
                              reason='同じ文面に既定のAを送り続けても進まないため、Bを1回だけ送って閉じる')
         return [pad('b')]
-    mem['phase_a_escape'] = {'key': key, 'n': n}
+    mem['phase_a_escape'] = {'key': key, 'n': n, 'step': step}
     return None
 
 
@@ -1437,7 +1438,7 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
         actions = menu_escape
     if actions is None:
         actions=legacy_actions(frame,phase,updated,mem)
-        a_escape = phase_a_escape_step(mem, phase, kind, screen.text, actions)
+        a_escape = phase_a_escape_step(mem, phase, kind, screen.text, actions, step=step)
         if a_escape is not None:
             actions = a_escape
         draw_hold = battle_draw_hold_step(screen, mem, state.get('screen_kind'), actions)
