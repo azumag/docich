@@ -29,8 +29,10 @@ stops it.  Every exit path releases the lease (best effort) and closes the ledge
 """
 from __future__ import annotations
 
+import math
 import os
 from decimal import Decimal
+from functools import partial
 from pathlib import Path
 
 from ..live import act, reconcile, views
@@ -84,13 +86,31 @@ def _as_int(value, default: int = 0) -> int:
         return default
 
 
-def _fields(*, phase: str, started_at: float, exit_code: int | None = None,
-            report=None, state: CycleState | None = None,
+def _interval_ms(interval_s) -> int | None:
+    """The actual interval in whole milliseconds (ceil), or None when it cannot be read.
+
+    Millisecond integers keep a fractional interval exact without allowing a float into the
+    status allow-list.  The writer drops an out-of-range value; the UI then falls back to
+    the legacy 60 s / 180 s bound.
+    """
+    try:
+        value = float(interval_s)
+        if not math.isfinite(value):
+            return None
+        return int(math.ceil(value * 1000.0))
+    except Exception:
+        return None
+
+
+def _fields(*, phase: str, started_at: float, interval_ms: int | None = None,
+            exit_code: int | None = None, report=None, state: CycleState | None = None,
             digest: str | None = None, reason: str | None = None,
             inert_reason: str | None = None, cycle: int | None = None,
             mode: str | None = None, outcome: str | None = None) -> dict:
     """Build one status field dict; only allow-listed keys are produced."""
     fields: dict = {"phase": phase, "pid": os.getpid(), "started_at": _as_int(started_at)}
+    if interval_ms is not None:
+        fields["interval_ms"] = interval_ms
     if exit_code is not None:
         fields["exit_code"] = _as_int(exit_code)
     if inert_reason is not None:
@@ -189,6 +209,10 @@ def run_worker(*, state_dir, open_reader, make_market_data, clock, stop_requeste
     state = CycleState()
     ps = None
 
+    # Record the actual cycle interval in every status so the WebUI can judge
+    # freshness from 3 x interval (milliseconds keep fractional intervals exact).
+    make_fields = partial(_fields, interval_ms=_interval_ms(interval_s))
+
     try:
         # 1. layout + ledger -------------------------------------------------------------
         try:
@@ -196,7 +220,7 @@ def run_worker(*, state_dir, open_reader, make_market_data, clock, stop_requeste
             ledger = LiveLedger.open(layout, paper_dir=Path(state_dir) / "trading",
                                      now=started_at)
         except (LiveLayoutError, LiveLedgerError, OSError) as exc:
-            _status(state_dir, clock, _fields(
+            _status(state_dir, clock, make_fields(
                 phase="exited", started_at=started_at, exit_code=EXIT_CONFIG,
                 reason=f"ledger_open_failed:{type(exc).__name__}"))
             return EXIT_CONFIG
@@ -208,7 +232,7 @@ def run_worker(*, state_dir, open_reader, make_market_data, clock, stop_requeste
             return EXIT_LEASE_HELD
 
         # 2b. a previous run's "exited" status must not look current any longer.
-        _status(state_dir, clock, _fields(phase="starting", started_at=started_at))
+        _status(state_dir, clock, make_fields(phase="starting", started_at=started_at))
 
         # 3. the exchange reader ----------------------------------------------------------
         try:
@@ -218,7 +242,7 @@ def run_worker(*, state_dir, open_reader, make_market_data, clock, stop_requeste
             code = (EXIT_CONFIG if kind == "config" else
                     EXIT_AUTH if kind == "auth" else
                     EXIT_CLOCK if kind == "clock" else EXIT_RETRYABLE)
-            _status(state_dir, clock, _fields(
+            _status(state_dir, clock, make_fields(
                 phase="exited", started_at=started_at, exit_code=code,
                 reason=kind or f"reader_open_failed:{type(exc).__name__}"))
             return code
@@ -226,14 +250,14 @@ def run_worker(*, state_dir, open_reader, make_market_data, clock, stop_requeste
         # 4. the active policy set --------------------------------------------------------
         digest = ledger.active_policy_set_digest()
         if digest is None:
-            _status(state_dir, clock, _fields(
+            _status(state_dir, clock, make_fields(
                 phase="inert", started_at=started_at, exit_code=EXIT_OK,
                 inert_reason=NO_POLICY_SET))
             return EXIT_OK
         try:
             ps = ledger.load_policy_set(digest)
         except Exception as exc:
-            _status(state_dir, clock, _fields(
+            _status(state_dir, clock, make_fields(
                 phase="exited", started_at=started_at, exit_code=EXIT_CONFIG,
                 reason=f"policy_load_failed:{type(exc).__name__}", digest=digest))
             return EXIT_CONFIG
@@ -253,7 +277,7 @@ def run_worker(*, state_dir, open_reader, make_market_data, clock, stop_requeste
             # file); release is best effort in the finally.
             return EXIT_LEASE_LOST
         except Exception as exc:
-            _status(state_dir, clock, _fields(
+            _status(state_dir, clock, make_fields(
                 phase="exited", started_at=started_at, exit_code=EXIT_RETRYABLE,
                 reason=f"on_startup_failed:{type(exc).__name__}",
                 digest=ps.digest))
@@ -271,7 +295,7 @@ def run_worker(*, state_dir, open_reader, make_market_data, clock, stop_requeste
         try:
             market_data = make_market_data(reader)
         except Exception as exc:
-            _status(state_dir, clock, _fields(
+            _status(state_dir, clock, make_fields(
                 phase="exited", started_at=started_at, exit_code=EXIT_RETRYABLE,
                 reason=f"market_data_failed:{type(exc).__name__}", digest=ps.digest))
             return EXIT_RETRYABLE
@@ -297,22 +321,22 @@ def run_worker(*, state_dir, open_reader, make_market_data, clock, stop_requeste
                 # "exited"): the status file now belongs to the worker that took over.
                 # Release is best effort in the finally.
                 return EXIT_LEASE_LOST
-            _status(state_dir, clock, _fields(
+            _status(state_dir, clock, make_fields(
                 phase="running", started_at=started_at, report=report, state=state,
                 digest=ps.digest))
 
             if report.outcome is CycleOutcome.STOP_REQUESTED:
-                _status(state_dir, clock, _fields(
+                _status(state_dir, clock, make_fields(
                     phase="exited", started_at=started_at, exit_code=EXIT_OK,
                     report=report, state=state, digest=ps.digest))
                 return EXIT_OK
             if report.outcome is CycleOutcome.EXIT_AUTH:
-                _status(state_dir, clock, _fields(
+                _status(state_dir, clock, make_fields(
                     phase="exited", started_at=started_at, exit_code=EXIT_AUTH,
                     report=report, state=state, digest=ps.digest))
                 return EXIT_AUTH
             if report.outcome is CycleOutcome.EXIT_CLOCK:
-                _status(state_dir, clock, _fields(
+                _status(state_dir, clock, make_fields(
                     phase="exited", started_at=started_at, exit_code=EXIT_CLOCK,
                     report=report, state=state, digest=ps.digest))
                 return EXIT_CLOCK
@@ -331,14 +355,14 @@ def run_worker(*, state_dir, open_reader, make_market_data, clock, stop_requeste
                 sleep(step)
                 slept += step
             if stopped:
-                _status(state_dir, clock, _fields(
+                _status(state_dir, clock, make_fields(
                     phase="exited", started_at=started_at, exit_code=EXIT_OK,
                     report=last_report, state=state, digest=ps.digest,
                     reason="stop_requested", outcome="stop_requested"))
                 return EXIT_OK
 
     except Exception as exc:  # contract: no exception escapes run_worker
-        _status(state_dir, clock, _fields(
+        _status(state_dir, clock, make_fields(
             phase="exited", started_at=started_at, exit_code=EXIT_CONFIG,
             reason=f"runner_error:{type(exc).__name__}",
             digest=None if ps is None else ps.digest))

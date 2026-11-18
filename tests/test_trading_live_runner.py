@@ -747,6 +747,19 @@ def test_r9_the_status_has_only_the_allow_listed_keys_and_no_balance(ws):
     assert status["phase"] == "exited" and status["cycle"] == 1
 
 
+def test_r9_the_status_records_the_actual_interval_in_whole_milliseconds(ws, monkeypatch):
+    prepared = prepare(ws, jpy="10000", cashflows={"JPY": "10000"})
+    calls = _status_spy(monkeypatch)
+
+    # 600.5 s keeps its half second as an int: 600_500 ms, never a float in the status.
+    code, sleeps = run(prepared, stop_requested=lambda: True, interval_s=600.5)
+
+    assert code == runner_module.EXIT_OK
+    assert calls
+    assert all(fields.get("interval_ms") == 600_500 for fields in calls)
+    assert read_status(ws)["interval_ms"] == 600_500
+
+
 # ---- r10: the per-cycle fields added to cycle.py / act.py --------------------------------
 def test_r10_ttl_fields_are_reset_and_populated_from_the_ttl_report(ws, harnesses):
     symbols = ("OAS/JPY", "XYM/JPY", "ZEC/JPY", "BTC/JPY", "ETH/JPY", "MONA/JPY",

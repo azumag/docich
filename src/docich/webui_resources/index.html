@@ -112,6 +112,7 @@ input:checked+.slider:before{transform:translateX(20px)}
 <button data-tab="dashboard" class="active">Dashboard</button>
 <button data-tab="status">Status</button>
 <button data-tab="corners">Corners</button>
+<button data-tab="live">LIVE</button>
 <button data-tab="stream">Stream</button>
 <button data-tab="overlay">Overlay</button>
 <button data-tab="audio">Audio</button>
@@ -233,6 +234,48 @@ input:checked+.slider:before{transform:translateX(20px)}
 <div id="renderer-status" class="help">読込中…</div>
 </div>
 <div class="card"><h2>コーナー状態ファイル</h2><p class="desc">各コーナーの自動/手動実行の最終記録です（問題調査用）。</p><div class="table-wrap"><table><thead><tr><th>state</th><th>状態</th><th>game</th><th>開始</th><th>終了予定</th><th>完了</th><th>要復旧</th><th>試合数</th></tr></thead><tbody id="corners-table"></tbody></table></div></div>
+</section>
+<!-- LIVE -->
+<section id="tab-live" style="display:none">
+<div class="card"><h2>LIVE 取引</h2>
+<p class="desc">この WebUI と同じ state_dir の LIVE bot を表示・操作します。10秒ごとに自動更新。値はすべて読み取り専用の台帳ビューで、注文ID・APIキー・制御ファイルの中身は表示しません。</p>
+<div class="kv">
+<dt>状態</dt><dd><span class="badge" id="live-state">未接続</span> <span class="badge" id="live-mode">-</span> <span class="help" id="live-control-sub">-</span></dd>
+<dt>worker</dt><dd><span id="live-worker">未接続</span> <span class="help">最終更新</span> <span class="mono" id="live-last-cycle">-</span></dd>
+<dt>残高警告</dt><dd id="live-warnings">-</dd>
+<dt>安全停止</dt><dd id="live-trips">-</dd>
+<dt>policy</dt><dd id="live-policy">-</dd>
+<dt>台帳</dt><dd id="live-ledger">-</dd>
+</div>
+<div class="actions">
+<button class="btn" id="live-on-shadow">ON (shadow)</button>
+<button class="btn primary" id="live-on-trade">ON (trade)</button>
+<input id="live-trade-confirm" maxlength="5" placeholder="TRADE" autocomplete="off" style="width:96px"/>
+<button class="btn danger" id="live-off">OFF</button>
+<button class="btn" id="live-refresh">更新</button>
+<span id="live-msg" class="help"></span>
+</div>
+<p class="help">OFF は買いも売りも止め、解除に人間の安全クリアは不要です。trade で ON にするときだけ、隣の欄に TRADE と入力してください（ブラウザのダイアログは使いません）。viewer / read-only は操作できません。</p>
+</div>
+<div class="card"><h3>約定による純収支</h3>
+<div class="grid2">
+<div class="card kpi"><h3>純収支 (JPY)</h3><div class="val" id="live-pnl-total">-</div><div class="subk" id="live-pnl-since">-</div></div>
+<div class="card kpi"><h3>ラウンドトリップ</h3><div class="val" id="live-pnl-round-trips">-</div><div class="subk" id="live-pnl-wins">-</div></div>
+<div class="card kpi"><h3>勝率</h3><div class="val" id="live-pnl-win-rate">-</div><div class="subk" id="live-pnl-fee-unknown">-</div></div>
+</div>
+<p class="help">約定による純収支（JPY）は、記録済み fill の (売却代金 - 購入代金 - 既知の手数料) による合計です。未決済の買いも含み、売るまで合計を押し下げます。確定損益や含み損益の評価ではありません。手数料不明の fill は 0 円として数えます。ラウンドトリップと勝率は、買いと売りが両方成立して完了したポジションだけを数えます (約定なしで取り消した買いや買いだけのポジションは含めません)。</p>
+<div class="table-wrap"><table><thead><tr><th>symbol</th><th>約定による純収支（JPY）</th></tr></thead><tbody id="live-pnl-symbols"></tbody></table></div>
+</div>
+<div class="card"><h3>オープンポジション</h3>
+<div class="table-wrap"><table><thead><tr><th>symbol</th><th>net base</th><th>平均取得単価</th><th>cost (JPY)</th><th>entry policy</th><th>opened</th></tr></thead><tbody id="live-positions"></tbody></table></div>
+</div>
+<div class="card"><h3>直近の fill (20件)</h3>
+<div class="table-wrap"><table><thead><tr><th>時刻</th><th>symbol</th><th>side</th><th>amount</th><th>price</th><th>notional</th></tr></thead><tbody id="live-fills"></tbody></table></div>
+</div>
+<div class="card"><h3>期首残高 (自動記録)</h3>
+<div class="table-wrap"><table><thead><tr><th>currency</th><th>amount</th><th>at</th></tr></thead><tbody id="live-opening"></tbody></table></div>
+<p class="help">worker が履歴のない通貨について一度だけ自動記録した auto_opening の一覧です。</p>
+</div>
 </section>
 <!-- STREAM -->
 <section id="tab-stream" style="display:none">
@@ -763,7 +806,7 @@ async function saveTwitchAds(){
   }catch(e){ toast(String(e),5000); }
 }
 function applyReadOnly(){
-  $$("main button").forEach(b=>{ b.disabled = READ_ONLY && b.id !== "backoff-refresh" && b.id !== "stats-refresh" && b.id !== "health-refresh" && b.id !== "chains-reload" && b.id !== "backoff-reload" && b.id !== "peak-reload" && b.id !== "prediction-refresh" && b.id !== "stream-refresh" && b.id !== "stream-settings-reload"; });
+  $$("main button").forEach(b=>{ b.disabled = READ_ONLY && b.id !== "backoff-refresh" && b.id !== "stats-refresh" && b.id !== "health-refresh" && b.id !== "chains-reload" && b.id !== "backoff-reload" && b.id !== "peak-reload" && b.id !== "prediction-refresh" && b.id !== "stream-refresh" && b.id !== "stream-settings-reload" && b.id !== "live-refresh"; });
   $$("main input, main textarea, main select").forEach(el=>{ if(READ_ONLY) el.disabled=true; else el.disabled=false; });
   // disable chain inherit etc will be handled in render
 }
@@ -2147,6 +2190,130 @@ async function loadCorners(){
   await children;
 }
 // webui-loader:loadCorners:end
+// webui-live:start
+let LIVE_VIEW={};
+function liveText(id,text){
+  const el=document.getElementById(id);
+  if(el) el.textContent=String(text==null?"":text);
+}
+function liveTime(value){
+  if(value===null||value===undefined||value==="") return "-";
+  if(typeof value==="number") return fmtTime(value);
+  const d=new Date(value);
+  return isNaN(d.getTime())?String(value):d.toLocaleString();
+}
+function liveEmptyRow(colspan,text){
+  return `<tr><td colspan="${colspan}" class="help">${esc(text)}</td></tr>`;
+}
+function liveWorkerLabel(status,alive){
+  if(!status) return "未接続 (status なし)";
+  const phase=typeof status.phase==="string"?status.phase:"";
+  if(alive){
+    if(phase==="starting") return "起動中";
+    if(phase==="stopping") return "停止処理中";
+    const failures=Number(status.consecutive_failures||0);
+    return failures>0?`稼働中 (再試行待ち: 連続失敗 ${failures})`:"稼働中";
+  }
+  if(phase==="exited"){
+    return typeof status.exit_code==="number"?`終了 (code ${status.exit_code})`:"終了";
+  }
+  if(phase==="inert") return "待機 (方針セットなし)";
+  if(phase==="running"||phase==="starting"||phase==="stopping") return "停止または応答なし";
+  return "状態不明";
+}
+function renderLive(d){
+  LIVE_VIEW=d||{};
+  const control=LIVE_VIEW.control||{};
+  const status=LIVE_VIEW.status||null;
+  const overview=LIVE_VIEW.overview||{};
+  const state=control.state||"unknown";
+  const badge=$("#live-state");
+  if(badge){
+    badge.textContent=state==="on"?"ON":(state==="off"?"OFF":"未接続");
+    badge.className="badge "+(state==="on"?"ok":(state==="off"?"warn":""));
+  }
+  const modeEl=$("#live-mode");
+  if(modeEl){
+    modeEl.textContent=control.mode==="trade"?"trade":(control.mode==="shadow"?"shadow":"-");
+    modeEl.className="badge "+(control.mode==="trade"?"bad":(control.mode==="shadow"?"":"warn"));
+  }
+  if(!d){
+    liveText("live-control-sub","未接続");
+    liveText("live-worker","未接続");
+    liveText("live-last-cycle","-");
+  }else{
+    const reasons=(control.reasons||[]).join(", ");
+    liveText("live-control-sub",control.updated_at?`更新 ${liveTime(control.updated_at)} / ${control.updated_by||"-"}`:(reasons||"-"));
+    liveText("live-worker",liveWorkerLabel(status,LIVE_VIEW.worker_alive));
+    liveText("live-last-cycle",status&&status.written_at?liveTime(status.written_at):"-");
+  }
+  liveText("live-warnings",status&&typeof status.balance_warnings==="number"?String(status.balance_warnings):"-");
+  const trips=(overview.safety&&overview.safety.trips)||[];
+  liveText("live-trips",trips.length?trips.join(", "):"なし");
+  const policy=overview.policy||{};
+  liveText("live-policy",policy.digest?`${policy.digest} (${(policy.symbols||[]).join(", ")||"symbol なし"})`:"なし");
+  liveText("live-ledger",!d?"未接続":(!LIVE_VIEW.ledger_present?"台帳なし":(overview.ledger_readable?"読取OK":"台帳を読めません")));
+
+  const pnl=overview.pnl||{};
+  liveText("live-pnl-total",pnl.total!=null?`${pnl.total} JPY`:"-");
+  liveText("live-pnl-since",pnl.since?`最初の fill ${liveTime(pnl.since)}`:"fill なし");
+  liveText("live-pnl-round-trips",pnl.round_trips!=null?String(pnl.round_trips):"-");
+  liveText("live-pnl-wins",pnl.wins!=null?`勝ち ${pnl.wins}`:"-");
+  const tripsDone=Number(pnl.round_trips||0);
+  liveText("live-pnl-win-rate",tripsDone?`${Math.round(Number(pnl.wins||0)/tripsDone*100)}%`:"-");
+  liveText("live-pnl-fee-unknown",pnl.fee_unknown_fills?`手数料不明 ${pnl.fee_unknown_fills} 件 (0円換算)`:"手数料不明なし");
+  const bySymbol=Object.entries(pnl.by_symbol||{});
+  const symEl=document.getElementById("live-pnl-symbols");
+  if(symEl) symEl.innerHTML=bySymbol.length
+    ?bySymbol.map(([symbol,value])=>`<tr><td class="mono">${esc(symbol)}</td><td class="mono">${esc(value)}</td></tr>`).join("")
+    :liveEmptyRow(2,"fill なし");
+
+  const positions=overview.positions||[];
+  const posEl=document.getElementById("live-positions");
+  if(posEl) posEl.innerHTML=positions.length
+    ?positions.map(p=>`<tr><td class="mono">${esc(p.symbol)}</td><td class="mono">${esc(p.net_base)}</td><td class="mono">${esc(p.avg_cost)}</td><td class="mono">${esc(p.cost)}</td><td class="mono">${esc(p.entry_policy_digest)}</td><td class="mono">${esc(liveTime(p.opened_at))}</td></tr>`).join("")
+    :liveEmptyRow(6,"オープンポジションなし");
+
+  const fills=overview.recent_fills||[];
+  const fillEl=document.getElementById("live-fills");
+  if(fillEl) fillEl.innerHTML=fills.length
+    ?fills.map(f=>`<tr><td class="mono">${esc(liveTime(f.at))}</td><td class="mono">${esc(f.symbol)}</td><td>${esc(f.side)}</td><td class="mono">${esc(f.amount)}</td><td class="mono">${esc(f.price)}</td><td class="mono">${esc(f.notional)}</td></tr>`).join("")
+    :liveEmptyRow(6,"fill なし");
+
+  const opening=overview.opening||[];
+  const openEl=document.getElementById("live-opening");
+  if(openEl) openEl.innerHTML=opening.length
+    ?opening.map(o=>`<tr><td class="mono">${esc(o.currency)}</td><td class="mono">${esc(o.amount)}</td><td class="mono">${esc(liveTime(o.at))}</td></tr>`).join("")
+    :liveEmptyRow(3,"期首残高の記録なし");
+}
+async function loadLive(){
+  try{
+    renderLive(await api("/api/live"));
+  }catch(e){
+    renderLive(null);
+    liveText("live-msg",`LIVE を取得できません: ${String(e)}`);
+  }
+}
+async function liveControl(state,mode){
+  if(READ_ONLY){ toast("read-only のため LIVE を操作できません"); return; }
+  const input=document.getElementById("live-trade-confirm");
+  const typed=input?(input.value||"").trim():"";
+  if(state==="on"&&mode==="trade"&&typed!=="TRADE"){
+    liveText("live-msg","trade で ON にするには TRADE と入力してください");
+    return;
+  }
+  try{
+    const body={state,mode};
+    if(state==="on"&&mode==="trade") body.confirm=typed;
+    const res=await api("/api/live/control",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
+    if(input) input.value="";
+    liveText("live-msg",state==="on"?`ON (${res.mode||mode}) にしました`:"OFF にしました");
+    await loadLive();
+  }catch(e){
+    liveText("live-msg",String(e));
+  }
+}
+// webui-live:end
 function renderCornerCatalogMessage(message){
   const cat=document.getElementById("corners-catalog");
   if(cat) cat.innerHTML=`<tr><td colspan="6" class="help">${esc(message)}</td></tr>`;
@@ -2985,6 +3152,7 @@ function updateAudioTextCount(){
 // server API contract, trading decision/risk/fill paths and all writes are
 // untouched. The trading dashboard already uses this pattern.
 // webui-poll-visibility:start
+let liveTimer=null;
 const pollInFlight = new Set();
 function pollGate(key, fn){
   if(document.hidden) return;
@@ -3000,6 +3168,7 @@ function clearTabTimers(){
   if(cornersTimer){ clearInterval(cornersTimer); cornersTimer=null; }
   if(streamTimer){ clearInterval(streamTimer); streamTimer=null; }
   if(audioTimer){ clearInterval(audioTimer); audioTimer=null; }
+  if(liveTimer){ clearInterval(liveTimer); liveTimer=null; }
 }
 function activeTabName(){
   const btn=document.querySelector("#tabs button.active");
@@ -3016,6 +3185,7 @@ function startTabPolling(tab, opts){
   // until every child settles and never rejects when only one side fails.
   else if(tab==="stream"){ const load=()=>Promise.allSettled([loadStream(), loadWorkersControl()]); if(refresh) pollGate("stream",load); streamTimer=setInterval(()=>pollGate("stream",load),10000); }
   else if(tab==="audio"){ if(refresh) pollGate("audio",loadVoiceChain); audioTimer=setInterval(()=>pollGate("audio",loadVoiceChain),10000); }
+  else if(tab==="live"){ if(refresh) pollGate("live",loadLive); liveTimer=setInterval(()=>pollGate("live",loadLive),10000); }
 }
 function startDashboardPolling(opts){
   const refresh=!!(opts && opts.refresh);
@@ -3059,6 +3229,7 @@ document.addEventListener("DOMContentLoaded",()=>{
     if(tab==="dashboard") loadDashboard();
     if(tab==="status") loadStatus();
     if(tab==="corners") loadCorners();
+    if(tab==="live") loadLive();
     if(tab==="stream") { loadStream(); loadWorkersControl(); }
     if(tab==="overlay") { loadOverlayEvents(); loadWorkBanner(); loadTop(); loadPreview(); }
     if(tab==="audio") { loadAudioQueue(); loadVoiceChain(); }
@@ -3236,9 +3407,20 @@ document.addEventListener("DOMContentLoaded",()=>{
   if(cRecover) cRecover.onclick=()=>{
     cornerAction({action:"recover"},"ローテーションの latch を復旧しますか？（固定 CLI を実行し、ledger を手で書き換えません）");
   };
+  // live (owner switch; OFF never needs a clearing step)
+  const lRefresh=document.getElementById("live-refresh");
+  if(lRefresh) lRefresh.onclick=()=>loadLive();
+  const lShadow=document.getElementById("live-on-shadow");
+  if(lShadow) lShadow.onclick=()=>liveControl("on","shadow");
+  const lTrade=document.getElementById("live-on-trade");
+  if(lTrade) lTrade.onclick=()=>liveControl("on","trade");
+  const lOff=document.getElementById("live-off");
+  if(lOff) lOff.onclick=()=>{
+    const mode=(LIVE_VIEW&&LIVE_VIEW.control&&LIVE_VIEW.control.mode)||"shadow";
+    liveControl("off",mode);
+  };
   // stream
-  const stStart=document.getElementById("stream-start");
-  if(stStart) stStart.onclick=()=>streamAction("start");
+  const stStart=document.getElementById("stream-start");  if(stStart) stStart.onclick=()=>streamAction("start");
   const stStop=document.getElementById("stream-stop");
   if(stStop) stStop.onclick=()=>streamAction("stop");
   const stRefresh=document.getElementById("stream-refresh");

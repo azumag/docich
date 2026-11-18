@@ -723,8 +723,31 @@ def summer_bonus_step(screen: Screen, mem):
     return [move]
 
 
+def _settle_road_defeats(mem):
+    """A march measured as defeated on the road is never still in flight.
+
+    The planner's own settlement only runs when a plan is rebuilt, so a
+    battle-heavy month left road-defeated records at ``en_route`` for months
+    (g1190 2026-11-18 65-1..65-5: ピオーネ→トリフェ kept ``en_route`` with
+    ``road_defeat`` set, and the retake waves never concentrated — #4579).
+    """
+    from ..state.regions import world as _world
+    sorties = _world(mem).get('sorties') or {}
+    if not isinstance(sorties, dict):
+        return
+    for step, sortie in list(sorties.items()):
+        if (isinstance(sortie, dict) and type(sortie.get('road_defeat')) is int
+                and sortie.get('status') in ('en_route', 'launched_unconfirmed')):
+            sortie['status'] = 'overdue'
+            _record(mem, 'sortie_road_defeat_settled', chart_step=step,
+                    observed_metric={'general': sortie.get('general'),
+                                     'target': sortie.get('target')},
+                    reason='道中敗北の記録があるため、行軍を決着済みとして片付ける')
+
+
 def observe_events(screen: Screen, mem):
     """Record chart-relevant facts that need no input (month header, harvest)."""
+    _settle_road_defeats(mem)
     _repair_home_name_chapter(mem)
     _repair_home_alias_failures(mem)
     mem['tick'] = int(mem.get('tick') or 0) + 1      # observations: ages sorties (_en_route)

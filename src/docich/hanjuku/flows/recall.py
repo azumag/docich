@@ -10,7 +10,7 @@ from ..os_layer.navigation import _start_y_jump
 from ..os_layer.readers import _current, _cursor, _options, fort_list_open, is_camp_menu, is_fort_menu
 from ..os_layer.world import NAME, _owned
 from ..strategy.orders import _fort_recall_goal, _recall_goal, _recall_owned
-from ..state.regions import flow as _flow, journal as _journal
+from ..state.regions import flow as _flow, journal as _journal, sorties as _sorties
 
 
 MENU_HOLD_LIMIT = 10           # arrived-but-unanchored holds after a failed castle menu
@@ -934,6 +934,27 @@ def _camp_recall_step(screen: Screen, mem, frame, *, observed_camps=None):
         # is empty. Four or five tents were on screen while every status row
         # said nobody was camped, so a sighting is never dismissed by the
         # roster (v1029's guard was removed).
+        if camps and camp_stays(mem) and isinstance(frame, Frame) and castle_roofs(frame):
+            # A corridor view keeps field camps beside their roofs: every one
+            # of them is left camped by ``camp_stays`` and none can be the
+            # boss-march foothold. Drive the cursor to an overdue boss
+            # sortie's aimed cell instead, to re-detect the stale-landed
+            # tent in the boss's roam band.
+            boss_target = chart.boss_castle(mem.get('chapter') or 0)
+            aimed = next((list(s['aimed_cell']) for s in _sorties(mem).values()
+                          if isinstance(s, dict) and s.get('target') == boss_target
+                          and s.get('status') == 'overdue'
+                          and _camp_target(s.get('aimed_cell'))), None)
+            if aimed:
+                from ..os_layer.navigation import nav_step
+                move = nav_step(screen, mem, frame, aimed)
+                if move == 'arrived':
+                    return []
+                if move in ('up', 'down', 'left', 'right'):
+                    _record(mem, 'camp_revisit',
+                            observed_metric={'camp_world': aimed, 'move': move},
+                            reason='回廊ビューの野営は全部野営停止のため、期限切れボス行軍の照準セルへカーソルを寄せてテントを再発見する')
+                    return [pad(move)]
         if not camps:
             # The field frames keep coming but no tent is visible: record a
             # throttled sample so the camera/roof situation is measurable
@@ -974,6 +995,19 @@ def _camp_recall_step(screen: Screen, mem, frame, *, observed_camps=None):
             # hunt that waits never brings them back (all 32 generals camped,
             # g1190 94-xx). Bounded by the ARRIVE check inside nav_step.
             last = _flow(mem).get('camp_last_world')
+            if not _camp_target(last) and camp_stays(mem):
+                # An overdue boss sortie stale-landed at its aimed cell and
+                # camped there; ``camp_world`` never resolves in roofless
+                # terrain, so revisit the recorded target cell to re-detect
+                # the tent and feed the boss-redirect chase.
+                chapter = mem.get('chapter') or 0
+                boss_target = chart.boss_castle(chapter)
+                for s in _sorties(mem).values():
+                    if (isinstance(s, dict) and s.get('target') == boss_target
+                            and s.get('status') == 'overdue'
+                            and _camp_target(s.get('aimed_cell'))):
+                        last = list(s['aimed_cell'])
+                        break
             if camp_stays(mem) and _camp_target(last):
                 from ..os_layer.navigation import nav_step
                 move = nav_step(screen, mem, frame, list(last))
@@ -1011,13 +1045,28 @@ def _camp_recall_step(screen: Screen, mem, frame, *, observed_camps=None):
         # camping — in the boss phase the field camps are expired boss
         # marches. Other camps keep the ordinary nearest-castle recall.
         boss = boss_redirect_goal(mem)
-        if boss and state.get('camp_world'):
-            wx, wy = chart.CH9_BOSS_WAYPOINT
-            wave = mem.get('boss_wave_generals') or {}
+        if boss:
+            chapter = mem.get('chapter') or 0
+            boss_target = chart.boss_castle(chapter)
+            # A camp holding a general whose boss sortie never entered is an
+            # expired boss march regardless of where the camera bound: the
+            # empty-cell camp is its rest stop, not a corridor reinforcement.
+            wave = {s.get('general') for s in _sorties(mem).values()
+                    if isinstance(s, dict) and s.get('target') == boss_target
+                    and s.get('status') not in ('arrived', 'cancelled')
+                    and s.get('general')}
             actors = ((mem.get('camp_status_seen') or {}).get('actors') or {})
-            if ((abs(state['camp_world'][0] - wx) <= 320
-                    and abs(state['camp_world'][1] - wy) <= 320)
-                    or any(g in actors for g in wave)):
+            cw = state.get('camp_world')
+            near = (isinstance(cw, (list, tuple)) and len(cw) == 2
+                    and abs(cw[0] - chart.CH9_BOSS_WAYPOINT[0]) <= 320
+                    and abs(cw[1] - chart.CH9_BOSS_WAYPOINT[1]) <= 320)
+            # A camp sighted in open terrain (no castle roof in the frame) is
+            # in the boss's roam band: castle camping always parks beside its
+            # own roof, so a roofless camp is an expired boss march that ran
+            # out of road. When a boss sortie is in flight, redirect it at the
+            # boss's fresh cell rather than recall it onto the corridor.
+            open_field = isinstance(frame, Frame) and not castle_roofs(frame)
+            if near or any(g in actors for g in wave) or (wave and open_field):
                 state['boss'], state['goal'] = True, boss
         if _camp_target(state.get('camp_world')):
             _flow(mem)['camp_last_world'] = list(state['camp_world'])

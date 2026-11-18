@@ -204,11 +204,24 @@ def phase_a_escape_step(mem, phase, kind, text, actions, *, step=None):
     confirm = (isinstance(actions, list) and len(actions) == 1
                and isinstance(actions[0], dict) and actions[0].get('type') == 'pad'
                and actions[0].get('buttons') == ['a'])
-    if (not confirm or kind != 'text' or mem.get('battle')
+    # The 築城 castle list also stalls as a *hold* (no planned input) when its
+    # wording differs from the measured 「そうたく」 line: 66-10 read
+    # 「これいじょうのぞうちくはできませんぞ!! どのしろをぞうちくなさいますか?」
+    # and the dialogue flow held it forever. A hold on that list is the same
+    # escape: B once closes it.
+    expand_prompt = ('ぞうちくなさいます' in (text or '')
+                     or 'そうたくなさいます' in (text or '')
+                     or 'これいじょうのぞうちく' in (text or ''))
+    held = isinstance(actions, list) and not actions
+    if (not (confirm or (held and expand_prompt)) or kind != 'text' or mem.get('battle')
             or phase not in ('dialogue', 'month_menu', 'event')):
         mem.pop('phase_a_escape', None)
         return None
-    key = f'{phase}:{kind}:{text or ""}'
+    # The 築城 prompt shares its screen with the month's gold, which changes
+    # between observations and reset the count; key the stall on the prompt
+    # phrase alone so the bound is reachable.
+    key = (f'{phase}:{kind}:chikujou-prompt' if expand_prompt
+           else f'{phase}:{kind}:{text or ""}')
     watch = mem.get('phase_a_escape') or {}
     n = (int(watch.get('n') or 0) + 1
          if isinstance(watch, dict) and watch.get('key') == key
@@ -227,6 +240,58 @@ def phase_a_escape_step(mem, phase, kind, text, actions, *, step=None):
 
 def pad(button, ms=100):
     return {'type':'pad','buttons':[button],'hold_ms':ms}
+
+
+def _is_chikujou_prompt(text):
+    """The 築城 castle list's 「どのしろをぞうちく…」 prompt (maxed or not)."""
+    text = text or ''
+    return ('どのしろをぞうちくなさいます' in text
+            or 'これいじょうのぞうちく' in text
+            or 'どのしろをそうたくなさいます' in text)
+
+
+def _is_quantity_confirm(kind, text):
+    """The purchase confirmation overlays the shop quantity menu."""
+    text = text or ''
+    return (kind in ('shop_quantity', 'shop_quantity_prompt', 'month_menu')
+            and 'よろしいでっか' in text
+            and 'うむッ' in text and 'いかんッ' in text)
+
+
+PLAN_STARVE_TICKS = 900   # observations (~15 min) of a plan that cannot rebuild
+
+
+def plan_starved_rearm(mem, phase, kind):
+    """Rebuild the field plan while battles/menus keep the map flow away.
+
+    next_order only runs on a map observation; a siege month therefore left
+    the plan at its old tick for an hour and order_start at 0 while the
+    back-half castles stayed enemy (g1190 2026-11-18 65-10..66-10 — #4584).
+    """
+    if kind in ('map', 'map_target', 'world_map') or phase in ('title', 'title_or_intro'):
+        return False
+    plan = mem.get('plan') or {}
+    if plan.get('active') or (plan.get('chart_plan') or {}).get('orders'):
+        return False
+    if not mem.get('chapter'):
+        return False
+    tick, last = mem.get('tick'), mem.get('chart_plan_tick')
+    if type(tick) is not int or type(last) is not int or tick - last < PLAN_STARVE_TICKS:
+        return False
+    live = [s for s in ((mem.get('world') or {}).get('sorties') or {}).values()
+            if isinstance(s, dict) and s.get('status') in ('en_route', 'launched_unconfirmed')]
+    if live:
+        return False   # a march still walking keeps the plan's reservation
+    from .strategy import replan
+    try:
+        replan._off_chart(mem)
+    except Exception:
+        return False
+    mem['chart_plan_tick'] = tick
+    decision_log._record(mem, 'plan_starved_rearm', screen=kind, phase=phase,
+                         observed_metric={'stale_ticks': tick - last},
+                         reason='戦闘や月次が続いてフィールド計画が止まっているため、待機中に計画を組み直す')
+    return True
 
 
 def _recall_owns_dialog(kind, recall_dialog, ch9_field_recall):
@@ -1027,12 +1092,51 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
         screen.kind='summer_bonus'
     observe_jump_foreground(screen, mem)
     prompts_flow.observe_events(screen,mem)
+    plan_starved_rearm(mem, phase, screen.kind)
     map_flow.observe_sortie_transition(screen,mem,state.get('screen_kind'))
     # Reconcile the deferred-goal ledger with the facts this observation just
     # updated, before any owner runs: an interrupted or deferred want must be
     # visible to this observation's idle-time scheduling.
     goals.refresh(mem)
     kind=screen.kind
+    if _is_quantity_confirm(kind, screen.text):
+        # The purchase confirmation (「1こで50Gになりまんな! よろしでっか?」)
+        # overlays the quantity menu; the quantity step waits on its own
+        # overlay and never answers it (g1190 2026-11-18 63-5: the frame was
+        # static for minutes with うむッ!/いかんッ! waiting).
+        decision_log._record(mem, 'quantity_confirm_accept', screen=kind,
+                             observed_metric={'text': (screen.text or '')[:60]},
+                             reason='数量の購入確認（よろしでっか?/うむッ!）は手が うむッ! にあるためAで確定する')
+        actions = [pad('a')]
+        updated.update(screen_kind=kind, no_input_streak=0, no_input_frames=[])
+        for key in ('_adjusted', '_interim', '_card_scroll_input'):
+            mem.pop(key, None)
+        _journal(mem).pop('_departure_input', None)
+        _journal(mem).pop('_recall_inputs', None)
+        updated['_records'] = mem.pop('_records')
+        updated['_experience'] = mem.pop('_experience', None)
+        updated['policy'] = mem
+        return actions, updated
+    if _is_chikujou_prompt(screen.text):
+        # The 築城 castle list runs out of room and asks which castle to
+        # expand; nothing on it can be chosen and the dialogue flow holds it
+        # (g1190 2026-11-18 66-10: 「これいじょうのぞうちくはできませんぞ!!
+        # どのしろをぞうちくなさいますか?」 sat for minutes). B closes it.
+        if mem.get('chikujou_prompt_key') != (screen.text or '')[:40]:
+            mem['chikujou_prompt_key'] = (screen.text or '')[:40]
+            decision_log._record(mem, 'chikujou_leftover', screen=kind,
+                                 observed_metric={'text': (screen.text or '')[:60]},
+                                 reason='築城の城一覧が上限に達して選択できないため、Bで閉じる')
+        actions = [pad('b')]
+        updated.update(screen_kind=kind, no_input_streak=0, no_input_frames=[])
+        for key in ('_adjusted', '_interim', '_card_scroll_input'):
+            mem.pop(key, None)
+        _journal(mem).pop('_departure_input', None)
+        _journal(mem).pop('_recall_inputs', None)
+        updated['_records'] = mem.pop('_records')
+        updated['_experience'] = mem.pop('_experience', None)
+        updated['policy'] = mem
+        return actions, updated
     if kind == 'summer_bonus':
         # The August vacation/bonus question owns the foreground: a stale
         # camp recall or the concert hold otherwise answers it with a hold
