@@ -1426,6 +1426,8 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
         if camp_menu or field_picker:
             actions = recall_flow.camp_recall_step(screen, mem, frame)
     if actions is None:
+        actions = map_flow.general_jump_step(screen, mem, frame)
+    if actions is None:
         actions = map_flow.castle_jump_step(screen, mem, frame)
     if actions is None:
         # A successful reanchor is a nested interrupt: restore the exact
