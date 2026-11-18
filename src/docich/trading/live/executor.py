@@ -27,7 +27,6 @@ from .exchange import (Guarded, ExchangeAmbiguous, ExchangeDataError, ExchangeEr
 from .ingest import ExecutorConfig, Ingestor
 from .lease import LeaseLost, WriterLease
 from .ledger import Intent, IntentRequest, SafetyBlocked
-from .safety import note_enable_result
 
 FAULT_HOOK: Callable[[str], None] | None = None   # tests only
 SENDER_KINDS_ALLOWED = frozenset({"mock"})        # phase E changes this one line, with the owner's review
@@ -109,7 +108,6 @@ class OrderExecutor:
             raise ValueError("only a PLANNED intent can be submitted")
         fence.check_lease(self.ledger, self.lease)
         gate = self.enable_check()
-        note_enable_result(self.ledger, self.lease, gate, now=self.clock())
         if not gate.allows_orders:
             self._abandon(intent_id, "gate_closed")
             return SubmitOutcome.BLOCKED

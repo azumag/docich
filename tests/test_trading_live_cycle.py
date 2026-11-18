@@ -1,6 +1,6 @@
 """The per-cycle LIVE skeleton (Issue #3623, L4b-5b-1): steps 0-9 and 14.  No network.
 
-The executor, ledger, lease, mock exchange and enable gate are the real ones from the
+The executor, ledger, lease, mock exchange and control-file gate are the real ones from the
 LIVE test harness; only the reader's health/rules hooks and the public market data are
 faked, because the mock exchange has neither.
 """
@@ -252,7 +252,7 @@ def test_the_hook_is_never_reached_in_monitor_mode_and_is_reached_in_shadow_and_
     assert monitor.outcome is CycleOutcome.CONTINUE and monitor.mode is None
     assert rig.hook_calls == []
 
-    ws.write_enable(h.ps, mode="shadow")
+    ws.write_control(mode="shadow")
     shadow = run_cycle(rig.deps, rig.state)
     assert shadow.mode == "shadow" and len(rig.hook_calls) == 1
     ctx = rig.hook_calls[0]
@@ -262,7 +262,7 @@ def test_the_hook_is_never_reached_in_monitor_mode_and_is_reached_in_shadow_and_
     assert isinstance(ctx.safety, SafetyState)
     assert ctx.can_decide is True
 
-    ws.write_enable(h.ps, mode="trade")
+    ws.write_control(mode="trade")
     trade = run_cycle(rig.deps, rig.state)
     assert trade.mode == "trade" and len(rig.hook_calls) == 2
     assert rig.hook_calls[1].mode == "trade"
@@ -341,23 +341,24 @@ def test_reader_unhealthy_after_three_failures_is_a_failed_cycle(ws, harnesses):
 
 
 # ---- c6. the lease check at the top of the cycle -------------------------------------------
-def test_lease_lost_at_the_check_exits_with_a_trip(ws, harnesses, monkeypatch):
-    h = harnesses()                                   # enabled: the observation write is real
-    rig = make_rig(ws, h)
-    real_note = cycle_module.note_enable_result
+def test_lease_lost_at_the_check_exits_with_a_trip(ws, harnesses):
+    h = harnesses()                                   # on/trade: the gate reading is real
+    base_gate = h._gate
 
-    def note_then_lose(*args, **kwargs):
-        real_note(*args, **kwargs)                    # step 1 completes its write...
+    def gate_then_lose():
+        result = base_gate()                          # step 1 reads the control file...
         _lose_lease(ws)                               # ...then the lease goes away
+        return result
 
-    monkeypatch.setattr(cycle_module, "note_enable_result", note_then_lose)
+    h._gate = gate_then_lose
+    rig = make_rig(ws, h)
     report = run_cycle(rig.deps, rig.state)
     assert report.outcome is CycleOutcome.EXIT_LEASE_LOST
     assert report.reason == "lease_lost" and report.mode == "trade"
     assert _trip_reasons(h.ledger) == ["lease_lost"]
     assert rig.hook_calls == []
 
-    # the next cycle cannot even write the enable observation; that is the same exit, not a raise
+    # the next cycle reads the same control file; the lease check still exits, not raises
     again = run_cycle(rig.deps, rig.state)
     assert again.outcome is CycleOutcome.EXIT_LEASE_LOST
     assert _trip_reasons(h.ledger) == ["lease_lost"]
@@ -489,7 +490,7 @@ def test_worker_state_is_recorded_only_on_change(ws, harnesses):
     assert all(isinstance(value, str) for value in first.values())
     assert first == {"mode": "none", "outcome": "continue", "blocks": "", "reason": "", "cycle": "1"}
 
-    ws.write_enable(h.ps, mode="shadow")
+    ws.write_control(mode="shadow")
     run_cycle(rig.deps, rig.state)
     events = views.events_of_kind(h.ledger, "worker_state")
     assert len(events) == 2
@@ -581,9 +582,9 @@ def test_sender_is_none_and_no_order_method_is_called(ws, harnesses):
     rig.executor.cancel = forbidden
 
     assert run_cycle(rig.deps, rig.state).outcome is CycleOutcome.CONTINUE   # monitor
-    ws.write_enable(h.ps, mode="shadow")
+    ws.write_control(mode="shadow")
     assert run_cycle(rig.deps, rig.state).outcome is CycleOutcome.CONTINUE
-    ws.write_enable(h.ps, mode="trade")
+    ws.write_control(mode="trade")
     assert run_cycle(rig.deps, rig.state).outcome is CycleOutcome.CONTINUE
     assert len(rig.hook_calls) == 2                     # shadow and trade reached the no-op hook
 
@@ -626,7 +627,7 @@ def test_cycle_module_has_no_process_exit_call():
 
 
 # ---- d1. a gate that raises must not escape run_cycle ---------------------------------------
-def test_a_gate_that_raises_becomes_a_failed_cycle(ws, harnesses):
+def test_a_gate_that_raises_is_a_closed_gate_and_the_cycle_continues(ws, harnesses):
     h = harnesses(gate_open=False)
     base_gate = h._gate
     failing = {"on": True}
@@ -640,10 +641,12 @@ def test_a_gate_that_raises_becomes_a_failed_cycle(ws, harnesses):
     rig = make_rig(ws, h)
     assert rig.executor.enable_check is rig.gate          # the very callable the executor uses
 
-    failed = run_cycle(rig.deps, rig.state)
-    assert failed.outcome is CycleOutcome.CYCLE_FAILED
-    assert failed.reason == "cycle_error:RuntimeError"
-    assert rig.state.consecutive_failures == 1
+    closed = run_cycle(rig.deps, rig.state)
+    assert closed.outcome is CycleOutcome.CONTINUE
+    assert closed.mode is None and closed.control_state == "unknown"
+    assert rig.hook_calls == []
+    assert rig.state.consecutive_failures == 0
+    assert live_safety.read_safety_state(h.ledger).trips == ()
 
     failing["on"] = False
     resumed = run_cycle(rig.deps, rig.state)
@@ -725,7 +728,7 @@ def test_failure_and_exit_paths_record_worker_state_on_change_only(ws, harnesses
                             "cycle": "5"}
 
     rig.reader.health_value = FakeHealth()
-    ws.write_enable(h.ps, mode="shadow")
+    ws.write_control(mode="shadow")
 
     def decide_down(deps, state, ctx):
         raise ValueError("decide down")
@@ -739,21 +742,21 @@ def test_failure_and_exit_paths_record_worker_state_on_change_only(ws, harnesses
 
 
 # ---- d5. stop and lease lost write no worker_state ------------------------------------------
-def test_stop_requested_and_lease_lost_do_not_record_worker_state(ws, harnesses, monkeypatch):
-    h = harnesses()                                       # enabled: the observation write is real
+def test_stop_requested_and_lease_lost_do_not_record_worker_state(ws, harnesses):
+    h = harnesses()                                       # on/trade: the gate reading is real
+    base_gate = h._gate
     stopped = make_rig(ws, h, stop_requested=lambda: True)
 
     assert run_cycle(stopped.deps, stopped.state).outcome is CycleOutcome.STOP_REQUESTED
     assert views.events_of_kind(h.ledger, "worker_state") == []
 
-    rig = make_rig(ws, h)
-    real_note = cycle_module.note_enable_result
-
-    def note_then_lose(*args, **kwargs):
-        real_note(*args, **kwargs)                        # step 1 completes its write...
+    def gate_then_lose():
+        result = base_gate()                              # step 1 reads the control file...
         _lose_lease(ws)                                   # ...then the lease goes away
+        return result
 
-    monkeypatch.setattr(cycle_module, "note_enable_result", note_then_lose)
+    h._gate = gate_then_lose
+    rig = make_rig(ws, h)
     lost = run_cycle(rig.deps, rig.state)
     assert lost.outcome is CycleOutcome.EXIT_LEASE_LOST
     assert views.events_of_kind(h.ledger, "worker_state") == []
@@ -764,7 +767,7 @@ def test_a_disabled_gate_result_never_gets_a_mode(ws, harnesses, monkeypatch):
     from docich.trading.live.enable import EnableReason, EnableResult
 
     h = harnesses(gate_open=False)
-    disabled = EnableResult(enabled=False, reasons=(EnableReason.EXPIRED,), mode="trade")
+    disabled = EnableResult(enabled=False, reasons=(EnableReason.SWITCHED_OFF,), mode="trade")
 
     def gate():
         return disabled
@@ -791,7 +794,7 @@ def test_a_disabled_gate_result_never_gets_a_mode(ws, harnesses, monkeypatch):
 def test_a_frame_for_another_symbol_is_stale(ws, harnesses):
     h = harnesses(gate_open=False)
     rig = make_rig(ws, h)
-    ws.write_enable(h.ps, mode="shadow")
+    ws.write_control(mode="shadow")
     rig.market.overrides = {"OAS/JPY": market_frame("OMG/JPY", at=h.clock.seconds())}
 
     report = run_cycle(rig.deps, rig.state)
@@ -814,7 +817,7 @@ def test_stop_flipping_during_the_frame_fetch_skips_the_hook(ws, harnesses):
         return len(calls) > 1                 # step 0 sees False, everything after sees True
 
     rig = make_rig(ws, h, stop_requested=stop_requested)
-    ws.write_enable(h.ps, mode="shadow")      # a mode that would otherwise reach the hook
+    ws.write_control(mode="shadow")      # a mode that would otherwise reach the hook
     steps: list[int] = []
     real_step = rig.executor.step
 
@@ -914,7 +917,7 @@ def test_the_real_bitbank_reader_health_returns_to_continue_after_failures(ws, h
 def test_repeated_decide_failures_advance_the_failure_counter(ws, harnesses):
     h = harnesses(gate_open=False)
     rig = make_rig(ws, h)
-    ws.write_enable(h.ps, mode="shadow")
+    ws.write_control(mode="shadow")
 
     def decide_down(deps, state, ctx):
         raise ValueError("decide down")

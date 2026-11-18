@@ -15,13 +15,13 @@ from pathlib import Path
 import pytest
 
 from docich.trading.live import balance as live_balance
+from docich.trading.live import control as live_control
 from docich.trading.live import executor as live_executor
 from docich.trading.live import lease as live_lease
 from docich.trading.live import policy as live_policy
 from docich.trading.live import safety as sf
 from docich.trading.live import reconcile as live_reconcile
 from docich.trading.live import views as live_views
-from docich.trading.live.enable import EnableReason, EnableResult
 from docich.trading.live.exchange import Capabilities, ExchangeAmbiguous, OrderRequest, OrderSnapshot
 from docich.trading.live.exchange import FillPage, OrderPage
 from docich.trading.live.ingest import observation_from
@@ -29,7 +29,7 @@ from docich.trading.live.executor import SubmitOutcome as S
 from docich.trading.live.ledger import LiveLedger
 from docich.trading.live.lease import acquire_writer_lease
 from docich.trading.live.paths import live_layout
-from docich.trading.live_owner import cli, revision as live_revision
+from docich.trading.live_owner import cli
 from test_trading_live_support import (Harness, SimulatedCrash, Workspace, block_network, market_rules, policy_set,
                                        synthetic_mapping, synthetic_spec)
 
@@ -51,11 +51,9 @@ def workspace():
 
 
 # ---- helpers -------------------------------------------------------------------------------
-def _run(state_dir, *argv, is_tty=False, now=NOW, revision=None, reader_factory=None):
+def _run(state_dir, *argv, is_tty=False, now=NOW, reader_factory=None):
     out = io.StringIO()
     extra = {}
-    if revision is not None:
-        extra["revision"] = revision
     if reader_factory is not None:
         extra["reader_factory"] = reader_factory
     code = cli.main(["--state-dir", str(state_dir), *argv], out=out, clock=lambda: now, is_tty=is_tty, **extra)
@@ -289,7 +287,7 @@ def test_cashflow_list_hides_amounts_unless_the_output_is_a_tty(tmp_path):
     assert "amount: hidden" in out.getvalue()
 
 
-# ---- no exchange, no network, no process (except revision.py) --------------------------------
+# ---- no exchange, no network, no process ------------------------------------------------------
 FORBIDDEN_MODULES = ("docich.trading.exchanges", "ccxt", "socket", "urllib", "http", "requests")
 
 
@@ -310,10 +308,12 @@ def _imported_modules(path: Path) -> list[str]:
     return imported
 
 
+PROCESS_MODULES = ("subprocess", "multiprocessing", "pty")
+
+
 def test_the_owner_package_imports_no_exchange_network_or_process_module():
     files = sorted(PKG.glob("*.py"))
-    assert [path.name for path in files] == ["__init__.py", "__main__.py", "cli.py", "exchange_access.py",
-                                             "revision.py"]
+    assert [path.name for path in files] == ["__init__.py", "__main__.py", "cli.py", "exchange_access.py"]
     for path in files:
         imported = _imported_modules(path)
         if path.name != "__init__.py":             # the docstring-only package marker imports nothing
@@ -323,8 +323,12 @@ def test_the_owner_package_imports_no_exchange_network_or_process_module():
                 assert path.name == "exchange_access.py", (path.name, name)
                 continue                           # the one module allowed to reach the exchange layer
             assert not any(name == bad or name.startswith(f"{bad}.") for bad in FORBIDDEN_MODULES), (path.name, name)
-            if name.split(".")[0] == "subprocess":
-                assert path.name == "revision.py", path.name       # the only process call in the package
+            assert name.split(".")[0] not in PROCESS_MODULES, (path.name, name)
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+            if (isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name)
+                    and node.value.id in ("os", "subprocess")
+                    and node.attr in ("system", "popen")):
+                raise AssertionError((path.name, f"{node.value.id}.{node.attr}"))
 
 
 def test_exchange_access_imports_the_exchange_layer_only_inside_a_function():
@@ -342,12 +346,6 @@ def test_exchange_access_imports_the_exchange_layer_only_inside_a_function():
                     if any(name == "ccxt" or name.startswith("docich.trading.exchanges") for name in names):
                         inside.append(node.name)
     assert inside == ["open_reader"]
-
-
-def test_the_revision_module_has_no_other_dependency():
-    modules = _imported_modules(PKG / "revision.py")
-    assert modules, "the import scan found nothing"
-    assert {name.split(".")[0] for name in modules} <= {"__future__", "re", "os", "pathlib", "subprocess"}
 
 
 def test_only_the_package_entry_point_imports_the_owner_package():
@@ -399,8 +397,7 @@ def test_the_live_package_never_pulls_in_the_owner_cli():
 
 def test_human_only_clears_are_called_only_from_the_owner_cli():
     files = sorted(PKG.glob("*.py"))
-    assert [path.name for path in files] == ["__init__.py", "__main__.py", "cli.py", "exchange_access.py",
-                                             "revision.py"]
+    assert [path.name for path in files] == ["__init__.py", "__main__.py", "cli.py", "exchange_access.py"]
     for path in files:
         text = path.read_text(encoding="utf-8")
         if path.name == "cli.py":
@@ -431,11 +428,11 @@ def _activate_args(snapshot, digest, **kw):
     return ["activate", *argv]
 
 
-def _activate_run(state_dir, snapshot, digest, *, confirm=None, revision=None, **kw):
+def _activate_run(state_dir, snapshot, digest, *, confirm=None, **kw):
     argv = _activate_args(snapshot, digest, **kw)
     if confirm is not None:
         argv += ["--confirm", confirm]
-    return _run(state_dir, *argv, revision=revision or (lambda: "a" * 40))
+    return _run(state_dir, *argv)
 
 
 def _activation_rows(workspace):
@@ -455,9 +452,9 @@ def _active_digest(workspace):
         ledger.close()
 
 
-def _refused(state_dir, *argv, revision=None):
+def _refused(state_dir, *argv):
     before = _listing(state_dir)
-    code, text = _run(state_dir, *argv, revision=revision or (lambda: "a" * 40))
+    code, text = _run(state_dir, *argv)
     assert code == 1, text
     assert text.startswith("refused:") and len(text.splitlines()) == 1, text
     assert _listing(state_dir) == before and not (Path(state_dir) / "trading-live" / "live.sqlite3").exists()
@@ -466,7 +463,6 @@ def _refused(state_dir, *argv, revision=None):
 
 def test_activate_preview_creates_no_ledger(workspace, tmp_path):
     ps = policy_set(live_policy.INITIAL_SYMBOLS)
-    workspace.write_enable(ps, revision="a" * 40)
     snapshot, digest = _snapshot(tmp_path)
     before = _listing(workspace.state)
     code, text = _activate_run(workspace.state, snapshot, digest)
@@ -474,15 +470,14 @@ def test_activate_preview_creates_no_ledger(workspace, tmp_path):
     assert "ledger: will be created" in text
     assert f"policy_set: {ps.digest[:12]}" in text
     assert f"experiment: {digest[:12]}" in text
-    assert f"code_revision: {'a' * 12}" in text
-    assert "mode: trade" in text and "operator: owner" in text
+    assert "mode: none" in text and "operator: owner" in text
+    assert "code_revision" not in text and "enable_file" not in text
     assert re.fullmatch(r"[0-9a-f]{10}", _token(text))
     assert _listing(workspace.state) == before and not workspace.layout.ledger_path.exists()
 
 
 def test_activate_confirm_records_the_activation_and_the_ledger_accepts_a_repeat(workspace, tmp_path):
     ps = policy_set(live_policy.INITIAL_SYMBOLS)
-    workspace.write_enable(ps, revision="a" * 40)
     snapshot, digest = _snapshot(tmp_path)
     code, preview = _activate_run(workspace.state, snapshot, digest)
     assert code == 0
@@ -498,47 +493,29 @@ def test_activate_confirm_records_the_activation_and_the_ledger_accepts_a_repeat
     assert _active_digest(workspace) == ps.digest
 
 
-def test_activate_is_allowed_in_shadow_mode(workspace, tmp_path):
-    ps = policy_set(live_policy.INITIAL_SYMBOLS)
-    workspace.write_enable(ps, mode="shadow", revision="a" * 40)
+def test_activate_needs_no_control_file_but_shows_its_mode_when_present(workspace, tmp_path):
     snapshot, digest = _snapshot(tmp_path)
+    code, preview = _activate_run(workspace.state, snapshot, digest)
+    assert code == 0 and "mode: none" in preview                  # no control file at all
+    workspace.write_control(mode="shadow")
     code, preview = _activate_run(workspace.state, snapshot, digest)
     assert code == 0 and "mode: shadow" in preview
     code, text = _activate_run(workspace.state, snapshot, digest, confirm=_token(preview))
-    assert code == 0 and text.startswith("activated: ") and _active_digest(workspace) == ps.digest
+    assert code == 0 and text.startswith("activated: ")
+    assert _active_digest(workspace) == policy_set(live_policy.INITIAL_SYMBOLS).digest
 
 
-def test_activate_refuses_an_enable_file_that_does_not_match(workspace, tmp_path):
-    snapshot, digest = _snapshot(tmp_path)
-    ps = policy_set(live_policy.INITIAL_SYMBOLS)
-    assert "file_missing" in _refused(workspace.state, *_activate_args(snapshot, digest))
-    workspace.write_enable(policy_set(), revision="a" * 40)                  # another policy set
-    assert "policy_set_digest_mismatch" in _refused(workspace.state, *_activate_args(snapshot, digest))
-    workspace.write_enable(ps, revision="a" * 40)                            # the right set, another commit
-    assert "code_revision_mismatch" in _refused(workspace.state, *_activate_args(snapshot, digest),
-                                                revision=lambda: "b" * 40)
-
-
-def test_activate_refuses_a_bad_snapshot_a_bad_revision_a_wrong_token_or_a_bad_operator(workspace, tmp_path):
-    ps = policy_set(live_policy.INITIAL_SYMBOLS)
-    workspace.write_enable(ps, revision="a" * 40)
+def test_activate_refuses_a_bad_snapshot_a_wrong_token_or_a_bad_operator(workspace, tmp_path):
     snapshot, digest = _snapshot(tmp_path)
     assert "confirmation token does not match" in _refused(
         workspace.state, *_activate_args(snapshot, digest), "--confirm", "0" * 10)
     assert "experiment digest mismatch" in _refused(workspace.state, *_activate_args(snapshot, "0" * 64))
     assert "LivePolicyError" in _refused(workspace.state, *_activate_args("no-such/snapshot.json", digest))
     assert "LivePolicyError" in _refused(workspace.state, *_activate_args(tmp_path / "missing.json", digest))
-
-    def dirty():
-        raise live_revision.RevisionError("the tracked tree is dirty: commit or revert before activating")
-
-    assert "the tracked tree is dirty" in _refused(workspace.state, *_activate_args(snapshot, digest), revision=dirty)
     assert "operator must not be empty" in _refused(workspace.state, *_activate_args(snapshot, digest, operator=" "))
 
 
 def test_activate_with_the_worker_holding_the_lease_returns_five(workspace, tmp_path):
-    ps = policy_set(live_policy.INITIAL_SYMBOLS)
-    workspace.write_enable(ps, revision="a" * 40)
     snapshot, digest = _snapshot(tmp_path)
     ledger = LiveLedger.open(workspace.layout, paper_dir=workspace.paper, now=NOW)
     try:
@@ -554,67 +531,6 @@ def test_activate_with_the_worker_holding_the_lease_returns_five(workspace, tmp_
             live_lease.release_writer_lease(ledger, held, now=NOW)
     finally:
         ledger.close()
-
-
-# ---- revision.py: the commit the enable file is bound to -------------------------------------
-def _git(repo, *args):
-    """Run git like revision.py does: no inherited GIT_* variable, a fixed configuration."""
-    env = {name: value for name, value in os.environ.items() if not name.startswith("GIT_")}
-    env.update({"GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1", "LC_ALL": "C"})
-    return subprocess.run(["git", *args], cwd=str(repo), capture_output=True, text=True, check=True, env=env)
-
-
-def _git_repo(tmp_path):
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    _git(repo, "init")
-    (repo / "tracked.txt").write_text("one\n", encoding="utf-8")
-    _git(repo, "add", "tracked.txt")
-    _git(repo, "-c", "user.name=test", "-c", "user.email=test@example.invalid", "commit", "-m", "one")
-    return repo
-
-
-def test_current_revision_returns_head_and_refuses_a_dirty_or_missing_repo(tmp_path):
-    repo = _git_repo(tmp_path)
-    head = _git(repo, "rev-parse", "HEAD").stdout.strip()
-    assert re.fullmatch(r"[0-9a-f]{40}", head)
-    assert live_revision.current_revision(repo) == head
-    (repo / "untracked.txt").write_text("x\n", encoding="utf-8")
-    assert live_revision.current_revision(repo) == head          # untracked files are not the revision
-    (repo / "tracked.txt").write_text("two\n", encoding="utf-8")
-    with pytest.raises(live_revision.RevisionError, match="dirty"):
-        live_revision.current_revision(repo)
-    plain = tmp_path / "plain"
-    plain.mkdir()
-    with pytest.raises(live_revision.RevisionError):
-        live_revision.current_revision(plain)
-
-
-def test_current_revision_ignores_inherited_git_dir_and_work_tree(tmp_path, monkeypatch):
-    repo = _git_repo(tmp_path)
-    other = tmp_path / "other"
-    other.mkdir()
-    _git(other, "init")
-    (other / "other.txt").write_text("other\n", encoding="utf-8")
-    _git(other, "add", "other.txt")
-    _git(other, "-c", "user.name=test", "-c", "user.email=test@example.invalid", "commit", "-m", "other")
-    repo_head = _git(repo, "rev-parse", "HEAD").stdout.strip()
-    other_head = _git(other, "rev-parse", "HEAD").stdout.strip()
-    assert repo_head != other_head
-    monkeypatch.setenv("GIT_DIR", str(other / ".git"))
-    monkeypatch.setenv("GIT_WORK_TREE", str(other))
-    assert live_revision.current_revision(repo) == repo_head      # not the other repository's HEAD
-
-
-def test_current_revision_requires_the_top_level_of_its_own_checkout(tmp_path):
-    repo = _git_repo(tmp_path)
-    (repo / "sub").mkdir()
-    with pytest.raises(live_revision.RevisionError, match="top of its own git checkout"):
-        live_revision.current_revision(repo / "sub")             # a subdirectory is not the checkout
-    nested = repo / "sub" / "deeper"
-    nested.mkdir()
-    with pytest.raises(live_revision.RevisionError, match="top of its own git checkout"):
-        live_revision.current_revision(nested)                   # nor a plain directory inside the repo
 
 
 # ---- unknown: list / show / resolve ---------------------------------------------------------
@@ -1722,61 +1638,15 @@ def test_trip_clear_with_the_worker_holding_the_lease_returns_five(tmp_path):
     assert [trip.reason for trip in _active_trips(tmp_path)] == ["data_anomaly"]
 
 
-def test_enable_missing_without_an_active_policy_set_is_refused(tmp_path):
-    _trip(tmp_path, "enable_missing", detail="the gate closed")
-    code, text = _run(tmp_path, *_trip_clear_args("enable_missing"), revision=lambda: "a" * 40)
-    assert code == 1 and text == "refused: no active policy set\n"
-    assert [trip.reason for trip in _active_trips(tmp_path)] == ["enable_missing"]
-
-
-def _activated_harness(workspace):
-    """A ledger with an active policy set and an ENABLE_MISSING trip (the harness lease handed back)."""
-    h = _unknown_harness(workspace, caps=Capabilities(False, False, True), gate_open=False)
-    workspace.write_enable(h.ps, revision="a" * 40)
-    h.ledger.record_owner_activation(h.lease, h.ps, enable=workspace.enable_result(h.ps),
-                                     operator="owner", note="test activation", now=h.clock.seconds())
-    h.ledger.trip_safety(sf.SafetyReason.ENABLE_MISSING, detail="the gate closed", now=h.clock.seconds())
-    _released(h)
-    return h
-
-
-def test_enable_missing_without_an_enable_file_is_refused(workspace):
-    h = _activated_harness(workspace)
-    try:
-        workspace.layout.enable_path.unlink()
-        code, text = _run(workspace.state, *_trip_clear_args("enable_missing"), revision=lambda: "a" * 40)
-        assert code == 1 and text.startswith("refused: enable file is not valid")
-        assert [trip.reason for trip in _active_trips(workspace.state)] == ["enable_missing"]
-    finally:
-        h.close()
-
-
-def test_enable_missing_is_cleared_with_a_valid_shadow_enable_file(workspace):
-    h = _activated_harness(workspace)
-    try:
-        workspace.write_enable(h.ps, mode="shadow", revision="a" * 40)   # enabled counts; trade is not required
-        argv = _trip_clear_args("enable_missing")
-        code, preview = _run(workspace.state, *argv, revision=lambda: "a" * 40)
-        assert code == 0 and "token: " in preview
-        code, text = _run(workspace.state, *argv, "--confirm", _token(preview), revision=lambda: "a" * 40)
-        assert code == 0 and text.startswith("cleared: enable_missing")
-        assert _active_trips(workspace.state) == ()
-    finally:
-        h.close()
-
-
-def test_enable_missing_refuses_the_confirm_when_the_file_was_removed_after_the_preview(workspace):
-    h = _activated_harness(workspace)
-    try:
-        argv = _trip_clear_args("enable_missing")
-        code, preview = _run(workspace.state, *argv, revision=lambda: "a" * 40)
-        assert code == 0 and "token: " in preview
-        workspace.layout.enable_path.unlink()
-        code, text = _run(workspace.state, *argv, "--confirm", _token(preview), revision=lambda: "a" * 40)
-        assert code == 1 and text.startswith("refused: enable file is not valid")
-        assert [trip.reason for trip in _active_trips(workspace.state)] == ["enable_missing"]
-    finally:
-        h.close()
+def test_legacy_enable_missing_is_cleared_like_any_other_trip(tmp_path):
+    """ENABLE_MISSING is a legacy row: no control file, no active policy set, human-only clear."""
+    _trip(tmp_path, "enable_missing", detail="a legacy stop")
+    argv = _trip_clear_args("enable_missing")
+    code, preview = _run(tmp_path, *argv)
+    assert code == 0 and "token: " in preview
+    code, text = _run(tmp_path, *argv, "--confirm", _token(preview))
+    assert code == 0 and text.startswith("cleared: enable_missing")
+    assert _active_trips(tmp_path) == ()
 
 
 def test_the_owner_clears_an_unknown_order_stop_and_then_resolves_the_intent(workspace, monkeypatch):
@@ -1825,7 +1695,6 @@ def test_a_non_blocking_stop_does_not_block_the_not_created_override(workspace, 
         intent, outcome = h.send(side="buy", key="b1", amount="10", price="90")
         assert outcome is S.UNKNOWN
         h.advance(500)
-        workspace.layout.enable_path.unlink()                  # the gate is closed, so ENABLE_MISSING may stand
         h.ledger.trip_safety(sf.SafetyReason.ENABLE_MISSING, detail="the gate closed", now=h.clock.seconds())
         _released(h)
 
@@ -1839,38 +1708,6 @@ def test_a_non_blocking_stop_does_not_block_the_not_created_override(workspace, 
         code, preview = _run(workspace.state, *argv, now=h.clock.seconds(), reader_factory=lambda state_dir: h.mock)
         assert code == 0, preview                                 # ENABLE_MISSING is not one of the blocking four
         assert "token: " in preview
-        code, text = _run(workspace.state, *argv, "--confirm", _token(preview), now=h.clock.seconds(),
-                          reader_factory=lambda state_dir: h.mock)
-        assert code == 0 and text == "resolved: not created (owner evidence)\n"
-        assert h.ledger.get_intent(intent.intent_id).state == "NOT_CREATED"
-    finally:
-        h.close()
-
-
-def test_the_cli_never_records_an_enable_observation(workspace, monkeypatch):
-    h = _unknown_harness(workspace, caps=Capabilities(False, False, True))
-    try:
-        h.mock.faults.push("submit", "LOST_REQUEST")
-        intent, outcome = h.send(side="buy", key="b1", amount="10", price="90")
-        assert outcome is S.UNKNOWN
-        h.advance(500)
-        _released(h)
-
-        def forbidden(*args, **kwargs):
-            raise AssertionError("the CLI must not record an enable observation")
-
-        monkeypatch.setattr(live_executor, "note_enable_result", forbidden)   # the name the executor calls
-        monkeypatch.setattr(LiveLedger, "record_enable_observation", forbidden)
-
-        def waiting(ex, pending):
-            return "waiting"
-
-        monkeypatch.setattr(live_reconcile, "try_resolve", waiting)
-        argv = ["unknown", "resolve", "--intent", intent.intent_id, "--not-created",
-                "--override-incomplete-proof", "--evidence", "checked the exchange history by hand",
-                "--operator", "owner"]
-        code, preview = _run(workspace.state, *argv, now=h.clock.seconds(), reader_factory=lambda state_dir: h.mock)
-        assert code == 0, preview
         code, text = _run(workspace.state, *argv, "--confirm", _token(preview), now=h.clock.seconds(),
                           reader_factory=lambda state_dir: h.mock)
         assert code == 0 and text == "resolved: not created (owner evidence)\n"
@@ -1901,16 +1738,11 @@ def test_trip_clear_without_a_ledger_refuses_and_creates_nothing(tmp_path, reaso
 
 def _record_machine_stop(ex, reason: str) -> None:
     """The write the worker itself makes for this reason (never ingest.anomaly)."""
-    now = ex.clock()
-    if reason == sf.SafetyReason.ENABLE_MISSING.value:
-        # record_enable_observation only trips after the gate was seen open, so make that true first
-        ex.ledger.record_enable_observation(ex.lease, EnableResult(True, (), mode="trade"), now=now)
-        ex.ledger.record_enable_observation(ex.lease, EnableResult(False, (EnableReason.EXPIRED,)), now=now)
-        return
-    ex.ledger.trip_safety(sf.SafetyReason.LEASE_LOST, detail="the writer lease was lost", now=now)
+    ex.ledger.trip_safety(sf.SafetyReason.LEASE_LOST, detail="the writer lease was lost",
+                          now=ex.clock())
 
 
-@pytest.mark.parametrize("reason", ["enable_missing", "lease_lost"])
+@pytest.mark.parametrize("reason", ["lease_lost"])
 def test_a_stop_recorded_by_the_machine_during_the_resolution_refuses_the_owner_override(
         workspace, monkeypatch, reason):
     h = _unknown_harness(workspace, caps=Capabilities(False, False, True))
@@ -1954,3 +1786,66 @@ def test_a_stop_recorded_by_the_machine_during_the_resolution_refuses_the_owner_
         assert h.ledger.get_intent(intent.intent_id).state == "NOT_CREATED"
     finally:
         h.close()
+
+
+# ---- control: the owner's plain on/off switch -----------------------------------------------
+def test_control_status_without_a_file_is_unknown_and_creates_nothing(tmp_path):
+    before = _listing(tmp_path)
+    code, text = _run(tmp_path, "control", "status")
+    assert code == 0
+    assert "state: unknown" in text and "mode: none" in text
+    assert "updated_at: none" in text and "updated_by: none" in text
+    assert "reasons: file_missing" in text
+    assert _listing(tmp_path) == before and not (tmp_path / "trading-live").exists()
+
+
+def test_control_on_off_writes_the_file_and_on_keeps_the_existing_mode(tmp_path):
+    code, text = _run(tmp_path, "control", "on", "--mode", "trade", "--yes-trade",
+                      "--operator", "owner")
+    assert code == 0
+    assert "state: on" in text and "mode: trade" in text and "updated_by: owner" in text
+    path = live_layout(tmp_path).control_path
+    assert oct(path.stat().st_mode & 0o777) == "0o600"
+    result = live_control.read_control(tmp_path, now=NOW)
+    assert result.enabled and result.allows_orders
+
+    code, text = _run(tmp_path, "control", "off", "--operator", "owner")
+    assert code == 0 and "state: off" in text and "mode: trade" in text
+    result = live_control.read_control(tmp_path, now=NOW)
+    assert not result.enabled and result.reasons == (live_control.EnableReason.SWITCHED_OFF,)
+    assert result.mode == "trade"
+
+    code, text = _run(tmp_path, "control", "on", "--operator", "owner")   # no --mode: keep trade
+    assert code == 0 and "state: on" in text and "mode: trade" in text
+    assert live_control.read_control(tmp_path, now=NOW).allows_orders
+
+
+def test_control_on_defaults_to_shadow_and_trade_needs_yes_trade(tmp_path):
+    code, text = _run(tmp_path, "control", "on", "--mode", "trade", "--operator", "owner")
+    assert code == 1 and text == "refused: --mode trade requires --yes-trade\n"
+    assert not live_layout(tmp_path).control_path.exists()
+
+    code, text = _run(tmp_path, "control", "on", "--operator", "owner")
+    assert code == 0 and "state: on" in text and "mode: shadow" in text
+    result = live_control.read_control(tmp_path, now=NOW)
+    assert result.enabled and not result.allows_orders
+
+    # an existing trade mode is kept when --mode is omitted, even through off
+    assert _run(tmp_path, "control", "on", "--mode", "trade", "--yes-trade",
+                "--operator", "owner")[0] == 0
+    assert _run(tmp_path, "control", "off", "--operator", "owner")[0] == 0
+    code, text = _run(tmp_path, "control", "on", "--operator", "owner")
+    assert code == 0 and "mode: trade" in text
+
+
+def test_control_set_refuses_a_bad_operator_or_a_directory_it_must_not_touch(tmp_path):
+    code, text = _run(tmp_path, "control", "on", "--operator", " ")
+    assert code == 1 and text.startswith("refused: operator must not be empty")
+    assert not live_layout(tmp_path).control_path.exists()
+
+    root = live_layout(tmp_path).root
+    root.mkdir(mode=0o755)
+    os.chmod(root, 0o755)
+    code, text = _run(tmp_path, "control", "on", "--operator", "owner")
+    assert code == 1 and text == "refused: trading-live must be mode 0700\n"
+    assert not live_layout(tmp_path).control_path.exists()

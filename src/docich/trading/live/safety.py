@@ -11,7 +11,7 @@ class SafetyReason(str, Enum):
     BALANCE_MISMATCH = "balance_mismatch"
     DATA_ANOMALY = "data_anomaly"
     FEE_MISSING = "fee_missing"
-    ENABLE_MISSING = "enable_missing"
+    ENABLE_MISSING = "enable_missing"   # legacy rows only: nothing writes it any more
     LEASE_LOST = "lease_lost"
 
 
@@ -36,10 +36,10 @@ class SafetyState:
         return bool(self.trips) or self.unresolved_unknown_submissions > 0 or not self.ledger_readable
 
     # Owner decision (2026-11-16): a safety stop blocks new buys only; sells (exits) still go out.
-    # One exception lives in ledger.mark_submitting: ENABLE_MISSING is the owner's off switch and blocks
-    # sells too.  A double sell is prevented by the one_open_intent index (one open intent per
-    # symbol and side, UNKNOWN_SUBMISSION included), not here.  An unknown *buy* does not block a sell:
-    # if it filled, the coins only grew.
+    # The owner's on/off switch is separate (control.py): off blocks buys and sells by abandoning
+    # the submit, and is not a safety trip.  A double sell is prevented by the one_open_intent index
+    # (one open intent per symbol and side, UNKNOWN_SUBMISSION included), not here.  An unknown
+    # *buy* does not block a sell: if it filled, the coins only grew.
 
 
 _UNKNOWN = "UNKNOWN_SUBMISSION"
@@ -54,10 +54,6 @@ def active_trips(cur: sqlite3.Cursor) -> tuple[SafetyTrip, ...]:
 def unresolved_unknowns(cur: sqlite3.Cursor) -> int:
     return cur.execute("SELECT COUNT(*) FROM intents WHERE state=?", (_UNKNOWN,)).fetchone()[0]
 
-
-def enable_missing_active(cur: sqlite3.Cursor) -> bool:
-    return cur.execute("SELECT 1 FROM safety_trips WHERE reason=? AND cleared_at IS NULL",
-                       (SafetyReason.ENABLE_MISSING.value,)).fetchone() is not None
 
 
 def insert_trip(cur: sqlite3.Cursor, reason: SafetyReason, detail: str, now: float) -> bool:
@@ -88,8 +84,3 @@ def clear_safety_trip(ledger, reason: SafetyReason, *, operator: str, note: str,
                       evidence: str, now: float) -> None:
     """HUMAN-ONLY.  Nothing in src/ may call this (a test enforces it)."""
     ledger.clear_safety(reason, operator=operator, note=note, evidence=evidence, now=now)
-
-
-def note_enable_result(ledger, lease, result, *, now: float) -> None:
-    """Record an enable-gate reading.  Trips ENABLE_MISSING only after the gate was once open."""
-    ledger.record_enable_observation(lease, result, now=now)

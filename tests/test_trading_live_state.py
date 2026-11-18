@@ -1,4 +1,4 @@
-"""LIVE L1: ledger, enable gate, lease, safety latch.  No network, nothing sent."""
+"""LIVE L1: ledger, on/off control file, lease, safety latch.  No network, nothing sent."""
 import ast
 import json
 import os
@@ -11,7 +11,6 @@ from pathlib import Path
 
 import pytest
 
-from docich.trading.live import enable as en
 from docich.trading.live import ledger as lg
 from docich.trading.live import safety as sf
 from docich.trading.live.lease import LeaseHeld, LeaseLost, acquire_writer_lease, release_writer_lease
@@ -77,7 +76,7 @@ def test_import_live_package_has_no_side_effects_or_network_modules(tmp_path):
     code = textwrap.dedent(f"""
         import os, sys
         before = sorted(os.listdir({str(tmp_path)!r}))
-        import docich.trading.live.ledger, docich.trading.live.enable, docich.trading.live.policy
+        import docich.trading.live.ledger, docich.trading.live.control, docich.trading.live.policy
         import docich.trading.live.lease, docich.trading.live.safety, docich.trading.live.paths
         import docich.trading.live.exchange, docich.trading.live.mock_exchange
         bad = [m for m in ("ssl", "ccxt", "http.client", "urllib.request", "requests") if m in sys.modules]
@@ -116,88 +115,6 @@ def test_human_only_apis_have_no_call_sites_in_src():
                     # the thin wrapper in safety.py is the only allowed reference
                     assert path.relative_to(SRC / "docich").as_posix() in (
                         "trading/live/safety.py", "trading/live/ledger.py", "trading/live_owner/cli.py"), (path, line)
-
-
-# ---- enable gate ------------------------------------------------------------
-def test_enable_missing_is_disabled_and_creates_nothing(ws):
-    result = ws.enable_result(policy_set())
-    assert not result.enabled and en.EnableReason.FILE_MISSING in result.reasons
-    assert not ws.layout.root.exists()
-
-
-def test_enable_valid_file_enabled_and_shadow_never_allows_orders(ws):
-    ps = policy_set()
-    ws.write_enable(ps)
-    result = ws.enable_result(ps)
-    assert result.enabled and result.allows_orders and result.file_sha256
-    ws.write_enable(ps, mode="shadow")
-    shadow = ws.enable_result(ps)
-    assert shadow.enabled and not shadow.allows_orders
-
-
-@pytest.mark.parametrize("perm", [0o644, 0o640, 0o660, 0o604, 0o700, 0o400])
-def test_enable_rejects_loose_or_wrong_modes(ws, perm):
-    ps = policy_set()
-    ws.write_enable(ps, perm=perm)
-    result = ws.enable_result(ps)
-    assert not result.enabled and en.EnableReason.MODE_NOT_0600 in result.reasons
-
-
-def test_enable_rejects_symlink_and_open_owner_dir(ws):
-    ps = policy_set()
-    path = ws.write_enable(ps)
-    real = path.with_name("real.json")
-    path.rename(real)
-    path.symlink_to(real)
-    assert not ws.enable_result(ps).enabled
-    path.unlink()
-    real.rename(path)
-    os.chmod(ws.layout.owner_dir, 0o755)
-    assert en.EnableReason.OWNER_DIR_INVALID in ws.enable_result(ps).reasons
-
-
-def test_enable_rejects_foreign_uid(ws, monkeypatch):
-    ps = policy_set()
-    ws.write_enable(ps)
-    monkeypatch.setattr(os, "geteuid", lambda: os.stat(ws.layout.enable_path).st_uid + 1)
-    assert not ws.enable_result(ps).enabled
-
-
-def test_enable_rejects_corrupt_oversize_unknown_keys_and_jpy_cap(ws):
-    ps = policy_set()
-    path = ws.write_enable(ps)
-    path.write_text("{not json", encoding="utf-8")
-    assert en.EnableReason.CORRUPT_JSON in ws.enable_result(ps).reasons
-    path.write_text(" " * 5000, encoding="utf-8")
-    os.chmod(path, 0o600)
-    assert en.EnableReason.TOO_LARGE in ws.enable_result(ps).reasons
-    ws.write_enable(ps, extra={"max_jpy": 100000})
-    assert en.EnableReason.UNKNOWN_KEYS in ws.enable_result(ps).reasons
-
-
-def test_enable_rejects_expired_future_and_naive_times(ws):
-    ps = policy_set()
-    ws.write_enable(ps, expires="2020-01-02T00:00:00+09:00", created="2020-01-01T00:00:00+09:00")
-    assert en.EnableReason.EXPIRED in ws.enable_result(ps).reasons
-    ws.write_enable(ps, created="2090-01-01T00:00:00+09:00", expires="2099-01-01T00:00:00+09:00")
-    assert en.EnableReason.NOT_YET_VALID in ws.enable_result(ps).reasons
-    ws.write_enable(ps, created="2026-01-01T00:00:00", expires="2099-01-01T00:00:00")
-    assert en.EnableReason.SCHEMA_INVALID in ws.enable_result(ps).reasons
-
-
-def test_enable_rejects_digest_and_revision_mismatch(ws):
-    ps, other = policy_set(), policy_set(("OAS/JPY",))
-    ws.write_enable(ps)
-    assert en.EnableReason.POLICY_SET_DIGEST_MISMATCH in ws.enable_result(other).reasons
-    assert en.EnableReason.CODE_REVISION_MISMATCH in ws.enable_result(ps, revision="b" * 40).reasons
-
-
-def test_enable_never_raises(ws, monkeypatch):
-    ps = policy_set()
-    ws.write_enable(ps)
-    monkeypatch.setattr(en, "_dir_ok", lambda path: (_ for _ in ()).throw(RuntimeError("boom")))
-    result = ws.enable_result(ps)
-    assert not result.enabled and en.EnableReason.CHECK_ERROR in result.reasons
 
 
 # ---- ledger basics ------------------------------------------------------------
@@ -348,11 +265,7 @@ def test_sell_goes_out_during_a_safety_stop_but_buy_does_not(ready, reason):
     sf.trip(ledger, reason, detail="x", now=NOW)
     with pytest.raises(lg.SafetyBlocked):
         ledger.mark_submitting(lease, buy.intent_id, now=NOW)
-    if reason is sf.SafetyReason.ENABLE_MISSING:  # the owner's off switch stops sells too
-        with pytest.raises(lg.SafetyBlocked):
-            ledger.mark_submitting(lease, sell.intent_id, now=NOW)
-    else:
-        assert ledger.mark_submitting(lease, sell.intent_id, now=NOW).state == "SUBMITTING"
+    assert ledger.mark_submitting(lease, sell.intent_id, now=NOW).state == "SUBMITTING"
 
 
 def _sell(ps, key):
@@ -525,39 +438,17 @@ def test_cashflows_are_append_only_and_validated(ready):
 
 
 # ---- policy activation -------------------------------------------------------------------
-def test_owner_activation_is_bound_to_the_policy_set_the_enable_file_was_checked_for(ready):
-    ws, ledger, lease, ps = ready
-    other = policy_set(("OAS/JPY", "OMG/JPY"))
-    ledger.store_policy_set(lease, other, now=NOW)
-    ws.write_enable(ps)
-    checked_for_ps = ws.enable_result(ps)
-    with pytest.raises(lg.LiveLedgerError, match="different policy set"):
-        ledger.record_owner_activation(lease, other, enable=checked_for_ps, operator="owner", note="n", now=NOW)
-    assert ledger.active_policy_set_digest() is None
-
-
-def test_enable_never_seen_then_missing_writes_nothing_but_seen_then_missing_trips(ready):
-    ws, ledger, lease, ps = ready
-    missing = ws.enable_result(ps)
-    sf.note_enable_result(ledger, lease, missing, now=NOW)
-    assert not sf.read_safety_state(ledger).trips
-    assert not any(e.kind == "enable_seen" for e in ledger.events(limit=1000))
-    ws.write_enable(ps)
-    sf.note_enable_result(ledger, lease, ws.enable_result(ps), now=NOW + 1)
-    assert not sf.read_safety_state(ledger).trips
-    ws.layout.enable_path.unlink()
-    sf.note_enable_result(ledger, lease, ws.enable_result(ps), now=NOW + 2)
-    assert [t.reason for t in sf.read_safety_state(ledger).trips] == ["enable_missing"]
-
-
-def test_owner_activation_requires_a_valid_enable_file_and_promotion_needs_owner_initial(ready):
+def test_owner_activation_needs_operator_and_note_and_promotion_needs_owner_initial(ready):
     ws, ledger, lease, ps = ready
     with pytest.raises(lg.LiveLedgerError):
         ledger.record_activation(lease, ps, reason="promotion", evidence_digest="e" * 64, now=NOW)
-    with pytest.raises(lg.LiveLedgerError):
-        ledger.record_owner_activation(lease, ps, enable=ws.enable_result(ps), operator="owner", note="n", now=NOW)
-    ws.write_enable(ps)
-    ledger.record_owner_activation(lease, ps, enable=ws.enable_result(ps), operator="owner", note="initial", now=NOW)
+    with pytest.raises(ValueError):
+        ledger.record_owner_activation(lease, ps, operator="", note="n", now=NOW)
+    with pytest.raises(ValueError):
+        ledger.record_owner_activation(lease, ps, operator="owner", note="", now=NOW)
+    with ledger.read_cursor() as cur:
+        assert cur.execute("SELECT COUNT(*) FROM policy_activations").fetchone()[0] == 0
+    ledger.record_owner_activation(lease, ps, operator="owner", note="initial", now=NOW)
     assert ledger.active_policy_set_digest() == ps.digest
     ledger.record_activation(lease, ps, reason="promotion", evidence_digest="e" * 64, now=NOW + 1)
     with ledger.read_cursor() as cur:

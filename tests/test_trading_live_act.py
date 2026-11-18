@@ -363,7 +363,7 @@ def test_outcome_handling(ws, harnesses, monkeypatch, case):
     elif case == "unknown":
         h.mock.faults.push("submit", "LOST_REQUEST", nth=1)
     else:  # blocked: the owner's gate is no longer open when the submit happens
-        ws.write_enable(ps, mode="shadow")
+        ws.write_control(mode="shadow")
 
     report = place_orders(rig.deps, rig.state, ctx, built)
     first = h.ledger.get_intent(
@@ -689,13 +689,13 @@ def test_the_hook_through_run_cycle(ws, harnesses, monkeypatch):
                         lambda *a, **k: LiveSignals((buy,), (), (), {}))
 
     # Shadow: the decision is recorded, no order exists.
-    ws.write_enable(ps, mode="shadow")
+    ws.write_control(mode="shadow")
     shadow = run_cycle(rig.deps, rig.state)
     assert shadow.mode == "shadow" and shadow.outcome is CycleOutcome.CONTINUE
     assert all_intents(h.ledger) == []
 
     # Trade: the hook places the buy through the mock sender.
-    ws.write_enable(ps, mode="trade")
+    ws.write_control(mode="trade")
     trade = run_cycle(rig.deps, rig.state)
     assert trade.mode == "trade"
     intents = all_intents(h.ledger)

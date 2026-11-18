@@ -482,7 +482,7 @@ def test_cancel_runs_before_the_step_and_in_every_mode(ws, harnesses, mode):
         rig.executor.enable_check = monitor_gate
         deps = replace(rig.deps, gate=monitor_gate)
     else:
-        ws.write_enable(h.ps, mode=mode)
+        ws.write_control(mode=mode)
 
     calls: list[str] = []
     real_cancel, real_step = rig.executor.cancel, rig.executor.step
@@ -506,10 +506,10 @@ def test_cancel_runs_before_the_step_and_in_every_mode(ws, harnesses, mode):
 
     # A stop request before step 0 returns before the TTL step: nothing is canceled.
     if mode == "shadow":
-        ws.write_enable(h.ps, mode="trade")        # create the order through the open gate
+        ws.write_control(mode="trade")        # create the order through the open gate
     second = resting_buy(h, key="b2")
     if mode == "shadow":
-        ws.write_enable(h.ps, mode="shadow")
+        ws.write_control(mode="shadow")
     h.clock.advance(46)
     seen = list(calls)
 
@@ -793,39 +793,37 @@ def test_a_lease_lost_cancel_trips_the_latch_exactly_once(ws, harnesses):
     assert [order.status.value for order in h.mock.all_orders()] == ["UNFILLED"]
 
 
-# ---- p4: step 5 runs with a REAL closed gate (no mode check guards it) ------------------
+# ---- p4: step 5 runs with a REAL switched-off gate (no mode check guards it) ------------
 def test_open_orders_are_withdrawn_when_the_gate_is_closed(ws, harnesses):
-    """An expired enable file (the real closed gate of the decide g10 test) still cancels.
+    """The owner switches off, and step 5 still withdraws the order.
 
-    The order is placed while the owner's gate is open; the enable file is then expired, so
-    the step-1 gate read reports mode None.  Closing a gate that was once open also arms
-    ENABLE_MISSING (the measured step-1 behavior) -- and step 5 still withdraws the order:
-    the intent is CANCELED, the mock order is CANCELED_UNFILLED, exactly one ttl_expired row
-    is written, the outcome is CONTINUE and report.mode stays None.
+    The order is placed while the control file is on/trade; the file is then switched off, so
+    the step-1 gate read reports mode None.  Switching off is not a safety trip -- and step 5
+    still withdraws the order: the intent is CANCELED, the mock order is CANCELED_UNFILLED,
+    exactly one ttl_expired row is written, the outcome is CONTINUE and report.mode stays None.
     """
     h = harnesses()
     intent = resting_buy(h, key="b1")
     assert h.clock.seconds() == NOW
     h.clock.advance(46)
 
-    ws.write_enable(h.ps, mode="trade", created="2000-01-01T00:00:00+09:00",
-                    expires="2000-01-02T00:00:00+09:00")
+    ws.write_control(state="off", mode="trade")
     closed = h._gate()
-    assert closed.enabled is False and closed.mode is None      # a real closed gate
+    assert closed.enabled is False and closed.mode == "trade"    # off keeps the file's mode
 
     report = run_cycle(deps_for(h), CycleState())
 
     assert report.outcome is CycleOutcome.CONTINUE
     assert report.mode is None and report.reason is None
+    assert report.control_state == "off" and report.control_mode == "trade"
     assert h.ledger.get_intent(intent.intent_id).state == "CANCELED"
     assert mock_order(h, intent).status.value == "CANCELED_UNFILLED"
     rows = [row for row in cancel_rows(h.ledger) if row["intent_id"] == intent.intent_id]
     assert len(rows) == 1
     assert rows[0]["action"] == "cancel" and rows[0]["reason"] == "ttl_expired"
     assert D(rows[0]["age_s"]) == D("46") and rows[0]["cycle"] == "1"
-    # The closed gate armed the latch at step 1; the risk-reducing withdraw runs anyway.
-    assert [trip.reason for trip in safety.read_safety_state(h.ledger).trips] == [
-        "enable_missing"]
+    # Switching off trips nothing; the risk-reducing withdraw runs anyway.
+    assert [trip.reason for trip in safety.read_safety_state(h.ledger).trips] == []
 
 
 # ---- p5: a fill that wins the cancel race is benign through run_cycle -------------------

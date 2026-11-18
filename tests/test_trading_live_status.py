@@ -73,21 +73,31 @@ def test_the_allow_list_drops_unknown_keys_and_wrong_types(ws):
     assert set(data) <= ALLOWED_KEYS
 
 
-def test_generated_fields_win_and_revision_and_digest_are_truncated_to_12_hex(ws):
+def test_generated_fields_win_and_digest_is_truncated_to_12_hex(ws):
     ok = write_status(ws.state, {
         "schema_version": 99, "written_at": 1.0, "phase": "exited",
-        "code_revision": "a" * 40, "policy_set_digest": "0123456789abcdef" + "0" * 48,
+        "control_state": "on", "control_mode": "trade",
+        "policy_set_digest": "0123456789abcdef" + "0" * 48,
         "reason": "done",
     }, now=NOW)
     assert ok is True
     data = read(ws)
     assert data["schema_version"] == 1 and data["written_at"] == int(NOW)
-    assert data["code_revision"] == "a" * 12
+    assert data["control_state"] == "on" and data["control_mode"] == "trade"
     assert data["policy_set_digest"] == "0123456789ab"
-    # A non-hex "revision" is not a revision: dropped rather than truncated.
-    assert write_status(ws.state, {"code_revision": "not-hex", "phase": "running"},
+    # A non-hex digest is not a digest: dropped rather than truncated.
+    assert write_status(ws.state, {"policy_set_digest": "not-hex", "phase": "running"},
+                        now=NOW) is True
+    assert "policy_set_digest" not in read(ws)
+    # The removed revision key is not allow-listed at all.
+    assert "code_revision" not in ALLOWED_KEYS
+    assert write_status(ws.state, {"code_revision": "a" * 40, "phase": "running"},
                         now=NOW) is True
     assert "code_revision" not in read(ws)
+    # Only the two known control states/modes (and None) survive.
+    assert write_status(ws.state, {"control_state": "bogus", "control_mode": "monitor"},
+                        now=NOW) is True
+    assert "control_state" not in read(ws) and "control_mode" not in read(ws)
 
 
 def test_only_the_known_phases_are_written(ws):

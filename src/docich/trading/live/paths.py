@@ -18,7 +18,7 @@ class LiveLayout:
     ledger_path: Path
     lock_path: Path
     owner_dir: Path
-    enable_path: Path
+    control_path: Path
     policy_dir: Path
 
 
@@ -27,7 +27,7 @@ def live_layout(state_dir) -> LiveLayout:
     owner = root / "owner"
     return LiveLayout(root=root, ledger_path=root / "live.sqlite3",
                       lock_path=root / "live-writer.lock", owner_dir=owner,
-                      enable_path=owner / "live_enable.json", policy_dir=owner / "policy")
+                      control_path=owner / "live_control.json", policy_dir=owner / "policy")
 
 
 def _overlaps(a: Path, b: Path) -> bool:

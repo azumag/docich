@@ -1,5 +1,5 @@
-"""Owner-only LIVE command line (L4a): status, cashflow list and the owner's cashflows.
+"""Owner-only LIVE command line (L4a): status, cashflow, activate and the on/off control.
 
-The commands read the LIVE ledger and never talk to an exchange.  Only ``cashflow add`` writes,
-and only after the owner repeats the previewed token.  See docs/operations/live-trading-state.md.
+The commands read the LIVE ledger, and only ``cashflow add``/``activate`` (after a previewed
+token) and ``control on|off`` write.  See docs/operations/live-trading-state.md.
 """
