@@ -152,7 +152,8 @@ KEY_OWNERSHIP = {
     'map_discovery': {'region': WORLD, 'lifetime': 'chapter', 'migrated': False},  # 実測地図発見データ
     'monster_ally_max_hp': {'region': WORLD, 'lifetime': 'chapter', 'migrated': False},  # 観測した味方モンスター最大HP
     'month': {'region': WORLD, 'lifetime': 'chapter', 'migrated': False},  # 観測した月
-    'progress_regressed': {'region': WORLD, 'lifetime': 'chapter', 'migrated': False},  # 同一章の月逆行を1回だけ記録するマーカー (#4535)
+    'month_chapter': {'region': WORLD, 'lifetime': 'chapter', 'migrated': False},  # monthを観測した章 (#4535)
+    'progress_regressed': {'region': WORLD, 'lifetime': 'chapter', 'migrated': False},  # 同一章の月逆行を[章,旧月,新月]単位で重複記録しないマーカー (#4535)
     'month_start_tick': {'region': WORLD, 'lifetime': 'run', 'migrated': False},  # 月の開始tick(v802)
     'month_durations': {'region': WORLD, 'lifetime': 'run', 'migrated': False},  # 直近の月の長さ(v802)
     'moving_boss': {'region': WORLD, 'lifetime': 'chapter', 'migrated': False},  # 移動ボス観測(リセット登録のみ)

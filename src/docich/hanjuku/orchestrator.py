@@ -289,20 +289,36 @@ def _load_save_label(text):
 
     The list row reads 「ーセーブ1ーだい11わ 58ねん9のつき」: the slot, its
     chapter and the saved year/month. Any part may be unreadable; only what
-    was actually read is returned.
+    was actually read is returned. A digit run torn by an unread cell (�)
+    is a partial read, not a smaller number — 58ねん seen as �8ねん must not
+    become year 8 — so such a field returns None like a missing one.
     """
     import re
-    slot = re.search(r'セーブ(\d{1,2})', text or '')
-    chapter = re.search(r'だい(\d{1,2})わ', text or '')
-    date = re.search(r'(\d{1,3})ねん\s*(\d{1,2})のつき', text or '')
+    text = text or ''
+
+    def _read(match, group=1):
+        if match is None:
+            return None
+        start, end = match.start(group), match.end(group)
+        if (start > 0 and text[start - 1] in '�0123456789'
+                or end < len(text) and text[end] == '�'):
+            return None
+        return int(match.group(group))
+
+    slot = re.search(r'セーブ(\d{1,2})', text)
+    chapter = re.search(r'だい(\d{1,2})わ', text)
+    date = re.search(r'(\d{1,3})ねん\s*(\d{1,2})のつき', text)
+    year = _read(date, 1) if date else None
+    month = _read(date, 2) if date else None
+    save_chapter = _read(chapter)
     return {
-        'save_slot': int(slot.group(1)) if slot else None,
-        'save_chapter': int(chapter.group(1)) if chapter else None,
-        'save_month': (f'{int(date.group(1))}-{int(date.group(2))}'
-                       if date else None),
-        'save_label': (f'だい{int(chapter.group(1))}わ {int(date.group(1))}ねん'
-                       f'{int(date.group(2))}のつき'
-                       if chapter and date else None),
+        'save_slot': _read(slot),
+        'save_chapter': save_chapter,
+        'save_month': (f'{year}-{month}'
+                       if year is not None and month is not None else None),
+        'save_label': (f'だい{save_chapter}わ {year}ねん{month}のつき'
+                       if save_chapter is not None and year is not None
+                       and month is not None else None),
     }
 
 

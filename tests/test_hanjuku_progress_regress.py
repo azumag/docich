@@ -29,7 +29,7 @@ def month_screen(year, month, chapter=None, gold=100):
 
 
 def chapter_11_memory(**extra):
-    mem = {'chapter': 11, 'month': '60-4', 'tick': 1,
+    mem = {'chapter': 11, 'month': '60-4', 'month_chapter': 11, 'tick': 1,
            'captured': ['タプロベイン', 'チリベット', 'マランマ', 'タタール'],
            'lost': []}
     mem.update(extra)
@@ -98,6 +98,17 @@ def test_an_unreadable_month_key_is_not_a_regress():
     assert not regressions(mem)
 
 
+def test_a_month_observed_in_another_chapter_is_not_a_regress():
+    # The ロード screen rewrites mem['chapter'] from the save row's だいNわ
+    # without a chapter transition, so the stored month still belongs to the
+    # chapter that observed it: ch11's 60-4 must not read as ch9's rollback.
+    mem = chapter_11_memory()
+    mem['chapter'] = 9                     # だい9わ save selected on the load screen
+    observe_events(month_screen(16, 2, chapter=9), mem)
+    assert not regressions(mem)
+    assert mem['month'] == '16-2' and mem['month_chapter'] == 9
+
+
 def test_the_save_row_names_its_slot_chapter_and_date():
     label = _load_save_label(
         'どれをロードなされますかな? ーセーブ1ー だい11わ 58ねん9のつき')
@@ -109,6 +120,25 @@ def test_an_unreadable_save_row_leaves_the_fields_empty():
     label = _load_save_label('ロードなされますかな')
     assert label == {'save_slot': None, 'save_chapter': None,
                      'save_month': None, 'save_label': None}
+
+
+@pytest.mark.parametrize('row, field', [
+    # A digit run torn by an unread cell (�) is a partial read, never a
+    # smaller number: 58ねん seen as �8ねん must not record year 8.
+    ('どれをロードなされますかな? ーセーブ1ー だい11わ �8ねん9のつき', 'save_month'),
+    ('どれをロードなされますかな? ーセーブ1ー だい11わ 58ねん�9のつき', 'save_month'),
+    ('どれをロードなされますかな? ーセーブ1ー だい1�わ 58ねん9のつき', 'save_chapter'),
+    ('どれをロードなされますかな? ーセーブ1�ー だい11わ 58ねん9のつき', 'save_slot'),
+])
+def test_a_torn_digit_is_a_partial_read_not_a_smaller_number(row, field):
+    assert _load_save_label(row)[field] is None
+
+
+def test_a_torn_year_drops_the_whole_date():
+    label = _load_save_label(
+        'どれをロードなされますかな? ーセーブ1ー だい11わ �8ねん9のつき')
+    assert label['save_month'] is None and label['save_label'] is None
+    assert label['save_slot'] == 1 and label['save_chapter'] == 11
 
 
 def _decide_on(fixture, state):

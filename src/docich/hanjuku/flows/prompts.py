@@ -749,8 +749,9 @@ def _settle_road_defeats(mem):
 # rewinds the run's month and castle holdings. The bot re-reads the screen and
 # follows, so nothing recorded the rollback itself (local chapter 11,
 # 60-4 -> 58-4 on 2026-11-18). A same-chapter month reading that drops by more
-# than this many months is logged once as progress_regressed; smaller backward
-# reads are header flicker, not a rollback.
+# than this many months is logged once per (chapter, before, after) rollback
+# as progress_regressed; smaller backward reads are header flicker, and a
+# month observed under another chapter is not this chapter's regression.
 MONTH_REGRESS_MIN = 2
 
 
@@ -779,6 +780,12 @@ def _observe_progress_regress(mem, month_before, month_after, chapter_before,
     """
     if chapter_before is None or mem.get('chapter') != chapter_before:
         return   # a chapter transition or an undecided chapter is not a regression
+    month_chapter = mem.get('month_chapter')
+    if month_chapter is not None and month_chapter != chapter_before:
+        # The save row's だいNわ can retarget mem['chapter'] without a chapter
+        # transition, so a month observed under another chapter must not be
+        # compared against this chapter's header (cross-chapter load).
+        return
     before, after = _month_ordinal(month_before), _month_ordinal(month_after)
     if before is None or after is None or before <= after + MONTH_REGRESS_MIN:
         return
@@ -846,6 +853,7 @@ def observe_events(screen: Screen, mem, previous_phase=None):
                                       previous_phase)
             previous = mem.get('month_start_tick')
             mem['month'] = key
+            mem['month_chapter'] = mem.get('chapter')
             mem['gold'] = header['gold']
             now = int(mem.get('tick') or 0)
             mem['month_start_tick'] = now
