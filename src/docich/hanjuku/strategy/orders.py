@@ -954,28 +954,6 @@ def _queue_overdue_location_recheck(mem, sortie):
                 reason='行軍追跡の期限超過は帰城の証拠でないため、月次の本人ステータスで所在を再確認する')
 
 
-def _boss_moved_midmarch(mem, sortie, target):
-    """A moving boss's castle left the cell an in-flight march was aimed at.
-
-    Ch9's boss relocates between Y-view measurements (MOVING_BOSS_CHAPTER):
-    a march sent to the previous cell can only reach an empty tile, so it
-    should not ride out the full arrival limit before the step is sent
-    again at the newly measured cell. Records created before ``aimed_cell``
-    existed keep the arrival-limit path.
-    """
-    if (mem.get('chapter') != chart.MOVING_BOSS_CHAPTER
-            or sortie.get('status') not in ('en_route', 'launched_unconfirmed')):
-        return False
-    aimed = sortie.get('aimed_cell')
-    if not isinstance(aimed, (list, tuple)) or not aimed:
-        return False
-    current = chart.castles(mem.get('chapter') or 0).get(target)
-    # The measured cell vanishes when its reading expires (castles strips the
-    # boss entry entirely): a march whose aim can no longer be verified is
-    # riding blind either way.
-    return not isinstance(current, (list, tuple)) or list(aimed) != list(current)
-
-
 def _relaunch_overdue_boss(mem):
     """Send a boss order again when its march never entered the boss castle,
     or when its entry ended without a measured result.
@@ -1002,10 +980,9 @@ def _relaunch_overdue_boss(mem):
         target = sortie.get('target') or sortie.get('planned_target')
         if sortie.get('status') == 'overdue':
             _drop_spent_sortie_attempt(mem, step)
-        moved = _boss_moved_midmarch(mem, sortie, target)
         if (status.get(step) != 'launched' or not chart.is_boss_castle(target)
                 or type(sortie.get('tick')) is not int
-                or (now - sortie['tick'] < _arrival_limit(mem, sortie) and not moved)):
+                or now - sortie['tick'] < _arrival_limit(mem, sortie)):
             continue
         relaunches = mem.setdefault('boss_relaunch', {})
         # Owner 2026-10-30: a spent relaunch budget must not park a site
@@ -1049,7 +1026,7 @@ def _relaunch_overdue_boss(mem):
             _record(mem, 'boss_cell_probe_shift', chart_step=step, general=sortie.get('general'),
                     observed_metric={**observed, 'from': index, 'to': index + 1},
                     reason='入城しないボス行軍の出し直し先を、次の候補セルへ1タイル進める')
-        if relaunches.get(step, 0) >= BOSS_RELAUNCH_LIMIT and not moved:
+        if relaunches.get(step, 0) >= BOSS_RELAUNCH_LIMIT:
             if not stale:
                 _record(mem, 'boss_relaunch_exhausted', chart_step=step, observed_metric=observed,
                         reason='ボス出撃の出し直しが上限に達したため保留')
@@ -1057,9 +1034,7 @@ def _relaunch_overdue_boss(mem):
             relaunches[step] = 0
             _record(mem, 'boss_relaunch_stale_retry', chart_step=step, observed_metric=observed,
                     reason='ボス出撃の出し直しが上限後も長期間進まないため、間隔を置いて出し直す')
-        # A march abandoned because the boss moved is the environment's fault,
-        # not a failed attempt: it re-sends for free at the measured cell.
-        relaunches[step] = relaunches.get(step, 0) + (0 if moved else 1)
+        relaunches[step] = relaunches.get(step, 0) + 1
         for key in ('rare_card_kit', 'strong_card_kit',
                     'dropper_card_kit', 'sortie_actor_miss'):
             (mem.get(key) or {}).pop(step, None)
@@ -1073,7 +1048,6 @@ def _relaunch_overdue_boss(mem):
                 observed_metric=observed, resulting_event=f'relaunch:{relaunches[step]}',
                 reason=('ボス城への突入後に勝敗の実測が残らず上限を超えたため、チャートの指示から出し直す'
                         if entered else
-                        '行軍中にボスが移動したため、再測定のセルで出し直す' if moved else
                         'ボス城への出撃が上限の観測内に入城しないため、チャートの指示から出し直す'))
 
 
