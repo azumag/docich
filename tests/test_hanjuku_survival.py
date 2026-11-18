@@ -496,7 +496,9 @@ def test_hero_emergency_retreat_threshold_is_stricter_than_resource_rescue(hp,en
 def test_a_summoned_monster_raises_the_retreat_threshold():
     cur = {'ally': 'ヴィーナス', 'enemy': 'カメレオンマン', 'ally_hp': 54, 'enemy_hp': 200,
            'start_ally_hp': 82}
-    assert not p._hero_retreat_needed(cur)
+    # #4606: a record opened on a monster panel never had a winnable melee
+    # plan, so any observed deficit retreats even without the egg_battle latch.
+    assert p._hero_retreat_needed(cur)
     assert p._hero_retreat_needed({**cur, 'egg_battle': True})
     # A winnable summon keeps fighting.
     assert not p._hero_retreat_needed({**cur, 'egg_battle': True, 'ally_hp': 82, 'enemy_hp': 60})
