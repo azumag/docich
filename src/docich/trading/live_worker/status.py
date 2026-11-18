@@ -24,6 +24,13 @@ from ..live.paths import live_layout
 STATUS_FILENAME = "live_status.json"
 SCHEMA_VERSION = 1
 
+# The runner's configured cycle interval, in whole milliseconds.  Milliseconds keep a
+# fractional CLI interval (for example 600.5 s) exact without widening the allow-list to
+# floats; the CLI's supported range is 30..3600 s.
+MIN_INTERVAL_MS = 30_000
+MAX_INTERVAL_MS = 3_600_000
+DEFAULT_INTERVAL_MS = 60_000
+
 PHASES = ("starting", "running", "inert", "stopping", "exited")
 PHASE_SET = frozenset(PHASES)
 
@@ -34,7 +41,7 @@ ALLOWED_KEYS = frozenset({
     "outcome", "reason", "blocks", "fresh_symbols", "stale_symbols",
     "consecutive_failures", "record_failures", "ttl_deferred", "ttl_failed",
     "balance_warnings", "control_state", "control_mode", "policy_set_digest", "inert_reason",
-    "exit_code",
+    "exit_code", "interval_ms",
 })
 TRUNCATED_KEYS = frozenset({"policy_set_digest"})
 ALLOWED_PHASES = PHASE_SET
@@ -64,6 +71,8 @@ def _clean_value(key: str, value: object) -> object:
         return value
     if type(value) is int:                       # bool is not an int here
         if key == "balance_warnings" and value < 0:
+            return _DROP
+        if key == "interval_ms" and not MIN_INTERVAL_MS <= value <= MAX_INTERVAL_MS:
             return _DROP
         return value
     if isinstance(value, list) and all(isinstance(item, str) for item in value):

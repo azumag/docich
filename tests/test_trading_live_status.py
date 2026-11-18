@@ -13,7 +13,8 @@ from pathlib import Path
 import pytest
 
 from docich.trading.live_worker import status as status_module
-from docich.trading.live_worker.status import (ALLOWED_KEYS, PHASES, STATUS_FILENAME,
+from docich.trading.live_worker.status import (ALLOWED_KEYS, MAX_INTERVAL_MS,
+                                               MIN_INTERVAL_MS, PHASES, STATUS_FILENAME,
                                                status_path, write_status)
 
 from test_trading_live_support import Workspace, block_network
@@ -252,3 +253,23 @@ def test_balance_warnings_is_allow_listed_and_a_non_negative_int(ws):
                         now=NOW) is True
     assert "balance_warnings" not in read(ws)
     assert "balance_warnings" in ALLOWED_KEYS
+
+
+def test_interval_ms_is_allow_listed_only_inside_the_supported_cli_range(ws):
+    # Whole milliseconds preserve a fractional interval (600.5 s) exactly, without floats.
+    assert write_status(ws.state, {"phase": "running", "interval_ms": 600_500},
+                        now=NOW) is True
+    assert read(ws)["interval_ms"] == 600_500
+
+    # The CLI range is 30..3600 s; both boundaries are valid.
+    for value in (MIN_INTERVAL_MS, MAX_INTERVAL_MS):
+        assert write_status(ws.state, {"phase": "running", "interval_ms": value},
+                            now=NOW) is True
+        assert read(ws)["interval_ms"] == value
+
+    # Out-of-range, non-int and bool values are dropped; the reader then falls back.
+    for value in (MIN_INTERVAL_MS - 1, MAX_INTERVAL_MS + 1, 0, -1, 600_000.0, True):
+        assert write_status(ws.state, {"phase": "running", "interval_ms": value},
+                            now=NOW) is True
+        assert "interval_ms" not in read(ws)
+    assert "interval_ms" in ALLOWED_KEYS
