@@ -1427,6 +1427,13 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
         # selected save with A; the prompt itself is the evidence.
         import re as _re
         loaded_chapter = _re.search(r'だい(\d{1,2})わ', screen.text or '')
+        # #4615 enters the loaded chapter through the canonical path, which
+        # resets the chapter-scoped month; the rollback record below is about
+        # the run *before* the load, so take its view first (docich#4535).
+        month_before_load = mem.get('month')
+        captured_before_load = sorted(mem.get('captured') or ())
+        lost_before_load = sorted(mem.get('lost') or ())
+        home_lost_before_load = bool(mem.get('home_lost'))
         if (loaded_chapter is not None and 1 <= int(loaded_chapter.group(1)) <= 12
                 and int(loaded_chapter.group(1)) != mem.get('chapter')):
             # The save slot names its chapter ("だい9わ"). A fresh policy after
@@ -1449,10 +1456,10 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
             decision_log._record(
                 mem, 'resume_from_save', screen=kind,
                 observed_metric={**_load_save_label(screen.text),
-                                 'month_before': mem.get('month'),
-                                 'captured': sorted(mem.get('captured') or ()),
-                                 'lost': sorted(mem.get('lost') or ()),
-                                 'home_lost': bool(mem.get('home_lost'))},
+                                 'month_before': month_before_load,
+                                 'captured': captured_before_load,
+                                 'lost': lost_before_load,
+                                 'home_lost': home_lost_before_load},
                 reason='タイトル復帰でセーブをロードしたため、読めたセーブ内容とロールバック前の所有城を記録する')
         updated.update(screen_kind=kind, no_input_streak=0, no_input_frames=[])
         for key in ('_adjusted', '_interim', '_card_scroll_input'):
