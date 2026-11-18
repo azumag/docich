@@ -48,3 +48,25 @@ def test_other_kinds_and_battle_text_are_not_escaped_here():
     battle = {'battle': {'ally': 'x'}}
     for _ in range(O.PHASE_A_ESCAPE_MAX * 2):
         assert O.phase_a_escape_step(battle, 'dialogue', 'text', TEXT, [O.pad('a')]) is None
+
+
+def test_change_after_sixty_characters_resets_count():
+    mem = {}
+    prefix = 'あ' * 60
+    for step in range(1, O.PHASE_A_ESCAPE_MAX):
+        assert O.phase_a_escape_step(mem, 'dialogue', 'text', prefix + 'い',
+                                     [O.pad('a')], step=step) is None
+    assert O.phase_a_escape_step(mem, 'dialogue', 'text', prefix + 'う',
+                                 [O.pad('a')], step=O.PHASE_A_ESCAPE_MAX) is None
+    assert mem['phase_a_escape']['n'] == 1
+
+
+def test_observation_owned_by_another_flow_breaks_continuity():
+    mem = {}
+    for step in range(1, O.PHASE_A_ESCAPE_MAX):
+        assert O.phase_a_escape_step(mem, 'dialogue', 'text', TEXT,
+                                     [O.pad('a')], step=step) is None
+    # A dedicated flow or early return skips this helper for one observation.
+    assert O.phase_a_escape_step(mem, 'dialogue', 'text', TEXT, [O.pad('a')],
+                                 step=O.PHASE_A_ESCAPE_MAX + 1) is None
+    assert mem['phase_a_escape']['n'] == 1
