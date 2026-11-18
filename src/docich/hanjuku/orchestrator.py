@@ -1117,6 +1117,25 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
         updated['_experience'] = mem.pop('_experience', None)
         updated['policy'] = mem
         return actions, updated
+    if (kind == 'main_menu'
+            and 'わがくにのすべてのしょうぐんをみることができますぞ' in (screen.text or '')):
+        # The all-generals roster panel looks like the shop's main menu to the
+        # pixel classifier and the shop phase held it every observation
+        # (g1190 2026-11-19 67-4: minutes of holds with one decision). B closes
+        # the panel and returns to the field.
+        decision_log._record(mem, 'close_panel', screen=kind,
+                             observed_metric={'text': (screen.text or '')[:60]},
+                             reason='全将軍一覧のパネルを実画面文言で確認したためBで閉じる')
+        actions = [pad('b')]
+        updated.update(screen_kind=kind, no_input_streak=0, no_input_frames=[])
+        for key in ('_adjusted', '_interim', '_card_scroll_input'):
+            mem.pop(key, None)
+        _journal(mem).pop('_departure_input', None)
+        _journal(mem).pop('_recall_inputs', None)
+        updated['_records'] = mem.pop('_records')
+        updated['_experience'] = mem.pop('_experience', None)
+        updated['policy'] = mem
+        return actions, updated
     if _is_chikujou_prompt(screen.text):
         # The 築城 castle list runs out of room and asks which castle to
         # expand; nothing on it can be chosen and the dialogue flow holds it
