@@ -83,6 +83,16 @@ def _finish(h, intent):
                                to_state="FILLED", now=1001.0)
 
 
+def _cancel(h, intent):
+    """Cancel a buy that never reached the exchange; its position row stays empty."""
+    h.ledger.transition_intent(h.lease, intent.intent_id, expected_state="PLANNED",
+                               to_state="SUBMITTING", now=1001.0)
+    h.ledger.transition_intent(h.lease, intent.intent_id, expected_state="SUBMITTING",
+                               to_state="ACKED", now=1001.0)
+    h.ledger.transition_intent(h.lease, intent.intent_id, expected_state="ACKED",
+                               to_state="CANCELED", now=1001.0)
+
+
 def _keys(value):
     if isinstance(value, dict):
         for key, item in value.items():
@@ -167,6 +177,83 @@ def test_pnl_positions_and_recent_fills_are_hand_derived(h):
     encoded = json.dumps(view)
     for leak in ("o1", "o2", "o3", "o4", "f1", "f2", "f3", "f4"):
         assert f'"{leak}"' not in encoded
+
+
+def test_a_closed_unfilled_buy_is_not_a_round_trip(h):
+    # A buy is planned, so its position row exists, then cancelled without any fill.
+    # The executor closes the flat row; that is not a completed buy/sell trip.
+    cancelled = _intent(h, key="cancel-oas", amount="10", price="100")
+    _cancel(h, cancelled)
+    h.ledger.close_position(h.lease, cancelled.position_id, now=1002.0)
+
+    view = live_overview(h.ledger, now=NOW)
+
+    assert view["pnl"]["round_trips"] == 0
+    assert view["pnl"]["wins"] == 0
+    assert view["pnl"]["total"] == "0"
+    assert view["pnl"]["by_symbol"] == {}
+    assert view["positions"] == []
+
+
+def test_a_closed_buy_without_a_sell_is_not_a_round_trip_but_keeps_its_pnl(h):
+    # A funded buy that never got a sell is a realized loss in the P&L, but it is not a
+    # round trip: it must not join the win denominator either.
+    buy = _intent(h, key="buy-only", amount="10", price="100")
+    _order(h, buy, order_id="buy-only-order")
+    _fill(h, fill_id="buy-only-fill", order_id="buy-only-order", symbol="OAS/JPY",
+          side="buy", amount="10", price="100", executed_at=1000.0)
+    _finish(h, buy)
+    h.ledger.close_position(h.lease, buy.position_id, now=1002.0)
+
+    view = live_overview(h.ledger, now=NOW)
+
+    assert view["pnl"]["by_symbol"] == {"OAS/JPY": "-1000"}
+    assert view["pnl"]["total"] == "-1000"
+    assert view["pnl"]["round_trips"] == 0
+    assert view["pnl"]["wins"] == 0
+    assert view["positions"] == []
+
+
+def test_round_trip_denominator_and_wins_use_only_completed_buy_sell_trips(h):
+    # OAS: buy 10 @100, sell 10 @90 -> -100 (a losing completed trip).
+    buy_oas = _intent(h, key="trip-oas-buy", symbol="OAS/JPY", amount="10", price="100")
+    _order(h, buy_oas, order_id="trip-oas-buy-order")
+    _fill(h, fill_id="trip-oas-buy-fill", order_id="trip-oas-buy-order", symbol="OAS/JPY",
+          side="buy", amount="10", price="100", executed_at=1000.0)
+    _finish(h, buy_oas)
+    sell_oas = _intent(h, key="trip-oas-sell", side="sell", symbol="OAS/JPY",
+                       amount="10", price="90")
+    _order(h, sell_oas, order_id="trip-oas-sell-order")
+    _fill(h, fill_id="trip-oas-sell-fill", order_id="trip-oas-sell-order", symbol="OAS/JPY",
+          side="sell", amount="10", price="90", executed_at=1100.0)
+    _finish(h, sell_oas)
+    h.ledger.close_position(h.lease, buy_oas.position_id, now=1101.0)
+
+    # XYM: buy 20 @50, sell 20 @60 -> +200 (a winning completed trip).
+    buy_xym = _intent(h, key="trip-xym-buy", symbol="XYM/JPY", amount="20", price="50")
+    _order(h, buy_xym, order_id="trip-xym-buy-order")
+    _fill(h, fill_id="trip-xym-buy-fill", order_id="trip-xym-buy-order", symbol="XYM/JPY",
+          side="buy", amount="20", price="50", executed_at=1200.0)
+    _finish(h, buy_xym)
+    sell_xym = _intent(h, key="trip-xym-sell", side="sell", symbol="XYM/JPY",
+                       amount="20", price="60")
+    _order(h, sell_xym, order_id="trip-xym-sell-order")
+    _fill(h, fill_id="trip-xym-sell-fill", order_id="trip-xym-sell-order", symbol="XYM/JPY",
+          side="sell", amount="20", price="60", executed_at=1300.0)
+    _finish(h, sell_xym)
+    h.ledger.close_position(h.lease, buy_xym.position_id, now=1301.0)
+
+    # A third, cancelled buy has no fills and must not change either count.
+    cancelled = _intent(h, key="trip-cancelled", symbol="OAS/JPY", amount="5", price="100")
+    _cancel(h, cancelled)
+    h.ledger.close_position(h.lease, cancelled.position_id, now=1302.0)
+
+    view = live_overview(h.ledger, now=NOW)
+
+    assert view["pnl"]["by_symbol"] == {"OAS/JPY": "-100", "XYM/JPY": "200"}
+    assert view["pnl"]["total"] == "100"
+    assert view["pnl"]["round_trips"] == 2       # only the two completed trips
+    assert view["pnl"]["wins"] == 1              # the XYM trip; wins <= round_trips
 
 
 def test_recent_fills_are_newest_first_and_capped_at_twenty(h):

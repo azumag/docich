@@ -19,15 +19,23 @@ import os
 import stat
 
 from .trading.live import control
+from .trading.live.cycle import next_wait
 from .trading.live.ledger import LiveLedger
 from .trading.live.overview import live_overview
 from .trading.live.paths import live_layout
 from .trading.live_worker.status import ALLOWED_KEYS, status_path
 
 MAX_STATUS_BYTES = 64 * 1024
-# The runner's cycle interval is not part of the status allow-list, so the UI uses the
-# bounded fallback required by the operator contract: 180 s (3 x the default 60 s cycle).
+# The runner writes one status per cycle, at the end of the cycle, and then sleeps for
+# ``next_wait``.  The cycle interval is not part of the status allow-list, so the UI uses
+# the runner's default 60 s interval as the supported base of that bounded wait.  A clean
+# running status is fresh for 180 s (3 x the default cycle); a retrying one additionally
+# gets its bounded retry wait (up to 300 s) before it is considered stale.
 WORKER_STALE_AFTER_S = 180
+WORKER_CYCLE_INTERVAL_S = 60.0
+# A status written by these phases describes a worker that is still on its way to its
+# terminal state.  ``inert`` and ``exited`` are terminal even when freshly written.
+WORKER_ACTIVE_PHASES = frozenset({"starting", "running", "stopping"})
 
 _STATES = ("on", "off")
 _MODES = ("shadow", "trade")
@@ -91,8 +99,52 @@ def _read_status(state_dir) -> dict | None:
         # it only as the age anchor, never as an extra exposed key.
         alias = data.get("updated_at")
         if type(alias) in (int, float):
-            view["written_at"] = int(alias)
+            try:
+                if math.isfinite(float(alias)):
+                    view["written_at"] = int(alias)
+            except (OverflowError, TypeError, ValueError):
+                pass
     return view
+
+
+def _worker_alive(status: dict | None, *, now: float) -> bool:
+    """Whether ``status`` describes a worker that may still be running.
+
+    Phase is part of the contract: a freshly written ``inert`` or ``exited`` status is a
+    finished worker, not a live one.  For ``running`` the runner's own bounded retry wait
+    (derived from the allow-listed ``consecutive_failures``) extends the age bound, because
+    the status is written before that sleep.  A missing/future timestamp and an unknown
+    phase stay false: those cannot prove liveness and must not hide a crash.
+    """
+    if not isinstance(status, dict):
+        return False
+    phase = status.get("phase")
+    if not isinstance(phase, str) or phase not in WORKER_ACTIVE_PHASES:
+        return False
+    written_at = status.get("written_at")
+    if type(written_at) not in (int, float):
+        return False
+    try:
+        moment = float(written_at)
+        current = float(now)
+    except (OverflowError, TypeError, ValueError):
+        return False
+    if not math.isfinite(moment) or not math.isfinite(current):
+        return False
+    age = current - moment
+    if age < 0:                              # a future timestamp is not fresh proof
+        return False
+    stale_after = float(WORKER_STALE_AFTER_S)
+    if phase == "running":
+        failures = status.get("consecutive_failures")
+        if type(failures) is int and failures > 0:
+            try:
+                retry_wait = float(next_wait(WORKER_CYCLE_INTERVAL_S, failures))
+            except (OverflowError, TypeError, ValueError):
+                retry_wait = 0.0
+            if math.isfinite(retry_wait) and retry_wait > 0:
+                stale_after += retry_wait
+    return age < stale_after
 
 
 def _empty_overview() -> dict:
@@ -120,10 +172,14 @@ def _overview(state_dir, *, now: float, ledger_present: bool) -> dict:
 def live_snapshot(state_dir, *, now: float) -> dict:
     """Return the WEBUI-facing LIVE snapshot.  Read-only and never raises.
 
-    ``worker_alive`` is true when the status file's write time is younger than
-    ``WORKER_STALE_AFTER_S`` (the cycle interval is not allow-listed).  A missing ledger
-    or status file is reported as ``ledger_present: false`` / ``status: null``; the
-    control file missing or invalid is reported by ``describe_control`` as ``unknown``.
+    ``worker_alive`` is true only for an active phase (``starting``, ``running`` or
+    ``stopping``) whose ``written_at`` is not in the future and is younger than the
+    phase's bound: 180 s normally, plus the runner's bounded retry wait for ``running``
+    (derived from the allow-listed ``consecutive_failures``).  Terminal ``inert`` and
+    ``exited`` statuses are never alive, however recently they were written.  A missing
+    ledger or status file is reported as ``ledger_present: false`` / ``status: null``;
+    the control file missing or invalid is reported by ``describe_control`` as
+    ``unknown``.
     """
     try:
         control_view = control.describe_control(state_dir, now=now)
@@ -132,14 +188,7 @@ def live_snapshot(state_dir, *, now: float) -> dict:
                         "updated_by": None, "reasons": ["check_error"]}
 
     status = _read_status(state_dir)
-    written_at = status.get("written_at") if isinstance(status, dict) else None
-    alive = False
-    if type(written_at) in (int, float):
-        try:
-            age = float(now) - float(written_at)
-        except Exception:
-            age = -1.0
-        alive = 0 <= age < WORKER_STALE_AFTER_S
+    alive = _worker_alive(status, now=now)
 
     try:
         ledger_path = live_layout(state_dir).ledger_path

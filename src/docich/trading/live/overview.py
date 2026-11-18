@@ -24,9 +24,13 @@ Open-position cost basis comes from :func:`views.position_cost` with a zero fee 
 because this read-only view has no market metadata to bound an unknown fee.  The
 accounting is the same as the executor's; only an unknown fee is left unestimated.
 
-Round trips are positions whose status is ``closed``; a round trip wins when its own
-recorded fills have a positive cash result under the same formula.  ``since`` is the
-first fill's ``executed_at`` or ``None`` when there are no fills.
+Round trips are positions whose status is ``closed`` *and* whose own recorded fills
+contain a funded buy and a funded sell; a position closed without a completed buy/sell
+trip (for example an unfilled buy that was cancelled) is not a round trip and never
+enters the win denominator.  A round trip wins when those fills have a positive cash
+result under the same formula.  The P&L figures still include every recorded fill, so a
+buy-only closed position keeps its realized loss even though it is not a round trip.
+``since`` is the first fill's ``executed_at`` or ``None`` when there are no fills.
 """
 from __future__ import annotations
 
@@ -95,6 +99,21 @@ def _fill_pnl(fill: views.FillRow) -> tuple[Decimal, bool, bool]:
     return signed - fee, unknown, other
 
 
+def _is_funded_round_trip(fills: list[views.FillRow]) -> bool:
+    """True when these fills contain both a funded buy and a funded sell.
+
+    A position row is created before its buy is sent, so a cancelled, never-filled buy
+    leaves a ``closed`` position with no fills at all.  Counting that row (or a closed
+    buy-only position) as a round trip would make the win denominator lie.  A fill is
+    "funded" when it moved a positive base amount at a positive quote notional.
+    """
+    sides: set[str] = set()
+    for fill in fills:
+        if fill.amount > 0 and fill.quote_notional > 0:
+            sides.add(fill.side)
+    return "buy" in sides and "sell" in sides
+
+
 def _dec(value: Decimal) -> str:
     return str(value)
 
@@ -119,17 +138,24 @@ def live_overview(ledger, *, now: float) -> dict:
             fee_unknown += 1 if unknown else 0
             fee_other += 1 if other else 0
 
-        # Closed positions and their own cash result (same formula as the symbol P&L).
+        # Closed positions, the fills that belong to them, and their own cash result
+        # (same formula as the symbol P&L).  The round-trip denominator is not every
+        # closed row: an unfilled buy that was cancelled closes a row with no fills.
         with ledger.read_cursor() as cur:
             closed_ids = [row[0] for row in
                           cur.execute("SELECT position_id FROM positions WHERE status='closed'")]
         closed = set(closed_ids)
-        per_position: dict[str, Decimal] = {}
+        closed_fills: dict[str, list[views.FillRow]] = {}
         for fill in fills:
             if fill.position_id in closed:
-                per_position[fill.position_id] = (
-                    per_position.get(fill.position_id, _ZERO) + _fill_pnl(fill)[0])
-        wins = sum(1 for value in per_position.values() if value > 0)
+                closed_fills.setdefault(fill.position_id, []).append(fill)
+        per_position = {
+            position_id: sum((_fill_pnl(fill)[0] for fill in rows), _ZERO)
+            for position_id, rows in closed_fills.items()
+        }
+        trips = [position_id for position_id, rows in closed_fills.items()
+                 if _is_funded_round_trip(rows)]
+        wins = sum(1 for position_id in trips if per_position[position_id] > 0)
 
         positions = []
         for row in views.open_position_rows(ledger):
@@ -198,7 +224,7 @@ def live_overview(ledger, *, now: float) -> dict:
             "pnl": {
                 "by_symbol": {symbol: _dec(value) for symbol, value in sorted(by_symbol.items())},
                 "total": _dec(total),
-                "round_trips": len(closed_ids),
+                "round_trips": len(trips),
                 "wins": wins,
                 "since": fills[0].executed_at if fills else None,
                 "fee_unknown_fills": fee_unknown,

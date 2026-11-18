@@ -102,6 +102,59 @@ class TestLiveSnapshot(unittest.TestCase):
         self.assertFalse(live_snapshot(self.ws.state, now=NOW + 180)["worker_alive"])
         self.assertFalse(live_snapshot(self.ws.state, now=NOW + 181)["worker_alive"])
 
+    def test_worker_alive_requires_an_active_phase_and_a_non_future_timestamp(self):
+        self.ws.write_control(state="off", mode="shadow", updated_by="owner", now=NOW)
+
+        # A freshly written terminal status is not a live worker, however recent it is.
+        for phase in ("exited", "inert"):
+            with self.subTest(phase=phase):
+                write_status(self.ws.state, {"phase": phase}, now=NOW)
+                self.assertFalse(live_snapshot(self.ws.state, now=NOW)["worker_alive"])
+                self.assertFalse(live_snapshot(self.ws.state, now=NOW + 1)["worker_alive"])
+
+        # starting/stopping are active phases with the regular bound.
+        for phase in ("starting", "stopping"):
+            with self.subTest(phase=phase):
+                write_status(self.ws.state, {"phase": phase}, now=NOW)
+                self.assertTrue(live_snapshot(self.ws.state, now=NOW)["worker_alive"])
+
+        # A future timestamp is not freshness; neither is a missing/unknown phase.
+        write_status(self.ws.state, {"phase": "running"}, now=NOW + 1)
+        self.assertFalse(live_snapshot(self.ws.state, now=NOW)["worker_alive"])
+        write_status(self.ws.state, {"phase": "mystery"}, now=NOW)
+        self.assertFalse(live_snapshot(self.ws.state, now=NOW)["worker_alive"])
+        # A malformed phase shape is not an active phase and must not raise.
+        write_status(self.ws.state, {"phase": ["running"]}, now=NOW)
+        self.assertFalse(live_snapshot(self.ws.state, now=NOW)["worker_alive"])
+
+    def test_worker_alive_allows_the_bounded_retry_wait_for_a_running_worker(self):
+        self.ws.write_control(state="off", mode="shadow", updated_by="owner", now=NOW)
+
+        # next_wait(60, 4) is capped at 300 s, so a running status stays alive through a
+        # 300 s retry plus the regular 180 s freshness window.
+        write_status(self.ws.state, {"phase": "running", "consecutive_failures": 4}, now=NOW)
+        self.assertTrue(live_snapshot(self.ws.state, now=NOW + 300)["worker_alive"])
+        self.assertTrue(live_snapshot(self.ws.state, now=NOW + 479)["worker_alive"])
+        self.assertFalse(live_snapshot(self.ws.state, now=NOW + 480)["worker_alive"])
+
+        # A larger failure count stays bounded by the same 300 s cap.
+        write_status(self.ws.state, {"phase": "running", "consecutive_failures": 99}, now=NOW)
+        self.assertTrue(live_snapshot(self.ws.state, now=NOW + 479)["worker_alive"])
+        self.assertFalse(live_snapshot(self.ws.state, now=NOW + 480)["worker_alive"])
+
+        # next_wait(60, 3) is 240 s, not the cap.
+        write_status(self.ws.state, {"phase": "running", "consecutive_failures": 3}, now=NOW)
+        self.assertTrue(live_snapshot(self.ws.state, now=NOW + 419)["worker_alive"])
+        self.assertFalse(live_snapshot(self.ws.state, now=NOW + 420)["worker_alive"])
+
+        # Without retry information the regular 180 s crash detection is unchanged.
+        write_status(self.ws.state, {"phase": "running"}, now=NOW)
+        self.assertFalse(live_snapshot(self.ws.state, now=NOW + 300)["worker_alive"])
+
+        # A terminal phase never borrows the retry window.
+        write_status(self.ws.state, {"phase": "exited", "consecutive_failures": 99}, now=NOW)
+        self.assertFalse(live_snapshot(self.ws.state, now=NOW)["worker_alive"])
+
     def test_a_malformed_status_file_is_reported_as_none(self):
         self.ws.write_control(state="on", mode="shadow", updated_by="owner", now=NOW)
         path = status_path(self.ws.state)
@@ -321,6 +374,11 @@ class TestLiveFrontend(unittest.TestCase):
         script = html.split("// webui-live:start", 1)[1].split("// webui-live:end", 1)[0]
         self.assertNotIn("alert(", script)
         self.assertNotIn("confirm(", script)
+        self.assertIn("function liveWorkerLabel", script)
+        for label in ("起動中", "稼働中 (再試行待ち", "停止処理中",
+                      "停止または応答なし", "終了 (code ", "待機 ("):
+            self.assertIn(label, script)
+        self.assertIn("ラウンドトリップと勝率", panel)
         self.assertIn("pollGate(\"live\",loadLive)", html)
         self.assertIn('tab==="live"', html)
 
