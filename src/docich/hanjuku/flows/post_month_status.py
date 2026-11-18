@@ -13,7 +13,7 @@ from ..os_layer.commands import menu_to, pad
 from ..os_layer.readers import world_markers
 from ..os_layer.screen import castle_roofs, own_camps
 from ..os_layer.world import NAME
-from ..state.regions import flow as _flow, world as _world
+from ..state.regions import flow as _flow, world as _world, plan as _plan_region
 from . import house, recall as recall_flow, map_registration
 from copy import deepcopy
 
@@ -38,6 +38,12 @@ END_STALL_READS = 3
 # map changes the frame digest on every observation.
 STRAY_MENU_KINDS = frozenset({'castle_menu', 'castle_info', 'general_list'})
 STRAY_MENU_BACKOUTS = 12
+# docich#4642: the monthly scan held the map and its stray-menu backout
+# cancelled sortie menus, so months passed with zero sorties. While the
+# month has no confirmed enemy-bound launch and a charted order can start,
+# the scan yields these map observations to the sortie plan; the cap keeps
+# the deferral finite when a picked order can never launch.
+SORTIE_FLOOR_YIELDS = 48
 # docich#3659: the #3505 boss-adjacent camp exemption was indefinite, so a
 # general camped on the boss castle could neither be recalled nor re-ordered
 # toward it (no camp->boss route exists). Bound the exemption: after this many
@@ -1348,6 +1354,27 @@ def step(screen, mem, frame):
     if (screen.kind == 'map_target'
             and state['stage'] not in {'wait_repair', 'wait_recall'}):
         return None
+    # docich#4642: the scan's stray-menu backout cancelled sortie menus and
+    # its map ownership starved the sortie plan for whole months. While the
+    # month still lacks a confirmed launch toward an enemy castle and a
+    # charted order can start, release the field map (and never cancel the
+    # sortie flow's own menus) so map_step/deploy_step drive that order.
+    if state['stage'] in {'await_map', 'open_menu', 'task_menu'}:
+        if (screen.kind in STRAY_MENU_KINDS | {'card_select', 'sortie_confirm'}
+                and _plan_region(mem).get('active') is not None):
+            return None
+        if screen.kind == 'map':
+            from . import map as map_flow
+            from ..strategy import orders as _orders
+            if (not (map_flow._month_sorties(mem).get('launches') or 0)
+                    and int(state.get('floor_yields') or 0) < SORTIE_FLOOR_YIELDS
+                    and _orders.next_order(mem) is not None):
+                state['floor_yields'] = int(state.get('floor_yields') or 0) + 1
+                if state['floor_yields'] == 1:
+                    _log(mem, 'post_month_sortie_floor',
+                         observed_metric={'stage': state['stage'], 'month': mem.get('month')},
+                         reason='当月に成立した出撃がまだ無く開始可能な指示があるため、月次確認を延期してマップを出撃計画へ明け渡す')
+                return None
     # The monthly workflow owns this map.  A lost cursor is a temporary
     # navigation interrupt, not a reason to let the sortie planner take over.
     if (screen.kind == 'map' and screen.cursor and not screen.marker
