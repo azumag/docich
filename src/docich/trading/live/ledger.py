@@ -486,6 +486,8 @@ class LiveLedger:
     def record_initial_activation(self, lease, ps: LivePolicySet, *, operator: str, note: str,
                                   now: float) -> None:
         """HUMAN-ONLY: the first activation; never replaces a different active policy."""
+        if lease is None:
+            raise ValueError("a writer lease is required")
         if not operator or not note:
             raise ValueError("operator and note are required")
         with self._tx(lease) as cur:

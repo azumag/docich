@@ -95,6 +95,8 @@ def _writers(h, intent, obs, fill, flow):
         "store_policy_set": lambda lease: ledger.store_policy_set(lease, ps, now=NOW),
         "record_owner_activation": lambda lease: ledger.record_owner_activation(
             lease, ps, operator="owner", note="scope test", now=NOW),
+        "record_initial_activation": lambda lease: ledger.record_initial_activation(
+            lease, ps, operator="owner", note="scope test", now=NOW),
         "record_activation": lambda lease: ledger.record_activation(
             lease, ps, reason="rollback", evidence_digest="e" * 64, now=NOW),
         "create_intent": lambda lease: ledger.create_intent(
@@ -117,8 +119,8 @@ def _writers(h, intent, obs, fill, flow):
 
 
 _WRITER_NAMES = sorted(
-    "release_lease_row store_policy_set record_owner_activation record_activation "
-    "create_intent mark_submitting transition_intent mark_in_flight_unknown "
+    "release_lease_row store_policy_set record_owner_activation record_initial_activation "
+    "record_activation create_intent mark_submitting transition_intent mark_in_flight_unknown "
     "close_position mark_residual_inventory record_live_event "
     "record_order_observation record_fill record_cashflow".split())
 
@@ -132,6 +134,17 @@ def test_every_writer_refuses_a_missing_lease(h, name):
 
     with pytest.raises(ValueError, match="^a writer lease is required$"):
         calls[name](None)
+
+    assert _snapshot(h.ledger) == before
+
+
+@pytest.mark.parametrize("operator, note", (("", "scope test"), ("owner", ""), ("", "")))
+def test_initial_activation_reports_the_missing_lease_before_bad_operator_or_note(h, operator, note):
+    """The lease guard runs first: a bad operator/note must not mask it."""
+    before = _snapshot(h.ledger)
+
+    with pytest.raises(ValueError, match="^a writer lease is required$"):
+        h.ledger.record_initial_activation(None, h.ps, operator=operator, note=note, now=NOW)
 
     assert _snapshot(h.ledger) == before
 
