@@ -187,3 +187,32 @@ def test_a_picker_switch_happens_only_once():
     state['origin'] = [638, 348]
     assert r.relay_from_picker(mem, state) is not None
     assert r.relay_from_picker(mem, state) is None       # already aimed
+
+
+def test_the_picker_screen_holds_before_dropping_the_relay_aim(monkeypatch):
+    """#4533 live: the B closes the picker a frame later; the flow must wait."""
+    mem = memory()
+    state = _flow(mem)['recall']
+    state['relay'] = {'cell': [508, 264], 'hub': 'タタール'}
+    state['move_visible'] = {'cell': [508, 264], 'relay': True}
+    state['stage'] = 'menu'
+    monkeypatch.setattr(r, 'is_camp_menu', lambda *_: False)
+    monkeypatch.setattr(r, 'is_fort_menu', lambda *_: False)
+    picker = Screen([], None, '', kind='world_map')
+    assert r._camp_recall_step(picker, mem, None) == []
+    assert _flow(mem)['recall'] is state
+    assert state['relay_menu_waits'] == 1
+
+
+def test_the_relay_aim_survives_until_the_camp_menu_returns(monkeypatch):
+    mem = memory()
+    state = _flow(mem)['recall']
+    state['relay'] = {'cell': [508, 264], 'hub': 'タタール'}
+    state['move_visible'] = {'cell': [508, 264], 'relay': True}
+    state['stage'] = 'menu'
+    monkeypatch.setattr(r, 'is_camp_menu', lambda *_: False)
+    monkeypatch.setattr(r, 'is_fort_menu', lambda *_: False)
+    picker = Screen([], None, '', kind='world_map')
+    for _ in range(r.RELAY_MENU_WAIT):
+        assert r._camp_recall_step(picker, mem, None) == []
+    assert _flow(mem).get('recall') is state          # still alive after the bound
