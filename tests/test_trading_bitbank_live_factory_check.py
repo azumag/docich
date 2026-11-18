@@ -378,3 +378,57 @@ def test_main_with_a_key_but_no_ccxt_prints_one_plain_line(state, capsys, monkey
     out = capsys.readouterr().out
     assert out.strip() == "ccxt is not installed here: pip install -r requirements-trading.txt"
     assert SENTINEL_KEY not in out
+
+
+def test_no_symbols_is_a_config_kind_and_reads_nothing(state):
+    _install_key(state)
+    made = FakeTransport(default_script())
+    with pytest.raises(ReaderUnavailable) as err:
+        fc.open_bitbank_reader(state, symbols=(), clock=lambda: 1.0, transport_factory=lambda c: made)
+    assert err.value.kind == "config" and "no symbols" in str(err.value)
+    assert made.calls == []
+
+
+def test_missing_credentials_is_a_config_kind(state):
+    with pytest.raises(ReaderUnavailable) as err:
+        fc.open_bitbank_reader(state, symbols=SYMBOLS, clock=lambda: 1.0,
+                               transport_factory=lambda c: FakeTransport(default_script()))
+    assert err.value.kind == "config" and "file_missing" in str(err.value)
+    assert SENTINEL_KEY not in str(err.value)
+
+
+def test_a_transport_construction_failure_is_a_config_kind(state):
+    _install_key(state)
+
+    def broken(creds):
+        raise RuntimeError(f"cannot import ccxt {SENTINEL_KEY}")
+
+    with pytest.raises(ReaderUnavailable) as err:
+        fc.open_bitbank_reader(state, symbols=SYMBOLS, clock=lambda: 1.0, transport_factory=broken)
+    assert err.value.kind == "config" and "RuntimeError" in str(err.value)
+    assert SENTINEL_KEY not in str(err.value)
+
+
+def test_a_clock_judgement_is_a_clock_kind(state):
+    _install_key(state)
+    with pytest.raises(ReaderUnavailable) as err:
+        _open(state, skew_s=2.0)
+    assert err.value.kind == "clock" and "clock" in str(err.value)
+
+
+def test_a_failed_clock_check_is_a_clock_kind(state):
+    _install_key(state)
+    with pytest.raises(ReaderUnavailable) as err:
+        _open(state, skew_s=None)
+    assert err.value.kind == "clock" and "clock check failed" in str(err.value)
+
+
+@pytest.mark.parametrize("health_kind,kind", [("auth", "auth"), ("clock", "clock"), ("network", None)])
+def test_the_rule_load_kind_passes_through_the_factory(state, health_kind, kind):
+    _install_key(state)
+    bad = ExchangeAmbiguous("x")
+    bad.health_kind = health_kind
+    with pytest.raises(ReaderUnavailable) as err:
+        _open(state, transport=FakeTransport(default_script(assets=bad), skew_s=0.0))
+    assert err.value.kind == kind
+    assert SENTINEL_KEY not in str(err.value)

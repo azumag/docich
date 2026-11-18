@@ -128,6 +128,7 @@ L1 は、本番(LIVE)の売買の**土台だけ**で、動作しない。どの�
 - 期首残高: worker が起動時に、監視通貨(銘柄の base/quote)ごとに、台帳履歴(cashflow・約定・手数料通貨・取引所に届いた可能性のある intent)が無く、取引所の total が正で、2回の残高読みが一致する場合に `auto_opening:<CCY>` の deposit を1件記録する(source `exchange_history`)。dust も同じ。読みが食い違えば次の機会に再試行する。オーナーは期首残高のために `cashflow add` を実行しない。後からの入出金は自動記録せず、残高の警告としてだけ現れる。
 - 残高の不一致は**停止しない**。2回の安定した照合で確認できた不一致の通貨数を `balance_warnings` として status に出す(0以上の整数)。金額・残高そのものは status に書かない。不一致でも買い・売りは止まらない。
 - 起動時の残高取得や自動記録が失敗しても inert にならず、終了もしない。周期ループで再試行する。inert になるのは方針セットが無い場合だけ(`no_active_policy_set`)。
+- 常駐化(systemd user unit)のテンプレートと終了コードの扱いは [live-worker-systemd.md](live-worker-systemd.md)。ユニットのインストール・enable はオーナーの作業で、`sender=None` の間は発注経路が無い。
 
 ## L1 でやらないこと
 
