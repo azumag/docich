@@ -343,9 +343,10 @@ def test_reader_unhealthy_after_three_failures_is_a_failed_cycle(ws, harnesses):
 # ---- c6. the lease check at the top of the cycle -------------------------------------------
 def test_lease_lost_at_the_check_exits_with_a_trip(ws, harnesses):
     h = harnesses()                                   # on/trade: the gate reading is real
+    base_gate = h._gate
 
     def gate_then_lose():
-        result = h._gate()                            # step 1 reads the control file...
+        result = base_gate()                          # step 1 reads the control file...
         _lose_lease(ws)                               # ...then the lease goes away
         return result
 
@@ -743,13 +744,14 @@ def test_failure_and_exit_paths_record_worker_state_on_change_only(ws, harnesses
 # ---- d5. stop and lease lost write no worker_state ------------------------------------------
 def test_stop_requested_and_lease_lost_do_not_record_worker_state(ws, harnesses):
     h = harnesses()                                       # on/trade: the gate reading is real
+    base_gate = h._gate
     stopped = make_rig(ws, h, stop_requested=lambda: True)
 
     assert run_cycle(stopped.deps, stopped.state).outcome is CycleOutcome.STOP_REQUESTED
     assert views.events_of_kind(h.ledger, "worker_state") == []
 
     def gate_then_lose():
-        result = h._gate()                                # step 1 reads the control file...
+        result = base_gate()                              # step 1 reads the control file...
         _lose_lease(ws)                                   # ...then the lease goes away
         return result
 

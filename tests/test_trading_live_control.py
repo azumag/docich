@@ -163,10 +163,19 @@ def test_a_foreign_owner_is_refused(ws, monkeypatch):
     _raw(ws, _payload())
     real_fstat = os.fstat
 
+    class _Foreign:
+        def __init__(self, info):
+            self.info = info
+
+        @property
+        def st_uid(self):
+            return self.info.st_uid + 1
+
+        def __getattr__(self, name):
+            return getattr(self.info, name)
+
     def foreign(fd):
-        info = real_fstat(fd)
-        return SimpleNamespace(st_mode=info.st_mode, st_uid=info.st_uid + 1,
-                               st_size=info.st_size)
+        return _Foreign(real_fstat(fd))
 
     monkeypatch.setattr(control.os, "fstat", foreign)
     assert _reasons(control.read_control(ws.state, now=NOW)) == ("owner_mismatch",)

@@ -1395,7 +1395,7 @@ def test_run_worker_has_no_revision_parameters():
 
 
 def test_control_switched_off_mid_run_keeps_cycling_and_reports_off(ws, monkeypatch):
-    prepared = prepare(ws)                                   # on/trade
+    prepared = prepare(ws, cashflows={"JPY": "10000"})       # on/trade
     completed = []
     real_cycle = runner_module.run_cycle
 
@@ -1422,7 +1422,7 @@ def test_control_switched_off_mid_run_keeps_cycling_and_reports_off(ws, monkeypa
 
 
 def test_a_missing_control_file_cycles_with_control_unknown_and_no_trip(ws):
-    prepared = prepare(ws, mode=None)                        # no control file at all
+    prepared = prepare(ws, mode=None, cashflows={"JPY": "10000"})  # no control file at all
     assert not ws.layout.control_path.exists()
 
     code, sleeps = run(prepared, stop_requested=lambda: True)
