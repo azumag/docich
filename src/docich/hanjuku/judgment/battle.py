@@ -1377,8 +1377,11 @@ def _survival_needed(cur):
                     and not cur.get('planned_cards') and cur.get('enemy') not in chart.BOSSES.values()
                     and not (ours is not None and theirs is not None and ours >= theirs
                              and start * 10 > cur['start_enemy_hp'] * 9))
+    # #4606: a summon-class opponent's live panel HP out-scales the stale
+    # general reading; compare the observed summon value, never an inferred one.
+    threat = (_summon_enemy_hp(cur) or enemy) if _summon_class_enemy(cur) else enemy
     return (hp <= GENERAL_CRITICAL_RETREAT_HP or (hp < enemy and hp * 5 <= start * 2)
-            or hp * 10 <= enemy * BEHIND_EGG_RATIO_TENTHS or behind_start
+            or hp * 10 <= threat * BEHIND_EGG_RATIO_TENTHS or behind_start
             or cur.get('card_damage_rescue_needed') is True
             or _unarmed_clash_risk(cur) or _unarmed_wall_risk(cur)
             or (not cur.get('planned_cards') and _combat_behind(cur)))
@@ -1419,6 +1422,8 @@ def _survival_state(mem, cur):
                         if _unarmed_clash_risk(cur)
                         else '初期卵なしまたは観測残数0の攻撃将軍は、敵の壁判定召喚より先に実資源を確認'
                         if _unarmed_wall_risk(cur)
+                        else '観測した召喚獣・大型敵が実敵のため、戦闘メニューで救済手段を確認'
+                        if _summon_class_enemy(cur)
                         else 'HP・兵士数・将軍の戦闘力で不利なため、戦闘メニューで救済手段を確認'
                         if _combat_behind(cur)
                         else 'HP低下のため温存を中止し、戦闘メニューで救済手段を確認'))
@@ -2000,6 +2005,9 @@ def _egg_before_retreat(mem, cur, *, menu=False):
     # the counted attempts (v726) may retry once.
     spent = attempts >= EGG_ATTEMPT_LIMIT or (rescue.get('egg_attempted') and not attempts)
     return (not cur.get('egg_battle') and _survival_needed(cur)
+            # #4606: against an observed summon/large enemy the retreat must not
+            # wait behind another probe of the same unreliable command box.
+            and not _summon_class_enemy(cur)
             and (_critical_survival_needed(cur) or not cur.get('planned_cards'))
             and _own_egg_positive(mem, cur) and not _own_egg_empty(mem, cur)
             and not spent and not rescue.get('exhausted')
@@ -2018,6 +2026,59 @@ def _egg_rescue_pending(cur):
         return True
     rescue['egg_pending'] = False
     return False
+
+
+def _monster_panel_enemy(cur):
+    """The record itself opened on a summon/large-enemy panel (#4606).
+
+    ``cur['enemy']`` holds the opponent panel's name, so a direct battle
+    against a monster reads e.g. ドラゴンフライ/ランプキン/テュポーン there
+    instead of a general's name (the ch11 panels whose command box then
+    ignored every input). Only the ``MONSTER_SKILLS`` table discriminates:
+    a large enemy absent from it is indistinguishable from an unread
+    general, and a monster sharing a general's name (none today) would
+    read as the general. Chapter bosses, boss generals/monsters and the
+    season kings keep their own fight rules.
+    """
+    enemy = cur.get('enemy')
+    if not isinstance(enemy, str) or enemy not in reference.MONSTER_SKILLS:
+        return False
+    if enemy in chart.BOSSES.values() or reference.is_boss_target(enemy):
+        return False
+    from ...hanjuku_map_sources import SEASON_KINGS
+    return enemy not in SEASON_KINGS and general_max_hp(enemy) is None
+
+
+def _summon_class_enemy(cur):
+    """The observed opponent is a summon monster or large enemy (#4606).
+
+    A record that opened on the monster panel reads its name into
+    ``cur['enemy']``; a mid-battle summon keeps the general's name there
+    while the monster panels latch ``enemy_summon_observed`` instead. The
+    latch only proves a summon was seen, so it carries the egg_battle
+    threshold; the panel itself is the "this kind of enemy" the issue
+    avoids. Which panels freeze their command box cannot be discriminated
+    from observations, so the whole class is treated as unplannable.
+    """
+    return (_monster_panel_enemy(cur)
+            or cur.get('enemy_summon_observed') is True)
+
+
+def _summon_enemy_hp(cur):
+    """The live summon-class opponent's observed panel HP, or None.
+
+    ``summon_enemy_hp`` records the enemy monster's own reading and an armed
+    bait's ``monster_hp`` the observed one from the summon proof, while
+    ``enemy_hp`` holds the general's; a record opened on the monster carries
+    it in ``enemy_hp`` itself. The largest observed value decides so a stale
+    pre-summon general HP cannot hide the live summon.
+    """
+    bait = cur.get('enemy_egg_bait')
+    monster = (bait.get('monster_hp') if isinstance(bait, dict)
+               and bait.get('phase') == 'summoned' else None)
+    values = [v for v in (cur.get('enemy_hp'), cur.get('summon_enemy_hp'), monster)
+              if type(v) is int and v > 0]
+    return max(values, default=None)
 
 
 def _default_retreat_needed(cur):
@@ -2046,12 +2107,20 @@ def _default_retreat_needed(cur):
             and not (_healthy_melee_advantage(cur) or _pre_summon_hp_advantage(cur)
                     or _full_hp_melee_advantage(cur))):
         return True  # no observed rescue remains; retreat before the summon
-    if cur.get('egg_battle'):
+    if cur.get('egg_battle') or _summon_class_enemy(cur):
         # An enemy summon we cannot answer (no egg left, no cards) is not a
         # winnable melee: retreat before the general dies (owner 2026-09-29;
         # g460 16:46: ヴィーナス 82 vs アルファルファ 38 summoned and killed
         # her while the bot chose こうげき and the retreat came too late).
-        return hp <= GENERAL_CRITICAL_RETREAT_HP or hp * 2 <= enemy or hp * 2 <= ref
+        # #4606: compare the live summon HP, never the stale general reading;
+        # the latches may be missing when the box froze before they were
+        # written. A record that opened on the monster panel itself
+        # (ドラゴンフライ/ランプキン/テュポーン) never had a winnable melee
+        # plan, so any observed deficit retreats; a summon behind a general's
+        # name keeps the existing half-pool threshold.
+        threat = _summon_enemy_hp(cur) or enemy
+        behind = hp < threat if _monster_panel_enemy(cur) else hp * 2 <= threat
+        return hp <= GENERAL_CRITICAL_RETREAT_HP or behind or hp * 2 <= ref
     return hp <= GENERAL_CRITICAL_RETREAT_HP or (hp < enemy and hp * 4 <= ref)
 
 
