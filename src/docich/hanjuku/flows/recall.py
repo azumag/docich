@@ -974,6 +974,19 @@ def _camp_recall_step(screen: Screen, mem, frame, *, observed_camps=None):
             # hunt that waits never brings them back (all 32 generals camped,
             # g1190 94-xx). Bounded by the ARRIVE check inside nav_step.
             last = _flow(mem).get('camp_last_world')
+            if not _camp_target(last) and camp_stays(mem):
+                # An overdue boss sortie stale-landed at its aimed cell and
+                # camped there; ``camp_world`` never resolves in roofless
+                # terrain, so revisit the recorded target cell to re-detect
+                # the tent and feed the boss-redirect chase.
+                chapter = mem.get('chapter') or 0
+                boss_target = chart.boss_castle(chapter)
+                for s in _sorties(mem).values():
+                    if (isinstance(s, dict) and s.get('target') == boss_target
+                            and s.get('status') == 'overdue'
+                            and _camp_target(s.get('aimed_cell'))):
+                        last = list(s['aimed_cell'])
+                        break
             if camp_stays(mem) and _camp_target(last):
                 from ..os_layer.navigation import nav_step
                 move = nav_step(screen, mem, frame, list(last))
