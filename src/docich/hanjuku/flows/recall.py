@@ -7,7 +7,8 @@ from ... import hanjuku_chart as chart
 from ..decision_log import _record
 from ..os_layer.commands import fort_list_batch, menu_to, pad
 from ..os_layer.navigation import _start_y_jump
-from ..os_layer.readers import _current, _cursor, _options, fort_list_open, is_camp_menu, is_fort_menu
+from ..os_layer.readers import (_canonical_general, _current, _cursor, _options,
+                                fort_list_open, is_camp_menu, is_fort_menu)
 from ..os_layer.world import NAME, _owned
 from ..strategy.orders import _fort_recall_goal, _recall_goal, _recall_owned
 from ..state.regions import flow as _flow, journal as _journal, sorties as _sorties
@@ -937,24 +938,25 @@ def _camp_recall_step(screen: Screen, mem, frame, *, observed_camps=None):
         if camps and camp_stays(mem) and isinstance(frame, Frame) and castle_roofs(frame):
             # A corridor view keeps field camps beside their roofs: every one
             # of them is left camped by ``camp_stays`` and none can be the
-            # boss-march foothold. Drive the cursor to an overdue boss
-            # sortie's aimed cell instead, to re-detect the stale-landed
-            # tent in the boss's roam band.
+            # boss-march foothold. The stale-landed boss-march camp is in the
+            # boss's roam band, unreachable by cursor nav over the distance,
+            # so open the X-menu しょうぐん roster and SELECT the overdue
+            # sortie's general: the cursor jumps straight onto their tent.
             boss_target = chart.boss_castle(mem.get('chapter') or 0)
-            aimed = next((list(s['aimed_cell']) for s in _sorties(mem).values()
-                          if isinstance(s, dict) and s.get('target') == boss_target
-                          and s.get('status') == 'overdue'
-                          and _camp_target(s.get('aimed_cell'))), None)
-            if aimed:
-                from ..os_layer.navigation import nav_step
-                move = nav_step(screen, mem, frame, aimed)
-                if move == 'arrived':
-                    return []
-                if move in ('up', 'down', 'left', 'right'):
-                    _record(mem, 'camp_revisit',
-                            observed_metric={'camp_world': aimed, 'move': move},
-                            reason='回廊ビューの野営は全部野営停止のため、期限切れボス行軍の照準セルへカーソルを寄せてテントを再発見する')
-                    return [pad(move)]
+            overdue_general = next((_canonical_general(s['general'])
+                                    for s in _sorties(mem).values()
+                                    if isinstance(s, dict)
+                                    and s.get('target') == boss_target
+                                    and s.get('status') == 'overdue'
+                                    and s.get('general')), None)
+            if overdue_general and not mem.get('general_jump'):
+                mem['general_jump'] = {'general': overdue_general, 'phase': 'menu',
+                                       'age': 0, 'total': 0, 'scrolls': 0,
+                                       'menu_presses': 0}
+                _record(mem, 'camp_revisit',
+                        observed_metric={'general': overdue_general},
+                        reason='回廊ビューの野営は全部野営停止のため、しょうぐん一覧からSELECTで期限切れボス行軍将軍の野営へ飛ぶ')
+                return []
         if not camps:
             # The field frames keep coming but no tent is visible: record a
             # throttled sample so the camera/roof situation is measurable

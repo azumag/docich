@@ -19,12 +19,14 @@ from .recall import (MENU_HOLD_LIMIT, RECALL_LIMIT, _hold_after_picker, _recall_
                     RELAY_MENU_WAIT,
                     relay_from_picker,
                             camp_recall_step)
-from ..os_layer.commands import VISIBLE_LIST_RELEASE_MS, castle_list_batch, menu_to, pad
+from ..os_layer.commands import (VISIBLE_LIST_RELEASE_MS, castle_list_batch, menu_to, pad,
+                                 roster_list_batch)
 from ..os_layer.navigation import (Y_JUMP_LIMIT, Y_JUMP_OFFSET, Y_JUMP_TOL, _align_on_roof, _drop_stale_y_jump, _start_y_jump,
                                    _forget_failed_jump, _want_y_jump, _y_jump_step, boss_probe_cell, nav_step,
                                    y_jump_unreachable)
-from ..os_layer.readers import (UNDER_CURSOR_PX, WORLD_MAP_OFFSET, _cursor, _roof_under_cursor, season_sites,
-                                world_cursor, world_flags, world_markers)
+from ..os_layer.readers import (UNDER_CURSOR_PX, WORLD_MAP_OFFSET, _canonical_general, _cursor,
+                                _roof_under_cursor, season_sites, world_cursor, world_flags,
+                                world_markers)
 from ..os_layer.world import (NAME, _apply_season_sites, _apply_skull_boss, _apply_world_flags,
                               _hero_castle, _owned, update_world)
 from ..strategy import goals
@@ -1573,6 +1575,123 @@ def castle_jump_step(screen, mem, frame):
             return []
         return []
     return _end_castle_jump(screen, mem, 'unknown_phase:' + str(phase))
+
+
+GENERAL_JUMP_LIMIT = 48          # observations across the whole roster trip
+
+
+def _end_general_jump(screen, mem, why):
+    jump = mem.pop('general_jump', None)
+    if not isinstance(jump, dict):
+        return []
+    _record(mem, 'general_jump_failed', target=jump.get('general'),
+            screen=screen.kind,
+            observed_metric={'why': why, 'total': jump.get('total'),
+                             'phase': jump.get('phase'),
+                             'scrolls': jump.get('scrolls')},
+            reason='しょうぐん一覧から将軍へSELECTで飛べないため、野営探索へ戻る')
+    if screen.kind in ('main_menu', 'general_list', 'castle_menu'):
+        return [pad('b')]
+    return []
+
+
+def general_jump_step(screen, mem, frame):
+    """Drive X -> しょうぐん -> general name -> SELECT onto that general.
+
+    The camp->boss redirect needs the camped general observed, but a stale
+    boss march camps in the boss's roam band that the cursor cannot reach
+    (``nav_step`` is infeasible over the distance, and the corridor camps
+    keep the west view busy). The X-menu roster's SELECT jumps the cursor
+    straight to a general (manual p.15), bringing the stale-landed tent
+    into view so the redirect can pick it up. Returns None when no jump is
+    in flight.
+    """
+    jump = mem.get('general_jump')
+    if not isinstance(jump, dict):
+        return None
+    jump['total'] = int(jump.get('total') or 0) + 1
+    jump['age'] = int(jump.get('age') or 0) + 1
+    if jump['total'] > GENERAL_JUMP_LIMIT:
+        return _end_general_jump(screen, mem, 'limit')
+    target = jump.get('general')
+    phase = jump.get('phase')
+
+    if phase == 'menu':
+        if screen.kind == 'map':
+            if jump['age'] >= 3 and int(jump.get('menu_presses') or 0) < 2:
+                jump['menu_presses'] = int(jump.get('menu_presses') or 0) + 1
+                return [pad('x')]
+            if jump['age'] < 4:
+                return []
+            return _end_general_jump(screen, mem, 'menu_not_open')
+        if screen.kind == 'unknown':
+            jump['fade'] = int(jump.get('fade') or 0) + 1
+            if jump['fade'] <= CASTLE_JUMP_FADE_BLIND:
+                return []
+            return _end_general_jump(screen, mem, 'unexpected_menu')
+        if screen.kind == 'main_menu':
+            jump['fade'] = 0
+            if screen.hand is None:
+                jump['blind'] = int(jump.get('blind') or 0) + 1
+                if jump['blind'] <= CASTLE_JUMP_CURSOR_BLIND:
+                    return []
+                return _end_general_jump(screen, mem, 'hand_hidden')
+            jump['blind'] = 0
+            move = menu_to(screen, 'しょうぐん')
+            if move == 'here':
+                jump['phase'] = 'list'
+                jump['age'] = 0
+                return [pad('a')]
+            if move:
+                return [move]
+            return _end_general_jump(screen, mem, 'roster_missing')
+        return _end_general_jump(screen, mem, 'unexpected_menu')
+
+    if phase == 'list':
+        if screen.kind == 'main_menu':
+            if jump['age'] >= 2 and int(jump.get('menu_presses') or 0) < 3:
+                jump['menu_presses'] = int(jump.get('menu_presses') or 0) + 1
+                return [pad('a')]
+            if jump['age'] < 3:
+                return []
+            return _end_general_jump(screen, mem, 'list_not_open')
+        if screen.kind not in ('general_list', 'castle_menu'):
+            if screen.kind == 'unknown':
+                return []
+            return _end_general_jump(screen, mem, 'unexpected_list')
+        if screen.hand is None:
+            jump['blind'] = int(jump.get('blind') or 0) + 1
+            if jump['blind'] <= CASTLE_JUMP_CURSOR_BLIND:
+                return []
+            return _end_general_jump(screen, mem, 'hand_hidden')
+        jump['blind'] = 0
+        if _canonical_general(screen.selected or '') == target:
+            jump['phase'] = 'confirm'
+            jump['age'] = 0
+            return [pad('select')]
+        if int(jump.get('scrolls') or 0) < CASTLE_JUMP_SCROLL_LIMIT:
+            jump['scrolls'] = int(jump.get('scrolls') or 0) + 1
+            jump['age'] = 0
+            batch = roster_list_batch(screen, target)
+            if batch:
+                return batch
+            return [pad('down')]
+        return _end_general_jump(screen, mem, 'general_missing')
+
+    if phase == 'confirm':
+        if screen.kind == 'map':
+            # The SELECT landed the cursor on the named general's field or
+            # camp; leave the state so the visible tent can feed the recall's
+            # boss-redirect chase on the normal dispatch.
+            mem.pop('general_jump', None)
+            _record(mem, 'general_jump_confirm', target=target,
+                    observed_metric={'cursor': list(_cursor(screen) or ())},
+                    reason='しょうぐん一覧のSELECTで将軍へ飛んだため、その野営を野営→ボス追撃へ回す')
+            return None
+        if screen.kind in ('general_list', 'castle_menu'):
+            return _end_general_jump(screen, mem, 'select_opens_status')
+        return []
+    return _end_general_jump(screen, mem, 'unknown_phase:' + str(phase))
 
 
 def resume_reanchored_owner(screen, mem, frame):
