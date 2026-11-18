@@ -99,11 +99,12 @@ def test_every_apt_job_caches_the_downloaded_archives(job_name):
     # into the seed the next run installs from instead of the mirror.
     assert f'        uses: {CACHE_ACTION}\n' in step
     assert '          path: ~/apt-debs\n' in step
-    assert f'          key: apt-debs-ubuntu-24.04-{job_name}\n' in step
+    assert f'          key: apt-debs-ubuntu-24.04-{job_name}-${{{{ github.run_id }}}}-${{{{ github.run_attempt }}}}\n' in step
     # Every apt job on this image shares one prefix so a green job can seed
     # another job's restore.
     restore_keys = step.split('restore-keys: |', 1)[1]
-    assert 'apt-debs-ubuntu-24.04-' in restore_keys
+    assert f'            apt-debs-ubuntu-24.04-{job_name}-\n' in restore_keys
+    assert '            apt-debs-ubuntu-24.04-\n' in restore_keys
     # The restore must run before the install step that consumes it.
     job = _job(job_name)
     assert job.index(CACHE_STEP_NAME) < job.index('      - name: Install isolated')

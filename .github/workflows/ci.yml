@@ -111,8 +111,10 @@ jobs:
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830
         with:
           path: ~/apt-debs
-          key: apt-debs-ubuntu-24.04-full-suite
+          key: apt-debs-ubuntu-24.04-full-suite-${{ matrix.shard }}-${{ github.run_id }}-${{ github.run_attempt }}
           restore-keys: |
+            apt-debs-ubuntu-24.04-full-suite-${{ matrix.shard }}-
+            apt-debs-ubuntu-24.04-full-suite-
             apt-debs-ubuntu-24.04-
       - name: Install system dependencies
         # Hosted images usually already provide both binaries. Avoid a network

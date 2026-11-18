@@ -111,8 +111,9 @@ jobs:
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830
         with:
           path: ~/apt-debs
-          key: apt-debs-ubuntu-24.04-cli-nethack-presenter
+          key: apt-debs-ubuntu-24.04-cli-nethack-presenter-${{ github.run_id }}-${{ github.run_attempt }}
           restore-keys: |
+            apt-debs-ubuntu-24.04-cli-nethack-presenter-
             apt-debs-ubuntu-24.04-
       - name: Install isolated X11 and CLI presenter dependencies
         run: |
@@ -180,8 +181,9 @@ jobs:
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830
         with:
           path: ~/apt-debs
-          key: apt-debs-ubuntu-24.04-retroarch-presenter
+          key: apt-debs-ubuntu-24.04-retroarch-presenter-${{ github.run_id }}-${{ github.run_attempt }}
           restore-keys: |
+            apt-debs-ubuntu-24.04-retroarch-presenter-
             apt-debs-ubuntu-24.04-
       - name: Install isolated X11 and RetroArch presenter dependencies
         run: |
@@ -299,8 +301,9 @@ jobs:
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830
         with:
           path: ~/apt-debs
-          key: apt-debs-ubuntu-24.04-soren91-presenter
+          key: apt-debs-ubuntu-24.04-soren91-presenter-${{ github.run_id }}-${{ github.run_attempt }}
           restore-keys: |
+            apt-debs-ubuntu-24.04-soren91-presenter-
             apt-debs-ubuntu-24.04-
       - name: Install isolated X11 and SRT presenter dependencies
         run: |
@@ -370,8 +373,9 @@ jobs:
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830
         with:
           path: ~/apt-debs
-          key: apt-debs-ubuntu-24.04-paper-view-presenter
+          key: apt-debs-ubuntu-24.04-paper-view-presenter-${{ github.run_id }}-${{ github.run_attempt }}
           restore-keys: |
+            apt-debs-ubuntu-24.04-paper-view-presenter-
             apt-debs-ubuntu-24.04-
       - name: Install isolated X11 presenter dependencies
         run: |

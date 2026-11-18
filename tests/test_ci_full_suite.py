@@ -178,10 +178,13 @@ def test_system_dependencies_restore_the_cached_apt_archives():
     assert "        if: needs.test-scope.outputs.suite != 'hanjuku'\n" in step
     assert '        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830\n' in step
     assert '          path: ~/apt-debs\n' in step
-    assert '          key: apt-debs-ubuntu-24.04-full-suite\n' in step
+    assert '          key: apt-debs-ubuntu-24.04-full-suite-${{ matrix.shard }}-${{ github.run_id }}-${{ github.run_attempt }}\n' in step
     # Shared prefix with the presenter-smoke apt caches so either workflow can
     # seed the other's ffmpeg deb.
-    assert 'apt-debs-ubuntu-24.04-' in step.split('restore-keys: |', 1)[1]
+    restore_keys = step.split('restore-keys: |', 1)[1]
+    assert '            apt-debs-ubuntu-24.04-full-suite-${{ matrix.shard }}-\n' in restore_keys
+    assert '            apt-debs-ubuntu-24.04-full-suite-\n' in restore_keys
+    assert '            apt-debs-ubuntu-24.04-\n' in restore_keys
     body = _system_setup()
     assert 'sudo cp -n ~/apt-debs/*.deb /var/cache/apt/archives/' in body
     assert "trap 'cp -n /var/cache/apt/archives/*.deb ~/apt-debs/" in body
