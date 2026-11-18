@@ -267,6 +267,56 @@ def test_a_read_level_clears_the_unread_count():
     assert 'hanjuku_level_unread' not in mem
 
 
+def test_the_visit_reopens_status_when_the_level_read_left_the_count_unread():
+    """The level page read must not leave the month's general count behind.
+
+    A visit that lands on the level page (or whose page-1 count row went
+    unread) has 半熟レベル/半熟値 but still no 将軍数. The same bounded
+    visit re-opens ステータス once so page 1's headcount is read with it.
+    """
+    mem = _month_memory()
+    mem['house'] = _level_state()
+    page2 = _country_page2(level=14, value=2800, needed=3400)
+    assert house.step(parse(page2), mem, page2) == [p.pad('b')]
+    assert mem['hanjuku_level'] == 14
+    main = _main_on('ステータス')
+    assert house.step(parse(main), mem, main) == []   # leave_status → open_roster
+    assert mem['house']['phase'] == 'open_roster'
+    # Count still unread → the visit re-opens ステータス instead of leaving.
+    general = _main_on('しょうぐん')
+    assert house.step(parse(general), mem, general) == [p.pad('down')]
+    assert mem['house'].get('count_retry', 0) == 0
+    assert mem['house']['phase'] == 'open_roster'
+    assert house.step(parse(main), mem, main) == [p.pad('a')]
+    assert mem['house']['phase'] == 'level_status'
+    assert mem['house']['count_retry'] == 1
+    page1 = _country_page1(soldiers=70)
+    assert house.step(parse(page1), mem, page1) == [p.pad('a')]
+    assert mem['country_general_count']['count'] == 10
+    assert house.step(parse(page2), mem, page2) == [p.pad('b')]
+    assert house.step(parse(main), mem, main) == []   # leave_status → open_roster
+    # Count now current: the visit leaves normally, no third open.
+    assert house.step(parse(main), mem, main) == [p.pad('b')]
+    assert mem['house']['phase'] == 'leave_roster'
+
+
+def test_the_count_reopen_is_bounded_when_page_one_keeps_missing():
+    """A level page that never yields the count does not re-open forever."""
+    mem = _month_memory()
+    mem['house'] = _level_state()
+    page2 = _country_page2(level=14, value=2800, needed=3400)
+    assert house.step(parse(page2), mem, page2) == [p.pad('b')]
+    main = _main_on('ステータス')
+    assert house.step(parse(main), mem, main) == []
+    assert house.step(parse(main), mem, main) == [p.pad('a')]   # one re-open
+    # The re-opened visit sees the level page again without the count read;
+    # the bounded retry is spent, so this time the visit leaves.
+    assert house.step(parse(page2), mem, page2) == [p.pad('b')]
+    assert house.step(parse(main), mem, main) == []
+    assert house.step(parse(main), mem, main) == [p.pad('b')]
+    assert mem['house']['phase'] == 'leave_roster'
+
+
 
 def test_month_rollover_releases_the_previous_month_roster_visit():
     """g1107 46-8->46-9: the old house close step owned the month menu with no

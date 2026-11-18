@@ -541,6 +541,13 @@ def _month_roster(state, visited=None):
     page2 = _country_page2()
     assert house.step(parse(page2), mem, page2) == [p.pad('b')]
     assert house.step(parse(status_frame), mem, status_frame) == []
+    if visited is not None:
+        # The count page never yielded a headcount: the visit re-opens
+        # ステータス once for the same month's count before leaving.
+        assert house.step(parse(status_frame), mem, status_frame) == [p.pad('a')]
+        assert house.step(parse(page1), mem, page1) == [p.pad('a')]
+        assert house.step(parse(page2), mem, page2) == [p.pad('b')]
+        assert house.step(parse(status_frame), mem, status_frame) == []
     assert house.step(parse(status_frame), mem, status_frame) == [p.pad('b')]
     assert house.step(parse(month_frame), mem, month_frame) == []
     assert not mem.get('house')
