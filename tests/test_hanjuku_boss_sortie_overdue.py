@@ -51,6 +51,7 @@ def test_the_live_march_is_overdue_and_waits_for_the_boss_unlock():
     assert record['observed_metric'] == {'general': 'アポロン', 'source': 'パタゴーヌ',
                                          'marching': 79599 - LAUNCH, 'relaunches': 0,
                                          'cell': list(chart.castles(CHAPTER)['ボス']),
+                                         'aimed_cell': None,
                                          'source_still_has_general': False}
     assert '3-B1' not in _plan_region(mem).get('general_override', {})
     assert '3-B1' not in _world(mem)['launched_orders']
@@ -352,3 +353,88 @@ def test_the_scaled_wait_never_outlives_the_long_march_window():
     # 2400-tick window, so the distance-scaled wait must clamp to the cap.
     mem = chapter6_memory(LAUNCH, source='アルブラーカ', target='アブダレ')
     assert O._arrival_limit(mem, _sorties(mem)['6-X1']) == O.LONG_MARCH_TICKS
+
+
+MOVING = 9
+BOSS9 = chart.boss_castle(MOVING)                    # 'ボス'
+AIMED = [658, 693]                                   # the cell the march was sent to
+NOW_CELL = (802, 645)                                # where the boss was re-measured
+
+
+def moving_memory(tick, aimed=AIMED, status='en_route'):
+    """A ch9 boss march in flight, aimed at ``aimed``.
+
+    Chapter 9 has no chart orders - boss sorties are interim - so the step
+    id only has to line up between ``orders`` and ``sorties``.
+    """
+    return {
+        'chapter': MOVING, 'tick': tick,
+        'orders': {'corridor-boss': 'launched'},
+        'sorties': {'corridor-boss': {'general': 'アポロン', 'source': 'アルマムーン',
+                                      'target': BOSS9, 'status': status,
+                                      'aimed_cell': aimed, 'tick': 1,
+                                      'confirmation_tick': 0}},
+        'launched_orders': {'corridor-boss': {'step': 'corridor-boss', 'general': 'アポロン',
+                                              'source': 'アルマムーン', 'target': BOSS9}},
+        'garrison': {'アルマムーン': ['どうし']},
+    }
+
+
+def test_a_march_at_a_moved_moving_boss_cell_is_resent_early():
+    """Issue #4558: g1270's marches rode ~2400 ticks to cells the boss had
+    already left - the relaunch only fired at the arrival limit."""
+    chart.set_boss_cell(MOVING, NOW_CELL)
+    try:
+        mem = moving_memory(10)                      # far inside the arrival limit
+        O.next_order(mem)
+        assert _plan_region(mem)['orders']['corridor-boss'] == 'pending'
+        assert _sorties(mem)['corridor-boss']['status'] == 'overdue'
+        (record,) = decisions(mem, 'boss_sortie_overdue')
+        assert record['observed_metric']['aimed_cell'] == AIMED
+        assert record['observed_metric']['cell'] == list(NOW_CELL)
+    finally:
+        chart.set_boss_cell(MOVING, None)
+
+
+def test_a_march_at_the_current_cell_rides_out_the_limit():
+    chart.set_boss_cell(MOVING, tuple(AIMED))
+    try:
+        mem = moving_memory(10)
+        O.next_order(mem)
+        assert _plan_region(mem)['orders']['corridor-boss'] == 'launched'
+        assert _sorties(mem)['corridor-boss']['status'] == 'en_route'
+        assert not decisions(mem, 'boss_sortie_overdue')
+    finally:
+        chart.set_boss_cell(MOVING, None)
+
+
+def test_a_march_whose_reading_expired_is_resent_early():
+    """The boss entry leaves ``castles(9)`` entirely when the reading ages
+    out: the march is riding blind and must not wait for the limit."""
+    chart.set_boss_cell(MOVING, None)
+    mem = moving_memory(10)
+    O.next_order(mem)
+    assert _sorties(mem)['corridor-boss']['status'] == 'overdue'
+    assert decisions(mem, 'boss_sortie_overdue')
+
+
+def test_a_march_without_an_aimed_cell_keeps_the_limit():
+    """Records written before ``aimed_cell`` existed keep the old path."""
+    chart.set_boss_cell(MOVING, NOW_CELL)
+    try:
+        mem = moving_memory(10, aimed=None)
+        O.next_order(mem)
+        assert _sorties(mem)['corridor-boss']['status'] == 'en_route'
+        assert not decisions(mem, 'boss_sortie_overdue')
+    finally:
+        chart.set_boss_cell(MOVING, None)
+
+
+def test_a_static_chapter_march_is_not_moved():
+    """Only the moving-boss chapter re-aims early; a static boss keeps the
+    arrival-limit bound even when its (fixed) cell differs from ``aimed_cell``."""
+    mem = memory(LAUNCH + 10)
+    _world(mem)['sorties']['3-B1']['aimed_cell'] = [1, 1]
+    O.next_order(mem)
+    assert _sorties(mem)['3-B1']['status'] == 'en_route'
+    assert not decisions(mem, 'boss_sortie_overdue')
