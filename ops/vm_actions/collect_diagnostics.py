@@ -7653,6 +7653,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v1118-boss-chase-camp",
             "hanjuku-chart-v1119-password-entry",
             "hanjuku-chart-v1120-boss-near-gate",
+            "hanjuku-chart-v1121-summer-bonus-choice",
             "hanjuku-chart-v1122-boss-measure-gated",
             "hanjuku-chart-v1123-boss-gate-revert",
             "hanjuku-chart-v1020-recall-giveup",
