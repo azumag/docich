@@ -34,3 +34,24 @@ def test_kit_read_box_without_a_monster_stays_battle_menu():
 
 def test_a_box_without_the_pixel_flag_keeps_the_existing_egg_rule():
     assert classify_text(box(mixed=False)) == 'egg_battle_menu'
+
+
+def test_defence_summon_egg_moves_up_from_disabled_card():
+    from docich.hanjuku.flows.battle_menus import egg_battle_step
+
+    screen = box()
+    screen.kind = classify_text(screen)
+    mem = {'egg_battle': True, 'egg_action': 'use_egg', 'egg_menu_stage': 2}
+    assert [a['buttons'] for a in egg_battle_step(screen, mem)] == [['up']]
+    screen.menu_cursor = 192
+    assert [a['buttons'] for a in egg_battle_step(screen, mem)] == [['a']]
+
+
+def test_defence_summon_egg_holds_when_cursor_unread():
+    from docich.hanjuku.flows.battle_menus import egg_battle_step
+
+    screen = box()
+    screen.kind = classify_text(screen)
+    screen.menu_cursor = None
+    mem = {'egg_battle': True, 'egg_action': 'use_egg', 'egg_menu_stage': 2}
+    assert egg_battle_step(screen, mem) == []
