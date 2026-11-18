@@ -215,6 +215,29 @@ def _soldier_spendable(mem, shop, header, *, recruit=True):
                - sum(KNOWN_PRICES[name] * qty for name, qty in cards))
 
 
+def _collapsed_army(mem, shop, header, target):
+    """A measured army at or below half the month's refill target (#4555).
+
+    The refill target itself is the measure: fifty, or a hundred when spare
+    cash planned the larger army. Half of it is a collapse; rebuilding then
+    takes the month's balance ahead of the egg, recruit and card holds (only
+    the house repair money stays back, the same rule the low-army refill
+    follows for twenty or fewer).
+    """
+    key = _month_key(header) if header else None
+    count = mem.get('soldiers_seen')
+    return (key is not None and isinstance(shop, dict) and key == shop.get('key')
+            and mem.get('soldiers_seen_key') == key
+            and type(count) is int and count >= 0
+            and type(target) is int and count * 2 <= target)
+
+
+def _collapsed_refill_budget(shop, gold):
+    """Cash bound a collapsed army's refill may use: all but the repair money."""
+    repair = _house_repair_reserve(shop)
+    return max(0, gold - repair) if type(gold) is int and type(repair) is int else None
+
+
 def _limit_soldier_refill(mem, shop, header, *, payment=False):
     # Never rewrite a dispatched purchase or its pending payment receipt.
     if (shop.get('soldier_receipt') or shop.get('soldiers_done') is True
@@ -226,14 +249,21 @@ def _limit_soldier_refill(mem, shop, header, *, payment=False):
     known = (key is not None and key == shop.get('key')
              and mem.get('soldiers_seen_key') == key
              and type(count) is int and count >= 0)
-    cap = min(SOLDIER_CAP, max(0, target - count) if known else target)
+    need = max(0, target - count) if known else target
+    cap = min(SOLDIER_CAP, need)
     # An unauthorised hiring fee must not shrink the necessary army and then
     # use that artificial spare cash to authorise itself. Keep the provisional
     # requirement for that gate; the actual digit confirmation is cash-capped.
     gold = (header or {}).get('gold')
+    collapsed = _collapsed_army(mem, shop, header, target)
+    spendable = held = budget = None
     if payment:
-        available = _soldier_spendable(mem, shop, header)
-        cap = min(cap, available if available is not None else 0)
+        spendable = _soldier_spendable(mem, shop, header)
+        if collapsed and spendable is not None:
+            rebuild = _collapsed_refill_budget(shop, gold)
+            if rebuild is not None:
+                spendable = rebuild
+        budget = spendable if spendable is not None else 0
     elif type(gold) is int:
         # No payroll hold: the plan may use the cash left after the other
         # necessary reservations, even down to 0G. The optional recruitment
@@ -242,7 +272,12 @@ def _limit_soldier_refill(mem, shop, header, *, payment=False):
         held = _month_held_reserve(shop)
         if low_army_first(shop):
             held -= shop.get('reserve', 0)  # the egg hold waits behind a low army
-        cap = min(cap, max(0, gold - held))
+        if collapsed:
+            repair = _house_repair_reserve(shop)
+            held = repair if type(repair) is int else held
+        budget = max(0, gold - held)
+    if budget is not None:
+        cap = min(cap, budget)
     for field in ('soldiers', 'soldiers_target', 'soldiers_before_recruit'):
         value = shop.get(field)
         if type(value) is int and value >= 0:
@@ -253,7 +288,57 @@ def _limit_soldier_refill(mem, shop, header, *, payment=False):
             _record(mem, 'soldier_refill_skip', month=shop.get('key'),
                     observed_metric={'soldiers': count, 'enough': target},
                     reason='当月の実兵士数が予算に応じた目標人数を満たすため資金を残す')
+    _note_soldier_refill_plan(mem, shop, header, payment=payment,
+                              count=count if known else None, target=target,
+                              need=need, cap=cap, budget=budget, held=held,
+                              spendable=spendable, collapsed=collapsed)
     shop['soldier_total_target'] = target
+
+
+def _note_soldier_refill_plan(mem, shop, header, *, payment, count, target,
+                              need, cap, budget, held, spendable, collapsed):
+    """#4555: keep the reason a month's refill plan stops at 0/1 soldiers.
+
+    The plan is bound either by the measured shortfall (49 -> 50 plans one)
+    or by the cash left after the month's holds; record gold, the wage and
+    income figures and each reservation so a stalled rebuild shows which one
+    bound it. One record per changed signature, so the per-frame reclamp does
+    not repeat itself.
+    """
+    if cap > 1:
+        shop.pop('refill_plan_logged', None)
+        return
+    if need <= cap:
+        clamp = 'enough' if need <= 0 else 'target_gap'
+    elif payment and spendable is None:
+        clamp = 'unreadable_budget'
+    else:
+        clamp = 'budget'
+    signature = [cap, need, target, count, clamp, bool(payment), bool(collapsed),
+                 budget, (header or {}).get('gold')]
+    if shop.get('refill_plan_logged') == signature:
+        return
+    shop['refill_plan_logged'] = signature
+    income = mem.get('country_income')
+    wages = mem.get('country_wages')
+    cards = [] if shop.get('merchant_done') else shop.get('items') or []
+    card_cost = (sum(KNOWN_PRICES[name] * qty for name, qty in cards)
+                 if all(name in KNOWN_PRICES for name, _ in cards) else None)
+    _record(mem, 'soldier_refill_plan', month=shop.get('key'),
+            observed_metric={'soldiers': count, 'target': target, 'need': need,
+                             'cap': cap, 'clamp': clamp, 'payment': bool(payment),
+                             'collapsed_army': bool(collapsed),
+                             'gold': (header or {}).get('gold'),
+                             'wage_hold': _soldier_wage_hold(mem),
+                             'income': income.get('income') if isinstance(income, dict) else None,
+                             'wages': wages.get('wages') if isinstance(wages, dict) else None,
+                             'egg_reserve': shop.get('reserve', 0),
+                             'repair_reserve': _house_repair_reserve(shop),
+                             'recruit_reserve': shop.get('recruit_reserve', 0),
+                             'card_cost': card_cost,
+                             'held_reserve': held, 'spendable': spendable},
+            reason=('当月の兵士補充の計画が0/1人で止まったため、'
+                    '実測兵数・目標・所持金・収入・各種予約のどれで絞られたかを記録する'))
 
 
 # Issue #2366: how a month's refill ended when no payment was matched. Only a

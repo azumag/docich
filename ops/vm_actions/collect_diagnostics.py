@@ -7673,6 +7673,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v1145-general-self-jump",
             "hanjuku-chart-v1146-general-jump-map",
             "hanjuku-chart-v1147-battle-menu-empty-hold",
+            "hanjuku-chart-v1148-refill-collapse",
             "hanjuku-chart-v1148-reanchor-backoff",
             "hanjuku-chart-v1149-house-scan-month",
             "hanjuku-chart-v1150-yview-anchor",
