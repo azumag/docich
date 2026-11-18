@@ -380,37 +380,18 @@ def moving_memory(tick, aimed=AIMED, status='en_route'):
     }
 
 
-def test_a_march_at_a_moved_moving_boss_cell_is_resent_early():
-    """Issue #4558: g1270's marches rode ~2400 ticks to cells the boss had
-    already left - the relaunch only fired at the arrival limit."""
+def test_a_march_at_a_moved_moving_boss_cell_rides_to_the_limit():
+    """The chase is camp-driven: a march aimed at the boss's old cell must
+    ride to the empty tile and camp so ``boss_redirect_goal`` can re-send
+    it at the fresh cell - an early kill would strand the unit mid-field."""
     chart.set_boss_cell(MOVING, NOW_CELL)
     try:
         mem = moving_memory(10)                      # far inside the arrival limit
         O.next_order(mem)
-        assert _plan_region(mem)['orders']['corridor-boss'] == 'pending'
-        assert _sorties(mem)['corridor-boss']['status'] == 'overdue'
-        (record,) = decisions(mem, 'boss_sortie_overdue')
-        assert record['observed_metric']['aimed_cell'] == AIMED
-        assert record['observed_metric']['cell'] == list(NOW_CELL)
-        # Issue #4561: the boss moved, so the re-send is free - the relaunch
-        # budget only counts attempts that could have entered.
-        assert mem.get('boss_relaunch', {}).get('corridor-boss', 0) == 0
-    finally:
-        chart.set_boss_cell(MOVING, None)
-
-
-def test_a_moved_relaunch_never_exhausts_the_budget():
-    """Issue #4561: a boss that relocates every measurement drained the
-    relaunch budget and parked the step until the stale retry cooldown."""
-    chart.set_boss_cell(MOVING, NOW_CELL)
-    try:
-        mem = moving_memory(10)
-        mem['boss_relaunch'] = {'corridor-boss': O.BOSS_RELAUNCH_LIMIT}
-        O.next_order(mem)
-        assert _plan_region(mem)['orders']['corridor-boss'] == 'pending'
-        assert _sorties(mem)['corridor-boss']['status'] == 'overdue'
-        assert not decisions(mem, 'boss_relaunch_exhausted')
-        assert mem['boss_relaunch']['corridor-boss'] == O.BOSS_RELAUNCH_LIMIT
+        assert _plan_region(mem)['orders']['corridor-boss'] == 'launched'
+        assert _sorties(mem)['corridor-boss']['status'] == 'en_route'
+        assert _sorties(mem)['corridor-boss']['aimed_cell'] == AIMED
+        assert not decisions(mem, 'boss_sortie_overdue')
     finally:
         chart.set_boss_cell(MOVING, None)
 
@@ -427,14 +408,15 @@ def test_a_march_at_the_current_cell_rides_out_the_limit():
         chart.set_boss_cell(MOVING, None)
 
 
-def test_a_march_whose_reading_expired_is_resent_early():
-    """The boss entry leaves ``castles(9)`` entirely when the reading ages
-    out: the march is riding blind and must not wait for the limit."""
+def test_a_march_whose_reading_expired_still_rides():
+    """An expired reading leaves no boss cell, but the unit must still reach
+    the tile and camp - ``camp_stays`` keeps it there until a fresh cell
+    is measured for the redirect."""
     chart.set_boss_cell(MOVING, None)
     mem = moving_memory(10)
     O.next_order(mem)
-    assert _sorties(mem)['corridor-boss']['status'] == 'overdue'
-    assert decisions(mem, 'boss_sortie_overdue')
+    assert _sorties(mem)['corridor-boss']['status'] == 'en_route'
+    assert not decisions(mem, 'boss_sortie_overdue')
 
 
 def test_a_march_without_an_aimed_cell_keeps_the_limit():
@@ -449,9 +431,9 @@ def test_a_march_without_an_aimed_cell_keeps_the_limit():
         chart.set_boss_cell(MOVING, None)
 
 
-def test_a_static_chapter_march_is_not_moved():
-    """Only the moving-boss chapter re-aims early; a static boss keeps the
-    arrival-limit bound even when its (fixed) cell differs from ``aimed_cell``."""
+def test_a_static_chapter_march_keeps_the_limit():
+    """A static boss's cell never drifts, so ``aimed_cell`` is ignored and
+    the march keeps the arrival-limit bound either way."""
     mem = memory(LAUNCH + 10)
     _world(mem)['sorties']['3-B1']['aimed_cell'] = [1, 1]
     O.next_order(mem)
