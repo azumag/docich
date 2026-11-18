@@ -1,7 +1,7 @@
 """``CcxtReadTransport``: ccxt as a signer and an HTTP carrier for a fixed set of GET endpoints.
 
 This is the only module that touches ccxt, and it imports it lazily.  It never uses ccxt's unified
-methods (they drop ``fee_amount_base`` and turn numbers into floats); it calls six implicit GET
+methods (they drop ``fee_amount_base`` and turn numbers into floats); it calls seven implicit GET
 methods by their fixed names and parses the raw JSON itself (``parse_float=str``, so no float ever
 exists).  Three layers keep it read-only:
 
@@ -38,9 +38,9 @@ ENDPOINTS: Final = MappingProxyType({            # logical name -> ccxt implicit
     "order": "privateGetUserSpotOrder",
     "active_orders": "privateGetUserSpotActiveOrders",
     "trade_history": "privateGetUserSpotTradeHistory",
+    "deposit_history": "privateGetUserDepositHistory",   # read by the deposit reconciler too (#4587)
 })
 CHECK_ONLY_ENDPOINTS: Final = MappingProxyType({  # reachability checks run by the owner's check script only
-    "deposit_history": "privateGetUserDepositHistory",
     "spot_status": "privateGetSpotStatus",
 })
 _ALLOWED_PATHS: Final = frozenset({

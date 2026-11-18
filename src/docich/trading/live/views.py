@@ -110,6 +110,31 @@ def cashflows(ledger) -> list[tuple[str, str, Decimal]]:
         return [(k, c, Decimal(a)) for k, c, a in cur.execute("SELECT kind, currency, amount FROM cashflows")]
 
 
+@dataclass(frozen=True)
+class CashflowRow:
+    """One cashflow row the deposit reconciler classifies against (Issue #4587)."""
+    cashflow_id: str
+    kind: str
+    currency: str
+    amount: Decimal
+    occurred_at: float
+    source: str
+
+
+def cashflow_rows(ledger) -> list[CashflowRow]:
+    with ledger.read_cursor() as cur:
+        return [CashflowRow(row[0], row[1], row[2], Decimal(row[3]), float(row[4]), row[5])
+                for row in cur.execute("SELECT cashflow_id, kind, currency, amount, occurred_at, source "
+                                       "FROM cashflows ORDER BY occurred_at, cashflow_id")]
+
+
+def ledger_created_at(ledger) -> float:
+    """When the ledger was created: the floor for 'before we kept books' (Issue #4587)."""
+    with ledger.read_cursor() as cur:
+        row = cur.execute("SELECT created_at FROM meta").fetchone()
+    return float(row[0])
+
+
 def position_net_base(ledger, position_id: str) -> Decimal:
     """Bought minus sold base amount of a position (from recorded fills), minus known fees paid in base.
 

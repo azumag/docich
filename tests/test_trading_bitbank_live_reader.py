@@ -3,8 +3,8 @@ from decimal import Decimal as D
 
 import pytest
 
-from bitbank_live_support import (SYMBOLS, T0, FakeTransport, assets_payload, default_script, order_row,
-                                  pairs_payload, trade_row)
+from bitbank_live_support import (SYMBOLS, T0, FakeTransport, assets_payload, default_script, deposit_row,
+                                  order_row, pairs_payload, trade_row)
 from docich.trading.exchanges.bitbank_live import errors as er
 from docich.trading.exchanges.bitbank_live import reader as rd
 from docich.trading.live.exchange import (ExchangeAmbiguous, ExchangeDataError, ExchangeRejected, FeeStatus,
@@ -268,3 +268,42 @@ def test_a_rule_load_failure_carries_only_the_auth_or_clock_kind(health_kind, ki
         make(default_script(pairs=error))
     assert err.value.kind == kind
     assert "SENTINEL" not in str(err.value)
+
+
+# ---- deposit history (Issue #4587) ----------------------------------------------------------
+def test_deposits_are_read_per_currency_cut_by_since_and_flagged_by_status():
+    rows = [deposit_row(uuid="u1", found_at=T0), deposit_row(uuid="u2", found_at=T0 + 1000),
+            deposit_row(uuid="u3", found_at=T0 + 2000, status="CONFIRMED")]
+    reader, transport = make(default_script(deposit_history={"deposits": rows}))
+    page = reader.fetch_deposits("JPY", since_ms=T0 + 1000)
+    assert [r.record_id for r in page.deposits] == ["bitbank:deposit:u2", "bitbank:deposit:u3"]
+    assert page.deposits[0].credited and not page.deposits[1].credited
+    assert page.deposits[0].amount == D("5000") and page.deposits[0].currency == "JPY"
+    assert page.complete and calls(transport, "deposit_history")[-1] == {"asset": "jpy", "count": 100}
+
+
+def test_a_full_deposit_page_may_be_cut_so_it_is_not_complete():
+    rows = [deposit_row(uuid=f"u{i}", found_at=T0 + i) for i in range(3)]
+    reader, _ = make(default_script(deposit_history={"deposits": rows}), deposit_count=3)
+    assert not reader.fetch_deposits("JPY", since_ms=0).complete
+    reader, _ = make(default_script(deposit_history={"deposits": rows[:2]}), deposit_count=3)
+    assert reader.fetch_deposits("JPY", since_ms=0).complete
+
+
+def test_a_deposit_of_another_asset_fails_the_page_and_a_broken_row_does_too():
+    reader, _ = make(default_script(deposit_history={"deposits": [deposit_row(asset="oas")]}))
+    with pytest.raises(ExchangeDataError):
+        reader.fetch_deposits("JPY", since_ms=0)
+    rows = [deposit_row(uuid="ok"), deposit_row(uuid="bad", amount="oops")]
+    reader, _ = make(default_script(deposit_history={"deposits": rows}))
+    with pytest.raises(ExchangeDataError):
+        reader.fetch_deposits("JPY", since_ms=0)
+    reader, _ = make(default_script(deposit_history={"deposits": [deposit_row(uuid="x", found_at="soon")]}))
+    with pytest.raises(ExchangeDataError):
+        reader.fetch_deposits("JPY", since_ms=0)
+
+
+def test_deposit_history_is_a_read_the_reader_advertises_and_it_is_still_not_a_sender():
+    reader, _ = make()
+    assert reader.capabilities.deposit_history and not reader.capabilities.client_order_id
+    assert not hasattr(reader, "submit_order") and not hasattr(reader, "kind")

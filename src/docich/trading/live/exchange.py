@@ -73,6 +73,7 @@ class Capabilities:
     fetch_by_client_id: bool    # ...and an order can be looked up by it
     fills_by_order: bool        # the fill history can be filtered by order id
     client_order_id_max_len: int = 0
+    deposit_history: bool = False   # a deposit history per currency can be read (Issue #4587)
 
 
 @dataclass(frozen=True)
@@ -185,6 +186,31 @@ class FillPage:
     complete: bool
 
 
+@dataclass(frozen=True)
+class DepositRecord:
+    """One deposit the exchange reports in its own history (Issue #4587).
+
+    ``record_id`` is the deterministic ledger id for the record
+    (``<exchange>:deposit:<exchange's own id>``), so a restart re-read is a no-op.
+    ``status`` is the exchange's own word; ``credited`` is True only when the exchange
+    says the money is in the balance (bitbank: ``DONE`` -- ``FOUND``/``CONFIRMED`` may
+    still be in flight and are never counted).
+    """
+    record_id: str
+    currency: str               # upper-case currency code
+    amount: Decimal
+    status: str
+    credited: bool
+    occurred_at_ms: int
+    raw: Mapping | None = None
+
+
+@dataclass(frozen=True)
+class DepositPage:
+    deposits: tuple[DepositRecord, ...]
+    complete: bool              # False: the list may be cut off, so a missing row proves nothing
+
+
 class CancelKind(str, Enum):
     CANCELED = "canceled"
     ALREADY_CLOSED = "already_closed"
@@ -238,6 +264,8 @@ class ExchangeReader(Protocol):
     def fetch_open_orders(self, symbol: str) -> OrderPage: ...
 
     def fetch_fills(self, symbol: str, *, since_ms: int, exchange_order_id: str | None = None) -> FillPage: ...
+
+    def fetch_deposits(self, currency: str, *, since_ms: int) -> DepositPage: ...
 
 
 class OrderSender(Protocol):
