@@ -238,6 +238,48 @@ def phase_a_escape_step(mem, phase, kind, text, actions, *, step=None):
     return None
 
 
+# #4528: an observation-only stall record. 40 observations is ~60 s at the
+# normal 1.5 s cadence -- long enough to ignore a transient frame, well inside
+# the 300 s screen_stalled terminal that ends a run.
+SEMANTIC_STALL_OBSERVATIONS = 40
+
+
+def semantic_stall_observe(mem, phase, kind, screen, guarded=False):
+    """Record a screen that keeps reading the same semantics, input aside.
+
+    The g1190 defence egg battle sat 2.5 h on one readable command box while A
+    was pressed every observation (#4528); #4542 did the same with alternating
+    A/B on a price-confirm screen. Neither ``screen_stalled`` (a two-digest
+    ring that a four-value idle blink resets) nor ``hanjuku_repetition`` (an
+    exact screen+input cycle, broken by button alternation) sees either case.
+
+    This is an *observation only*: the planned input and every hold/escape are
+    left untouched. The key is (kind, text, menu rows, phase); pressed buttons
+    and the frame digest are deliberately excluded, so an A repeat and an A/B
+    alternation are one episode and a blinking sprite cannot restart the count.
+    One record is emitted per episode, the first time the bound is reached.
+    A bounded transaction (recall/house/...) is not a stall and is not counted.
+    """
+    if guarded or not (screen.text or screen.menu_rows):
+        mem.pop('semantic_stall_watch', None)
+        return
+    rows = [[line.y, [list(span) for span in line.spans()]]
+            for line in (screen.menu_rows or []) if type(line.y) is int]
+    key = [kind, screen.text or '', rows, phase]
+    watch = mem.get('semantic_stall_watch') or {}
+    same = isinstance(watch, dict) and watch.get('key') == key
+    n = (int(watch.get('n') or 0) + 1) if same else 1
+    reported = bool(same and watch.get('reported'))
+    if n >= SEMANTIC_STALL_OBSERVATIONS and not reported:
+        decision_log._record(
+            mem, 'semantic_stall_observed', screen=kind, phase=phase,
+            observed_metric={'observations': n, 'limit': SEMANTIC_STALL_OBSERVATIONS,
+                             'text': (screen.text or '')[:40], 'menu_rows': rows},
+            reason='同一の画面種別・文言・メニュー行・phaseが連続して観測されたため、操作を変えず停滞を記録する')
+        reported = True
+    mem['semantic_stall_watch'] = {'key': key, 'n': n, 'reported': reported}
+
+
 def pad(button, ms=100):
     return {'type':'pad','buttons':[button],'hold_ms':ms}
 
@@ -1776,6 +1818,7 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
     bounded_wait=(any(_flow(mem).get(k) for k in ('recall','sortie_attempt'))
                   or any(mem.get(k) for k in ('house','month_sub','y_jump',
                                            'resume_egg_ritual')))
+    semantic_stall_observe(mem, phase, kind, screen, guarded=bounded_wait)
     if (not actions and not bounded_wait
             and not mem.get('_map_registration_hold')):
         nudge = map_unsteerable_nudge(screen, mem, kind, phase, streak, digest)

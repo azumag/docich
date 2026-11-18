@@ -215,6 +215,25 @@ def _emit_moves(move):
     return [move] if isinstance(move, dict) else []
 
 
+def _command_rows_to(screen, label):
+    """One step towards a command row read in ``menu_rows``.
+
+    ``_battle_menu_to`` reads ``screen.lines``, but a defence summon box parses
+    its command rows into ``menu_rows`` (disabled grey rows are excluded from
+    the readable text). Move from the measured knight cursor so a grey row is
+    never confirmed and no starting row is assumed. ``'here'`` means confirm,
+    a pad dict means one step, ``None`` means an unreadable cursor/target.
+    """
+    targets = [line.y for line in (screen.menu_rows or [])
+               if any(word == label for _, word in line.spans())]
+    if screen.menu_cursor is None or not targets:
+        return None
+    y = min(targets, key=lambda row: abs(row - screen.menu_cursor))
+    if y == screen.menu_cursor:
+        return 'here'
+    return pad('down' if y > screen.menu_cursor else 'up')
+
+
 def _battle_menu_move(screen, mem, label, *, key='battle_menu_move'):
     """One command-box step that never repeats a press on an identical frame.
 
@@ -2346,6 +2365,16 @@ def egg_battle_step(screen: Screen, mem):
         if move:
             return _emit_moves(move)
         # Hand present but the label is unreadable: keep moving like no-hand.
+    # g1190 2026-11-18: the defence summon box (mixed_item_box) parses its
+    # command rows into menu_rows and leaves the knight on the grey きりふだ
+    # row. Walk from that measured cursor to the egg row and confirm only when
+    # actually there; an unreadable cursor/target is held, never blind-A'd.
+    # A normal egg battle box keeps its reviewed down/down walk.
+    if screen.mixed_item_box:
+        move = _command_rows_to(screen, 'たまごをつかう')
+        if move == 'here':
+            return [pad('a')]
+        return _emit_moves(move)
     # No hand (or unreadable hand): walk down twice from こうげき to たまご.
     stage = int(mem.get('egg_menu_stage') or 0)
     if stage < 2:
