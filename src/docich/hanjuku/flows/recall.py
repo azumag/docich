@@ -32,6 +32,7 @@ DOME_SCREEN_WAIT = 6           # other-screen observations after A on a dome bef
 BOSS_RETRY_TICKS = 120         # first wait before a camp is sent at the moving boss again
 BOSS_JUMP_LIMIT = 2            # Y jumps to the boss per redirect
 RELAY_ARRIVE_PX = 32           # a camp this close to the back-half relay cell has finished leg one
+RELAY_MENU_WAIT = 4             # observations for the picker B to settle back on the camp menu
 
 # #4468: a field general's blue G badge is the very same square as the real
 # いどう destination marker. On g1190 2026-11-17 the recall read a bare field
@@ -1157,6 +1158,17 @@ def _camp_recall_step(screen: Screen, mem, frame, *, observed_camps=None):
         if actions is not None:
             return actions
         stage = state.get('stage')
+    if stage == 'menu' and state.get('relay') and not is_camp_menu(screen):
+        # The whole-island picker closes one or more frames after the B that
+        # #4534 sends when it re-aims a camp at the relay; the picker screen
+        # itself used to pop the recall flow and the aim was lost (live trace
+        # 2026-11-18 09:35:43: stage menu + relay, then the flow vanished).
+        # Hold briefly so the camp menu can come back and offer いどう.
+        waits = int(state.get('relay_menu_waits') or 0) + 1
+        state['relay_menu_waits'] = waits
+        if waits <= RELAY_MENU_WAIT:
+            return []
+        state['relay_menu_waits'] = 0
     if stage == 'menu':
         if state.get('hero') and (screen.kind in ('castle_menu', 'general_list')
                                   or (screen.kind == 'map' and state['steps'] > 4)):
