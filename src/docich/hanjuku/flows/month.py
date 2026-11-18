@@ -26,9 +26,10 @@ from ..strategy.economy import (EGG_RECOVER_COST, EGG_RITUAL_LIMIT, MONTH_SUB_AB
                                    MONTH_SUB_ABORT_B_LIMIT, MONTH_SUB_LIMIT,
                                 MONTH_SUB_MENU_WAIT, RECRUIT_CANDIDATE_LIMIT, RECRUIT_COST, SOLDIER_ENOUGH,
                                 WAGE_SPEND_HOLD, _army_count_increment, _batch_active, _chikujou_affordable, _chikujou_candidates, _chikujou_reserve,
+                                _collapsed_army, _collapsed_refill_budget,
                                 _defer_recruit_cash, _defer_recruit_for_egg, _depleted_eggs, _egg_before_soldiers,
                                 _egg_estimate, _egg_measured_cost, _egg_recovery_targets,
-                                _house_repair_reserve, _limit_soldier_refill, _soldier_spendable,
+                                _house_repair_reserve, _limit_soldier_refill, _soldier_spendable, _soldier_target,
                                 _low_army_planned, _low_army_refill, _month_held_reserve, _month_key, _plan,
                                 _prepare_recruit_egg_check,
                                 _prioritise_recruit, _recruit_cash_floor, _recruit_dialog_cash_ready,
@@ -355,6 +356,22 @@ MONTH_EXIT_REFUSAL_LIMIT = 3   # refused month exits per month before leaving an
 MONTH_AMOUNT_BACK_LIMIT = 3    # bounded B presses out of the gold amount overlay
 
 
+def _month_soldier_budget(mem, shop, header, gold):
+    """Cash bound on this month's soldier plan inside the recruit branches.
+
+    Normally the refill sees only what the month's holds (egg, repair and the
+    pending recruit fee) leave. A collapsed army (a measured count at or below
+    half the refill target, #4555) rebuilds first instead: every hold except
+    the house repair money waits, so the plan may use the month's balance.
+    """
+    budget = max(0, gold - _month_held_reserve(shop) - shop.get('recruit_reserve', 0))
+    if _collapsed_army(mem, shop, header, _soldier_target(mem, shop, header)):
+        rebuild = _collapsed_refill_budget(shop, gold)
+        if rebuild is not None:
+            budget = rebuild
+    return budget
+
+
 def month_step(screen: Screen, mem):
     shop = _plan(mem, screen.header)
     body = _month_dialog_body(screen)
@@ -552,8 +569,7 @@ def month_step(screen: Screen, mem):
                                        max(0, gold - _month_held_reserve(shop))))
         if not shop.get('soldiers_done'):
             shop['soldiers'] = min(shop.get('soldiers', 0),
-                                   max(0, gold - _month_held_reserve(shop)
-                                       - shop['recruit_reserve']))
+                                   _month_soldier_budget(mem, shop, screen.header, gold))
             shop['soldiers_done'] = shop['soldiers'] == 0
         shop['recruit_measured_budget'] = True
     if (shop and shop.get('soldiers_from_gold') and not shop.get('soldiers_recalculated')
@@ -1379,9 +1395,8 @@ def _finish_month_sub(screen, mem, shop) -> bool:
         # the original 76 soldiers then spent the wage reserve down to 18G.
         # All paid recruits need the actual balance, not only broken heroes.
         previous_soldiers = shop.get('soldiers', 0)
-        shop['soldiers'] = min(previous_soldiers, max(0, gold
-                               - _month_held_reserve(shop)
-                               - shop.get('recruit_reserve', 0)))
+        shop['soldiers'] = min(previous_soldiers,
+                               _month_soldier_budget(mem, shop, screen.header, gold))
         shop['soldiers_done'] = shop['soldiers'] == 0
         if paid and sub['kind'] == 'recruit':
             _record(mem, 'soldier_budget_after_recruit', month=sub.get('key'),

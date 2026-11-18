@@ -1,0 +1,122 @@
+"""A collapsed army's refill may spend the month's balance (#4555).
+
+g1190 2026-11-18 65-3: 9999G on hand yet the refill paid a single soldier
+while recruit stayed deferred_army and the 29-general batch never ran. The
+plan now records why it stopped at 0/1 (soldier_refill_plan), and a measured
+army at or below half its refill target may rebuild from the balance,
+keeping back only the house repair money.
+"""
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
+
+from docich.hanjuku.flows import month as monthly
+from docich.hanjuku.strategy import economy as e
+
+
+def memory(soldiers, **extra):
+    mem = {'chapter': 6, 'month': '6-5',
+           'soldiers_seen': soldiers, 'soldiers_seen_key': '6-5'}
+    mem.update(extra)
+    return mem
+
+
+def shop(**extra):
+    state = {'key': '6-5', 'items': [], 'merchant_done': True, 'egg': 'done',
+             'soldiers': 80, 'soldiers_target': 80, 'soldiers_done': False,
+             'reserve': 0, 'recruit_reserve': 0}
+    state.update(extra)
+    return state
+
+
+def header(gold):
+    return {'year': 6, 'month': 5, 'gold': gold}
+
+
+def records(mem, kind):
+    return [r for r in mem.get('_records') or [] if r['decision'] == kind]
+
+
+def test_collapsed_refill_keeps_only_the_house_repair_money():
+    mem = memory(20)
+    state = shop(soldiers=30, reserve=100, hero_repair_reserve=50)
+    e._limit_soldier_refill(mem, state, header(70))
+    # 20 <= 50/2, collapsed: the 100G egg hold waits; only the 50G repair
+    # money stays, so 70G - 50G refills twenty of the thirty planned.
+    assert state['soldiers'] == 20
+    assert state['soldiers_done'] is False
+
+
+def test_the_same_holds_starve_a_non_collapsed_army():
+    mem = memory(30)
+    state = shop(soldiers=30, reserve=100, hero_repair_reserve=50)
+    e._limit_soldier_refill(mem, state, header(70))
+    # 30 > 50/2: the egg hold still binds and nothing is left to refill.
+    assert state['soldiers'] == 0 and state['soldiers_done'] is True
+
+
+def test_payment_releases_the_recruit_reserve_and_pending_cards():
+    mem = memory(20)
+    state = shop(soldiers=30, merchant_done=False,
+                 items=[['フットバース', 9]], recruit_reserve=1450)
+    e._limit_soldier_refill(mem, state, header(9999), payment=True)
+    assert state['soldiers'] == 30 and state['soldiers_done'] is False
+
+
+def test_payment_still_starves_when_the_army_is_not_collapsed():
+    mem = memory(30)
+    state = shop(soldiers=30, merchant_done=False,
+                 items=[['フットバース', 9]], recruit_reserve=1450)
+    e._limit_soldier_refill(mem, state, header(9999), payment=True)
+    assert state['soldiers'] == 0 and state['soldiers_done'] is True
+
+
+def test_the_small_plan_record_names_the_budget_clamp_once():
+    mem = memory(48)
+    state = shop(soldiers=30, reserve=50, hero_repair_reserve=49)
+    e._limit_soldier_refill(mem, state, header(100))
+    # 48 > 50/2, not collapsed: 100G - 50G egg - 49G repair leaves one soldier.
+    assert state['soldiers'] == 1
+    rows = records(mem, 'soldier_refill_plan')
+    assert len(rows) == 1
+    metric = rows[0]['observed_metric']
+    assert metric['clamp'] == 'budget' and metric['cap'] == 1
+    assert metric['gold'] == 100 and metric['soldiers'] == 48
+    assert metric['need'] == 2 and metric['target'] == 50
+    assert metric['egg_reserve'] == 50 and metric['repair_reserve'] == 49
+    assert metric['collapsed_army'] is False
+    e._limit_soldier_refill(mem, state, header(100))
+    assert len(records(mem, 'soldier_refill_plan')) == 1  # signature dedup
+
+
+def test_the_target_gap_record_shows_a_one_soldier_shortfall():
+    mem = memory(49)
+    state = shop(soldiers=30, egg='pending', reserve=9900)
+    e._limit_soldier_refill(mem, state, header(9999))
+    assert state['soldiers'] == 1   # 49 -> 50: one short of the target
+    metric = records(mem, 'soldier_refill_plan')[0]['observed_metric']
+    assert metric['clamp'] == 'target_gap' and metric['need'] == 1
+    assert metric['collapsed_army'] is False
+
+
+def test_an_enough_army_records_no_budget_reason():
+    mem = memory(100)
+    state = shop(soldiers=0)
+    e._limit_soldier_refill(mem, state, header(9999))
+    metric = records(mem, 'soldier_refill_plan')[0]['observed_metric']
+    assert metric['clamp'] == 'enough' and metric['cap'] == 0
+
+
+def test_the_recruit_branch_relaxes_its_soldier_clamp_when_collapsed():
+    mem = memory(20)
+    state = shop(reserve=100, hero_repair_reserve=50, recruit_reserve=1450)
+    budget = monthly._month_soldier_budget(mem, state, header(9999), 9999)
+    assert budget == 9999 - 50  # egg and recruit holds wait behind the rebuild
+
+
+def test_the_recruit_branch_keeps_the_full_holds_when_not_collapsed():
+    mem = memory(60)
+    state = shop(reserve=100, hero_repair_reserve=50, recruit_reserve=1450)
+    budget = monthly._month_soldier_budget(mem, state, header(9999), 9999)
+    assert budget == 9999 - 100 - 50 - 1450
