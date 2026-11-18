@@ -88,6 +88,25 @@ ON/OFF、`trade`、control ファイル、worker は変更しない。
 
 止める理由は6つ定義してある。コードが自動で止めるのは、未知の注文(`record_order_observation`)、手数料の未取得と約定の矛盾(`record_fill`)、書き込み権の喪失(`lease_lost`)、データ異常(`ingest.anomaly`)の4つ。`balance_mismatch` と `enable_missing` は旧行の互換のために列挙だけ残しており、**新しくは誰も書かない**(残高の不一致は停止ではなく警告。オーナー決定 2026-11-18)。止まっている間は、新規の買いの送信だけを拒否する。売り(手じまい)は送れる(オーナー決定 2026-11-16)。二重売りは、同じ銘柄・同じ向きの未完了の注文を1件に制限する台帳の索引が防ぐ(結果不明の売りが残っていれば、2つ目の売りは作れない)。結果不明の買いは売りを止めない(約定していても保有が増えるだけ)。照合と監視は止まっていても続ける。オン/オフの制御ファイルはこれとは別で、OFF は買いも売りも止めるが、安全停止ではないので trip も解除操作も要らない。**安全停止の解除は人だけ**。コードから解除を呼ぶ処理は無く、テストで確かめている。
 
+## 書き込み権(writer lease)が必須の範囲(Issue #4588)
+
+台帳の書き込みトランザクションは2種類だけ。`_tx(lease)` は `BEGIN IMMEDIATE` の中で lease を検証し、`lease=None` を `ValueError("a writer lease is required")` で拒否する。`_tx_admin` は lease を検査しない管理用で、使えるのは次の4箇所だけ:
+
+- 台帳の作成(`_migrate` の初期行)
+- lease 行そのものの確保(`claim_lease_row`。lease がまだ存在しないので当然)
+- 安全停止の記録(`trip_safety`。lease を失った直後でも止められなければならない)
+- 人だけが呼ぶ停止の解除(`clear_safety`。owner CLI は先に lease を取るが、ledger 層は lease 無しでも受け付ける)
+
+それ以外の公開 writer(方針の保存・有効化、意図の作成・遷移、ポジションの終了・端数化、live イベント・注文観測・約定・cashflow・有効化ファイル観測の記録、lease 行の解放)は、引数の検査より先に `lease is None` を拒否する。引き渡された lease が失効・陳腐化(epoch/holder のずれ・`released_at` あり・ロックファイルの差替)していれば、トランザクション内の `verify_in_tx` が `LeaseLost` で止め、変更は commit されない。テストは `tests/test_trading_live_lease_scope.py`(全 writer × lease 無し/陳腐/解放済み/横取り後で DB 全体が不変であること)。
+
+## 同一銘柄の複数建玉(Issue #4588 の許容条件・互換性記録)
+
+開いているポジションの一意制約は `(symbol, entry_policy_digest)` なので、同じ銘柄でも方針が交代すれば digest 違いの別ポジションを持てる。台帳スキーマ(schema v1)と既存行はそのままで、移行・統合は行わない。層ごとの扱い:
+
+- **台帳層(許可)**: digest の異なる2つ目の open ポジションは有効な行として残る。売りは要求の `policy_digest` で建てたポジションにだけ結び付く(別 digest の売りは `no open position under that policy` で拒否)。数量・原価・端数判定は `position_id` ごと。(symbol, side) の未完了意図は1件なので、どのポジション宛てでも2件目の売り・買いは作れない(重複注文の抑止)。
+- **ワーカー層(自動売買が許す範囲)**: open ポジションが1つで digest が現行と違うものは「legacy」で、入口 digest のまま売れるが買い増しはしない(= ワーカー自身は2つ目を作らない)。同じ銘柄に open が2つ以上あれば「ambiguous」で、その銘柄には買いも売りも計画しない(数量を併合したり、所有戦略を推測して売りを選んだりしない)。実行器の `exceeds_holding` は自分の `position_id` の net を超える売りを捨てるので、銘柄の合計で足りても他ポジションの分は切らない。
+- **回復**: 端数ポジションを `residual_inventory` にする・ポジションを閉じれば、open が1つに戻り ambiguous は自然に解消する。既存台帳の複数建玉は再オープン後もそのまま読め、イベント連鎖は検証できる(ワーカーは引き続き ambiguous として扱う)。テストは `tests/test_trading_live_multi_position.py`。
+
 ## L2a: 取引所の型と模擬取引所
 
 - `exchange.py`: 取引所の型(注文・約定・残高・板)、例外の分類(`ExchangeAmbiguous`=届いたか不明、`ExchangeRejected`=明示的な拒否=作られていない確定、`OrderNotFound`、`ExchangeDataError`)、2つの Protocol。**読み取り(`ExchangeReader`)と送信(`OrderSender`)を分けてある**。L3 で実接続を作るときは Reader だけを実装する。金額は Decimal(float は拒否)。

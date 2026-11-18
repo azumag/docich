@@ -1,7 +1,13 @@
 """LIVE ledger (sqlite).  Intents are persisted BEFORE anything is sent.
 
-Single writer: every write goes through ``_tx`` (``BEGIN IMMEDIATE``) and, when
-a lease is given, re-checks the writer lease inside the same transaction.
+Single writer: every write goes through ``_tx`` (``BEGIN IMMEDIATE`` plus a
+writer-lease check inside the same transaction) or ``_tx_admin`` (``BEGIN
+IMMEDIATE``, no lease check).  ``_tx`` refuses ``lease=None``; the only writes
+allowed without a lease are the management operations on ``_tx_admin``: schema
+bootstrap, the lease row claim itself, a safety trip (stopping must always be
+possible, e.g. right after the lease was lost), and a human-only trip clear.
+Every other writer checks ``lease is None`` before doing any work, so a missing
+or forgotten lease can never commit an update.
 """
 from __future__ import annotations
 
@@ -301,7 +307,7 @@ class LiveLedger:
             if tables:
                 raise LiveLedgerError("wrong_kind: not a LIVE ledger")
             self._conn.executescript(_DDL)
-            with self._tx(None) as cur:
+            with self._tx_admin() as cur:
                 cur.execute("INSERT INTO meta(key,value) VALUES('kind','docich-live-ledger')")
                 cur.execute("INSERT INTO meta(key,value) VALUES('ledger_id',?)", (uuid.uuid4().hex,))
                 cur.execute("INSERT INTO meta(key,value) VALUES('created_at',?)", (repr(float(now)),))
@@ -313,12 +319,10 @@ class LiveLedger:
 
     # -- transactions -----------------------------------------------------
     @contextmanager
-    def _tx(self, lease: WriterLease | None) -> Iterator[sqlite3.Cursor]:
+    def _write_tx(self) -> Iterator[sqlite3.Cursor]:
         cur = self._conn.cursor()
         cur.execute("BEGIN IMMEDIATE")
         try:
-            if lease is not None:
-                verify_in_tx(cur, lease)
             yield cur
             cur.execute("COMMIT")
         except BaseException:
@@ -327,6 +331,21 @@ class LiveLedger:
             except sqlite3.Error:
                 pass
             raise
+
+    @contextmanager
+    def _tx(self, lease: WriterLease) -> Iterator[sqlite3.Cursor]:
+        """A write transaction that re-checks the writer lease before any change."""
+        if lease is None:
+            raise ValueError("a writer lease is required")
+        with self._write_tx() as cur:
+            verify_in_tx(cur, lease)
+            yield cur
+
+    @contextmanager
+    def _tx_admin(self) -> Iterator[sqlite3.Cursor]:
+        """A write transaction with no lease check: management operations only."""
+        with self._write_tx() as cur:
+            yield cur
 
     @contextmanager
     def read_cursor(self) -> Iterator[sqlite3.Cursor]:
@@ -367,7 +386,7 @@ class LiveLedger:
 
     # -- lease ------------------------------------------------------------
     def claim_lease_row(self, *, holder_id: str, pid: int, now: float) -> int:
-        with self._tx(None) as cur:
+        with self._tx_admin() as cur:
             row = cur.execute("SELECT epoch, released_at FROM writer_lease WHERE singleton=1").fetchone()
             epoch = (row[0] if row else 0) + 1
             cur.execute("INSERT INTO writer_lease(singleton, holder_id, epoch, pid, acquired_at, released_at) "
@@ -379,12 +398,16 @@ class LiveLedger:
         return epoch
 
     def release_lease_row(self, lease: WriterLease, *, now: float) -> None:
+        if lease is None:
+            raise ValueError("a writer lease is required")
         with self._tx(lease) as cur:
             cur.execute("UPDATE writer_lease SET released_at=? WHERE singleton=1", (float(now),))
             self._emit(cur, "lease_released", "lease", lease.holder_id, {"epoch": lease.epoch}, now)
 
     # -- policies ---------------------------------------------------------
     def store_policy_set(self, lease: WriterLease, ps: LivePolicySet, *, now: float) -> str:
+        if lease is None:
+            raise ValueError("a writer lease is required")
         with self._tx(lease) as cur:
             for policy in ps.policies.values():
                 cur.execute("INSERT OR IGNORE INTO policies(policy_digest, payload, created_at) VALUES (?,?,?)",
@@ -424,6 +447,8 @@ class LiveLedger:
 
     def _activate(self, lease, ps, *, reason, actor, evidence_digest, enable_digest, note, now,
                   require_empty: bool = False) -> None:
+        if lease is None:
+            raise ValueError("a writer lease is required")
         self.store_policy_set(lease, ps, now=now)
         with self._tx(lease) as cur:
             prev = cur.execute("SELECT set_digest FROM policy_activations ORDER BY activation_id DESC LIMIT 1").fetchone()
@@ -450,6 +475,8 @@ class LiveLedger:
     def record_owner_activation(self, lease, ps: LivePolicySet, *, operator: str, note: str,
                                 now: float) -> None:
         """HUMAN-ONLY (owner operation).  The on/off control file is not part of the record."""
+        if lease is None:
+            raise ValueError("a writer lease is required")
         if not operator or not note:
             raise ValueError("operator and note are required")
         first = self.active_policy_set_digest() is None
@@ -469,6 +496,8 @@ class LiveLedger:
                        require_empty=True)
 
     def record_activation(self, lease, ps: LivePolicySet, *, reason: str, evidence_digest: str, now: float) -> None:
+        if lease is None:
+            raise ValueError("a writer lease is required")
         if reason not in ("promotion", "rollback"):
             raise ValueError("reason must be promotion or rollback")
         self._activate(lease, ps, reason=reason, actor="promotion_judge", evidence_digest=evidence_digest,
@@ -482,6 +511,8 @@ class LiveLedger:
         return Intent(*row)
 
     def create_intent(self, lease: WriterLease, req: IntentRequest, *, now: float) -> Intent:
+        if lease is None:
+            raise ValueError("a writer lease is required")
         try:
             amount = decimal_text(req.amount, name="amount")
             price = None if req.price is None else decimal_text(req.price, name="price")
@@ -562,6 +593,8 @@ class LiveLedger:
 
     def mark_submitting(self, lease: WriterLease, intent_id: str, *, now: float) -> Intent:
         """The send may happen only after this returns (the commit is the barrier)."""
+        if lease is None:
+            raise ValueError("a writer lease is required")
         with self._tx(lease) as cur:
             current = self._intent(cur, intent_id)
             if current.side == "buy":
@@ -573,11 +606,15 @@ class LiveLedger:
 
     def transition_intent(self, lease, intent_id, *, expected_state, to_state, now,
                           exchange_order_id=None, reason_code=None, evidence=None) -> Intent:
+        if lease is None:
+            raise ValueError("a writer lease is required")
         with self._tx(lease) as cur:
             return self._move(cur, lease, intent_id, expected_state, to_state, now,
                               exchange_order_id=exchange_order_id, reason_code=reason_code, evidence=evidence)
 
     def mark_in_flight_unknown(self, lease, *, now: float) -> tuple[str, ...]:
+        if lease is None:
+            raise ValueError("a writer lease is required")
         with self._tx(lease) as cur:
             ids = [row[0] for row in cur.execute("SELECT intent_id FROM intents WHERE state='SUBMITTING'")]
             for intent_id in ids:
@@ -586,6 +623,8 @@ class LiveLedger:
         return tuple(ids)
 
     def close_position(self, lease, position_id: str, *, now: float) -> None:
+        if lease is None:
+            raise ValueError("a writer lease is required")
         with self._tx(lease) as cur:
             if cur.execute("SELECT 1 FROM intents WHERE position_id=? AND state IN (?,?,?,?,?)",
                            (position_id, *_OPEN_STATES)).fetchone():
@@ -660,6 +699,8 @@ class LiveLedger:
 
     # -- exchange facts -----------------------------------------------------
     def record_order_observation(self, lease, obs: OrderObservation, *, now: float) -> None:
+        if lease is None:
+            raise ValueError("a writer lease is required")
         with self._tx(lease) as cur:
             known_intent = obs.intent_id
             if known_intent is None:
@@ -683,6 +724,8 @@ class LiveLedger:
 
     def record_fill(self, lease, fill: FillRecord, *, now: float) -> bool:
         """True when newly recorded; False for an identical duplicate."""
+        if lease is None:
+            raise ValueError("a writer lease is required")
         conflict = False
         key = (fill.exchange_order_id, fill.symbol, fill.side, fill.amount, fill.price, fill.quote_notional,
                fill.fee_status, fill.fee_amount, fill.fee_currency, float(fill.executed_at))
@@ -725,6 +768,8 @@ class LiveLedger:
         return True
 
     def record_cashflow(self, lease, flow: Cashflow, *, now: float) -> None:
+        if lease is None:
+            raise ValueError("a writer lease is required")
         try:
             amount = decimal_text(flow.amount, name="amount", allow_negative=flow.kind == "adjustment")
         except CanonicalError as exc:
@@ -739,9 +784,26 @@ class LiveLedger:
                 raise LiveLedgerError(f"cashflow rejected: {exc}") from exc
             self._emit(cur, "cashflow_recorded", "cashflow", flow.cashflow_id, {"kind": flow.kind}, now)
 
+    def record_enable_observation(self, lease, result: EnableResult, *, now: float) -> None:
+        """Remember that the gate was open once; trip ENABLE_MISSING if it later closes.
+
+        Never enabled -> nothing is written (a fresh install must stay inert).
+        """
+        if lease is None:
+            raise ValueError("a writer lease is required")
+        with self._tx(lease) as cur:
+            seen = cur.execute("SELECT 1 FROM events WHERE kind='enable_seen' LIMIT 1").fetchone()
+            if result.enabled:
+                if not seen:
+                    self._emit(cur, "enable_seen", "enable", result.file_sha256, {"mode": result.mode}, now)
+            elif seen and safety.insert_trip(cur, SafetyReason.ENABLE_MISSING,
+                                             ",".join(r.value for r in result.reasons), now):
+                self._emit(cur, "safety_trip", "safety", SafetyReason.ENABLE_MISSING.value,
+                           {"reasons": [r.value for r in result.reasons]}, now)
+
     # -- safety (see safety.py) ----------------------------------------------
     def trip_safety(self, reason: SafetyReason, *, detail: str, now: float) -> bool:
-        with self._tx(None) as cur:
+        with self._tx_admin() as cur:
             inserted = safety.insert_trip(cur, reason, detail, now)
             if inserted:
                 self._emit(cur, "safety_trip", "safety", reason.value, {"detail": str(detail)[:200]}, now)
@@ -750,7 +812,7 @@ class LiveLedger:
     def clear_safety(self, reason: SafetyReason, *, operator: str, note: str, evidence: str, now: float) -> None:
         if not (operator and note and evidence):
             raise ValueError("operator, note and evidence are required")
-        with self._tx(None) as cur:
+        with self._tx_admin() as cur:
             row = cur.execute("SELECT trip_id FROM safety_trips WHERE reason=? AND cleared_at IS NULL",
                               (reason.value,)).fetchone()
             if row is None:
