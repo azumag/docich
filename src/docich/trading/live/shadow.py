@@ -454,7 +454,7 @@ class ShadowBook:
             remove = True
         cash_delta = fill.notional - quote_fee
         sell_book = None
-        if fill.status == "partial" and (fill.book_ts_ms or fill.bar_ts_ms):
+        if fill.book_ts_ms or fill.bar_ts_ms:
             sell_book = (fill.symbol, fill.opportunity_id,
                          fill.book_ts_ms, fill.bar_ts_ms)
         return _FillTransition(content, False, position, remove, cash_delta,

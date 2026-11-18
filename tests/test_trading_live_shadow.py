@@ -321,8 +321,8 @@ def test_trade_mode_does_not_write_shadow_events_or_intents(ws, harnesses, monke
     assert _counts(h.ledger)["intents"] == 0
 
 
-# ---- h. a partial sell may not reuse the same displayed book, even after restart ------
-def test_a_partial_sell_book_is_not_reused_after_restart_until_refreshed(
+# ---- h. a depth-limited sell may not reuse the same displayed book, even after restart --
+def test_a_depth_limited_sell_book_is_not_reused_after_restart_until_refreshed(
         ws, harnesses, monkeypatch):
     h = harnesses()
     rig, buy = _buy_rig(ws, h)
@@ -339,11 +339,12 @@ def test_a_partial_sell_book_is_not_reused_after_restart_until_refreshed(
     h.clock.advance(1)
     first_sell = shadow.run_shadow(rig.deps, rig.state, decide_tests.make_ctx(rig))
     assert first_sell is not None and len(first_sell.fills) == 1
-    partial = first_sell.fills[0]
-    assert partial.side == "sell" and partial.amount == D("3")
-    assert partial.status == "partial" and partial.levels_used == 1
+    limited_fill = first_sell.fills[0]
+    assert limited_fill.side == "sell" and limited_fill.amount == D("3")
+    assert limited_fill.status == "filled" and limited_fill.levels_used == 1
+    assert first_sell.book.positions["OAS/JPY"].amount == D("2")
 
-    # A fresh process replays the partial fill and must still know the book was used.
+    # A fresh process replays the depth-limited fill and knows the book was used.
     fresh = CycleState(cycle_number=4)
     again = shadow.run_shadow(rig.deps, fresh, decide_tests.make_ctx(rig))
     assert again is not None and again.fills == ()
