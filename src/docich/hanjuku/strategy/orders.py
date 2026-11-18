@@ -588,9 +588,6 @@ def _defense_move_pick(mem, source, target, sendable):
     return sendable[0]
 
 
-MOVING_BOSS_NEAR = 120          # a march this close can land inside the boss's monthly stay
-
-
 def _boss_target_unlocked(order, mem):
     # An adjusted after=None (including normalized self-capture conditions),
     # a retry or a hotloaded active order cannot remove the game prerequisite.
@@ -601,17 +598,9 @@ def _boss_target_unlocked(order, mem):
         # The moving boss may only be attacked at a cell measured on this
         # month's Y view; the orchestrator clears the registry when the
         # reading expires, so a stale position never unlocks the order.
-        if order.get('target') != chart.boss_castle(9) or not chart.moving_boss_cell(9):
-            return False
-        # g1270 2026-11-16: a march sent while the boss sits far from every
-        # owned castle rides ~2400-3600 ticks chasing a moving castle and
-        # never enters. The boss relocates monthly, so only a march short
-        # enough to land inside its stay can connect - unlock the order
-        # only while the measured cell stands near an owned castle.
-        cell = chart.moving_boss_cell(9)
-        owned = _owned(mem) & set(chart.castles(9))
-        return any(_distance(9, c, order['target']) <= MOVING_BOSS_NEAR
-                   for c in owned) if cell else False
+        # The march tile-aims and camps on the empty cell: that road camp is
+        # the foothold ``boss_redirect_goal`` re-sends at the fresh boss cell.
+        return order.get('target') == chart.boss_castle(9) and bool(chart.moving_boss_cell(9))
     if chapter == 4 and (order.get('target') not in chart.boss_sites(4)
                          or _season_site_held(order, mem)):
         return False
