@@ -226,7 +226,13 @@ def _invalidate(mem, reason, actor=None, *, new_game=False):
     drop_ui = (bool(raw_state) and (new_game or not isinstance(raw_state, dict)
                                   or state.get('retreat_recheck') or state.get('anonymous_recheck'))
                and (actor is None or state.get('general') in (None, actor)))
-    if drop_ui:
+    recall = _flow(mem).get('recall')
+    relay_aimed = isinstance(recall, dict) and recall.get('relay')
+    if drop_ui and not relay_aimed:
+        # A camp recall that already re-aimed itself at the back-half relay
+        # owns the episode (#4533): the anonymous/named recheck deferring used
+        # to clear it one observation later (live 2026-11-18 10:01:31), so the
+        # picker B never reached the camp menu and the relay never started.
         _flow(mem).pop('recall', None)
     if affected or drop_ui:
         _record(mem, 'retreat_recheck_invalidated', chart_step=None, general=actor,
@@ -413,7 +419,9 @@ def _defer(mem, state, reason, *, status='needs_observation'):
             row.update(status='arrival_unconfirmed', retry_after=mem['tick'] + ARRIVAL_RETRY_TICKS)
         if _valid_camp(mem, state):
             row['camp_observation'] = state['camp_observation']
-    _flow(mem).pop('recall', None)
+    recall = _flow(mem).get('recall')
+    if not (isinstance(recall, dict) and recall.get('relay')):
+        _flow(mem).pop('recall', None)
     mem['uncertain'] = True
     _record(mem, 'retreat_recheck_unconfirmed', chart_step=None, general=actor,
             resulting_event=status, reason=reason)
