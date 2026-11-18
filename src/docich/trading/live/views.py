@@ -129,10 +129,15 @@ def cashflow_rows(ledger) -> list[CashflowRow]:
 
 
 def ledger_created_at(ledger) -> float:
-    """When the ledger was created: the floor for 'before we kept books' (Issue #4587)."""
+    """When the ledger was created: the floor for 'before we kept books' (Issue #4587).
+
+    ``meta`` is a key/value table, so ``created_at`` is a key, not a column.  A ledger that
+    somehow lacks the row has no provable floor: 0.0 keeps every deposit on the normal path
+    instead of crashing the read.
+    """
     with ledger.read_cursor() as cur:
-        row = cur.execute("SELECT created_at FROM meta").fetchone()
-    return float(row[0])
+        row = cur.execute("SELECT value FROM meta WHERE key='created_at'").fetchone()
+    return float(row[0]) if row is not None else 0.0
 
 
 def position_net_base(ledger, position_id: str) -> Decimal:
