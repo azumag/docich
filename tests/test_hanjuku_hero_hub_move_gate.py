@@ -145,3 +145,20 @@ def test_rejected_full_chart_keeps_hero_move_for_interim(monkeypatch):
     assert state['interim_order']['hero_hub_move'] is True
     assert state['interim_order']['general'] == 'どうし'
     assert mem['hero_hub_move_eval']['planned'] is True
+
+
+def test_adopted_full_chart_preserves_hero_permission_and_month(monkeypatch):
+    """Validation must not discard trusted mechanical-only move permission."""
+    monkeypatch.delenv(chart.SPEEDRUN_CHART_ENV, raising=False)
+    mem = memory({'アルマムーン': ['どうし', 'g1', 'g2'], HUB: ['h1', 'h2']})
+    candidates = orders(mem)
+    assert 0 < len(candidates) <= 16
+    assert any(o.get('hero_hub_move') is True for o in candidates)
+    state = mem.setdefault('chart_adjust', {})
+    replan._mechanical_chart(mem, state, 'test-request', 'test-digest')
+    plan = _plan_region(mem)['chart_plan']
+    [hero] = [o for o in plan['orders'] if o.get('hero_hub_move') is True]
+    assert (hero['general'], hero['purpose']) == ('どうし', 'move')
+    assert mem['hero_hub_move_eval']['planned'] is True
+    _plan_region(mem).pop('chart_plan')
+    assert not hero_moves(mem)
