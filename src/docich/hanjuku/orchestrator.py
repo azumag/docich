@@ -204,11 +204,24 @@ def phase_a_escape_step(mem, phase, kind, text, actions, *, step=None):
     confirm = (isinstance(actions, list) and len(actions) == 1
                and isinstance(actions[0], dict) and actions[0].get('type') == 'pad'
                and actions[0].get('buttons') == ['a'])
-    if (not confirm or kind != 'text' or mem.get('battle')
+    # The 築城 castle list also stalls as a *hold* (no planned input) when its
+    # wording differs from the measured 「そうたく」 line: 66-10 read
+    # 「これいじょうのぞうちくはできませんぞ!! どのしろをぞうちくなさいますか?」
+    # and the dialogue flow held it forever. A hold on that list is the same
+    # escape: B once closes it.
+    expand_prompt = ('ぞうちくなさいます' in (text or '')
+                     or 'そうたくなさいます' in (text or '')
+                     or 'これいじょうのぞうちく' in (text or ''))
+    held = isinstance(actions, list) and not actions
+    if (not (confirm or (held and expand_prompt)) or kind != 'text' or mem.get('battle')
             or phase not in ('dialogue', 'month_menu', 'event')):
         mem.pop('phase_a_escape', None)
         return None
-    key = f'{phase}:{kind}:{text or ""}'
+    # The 築城 prompt shares its screen with the month's gold, which changes
+    # between observations and reset the count; key the stall on the prompt
+    # phrase alone so the bound is reachable.
+    key = (f'{phase}:{kind}:chikujou-prompt' if expand_prompt
+           else f'{phase}:{kind}:{text or ""}')
     watch = mem.get('phase_a_escape') or {}
     n = (int(watch.get('n') or 0) + 1
          if isinstance(watch, dict) and watch.get('key') == key
@@ -227,6 +240,14 @@ def phase_a_escape_step(mem, phase, kind, text, actions, *, step=None):
 
 def pad(button, ms=100):
     return {'type':'pad','buttons':[button],'hold_ms':ms}
+
+
+def _is_chikujou_prompt(text):
+    """The 築城 castle list's 「どのしろをぞうちく…」 prompt (maxed or not)."""
+    text = text or ''
+    return ('どのしろをぞうちくなさいます' in text
+            or 'これいじょうのぞうちく' in text
+            or 'どのしろをそうたくなさいます' in text)
 
 
 def _is_quantity_confirm(kind, text):
@@ -1087,6 +1108,26 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
                              observed_metric={'text': (screen.text or '')[:60]},
                              reason='数量の購入確認（よろしでっか?/うむッ!）は手が うむッ! にあるためAで確定する')
         actions = [pad('a')]
+        updated.update(screen_kind=kind, no_input_streak=0, no_input_frames=[])
+        for key in ('_adjusted', '_interim', '_card_scroll_input'):
+            mem.pop(key, None)
+        _journal(mem).pop('_departure_input', None)
+        _journal(mem).pop('_recall_inputs', None)
+        updated['_records'] = mem.pop('_records')
+        updated['_experience'] = mem.pop('_experience', None)
+        updated['policy'] = mem
+        return actions, updated
+    if _is_chikujou_prompt(screen.text):
+        # The 築城 castle list runs out of room and asks which castle to
+        # expand; nothing on it can be chosen and the dialogue flow holds it
+        # (g1190 2026-11-18 66-10: 「これいじょうのぞうちくはできませんぞ!!
+        # どのしろをぞうちくなさいますか?」 sat for minutes). B closes it.
+        if mem.get('chikujou_prompt_key') != (screen.text or '')[:40]:
+            mem['chikujou_prompt_key'] = (screen.text or '')[:40]
+            decision_log._record(mem, 'chikujou_leftover', screen=kind,
+                                 observed_metric={'text': (screen.text or '')[:60]},
+                                 reason='築城の城一覧が上限に達して選択できないため、Bで閉じる')
+        actions = [pad('b')]
         updated.update(screen_kind=kind, no_input_streak=0, no_input_frames=[])
         for key in ('_adjusted', '_interim', '_card_scroll_input'):
             mem.pop(key, None)
