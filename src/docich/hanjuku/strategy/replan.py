@@ -1907,10 +1907,6 @@ def _mechanical_chart(mem, state, rid, digest):
             # the hero stayed at home while the plan named only attacks).
             **({'hero_hub_move': True} if order.get('hero_hub_move') is True else {}),
         })
-    # The month's hero-hub move is spent as soon as the plan carries it: a
-    # rebuilt chart must not schedule a second one (#4546).
-    if any(o.get('hero_hub_move') is True for o in orders):
-        _note_hero_hub_move(mem)
     _suppress_recent_failures(mem, orders)
     # Failed steps the plan still offers are retried after their bounded
     # windows. This runs even when the rebuilt plan is identical: that is the
@@ -1927,6 +1923,8 @@ def _mechanical_chart(mem, state, rid, digest):
             and [o['step'] for o in orders] == previous_local):
         _carry_hero_permission(stored, orders)
         _plan_region(mem)['chart_plan'] = stored
+        if any(o.get('hero_hub_move') is True for o in stored.get('orders') or ()):
+            _note_hero_hub_move(mem)
         mem.setdefault('chart_plan_tick', int(mem.get('tick') or 0))
         state.pop('interim_order', None)
         return
@@ -1940,6 +1938,8 @@ def _mechanical_chart(mem, state, rid, digest):
         return
     validated = dict(validated, request_digest=digest)
     _adopt_plan(mem, validated, rid)
+    if any(o.get('hero_hub_move') is True for o in validated['orders']):
+        _note_hero_hub_move(mem)
 
 
 def _mechanical_step(order, used, mem=None):
