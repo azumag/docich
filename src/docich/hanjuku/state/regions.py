@@ -183,6 +183,7 @@ KEY_OWNERSHIP = {
     'boss_egg_wait': {'region': PLAN, 'lifetime': 'chapter', 'migrated': False},  # replan戦略層のボス卵待ち計画
     'boss_probe_rotation': {'region': PLAN, 'lifetime': 'chapter', 'migrated': False},  # ボスプローブ割当の戦略管理
     'boss_relaunch': {'region': PLAN, 'lifetime': 'chapter', 'migrated': False},  # ボス再出撃の戦略管理
+    'boss_stale_wait': {'region': PLAN, 'lifetime': 'chapter', 'migrated': False},  # #4561 枯渇後のYビュー測定待ち
     'boss_step_probe': {'region': PLAN, 'lifetime': 'chapter', 'migrated': False},  # 同上
     'boss_step_rearm': {'region': PLAN, 'lifetime': 'chapter', 'migrated': False},  # 同上
     'cards_capped': {'region': PLAN, 'lifetime': 'chapter', 'migrated': False},  # カード上限の戦略記録

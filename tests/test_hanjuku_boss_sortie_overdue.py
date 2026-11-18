@@ -439,3 +439,81 @@ def test_a_static_chapter_march_keeps_the_limit():
     O.next_order(mem)
     assert _sorties(mem)['3-B1']['status'] == 'en_route'
     assert not decisions(mem, 'boss_sortie_overdue')
+
+
+def test_an_exhausted_moving_boss_step_waits_for_a_new_measurement():
+    """Issue #4561 (3): g1270's exhausted boss step re-armed on a fixed
+    cooldown even though the boss had already moved to another cell. A fresh
+    Y-view measurement, not elapsed time, is the re-arm event."""
+    chart.set_boss_cell(MOVING, NOW_CELL)
+    try:
+        mem = moving_memory(10, aimed=list(NOW_CELL))
+        mem['boss_cell'] = {'chapter': MOVING, 'cell': list(NOW_CELL), 'tick': 5}
+        mem['boss_relaunch'] = {'corridor-boss': O.BOSS_RELAUNCH_LIMIT}
+        mem['tick'] = 100 + O.BOSS_STALE_COOLDOWN
+        O.next_order(mem)
+        assert len(decisions(mem, 'boss_relaunch_exhausted')) == 1
+        assert _plan_region(mem)['orders']['corridor-boss'] == 'launched'
+        assert (mem.get('boss_stale_wait') or {}).get('corridor-boss', {}).get('tick') == 5
+        # Time past the old cooldown alone must not re-arm the step.
+        mem['tick'] += 100
+        O.next_order(mem)
+        assert _plan_region(mem)['orders']['corridor-boss'] == 'launched'
+        assert not decisions(mem, 'boss_relaunch_stale_retry')
+        # The next Y-view measurement re-arms it with one bounded retry.
+        mem['boss_cell'] = {'chapter': MOVING, 'cell': list(NOW_CELL), 'tick': 200}
+        O.next_order(mem)
+        assert _plan_region(mem)['orders']['corridor-boss'] == 'pending'
+        assert len(decisions(mem, 'boss_relaunch_stale_retry')) == 1
+        assert 'corridor-boss' not in (mem.get('boss_stale_wait') or {})
+    finally:
+        chart.set_boss_cell(MOVING, None)
+
+
+def test_an_exhausted_static_boss_step_keeps_the_time_cooldown():
+    """Only the moving boss has a measurement clock; a chapter-4 site keeps
+    its long stale cooldown and must not be blocked by a missing reading."""
+    mem = memory(79599, status='overdue')
+    mem['boss_relaunch'] = {'3-B1': O.BOSS_RELAUNCH_LIMIT}
+    mem['tick'] = LAUNCH + O.BOSS_STALE_COOLDOWN - 1
+    O.next_order(mem)
+    assert _plan_region(mem)['orders']['3-B1'] == 'launched'
+    mem['tick'] += 1
+    O.next_order(mem)
+    assert _plan_region(mem)['orders']['3-B1'] == 'pending'
+
+
+def test_an_exhausted_moving_boss_step_is_parked_until_measured():
+    """The stale step stays parked so the stall escape keeps backing out to
+    the field map, where the Y view can actually take the next measurement."""
+    chart.set_boss_cell(MOVING, NOW_CELL)
+    try:
+        mem = moving_memory(10, aimed=list(NOW_CELL), status='overdue')
+        mem['boss_cell'] = {'chapter': MOVING, 'cell': list(NOW_CELL), 'tick': 5}
+        mem['boss_relaunch'] = {'corridor-boss': O.BOSS_RELAUNCH_LIMIT}
+        mem['tick'] = 100 + O.BOSS_STALE_COOLDOWN + 100
+        mem['boss_stale_wait'] = {'corridor-boss': {
+            'tick': 5, 'cell': list(NOW_CELL), 'since': mem['tick'] - 100}}
+        assert O.parked_boss_steps(mem) == ['corridor-boss']
+        mem['boss_cell'] = {'chapter': MOVING, 'cell': list(NOW_CELL), 'tick': 200}
+        assert O.parked_boss_steps(mem) == []
+    finally:
+        chart.set_boss_cell(MOVING, None)
+
+
+def test_an_exhausted_moving_boss_step_falls_back_if_the_view_goes_blind():
+    """A view that never measures again must not park the step forever."""
+    chart.set_boss_cell(MOVING, NOW_CELL)
+    try:
+        mem = moving_memory(10, aimed=list(NOW_CELL), status='overdue')
+        mem['boss_cell'] = {'chapter': MOVING, 'cell': list(NOW_CELL), 'tick': 5}
+        mem['boss_relaunch'] = {'corridor-boss': O.BOSS_RELAUNCH_LIMIT}
+        mem['tick'] = 100 + O.BOSS_STALE_COOLDOWN
+        mem['boss_stale_wait'] = {'corridor-boss': {
+            'tick': 5, 'cell': list(NOW_CELL),
+            'since': mem['tick'] - O.BOSS_MEASURE_FALLBACK_TICKS}}
+        assert O.parked_boss_steps(mem) == []
+        O.next_order(mem)
+        assert _plan_region(mem)['orders']['corridor-boss'] == 'pending'
+    finally:
+        chart.set_boss_cell(MOVING, None)
