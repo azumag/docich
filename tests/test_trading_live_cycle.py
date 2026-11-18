@@ -897,16 +897,20 @@ def test_the_real_bitbank_reader_health_returns_to_continue_after_failures(ws, h
     # the scripted balance failures are a block, never a terminal outcome
     assert [row[0] for row in table] == list(range(1, 11))
     assert [row[1] for row in table] == [CycleOutcome.CONTINUE] * 10
-    assert [(row[0], row[3]) for row in table if row[3]] == [(1, ("balance_unavailable",))]
+    assert [(row[0], row[3]) for row in table if row[3]] == [
+        (1, ("balance_unavailable",)),
+        (2, ("balance_unavailable",)),
+        (3, ("balance_unavailable",)),
+    ]
     assert table[0][4] >= 1                               # the failed reads were actually counted
     assert hook == []                                     # monitor mode never decides
 
-    # cycle 1 could not read the balance; the first balance read of cycle 2 fails too, then step 7's
-    # read succeeds and resets the reader, so the first clean report is cycle 2
-    recovered = next(row for row in table if row[0] > 1 and not row[3])
-    assert recovered[0] == 2
+    # step 7 makes one assets read per normal cycle, so cycles 1-3 each consume one of the three
+    # scripted 503s; cycle 4's read is the first to succeed and resets the reader's failure count
+    recovered = next(row for row in table if not row[3])
+    assert recovered[0] == 4
     assert recovered[1] is CycleOutcome.CONTINUE
-    assert recovered[5] == 0
+    assert recovered[4] == 0
     assert all(row[5] == 0 for row in table)
     assert state.consecutive_failures == 0
 
