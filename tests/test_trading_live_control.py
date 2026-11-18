@@ -421,3 +421,21 @@ def test_nothing_under_src_writes_safety_reason_enable_missing():
                 offenders.append((path.relative_to(SRC).as_posix(), node.lineno))
     assert offenders == []
     assert live_safety.SafetyReason.ENABLE_MISSING.value == "enable_missing"
+
+
+# ---- source pin: nothing writes the legacy BALANCE_MISMATCH trip --------------------------
+def test_nothing_under_src_writes_safety_reason_balance_mismatch():
+    # The enum value stays for old rows (the owner CLI can still list/clear it), but no
+    # balance code may trip it: a mismatch is a warning count only (owner decision 2026-11-18).
+    allowed = {"docich/trading/live/safety.py",       # the enum definition
+               "docich/trading/live_owner/cli.py"}    # legacy rows in the owner's block list
+    offenders = []
+    for path in (SRC / "docich" / "trading").rglob("*.py"):
+        rel = path.relative_to(SRC).as_posix()
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Attribute) and node.attr == "BALANCE_MISMATCH":
+                if rel not in allowed:
+                    offenders.append((rel, node.lineno))
+    assert offenders == []
+    assert live_safety.SafetyReason.BALANCE_MISMATCH.value == "balance_mismatch"

@@ -110,7 +110,7 @@ class HeldPosition:
 
 @dataclass(frozen=True)
 class Funds:
-    capital: Decimal                    # C: sum of JPY cashflows
+    capital: Decimal                    # C: live JPY (free+locked) + position cost
     deployed: Decimal                   # D: cost of open positions
     free_quote: Decimal                 # F: usable JPY (caller already took the min)
 
@@ -470,6 +470,8 @@ def size_orders(
             skipped.append(_skip(opportunity, "open_buy_exists", "buy"))
             continue
         if capital <= 0:
+            # C is the live JPY plus the positions' cost.  Zero means there is no JPY on
+            # the exchange at all, so there is nothing to spend on a new buy.
             skipped.append(_skip(opportunity, "no_capital_recorded", "buy"))
             continue
         market = markets.get(symbol)

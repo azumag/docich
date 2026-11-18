@@ -1456,8 +1456,11 @@ def test_dropping_buys_for_the_budget_restores_the_leftovers(ws, ws_alt, harness
 
     assert control2.result is not None
     assert control2.result.buys == () and len(control2.result.sells) == 1
-    assert dropped.result.free_quote_left == control2.result.free_quote_left == D("9000")
-    assert dropped.result.headroom_left == control2.result.headroom_left == D("10000")
+    # Capital is the live JPY (10000; the fixture did not spend the mock's cash) plus the
+    # position's 1000 cost = 11000, so the free quote is the exchange's 10000 and the sell
+    # restores the 10000 headroom (11000 capital - 1000 deployed).
+    assert dropped.result.free_quote_left == control2.result.free_quote_left == D("10000")
+    assert dropped.result.headroom_left == control2.result.headroom_left == D("11000")
 
 
 # ---- m4: the budget drop must not lose the skips the first sizing made -------------------

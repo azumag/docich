@@ -11,23 +11,20 @@ state.  ``balance`` must be a snapshot the caller just fetched from the exchange
 remembered from an earlier poll.  ``ledger`` is a ``LiveLedger`` (or anything with the
 same ``read_cursor``).
 
-An outstanding buy counts against the investment limit (its notional is added to the
-deployed cost), otherwise several symbols could be bought past the capital in total; the
-quote it reserves is subtracted from the free quote for the same reason.  When a fee rate
-or a cost basis cannot be determined the buy side is blocked with ``fee_rate_unknown``
-and the affected symbol is reported in ``problems``; the rest of the inputs are still
-filled, so other symbols' sells can still be planned (a symbol whose cost basis is
-unavailable cannot be sold, only reported).
+Capital C is the exchange's live JPY total (free AND locked) plus the cost of the bot's own
+open positions (``views.deployed_cost``, rebuilt from the recorded fills): the account's
+equity at cost.  ``deployed`` is that position cost plus the notional of every outstanding
+buy, so ``C - deployed`` is ``jpy_total - open buy notional``: JPY locked in an open buy is
+counted once (inside ``jpy_total``) and the buy's notional is deducted once, never twice.
+The free quote F is the exchange's free JPY, floored at zero: the whole account's spendable
+JPY may be used, and a deposit raises the next cycle's capital without any ledger write.
 
-The expected quote balance is only trusted when ``expected_balances`` can prove it: a fill
-of a symbol absent from ``rules`` makes every currency cell ``indeterminate``, so the free
-quote is set to 0 and buys are blocked with ``balance_expectation_indeterminate`` (the
-rest of the inputs are still returned).  Otherwise the cell's ``slack`` -- how far an
-unknown fee may have moved the total -- is subtracted from the ledger side, so the free
-quote stays on the safe side.  ``Funds.capital`` is the ledger's net cashflow floored at
-zero: withdrawing past the deposits can make the net negative, and sizing reports
-``no_capital_recorded`` for buys (sells are still planned) instead of refusing the whole
-cycle.
+There is no ledger-expected balance in this module any more, so a balance mismatch can never
+block a buy; a currency whose cost basis cannot be priced blocks buys with
+``fee_rate_unknown`` and is reported in ``problems`` while the rest of the inputs are still
+returned (a symbol whose cost basis is unavailable cannot be sold, only reported).
+``no_capital_recorded`` now means exactly "no JPY on the exchange" (and no position cost to
+stand against it); sells are still planned.
 
 ``sell_attempts_for`` counts, per exit opportunity, the decision keys of the attempts
 already recorded for that position.  The key carries the digest the position was entered
@@ -43,7 +40,6 @@ from decimal import Decimal
 from typing import TYPE_CHECKING, Mapping, Sequence
 
 from . import views
-from .balance import expected_balances
 from .exchange import BalanceSnapshot, MarketRules
 from .sizing import Funds, HeldPosition
 
@@ -55,7 +51,6 @@ if TYPE_CHECKING:  # imported for annotations only: keeps this module light at i
 ZERO = Decimal(0)
 FEE_RATE_UNKNOWN = "fee_rate_unknown"
 COST_BASIS_UNAVAILABLE = "cost_basis_unavailable"
-BALANCE_EXPECTATION_INDETERMINATE = "balance_expectation_indeterminate"
 
 
 @dataclass(frozen=True)
@@ -83,7 +78,6 @@ def build_cycle_inputs(ledger: LiveLedger, *, rules: Mapping[str, MarketRules],
     block_buys: set[str] = set()
     problems: set[tuple[str, str]] = set()
 
-    capital = views.capital_quote(ledger, "JPY")
     fee_rates = {symbol: rule.max_fee_rate for symbol, rule in rules.items()}
 
     try:
@@ -97,20 +91,14 @@ def build_cycle_inputs(ledger: LiveLedger, *, rules: Mapping[str, MarketRules],
         exposure = views.OpenBuyExposure(ZERO, ZERO)
         block_buys.add(FEE_RATE_UNKNOWN)
 
-    expected = expected_balances(ledger, rules)
-    jpy_expected = expected.get("JPY")
-    jpy_free = _asset_free(balance, "JPY")
-    if jpy_expected is not None and jpy_expected.indeterminate:
-        # A fill of an unruled symbol may have moved JPY by any amount: the ledger total
-        # proves nothing, so no quote is free this cycle (sells are still planned).
-        free_quote = ZERO
-        block_buys.add(BALANCE_EXPECTATION_INDETERMINATE)
-    else:
-        expected_jpy_total = ZERO if jpy_expected is None else jpy_expected.total
-        slack = ZERO if jpy_expected is None else jpy_expected.slack
-        free_quote = max(
-            ZERO, min(jpy_free, expected_jpy_total - slack - exposure.reserved_quote)
-        )
+    # C is the account's live JPY (free and locked) plus the cost of the bot's positions:
+    # equity at cost.  JPY locked in an open buy is already inside ``jpy_total``; the buy's
+    # notional is deducted once from the deployed side, so headroom is not double counted.
+    jpy = balance.assets.get("JPY")
+    jpy_total = ZERO if jpy is None else jpy.total
+    jpy_free = ZERO if jpy is None else jpy.free
+    capital = jpy_total + deployed
+    free_quote = max(ZERO, jpy_free)
     funds = Funds(capital=max(ZERO, capital), deployed=deployed + exposure.notional,
                   free_quote=free_quote)
 

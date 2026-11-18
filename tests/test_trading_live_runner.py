@@ -280,7 +280,7 @@ def test_r1_three_cycles_then_stop_releases_the_lease_and_writes_exited(ws, monk
 
 
 # ---- r2: the startup order ---------------------------------------------------------------
-def test_r2_startup_order_is_ledger_lease_reader_balance_startup_cycle(ws, monkeypatch):
+def test_r2_startup_order_is_ledger_lease_reader_on_startup_opening_cycle(ws, monkeypatch):
     prepared = prepare(ws, cashflows={"JPY": "10000"})
     calls = []
 
@@ -300,16 +300,6 @@ def test_r2_startup_order_is_ledger_lease_reader_balance_startup_cycle(ws, monke
     monkeypatch.setattr(runner_module, "acquire_writer_lease", acquire_spy)
 
     reader = prepared.reader
-    real_fetch = reader.fetch_balance
-    seen = {"balance": False}
-
-    def fetch_spy():
-        if not seen["balance"]:
-            seen["balance"] = True
-            calls.append("balance")
-        return real_fetch()
-
-    monkeypatch.setattr(reader, "fetch_balance", fetch_spy)
     real_startup = runner_module.reconcile.on_startup
 
     def startup_spy(executor):
@@ -317,6 +307,13 @@ def test_r2_startup_order_is_ledger_lease_reader_balance_startup_cycle(ws, monke
         return real_startup(executor)
 
     monkeypatch.setattr(runner_module.reconcile, "on_startup", startup_spy)
+    real_opening = runner_module.record_auto_opening
+
+    def opening_spy(*args, **kwargs):
+        calls.append("record_auto_opening")
+        return real_opening(*args, **kwargs)
+
+    monkeypatch.setattr(runner_module, "record_auto_opening", opening_spy)
     real_cycle = runner_module.run_cycle
 
     def cycle_spy(deps, state):
@@ -330,35 +327,11 @@ def test_r2_startup_order_is_ledger_lease_reader_balance_startup_cycle(ws, monke
         open_reader=lambda state_dir: (calls.append("reader"), reader)[1])
 
     assert code == runner_module.EXIT_OK
-    assert calls == ["ledger", "lease", "reader", "balance", "on_startup", "run_cycle"]
+    # There is no balance precheck any more: on_startup first, then the automatic opening
+    # balances, then the first cycle.
+    assert calls == ["ledger", "lease", "reader", "on_startup", "record_auto_opening",
+                     "run_cycle"]
     assert read_status(ws)["cycle"] == 1
-
-
-# ---- r3: the opening-balance precheck ---------------------------------------------------
-def test_r3_a_nonzero_opening_balance_without_a_cashflow_is_inert(ws, monkeypatch):
-    prepared = prepare(ws, coins={"OAS": "3"},
-                       cashflows={"JPY": "10000"})       # OAS has no cashflow row of any kind
-    before = event_kinds(ws)
-    startups = []
-    monkeypatch.setattr(runner_module.reconcile, "on_startup",
-                        lambda executor: startups.append(1))
-
-    code, sleeps = run(prepared, stop_requested=lambda: True)
-
-    assert code == runner_module.EXIT_OK
-    assert startups == []
-    assert sleeps == []
-    status = read_status(ws)
-    assert status["phase"] == "inert"
-    assert status["inert_reason"] == "opening_balance_missing:OAS"
-    assert status["exit_code"] == 0
-    # Only the lease bookkeeping is appended: no cycle, no decision, no safety write.
-    assert event_kinds(ws)[len(before):] == ["lease_acquired", "lease_released"]
-    assert safety_trips(ws) == []
-    assert intent_count(ws) == 0
-    assert prepared.mock.submissions == []
-    assert prepared.mock.all_orders() == []
-    acquire_again(ws)
 
 
 def test_r3_all_watched_currencies_with_a_cashflow_let_the_run_proceed(ws, monkeypatch):
@@ -463,31 +436,6 @@ def test_r5_a_held_lease_returns_5_and_writes_no_status(ws):
     finally:
         release_writer_lease(ledger, lease, now=WORKER_NOW)
         ledger.close()
-
-
-def test_r5_a_balance_failure_at_the_precheck_is_retryable_and_skips_startup(ws, monkeypatch):
-    prepared = prepare(ws, cashflows={"JPY": "10000"})
-    prepared.reader.balance_error = RuntimeError("balance down")
-    startups = []
-    before = event_kinds(ws)
-    monkeypatch.setattr(runner_module.reconcile, "on_startup",
-                        lambda executor: startups.append(1))
-
-    code, sleeps = run(prepared, stop_requested=lambda: True)
-
-    assert code == runner_module.EXIT_RETRYABLE
-    assert sleeps == []
-    assert startups == []
-    status = read_status(ws)
-    assert status["phase"] == "exited"
-    assert status["exit_code"] == runner_module.EXIT_RETRYABLE
-    assert status["reason"] == "balance_unavailable_at_start"
-    assert safety_trips(ws) == []
-    assert intent_count(ws) == 0
-    assert prepared.mock.submissions == []
-    assert prepared.mock.all_orders() == []
-    assert event_kinds(ws)[len(before):] == ["lease_acquired", "lease_released"]
-    acquire_again(ws)
 
 
 def test_r5_an_on_startup_failure_is_retryable_and_no_cycle_runs(ws, monkeypatch):
@@ -869,27 +817,6 @@ def test_a_watched_currency_missing_from_the_balance_counts_as_zero(ws, monkeypa
     assert status["cycle"] == 1
 
 
-def test_a_locked_only_watched_currency_without_a_cashflow_is_inert(ws, monkeypatch):
-    # The converse of the missing-entry rule: present with free 0 but a non-zero locked total
-    # and no cashflow of any kind is still an opening balance this worker cannot account for.
-    from docich.trading.live.exchange import AssetBalance, BalanceSnapshot
-
-    prepared = prepare(ws, cashflows={"JPY": "10000"})
-    snapshot = BalanceSnapshot(
-        assets={"JPY": AssetBalance(total=D("10000"), free=D("10000"), locked=D("0")),
-                "OAS": AssetBalance(total=D("2"), free=D("0"), locked=D("2"))},
-        exchange_ts_ms=int(WORKER_NOW * 1000), fetched_at=WORKER_NOW)
-    monkeypatch.setattr(prepared.reader, "fetch_balance", lambda: snapshot)
-
-    code, sleeps = run(prepared, stop_requested=lambda: True)
-
-    assert code == runner_module.EXIT_OK
-    status = read_status(ws)
-    assert status["phase"] == "inert"
-    assert status["inert_reason"] == "opening_balance_missing:OAS"
-    assert status["exit_code"] == 0
-
-
 def test_the_ledger_is_closed_on_every_exit_path(monkeypatch):
     real_close = LiveLedger.close
     closes = []
@@ -1089,36 +1016,7 @@ def test_h3_a_fee_currency_is_history_so_the_run_proceeds(ws, monkeypatch):
     assert "inert_reason" not in status
 
 
-# ---- h5/h6: the precheck's try boundary and the starting status ---------------------------
-def test_h5_a_watched_currencies_failure_is_retryable_not_runner_error(ws, monkeypatch):
-    prepared = prepare(ws, cashflows={"JPY": "10000"})
-    startups = []
-    monkeypatch.setattr(runner_module.reconcile, "on_startup",
-                        lambda executor: startups.append(1))
-
-    def boom(self):
-        raise RuntimeError("rules down")
-
-    monkeypatch.setattr(runner_module.OrderExecutor, "watched_currencies", boom)
-    before = event_kinds(ws)
-
-    code, sleeps = run(prepared, stop_requested=lambda: True)
-
-    assert code == runner_module.EXIT_RETRYABLE
-    assert sleeps == []
-    assert startups == []
-    status = read_status(ws)
-    assert status["phase"] == "exited"
-    assert status["exit_code"] == runner_module.EXIT_RETRYABLE
-    assert status["reason"] == "balance_unavailable_at_start"
-    assert safety_trips(ws) == []
-    assert intent_count(ws) == 0
-    assert prepared.mock.submissions == []
-    assert prepared.mock.all_orders() == []
-    assert event_kinds(ws)[len(before):] == ["lease_acquired", "lease_released"]
-    acquire_again(ws)
-
-
+# ---- h6: the first status after the lease is starting ---------------------------------------
 def test_h6_the_first_status_after_the_lease_is_starting(ws, monkeypatch):
     prepared = prepare(ws, cashflows={"JPY": "10000"})
     phases = []
@@ -1143,7 +1041,7 @@ def test_h6_the_first_status_after_the_lease_is_starting(ws, monkeypatch):
     acquire_again(ws)
 
 
-# ---- F1: an intent that may have reached the exchange lets the balance precheck proceed -----
+# ---- F1: an intent that may have reached the exchange is opening-balance history -----------
 def record_unknown_submission(ws, prepared, *, symbol="OAS/JPY", key="f1-unknown"):
     """The ledger a crash between send and record leaves: a SUBMITTING intent moved to UNKNOWN."""
     from docich.trading.live.ledger import IntentRequest
@@ -1184,7 +1082,7 @@ def test_f1_an_unknown_submission_intent_is_opening_balance_history(ws, monkeypa
     code, sleeps = run(prepared, stop_requested=lambda: True)
 
     assert code == runner_module.EXIT_OK
-    assert startups == [1]                    # the precheck did not go inert: reconcile was reached
+    assert startups == [1]                    # history existed: reconcile was reached, no inert
     assert sleeps == []
     status = read_status(ws)
     assert status["phase"] == "exited"
@@ -1221,47 +1119,6 @@ def test_f2_a_market_data_failure_is_retryable_and_skips_the_cycle(ws, monkeypat
     assert status["reason"] == "market_data_failed:OSError"
     assert intent_count(ws) == 0
     assert prepared.mock.submissions == []
-    acquire_again(ws)
-
-
-# ---- F3: the startup balance failure is classified like every other reader failure ----------
-@pytest.mark.parametrize("exc_kind,health_kind,code,reason", [
-    ("auth", None, runner_module.EXIT_AUTH, "auth"),
-    ("auth", "clock", runner_module.EXIT_AUTH, "auth"),          # the exception's kind wins
-    (None, "clock", runner_module.EXIT_CLOCK, "clock"),
-    (None, "network", runner_module.EXIT_RETRYABLE, "balance_unavailable_at_start"),
-])
-def test_f3_a_balance_failure_at_start_is_classified(ws, exc_kind, health_kind, code, reason):
-    prepared = prepare(ws, cashflows={"JPY": "10000"})
-    prepared.reader.balance_error = (ReaderFailure(exc_kind) if exc_kind is not None
-                                     else RuntimeError("balance down"))
-    if health_kind is not None:
-        prepared.reader.health_value = Health(health_kind, 0)
-
-    got, sleeps = run(prepared, stop_requested=lambda: True)
-
-    assert got == code
-    assert sleeps == []
-    status = read_status(ws)
-    assert status["phase"] == "exited"
-    assert status["exit_code"] == code
-    assert status["reason"] == reason
-    assert intent_count(ws) == 0
-    acquire_again(ws)
-
-
-def test_f3_a_failing_health_read_at_the_balance_failure_is_unknown(ws):
-    prepared = prepare(ws, cashflows={"JPY": "10000"})
-    prepared.reader.balance_error = RuntimeError("balance down")
-    prepared.reader.health_error = RuntimeError("health down")
-
-    got, sleeps = run(prepared, stop_requested=lambda: True)
-
-    assert got == runner_module.EXIT_RETRYABLE
-    status = read_status(ws)
-    assert status["phase"] == "exited"
-    assert status["exit_code"] == 8
-    assert status["reason"] == "balance_unavailable_at_start"
     acquire_again(ws)
 
 
@@ -1434,4 +1291,153 @@ def test_a_missing_control_file_cycles_with_control_unknown_and_no_trip(ws):
     assert status["mode"] is None
     assert safety_trips(ws) == []
     assert prepared.mock.submissions == []
+    acquire_again(ws)
+
+
+# ---- automatic opening balances (no precheck, no inert) ------------------------------------
+def auto_opening_rows(ws) -> list[tuple]:
+    ledger = LiveLedger.open_readonly(ws.layout)
+    try:
+        with ledger.read_cursor() as cur:
+            return cur.execute(
+                "SELECT currency, amount, source FROM cashflows "
+                "WHERE source='auto_opening' ORDER BY currency").fetchall()
+    finally:
+        ledger.close()
+
+
+def test_a_start_with_coin_and_jpy_balances_and_no_history_now_runs(ws, monkeypatch):
+    # The ledger has an active policy set but no cashflow/fill/intent of any kind.
+    prepared = prepare(ws, coins={"OAS": "3"}, cashflows=None)
+    completed = []
+    real_cycle = runner_module.run_cycle
+
+    def cycle_spy(deps, state):
+        report = real_cycle(deps, state)
+        completed.append(report)
+        return report
+
+    monkeypatch.setattr(runner_module, "run_cycle", cycle_spy)
+
+    code, sleeps = run(prepared, stop_requested=lambda: bool(completed))
+
+    assert code == runner_module.EXIT_OK
+    assert len(completed) == 1 and completed[0].outcome is CycleOutcome.CONTINUE
+    status = read_status(ws)
+    assert status["phase"] == "exited"
+    assert status["exit_code"] == 0
+    assert status["cycle"] == 1
+    assert "inert_reason" not in status
+    assert auto_opening_rows(ws) == [("JPY", "10000", "auto_opening"),
+                                     ("OAS", "3", "auto_opening")]
+    assert safety_trips(ws) == []
+    assert prepared.mock.submissions == []
+    acquire_again(ws)
+
+
+def test_a_start_with_a_dust_balance_also_runs_and_records_the_dust(ws, monkeypatch):
+    prepared = prepare(ws, coins={"OAS": "0.00000001"}, cashflows=None)
+    completed = []
+    real_cycle = runner_module.run_cycle
+
+    def cycle_spy(deps, state):
+        report = real_cycle(deps, state)
+        completed.append(report)
+        return report
+
+    monkeypatch.setattr(runner_module, "run_cycle", cycle_spy)
+    code, sleeps = run(prepared, stop_requested=lambda: bool(completed))
+
+    assert code == runner_module.EXIT_OK
+    assert len(completed) == 1
+    assert "inert_reason" not in read_status(ws)
+    assert ("OAS", "0.00000001", "auto_opening") in auto_opening_rows(ws)
+
+
+def test_an_unknown_submission_is_ingested_before_any_auto_opening(ws, monkeypatch):
+    prepared = prepare(ws, coins={"OAS": "3"}, cashflows={"JPY": "10000"})
+    record_unknown_submission(ws, prepared)            # the send reached the exchange; no fill
+    startups = []
+    real_startup = runner_module.reconcile.on_startup
+
+    def startup_spy(executor):
+        startups.append(1)
+        return real_startup(executor)
+
+    monkeypatch.setattr(runner_module.reconcile, "on_startup", startup_spy)
+
+    code, sleeps = run(prepared, stop_requested=lambda: True)
+
+    assert code == runner_module.EXIT_OK
+    assert startups == [1]
+    assert read_status(ws)["phase"] == "exited"
+    # The intent is history for OAS, so the coin never gets an auto_opening cashflow.
+    assert auto_opening_rows(ws) == []
+    ledger = LiveLedger.open_readonly(ws.layout)
+    try:
+        assert views.currencies_with_history(ledger) == frozenset({"OAS", "JPY"})
+    finally:
+        ledger.close()
+
+
+def test_a_failed_opening_attempt_is_retried_once_before_the_next_cycle(ws, monkeypatch):
+    prepared = prepare(ws, coins={"OAS": "3"}, cashflows=None)
+    real_opening = runner_module.record_auto_opening
+    calls = []
+
+    def flaky(*args, **kwargs):
+        calls.append(1)
+        if len(calls) == 1:
+            raise RuntimeError("the first attempt could not read the balance")
+        return real_opening(*args, **kwargs)
+
+    monkeypatch.setattr(runner_module, "record_auto_opening", flaky)
+    completed = []
+    real_cycle = runner_module.run_cycle
+
+    def cycle_spy(deps, state):
+        report = real_cycle(deps, state)
+        completed.append(report)
+        return report
+
+    monkeypatch.setattr(runner_module, "run_cycle", cycle_spy)
+
+    code, sleeps = run(prepared, stop_requested=lambda: bool(completed))
+
+    assert code == runner_module.EXIT_OK
+    assert len(calls) == 2                       # startup attempt + one retry before cycle 1
+    assert len(completed) == 1
+    assert auto_opening_rows(ws) == [("JPY", "10000", "auto_opening"),
+                                     ("OAS", "3", "auto_opening")]
+    status = read_status(ws)
+    assert status["phase"] == "exited"
+    assert "inert_reason" not in status
+
+
+def test_balance_warnings_are_reported_in_the_status_and_never_trip(ws, monkeypatch):
+    prepared = prepare(ws, cashflows={"JPY": "10000"})
+    prepared.mock.adjust_balance("JPY", "-100")     # expected 10000, the exchange says 9900
+    completed = []
+    real_cycle = runner_module.run_cycle
+
+    def cycle_spy(deps, state):
+        report = real_cycle(deps, state)
+        completed.append(report)
+        if len(completed) == 2:
+            prepared.mock.adjust_balance("JPY", "100")   # the balance agrees again
+        return report
+
+    monkeypatch.setattr(runner_module, "run_cycle", cycle_spy)
+
+    code, sleeps = run(prepared, stop_requested=lambda: len(completed) >= 3)
+
+    assert code == runner_module.EXIT_OK
+    # Cycle 1 starts the streak, cycle 2 confirms it (60 s later), cycle 3 clears it.
+    assert [report.balance_warnings for report in completed] == [0, 1, 0]
+    assert safety_trips(ws) == []
+    assert "safety_trip" not in event_kinds(ws)
+    status = read_status(ws)
+    assert status["phase"] == "exited"
+    assert status["balance_warnings"] == 0
+    assert "balance" not in status and "amount" not in status
     acquire_again(ws)

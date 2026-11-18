@@ -235,3 +235,20 @@ def test_status_write_fsyncs_the_file_and_the_directory(ws, monkeypatch):
     assert target.read_bytes() == before
     assert read(ws)["cycle"] == 1
     assert [p.name for p in ws.layout.root.iterdir() if p.name.startswith(".")] == []
+
+
+def test_balance_warnings_is_allow_listed_and_a_non_negative_int(ws):
+    assert write_status(ws.state, {"phase": "running", "balance_warnings": 2},
+                        now=NOW) is True
+    assert read(ws)["balance_warnings"] == 2
+
+    # Negative values are dropped (the cycle never produces one).
+    assert write_status(ws.state, {"phase": "running", "balance_warnings": -1},
+                        now=NOW) is True
+    assert "balance_warnings" not in read(ws)
+
+    # bool is not an int here, exactly like the other integer keys.
+    assert write_status(ws.state, {"phase": "running", "balance_warnings": True},
+                        now=NOW) is True
+    assert "balance_warnings" not in read(ws)
+    assert "balance_warnings" in ALLOWED_KEYS

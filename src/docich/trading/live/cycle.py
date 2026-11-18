@@ -122,6 +122,7 @@ class CycleState:
     ttl_deferred: int = 0                        # per-cycle TTL facts: reset at the top of every cycle
     ttl_failed: int = 0
     record_failures: int = 0
+    balance_warnings: int = 0                    # per-cycle: confirmed mismatch currencies
 
 
 @dataclass
@@ -150,6 +151,7 @@ class CycleReport:
     stale_symbols: tuple[str, ...]
     control_state: str
     control_mode: str | None
+    balance_warnings: int = 0
 
 
 def _control_state(enable: "EnableResult | None") -> str:
@@ -168,7 +170,8 @@ def _report(outcome: CycleOutcome, state: CycleState, mode: str | None, reason: 
                        block_reasons=tuple(sorted(block_reasons)),
                        fresh_symbols=tuple(sorted(fresh)), stale_symbols=tuple(sorted(stale)),
                        control_state=_control_state(enable),
-                       control_mode=None if enable is None else enable.mode)
+                       control_mode=None if enable is None else enable.mode,
+                       balance_warnings=max(0, int(state.balance_warnings)))
 
 
 def _lease_lost(deps: CycleDeps, state: CycleState, mode: str | None, now: float, detail: str,
@@ -225,6 +228,15 @@ def _health_failures(health: object) -> int:
         return 0
 
 
+def _balance_warnings(executor) -> int:
+    """How many currencies the last confirmed balance check warned about (never negative)."""
+    try:
+        currencies = getattr(getattr(executor, "monitor", None), "warning_currencies", ())
+        return max(0, len(currencies))
+    except Exception:
+        return 0
+
+
 def _run_cycle(deps: CycleDeps, state: CycleState) -> CycleReport:
     """Run steps 0-9 and 14 of one cycle; ``run_cycle`` contains any exception escaping here."""
     state.cycle_number += 1
@@ -232,6 +244,7 @@ def _run_cycle(deps: CycleDeps, state: CycleState) -> CycleReport:
     state.ttl_deferred = 0
     state.ttl_failed = 0
     state.record_failures = 0
+    state.balance_warnings = 0
     cycle_number = state.cycle_number
     now = float(deps.clock())
 
@@ -292,6 +305,10 @@ def _run_cycle(deps: CycleDeps, state: CycleState) -> CycleReport:
         return _finish(deps, state, CycleOutcome.CYCLE_FAILED, mode,
                        f"step_failed:{type(exc).__name__}", block_reasons, (), (), now,
                        enable=enable)
+
+    # The balance monitor only warns: its confirmed mismatch currencies are a per-cycle
+    # fact for the status file, never a block and never a safety trip.
+    state.balance_warnings = _balance_warnings(deps.executor)
 
     # 7. one fresh balance snapshot; without it no decision can be made safely
     balance = None
