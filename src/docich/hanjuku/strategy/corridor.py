@@ -318,6 +318,7 @@ def orders(mem) -> list[dict]:
     for source, route in routes_by.items():
         if not route or len(route) < 2:
             continue
+        recheck = False
         if len(route) == 2:
             purpose = 'retake' if target in lost else 'attack'
             hop = target
@@ -412,6 +413,11 @@ def orders(mem) -> list[dict]:
                                               'tick': int(mem.get('tick') or 0)},
                              reason='前線の在城一覧が古いため2人待ちをせず出撃を始め、出撃一覧で在城を読み直す')
                 _finish = True
+                # The read is what this sortie is for: the deploy re-judges the
+                # pair wait on the fresh list instead of always sending
+                # (#4498: the bypass sent a lone general 290 times, emptied the
+                # front and serialised the supply moves behind it).
+                recheck = True
             if (not _finish and _repelled_alone(mem, target)
                     and isinstance(_front_names_now, list)
                     and 0 < len(_front_names_now) < _mass
@@ -465,6 +471,8 @@ def orders(mem) -> list[dict]:
         if _drained(mem, source, purpose):
             continue
         order = _order(mem, source, hop, target, purpose)
+        if recheck:
+            order['front_roster_recheck'] = True
         (moves if purpose == 'move' else attacks).append((len(route), order))
     hero_order = _hero_post_order(mem, routes_by, hero_at, wave)
     if hero_order is not None:
