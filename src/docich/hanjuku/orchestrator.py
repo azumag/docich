@@ -186,6 +186,115 @@ def event_text_advance(mem, phase, kind, key, actions, guarded=False):
     return advance
 
 
+# docich#4632: an unreadable scripted-scene frame (kind 'unknown' in a
+# concert/event/dialogue phase) held by a foreground owner got no input until
+# NO_INPUT_HOLD_MAX, and a fade or animation restarted even that streak: the
+# g1190 throne chant sat 57 observations and the Sugiyama concert invite 107.
+# Give an unchanged scene the same bounded A unknown_hold_advance gives a
+# claimed screen; a different image still waits. Guarded purchase/trade
+# prompts keep their fail-closed contract: neither helper sends a blind key
+# to a pending unconfirmed choice.
+SCENE_UNKNOWN_ADVANCE = 6
+SCENE_UNKNOWN_ADVANCE_MAX = 3
+
+
+def scene_hold_advance(mem, phase, kind, digest, actions, guarded, *,
+                       blocked=False):
+    """Bounded A for an unreadable scripted-scene frame an owner keeps held.
+
+    Like scene_hold_forced_step, ``blocked`` marks screens an active bounded
+    transaction or a battle still owns: those keep their own answer budget
+    and get no blind key from here either.
+    """
+    if (guarded or blocked or actions or kind != 'unknown'
+            or phase not in EVENT_TEXT_ADVANCE_PHASES):
+        mem.pop('scene_hold_watch', None)
+        return None
+    watch = mem.get('scene_hold_watch')
+    if not isinstance(watch, dict):
+        watch = {}
+    recent = [d for d in (watch.get('recent') or []) if isinstance(d, str)][:2]
+    same = digest in recent
+    watch['n'] = int(watch.get('n') or 0) + 1 if same else 1
+    watch['recent'] = ([digest] + [d for d in recent if d != digest])[:2]
+    if not same:
+        watch['presses'] = 0
+    mem['scene_hold_watch'] = watch
+    if watch['n'] < SCENE_UNKNOWN_ADVANCE:
+        return None
+    presses = int(watch.get('presses') or 0)
+    if presses >= SCENE_UNKNOWN_ADVANCE_MAX:
+        return None
+    watch['presses'] = presses + 1
+    watch['n'] = 0
+    decision_log._record(mem, 'scene_hold_advance', screen=kind, phase=phase,
+                         observed_metric={'press': presses + 1,
+                                          'frame_sha256': digest},
+                         reason='場面の読めない画面を所有者が入力なしに保留し続けているため、同一画像の確認のうえAを1回送って進める')
+    return [pad('a')]
+
+
+# docich#4632: a scripted concert/event scene a foreground owner keeps
+# holding past this many observations gets a forced response: the reviewed
+# phase-default A. Guarded holds (a pending unconfirmed trade/beauty choice),
+# bounded transactions (house/month_sub/recall/map registration/...) and
+# battles own their answers and are excluded; an observation that already
+# planned an input keeps the episode but does not grow the hold count.
+SCENE_HOLD_PHASES = frozenset({'concert', 'event'})
+SCENE_HOLD_FORCE_MAX = 40      # ~60 s of held scene frames -> forced response
+SCENE_HOLD_FORCE_SEQUENCES = 3 # forced responses per unchanged episode
+
+
+def scene_hold_forced_step(screen, mem, phase, kind, actions, *, guarded, blocked):
+    """Force a reviewed response on a scripted scene held too long.
+
+    ``guarded`` marks a hold that may sit on a pending unconfirmed choice
+    (trade guard / beauty guard): those never get a blind key from here and
+    do not grow the count either. ``blocked`` marks screens an active bounded
+    transaction or a battle still owns. The watch keys on the screen text
+    (kind for unreadable frames) -- not the phase or frame digest -- so the
+    reported concert/event phase flicker and a fading scene still count as
+    one episode.
+    """
+    if (phase not in SCENE_HOLD_PHASES or blocked
+            or kind not in ('text', 'unknown', 'yes_no')):
+        mem.pop('scene_hold_forced', None)
+        return None
+    prev = mem.get('scene_hold_forced')
+    if not isinstance(prev, dict):
+        prev = {}
+    key = [kind, (screen.text or '')[:24]]
+    if prev.get('key') != key:
+        prev = {}
+    watch = {'key': key,
+             'n': int(prev.get('n') or 0),
+             'sequences': int(prev.get('sequences') or 0),
+             'exhausted': bool(prev.get('exhausted'))}
+    mem['scene_hold_forced'] = watch
+    if actions or guarded:
+        return None
+    watch['n'] += 1
+    if watch['n'] < SCENE_HOLD_FORCE_MAX:
+        return None
+    if watch['sequences'] >= SCENE_HOLD_FORCE_SEQUENCES:
+        if not watch['exhausted']:
+            watch['exhausted'] = True
+            decision_log._record(mem, 'scene_hold_forced_exhausted',
+                                 screen=kind, phase=phase,
+                                 observed_metric={'sequences': watch['sequences'],
+                                                  'text': (screen.text or '')[:40]},
+                                 reason='場面の強制応答を上限まで送っても画面が変わらないため、これ以上の盲入力を止める')
+        return None
+    watch['n'] = 0
+    watch['sequences'] += 1
+    decision_log._record(mem, 'scene_hold_forced', screen=kind, phase=phase,
+                         observed_metric={'sequence': watch['sequences'],
+                                          'held_observations': SCENE_HOLD_FORCE_MAX,
+                                          'text': (screen.text or '')[:40]},
+                         reason='場面の保留が閾値を超えたため、フェーズ既定の応答をAで決定して停滞を解消する')
+    return [pad('a')]
+
+
 PHASE_A_ESCAPE_MAX = 10   # identical readable screens holding the default A
 
 
@@ -351,8 +460,35 @@ def plan_starved_rearm(mem, phase, kind):
     if kind in ('map', 'map_target', 'world_map') or phase in ('title', 'title_or_intro'):
         return False
     plan = mem.get('plan') or {}
-    if plan.get('active') or (plan.get('chart_plan') or {}).get('orders'):
+    if plan.get('active'):
         return False
+    # A plan whose orders all went 'failed' (or completed) is dead the same
+    # way an empty plan is: next_order skips them forever. #4642, g1190
+    # 2026-11-19: the plan's only order was a 'failed' retake and months
+    # 4-12..5-3 passed with zero sorties while this guard kept the plan.
+    status = plan.get('orders') or {}
+    pending = [o for o in (plan.get('chart_plan') or {}).get('orders') or ()
+               if status.get(o.get('step')) in (None, 'pending')]
+    if pending:
+        # A pending order that can never start is dead the same way a failed
+        # one is (docich#4642 follow-ups). ``startable`` alone reads the raw
+        # order source, while ``_source`` may resolve a source_override to a
+        # castle whose garrison lacks the named general (g1190 6-11..7-1:
+        # a move whose resolved source was ナキューメラ failed
+        # _source_spare_missing for ~1700 ticks while 'pending' kept this
+        # rearm from rebuilding). Keep the plan only if some pending order
+        # survives next_order's own launch gates.
+        from .strategy import orders, replan
+        situation = replan._adjust_situation(mem)
+        owned = orders._owned(mem)
+        if any(replan.chart_adjust.startable(o, situation) is None
+               and orders._ready(o, mem)
+               and orders._source(o, mem) in owned
+               and orders._source_list_open(o, mem)
+               and not orders._retake_reserved(o, mem)
+               and not orders._source_spare_missing(o, mem, allow_probe=True)
+               for o in pending):
+            return False
     if not mem.get('chapter'):
         return False
     tick, last = mem.get('tick'), mem.get('chart_plan_tick')
@@ -1291,11 +1427,22 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
         # selected save with A; the prompt itself is the evidence.
         import re as _re
         loaded_chapter = _re.search(r'だい(\d{1,2})わ', screen.text or '')
-        if loaded_chapter is not None and 1 <= int(loaded_chapter.group(1)) <= 12:
+        # #4615 enters the loaded chapter through the canonical path, which
+        # resets the chapter-scoped month; the rollback record below is about
+        # the run *before* the load, so take its view first (docich#4535).
+        month_before_load = mem.get('month')
+        captured_before_load = sorted(mem.get('captured') or ())
+        lost_before_load = sorted(mem.get('lost') or ())
+        home_lost_before_load = bool(mem.get('home_lost'))
+        if (loaded_chapter is not None and 1 <= int(loaded_chapter.group(1)) <= 12
+                and int(loaded_chapter.group(1)) != mem.get('chapter')):
             # The save slot names its chapter ("だい9わ"). A fresh policy after
             # a load otherwise keeps chapter None and the corridor plan has no
-            # orders to run (g1190 2026-11-15).
-            mem['chapter'] = int(loaded_chapter.group(1))
+            # orders to run (g1190 2026-11-15). Enter through the canonical
+            # path so the loaded game's chapter-scoped state starts clean.
+            campaign._enter_chapter(mem, int(loaded_chapter.group(1)),
+                evidence='save_slot',
+                reason='セーブのロード画面の章表示を確認したため、読み込む章として確定する')
         decision_log._record(mem, 'load_screen_confirm', screen=kind,
                              observed_metric={'text': (screen.text or '')[-40:],
                                               **({'chapter': mem.get('chapter')}
@@ -1309,10 +1456,10 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
             decision_log._record(
                 mem, 'resume_from_save', screen=kind,
                 observed_metric={**_load_save_label(screen.text),
-                                 'month_before': mem.get('month'),
-                                 'captured': sorted(mem.get('captured') or ()),
-                                 'lost': sorted(mem.get('lost') or ()),
-                                 'home_lost': bool(mem.get('home_lost'))},
+                                 'month_before': month_before_load,
+                                 'captured': captured_before_load,
+                                 'lost': lost_before_load,
+                                 'home_lost': home_lost_before_load},
                 reason='タイトル復帰でセーブをロードしたため、読めたセーブ内容とロールバック前の所有城を記録する')
         updated.update(screen_kind=kind, no_input_streak=0, no_input_frames=[])
         for key in ('_adjusted', '_interim', '_card_scroll_input'):
@@ -1707,12 +1854,14 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
             decision_log._record(mem,'situation_held',screen=kind,
                            reason='いばら消滅表示を確認したが章を確定できないため保留')
             actions=[]
+    elif kind in deploy_flow.CHAPTER_PROBE_KINDS and not mem.get('chapter'):
+        # docich#4530: with no chapter no chart plan can run, so the bounded
+        # field -> interior menu -> status route is the only way to learn it.
+        actions=deploy_flow.chapterless_status_step(screen,mem)
     elif kind=='month_menu':
         actions=month_flow.month_step(screen,mem)
     elif kind in {'shop_list','shop_quantity_prompt','shop_quantity','shop_exit_confirm'}:
         actions=shop_flow.shop_step(screen,mem)
-    elif kind=='castle_menu' and not mem.get('chapter'):
-        actions=deploy_flow.chapterless_status_step(screen,mem)
     elif kind in {'castle_menu','general_list','card_select','sortie_confirm'} and mem.get('chapter'):
         actions=deploy_flow.deploy_step(screen,mem)
     elif kind=='map_target' and mem.get('chapter'):
@@ -1875,6 +2024,20 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
     bounded_wait=(any(_flow(mem).get(k) for k in ('recall','sortie_attempt'))
                   or any(mem.get(k) for k in ('house','month_sub','y_jump',
                                            'resume_egg_ritual')))
+    # docich#4632: a scripted scene an owner holds with no input is nudged
+    # after a few unchanged frames, and a hold that outlives the long bound
+    # gets a forced answer. Guarded choices stay fail-closed: no blind key.
+    scene_blocked = (bounded_wait or bool(mem.get('battle'))
+                     or bool(mem.get('_map_registration_hold')))
+    advance = scene_hold_advance(mem, phase, kind, digest, actions,
+                                 event_guarded, blocked=scene_blocked)
+    if advance is not None:
+        actions = advance
+    forced = scene_hold_forced_step(
+        screen, mem, phase, kind, actions, guarded=event_guarded,
+        blocked=scene_blocked)
+    if forced is not None:
+        actions = forced
     semantic_stall_observe(mem, phase, kind, screen, guarded=bounded_wait)
     if (not actions and not bounded_wait
             and not mem.get('_map_registration_hold')):
@@ -1902,6 +2065,29 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
                 reason='月一メニューで兵数・募集の確認が進まず無入力のまま停滞したため、購入せずBで閉じて再観測する')
         army_owned = False
         recruit_guard = None
+    if (army_owned and kind == 'discharge_menu'
+            and (type((screen.header or {}).get('gold')) is int
+                 or streak > hold_max)):
+        # Issue #4633 (g1190 ch1fresh 2-8): the forced-discharge scene is not
+        # a month submenu the pending count/refill can finish on, and the
+        # surviving ownership vetoed the no-input B for the whole stall
+        # (removal_held + refill_requested 未receipt). A header gold read
+        # means the balance is paid up and B leaves the scene; past the
+        # no-input bound release the check either way so the fallback's exit
+        # can fire. The game itself refuses B while the balance is negative,
+        # so a still-negative release only re-enables the last-resort exit.
+        check = mem.get('army_count_check')
+        if isinstance(check, dict):
+            check.update(stage='unverified', result='unverified')
+        if isinstance(mem.get('shop'), dict) and not mem['shop'].get('soldier_receipt'):
+            month_flow.refill_outcome(mem, mem['shop'], 'cancelled', screen=kind,
+                    reason='強制解雇画面が兵数確認・補充の完了場所ではないため当月の補充を中止。購入はしていない')
+            mem['shop']['soldiers_done'] = True
+        decision_log._record(mem, 'discharge_army_count_release', screen=kind, phase=phase,
+                observed_metric={'streak': streak,
+                                 'gold': (screen.header or {}).get('gold')},
+                reason='強制解雇画面に残った兵数確認・補充の所有を、残高非負または停滞超過で開放し退出可能にする')
+        army_owned = False
     if (not actions and streak>hold_max and not trade_guard_hold and not bijin_guard_hold
             and not (kind == 'gift_request' and mem.get('bijin_gift_hold') is True)
             and not (sortie_cancel_hold or (kind == 'sortie_confirm'
@@ -1919,8 +2105,10 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
         # Even this last-resort path must not confirm an unread summer option:
         # the cursor may be on the mass-dismissal row. Reobserve after one move.
         # These recognized events must never borrow a scripted scene's blind A.
+        # discharge_menu gets B like the month menu: it is the screen's own
+        # exit key, while a blind A could confirm the cursor row's dismissal.
         actions=([pad('up')] if kind=='summer_bonus'
-                 else [pad('b')] if kind=='month_menu' or event_confirmation
+                 else [pad('b')] if kind in ('month_menu', 'discharge_menu') or event_confirmation
                  else legacy_actions(frame,phase,updated,mem))
         if kind == 'month_menu':
             # The legacy monthly A repeatedly opened the merchant from a
