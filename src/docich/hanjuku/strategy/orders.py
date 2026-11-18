@@ -723,12 +723,31 @@ def _order_for_step(mem, step):
         return None
     frozen = execution_order(mem, step)
     if frozen is not None:
-        return frozen
+        return _with_hero_hub_permission(mem, frozen)
     if execution_claimed(mem, step):
         return None  # foreign/stale execution is not a fresh plan or actor
-    return (next((o for o in (*_orders(mem), *chart.orders(mem.get('chapter') or 0))
-                  if o['step'] == step), None)
-            or (_world(mem).get('launched_orders') or {}).get(step))
+    order = (next((o for o in (*_orders(mem), *chart.orders(mem.get('chapter') or 0))
+                   if o['step'] == step), None)
+             or (_world(mem).get('launched_orders') or {}).get(step))
+    return _with_hero_hub_permission(mem, order)
+
+
+def _with_hero_hub_permission(mem, order):
+    """A plan that names the hero for the gateway hub may move him there.
+
+    The plan row is adopted before the permission was understood and a pending
+    plan is never rebuilt, so the deploy flow read it without the flag and
+    refused the hero every time (g1190 2026-11-18 15:28: ハバティー and
+    デーメーテール departed while どうし stayed home — #4546).
+    """
+    if (not isinstance(order, dict) or order.get('hero_hub_move') is True
+            or order.get('general') != NAME or order.get('purpose') != 'move'):
+        return order
+    gate = chart.gateway(mem.get('chapter') or 0)
+    if (not gate or order.get('target') != gate.get('hub')
+            or gate['hub'] not in _owned(mem)):
+        return order
+    return {**order, 'hero_hub_move': True}
 
 
 def _plan_pending(mem) -> bool:

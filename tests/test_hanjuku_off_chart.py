@@ -673,6 +673,18 @@ def test_a_move_never_sends_the_hero_even_when_the_plan_names_him():
     assert _plan_region(mem)['general_override']['I:m:1'] == 'キャラウェイ'
 
 
+def test_a_hero_hub_move_sends_the_hero():
+    """Recruiting joins the hero's castle, so the gateway hub only grows when
+    he stands there. g1190 2026-11-18 15:12 (#4546): the plan named どうし for
+    the hub move, the hero was refused and ラビオリ departed instead."""
+    mem = _move_memory_naming(chart.HERO)
+    mem['chart_adjust']['interim_order']['hero_hub_move'] = True
+    _scanned_move(mem, [chart.HERO, 'キャラウェイ', 'ココット', 'クミン'])
+    assert _plan_region(mem)['general_override']['I:m:1'] == chart.HERO
+    picked = decisions(mem, 'move_general_picked')
+    assert picked and picked[-1]['general'] == chart.HERO
+
+
 def _world_map_frame(owners):
     """Synthetic Y view: gold frame pixel, open sea, one flag per castle (chapter 1)."""
     from docich import hanjuku_screen
