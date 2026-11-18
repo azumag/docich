@@ -104,9 +104,21 @@ jobs:
           persist-credentials: false
       - name: Install isolated X11 and CLI presenter dependencies
         run: |
-          sudo apt-get update
+          # A stalled apt mirror used to hang until the job timeout killed the
+          # job (#4624). Bound every apt call, retry the index refresh, and
+          # fail fast after the third failure.
+          for i in 1 2 3; do
+            if timeout 120 sudo apt-get update; then
+              break
+            fi
+            if [ "$i" = 3 ]; then
+              echo 'apt-get update failed 3 times; giving up' >&2
+              exit 1
+            fi
+            sleep 10
+          done
           # x11-utils provides xdpyinfo, which `docich up` uses to wait for the display.
-          sudo apt-get install -y ffmpeg tmux xterm xdotool xvfb x11-utils nethack-console
+          timeout 300 sudo apt-get install -y ffmpeg tmux xterm xdotool xvfb x11-utils nethack-console
           # smoke_cli.sh resolves nethack from PATH or /usr/games.
           command -v nethack || test -x /usr/games/nethack
           command -v xdpyinfo
@@ -122,8 +134,17 @@ jobs:
           persist-credentials: false
       - name: Install isolated X11 and RetroArch presenter dependencies
         run: |
-          sudo apt-get update
-          sudo apt-get install -y ffmpeg tmux xdotool xvfb x11-utils dbus-x11 retroarch
+          for i in 1 2 3; do
+            if timeout 120 sudo apt-get update; then
+              break
+            fi
+            if [ "$i" = 3 ]; then
+              echo 'apt-get update failed 3 times; giving up' >&2
+              exit 1
+            fi
+            sleep 10
+          done
+          timeout 300 sudo apt-get install -y ffmpeg tmux xdotool xvfb x11-utils dbus-x11 retroarch
       - name: Require the RetroArch presenter to be exercisable
         run: |
           # Fail loudly instead of silently skipping step 4 of smoke_brain.sh.
@@ -200,8 +221,17 @@ jobs:
           persist-credentials: false
       - name: Install isolated X11 and SRT presenter dependencies
         run: |
-          sudo apt-get update
-          sudo apt-get install -y ffmpeg tmux xterm xdotool xvfb x11-utils iproute2 lsof
+          for i in 1 2 3; do
+            if timeout 120 sudo apt-get update; then
+              break
+            fi
+            if [ "$i" = 3 ]; then
+              echo 'apt-get update failed 3 times; giving up' >&2
+              exit 1
+            fi
+            sleep 10
+          done
+          timeout 300 sudo apt-get install -y ffmpeg tmux xterm xdotool xvfb x11-utils iproute2 lsof
       - name: Bind a 100.64.0.0/10 address for the renderer-agent contract
         run: |
           # is_tailscale_ipv4 accepts only 100.64.0.0/10. The test binds its stub
@@ -230,8 +260,17 @@ jobs:
           persist-credentials: false
       - name: Install isolated X11 presenter dependencies
         run: |
-          sudo apt-get update
-          sudo apt-get install -y ffmpeg tmux xterm xdotool xvfb x11-utils
+          for i in 1 2 3; do
+            if timeout 120 sudo apt-get update; then
+              break
+            fi
+            if [ "$i" = 3 ]; then
+              echo 'apt-get update failed 3 times; giving up' >&2
+              exit 1
+            fi
+            sleep 10
+          done
+          timeout 300 sudo apt-get install -y ffmpeg tmux xterm xdotool xvfb x11-utils
       - name: Require a real Chromium-family browser
         run: |
           for name in google-chrome-stable google-chrome chromium chromium-browser; do

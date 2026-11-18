@@ -66,12 +66,13 @@ jobs:
     # tempfile isolation; tests needing live external state (real tmux
     # server, submodules, browsers, /proc identity) must inject fakes or
     # declare an explicit opt-in/skip gate, never fail the suite.
-    # The suite is cut into two file-level shards that run on separate runners
+    # The suite is cut into three file-level shards that run on separate runners
     # (.github/scripts/ci_shard.py), each spread over 4 pytest-xdist workers to
     # match the runner's 4 vCPUs (2 cores with hyper-threading, and the CPU model
     # varies by run, which alone moves one runner between about 6 and 12 minutes).
-    # The repository is public, so a second runner costs no minutes; it halves the
-    # time to a result. Collection must stay deterministic: a test whose node ids
+    # The repository is public, so extra runners cost no minutes; three shards
+    # keep the slowest shard comfortably inside the job timeout even as the
+    # suite grows. Collection must stay deterministic: a test whose node ids
     # depend on uuid4()/time at import time makes the workers disagree and
     # pytest-xdist aborts the entire run.
     runs-on: ubuntu-24.04
@@ -79,7 +80,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2]
+        shard: [1, 2, 3]
     env:
       TEST_SUITE: ${{ needs.test-scope.outputs.suite }}
       CI_SHARD: ${{ matrix.shard }}/${{ strategy.job-total }}
@@ -108,20 +109,33 @@ jobs:
         run: |
           if ! command -v ffmpeg >/dev/null 2>&1 || ! command -v ffprobe >/dev/null 2>&1; then
             # Hosted Ubuntu runners sometimes use a slow Azure apt mirror.
-            # Only alter the mirror in real Actions; hermetic setup tests keep
-            # the existing two apt commands and no runner-specific dependency.
+            # Only alter the mirror in real Actions; hermetic setup tests stub
+            # the helper binaries instead of touching a real package index.
             if [ "${GITHUB_ACTIONS:-}" = "true" ] && [ -f /etc/apt/apt-mirrors.txt ]; then
               sudo sed -i 's#azure.archive.ubuntu.com#archive.ubuntu.com#g' /etc/apt/apt-mirrors.txt
             fi
-            sudo apt-get update
-            sudo apt-get install -y ffmpeg
+            # A stalled apt mirror used to hang until the job timeout killed the
+            # shard without ever starting pytest (#4624). Bound every apt call
+            # and retry the index refresh; a third failure fails the step fast
+            # instead of burning the job's remaining budget.
+            for i in 1 2 3; do
+              if timeout 120 sudo apt-get update; then
+                break
+              fi
+              if [ "$i" = 3 ]; then
+                echo 'apt-get update failed 3 times; giving up' >&2
+                exit 1
+              fi
+              sleep 10
+            done
+            timeout 300 sudo apt-get install -y ffmpeg
           fi
           ffmpeg -version >/dev/null
           ffprobe -version >/dev/null
       - name: Full hermetic test suite (canonical pytest runner)
         env:
           PYTHONPATH: .github/scripts
-        run: python3 -m pytest -q -p ci_shard $(python3 .github/scripts/ci_test_scope.py targets "$TEST_SUITE") --durations=50 --durations-min=0.1 -n 4 --dist loadfile --ignore=tests/test_hanjuku_scene_process.py
+        run: python3 -m pytest -q -p ci_shard $(python3 .github/scripts/ci_test_scope.py targets "$TEST_SUITE") --durations=50 --durations-min=0.1 -n 4 --dist loadfile --ignore=tests/test_hanjuku_scene_process.py --junitxml="${{runner.temp}}/junit-${{matrix.shard}}.xml"
       - name: Single-threaded scene-process contracts (serial)
         # Runs on shard 1 only; the file is not part of the sharded collection.
         if: matrix.shard == 1
@@ -129,7 +143,18 @@ jobs:
         # in a process with exactly one thread (/proc/self/task). Every
         # pytest-xdist worker carries an execnet receiver thread, so this file
         # cannot run in a worker and stays on the serial runner.
-        run: python3 -m pytest -q tests/test_hanjuku_scene_process.py
+        run: python3 -m pytest -q tests/test_hanjuku_scene_process.py --junitxml="${{runner.temp}}/junit-serial.xml"
+      - name: Upload the pytest junit report
+        # A cancelled or timed-out run prints no --durations table, so the
+        # per-test timings survive only in the junit report (#4624). always()
+        # keeps the upload on the red paths where it matters most.
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: pytest-junit-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.shard }}
+          path: ${{ runner.temp }}/junit*.xml
+          if-no-files-found: warn
+          retention-days: 7
 
   ci-required:
     # The one check main's ruleset requires. The test job has two names and may
