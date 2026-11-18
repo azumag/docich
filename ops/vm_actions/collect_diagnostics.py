@@ -7657,6 +7657,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v1122-boss-measure-gated",
             "hanjuku-chart-v1123-boss-gate-revert",
             "hanjuku-chart-v1124-quantity-confirm",
+            "hanjuku-chart-v1130-road-defeat-settle",
             "hanjuku-chart-v1125-camp-boss-wave",
             "hanjuku-chart-v1020-recall-giveup",
             "hanjuku-chart-v1021-plan-invalid-source",
