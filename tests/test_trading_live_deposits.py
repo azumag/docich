@@ -4,7 +4,8 @@ An exchange deposit the ledger does not count is, in order: classified as part o
 snapshot (baseline), still in flight (pending), already ingested (duplicate), already covered
 by an owner cashflow (already_counted), conflicting under its id (conflict) — or recorded once
 under the exchange's own id.  A truncated history is flagged: absence then proves nothing.
-Everything is read-only on the exchange and warning-only on the ledger: nothing stops trading.
+Everything is read-only on the exchange and recorded append-only in the ledger: nothing stops
+trading, and an unexplained balance difference is not guessed at.
 """
 from decimal import Decimal as D
 
@@ -133,7 +134,7 @@ def test_a_truncated_history_is_flagged_so_a_missing_row_proves_nothing(ws):
         h.mock.faults.push("fetch_deposits", "TRUNCATED_PAGE")     # the page may be cut off
         checks = deposits.run(h.ex)
         assert checks["JPY"].complete is False and checks["JPY"].recorded == 1
-        assert not _check(h).proven(["JPY"])                       # d2 still unexplained: stays a warning
+        assert not _check(h).proven(["JPY"])                       # d2 still unexplained
         checks = deposits.run(h.ex)                                # full read next pass: no double count
         assert checks["JPY"].complete and checks["JPY"].duplicate == 1 and checks["JPY"].recorded == 1
         assert _check(h).proven(["JPY"])
@@ -157,16 +158,13 @@ def test_a_record_id_that_reappears_with_different_content_is_a_conflict_not_an_
         h.close()
 
 
-def test_an_unexplained_withdrawal_stays_a_balance_warning_and_never_stops_trading(ws):
+def test_an_unexplained_withdrawal_is_not_inferred_and_never_stops_trading(ws):
     h = _harness(ws)
     try:
         h.send(side="buy", key="b1", amount="10", price="100")
         h.mock.adjust_balance("OAS", "-3")                         # an outside withdrawal, no history for it
         assert deposits.run(h.ex)["OAS"].seen == 0
-        assert h.ex.check_balance()
-        h.advance(30)
-        h.ex.check_balance()
-        assert h.ex.monitor.warning_currencies == ("OAS",)         # the difference is reported, not guessed
+        assert [c.currency for c in _check(h).mismatches()] == ["OAS"]  # raw books show the difference
         assert h.trips() == []
         sell, _ = h.send(side="sell", key="s1", amount="5", price="99")
         assert h.state(sell.intent_id) == "FILLED"                 # nothing blocks the exit

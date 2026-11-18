@@ -5,11 +5,12 @@ balances are recorded automatically as ``auto_opening:<CCY>`` cashflows with sou
 ``exchange_history`` (see ``opening.py``), so the ledger normally explains the exchange's
 balance from its first cycle.
 
-A mismatch is only a WARNING.  ``BalanceMonitor`` confirms one from two stable checks at least
-``min_gap_s`` apart with no new fills in between and exposes the currencies as
-``warning_currencies``; it never trips a safety stop and never blocks a buy (owner decision
-2026-11-18).  ``SafetyReason.BALANCE_MISMATCH`` stays in the enum only for old rows, which a
-human can still clear.
+The comparison is evidence for resolving an UNKNOWN_SUBMISSION (``reconcile.try_resolve``): a
+NOT_CREATED conclusion needs every currency the order could have touched to be checked and
+``ok``.  It is not a periodic warning.  The comparison never trips a safety stop; for an
+ambiguous submission it can only withhold proof of NOT_CREATED, so an order that may have been
+sent is never declared absent.  ``SafetyReason.BALANCE_MISMATCH`` stays in the enum only for old
+rows, which a human can still clear (owner decision 2026-11-18).
 
 Tolerance is never a percentage of the balance.  It is the rounding unit times (1 + number of
 fills touching the currency), plus, for every fill whose fee is *unknown*, ``max_fee_rate`` times
@@ -139,39 +140,3 @@ def stable_check(ledger, reader, rules: Mapping[str, MarketRules], *, currencies
     if not same or views.fill_count(ledger) != before_fills:
         return None, False
     return check_balances(ledger, second, rules, currencies=currencies), True
-
-
-@dataclass
-class BalanceMonitor:
-    """Warn about a mismatch confirmed by two stable checks at least ``min_gap_s`` apart.
-
-    The gap keeps a balance that merely lags behind (it shows up on the next poll) from
-    becoming a warning.  ``warning_currencies`` holds the confirmed mismatch's currencies and
-    is cleared by the next stable check that finds none.  ``None`` (an unstable check) keeps
-    the previous value.  Nothing here trips a safety stop.
-    """
-    min_gap_s: float = 30.0
-    streak: int = 0
-    last_fill_count: int | None = None
-    first_at: float | None = None
-    warning_currencies: tuple[str, ...] = ()
-
-    def observe(self, ledger, result: BalanceCheckResult | None, *, now: float) -> bool:
-        """Update the warning; True only when this observation confirmed a mismatch."""
-        if result is None:                      # unstable: keep the previous value
-            return False
-        mismatches = result.mismatches()
-        if not mismatches:
-            self.streak, self.last_fill_count, self.first_at = 0, None, None
-            self.warning_currencies = ()
-            return False
-        currencies = tuple(sorted({c.currency for c in mismatches}))
-        count = views.fill_count(ledger)
-        if self.streak == 0 or self.last_fill_count != count:
-            self.streak, self.last_fill_count, self.first_at = 1, count, now
-            return False
-        if now - (self.first_at or now) < self.min_gap_s:
-            return False
-        self.streak += 1
-        self.warning_currencies = currencies
-        return True

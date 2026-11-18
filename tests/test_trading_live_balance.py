@@ -4,8 +4,6 @@ from decimal import Decimal as D
 import pytest
 
 from docich.trading.live import balance as bal
-from docich.trading.live import safety as sf
-from docich.trading.live import views
 from docich.trading.live.mock_exchange import MockFees
 from test_trading_live_support import Harness, Workspace, block_network
 
@@ -100,57 +98,12 @@ def test_the_tolerance_is_a_rounding_unit_not_a_percentage(ws):
         h.close()
 
 
-def test_two_stable_mismatches_apart_in_time_warn_but_never_trip(ws):
-    h = _harness(ws)
-    try:
-        h.send(side="buy", key="b1", amount="10", price="100")
-        h.mock.adjust_balance("OAS", "-3")           # an outside withdrawal
-        assert h.ex.check_balance() and h.trips() == []         # first sighting
-        assert h.ex.monitor.warning_currencies == ()
-        h.advance(5)
-        h.ex.check_balance()
-        assert h.trips() == []                                   # too soon: could still be lag
-        assert h.ex.monitor.warning_currencies == ()
-        h.advance(30)
-        assert h.ex.check_balance() is True
-        assert h.ex.monitor.warning_currencies == ("OAS",)
-        assert h.trips() == []                                   # a warning, never a stop
-        # Nothing wrote BALANCE_MISMATCH: there is no safety row and no safety event.
-        assert views.events_of_kind(h.ledger, "safety_trip") == []
-        assert sf.read_safety_state(h.ledger).block_new_buys is False
-        # The exit still goes out; the warning does not block it (nor buys).
-        sell, outcome = h.send(side="sell", key="s1", amount="5", price="99")
-        assert h.state(sell.intent_id) == "FILLED"
-
-        # The next stable check that agrees clears the warning.
-        h.mock.adjust_balance("OAS", "3")
-        h.ex.check_balance()
-        assert h.ex.monitor.warning_currencies == ()
-        assert h.trips() == []
-    finally:
-        h.close()
-
-
-def test_a_lagging_balance_that_catches_up_does_not_trip(ws):
-    h = _harness(ws)
-    try:
-        h.send(side="buy", key="b1", amount="10", price="100")
-        h.mock.lag_balance(2)                        # the first check reads two stale balances
-        h.ex.check_balance()
-        h.advance(40)
-        assert h.ex.check_balance() and h.trips() == []
-    finally:
-        h.close()
-
-
 def test_a_balance_that_moves_during_the_check_is_not_judged(ws):
     h = _harness(ws)
     try:
         h.send(side="buy", key="b1", amount="10", price="100")
-        calls = []
 
         def between():
-            calls.append(1)
             h.mock.adjust_balance("JPY", "1")
 
         result, stable = bal.stable_check(h.ledger, h.mock, h.ex.rules(), currencies=["JPY"], between=between)
@@ -159,17 +112,7 @@ def test_a_balance_that_moves_during_the_check_is_not_judged(ws):
         h.close()
 
 
-def test_checks_wait_while_an_order_is_in_flight(ws):
-    h = _harness(ws)
-    try:
-        h.mock.faults.push("submit", "LOST_RESPONSE")
-        h.send(side="buy", key="b1", amount="10", price="100")
-        assert h.ex.check_balance() is False
-    finally:
-        h.close()
-
-
-def test_a_failing_order_lookup_does_not_turn_a_normal_fill_into_a_balance_mismatch(ws):
+def test_a_failing_order_lookup_is_retried_and_never_trips(ws):
     h = _harness(ws)
     try:
         h.send(side="buy", key="b1", amount="10", price="90")          # resting
@@ -186,41 +129,5 @@ def test_a_failing_order_lookup_does_not_turn_a_normal_fill_into_a_balance_misma
         h.advance(40)
         h.ex.step()
         assert h.trips() == []
-    finally:
-        h.close()
-
-
-def test_an_unstable_check_keeps_the_previous_warning(ws):
-    h = _harness(ws)
-    try:
-        h.send(side="buy", key="b1", amount="10", price="100")
-        h.mock.adjust_balance("OAS", "-3")
-        h.ex.check_balance()
-        h.advance(30)
-        h.ex.check_balance()
-        assert h.ex.monitor.warning_currencies == ("OAS",)
-
-        # stable_check returns None while the balance moves between its two reads (the
-        # executor does not even call observe then); observe(None) must keep the warning.
-        h.ex.monitor.observe(h.ledger, None, now=h.clock.seconds() + 60)
-        assert h.ex.monitor.warning_currencies == ("OAS",)
-        assert h.trips() == []
-    finally:
-        h.close()
-
-
-def test_a_mismatch_with_no_proof_of_instability_is_never_a_safety_event(ws):
-    h = _harness(ws)
-    try:
-        h.send(side="buy", key="b1", amount="10", price="100")
-        h.mock.adjust_balance("JPY", "-100")
-        for _ in range(5):
-            h.ex.check_balance()
-            h.advance(31)
-        assert h.ex.monitor.warning_currencies == ("JPY",)
-        assert h.trips() == []
-        assert views.events_of_kind(h.ledger, "safety_trip") == []
-        sell, outcome = h.send(side="sell", key="s1", amount="10", price="99")
-        assert h.state(sell.intent_id) == "FILLED"
     finally:
         h.close()

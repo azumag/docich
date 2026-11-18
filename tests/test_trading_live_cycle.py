@@ -227,6 +227,7 @@ def test_a_normal_monitor_cycle_runs_the_steps_in_order(ws, harnesses, monkeypat
     assert report.fresh_symbols == ("OAS/JPY",) and report.stale_symbols == ()
     assert report.block_reasons == ()
     assert rig.hook_calls == []                      # monitor mode never decides
+    assert rig.reader.balance_calls == 1             # no routine double read around order polling
 
     expected = ["gate", "lease", "health", "step", "balance", "frame:OAS/JPY"]
     first = [calls.index(item) for item in expected]
@@ -896,16 +897,20 @@ def test_the_real_bitbank_reader_health_returns_to_continue_after_failures(ws, h
     # the scripted balance failures are a block, never a terminal outcome
     assert [row[0] for row in table] == list(range(1, 11))
     assert [row[1] for row in table] == [CycleOutcome.CONTINUE] * 10
-    assert [(row[0], row[3]) for row in table if row[3]] == [(1, ("balance_unavailable",))]
+    assert [(row[0], row[3]) for row in table if row[3]] == [
+        (1, ("balance_unavailable",)),
+        (2, ("balance_unavailable",)),
+        (3, ("balance_unavailable",)),
+    ]
     assert table[0][4] >= 1                               # the failed reads were actually counted
     assert hook == []                                     # monitor mode never decides
 
-    # cycle 1 could not read the balance; the first balance read of cycle 2 fails too, then step 7's
-    # read succeeds and resets the reader, so the first clean report is cycle 2
-    recovered = next(row for row in table if row[0] > 1 and not row[3])
-    assert recovered[0] == 2
+    # step 7 makes one assets read per normal cycle, so cycles 1-3 each consume one of the three
+    # scripted 503s; cycle 4's read is the first to succeed and resets the reader's failure count
+    recovered = next(row for row in table if not row[3])
+    assert recovered[0] == 4
     assert recovered[1] is CycleOutcome.CONTINUE
-    assert recovered[5] == 0
+    assert recovered[4] == 0
     assert all(row[5] == 0 for row in table)
     assert state.consecutive_failures == 0
 
@@ -949,58 +954,16 @@ def test_next_wait_never_overflows():
     assert next_wait(30.0, 5) == 300.0
 
 
-# ---- balance warnings: per-cycle fact, never a block --------------------------------------
-def test_balance_warnings_are_copied_to_the_report_and_cleared_next_cycle(ws, harnesses):
+# ---- no periodic balance warning: a difference is not a cycle fact ---------------------------
+def test_an_account_balance_difference_is_not_a_cycle_fact(ws, harnesses):
     h = harnesses(gate_open=False)
     rig = make_rig(ws, h)
-    h.mock.adjust_balance("JPY", "-100")        # ledger expects 10000, exchange says 9900
-
-    assert rig.executor.check_balance() is True       # first stable sighting: streak 1
-    h.advance(31)
-    assert rig.executor.check_balance() is True       # confirmed
-    assert rig.executor.monitor.warning_currencies == ("JPY",)
-
-    first = run_cycle(rig.deps, rig.state)
-    assert first.outcome is CycleOutcome.CONTINUE
-    assert first.balance_warnings == 1
-    assert rig.state.balance_warnings == 1
-    assert _trip_reasons(h.ledger) == []
-
-    h.mock.adjust_balance("JPY", "100")               # the balance agrees again
-    second = run_cycle(rig.deps, rig.state)
-    assert second.outcome is CycleOutcome.CONTINUE
-    assert second.balance_warnings == 0
-    assert rig.state.balance_warnings == 0
-    assert rig.executor.monitor.warning_currencies == ()
-    assert _trip_reasons(h.ledger) == []
-
-
-def test_balance_warnings_start_at_zero_for_every_cycle(ws, harnesses):
-    h = harnesses(gate_open=False)
-    rig = make_rig(ws, h)
-    rig.state.balance_warnings = 7                  # a stale value from an earlier cycle
-    report = run_cycle(rig.deps, rig.state)
-    assert report.outcome is CycleOutcome.CONTINUE
-    assert report.balance_warnings == 0
-    assert rig.state.balance_warnings == 0
-
-
-def test_two_mismatched_currencies_are_counted_twice(ws, harnesses):
-    h = harnesses()
-    h.mock.set_book("OAS/JPY", asks=[(D("100"), D("1000"))],
-                    bids=[(D("99"), D("1000"))])
-    h.send(side="buy", key="seed", amount="10", price="100")
-    rig = make_rig(ws, h)
-    h.mock.adjust_balance("JPY", "-100")
-    h.mock.adjust_balance("OAS", "-3")
-
-    rig.executor.check_balance()
-    h.advance(31)
-    rig.executor.check_balance()
-    assert rig.executor.monitor.warning_currencies == ("JPY", "OAS")
+    h.mock.adjust_balance("JPY", "-100")             # the exchange is below the ledger's expectation
 
     report = run_cycle(rig.deps, rig.state)
+
     assert report.outcome is CycleOutcome.CONTINUE
-    assert report.balance_warnings == 2
-    assert rig.state.balance_warnings == 2
+    assert not hasattr(report, "balance_warnings")
+    assert not hasattr(rig.state, "balance_warnings")
+    assert rig.reader.balance_calls == 1             # only step 7's single snapshot
     assert _trip_reasons(h.ledger) == []

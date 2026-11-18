@@ -43,7 +43,7 @@ ALLOWED_KEYS = frozenset({
     "schema_version", "written_at", "started_at", "pid", "phase", "cycle", "mode",
     "outcome", "reason", "blocks", "fresh_symbols", "stale_symbols",
     "consecutive_failures", "record_failures", "ttl_deferred", "ttl_failed",
-    "balance_warnings", "control_state", "control_mode", "policy_set_digest", "inert_reason",
+    "control_state", "control_mode", "policy_set_digest", "inert_reason",
     "exit_code", "interval_ms",
     "market_gap_scope", "market_stale_count",
     "market_gap_since", "market_gap_seconds",
@@ -52,7 +52,7 @@ ALLOWED_KEYS = frozenset({
 TRUNCATED_KEYS = frozenset({"policy_set_digest"})
 GAP_SCOPES = frozenset({"none", "partial", "all"})
 NON_NEGATIVE_KEYS = frozenset({
-    "balance_warnings", "market_stale_count", "market_gap_since", "market_gap_seconds",
+    "market_stale_count", "market_gap_since", "market_gap_seconds",
     "market_all_stale_since", "market_all_stale_seconds", "market_all_stale_cycles",
 })
 ALLOWED_PHASES = PHASE_SET

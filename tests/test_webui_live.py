@@ -82,11 +82,12 @@ class TestLiveSnapshot(unittest.TestCase):
         ledger = self.ws.open_ledger(now=NOW)
         ledger.close()
 
-        # The writer already drops unknown keys; inject one to prove the reader filters too.
+        # The writer already drops unknown keys; inject them to prove the reader filters too.
         path = status_path(self.ws.state)
         raw = json.loads(path.read_text(encoding="utf-8"))
         raw["unknown_key"] = "SENTINEL-UNKNOWN"
         raw["balance"] = "12345"
+        raw["balance_warnings"] = 2                    # an obsolete legacy worker key
         path.write_text(json.dumps(raw), encoding="utf-8")
 
         snapshot = live_snapshot(self.ws.state, now=NOW)
@@ -99,7 +100,7 @@ class TestLiveSnapshot(unittest.TestCase):
         self.assertEqual(snapshot["overview"]["pnl"]["total"], "0")
         self.assertTrue(snapshot["worker_alive"])
         self.assertEqual(snapshot["status"]["cycle"], 3)
-        self.assertEqual(snapshot["status"]["balance_warnings"], 2)
+        self.assertNotIn("balance_warnings", snapshot["status"])
         self.assertEqual(snapshot["status"]["policy_set_digest"], "0123456789ab")
         self.assertLessEqual(set(snapshot["status"]), ALLOWED_KEYS)
         self.assertNotIn("unknown_key", snapshot["status"])
@@ -1076,7 +1077,7 @@ __SNIPPET__
         self.assertLess(nav.index('data-tab="live"'), nav.index('data-tab="stream"'))
         self.assertIn('id="tab-live"', html)
         for element_id in (
-            "live-state", "live-mode", "live-worker", "live-last-cycle", "live-warnings",
+            "live-state", "live-mode", "live-worker", "live-last-cycle",
             "live-trips", "live-policy", "live-ledger", "live-on-shadow", "live-on-trade",
             "live-off", "live-trade-confirm", "live-refresh", "live-pnl-total",
             "live-pnl-round-trips", "live-pnl-win-rate", "live-pnl-symbols",

@@ -21,7 +21,6 @@ from enum import Enum
 from typing import Callable
 
 from . import deposits, fence, reconcile, views
-from .balance import BalanceMonitor, stable_check
 from .exchange import (Guarded, ExchangeAmbiguous, ExchangeDataError, ExchangeError, ExchangeReader, ExchangeRejected,
                        MarketRules, OrderNotFound, OrderRequest, OrderSender, make_client_order_id)
 from .ingest import ExecutorConfig, Ingestor
@@ -50,7 +49,6 @@ class StepReport:
     resolved: list[str] = field(default_factory=list)
     refreshed: int = 0
     swept: bool = False
-    balance_checked: bool = False
     deposits: dict = field(default_factory=dict)   # per-currency DepositCheck from deposits.run (#4587)
 
 
@@ -65,7 +63,6 @@ class OrderExecutor:
         self.sender = None if sender is None else Guarded(sender)
         self.enable_check, self.clock, self.symbols, self.config = enable_check, clock, tuple(symbols), config
         self.ingest = Ingestor(ledger, lease, self.reader, config, clock)
-        self.monitor = BalanceMonitor()
         self._rules: dict[str, MarketRules] = {}
         self._steps = 0
         self.sweep_since_ms: dict[str, int] = {}
@@ -204,49 +201,8 @@ class OrderExecutor:
         if self._steps == 1 or self._steps % max(1, self.config.cashflow_every) == 0:
             report.deposits = deposits.run(self)
         self.ingest.close_flat_positions()
-        report.balance_checked = self.check_balance()
         return report
-
-    def quiet(self) -> bool:
-        if self.ledger.list_intents(states=("SUBMITTING", "UNKNOWN_SUBMISSION")):
-            return False
-        for intent in self.ledger.list_intents(states=("ACKED", "PARTIALLY_FILLED")):
-            row = views.order_row(self.ledger, intent.exchange_order_id or "")
-            fills = views.fills_for_order(self.ledger, intent.exchange_order_id or "")
-            if row is None or sum((f.amount for f in fills), Decimal(0)) != row.executed_amount:
-                return False
-        return True
 
     def watched_currencies(self) -> tuple[str, ...]:
         rules = self.rules()
         return tuple(sorted({r.quote for r in rules.values()} | {r.base for r in rules.values()}))
-
-    def check_balance(self) -> bool:
-        """Compare ledger and exchange balances when nothing is in flight.  True if a stable check ran."""
-        if not self.quiet():
-            return False
-
-        behind: list[str] = []
-
-        def between():
-            # the ledger must be up to date *inside* the two balance reads: refresh every open order, and
-            # judge nothing if any refresh failed or found something it cannot account for
-            for intent in self.ledger.list_intents(states=("ACKED", "PARTIALLY_FILLED")):
-                outcome = self.ingest.refresh(intent, tick=False)
-                if outcome in ("unavailable", "missing", "data_error", "anomaly", "no_order"):
-                    behind.append(outcome)
-            for symbol in self.symbols:
-                self.reader.fetch_open_orders(symbol)
-
-        try:
-            result, stable = stable_check(self.ledger, self.reader, self.rules(), currencies=self.watched_currencies(),
-                                          between=between)
-        except ExchangeAmbiguous:
-            return False
-        except ExchangeDataError as exc:
-            self.ingest.anomaly(f"fetch_balance: {exc}")
-            return False
-        if not stable or behind or not self.quiet():
-            return False
-        self.monitor.observe(self.ledger, result, now=self.clock())
-        return True

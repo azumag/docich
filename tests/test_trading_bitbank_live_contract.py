@@ -140,7 +140,8 @@ def test_a_filled_buy_and_sell_through_the_bitbank_reader(ws):
         assert h.state(buy.intent_id) == "FILLED"
         sell, _ = h.send(side="sell", key="s1", amount="10", price="99")
         assert h.state(sell.intent_id) == "FILLED"
-        assert h.ex.step().balance_checked and h.trips() == []
+        h.ex.step()
+        assert h.trips() == []
     finally:
         h.close()
 

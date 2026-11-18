@@ -3,7 +3,7 @@
 ``run_cycle`` performs the non-decision steps of one cycle in a fixed order: read the
 owner's on/off control switch, check the writer lease, look at the exchange reader's health, reload
 the market rules on their cadence, run ``OrderExecutor.step`` (poll/resolve/sweep/close
-flat positions/check the balance), fetch one balance snapshot, fetch one market frame per
+flat positions), fetch one balance snapshot, fetch one market frame per
 symbol and keep only the fresh ones, read the persisted safety state, then hand the
 per-cycle facts to the ``decide`` hook.
 
@@ -206,7 +206,6 @@ class CycleState:
     ttl_deferred: int = 0                        # per-cycle TTL facts: reset at the top of every cycle
     ttl_failed: int = 0
     record_failures: int = 0
-    balance_warnings: int = 0                    # per-cycle: confirmed mismatch currencies
     shadow_dedupe: dict = field(default_factory=dict)  # shadow-only decision dedupe
     shadow_book: object | None = None                  # in-process projection cache (replayed on restart)
 
@@ -237,7 +236,6 @@ class CycleReport:
     stale_symbols: tuple[str, ...]
     control_state: str
     control_mode: str | None
-    balance_warnings: int = 0
     market_gap: MarketGapReport = field(default_factory=MarketGapReport)
 
 
@@ -258,7 +256,6 @@ def _report(outcome: CycleOutcome, state: CycleState, mode: str | None, reason: 
                        fresh_symbols=tuple(sorted(fresh)), stale_symbols=tuple(sorted(stale)),
                        control_state=_control_state(enable),
                        control_mode=None if enable is None else enable.mode,
-                       balance_warnings=max(0, int(state.balance_warnings)),
                        market_gap=state.market_gap.report())
 
 
@@ -316,15 +313,6 @@ def _health_failures(health: object) -> int:
         return 0
 
 
-def _balance_warnings(executor) -> int:
-    """How many currencies the last confirmed balance check warned about (never negative)."""
-    try:
-        currencies = getattr(getattr(executor, "monitor", None), "warning_currencies", ())
-        return max(0, len(currencies))
-    except Exception:
-        return 0
-
-
 def _run_cycle(deps: CycleDeps, state: CycleState) -> CycleReport:
     """Run steps 0-9 and 14 of one cycle; ``run_cycle`` contains any exception escaping here."""
     state.cycle_number += 1
@@ -332,7 +320,6 @@ def _run_cycle(deps: CycleDeps, state: CycleState) -> CycleReport:
     state.ttl_deferred = 0
     state.ttl_failed = 0
     state.record_failures = 0
-    state.balance_warnings = 0
     cycle_number = state.cycle_number
     now = float(deps.clock())
 
@@ -381,7 +368,7 @@ def _run_cycle(deps: CycleDeps, state: CycleState) -> CycleReport:
     except LeaseLost as exc:
         return _lease_lost(deps, state, mode, now, str(exc), enable=enable)
 
-    # 6. poll/resolve/sweep/close-flat/check-balance
+    # 6. poll/resolve/sweep/close-flat
     try:
         deps.executor.step()
     except LeaseLost:
@@ -393,10 +380,6 @@ def _run_cycle(deps: CycleDeps, state: CycleState) -> CycleReport:
         return _finish(deps, state, CycleOutcome.CYCLE_FAILED, mode,
                        f"step_failed:{type(exc).__name__}", block_reasons, (), (), now,
                        enable=enable)
-
-    # The balance monitor only warns: its confirmed mismatch currencies are a per-cycle
-    # fact for the status file, never a block and never a safety trip.
-    state.balance_warnings = _balance_warnings(deps.executor)
 
     # 7. one fresh balance snapshot; without it no decision can be made safely
     balance = None

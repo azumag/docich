@@ -42,12 +42,13 @@ def _buy(h, key="b1", amount="10", price="100"):
 
 
 # ---- the happy path ------------------------------------------------------------------------
-def test_buy_that_crosses_the_book_is_filled_recorded_and_the_balance_checks_out(h):
+def test_buy_that_crosses_the_book_is_filled_and_recorded(h):
     intent, outcome = _buy(h)
     assert outcome is S.ACKED and h.state(intent.intent_id) == "FILLED"
     fills = views.fills_for_order(h.ledger, h.ledger.get_intent(intent.intent_id).exchange_order_id)
     assert len(fills) == 1 and fills[0].amount == 10 and fills[0].fee_status == "known"
-    assert h.ex.step().balance_checked and h.trips() == []
+    h.ex.step()
+    assert h.trips() == []
     assert views.position_net_base(h.ledger, intent.position_id) == 10
 
 
@@ -72,7 +73,8 @@ def test_sell_after_buy_closes_the_position(h):
     assert outcome is S.ACKED and h.state(sell.intent_id) == "FILLED"
     with h.ledger.read_cursor() as cur:
         assert cur.execute("SELECT status FROM positions WHERE position_id=?", (buy.position_id,)).fetchone()[0] == "closed"
-    assert h.ex.step().balance_checked and h.trips() == []
+    h.ex.step()
+    assert h.trips() == []
 
 
 # ---- gates and local checks ----------------------------------------------------------------
@@ -489,7 +491,7 @@ def test_a_duplicated_unknown_fee_fill_ticks_the_grace_counter_once_per_poll(h):
     assert views.all_fills(h.ledger)[0].fee_status == "known" and h.trips() == []
 
 
-def test_the_balance_check_does_not_make_the_missing_order_counter_tick_twice(ws):
+def test_each_regular_step_increments_the_missing_order_counter_once(ws):
     h = Harness(ws, config=ExecutorConfig(settle_s=120.0, sweep_every=1, fill_lag_polls=2))
     try:
         intent, _ = _buy(h, price="90")
