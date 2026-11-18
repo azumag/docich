@@ -105,7 +105,9 @@ def test_world_region_dies_with_the_chapter_but_journal_survives():
 def test_migrated_departure_and_recall_keys_live_in_their_regions():
     # Stage-2: sortie_attempt / launch_probe / recall family moved from
     # declared-only (stage 1) into their owning regions.
-    for key, region in (('sortie_attempt', FLOW), ('launch_probe', FLOW),
+    # v1154: launch_probe is a WORLD fact — the departure survey must outlive
+    # the deploy transaction (g1190 2026-11-19 run 5: #4626).
+    for key, region in (('sortie_attempt', FLOW), ('launch_probe', WORLD),
                         ('launch_miss', FLOW), ('recall', FLOW),
                         ('recall_verification', FLOW), ('recall_retry', FLOW),
                         ('recall_skip', FLOW), ('recall_skip_target', FLOW),
