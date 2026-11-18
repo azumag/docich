@@ -16,6 +16,7 @@ from ..version import BOT_VERSION
 from .deploy import (_cancel_broken_hero_sortie, _deploy_context, _deploy_input, _hold_deploy,
                             _hold_guarded_sortie, _hold_locked_boss, _hold_unrouted_sortie)
 from .recall import (MENU_HOLD_LIMIT, RECALL_LIMIT, _hold_after_picker, _recall_dispatch_step, _request_recall,
+                    RELAY_MENU_WAIT,
                     relay_from_picker,
                             camp_recall_step)
 from ..os_layer.commands import VISIBLE_LIST_RELEASE_MS, castle_list_batch, menu_to, pad
@@ -394,6 +395,18 @@ def world_map_step(screen, mem, frame):
                 return routed
         return _y_jump_step(mem, frame)
     recall = _flow(mem).get('recall')
+    if (isinstance(recall, dict) and recall.get('relay')
+            and recall.get('stage') == 'menu' and screen.kind == 'world_map'):
+        # relay_from_picker re-aimed this camp at the relay cell and sent the B
+        # that closes the picker. The picker screen stays for an observation or
+        # two and this function owns it; without a hold the stage-is-dest
+        # branch below is skipped and the generic world_map path drops the
+        # recall flow (live 2026-11-18 09:53: stage menu+relay, then task done).
+        waits = int(recall.get('relay_menu_waits') or 0) + 1
+        recall['relay_menu_waits'] = waits
+        if waits <= RELAY_MENU_WAIT:
+            return []
+        recall['relay_menu_waits'] = 0
     if recall and recall.get('stage') == 'await_dispatch':
         return _recall_dispatch_step(screen, mem, recall)
     if recall and recall.get('boss') and recall.get('stage') == 'dest':
