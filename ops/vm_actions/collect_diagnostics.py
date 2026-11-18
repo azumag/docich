@@ -7648,6 +7648,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v1113-recruit-shortage",
             "hanjuku-chart-v1114-army-recheck",
             "hanjuku-chart-v1115-boss-moved-reaim",
+            "hanjuku-chart-v1116-boss-relaunch-free",
             "hanjuku-chart-v1020-recall-giveup",
             "hanjuku-chart-v1021-plan-invalid-source",
             "hanjuku-chart-v1041-egg-receipt-presence",
