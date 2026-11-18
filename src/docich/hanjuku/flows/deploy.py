@@ -10,7 +10,7 @@ from ..state.regions import world as _world, flow as _flow, journal as _journal,
 import re
 import time
 
-from ..os_layer.screen import Screen
+from ..os_layer.screen import Screen, month_confirmation_positions
 from ..os_layer.font import UNKNOWN
 from ... import hanjuku_chart as chart, hanjuku_chart_adjust as chart_adjust, hanjuku_reference as reference
 from ...hanjuku_egg_reference import enemy_egg_triggers, general_max_hp
@@ -18,7 +18,8 @@ from ..decision_log import _record
 from ..os_layer.commands import (MENU_NAV_BATCH_MAX, MENU_NAV_RELEASE_MS, general_list_batch,
                                  menu_to, pad)
 from ..os_layer.readers import (CASTLE_STATUS, STATUS_NAMES, _empty_sortie_inventory, _general_visible,
-                                _measured_card_select, _options, _present_generals, _sortie_inventory, _current)
+                                _measured_card_select, _options, _present_generals,
+                                _sortie_inventory, _current, month_menu_ready)
 from ..os_layer.world import NAME, _en_route, _owned
 from ..state import egg_memory
 from ..strategy.boss_cards import UNSEEN, boss_card_reserved, boss_kit
@@ -1825,6 +1826,11 @@ def resume_sortie_step(screen: Screen, mem):
 
 
 CHAPTER_PROBE_OPEN_LIMIT = 3   # status openings per month while the chapter is unknown
+CHAPTER_PROBE_MAP_OPEN_LIMIT = 3   # field A presses per month that try to open the interior menu
+CHAPTER_PROBE_MAIN_OPEN_LIMIT = 3  # メインメニュー openings per month while the chapter is unknown
+# Screen kinds the chapterless probe owns: the free field and every menu on the
+# map -> 城内メニュー (month layout) -> メインメニュー -> ステータス route.
+CHAPTER_PROBE_KINDS = frozenset({'map', 'month_menu', 'main_menu', 'castle_menu', 'castle_info'})
 
 
 def chapterless_status_step(screen: Screen, mem):
@@ -1834,6 +1840,14 @@ def chapterless_status_step(screen: Screen, mem):
     dispatch branch waiting for one, so the castle menu looped on B/A forever.
     The status panel names the castle; observe_events turns a name unique to
     one chapter into the chapter. A name still unresolved here is ambiguous.
+
+    #4530: a battery-save resume left the same chapterless bot on the free
+    map, where no flow ever opens a menu and the hold never ends. One measured
+    A on the field opens the castle's interior menu (the month-menu layout),
+    whose メインメニュー row is the only route to ステータス from there, so
+    the probe walks map -> month_menu(メインメニュー) -> main_menu(ステータス)
+    -> status panel. Every input is bounded per month; unreadable screens and
+    foregrounds owned by someone else fail closed.
     """
     if mem.get('chapter'):
         mem.pop('chapter_probe', None)
@@ -1851,6 +1865,48 @@ def chapterless_status_step(screen: Screen, mem):
                 observed_metric={'castle': name, 'opens': probe['opens']},
                 reason='城名が複数の章に存在するため章を確定できない')
         return [pad('b')]
+    if screen.kind == 'map':
+        # A chapterless plan can never start, so an active order, a battle or
+        # a monthly/repair session is the only way the field is already owned.
+        # One bounded A opens the interior menu for the two-stage route below.
+        if (_plan_region(mem).get('active') or mem.get('battle')
+                or mem.get('month_sub') or mem.get('house')):
+            return []
+        presses = int(probe.get('map_presses') or 0)
+        if presses >= CHAPTER_PROBE_MAP_OPEN_LIMIT:
+            return []
+        probe['map_presses'] = presses + 1
+        _record(mem, 'chapter_probe_field_open', screen=screen.kind,
+                observed_metric={'presses': probe['map_presses'], 'month': probe.get('month')},
+                reason='章が未確定で計画も無いためAで城内メニューを開き、城名から章を確認する')
+        return [pad('a')]
+    if screen.kind == 'castle_info':
+        # An information panel without a resolvable castle name carries no
+        # chapter evidence; close it to reach the menu behind it.
+        return [pad('b')]
+    if screen.kind == 'month_menu':
+        if month_confirmation_positions(screen):
+            # A うむッ/いかんッ choice over the menu is declined, never
+            # confirmed: B returns to the menu and the probe continues.
+            return [pad('b')]
+        # ready = menu hand in the grid, no confirmation/amount picker, and no
+        # recruitment dialogue. An unreadable foreground holds: a selected
+        # row's help line is decoration, not a dialogue owner.
+        if not month_menu_ready(screen):
+            return []
+        presses = int(probe.get('main_opens') or 0)
+        if presses >= CHAPTER_PROBE_MAIN_OPEN_LIMIT:
+            return []
+        move = menu_to(screen, 'メインメニュー')
+        if move is None:
+            return []
+        if move != 'here':
+            return [move]
+        probe['main_opens'] = presses + 1
+        _record(mem, 'chapter_probe_main_menu', screen=screen.kind,
+                observed_metric={'opens': probe['main_opens'], 'month': probe.get('month')},
+                reason='章が未確定のためメインメニューを開いてステータスへの経路を確保する')
+        return [pad('a')]
     if int(probe.get('opens') or 0) >= CHAPTER_PROBE_OPEN_LIMIT:
         return []
     move = menu_to(screen, 'ステータス')

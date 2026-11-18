@@ -1427,11 +1427,15 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
         # selected save with A; the prompt itself is the evidence.
         import re as _re
         loaded_chapter = _re.search(r'だい(\d{1,2})わ', screen.text or '')
-        if loaded_chapter is not None and 1 <= int(loaded_chapter.group(1)) <= 12:
+        if (loaded_chapter is not None and 1 <= int(loaded_chapter.group(1)) <= 12
+                and int(loaded_chapter.group(1)) != mem.get('chapter')):
             # The save slot names its chapter ("だい9わ"). A fresh policy after
             # a load otherwise keeps chapter None and the corridor plan has no
-            # orders to run (g1190 2026-11-15).
-            mem['chapter'] = int(loaded_chapter.group(1))
+            # orders to run (g1190 2026-11-15). Enter through the canonical
+            # path so the loaded game's chapter-scoped state starts clean.
+            campaign._enter_chapter(mem, int(loaded_chapter.group(1)),
+                evidence='save_slot',
+                reason='セーブのロード画面の章表示を確認したため、読み込む章として確定する')
         decision_log._record(mem, 'load_screen_confirm', screen=kind,
                              observed_metric={'text': (screen.text or '')[-40:],
                                               **({'chapter': mem.get('chapter')}
@@ -1843,12 +1847,14 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
             decision_log._record(mem,'situation_held',screen=kind,
                            reason='いばら消滅表示を確認したが章を確定できないため保留')
             actions=[]
+    elif kind in deploy_flow.CHAPTER_PROBE_KINDS and not mem.get('chapter'):
+        # docich#4530: with no chapter no chart plan can run, so the bounded
+        # field -> interior menu -> status route is the only way to learn it.
+        actions=deploy_flow.chapterless_status_step(screen,mem)
     elif kind=='month_menu':
         actions=month_flow.month_step(screen,mem)
     elif kind in {'shop_list','shop_quantity_prompt','shop_quantity','shop_exit_confirm'}:
         actions=shop_flow.shop_step(screen,mem)
-    elif kind=='castle_menu' and not mem.get('chapter'):
-        actions=deploy_flow.chapterless_status_step(screen,mem)
     elif kind in {'castle_menu','general_list','card_select','sortie_confirm'} and mem.get('chapter'):
         actions=deploy_flow.deploy_step(screen,mem)
     elif kind=='map_target' and mem.get('chapter'):
