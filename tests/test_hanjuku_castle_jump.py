@@ -1027,3 +1027,21 @@ def test_a_refused_y_route_is_offered_once_then_walks(monkeypatch):
     screen = _screen('map', [], cursor=(80, 90))
     assert M.map_step(screen, mem, None) == [M.pad('right')]
     assert 'castle_jump_y' not in mem
+
+
+def test_a_slow_menu_draw_is_not_declared_missing():
+    # docich#4658: the jump gave up at age 4 while the menu was still drawing,
+    # so 106 of 106 trips ended menu_not_open and no order ever launched.
+    mem = _memory()
+    mem['castle_jump'] = {'step': 'J1', 'source': 'アルマムーン',
+                          'phase': 'menu', 'age': 0,
+                          'total': 0, 'tick': 0, 'menu_presses': 1}
+    field = _screen('map', [])
+    for _ in range(M.CASTLE_JUMP_MENU_WAIT - 1):
+        actions = M.castle_jump_step(field, mem, None)
+        assert actions in ([], [M.pad('x')])
+        assert not [r for r in mem['_records']
+                    if r.get('decision') == 'castle_jump_failed']
+    # The menu finally draws: the jump keeps navigating instead of failing.
+    assert M.castle_jump_step(_main_menu(hand_y=39), mem, None) == [M.pad('down')]
+    assert mem['castle_jump'][ 'phase' ] == 'menu'

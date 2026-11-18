@@ -1079,6 +1079,11 @@ def _watch_cursor_still(mem):
 # the cursor to that castle (manual p.15: 将軍と同じく、セレクトボタンでその城へ飛べる).
 CASTLE_JUMP_HINT = 'Aボタンでステータスひょうじ'
 CASTLE_JUMP_LIMIT = 48          # observations across the whole menu trip
+# docich#4658: menu draw timing for the X jump. The retry must come
+# after the first X had time to draw, and the wait must be long
+# enough that a slow menu is not declared missing.
+CASTLE_JUMP_MENU_RETRY_AGE = 6
+CASTLE_JUMP_MENU_WAIT = 12
 # The しろ list is an eight-row window (y=39..151). In the observed failures
 # it opened on the home castle at row 0, so reaching the last row of a
 # 12-castle chapter needs 11 Downs. The old bound of 8 stopped at row 8 and
@@ -1451,10 +1456,16 @@ def castle_jump_step(screen, mem, frame):
         if screen.kind == 'map':
             # Give the first X a few observations to draw the menu; a second
             # X too early would close the menu it just opened.
-            if jump['age'] >= 3 and int(jump.get('menu_presses') or 0) < 2:
+            # docich#4658: the X sent when the jump starts needs a few
+            # frames to draw the menu. A second X while the frame still
+            # reads 'map' closed the menu it had just opened, and the
+            # jump gave up at age 4 (g1190 ch1: 106 of 106 failures were
+            # menu_not_open). Retry once late and wait a bounded window.
+            if (jump['age'] >= CASTLE_JUMP_MENU_RETRY_AGE
+                    and int(jump.get('menu_presses') or 0) < 2):
                 jump['menu_presses'] = int(jump.get('menu_presses') or 0) + 1
                 return [pad('x')]
-            if jump['age'] < 4:
+            if jump['age'] < CASTLE_JUMP_MENU_WAIT:
                 return []
             return _end_castle_jump(screen, mem, 'menu_not_open')
         if screen.kind == 'unknown':
@@ -1756,10 +1767,16 @@ def general_jump_step(screen, mem, frame):
 
     if phase == 'menu':
         if screen.kind == 'map':
-            if jump['age'] >= 3 and int(jump.get('menu_presses') or 0) < 2:
+            # docich#4658: the X sent when the jump starts needs a few
+            # frames to draw the menu. A second X while the frame still
+            # reads 'map' closed the menu it had just opened, and the
+            # jump gave up at age 4 (g1190 ch1: 106 of 106 failures were
+            # menu_not_open). Retry once late and wait a bounded window.
+            if (jump['age'] >= CASTLE_JUMP_MENU_RETRY_AGE
+                    and int(jump.get('menu_presses') or 0) < 2):
                 jump['menu_presses'] = int(jump.get('menu_presses') or 0) + 1
                 return [pad('x')]
-            if jump['age'] < 4:
+            if jump['age'] < CASTLE_JUMP_MENU_WAIT:
                 return []
             return _end_general_jump(screen, mem, 'menu_not_open')
         if screen.kind == 'unknown':
