@@ -141,6 +141,7 @@ def observe_sortie_transition(screen, mem, previous_kind=None):
     _world(mem).setdefault('sorties', {})[step] = {
         'general': general, 'source': snapshot['source'], 'target': None,
         'planned_target': order['target'], 'status': 'launched_unconfirmed',
+        'aimed_cell': (list((chart.castles(mem.get('chapter') or 0) or {}).get(order['target']) or ()) or None),
         'evidence': deepcopy({k: v for k, v in context.items() if k != 'departure_order'}),
         'tick': int(mem.get('tick') or 0),
         **({'confirmation_tick': snapshot['departure_binding']['confirm_tick']}
@@ -2160,10 +2161,13 @@ def _commit_departure(mem, order, context, snapshot):
     previous = _sorties(mem).get(order['step'])
     if previous:
         _retire_unentered_sortie(mem, order['step'], previous)
+    chapter = mem.get('chapter') or 0
+    castles = chart.castles(chapter)
     _world(mem).setdefault('sorties', {})[order['step']] = {
         'general': general, 'source': snapshot['source'],
         'target': order['target'], 'status': 'en_route',
         'purpose': snapshot.get('purpose'),
+        'aimed_cell': (list(castles[order['target']]) if order['target'] in castles else None),
         'evidence': deepcopy({k: v for k, v in
             ((_plan_region(mem).get('order_context') or {}).get(order['step']) or {}).items()
             if k != 'departure_order'}),
@@ -2171,8 +2175,6 @@ def _commit_departure(mem, order, context, snapshot):
         **({'confirmation_tick': snapshot['departure_binding']['confirm_tick']}
            if 'departure_binding' in snapshot else {})}
     ((_plan_region(mem).get('order_context') or {}).get(order['step']) or {}).pop('departure_order', None)
-    chapter = mem.get('chapter') or 0
-    castles = chart.castles(chapter)
     if (WORLD_MAP_OFFSET.get(chapter) and order['target'] in castles
             and snapshot['source'] in castles):
         # A sent A plus a closed picker is still not proof the unit left.
