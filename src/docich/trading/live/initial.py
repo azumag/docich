@@ -456,7 +456,9 @@ def activate_policy(state_dir, *, source: object, snapshot: object = None,
     a safe no-op.  A retry whose preview saw an absent ledger can still match after the
     first success changed both the ledger id and the active digest.  If an empty ledger
     was created after that preview (or by a failed attempt), the token is stale and the
-    operator must preview again; this path never writes.
+    operator must preview again; this path never writes.  When the preview saw no ledger,
+    the ledger is created exclusively, so a competing ledger is reported as stale instead
+    of being adopted.
     """
     op = _text(operator, "operator_invalid")
     nt = _text(note, "note_invalid")
@@ -477,12 +479,18 @@ def activate_policy(state_dir, *, source: object, snapshot: object = None,
     present_now = layout.ledger_path.is_file()
     if present_now != before.present:
         raise InitialSetupError("stale_preview")
+    require_new = not before.present
 
     ledger = None
     writer = None
     try:
         try:
-            ledger = LiveLedger.open(layout, paper_dir=_paper_dir(state_dir), now=now)
+            ledger = LiveLedger.open(layout, paper_dir=_paper_dir(state_dir), now=now,
+                                     require_new=require_new)
+        except FileExistsError as exc:
+            # A competing process created the ledger after our existence check.
+            # Never open or write that other ledger; the operator must preview again.
+            raise InitialSetupError("stale_preview") from exc
         except InitialSetupError:
             raise
         except Exception as exc:

@@ -241,10 +241,26 @@ class LiveLedger:
 
     # -- opening ----------------------------------------------------------
     @classmethod
-    def open(cls, layout: LiveLayout, *, paper_dir, now: float) -> "LiveLedger":
+    def open(cls, layout: LiveLayout, *, paper_dir, now: float,
+             require_new: bool = False) -> "LiveLedger":
+        """Open (and migrate) the LIVE ledger.
+
+        ``require_new`` makes the first creation atomic: the path is created with
+        ``O_CREAT|O_EXCL`` after live-layout validation and before sqlite opens it.
+        An existing path (including another process's empty ledger) raises
+        ``FileExistsError`` and is never adopted or written.
+        """
         ensure_live_root(layout, paper_dir=paper_dir)
         old_umask = os.umask(0o077)
+        conn = None
         try:
+            if require_new:
+                fd = os.open(layout.ledger_path,
+                             os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+                try:
+                    os.fchmod(fd, 0o600)
+                finally:
+                    os.close(fd)
             conn = sqlite3.connect(str(layout.ledger_path), isolation_level=None, timeout=5.0)
             conn.execute("PRAGMA journal_mode=WAL")
             conn.execute("PRAGMA synchronous=FULL")
@@ -253,10 +269,11 @@ class LiveLedger:
             ledger = cls(conn, layout.ledger_path)
             ledger._migrate(now)
         except BaseException:
-            try:
-                conn.close()
-            except Exception:
-                pass
+            if conn is not None:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
             raise
         finally:
             os.umask(old_umask)

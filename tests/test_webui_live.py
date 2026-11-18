@@ -10,7 +10,9 @@ import hashlib
 import http.client
 import json
 import os
+import shutil
 import stat
+import subprocess
 import sys
 import tempfile
 import threading
@@ -18,6 +20,7 @@ import time
 import unittest
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
@@ -505,6 +508,34 @@ class TestLiveHttp(unittest.TestCase):
         self.assertEqual(status, 200, result)
         self.assertTrue(result["activated"])
 
+    def test_initial_activation_race_with_a_competing_empty_ledger_is_stale(self):
+        self._initial_history()
+        _, preview = self._preview_initial()
+        self.assertFalse(preview["ledger_present"])
+        layout = live_layout(self.g.state_dir)
+        original_open = LiveLedger.open
+        observed = {}
+
+        def competing_open(path, *, paper_dir, now, require_new=False):
+            if not observed:
+                # Another process creates an empty ledger after the activation's
+                # existence check but before its sqlite open.
+                competing = original_open(path, paper_dir=paper_dir, now=now)
+                competing.close()
+                observed["bytes"] = path.ledger_path.read_bytes()
+                observed["mode"] = stat.S_IMODE(path.ledger_path.stat().st_mode)
+            return original_open(path, paper_dir=paper_dir, now=now,
+                                 require_new=require_new)
+
+        with mock.patch.object(LiveLedger, "open", new=competing_open):
+            status, data = self._confirm_initial(preview)
+        self.assertEqual((status, data["error"]), (409, "stale_preview"))
+        # The contested path is left in place and untouched.
+        self.assertTrue(layout.ledger_path.is_file())
+        self.assertEqual(layout.ledger_path.read_bytes(), observed["bytes"])
+        self.assertEqual(observed["mode"], 0o600)
+        self.assertEqual(self._activation_rows(), [])
+
     def test_initial_rejects_non_string_fields_and_non_ascii_tokens(self):
         self._initial_history()
         cases = (
@@ -901,6 +932,143 @@ class TestLiveHttp(unittest.TestCase):
 
 
 class TestLiveFrontend(unittest.TestCase):
+    def _html(self):
+        return (ROOT / "src/docich/webui_resources/index.html").read_text(encoding="utf-8")
+
+    def _live_script(self):
+        html = self._html()
+        self.assertIn("// webui-live:start", html)
+        self.assertIn("// webui-live:end", html)
+        return html.split("// webui-live:start", 1)[1].split("// webui-live:end", 1)[0]
+
+    def _run_node(self, script):
+        if shutil.which("node") is None:
+            self.skipTest("JS 挙動検証には node が必要 (CI runner には同梱)")
+        completed = subprocess.run(["node", "-e", script], capture_output=True,
+                                   text=True, timeout=15, check=False)
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        return json.loads(completed.stdout)
+
+    def test_initial_digest_prefix_survives_overview_polls(self):
+        full = "a" * 64
+        experiment = "b" * 64
+        script = r"""
+const elements={};
+function fakeEl(){return {textContent:"",innerHTML:"",disabled:false,style:{},value:"",className:""};}
+const document={
+  getElementById(id){return elements[id]||(elements[id]=fakeEl());},
+  querySelector(){return fakeEl();},
+};
+const $=()=>fakeEl();
+const esc=x=>String(x);
+const fmtTime=x=>String(x);
+const READ_ONLY=false;
+__SNIPPET__
+const full=__FULL__;
+const experiment=__EXPERIMENT__;
+LIVE_INITIAL.token="token-1";
+liveInitialRender({source:"history",snapshot:"{}",experiment_digest:experiment,
+  policy_set_digest:full,active_policy_set_digest:full,symbols:["OAS/JPY"]});
+const overview={ledger_readable:true,policy:{digest:full.slice(0,12),symbols:["OAS/JPY"]},
+  safety:{trips:[]},pnl:{},positions:[],recent_fills:[],opening:[]};
+renderLive({control:{},status:null,ledger_present:true,overview});
+renderLive({control:{},status:null,ledger_present:true,overview});
+const out={
+  token_after_polls:LIVE_INITIAL.token,
+  msg_after_polls:elements["live-initial-msg"].textContent,
+  policy_display:elements["live-initial-policy-digest"].textContent,
+  experiment_display:elements["live-initial-digest"].textContent,
+  active_display:elements["live-initial-active"].textContent,
+};
+LIVE_INITIAL.token="token-2";
+LIVE_INITIAL.activeDigest=null;
+renderLive({control:{},status:null,ledger_present:false,
+  overview:{policy:{digest:null,symbols:[]},safety:{trips:[]},pnl:{},
+    positions:[],recent_fills:[],opening:[]}});
+out.null_token=LIVE_INITIAL.token;
+out.null_msg=elements["live-initial-msg"].textContent;
+LIVE_INITIAL.token="token-3";
+LIVE_INITIAL.activeDigest=full;
+renderLive({control:{},status:null,ledger_present:true,
+  overview:{...overview,policy:{digest:"0123456789ab",symbols:[]}}});
+out.mismatch_token=LIVE_INITIAL.token;
+out.mismatch_msg=elements["live-initial-msg"].textContent;
+process.stdout.write(JSON.stringify(out));
+"""
+        script = (script.replace("__SNIPPET__", self._live_script())
+                  .replace("__FULL__", json.dumps(full))
+                  .replace("__EXPERIMENT__", json.dumps(experiment)))
+        out = self._run_node(script)
+        self.assertEqual(out["token_after_polls"], "token-1")
+        self.assertEqual(out["msg_after_polls"], "")
+        self.assertEqual(out["policy_display"], full)
+        self.assertEqual(out["experiment_display"], experiment)
+        self.assertEqual(out["active_display"], full[:12] + " (1 symbols)")
+        self.assertEqual(out["null_token"], "token-2")
+        self.assertEqual(out["null_msg"], "")
+        self.assertIsNone(out["mismatch_token"])
+        self.assertIn("有効な policy が変わった", out["mismatch_msg"])
+
+    def test_api_error_code_selects_the_initial_message_and_clears_stale_preview(self):
+        html = self._html()
+        api_body = html.split("async function api(path, opts={}){", 1)[1].split(
+            "\nfunction chainKeys(){", 1)[0]
+        script = r"""
+const out={};
+async function fetchCsrfToken(){return null;}
+const sessionStorage={getItem(){return null;},removeItem(){}};
+function showLogin(){}
+function fakeResponse(status,body){
+  return {status,ok:false,text:async()=>JSON.stringify(body),
+    clone(){return this;},json:async()=>body};
+}
+globalThis.fetch=async()=>fakeResponse(409,{error:"stale_preview",
+  detail:"確認後に候補・台帳・有効方針が変わったため、もう一度確認してください。"});
+async function api(path, opts={}){__API_BODY__}
+__SNIPPET__
+(async()=>{
+  let stale;
+  try{await api("/api/live/initial-policy/activate",{method:"POST"});}catch(e){stale=e;}
+  out.api_code=stale.code;
+  out.api_message=stale.message;
+  out.ui_message=liveInitialErrorText(stale);
+  out.ui_clears=liveInitialClearsToken(stale);
+
+  globalThis.fetch=async()=>fakeResponse(400,{error:"digest_invalid",
+    detail:"digest は 64 文字の小文字 hex で指定してください。"});
+  let other;
+  try{await api("/api/live/initial-policy/preview",{method:"POST"});}catch(e){other=e;}
+  out.other_code=other.code;
+  out.other_message=liveInitialErrorText(other);
+  out.other_clears=liveInitialClearsToken(other);
+
+  out.legacy_message=liveInitialErrorText(new Error("409 /api/live: stale_preview"));
+  out.legacy_clears=liveInitialClearsToken(new Error("409 /api/live: stale_preview"));
+  process.stdout.write(JSON.stringify(out));
+})();
+"""
+        script = (script.replace("__API_BODY__", api_body)
+                  .replace("__SNIPPET__", self._live_script()))
+        out = self._run_node(script)
+        self.assertEqual(out["api_code"], "stale_preview")
+        self.assertEqual(
+            out["api_message"],
+            "409 /api/live/initial-policy/activate: "
+            "確認後に候補・台帳・有効方針が変わったため、もう一度確認してください。")
+        self.assertIn("確認後に候補", out["api_message"])
+        self.assertEqual(
+            out["ui_message"],
+            "確認後に候補・台帳・有効方針が変わったため、もう一度確認してください。")
+        self.assertTrue(out["ui_clears"])
+        self.assertEqual(out["other_code"], "digest_invalid")
+        self.assertEqual(
+            out["other_message"], "digest は 64 文字の小文字 hex で指定してください。")
+        self.assertFalse(out["other_clears"])
+        self.assertEqual(
+            out["legacy_message"],
+            "確認後に候補・台帳・有効方針が変わったため、もう一度確認してください。")
+        self.assertTrue(out["legacy_clears"])
+
     def test_live_tab_panel_and_manifest_are_pinned(self):
         html = (ROOT / "src/docich/webui_resources/index.html").read_text(encoding="utf-8")
         nav = html.split('<nav id="tabs">', 1)[1].split("</nav>", 1)[0]

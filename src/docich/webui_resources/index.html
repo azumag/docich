@@ -670,7 +670,9 @@ async function api(path, opts={}){
   try{ data = JSON.parse(text);}catch(e){ data = text; }
   if(!res.ok){
     const detail = data && data.detail ? data.detail : (typeof data==="string"?data:JSON.stringify(data));
-    throw new Error(`${res.status} ${path}: ${detail}`);
+    const err = new Error(`${res.status} ${path}: ${detail}`);
+    if(data && typeof data==="object" && typeof data.error==="string" && data.error) err.code = data.error;
+    throw err;
   }
   return data;
 }
@@ -2237,6 +2239,11 @@ function liveTime(value){
   const d=new Date(value);
   return isNaN(d.getTime())?String(value):d.toLocaleString();
 }
+function liveDigestPrefix(value){
+  // The overview reports 12 chars while the initial-policy preview reports the full
+  // digest.  Compare on one normalized prefix, and keep null as the same "none".
+  return value?String(value).slice(0,12):"none";
+}
 function liveEmptyRow(colspan,text){
   return `<tr><td colspan="${colspan}" class="help">${esc(text)}</td></tr>`;
 }
@@ -2287,8 +2294,8 @@ function renderLive(d){
   liveText("live-trips",trips.length?trips.join(", "):"なし");
   const policy=overview.policy||{};
   liveText("live-policy",policy.digest?`${policy.digest} (${(policy.symbols||[]).join(", ")||"symbol なし"})`:"なし");
-  const currentDigest=policy.digest||"none";
-  if(LIVE_INITIAL.token && LIVE_INITIAL.activeDigest!==currentDigest){
+  const currentDigest=liveDigestPrefix(policy.digest);
+  if(LIVE_INITIAL.token && liveDigestPrefix(LIVE_INITIAL.activeDigest)!==currentDigest){
     liveInitialClearToken();
     liveInitialMsg("有効な policy が変わった可能性があります。もう一度「この方針を確認」を押してください。",true);
   }
@@ -2361,8 +2368,15 @@ function liveInitialMsg(text,bad){
   el.textContent=String(text||"");
   el.style.color=bad?"var(--bad)":"";
 }
+function liveInitialErrorCode(e){
+  return e && typeof e.code==="string" ? e.code : "";
+}
+function liveInitialClearsToken(e){
+  const code=liveInitialErrorCode(e);
+  if(code) return ["stale_preview","active_policy_conflict","lease_held"].includes(code);
+  return /stale_preview|active_policy_conflict|lease_held/.test(String(e||""));
+}
 function liveInitialErrorText(e){
-  const s=String(e||"");
   const known={
     history_missing:"PAPER の評価履歴が見つかりません。エクスポート済み JSON をインポートしてください。",
     history_unreadable:"PAPER の評価履歴を安全に読めません。",
@@ -2386,7 +2400,10 @@ function liveInitialErrorText(e){
     ledger_unavailable:"LIVE 台帳を安全に読めません。",
     activation_refused:"台帳が初期方針の有効化を拒否しました。",
   };
-  for(const [code,text] of Object.entries(known)) if(s.includes(code)) return text;
+  const code=liveInitialErrorCode(e);
+  if(code && known[code]) return known[code];
+  const s=String(e||"");
+  for(const [knownCode,text] of Object.entries(known)) if(s.includes(knownCode)) return text;
   return "初期方針の操作に失敗しました。";
 }
 function liveInitialRender(d){
@@ -2477,7 +2494,7 @@ async function liveInitialConfirm(){
     }
     await loadLive();
   }catch(e){
-    if(/stale_preview|active_policy_conflict|lease_held/.test(String(e))) liveInitialClearToken();
+    if(liveInitialClearsToken(e)) liveInitialClearToken();
     liveInitialMsg(liveInitialErrorText(e),true);
   }finally{
     if(confirmBtn) confirmBtn.disabled=READ_ONLY||!LIVE_INITIAL.token;
