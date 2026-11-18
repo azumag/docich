@@ -5,7 +5,8 @@ terminal order coming back to life, two orders for one intent, ...) a DATA_ANOMA
 nothing is recorded; where it is merely late (a fill not in the history yet) we wait.
 
 A fee that arrives late for an already recorded fill is *not* written (the L1 ledger treats a
-changed fill as a conflict); the balance check absorbs the uncertainty instead.
+changed fill as a conflict); the expected-balance tolerance accounts for that uncertainty when
+the currency is used in a NOT_CREATED proof.
 """
 from __future__ import annotations
 
@@ -152,7 +153,7 @@ class Ingestor:
         except LiveLedgerError as exc:
             return "no_order" if "unknown order" in str(exc) else "conflict"
 
-    def pull_fills(self, intent: Intent, snap: OrderSnapshot, *, tick: bool = True) -> None:
+    def pull_fills(self, intent: Intent, snap: OrderSnapshot) -> None:
         page = self.reader.fetch_fills(intent.symbol, since_ms=self.since_ms(intent),
                                        exchange_order_id=snap.exchange_order_id)
         recorded = 0
@@ -165,17 +166,17 @@ class Ingestor:
                 continue
             key = f"{fill.symbol}:{fill.trade_id}"
             if fill.fee.status is FeeStatus.UNKNOWN and views.fill_row(self.ledger, key) is None:
-                if key not in ticked and tick:
+                if key not in ticked:
                     ticked.add(key)
                     self._fee_wait[key] = self._fee_wait.get(key, 0) + 1
-                if not tick or self._fee_wait.get(key, 0) <= self.config.fee_grace_polls:
+                if self._fee_wait.get(key, 0) <= self.config.fee_grace_polls:
                     continue
             if self.record_fill_once(fill) == "recorded":
                 recorded += 1
                 _fault(f"fill_recorded:{recorded}")
 
     # ---------------------------------------------------------------- intents
-    def advance(self, intent: Intent, snap: OrderSnapshot, *, tick: bool = True) -> str:
+    def advance(self, intent: Intent, snap: OrderSnapshot) -> str:
         """Move the intent along from the order status.  Returns the intent state afterwards."""
         current = self.ledger.get_intent(intent.intent_id)
         if current is None or current.state not in ("ACKED", "PARTIALLY_FILLED"):
@@ -199,7 +200,7 @@ class Ingestor:
             self.anomaly(f"order {snap.exchange_order_id} of intent {intent.intent_id} was rejected after ack")
         waiting = (status in (OrderStatus.FULLY_FILLED, OrderStatus.CANCELED_PARTIALLY_FILLED,
                               OrderStatus.CANCELED_UNFILLED) and target is None)
-        if waiting and tick:
+        if waiting:
             self._lag[intent.intent_id] = self._lag.get(intent.intent_id, 0) + 1
             if self._lag[intent.intent_id] > self.config.fill_lag_polls:
                 self.anomaly(f"order {snap.exchange_order_id}: executed {snap.executed_amount} but fills {got}")
@@ -231,12 +232,8 @@ class Ingestor:
         return closed
 
     # ---------------------------------------------------------------- one round for one intent
-    def refresh(self, intent: Intent, *, tick: bool = True) -> str:
-        """fetch order -> record -> fetch fills -> record -> advance.  Returns the resulting state or a word.
-
-        ``tick=False`` is a look that must not count towards the "waiting too long" anomalies (the balance
-        check refreshes inside its bracket on top of the step's own poll).
-        """
+    def refresh(self, intent: Intent) -> str:
+        """fetch order -> record -> fetch fills -> record -> advance.  Returns the resulting state or a word."""
         eid = intent.exchange_order_id
         if eid is None:
             row = views.order_for_intent(self.ledger, intent.intent_id)
@@ -246,8 +243,6 @@ class Ingestor:
         try:
             snap = self.reader.fetch_order(intent.symbol, eid)
         except OrderNotFound:
-            if not tick:
-                return "missing"
             self._missing[intent.intent_id] = self._missing.get(intent.intent_id, 0) + 1
             if self._missing[intent.intent_id] > self.config.fill_lag_polls:
                 self.anomaly(f"acknowledged order {eid} of intent {intent.intent_id} is gone from the exchange")
@@ -261,10 +256,10 @@ class Ingestor:
         if not self.sync_order(intent, snap):
             return "anomaly"
         try:
-            self.pull_fills(intent, snap, tick=tick)
+            self.pull_fills(intent, snap)
         except ExchangeAmbiguous:
             return "unavailable"
         except ExchangeDataError as exc:
             self.anomaly(f"fetch_fills: {exc}")
             return "data_error"
-        return self.advance(intent, snap, tick=tick)
+        return self.advance(intent, snap)

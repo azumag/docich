@@ -607,9 +607,9 @@ def test_same_symbol_sell_blocks_the_buy(ws, harnesses, monkeypatch):
     assert (rows[0]["side"], rows[0]["symbol"]) == ("buy", "OAS/JPY")
 
 
-# ---- a10: a balance mismatch is a warning count only; buys and sells still go out ---------
-def test_a_balance_mismatch_is_only_a_warning_and_buys_still_go_out(ws, harnesses,
-                                                                    monkeypatch):
+# ---- a10: an unrelated account balance difference changes no order decision ----------------
+def test_an_unrelated_account_balance_difference_does_not_change_buy_sell_order(
+        ws, harnesses, monkeypatch):
     symbols = ("OAS/JPY", "XYM/JPY")
     h = harnesses(symbols=symbols)
     ps = decide_tests.policy_set_for(*symbols)
@@ -642,10 +642,9 @@ def test_a_balance_mismatch_is_only_a_warning_and_buys_still_go_out(ws, harnesse
 
     cycle1 = run_cycle(rig.deps, rig.state)
     assert cycle1.outcome is CycleOutcome.CONTINUE
-    assert cycle1.balance_warnings == 0
     assert safety_module.read_safety_state(h.ledger).trips == ()
 
-    h.clock.advance(31)                        # the monitor needs two checks >= 30 s apart
+    h.clock.advance(31)                        # the next cycle
     for symbol in symbols:
         rig.reader.books[symbol] = decide_tests.book(symbol, ts=int(rig.clock() * 1000))
     buy = decide_tests.opportunity("XYM/JPY", "buy", oid="buy-xym")
@@ -655,12 +654,10 @@ def test_a_balance_mismatch_is_only_a_warning_and_buys_still_go_out(ws, harnesse
 
     cycle2 = run_cycle(rig.deps, rig.state)
 
-    # The second stable mismatch, at least 30 s later and with no new fill, is confirmed as
-    # a warning; nothing trips and nothing writes a safety row.
+    # The account difference is not judged, warned about, or turned into a safety row; the
+    # decisions and their order are unaffected.
     assert rig.state.cycle_number == 2
     assert cycle2.outcome is CycleOutcome.CONTINUE
-    assert rig.executor.monitor.warning_currencies == ("JPY",)
-    assert cycle2.balance_warnings == 1
     assert safety_module.read_safety_state(h.ledger).trips == ()
     assert [reason for reason in h.trips()] == []
     assert views.events_of_kind(h.ledger, "safety_trip") == []
@@ -677,7 +674,7 @@ def test_a_balance_mismatch_is_only_a_warning_and_buys_still_go_out(ws, harnesse
     assert len(sell_plans) == 1 and sell_plans[0]["symbol"] == "OAS/JPY"
     assert len(buy_plans) == 1 and buy_plans[0]["symbol"] == "XYM/JPY"
 
-    # Both the sell and the buy went out through the mock sender: a warning blocks neither.
+    # Both the sell and the buy went out through the mock sender in decision order.
     assert [item["side"] for item in h.mock.submissions[submissions_before:]] == [
         "sell", "buy"]
     assert h.mock.submissions[-1]["amount"] == "4.95"

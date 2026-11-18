@@ -149,7 +149,6 @@ def _fields(*, phase: str, started_at: float, interval_ms: int | None = None,
             "stale_symbols": list(report.stale_symbols),
             "control_state": report.control_state,
             "control_mode": report.control_mode,
-            "balance_warnings": max(0, _as_int(report.balance_warnings)),
         })
         gap = getattr(report, "market_gap", None)
         if gap is not None:

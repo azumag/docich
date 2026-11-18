@@ -1,9 +1,9 @@
 """Deposit-history reconciliation for LIVE (Issue #4587, under the parent #3623).
 
 The ledger's expected balance counts cashflows and fills, so a deposit the owner makes
-while the worker is live would otherwise sit in ``balance_warnings`` as an unexplained
-difference forever.  ``run`` reads the exchange's own deposit history (read-only) and
-records each credited deposit the ledger does not already count, under a deterministic
+while the worker is live would otherwise remain an unexplained difference in the books.
+``run`` reads the exchange's own deposit history (read-only) and records each credited
+deposit the ledger does not already count, under a deterministic
 ``<exchange>:deposit:<uuid>`` cashflow id, so re-reading the same history after a restart
 is a no-op.
 
@@ -23,12 +23,11 @@ Every row the exchange reports is classified, never guessed:
 
 ``DepositPage.complete`` False is kept on the per-currency result and in the
 ``cashflow_check`` ledger event: the history may be cut off, so a missing row then proves
-nothing and any residual difference stays an unexplained balance warning.
+nothing and any residual difference stays unexplained.
 
-Only deposits are reconciled this way: the reference read path exposes no withdrawal
-history, so a withdrawal stays an unexplained balance warning for the owner to account
-for.  Nothing here infers cashflows from balance deltas, and no balance difference ever
-stops the worker.
+Only deposits are reconciled this way; withdrawals are not reconciled automatically.
+Nothing here infers cashflows from balance deltas or stops the worker on a balance
+difference.
 """
 from __future__ import annotations
 

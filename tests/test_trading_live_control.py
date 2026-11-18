@@ -426,7 +426,8 @@ def test_nothing_under_src_writes_safety_reason_enable_missing():
 # ---- source pin: nothing writes the legacy BALANCE_MISMATCH trip --------------------------
 def test_nothing_under_src_writes_safety_reason_balance_mismatch():
     # The enum value stays for old rows (the owner CLI can still list/clear it), but no
-    # balance code may trip it: a mismatch is a warning count only (owner decision 2026-11-18).
+    # balance code may trip it: the routine cycle neither warns nor trips on a mismatch
+    # (owner decision 2026-11-18).
     allowed = {"docich/trading/live/safety.py",       # the enum definition
                "docich/trading/live_owner/cli.py"}    # legacy rows in the owner's block list
     offenders = []

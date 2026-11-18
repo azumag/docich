@@ -242,7 +242,6 @@ input:checked+.slider:before{transform:translateX(20px)}
 <div class="kv">
 <dt>状態</dt><dd><span class="badge" id="live-state">未接続</span> <span class="badge" id="live-mode">-</span> <span class="help" id="live-control-sub">-</span></dd>
 <dt>worker</dt><dd><span id="live-worker">未接続</span> <span class="help">最終更新</span> <span class="mono" id="live-last-cycle">-</span></dd>
-<dt>残高警告</dt><dd id="live-warnings">-</dd>
 <dt>安全停止</dt><dd id="live-trips">-</dd>
 <dt>policy</dt><dd id="live-policy">-</dd>
 <dt>台帳</dt><dd id="live-ledger">-</dd>
@@ -2289,7 +2288,6 @@ function renderLive(d){
     liveText("live-worker",liveWorkerLabel(status,LIVE_VIEW.worker_alive));
     liveText("live-last-cycle",status&&status.written_at?liveTime(status.written_at):"-");
   }
-  liveText("live-warnings",status&&typeof status.balance_warnings==="number"?String(status.balance_warnings):"-");
   const trips=(overview.safety&&overview.safety.trips)||[];
   liveText("live-trips",trips.length?trips.join(", "):"なし");
   const policy=overview.policy||{};

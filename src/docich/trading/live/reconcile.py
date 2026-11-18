@@ -207,5 +207,4 @@ def on_startup(ex) -> dict[str, int]:
     ex.ingest.close_flat_positions()
     sweep(ex)
     deposits.run(ex)            # deposits made while we were down are books the ledger lacks (#4587)
-    ex.check_balance()
     return counts

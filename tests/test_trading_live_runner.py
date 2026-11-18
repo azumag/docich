@@ -1479,7 +1479,7 @@ def test_a_failed_opening_attempt_is_retried_once_before_the_next_cycle(ws, monk
     assert "inert_reason" not in status
 
 
-def test_balance_warnings_are_reported_in_the_status_and_never_trip(ws, monkeypatch):
+def test_an_account_balance_difference_is_not_reported_in_the_status(ws, monkeypatch):
     prepared = prepare(ws, cashflows={"JPY": "10000"})
     prepared.mock.adjust_balance("JPY", "-100")     # expected 10000, the exchange says 9900
     completed = []
@@ -1488,21 +1488,19 @@ def test_balance_warnings_are_reported_in_the_status_and_never_trip(ws, monkeypa
     def cycle_spy(deps, state):
         report = real_cycle(deps, state)
         completed.append(report)
-        if len(completed) == 2:
-            prepared.mock.adjust_balance("JPY", "100")   # the balance agrees again
         return report
 
     monkeypatch.setattr(runner_module, "run_cycle", cycle_spy)
 
-    code, sleeps = run(prepared, stop_requested=lambda: len(completed) >= 3)
+    code, sleeps = run(prepared, stop_requested=lambda: len(completed) >= 2)
 
     assert code == runner_module.EXIT_OK
-    # Cycle 1 starts the streak, cycle 2 confirms it (60 s later), cycle 3 clears it.
-    assert [report.balance_warnings for report in completed] == [0, 1, 0]
+    assert len(completed) == 2
+    assert all(not hasattr(report, "balance_warnings") for report in completed)
     assert safety_trips(ws) == []
     assert "safety_trip" not in event_kinds(ws)
     status = read_status(ws)
     assert status["phase"] == "exited"
-    assert status["balance_warnings"] == 0
+    assert "balance_warnings" not in status
     assert "balance" not in status and "amount" not in status
     acquire_again(ws)
