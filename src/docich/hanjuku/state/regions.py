@@ -295,6 +295,8 @@ KEY_OWNERSHIP = {
     'password_entry_seen': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 章クリアのパスワード画面を検出した記録
     'chikujou_prompt_key': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 築城プロンプトの記録キー
     'reanchor_failures': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 再アンカー連続失敗の抑制カウンタ
+    'y_anchor_attempts': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # Yビュー再アンカーの試行回数
+    'y_anchor_due': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 次の map 観測でYを押す印
     'cursor_card_downs': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # カード選択カーソル下移動の手順状態
     'cursor_pick_downs': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 同上
     'cursor_still': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # カーソル停滞検出
