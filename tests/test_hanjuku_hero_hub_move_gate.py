@@ -140,7 +140,7 @@ def test_rejected_full_chart_keeps_hero_move_for_interim(monkeypatch):
                   HUB: [f'h{i}' for i in range(8)]})
     assert len(orders(mem)) > 16
     state = mem.setdefault('chart_adjust', {})
-    replan._mechanical_chart(mem, state, 'test-request', 'test-digest')
+    replan._mechanical_chart(mem, state, 'a' * 16, 'b' * 64)
     assert not _plan_region(mem).get('chart_plan')
     assert state['interim_order']['hero_hub_move'] is True
     assert state['interim_order']['general'] == 'どうし'
@@ -155,7 +155,7 @@ def test_adopted_full_chart_preserves_hero_permission_and_month(monkeypatch):
     assert 0 < len(candidates) <= 16
     assert any(o.get('hero_hub_move') is True for o in candidates)
     state = mem.setdefault('chart_adjust', {})
-    replan._mechanical_chart(mem, state, 'test-request', 'test-digest')
+    replan._mechanical_chart(mem, state, 'a' * 16, 'b' * 64)
     plan = _plan_region(mem)['chart_plan']
     [hero] = [o for o in plan['orders'] if o.get('hero_hub_move') is True]
     assert (hero['general'], hero['purpose']) == ('どうし', 'move')
