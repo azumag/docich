@@ -1584,6 +1584,8 @@ def _end_general_jump(screen, mem, why):
     jump = mem.pop('general_jump', None)
     if not isinstance(jump, dict):
         return []
+    mem['general_jump_skip'] = {'general': jump.get('general'),
+                                'tick': int(mem.get('tick') or 0)}
     _record(mem, 'general_jump_failed', target=jump.get('general'),
             screen=screen.kind,
             observed_metric={'why': why, 'total': jump.get('total'),
@@ -1608,7 +1610,27 @@ def general_jump_step(screen, mem, frame):
     """
     jump = mem.get('general_jump')
     if not isinstance(jump, dict):
-        return None
+        # The camp recall's corridor-view trigger only runs while its flow
+        # owns a camp frame; on a plain held field there is no such owner,
+        # so arm the jump here whenever an overdue boss march sits camped
+        # out of the cursor's reach.
+        boss_target = chart.boss_castle(mem.get('chapter') or 0)
+        tick = int(mem.get('tick') or 0)
+        skip = mem.get('general_jump_skip') or {}
+        general = next((_canonical_general(s['general'])
+                        for s in _sorties(mem).values()
+                        if isinstance(s, dict) and s.get('target') == boss_target
+                        and s.get('status') == 'overdue' and s.get('general')
+                        and not (skip.get('general') == _canonical_general(s['general'])
+                                 and tick - int(skip.get('tick') or 0) < 200)), None)
+        if general is None:
+            return None
+        mem['general_jump'] = jump = {'general': general, 'phase': 'menu',
+                                      'age': 0, 'total': 0, 'scrolls': 0,
+                                      'menu_presses': 0}
+        _record(mem, 'general_jump_open', target=general,
+                observed_metric={'cursor': mem.get('cursor')},
+                reason='期限切れボス行軍の将軍がカーソル圏外に野営したため、しょうぐん一覧からSELECTでその野営へ飛ぶ')
     jump['total'] = int(jump.get('total') or 0) + 1
     jump['age'] = int(jump.get('age') or 0) + 1
     if jump['total'] > GENERAL_JUMP_LIMIT:
