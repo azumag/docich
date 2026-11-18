@@ -376,6 +376,21 @@ def quantity_step(screen: Screen, mem, soldiers=False):
                 if (isinstance(cancel, dict) and cancel.get('identity') == identity
                         and cancel.get('key') == key and shop.get('soldiers_done') is True):
                     return [pad('b')] if _army_count_increment(cancel, 'presses', 4) <= 3 else []
+            # g1190-ch1fresh: an unscoped editor that stays unscoped for many
+            # observations never releases. The resume path above is a narrow
+            # escape; hold a bounded count first (a transient chapter=None can
+            # still resolve), then cancel so the month can leave.
+            hold = mem.get('unscoped_refill_hold')
+            if not isinstance(hold, dict) or hold.get('key') != key:
+                hold = mem['unscoped_refill_hold'] = {'key': key, 'count': 0}
+            hold['count'] = int(hold.get('count') or 0) + 1
+            if hold['count'] >= UNSCOPED_REFILL_LIMIT:
+                mem.pop('unscoped_refill_hold', None)
+                shop['soldiers_done'] = True
+                _record(mem, 'unscoped_refill_abandoned', month=key,
+                        observed_metric={'holds': hold['count'], 'chapter': mem.get('chapter')},
+                        reason='章が解決せず数量入力画面が有限回を超えても保留されるため、当月の補充を諦めて月を進める')
+                return [pad('b')]
             return []  # a faded month/header cannot authorize a runtime purchase
         if (scope is not None and isinstance(state, dict) and state.get('scope') == scope
                 and state.get('stage') == 'measured'
@@ -561,6 +576,7 @@ DISCHARGE_LIMIT = 32             # at most the full roster, one confirmed remova
 DISCHARGE_REMOVAL_LIMIT = 8      # failed removal verify before trying the next weakest
 DISCHARGE_SCAN_LIMIT = 20        # preserve the existing bounded cursor walk
 DISCHARGE_EXIT_LIMIT = 4         # B presses per month once the balance is paid up
+UNSCOPED_REFILL_LIMIT = 32       # holds before cancelling an unscoped refill editor
 
 
 def discharge_candidates(screen):
