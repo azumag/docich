@@ -2139,7 +2139,12 @@ def _drop_stale_plan(mem):
     if now - adopted < PLAN_STALE_TICKS:
         return
     status = _plan_region(mem).get('orders') or {}
-    if any(status.get(o.get('step')) not in (None, 'pending') for o in plan['orders']):
+    # docich#4642: an all-failed (or completed) plan must rebuild the same
+    # way an all-pending one does — only a march still in flight keeps it.
+    live = {s.get('step') for s in (_world(mem).get('sorties') or {}).values()
+            if isinstance(s, dict) and s.get('status') in ('en_route', 'launched_unconfirmed')}
+    if any(o.get('step') in live or status.get(o.get('step')) == 'launched_unconfirmed'
+           for o in plan['orders']):
         return
     _plan_region(mem)['chart_plan'] = None
     mem.pop('chart_plan_tick', None)

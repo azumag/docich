@@ -313,7 +313,15 @@ def plan_starved_rearm(mem, phase, kind):
     if kind in ('map', 'map_target', 'world_map') or phase in ('title', 'title_or_intro'):
         return False
     plan = mem.get('plan') or {}
-    if plan.get('active') or (plan.get('chart_plan') or {}).get('orders'):
+    if plan.get('active'):
+        return False
+    # A plan whose orders all went 'failed' (or completed) is dead the same
+    # way an empty plan is: next_order skips them forever. #4642, g1190
+    # 2026-11-19: the plan's only order was a 'failed' retake and months
+    # 4-12..5-3 passed with zero sorties while this guard kept the plan.
+    status = plan.get('orders') or {}
+    if any(status.get(o.get('step')) in (None, 'pending')
+           for o in (plan.get('chart_plan') or {}).get('orders') or ()):
         return False
     if not mem.get('chapter'):
         return False
