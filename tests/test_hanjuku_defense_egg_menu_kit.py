@@ -227,3 +227,29 @@ def test_defense_kit_read_requires_consecutive_matching_lists():
         assert p.card_list_step(screen, mem) == []
     assert p.card_list_step(a, mem) == [p.pad('b'), p.pad('b')]
     assert p._egg_plan(mem, cur)['kit_source'] == 'unknown'
+
+
+def test_enemy_egg_use_keeps_selected_identity_after_replan():
+    mem = defense_mem()
+    cur = mem['battle']
+    card = 'イッテツーン'
+    tid = 'eggdrop:None:イッテツーン'
+    cur['defense_card_menu'] = {'enemy': 'オレガノ', 'ally': 'バタール',
+                                'start_enemy_hp': 65, 'start_ally_hp': 99,
+                                'cards': [card], 'readings': 2}
+    assert p._egg_plan(mem, cur)['dropper'] == card
+    cur['card_flow'] = {'card': card, 'stage': 'announce',
+                        'tactic_id': tid, 'egg_drop_only': True,
+                        'selection_planned': True}
+    cur['cards_selected'].append(card)
+    cur['egg_drop_selected_tick'] = 101
+    p._egg_drop_trace(mem, cur, 'selected', card=card, tactic_id=tid)
+    p._card_use_unclassified(mem, cur, 'test unclassified')
+    assert cur['card_flow'] is None
+    assert p._egg_plan(mem, cur)['dropper'] is None
+    cur['enemy_transform_observed'] = True
+    p._egg_drop_trace(mem, cur, 'enemy_egg_used', transform_skill=True)
+    traces = records(mem, 'battle_egg_drop_trace')
+    assert [t['stage'] for t in traces] == [
+        'decided', 'selected', 'unclassified', 'enemy_egg_used']
+    assert all(t['card'] == card and t['tactic_id'] == tid for t in traces)

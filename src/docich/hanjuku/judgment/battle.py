@@ -1166,10 +1166,17 @@ def _egg_drop_trace(mem, cur, stage, *, card=None, tactic_id=None, plan=None, **
     """
     plan = plan if isinstance(plan, dict) else (cur.get('egg_plan') or {})
     flow = cur.get('card_flow') or {}
+    # Preserve the opening attempt across transient plans and card flows.
+    identity = cur.get('egg_drop_trace_identity') or {}
+    if stage == 'enemy_egg_used' and identity:
+        card = card or identity.get('card')
+        tactic_id = tactic_id or identity.get('tactic_id')
     card = card or flow.get('card') or plan.get('dropper')
     tid = tactic_id or flow.get('tactic_id')
     if tid is None and card and cur.get('egg_drop_decision_tick') is not None:
         tid = f"eggdrop:{cur.get('step')}:{card}"
+    if stage in ('decided', 'selected') and card and tid:
+        cur['egg_drop_trace_identity'] = {'card': card, 'tactic_id': tid}
     observed = {'tick': mem.get('tick'),
                 'decision_tick': cur.get('egg_drop_decision_tick'),
                 'selected_tick': cur.get('egg_drop_selected_tick'),
