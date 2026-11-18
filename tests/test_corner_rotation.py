@@ -1264,6 +1264,69 @@ def test_slot_writes_and_clears_its_heartbeat_while_executing(setup):
     assert manager.heartbeat_path.exists() is False
 
 
+def test_slot_running_past_quarantine_window_does_not_quarantine(setup):
+    """A slot that owned the lock >24h is busy, not downtime."""
+    _, clock, _, _, make = setup
+    manager = make()
+
+    class SlowExecutor:
+        def execute(self, adapter, request):
+            clock[0] += 30 * 3600
+            return "completed"
+
+    manager.executor = SlowExecutor()
+    assert manager.tick()["status"] == "ready"
+    result = make().tick()
+    assert result.get("reason") != "clock-gap-quarantine"
+    assert "clock_hold_until" not in state(make())
+
+
+def test_long_slot_queued_retry_resumes_without_quarantine(setup):
+    """A >24h slot ending queued keeps its pending resume, not a hold."""
+    _, clock, _, executor, make = setup
+    manager = make()
+    executor.result = "queued"
+
+    class SlowExecutor:
+        def __init__(self, inner):
+            self.inner = inner
+
+        def execute(self, adapter, request):
+            clock[0] += 30 * 3600
+            return self.inner.execute(adapter, request)
+
+    manager.executor = SlowExecutor(executor)
+    assert manager.tick()["status"] == "waiting"
+    first = executor.calls[0]
+    executor.result = "completed"
+    result = make().tick()
+    assert result.get("reason") != "clock-gap-quarantine"
+    assert executor.calls[1]["request_id"] == first["request_id"]
+    assert "clock_hold_until" not in state(make())
+
+
+def test_resolved_long_slot_ledger_activity_skips_quarantine(setup):
+    """Fresh ledger rows prove life even when last_seen_at stayed stale."""
+    _, clock, _, executor, make = setup
+    manager = make()
+    ledger = manager.load(clock[0])
+    ledger.update(
+        status="ready", reason=None,
+        last_seen_at=clock[0] - 30 * 3600,
+        last_slot_at=clock[0] - 30 * 3600,
+        last_result={"corner": "retro", "request_id": "req-1",
+                     "status": "completed", "at": clock[0] - 60},
+        history=[{"corner": "retro", "at": clock[0] - 60,
+                  "source": "completion"}],
+        next_due_at=clock[0] - 3500,
+    )
+    manager.save(ledger)
+    result = manager.tick()
+    assert result.get("reason") != "clock-gap-quarantine"
+    assert "clock_hold_until" not in state(manager)
+    assert executor.calls
+
+
 def _quarantined_manual(make, clock, *, corner='hanjuku-hero', hold=DAY,
                        status='waiting', reason='clock-gap-quarantine', queued=True):
     manager = make()

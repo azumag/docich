@@ -386,6 +386,40 @@ class CornerRotationManager:
         age = now - float(at)
         return 0 <= age <= HEARTBEAT_FRESH_S
 
+    def _last_proven_alive_at(self, state):
+        """Newest timestamp this ledger itself wrote, or ``None``.
+
+        ``last_seen_at`` cannot move while one tick owns a slot longer than
+        the quarantine window, so a gap measured from it alone cannot tell a
+        dead rotation from a live one that was simply busy. The same live
+        process leaves fresh durable rows when the slot resolves
+        (``last_result``, history entries, a re-anchored ``last_slot_at``,
+        reservation timestamps), so the honest "last seen alive" signal is
+        the newest of them. Every field is written by this code with
+        ``self.clock()``; a process that stayed dead writes nothing new, so
+        genuine downtime and forward clock jumps still quarantine.
+        """
+        stamps = [state.get("last_seen_at"), state.get("last_slot_at")]
+        result = state.get("last_result")
+        if isinstance(result, dict):
+            stamps.append(result.get("at"))
+        history = state.get("history")
+        if isinstance(history, list):
+            stamps.extend(
+                row.get("at") for row in history if isinstance(row, dict)
+            )
+        for key in ("pending", "manual_pending"):
+            reservation = state.get(key)
+            if isinstance(reservation, dict):
+                stamps.append(reservation.get("selected_at"))
+        proven = []
+        for value in stamps:
+            try:
+                proven.append(timestamp(value))
+            except Exception:
+                continue
+        return max(proven) if proven else None
+
     def _initial_known_corners(self):
         """Seed the migration ledger from pre-catalog corner state files.
 
@@ -2346,11 +2380,14 @@ class CornerRotationManager:
             if now < state["last_seen_at"]:
                 self._clear_notice()
                 return self._wait(state, "clock-regressed")
-            if now - state["last_seen_at"] > DAY:
+            last_alive = self._last_proven_alive_at(state)
+            if last_alive is None or now - last_alive > DAY:
                 # A large jump is indistinguishable from downtime without a
                 # trusted time source: quarantine one full day, don't erase use.
                 # A slot parked in this process is not downtime; its heartbeat
-                # proves the process was alive until the restart.
+                # proves the process was alive until the restart, and a slot
+                # that ran past the window leaves fresh ledger rows proving
+                # the same after it resolves.
                 if not self._heartbeat_proves_parked_slot(state, now):
                     state["clock_hold_until"] = now + DAY
             state["last_seen_at"] = now
@@ -2413,6 +2450,11 @@ class CornerRotationManager:
                             # program-slot and GameSwitchCoordinator gates.
                             with self._slot_heartbeat(manual):
                                 resumed = self.executor.execute(adapter, manual)
+                            # The slot just proved this process lived through
+                            # whatever gap last_seen_at could not record while
+                            # the lock was held; keep the watermark truthful.
+                            state["last_seen_at"] = max(
+                                state["last_seen_at"], timestamp(self.clock()))
                             resumed_status = (resumed if isinstance(resumed, str)
                                               else getattr(resumed, "status", None))
                             if resumed_status in {"completed", "interrupted"}:
@@ -2587,6 +2629,11 @@ class CornerRotationManager:
                 self.save(state)
                 with self._slot_heartbeat(pending):
                     result = self.executor.execute(adapter, pending)
+                # The slot just proved this process lived through whatever gap
+                # last_seen_at could not record while the lock was held; keep
+                # the watermark truthful for every outcome branch below.
+                state["last_seen_at"] = max(
+                    state["last_seen_at"], timestamp(self.clock()))
                 status = result if isinstance(result, str) else result.status
                 for raw in adapter.observations():
                     if raw.get("rotation_request_id") == pending["request_id"] and raw.get("started_at") is not None:
@@ -3081,6 +3128,10 @@ def run_manual(g, manager, games):
         try:
             with rotation._slot_heartbeat(request):
                 result = rotation.executor.execute(adapter, request)
+            # Same watermark truth as the timer path: a manual slot that ran
+            # past the quarantine window is not downtime either.
+            state["last_seen_at"] = max(
+                state["last_seen_at"], timestamp(rotation.clock()))
             status = result if isinstance(result, str) else result.status
             if status == "capture-profile-expired":
                 owned = [raw for raw in selected_adapter.observations()
