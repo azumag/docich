@@ -72,8 +72,9 @@ def open_bitbank_reader(state_dir, *, symbols: Sequence[str], clock: Callable[[]
     try:
         low, high = clock_bounds(transport, symbols[0], probes=probes)
     except ExchangeError as exc:
-        kind = exc.health_kind if exc.health_kind in ("auth", "clock") else None
-        raise ReaderUnavailable(f"clock check failed ({type(exc).__name__}/{exc.health_kind})", kind=kind) from None
+        health_kind = getattr(exc, "health_kind", None)
+        kind = health_kind if health_kind in ("auth", "clock") else None
+        raise ReaderUnavailable(f"clock check failed ({type(exc).__name__}/{health_kind})", kind=kind) from None
     except ValueError as exc:
         raise ReaderUnavailable(f"clock check failed ({type(exc).__name__})", kind="clock") from None
     problem = judge_clock(low, high, max_ahead_s=max_ahead_s, max_behind_s=max_behind_s)
