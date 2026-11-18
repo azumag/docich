@@ -12,7 +12,7 @@ from docich.trading.exchanges.bitbank_live import check as ck
 from docich.trading.exchanges.bitbank_live import factory as fc
 from docich.trading.exchanges.bitbank_live.credentials import KEY_FILENAME
 from docich.trading.exchanges.bitbank_live.reader import ReaderUnavailable
-from docich.trading.live.exchange import ExchangeAmbiguous, OrderNotFound
+from docich.trading.live.exchange import ExchangeAmbiguous, ExchangeDataError, OrderNotFound
 from docich.trading.live.paths import live_layout
 
 
@@ -431,4 +431,18 @@ def test_the_rule_load_kind_passes_through_the_factory(state, health_kind, kind)
     with pytest.raises(ReaderUnavailable) as err:
         _open(state, transport=FakeTransport(default_script(assets=bad), skew_s=0.0))
     assert err.value.kind == kind
+    assert SENTINEL_KEY not in str(err.value)
+
+
+def test_unclassified_data_error_during_clock_check_is_reader_unavailable(state, monkeypatch):
+    _install_key(state)
+
+    def malformed(*args, **kwargs):
+        raise ExchangeDataError(SENTINEL_KEY)
+
+    monkeypatch.setattr(fc, "clock_bounds", malformed)
+    with pytest.raises(ReaderUnavailable) as err:
+        _open(state)
+    assert err.value.kind is None
+    assert "ExchangeDataError" in str(err.value)
     assert SENTINEL_KEY not in str(err.value)
