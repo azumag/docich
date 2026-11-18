@@ -186,6 +186,44 @@ def event_text_advance(mem, phase, kind, key, actions, guarded=False):
     return advance
 
 
+PHASE_A_ESCAPE_MAX = 10   # identical readable screens holding the default A
+
+
+def phase_a_escape_step(mem, phase, kind, text, actions):
+    """Break a phase-default A that the same readable screen keeps ignoring.
+
+    g1190 2026-11-18 10:40 (#4543): the ちくじょう castle list
+    「どのしろを そうたく なさいますか?」/「これいじょうの ぎょうらくは…」 sat
+    in phase dialogue while the default A was sent on every observation; the
+    frame never changed and the run ended screen_stalled. One B closes that
+    list (probe on the saved state). Count identical (phase, kind, text)
+    observations that planned the default A; after the bound send B once and
+    restart the count. A changed line, another phase/kind, or any other
+    planned action resets it, so typed dialogue and real flows never match.
+    """
+    confirm = (isinstance(actions, list) and len(actions) == 1
+               and isinstance(actions[0], dict) and actions[0].get('type') == 'pad'
+               and actions[0].get('buttons') == ['a'])
+    if (not confirm or kind != 'text' or mem.get('battle')
+            or phase not in ('dialogue', 'month_menu', 'event')):
+        mem.pop('phase_a_escape', None)
+        return None
+    key = f'{phase}:{kind}:{(text or "")[:60]}'
+    watch = mem.get('phase_a_escape') or {}
+    n = (int(watch.get('n') or 0) + 1
+         if isinstance(watch, dict) and watch.get('key') == key else 1)
+    if n >= PHASE_A_ESCAPE_MAX:
+        mem['phase_a_escape'] = {'key': key, 'n': 0}
+        decision_log._record(mem, 'phase_a_escape', screen=kind, phase=phase,
+                             observed_metric={'identical_observations': n,
+                                              'limit': PHASE_A_ESCAPE_MAX,
+                                              'text': (text or '')[:40]},
+                             reason='同じ文面に既定のAを送り続けても進まないため、Bを1回だけ送って閉じる')
+        return [pad('b')]
+    mem['phase_a_escape'] = {'key': key, 'n': n}
+    return None
+
+
 def pad(button, ms=100):
     return {'type':'pad','buttons':[button],'hold_ms':ms}
 
@@ -1399,6 +1437,9 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
         actions = menu_escape
     if actions is None:
         actions=legacy_actions(frame,phase,updated,mem)
+        a_escape = phase_a_escape_step(mem, phase, kind, screen.text, actions)
+        if a_escape is not None:
+            actions = a_escape
         draw_hold = battle_draw_hold_step(screen, mem, state.get('screen_kind'), actions)
         if draw_hold is not None:
             actions = draw_hold
