@@ -1679,3 +1679,29 @@ def test_a_handless_main_menu_walks_to_shougun_deterministically():
     assert got[post.MAIN_MENU_BLIND_UPS] == [pad('down')]
     assert got[post.MAIN_MENU_BLIND_UPS + 1] == [pad('a')]
     assert state['stage'] == 'roster'
+
+
+def test_the_scan_stands_down_while_a_castle_jump_runs():
+    # docich#4658: the sortie trip owns the field and its menus.
+    mem = memory()
+    post.arm(mem)
+    state = mem['post_month_status']
+    state.update(stage='open_menu', phase_reads=2)
+    mem['castle_jump'] = {
+        'mode': 'menu', 'phase': 'menu',
+        'return_to': {'owner': 'sortie_plan'}}
+    field = Screen([], None, '', kind='map')
+    assert post.step(field, mem, None) is None
+    assert state['phase_reads'] == 2
+
+
+def test_the_scan_keeps_its_own_reanchor_jump():
+    mem = memory()
+    post.arm(mem)
+    state = mem['post_month_status']
+    state.update(stage='open_menu', phase_reads=2)
+    mem['castle_jump'] = {
+        'mode':'reanchor', 'phase': 'menu',
+        'return_to': {'owner': 'post_month_status'}}
+    field = Screen([], None, '', kind='map')
+    assert post.step(field, mem, None) is not None

@@ -1339,6 +1339,16 @@ def step(screen, mem, frame):
             or state.get('identity') != receipts.run_identity(mem.get('_run_identity'))):
         mem.pop('post_month_status', None)
         return None
+    # docich#4658: a sortie's castle jump owns the field and its menus. The
+    # monthly scan used to reopen and close the same main menu while the jump
+    # was mid-navigation: 106 of 106 jumps failed with 'menu_not_open' and no
+    # order ever launched. Stand down for the whole transaction; the scan's
+    # own reanchor carries return_to.owner == 'post_month_status' and keeps
+    # running.
+    jump = mem.get('castle_jump')
+    if (isinstance(jump, dict)
+            and (jump.get('return_to') or {}).get('owner') != 'post_month_status'):
+        return None
     if (mem.get('battle') or mem.get('month_sub')
             or screen.kind in {'battle', 'battle_menu', 'egg_battle_menu',
                                'egg_choice_menu', 'monster_menu', 'month_menu',
