@@ -1614,7 +1614,10 @@ def general_jump_step(screen, mem, frame):
         # owns a camp frame; on a plain held field there is no such owner,
         # so arm the jump here whenever an overdue boss march sits camped
         # out of the cursor's reach.
-        boss_target = chart.boss_castle(mem.get('chapter') or 0)
+        boss_castle = getattr(chart, 'boss_castle', None)
+        boss_target = boss_castle(mem.get('chapter') or 0) if boss_castle else None
+        if boss_target is None:
+            return None
         tick = int(mem.get('tick') or 0)
         skip = mem.get('general_jump_skip') or {}
         general = next((_canonical_general(s['general'])
