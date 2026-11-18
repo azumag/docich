@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from decimal import Decimal
 
-from . import views
+from . import deposits, views
 from .balance import stable_check
 from .canonical import canonical_json
 from .exchange import (ExchangeAmbiguous, ExchangeDataError, OrderNotFound, OrderPage, OrderSnapshot)
@@ -206,5 +206,6 @@ def on_startup(ex) -> dict[str, int]:
         ex.ingest.refresh(intent)
     ex.ingest.close_flat_positions()
     sweep(ex)
+    deposits.run(ex)            # deposits made while we were down are books the ledger lacks (#4587)
     ex.check_balance()
     return counts

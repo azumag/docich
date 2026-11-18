@@ -15,8 +15,9 @@ from dataclasses import dataclass
 from decimal import Decimal
 from typing import Callable, Mapping, Protocol, Sequence
 
-from ...live.exchange import (BalanceSnapshot, Capabilities, ExchangeAmbiguous, ExchangeDataError, ExchangeError,
-                              FillPage, MarketRules, OrderBook, OrderNotFound, OrderPage, OrderSnapshot)
+from ...live.exchange import (BalanceSnapshot, Capabilities, DepositPage, ExchangeAmbiguous, ExchangeDataError,
+                              ExchangeError, FillPage, MarketRules, OrderBook, OrderNotFound, OrderPage,
+                              OrderSnapshot)
 from . import parse
 
 
@@ -67,17 +68,18 @@ class ReaderHealth:
 
 
 CAPABILITIES = Capabilities(client_order_id=False, fetch_by_client_id=False, fills_by_order=True,
-                            client_order_id_max_len=0)
+                            client_order_id_max_len=0, deposit_history=True)
 
 
 class BitbankReader:
     def __init__(self, transport: BitbankTransport, *, symbols: Sequence[str], clock: Callable[[], float],
-                 open_orders_count: int = 100, fills_count: int = 1000,
+                 open_orders_count: int = 100, fills_count: int = 1000, deposit_count: int = 100,
                  fee_rate_floor: Decimal = Decimal(0)) -> None:
         self._transport = transport
         self._symbols = tuple(symbols)
         self._clock = clock
         self._open_count, self._fills_count = int(open_orders_count), int(fills_count)
+        self._deposit_count = int(deposit_count)
         self._floor = fee_rate_floor
         self._health = ReaderHealth(None, 0, None)
         self._by_pair = {parse.pair_id(s): s for s in self._symbols}
@@ -196,6 +198,26 @@ class BitbankReader:
         kept = sorted(fills, key=lambda f: (f.executed_at_ms, int(f.trade_id)))   # ids are digits (parse.id_text)
         self._ok()
         return FillPage(fills=tuple(kept), complete=complete)
+
+    def fetch_deposits(self, currency: str, *, since_ms: int) -> DepositPage:
+        """The exchange's own deposit history for one currency (Issue #4587).
+
+        Same conservative cut as ``fetch_fills``: ``since`` is not sent to the exchange (its unit is
+        undocumented), rows before it are dropped here, and the page is complete only when fewer than
+        ``deposit_count`` rows came back — bitbank returns at most ``count`` per call, so a full page
+        may hide older or newer rows.
+        """
+        data = self._get("deposit_history", {"asset": currency.lower(), "count": self._deposit_count})
+        rows = self._parsed(_list, data, "deposits")
+        stamps = [self._parsed(parse.ms_value, parse._field(row, "found_at", "found_at"), "found_at")
+                  for row in rows]
+        records = [self._parsed(parse.deposit_from, row) for row, stamp in zip(rows, stamps) if stamp >= since_ms]
+        if any(r.currency != currency for r in records):
+            self._parsed(_mismatch, "deposit_history")
+        complete = len(rows) < self._deposit_count
+        kept = sorted(records, key=lambda r: (r.occurred_at_ms, r.record_id))
+        self._ok()
+        return DepositPage(deposits=tuple(kept), complete=complete)
 
 
 def _list(data: object, key: str) -> list:

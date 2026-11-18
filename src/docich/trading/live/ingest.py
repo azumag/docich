@@ -38,6 +38,7 @@ class ExecutorConfig:
     fill_lag_polls: int = 10       # polls an executed order may wait for its fills before DATA_ANOMALY
     fee_grace_polls: int = 3       # polls a fill with an unknown fee is held back, hoping the fee shows up
     sweep_every: int = 5           # steps between scans for orders the ledger does not know
+    cashflow_every: int = 5        # steps between read-only deposit-history reconciliations (#4587)
 
 
 def observation_from(snap: OrderSnapshot, intent_id: str | None) -> OrderObservation:
