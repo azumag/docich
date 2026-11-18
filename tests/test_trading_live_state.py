@@ -139,6 +139,24 @@ def test_open_is_idempotent_and_keeps_the_ledger_id(ws):
     second.close()
 
 
+def test_open_require_new_is_exclusive_and_keeps_existing_ledger(ws):
+    first = lg.LiveLedger.open(ws.layout, paper_dir=ws.paper, now=NOW, require_new=True)
+    with first.read_cursor() as cur:
+        ledger_id = cur.execute("SELECT value FROM meta WHERE key='ledger_id'").fetchone()[0]
+    first.close()
+    assert oct(ws.layout.ledger_path.stat().st_mode & 0o777) == "0o600"
+
+    with pytest.raises(FileExistsError):
+        lg.LiveLedger.open(ws.layout, paper_dir=ws.paper, now=NOW + 1, require_new=True)
+
+    ledger = lg.LiveLedger.open_readonly(ws.layout)
+    try:
+        with ledger.read_cursor() as cur:
+            assert cur.execute("SELECT value FROM meta WHERE key='ledger_id'").fetchone()[0] == ledger_id
+    finally:
+        ledger.close()
+
+
 def test_open_refuses_newer_schema_paper_and_foreign_db(ws):
     ws.layout.root.mkdir(mode=0o700)
     conn = sqlite3.connect(ws.layout.ledger_path)
