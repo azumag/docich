@@ -947,3 +947,60 @@ def test_next_wait_never_overflows():
     assert next_wait(30.0, 10 ** 6) == 300.0
     assert next_wait(400.0, 10 ** 6) == 400.0
     assert next_wait(30.0, 5) == 300.0
+
+
+# ---- balance warnings: per-cycle fact, never a block --------------------------------------
+def test_balance_warnings_are_copied_to_the_report_and_cleared_next_cycle(ws, harnesses):
+    h = harnesses(gate_open=False)
+    rig = make_rig(ws, h)
+    h.mock.adjust_balance("JPY", "-100")        # ledger expects 10000, exchange says 9900
+
+    assert rig.executor.check_balance() is True       # first stable sighting: streak 1
+    h.advance(31)
+    assert rig.executor.check_balance() is True       # confirmed
+    assert rig.executor.monitor.warning_currencies == ("JPY",)
+
+    first = run_cycle(rig.deps, rig.state)
+    assert first.outcome is CycleOutcome.CONTINUE
+    assert first.balance_warnings == 1
+    assert rig.state.balance_warnings == 1
+    assert _trip_reasons(h.ledger) == []
+
+    h.mock.adjust_balance("JPY", "100")               # the balance agrees again
+    second = run_cycle(rig.deps, rig.state)
+    assert second.outcome is CycleOutcome.CONTINUE
+    assert second.balance_warnings == 0
+    assert rig.state.balance_warnings == 0
+    assert rig.executor.monitor.warning_currencies == ()
+    assert _trip_reasons(h.ledger) == []
+
+
+def test_balance_warnings_start_at_zero_for_every_cycle(ws, harnesses):
+    h = harnesses(gate_open=False)
+    rig = make_rig(ws, h)
+    rig.state.balance_warnings = 7                  # a stale value from an earlier cycle
+    report = run_cycle(rig.deps, rig.state)
+    assert report.outcome is CycleOutcome.CONTINUE
+    assert report.balance_warnings == 0
+    assert rig.state.balance_warnings == 0
+
+
+def test_two_mismatched_currencies_are_counted_twice(ws, harnesses):
+    h = harnesses()
+    h.mock.set_book("OAS/JPY", asks=[(D("100"), D("1000"))],
+                    bids=[(D("99"), D("1000"))])
+    h.send(side="buy", key="seed", amount="10", price="100")
+    rig = make_rig(ws, h)
+    h.mock.adjust_balance("JPY", "-100")
+    h.mock.adjust_balance("OAS", "-3")
+
+    rig.executor.check_balance()
+    h.advance(31)
+    rig.executor.check_balance()
+    assert rig.executor.monitor.warning_currencies == ("JPY", "OAS")
+
+    report = run_cycle(rig.deps, rig.state)
+    assert report.outcome is CycleOutcome.CONTINUE
+    assert report.balance_warnings == 2
+    assert rig.state.balance_warnings == 2
+    assert _trip_reasons(h.ledger) == []

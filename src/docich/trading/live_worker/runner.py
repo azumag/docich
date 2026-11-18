@@ -9,7 +9,7 @@ on/off switch is read from ``live_control.json`` on every cycle.
 
 Exit codes (module constants)::
 
-    EXIT_OK = 0           stop requested, or no active policy set / opening balance to record
+    EXIT_OK = 0           stop requested, or no active policy set
     EXIT_CONFIG = 2       layout/ledger/reader-config/policy failure
     EXIT_AUTH = 3         the exchange reader reports an authentication failure
     EXIT_CLOCK = 4        the exchange reader reports a clock-skew failure
@@ -20,14 +20,17 @@ Exit codes (module constants)::
                           safe to restart (systemd does not restart 2, 3 or 5)
 
 Startup order is fixed: ledger -> lease -> reader -> active policy set -> executor ->
-opening-balance precheck -> ``reconcile.on_startup`` -> the cycle loop.  An INERT start
-(no active policy set, or a non-zero opening balance without any ledger history) writes the
-status, releases the lease and returns 0 without a safety row, an intent, an order or a startup
-reconcile.  Every exit path releases the lease (best effort) and closes the ledger.
+``reconcile.on_startup`` -> ``opening.record_auto_opening`` -> the cycle loop.  An INERT
+start (no active policy set) writes the status, releases the lease and returns 0 without a
+safety row, an intent or an order.  Opening balances are recorded by the worker itself (one
+``auto_opening:<CCY>`` cashflow with source ``exchange_history`` per watched currency with no
+history and a positive total); a balance condition never makes the worker inert and never
+stops it.  Every exit path releases the lease (best effort) and closes the ledger.
 """
 from __future__ import annotations
 
 import os
+from decimal import Decimal
 from pathlib import Path
 
 from ..live import act, reconcile, views
@@ -37,6 +40,7 @@ from ..live.executor import OrderExecutor
 from ..live.ingest import ExecutorConfig
 from ..live.lease import (LeaseHeld, LeaseLost, acquire_writer_lease, release_writer_lease)
 from ..live.ledger import LiveLedger, LiveLedgerError
+from ..live.opening import record_auto_opening
 from ..live.paths import LiveLayoutError, live_layout
 from .status import write_status
 
@@ -51,8 +55,7 @@ EXIT_RETRYABLE = 8
 SLEEP_SLICE_S = 1.0
 READER_KINDS = frozenset({"auth", "clock", "config"})
 NO_POLICY_SET = "no_active_policy_set"
-OPENING_BALANCE_MISSING = "opening_balance_missing:"
-BALANCE_UNAVAILABLE_AT_START = "balance_unavailable_at_start"
+ZERO = Decimal(0)
 
 
 def _safe_now(clock, default: float = 0.0) -> float:
@@ -103,6 +106,7 @@ def _fields(*, phase: str, started_at: float, exit_code: int | None = None,
             "stale_symbols": list(report.stale_symbols),
             "control_state": report.control_state,
             "control_mode": report.control_mode,
+            "balance_warnings": max(0, _as_int(report.balance_warnings)),
         })
         if reason is not None:
             fields["reason"] = reason
@@ -136,19 +140,44 @@ def _reader_kind(exc: BaseException) -> str | None:
         return None
 
 
-def _opening_balance_missing(balance, currencies, ledger) -> tuple[str, ...]:
-    """Watched currencies with a non-zero total and no ledger history of any kind."""
-    seen = views.currencies_with_history(ledger)
-    missing: list[str] = []
+def _opening_pending(reader, ledger, currencies) -> bool:
+    """True while a watched currency still has no history and a positive exchange total."""
+    try:
+        history = views.currencies_with_history(ledger)
+        balance = reader.fetch_balance()
+    except LeaseLost:
+        raise
+    except Exception:
+        return True
     for currency in currencies:
+        if str(currency).upper() in history:
+            continue
         asset = balance.assets.get(currency)
-        if asset is None:
-            continue
-        if asset.free + asset.locked == 0:
-            continue
-        if str(currency).upper() not in seen:
-            missing.append(currency)
-    return tuple(sorted(missing))
+        total = ZERO if asset is None else asset.total
+        if total > 0:
+            return True
+    return False
+
+
+def _opening_attempt(ledger, lease, executor, clock) -> bool:
+    """One best-effort auto-opening pass.  True while another pass is still needed.
+
+    ``LeaseLost`` propagates (the caller returns 7 without writing a status).  Every other
+    failure is swallowed and leaves the flag set, so a balance can never stop the worker.
+    """
+    try:
+        currencies = executor.watched_currencies()
+        record_auto_opening(ledger, lease, executor.reader, currencies, now=clock())
+    except LeaseLost:
+        raise
+    except Exception:
+        return True
+    try:
+        return _opening_pending(executor.reader, ledger, currencies)
+    except LeaseLost:
+        raise
+    except Exception:
+        return True
 
 
 def run_worker(*, state_dir, open_reader, make_market_data, clock, stop_requested,
@@ -216,34 +245,7 @@ def run_worker(*, state_dir, open_reader, make_market_data, clock, stop_requeste
                                  symbols=tuple(sorted(ps.policies)),
                                  config=ExecutorConfig())
 
-        # 6. opening-balance precheck (read-only, before on_startup) ----------------------
-        try:
-            balance = reader.fetch_balance()
-            currencies = executor.watched_currencies()
-        except Exception as exc:
-            kind = _reader_kind(exc)
-            if kind is None:
-                try:
-                    kind = getattr(reader.health(), "last_error_kind", None)
-                except Exception:
-                    kind = None
-            code = (EXIT_AUTH if kind == "auth" else
-                    EXIT_CLOCK if kind == "clock" else EXIT_RETRYABLE)
-            reason = kind if kind in ("auth", "clock") else BALANCE_UNAVAILABLE_AT_START
-            _status(state_dir, clock, _fields(
-                phase="exited", started_at=started_at, exit_code=code, reason=reason,
-                digest=ps.digest))
-            return code
-
-        missing = _opening_balance_missing(balance, currencies, ledger)
-        if missing:
-            _status(state_dir, clock, _fields(
-                phase="inert", started_at=started_at, exit_code=EXIT_OK,
-                inert_reason=OPENING_BALANCE_MISSING + ",".join(missing),
-                digest=ps.digest))
-            return EXIT_OK
-
-        # 7. restart reconciliation -------------------------------------------------------
+        # 6. restart reconciliation: unrecorded fills and sent intents are ingested FIRST ---
         try:
             reconcile.on_startup(executor)
         except LeaseLost:
@@ -256,6 +258,14 @@ def run_worker(*, state_dir, open_reader, make_market_data, clock, stop_requeste
                 reason=f"on_startup_failed:{type(exc).__name__}",
                 digest=ps.digest))
             return EXIT_RETRYABLE
+
+        # 7. opening balances: the worker records them itself, best effort.  A reader or
+        # write failure only means the cycle loop retries; it never makes the worker inert.
+        try:
+            opening_pending = _opening_attempt(ledger, lease, executor, clock)
+        except LeaseLost:
+            # The lease may already be gone: write no status at all.
+            return EXIT_LEASE_LOST
 
         # 8. the cycle loop ---------------------------------------------------------------
         try:
@@ -272,6 +282,14 @@ def run_worker(*, state_dir, open_reader, make_market_data, clock, stop_requeste
                          config=config)
         last_report = None
         while True:
+            # At most one retry per cycle while some watched currency still needs an
+            # opening balance.  It runs before the cycle so the cycle sees the cashflow.
+            if opening_pending:
+                try:
+                    opening_pending = _opening_attempt(ledger, lease, executor, clock)
+                except LeaseLost:
+                    # The lease may already be gone: write nothing at all.
+                    return EXIT_LEASE_LOST
             report = run_cycle(deps, state)
             last_report = report
             if report.outcome is CycleOutcome.EXIT_LEASE_LOST:

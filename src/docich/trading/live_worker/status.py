@@ -33,7 +33,8 @@ ALLOWED_KEYS = frozenset({
     "schema_version", "written_at", "started_at", "pid", "phase", "cycle", "mode",
     "outcome", "reason", "blocks", "fresh_symbols", "stale_symbols",
     "consecutive_failures", "record_failures", "ttl_deferred", "ttl_failed",
-    "control_state", "control_mode", "policy_set_digest", "inert_reason", "exit_code",
+    "balance_warnings", "control_state", "control_mode", "policy_set_digest", "inert_reason",
+    "exit_code",
 })
 TRUNCATED_KEYS = frozenset({"policy_set_digest"})
 ALLOWED_PHASES = PHASE_SET
@@ -62,6 +63,8 @@ def _clean_value(key: str, value: object) -> object:
             return value if value in ("shadow", "trade") else _DROP
         return value
     if type(value) is int:                       # bool is not an int here
+        if key == "balance_warnings" and value < 0:
+            return _DROP
         return value
     if isinstance(value, list) and all(isinstance(item, str) for item in value):
         return list(value)

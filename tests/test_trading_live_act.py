@@ -146,6 +146,9 @@ def test_trade_mode_places_sells_before_buys(ws, harnesses, monkeypatch):
     decide_tests.store(h, ps)
     h.mock.adjust_balance("OAS", "10")
     decide_tests.fill_position(h, ps, amount="10", price="100")
+    # The fixture fill was recorded directly in the ledger, so move the mock's JPY by the
+    # same 1000 notional: exchange total 9000 + position cost 1000 = capital 10000.
+    h.mock.adjust_balance("JPY", "-1000")
     rig = make_rig(ws, h, ps=ps,
                    rules={"OAS/JPY": decide_tests.rule(),
                           "XYM/JPY": decide_tests.rule("XYM/JPY")},
@@ -604,15 +607,22 @@ def test_same_symbol_sell_blocks_the_buy(ws, harnesses, monkeypatch):
     assert (rows[0]["side"], rows[0]["symbol"]) == ("buy", "OAS/JPY")
 
 
-# ---- a10: BALANCE_MISMATCH after two cycles blocks buys but not sells -------------------
-def test_balance_mismatch_after_two_cycles_blocks_buys_but_not_sells(ws, harnesses,
-                                                                     monkeypatch):
+# ---- a10: a balance mismatch is a warning count only; buys and sells still go out ---------
+def test_a_balance_mismatch_is_only_a_warning_and_buys_still_go_out(ws, harnesses,
+                                                                    monkeypatch):
     symbols = ("OAS/JPY", "XYM/JPY")
     h = harnesses(symbols=symbols)
     ps = decide_tests.policy_set_for(*symbols)
     decide_tests.store(h, ps)
     rules = {symbol: decide_tests.rule(symbol) for symbol in symbols}
+    # The mock validates against its own market rules: give it the same step the sizer and
+    # executor read, so a 0.01-step amount such as 4.95 is not rejected by the fixture's
+    # default amount_step of 1.
+    for symbol in symbols:
+        h.mock._markets[symbol] = rules[symbol]
     h.mock.set_book("OAS/JPY", bids=[(D("100"), D("1000"))],
+                    asks=[(D("100"), D("1000"))])
+    h.mock.set_book("XYM/JPY", bids=[(D("99"), D("1000"))],
                     asks=[(D("100"), D("1000"))])
     rig = make_rig(ws, h, ps=ps, rules=rules, symbols=symbols,
                    book_overrides={symbol: decide_tests.book(symbol) for symbol in symbols})
@@ -632,6 +642,7 @@ def test_balance_mismatch_after_two_cycles_blocks_buys_but_not_sells(ws, harness
 
     cycle1 = run_cycle(rig.deps, rig.state)
     assert cycle1.outcome is CycleOutcome.CONTINUE
+    assert cycle1.balance_warnings == 0
     assert safety_module.read_safety_state(h.ledger).trips == ()
 
     h.clock.advance(31)                        # the monitor needs two checks >= 30 s apart
@@ -644,38 +655,39 @@ def test_balance_mismatch_after_two_cycles_blocks_buys_but_not_sells(ws, harness
 
     cycle2 = run_cycle(rig.deps, rig.state)
 
-    # The real semantics: the first stable mismatch only starts the streak (cycle 1); the
-    # second stable one, at least 30 s later and with no new fill, trips in cycle 2.
+    # The second stable mismatch, at least 30 s later and with no new fill, is confirmed as
+    # a warning; nothing trips and nothing writes a safety row.
     assert rig.state.cycle_number == 2
-    trips = safety_module.read_safety_state(h.ledger).trips
-    assert [trip.reason for trip in trips] == ["balance_mismatch"]
-    # Hand: deposit 10000, seed buy 10*100 plus its 1 JPY taker fee => expected 8999;
-    # the injected -100 makes the exchange say 8899.  The tolerance is the 1 JPY unit
-    # times (1 + 3 touches: the quote and the fee on the fill, plus the fill itself) = 3.
-    assert trips[0].detail == "JPY expected 8999 actual 8899.0000 tol 3"
-    assert trips[0].tripped_at == rig.clock()
     assert cycle2.outcome is CycleOutcome.CONTINUE
+    assert rig.executor.monitor.warning_currencies == ("JPY",)
+    assert cycle2.balance_warnings == 1
+    assert safety_module.read_safety_state(h.ledger).trips == ()
+    assert [reason for reason in h.trips()] == []
+    assert views.events_of_kind(h.ledger, "safety_trip") == []
 
     rows = decide_tests.decision_rows(h.ledger)
     blocked = [row.payload for row in rows
                if row.payload["action"] == "skip"
                and row.payload["reason"] == "buys_blocked_safety"]
-    assert len(blocked) == 1
-    assert (blocked[0]["side"], blocked[0]["symbol"]) == ("buy", "XYM/JPY")
-    assert "safety" in blocked[0]["blocks"]
+    assert blocked == []
     sell_plans = [row.payload for row in rows
                   if row.payload["action"] == "plan" and row.payload["side"] == "sell"]
+    buy_plans = [row.payload for row in rows
+                 if row.payload["action"] == "plan" and row.payload["side"] == "buy"]
     assert len(sell_plans) == 1 and sell_plans[0]["symbol"] == "OAS/JPY"
+    assert len(buy_plans) == 1 and buy_plans[0]["symbol"] == "XYM/JPY"
 
-    # The exit still goes out through the mock sender even with the safety stop active.
-    assert len(h.mock.submissions) == submissions_before + 1
-    assert h.mock.submissions[-1]["side"] == "sell"
-    assert h.mock.submissions[-1]["amount"] == "10"
+    # Both the sell and the buy went out through the mock sender: a warning blocks neither.
+    assert [item["side"] for item in h.mock.submissions[submissions_before:]] == [
+        "sell", "buy"]
+    assert h.mock.submissions[-1]["amount"] == "4.95"
+    assert h.mock.submissions[-1]["price"] == "100"
     exit_intent = views.intent_by_decision_key(h.ledger, sell_plans[0]["decision_key"])
     assert exit_intent is not None and exit_intent.side == "sell"
     assert exit_intent.state in ("ACKED", "FILLED")
-    buy_key = f"live1:{ps.policy_for('XYM/JPY').digest[:16]}:buy-xym"
-    assert views.intent_by_decision_key(h.ledger, buy_key) is None
+    buy_intent = views.intent_by_decision_key(h.ledger, buy_plans[0]["decision_key"])
+    assert buy_intent is not None and buy_intent.side == "buy"
+    assert buy_intent.state in ("ACKED", "FILLED")
 
 
 # ---- a11: the hook through run_cycle ---------------------------------------------------
