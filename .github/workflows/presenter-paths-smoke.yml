@@ -97,16 +97,25 @@ concurrency:
 jobs:
   cli-nethack-presenter:
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
         with:
           persist-credentials: false
       - name: Install isolated X11 and CLI presenter dependencies
         run: |
-          # A stalled apt mirror used to hang until the job timeout killed the
-          # job (#4624). Bound every apt call, retry the index refresh, and
-          # fail fast after the third failure.
+          # Hosted Ubuntu runners sometimes use a slow Azure apt mirror; apply
+          # the same swap ci.yml's system-dependency step makes (#4624). The
+          # unswapped mirror kept Get: lines crawling until the job timeout
+          # killed the job (#4625 run 44360312635).
+          if [ "${GITHUB_ACTIONS:-}" = "true" ] && [ -f /etc/apt/apt-mirrors.txt ]; then
+            sudo sed -i 's#azure.archive.ubuntu.com#archive.ubuntu.com#g' /etc/apt/apt-mirrors.txt
+          fi
+          # Bound every apt call and fail fast after the third failure. apt
+          # resumes downloads left under /var/cache/apt/archives/partial, so a
+          # 300 s bound abandons a stalled mirror early without losing the
+          # progress already made; three rounds still give a degraded-but-
+          # working mirror up to ~15 minutes of cumulative download time.
           for i in 1 2 3; do
             if timeout 120 sudo apt-get update; then
               break
@@ -119,7 +128,7 @@ jobs:
           done
           # x11-utils provides xdpyinfo, which `docich up` uses to wait for the display.
           for i in 1 2 3; do
-            if timeout 600 sudo apt-get install -y ffmpeg tmux xterm xdotool xvfb x11-utils nethack-console; then
+            if timeout 300 sudo apt-get install -y ffmpeg tmux xterm xdotool xvfb x11-utils nethack-console; then
               break
             fi
             if [ "$i" = 3 ]; then
@@ -136,13 +145,18 @@ jobs:
 
   retroarch-presenter:
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
         with:
           persist-credentials: false
       - name: Install isolated X11 and RetroArch presenter dependencies
         run: |
+          # Same slow-Azure-mirror swap and bounded retries as the
+          # cli-nethack-presenter step above (#4624, #4625 run 44360312635).
+          if [ "${GITHUB_ACTIONS:-}" = "true" ] && [ -f /etc/apt/apt-mirrors.txt ]; then
+            sudo sed -i 's#azure.archive.ubuntu.com#archive.ubuntu.com#g' /etc/apt/apt-mirrors.txt
+          fi
           for i in 1 2 3; do
             if timeout 120 sudo apt-get update; then
               break
@@ -154,7 +168,7 @@ jobs:
             sleep 10
           done
           for i in 1 2 3; do
-            if timeout 600 sudo apt-get install -y ffmpeg tmux xdotool xvfb x11-utils dbus-x11 retroarch; then
+            if timeout 300 sudo apt-get install -y ffmpeg tmux xdotool xvfb x11-utils dbus-x11 retroarch; then
               break
             fi
             if [ "$i" = 3 ]; then
@@ -239,6 +253,11 @@ jobs:
           persist-credentials: false
       - name: Install isolated X11 and SRT presenter dependencies
         run: |
+          # Same slow-Azure-mirror swap and bounded retries as the
+          # cli-nethack-presenter step above (#4624, #4625 run 44360312635).
+          if [ "${GITHUB_ACTIONS:-}" = "true" ] && [ -f /etc/apt/apt-mirrors.txt ]; then
+            sudo sed -i 's#azure.archive.ubuntu.com#archive.ubuntu.com#g' /etc/apt/apt-mirrors.txt
+          fi
           for i in 1 2 3; do
             if timeout 120 sudo apt-get update; then
               break
@@ -250,7 +269,7 @@ jobs:
             sleep 10
           done
           for i in 1 2 3; do
-            if timeout 600 sudo apt-get install -y ffmpeg tmux xterm xdotool xvfb x11-utils iproute2 lsof; then
+            if timeout 300 sudo apt-get install -y ffmpeg tmux xterm xdotool xvfb x11-utils iproute2 lsof; then
               break
             fi
             if [ "$i" = 3 ]; then
@@ -287,6 +306,11 @@ jobs:
           persist-credentials: false
       - name: Install isolated X11 presenter dependencies
         run: |
+          # Same slow-Azure-mirror swap and bounded retries as the
+          # cli-nethack-presenter step above (#4624, #4625 run 44360312635).
+          if [ "${GITHUB_ACTIONS:-}" = "true" ] && [ -f /etc/apt/apt-mirrors.txt ]; then
+            sudo sed -i 's#azure.archive.ubuntu.com#archive.ubuntu.com#g' /etc/apt/apt-mirrors.txt
+          fi
           for i in 1 2 3; do
             if timeout 120 sudo apt-get update; then
               break
@@ -298,7 +322,7 @@ jobs:
             sleep 10
           done
           for i in 1 2 3; do
-            if timeout 600 sudo apt-get install -y ffmpeg tmux xterm xdotool xvfb x11-utils; then
+            if timeout 300 sudo apt-get install -y ffmpeg tmux xterm xdotool xvfb x11-utils; then
               break
             fi
             if [ "$i" = 3 ]; then
