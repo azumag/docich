@@ -392,6 +392,25 @@ def test_a_march_at_a_moved_moving_boss_cell_is_resent_early():
         (record,) = decisions(mem, 'boss_sortie_overdue')
         assert record['observed_metric']['aimed_cell'] == AIMED
         assert record['observed_metric']['cell'] == list(NOW_CELL)
+        # Issue #4561: the boss moved, so the re-send is free - the relaunch
+        # budget only counts attempts that could have entered.
+        assert mem.get('boss_relaunch', {}).get('corridor-boss', 0) == 0
+    finally:
+        chart.set_boss_cell(MOVING, None)
+
+
+def test_a_moved_relaunch_never_exhausts_the_budget():
+    """Issue #4561: a boss that relocates every measurement drained the
+    relaunch budget and parked the step until the stale retry cooldown."""
+    chart.set_boss_cell(MOVING, NOW_CELL)
+    try:
+        mem = moving_memory(10)
+        mem['boss_relaunch'] = {'corridor-boss': O.BOSS_RELAUNCH_LIMIT}
+        O.next_order(mem)
+        assert _plan_region(mem)['orders']['corridor-boss'] == 'pending'
+        assert _sorties(mem)['corridor-boss']['status'] == 'overdue'
+        assert not decisions(mem, 'boss_relaunch_exhausted')
+        assert mem['boss_relaunch']['corridor-boss'] == O.BOSS_RELAUNCH_LIMIT
     finally:
         chart.set_boss_cell(MOVING, None)
 
