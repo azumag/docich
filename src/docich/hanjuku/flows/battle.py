@@ -13,13 +13,13 @@ from dataclasses import asdict
 
 from ..judgment.battle import _general_egg_rescue_recheck
 from . import egg_bait
-from ..os_layer.screen import Screen
+from ..os_layer.screen import Screen, _card_picker_rows
 from ..os_layer.font import UNKNOWN
 from ... import hanjuku_chart as chart, hanjuku_experience as experience
 from ... import hanjuku_reference as reference
 from ...hanjuku_egg_reference import enemy_egg_triggers, general_max_hp
 from ..decision_log import _record, _tally
-from ..judgment.battle import (EGG_WALL_DAMAGE, DEFENDER_SUMMON_OPEN_LIMIT, CARD_MENU_OPEN_RETRIES, DEFENDER_EGG_OPEN_LIMIT, DUEL_EVENT_TOKENS,
+from ..judgment.battle import (EGG_WALL_DAMAGE, DEFENDER_SUMMON_OPEN_LIMIT, CARD_MENU_OPEN_RETRIES, CARD_LIST_OPEN_WAITS, DEFENDER_EGG_OPEN_LIMIT, DUEL_EVENT_TOKENS,
                                _conserved_army_recheck,
                                ENTRY_RETURN_KINDS, GENERAL_CRITICAL_RETREAT_HP, HERO_RECALL_MIN_HP,
                                HERO_RECALL_RATIO_TENTHS, MELEE_HOLD_LIMIT, MELEE_HP_HOLD_DIVISOR,
@@ -924,9 +924,26 @@ def battle_step(screen: Screen, mem):
                                              if melee_followup else
                                              '選択後の敵HP低下と白兵復帰を実測したため、使用告知は未確認のまま後続札へ進む'))
         else:
+            stage = flow.get('stage')
+            if stage != 'menu' and _card_picker_rows(screen):
+                # 実切り札一覧がHPパネルと併存して battle 分類のまま残る実画面
+                # がある。一覧の選択手順へそのまま渡す ('menu'/'down' の帳簿
+                # ずれは card_list_step 側で現段へ揃える)。
+                from . import battle_menus
+                return battle_menus.card_list_step(screen, mem)
+            if stage in ('down', 'list'):
+                # きりふだ行への確定から一覧の描画までは数観測掛かる。間の実
+                # 戦闘パネルは白兵復帰ではなく開き途中なので有界に待つ
+                # (g1190-local ch1: 描画途中の battle 観測2回でフローが閉じ、
+                # 開いた一覧を selection_planned=False のまま捨てていた)。
+                waits = int(flow.get('list_open_battle_waits') or 0) + 1
+                flow['list_open_battle_waits'] = waits
+                if waits >= CARD_LIST_OPEN_WAITS:
+                    _card_use_unclassified(mem, cur, '切り札一覧が開かないまま白兵へ戻った')
+                return []
             flow['battle_frames_without_receipt'] = flow.get('battle_frames_without_receipt', 0) + 1
             waited = flow['battle_frames_without_receipt']
-            opening = flow.get('stage') == 'menu'
+            opening = stage == 'menu'
             if opening and waited <= CARD_MENU_OPEN_RETRIES:
                 return [pad('b')]
             if waited >= (CARD_MENU_OPEN_RETRIES + 1 if opening else 2):
