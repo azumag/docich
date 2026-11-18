@@ -199,6 +199,7 @@ KEY_OWNERSHIP = {
     'chart_edition': {'region': PLAN, 'lifetime': 'run', 'migrated': False},  # 新規ゲーム開始時にピンされるチャート版
     'chart_plan_tick': {'region': PLAN, 'lifetime': 'chapter', 'migrated': False},  # チャート計画の策定tick
     'corridor_drained': {'region': PLAN, 'lifetime': 'chapter', 'migrated': False},  # chapter9 corridorの枯渇管理(定数DRAINED経由)
+    'hero_hub_move_eval': {'region': PLAN, 'lifetime': 'chapter', 'migrated': False},  # 主人公ハブ移動の月次評価簿記(#4546)
     'hero_locate': {'region': PLAN, 'lifetime': 'chapter', 'migrated': False},  # chapter9 主人公の所在確認の予算・発行済み指示(v843)
     'corridor_probe': {'region': PLAN, 'lifetime': 'chapter', 'migrated': False},  # chapter9 corridorの城一覧確認予算(v707)
     'front_guard_hold': {'region': PLAN, 'lifetime': 'chapter', 'migrated': False},  # chapter9 前線1人の待ち時計(v735)
