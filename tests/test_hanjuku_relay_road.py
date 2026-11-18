@@ -1,0 +1,46 @@
+"""The relay's いどう leg is dead-reckoned when no roof can anchor it.
+
+The back half has no own roofs, so observed_cursor_cell cannot place the field
+cursor. The picker measured the camp's world cell; the cursor moves ~1 px per
+frame, so the camp→relay delta is walked directly.
+"""
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
+
+from docich.hanjuku.flows import recall as r
+from docich.hanjuku.os_layer.commands import pad
+from docich.hanjuku.os_layer.screen import Screen
+from docich.hanjuku.state.regions import flow as _flow
+
+MAP = Screen([], None, '', kind='map')
+
+
+def memory():
+    return {'chapter': 11, 'tick': 100, '_records': [],
+            'recall': {'stage': 'relay', 'steps': 0, 'target': [140, 112],
+                       'camp_world': [638, 348],
+                       'relay': {'cell': [508, 264], 'hub': 'タタール'},
+                       'move_visible': {'cell': [508, 264], 'relay': True}}}
+
+
+def test_the_delta_is_walked_left_then_up_and_confirmed():
+    mem = memory()
+    state = _flow(mem)['recall']
+    first = r._relay_road(mem, state, [508, 264])
+    assert first == [pad('left', 16)]          # dx = -130 first
+    presses = 0
+    actions = first
+    while actions != [pad('a')] and presses < 40:
+        actions = r._relay_road(mem, state, [508, 264])
+        presses += 1
+    assert actions == [pad('a')]
+    assert any(rec['decision'] == 'camp_recall_relay_road' for rec in mem['_records'])
+
+
+def test_a_camp_without_a_measured_world_cell_cannot_reckon():
+    mem = memory()
+    state = _flow(mem)['recall']
+    state.pop('camp_world')
+    assert r._relay_road(mem, state, [508, 264]) is None
