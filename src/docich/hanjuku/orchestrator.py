@@ -229,6 +229,18 @@ def pad(button, ms=100):
     return {'type':'pad','buttons':[button],'hold_ms':ms}
 
 
+def _recall_owns_dialog(kind, recall_dialog, ch9_field_recall):
+    """A camp recall never takes the August vacation/bonus choice.
+
+    The recheck/redefer path held every observation on that menu (g1190
+    2026-11-18 62-8: 123 retreat_recheck_unconfirmed and 94
+    no_input_fallback on one frozen question), so the choice itself has to own
+    the foreground.
+    """
+    return (bool(recall_dialog or ch9_field_recall)
+            and kind not in ('summer_bonus', 'summer_bonus_message'))
+
+
 def concert_b_instruction_step(phase, kind, screen, mem, digest):
     """Let a screen that names its own exit key close with B.
 
@@ -1021,6 +1033,22 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
     # visible to this observation's idle-time scheduling.
     goals.refresh(mem)
     kind=screen.kind
+    if kind == 'summer_bonus':
+        # The August vacation/bonus question owns the foreground: a stale
+        # camp recall or the concert hold otherwise answers it with a hold
+        # (g1190 2026-11-18 62-8: 123 retreat_recheck_unconfirmed and 94
+        # no_input_fallback on this one menu).
+        actions = prompts_flow.summer_bonus_step(screen, mem)
+        if actions:
+            updated.update(screen_kind=kind, no_input_streak=0, no_input_frames=[])
+            for key in ('_adjusted', '_interim', '_card_scroll_input'):
+                mem.pop(key, None)
+            _journal(mem).pop('_departure_input', None)
+            _journal(mem).pop('_recall_inputs', None)
+            updated['_records'] = mem.pop('_records')
+            updated['_experience'] = mem.pop('_experience', None)
+            updated['policy'] = mem
+            return actions, updated
     if 'ロードなされますかな' in (screen.text or ''):
         # The save/load menu looks like a shop to the pixel classifier, so the
         # shop phase pressed B forever and screen_stalled (g1190 2026-11-15
@@ -1323,7 +1351,7 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
         actions = prompts_flow.yes_no_step(screen, mem)
     if actions is None:
         actions = (recall_flow.camp_recall_step(screen, mem, frame)
-                   if recall_dialog or ch9_field_recall
+                   if _recall_owns_dialog(kind, recall_dialog, ch9_field_recall)
                    else month_flow.month_sub_step(screen, mem) if mem.get('month_sub') and (kind != 'month_menu' or month_dialog)
                    else None)
     # No house phase expects a red-curtain screen (concert/merchant backdrop):
