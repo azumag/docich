@@ -33,9 +33,9 @@ ALLOWED_KEYS = frozenset({
     "schema_version", "written_at", "started_at", "pid", "phase", "cycle", "mode",
     "outcome", "reason", "blocks", "fresh_symbols", "stale_symbols",
     "consecutive_failures", "record_failures", "ttl_deferred", "ttl_failed",
-    "code_revision", "policy_set_digest", "inert_reason", "exit_code",
+    "control_state", "control_mode", "policy_set_digest", "inert_reason", "exit_code",
 })
-TRUNCATED_KEYS = frozenset({"code_revision", "policy_set_digest"})
+TRUNCATED_KEYS = frozenset({"policy_set_digest"})
 ALLOWED_PHASES = PHASE_SET
 _HEX = frozenset("0123456789abcdef")
 _DROP = object()
@@ -56,6 +56,10 @@ def _clean_value(key: str, value: object) -> object:
         if key in TRUNCATED_KEYS:
             short = value[:12]
             return short if short and all(ch in _HEX for ch in short) else _DROP
+        if key == "control_state":
+            return value if value in ("on", "off", "unknown") else _DROP
+        if key == "control_mode":
+            return value if value in ("shadow", "trade") else _DROP
         return value
     if type(value) is int:                       # bool is not an int here
         return value

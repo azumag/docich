@@ -16,14 +16,13 @@ from pathlib import Path
 
 import pytest
 
-from docich.trading.live import act, safety, views
+from docich.trading.live import act, control as live_control, safety, views
 from docich.trading.live import decide as decide_module
 from docich.trading.live.cycle import CycleOutcome, CycleState, next_wait, run_cycle
 from docich.trading.live.lease import (LeaseHeld, LeaseLost, acquire_writer_lease,
                                        release_writer_lease)
 from docich.trading.live.ledger import Cashflow, LiveLedger
 from docich.trading.live.signals import LiveSignals
-from docich.trading.live_owner.revision import RevisionError
 from docich.trading.live_worker import runner as runner_module
 from docich.trading.live_worker.status import ALLOWED_KEYS, STATUS_FILENAME
 from docich.trading.market_data import MarketFrame
@@ -34,7 +33,6 @@ import test_trading_live_decide as decide_tests
 import test_trading_live_ttl as ttl_tests
 
 WORKER_NOW = 1_800_000_000.0
-REV = "a" * 40
 NO_SENDER = "trade_unavailable_no_sender"
 
 
@@ -129,12 +127,11 @@ class Prepared:
     ps: object
     reader: RunnerReader
     mode: str | None
-    revision: str
 
 
-def prepare(ws: Workspace, *, symbols=("OAS/JPY",), mode="trade", revision=REV,
+def prepare(ws: Workspace, *, symbols=("OAS/JPY",), mode="trade",
             jpy="10000", coins=None, cashflows=None, activate=True, store=True) -> Prepared:
-    """A closed ledger + released lease + active policy set + enable file (the runner's inputs)."""
+    """A closed ledger + released lease + active policy set + control file (the runner's inputs)."""
     clock = Clock(start_ms=int(WORKER_NOW * 1000))
     mock, _ = make_mock(clock, symbols=symbols, jpy=jpy)
     for currency, amount in (coins or {}).items():
@@ -145,11 +142,9 @@ def prepare(ws: Workspace, *, symbols=("OAS/JPY",), mode="trade", revision=REV,
     if store:
         ledger.store_policy_set(lease, ps, now=clock.seconds())
     if mode is not None:
-        ws.write_enable(ps, mode=mode, revision=revision)
+        ws.write_control(mode=mode)
     if activate:
-        ledger.record_owner_activation(lease, ps,
-                                       enable=ws.enable_result(ps, revision=revision),
-                                       operator="owner", note="runner test",
+        ledger.record_owner_activation(lease, ps, operator="owner", note="runner test",
                                        now=clock.seconds())
     for index, (currency, amount) in enumerate((cashflows or {}).items()):
         ledger.record_cashflow(lease, Cashflow(f"cf-{currency}-{index}", "deposit", currency,
@@ -158,36 +153,27 @@ def prepare(ws: Workspace, *, symbols=("OAS/JPY",), mode="trade", revision=REV,
     release_writer_lease(ledger, lease, now=clock.seconds())
     ledger.close()
     return Prepared(ws=ws, clock=clock, mock=mock, ps=ps, reader=RunnerReader(mock),
-                    mode=mode, revision=revision)
+                    mode=mode)
 
 
-def run(prepared: Prepared, *, stop_requested=None, revision=None, open_reader=None,
-        make_market_data=None, interval_s=60.0, revision_check_every_s=10_000.0,
-        config=None):
+def run(prepared: Prepared, *, stop_requested=None, open_reader=None,
+        make_market_data=None, interval_s=60.0, config=None):
     """Call run_worker with the prepared state dir and the fake clock/sleep."""
     clock = prepared.clock.seconds
     sleeps = Sleeps(prepared.clock)
-    times = []
-
-    def rev():
-        times.append(float(clock()))
-        return prepared.revision if revision is None else revision()
-
     kwargs = dict(
         state_dir=prepared.ws.state,
         open_reader=open_reader or (lambda state_dir: prepared.reader),
         make_market_data=make_market_data or (lambda reader: FakeMarketData(clock)),
-        revision=rev,
         clock=clock,
         stop_requested=stop_requested or (lambda: False),
         sleep=sleeps,
         interval_s=interval_s,
-        revision_check_every_s=revision_check_every_s,
     )
     if config is not None:
         kwargs["config"] = config
     code = runner_module.run_worker(**kwargs)
-    return code, sleeps.calls, times
+    return code, sleeps.calls
 
 
 def read_status(ws: Workspace) -> dict:
@@ -262,7 +248,7 @@ def test_r1_three_cycles_then_stop_releases_the_lease_and_writes_exited(ws, monk
         return report
 
     monkeypatch.setattr(runner_module, "run_cycle", cycle_spy)
-    code, sleeps, times = run(prepared, stop_requested=lambda: len(completed) >= 3)
+    code, sleeps = run(prepared, stop_requested=lambda: len(completed) >= 3)
 
     assert code == runner_module.EXIT_OK
     assert len(completed) == 3
@@ -276,7 +262,8 @@ def test_r1_three_cycles_then_stop_releases_the_lease_and_writes_exited(ws, monk
     assert status["cycle"] == 3
     assert status["outcome"] == "stop_requested"
     assert status["mode"] == "trade"
-    assert status["code_revision"] == REV[:12]
+    assert status["control_state"] == "on" and status["control_mode"] == "trade"
+    assert "code_revision" not in status
     assert status["policy_set_digest"] == prepared.ps.digest[:12]
 
     # The lease is free again and the ledger kept exactly one no-sender notice, no intent.
@@ -293,7 +280,7 @@ def test_r1_three_cycles_then_stop_releases_the_lease_and_writes_exited(ws, monk
 
 
 # ---- r2: the startup order ---------------------------------------------------------------
-def test_r2_startup_order_is_ledger_lease_reader_revision_balance_startup_cycle(ws, monkeypatch):
+def test_r2_startup_order_is_ledger_lease_reader_balance_startup_cycle(ws, monkeypatch):
     prepared = prepare(ws, cashflows={"JPY": "10000"})
     calls = []
 
@@ -338,15 +325,12 @@ def test_r2_startup_order_is_ledger_lease_reader_revision_balance_startup_cycle(
 
     monkeypatch.setattr(runner_module, "run_cycle", cycle_spy)
 
-    code, sleeps, times = run(
+    code, sleeps = run(
         prepared, stop_requested=lambda: True,
-        open_reader=lambda state_dir: (calls.append("reader"), reader)[1],
-        revision=lambda: (calls.append("revision"), prepared.revision)[1])
+        open_reader=lambda state_dir: (calls.append("reader"), reader)[1])
 
     assert code == runner_module.EXIT_OK
-    assert calls == ["ledger", "lease", "reader", "revision", "balance", "on_startup",
-                     "run_cycle"]
-    assert times == [WORKER_NOW]
+    assert calls == ["ledger", "lease", "reader", "balance", "on_startup", "run_cycle"]
     assert read_status(ws)["cycle"] == 1
 
 
@@ -359,7 +343,7 @@ def test_r3_a_nonzero_opening_balance_without_a_cashflow_is_inert(ws, monkeypatc
     monkeypatch.setattr(runner_module.reconcile, "on_startup",
                         lambda executor: startups.append(1))
 
-    code, sleeps, times = run(prepared, stop_requested=lambda: True)
+    code, sleeps = run(prepared, stop_requested=lambda: True)
 
     assert code == runner_module.EXIT_OK
     assert startups == []
@@ -389,7 +373,7 @@ def test_r3_all_watched_currencies_with_a_cashflow_let_the_run_proceed(ws, monke
 
     monkeypatch.setattr(runner_module.reconcile, "on_startup", startup_spy)
 
-    code, sleeps, times = run(prepared, stop_requested=lambda: True)
+    code, sleeps = run(prepared, stop_requested=lambda: True)
 
     assert code == runner_module.EXIT_OK
     assert startups == [1]
@@ -410,7 +394,7 @@ def test_r3_a_zero_balance_without_a_cashflow_does_not_block(ws, monkeypatch):
 
     monkeypatch.setattr(runner_module.reconcile, "on_startup", startup_spy)
 
-    code, sleeps, times = run(prepared, stop_requested=lambda: True)
+    code, sleeps = run(prepared, stop_requested=lambda: True)
 
     assert code == runner_module.EXIT_OK
     assert startups == [1]
@@ -418,17 +402,16 @@ def test_r3_a_zero_balance_without_a_cashflow_does_not_block(ws, monkeypatch):
 
 
 # ---- r4: no active policy set ------------------------------------------------------------
-def test_r4_no_active_policy_set_is_inert_and_never_reaches_the_revision(ws, monkeypatch):
+def test_r4_no_active_policy_set_is_inert_before_the_executor(ws, monkeypatch):
     prepared = prepare(ws, activate=False, cashflows={"JPY": "10000"})
     startups = []
     monkeypatch.setattr(runner_module.reconcile, "on_startup",
                         lambda executor: startups.append(1))
     before = event_kinds(ws)
 
-    code, sleeps, times = run(prepared, stop_requested=lambda: True)
+    code, sleeps = run(prepared, stop_requested=lambda: True)
 
     assert code == runner_module.EXIT_OK
-    assert times == []                       # step 4 is before step 5
     assert startups == []
     status = read_status(ws)
     assert status["phase"] == "inert"
@@ -458,7 +441,7 @@ def test_r5_a_reader_startup_failure_maps_the_exit_code_and_releases_the_lease(
             raise RuntimeError("reader down")
         raise ReaderFailure(kind)
 
-    got, sleeps, times = run(prepared, open_reader=open_reader)
+    got, sleeps = run(prepared, open_reader=open_reader)
 
     assert got == code
     assert sleeps == []
@@ -474,34 +457,12 @@ def test_r5_a_held_lease_returns_5_and_writes_no_status(ws):
     ledger = LiveLedger.open(ws.layout, paper_dir=ws.paper, now=WORKER_NOW)
     lease = acquire_writer_lease(ledger, ws.layout, now=WORKER_NOW)
     try:
-        code, sleeps, times = run(prepared, stop_requested=lambda: True)
+        code, sleeps = run(prepared, stop_requested=lambda: True)
         assert code == runner_module.EXIT_LEASE_HELD
         assert not (ws.layout.root / STATUS_FILENAME).exists()
     finally:
         release_writer_lease(ledger, lease, now=WORKER_NOW)
         ledger.close()
-
-
-@pytest.mark.parametrize("exc", [
-    pytest.param(RevisionError("the tracked tree is dirty"), id="RevisionError"),
-    pytest.param(RuntimeError("git rev-parse failed"), id="RuntimeError"),
-    pytest.param(OSError("git is not installed"), id="OSError"),
-])
-def test_r5_any_unreadable_revision_is_exit_2(ws, exc):
-    prepared = prepare(ws, cashflows={"JPY": "10000"})
-
-    def revision():
-        raise exc
-
-    code, sleeps, times = run(prepared, revision=revision)
-
-    assert code == runner_module.EXIT_CONFIG
-    assert times == [WORKER_NOW]
-    status = read_status(ws)
-    assert status["phase"] == "exited"
-    assert status["exit_code"] == runner_module.EXIT_CONFIG
-    assert status["reason"] == f"revision_error:{type(exc).__name__}"
-    acquire_again(ws)
 
 
 def test_r5_a_balance_failure_at_the_precheck_is_retryable_and_skips_startup(ws, monkeypatch):
@@ -512,7 +473,7 @@ def test_r5_a_balance_failure_at_the_precheck_is_retryable_and_skips_startup(ws,
     monkeypatch.setattr(runner_module.reconcile, "on_startup",
                         lambda executor: startups.append(1))
 
-    code, sleeps, times = run(prepared, stop_requested=lambda: True)
+    code, sleeps = run(prepared, stop_requested=lambda: True)
 
     assert code == runner_module.EXIT_RETRYABLE
     assert sleeps == []
@@ -544,7 +505,7 @@ def test_r5_an_on_startup_failure_is_retryable_and_no_cycle_runs(ws, monkeypatch
     monkeypatch.setattr(runner_module.reconcile, "on_startup", startup)
     monkeypatch.setattr(runner_module, "run_cycle", cycle_spy)
 
-    code, sleeps, times = run(prepared, stop_requested=lambda: True)
+    code, sleeps = run(prepared, stop_requested=lambda: True)
 
     assert code == runner_module.EXIT_RETRYABLE
     assert cycles == []
@@ -566,7 +527,7 @@ def test_r6_reader_health_auth_and_clock_exit(ws, kind, code):
     prepared = prepare(ws, cashflows={"JPY": "10000"})
     prepared.reader.health_value = Health(kind, 0)
 
-    got, sleeps, times = run(prepared, stop_requested=lambda: False)
+    got, sleeps = run(prepared, stop_requested=lambda: False)
 
     assert got == code
     status = read_status(ws)
@@ -582,7 +543,7 @@ def test_r6_a_lost_lease_during_a_cycle_is_exit_7(ws):
     prepared = prepare(ws, cashflows={"JPY": "10000"})
     prepared.reader.on_health = lambda: lose_lease(ws)
 
-    got, sleeps, times = run(prepared, stop_requested=lambda: False)
+    got, sleeps = run(prepared, stop_requested=lambda: False)
 
     assert got == runner_module.EXIT_LEASE_LOST
     # A worker that lost the lease writes no status at all: the file still holds the
@@ -596,57 +557,6 @@ def test_r6_a_lost_lease_during_a_cycle_is_exit_7(ws):
     # The lock was replaced; the best-effort release must not have raised out of the runner.
 
 
-def test_r6_a_changed_revision_exits_6_only_at_the_check_interval(ws):
-    prepared = prepare(ws, cashflows={"JPY": "10000"})
-
-    def revision():
-        return "b" * 40 if prepared.clock.seconds() >= WORKER_NOW + 60 else prepared.revision
-
-    code, sleeps, times = run(prepared, stop_requested=lambda: False,
-                              revision=revision, revision_check_every_s=60.0)
-
-    assert code == runner_module.EXIT_CODE_CHANGED
-    # Called once at startup, then once at exactly t0+60 -- never on every loop turn.
-    assert times == [WORKER_NOW, WORKER_NOW + 60]
-    assert sum(sleeps) == 60.0 and set(sleeps) == {1.0}
-    status = read_status(ws)
-    assert status["phase"] == "exited"
-    assert status["exit_code"] == runner_module.EXIT_CODE_CHANGED
-    assert status["reason"] == "code_revision_changed"
-    assert status["cycle"] == 1
-    acquire_again(ws)
-
-
-@pytest.mark.parametrize("exc", [
-    pytest.param(RevisionError("the tracked tree is dirty"), id="RevisionError"),
-    pytest.param(RuntimeError("git rev-parse failed"), id="RuntimeError"),
-])
-def test_r6_an_unreadable_revision_exits_6_at_the_check_interval(ws, exc):
-    prepared = prepare(ws, cashflows={"JPY": "10000"})
-    calls = []
-
-    def revision():
-        calls.append(1)
-        if len(calls) == 1:               # startup reads the revision; the periodic read fails
-            return prepared.revision
-        raise exc
-
-    code, sleeps, times = run(prepared, stop_requested=lambda: False,
-                              revision=revision, revision_check_every_s=60.0)
-
-    assert code == runner_module.EXIT_CODE_CHANGED
-    # One startup call plus exactly one periodic call: the failure ends the worker at t0+60.
-    assert times == [WORKER_NOW, WORKER_NOW + 60]
-    assert len(calls) == 2
-    assert sleeps == [1.0] * 60
-    status = read_status(ws)
-    assert status["phase"] == "exited"
-    assert status["exit_code"] == runner_module.EXIT_CODE_CHANGED
-    assert status["reason"] == f"revision_unreadable:{type(exc).__name__}"
-    assert status["cycle"] == 1
-    acquire_again(ws)
-
-
 # ---- r7: stop handling ------------------------------------------------------------------
 def test_r7_a_stop_during_the_wait_ends_within_one_slice(ws):
     prepared = prepare(ws, cashflows={"JPY": "10000"})
@@ -654,7 +564,7 @@ def test_r7_a_stop_during_the_wait_ends_within_one_slice(ws):
     def stop_requested():
         return prepared.clock.seconds() >= WORKER_NOW + 1.0
 
-    code, sleeps, times = run(prepared, stop_requested=stop_requested)
+    code, sleeps = run(prepared, stop_requested=stop_requested)
 
     assert code == runner_module.EXIT_OK
     assert sleeps == [1.0]                       # one 1.0 s slice, no full interval
@@ -670,7 +580,7 @@ def test_r7_a_stop_during_the_wait_ends_within_one_slice(ws):
 def test_r7_a_stop_before_the_first_cycle_exits_0_without_orders(ws):
     prepared = prepare(ws, cashflows={"JPY": "10000"})
 
-    code, sleeps, times = run(prepared, stop_requested=lambda: True)
+    code, sleeps = run(prepared, stop_requested=lambda: True)
 
     assert code == runner_module.EXIT_OK
     assert sleeps == []
@@ -688,7 +598,7 @@ def test_the_stop_flag_set_before_startup_work_still_releases_everything(ws):
     prepared = prepare(ws, cashflows={"JPY": "10000"})
 
     # The flag is already true before run_worker does any startup work.
-    code, sleeps, times = run(prepared, stop_requested=lambda: True)
+    code, sleeps = run(prepared, stop_requested=lambda: True)
 
     assert code == runner_module.EXIT_OK
     status = read_status(ws)
@@ -709,8 +619,7 @@ def test_r8_consecutive_failures_lengthen_the_exact_waits(ws):
     def stop_requested():
         return prepared.clock.seconds() >= WORKER_NOW + 181.0
 
-    code, sleeps, times = run(prepared, stop_requested=stop_requested,
-                              interval_s=60.0, revision_check_every_s=10_000.0)
+    code, sleeps = run(prepared, stop_requested=stop_requested, interval_s=60.0)
 
     # Hand derivation: failures 1,2,3 -> next_wait(60,1)=60, next_wait(60,2)=120, then one
     # 1.0 s slice of next_wait(60,3)=240 before the stop is seen.  All slices are <= 1.0 s.
@@ -809,7 +718,7 @@ def test_r9_the_cycle_deps_carry_the_real_decide_hook_and_the_policy_symbols(ws,
         return real_cycle(deps, state)
 
     monkeypatch.setattr(runner_module, "run_cycle", cycle_spy)
-    code, sleeps, times = run(prepared, stop_requested=lambda: True)
+    code, sleeps = run(prepared, stop_requested=lambda: True)
 
     assert code == runner_module.EXIT_OK
     deps = captured["deps"]
@@ -826,7 +735,7 @@ def test_r9_the_cycle_deps_carry_the_real_decide_hook_and_the_policy_symbols(ws,
 def test_r9_the_status_has_only_the_allow_listed_keys_and_no_balance(ws):
     prepared = prepare(ws, jpy="987654321", cashflows={"JPY": "987654321"})
 
-    code, sleeps, times = run(prepared, stop_requested=lambda: True)
+    code, sleeps = run(prepared, stop_requested=lambda: True)
 
     assert code == runner_module.EXIT_OK
     text = status_text(ws)
@@ -888,7 +797,7 @@ def test_r10_record_failures_are_populated_by_decide_and_act(ws, harnesses, monk
     buy = decide_tests.opportunity("OAS/JPY", "buy", oid="buy-1")
     monkeypatch.setattr(decide_module, "scan_live",
                         lambda *args, **kwargs: LiveSignals((buy,), (), (), {}))
-    ws.write_enable(h.ps, mode="shadow")
+    ws.write_control(mode="shadow")
 
     def record_down(lease, kind, payload, *, now):
         raise RuntimeError("record down")
@@ -914,7 +823,7 @@ def test_exit_code_numbers_are_part_of_the_contract():
     assert runner_module.EXIT_AUTH == 3
     assert runner_module.EXIT_CLOCK == 4
     assert runner_module.EXIT_LEASE_HELD == 5
-    assert runner_module.EXIT_CODE_CHANGED == 6
+    assert not hasattr(runner_module, "EXIT_CODE_CHANGED")   # 6 stays unused
     assert runner_module.EXIT_LEASE_LOST == 7
     assert runner_module.EXIT_RETRYABLE == 8
 
@@ -924,23 +833,11 @@ def test_a_held_lease_returns_the_literal_5(ws):
     ledger = LiveLedger.open(ws.layout, paper_dir=ws.paper, now=WORKER_NOW)
     lease = acquire_writer_lease(ledger, ws.layout, now=WORKER_NOW)
     try:
-        code, sleeps, times = run(prepared, stop_requested=lambda: True)
+        code, sleeps = run(prepared, stop_requested=lambda: True)
         assert code == 5
     finally:
         release_writer_lease(ledger, lease, now=WORKER_NOW)
         ledger.close()
-
-
-def test_a_changed_revision_returns_the_literal_6(ws):
-    prepared = prepare(ws, cashflows={"JPY": "10000"})
-
-    def revision():
-        return "b" * 40 if prepared.clock.seconds() >= WORKER_NOW + 60 else prepared.revision
-
-    code, sleeps, times = run(prepared, stop_requested=lambda: False,
-                              revision=revision, revision_check_every_s=60.0)
-
-    assert code == 6
 
 
 def test_a_watched_currency_missing_from_the_balance_counts_as_zero(ws, monkeypatch):
@@ -962,7 +859,7 @@ def test_a_watched_currency_missing_from_the_balance_counts_as_zero(ws, monkeypa
 
     monkeypatch.setattr(runner_module.reconcile, "on_startup", startup_spy)
 
-    code, sleeps, times = run(prepared, stop_requested=lambda: True)
+    code, sleeps = run(prepared, stop_requested=lambda: True)
 
     assert code == runner_module.EXIT_OK
     assert startups == [1]
@@ -984,7 +881,7 @@ def test_a_locked_only_watched_currency_without_a_cashflow_is_inert(ws, monkeypa
         exchange_ts_ms=int(WORKER_NOW * 1000), fetched_at=WORKER_NOW)
     monkeypatch.setattr(prepared.reader, "fetch_balance", lambda: snapshot)
 
-    code, sleeps, times = run(prepared, stop_requested=lambda: True)
+    code, sleeps = run(prepared, stop_requested=lambda: True)
 
     assert code == runner_module.EXIT_OK
     status = read_status(ws)
@@ -1080,7 +977,7 @@ def record_mock_buy(ws, prepared, *, amount="2", price="100", symbol="OAS/JPY", 
     try:
         executor = OrderExecutor(
             ledger, lease, reader=prepared.mock, sender=prepared.mock,
-            enable_check=lambda: ws.enable_result(prepared.ps, revision=prepared.revision),
+            enable_check=lambda: live_control.read_control(ws.state, now=clock()),
             clock=clock, symbols=(symbol,), config=ExecutorConfig())
         intent = executor.plan(IntentRequest(
             decision_key=key, symbol=symbol, side="buy", order_type="limit", amount=amount,
@@ -1147,7 +1044,7 @@ def test_h2_a_recorded_buy_fill_is_history_so_the_run_proceeds(ws, monkeypatch):
 
     monkeypatch.setattr(runner_module.reconcile, "on_startup", startup_spy)
 
-    code, sleeps, times = run(prepared, stop_requested=lambda: True)
+    code, sleeps = run(prepared, stop_requested=lambda: True)
 
     assert code == runner_module.EXIT_OK
     assert startups == [1]
@@ -1182,7 +1079,7 @@ def test_h3_a_fee_currency_is_history_so_the_run_proceeds(ws, monkeypatch):
 
     monkeypatch.setattr(runner_module.reconcile, "on_startup", startup_spy)
 
-    code, sleeps, times = run(prepared, stop_requested=lambda: True)
+    code, sleeps = run(prepared, stop_requested=lambda: True)
 
     assert code == runner_module.EXIT_OK
     assert startups == [1]
@@ -1205,7 +1102,7 @@ def test_h5_a_watched_currencies_failure_is_retryable_not_runner_error(ws, monke
     monkeypatch.setattr(runner_module.OrderExecutor, "watched_currencies", boom)
     before = event_kinds(ws)
 
-    code, sleeps, times = run(prepared, stop_requested=lambda: True)
+    code, sleeps = run(prepared, stop_requested=lambda: True)
 
     assert code == runner_module.EXIT_RETRYABLE
     assert sleeps == []
@@ -1236,7 +1133,7 @@ def test_h6_the_first_status_after_the_lease_is_starting(ws, monkeypatch):
     def open_reader(state_dir):
         raise ReaderFailure("auth")
 
-    code, sleeps, times = run(prepared, open_reader=open_reader)
+    code, sleeps = run(prepared, open_reader=open_reader)
 
     assert code == runner_module.EXIT_AUTH
     assert phases == ["starting", "exited"]
@@ -1284,7 +1181,7 @@ def test_f1_an_unknown_submission_intent_is_opening_balance_history(ws, monkeypa
     monkeypatch.setattr(runner_module.reconcile, "on_startup",
                         lambda executor: startups.append(1))
 
-    code, sleeps, times = run(prepared, stop_requested=lambda: True)
+    code, sleeps = run(prepared, stop_requested=lambda: True)
 
     assert code == runner_module.EXIT_OK
     assert startups == [1]                    # the precheck did not go inert: reconcile was reached
@@ -1312,7 +1209,7 @@ def test_f2_a_market_data_failure_is_retryable_and_skips_the_cycle(ws, monkeypat
 
     monkeypatch.setattr(runner_module, "run_cycle", cycle_spy)
 
-    code, sleeps, times = run(prepared, make_market_data=make_market_data,
+    code, sleeps = run(prepared, make_market_data=make_market_data,
                               stop_requested=lambda: True)
 
     assert code == runner_module.EXIT_RETRYABLE
@@ -1341,11 +1238,10 @@ def test_f3_a_balance_failure_at_start_is_classified(ws, exc_kind, health_kind, 
     if health_kind is not None:
         prepared.reader.health_value = Health(health_kind, 0)
 
-    got, sleeps, times = run(prepared, stop_requested=lambda: True)
+    got, sleeps = run(prepared, stop_requested=lambda: True)
 
     assert got == code
     assert sleeps == []
-    assert times == [WORKER_NOW]
     status = read_status(ws)
     assert status["phase"] == "exited"
     assert status["exit_code"] == code
@@ -1359,7 +1255,7 @@ def test_f3_a_failing_health_read_at_the_balance_failure_is_unknown(ws):
     prepared.reader.balance_error = RuntimeError("balance down")
     prepared.reader.health_error = RuntimeError("health down")
 
-    got, sleeps, times = run(prepared, stop_requested=lambda: True)
+    got, sleeps = run(prepared, stop_requested=lambda: True)
 
     assert got == runner_module.EXIT_RETRYABLE
     status = read_status(ws)
@@ -1396,7 +1292,7 @@ def test_f4_a_lost_lease_during_a_cycle_writes_no_running_or_exited_status(ws, m
 
     monkeypatch.setattr(runner_module, "run_cycle", cycle_spy)
 
-    got, sleeps, times = run(prepared, stop_requested=lambda: False)
+    got, sleeps = run(prepared, stop_requested=lambda: False)
 
     assert got == runner_module.EXIT_LEASE_LOST
     assert len(cycles) == 2
@@ -1415,7 +1311,7 @@ def test_f4_a_lost_lease_during_on_startup_writes_no_exited_status(ws, monkeypat
 
     monkeypatch.setattr(runner_module.reconcile, "on_startup", startup)
 
-    got, sleeps, times = run(prepared, stop_requested=lambda: True)
+    got, sleeps = run(prepared, stop_requested=lambda: True)
 
     assert got == runner_module.EXIT_LEASE_LOST
     assert [fields["phase"] for fields in calls] == ["starting"]
@@ -1460,7 +1356,7 @@ def test_f5_a_swallowed_no_sender_write_counts_one_record_failure(ws, monkeypatc
     monkeypatch.setattr(LiveLedger, "record_live_event", record)
 
     # Cycle 1 fails the notice write; cycle 2 tries again (a failed write is not deduped).
-    code, sleeps, times = run(prepared, stop_requested=lambda: len(states) >= 2)
+    code, sleeps = run(prepared, stop_requested=lambda: len(states) >= 2)
 
     assert code == runner_module.EXIT_OK
     assert len(states) == 2
@@ -1477,7 +1373,7 @@ def test_f5_a_written_no_sender_notice_counts_no_record_failure(ws, monkeypatch)
     prepared = prepare(ws, cashflows={"JPY": "10000"})
     states = _capture_cycle_states(monkeypatch)
 
-    code, sleeps, times = run(prepared, stop_requested=lambda: len(states) >= 1)
+    code, sleeps = run(prepared, stop_requested=lambda: len(states) >= 1)
 
     assert code == runner_module.EXIT_OK
     assert len(states) == 1
@@ -1488,3 +1384,54 @@ def test_f5_a_written_no_sender_notice_counts_no_record_failure(ws, monkeypatch)
     assert status["cycle"] == 1
     rows = _live_decision_rows(ws)
     assert [row["reason"] for row in rows if row.get("reason") == NO_SENDER] == [NO_SENDER]
+
+
+# ---- control switch through the runner ---------------------------------------------------
+def test_run_worker_has_no_revision_parameters():
+    import inspect
+    parameters = inspect.signature(runner_module.run_worker).parameters
+    assert "revision" not in parameters
+    assert "revision_check_every_s" not in parameters
+
+
+def test_control_switched_off_mid_run_keeps_cycling_and_reports_off(ws, monkeypatch):
+    prepared = prepare(ws)                                   # on/trade
+    completed = []
+    real_cycle = runner_module.run_cycle
+
+    def cycle_spy(deps, state):
+        report = real_cycle(deps, state)
+        completed.append(report)
+        if len(completed) == 1:                              # the owner switches off after cycle 1
+            ws.write_control(state="off", mode="trade")
+        return report
+
+    monkeypatch.setattr(runner_module, "run_cycle", cycle_spy)
+    code, sleeps = run(prepared, stop_requested=lambda: len(completed) >= 3)
+
+    assert code == runner_module.EXIT_OK
+    assert [report.control_state for report in completed] == ["on", "off", "off"]
+    assert [report.mode for report in completed] == ["trade", None, None]
+    status = read_status(ws)
+    assert status["phase"] == "exited" and status["exit_code"] == 0
+    assert status["control_state"] == "off" and status["control_mode"] == "trade"
+    assert "code_revision" not in status
+    assert safety_trips(ws) == []
+    assert prepared.mock.submissions == []
+    acquire_again(ws)
+
+
+def test_a_missing_control_file_cycles_with_control_unknown_and_no_trip(ws):
+    prepared = prepare(ws, mode=None)                        # no control file at all
+    assert not ws.layout.control_path.exists()
+
+    code, sleeps = run(prepared, stop_requested=lambda: True)
+
+    assert code == runner_module.EXIT_OK
+    status = read_status(ws)
+    assert status["phase"] == "exited" and status["cycle"] == 1
+    assert status["control_state"] == "unknown" and status["control_mode"] is None
+    assert status["mode"] is None
+    assert safety_trips(ws) == []
+    assert prepared.mock.submissions == []
+    acquire_again(ws)

@@ -1,4 +1,4 @@
-# LIVE の状態・方針・有効化ゲート(L1、Issue #3623)
+# LIVE の状態・方針・オン/オフ制御(L1、Issue #3623)
 
 L1 は、本番(LIVE)の売買の**土台だけ**で、動作しない。どの実行経路からも import されず、ネットワークを使わず、注文を送らない。PAPER のワーカーにはつながっていない。LIVE のワーカー(L4)・取引所への接続(L3)・昇格の適用(L6)はまだ無い。
 
@@ -8,30 +8,43 @@ L1 は、本番(LIVE)の売買の**土台だけ**で、動作しない。どの�
 <state_dir>/trading-live/            0700   PAPER の <state_dir>/trading とは別
   live.sqlite3 (+ -wal, -shm)        0600   LIVE の台帳
   live-writer.lock                   0600   単一の書き込み権(flock)
-  owner/                             0700   オーナーが作る。コードは作らない
-    live_enable.json                 0600   有効化ファイル。コードは作らない
+  owner/                             0700   制御ファイルの置き場(無ければ control が作る)
+    live_control.json                0600   オン/オフ制御ファイル(WebUI とオーナー CLI が書く)
     policy/<experiment_id>.json      0600   オーナーが置く方針スナップショット
 ```
 
 - 台帳は `src/docich/trading/live/ledger.py`。意図(intent)は送信の**前**に保存し、保存が済むまで送信してはならない。再起動後に「送信中」だった意図は、取引所へ照会して確かめるまで、自動では再送しない。
 - 台帳の既定の置き場は PAPER と同じ `state_dir`。`git clean -x` などの手作業で消さないこと。
 
-## 有効化ファイル
+## オン/オフ制御ファイル
 
-オーナーだけが作る。コードは作らず、読むだけ。次のどれかに当てはまれば無効(送信しない)。
-
-- ファイルが無い、権限が 0600 でない、所有者が違う、symlink、4096 バイト超、JSON が壊れている。
-- 知らないキーがある(円建ての上限のキーも置けない)。
-- 期限切れ、まだ有効でない、タイムゾーンの無い時刻。
-- 中の `policy_set_digest` が、使う方針の組の digest と違う。`code_revision` が実行中のコードと違う。
+オーナーの普通のスイッチ。WebUI とオーナー CLI(`control on|off`)の両方が同じファイルを書く。
+コードが読むだけで、勝手に作ることはない(`control` の書き込み時だけ、無い `trading-live` と
+`owner` を 0700 で作る)。
 
 ```json
-{"schema_version":1,"kind":"docich-live-enable","mode":"shadow",
- "policy_set_digest":"<64 hex>","code_revision":"<40 hex>",
- "created_at":"2026-11-20T09:00:00+09:00","expires_at":"2026-12-20T09:00:00+09:00"}
+{"schema_version":1,"kind":"docich-live-control","state":"on","mode":"trade",
+ "updated_at":"2026-11-20T09:00:00+00:00","updated_by":"owner"}
 ```
 
-`mode` が `shadow` なら、注文は送らない(L5 のシャドー用)。`trade` だけが注文を許す。作るときは `umask 077; install -d -m 700 <state_dir>/trading-live/owner` で作り、ファイルは 0600 にする。ファイルを消すと、一度有効だった後なら `enable_missing` で止まる(一度も有効になっていない状態では何も書かない)。ただし L1 には、この確認を周期的に呼ぶワーカーがまだ無い。
+- キーはこの6つだけ。知らないキー・型違い・schema 違い・タイムゾーンの無い `updated_at` は
+  無効として OFF に読む。
+- `state` は `on` / `off`。`off` は買いも売りも止める(送信直前に `gate_closed` で放棄する)。
+  ただし TTL の取消(`ttl.cancel_expired` / `executor.cancel`)は止めない。リスクを減らす
+  操作は止めないため。
+- `mode` は `on` のときだけ意味を持つ。`shadow` は注文を送らず、`trade` だけが注文を許す。
+  `off` でも `mode` は保持する(次に `on` にしたときの既定)。
+- 無い・0600 でない・所有者が違う・symlink・4096 バイト超・JSON が壊れている・不正な
+  schema は、すべて OFF として読む(理由コード付き)。**安全停止は trip しない**。
+  OFF から ON に戻すのに、人の安全停止解除も、再起動も要らない。
+- 期限・方針 digest・コード revision には結び付かない。どのコミットで動いていても、
+  同じファイルの `on`/`off` がそのまま効く。
+
+`python -m docich.trading.live_owner --state-dir <state> control on --mode trade --yes-trade
+--operator NAME` で書く。`--mode` を省くと、読める既存ファイルの `mode` を保ち、無ければ
+`shadow`。`--mode trade` は `--yes-trade` が無ければ拒否する。`control off --operator NAME`
+は `mode` を保ったまま `state` を `off` にする。`control status` は読み取りだけで、
+`state` / `mode` / `updated_at` / `updated_by` / 理由コードを出す。
 
 ## 方針スナップショット
 
@@ -42,7 +55,7 @@ L1 は、本番(LIVE)の売買の**土台だけ**で、動作しない。どの�
 
 ## 安全停止
 
-止める理由は6つ定義してある。L1 のコードが自動で止めるのは、未知の注文(`record_order_observation`)、手数料の未取得と約定の矛盾(`record_fill`)、有効化ファイルが一度開いた後に無効になったとき(`note_enable_result`)の4つ。残高の不一致(`balance_mismatch`)と書き込み権の喪失(`lease_lost`)は、L2b の実行器(`balance.py`・`fence.py`)が検知して止める。ただし、実行器を呼ぶワーカーが L4 まで無いので、今は動いていない。止まっている間は、新規の買いの送信だけを拒否する。売り(手じまい)は送れる(オーナー決定 2026-11-16)。例外は1つで、有効化ファイルの欠落(`enable_missing`)はオーナーの停止スイッチなので、売りも止める。二重売りは、同じ銘柄・同じ向きの未完了の注文を1件に制限する台帳の索引が防ぐ(結果不明の売りが残っていれば、2つ目の売りは作れない)。結果不明の買いは売りを止めない(約定していても保有が増えるだけ)。照合と監視は止まっていても続ける。有効化ファイルの確認はワーカー側(L4)でも行う。**解除は人だけ**。コードから解除を呼ぶ処理は無く、テストで確かめている。
+止める理由は6つ定義してある。コードが自動で止めるのは、未知の注文(`record_order_observation`)、手数料の未取得と約定の矛盾(`record_fill`)、残高の不一致(`balance_mismatch`)、書き込み権の喪失(`lease_lost`)、データ異常(`ingest.anomaly`)の5つ。`enable_missing` は旧行の互換のために列挙だけ残しており、**新しくは誰も書かない**。止まっている間は、新規の買いの送信だけを拒否する。売り(手じまい)は送れる(オーナー決定 2026-11-16)。二重売りは、同じ銘柄・同じ向きの未完了の注文を1件に制限する台帳の索引が防ぐ(結果不明の売りが残っていれば、2つ目の売りは作れない)。結果不明の買いは売りを止めない(約定していても保有が増えるだけ)。照合と監視は止まっていても続ける。オン/オフの制御ファイルはこれとは別で、OFF は買いも売りも止めるが、安全停止ではないので trip も解除操作も要らない。**安全停止の解除は人だけ**。コードから解除を呼ぶ処理は無く、テストで確かめている。
 
 ## L2a: 取引所の型と模擬取引所
 
@@ -98,12 +111,13 @@ L1 は、本番(LIVE)の売買の**土台だけ**で、動作しない。どの�
 - `python -m docich.trading.live_owner --state-dir <state> status`: **読み取り専用**。台帳が無ければ `ledger: not created` の1行だけで、ディレクトリもファイルも作らない。あれば有効な方針ダイジェストの先頭12桁(無ければ `none`)、状態ごとの意図数(0件の状態は出さない)、未決済・`residual_inventory` のポジション数、安全停止の理由(無ければ `none`)、UNKNOWN_SUBMISSION の数、cashflow 数、event 数を出す。金額と注文 ID は出さない。
 - `python -m docich.trading.live_owner --state-dir <state> cashflow list`: **読み取り専用**。1行1件で id・kind・通貨・時刻(ISO)・source を出し、金額は**端末(TTY)のときだけ**表示する。それ以外は `amount: hidden`。台帳が無ければ status と同じ1行。
 - `python -m docich.trading.live_owner --state-dir <state> cashflow add --kind {deposit,withdrawal,adjustment} --currency CUR --amount DEC --occurred-at ISO8601 --operator NAME --note TEXT [--confirm TOKEN] [--allow-repeat]`: 開始残高・入出金・調整の記録。**二段確認**: `--confirm` 無しは正規化した内容と token を出すだけで、何も書かず・LIVE ディレクトリも作らない。`--confirm TOKEN` で同じ引数から token を再計算し、一致したときだけ writer lease を取って記録する。preview は、その confirm が台帳を作るのか既存の台帳に書くのかも `ledger: will be created` / `ledger: exists` の1行で示す。token は内容と台帳 ID のハッシュなので、台帳ができた後は preview を取り直す。同じ id は `already recorded`、同じ (kind, 通貨, 金額) は `--allow-repeat` が無ければ拒否。
-- `python -m docich.trading.live_owner --state-dir <state> activate --snapshot PATH --experiment-digest HEX64 --operator NAME --note TEXT [--confirm TOKEN]`: 実験スナップショットから11銘柄の方針セットを作り、そのオーナー有効化を台帳へ記録する。**有効化ファイル(`<state>/trading-live/owner/live_enable.json`)はオーナーが事前に用意する**。このファイルは方針セットの digest **と git の commit** に結び付いており、`activate` はチェックアウトの `git rev-parse HEAD` を revision として使う(tracked file に未コミットの変更があれば拒否。untracked は無視)。git のコマンドは継承した `GIT_*` をすべて除いた環境で実行し、指定したディレクトリがその git リポジトリの最上位であることを要求する(親リポジトリの HEAD は使わない)。**二段確認**: `--confirm` 無しは `ledger` / `policy_set` / `experiment` / `code_revision`(先頭12桁)/ `mode` / `operator` / token を出すだけで何も書かない。`--confirm TOKEN` で token を再計算して一致したときだけ writer lease を取り、lease の下で有効化ファイルを読み直し、変わっていなければ `record_owner_activation` を呼ぶ。終了コードは上と同じ(0/1/2/5)。**src の中でオーナー有効化を記録する唯一の場所**。
+- `python -m docich.trading.live_owner --state-dir <state> activate --snapshot PATH --experiment-digest HEX64 --operator NAME --note TEXT [--confirm TOKEN]`: 実験スナップショットから11銘柄の方針セットを作り、そのオーナー有効化を台帳へ記録する。制御ファイルも git の revision も**必要ない**。**二段確認**: `--confirm` 無しは `ledger` / `policy_set` / `experiment` / `mode`(制御ファイルの参考表示。無ければ `none`)/ `operator` / token を出すだけで何も書かない。`--confirm TOKEN` で token を再計算して一致したときだけ writer lease を取り、`record_owner_activation` を呼ぶ(方針セットの digest だけを記録し、`enable_digest` は None)。終了コードは上と同じ(0/1/2/5)。**src の中でオーナー有効化を記録する唯一の場所**。
+- `python -m docich.trading.live_owner --state-dir <state> control status|on|off [--mode shadow|trade] [--yes-trade] --operator NAME`: オン/オフ制御ファイルの読み書き。`status` は読み取り専用。`on` は `--mode` を省くと既存の `mode`(読めなければ `shadow`)を保ち、`--mode trade` は `--yes-trade` が無ければ拒否する。`off` は `mode` を保ったまま `state` を `off` にする。無い `trading-live` / `owner` は 0700 で作り、ファイルは 0600 で原子的に置き換える。writer lease は要らない。
 - `python -m docich.trading.live_owner --state-dir <state> unknown list`: **読み取り専用**(取引所にも触れない)。UNKNOWN_SUBMISSION の意図を1行ずつ、**完全な intent id**・銘柄・売買・注文種別・経過秒数で出す(そのまま `show`/`resolve --intent` に渡せる)。金額と価格は TTY のときだけ(それ以外は `amount: hidden` / `price: hidden`)。無ければ `unknown_submissions: none`。
 - `python -m docich.trading.live_owner --state-dir <state> unknown show --intent ID`: **読み取り専用**(writer lease を取らない)。解決に使う時間窓(`submitted_at` ± `skew_margin_s`)、未約定一覧と**約定履歴**が完全か、候補(台帳が意図に結び付けていない注文。**未約定一覧と、窓の開始以降の約定履歴の両方**から集める。約定履歴にしか無い注文は id で照会する)と一致数(`matching`)、台帳が既に注文を持っているか(`ledger_order`)、`settle_s` を過ぎたかを出す。取引所の注文 ID は TTY のときだけ。
-- `python -m docich.trading.live_owner --state-dir <state> unknown resolve --intent ID (--found-order EID | --not-created) --evidence TEXT --operator NAME [--override-incomplete-proof] [--confirm TOKEN]`: **人が証拠つきで UNKNOWN_SUBMISSION を解決する**。`--found-order` は取引所の注文が意図と一致(`reconcile.matches_intent`)し、かつ他の意図のものではないときだけ `found_by_owner` として ACKED へ繋ぐ(一致しなければ何も記録せず拒否)。`--found-order` の拒否は、取引所がその ID を知らない・台帳がこの意図に別の注文を既に持っている・取引所の注文がこの意図に一致しないか整合しない・その ID が別の意図のもの、のいずれの場合も書き込みの前に起きる。`--found-order` は有効な安全停止があっても止められない(取引所に実在する注文を結ぶ経路で、機械自身の解決も同じ規則)。`--not-created` はまず、① 台帳がこの意図の注文を既に記録していないこと、② 未約定一覧**と約定履歴**のどちらにも一致する注文が無いこと、③ `settle_s` 経過、を確かめ、次に**機械自身の証明**(`reconcile.try_resolve`)を試す。機械が `acked`/`not_created` を出せばそれで終わり(オーナーの文面は証拠として記録しない)。**既存の注文・`anomaly`・機械が記録した data anomaly は `--override-incomplete-proof` では越えられない**(拒否)。機械自身の証明の途中で記録された安全停止、または UNKNOWN_ORDER / DATA_ANOMALY / FEE_MISSING / BALANCE_MISMATCH のいずれかが有効な停止として残っている場合も、`--override-incomplete-proof` があっても `--not-created` を拒否し、停止は `trip list` で確認して `trip clear`(preview が出す token を `--confirm` で返す。writer lease が必要)で解除する。LEASE_LOST と ENABLE_MISSING はこの4つに含まれず、`--not-created` の override を妨げない。ENABLE_MISSING を解除できるのは、有効な方針セットに対する有効な有効化ファイル(`enabled` が真。`shadow` も可)があるときだけで、LEASE_LOST はオーナーの証拠だけで解除する。`--override-incomplete-proof` があるときは有効な停止が preview を拒否して token を出さず、無いときは preview が `safety_stops_active: <reasons>` を出したうえで token も出すが、confirm は停止が有効な間は拒否し、安全状態を読めないときは preview と confirm の両方を拒否する。機械が何も記録せず `waiting` のときだけ、このフラグで `owner_not_created` として NOT_CREATED にし、証拠 JSON を残す。証拠を書く直前に取引所を読み直し、そのとき一致する注文が見えた場合は、override を拒否して何も書かない。二段確認で、`--confirm` 無しは何も書かず token を出すだけ。確認時は writer lease を取り、**lease の下で全チェックをやり直す**ので、**先に live worker を止めておく**こと(終了コード `5`)。証拠 JSON は `{"method":"owner_manual","mode":... ,"operator":...,"evidence":...,"checked_at":...,"machine":{"result":...,"open_list_complete":...,"fills_complete":...,"candidates":...,"override_incomplete_proof":...}}`(found のときだけ `found_order_id` を追加。金額・注文 ID は not_created 側には入れない)。
+- `python -m docich.trading.live_owner --state-dir <state> unknown resolve --intent ID (--found-order EID | --not-created) --evidence TEXT --operator NAME [--override-incomplete-proof] [--confirm TOKEN]`: **人が証拠つきで UNKNOWN_SUBMISSION を解決する**。`--found-order` は取引所の注文が意図と一致(`reconcile.matches_intent`)し、かつ他の意図のものではないときだけ `found_by_owner` として ACKED へ繋ぐ(一致しなければ何も記録せず拒否)。`--found-order` の拒否は、取引所がその ID を知らない・台帳がこの意図に別の注文を既に持っている・取引所の注文がこの意図に一致しないか整合しない・その ID が別の意図のもの、のいずれの場合も書き込みの前に起きる。`--found-order` は有効な安全停止があっても止められない(取引所に実在する注文を結ぶ経路で、機械自身の解決も同じ規則)。`--not-created` はまず、① 台帳がこの意図の注文を既に記録していないこと、② 未約定一覧**と約定履歴**のどちらにも一致する注文が無いこと、③ `settle_s` 経過、を確かめ、次に**機械自身の証明**(`reconcile.try_resolve`)を試す。機械が `acked`/`not_created` を出せばそれで終わり(オーナーの文面は証拠として記録しない)。**既存の注文・`anomaly`・機械が記録した data anomaly は `--override-incomplete-proof` では越えられない**(拒否)。機械自身の証明の途中で記録された安全停止、または UNKNOWN_ORDER / DATA_ANOMALY / FEE_MISSING / BALANCE_MISMATCH のいずれかが有効な停止として残っている場合も、`--override-incomplete-proof` があっても `--not-created` を拒否し、停止は `trip list` で確認して `trip clear`(preview が出す token を `--confirm` で返す。writer lease が必要)で解除する。LEASE_LOST と ENABLE_MISSING(旧行)はこの4つに含まれず、`--not-created` の override を妨げない。ENABLE_MISSING は旧行の互換のための理由で、他の停止と同じ人の解除経路(`trip clear`)で解除する。制御ファイルや方針セットは必要ない。LEASE_LOST もオーナーの証拠だけで解除する。`--override-incomplete-proof` があるときは有効な停止が preview を拒否して token を出さず、無いときは preview が `safety_stops_active: <reasons>` を出したうえで token も出すが、confirm は停止が有効な間は拒否し、安全状態を読めないときは preview と confirm の両方を拒否する。機械が何も記録せず `waiting` のときだけ、このフラグで `owner_not_created` として NOT_CREATED にし、証拠 JSON を残す。証拠を書く直前に取引所を読み直し、そのとき一致する注文が見えた場合は、override を拒否して何も書かない。二段確認で、`--confirm` 無しは何も書かず token を出すだけ。確認時は writer lease を取り、**lease の下で全チェックをやり直す**ので、**先に live worker を止めておく**こと(終了コード `5`)。証拠 JSON は `{"method":"owner_manual","mode":... ,"operator":...,"evidence":...,"checked_at":...,"machine":{"result":...,"open_list_complete":...,"fills_complete":...,"candidates":...,"override_incomplete_proof":...}}`(found のときだけ `found_order_id` を追加。金額・注文 ID は not_created 側には入れない)。
 - `python -m docich.trading.live_owner --state-dir <state> trip list`: **読み取り専用**(writer lease を取らない)。有効な停止を1行ずつ `trip_id=<id> reason=<reason> tripped_at=<ISO 8601 UTC>` で出し、続けて `detail=<detail>` を出す(**TTY のときだけ**。それ以外は `detail=hidden`)。停止が無ければ `no active safety stops`。台帳が無ければ `ledger: not created` の1行だけで、何も作らない。安全状態を読めないときは `refused: the safety state cannot be read` で終了コード `1`。
-- `python -m docich.trading.live_owner --state-dir <state> trip clear --reason {unknown_order,balance_mismatch,data_anomaly,fee_missing,enable_missing,lease_lost} --operator NAME --note TEXT --evidence TEXT [--confirm TOKEN]`: **人が安全停止を解除する経路**。`--operator` と `--note` は前後の空白を除いて 1〜200 文字、`--evidence` は `unknown resolve` と同じ 20〜400 文字。**二段確認**で、`--confirm` 無しは `trip_id` / `reason` / `tripped_at` / `detail`(TTY のみ)/ token を出すだけで何も書かず、lease も取らない。`--confirm TOKEN` が一致したときだけ writer lease を取り、lease の下で安全状態を読み直し、同じ理由の停止の `trip_id` が preview と変わっていれば `refused: the safety stop changed since the preview; run the preview again` で拒否する(再 trip された停止は古い token を無効にする)。`enable_missing` だけは、有効な方針セット(`active_policy_set_digest`)に対する**有効な有効化ファイル**が必要で(判定は `enabled`。`shadow` も可)、無ければ `refused: enable file is not valid: <reasons>`、有効な方針セットが無ければ `refused: no active policy set`。lease の下でも同じ確認をやり直す。成功すると `cleared: <reason> (trip_id=<id>)`。live worker が lease を保持していれば終了コード `5`。
+- `python -m docich.trading.live_owner --state-dir <state> trip clear --reason {unknown_order,balance_mismatch,data_anomaly,fee_missing,enable_missing,lease_lost} --operator NAME --note TEXT --evidence TEXT [--confirm TOKEN]`: **人が安全停止を解除する経路**。`--operator` と `--note` は前後の空白を除いて 1〜200 文字、`--evidence` は `unknown resolve` と同じ 20〜400 文字。**二段確認**で、`--confirm` 無しは `trip_id` / `reason` / `tripped_at` / `detail`(TTY のみ)/ token を出すだけで何も書かず、lease も取らない。`--confirm TOKEN` が一致したときだけ writer lease を取り、lease の下で安全状態を読み直し、同じ理由の停止の `trip_id` が preview と変わっていれば `refused: the safety stop changed since the preview; run the preview again` で拒否する(再 trip された停止は古い token を無効にする)。`enable_missing` は旧行の互換のための理由で、有効化ファイルの確認は無い。他の停止と同じく、preview の token と人が渡した証拠だけで解除する。成功すると `cleared: <reason> (trip_id=<id>)`。live worker が lease を保持していれば終了コード `5`。
 - 終了コード: `0` 成功 / `1` 拒否(refused) / `2` 引数の誤り(usage) / `5` writer lease を live worker が保持(停止してから再実行)。
 - 金額は `Decimal`(浮動小数は拒否、8桁まで)。`--occurred-at` はタイムゾーン付きの ISO 8601 のみ(naive と未来は拒否)。`--operator` と `--note` は前後の空白を除いて 1〜200 文字。
 

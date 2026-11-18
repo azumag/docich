@@ -1,7 +1,7 @@
 """One LIVE worker cycle: the skeleton around the executor (Issue #3623, L4b-5b-1).
 
 ``run_cycle`` performs the non-decision steps of one cycle in a fixed order: read the
-owner's enable gate, check the writer lease, look at the exchange reader's health, reload
+owner's on/off control switch, check the writer lease, look at the exchange reader's health, reload
 the market rules on their cadence, run ``OrderExecutor.step`` (poll/resolve/sweep/close
 flat positions/check the balance), fetch one balance snapshot, fetch one market frame per
 symbol and keep only the fresh ones, read the persisted safety state, then hand the
@@ -25,12 +25,12 @@ from typing import TYPE_CHECKING, Callable, Protocol
 from ..freshness import QUALITY_FRESH, assess_market_freshness
 from ..market_data import MarketFrame
 from . import fence
+from .enable import EnableReason, EnableResult
 from .lease import LeaseLost
-from .safety import note_enable_result, read_safety_state
+from .safety import read_safety_state
 from .ttl import cancel_expired
 
 if TYPE_CHECKING:  # annotations only: the cycle itself does not need these types to run
-    from .enable import EnableResult
     from .exchange import BalanceSnapshot
     from .policy import LivePolicySet
     from .safety import SafetyState
@@ -148,26 +148,41 @@ class CycleReport:
     block_reasons: tuple[str, ...]
     fresh_symbols: tuple[str, ...]
     stale_symbols: tuple[str, ...]
+    control_state: str
+    control_mode: str | None
+
+
+def _control_state(enable: "EnableResult | None") -> str:
+    """The status view of one gate reading ("unknown" when there was no reading)."""
+    if enable is None:
+        return "unknown"
+    if enable.enabled:
+        return "on"
+    return "off" if EnableReason.SWITCHED_OFF in enable.reasons else "unknown"
 
 
 def _report(outcome: CycleOutcome, state: CycleState, mode: str | None, reason: str | None,
-            block_reasons: object = (), fresh: object = (), stale: object = ()) -> CycleReport:
+            block_reasons: object = (), fresh: object = (), stale: object = (),
+            enable: "EnableResult | None" = None) -> CycleReport:
     return CycleReport(outcome=outcome, cycle_number=state.cycle_number, mode=mode, reason=reason,
                        block_reasons=tuple(sorted(block_reasons)),
-                       fresh_symbols=tuple(sorted(fresh)), stale_symbols=tuple(sorted(stale)))
+                       fresh_symbols=tuple(sorted(fresh)), stale_symbols=tuple(sorted(stale)),
+                       control_state=_control_state(enable),
+                       control_mode=None if enable is None else enable.mode)
 
 
 def _lease_lost(deps: CycleDeps, state: CycleState, mode: str | None, now: float, detail: str,
-                block_reasons: object = (), fresh: object = (), stale: object = ()) -> CycleReport:
+                block_reasons: object = (), fresh: object = (), stale: object = (),
+                enable: "EnableResult | None" = None) -> CycleReport:
     """Best-effort trip (stopping needs no lease), then the exit outcome."""
     fence.on_lease_lost(deps.ledger, detail=detail, now=now)
     return _report(CycleOutcome.EXIT_LEASE_LOST, state, mode, LEASE_LOST_REASON,
-                   block_reasons, fresh, stale)
+                   block_reasons, fresh, stale, enable=enable)
 
 
 def _finish(deps: CycleDeps, state: CycleState, outcome: CycleOutcome, mode: str | None,
             reason: str | None, block_reasons: object, fresh: object, stale: object,
-            now: float) -> CycleReport:
+            now: float, enable: "EnableResult | None" = None) -> CycleReport:
     """Record one worker_state event when its key changes, then build the report.
 
     Used by every return of ``_run_cycle`` except STOP_REQUESTED (which writes nothing) and
@@ -182,12 +197,13 @@ def _finish(deps: CycleDeps, state: CycleState, outcome: CycleOutcome, mode: str
         try:
             deps.ledger.record_live_event(deps.lease, "worker_state", payload, now=now)
         except LeaseLost as exc:
-            return _lease_lost(deps, state, mode, now, str(exc), block_reasons, fresh, stale)
+            return _lease_lost(deps, state, mode, now, str(exc), block_reasons, fresh, stale,
+                               enable=enable)
         except Exception:
             pass  # keep the computed outcome; do not record, do not raise
         else:
             state.last_worker_state = key
-    return _report(outcome, state, mode, reason, block_reasons, fresh, stale)
+    return _report(outcome, state, mode, reason, block_reasons, fresh, stale, enable=enable)
 
 
 def _health(reader: CycleReader):
@@ -223,29 +239,27 @@ def _run_cycle(deps: CycleDeps, state: CycleState) -> CycleReport:
     if deps.stop_requested():
         return _report(CycleOutcome.STOP_REQUESTED, state, None, "stop_requested")
 
-    # 1. the owner's enable gate; the reading is remembered (ENABLE_MISSING after it was once open)
+    # 1. the owner's on/off switch; a gate that raises is a closed gate, not a failed cycle
     mode: str | None = None
     try:
         enable = deps.gate()
-        note_enable_result(deps.ledger, deps.lease, enable, now=now)
-    except LeaseLost as exc:
-        # the observation write is lease-fenced too: losing it here is the same exit as step 2
-        return _lease_lost(deps, state, mode, now, str(exc))
-    mode = enable.mode if enable.enabled else None
+        mode = enable.mode if enable.enabled else None
+    except Exception:
+        enable = EnableResult(False, (EnableReason.CHECK_ERROR,))
 
     # 2. the writer lease, before anything touches the exchange
     try:
         fence.check_lease(deps.ledger, deps.lease)
     except LeaseLost as exc:
-        return _lease_lost(deps, state, mode, now, str(exc))
+        return _lease_lost(deps, state, mode, now, str(exc), enable=enable)
 
     # 3. reader health: auth/clock are terminal, and write no trip (nothing was being sent)
     health = _health(deps.reader)
     kind = _health_kind(health)
     if kind == "auth":
-        return _finish(deps, state, CycleOutcome.EXIT_AUTH, mode, "auth", (), (), (), now)
+        return _finish(deps, state, CycleOutcome.EXIT_AUTH, mode, "auth", (), (), (), now, enable=enable)
     if kind == "clock":
-        return _finish(deps, state, CycleOutcome.EXIT_CLOCK, mode, "clock", (), (), (), now)
+        return _finish(deps, state, CycleOutcome.EXIT_CLOCK, mode, "clock", (), (), (), now, enable=enable)
 
     block_reasons: set[str] = set()
 
@@ -264,18 +278,20 @@ def _run_cycle(deps: CycleDeps, state: CycleState) -> CycleReport:
         state.ttl_deferred = report.deferred
         state.ttl_failed = len(report.failed)
     except LeaseLost as exc:
-        return _lease_lost(deps, state, mode, now, str(exc))
+        return _lease_lost(deps, state, mode, now, str(exc), enable=enable)
 
     # 6. poll/resolve/sweep/close-flat/check-balance
     try:
         deps.executor.step()
     except LeaseLost:
         # the executor's own _guard already tripped the latch; do not trip twice
-        return _report(CycleOutcome.EXIT_LEASE_LOST, state, mode, LEASE_LOST_REASON, block_reasons)
+        return _report(CycleOutcome.EXIT_LEASE_LOST, state, mode, LEASE_LOST_REASON, block_reasons,
+                       enable=enable)
     except Exception as exc:
         state.consecutive_failures += 1
         return _finish(deps, state, CycleOutcome.CYCLE_FAILED, mode,
-                       f"step_failed:{type(exc).__name__}", block_reasons, (), (), now)
+                       f"step_failed:{type(exc).__name__}", block_reasons, (), (), now,
+                       enable=enable)
 
     # 7. one fresh balance snapshot; without it no decision can be made safely
     balance = None
@@ -320,26 +336,27 @@ def _run_cycle(deps: CycleDeps, state: CycleState) -> CycleReport:
             # a stop requested during steps 6-8 wins over the decision: nothing is decided or sent
             if deps.stop_requested():
                 return _report(CycleOutcome.STOP_REQUESTED, state, mode, "stop_requested",
-                               block_reasons, frames, stale)
+                               block_reasons, frames, stale, enable=enable)
             try:
                 deps.decide(deps, state, ctx)
             except LeaseLost as exc:
-                return _lease_lost(deps, state, mode, now, str(exc), block_reasons, frames, stale)
+                return _lease_lost(deps, state, mode, now, str(exc), block_reasons, frames, stale,
+                                   enable=enable)
             except Exception as exc:
                 state.consecutive_failures += 1
                 return _finish(deps, state, CycleOutcome.CYCLE_FAILED, mode,
                                f"decide_failed:{type(exc).__name__}", block_reasons, frames,
-                               stale, now)
+                               stale, now, enable=enable)
 
     # 10. the reader after the cycle: auth/clock exit, too many consecutive failures fail the cycle
     health = _health(deps.reader)
     kind = _health_kind(health)
     if kind == "auth":
         return _finish(deps, state, CycleOutcome.EXIT_AUTH, mode, "auth",
-                       block_reasons, frames, stale, now)
+                       block_reasons, frames, stale, now, enable=enable)
     if kind == "clock":
         return _finish(deps, state, CycleOutcome.EXIT_CLOCK, mode, "clock",
-                       block_reasons, frames, stale, now)
+                       block_reasons, frames, stale, now, enable=enable)
     if _health_failures(health) >= deps.config.max_consecutive_reader_failures:
         outcome = CycleOutcome.CYCLE_FAILED
         reason = READER_UNHEALTHY
@@ -350,7 +367,8 @@ def _run_cycle(deps: CycleDeps, state: CycleState) -> CycleReport:
         state.consecutive_failures = 0
 
     # 14. one worker_state event per *change* (the per-cycle heartbeat is a later status file)
-    return _finish(deps, state, outcome, mode, reason, block_reasons, frames, stale, now)
+    return _finish(deps, state, outcome, mode, reason, block_reasons, frames, stale, now,
+                   enable=enable)
 
 
 def run_cycle(deps: CycleDeps, state: CycleState) -> CycleReport:

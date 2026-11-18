@@ -16,7 +16,6 @@ from typing import Callable, Iterator
 
 from . import safety
 from .canonical import CanonicalError, canonical_json, decimal_text, sha256_hex
-from .enable import EnableResult
 from .lease import LeaseLost, WriterLease, verify_in_tx
 from .paths import LiveLayout, ensure_live_root
 from .policy import (LivePolicy, LivePolicySet, policy_from_payload,
@@ -426,18 +425,14 @@ class LiveLedger:
             self._emit(cur, "policy_activated", "policy_set", ps.digest,
                        {"reason": reason, "actor": actor, "changed": changed}, now)
 
-    def record_owner_activation(self, lease, ps: LivePolicySet, *, enable: EnableResult,
-                                operator: str, note: str, now: float) -> None:
-        """HUMAN-ONLY (owner operation).  Requires an enabled, digest-bound enable file."""
-        if not enable.enabled or not enable.file_sha256:
-            raise LiveLedgerError("the owner enable file is not valid")
-        if enable.policy_set_digest != ps.digest:
-            raise LiveLedgerError("the enable file was validated for a different policy set")
+    def record_owner_activation(self, lease, ps: LivePolicySet, *, operator: str, note: str,
+                                now: float) -> None:
+        """HUMAN-ONLY (owner operation).  The on/off control file is not part of the record."""
         if not operator or not note:
             raise ValueError("operator and note are required")
         first = self.active_policy_set_digest() is None
         self._activate(lease, ps, reason="owner_initial" if first else "owner_manual", actor="owner",
-                       evidence_digest=None, enable_digest=enable.file_sha256, note=f"{operator}: {note}"[:500], now=now)
+                       evidence_digest=None, enable_digest=None, note=f"{operator}: {note}"[:500], now=now)
 
     def record_activation(self, lease, ps: LivePolicySet, *, reason: str, evidence_digest: str, now: float) -> None:
         if reason not in ("promotion", "rollback"):
@@ -538,8 +533,6 @@ class LiveLedger:
             if current.side == "buy":
                 if safety.active_trips(cur) or safety.unresolved_unknowns(cur):
                     raise SafetyBlocked("safety stop is active: new buys are blocked")
-            elif safety.enable_missing_active(cur):
-                raise SafetyBlocked("the owner's enable file is missing: nothing is sent")
             intent = self._move(cur, lease, intent_id, "PLANNED", "SUBMITTING", now)
         _fault("after_submitting_commit")
         return intent
@@ -711,21 +704,6 @@ class LiveLedger:
             except sqlite3.IntegrityError as exc:
                 raise LiveLedgerError(f"cashflow rejected: {exc}") from exc
             self._emit(cur, "cashflow_recorded", "cashflow", flow.cashflow_id, {"kind": flow.kind}, now)
-
-    def record_enable_observation(self, lease, result: EnableResult, *, now: float) -> None:
-        """Remember that the gate was open once; trip ENABLE_MISSING if it later closes.
-
-        Never enabled -> nothing is written (a fresh install must stay inert).
-        """
-        with self._tx(lease) as cur:
-            seen = cur.execute("SELECT 1 FROM events WHERE kind='enable_seen' LIMIT 1").fetchone()
-            if result.enabled:
-                if not seen:
-                    self._emit(cur, "enable_seen", "enable", result.file_sha256, {"mode": result.mode}, now)
-            elif seen and safety.insert_trip(cur, SafetyReason.ENABLE_MISSING,
-                                             ",".join(r.value for r in result.reasons), now):
-                self._emit(cur, "safety_trip", "safety", SafetyReason.ENABLE_MISSING.value,
-                           {"reasons": [r.value for r in result.reasons]}, now)
 
     # -- safety (see safety.py) ----------------------------------------------
     def trip_safety(self, reason: SafetyReason, *, detail: str, now: float) -> bool:

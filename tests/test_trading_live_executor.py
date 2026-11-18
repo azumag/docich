@@ -87,7 +87,7 @@ def test_closed_gate_sends_nothing(ws):
 
 def test_shadow_mode_never_sends(ws):
     h = Harness(ws, gate_open=False)
-    ws.write_enable(h.ps, mode="shadow")
+    ws.write_control(mode="shadow")
     try:
         intent, outcome = h.send()
         assert outcome is S.BLOCKED and h.mock.submissions == []
@@ -134,13 +134,6 @@ def test_during_a_safety_stop_a_buy_is_abandoned_but_the_sell_goes_out(h):
     assert outcome is S.BLOCKED and h.state(blocked.intent_id) == "ABANDONED"
     sell, outcome = h.send(side="sell", key="s1", amount="10", price="99")
     assert outcome is S.ACKED and h.state(sell.intent_id) == "FILLED"
-
-
-def test_enable_file_removed_after_it_was_open_trips_and_stops_even_sells(h, ws):
-    buy, _ = _buy(h)
-    os.unlink(ws.layout.enable_path)
-    sell, outcome = h.send(side="sell", key="s1", amount="10", price="99")
-    assert outcome is S.BLOCKED and "enable_missing" in h.trips() and h.mock.submissions[-1]["side"] == "buy"
 
 
 # ---- lost request / lost response ---------------------------------------------------------

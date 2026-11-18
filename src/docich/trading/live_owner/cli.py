@@ -1,6 +1,7 @@
-"""The owner's LIVE command line (L4a): status, cashflow list, cashflow add and activate.
+"""The owner's LIVE command line (L4a): status, cashflow, activate and the on/off control.
 
     python -m docich.trading.live_owner --state-dir <dir> status
+    python -m docich.trading.live_owner --state-dir <dir> control status|on|off
     python -m docich.trading.live_owner --state-dir <dir> cashflow list
     python -m docich.trading.live_owner --state-dir <dir> cashflow add --kind deposit ...
     python -m docich.trading.live_owner --state-dir <dir> activate --snapshot ... --experiment-digest ...
@@ -8,8 +9,8 @@
     python -m docich.trading.live_owner --state-dir <dir> trip list
     python -m docich.trading.live_owner --state-dir <dir> trip clear --reason ... --confirm ...
 
-The two writers (``cashflow add`` and ``activate``) print a token first and act only when the owner
-repeats it.  ``unknown resolve`` and ``trip clear`` do the same; ``unknown resolve`` records the
+The writers (``cashflow add``, ``activate``) print a token first and act only when the owner
+repeats it; ``control on|off`` writes the small switch file directly.  ``unknown resolve`` and ``trip clear`` do the same; ``unknown resolve`` records the
 owner's evidence and ``trip clear`` is the human-only stop release.  Nothing here talks to an
 exchange except the checks in ``unknown show|resolve`` (through a read-only reader).
 
@@ -28,10 +29,11 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Callable, TextIO
 
-from . import revision as revision_module
-from ..live import enable as live_enable, executor as live_executor, ingest as live_ingest, lease as live_lease
+from ..live import control as live_control, executor as live_executor
+from ..live import ingest as live_ingest, lease as live_lease
 from ..live import policy as live_policy, reconcile as live_reconcile, safety, views as live_views
 from ..live.canonical import canonical_json, sha256_hex
+from ..live.enable import EnableReason, EnableResult
 from ..live.exchange import ExchangeError, OrderNotFound, dec, dec_text
 from ..live.ledger import Cashflow, LiveLedger, LiveLedgerError
 from ..live.paths import LiveLayout, live_layout
@@ -171,6 +173,47 @@ def _status(args, out: TextIO) -> int:
     return EXIT_OK
 
 
+# ---- control: the owner's plain on/off switch -----------------------------------------------
+def _print_control(view: dict, out: TextIO) -> None:
+    print(f"state: {view['state']}", file=out)
+    print(f"mode: {view['mode'] or 'none'}", file=out)
+    print(f"updated_at: {view['updated_at'] or 'none'}", file=out)
+    print(f"updated_by: {view['updated_by'] or 'none'}", file=out)
+    print("reasons: " + (", ".join(view["reasons"]) if view["reasons"] else "none"), file=out)
+
+
+def _control_status(args, out: TextIO, clock: Callable[[], float]) -> int:
+    _print_control(live_control.describe_control(args.state_dir, now=clock()), out)
+    return EXIT_OK
+
+
+def _control_set(args, out: TextIO, clock: Callable[[], float], state: str) -> int:
+    try:
+        operator = _parse_text(args.operator, "operator")
+        if len(operator) > live_control.MAX_UPDATED_BY:      # the file's own limit
+            raise ValueError(f"operator must be at most {live_control.MAX_UPDATED_BY} characters")
+    except ValueError as exc:
+        print(f"refused: {exc}", file=out)
+        return EXIT_REFUSED
+    existing = live_control.describe_control(args.state_dir, now=clock())
+    explicit_mode = getattr(args, "mode", None)
+    if explicit_mode == "trade" and not getattr(args, "yes_trade", False):
+        print("refused: --mode trade requires --yes-trade", file=out)
+        return EXIT_REFUSED
+    requested = explicit_mode or (existing["mode"] if existing["mode"] in ("shadow", "trade") else "shadow")
+    try:
+        live_control.write_control(args.state_dir, state=state, mode=requested,
+                                   updated_by=operator, now=clock())
+    except ValueError as exc:
+        print(f"refused: {exc}", file=out)
+        return EXIT_REFUSED
+    except OSError as exc:
+        print(f"refused: control write failed: {type(exc).__name__}", file=out)
+        return EXIT_REFUSED
+    _print_control(live_control.describe_control(args.state_dir, now=clock()), out)
+    return EXIT_OK
+
+
 def _cashflow_list(args, out: TextIO, is_tty: bool) -> int:
     layout = live_layout(args.state_dir)
     if not layout.ledger_path.is_file():
@@ -193,7 +236,7 @@ def _cashflow_list(args, out: TextIO, is_tty: bool) -> int:
     return EXIT_OK
 
 
-# ---- cashflow add (the only writer) ----------------------------------------------------------
+# ---- cashflow add (one of the writers) -------------------------------------------------------
 def _preview(content: dict[str, str], token: str, out: TextIO, is_tty: bool, ledger_exists: bool) -> None:
     print(f"ledger: {'exists' if ledger_exists else 'will be created'}", file=out)
     print(f"kind: {content['kind']}", file=out)
@@ -312,26 +355,6 @@ def _clear_arguments(args) -> tuple[str, str, str]:
     return operator, note, evidence
 
 
-def _enable_file_refusal(args, ledger, clock: Callable[[], float],
-                         revision: Callable[[], str]) -> str | None:
-    """Why ENABLE_MISSING cannot be cleared now (None: the enable file allows it).
-
-    The check is ``enabled`` (a shadow file counts), the same field the worker trips on, and it is
-    bound to the active policy set's digest and to the current code revision.
-    """
-    digest = ledger.active_policy_set_digest()
-    if digest is None:
-        return "refused: no active policy set"
-    try:
-        rev = revision()
-    except revision_module.RevisionError as exc:
-        return f"refused: {exc}"
-    result = live_enable.live_enabled(args.state_dir, policy_set_digest=digest, code_revision=rev, now=clock())
-    if not result.enabled:
-        return "refused: enable file is not valid: " + ", ".join(reason.value for reason in result.reasons)
-    return None
-
-
 def _trip_list(args, out: TextIO, is_tty: bool) -> int:
     layout = live_layout(args.state_dir)
     if not layout.ledger_path.is_file():
@@ -354,8 +377,7 @@ def _trip_list(args, out: TextIO, is_tty: bool) -> int:
     return EXIT_OK
 
 
-def _trip_clear(args, out: TextIO, clock: Callable[[], float], is_tty: bool,
-                revision: Callable[[], str]) -> int:
+def _trip_clear(args, out: TextIO, clock: Callable[[], float], is_tty: bool) -> int:
     try:
         operator, note, evidence = _clear_arguments(args)
     except ValueError as exc:
@@ -375,11 +397,6 @@ def _trip_clear(args, out: TextIO, clock: Callable[[], float], is_tty: bool,
         if trip is None:
             print("refused: no active trip for that reason", file=out)
             return EXIT_REFUSED
-        if args.reason == safety.SafetyReason.ENABLE_MISSING.value:
-            refusal = _enable_file_refusal(args, ledger, clock, revision)
-            if refusal is not None:
-                print(refusal, file=out)
-                return EXIT_REFUSED
         token = _token(_trip_content(args.reason, trip, operator, note, evidence), _ledger_id(layout))
     finally:
         ledger.close()
@@ -391,10 +408,10 @@ def _trip_clear(args, out: TextIO, clock: Callable[[], float], is_tty: bool,
     if args.confirm.strip() != token:
         print("refused: confirmation token does not match", file=out)
         return EXIT_REFUSED
-    return _record_trip_clear(args, out, clock, revision, operator, note, evidence, trip)
+    return _record_trip_clear(args, out, clock, operator, note, evidence, trip)
 
 
-def _record_trip_clear(args, out: TextIO, clock: Callable[[], float], revision: Callable[[], str],
+def _record_trip_clear(args, out: TextIO, clock: Callable[[], float],
                        operator: str, note: str, evidence: str, previewed) -> int:
     layout = live_layout(args.state_dir)
     ledger, writer = None, None
@@ -413,11 +430,6 @@ def _record_trip_clear(args, out: TextIO, clock: Callable[[], float], revision: 
         if trip is None or trip.trip_id != previewed.trip_id:
             print("refused: the safety stop changed since the preview; run the preview again", file=out)
             return EXIT_REFUSED
-        if args.reason == safety.SafetyReason.ENABLE_MISSING.value:
-            refusal = _enable_file_refusal(args, ledger, clock, revision)
-            if refusal is not None:
-                print(refusal, file=out)
-                return EXIT_REFUSED
         try:
             safety.clear_safety_trip(ledger, safety.SafetyReason(args.reason), operator=operator, note=note,
                                      evidence=evidence, now=clock())
@@ -437,23 +449,21 @@ def _short(exc: BaseException) -> str:
     return text[:200] if text else "invalid input"
 
 
-def _activation_content(ps, enable_result, rev: str, operator: str, note: str) -> dict[str, str]:
-    return {"policy_set_digest": ps.digest, "enable_file_sha256": enable_result.file_sha256 or "",
-            "code_revision": rev, "operator": operator, "note": note}
+def _activation_content(ps, operator: str, note: str) -> dict[str, str]:
+    return {"policy_set_digest": ps.digest, "operator": operator, "note": note}
 
 
-def _preview_activation(ps, spec, enable_result, rev: str, operator: str, token: str, out: TextIO,
+def _preview_activation(ps, spec, mode: str | None, operator: str, token: str, out: TextIO,
                         ledger_exists: bool) -> None:
     print(f"ledger: {'exists' if ledger_exists else 'will be created'}", file=out)
     print(f"policy_set: {ps.digest[:12]}", file=out)
     print(f"experiment: {live_policy.experiment_digest(spec)[:12]}", file=out)
-    print(f"code_revision: {rev[:12]}", file=out)
-    print(f"mode: {enable_result.mode}", file=out)
+    print(f"mode: {mode or 'none'}", file=out)
     print(f"operator: {operator}", file=out)
     print(f"token: {token}", file=out)
 
 
-def _record_activation(args, ps, enable_result, rev: str, operator: str, note: str, out: TextIO,
+def _record_activation(args, ps, operator: str, note: str, out: TextIO,
                        clock: Callable[[], float]) -> int:
     layout = live_layout(args.state_dir)
     ledger, writer = None, None
@@ -464,14 +474,8 @@ def _record_activation(args, ps, enable_result, rev: str, operator: str, note: s
         except live_lease.LeaseHeld:
             print("refused: the live worker holds the writer lease; stop it first", file=out)
             return EXIT_LEASE_HELD
-        again = live_enable.live_enabled(args.state_dir, policy_set_digest=ps.digest, code_revision=rev,
-                                         now=clock())
-        if (again.enabled, again.file_sha256, again.mode) != (enable_result.enabled, enable_result.file_sha256,
-                                                             enable_result.mode):
-            print("refused: the enable file changed; run the preview again", file=out)
-            return EXIT_REFUSED
         try:
-            ledger.record_owner_activation(writer, ps, enable=again, operator=operator, note=note, now=clock())
+            ledger.record_owner_activation(writer, ps, operator=operator, note=note, now=clock())
         except LiveLedgerError:
             print("refused: the ledger refused the activation", file=out)
             return EXIT_REFUSED
@@ -481,7 +485,7 @@ def _record_activation(args, ps, enable_result, rev: str, operator: str, note: s
         _release_writer(ledger, writer, clock)
 
 
-def _activate(args, out: TextIO, clock: Callable[[], float], revision: Callable[[], str]) -> int:
+def _activate(args, out: TextIO, clock: Callable[[], float]) -> int:
     try:
         operator = _parse_text(args.operator, "operator")
         note = _parse_text(args.note, "note")
@@ -494,27 +498,17 @@ def _activate(args, out: TextIO, clock: Callable[[], float], revision: Callable[
     except Exception as exc:        # the snapshot is the owner's input: refuse it, never traceback
         print(f"refused: {type(exc).__name__}: {_short(exc)}", file=out)
         return EXIT_REFUSED
-    try:
-        rev = revision()
-    except revision_module.RevisionError as exc:
-        print(f"refused: {exc}", file=out)
-        return EXIT_REFUSED
-    enable_result = live_enable.live_enabled(args.state_dir, policy_set_digest=ps.digest, code_revision=rev,
-                                             now=clock())
-    if not enable_result.enabled:
-        print("refused: enable file is not valid: "
-              + ", ".join(reason.value for reason in enable_result.reasons), file=out)
-        return EXIT_REFUSED
-    content = _activation_content(ps, enable_result, rev, operator, note)
+    content = _activation_content(ps, operator, note)
     layout = live_layout(args.state_dir)
     token = _token(content, _ledger_id(layout))
     if args.confirm is None:
-        _preview_activation(ps, spec, enable_result, rev, operator, token, out, layout.ledger_path.is_file())
+        mode = live_control.describe_control(args.state_dir, now=clock())["mode"]
+        _preview_activation(ps, spec, mode, operator, token, out, layout.ledger_path.is_file())
         return EXIT_OK
     if args.confirm.strip() != token:
         print("refused: confirmation token does not match", file=out)
         return EXIT_REFUSED
-    return _record_activation(args, ps, enable_result, rev, operator, note, out, clock)
+    return _record_activation(args, ps, operator, note, out, clock)
 
 
 # ---- unknown: a human resolves an UNKNOWN_SUBMISSION intent --------------------------------
@@ -540,7 +534,7 @@ def _unavailable(exc: BaseException, out: TextIO) -> int:
 
 def _closed_gate():
     """The read-only executor's gate: always closed, so even a bug can never send."""
-    return live_enable.EnableResult(False, (live_enable.EnableReason.FILE_MISSING,))
+    return EnableResult(False, (EnableReason.FILE_MISSING,))
 
 
 def _open_read_only_executor(state_dir, ledger, writer, reader, clock):
@@ -939,6 +933,21 @@ def _build_parser(out: TextIO) -> argparse.ArgumentParser:
     parser.add_argument("--state-dir", required=True, help="LIVE state dir (an absolute path)")
     commands = parser.add_subparsers(dest="command", required=True)
     commands.add_parser("status", stream=out, help="read-only summary of the LIVE ledger")
+    control = commands.add_parser("control", stream=out, help="the owner's on/off switch file")
+    controls = control.add_subparsers(dest="control_command", required=True)
+    controls.add_parser("status", stream=out, help="read-only view of the switch")
+    control_on = controls.add_parser("on", stream=out, help="switch the bot on")
+    control_on.add_argument("--mode", choices=("shadow", "trade"), default=None,
+                            help="shadow (default) or trade; omitted keeps the file's mode")
+    control_on.add_argument("--yes-trade", action="store_true",
+                            help="required with --mode trade: the owner means real orders")
+    control_on.add_argument("--operator", required=True)
+    control_off = controls.add_parser("off", stream=out, help="switch the bot off (blocks buys and sells)")
+    control_off.add_argument("--mode", choices=("shadow", "trade"), default=None,
+                             help="shadow or trade; omitted keeps the file's mode")
+    control_off.add_argument("--yes-trade", action="store_true",
+                             help="required with --mode trade")
+    control_off.add_argument("--operator", required=True)
     cashflow = commands.add_parser("cashflow", stream=out, help="the owner's cashflows")
     flows = cashflow.add_subparsers(dest="cashflow_command", required=True)
     flows.add_parser("list", stream=out, help="read-only list (amounts only on a TTY)")
@@ -953,7 +962,7 @@ def _build_parser(out: TextIO) -> argparse.ArgumentParser:
     add.add_argument("--allow-repeat", action="store_true",
                      help="record another cashflow with the same kind, currency and amount")
     activate = commands.add_parser("activate", stream=out,
-                                   help="record an owner activation of a policy set (needs a valid enable file)")
+                                   help="record an owner activation of a policy set")
     activate.add_argument("--snapshot", required=True, help="the experiment snapshot (JSON)")
     activate.add_argument("--experiment-digest", required=True, help="the snapshot's 64-hex digest")
     activate.add_argument("--operator", required=True)
@@ -987,7 +996,6 @@ def _build_parser(out: TextIO) -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None, *, out: TextIO | None = None, clock: Callable[[], float] = time.time,
          is_tty: bool | None = None,
-         revision: Callable[[], str] = revision_module.current_revision,
          reader_factory: Callable[[Path], object] | None = None) -> int:
     out = sys.stdout if out is None else out
     if is_tty is None:
@@ -1005,8 +1013,12 @@ def main(argv: list[str] | None = None, *, out: TextIO | None = None, clock: Cal
         return EXIT_USAGE
     if args.command == "status":
         return _status(args, out)
+    if args.command == "control":
+        if args.control_command == "status":
+            return _control_status(args, out, clock)
+        return _control_set(args, out, clock, "on" if args.control_command == "on" else "off")
     if args.command == "activate":
-        return _activate(args, out, clock, revision)
+        return _activate(args, out, clock)
     if args.command == "unknown":
         if args.unknown_command == "list":
             return _unknown_list(args, out, clock, is_tty)
@@ -1016,7 +1028,7 @@ def main(argv: list[str] | None = None, *, out: TextIO | None = None, clock: Cal
     if args.command == "trip":
         if args.trip_command == "list":
             return _trip_list(args, out, is_tty)
-        return _trip_clear(args, out, clock, is_tty, revision)
+        return _trip_clear(args, out, clock, is_tty)
     if args.cashflow_command == "list":
         return _cashflow_list(args, out, is_tty)
     return _cashflow_add(args, out, clock, is_tty)

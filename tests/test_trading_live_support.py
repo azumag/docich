@@ -1,11 +1,10 @@
 """Shared fixtures for the LIVE L1 tests (synthetic, no network)."""
-import json
 import os
 import socket
 import tempfile
 from pathlib import Path
 
-from docich.trading.live import enable as live_enable
+from docich.trading.live import control as live_control
 from docich.trading.live.ledger import LiveLedger
 from docich.trading.live.paths import live_layout
 from docich.trading.live.policy import build_policy_set, load_experiment_snapshot, experiment_digest
@@ -57,23 +56,18 @@ class Workspace:
     def open_ledger(self, now=1000.0):
         return LiveLedger.open(self.layout, paper_dir=self.paper, now=now)
 
-    def write_enable(self, ps, *, mode="trade", revision="a" * 40, created="2026-01-01T00:00:00+09:00",
-                     expires="2099-01-01T00:00:00+09:00", perm=0o600, extra=None):
-        self.layout.owner_dir.mkdir(parents=True, exist_ok=True)
-        os.chmod(self.layout.root, 0o700)
-        os.chmod(self.layout.owner_dir, 0o700)
-        data = {"schema_version": 1, "kind": "docich-live-enable", "mode": mode,
-                "policy_set_digest": ps.digest, "code_revision": revision,
-                "created_at": created, "expires_at": expires}
-        data.update(extra or {})
-        path = self.layout.enable_path
-        path.write_text(json.dumps(data), encoding="utf-8")
-        os.chmod(path, perm)
+    def write_control(self, *, state="on", mode="trade", updated_by="owner",
+                      now=1_800_000_000.0, perm=None):
+        """Write the owner's control file (on/trade by default); ``perm`` for a bad mode."""
+        live_control.write_control(self.state, state=state, mode=mode,
+                                   updated_by=updated_by, now=now)
+        path = self.layout.control_path
+        if perm is not None:
+            os.chmod(path, perm)
         return path
 
-    def enable_result(self, ps, *, revision="a" * 40, now=1_800_000_000.0):
-        return live_enable.live_enabled(self.state, policy_set_digest=ps.digest,
-                                        code_revision=revision, now=now)
+    def control_result(self, *, now=1_800_000_000.0):
+        return live_control.read_control(self.state, now=now)
 
 
 def block_network(monkeypatch):
@@ -157,7 +151,7 @@ class Harness:
         if opening:
             self.deposit("JPY", jpy)
         if gate_open:
-            ws.write_enable(self.ps)
+            ws.write_control()
 
     # -- life cycle
     def boot(self):
@@ -169,7 +163,7 @@ class Harness:
             clock=self.clock.seconds, symbols=self.symbols, config=self.config)
 
     def _gate(self):
-        return self.ws.enable_result(self.ps)
+        return self.ws.control_result()
 
     def crash(self):
         """The process dies: the lock is released by the OS, nothing is closed politely."""

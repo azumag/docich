@@ -797,7 +797,7 @@ def test_decide_and_act_through_run_cycle(ws, harnesses, monkeypatch):
     assert decision_rows(h.ledger) == []
 
     # shadow: decide_and_act records one plan
-    ws.write_enable(ps, mode="shadow")
+    ws.write_control(mode="shadow")
     shadow = run_cycle(rig.deps, rig.state)
     assert shadow.mode == "shadow"
     assert len(decision_rows(h.ledger)) == 1
@@ -809,9 +809,8 @@ def test_decide_and_act_through_run_cycle(ws, harnesses, monkeypatch):
     assert still_shadow.mode == "shadow"
     assert len(decision_rows(h.ledger)) == 1
 
-    # a disabled gate (expired enable file) never reaches decide
-    ws.write_enable(ps, mode="shadow", created="2000-01-01T00:00:00+09:00",
-                    expires="2000-01-02T00:00:00+09:00")
+    # the owner switches the bot off: decide is not reached
+    ws.write_control(state="off", mode="shadow")
     disabled = run_cycle(rig.deps, rig.state)
     assert disabled.mode is None
     assert len(decision_rows(h.ledger)) == 1
