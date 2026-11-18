@@ -15,6 +15,10 @@ Mutation defense (issue #42): PUT/POST/DELETE には Host/Origin allowlist・
   を要求する (dangerous action の再確認)。token 未設定 (既定の loopback 開発) でも
   Host/Origin/CSRF/Content-Type チェック自体は有効なままで、CSRF token の発行
   (`GET /api/csrf`) は token 有無に関わらず _check_auth() と同じ経路で行う。
+LIVE タブ: GET /api/live は制御ファイル・worker status・台帳の読み取り専用 view を返し、
+POST /api/live/control は owner のオン/オフと shadow/trade を切り替える (trade で ON に
+するときだけ body の confirm="TRADE" を要求する)。POST は上の mutation guard をそのまま
+通り、viewer/read-only は guard が拒否する。
 State: soren_root = ELOOP_LIB_DIR 相当 (games/soviet_now or /home/ubuntu/soren)。
 """
 from __future__ import annotations
@@ -74,6 +78,7 @@ from .runtime_backend import (
 )
 from . import stream_pause
 from .stream_identity import runner_kind
+from .webui_live import live_snapshot, set_control
 
 # --- allowlist / validation --------------------------------------------------
 
@@ -708,6 +713,9 @@ CSRF_TTL_SEC = 4 * 3600  # 4時間
 # (streamAction/workerControl) または「保存」操作自体を再確認とみなし、
 # confirm:true を body に含める。
 CONFIRM_REQUIRED_PATHS = {("POST", "/api/workers"), ("POST", "/api/stream"), ("PUT", "/api/config"), ("POST", "/api/corners"), ("POST", "/api/tsuitate-beta"), ("POST", "/api/special-corner/end"), ("PUT", "/api/special-corner/settings"), ("POST", "/api/special-corner/receiver"), ("POST", "/api/special-corner/start")}
+# POST /api/live/control is deliberately not in the set above: its confirmation value is
+# the literal "TRADE" (validated by webui_live.set_control), not confirm:true.  It still
+# goes through _guard_mutation() like every other mutation.
 
 
 def _make_csrf_token(secret: bytes, ttl: int = CSRF_TTL_SEC, now: int | None = None) -> str:
@@ -3689,6 +3697,8 @@ class _Handler(BaseHTTPRequestHandler):
                 status = self._handle_get_predictions()
             elif path == "/api/corners":
                 status = self._handle_get_corners()
+            elif path == "/api/live":
+                status = self._handle_get_live()
             elif path == "/api/special-corner":
                 status = self._handle_get_special_corner()
             elif path == "/api/special-corner/settings":
@@ -3813,6 +3823,8 @@ class _Handler(BaseHTTPRequestHandler):
                 status = self._handle_post_prediction_action()
             elif parsed.path == "/api/corners":
                 status = self._handle_post_corners()
+            elif parsed.path == "/api/live/control":
+                status = self._handle_post_live_control()
             elif parsed.path == "/api/special-corner/end":
                 status = self._handle_post_special_corner_end()
             elif parsed.path == "/api/special-corner/receiver":
@@ -4825,6 +4837,52 @@ class _Handler(BaseHTTPRequestHandler):
                 "hint": hint,
             },
         )
+        return 200
+
+    def _handle_get_live(self) -> int:
+        """Read-only LIVE snapshot (control file + worker status + ledger overview)."""
+        try:
+            snapshot = live_snapshot(self.g.state_dir, now=time.time())
+        except Exception as exc:                       # live_snapshot promises not to raise
+            self._send_error_json(500, "live_snapshot_failed", type(exc).__name__)
+            return 500
+        self._send_json(200, snapshot)
+        return 200
+
+    def _handle_post_live_control(self) -> int:
+        """Owner's LIVE switch.  Guard (auth/CSRF/read-only) has already run."""
+        body, err = self._read_body()
+        if err:
+            return err
+        try:
+            data = json.loads(body.decode("utf-8"))
+        except Exception as exc:
+            self._send_error_json(400, "invalid_json", str(exc))
+            return 400
+        if not isinstance(data, dict):
+            self._send_error_json(400, "validation_error", "body must be object")
+            return 400
+        try:
+            result = set_control(
+                self.g.state_dir,
+                state=data.get("state"),
+                mode=data.get("mode"),
+                confirm=data.get("confirm"),
+                actor=self._identity(),
+                now=time.time(),
+            )
+        except ValueError as exc:
+            reason_text = str(exc)
+            error = "confirm_required" if reason_text == "confirm_required" else "validation_error"
+            self._send_error_json(400, error, reason_text)
+            return 400
+        except Exception as exc:                       # no path/content in the response
+            self._send_error_json(500, "live_control_failed", type(exc).__name__)
+            return 500
+        # The guard already audited the request; this records that the switch was written.
+        _log_authz_event(self.soren_root, "POST", "/api/live/control",
+                         self._identity(), "allow", "live_control")
+        self._send_json(200, result)
         return 200
 
     def _handle_get_corners(self) -> int:

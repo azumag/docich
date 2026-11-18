@@ -11,6 +11,7 @@ import pytest
 
 _HTTP_API_TEST_FILES = frozenset({
     'test_webui.py',
+    'test_webui_live.py',
     'test_webui_resources.py',
     'test_tsuitate_beta_control.py',
 })
