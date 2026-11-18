@@ -24,6 +24,7 @@ on:
       - 'tests/test_webui_live.py'
       - 'tests/bitbank_live_support.py'
       - 'tests/helpers/**'
+      - 'docs/operations/live-worker-systemd.md'
       - 'tests/test_paper*.py'
       - 'tests/test_program_view*.py'
       - 'tests/test_overlay*.py'
@@ -60,6 +61,7 @@ on:
       - 'tests/test_webui_live.py'
       - 'tests/bitbank_live_support.py'
       - 'tests/helpers/**'
+      - 'docs/operations/live-worker-systemd.md'
       - 'tests/test_paper*.py'
       - 'tests/test_program_view*.py'
       - 'tests/test_overlay*.py'
@@ -123,6 +125,7 @@ jobs:
             --root-path 'tests/test_webui_live.py' \
             --root-path 'tests/bitbank_live_support.py' \
             --root-path 'tests/helpers/**' \
+            --root-path 'docs/operations/live-worker-systemd.md' \
             --root-path 'tests/test_paper*.py' \
             --root-path 'tests/test_program_view*.py' \
             --root-path 'tests/test_overlay*.py' \
@@ -183,6 +186,26 @@ jobs:
           tests/test_trading_soren_output.py tests/test_overlay_queue.py tests/test_audio_delivery.py tests/test_overlay_interop.py
           tests/test_soren91_corner.py
           tests/test_paper_corner_meriken_rotation.py
+      - name: LIVE worker no-key systemd smoke (GitHub-hosted)
+        if: runner.environment == 'github-hosted'
+        timeout-minutes: 5
+        shell: bash
+        run: |
+          set -euo pipefail
+          export XDG_RUNTIME_DIR="/run/user/$(id -u)"
+          # The hosted runner has no login session. Start its own ephemeral user
+          # manager only if systemctl --user cannot reach one; never enable linger.
+          if ! systemctl --user show-environment >/dev/null 2>&1; then
+            timeout 30s sudo systemctl start "user@$(id -u).service"
+          fi
+          for _ in 1 2 3 4 5 6 7 8 9 10; do
+            if systemctl --user show-environment >/dev/null 2>&1; then
+              break
+            fi
+            sleep 1
+          done
+          systemctl --user show-environment >/dev/null
+          python3 tests/helpers/live_worker_systemd_smoke.py
       - name: Bitbank read-only transport against the real ccxt (no network)
         run: |
           python3 -m pip install -r requirements-trading.txt
