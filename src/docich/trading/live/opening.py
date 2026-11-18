@@ -2,8 +2,9 @@
 
 The owner never runs ``cashflow add`` for an opening balance.  For each watched currency
 with no ledger history of any kind and a positive exchange total, this module writes ONE
-deposit cashflow with source ``auto_opening``.  The total is the exchange's ``total``
-(free + locked): dust is recorded exactly like any other positive balance.
+deposit cashflow with source ``exchange_history`` (it is derived from the exchange) and an
+id prefixed ``auto_opening:``.  The total is the exchange's ``total`` (free + locked): dust
+is recorded exactly like any other positive balance.
 
 Two consecutive ``reader.fetch_balance()`` reads must agree on a currency's total; a
 currency whose reads differ is skipped and retried by the caller next time.  A currency
@@ -24,7 +25,8 @@ from .lease import LeaseLost
 from .ledger import Cashflow
 
 ZERO = Decimal(0)
-SOURCE = "auto_opening"
+SOURCE = "exchange_history"          # the ledger's CHECK allows owner_manual / exchange_history
+ID_PREFIX = "auto_opening:"
 NOTE = "opening balance recorded automatically"
 
 
@@ -34,10 +36,12 @@ def _total(balance, currency: str) -> Decimal:
 
 
 def record_auto_opening(ledger, lease, reader, currencies, *, now: float) -> tuple[str, ...]:
-    """Record one ``auto_opening`` deposit per new, positive, stable currency.
+    """Record one ``auto_opening:<CCY>`` deposit per new, positive, stable currency.
 
-    Returns the currencies written in this call (empty when there was nothing to do or an
-    exception was swallowed).  The reader is called exactly twice for the whole set.
+    The cashflow source is ``exchange_history`` because the amount comes from the exchange;
+    the id prefix and the note carry the ``auto_opening`` marker.  Returns the currencies
+    written in this call (empty when there was nothing to do or an exception was swallowed).
+    The reader is called exactly twice for the whole set.
     """
     recorded: list[str] = []
     try:
@@ -63,7 +67,7 @@ def record_auto_opening(ledger, lease, reader, currencies, *, now: float) -> tup
             continue
         try:
             ledger.record_cashflow(lease, Cashflow(
-                cashflow_id=f"auto_opening:{currency}",
+                cashflow_id=f"{ID_PREFIX}{currency}",
                 kind="deposit",
                 currency=currency,
                 amount=str(first_total),

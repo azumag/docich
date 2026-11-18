@@ -1301,7 +1301,7 @@ def auto_opening_rows(ws) -> list[tuple]:
         with ledger.read_cursor() as cur:
             return cur.execute(
                 "SELECT currency, amount, source FROM cashflows "
-                "WHERE source='auto_opening' ORDER BY currency").fetchall()
+                "WHERE cashflow_id LIKE 'auto_opening:%' ORDER BY currency").fetchall()
     finally:
         ledger.close()
 
@@ -1328,8 +1328,8 @@ def test_a_start_with_coin_and_jpy_balances_and_no_history_now_runs(ws, monkeypa
     assert status["exit_code"] == 0
     assert status["cycle"] == 1
     assert "inert_reason" not in status
-    assert auto_opening_rows(ws) == [("JPY", "10000", "auto_opening"),
-                                     ("OAS", "3", "auto_opening")]
+    assert auto_opening_rows(ws) == [("JPY", "10000", "exchange_history"),
+                                     ("OAS", "3", "exchange_history")]
     assert safety_trips(ws) == []
     assert prepared.mock.submissions == []
     acquire_again(ws)
@@ -1351,7 +1351,7 @@ def test_a_start_with_a_dust_balance_also_runs_and_records_the_dust(ws, monkeypa
     assert code == runner_module.EXIT_OK
     assert len(completed) == 1
     assert "inert_reason" not in read_status(ws)
-    assert ("OAS", "0.00000001", "auto_opening") in auto_opening_rows(ws)
+    assert ("OAS", "0.00000001", "exchange_history") in auto_opening_rows(ws)
 
 
 def test_an_unknown_submission_is_ingested_before_any_auto_opening(ws, monkeypatch):
@@ -1407,8 +1407,8 @@ def test_a_failed_opening_attempt_is_retried_once_before_the_next_cycle(ws, monk
     assert code == runner_module.EXIT_OK
     assert len(calls) == 2                       # startup attempt + one retry before cycle 1
     assert len(completed) == 1
-    assert auto_opening_rows(ws) == [("JPY", "10000", "auto_opening"),
-                                     ("OAS", "3", "auto_opening")]
+    assert auto_opening_rows(ws) == [("JPY", "10000", "exchange_history"),
+                                     ("OAS", "3", "exchange_history")]
     status = read_status(ws)
     assert status["phase"] == "exited"
     assert "inert_reason" not in status

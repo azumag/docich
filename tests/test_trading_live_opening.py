@@ -83,7 +83,7 @@ def test_a_coin_with_a_balance_and_no_history_is_recorded_once(live):
 
     assert record_auto_opening(ledger, lease, mock, ("XRP",), now=NOW) == ("XRP",)
     assert cashflow_rows(ledger) == [
-        ("auto_opening:XRP", "deposit", "XRP", "3", "auto_opening", NOW,
+        ("auto_opening:XRP", "deposit", "XRP", "3", "exchange_history", NOW,
          "opening balance recorded automatically"),
     ]
     # The ledger now has history for XRP: a second call touches nothing.
@@ -97,7 +97,7 @@ def test_jpy_is_recorded_like_any_other_currency(live):
 
     assert record_auto_opening(ledger, lease, mock, ("JPY",), now=NOW) == ("JPY",)
     rows = cashflow_rows(ledger)
-    assert rows == [("auto_opening:JPY", "deposit", "JPY", "8000", "auto_opening", NOW,
+    assert rows == [("auto_opening:JPY", "deposit", "JPY", "8000", "exchange_history", NOW,
                      "opening balance recorded automatically")]
 
 
@@ -243,7 +243,7 @@ def test_a_rejected_duplicate_id_is_swallowed(live, monkeypatch):
     # Pretend the id is already taken without exposing it through currencies_with_history:
     # the ledger itself rejects the insert and the call must not raise.
     ledger.record_cashflow(lease, Cashflow("auto_opening:XRP", "deposit", "XRP", "3",
-                                           "auto_opening", NOW), now=NOW)
+                                           "exchange_history", NOW), now=NOW)
     monkeypatch.setattr(opening.views, "currencies_with_history", lambda ledger: frozenset())
 
     assert record_auto_opening(ledger, lease, mock, ("XRP",), now=NOW) == ()

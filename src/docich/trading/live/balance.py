@@ -1,8 +1,9 @@
 """Balance reconciliation (Issue #3623, L2): ledger-expected balance vs the exchange's balance.
 
 Expected(c) = sum of cashflows + effect of every recorded fill (+ fee when known).  Opening
-balances are recorded automatically with source ``auto_opening`` (see ``opening.py``), so the
-ledger normally explains the exchange's balance from its first cycle.
+balances are recorded automatically as ``auto_opening:<CCY>`` cashflows with source
+``exchange_history`` (see ``opening.py``), so the ledger normally explains the exchange's
+balance from its first cycle.
 
 A mismatch is only a WARNING.  ``BalanceMonitor`` confirms one from two stable checks at least
 ``min_gap_s`` apart with no new fills in between and exposes the currencies as

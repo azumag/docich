@@ -146,6 +146,9 @@ def test_trade_mode_places_sells_before_buys(ws, harnesses, monkeypatch):
     decide_tests.store(h, ps)
     h.mock.adjust_balance("OAS", "10")
     decide_tests.fill_position(h, ps, amount="10", price="100")
+    # The fixture fill was recorded directly in the ledger, so move the mock's JPY by the
+    # same 1000 notional: exchange total 9000 + position cost 1000 = capital 10000.
+    h.mock.adjust_balance("JPY", "-1000")
     rig = make_rig(ws, h, ps=ps,
                    rules={"OAS/JPY": decide_tests.rule(),
                           "XYM/JPY": decide_tests.rule("XYM/JPY")},
@@ -612,6 +615,11 @@ def test_a_balance_mismatch_is_only_a_warning_and_buys_still_go_out(ws, harnesse
     ps = decide_tests.policy_set_for(*symbols)
     decide_tests.store(h, ps)
     rules = {symbol: decide_tests.rule(symbol) for symbol in symbols}
+    # The mock validates against its own market rules: give it the same step the sizer and
+    # executor read, so a 0.01-step amount such as 4.95 is not rejected by the fixture's
+    # default amount_step of 1.
+    for symbol in symbols:
+        h.mock._markets[symbol] = rules[symbol]
     h.mock.set_book("OAS/JPY", bids=[(D("100"), D("1000"))],
                     asks=[(D("100"), D("1000"))])
     h.mock.set_book("XYM/JPY", bids=[(D("99"), D("1000"))],

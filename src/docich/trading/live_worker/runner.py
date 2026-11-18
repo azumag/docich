@@ -23,9 +23,9 @@ Startup order is fixed: ledger -> lease -> reader -> active policy set -> execut
 ``reconcile.on_startup`` -> ``opening.record_auto_opening`` -> the cycle loop.  An INERT
 start (no active policy set) writes the status, releases the lease and returns 0 without a
 safety row, an intent or an order.  Opening balances are recorded by the worker itself (one
-``auto_opening`` cashflow per watched currency with no history and a positive total); a
-balance condition never makes the worker inert and never stops it.  Every exit path releases
-the lease (best effort) and closes the ledger.
+``auto_opening:<CCY>`` cashflow with source ``exchange_history`` per watched currency with no
+history and a positive total); a balance condition never makes the worker inert and never
+stops it.  Every exit path releases the lease (best effort) and closes the ledger.
 """
 from __future__ import annotations
 

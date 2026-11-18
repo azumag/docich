@@ -100,7 +100,7 @@ def snapshot(*, jpy_free: str | None = None, jpy_total: str | None = None, free=
     assets = {}
     if jpy_free is not None:
         total = jpy_free if jpy_total is None else jpy_total
-        assets["JPY"] = AssetBalance(D(total), D(jpy_free), D("0"))
+        assets["JPY"] = AssetBalance(D(total), D(jpy_free), D(total) - D(jpy_free))
     for currency, amount in (free or {}).items():
         assets[currency] = AssetBalance(D(amount), D(amount), D("0"))
     return BalanceSnapshot(assets, 1_700_000_000_000, 1000.0)
@@ -594,7 +594,9 @@ def test_unknown_fee_fill_uses_the_rules_max_fee_rate(h):
     digest = ps.policy_for("OAS/JPY").digest
 
     result = build_cycle_inputs(h.ledger, rules=rules_for("OAS/JPY"),
-                                balance=jpy_balance("9000", "8999"), policy_set=ps)
+                                balance=snapshot(jpy_total="9000", jpy_free="8999",
+                                                 free={"OAS": "10"}),
+                                policy_set=ps)
 
     # 1000 notional + 0.001 * 1000 estimated fee = 1001; 1001 / 10 = 100.1.
     assert result.block_buys == ()
@@ -932,7 +934,8 @@ def test_capital_is_live_jpy_plus_position_cost_and_headroom_never_double_counts
     # The 0.10 opportunity cap on C=10000 is 1000; the headroom (6500) leaves it standing.
     assert len(sized.buys) == 1
     assert sized.buys[0].amount == D("10")
-    assert sized.buys[0].required_quote == D("1001.0")
+    # required_quote = 10 * 100 * (1 + 0.001) + quote_unit 1 = 1002.000.
+    assert sized.buys[0].required_quote == D("1002.000")
 
 
 def test_a_deposit_raises_capital_next_cycle_without_any_ledger_write(h):
