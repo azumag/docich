@@ -28,13 +28,15 @@ _MAX_CYCLES = 6            # 失敗再タイプのループ上限 (これを超�
 def password_step(screen, mem):
     """リスト先頭まで上げてから A+down で全語を上から順に入力する。"""
     st = mem.setdefault('password_entry', {})
+    if st.get('cycles', 0) >= _MAX_CYCLES:
+        return []
     tops = st.get('tops', 0)
     picks = st.get('picks', 0)
     if tops < _TOP_PRESSES:
         st['tops'] = tops + 4
         return [pad('up')] * 4
     if picks < _SWEEP_PICKS:
-        st['picks'] = picks + 4
+        st['picks'] = picks + 2
         return [pad('a'), pad('down'), pad('a'), pad('down')]
     cycles = st.get('cycles', 0) + 1
     _record(mem, 'password_entry_resweep', screen=screen.kind,
@@ -44,9 +46,10 @@ def password_step(screen, mem):
         _record(mem, 'situation_held', screen=screen.kind,
                 observed_metric={'cycles': cycles},
                 reason='パスワード入力の掃引を繰り返しても扉が開かないため保留')
-        st.clear()
+        st['cycles'] = cycles
         return []
     # 失敗で先頭へ戻る。手カーソル位置は不明なので上げ直す。
     st.clear()
     st['cycles'] = cycles
+    st['tops'] = 4
     return [pad('up')] * 4
