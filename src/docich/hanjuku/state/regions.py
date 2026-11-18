@@ -306,6 +306,7 @@ KEY_OWNERSHIP = {
     'dropper_card_kit': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # ドロップ用カードキット手順状態
     'egg_action': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 卵メニューアクション手順
     'egg_battle': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 卵戦闘手順セッション
+    'egg_use_unread_ups': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 卵確定前の未読カーソル上戻し回数(#4528)
     'egg_battle_row_dead': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 卵戦闘メニュー行の死亡管理
     'egg_choice': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 卵選択メニュー手順状態
     'egg_key': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 同上キー
