@@ -153,6 +153,7 @@ def _status(args, out: TextIO) -> int:
     if not layout.ledger_path.is_file():
         print("ledger: not created", file=out)
         return EXIT_OK
+    shadow_line = "shadow: unreadable"
     ledger = LiveLedger.open_readonly(layout)
     try:
         digest = ledger.active_policy_set_digest()
@@ -162,6 +163,14 @@ def _status(args, out: TextIO) -> int:
             cashflows = cur.execute("SELECT COUNT(*) FROM cashflows").fetchone()[0]
             events = cur.execute("SELECT COUNT(*) FROM events").fetchone()[0]
         state = safety.read_safety_state(ledger)
+        try:
+            evidence, plans, fills, shadow_positions = live_shadow_report.shadow_counts(ledger)
+        except Exception:
+            pass
+        else:
+            shadow_line = (
+                f"shadow: evidence plans={plans} fills={fills} positions={shadow_positions}"
+                if evidence else "shadow: no evidence")
     finally:
         ledger.close()
     print("ledger: ok", file=out)
@@ -173,16 +182,7 @@ def _status(args, out: TextIO) -> int:
     print(f"unknown_submissions: {state.unresolved_unknown_submissions}", file=out)
     print(f"cashflows: {cashflows}", file=out)
     print(f"events: {events}", file=out)
-    try:
-        evidence, plans, fills, positions = live_shadow_report.shadow_counts(ledger)
-    except Exception:
-        print("shadow: unreadable", file=out)
-    else:
-        if evidence:
-            print(f"shadow: evidence plans={plans} fills={fills} positions={positions}",
-                  file=out)
-        else:
-            print("shadow: no evidence", file=out)
+    print(shadow_line, file=out)
     return EXIT_OK
 
 

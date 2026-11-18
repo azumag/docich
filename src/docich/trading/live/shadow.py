@@ -822,6 +822,8 @@ def _close_residuals(deps: "CycleDeps", ctx: "CycleContext", book: ShadowBook,
         return 0
     failures = 0
     for position_id in result.residual_position_ids:
+        if deps.stop_requested():
+            break
         position = next((item for item in book.positions.values()
                          if item.position_id == position_id), None)
         if position is None:
@@ -856,6 +858,9 @@ def _execute_plans(deps: "CycleDeps", state: "CycleState", ctx: "CycleContext",
     failures = 0
 
     for plan in result.sells + result.buys:
+        # a stop request wins over every remaining plan; earlier fills stay durable
+        if deps.stop_requested():
+            break
         if plan.decision_key in book.decision_keys:
             skipped.append((plan.decision_key, ALREADY_FILLED))
             continue
@@ -943,6 +948,8 @@ def run_shadow(deps: "CycleDeps", state: "CycleState",
                ctx: "CycleContext", *, book: ShadowBook | None = None) -> ShadowRun | None:
     """Simulate one shadow cycle; the normal hook calls this and ignores the result."""
     if ctx.mode != SHADOW_MODE:
+        return None
+    if deps.stop_requested():
         return None
     book = _cached_book(state, deps.ledger) if book is None else project_shadow_book(
         deps.ledger, book=book)

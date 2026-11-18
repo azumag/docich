@@ -68,11 +68,12 @@ def _counts(ledger) -> dict[str, int]:
         }
 
 
-def _rig(ws, h, *, sender=None, symbols=("OAS/JPY",), rules=None):
+def _rig(ws, h, *, sender=None, symbols=("OAS/JPY",), rules=None, stop_requested=None):
     ps = decide_tests.policy_set_for(*symbols)
     decide_tests.store(h, ps)
     rules = rules or {symbol: decide_tests.rule(symbol) for symbol in symbols}
-    return act_tests.make_rig(ws, h, ps=ps, rules=rules, symbols=symbols, sender=sender)
+    return act_tests.make_rig(ws, h, ps=ps, rules=rules, symbols=symbols, sender=sender,
+                              stop_requested=stop_requested)
 
 
 def _buy_rig(ws, h, *, sender=None):
@@ -578,3 +579,58 @@ def test_a_valid_shadow_residual_clears_dust_on_replay_only(ws, harnesses, monke
     assert fill.position_id in replayed.residual_ids
     assert len(views.events_of_kind(h.ledger, "shadow_residual")) == 1
     assert _counts(h.ledger) == {"intents": 0, "orders": 0, "fills": 0, "positions": 0}
+
+
+# ---- m. status reads shadow counts before the ledger is closed --------------------------
+def test_the_owner_cli_status_reads_shadow_counts_before_closing_the_ledger(
+        ws, harnesses, monkeypatch):
+    h = harnesses()
+    rig, buy = _buy_rig(ws, h)
+    monkeypatch.setattr(decide_module, "scan_live",
+                        lambda *a, **k: LiveSignals((buy,), (), (), {}))
+    shadow.run_shadow(rig.deps, rig.state, decide_tests.make_ctx(rig))
+
+    out = io.StringIO()
+    code = owner_cli.main(["--state-dir", str(ws.state), "status"],
+                          out=out, clock=lambda: NOW)
+    text = out.getvalue()
+    assert code == 0
+    assert "shadow: evidence plans=1 fills=1 positions=1" in text
+
+
+# ---- n. a stop after the first shadow fill keeps earlier events only -------------------
+def test_a_stop_after_the_first_shadow_fill_prevents_the_second(ws, harnesses,
+                                                                monkeypatch):
+    h = harnesses(symbols=("OAS/JPY", "XYM/JPY"))
+    flag = {"stop": False}
+    rig = _rig(ws, h, symbols=("OAS/JPY", "XYM/JPY"),
+               stop_requested=lambda: flag["stop"])
+    entries = (decide_tests.opportunity("OAS/JPY", "buy", oid="buy-1"),
+               decide_tests.opportunity("XYM/JPY", "buy", oid="buy-2"))
+    monkeypatch.setattr(decide_module, "scan_live",
+                        lambda *a, **k: LiveSignals(entries, (), (), {}))
+    real_append = shadow._append_fill
+    appended = []
+
+    def append_then_stop(*args, **kwargs):
+        recorded = real_append(*args, **kwargs)
+        appended.append(recorded)
+        flag["stop"] = True
+        return recorded
+
+    monkeypatch.setattr(shadow, "_append_fill", append_then_stop)
+    run = shadow.run_shadow(rig.deps, rig.state, decide_tests.make_ctx(rig))
+
+    assert run is not None and len(run.fills) == 1
+    assert len(appended) == 1 and appended[0] is not None
+    assert len(views.events_of_kind(h.ledger, "shadow_fill")) == 1
+    assert run.record_failures == 0
+
+
+def test_a_stop_before_deciding_leaves_no_shadow_events(ws, harnesses):
+    h = harnesses()
+    rig, _buy = _buy_rig(ws, h)
+    rig.deps = dataclasses.replace(rig.deps, stop_requested=lambda: True)
+
+    assert shadow.run_shadow(rig.deps, rig.state, decide_tests.make_ctx(rig)) is None
+    assert views.events_of_kind(h.ledger, "shadow_fill") == []
