@@ -830,6 +830,11 @@ def _boss_retry_due(order, mem) -> bool:
 
 BOSS_RELAUNCH_LIMIT = 2                     # boss sorties sent again per step after a march that never entered
 BOSS_STALE_COOLDOWN = 3 * BOSS_ARRIVAL_LIMIT   # an exhausted step re-arms after a long wait
+# Issue #4561 (3): a moving boss has no static cell, so elapsed time alone
+# cannot say whether an exhausted step's next sortie would aim at a cell the
+# boss still holds. The next Y-view measurement is the re-arm event; this bound
+# only keeps a view that never measures again from parking the step forever.
+BOSS_MEASURE_FALLBACK_TICKS = BOSS_ARRIVAL_LIMIT
 # A 四季王 step whose march record expired stays 'launched' with no record, no
 # overdue path and nothing that can bind an entry, so the step never runs
 # again. g1163 2026-11-09 02:5x: 4-B1/4-B2 sat launched with an empty sorties
@@ -895,13 +900,16 @@ def parked_boss_steps(mem):
 
     A step is parked when its order still says launched, its sortie is
     overdue (or an entered fight left no result), its bounded relaunch budget
-    is spent, and the stale cooldown has elapsed. At that point only
-    _relaunch_overdue_boss can restart it, so a caller stuck in a menu can
-    prioritize returning to the field map.
+    is spent, and the stale cooldown has elapsed. On a moving boss the elapsed
+    wait is replaced by a fresh Y-view measurement (issue #4561), so the step
+    is only re-armable once a new cell has actually been measured. At that
+    point only _relaunch_overdue_boss can restart it, so a caller stuck in a
+    menu can prioritize returning to the field map.
     """
     now = int(mem.get('tick') or 0)
     orders_status = _plan_region(mem).get('orders') or {}
     relaunches = mem.get('boss_relaunch') or {}
+    reading = boss_cell_measurement(mem)
     out = []
     for step, sortie in _sorties(mem).items():
         if not isinstance(sortie, dict):
@@ -912,8 +920,15 @@ def parked_boss_steps(mem):
                 or status not in ('overdue', 'arrived')
                 or (status == 'arrived' and _boss_fight_live(mem, step))
                 or type(sortie.get('tick')) is not int
-                or relaunches.get(step, 0) < BOSS_RELAUNCH_LIMIT
-                or now - sortie['tick'] < BOSS_STALE_COOLDOWN):
+                or relaunches.get(step, 0) < BOSS_RELAUNCH_LIMIT):
+            continue
+        # Issue #4561 (3): a moving boss's exhausted step is parked until the
+        # Y view measures again, not for a fixed number of ticks. The time
+        # bound still applies where there is no measurement clock.
+        stale_ready = _boss_stale_wait_ready(mem, step, reading, now)
+        if stale_ready is True:
+            continue
+        if stale_ready is None and now - sortie['tick'] < BOSS_STALE_COOLDOWN:
             continue
         out.append(step)
     return sorted(out)
@@ -967,6 +982,52 @@ def _queue_overdue_location_recheck(mem, sortie):
                 reason='行軍追跡の期限超過は帰城の証拠でないため、月次の本人ステータスで所在を再確認する')
 
 
+def boss_cell_measurement(mem):
+    """Latest accepted Y-view boss cell for the moving-boss chapter.
+
+    Returns ``(tick, [x, y])`` or ``None``. Only chapter 9's boss keeps moving
+    between measurements; every other chapter stays on the time-based paths
+    (a static boss cell needs no measurement to be trusted). A memory without
+    a fresh ``boss_cell`` reading also returns ``None``, so legacy/older runs
+    keep the behaviour they had before the measurement gate existed.
+    """
+    # A policy-chart stub (tests/hot-load) may not carry the moving-boss
+    # constant; without it there is no measurement clock to gate on.
+    moving = getattr(chart, 'MOVING_BOSS_CHAPTER', None)
+    if moving is None or (mem.get('chapter') or 0) != moving:
+        return None
+    reading = mem.get('boss_cell')
+    if not isinstance(reading, dict) or reading.get('chapter') != (mem.get('chapter') or 0):
+        return None
+    cell, tick = reading.get('cell'), reading.get('tick')
+    if not isinstance(cell, (list, tuple)) or not cell or type(tick) is not int:
+        return None
+    return (tick, list(cell))
+
+
+def _boss_reading_refreshed(reading, waited):
+    """Did the Y view measure again since ``waited`` was recorded?"""
+    tick, cell = reading
+    return (tick > waited.get('tick', 0)
+            or (waited.get('cell') is not None and cell != waited['cell']))
+
+
+def _boss_stale_wait_ready(mem, step, reading, now):
+    """Read-only: can an exhausted moving-boss step re-arm on a new reading?
+
+    ``None`` means this chapter/step has no measurement clock, so the caller
+    keeps its time-based cooldown. ``True``/``False`` are the measurement gate.
+    Kept side-effect free because :func:`parked_boss_steps` calls it too.
+    """
+    if reading is None:
+        return None
+    waited = (mem.get('boss_stale_wait') or {}).get(step)
+    if not isinstance(waited, dict):
+        return None
+    return (_boss_reading_refreshed(reading, waited)
+            or now - waited.get('since', now) >= BOSS_MEASURE_FALLBACK_TICKS)
+
+
 def _relaunch_overdue_boss(mem):
     """Send a boss order again when its march never entered the boss castle,
     or when its entry ended without a measured result.
@@ -987,6 +1048,7 @@ def _relaunch_overdue_boss(mem):
     """
     now = int(mem.get('tick') or 0)
     status = _plan_region(mem).setdefault('orders', {})
+    reading = boss_cell_measurement(mem)
     for step, sortie in _sorties(mem).items():
         # An unconfirmed launch keeps its cell in planned_target only; g1075
         # 4-B2 カペリーニ stayed en route for 3066 ticks (2026-10-30 09:28).
@@ -1004,11 +1066,16 @@ def _relaunch_overdue_boss(mem):
         # whose kings are unmeasured can never be abandoned mid-attrition.
         stale = (sortie.get('status') == 'overdue'
                  and relaunches.get(step, 0) >= BOSS_RELAUNCH_LIMIT)
+        # Issue #4561 (3): a moving boss's exhausted step waits for the next
+        # Y-view measurement rather than a fixed number of ticks.
+        stale_ready = _boss_stale_wait_ready(mem, step, reading, now)
+        stale_ready = (stale and (stale_ready if stale_ready is not None
+                                  else now - sortie['tick'] >= BOSS_STALE_COOLDOWN))
         if (sortie.get('status') not in ('en_route', 'launched_unconfirmed')
                 and not (sortie.get('status') == 'arrived'
                          and not _site_king_down(mem, target)
                          and not _boss_fight_live(mem, step))
-                and not (stale and now - sortie['tick'] >= BOSS_STALE_COOLDOWN)):
+                and not stale_ready):
             continue
         entered = sortie.get('status') == 'arrived'
         sortie['status'] = 'overdue'
@@ -1043,7 +1110,13 @@ def _relaunch_overdue_boss(mem):
             if not stale:
                 _record(mem, 'boss_relaunch_exhausted', chart_step=step, observed_metric=observed,
                         reason='ボス出撃の出し直しが上限に達したため保留')
+                # Issue #4561 (3): pin the measurement the step was exhausted
+                # at. Re-arming now only happens on a newer Y-view reading.
+                if reading is not None and step not in (mem.get('boss_stale_wait') or {}):
+                    mem.setdefault('boss_stale_wait', {})[step] = {
+                        'tick': reading[0], 'cell': reading[1], 'since': now}
                 continue
+            (mem.get('boss_stale_wait') or {}).pop(step, None)
             relaunches[step] = 0
             _record(mem, 'boss_relaunch_stale_retry', chart_step=step, observed_metric=observed,
                     reason='ボス出撃の出し直しが上限後も長期間進まないため、間隔を置いて出し直す')
@@ -2521,8 +2594,10 @@ def _bind_sortie(mem, step, castle, general=None):
         if chart.is_boss_castle(castle):
             # A measured boss entry re-arms the relaunch budget: the cap
             # counts cycles that never produced an entry, not attempts that
-            # actually reached the castle and fought.
+            # actually reached the castle and fought. A stale measurement
+            # wait from the abandoned march is obsolete once the fight is on.
             (mem.get('boss_relaunch') or {}).pop(step, None)
+            (mem.get('boss_stale_wait') or {}).pop(step, None)
 
 
 def _transit_sorties(mem, castle, names):
