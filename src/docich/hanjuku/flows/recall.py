@@ -10,7 +10,7 @@ from ..os_layer.navigation import _start_y_jump
 from ..os_layer.readers import _current, _cursor, _options, fort_list_open, is_camp_menu, is_fort_menu
 from ..os_layer.world import NAME, _owned
 from ..strategy.orders import _fort_recall_goal, _recall_goal, _recall_owned
-from ..state.regions import flow as _flow, journal as _journal
+from ..state.regions import flow as _flow, journal as _journal, sorties as _sorties
 
 
 MENU_HOLD_LIMIT = 10           # arrived-but-unanchored holds after a failed castle menu
@@ -1011,13 +1011,22 @@ def _camp_recall_step(screen: Screen, mem, frame, *, observed_camps=None):
         # camping — in the boss phase the field camps are expired boss
         # marches. Other camps keep the ordinary nearest-castle recall.
         boss = boss_redirect_goal(mem)
-        if boss and state.get('camp_world'):
-            wx, wy = chart.CH9_BOSS_WAYPOINT
-            wave = mem.get('boss_wave_generals') or {}
+        if boss:
+            chapter = mem.get('chapter') or 0
+            boss_target = chart.boss_castle(chapter)
+            # A camp holding a general whose boss sortie never entered is an
+            # expired boss march regardless of where the camera bound: the
+            # empty-cell camp is its rest stop, not a corridor reinforcement.
+            wave = {s.get('general') for s in _sorties(mem).values()
+                    if isinstance(s, dict) and s.get('target') == boss_target
+                    and s.get('status') in ('launched', 'overdue')
+                    and s.get('general')}
             actors = ((mem.get('camp_status_seen') or {}).get('actors') or {})
-            if ((abs(state['camp_world'][0] - wx) <= 320
-                    and abs(state['camp_world'][1] - wy) <= 320)
-                    or any(g in actors for g in wave)):
+            cw = state.get('camp_world')
+            near = (isinstance(cw, (list, tuple)) and len(cw) == 2
+                    and abs(cw[0] - chart.CH9_BOSS_WAYPOINT[0]) <= 320
+                    and abs(cw[1] - chart.CH9_BOSS_WAYPOINT[1]) <= 320)
+            if near or any(g in actors for g in wave):
                 state['boss'], state['goal'] = True, boss
         if _camp_target(state.get('camp_world')):
             _flow(mem)['camp_last_world'] = list(state['camp_world'])
