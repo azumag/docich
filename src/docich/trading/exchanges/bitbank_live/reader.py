@@ -26,7 +26,37 @@ class BitbankTransport(Protocol):
 
 
 class ReaderUnavailable(RuntimeError):
-    """The reader could not be built (message: a short reason, never a value)."""
+    """The reader could not be built (message: a short reason, never a value).
+
+    ``kind`` is the runner's exit-code hint: ``"config"`` for a local setup problem (do not
+    restart), ``"auth"`` for a refused key, ``"clock"`` for an unacceptable local clock, and
+    ``None`` for anything unclassified (a retryable failure).  The one-argument form keeps
+    working and leaves ``kind`` as ``None``.
+    """
+
+    def __init__(self, message: str, kind: str | None = None) -> None:
+        super().__init__(message)
+        self.kind = kind
+
+
+# The reader/transport health kinds that are terminal for the worker (``errors.kind_for_code``
+# and ``kind_for_http`` define exactly these; rate/network/account/request/data are retryable).
+_AUTH_HEALTH_KINDS = frozenset({"auth"})
+_CLOCK_HEALTH_KINDS = frozenset({"clock"})
+
+
+def _reader_kind_for(exc: BaseException) -> str | None:
+    """Map an exchange error's ``health_kind`` to a ``ReaderUnavailable.kind``.
+
+    Only the exchange's auth kinds are ``"auth"`` and only its clock kinds are ``"clock"``;
+    everything else (rate, network, account, request, data, absent) is ``None`` = retryable.
+    """
+    kind = getattr(exc, "health_kind", None)
+    if kind in _AUTH_HEALTH_KINDS:
+        return "auth"
+    if kind in _CLOCK_HEALTH_KINDS:
+        return "clock"
+    return None
 
 
 @dataclass(frozen=True)
@@ -57,7 +87,8 @@ class BitbankReader:
             self.reload_rules()
         except ExchangeError as exc:
             raise ReaderUnavailable(f"cannot load market rules ({type(exc).__name__}/"
-                                    f"{getattr(exc, 'health_kind', '-')})") from None
+                                    f"{getattr(exc, 'health_kind', '-')})",
+                                    kind=_reader_kind_for(exc)) from None
 
     # -------------------------------------------------------------- plumbing
     def _get(self, endpoint: str, params: Mapping[str, object]) -> object:

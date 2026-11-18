@@ -123,6 +123,8 @@ class CycleState:
     ttl_failed: int = 0
     record_failures: int = 0
     balance_warnings: int = 0                    # per-cycle: confirmed mismatch currencies
+    shadow_dedupe: dict = field(default_factory=dict)  # shadow-only decision dedupe
+    shadow_book: object | None = None                  # in-process projection cache (replayed on restart)
 
 
 @dataclass

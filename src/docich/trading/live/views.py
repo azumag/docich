@@ -267,12 +267,18 @@ def open_positions(ledger) -> list[tuple[str, str]]:
             "SELECT position_id, symbol FROM positions WHERE status='open' ORDER BY opened_at, position_id")]
 
 
-def events_of_kind(ledger, kind: str, *, after_event_id: int = 0, limit: int = 1000) -> list[EventRow]:
-    """Events of one kind, oldest first; ``payload`` is the inner payload, not the stored envelope."""
+def events_of_kinds(ledger, kinds: tuple[str, ...], *, after_event_id: int = 0,
+                    limit: int = 1000) -> list[EventRow]:
+    """Events of the named kinds, oldest first; ``payload`` is the inner payload."""
+    names = tuple(kinds)
+    if not names:
+        return []
+    marks = ",".join("?" for _ in names)
     with ledger.read_cursor() as cur:
-        rows = cur.execute("SELECT event_id, occurred_at, entity_type, entity_id, payload FROM events "
-                           "WHERE kind=? AND event_id>? ORDER BY event_id LIMIT ?",
-                           (kind, int(after_event_id), int(limit))).fetchall()
+        rows = cur.execute(
+            f"SELECT event_id, occurred_at, entity_type, entity_id, payload FROM events "
+            f"WHERE kind IN ({marks}) AND event_id>? ORDER BY event_id LIMIT ?",
+            (*names, int(after_event_id), int(limit))).fetchall()
     out = []
     for event_id, occurred_at, entity_type, entity_id, stored in rows:
         try:
@@ -284,6 +290,11 @@ def events_of_kind(ledger, kind: str, *, after_event_id: int = 0, limit: int = 1
             inner = {}
         out.append(EventRow(int(event_id), float(occurred_at), entity_type, entity_id, inner))
     return out
+
+
+def events_of_kind(ledger, kind: str, *, after_event_id: int = 0, limit: int = 1000) -> list[EventRow]:
+    """Events of one kind, oldest first; ``payload`` is the inner payload, not the stored envelope."""
+    return events_of_kinds(ledger, (kind,), after_event_id=after_event_id, limit=limit)
 
 
 # -- L4b-5: sizing/reconcile views (nothing below writes) -------------------------------------

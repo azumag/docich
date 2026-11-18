@@ -248,3 +248,23 @@ def test_a_mismatched_response_is_a_failed_read_not_a_success(method, endpoint, 
     with pytest.raises(ExchangeDataError):
         getattr(reader, method)(*args, **kwargs)
     assert reader.health().consecutive_failures == 1 and reader.health().last_error_kind == "data"
+
+
+def test_reader_unavailable_without_a_kind_keeps_the_plain_message():
+    exc = rd.ReaderUnavailable("a short reason")
+    assert str(exc) == "a short reason" and exc.kind is None
+    explicit = rd.ReaderUnavailable("a short reason", kind="config")
+    assert str(explicit) == "a short reason" and explicit.kind == "config"
+
+
+@pytest.mark.parametrize("health_kind,kind", [
+    ("auth", "auth"), ("clock", "clock"), ("network", None), ("rate", None),
+    ("account", None), ("request", None), ("data", None), (None, None)])
+def test_a_rule_load_failure_carries_only_the_auth_or_clock_kind(health_kind, kind):
+    error = ExchangeAmbiguous("down")
+    if health_kind is not None:
+        error.health_kind = health_kind
+    with pytest.raises(rd.ReaderUnavailable) as err:
+        make(default_script(pairs=error))
+    assert err.value.kind == kind
+    assert "SENTINEL" not in str(err.value)
