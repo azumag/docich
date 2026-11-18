@@ -393,6 +393,44 @@ def pad(button, ms=100):
     return {'type':'pad','buttons':[button],'hold_ms':ms}
 
 
+def _load_save_label(text):
+    """Parse the selected save row of the ロード選択 screen (docich#4535).
+
+    The list row reads 「ーセーブ1ーだい11わ 58ねん9のつき」: the slot, its
+    chapter and the saved year/month. Any part may be unreadable; only what
+    was actually read is returned. A digit run torn by an unread cell (�)
+    is a partial read, not a smaller number — 58ねん seen as �8ねん must not
+    become year 8 — so such a field returns None like a missing one.
+    """
+    import re
+    text = text or ''
+
+    def _read(match, group=1):
+        if match is None:
+            return None
+        start, end = match.start(group), match.end(group)
+        if (start > 0 and text[start - 1] in '�0123456789'
+                or end < len(text) and text[end] == '�'):
+            return None
+        return int(match.group(group))
+
+    slot = re.search(r'セーブ(\d{1,2})', text)
+    chapter = re.search(r'だい(\d{1,2})わ', text)
+    date = re.search(r'(\d{1,3})ねん\s*(\d{1,2})のつき', text)
+    year = _read(date, 1) if date else None
+    month = _read(date, 2) if date else None
+    save_chapter = _read(chapter)
+    return {
+        'save_slot': _read(slot),
+        'save_chapter': save_chapter,
+        'save_month': (f'{year}-{month}'
+                       if year is not None and month is not None else None),
+        'save_label': (f'だい{save_chapter}わ {year}ねん{month}のつき'
+                       if save_chapter is not None and year is not None
+                       and month is not None else None),
+    }
+
+
 def _is_chikujou_prompt(text):
     """The 築城 castle list's 「どのしろをぞうちく…」 prompt (maxed or not)."""
     text = text or ''
@@ -1183,7 +1221,7 @@ IDENTITY_RESET_KEYS = (
     'egg_memory',
     'egg_recheck', 'castle_income', 'castle_ownership', 'starter_party',
     'map_registration', 'map_discovery', 'boss_victories', 'obs_cost',
-    'generals_lost',
+    'generals_lost', 'title_episode',
 )
 
 
@@ -1277,12 +1315,18 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
     _journal(mem)['_departure_input']=departure_input
     mem['_experience']=experience if isinstance(experience, dict) else experience_module.empty()
     updated={**state,'phase':phase,'step':step,'phase_step':phase_step,'bot_version':BOT_VERSION}
-    if phase in ('field', 'field_menu', 'battle', 'battle_intro'):
+    if phase in ('title', 'title_or_intro'):
+        # docich#4535: a title return that comes back through a battery save
+        # rewinds the run's progress. Keep the episode open through its fades
+        # (title_or_intro) so the load confirm can record resume_from_save.
+        mem['title_episode'] = True
+    elif phase in ('field', 'field_menu', 'battle', 'battle_intro'):
         # A title episode ends only when the run is back in the game world.
         # g1190 2026-11-16: the counter survived the episode, so a later title
         # return pressed Start without trying つづき at all. A title fade
         # (title_or_intro) keeps the episode open instead of restarting it.
         updated.pop('title_tries', None)
+        mem.pop('title_episode', None)
     updated['status_panel_feedback'] = None
     updated['map_cursor_feedback'] = None
     updated['nav_hold_feedback'] = None
@@ -1295,7 +1339,7 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
     if prompts_flow.summer_bonus_continue(screen,mem):
         screen.kind='summer_bonus'
     observe_jump_foreground(screen, mem)
-    prompts_flow.observe_events(screen,mem)
+    prompts_flow.observe_events(screen,mem,previous_phase=state.get('phase'))
     plan_starved_rearm(mem, phase, screen.kind)
     map_flow.observe_sortie_transition(screen,mem,state.get('screen_kind'))
     # Reconcile the deferred-goal ledger with the facts this observation just
@@ -1393,6 +1437,19 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
                                               **({'chapter': mem.get('chapter')}
                                                  if mem.get('chapter') else {})},
                              reason='セーブのロード選択画面を実画面文言で確認したため、選択中のセーブをAでロードする')
+        if mem.pop('title_episode', None):
+            # docich#4535: a title return resumed through a battery save
+            # rewinds the run's month and castle holdings. Record the selected
+            # save so the rollback stays provable in the decision log; the
+            # flag makes this fire once per title episode.
+            decision_log._record(
+                mem, 'resume_from_save', screen=kind,
+                observed_metric={**_load_save_label(screen.text),
+                                 'month_before': mem.get('month'),
+                                 'captured': sorted(mem.get('captured') or ()),
+                                 'lost': sorted(mem.get('lost') or ()),
+                                 'home_lost': bool(mem.get('home_lost'))},
+                reason='タイトル復帰でセーブをロードしたため、読めたセーブ内容とロールバック前の所有城を記録する')
         updated.update(screen_kind=kind, no_input_streak=0, no_input_frames=[])
         for key in ('_adjusted', '_interim', '_card_scroll_input'):
             mem.pop(key, None)

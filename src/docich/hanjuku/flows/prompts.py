@@ -794,7 +794,64 @@ def _settle_road_defeats(mem):
                     reason='道中敗北の記録があるため、行軍を決着済みとして片付ける')
 
 
-def observe_events(screen: Screen, mem):
+# docich#4535: a battery-save load after a title return (game over) silently
+# rewinds the run's month and castle holdings. The bot re-reads the screen and
+# follows, so nothing recorded the rollback itself (local chapter 11,
+# 60-4 -> 58-4 on 2026-11-18). A same-chapter month reading that drops by more
+# than this many months is logged once per (chapter, before, after) rollback
+# as progress_regressed; smaller backward reads are header flicker, and a
+# month observed under another chapter is not this chapter's regression.
+MONTH_REGRESS_MIN = 2
+
+
+def _month_ordinal(key):
+    """Sequential index of a 'year-month' key, or None when it cannot be read."""
+    if not isinstance(key, str):
+        return None
+    year, sep, month = key.partition('-')
+    if not sep:
+        return None
+    try:
+        year, month = int(year), int(month)
+    except ValueError:
+        return None
+    if year < 1 or not 1 <= month <= 12:
+        return None
+    return year * 12 + month
+
+
+def _observe_progress_regress(mem, month_before, month_after, chapter_before,
+                              previous_phase):
+    """Record a same-chapter month rollback once (docich#4535).
+
+    ``mem['captured']``/``mem['lost']`` still hold the pre-rollback view at
+    this point, so the record keeps the holdings the load rewound.
+    """
+    if chapter_before is None or mem.get('chapter') != chapter_before:
+        return   # a chapter transition or an undecided chapter is not a regression
+    month_chapter = mem.get('month_chapter')
+    if month_chapter is not None and month_chapter != chapter_before:
+        # The save row's だいNわ can retarget mem['chapter'] without a chapter
+        # transition, so a month observed under another chapter must not be
+        # compared against this chapter's header (cross-chapter load).
+        return
+    before, after = _month_ordinal(month_before), _month_ordinal(month_after)
+    if before is None or after is None or before <= after + MONTH_REGRESS_MIN:
+        return
+    key = [chapter_before, month_before, month_after]
+    if mem.get('progress_regressed') == key:
+        return   # a flickering header must not log the same rollback twice
+    mem['progress_regressed'] = key
+    _record(mem, 'progress_regressed',
+            observed_metric={'month_before': month_before, 'month_after': month_after,
+                             'captured': sorted(mem.get('captured') or ()),
+                             'lost': sorted(mem.get('lost') or ()),
+                             'home_lost': bool(mem.get('home_lost')),
+                             'previous_phase': previous_phase},
+            reason='同一章で月が大きく逆行したため、タイトル復帰のセーブロード等による進行ロールバックとして記録する')
+
+
+def observe_events(screen: Screen, mem, previous_phase=None):
     """Record chart-relevant facts that need no input (month header, harvest)."""
     _settle_road_defeats(mem)
     _repair_home_name_chapter(mem)
@@ -835,13 +892,17 @@ def observe_events(screen: Screen, mem):
                     reason='出撃画面のたまご行から卵の残り使用回数を記録')
     header = screen.header
     if header:
+        month_before, chapter_before = mem.get('month'), mem.get('chapter')
         chapter = header.get('chapter')
         if chapter and chapter != mem.get('chapter'):
             _enter_chapter(mem, chapter, reason='画面の章表示を確認し、前章の座標・出撃・購入状態を初期化')
         key = _month_key(header)
         if mem.get('month') != key:
+            _observe_progress_regress(mem, month_before, key, chapter_before,
+                                      previous_phase)
             previous = mem.get('month_start_tick')
             mem['month'] = key
+            mem['month_chapter'] = mem.get('chapter')
             mem['gold'] = header['gold']
             now = int(mem.get('tick') or 0)
             mem['month_start_tick'] = now
