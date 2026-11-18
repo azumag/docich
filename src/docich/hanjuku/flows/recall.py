@@ -504,6 +504,48 @@ def relay_from_picker(mem, state):
     return relay
 
 
+RELAY_ROAD_STEP = 16      # frames per press; the field cursor moves ~1 px/frame
+RELAY_ROAD_PRESS_MAX = 40  # bounded presses for one relay leg
+
+
+def _relay_road(mem, state, cell):
+    """Dead-reckon the relay cursor when no own roof can anchor the camera.
+
+    The back half has no own roofs, so ``observed_cursor_cell`` cannot place
+    the いどう cursor (g1190 2026-11-18: relay started but leg one aborted as
+    cursor_not_found). The picker already measured the camp's world cell and
+    the field cursor moves about one pixel per frame, so the camp→relay delta
+    is walked directly and the A confirms the cell when the delta is spent.
+    Units are the same: ``_camp_world_cell`` keeps screen cells == world cells.
+    """
+    road = state.get('relay_road')
+    if not isinstance(road, dict):
+        origin = state.get('camp_world') or state.get('origin')
+        if not (_camp_target(origin) and _camp_target(cell)):
+            return None
+        road = state['relay_road'] = {
+            'dx': int(cell[0]) - int(origin[0]),
+            'dy': int(cell[1]) - int(origin[1]),
+            'presses': 0}
+        _record(mem, 'camp_recall_relay_road', observed_metric={
+            'camp': list(origin), 'relay': list(cell),
+            'dx': road['dx'], 'dy': road['dy']},
+            reason='屋根アンカーが無い後半では、ピッカーで測った野営セルと中継セルの差でいどうカーソルを送る')
+    presses = int(road.get('presses') or 0)
+    dx, dy = int(road.get('dx') or 0), int(road.get('dy') or 0)
+    if presses >= RELAY_ROAD_PRESS_MAX or (dx == 0 and dy == 0):
+        return [pad('a')]
+    if abs(dx) >= abs(dy):
+        frames = min(RELAY_ROAD_STEP, abs(dx))
+        road['dx'] = dx - frames if dx > 0 else dx + frames
+        road['presses'] = presses + 1
+        return [pad('right' if dx > 0 else 'left', frames)]
+    frames = min(RELAY_ROAD_STEP, abs(dy))
+    road['dy'] = dy - frames if dy > 0 else dy + frames
+    road['presses'] = presses + 1
+    return [pad('down' if dy > 0 else 'up', frames)]
+
+
 def _visible_move_dest_step(screen, mem, frame, state):
     """Steer the field cursor onto the visible own castle, then confirm.
 
@@ -532,6 +574,10 @@ def _visible_move_dest_step(screen, mem, frame, state):
         _plan_cliff_escape(mem, state, frame)
     escape = None if state.get('relay') else state.get('escape_world')
     here = observed_cursor_cell(screen, mem, frame)
+    if here is None and state.get('relay'):
+        road = _relay_road(mem, state, cell)
+        if road is not None:
+            return road
     if escape:
         # Owner 2026-11-16: the cliff-bound camp first steps perpendicular
         # off the wall; the freed camp is recalled home on a later pass.
