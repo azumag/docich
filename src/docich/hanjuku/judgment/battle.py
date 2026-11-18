@@ -158,6 +158,7 @@ def _card_use_unclassified(mem, cur, reason):
         _record(mem, 'battle_card_open_unclassified', **_battle_labels(cur), card=card,
                 expected_metric='実メニューと札一覧の選択',
                 observed_metric={'selection_planned': False, 'attempts': count,
+                                 'stage': flow.get('stage'), 'cause': reason,
                                  'retry_allowed': bool(tid and count < CARD_OPEN_ATTEMPTS)},
                 reason='札の選択前に操作が戻ったため携行札を差し引かず、有限回だけ再試行')
         cur['card_flow'] = None
@@ -717,6 +718,7 @@ def _card_damage_recheck_resources(mem, cur):
 
 CARD_OPEN_ATTEMPTS = 2        # initial chart opening plus one bounded retry
 CARD_MENU_OPEN_RETRIES = 4    # B repeats while the command menu has not opened yet
+CARD_LIST_OPEN_WAITS = 4      # battle panels tolerated while the card list draws (#4645)
 CARD_LIST_CURSOR_LIMIT = 10  # same finite list budget as survival selections
 CARD_ANNOUNCE_LIMIT = 6      # shared by chart and survival confirmation waits
 MELEE_HOLD_LIMIT = 8          # egg-safe holds in one fight before melee proceeds

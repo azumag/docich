@@ -1574,6 +1574,10 @@ def card_list_step(screen: Screen, mem):
         return [pad('b')]
     if flow.get('read_kit'):
         return _defense_card_kit_read(screen, mem, cur, flow, names)
+    if flow.get('stage') in ('menu', 'down') and names:
+        # 実の札行が読めるのに帳簿が移動途中のまま残る開きずれがある。可視の
+        # 一覧を現段として扱い、保持している選択手順へ合流させる。
+        flow['stage'] = 'list'
     if flow['stage'] == 'list' and flow.get('survival'):
         return _survival_card_list(screen, mem, cur, flow, names)
     if flow['stage'] == 'list':
