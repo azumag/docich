@@ -5,8 +5,12 @@ records, always attempt 1 - long after the plan had replaced that step. An
 abandoned step that is neither in the plan nor in the launched-order records
 and never got a status keeps the map loop busy while nothing can start it.
 """
+from docich import hanjuku_chart as chart
 from docich.hanjuku.flows import map as M
 from docich.hanjuku.state.regions import plan as _plan_region
+
+ROAD = chart.corridor(9)
+A, B, C, D = ROAD[0], ROAD[1], ROAD[2], ROAD[3]
 
 
 def memory(active, plan_steps=('A:x:M1',), launched=None, status=None):
@@ -14,6 +18,20 @@ def memory(active, plan_steps=('A:x:M1',), launched=None, status=None):
             'chart_plan': {'orders': [{'step': s} for s in plan_steps]},
             'world': {'launched_orders': dict(launched or {})},
             'orders': dict(status or {})}
+
+
+def corridor_memory(active, residents=('ローズマリー', 'ベーグル'), tick=5000):
+    """Chapter 9 with A,B,C held and a repelled attack on D under the pair wait.
+
+    The front C holds ``residents``; with two the pair wait holds the attack,
+    so the corridor mints only the refill moves ``B>C`` and ``A>B`` (#4498).
+    """
+    return {'chapter': 9, 'tick': tick, 'month': '36-6', '_records': [],
+            'captured': [B, C], 'lost': [], 'orders': {}, 'active': active, 'picked': [],
+            'world': {'garrison': {A: ['リーキ'], B: ['ベーグル'], C: list(residents)},
+                      'sorties': {}, 'launched_orders': {}},
+            'sortie_history': [{'target': D, 'outcome': 'lost', 'enemy_hp': 39,
+                                'tick': tick - 100}]}
 
 
 def records(mem):
@@ -46,3 +64,46 @@ def test_an_order_with_a_status_is_kept():
 def test_no_plan_never_releases_anything():
     mem = memory('A:x:OLD', plan_steps=())
     assert M._release_stale_active(mem) is False
+
+
+def test_a_live_corridor_move_is_not_released():
+    """g1270 (#4498): the release+backoff cycle on live march orders stalled ch9.
+
+    The corridor rebuilds its order list every call, so an adopted chart_plan
+    never owns its steps. Releasing a move the march still mints, then paying
+    the order-start backoff to pick it again, was the measured 150-261 obs
+    gap between sorties.
+    """
+    mem = corridor_memory(f'I:c9:{B}>{C}:0')
+    with chart.map_context(mem):
+        assert M._release_stale_active(mem) is False
+    assert _plan_region(mem)['active'] == f'I:c9:{B}>{C}:0'
+
+
+def test_a_live_corridor_attack_is_not_released():
+    mem = corridor_memory(f'I:c9:{C}>{D}:0',
+                          residents=('ローズマリー', 'ベーグル', 'キャロット'))
+    with chart.map_context(mem):
+        assert M._release_stale_active(mem) is False
+    assert _plan_region(mem)['active'] == f'I:c9:{C}>{D}:0'
+
+
+def test_a_corridor_step_the_march_dropped_is_released():
+    """A pair from an older plan the corridor no longer mints is released.
+
+    (An attack the pair wait retracts is settled by ``front_mass_retracted``
+    itself, which marks it 'pending'; release covers the rest.)
+    """
+    mem = corridor_memory(f'I:c9:{ROAD[4]}>{ROAD[5]}:3')
+    with chart.map_context(mem):
+        assert M._release_stale_active(mem) is True
+    assert _plan_region(mem)['active'] is None
+    assert 'stale_active_released' in records(mem)
+
+
+def test_a_non_corridor_step_still_uses_the_chart_plan():
+    mem = corridor_memory('A:x:OLD')
+    mem['chart_plan'] = {'orders': [{'step': 'A:x:M1'}]}
+    with chart.map_context(mem):
+        assert M._release_stale_active(mem) is True
+    assert records(mem) == ['stale_active_released']

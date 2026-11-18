@@ -1031,6 +1031,48 @@ def _corridor_list_end(screen, mem, order):
     return [pad('b'), pad('b')]
 
 
+def _corridor_roster_recheck(screen, mem, order):
+    """A stale-roster attack re-judges the pair wait on the fresh list.
+
+    ``corridor.orders`` lifts the repelled-front pair wait when the front's
+    resident read is too old to trust, purely so the sortie opens the list
+    and reads it again (``front_roster_recheck``). Sending the cursor's
+    general anyway is what emptied the front and serialised the march in #4498
+    (g1270: ``front_roster_stale`` 290x while ``order_start`` gaps grew to
+    261 obs). When the fresh list still shows fewer than ``_keep + 2``
+    residents and the wait itself has not run out, the read is the answer
+    the plan asked for: record it, close the menu, and let the refill moves
+    run. The bounds mirror the planner's, so a nearly dead defender or an
+    expired wait still marches the lone general.
+    """
+    if (order.get('front_roster_recheck') is not True or order.get('corridor') is not True
+            or order.get('roster_probe') is True
+            or (_plan_region(mem).get('orders') or {}).get(order['step']) == 'launched_unconfirmed'):
+        return None
+    present = _present_generals(screen)
+    if present is None:
+        return None                         # the normal path bounds the hold
+    from ..strategy import corridor
+    source, target = _source(order, mem), order['target']
+    keep = 2 if ((corridor._flip_prone(mem, target)
+                  or corridor._defended_recently(mem, source))
+                 and order.get('purpose') != 'retake') else 1
+    mass = keep + 2
+    if not (0 < len(present) < mass):
+        return None
+    if (not corridor._repelled_alone(mem, target)
+            or corridor._defender_nearly_dead(mem, target)
+            or corridor._front_mass_expired(mem, source, len(present))):
+        return None                         # the pair wait ran out: march alone
+    _observe_garrison(screen, mem, order, complete=True)
+    _record(mem, 'front_mass_confirmed', **_deploy_context(order, mem), castle=source,
+            observed_metric={'present': present[:8], 'need': mass},
+            reason='出撃一覧で前線の在城を読み直したところ2人同時に出せる人数に足りないため、出さずに増援を待つ')
+    _finish_order(mem, 'done', source=source,
+                  reason='前線の在城一覧を読み直した結果2人待ちの条件が続いているため、この出撃を閉じて増援を優先する')
+    return [pad('b'), pad('b')]
+
+
 CASTLE_STATUS_AS_LIST_LIMIT = 3   # B presses on a ステータス panel read as the list before cancelling
 CURSOR_PICK_DOWNS = 2 * GENERAL_LIST_FULL   # presses past the hero before the normal path takes over
 
@@ -2102,6 +2144,9 @@ def deploy_step(screen: Screen, mem):
             return [pad('b'), pad('b')]
         return _check_source_castle(screen, mem, order)
     if kind == 'general_list':
+        rechecked = _corridor_roster_recheck(screen, mem, order)
+        if rechecked is not None:
+            return rechecked
         picked = _cursor_order_pick(screen, mem, order)
         if picked is not None:
             return picked

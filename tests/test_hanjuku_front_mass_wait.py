@@ -249,3 +249,21 @@ def test_a_fresh_front_roster_still_waits_for_the_pair():
     mem['world']['garrison_tick'] = {C: mem['tick'] - 10}
     assert attacks(mem) == []
     assert decided(mem, 'front_wait_mass')
+
+
+def test_a_stale_roster_attack_is_marked_for_recheck():
+    """#4498: the sortie exists to re-read the list, not to feed the defender.
+
+    g1270 sent the lone resident 290 times on a stale reading; the flag lets
+    the deploy re-judge the pair wait on the fresh list instead.
+    """
+    mem = memory(['ローズマリー', 'ベーグル'])
+    mem['world']['garrison_tick'] = {C: mem['tick'] - corridor.FRONT_ROSTER_STALE_TICKS - 1}
+    arms = attacks(mem)
+    assert arms and all(a.get('front_roster_recheck') is True for a in arms)
+
+
+def test_an_attack_on_a_fresh_reading_carries_no_recheck_flag():
+    mem = memory(['ローズマリー', 'ベーグル', 'キャロット'])
+    arms = attacks(mem)
+    assert arms and all(not a.get('front_roster_recheck') for a in arms)

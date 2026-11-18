@@ -950,11 +950,31 @@ def _release_stale_active(mem):
     step = _plan_region(mem).get('active')
     if not step:
         return False
-    plan = _plan_region(mem).get('chart_plan') or {}
-    plan_steps = {o.get('step') for o in plan.get('orders') or ()}
     launched = _world(mem).get('launched_orders') or {}
     status = (_plan_region(mem).get('orders') or {}).get(step)
-    if not plan_steps or step in plan_steps or step in launched or status is not None:
+    if step in launched or status is not None:
+        return False
+    from ..strategy import corridor
+    if corridor.mechanical(mem) and corridor._pair(step) is not None:
+        # Chapter 9's march rebuilds its order list on every call, so an
+        # adopted ``chart_plan`` never owns its steps: the corridor itself is
+        # the plan, and a step it still mints is live. g1270 (#4498) released
+        # every unlaunched march order on the next map frame, and the release
+        # + order-start backoff cycle (~13 obs per map step) was the measured
+        # 150-261 obs stall between sorties from different castles.
+        live = {o.get('step') for o in corridor.orders(mem)}
+        if step in live or _plan_region(mem).get('active') != step:
+            return False
+        _plan_region(mem)['active'] = None
+        mem['picked'] = []
+        _drop_jump_state(mem, step)
+        _record(mem, 'stale_active_released', chart_step=step,
+                observed_metric={'live_steps': sorted(live)[:8]},
+                reason='第9話の進軍計画がこの指示をもう発行していないため解放し、現在の計画から選び直す')
+        return True
+    plan = _plan_region(mem).get('chart_plan') or {}
+    plan_steps = {o.get('step') for o in plan.get('orders') or ()}
+    if not plan_steps or step in plan_steps:
         return False
     _plan_region(mem)['active'] = None
     mem['picked'] = []
