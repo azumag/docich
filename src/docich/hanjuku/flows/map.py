@@ -1006,6 +1006,8 @@ CASTLE_JUMP_SCROLL_LIMIT = 16   # list scrolls while looking for the source
 CASTLE_JUMP_SCROLL_PROOF = 2    # extra taps issued once the hand is on the last row
 CASTLE_JUMP_SCROLL_STALL = 2    # unchanged list readings before the Y route takes over
 CASTLE_JUMP_COOLDOWN = 40       # observations before retrying a failed source
+REANCHOR_FAILURE_LIMIT = 3      # consecutive failed reanchors before backing off
+REANCHOR_FAILURE_BACKOFF = 600  # observations a tripped reanchor stays quiet
 CASTLE_JUMP_FAR = 48            # same distance gate as the Y jump (map px)
 # The orange hand of the main menu and of the しろ list blinks, so whole frames
 # are captured with no cursor sprite drawn. g1139 2026-11-07 lost five jumps
@@ -1233,6 +1235,22 @@ def _end_castle_jump(screen, mem, why):
         _record(mem, 'cursor_reanchor_failed', target=jump.get('source'),
                 screen=screen.kind, observed_metric=metric,
                 reason='アルマムーンへのSELECT復旧が成立しないため、再試行を制限して従来の探索へ戻る')
+        # A reanchor that keeps failing is a loop, not a repair: the map flow
+        # never leaves it to dispatch the plan (g1190 2026-11-19 run 3:
+        # 14 cursor_reanchor_failed and 14 cursor_still_search with no sortie
+        # from the chapter start to 58-7). Back off for a long window so the
+        # normal navigation can run instead of retrying every cooldown.
+        fails = mem.get('reanchor_failures') or {}
+        n = int(fails.get('n') or 0) + 1
+        if n >= REANCHOR_FAILURE_LIMIT:
+            mem['reanchor_failures'] = {'n': 0, 'tick': int(mem.get('tick') or 0)}
+            mem['castle_jump_skip'] = {'mode': 'reanchor', 'step': None,
+                                       'tick': int(mem.get('tick') or 0) + REANCHOR_FAILURE_BACKOFF}
+            _record(mem, 'cursor_reanchor_suppressed',
+                    observed_metric={'failures': n, 'backoff': REANCHOR_FAILURE_BACKOFF},
+                    reason='再アンカーが続けて失敗するため長時間休止し、通常のナビゲーションへ戻す')
+        else:
+            mem['reanchor_failures'] = {'n': n, 'tick': int(mem.get('tick') or 0)}
     else:
         _record(mem, 'castle_jump_failed', chart_step=jump.get('step'), target=jump.get('source'),
                 screen=screen.kind, observed_metric=metric,
