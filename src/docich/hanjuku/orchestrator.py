@@ -2052,6 +2052,29 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
                 reason='月一メニューで兵数・募集の確認が進まず無入力のまま停滞したため、購入せずBで閉じて再観測する')
         army_owned = False
         recruit_guard = None
+    if (army_owned and kind == 'discharge_menu'
+            and (type((screen.header or {}).get('gold')) is int
+                 or streak > hold_max)):
+        # Issue #4633 (g1190 ch1fresh 2-8): the forced-discharge scene is not
+        # a month submenu the pending count/refill can finish on, and the
+        # surviving ownership vetoed the no-input B for the whole stall
+        # (removal_held + refill_requested 未receipt). A header gold read
+        # means the balance is paid up and B leaves the scene; past the
+        # no-input bound release the check either way so the fallback's exit
+        # can fire. The game itself refuses B while the balance is negative,
+        # so a still-negative release only re-enables the last-resort exit.
+        check = mem.get('army_count_check')
+        if isinstance(check, dict):
+            check.update(stage='unverified', result='unverified')
+        if isinstance(mem.get('shop'), dict) and not mem['shop'].get('soldier_receipt'):
+            month_flow.refill_outcome(mem, mem['shop'], 'cancelled', screen=kind,
+                    reason='強制解雇画面が兵数確認・補充の完了場所ではないため当月の補充を中止。購入はしていない')
+            mem['shop']['soldiers_done'] = True
+        decision_log._record(mem, 'discharge_army_count_release', screen=kind, phase=phase,
+                observed_metric={'streak': streak,
+                                 'gold': (screen.header or {}).get('gold')},
+                reason='強制解雇画面に残った兵数確認・補充の所有を、残高非負または停滞超過で開放し退出可能にする')
+        army_owned = False
     if (not actions and streak>hold_max and not trade_guard_hold and not bijin_guard_hold
             and not (kind == 'gift_request' and mem.get('bijin_gift_hold') is True)
             and not (sortie_cancel_hold or (kind == 'sortie_confirm'
@@ -2069,8 +2092,10 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
         # Even this last-resort path must not confirm an unread summer option:
         # the cursor may be on the mass-dismissal row. Reobserve after one move.
         # These recognized events must never borrow a scripted scene's blind A.
+        # discharge_menu gets B like the month menu: it is the screen's own
+        # exit key, while a blind A could confirm the cursor row's dismissal.
         actions=([pad('up')] if kind=='summer_bonus'
-                 else [pad('b')] if kind=='month_menu' or event_confirmation
+                 else [pad('b')] if kind in ('month_menu', 'discharge_menu') or event_confirmation
                  else legacy_actions(frame,phase,updated,mem))
         if kind == 'month_menu':
             # The legacy monthly A repeatedly opened the merchant from a
