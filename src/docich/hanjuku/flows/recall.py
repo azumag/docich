@@ -1019,14 +1019,20 @@ def _camp_recall_step(screen: Screen, mem, frame, *, observed_camps=None):
             # empty-cell camp is its rest stop, not a corridor reinforcement.
             wave = {s.get('general') for s in _sorties(mem).values()
                     if isinstance(s, dict) and s.get('target') == boss_target
-                    and s.get('status') in ('launched', 'overdue')
+                    and s.get('status') not in ('arrived', 'cancelled')
                     and s.get('general')}
             actors = ((mem.get('camp_status_seen') or {}).get('actors') or {})
             cw = state.get('camp_world')
             near = (isinstance(cw, (list, tuple)) and len(cw) == 2
                     and abs(cw[0] - chart.CH9_BOSS_WAYPOINT[0]) <= 320
                     and abs(cw[1] - chart.CH9_BOSS_WAYPOINT[1]) <= 320)
-            if near or any(g in actors for g in wave):
+            # A camp sighted in open terrain (no castle roof in the frame) is
+            # in the boss's roam band: castle camping always parks beside its
+            # own roof, so a roofless camp is an expired boss march that ran
+            # out of road. When a boss sortie is in flight, redirect it at the
+            # boss's fresh cell rather than recall it onto the corridor.
+            open_field = isinstance(frame, Frame) and not castle_roofs(frame)
+            if near or any(g in actors for g in wave) or (wave and open_field):
                 state['boss'], state['goal'] = True, boss
         if _camp_target(state.get('camp_world')):
             _flow(mem)['camp_last_world'] = list(state['camp_world'])
