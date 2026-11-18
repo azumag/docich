@@ -102,6 +102,18 @@ jobs:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
         with:
           persist-credentials: false
+      - name: Cache the downloaded apt archives
+        # The 300 s bound still lets a ~100 KB/s mirror starve a large deb
+        # (#4625 run 44370031644: libflite1, 13.6 MB, outlasted all three
+        # attempts). Persist the .deb files the install step stages through
+        # ~/apt-debs so one green job seeds the next; the shared restore-keys
+        # prefix lets every apt job on this image reuse another job's seed.
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830
+        with:
+          path: ~/apt-debs
+          key: apt-debs-ubuntu-24.04-cli-nethack-presenter
+          restore-keys: |
+            apt-debs-ubuntu-24.04-
       - name: Install isolated X11 and CLI presenter dependencies
         run: |
           # Hosted Ubuntu runners sometimes use a slow Azure apt mirror; apply
@@ -110,6 +122,18 @@ jobs:
           # killed the job (#4625 run 44360312635).
           if [ "${GITHUB_ACTIONS:-}" = "true" ] && [ -f /etc/apt/apt-mirrors.txt ]; then
             sudo sed -i 's#azure.archive.ubuntu.com#archive.ubuntu.com#g' /etc/apt/apt-mirrors.txt
+          fi
+          # The actions/cache step above restores .deb files into ~/apt-debs
+          # (it cannot write the root-owned archive directory itself). Seed
+          # apt's real archives from it so the install below runs from the
+          # cache, and harvest whatever apt still downloads — the trap covers
+          # the failing-attempt exit path too — so the post-job save persists
+          # it for the next run. Guarded like the mirror swap so a hermetic
+          # replay of this step never touches a real archive directory.
+          if [ "${GITHUB_ACTIONS:-}" = "true" ]; then
+            mkdir -p ~/apt-debs || true
+            sudo cp -n ~/apt-debs/*.deb /var/cache/apt/archives/ 2>/dev/null || true
+            trap 'cp -n /var/cache/apt/archives/*.deb ~/apt-debs/ 2>/dev/null || true' EXIT
           fi
           # Bound every apt call and fail fast after the third failure. apt
           # resumes downloads left under /var/cache/apt/archives/partial, so a
@@ -150,12 +174,30 @@ jobs:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
         with:
           persist-credentials: false
+      - name: Cache the downloaded apt archives
+        # Same archive persistence as cli-nethack-presenter (#4625 run
+        # 44370031644); the shared prefix trades seeds between the apt jobs.
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830
+        with:
+          path: ~/apt-debs
+          key: apt-debs-ubuntu-24.04-retroarch-presenter
+          restore-keys: |
+            apt-debs-ubuntu-24.04-
       - name: Install isolated X11 and RetroArch presenter dependencies
         run: |
           # Same slow-Azure-mirror swap and bounded retries as the
           # cli-nethack-presenter step above (#4624, #4625 run 44360312635).
           if [ "${GITHUB_ACTIONS:-}" = "true" ] && [ -f /etc/apt/apt-mirrors.txt ]; then
             sudo sed -i 's#azure.archive.ubuntu.com#archive.ubuntu.com#g' /etc/apt/apt-mirrors.txt
+          fi
+          # Same apt-debs staging as the cli-nethack-presenter step above:
+          # seed /var/cache/apt/archives from the restored cache so the
+          # install runs from it, and harvest new downloads back for the
+          # post-job save (#4625 run 44370031644).
+          if [ "${GITHUB_ACTIONS:-}" = "true" ]; then
+            mkdir -p ~/apt-debs || true
+            sudo cp -n ~/apt-debs/*.deb /var/cache/apt/archives/ 2>/dev/null || true
+            trap 'cp -n /var/cache/apt/archives/*.deb ~/apt-debs/ 2>/dev/null || true' EXIT
           fi
           for i in 1 2 3; do
             if timeout 120 sudo apt-get update; then
@@ -251,12 +293,30 @@ jobs:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
         with:
           persist-credentials: false
+      - name: Cache the downloaded apt archives
+        # Same archive persistence as cli-nethack-presenter (#4625 run
+        # 44370031644); the shared prefix trades seeds between the apt jobs.
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830
+        with:
+          path: ~/apt-debs
+          key: apt-debs-ubuntu-24.04-soren91-presenter
+          restore-keys: |
+            apt-debs-ubuntu-24.04-
       - name: Install isolated X11 and SRT presenter dependencies
         run: |
           # Same slow-Azure-mirror swap and bounded retries as the
           # cli-nethack-presenter step above (#4624, #4625 run 44360312635).
           if [ "${GITHUB_ACTIONS:-}" = "true" ] && [ -f /etc/apt/apt-mirrors.txt ]; then
             sudo sed -i 's#azure.archive.ubuntu.com#archive.ubuntu.com#g' /etc/apt/apt-mirrors.txt
+          fi
+          # Same apt-debs staging as the cli-nethack-presenter step above:
+          # seed /var/cache/apt/archives from the restored cache so the
+          # install runs from it, and harvest new downloads back for the
+          # post-job save (#4625 run 44370031644).
+          if [ "${GITHUB_ACTIONS:-}" = "true" ]; then
+            mkdir -p ~/apt-debs || true
+            sudo cp -n ~/apt-debs/*.deb /var/cache/apt/archives/ 2>/dev/null || true
+            trap 'cp -n /var/cache/apt/archives/*.deb ~/apt-debs/ 2>/dev/null || true' EXIT
           fi
           for i in 1 2 3; do
             if timeout 120 sudo apt-get update; then
@@ -304,12 +364,30 @@ jobs:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
         with:
           persist-credentials: false
+      - name: Cache the downloaded apt archives
+        # Same archive persistence as cli-nethack-presenter (#4625 run
+        # 44370031644); the shared prefix trades seeds between the apt jobs.
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830
+        with:
+          path: ~/apt-debs
+          key: apt-debs-ubuntu-24.04-paper-view-presenter
+          restore-keys: |
+            apt-debs-ubuntu-24.04-
       - name: Install isolated X11 presenter dependencies
         run: |
           # Same slow-Azure-mirror swap and bounded retries as the
           # cli-nethack-presenter step above (#4624, #4625 run 44360312635).
           if [ "${GITHUB_ACTIONS:-}" = "true" ] && [ -f /etc/apt/apt-mirrors.txt ]; then
             sudo sed -i 's#azure.archive.ubuntu.com#archive.ubuntu.com#g' /etc/apt/apt-mirrors.txt
+          fi
+          # Same apt-debs staging as the cli-nethack-presenter step above:
+          # seed /var/cache/apt/archives from the restored cache so the
+          # install runs from it, and harvest new downloads back for the
+          # post-job save (#4625 run 44370031644).
+          if [ "${GITHUB_ACTIONS:-}" = "true" ]; then
+            mkdir -p ~/apt-debs || true
+            sudo cp -n ~/apt-debs/*.deb /var/cache/apt/archives/ 2>/dev/null || true
+            trap 'cp -n /var/cache/apt/archives/*.deb ~/apt-debs/ 2>/dev/null || true' EXIT
           fi
           for i in 1 2 3; do
             if timeout 120 sudo apt-get update; then

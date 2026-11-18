@@ -165,6 +165,28 @@ def test_pip_cache_tracks_all_root_requirements_files():
     assert 'run: python3 -m pip install -r requirements-test.txt' in text
 
 
+def test_system_dependencies_restore_the_cached_apt_archives():
+    text = WORKFLOW.read_text()
+    job = text.split('\n  full-suite:\n', 1)[1].split('\n  ci-required:', 1)[0]
+    # A slow mirror can starve a large deb even inside the bounded retries
+    # (#4624, #4625 run 44370031644), so a green shard persists the .deb files
+    # the install stages through ~/apt-debs and the restore must run first.
+    cache_name = '      - name: Cache the downloaded apt archives\n'
+    assert job.index(cache_name) < job.index('      - name: Install system dependencies\n')
+    step = job.split(cache_name, 1)[1].split('      - name:', 1)[0]
+    # Same suite guard as the install: a hanjuku-scoped run skips both.
+    assert "        if: needs.test-scope.outputs.suite != 'hanjuku'\n" in step
+    assert '        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830\n' in step
+    assert '          path: ~/apt-debs\n' in step
+    assert '          key: apt-debs-ubuntu-24.04-full-suite\n' in step
+    # Shared prefix with the presenter-smoke apt caches so either workflow can
+    # seed the other's ffmpeg deb.
+    assert 'apt-debs-ubuntu-24.04-' in step.split('restore-keys: |', 1)[1]
+    body = _system_setup()
+    assert 'sudo cp -n ~/apt-debs/*.deb /var/cache/apt/archives/' in body
+    assert "trap 'cp -n /var/cache/apt/archives/*.deb ~/apt-debs/" in body
+
+
 def _run_setup(tmp_path: Path, available=(), *, fail=''):
     bindir = tmp_path / 'bin'
     bindir.mkdir()

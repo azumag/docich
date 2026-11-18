@@ -101,6 +101,19 @@ jobs:
           node-version-file: .node-version
       - name: Install test dependencies
         run: python3 -m pip install -r requirements-test.txt
+      - name: Cache the downloaded apt archives
+        # A slow mirror can starve a large deb even inside the bounded
+        # retries below (#4624, #4625 run 44370031644), so a green run persists
+        # the .deb files the install stages through ~/apt-debs. The shared
+        # restore-keys prefix lets this job reuse any apt cache the
+        # presenter-smoke jobs seeded on the same runner image.
+        if: needs.test-scope.outputs.suite != 'hanjuku'
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830
+        with:
+          path: ~/apt-debs
+          key: apt-debs-ubuntu-24.04-full-suite
+          restore-keys: |
+            apt-debs-ubuntu-24.04-
       - name: Install system dependencies
         # Hosted images usually already provide both binaries. Avoid a network
         # package-index refresh in that case, but keep fresh images supported.
@@ -115,6 +128,18 @@ jobs:
             # the helper binaries instead of touching a real package index.
             if [ "${GITHUB_ACTIONS:-}" = "true" ] && [ -f /etc/apt/apt-mirrors.txt ]; then
               sudo sed -i 's#azure.archive.ubuntu.com#archive.ubuntu.com#g' /etc/apt/apt-mirrors.txt
+            fi
+            # The actions/cache step above restores .deb files into ~/apt-debs
+            # (it cannot write the root-owned archive directory itself). Seed
+            # apt's real archives from it so the install runs from the cache,
+            # and harvest whatever apt still downloads — the trap covers the
+            # failing-attempt exit path too — for the post-job save. Guarded
+            # like the mirror swap so hermetic replays of this step never
+            # touch a real archive directory.
+            if [ "${GITHUB_ACTIONS:-}" = "true" ]; then
+              mkdir -p ~/apt-debs || true
+              sudo cp -n ~/apt-debs/*.deb /var/cache/apt/archives/ 2>/dev/null || true
+              trap 'cp -n /var/cache/apt/archives/*.deb ~/apt-debs/ 2>/dev/null || true' EXIT
             fi
             # A stalled apt mirror used to hang until the job timeout killed the
             # shard without ever starting pytest (#4624). Bound every apt call
