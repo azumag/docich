@@ -367,6 +367,57 @@ def _recall_picker_cycles(chapter, flags, nearby, goal):
             and all(flags.get(name) in ('own', 'enemy') for name in castles))
 
 
+
+UNVERIFIED_LAUNCH_LIMIT = 3   # Y-view observations without the unit before rearm
+
+
+def _settle_unverified_launches(mem, markers):
+    """Return a launch with no visible unit and no march record to pending.
+
+    A sent A plus a closed picker is not proof the unit left (g1097), and the
+    per-sortie ``launch_probe`` lives in the procedure region, so it is gone
+    once the deploy ends (g1190 2026-11-19 run 5: three ``launched`` castles
+    for five months while the Y view showed a single unit — #4626). The world
+    map is the measured ground truth: when fewer units are drawn than there
+    are launches, a launch without a march record misses again, and after
+    UNVERIFIED_LAUNCH_LIMIT such views it goes back to pending so the plan can
+    pick it again next month.
+    """
+    launched = _world(mem).get('launched_orders') or {}
+    if not launched:
+        mem.pop('launch_unverified', None)
+        return
+    if not markers:
+        return          # an unread world map proves nothing
+    sorties = _sorties(mem)
+    watch = mem.get('launch_unverified')
+    watch = watch if isinstance(watch, dict) else {}
+    if len(markers) >= len(launched):
+        mem['launch_unverified'] = {}
+        return
+    changed = False
+    for step in list(launched):
+        if step in sorties:
+            watch.pop(step, None)
+            continue
+        watch[step] = int(watch.get(step) or 0) + 1
+        if watch[step] < UNVERIFIED_LAUNCH_LIMIT:
+            continue
+        watch.pop(step, None)
+        launched.pop(step, None)
+        status = _plan_region(mem).setdefault('orders', {})
+        if status.get(step) not in ('failed',):
+            status[step] = 'pending'
+        _record(mem, 'sortie_unverified_rearmed', chart_step=step,
+                observed_metric={'units': len(markers), 'launched': len(launched) + 1,
+                                 'limit': UNVERIFIED_LAUNCH_LIMIT},
+                reason='全城マップにユニットが見えず行軍記録も無いままの出撃を指示待ちへ戻し、次月に選び直す')
+        changed = True
+    if watch:
+        mem['launch_unverified'] = watch
+    else:
+        mem.pop('launch_unverified', None)
+
 def world_map_step(screen, mem, frame):
     """Read every castle's owner from the Y view, then close it with Y
     (or, while a Y jump is running, steer its cursor to the goal castle)."""
@@ -661,6 +712,7 @@ def world_map_step(screen, mem, frame):
         _apply_skull_boss(mem, frame)
     markers = world_markers(frame)
     _probe_launch_markers(mem, markers)
+    _settle_unverified_launches(mem, markers)
     mem['_world_units_prev'] = [list(b) for b in markers]
     if markers:
         _record(mem, 'world_map_units', observed_metric={'count': len(markers),

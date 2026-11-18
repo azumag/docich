@@ -7678,6 +7678,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v1150-yview-anchor",
             "hanjuku-chart-v1151-goal-expiry",
             "hanjuku-chart-v1152-order-hold-tally",
+            "hanjuku-chart-v1153-unverified-launch",
             "hanjuku-chart-v1020-recall-giveup",
             "hanjuku-chart-v1021-plan-invalid-source",
             "hanjuku-chart-v1041-egg-receipt-presence",
