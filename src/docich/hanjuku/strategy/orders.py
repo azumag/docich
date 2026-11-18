@@ -1990,6 +1990,19 @@ def _source_spare_missing(order, mem, *, allow_probe=False):
             and (present is None or routes.probe_due(mem, source))):
         return False  # an unread/arriving roster needs its own receipt
     unavailable = _en_route(mem)[0] | set(_world(mem).get('general_location_unknown') or ())
+    # An order that names a general this castle no longer holds cannot start:
+    # the base chart keeps names from its own snapshot (g1190 2026-11-18
+    # 65-10: the chapter-11 chart named キャロット for アエンタール long after
+    # he died, so next_order kept returning it and no fresh order ran).
+    named = (_plan_region(mem).get('general_override', {}).get(order['step'])
+             or order.get('general'))
+    if (present is not None and isinstance(named, str)
+            and named not in (chart_adjust.PROBE_GENERAL, NAME, 'しょうぐん')
+            and order.get('source_probe') is not True
+            and order['step'] not in (_plan_region(mem).get('source_override') or {})
+            and not chart.is_boss_castle(order.get('target'))
+            and named not in present and named not in unavailable):
+        return True   # a boss retry may still substitute a fit general from the list
     if (present is not None and _unplaced_castle_generals(mem)
             and source == _arrival_castle(mem, _owned(mem))):
         return False   # fresh joiners are checked by _keep_sortie_defender
