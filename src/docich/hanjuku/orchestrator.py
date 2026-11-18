@@ -324,14 +324,23 @@ def plan_starved_rearm(mem, phase, kind):
                if status.get(o.get('step')) in (None, 'pending')]
     if pending:
         # A pending order that can never start is dead the same way a failed
-        # one is (docich#4642 follow-up, g1190 5-12..6-5: the only order named
-        # a general the vanished source roster could not confirm, so
-        # startable refused it for six months while 'pending' kept this
+        # one is (docich#4642 follow-ups). ``startable`` alone reads the raw
+        # order source, while ``_source`` may resolve a source_override to a
+        # castle whose garrison lacks the named general (g1190 6-11..7-1:
+        # a move whose resolved source was ナキューメラ failed
+        # _source_spare_missing for ~1700 ticks while 'pending' kept this
         # rearm from rebuilding). Keep the plan only if some pending order
-        # is startable in the current situation.
-        from .strategy import replan
+        # survives next_order's own launch gates.
+        from .strategy import orders, replan
         situation = replan._adjust_situation(mem)
-        if any(replan.chart_adjust.startable(o, situation) is None for o in pending):
+        owned = orders._owned(mem)
+        if any(replan.chart_adjust.startable(o, situation) is None
+               and orders._ready(o, mem)
+               and orders._source(o, mem) in owned
+               and orders._source_list_open(o, mem)
+               and not orders._retake_reserved(o, mem)
+               and not orders._source_spare_missing(o, mem, allow_probe=True)
+               for o in pending):
             return False
     if not mem.get('chapter'):
         return False
