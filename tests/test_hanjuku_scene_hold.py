@@ -36,7 +36,7 @@ def test_a_readable_prompt_with_an_unreadable_hand_is_held_then_answered():
     """The Sugiyama concert invite case: labels read, the hand never does."""
     screen = _prompt(UNCLASSIFIED)
     mem = {}
-    for _ in range(P.YES_NO_UNREAD_BOUND):
+    for _ in range(P.YES_NO_ACCEPT_SETTLE):
         assert P.yes_no_step(screen, mem) == []
     assert P.yes_no_step(screen, mem) == [P.pad('a')]
     rec = mem['_records'][-1]
@@ -44,7 +44,17 @@ def test_a_readable_prompt_with_an_unreadable_hand_is_held_then_answered():
     assert rec['choice'] == 'うむッ!'
     assert rec['strategy_variant'] == 'unclassified_prompt'
     assert sum(1 for r in mem['_records'] if r['decision'] == 'situation_held') \
-        == P.YES_NO_UNREAD_BOUND
+        == P.YES_NO_ACCEPT_SETTLE
+
+
+def test_the_accept_settle_is_shorter_than_the_reviewed_decline_bound():
+    """Reviewed choices keep the long bound: only the default accept hurries."""
+    assert P.YES_NO_ACCEPT_SETTLE < P.YES_NO_UNREAD_BOUND
+    decline = _prompt(TRADE)
+    mem = {}
+    for _ in range(P.YES_NO_UNREAD_BOUND):
+        assert P.yes_no_step(decline, mem) == []
+    assert P.yes_no_step(decline, mem) == [P.pad('down')]
 
 
 def test_a_decline_choice_moves_to_the_lower_row_once_then_confirms():
@@ -77,7 +87,7 @@ def test_forced_presses_are_capped_per_prompt_episode():
 def test_a_new_prompt_restarts_the_episode():
     mem = {}
     screen = _prompt(UNCLASSIFIED)
-    for _ in range(P.YES_NO_UNREAD_BOUND + 1):
+    for _ in range(P.YES_NO_ACCEPT_SETTLE + 1):
         P.yes_no_step(screen, mem)
     other = _prompt('べつの しつもん ですか?\nうむッ!\nいかんッ!')
     assert P.yes_no_step(other, mem) == []
