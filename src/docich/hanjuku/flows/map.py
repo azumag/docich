@@ -1967,9 +1967,21 @@ def general_jump_step(screen, mem, frame):
                                 or (screen.selected
                                     and sum(1 for x, _y, _w in _options(screen)
                                             if x == 168) >= 3)))
-            if not roster_text:
-                if screen.kind == 'unknown':
+            if roster_text:
+                jump['text_blind'] = 0
+            elif screen.kind == 'text':
+                # g1242: while the roster scrolls/redraws, intermediate
+                # 'text' frames briefly lose selected/rows and fail the
+                # structural check, killing the whole jump as
+                # unexpected_list. Wait a bounded window for the panel to
+                # settle instead of ending on the first transient frame.
+                jump['text_blind'] = int(jump.get('text_blind') or 0) + 1
+                if jump['text_blind'] <= 6:
                     return []
+                return _end_general_jump(screen, mem, 'unexpected_list')
+            elif screen.kind == 'unknown':
+                return []
+            else:
                 return _end_general_jump(screen, mem, 'unexpected_list')
         if screen.hand is None:
             jump['blind'] = int(jump.get('blind') or 0) + 1
