@@ -1727,3 +1727,20 @@ def test_the_scan_owns_menu_frames_while_walking_them():
     assert not O._post_month_menu_owns({'post_month_status': {'stage': 'roster'}})
     assert not O._post_month_menu_owns({'post_month_status': {'stage': 'await_map'}})
     assert not O._post_month_menu_owns({})
+
+
+def test_the_menu_stage_keeps_its_frame_while_month_sub_is_active():
+    # docich#4658: month_sub used to take the menu the scan had opened, so
+    # open_menu never reached roster in the live runs.
+    mem = memory()
+    post.arm(mem)
+    mem['month_sub'] = {'key': '1-2'}
+    state = mem['post_month_status']
+    state.update(stage='open_menu')
+    menu = Screen([], (146, 33, 166, 46), 'ステータス しょうぐん しろ', kind='main_menu')
+    # No row lines in this synthetic frame: the deterministic walk (up first)
+    # still owns the frame instead of the shop flow taking it.
+    assert post.step(menu, mem, None) == [pad('up')]
+    # A real battle screen still wins over the menu stage.
+    battle = Screen([], None, '', kind='battle')
+    assert post.step(battle, mem, None) is None

@@ -1349,7 +1349,16 @@ def step(screen, mem, frame):
     if (isinstance(jump, dict)
             and (jump.get('return_to') or {}).get('owner') != 'post_month_status'):
         return None
-    if (mem.get('battle') or mem.get('month_sub')
+    # docich#4658: once the scan has opened the main menu it must finish
+    # walking it. month_sub (the monthly shop/refill transaction) is
+    # usually active then and answers the same frames with its own keys,
+    # which closed the menu after one observation and kept open_menu
+    # from ever reaching roster. The menu-navigation stages keep the
+    # frame even while month_sub/battle flags are set; real battle
+    # screens below still win.
+    menu_nav = (state.get('stage') in ('open_menu', 'task_menu')
+                and screen.kind == 'main_menu')
+    if (not menu_nav and (mem.get('battle') or mem.get('month_sub'))
             or screen.kind in {'battle', 'battle_menu', 'egg_battle_menu',
                                'egg_choice_menu', 'monster_menu', 'month_menu',
                                'attack_started', 'defense_started',

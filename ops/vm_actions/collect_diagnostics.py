@@ -7705,6 +7705,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v1175-menu-fail-y-route",
             "hanjuku-chart-v1176-scan-menu-walk",
             "hanjuku-chart-v1177-scan-menu-priority",
+            "hanjuku-chart-v1178-scan-menu-override",
             "hanjuku-chart-v1158-progress-regress",
             "hanjuku-chart-v1161-refill-collapse",
             "hanjuku-chart-v1160-chapter-probe-field",
