@@ -23,7 +23,10 @@ CASTLES = chart.castles(1)
 
 
 def map_screen(x, y):
-    return Screen(lines=[], hand=None, text='', kind='map', cursor=(x, y))
+    # docich#4658: a real field frame carries the month/gold HUD; the
+    # castle jump only opens on such a readable field.
+    return Screen(lines=[], hand=None, text='', kind='map', cursor=(x, y),
+                  header={'chapter': 1, 'year': 1, 'month': 2, 'gold': 100})
 
 
 def decisions(mem, kind):
