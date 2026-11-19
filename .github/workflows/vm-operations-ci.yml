@@ -20,6 +20,7 @@ on:
       - '.github/workflows/vm-monitor-silence-alert.yml'
       - '.github/workflows/vm-deploy-blocker-alert.yml'
       - '.github/workflows/gameswitch-adopt.yml'
+      - '.github/workflows/pr-merge-audio-report.yml'
 
   push:
     branches: [main]
@@ -41,6 +42,7 @@ on:
       - '.github/workflows/vm-monitor-silence-alert.yml'
       - '.github/workflows/vm-deploy-blocker-alert.yml'
       - '.github/workflows/gameswitch-adopt.yml'
+      - '.github/workflows/pr-merge-audio-report.yml'
 
 
 permissions:
@@ -92,6 +94,8 @@ jobs:
       - run: >-
           python3 -m py_compile
           ops/vm_actions/authorize.py
+          ops/vm_actions/authorize_pr_merge_audio.py
+          ops/vm_actions/pr_merge_audio_report.py
           ops/vm_actions/authorize_gameswitch_recover.py
           ops/vm_actions/authorize_gameswitch_adopt.py
           ops/vm_actions/authorize_nethack_corner.py
@@ -132,6 +136,7 @@ jobs:
           ops/vm_actions/install_vm_gateway.sh
           ops/vm_actions/install_nethack_canary_smoke.sh
           ops/vm_actions/request_nethack_canary_smoke.sh
+          ops/vm_actions/report_pr_merge_audio.sh
           ops/vm_actions/restart_webui.sh
           ops/vm_actions/recover_soren_game.sh
           ops/vm_actions/gameswitch_recover.sh
