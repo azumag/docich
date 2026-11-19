@@ -115,7 +115,7 @@ def test_exchange_rejection_is_not_created_for_sure(h):
     assert sf.read_safety_state(h.ledger).block_new_buys is False
 
 
-def test_only_the_mock_sender_is_accepted(h):
+def test_a_sender_kind_outside_the_allow_list_is_refused(h):
     class Real:
         kind = "bitbank"
 
@@ -536,7 +536,7 @@ def test_a_read_only_executor_refuses_to_cancel_and_still_polls_the_orders_it_di
     assert h.state(intent.intent_id) == "FILLED"
 
 
-def test_a_sender_that_is_not_the_mock_is_still_refused(h):
+def test_an_unrelated_sender_kind_is_still_refused(h):
     class Other:
         kind = "ccxt"
 

@@ -10,7 +10,7 @@ from bitbank_live_support import (SENTINEL_KEY, SENTINEL_SECRET, SYMBOLS, T0, Fa
                                   default_script, order_row, trade_row)
 from docich.trading.exchanges.bitbank_live import check as ck
 from docich.trading.exchanges.bitbank_live import factory as fc
-from docich.trading.exchanges.bitbank_live.credentials import KEY_FILENAME
+from docich.trading.exchanges.bitbank_live.credentials import KEY_FILENAME, load_credentials
 from docich.trading.exchanges.bitbank_live.reader import ReaderUnavailable
 from docich.trading.live.exchange import ExchangeAmbiguous, ExchangeDataError, OrderNotFound
 from docich.trading.live.paths import live_layout
@@ -45,6 +45,31 @@ def _open(state, *, skew_s=0.0, transport=None, **kw):
 def test_a_clean_start_builds_a_reader(state):
     _install_key(state)
     assert _open(state).market_rules("OAS/JPY").min_amount == 1
+
+
+def test_the_credentials_only_factory_accepts_the_protected_object_and_same_checks(state):
+    _install_key(state)
+    seen = []
+    credentials = load_credentials(state)
+
+    def transport_factory(given):
+        seen.append(given)
+        return FakeTransport(default_script(), skew_s=0.0)
+
+    reader = fc.open_bitbank_reader_from_credentials(
+        credentials, symbols=SYMBOLS, clock=lambda: 1.0, transport_factory=transport_factory)
+    assert reader.market_rules("OAS/JPY").min_amount == 1
+    assert seen[0] is credentials
+
+
+def test_the_credentials_only_factory_refuses_a_raw_key_pair(state):
+    built = []
+    with pytest.raises(ReaderUnavailable) as err:
+        fc.open_bitbank_reader_from_credentials(
+            (SENTINEL_KEY, SENTINEL_SECRET), symbols=SYMBOLS, clock=lambda: 1.0,
+            transport_factory=lambda credentials: built.append(credentials))
+    assert err.value.kind == "config" and built == []
+    assert SENTINEL_KEY not in str(err.value)
 
 
 @pytest.mark.parametrize("skew_s,ok", [(0.0, True), (0.5, True), (0.8, True), (0.9, False), (3.0, False),

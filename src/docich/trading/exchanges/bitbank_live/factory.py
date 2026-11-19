@@ -18,7 +18,7 @@ from typing import Callable, Sequence
 
 from ...live.exchange import ExchangeError
 from . import parse
-from .credentials import CredentialsUnavailable, load_credentials
+from .credentials import Credentials, CredentialsUnavailable, load_credentials
 from .reader import BitbankReader, ReaderUnavailable
 from .transport import CcxtReadTransport
 
@@ -61,6 +61,26 @@ def open_bitbank_reader(state_dir, *, symbols: Sequence[str], clock: Callable[[]
         credentials = load_credentials(state_dir, source=source)
     except CredentialsUnavailable as exc:
         raise ReaderUnavailable(f"credentials: {exc.reason.value}", kind="config") from None
+    return open_bitbank_reader_from_credentials(
+        credentials, symbols=symbols, clock=clock, transport_factory=transport_factory,
+        max_ahead_s=max_ahead_s, max_behind_s=max_behind_s, probes=probes)
+
+
+def open_bitbank_reader_from_credentials(
+        credentials: Credentials, *, symbols: Sequence[str], clock: Callable[[], float] = time.time,
+        transport_factory: Callable[[object], object] | None = None,
+        max_ahead_s: float = MAX_LOCAL_AHEAD_S, max_behind_s: float = MAX_LOCAL_BEHIND_S,
+        probes: int = CLOCK_PROBES) -> BitbankReader:
+    """The same reader initialization for an already-loaded protected ``Credentials`` object.
+
+    A paired session must not load a second key for its sender: both halves come from this one
+    object.  The object is only accepted as ``Credentials`` so no raw pair or arbitrary path can
+    be passed here.
+    """
+    if not isinstance(credentials, Credentials):
+        raise ReaderUnavailable("credentials: invalid", kind="config")
+    if not symbols:
+        raise ReaderUnavailable("no symbols", kind="config")
     try:
         transport = (transport_factory or CcxtReadTransport)(credentials)
     except ReaderUnavailable:

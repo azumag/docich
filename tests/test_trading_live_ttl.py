@@ -3,8 +3,8 @@
 The ledger, lease, policy storage, mock exchange and executor are the real LIVE pieces from
 the shared harness; the cycle rig is the one the act tests use (only the reader hooks and the
 public market data are faked).  Every number is pinned against the task's hand calculation;
-money is ``Decimal`` and compared with ``==``.  Nothing here touches the network, and no real
-sender exists: ``SENDER_KINDS_ALLOWED`` stays mock-only.
+money is ``Decimal`` and compared with ``==``.  Nothing here touches the network, and the
+default worker still wires no sender; the allow-list also names the explicit spot pair.
 """
 from __future__ import annotations
 
@@ -632,8 +632,8 @@ def test_ttl_matches_the_sizer_ttl_and_modules_stay_clean(tmp_path):
         assert module_exits == []
         assert ".cancel" not in module_calls
 
-    # The real sender does not exist yet: production wiring stays mock-only.
-    assert executor_module.SENDER_KINDS_ALLOWED == frozenset({"mock"})
+    # The mock plus the one explicitly paired bitbank spot kind; unrelated kinds stay refused.
+    assert executor_module.SENDER_KINDS_ALLOWED == frozenset({"mock", "bitbank_spot"})
 
 
 # ---- p1: a fill that wins the cancel race is not a failed cancel ------------------------

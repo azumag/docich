@@ -596,32 +596,42 @@ def test_signing_happens_after_at_least_200ms_of_pacing(recorder):
     assert len(recorder.connections) == 2
 
 
-# ---- the deliberate absence of production wiring -----------------------------------------
-def test_the_executor_still_accepts_only_the_mock():
+# ---- the explicit paired-session boundary -------------------------------------------------
+def test_the_executor_accepts_this_real_sender_kind_but_no_unrelated_kind(ws):
     assert BitbankSpotSender.kind == "bitbank_spot"
-    assert live_executor.SENDER_KINDS_ALLOWED == frozenset({"mock"})
-    assert BitbankSpotSender.kind not in live_executor.SENDER_KINDS_ALLOWED
+    assert live_executor.SENDER_KINDS_ALLOWED == frozenset({"mock", "bitbank_spot"})
 
-
-def test_the_executor_refuses_this_real_sender(ws):
     harness = Harness(ws)
     try:
+        live_executor.OrderExecutor(harness.ledger, harness.lease, reader=harness.mock,
+                                    sender=_sender(), enable_check=harness._gate,
+                                    clock=harness.clock.seconds, symbols=harness.symbols,
+                                    config=harness.config)
+
+        class Unrelated:
+            kind = "bitbank_margin"
+
         with pytest.raises(ValueError, match="not allowed"):
             live_executor.OrderExecutor(harness.ledger, harness.lease, reader=harness.mock,
-                                        sender=_sender(), enable_check=harness._gate,
+                                        sender=Unrelated(), enable_check=harness._gate,
                                         clock=harness.clock.seconds, symbols=harness.symbols,
                                         config=harness.config)
     finally:
         harness.close()
 
 
-def test_the_production_runner_still_wires_sender_none():
+def test_the_runner_defaults_to_no_pair_and_wires_the_selected_sender():
     tree = ast.parse(Path(runner_module.__file__).read_text(encoding="utf-8"))
     calls = [node for node in ast.walk(tree) if isinstance(node, ast.Call)
              and isinstance(node.func, ast.Name) and node.func.id == "OrderExecutor"]
     assert len(calls) == 1
     sender = next((keyword.value for keyword in calls[0].keywords if keyword.arg == "sender"), None)
-    assert isinstance(sender, ast.Constant) and sender.value is None
+    assert isinstance(sender, ast.Name) and sender.id == "sender"
+
+    (run,) = [node for node in ast.walk(tree)
+              if isinstance(node, ast.FunctionDef) and node.name == "run_worker"]
+    defaults = dict(zip([arg.arg for arg in run.args.kwonlyargs], run.args.kw_defaults))
+    assert isinstance(defaults["open_pair"], ast.Constant) and defaults["open_pair"].value is None
 
 
 def test_only_the_two_fixed_spot_paths_exist():

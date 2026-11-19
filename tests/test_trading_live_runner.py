@@ -3,7 +3,7 @@
 The ledger, lease, mock exchange, executor and enable gate are the real LIVE pieces from the
 shared harness; the reader is a thin test wrapper around the mock (health/balance hooks only),
 the market data is injected, and the clock/sleep/stop flag are fakes.  Every number is hand
-derived; nothing here touches the network and no real sender exists.
+derived; nothing here touches the network and the default wiring supplies no sender.
 """
 from __future__ import annotations
 
@@ -156,7 +156,7 @@ def prepare(ws: Workspace, *, symbols=("OAS/JPY",), mode="trade",
                     mode=mode)
 
 
-def run(prepared: Prepared, *, stop_requested=None, open_reader=None,
+def run(prepared: Prepared, *, stop_requested=None, open_reader=None, open_pair=None,
         make_market_data=None, interval_s=60.0, config=None):
     """Call run_worker with the prepared state dir and the fake clock/sleep."""
     clock = prepared.clock.seconds
@@ -170,6 +170,8 @@ def run(prepared: Prepared, *, stop_requested=None, open_reader=None,
         sleep=sleeps,
         interval_s=interval_s,
     )
+    if open_pair is not None:
+        kwargs["open_pair"] = open_pair
     if config is not None:
         kwargs["config"] = config
     code = runner_module.run_worker(**kwargs)
@@ -580,7 +582,7 @@ def test_r8_consecutive_failures_lengthen_the_exact_waits(ws):
 
 
 # ---- r9: production wiring pins ---------------------------------------------------------
-def test_r9_the_runner_constructs_the_executor_with_a_literal_none_sender():
+def test_r9_the_runner_has_one_executor_and_defaults_open_pair_to_none():
     tree = ast.parse(Path(runner_module.__file__).read_text(encoding="utf-8"))
     calls = []
     for node in ast.walk(tree):
@@ -592,9 +594,114 @@ def test_r9_the_runner_constructs_the_executor_with_a_literal_none_sender():
             keywords = {keyword.arg: keyword.value for keyword in node.keywords}
             calls.append(keywords)
     assert len(calls) == 1
-    assert "sender" in calls[0]
-    assert isinstance(calls[0]["sender"], ast.Constant)
-    assert calls[0]["sender"].value is None
+    assert isinstance(calls[0]["sender"], ast.Name) and calls[0]["sender"].id == "sender"
+
+    (run,) = [node for node in ast.walk(tree)
+              if isinstance(node, ast.FunctionDef) and node.name == "run_worker"]
+    defaults = dict(zip([arg.arg for arg in run.args.kwonlyargs], run.args.kw_defaults))
+    assert isinstance(defaults["open_pair"], ast.Constant) and defaults["open_pair"].value is None
+
+
+class PairedSender:
+    """The explicit paired sender: enough shape for the executor; it must not be called here."""
+
+    kind = "bitbank_spot"
+
+    def submit_order(self, request):
+        raise AssertionError("this test must not place an order")
+
+    def cancel_order(self, symbol, exchange_order_id):
+        raise AssertionError("this test must not cancel an order")
+
+
+def test_r9_an_injected_pair_passes_its_sender_and_keeps_the_existing_gate(ws, monkeypatch):
+    prepared = prepare(ws, mode="trade", cashflows={"JPY": "10000"})
+    sender = PairedSender()
+    opened = []
+    captured = {}
+    real_cycle = runner_module.run_cycle
+
+    # Keep the trade mode and the gate real, but make the decide hook a no-op so this test is
+    # about wiring, not about a synthetic signal.
+    monkeypatch.setattr(runner_module.act, "decide_and_act", lambda deps, state, ctx: None)
+
+    def cycle_spy(deps, state):
+        captured["deps"] = deps
+        return real_cycle(deps, state)
+
+    monkeypatch.setattr(runner_module, "run_cycle", cycle_spy)
+
+    def open_pair(state_dir):
+        opened.append(state_dir)
+        return prepared.reader, sender
+
+    code, sleeps = run(prepared, open_pair=open_pair, stop_requested=lambda: True)
+
+    assert code == runner_module.EXIT_OK
+    deps = captured["deps"]
+    assert deps.executor.sender is not None and deps.executor.sender._inner is sender
+    assert deps.gate is deps.executor.enable_check
+    assert deps.gate().allows_orders is True               # on+trade is still the runtime switch
+    assert opened == [prepared.ws.state]
+    assert prepared.mock.submissions == []
+
+
+@pytest.mark.parametrize("kind,code,reason", [
+    ("config", runner_module.EXIT_CONFIG, "config"),
+    ("auth", runner_module.EXIT_AUTH, "auth"),
+    ("clock", runner_module.EXIT_CLOCK, "clock"),
+    (None, runner_module.EXIT_RETRYABLE, "reader_open_failed:ReaderFailure"),
+])
+def test_r9_a_broken_pair_uses_the_reader_exit_path_and_never_falls_back(
+        ws, kind, code, reason):
+    prepared = prepare(ws, cashflows={"JPY": "10000"})
+    reader_calls = []
+
+    def open_reader(state_dir):
+        reader_calls.append(state_dir)
+        return prepared.reader
+
+    def open_pair(state_dir):
+        raise ReaderFailure(kind)
+
+    got, sleeps = run(prepared, open_pair=open_pair, open_reader=open_reader)
+
+    assert got == code
+    assert sleeps == []
+    assert reader_calls == []
+    status = read_status(ws)
+    assert status["phase"] == "exited"
+    assert status["exit_code"] == code
+    assert status["reason"] == reason
+    acquire_again(ws)
+
+
+def test_r9_a_malformed_pair_is_config_and_never_falls_back(ws):
+    prepared = prepare(ws, cashflows={"JPY": "10000"})
+    reader_calls = []
+
+    def open_reader(state_dir):
+        reader_calls.append(state_dir)
+        return prepared.reader
+
+    got, sleeps = run(prepared, open_pair=lambda _state_dir: (prepared.reader, None),
+                       open_reader=open_reader)
+
+    assert got == runner_module.EXIT_CONFIG
+    assert reader_calls == []
+    assert read_status(ws)["reason"] == "config"
+    acquire_again(ws)
+
+
+def test_r9_a_pair_with_an_unrelated_sender_kind_is_config(ws):
+    prepared = prepare(ws, cashflows={"JPY": "10000"})
+    unrelated = type("Unrelated", (), {"kind": "bitbank_margin"})()
+
+    got, sleeps = run(prepared, open_pair=lambda _state_dir: (prepared.reader, unrelated))
+
+    assert got == runner_module.EXIT_CONFIG
+    assert read_status(ws)["reason"] == "config"
+    acquire_again(ws)
 
 
 FORBIDDEN_MODULES = frozenset({
@@ -609,6 +716,7 @@ FORBIDDEN_PATHS = ("docich.trading.exchanges", "docich.trading.live_owner.cli",
 MAIN_ALLOWED_IMPORTS = frozenset({
     "signal", "time",
     "docich.trading.exchanges.bitbank_live.factory",
+    "docich.trading.exchanges.bitbank_spot_session",
     "docich.trading.exchanges.bitbank_ccxt",
     "docich.trading.market_data",
     "docich.trading.live.policy",

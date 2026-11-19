@@ -8,8 +8,10 @@ Rules this module keeps (each is tested with crash injection):
   (timeout, disconnect, an exception nobody classified) leaves the intent UNKNOWN_SUBMISSION, and
   the same intent is never sent twice.  A new attempt is a *new* intent (new decision_key) after the
   old one is proven NOT_CREATED.
-* Only a sender whose ``kind`` is on the allow-list can be used.  In L2/L3 that is the mock.  A
-  ``sender=None`` executor is read-only: it polls, but every submit is abandoned and cancel refuses.
+* Only a sender whose ``kind`` is on the allow-list can be used.  The mock is for tests; the
+  real ``bitbank_spot`` sender is accepted only when the explicit paired-session wiring supplies
+  it.  A ``sender=None`` executor is read-only: it polls, but every submit is abandoned and
+  cancel refuses.
 * The writer lease is checked right before every send and cancel.  Losing it stops everything.
 """
 from __future__ import annotations
@@ -28,7 +30,7 @@ from .lease import LeaseLost, WriterLease
 from .ledger import Intent, IntentRequest, SafetyBlocked
 
 FAULT_HOOK: Callable[[str], None] | None = None   # tests only
-SENDER_KINDS_ALLOWED = frozenset({"mock"})        # phase E changes this one line, with the owner's review
+SENDER_KINDS_ALLOWED = frozenset({"mock", "bitbank_spot"})   # bitbank_spot only via the explicit paired session
 
 
 def _fault(point: str) -> None:

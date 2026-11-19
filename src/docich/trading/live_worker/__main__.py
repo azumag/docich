@@ -1,10 +1,13 @@
 """``python -m docich.trading.live_worker run``: the process entry point (Issue #3623, L4b-6b).
 
 The runner in ``runner.py`` is fully dependency-injected.  This module is the only place that
-supplies the real exchange pieces: a read-only ``BitbankReader`` (the owner's key file, the
-read-only ccxt transport and the market rules) and public OHLCV market data from
-``BitbankPublicGateway``.  The runner wires no order-placing component, so even a fully
-wired, enabled worker has no order path here.
+supplies the real exchange pieces.  By default it builds a read-only ``BitbankReader`` (the
+owner's read-only key file, the read-only ccxt transport and the market rules) and public
+OHLCV market data from ``BitbankPublicGateway``; the runner then passes ``sender=None`` to
+the executor.  The explicit, one-time ``run --spot-order-sender`` service role instead asks
+for the paired session: one fixed order-capable key file builds both the GET-only reader and
+``BitbankSpotSender``.  That is not a runtime trade switch: ``live_control.json`` on+trade is
+still the only per-cycle permission for a new order.
 
 Wiring is a plain parameter (``main(..., wiring=real_wiring)``) so tests can pass a synthetic
 exchange without an environment variable or a CLI flag selecting a mock.
@@ -70,8 +73,13 @@ class _PublicMarketData:
         return frames[symbol]
 
 
-def real_wiring(state_dir) -> dict:
-    """The ``run_worker`` keyword arguments that need the real (read-only) exchange layer."""
+def real_wiring(state_dir, *, spot_order_sender: bool = False) -> dict:
+    """The ``run_worker`` keyword arguments that need the real exchange layer.
+
+    The default has no pair opener at all, so even an order-capable key file on disk cannot
+    add a sender.  ``spot_order_sender=True`` is the explicit one-time service role: it adds
+    ``open_pair`` and the runner prefers it, with no fallback to the reader-only path.
+    """
 
     def open_reader(_state_dir):
         return open_bitbank_reader(state_dir, symbols=INITIAL_SYMBOLS)
@@ -79,13 +87,20 @@ def real_wiring(state_dir) -> dict:
     def make_market_data(_reader):
         return _PublicMarketData()
 
-    return {"open_reader": open_reader, "make_market_data": make_market_data}
+    wiring = {"open_reader": open_reader, "make_market_data": make_market_data}
+    if spot_order_sender:
+        def open_pair(_state_dir):
+            from ..exchanges.bitbank_spot_session import open_bitbank_spot_session
+            return open_bitbank_spot_session(state_dir, symbols=INITIAL_SYMBOLS)
+        wiring["open_pair"] = open_pair
+    return wiring
 
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="python -m docich.trading.live_worker",
-        description="the LIVE worker: read-only exchange access, no order placement")
+        description="the LIVE worker: read-only by default; an explicit paired spot session can "
+                    "place orders behind live_control on+trade")
     commands = parser.add_subparsers(dest="command", required=True)
     run = commands.add_parser("run", help="run until SIGTERM/SIGINT (or an exit code above)")
     run.add_argument("--state-dir", required=True,
@@ -93,6 +108,10 @@ def _parser() -> argparse.ArgumentParser:
     run.add_argument("--interval", type=float, default=DEFAULT_INTERVAL_S,
                      help=f"seconds between cycles, {MIN_INTERVAL_S:g}..{MAX_INTERVAL_S:g} "
                           f"(default {DEFAULT_INTERVAL_S:g})")
+    run.add_argument("--spot-order-sender", action="store_true",
+                     help="one-time service role: open the paired spot session from the fixed "
+                          "order-capable key file (reader and sender share one account); default "
+                          "is read-only and this does not bypass live_control on+trade")
     return parser
 
 
@@ -146,7 +165,10 @@ def main(argv=None, *, wiring=real_wiring) -> int:
     try:
         previous[signal.SIGTERM] = signal.signal(signal.SIGTERM, request_stop)
         previous[signal.SIGINT] = signal.signal(signal.SIGINT, request_stop)
-        kwargs = wiring(state_dir)
+        # Preserve the original one-positional-argument wiring for the default read-only path.
+        # Only the explicit role passes the keyword, so an old synthetic wiring keeps working.
+        kwargs = (wiring(state_dir, spot_order_sender=True) if args.spot_order_sender
+                  else wiring(state_dir))
         return run_worker(state_dir=state_dir, clock=time.time,
                           stop_requested=stop_requested, sleep=sleep,
                           interval_s=interval, **kwargs)
