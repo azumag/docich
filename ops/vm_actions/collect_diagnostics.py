@@ -7883,6 +7883,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v1215-monster-no-damage",
             "hanjuku-chart-v1216-castle-jump-abandon",
             "hanjuku-chart-v1217-castle-jump-center",
+            "hanjuku-chart-v1218-soldier-topup",
             "hanjuku-chart-v1158-progress-regress",
             "hanjuku-chart-v1161-refill-collapse",
             "hanjuku-chart-v1160-chapter-probe-field",
