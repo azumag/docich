@@ -799,9 +799,28 @@ def is_fort_menu(screen) -> bool:
             and 'こうかん' in screen.text and 'ステータス' not in screen.text)
 
 
+FORT_MENU_COMMANDS = ('しゅつげき', 'こうかん')
+
+
 def fort_list_open(screen) -> bool:
-    """The generals' list beside the 砦 menu: the hand moved to the right panel."""
-    return is_fort_menu(screen) and bool(screen.hand) and screen.hand[0] > 100
+    """The generals' list beside the 砦 menu, read from its rows, not the hand x.
+
+    The old "hand x > 100" test assumed the menu always sits at the screen's
+    left edge. In g1288 2026-11-20 05:46 the fort menu itself was drawn around
+    x 93..133 (hand on しゅつげき at x≈103), so the test called the menu a
+    list, ``boss_pursuit._fort_step`` read the menu's own しゅつげき/こうかん as
+    members, and every pursuit closed ``general_not_in_fort`` without ever
+    opening the list. The hand's row separates the two panels: a command on
+    that row is the menu; a non-command row beside it is the member list.
+    """
+    if not is_fort_menu(screen):
+        return False
+    options = _options(screen)
+    row = screen.hand[1] + 6 if screen.hand else None
+    if row is not None and any(abs(y - row) <= 2 and word in FORT_MENU_COMMANDS
+                               for _, y, word in options):
+        return False
+    return any(x > 100 and word not in FORT_MENU_COMMANDS for x, _, word in options)
 
 
 def _empty_sortie_inventory(screen, *, occluded=0):
