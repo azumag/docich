@@ -12,10 +12,11 @@ Two things keep that impossible:
 
 * ``load_state`` still reads an oversized record once (regular file, hard cap),
   so a run that already drifted can be brought back instead of dying;
-* ``compact_state`` trims caches, unreferenced retired orders and old history
-  before every write, down to a target below the limit, so the record stays
-  readable. Only measured caches and retirement bookkeeping are dropped; live
-  orders, sorties and the current month are never touched.
+* ``compact_state`` trims unreferenced retired orders, old history and stale
+  bookkeeping before every write, down to a target below the limit, and only
+  if the record still does not fit touches the rebuildable observation
+  caches, so the record stays readable. Live orders, sorties and the current
+  month are never touched.
 """
 from __future__ import annotations
 
@@ -27,10 +28,17 @@ from ..retroarch_boundary import read_record
 OVERSIZED_READ_LIMIT = 4 * 1024 * 1024   # one recovery read, never a habit
 TARGET_FRACTION = 3                      # compact down to 3/4 of the read limit
 HISTORY_KEEP = 20                        # newest entries of an append-only list
+HISTORY_LAST_RESORT_KEEP = HISTORY_KEEP // 2   # tighter tail before the last cache
 SETTLED_MARCH_TICKS = 3000                # a launch record older than this cannot matter
 
 # Observation caches: every one of these is rebuilt by the next observation.
-CACHE_KEYS = ('obs_cost', 'post_month_status_last', 'general_statuses')
+# Compaction reaches them only after all the compressible bookkeeping below is
+# gone — when an oversized record lost the caches first, the monthly status
+# stayed empty and the egg check and camp watch went blind (#4419).
+CACHE_KEYS = ('obs_cost', 'post_month_status_last')
+# ``general_statuses`` feeds that egg check and camp watch directly, so it is
+# the last key dropped — after even a second, tighter history trim (#4419).
+LAST_RESORT_KEYS = ('general_statuses',)
 # Append-only history that only needs its recent tail.
 HISTORY_KEYS = ('sortie_history',)
 # Counters and per-cell tallies: they only inform the plan, never the safety
@@ -215,10 +223,10 @@ def _compact_oversized(state, limit: int, remaining: int):
         remaining = _drop_sized(mapping, key, remaining)
 
     goal = target(limit)
-    for key in CACHE_KEYS:
-        if remaining <= goal:
-            return out, dropped
-        drop(policy, key)
+    # Compressible bookkeeping goes before any cache (#4419): retired orders,
+    # the history tail and stale march/step bookkeeping can all be rebuilt or
+    # re-derived, while a dropped cache leaves features blind until the next
+    # observation re-measures it.
     plan = policy.get('plan')
     if isinstance(plan, dict):
         orders = plan.get('orders')
@@ -231,24 +239,44 @@ def _compact_oversized(state, limit: int, remaining: int):
                     drop(orders, step, f'plan.orders:{step}')
             if not orders:
                 drop(plan, 'orders', 'plan.orders')
-    for key in HISTORY_KEYS:
+    remaining = _trim_history(policy, HISTORY_KEEP, goal, remaining, dropped)
+    if remaining <= goal:
+        return out, dropped
+    _prune_settled_marches(out, goal, dropped)
+    # The prune helpers return on their own once the record fits; calling them
+    # unconditionally and re-measuring once here avoids extra serializations.
+    _prune_retired_step_maps(out, goal, dropped)
+    remaining = size(out)
+    for key in CACHE_KEYS:
         if remaining <= goal:
             return out, dropped
-        history = policy.get(key)
-        if isinstance(history, list) and len(history) > HISTORY_KEEP:
-            policy[key] = history[-HISTORY_KEEP:]
-            dropped.append(key)     # its tail was discarded
-            remaining -= size(history) - size(policy[key])
+        drop(policy, key)
     for key in COUNTER_KEYS:
         if remaining <= goal:
             return out, dropped
         drop(policy, key)
-    if remaining > goal:
-        _prune_settled_marches(out, goal, dropped)
-    # The prune helper returns on its own once the record fits; calling it
-    # unconditionally avoids an extra full serialization here.
-    _prune_retired_step_maps(out, goal, dropped)
+    # One tighter pass over the history tail before the last cache goes.
+    remaining = _trim_history(policy, HISTORY_LAST_RESORT_KEEP, goal,
+                              remaining, dropped)
+    for key in LAST_RESORT_KEYS:
+        if remaining <= goal:
+            return out, dropped
+        drop(policy, key)
     return out, dropped
+
+
+def _trim_history(policy, keep: int, goal: int, remaining: int, dropped) -> int:
+    """Keep only the newest ``keep`` entries of each append-only list."""
+    for key in HISTORY_KEYS:
+        if remaining <= goal:
+            return remaining
+        history = policy.get(key)
+        if isinstance(history, list) and len(history) > keep:
+            policy[key] = history[-keep:]
+            if key not in dropped:
+                dropped.append(key)     # its tail was discarded
+            remaining -= size(history) - size(policy[key])
+    return remaining
 
 
 def _prune_retired_step_maps(state, goal: int, dropped=None) -> None:
