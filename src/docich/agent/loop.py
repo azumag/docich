@@ -45,6 +45,10 @@ def _describe_action(action) -> str:
     kind = getattr(action, "type", "")
     if kind == "text":
         return f"key:{getattr(action, 'text', '')}"
+    if kind == "key":
+        return "key:" + "+".join(str(k) for k in getattr(action, "keys", []) or [])
+    if kind == "special":
+        return f"special:{getattr(action, 'key', '')}"
     if kind == "pad":
         return "pad:" + "+".join(str(b) for b in getattr(action, "buttons", []) or [])
     if kind == "wait":
@@ -139,6 +143,7 @@ def _run_iteration(adapter, brain, interval_ms: int, *, fence=None, state_dir=No
     completed = 0
     sent_actions: list[str] = []
     act_start = tel.now()
+    cycle_finished = False
     try:
         if fence is not None:
             _check_loop_fence(fence, state_dir)
@@ -165,6 +170,7 @@ def _run_iteration(adapter, brain, interval_ms: int, *, fence=None, state_dir=No
                     if not brain.validate_action(single, fresh, canonical=canonical):
                         return False
                 adapter.act(single)
+                sent_actions.append(_describe_action(single))
                 if guarded:
                     brain.action_sent(single)
                 return True
@@ -174,17 +180,18 @@ def _run_iteration(adapter, brain, interval_ms: int, *, fence=None, state_dir=No
             locked_send = fence is not None or (guarded and state_dir is not None)
             sent = shared_section(state_dir, _act) if locked_send else _act()
             completed += int(sent)
-            if sent:
-                sent_actions.append(_describe_action(action))
         tel.count("actions_completed", completed)
+        cycle_finished = True
+        return completed
+    finally:
         log_lines = [
             f"{datetime.now(timezone.utc).strftime('%H:%M:%S')} {desc}"
             for desc in sent_actions
         ]
-        log_lines.append(f"--- {completed} 件のアクションを実行 ---")
-        _write_action_log(state_dir, game_name or "agent", log_lines)
-        return completed
-    finally:
+        if cycle_finished or sent_actions:
+            logged_count = completed if cycle_finished else len(sent_actions)
+            log_lines.append(f"--- {logged_count} 件のアクションを実行 ---")
+            _write_action_log(state_dir, game_name or "agent", log_lines)
         tel.add_time("act_s", act_start)
         if guarded:
             # Includes fresh rejection, observe/act errors and terminal fence
