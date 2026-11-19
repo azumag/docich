@@ -877,7 +877,7 @@ def _disabled_defense_pending(screen, mem, cur):
 
 CARD_ROW_WALK_TOPDOWN = 2    # ups that reach the command box's top row
 CARD_ROW_WALK_AFTER = 2      # held observations before the deterministic walk
-CARD_MENU_TICK_LIMIT = 12    # hard bound after the walk has run
+CARD_MENU_TICK_LIMIT = 8     # same bound as before: the walk finishes by tick 5
 
 def _card_row_walk(flow, screen, ticks):
     '''docich#4673: reach きりふだ without a readable command-box cursor.
@@ -889,8 +889,11 @@ def _card_row_walk(flow, screen, ticks):
     きりふだ, and A opens the list. Bounded; None when the box or tick is
     not right for it.
     '''
-    if (flow.get('stage') != 'menu'
-            or 'きりふだ' not in (screen.text or '') or ticks < CARD_ROW_WALK_AFTER):
+    text = screen.text or ''
+    measured = ('たまごをつかう' in text and 'きりふだ' in text
+                and 'たいきゃく' in text)
+    if (flow.get('stage') != 'menu' or not measured
+            or ticks < CARD_ROW_WALK_AFTER):
         return None
     walk = int(flow.get('card_row_walk') or 0)
     flow['card_row_walk'] = walk + 1
