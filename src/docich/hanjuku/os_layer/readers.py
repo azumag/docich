@@ -52,8 +52,25 @@ def _current(screen: Screen):
     x0, y0, x1, y1 = screen.hand
     row = y0 + 6
     cands = [(x, y, w) for x, y, w in _options(screen) if abs(y - row) <= 2 and x >= x1 - 4]
+    if cands:
+        return min(cands, default=None)
+    # docich#4686: the historical match above assumes the box starts one row
+    # above its text and that the text begins at/after the box's right edge.
+    # The main menu's box instead starts on its text row and its text begins at
+    # the box's left edge, so nothing matched there and both the monthly scan
+    # and the house roster could not open しょうぐん (live: main_menu 90 times,
+    # stage stayed open_menu; roster opened 2 of 18 tries). Fall back to the
+    # box's own row and span only when the historical match found nothing, so
+    # every menu that works today keeps its exact behaviour.
+    if screen.kind != 'main_menu':
+        return (((x1 - 4 + 7) // 8) * 8, row, '')
+    alt = [(x, y, w) for x, y, w in _options(screen)
+           if abs(y - y0) <= 2 and x0 - 8 <= x <= x1 + 8]
+    if alt:
+        alt.sort(key=lambda c: (c[0], c[1]))
+        return alt[0]
     # A blank cell (e.g. right of ょ in the kana grid) still has a position.
-    return min(cands, default=None) or (((x1 - 4 + 7) // 8) * 8, row, '')
+    return (((x1 - 4 + 7) // 8) * 8, row, '')
 
 
 def _month_dialog_unread(screen: Screen) -> bool:
