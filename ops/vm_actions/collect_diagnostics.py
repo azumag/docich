@@ -7729,6 +7729,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v1199-recall-y-fallback",
             "hanjuku-chart-v1200-picker-progress",
             "hanjuku-chart-v1202-unknown-hold-4",
+            "hanjuku-chart-v1203-card-hp-evidence",
             "hanjuku-chart-v1158-progress-regress",
             "hanjuku-chart-v1161-refill-collapse",
             "hanjuku-chart-v1160-chapter-probe-field",

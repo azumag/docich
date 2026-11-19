@@ -1696,6 +1696,27 @@ def card_list_step(screen: Screen, mem):
     if flow['stage'] == 'announce' and flow.get('selection_planned'):
         flow['announce_ticks'] = flow.get('announce_ticks', 0) + 1
         if flow['announce_ticks'] > CARD_ANNOUNCE_LIMIT:
+            # docich#4703: a measured enemy HP drop after the selection is
+            # evidence the card fired even when the announce banner was not
+            # read. ch4 16-x spent 6 announce_retry and 13 open_unclassified in
+            # fifteen minutes while the cards themselves were landing. Record
+            # the use from that measurement instead of retrying (or giving the
+            # card up) on sight alone.
+            opening = flow.get('enemy_hp_at_open')
+            now_hp = cur.get('enemy_hp')
+            if type(opening) is int and type(now_hp) is int and now_hp < opening:
+                flow['stage'] = 'done'
+                cur['card_consumption_complete'] = True
+                used = cur.setdefault('cards_used', [])
+                if flow.get('card') and flow['card'] not in used:
+                    used.append(flow['card'])
+                _record(mem, 'battle_card_effect_confirmed', **_battle_labels(cur),
+                        card=flow.get('card'),
+                        observed_metric={'enemy_hp_at_open': opening, 'enemy_hp': now_hp},
+                        expected_metric='敵HPの低下',
+                        reason='選択後に敵HPが低下したため、使用告知の代わりに実測で切り札の使用を確定する')
+                cur['card_flow'] = None
+                return []
             # Owner 2026-11-02 (VSヴィーナス at オトラント): a timed-out
             # announce means the list is still open — the carry may never
             # have fired, so retreating here leaves the card unused.
