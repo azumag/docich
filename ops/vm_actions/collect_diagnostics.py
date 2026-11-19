@@ -7921,6 +7921,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v1244-gjump-scroll-limit",
             "hanjuku-chart-v1245-gjump-seen-names",
             "hanjuku-chart-v1246-recall-goal-diag",
+            "hanjuku-chart-v1247-picker-yjump",
             "hanjuku-chart-v1158-progress-regress",
             "hanjuku-chart-v1161-refill-collapse",
             "hanjuku-chart-v1160-chapter-probe-field",

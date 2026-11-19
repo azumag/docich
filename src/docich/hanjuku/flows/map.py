@@ -599,6 +599,15 @@ def world_map_step(screen, mem, frame):
                                      'picker_boxes': [list(b) for b in world_markers(frame)],
                                      'hero_castle': _hero_castle(mem)},
                     reason='現在地から近い自軍城を選び、同距離ならどうしの在城先を優先する')
+        if (goal and not mem.get('y_jump') and not mem.get('castle_jump')
+                and (mem.get('y_jumps') or {}).get('RECALL:target', 0) < 2):
+            # docich#4755 / owner 2026-11-19: walking the picker ring one castle
+            # at a time is the slow path the owner banned. The whole-map Y
+            # jump lands the picker cursor on the goal castle directly; the
+            # cursor==goal confirmation below then sends A as usual.
+            _record(mem, 'camp_recall_picker_y_jump', observed_metric={'goal': goal},
+                    reason='帰還先ピッカーのカーソル歩行を全体マップ（Y）ジャンプへ置き換える')
+            return _start_y_jump(mem, {'step': 'RECALL'}, goal, 'target')
         if nearby != [goal]:
             gx, gy = chart.castles(chapter)[goal]
             dx, dy = gx / 8 + offset[0] - cursor[0], gy / 8 + offset[1] - cursor[1]
