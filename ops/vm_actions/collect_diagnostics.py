@@ -7787,6 +7787,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v1209-own-castle-x-only",
             "hanjuku-chart-v1210-y-anchor-cap",
             "hanjuku-chart-v1211-general-reselect",
+            "hanjuku-chart-v1212-stale-plan-rebuild",
             "hanjuku-chart-v1158-progress-regress",
             "hanjuku-chart-v1161-refill-collapse",
             "hanjuku-chart-v1160-chapter-probe-field",
