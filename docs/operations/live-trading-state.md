@@ -192,49 +192,60 @@ ON/OFF、`trade`、control ファイル、worker は変更しない。
 
 ## L4d: Phase E の単発買いプローブ(隔離 CLI、Issue #3623)
 
-グローバル制御が **OFF のまま**、1回だけ小さな現物買いを明示承認するための隔離コマンド。
-`live_worker` のサブコマンドではなく、アプリ・常駐 worker・自動売買から import されない。
+グローバル制御が **OFF のまま**、1回だけ小さな現物買いを明示承認するための隔離コマンド
+`docich.trading.live_probe`。`live_worker` のサブコマンドではなく、アプリ・常駐 worker・
+自動売買から import されない。
 systemd の停止・起動もこの CLI は行わない。運用者が先に worker を短時間停止して writer
 lease を空け、実行後に元の OFF worker を戻す。
 
 ### 事前条件
 
 - LIVE 台帳が既に作成済みで、有効な policy set に買いたい銘柄が含まれること。
-- 安全停止が無く、このプローブ以外の未完了 intent が無いこと。同一銘柄に異なる policy の
-  複数 open position が無いこと。
+- 安全停止が無く、このプローブ以外の未完了 intent が無いこと。新規 submission では同一銘柄に
+  open position が 1 つも無いこと。再実行で受け付けるのは、同じプローブ intent が作った
+  同一 position だけである。
 - `live_control.json` が明示的な `off` であること(欠落・壊れ・不明は拒否)。
 - 価格・数量・上限・手数料・予備費はすべて 10 進文字列。float・指数表記は拒否される。
 
 ### プレビュー(状態を変更しない)
 
 ```bash
-python -m docich.trading.live_worker.probe_order \
+python -m docich.trading.live_probe \
   --state-dir <state> --symbol <BASE/JPY> \
   --amount <数量> --price <指値> --max-quote <上限> \
   --fee <想定手数料> --reserve <予備費> [--monitor-seconds 30]
 ```
 
-出力は銘柄・数量・指値・上限・policy の先頭12桁・既存 intent 状態・短い確認 token だけ。
+出力は銘柄・数量・指値・上限・監視秒・policy の先頭12桁・既存 intent 状態・短い確認 token だけ。
 残高・口座番号・注文 ID・鍵・例外本文は出さない。プレビューは台帳・control・lease を
-書き換えない。token は銘柄・売買・数量・指値・上限・fee・reserve・policy digest・policy set
-digest・台帳 identity・固定 decision key に結び付き、残高や板は含まない。
+書き換えない。token は銘柄・売買・数量・指値・上限・fee・reserve・監視秒・policy digest・
+policy set digest・台帳 identity・固定 decision key に結び付き、残高や板は含まない。
 
 ### 実行(確認 token が必要)
 
 プレビューと同じ引数に `--confirm <token>` を付ける。実行時は writer lease を取り、同じ
 台帳・policy・静的パラメータを再確認したうえで、動的な `/spot/status` が `NORMAL` で
 `min_amount` を満たすこと、板が新鮮で best ask が指値以内かつ数量分の厚みがあること、
-手数料が market rules の最大料率以上で、free JPY が「約定代金 + fee + reserve」以上あること、
-台帳の期待残高と取引所残高が対象通貨で一致することを再確認する。グローバル control は
-入口と送信直前に `off` を確認する。ON・不明なら POST しない。通常の on+trade ゲートへの
-フォールバックは無い。
+手数料が market rules の最大料率以上で、reserve が quote の精度単位2つ分以上あり、free JPY が
+「約定代金 + fee + reserve」以上あることを確認する。**最初の注文前だけ**、対象ペアの
+`fetch_open_orders` が complete かつ空であること、板の読み取り前後で JPY と base の total が
+安定していること、板の読み取り後に free JPY を再確認する。台帳の期待残高と取引所残高は
+対象通貨で一致することも確認する。グローバル control は入口と送信直前に `off` を確認する。
+ON・不明なら POST しない。通常の on+trade ゲートへのフォールバックは無い。これらの残高・
+open order 検査を通常 worker のサイクルへ広げない。
 
 固定の decision key `probe1:phase-e-single-buy` を使う。同じ key の intent がどの状態に
-あっても 2 回目の POST は行わない。別パラメータでの再実行は拒否する。送信結果が不明な
-場合は再送せず `UNKNOWN_SUBMISSION` のまま照合を試みる。監視は既定 30 秒(1〜120 秒で指定可)
+あっても 2 回目の POST は行わない。注文内容(銘柄・数量・指値・policy)が異なる再実行は
+拒否する。送信結果が不明な
+場合は再送せず `UNKNOWN_SUBMISSION` のまま照合を試みる。送信経路に入った後に想定外の
+例外が出た場合も、preflight 拒否としては扱わない。台帳を安全に読めれば永続 state を報告し、
+読めなければ `unresolved` として終了コード `8` を返す。どちらの場合も同じプロセスから
+再送しない。監視は既定 30 秒(1〜120 秒で指定可)
 で打ち切り、未約定の残りは既存 executor の cancel で取り消し、終端状態と記録済み約定を
 確認する。
 
+完全約定時の表示は `outcome: filled` / `state: FILLED` / `filled_amount: <数量>` で、
+order の `remaining_amount` が `0` であることも確認する。
 終了コード: `0` プレビュー成功または完全約定、`1` 拒否・注文なし、`2` 引数誤り、
 `5` 他の worker が writer lease を保持、`7` lease 喪失、`8` 未解決・部分約定・取消済み
 未約定。`8` のときは出力の `next: restore the OFF worker` に従い、通常の OFF worker を

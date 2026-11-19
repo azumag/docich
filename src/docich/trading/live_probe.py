@@ -3,7 +3,7 @@
 This module is a separate operator command, not a subcommand of ``live_worker`` and not
 imported by any application path::
 
-    python -m docich.trading.live_worker.probe_order --state-dir ... --symbol OAS/JPY \
+    python -m docich.trading.live_probe --state-dir ... --symbol OAS/JPY \
         --amount 10 --price 100 --max-quote 1010 --fee 2 --reserve 8 [--confirm TOKEN]
 
 Without ``--confirm`` it only reads and prints a preview plus a short token.  With the exact
@@ -42,16 +42,16 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Callable, Mapping, Sequence, TextIO
 
-from ..live import balance, control, decide, reconcile, safety, views
-from ..live.canonical import confirmation_token
-from ..live.enable import EnableReason
-from ..live.exchange import ExchangeRejected, OrderRequest, dec, dec_text
-from ..live.executor import OrderExecutor, SubmitOutcome
-from ..live.ingest import ExecutorConfig
-from ..live.lease import LeaseHeld, LeaseLost, acquire_writer_lease, release_writer_lease
-from ..live.ledger import Intent, IntentRequest, LiveLedger, LiveLedgerError
-from ..live.paths import LiveLayoutError, live_layout
-from ..live.policy import INITIAL_SYMBOLS, LivePolicy, LivePolicySet
+from .live import balance, control, decide, reconcile, safety, views
+from .live.canonical import confirmation_token
+from .live.enable import EnableReason
+from .live.exchange import ExchangeRejected, OrderRequest, dec, dec_text
+from .live.executor import OrderExecutor, SubmitOutcome
+from .live.ingest import ExecutorConfig
+from .live.lease import LeaseHeld, LeaseLost, acquire_writer_lease, release_writer_lease
+from .live.ledger import Intent, IntentRequest, LiveLedger, LiveLedgerError
+from .live.paths import LiveLayoutError, live_layout
+from .live.policy import INITIAL_SYMBOLS, LivePolicy, LivePolicySet
 
 EXIT_OK = 0
 EXIT_REFUSED = 1
@@ -71,7 +71,6 @@ MIN_MONITOR_S = 1
 MAX_MONITOR_S = 120
 POLL_S = 2.0
 CANCEL_CONFIRM_S = 10.0
-RESERVE_FLOOR_JPY = Decimal("1")
 OPEN_INTENT_STATES = ("PLANNED", "SUBMITTING", "UNKNOWN_SUBMISSION", "ACKED", "PARTIALLY_FILLED")
 TERMINAL_INTENT_STATES = frozenset({"FILLED", "CANCELED", "EXPIRED", "REJECTED", "ABANDONED", "NOT_CREATED"})
 _PLAIN_DECIMAL = re.compile(r"[0-9]+(?:\.[0-9]+)?")
@@ -290,11 +289,21 @@ def _check_other_intents(ledger: LiveLedger, existing: Intent | None) -> None:
             raise ProbeRefused("active_intents")
 
 
-def _check_positions(ledger: LiveLedger, plan: ProbePlan, policy: LivePolicy) -> None:
+def _check_positions(ledger: LiveLedger, plan: ProbePlan, policy: LivePolicy,
+                     existing: Intent | None) -> None:
     rows = [row for row in views.open_position_rows(ledger) if row.symbol == plan.symbol]
     if len(rows) > 1:
         raise ProbeRefused("ambiguous_position")
-    if rows and rows[0].entry_policy_digest != policy.digest:
+    if existing is None:
+        # A new probe submission must not add to inventory that another policy or process
+        # already opened on this symbol.
+        if rows:
+            raise ProbeRefused("position_already_open")
+        return
+    # Re-entry is bounded to the position this exact probe intent created.  It is the only
+    # position a resumed trial may monitor or cancel against.
+    if any(row.position_id != existing.position_id or row.entry_policy_digest != policy.digest
+           for row in rows):
         raise ProbeRefused("ambiguous_position")
 
 
@@ -309,6 +318,7 @@ def _token_content(plan: ProbePlan, policy: LivePolicy, policy_set: LivePolicySe
         "max_quote": dec_text(plan.max_quote),
         "fee": dec_text(plan.fee),
         "reserve": dec_text(plan.reserve),
+        "monitor_s": str(plan.monitor_s),
         "decision_key": DECISION_KEY,
         "rule_id": RULE_ID,
         "policy_digest": policy.digest,
@@ -318,8 +328,8 @@ def _token_content(plan: ProbePlan, policy: LivePolicy, policy_set: LivePolicySe
 
 def _default_session_opener(state_dir, *, symbols: Sequence[str], clock: Callable[[], float]):
     """The production pair: one fixed key, GET-only reader and spot sender, same as the worker."""
-    from ..exchanges.bitbank_live.transport import CHECK_ONLY_ENDPOINTS, ENDPOINTS, CcxtReadTransport
-    from ..exchanges.bitbank_spot_session import open_bitbank_spot_session
+    from .exchanges.bitbank_live.transport import CHECK_ONLY_ENDPOINTS, ENDPOINTS, CcxtReadTransport
+    from .exchanges.bitbank_spot_session import open_bitbank_spot_session
 
     def transport_factory(credentials):
         # spot_status is a read-only check endpoint; the default worker transport deliberately
@@ -367,6 +377,25 @@ def _spot_status(reader, plan: ProbePlan):
     return min_amount
 
 
+def _fetch_balance(reader, code: str):
+    try:
+        return reader.fetch_balance()
+    except Exception:
+        raise ProbeRefused(code) from None
+
+
+def _require_empty_open_orders(reader, plan: ProbePlan) -> None:
+    """Prove there is no live order on the exact pair before the first probe POST."""
+    try:
+        page = reader.fetch_open_orders(plan.symbol)
+    except Exception:
+        raise ProbeRefused("open_orders_unavailable") from None
+    if not page.complete:
+        raise ProbeRefused("open_orders_incomplete")
+    if page.orders:
+        raise ProbeRefused("open_orders_present")
+
+
 def _check_dynamic(ledger: LiveLedger, reader, plan: ProbePlan, policy_set: LivePolicySet,
                    *, clock: Callable[[], float]) -> None:
     rules = _rule_set(reader, policy_set)
@@ -384,24 +413,15 @@ def _check_dynamic(ledger: LiveLedger, reader, plan: ProbePlan, policy_set: Live
         raise ProbeRefused("fee_rate_unknown")
     if plan.fee < plan.notional() * rule.max_fee_rate:
         raise ProbeRefused("fee_below_max")
-    reserve_floor = max(rule.quote_unit * 2, RESERVE_FLOOR_JPY)
+    reserve_floor = rule.quote_unit * 2
     if plan.reserve < reserve_floor:
         raise ProbeRefused("reserve_too_small")
     if plan.gross() > plan.max_quote:
         raise ProbeRefused("max_quote_exceeded")
-    try:
-        snapshot = reader.fetch_balance()
-    except Exception:
-        raise ProbeRefused("balance_unavailable") from None
-    quote = snapshot.assets.get(rule.quote)
+    before = _fetch_balance(reader, "balance_unavailable")
+    quote = before.assets.get(rule.quote)
     if quote is None or quote.free < plan.gross():
         raise ProbeRefused("insufficient_jpy")
-    try:
-        check = balance.check_balances(ledger, snapshot, rules, currencies=(rule.base, rule.quote))
-    except Exception:
-        raise ProbeRefused("balance_inconsistent") from None
-    if not check.checks or any(item.status != "ok" for item in check.checks):
-        raise ProbeRefused("balance_inconsistent")
     try:
         book = reader.fetch_order_book(plan.symbol, depth=20)
     except Exception:
@@ -414,6 +434,22 @@ def _check_dynamic(ledger: LiveLedger, reader, plan: ProbePlan, policy_set: Live
     available = sum((amount for price, amount in book.asks if price <= plan.price), Decimal(0))
     if available < plan.amount:
         raise ProbeRefused("liquidity_insufficient")
+    after = _fetch_balance(reader, "balance_unavailable")
+    wanted = (rule.base, rule.quote)
+    if any((before.assets.get(code).total if before.assets.get(code) else Decimal(0)) !=
+           (after.assets.get(code).total if after.assets.get(code) else Decimal(0))
+           for code in wanted):
+        raise ProbeRefused("balance_unstable")
+    try:
+        check = balance.check_balances(ledger, after, rules, currencies=wanted)
+    except Exception:
+        raise ProbeRefused("balance_inconsistent") from None
+    if not check.checks or any(item.status != "ok" for item in check.checks):
+        raise ProbeRefused("balance_inconsistent")
+    quote = after.assets.get(rule.quote)
+    if quote is None or quote.free < plan.gross():
+        raise ProbeRefused("insufficient_jpy")
+    _require_empty_open_orders(reader, plan)
 
 
 def _check_status_for_resume(reader, plan: ProbePlan) -> None:
@@ -438,7 +474,7 @@ def preview(state_dir, plan: ProbePlan, *, clock: Callable[[], float] = time.tim
         existing = views.intent_by_decision_key(ledger, DECISION_KEY)
         _check_existing(existing, plan, policy)
         _check_other_intents(ledger, existing)
-        _check_positions(ledger, plan, policy)
+        _check_positions(ledger, plan, policy, existing)
         _require_control_off(state, clock)
         if existing is None:
             reader, _sender = _open_session(state, plan, clock=clock, session_opener=session_opener)
@@ -450,6 +486,7 @@ def preview(state_dir, plan: ProbePlan, *, clock: Callable[[], float] = time.tim
             "amount": dec_text(plan.amount),
             "price": dec_text(plan.price),
             "max_quote": dec_text(plan.max_quote),
+            "monitor_s": plan.monitor_s,
             "policy_digest": policy.digest[:12],
             "existing_state": None if existing is None else existing.state,
             "token": token,
@@ -569,10 +606,14 @@ def _accounting(ledger: LiveLedger, intent: Intent) -> tuple[str | None, Decimal
         return "fill_identity", executed
     if any(fill.fee_status != "known" for fill in fills):
         return "fee_unknown", executed
+    # A probe buy may add to an existing position under the same policy.  Recompute the
+    # whole position, not just this order's fills, so prior inventory is included.
     expected_net = Decimal(0)
-    for fill in fills:
-        expected_net += fill.amount
-        if fill.fee_currency == order.symbol.split("/")[0]:
+    for fill in views.all_fills(ledger):
+        if fill.position_id != intent.position_id:
+            continue
+        expected_net += fill.amount if fill.side == SIDE else -fill.amount
+        if fill.fee_status == "known" and fill.fee_currency == order.symbol.split("/")[0]:
             expected_net -= fill.fee_amount or Decimal(0)
     try:
         net = views.position_net_base(ledger, intent.position_id)
@@ -610,6 +651,7 @@ def _outcome(ledger: LiveLedger, intent: Intent | None) -> _Outcome:
         problem, filled = _accounting(ledger, intent)
         order = views.order_for_intent(ledger, intent.intent_id)
         if problem is None and (order is None or order.status != "FULLY_FILLED"
+                                or order.remaining_amount != 0
                                 or filled != Decimal(intent.amount)):
             problem = "fill_incomplete"
         if problem is not None:
@@ -629,8 +671,28 @@ def _outcome(ledger: LiveLedger, intent: Intent | None) -> _Outcome:
             return _Outcome("partial", state, filled, EXIT_UNRESOLVED,
                             next="restore the OFF worker")
         return _Outcome("canceled_unfilled", state, Decimal(0), EXIT_UNRESOLVED)
+    if state in ("ACKED", "PARTIALLY_FILLED"):
+        problem, filled = _accounting(ledger, intent)
+        return _Outcome("unresolved", state, filled, EXIT_UNRESOLVED,
+                        next="restore the OFF worker", problem=problem or "not_terminal")
     return _Outcome("unresolved", state, Decimal(0), EXIT_UNRESOLVED,
                     next="restore the OFF worker", problem="not_terminal")
+
+
+def _durable_outcome(ledger: LiveLedger, intent_id: str) -> _Outcome:
+    """The ledger's state after a partly-completed submit, or an explicit unresolved result."""
+    try:
+        intent = ledger.get_intent(intent_id)
+    except Exception:
+        intent = None
+    if intent is None:
+        return _Outcome("unresolved", "unknown", Decimal(0), EXIT_UNRESOLVED,
+                        next="restore the OFF worker", problem="state_unreadable")
+    try:
+        return _outcome(ledger, intent)
+    except Exception:
+        return _Outcome("unresolved", intent.state, Decimal(0), EXIT_UNRESOLVED,
+                        next="restore the OFF worker", problem="state_unreadable")
 
 
 def run(state_dir, plan: ProbePlan, confirm: object, *, clock: Callable[[], float] = time.time,
@@ -661,7 +723,7 @@ def run(state_dir, plan: ProbePlan, confirm: object, *, clock: Callable[[], floa
         existing = views.intent_by_decision_key(ledger, DECISION_KEY)
         _check_existing(existing, plan, policy)
         _check_other_intents(ledger, existing)
-        _check_positions(ledger, plan, policy)
+        _check_positions(ledger, plan, policy, existing)
 
         if existing is not None and existing.state in TERMINAL_INTENT_STATES:
             return _view(plan, _outcome(ledger, existing))
@@ -707,13 +769,24 @@ def run(state_dir, plan: ProbePlan, confirm: object, *, clock: Callable[[], floa
                 except Exception:
                     pass
                 raise
-            outcome = executor.submit(intent.intent_id)
-            if outcome is not SubmitOutcome.ACKED:
-                intent = ledger.get_intent(intent.intent_id)
-                if outcome is SubmitOutcome.UNKNOWN:
-                    intent = _monitor(executor, ledger, intent.intent_id, plan, clock=clock, sleep=sleep,
-                                      sender_wrapper=wrapper)
-                return _view(plan, _outcome(ledger, intent))
+            try:
+                outcome = executor.submit(intent.intent_id)
+                if outcome is not SubmitOutcome.ACKED:
+                    current = ledger.get_intent(intent.intent_id)
+                    if outcome is SubmitOutcome.UNKNOWN:
+                        current = _monitor(executor, ledger, current.intent_id, plan, clock=clock,
+                                           sleep=sleep, sender_wrapper=wrapper)
+                    return _view(plan, _outcome(ledger, current))
+                current = _monitor(executor, ledger, intent.intent_id, plan, clock=clock,
+                                   sleep=sleep, sender_wrapper=wrapper)
+                return _view(plan, _outcome(ledger, current))
+            except LeaseLost:
+                raise
+            except Exception:
+                # The POST path was entered, so an unexpected failure is never a clean
+                # preflight refusal: report durable state when it can be read safely, and
+                # otherwise stay unresolved.  Either way this process does not repost.
+                return _view(plan, _durable_outcome(ledger, intent.intent_id))
         intent = _monitor(executor, ledger, intent.intent_id, plan, clock=clock, sleep=sleep,
                           sender_wrapper=wrapper)
         return _view(plan, _outcome(ledger, intent))
@@ -736,6 +809,7 @@ def _view(plan: ProbePlan, outcome: _Outcome) -> dict:
         "amount": dec_text(plan.amount),
         "price": dec_text(plan.price),
         "max_quote": dec_text(plan.max_quote),
+        "monitor_s": plan.monitor_s,
         "outcome": outcome.outcome,
         "state": outcome.state,
         "filled_amount": dec_text(outcome.filled) if outcome.filled > 0 else "0",
@@ -753,6 +827,7 @@ def _print_preview(view: Mapping, out: TextIO) -> None:
     print(f"amount: {view['amount']}", file=out)
     print(f"limit: {view['price']}", file=out)
     print(f"max_quote: {view['max_quote']}", file=out)
+    print(f"monitor_s: {view['monitor_s']}", file=out)
     print(f"policy: {view['policy_digest']}", file=out)
     print(f"intent: {view['existing_state'] or 'none'}", file=out)
     print(f"token: {view['token']}", file=out)
@@ -764,6 +839,7 @@ def _print_run(view: Mapping, out: TextIO) -> None:
     print(f"amount: {view['amount']}", file=out)
     print(f"limit: {view['price']}", file=out)
     print(f"max_quote: {view['max_quote']}", file=out)
+    print(f"monitor_s: {view['monitor_s']}", file=out)
     print(f"outcome: {view['outcome']}", file=out)
     print(f"state: {view['state']}", file=out)
     print(f"filled_amount: {view['filled_amount']}", file=out)
@@ -785,7 +861,7 @@ class _Parser(argparse.ArgumentParser):
 
 def _parser(out: TextIO) -> argparse.ArgumentParser:
     parser = _Parser(
-        prog="python -m docich.trading.live_worker.probe_order",
+        prog="python -m docich.trading.live_probe",
         description="preview/run one explicitly approved Phase E spot buy while global control is off",
         stream=out)
     parser.add_argument("--state-dir", required=True)

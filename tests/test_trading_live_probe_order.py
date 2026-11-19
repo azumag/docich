@@ -6,13 +6,15 @@ from decimal import Decimal as D
 
 import pytest
 
+from bitbank_live_support import FakeTransport, default_script
 from docich.trading.exchanges.bitbank_live import parse
+from docich.trading.exchanges.bitbank_live.reader import BitbankReader
 from docich.trading.live import views
 from docich.trading.live.exchange import (ExchangeAmbiguous, ExchangeDataError, ExchangeRejected,
                                           OrderRequest, SpotStatus)
 from docich.trading.live.ledger import Cashflow, IntentRequest, LiveLedger
 from docich.trading.live.lease import acquire_writer_lease, release_writer_lease
-from docich.trading.live_worker import probe_order
+from docich.trading import live_probe as probe_order
 from test_trading_live_support import Clock, Workspace, make_mock, policy_set
 
 NOW = 1_800_000_000.0
@@ -132,6 +134,20 @@ def test_preview_is_read_only_and_prints_only_the_public_plan_and_token():
         _cleanup(ws)
 
 
+def test_monitor_seconds_is_bound_to_the_preview_token_and_output():
+    ws, clock, mock, _ = _setup()
+    try:
+        one = _preview(ws, clock, mock, plan=_plan(monitor_s=1))
+        two = _preview(ws, clock, mock, plan=_plan(monitor_s=2))
+        assert one["token"] != two["token"]
+        out = io.StringIO()
+        probe_order._print_preview(two, out)
+        assert "monitor_s: 2" in out.getvalue()
+        assert mock.submissions == []
+    finally:
+        _cleanup(ws)
+
+
 def test_exact_confirmation_mismatch_refuses_before_any_intent_or_post():
     ws, clock, mock, _ = _setup()
     try:
@@ -171,7 +187,7 @@ def test_dynamic_bounds_step_min_fee_reserve_and_cap_are_enforced():
             (_plan(price=D("100.0005")), ProbeReader(mock), "price_tick"),
             (_plan(amount=D("1")), ProbeReader(mock, min_amount="2"), "amount_below_min"),
             (_plan(fee=D("1.5")), ProbeReader(mock), "fee_below_max"),
-            (_plan(reserve=D("0.5")), ProbeReader(mock), "reserve_too_small"),
+            (_plan(reserve=D("0.0001")), ProbeReader(mock), "reserve_too_small"),
             (_plan(max_quote=D("1002")), ProbeReader(mock), "max_quote_exceeded"),
         ]:
             with pytest.raises(probe_order.ProbeRefused) as err:
@@ -329,6 +345,38 @@ def test_stopped_pair_bad_balance_and_missing_liquidity_are_refused():
         _cleanup(ws)
 
 
+def test_a_new_submission_requires_a_complete_empty_open_order_list():
+    ws, clock, mock, _ = _setup()
+    try:
+        mock.submit_order(OrderRequest(SYMBOL, "buy", "limit", D("1"), D("99"), None))
+        with pytest.raises(probe_order.ProbeRefused) as err:
+            _preview(ws, clock, mock)
+        assert err.value.code == "open_orders_present"
+        assert mock.submissions[-1]["outcome"] == "created"
+    finally:
+        _cleanup(ws)
+
+
+def test_balances_must_stay_stable_across_the_book_check_and_free_quote_is_rechecked():
+    ws, clock, mock, _ = _setup()
+    try:
+        unstable = ProbeReader(mock)
+        unstable.after_book = lambda: mock.adjust_balance("JPY", "1")
+        with pytest.raises(probe_order.ProbeRefused) as err:
+            _preview(ws, clock, mock, reader=unstable)
+        assert err.value.code == "balance_unstable"
+
+        locked = ProbeReader(mock)
+        # The total stays the same but an order locks most of the free quote between reads.
+        locked.after_book = lambda: mock.submit_order(
+            OrderRequest(SYMBOL, "buy", "limit", D("99"), D("100"), None))
+        with pytest.raises(probe_order.ProbeRefused) as err:
+            _preview(ws, clock, mock, reader=locked)
+        assert err.value.code == "insufficient_jpy"
+    finally:
+        _cleanup(ws)
+
+
 # ---- cancellation / partial fill --------------------------------------------------------
 def test_open_remainder_is_canceled_and_a_partial_fill_is_not_success():
     ws, clock, mock, _ = _setup()
@@ -347,7 +395,7 @@ def test_open_remainder_is_canceled_and_a_partial_fill_is_not_success():
             order = views.order_for_intent(ledger, intent.intent_id)
             assert order.status == "CANCELED_PARTIALLY_FILLED"
             assert views.position_net_base(ledger, intent.position_id) == D("4")
-            assert [row.status for row in views.open_position_rows(ledger)] == ["open"]
+            assert [row.symbol for row in views.open_position_rows(ledger)] == [SYMBOL]
         finally:
             ledger.close()
     finally:
@@ -391,3 +439,13 @@ def test_spot_status_parser_requires_the_dynamic_min_amount_and_a_known_pair():
     with pytest.raises(ExchangeDataError):
         parse.spot_statuses({"statuses": [{"pair": "oas_jpy", "status": "NORMAL"}]},
                             {"oas_jpy": "OAS/JPY"})
+
+
+def test_bitbank_reader_reads_spot_status_through_the_get_transport():
+    transport = FakeTransport(default_script(
+        spot_status={"statuses": [
+            {"pair": "btc_jpy", "status": "NORMAL", "min_amount": "0.0001"},
+            {"pair": "oas_jpy", "status": "NORMAL", "min_amount": "2"}]}))
+    reader = BitbankReader(transport, symbols=("OAS/JPY", "XYM/JPY"), clock=lambda: 50.0)
+    assert reader.fetch_spot_status(SYMBOL) == SpotStatus(SYMBOL, "NORMAL", D("2"))
+    assert [name for name, _ in transport.calls][-1] == "spot_status"
