@@ -1,0 +1,30 @@
+"""docich#4673: the card row must be reachable without a readable cursor.
+
+The measured battle command box is たまごをつかう / きりふだ / たいきゃく on
+16 px rows. When the cursor was unreadable the flow held until the tick limit
+and closed the box with B, so a usable card was never tried (live: six
+battle_card_open_unclassified in forty minutes).
+"""
+from docich.hanjuku.flows import battle_menus as M
+from docich.hanjuku.os_layer.screen import Screen
+
+
+def box(text='たまごをつかう きりふだ たいきゃく'):
+    return Screen([], None, text, kind='battle_menu')
+
+
+def test_the_walk_reaches_the_card_row_deterministically():
+    flow = {'stage': 'menu'}
+    assert M._card_row_walk(flow, box(), 1) is None      # too early
+    assert M._card_row_walk(flow, box(), 2) == [M.pad('up')]
+    assert M._card_row_walk(flow, box(), 3) == [M.pad('up')]
+    assert M._card_row_walk(flow, box(), 4) == [M.pad('down')]
+    assert M._card_row_walk(flow, box(), 5) == [M.pad('a')]
+    assert flow['stage'] == 'list'
+
+
+def test_the_walk_needs_the_card_label_on_screen():
+    flow = {'stage': 'menu'}
+    other = Screen([], None, 'たたかう にげる', kind='battle_menu')
+    assert M._card_row_walk(flow, other, 5) is None
+    assert 'card_row_walk' not in flow
