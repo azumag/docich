@@ -7918,6 +7918,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v1241-gjump-missing-diag",
             "hanjuku-chart-v1242-gjump-roster-fallback",
             "hanjuku-chart-v1243-gjump-text-grace",
+            "hanjuku-chart-v1244-gjump-scroll-limit",
             "hanjuku-chart-v1158-progress-regress",
             "hanjuku-chart-v1161-refill-collapse",
             "hanjuku-chart-v1160-chapter-probe-field",
