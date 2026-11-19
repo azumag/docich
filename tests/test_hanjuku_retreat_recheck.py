@@ -41,6 +41,18 @@ def test_chapter9_boss_wave_generals_are_not_rechecked():
     assert 'ゼウス' in camp_recheck._scope(other)
 
 
+def test_chapter9_defers_the_whole_recheck_queue_while_boss_waves_are_in_flight():
+    mem = memory()
+    mem['chapter'] = 9
+    _flow(mem)['retreat_rechecks']['ゼウス']['chapter'] = 9
+    mem['boss_wave_generals'] = {'カシス': {'step': 'A', 'launched': 1}}
+    assert camp_recheck._scope(mem) == {}
+    # deferred, not discarded: the queue is still there for after the waves
+    assert 'ゼウス' in (_flow(mem).get('retreat_rechecks') or {})
+    mem['boss_wave_generals'] = {}
+    assert 'ゼウス' in camp_recheck._scope(mem)
+
+
 def main_menu():
     c = Canvas(); c.text(48, 47, 'しょうぐん'); c.hand(26, 41)
     screen = parse(c.frame()); screen.kind = 'main_menu'

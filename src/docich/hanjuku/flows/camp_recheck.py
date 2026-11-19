@@ -176,6 +176,13 @@ def _scope(mem):
     chapter, now = mem.get('chapter'), mem.get('tick')
     statuses = {'needs_observation', 'dispatch_unconfirmed', 'arrival_unconfirmed',
                 'anonymous_recheck_exhausted'}
+    if chapter == 9 and (mem.get('boss_wave_generals') or {}):
+        # While boss waves are in flight the field belongs to the boss plan:
+        # the 30-camp recheck queue kept the active boss step waiting for
+        # minutes (live g1288 2026-11-20 08:09-08:25). Leave the queue intact
+        # and resume it when the wave list empties; deferring is not losing
+        # the named observations.
+        return {}
     if (identity is not None and type(chapter) is int and chapter > 0
             and type(now) is int and now >= 0 and isinstance(queue, dict)):
         for name, row in queue.items():
