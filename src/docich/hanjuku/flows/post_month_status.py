@@ -1482,14 +1482,21 @@ def step(screen, mem, frame):
         _stage(state, 'task_select', seeks=0)
         stage = 'task_select'
     if stage == 'open_menu':
-        if screen.kind == 'main_menu' and not screen.hand:
-            # docich#4655: the hand is a small blinking sprite and misses on
-            # some menu frames. Returning [] there let another owner open and
-            # close the same menu, so the scan reopened it forever (the live
-            # cycle was map[X] main_menu[down] main_menu[down] [B] map[X]).
-            # Walk deterministically instead: up x6 reaches the top row
-            # (ステータス) from anywhere in this menu, then one down is
-            # しょうぐん. Bounded, and only on a classified main menu.
+        if screen.kind == 'main_menu':
+            # docich#4658: reach しょうぐん deterministically. A blinking hand or
+            # a frame whose text misses the label both used to leave the scan
+            # idle on the menu (open_menu never reached roster in the live runs;
+            # phase_reads grew past 30 with no input). up x6 returns to the top
+            # row (ステータス) from anywhere in this menu, one down is しょうぐん,
+            # and A opens it. Bounded per stage entry.
+            direction = menu_to(screen, 'しょうぐん') if screen.hand else None
+            if direction == 'here':
+                state.pop('menu_blind', None)
+                _stage(state, 'roster')
+                return [pad('a')]
+            if direction:
+                state.pop('menu_blind', None)
+                return [direction]
             blind = state.get('menu_blind')
             blind = blind if type(blind) is int and blind >= 0 else 0
             state['menu_blind'] = blind + 1
@@ -1500,13 +1507,6 @@ def step(screen, mem, frame):
             state.pop('menu_blind', None)
             _stage(state, 'roster')
             return [pad('a')]
-        if screen.kind == 'main_menu':
-            state.pop('menu_blind', None)
-            direction = menu_to(screen, 'しょうぐん')
-            if direction == 'here':
-                _stage(state, 'roster')
-                return [pad('a')]
-            return [direction] if direction else []
         if screen.kind == 'map' and _open_retry_due(state):
             if int(state.get('phase_reads') or 0) > 6:
                 _log(mem, 'post_month_open_retry', screen=screen.kind,
