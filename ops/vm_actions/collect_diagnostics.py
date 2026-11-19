@@ -7718,6 +7718,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v1187-scan-giveup-early",
             "hanjuku-chart-v1188-army-floor",
             "hanjuku-chart-v1189-roster-label",
+            "hanjuku-chart-v1190-scan-skip-five",
             "hanjuku-chart-v1158-progress-regress",
             "hanjuku-chart-v1161-refill-collapse",
             "hanjuku-chart-v1160-chapter-probe-field",

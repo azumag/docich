@@ -1808,13 +1808,14 @@ def test_three_open_failures_skip_the_next_arm():
                  open_tries=post.OPEN_MENU_TRIES)
     field = Screen([], None, '', kind='map')
     assert post.step(field, mem, None) is None
-    assert mem['post_month_skip_arms'] == 1
+    assert mem['post_month_skip_arms'] == post.POST_MONTH_SKIP_ARMS
     assert mem['post_month_open_failures'] == 0
-    # The next arm is skipped, then the scan is allowed again.
-    mem['month'] = '1-3'
-    post.arm(mem)
-    assert 'post_month_status' not in mem
+    # The next arms are skipped, then the scan is allowed again.
+    for index in range(post.POST_MONTH_SKIP_ARMS):
+        mem['month'] = f'1-{3 + index}'
+        post.arm(mem)
+        assert 'post_month_status' not in mem
     assert mem['post_month_skip_arms'] == 0
-    mem['month'] = '1-4'
+    mem['month'] = '1-9'
     post.arm(mem)
     assert 'post_month_status' in mem
