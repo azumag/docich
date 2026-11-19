@@ -1151,6 +1151,14 @@ def _camp_recall_step(screen: Screen, mem, frame, *, observed_camps=None):
             _record(mem, 'camp_recall_y_route', observed_metric={'goal': goal},
                     reason='野営からの帰還は「きかん」を使わず、全体マップ（Y）で自城へ直接戻る（オーナー指示）')
             return _y_route_step(screen, mem, state)
+        # docich#4755: the picker fallback keeps firing while y_route never
+        # engages — record which goal inputs were missing so the next fix
+        # targets the actual gap instead of guessing.
+        _record(mem, 'camp_recall_goal_unresolved', observed_metric={
+            'origin': state.get('origin'), 'camp_world': state.get('camp_world'),
+            'target': state.get('target'), 'fort': bool(state.get('fort')),
+            'stage_from': state.get('stage')},
+            reason='hero_focus で帰還goalが解決できず picker 経路へフォールバック')
         state['stage'], state['steps'] = 'hero_open', 0
         return [pad('select')]         # measured: SELECT centres the cursor on the hero
     if stage == 'y_route':
