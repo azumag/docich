@@ -458,8 +458,11 @@ def test_trade_pnl_preserves_rebate_signs(h):
     _finish(h, sell_xym)
 
     trade = live_overview(h.ledger, now=NOW)["trade_pnl"]
-    assert trade["by_symbol"] == {"OAS/JPY": "100", "XYM/JPY": "102"}
-    assert trade["total"] == "202"
+    # Equal Decimal prices may serialize as "102.0" or "102"; compare numerically.
+    assert ({symbol: D(value) for symbol, value in trade["by_symbol"].items()}
+            == {"OAS/JPY": D("100"), "XYM/JPY": D("102")})
+    assert D(trade["total"]) == D("202")
+    assert [D(row["pnl"]) for row in trade["rows"]] == [D("102"), D("100")]
     assert all(row["fee_unknown"] is False and row["fee_other_currency"] is False
                for row in trade["rows"])
 
@@ -616,18 +619,42 @@ def test_trade_pnl_one_unaccounted_fill_excludes_the_whole_sell_order(h):
           symbol="OAS/JPY", side="sell", amount="3", price="120", executed_at=1110.0)
     _finish(h, sell)
 
+    # The oversell left -1 inventory in this still-open position.  A later buy must not
+    # reset the broken replay, so the following sell stays unaccounted too.
+    _flat_buy = _intent(h, key="tp-excess-flat-buy", symbol="OAS/JPY", amount="1",
+                        price="1150.0")
+    _order(h, _flat_buy, order_id="tp-excess-flat-buy-order")
+    _fill(h, fill_id="tp-excess-flat-buy-fill", order_id="tp-excess-flat-buy-order",
+          symbol="OAS/JPY", side="buy", amount="1", price="1150.0", executed_at=1150.0)
+    _finish(h, _flat_buy)
+    buy_more = _intent(h, key="tp-excess-rebuy", symbol="OAS/JPY", amount="10", price="100")
+    _order(h, buy_more, order_id="tp-excess-rebuy-order")
+    _fill(h, fill_id="tp-excess-rebuy-fill", order_id="tp-excess-rebuy-order",
+          symbol="OAS/JPY", side="buy", amount="10", price="100", executed_at=1200.0)
+    _finish(h, buy_more)
+    sell_more = _intent(h, key="tp-excess-resell", side="sell", symbol="OAS/JPY",
+                        amount="5", price="120")
+    _order(h, sell_more, order_id="tp-excess-resell-order")
+    _fill(h, fill_id="tp-excess-resell-fill", order_id="tp-excess-resell-order",
+          symbol="OAS/JPY", side="sell", amount="5", price="120", executed_at=1300.0)
+    _finish(h, sell_more)
+
     trade = live_overview(h.ledger, now=NOW)["trade_pnl"]
     # Every sale is unaccounted, so there is no valid total (not a zero result).
     assert trade["total"] is None
     assert trade["by_symbol"] == {}
-    assert len(trade["rows"]) == 1
-    row = trade["rows"][0]
-    assert row["pnl"] is None
-    assert row["status"] == "unaccounted"
-    assert row["unaccounted_reason"] == "excess_basis"
-    assert row["fills"] == 2
-    assert trade["unaccounted_orders"] == 1
-    assert trade["unaccounted_fills"] == 2
+    assert len(trade["rows"]) == 2
+    newest, oldest = trade["rows"]
+    assert newest["pnl"] is None
+    assert newest["status"] == "unaccounted"
+    assert newest["unaccounted_reason"] == "basis_unavailable"
+    assert newest["fills"] == 1
+    assert oldest["pnl"] is None
+    assert oldest["status"] == "unaccounted"
+    assert oldest["unaccounted_reason"] == "excess_basis"
+    assert oldest["fills"] == 2
+    assert trade["unaccounted_orders"] == 2
+    assert trade["unaccounted_fills"] == 3
     assert trade["complete"] is False
 
 

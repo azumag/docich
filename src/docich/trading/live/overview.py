@@ -267,8 +267,9 @@ def _trade_pnl(fills: list[views.FillRow], known_positions: set[str], *, page) -
         for fill, after in views.cost_basis_steps(position_fills, _ZERO):
             own_unknown, own_other = _trade_fee_flags(fill)
             if fill.side == "buy":
-                if before.net_base <= 0:
-                    broken = False
+                # After a broken oversell a later buy can make net exactly zero while
+                # bad basis remains, so broken is sticky for that position, never reset.
+                if before.net_base == 0:
                     cycle_unknown.clear()
                     cycle_other.clear()
                 if own_unknown:
