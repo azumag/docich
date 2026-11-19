@@ -153,8 +153,10 @@ def _sections(body: str) -> list[tuple[str, str]]:
     Fenced code blocks and HTML comments are removed first, so an example
     heading inside them is data rather than a section boundary.
     """
-    text = _COMMENT_RE.sub("\n", body)
-    text = _strip_fenced_blocks(text)
+    # Strip fenced blocks first: a "<!--" inside a code example must not
+    # consume the lines that follow the closing fence.
+    text = _strip_fenced_blocks(body)
+    text = _COMMENT_RE.sub("\n", text)
     lines = text.replace("\r\n", "\n").replace("\r", "\n").split("\n")
     sections: list[tuple[str, str]] = []
     current: str | None = None

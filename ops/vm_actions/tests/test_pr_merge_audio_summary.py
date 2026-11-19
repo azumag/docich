@@ -151,6 +151,15 @@ class SummarySelectionTests(unittest.TestCase):
         self.assertEqual(override, "")
         self.assertEqual(overview, "本当の概要です。")
 
+    def test_comment_marker_inside_fence_does_not_hide_following_section(self):
+        fence = chr(96) * 3
+        body = (
+            f"{fence}html\n<!-- placeholder\n{fence}\n"
+            "## 音声サマリー\n\n表示を改善しました。\n<!-- badge -->"
+        )
+        override, _ = report.extract_body_parts(body)
+        self.assertEqual(override, "表示を改善しました。")
+
     def test_tilde_fence_and_html_comment_headings_are_ignored(self):
         body = (
             "## 概要\n\n"
