@@ -1702,6 +1702,31 @@ def interim_candidates(mem, allow_sole=False) -> dict:
         if chart_adjust.startable(order, situation) is not None:
             continue
         out[f"{order['purpose']}_{len(out) + 1}"] = order
+    # docich#4689: every castle holding exactly one general can neither donate
+    # nor attack, so a stuck army needs one read of a castle list to see the
+    # generals it recruited. ch3 month 11-1..12-3 waited ten months with 31
+    # generals country-wide and only four located: next_order null, no
+    # candidate ever offered, and the recruits never entered a castle list.
+    # One read-only probe from the home castle to the nearest enemy castle
+    # opens that list; whatever it shows, the next plan is built from it.
+    if not out and not _army_below_floor(mem):
+        home = chart.home_castle(chapter)
+        garrison_map = _world(mem).get('garrison') or {}
+        located = sum(len(names) for names in garrison_map.values()
+                      if isinstance(names, (list, tuple)))
+        totals = mem.get('country_general_count')
+        total = totals.get('count') if isinstance(totals, dict) else None
+        already = any(o.get('source') == home
+                      for o in (*sorties['retake'], *sorties['attack'], *moves))
+        target = next((c for c in castles
+                       if c not in owned and not chart.is_boss_castle(c)), None)
+        if (home in owned and target and not already
+                and type(total) is int and total > located):
+            out['probe_home_1'] = {
+                'general': MOVE_ANY_GENERAL, 'source': home, 'target': target,
+                'cards': [], 'after': None, 'purpose': 'attack',
+                'source_probe': True,
+                'note': f'暫定: 膠着のため{home}の将軍一覧を読んでから{target}へ出撃する'}
     return out
 
 
