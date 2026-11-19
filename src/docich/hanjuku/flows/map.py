@@ -1132,7 +1132,11 @@ CASTLE_JUMP_SCROLL_STALL = 2    # unchanged list readings before the Y route tak
 CASTLE_JUMP_COOLDOWN = 40       # observations before retrying a failed source
 CASTLE_JUMP_ABANDON = 4         # menu failures before the step is given up
 Y_ANCHOR_ATTEMPTS = 2            # Y-view re-anchors before the castle-list jump
-Y_ANCHOR_CHAPTER_TOTAL = 6       # fruitless Y re-anchors allowed in one chapter
+# Owner 2026-11-19: six anchors for a whole chapter starved the Y jump — ch6
+# spent the budget early, so later jumps had no anchor and the cursor drifted
+# on the whole-map view and on the field without ever committing. Keep a bound
+# (the v1210 loop guard) but size it for a thirteen-castle chapter.
+Y_ANCHOR_CHAPTER_TOTAL = 24      # fruitless Y re-anchors allowed in one chapter
 REANCHOR_FAILURE_LIMIT = 3      # consecutive failed reanchors before backing off
 REANCHOR_FAILURE_BACKOFF = 600  # observations a tripped reanchor stays quiet
 CASTLE_JUMP_FAR = 48            # same distance gate as the Y jump (map px)
