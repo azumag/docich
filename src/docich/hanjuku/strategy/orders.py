@@ -2375,7 +2375,10 @@ def _recall_goal(mem, flags=None):
     # the Y-jump goal stops falling back to the きかん picker (docich#4755).
     origin = state.get('origin') or state.get('camp_world')
     if (isinstance(origin, (list, tuple)) and len(origin) == 2
-            and all(type(value) is int for value in origin)):
+            and all(type(value) in (int, float) for value in origin)):
+        # camp_world arrives as cursor arithmetic, so it is often float;
+        # round once here instead of rejecting the whole position (docich#4755).
+        origin = [round(value) for value in origin]
         # Units march directly; axis-summed distance can rank a diagonal
         # nearer castle behind a farther one. Squaring avoids rounding ties.
         return min(owned, key=lambda c: _rank(
