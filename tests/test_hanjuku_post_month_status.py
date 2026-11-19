@@ -1770,3 +1770,28 @@ def test_the_visit_resets_are_bounded():
         post._open_retry_due(state, 'map')
         post._open_retry_due(state, 'main_menu')
     assert state['open_resets'] == post.OPEN_MENU_RESETS
+
+
+def test_the_scan_releases_the_field_when_the_menu_never_opens():
+    # docich#4658: it used to hold the map until MAX_STEPS (phase_reads 102
+    # with no input, 10-12 s idles per observation).
+    mem = memory()
+    post.arm(mem)
+    state = mem['post_month_status']
+    state.update(stage='open_menu', phase_reads=post.OPEN_MENU_GIVEUP_READS + 1,
+                 open_tries=post.OPEN_MENU_TRIES)
+    field = Screen([], None, '', kind='map')
+    assert post.step(field, mem, None) is None
+    assert 'post_month_status' not in mem
+    assert mem['post_month_status_last']['failed'] == 'menu_never_opened'
+
+
+def test_the_scan_keeps_trying_before_the_giveup_bound():
+    mem = memory()
+    post.arm(mem)
+    state = mem['post_month_status']
+    state.update(stage='open_menu', phase_reads=post.OPEN_MENU_GIVEUP_READS - 2,
+                 open_tries=post.OPEN_MENU_TRIES)
+    field = Screen([], None, '', kind='map')
+    assert post.step(field, mem, None) == []
+    assert 'post_month_status' in mem
