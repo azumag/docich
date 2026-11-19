@@ -1237,6 +1237,17 @@ def _start_reanchor_jump(mem, *, owner=None):
     return [pad('x')]
 
 
+def _jump_field_ready(screen):
+    '''docich#4658: may a castle jump open the X menu on this frame?
+
+    A field frame without the month/gold HUD is a camera pan, a battle
+    announcement or another mode transition where X does nothing. The
+    jump used to start there, spend both presses and die (106 of 106
+    trips before v1172, 'field_unstable' after).
+    '''
+    return bool(screen.header) and bool(screen.cursor) and not screen.marker
+
+
 def _want_castle_jump(mem, order, source, goal):
     chapter = mem.get('chapter') or 0
     if chapter not in Y_JUMP_OFFSET:
@@ -2222,7 +2233,12 @@ def map_step(screen: Screen, mem, frame):
                 and not y_jump_unreachable(mem, source)
                 and _want_y_jump(mem, order, source, 'map')):
             return _start_y_jump(mem, order, source, 'map')
-    if screen.cursor and not screen.marker and _want_castle_jump(mem, order, source, goal):
+    # docich#4658: a field frame without the month/gold HUD is a camera pan,
+    # battle announcement or other mode transition where X does nothing. The
+    # jump used to start there, spend both presses and die with
+    # 'field_unstable' (or 'menu_not_open' before v1172), then start again on
+    # the next frame. Only open the trip once the field is readable.
+    if _jump_field_ready(screen) and _want_castle_jump(mem, order, source, goal):
         return _start_castle_jump(mem, order, source)
     result = nav_step(screen, mem, frame, goal, source, step=order['step'])
     if result == 'infeasible':

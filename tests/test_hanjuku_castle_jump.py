@@ -1058,3 +1058,14 @@ def test_a_hudless_field_does_not_spend_the_x_press():
     for _ in range(M.CASTLE_JUMP_MENU_WAIT - 1):
         assert M.castle_jump_step(raw_field, mem, None) == []
         assert mem['castle_jump']['menu_presses'] == 1
+
+
+def test_a_hudless_field_never_starts_the_jump():
+    # docich#4658: X does nothing on a HUD-less field frame, so the trip
+    # must not open there (it used to burn both presses and die).
+    raw = _screen('map', [], cursor=(140, 120))
+    assert not M._jump_field_ready(raw)
+    ready = Screen(lines=[], hand=None, text='', kind='map',
+                   cursor=(140, 120),
+                   header={'chapter': 1, 'year': 9, 'month': 2, 'gold': 44})
+    assert M._jump_field_ready(ready)
