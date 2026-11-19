@@ -1799,6 +1799,13 @@ def interim_candidates(mem, allow_sole=False) -> dict:
                 'general': MOVE_ANY_GENERAL, 'source': source, 'target': target,
                 'cards': [], 'after': None, 'purpose': 'attack',
                 'source_probe': True,
+                # docich#4696: mark it a read-only roster probe as well, so the
+                # deploy flow reads the source list with _observe_garrison and
+                # backs out (B,B) instead of trying to send a general the bot
+                # has not read. ch3 14-x: the source probe reached the list but
+                # the plain source_probe path kept going to a sortie it could
+                # not resolve, and the garrison stayed at four castles.
+                'roster_probe': True,
                 'note': f'暫定: 膠着のため{source}の将軍一覧を読んでから{target}へ出撃する'}
     return out
 
