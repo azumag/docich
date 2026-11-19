@@ -1717,3 +1717,13 @@ def test_a_menu_without_a_locatable_row_walks_instead_of_idling():
     menu = Screen([], (146, 33, 166, 46), 'メニュー', kind='main_menu')
     assert post.step(menu, mem, None) == [pad('up')]
     assert state['menu_blind'] == 1
+
+
+def test_the_scan_owns_menu_frames_while_walking_them():
+    # docich#4658: the monthly shop flow used to take the menu frames the
+    # scan had just opened, so the scan never reached roster.
+    from docich.hanjuku import orchestrator as O
+    assert O._post_month_menu_owns({'post_month_status': {'stage': 'open_menu'}})
+    assert not O._post_month_menu_owns({'post_month_status': {'stage': 'roster'}})
+    assert not O._post_month_menu_owns({'post_month_status': {'stage': 'await_map'}})
+    assert not O._post_month_menu_owns({})
