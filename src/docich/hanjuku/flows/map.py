@@ -1841,6 +1841,8 @@ def _end_general_jump(screen, mem, why):
     # roster" from "target visible but selected never matched" — record the
     # highlighted name and the visible roster rows (x=168 column).
     rows = sorted({w for x, y, w in _options(screen) if x == 168})[:12] if screen.kind == 'text' else []
+    seen = jump.get('seen') or []
+    target_seen = any(_canonical_general(w) == jump.get('general') for w in seen)
     _record(mem, 'general_jump_failed', target=jump.get('general'),
             screen=screen.kind,
             observed_metric={'why': why, 'total': jump.get('total'),
@@ -1848,6 +1850,8 @@ def _end_general_jump(screen, mem, why):
                              'scrolls': jump.get('scrolls'),
                              'selected': screen.selected,
                              'rows': rows,
+                             'seen_count': len(seen),
+                             'target_seen': target_seen,
                              'text': (screen.text or '')[:48]},
             reason='しょうぐん一覧から将軍へSELECTで飛べないため、野営探索へ戻る')
     if screen.kind in ('main_menu', 'general_list', 'castle_menu'):
@@ -1990,6 +1994,13 @@ def general_jump_step(screen, mem, frame):
                 return []
             return _end_general_jump(screen, mem, 'hand_hidden')
         jump['blind'] = 0
+        # docich#4752: accumulate every roster name seen while scrolling so a
+        # general_missing failure can prove whether the target was absent
+        # from the panel or merely never reached (bounded to 240 entries).
+        seen = jump.setdefault('seen', [])
+        for _x, _y, word in _options(screen):
+            if _x == 168 and word not in seen and len(seen) < 240:
+                seen.append(word)
         if _canonical_general(screen.selected or '') == target:
             jump['phase'] = 'confirm'
             jump['age'] = 0
