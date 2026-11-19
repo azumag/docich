@@ -820,7 +820,28 @@ def _garrison_rotation(mem, owned, busy, heading, taken=()):
     return out
 
 
-INTERIM_CARDS = ('イッテツーン', 'イッテツーン')   # same opener as a lost melee's retry
+INTERIM_CARDS = ('イッテツーン', 'イッテツーン')
+
+def _stock_cards(mem, wanted):
+    '''docich#4685: carry cards the country actually holds.
+
+    The planned cards were dropped at the list when out of stock, so an
+    attack could march with an empty kit: ch2 2026-11-19 sent 37/38 HP
+    generals at アウスパジア (enemy HP 85) twice while ノリウツール 21 and
+    バグストーム 25 sat in stock, and both waves retreated. Keep the
+    wanted cards that are in stock, else carry the best-stocked ones.
+    '''
+    stock = mem.get('card_stock') or {}
+    if not isinstance(stock, dict) or not stock:
+        return list(wanted)   # unread stock is not evidence of an empty one
+    held = [c for c in wanted if isinstance(stock.get(c), int) and stock.get(c) > 0]
+    if held:
+        return held
+    ranked = sorted(((n, q) for n, q in stock.items()
+                     if isinstance(q, int) and q > 0 and isinstance(n, str)),
+                    key=lambda row: -row[1])
+    return [n for n, _ in ranked[:2]]
+   # same opener as a lost melee's retry
 
 # Generals the hub's latest complete roster must show before the hero joins
 # it: a confirmed staffed hub, so he is never dropped into an unmeasured one.
@@ -1222,7 +1243,7 @@ def interim_candidates(mem, allow_sole=False) -> dict:
         # this castle, else the retry opener (two イッテツーン). Cards out of
         # stock are dropped at the card list (card_drop), never waited for.
         base = chart_orders.get(target) or card_orders.get(target)
-        cards = list(base['cards']) if base and base.get('cards') else list(INTERIM_CARDS)
+        cards = _stock_cards(mem, list(base['cards']) if base and base.get('cards') else list(INTERIM_CARDS))
         if chart.is_boss_castle(target):
             cards = []   # 波: strict kit waits for nobody — carry what is there
         sorties[purpose].append({
@@ -1531,7 +1552,7 @@ def interim_candidates(mem, allow_sole=False) -> dict:
         wave_busy = busy | planned_busy | committed
         purpose = 'retake' if wave_target in lost else 'attack'
         base = chart_orders.get(wave_target) or card_orders.get(wave_target)
-        cards = list(base['cards']) if base and base.get('cards') else list(INTERIM_CARDS)
+        cards = _stock_cards(mem, list(base['cards']) if base and base.get('cards') else list(INTERIM_CARDS))
         extra = 0
         while extra < INTERIM_WAVE_LIMIT:
             more = _wave_pick(mem, wave_target, owned, wave_busy, allow_sole)
