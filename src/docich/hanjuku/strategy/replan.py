@@ -1716,17 +1716,34 @@ def interim_candidates(mem, allow_sole=False) -> dict:
                       if isinstance(names, (list, tuple)))
         totals = mem.get('country_general_count')
         total = totals.get('count') if isinstance(totals, dict) else None
-        already = any(o.get('source') == home
+        enemies = [c for c in castles if c not in owned and not chart.is_boss_castle(c)]
+        # docich#4705: the probe must open the castle that can actually send.
+        # ch4 17-x held 17 generals at home, but every 四季王城 is blocked from
+        # there (march_blocked) and only the frontier castles can reach them;
+        # their lists were never read, so startable answered
+        # 'general_unconfirmed_at_source' and no order was ever offered. Prefer
+        # a source that owns a spare and can march to some enemy, home on ties.
+        source = None
+        target = None
+        for candidate_source in sorted(
+                owned,
+                key=lambda c: (c != home,
+                               -len(set(garrison_map.get(c) or ())), c)):
+            reachable = [e for e in enemies
+                         if not routes.is_road(chapter)
+                         or not chart.march_blocked(chapter, candidate_source, e, owned)]
+            if reachable:
+                source, target = candidate_source, reachable[0]
+                break
+        already = any(o.get('source') == source
                       for o in (*sorties['retake'], *sorties['attack'], *moves))
-        target = next((c for c in castles
-                       if c not in owned and not chart.is_boss_castle(c)), None)
-        if (home in owned and target and not already
+        if (source in owned and target and not already
                 and type(total) is int and total > located):
-            out['probe_home_1'] = {
-                'general': MOVE_ANY_GENERAL, 'source': home, 'target': target,
+            out['probe_stuck_1'] = {
+                'general': MOVE_ANY_GENERAL, 'source': source, 'target': target,
                 'cards': [], 'after': None, 'purpose': 'attack',
                 'source_probe': True,
-                'note': f'暫定: 膠着のため{home}の将軍一覧を読んでから{target}へ出撃する'}
+                'note': f'暫定: 膠着のため{source}の将軍一覧を読んでから{target}へ出撃する'}
     return out
 
 
