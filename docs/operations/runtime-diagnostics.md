@@ -704,6 +704,17 @@ cmdlineの生バイト・URL・パス・PIDは出さず、argv/生バイトは�
 - boundary: Soren `tmp/state/corner_boundary_improvement.json` /
   `corner_boundary_prediction.json` の `completed_at` と age のみ。コーナーの
   境界待ちの可否を判定できる。
+- boundary.prediction.round: 予想round（v2）が存在するときだけ、その進捗を固定キーで投影する
+  （`current_prediction.json` が無い場合はキー自体を出さず、既存のenvelopeを増やさない）。
+  `present` / `readable` / `round_version` / `games_completed` / `max_games` /
+  `remaining_games` / `target_first_game` / `last_game_num` / `created_age_sec` /
+  `progress_age_sec`（state mtimeからの経過）/ `fence_present` / `fence_age_sec` /
+  `retry`（`attempt` / `next_retry_at` / `retry_active` / `http_code`）/
+  `complete` / `settlement_pending` / `settlement_pending_sec`。
+  `complete=true` かつ `settlement_pending=true` は「48/48まで到達したが、
+  その後に `corner_boundary_prediction.json` が更新されていない」ことを表す。
+  prediction id・outcome id・本文は出さない。同じ投影はhard ceilingで `corners` が
+  落ちても残るよう top-level `prediction.boundary.round` にも複製される。
 - boundary.audio: 共有オーディオキュー（`COMMENT_QUEUE_DIR`、既定
   `<soren>/tmp/.comment_queue`）の `comment_*.txt` / `comment_*.playing` の
   件数、最古itemのage、固定enum `reason`（`quiet` / `queued` / `playing` /

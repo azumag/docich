@@ -2232,7 +2232,91 @@ def _corner_manual_capabilities(g: GlobalConfig, row: Any) -> dict[str, Any]:
             "manual_start_reason": reason}
 
 
-def _corners_view(g: GlobalConfig) -> dict[str, Any]:
+def _prediction_round_view(g: GlobalConfig, soren_root=None) -> dict[str, Any]:
+    """Bounded progress of the Soren prediction round that holds the corner slot.
+
+    The corner panel otherwise only shows ``next_due`` and a pending corner that
+    has not started, which reads like a stuck rotation while a contested 48-game
+    prediction is still counting. Only fixed counters, enums and ages are
+    exposed; the prediction id and outcome ids never leave the state file.
+    """
+    try:
+        root = _resolve_soren_root(g, str(soren_root) if soren_root else None)
+    except Exception:
+        return {"present": False, "readable": False}
+    state_dir = root / "tmp" / "state"
+    path = state_dir / "current_prediction.json"
+    now = time.time()
+
+    def _bounded(value, low, high):
+        return (value if isinstance(value, int) and not isinstance(value, bool)
+                and low <= value <= high else None)
+
+    def _age(mtime):
+        return max(0, int(now - mtime)) if mtime is not None else -1
+
+    def _mtime(target):
+        try:
+            return target.stat().st_mtime
+        except OSError:
+            return None
+
+    retry_raw = _load_json_file(state_dir / "prediction_retry" / "resolve.json")
+    retry = retry_raw if isinstance(retry_raw, dict) else {}
+    next_retry = retry.get("next_retry_at")
+    next_retry = (int(next_retry) if isinstance(next_retry, (int, float))
+                  and not isinstance(next_retry, bool) and next_retry >= 0 else None)
+    http_code = retry.get("http_code")
+    raw = _load_json_file(path)
+    created_at = _view_time(raw.get("created_at")) if isinstance(raw, dict) else None
+    out: dict[str, Any] = {
+        "present": path.is_file(),
+        "readable": isinstance(raw, dict),
+        "round_version": None,
+        "games_completed": None,
+        "max_games": None,
+        "remaining_games": None,
+        "created_age_sec": max(0, int(now - created_at)) if created_at is not None else -1,
+        "progress_age_sec": _age(_mtime(path)),
+        "fence_present": (state_dir / "regression_check_in_progress").is_file(),
+        "fence_age_sec": _age(_mtime(state_dir / "regression_check_in_progress")),
+        "retry": {
+            "attempt": _bounded(retry.get("attempt"), 0, 1000),
+            "next_retry_at": next_retry,
+            "retry_active": (next_retry is not None and next_retry > now),
+            "http_code": (str(http_code)[:16] if http_code is not None else None),
+        },
+        "complete": None,
+        "settlement_pending": None,
+        "settlement_pending_sec": None,
+    }
+    if not isinstance(raw, dict):
+        return out
+    completed = _bounded(raw.get("games_completed"), 0, 1_000_000)
+    maximum = _bounded(raw.get("max_games"), 0, 1_000_000)
+    out.update(
+        round_version=_bounded(raw.get("round_version"), 0, 99),
+        games_completed=completed,
+        max_games=maximum,
+        remaining_games=(max(0, maximum - completed)
+                         if completed is not None and maximum is not None else None),
+    )
+    if completed is not None and maximum is not None and maximum > 0 and completed >= maximum:
+        out["complete"] = True
+        wrote_at = _mtime(path)
+        boundary = _load_json_file(state_dir / "corner_boundary_prediction.json")
+        boundary_at = _view_time(boundary.get("completed_at")) if isinstance(boundary, dict) else None
+        if wrote_at is not None:
+            pending = boundary_at is None or boundary_at < wrote_at
+            out["settlement_pending"] = bool(pending)
+            if pending:
+                out["settlement_pending_sec"] = max(0, int(now - wrote_at))
+    elif completed is not None and maximum is not None:
+        out["complete"] = False
+    return out
+
+
+def _corners_view(g: GlobalConfig, soren_root=None) -> dict[str, Any]:
     """Read-only page model: rotation ledger + game switch + catalog + corner states."""
     from .corner_catalog import load_catalog
 
@@ -2338,6 +2422,7 @@ def _corners_view(g: GlobalConfig) -> dict[str, Any]:
         },
         "rotation": _rotation_view(g),
         "game_switch": _game_switch_view(g),
+        "prediction": _prediction_round_view(g, soren_root),
         "catalog": catalog,
         "catalog_status": catalog_status,
         "catalog_error": catalog_error,
@@ -4999,7 +5084,7 @@ class _Handler(BaseHTTPRequestHandler):
     def _handle_get_corners(self) -> int:
         """Read-only rotation/game-switch/corner projection (seed/uuid は出さない)."""
         try:
-            view = _corners_view(self.g)
+            view = _corners_view(self.g, self.soren_root)
         except Exception as exc:
             self._send_error_json(500, "corners_unavailable", str(exc)[:200])
             return 500

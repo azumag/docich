@@ -6577,12 +6577,97 @@ def _collect_audio_queue(soren, now):
     }
 
 
+def _collect_prediction_round(root, now, boundary_completed):
+    """Progress of the Soren prediction round that holds the corner boundary.
+
+    A contested prediction runs for the advertised 48 games, which can take
+    hours, while the boundary file only carries ``completed_at``. Without the
+    round's own counters an operator cannot tell "still counting" from
+    "completed but the settlement never reached the boundary", and a corner
+    that waits at the boundary looks stuck. Only fixed counters, enums and
+    ages are emitted; the prediction id and outcome ids stay private.
+    """
+    path = root / "current_prediction.json"
+    present, readable, data = _load_state_file(path)
+    if not present:
+        # No prediction round is running: emit no subsection at all so the
+        # envelope is byte-identical to the pre-#4719 shape and cannot push
+        # another section over the diagnostics budget.
+        return None
+    retry_present, retry_readable, retry = _load_state_file(
+        root / "prediction_retry" / "resolve.json"
+    )
+    retry_next = _finite_number(retry.get("next_retry_at")) if retry_readable else None
+    http_code = retry.get("http_code") if retry_readable else None
+    fence = root / "regression_check_in_progress"
+    entry = {
+        "present": present,
+        "readable": readable,
+        "round_version": None,
+        "games_completed": None,
+        "max_games": None,
+        "remaining_games": None,
+        "target_first_game": None,
+        "last_game_num": None,
+        "created_age_sec": -1,
+        "progress_age_sec": _file_age_sec(path, now),
+        "fence_present": fence.is_file(),
+        "fence_age_sec": _file_age_sec(fence, now),
+        "retry": {
+            "present": retry_present,
+            "readable": retry_readable,
+            "attempt": _bounded_int(retry.get("attempt")) if retry_readable else None,
+            "next_retry_at": int(retry_next) if retry_next is not None else None,
+            "retry_active": (retry_next is not None and retry_next > now),
+            "http_code": (str(http_code)[:16] if http_code is not None else None),
+        },
+        "complete": None,
+        "settlement_pending": None,
+        "settlement_pending_sec": None,
+    }
+    if not readable:
+        return entry
+
+    def _counter(key, limit=1_000_000):
+        value = _bounded_int(data.get(key))
+        return value if value is not None and 0 <= value <= limit else None
+
+    version = _counter("round_version", 99)
+    completed = _counter("games_completed")
+    maximum = _counter("max_games")
+    entry.update(
+        round_version=version,
+        games_completed=completed,
+        max_games=maximum,
+        remaining_games=(max(0, maximum - completed)
+                         if completed is not None and maximum is not None else None),
+        target_first_game=_counter("target_first_game"),
+        last_game_num=_counter("last_game_num"),
+        created_age_sec=_bounded_age(data.get("created_at"), now),
+    )
+    if completed is not None and maximum is not None and maximum > 0 and completed >= maximum:
+        entry["complete"] = True
+        try:
+            wrote_at = path.stat().st_mtime
+        except OSError:
+            wrote_at = None
+        if wrote_at is not None:
+            pending = boundary_completed is None or boundary_completed < wrote_at
+            entry["settlement_pending"] = bool(pending)
+            if pending:
+                entry["settlement_pending_sec"] = max(0, int(now - wrote_at))
+    elif completed is not None and maximum is not None:
+        entry["complete"] = False
+    return entry
+
+
 def _collect_boundary(root, now):
     """Freshness of the confirmed cycle boundaries the corners gate on.
 
     The boundary is published in the Soren state dir (see
-    strategy/ab_gate.sh, strategy/improve.sh, twitch_predictions.sh). Only the
-    completion timestamp and its age are surfaced.
+    strategy/ab_gate.sh, strategy/improve.sh, twitch_predictions.sh). The
+    completion timestamp and its age are surfaced, plus the prediction round's
+    own progress so a long contest can be told apart from a stalled settlement.
     """
     result = {}
     for kind in ("improvement", "prediction"):
@@ -6594,6 +6679,11 @@ def _collect_boundary(root, now):
             "completed_at": completed,
             "age_sec": int(now - completed) if completed is not None else -1,
         }
+    round_state = _collect_prediction_round(
+        root, now, result["prediction"]["completed_at"]
+    )
+    if round_state is not None:
+        result["prediction"]["round"] = round_state
     # root is <soren>/tmp/state, so the Soren root is two levels up.
     result["audio"] = _collect_audio_queue(root.parent.parent, now)
     return result
@@ -9750,6 +9840,54 @@ def _bounded_age(value, now):
     return age if 0 <= age <= 10 ** 9 else -1
 
 
+def _prediction_round_copy(value):
+    """Bounded copy of ``corners.boundary.prediction.round`` for the exempt section.
+
+    ``_collect_prediction_round`` already bounds its fields; this keeps the
+    fixed key shape for the top-level duplicate and never passes an unexpected
+    value through when an older collector shape is read.
+    """
+    value = value if isinstance(value, dict) else {}
+    if not value:
+        return None
+    retry = value.get("retry")
+    retry = retry if isinstance(retry, dict) else {}
+
+    def _int(raw, low, high):
+        return (raw if isinstance(raw, int) and not isinstance(raw, bool)
+                and low <= raw <= high else None)
+
+    def _bool(raw):
+        return raw if isinstance(raw, bool) else None
+
+    http_code = retry.get("http_code")
+    return {
+        "present": value.get("present") is True,
+        "readable": value.get("readable") is True,
+        "round_version": _int(value.get("round_version"), 0, 99),
+        "games_completed": _int(value.get("games_completed"), 0, 1_000_000),
+        "max_games": _int(value.get("max_games"), 0, 1_000_000),
+        "remaining_games": _int(value.get("remaining_games"), 0, 1_000_000),
+        "target_first_game": _int(value.get("target_first_game"), 0, 10 ** 12),
+        "last_game_num": _int(value.get("last_game_num"), 0, 10 ** 12),
+        "created_age_sec": _int(value.get("created_age_sec"), -1, 10 ** 9),
+        "progress_age_sec": _int(value.get("progress_age_sec"), -1, 10 ** 9),
+        "fence_present": _bool(value.get("fence_present")),
+        "fence_age_sec": _int(value.get("fence_age_sec"), -1, 10 ** 9),
+        "retry": {
+            "present": retry.get("present") is True,
+            "readable": retry.get("readable") is True,
+            "attempt": _int(retry.get("attempt"), 0, 1000),
+            "next_retry_at": _int(retry.get("next_retry_at"), 0, 10 ** 12),
+            "retry_active": _bool(retry.get("retry_active")),
+            "http_code": (http_code[:16] if isinstance(http_code, str) else None),
+        },
+        "complete": _bool(value.get("complete")),
+        "settlement_pending": _bool(value.get("settlement_pending")),
+        "settlement_pending_sec": _int(value.get("settlement_pending_sec"), 0, 10 ** 9),
+    }
+
+
 def _prediction_projection(corners, now):
     """The 予想王 evidence as a top-level section the ceiling drops keep (#2805).
 
@@ -9795,7 +9933,7 @@ def _prediction_projection(corners, now):
     def _text(value):
         return value if isinstance(value, str) else None
 
-    return {
+    result = {
         "state_dir_found": corners.get("state_dir_found") is True,
         "leaderboard": dict(leaderboard),
         "soren_handoff": dict(handoff),
@@ -9830,6 +9968,10 @@ def _prediction_projection(corners, now):
             "age_sec": _bounded_age(prediction.get("completed_at"), now),
         },
     }
+    round_state = _prediction_round_copy(prediction.get("round"))
+    if round_state is not None:
+        result["boundary"]["round"] = round_state
+    return result
 
 
 # Fixed lawsim_corner.json status enum (lawsim_corner.py); anything else is None.
