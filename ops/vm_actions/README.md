@@ -376,6 +376,10 @@ public guard を弱めたり、任意 command/argument を受けたりしませ�
 - 本文は**配信で読み上げられ、かつ workflow run の入力として公開リポジトリ上に残る**。秘密情報は入れない。実行出力は gateway が VM private log に退避する（Actions には出ない）。
 - 話者は audio_worker 既定。変更したい場合は別 PR で固定の許可リスト入力を追加する。
 
+### `PR merge audio report`（main への merge を audio-worker で報告する owner-only workflow）
+
+`.github/workflows/pr-merge-audio-report.yml`。protected `main` への push のうち、owner が pull request を main へマージしたときに、その PR タイトルから作った 1 文（240字以内）を `report_pr_merge_audio.sh` 経由で audio_worker に積みます（enqueue 成功で終了し、再生完了は待たない）。free-form 入力は無く、`authorize_pr_merge_audio.py` が owner / protected main / workflow path / push payload を完全一致で検証し、`pr_merge_audio_report.py` が `/commits/{sha}/pulls` から merged PR を選んでタイトルを sanitize・base64 化します。PR が無い push は VM に接続せず skip します。deploy と競合した `gateway_busy` だけを上限付きで再試行し、共有 concurrency group は置かずに連続 merge の取りこぼしを防ぎます。本文は Actions log に出さず、失敗しても merge / deploy は止めません。詳細は [docs/operations/pr-merge-audio-report.md](../../docs/operations/pr-merge-audio-report.md)。
+
 ### program admission の読取専用投影
 
 `diagnostics.program_admission_evidence` は、通常の `pending` が `dispatched`
