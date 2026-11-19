@@ -1827,7 +1827,8 @@ def castle_jump_step(screen, mem, frame):
     return _end_castle_jump(screen, mem, 'unknown_phase:' + str(phase))
 
 
-GENERAL_JUMP_LIMIT = 48          # observations across the whole roster trip
+GENERAL_JUMP_LIMIT = 96          # observations across the whole roster trip
+GENERAL_JUMP_SCROLL_LIMIT = 40   # the all-general roster outgrows the castle list's 16
 
 
 def _end_general_jump(screen, mem, why):
@@ -1993,7 +1994,7 @@ def general_jump_step(screen, mem, frame):
             jump['phase'] = 'confirm'
             jump['age'] = 0
             return [pad('select')]
-        if int(jump.get('scrolls') or 0) < CASTLE_JUMP_SCROLL_LIMIT:
+        if int(jump.get('scrolls') or 0) < GENERAL_JUMP_SCROLL_LIMIT:
             jump['scrolls'] = int(jump.get('scrolls') or 0) + 1
             jump['age'] = 0
             batch = roster_list_batch(screen, target)
