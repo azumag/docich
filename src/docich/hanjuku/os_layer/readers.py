@@ -50,8 +50,23 @@ def _current(screen: Screen):
     if not screen.hand:
         return None
     x0, y0, x1, y1 = screen.hand
+    # docich#4686: the hand box's origin differs by one row between menus. The
+    # month/shop boxes start one row above their text (y0+6 is the row), while
+    # the main menu's box starts on the row itself (y0 is the row). Matching
+    # only y0+6 missed しょうぐん there, and the scan pressed up at the top row
+    # until its give-up bound (live: main_menu 90 times, stage stayed
+    # open_menu; house roster opened 2 of 18 tries). Accept every plausible
+    # row and prefer the one nearest the historical y0+6.
     row = y0 + 6
-    cands = [(x, y, w) for x, y, w in _options(screen) if abs(y - row) <= 2 and x >= x1 - 4]
+    offsets = (6, 0, 3, -6)
+    # The text can start at the box's left edge (main menu) or just inside its
+    # right edge (month/shop rows), so accept anything the box covers with a
+    # little slack on both sides instead of only the right edge.
+    cands = [(x, y, w) for x, y, w in _options(screen)
+             if any(abs(y - (y0 + off)) <= 2 for off in offsets)
+             and x0 - 8 <= x <= x1 + 8]
+    if cands:
+        cands.sort(key=lambda c: (abs(c[1] - row), c[0]))
     # A blank cell (e.g. right of ょ in the kana grid) still has a position.
     return min(cands, default=None) or (((x1 - 4 + 7) // 8) * 8, row, '')
 
