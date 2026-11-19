@@ -1849,11 +1849,17 @@ def _recall_dispatch_step(screen, mem, state):
                 'interrupted': interrupted,
                 'general': state.get('general') if state.get('fort') else None}, resulting_event=status,
                 reason='帰還の本人・移動・到着を確認できず未確認として保持し、有限な操作を終了')
-        if status == 'arrival_unconfirmed':
+        if status == 'arrival_unconfirmed' and not state.get('picker_closed'):
             # The same camp was sent at the same castle month after month
             # (g1190 2026-11-17 21:1x: リーキ -> アルマムーン three times) and the
             # general never moved. Remember the pair so the next attempt picks
             # a different castle instead of repeating a silent failure.
+            # picker_closed means the destination picker already dropped back
+            # to the field map — the game accepted the dispatch and the
+            # general is walking home in game time, which the 6-step window
+            # cannot verify. Counting those as failures poisoned every
+            # (camp, castle) pair until _recall_exhausted abandoned the camp
+            # (docich#4755 follow-up: generals stuck in field camps).
             camp = state.get('target')
             goal = state.get('goal')
             if (isinstance(camp, (list, tuple)) and len(camp) == 2
