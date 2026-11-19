@@ -881,6 +881,27 @@ def _camp_inside_roof(camp, roofs):
     return False
 
 
+Y_ROUTE_RETRIES = 6
+
+
+def _y_route_step(screen, mem, state):
+    """Camp recall through the whole-map jump (owner 2026-11-19: no きかん)."""
+    goal = state.get('goal')
+    if not goal:
+        return []
+    if (mem.get('y_jumped') or {}).get('RECALL') == goal:
+        return _finish_hero_recall(mem, state, goal)
+    state['steps'] = int(state.get('steps') or 0) + 1
+    if not mem.get('y_jump') and state['steps'] > Y_ROUTE_RETRIES:
+        # The view never produced a receipt: fall back to the menu route
+        # rather than holding the recall forever.
+        state['stage'], state['steps'] = 'hero_open', 0
+        return [pad('select')]
+    if screen.kind in ('map', 'world_map'):
+        return _start_y_jump(mem, {'step': 'RECALL'}, goal, 'target')
+    return []
+
+
 def _camp_recall_step(screen: Screen, mem, frame, *, observed_camps=None):
     """Owner rule (2026-09-28): a camp (野営) seen on screen is recalled.
 
@@ -1114,8 +1135,22 @@ def _camp_recall_step(screen: Screen, mem, frame, *, observed_camps=None):
     if stage == 'hero_focus':
         if screen.kind != 'map':
             return []                  # battle results and messages fade out first
+        # Owner 2026-11-19: returning from a camp through きかん takes too long
+        # — camp recalls go home through the whole-map Y jump instead. The
+        # menu route (SELECT → きかん) still owns the hero-rescue and
+        # weak-return recalls, whose retreat-recheck bookkeeping depends on it.
+        goal = state.get('goal') or (_fort_recall_goal(mem, state) if state.get('fort')
+                                     else _recall_goal(mem))
+        if goal and (state.get('camp') or state.get('camp_world')):
+            state['goal'] = goal
+            state['stage'], state['steps'] = 'y_route', 0
+            _record(mem, 'camp_recall_y_route', observed_metric={'goal': goal},
+                    reason='野営からの帰還は「きかん」を使わず、全体マップ（Y）で自城へ直接戻る（オーナー指示）')
+            return _y_route_step(screen, mem, state)
         state['stage'], state['steps'] = 'hero_open', 0
         return [pad('select')]         # measured: SELECT centres the cursor on the hero
+    if stage == 'y_route':
+        return _y_route_step(screen, mem, state)
     if stage == 'hero_open':
         if screen.kind != 'map':
             return []
