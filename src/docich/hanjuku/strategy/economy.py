@@ -1174,12 +1174,16 @@ def _prioritise_recruit(mem, shop, gold):
     # deferred_egg must no longer cancel recruitment after a verified
     # recovery/no-recovery result; the normal cash/shortage gates still apply.
     if (shop.get('recruit') == 'deferred_egg'
-            and shop.get('egg') in ('done', 'not_needed')
-            and _recruit_shortage(mem) is not None):
+            and shop.get('egg') in ('done', 'not_needed', 'skipped')
+            and (_recruit_shortage(mem) is not None or shop.get('egg') == 'skipped')):
+        # docich#4725: a skipped egg is a resolved egg. ch6 24-x held
+        # recruit=deferred_egg for whole months while egg=skipped, so no
+        # general or soldier was ever bought with 9.8k gold in hand. Release
+        # the deferral and let the ordinary shortage / top-up gates decide.
         shop['recruit'] = 'pending'
         shop.pop('recruit_measured_budget', None)
         _record(mem, 'recruit_egg_rechecked', month=shop.get('key'),
-                reason='同月の卵回復完了を確認したため募集を再計画する')
+                reason='卵が回復不要（skipped）で確定したため募集の保留を解いて再計画する')
     if (egg_deferred_for_soldiers(shop)
             or shop.get('recruit') in ('deferred_egg', 'deferred_cash', 'deferred_army')
             or _stop_unneeded_recruit(mem, shop)):
