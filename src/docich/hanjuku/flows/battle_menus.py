@@ -875,6 +875,33 @@ def _disabled_defense_pending(screen, mem, cur):
     return None
 
 
+CARD_ROW_WALK_TOPDOWN = 2    # ups that reach the command box's top row
+CARD_ROW_WALK_AFTER = 2      # held observations before the deterministic walk
+CARD_MENU_TICK_LIMIT = 12    # hard bound after the walk has run
+
+def _card_row_walk(flow, screen, ticks):
+    '''docich#4673: reach きりふだ without a readable command-box cursor.
+
+    The measured box has three rows (たまごをつかう / きりふだ / たいきゃく,
+    16 px apart). When the cursor is unreadable the flow used to hold until
+    the tick limit and close with B, so a usable card was never tried. Up
+    twice reaches the top row from anywhere in this box; one down is
+    きりふだ, and A opens the list. Bounded; None when the box or tick is
+    not right for it.
+    '''
+    if (flow.get('stage') != 'menu'
+            or 'きりふだ' not in (screen.text or '') or ticks < CARD_ROW_WALK_AFTER):
+        return None
+    walk = int(flow.get('card_row_walk') or 0)
+    flow['card_row_walk'] = walk + 1
+    if walk < CARD_ROW_WALK_TOPDOWN:
+        return [pad('up')]
+    if walk == CARD_ROW_WALK_TOPDOWN:
+        return [pad('down')]
+    flow['stage'] = 'list'
+    return [pad('a')]
+
+
 def battle_menu_step(screen: Screen, mem):
     _migrate_card_evidence(mem)
     cur = mem.get('battle') or {}
@@ -917,31 +944,6 @@ def battle_menu_step(screen: Screen, mem):
                     observed_metric={'enemy_hp': cur.get('enemy_hp'), 'ally_hp': cur.get('ally_hp')},
                     reason='敵HPが一撃で倒せる値のため、奥の手・卵・切り札を選ばずメニューを閉じて白兵へ戻る')
         return [pad('b')]
-CARD_ROW_WALK_TOPDOWN = 2    # ups that reach the command box's top row
-CARD_ROW_WALK_AFTER = 2      # held observations before the deterministic walk
-CARD_MENU_TICK_LIMIT = 12    # hard bound after the walk has run
-
-def _card_row_walk(flow, screen, ticks):
-    '''docich#4673: reach きりふだ without a readable command-box cursor.
-
-    The measured box has three rows (たまごをつかう / きりふだ / たいきゃく,
-    16 px apart). When the cursor is unreadable the flow used to hold until
-    the tick limit and close with B, so a usable card was never tried. Up
-    twice reaches the top row from anywhere in this box; one down is
-    きりふだ, and A opens the list. Bounded; None when the box or tick is
-    not right for it.
-    '''
-    if 'きりふだ' not in (screen.text or '') or ticks < CARD_ROW_WALK_AFTER:
-        return None
-    walk = int(flow.get('card_row_walk') or 0)
-    flow['card_row_walk'] = walk + 1
-    if walk < CARD_ROW_WALK_TOPDOWN:
-        return [pad('up')]
-    if walk == CARD_ROW_WALK_TOPDOWN:
-        return [pad('down')]
-    flow['stage'] = 'list'
-    return [pad('a')]
-
     if flow and flow.get('read_kit'):
         # #4456: reuse the command-menu navigation to reach きりふだ, then let
         # card_list_step read the names. No selection and no consumption.
