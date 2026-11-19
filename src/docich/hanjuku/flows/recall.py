@@ -1490,6 +1490,19 @@ def _camp_recall_step(screen: Screen, mem, frame, *, observed_camps=None):
             _record(mem, 'camp_recall_skipped',
                     observed_metric={'marker': list(marker) if marker else None, 'roofs': len(roofs)},
                     reason='可視範囲に自軍城の屋根がなく帰還先を選べないため取り消す')
+            # Owner 2026-11-19: the in-place return judgement is very slow on
+            # screen, so one failed return switches to the whole-map jump
+            # instead of walking the field again. The jump budget keeps its
+            # own bound, so this cannot loop.
+            goal = state.get('goal') or (_fort_recall_goal(mem, state) if state.get('fort')
+                                         else _recall_goal(mem))
+            if (marker and goal and (mem.get('y_jumps') or {}).get('RECALL:target', 0) < 2
+                    and not mem.get('y_jump') and not mem.get('castle_jump')):
+                state['goal'] = goal
+                _record(mem, 'camp_recall_y_jump_fallback',
+                        observed_metric={'goal': goal, 'roofs': len(roofs)},
+                        reason='帰還先の判定が一度失敗したため、全体マップ（Y）で自軍城へ直接戻る')
+                return _start_y_jump(mem, {'step': 'RECALL'}, goal, 'target')
             return [pad('b')]
         roof = min(roofs, key=lambda r: abs(r['target'][0] - marker[0]) + abs(r['target'][1] - marker[1]))
         dx = roof['target'][0] - marker[0]
