@@ -1446,6 +1446,21 @@ def step(screen, mem, frame):
         if screen.kind == 'map':
             from . import map as map_flow
             from ..strategy import orders as _orders
+            # The moving boss's waves outrank the monthly roster scan: while
+            # they are in flight and the cell is measured, yield the map so
+            # boss_pursuit/map_step can re-aim them (live g1288 2026-11-20:
+            # five waves camped while the scan held the field for minutes).
+            # Bounded by the same cap; the scan resumes when they settle.
+            if (mem.get('chapter') == 9 and mem.get('boss_wave_generals')
+                    and isinstance(mem.get('boss_cell'), dict)
+                    and int(state.get('boss_floor_yields') or 0) < SORTIE_FLOOR_YIELDS):
+                state['boss_floor_yields'] = int(state.get('boss_floor_yields') or 0) + 1
+                if state['boss_floor_yields'] == 1:
+                    _log(mem, 'post_month_boss_floor',
+                         observed_metric={'stage': state['stage'], 'month': mem.get('month'),
+                                          'waves': len(mem.get('boss_wave_generals') or {})},
+                         reason='ボス波が飛んでいる間は月次確認を延期し、マップをボス追撃へ明け渡す')
+                return None
             if (not (map_flow._month_sorties(mem).get('launches') or 0)
                     and int(state.get('floor_yields') or 0) < SORTIE_FLOOR_YIELDS
                     and _orders.next_order(mem) is not None):
