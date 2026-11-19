@@ -2463,18 +2463,31 @@ MONSTER_ATTACKLESS_TURNS = 1
 # A menu redraw re-decides the same turn on the next observation (14:13:28
 # and :29 both chose あたためる); decisions this close count as one turn.
 MONSTER_STALL_SAME_TURN_TICKS = 3
+# Total own turns a non-attackless stall may run before the summon returns.
+# The stall count needs 2*MONSTER_STALL_TURNS turns to prove neither skill
+# moves the enemy panel; two further turns are grace for a low hit rate.
+# g1190-ch1v4 2026-11-20 (docich#4738): サマカンテ vs 将軍リーキ kept ホット
+# ないちげき for 7+ own turns at enemy HP 30 while falling 614 -> 534 -> dead;
+# keeping the choice forever only delays the general's exposure that a lost
+# summon forces anyway, so the stall returns once ``return_risk`` allows it.
+MONSTER_STALL_RETURN_TURNS = 6
 
 
-def _monster_stall_switch(mem, owner, ally, enemy, action, skill_count, *, attackless=False):
+def _monster_stall_switch(mem, owner, ally, enemy, action, skill_count, *, attackless=False,
+                          return_risk=None):
     """Try the other skill once the chosen one has not moved the enemy's HP.
 
     Counts our own decided turns per skill while the enemy panel HP stays the
     same for this ally/enemy pair; any HP change starts over. When both skills
-    have spent their turns the choice is kept (returning the summon exposes
-    its general) and the stall is recorded once. ``attackless`` marks a menu
-    whose verified table rows are both zero for this opponent: there the
-    comparison budget shrinks to one turn per skill and the menu then returns
-    the summon instead of repeating commands that cannot damage the enemy.
+    have spent their turns the choice is kept while ``return_risk`` shields a
+    measured wounded/weak general; otherwise the stall is bounded by
+    MONSTER_STALL_RETURN_TURNS total own turns and the summon then returns,
+    because a summon that cannot move the enemy panel is only spending its own
+    HP and the general's exposure is forced once it falls. ``attackless``
+    marks a menu whose verified table rows are both zero for this opponent:
+    there the comparison budget shrinks to one turn per skill and the menu
+    then returns the summon instead of repeating commands that cannot damage
+    the enemy.
     """
     if owner != 'ally' or ally is None or enemy is None or skill_count < 2:
         return action
@@ -2507,6 +2520,19 @@ def _monster_stall_switch(mem, owner, ally, enemy, action, skill_count, *, attac
                         observed_metric={'ally': ally.name, 'enemy': enemy.name, 'enemy_hp': enemy.hp,
                                          'turns': dict(turns), 'attackless': True},
                         reason='両技とも攻撃性能がなく敵のHPが動かないため、無効な攻撃を繰り返さず召喚獣を戻す')
+            # Latch 'retreat' so a same-turn redraw cannot resurrect the skill.
+            stall['last'], stall['tick'] = 'retreat', tick
+            return 'retreat'
+        elif (not return_risk
+                and turns.get('skill1', 0) + turns.get('skill2', 0) >= MONSTER_STALL_RETURN_TURNS):
+            if not stall.get('returned'):
+                stall['returned'] = 'bounded'
+                _record(mem, 'monster_skill_stall', strategy_variant='monster_stall_bounded_return',
+                        observed_metric={'ally': ally.name, 'enemy': enemy.name, 'enemy_hp': enemy.hp,
+                                         'turns': dict(turns)},
+                        reason=f'両技とも{MONSTER_STALL_RETURN_TURNS}ターン敵のHPを動かせないため、'
+                               'これ以上削られる前に召喚獣を戻す')
+            stall['last'], stall['tick'] = 'retreat', tick
             return 'retreat'
         elif not stall.get('recorded'):
             stall['recorded'] = True
@@ -2860,7 +2886,7 @@ def monster_menu_step(screen: Screen, mem):
             action = default
         if not special_cycle and not damage_first and not damage_second and not chikyu and not lampkin:
             action = _monster_stall_switch(mem, owner, ally, enemy, action, len(skill_lines),
-                                           attackless=attackless)
+                                           attackless=attackless, return_risk=return_risk)
         # Keep the existing telemetry shape. The general's exposure risk is
         # still reported, but useful summons no longer request a return that
         # needs to be blocked by that separate guard.
@@ -2878,8 +2904,12 @@ def monster_menu_step(screen: Screen, mem):
                    '帰還する（オーナー 2026-11-03）')
         elif action == 'retreat':
             label = 'たまごに もどれ'
+            returned = (mem.get('monster_stall') or {}).get('returned')
             why = ('両技とも攻撃性能がなく敵のHPも動かないため、無効な攻撃を繰り返さず戻す'
-                   if (mem.get('monster_stall') or {}).get('returned') else
+                   if returned is True else
+                   f'両技で{MONSTER_STALL_RETURN_TURNS}ターン敵のHPを動かせないため、'
+                   'これ以上削られる前に戻す'
+                   if returned == 'bounded' else
                    '両技に攻撃性能がない召喚獣のため、無効な攻撃を繰り返さず戻す')
         elif balloon_cycle:
             label = second if action == 'skill2' else first

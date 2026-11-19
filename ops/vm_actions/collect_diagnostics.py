@@ -7899,6 +7899,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v1223",
             "hanjuku-chart-v1224",
             "hanjuku-chart-v1225",
+            "hanjuku-chart-v1226-stall-return",
             "hanjuku-chart-v1158-progress-regress",
             "hanjuku-chart-v1161-refill-collapse",
             "hanjuku-chart-v1160-chapter-probe-field",
