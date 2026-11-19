@@ -245,6 +245,13 @@ def test_render_contains_markers_and_evidence(runtime_dir):
     assert record['incident_id'] in text
 
 
+def test_issue_title_uses_the_primary_signal():
+    assert audit._issue_title({'chapter': 1, 'signature': 'unread'}) == (
+        '[半熟英雄] 月内出撃ゼロ: ch1 未読画面で保留')
+    assert audit._issue_title({'chapter': 2, 'signature': 'departure_failure'}) == (
+        '[半熟英雄] 月内出撃ゼロ: ch2 出撃開始後に発射されない')
+
+
 def test_render_comment_is_compact(runtime_dir):
     record = sealed_zero(runtime_dir)
     text = audit.render_comment(record)

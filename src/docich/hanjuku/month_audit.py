@@ -84,6 +84,18 @@ SIGNAL_LABELS = {
 SIGNAL_ORDER = tuple(SIGNAL_LABELS)
 # One stable issue signature per month: the first matching primary cause.
 # The full signal list stays in the record for the timeline and evidence.
+PRIMARY_LABELS = {
+    'plan_starved': '計画の指示が尽きる',
+    'departure_failure': '出撃開始後に発射されない',
+    'monthly_scan': '月次処理がマップを占有',
+    'camp_recall': '野営帰還を繰り返す',
+    'battle': '戦闘が長引く',
+    'unread': '未読画面で保留',
+    'no_source': '出撃元の将軍がいない',
+    'stuck_march': '行軍が停滞',
+    'ledger_unknown': '月内出撃数を確認できない',
+    'unknown': '原因未分類',
+}
 PRIMARY_SIGNALS = (
     ('plan_starved', ('plan_all_settled', 'no_orders')),
     ('departure_failure', ('order_start_without_launch', 'launch_confirmation_missing',
@@ -1094,7 +1106,7 @@ def render_comment(record):
 
 
 def _issue_title(record):
-    label = SIGNAL_LABELS.get(record.get('signature'), '原因未分類')
+    label = PRIMARY_LABELS.get(record.get('signature'), '原因未分類')
     return f"{TITLE_PREFIX}: ch{record.get('chapter')} {label}"[:100]
 
 
