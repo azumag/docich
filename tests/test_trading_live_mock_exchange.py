@@ -409,8 +409,8 @@ def test_free_never_goes_negative_and_total_equals_free_plus_locked():
         assert asset.free >= 0 and asset.total == asset.free + asset.locked
 
 
-# ---- the only thing that can "send" is the mock -----------------------------------------
-def test_only_the_mock_defines_submit_or_cancel_order_and_live_does_not_import_the_real_adapter():
+# ---- the only things that can "send" are the mock and the isolated pre-E adapter ----------
+def test_only_the_mock_and_the_isolated_spot_adapter_define_send_methods_and_live_does_not_import_them():
     import ast
     from pathlib import Path
     src = Path(__file__).resolve().parents[1] / "src" / "docich"
@@ -422,8 +422,9 @@ def test_only_the_mock_defines_submit_or_cancel_order_and_live_does_not_import_t
                 names = {n.name for n in node.body if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))}
                 if names & {"submit_order", "cancel_order"}:
                     definers.append((str(path.relative_to(src)), node.name))
-    # the Protocol in exchange.py only declares the signatures
-    assert sorted(definers) == [("trading/live/exchange.py", "OrderSender"),
+    # exchange.py only declares the Protocol; the bitbank adapter is isolated and not allow-listed.
+    assert sorted(definers) == [("trading/exchanges/bitbank_spot_sender.py", "BitbankSpotSender"),
+                                ("trading/live/exchange.py", "OrderSender"),
                                 ("trading/live/mock_exchange.py", "MockExchange")]
     for path in (src / "trading" / "live").glob("*.py"):
         text = path.read_text(encoding="utf-8")
