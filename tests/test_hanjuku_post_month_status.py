@@ -1744,3 +1744,29 @@ def test_the_menu_stage_keeps_its_frame_while_month_sub_is_active():
     # A real battle screen still wins over the menu stage.
     battle = Screen([], None, '', kind='battle')
     assert post.step(battle, mem, None) is None
+
+
+def test_a_new_visit_restores_the_open_retry_budget():
+    # docich#4658: eight attempts inside one busy stretch used to exhaust
+    # the scan for the rest of the month.
+    mem = memory()
+    post.arm(mem)
+    state = mem['post_month_status']
+    state.update(stage='open_menu', phase_reads=2, open_tries=post.OPEN_MENU_TRIES)
+    assert post._open_retry_due(state, 'map') is False
+    assert post._open_retry_due(state, 'main_menu') is False
+    assert state['open_tries'] == 0
+    state['phase_reads'] = 3
+    assert post._open_retry_due(state, 'main_menu') is True
+    assert state['open_tries'] == 1
+
+
+def test_the_visit_resets_are_bounded():
+    mem = memory()
+    post.arm(mem)
+    state = mem['post_month_status']
+    state.update(stage='open_menu', phase_reads=3)
+    for _ in range(post.OPEN_MENU_RESETS + 3):
+        post._open_retry_due(state, 'map')
+        post._open_retry_due(state, 'main_menu')
+    assert state['open_resets'] == post.OPEN_MENU_RESETS
