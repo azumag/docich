@@ -138,6 +138,13 @@ JEVは自動有効化されていない手動のplayer-policy試験であり、�
   新規48試合予想を作らない。`prediction-pending` のときだけ、acc>0や改善running/lockが
   あっても予想の作成を許す（A/B・hot streak・48試合条件は維持）。改善ロック作成は `hold` が
   付いている間は行わず、試合消化だけを続ける。
+- **WebUIのコーナー欄は予想roundの進捗と待ち理由を表示する。** 予想がin-flightの間は
+  `current_prediction.json` の `games_completed` / `max_games` / 残り試合と、
+  `prediction_retry/resolve.json` のretry状態・`regression_check_in_progress` の有無を
+  boundedに投影し、「起動要求済み」のpendingが予想の完了待ちなのか、48/48完了後の精算待ち
+  なのかを区別する。`next_due_at` はローテーションの目安であり、予想ホールド中の実際の
+  開始時刻ではない。予想roundが48/48で完了しているのに境界が更新されていない場合は
+  「精算の反映待ち」として表示する（境界の公開は従来どおりSoren側が行う）。
 - **コーナー実行中も新規予想を始めない。** コーナーが始まると `next_corner.json` は消えるため、
   掲示だけではSoren gameが裏にいる間の予想開始を防げない。`corner_notice_state.py` は同じ
   `game_switch.json` の `phase`/`active.game` も読み、`ready` + `sorengame` 以外（PAPERの

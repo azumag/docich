@@ -2156,6 +2156,8 @@ class TestHttpHandlers(unittest.TestCase):
             'action:"schedule"',
             'action:"cancel-schedule"',
             '"scheduled-manual-not-due"',
+            "予想の完了待ち",
+            "next_due（目安）",
         ):
             self.assertIn(marker, body)
 
@@ -2491,6 +2493,74 @@ class TestHttpHandlers(unittest.TestCase):
         self.assertEqual(ledger.read_bytes(), before)
         for secret in ("PRIVATE-REQUEST", "PRIVATE-DETAIL"):
             self.assertNotIn(secret, json.dumps(data))
+
+    def test_get_corners_exposes_prediction_round_progress(self):
+        self._write_weather_catalog_config()
+        now = time.time()
+        state_dir = self.soren / "tmp" / "state"
+        state = state_dir / "current_prediction.json"
+        state.write_text(json.dumps({
+            "round_version": 2,
+            "games_completed": 36,
+            "max_games": 48,
+            "created_at": now - 3600,
+            "target_first_game": 10,
+            "last_game_num": 60,
+            "prediction_id": "PRIVATE-PREDICTION",
+            "outcome_ids": ["PRIVATE-A", "PRIVATE-B", "PRIVATE-C", "PRIVATE-D"],
+        }))
+        os.utime(state, (now - 120, now - 120))
+        (state_dir / "corner_boundary_prediction.json").write_text(
+            json.dumps({"completed_at": now - 7200}))
+        (state_dir / "prediction_retry").mkdir()
+        (state_dir / "prediction_retry" / "resolve.json").write_text(json.dumps({
+            "operation": "resolve", "attempt": 2,
+            "next_retry_at": int(now + 300), "http_code": "401",
+        }))
+        (state_dir / "regression_check_in_progress").write_text("")
+
+        status, data = self._request("GET", "/api/corners")
+
+        self.assertEqual(status, 200, data)
+        prediction = data["prediction"]
+        self.assertIs(prediction["present"], True)
+        self.assertIs(prediction["readable"], True)
+        self.assertEqual(prediction["round_version"], 2)
+        self.assertEqual(prediction["games_completed"], 36)
+        self.assertEqual(prediction["max_games"], 48)
+        self.assertEqual(prediction["remaining_games"], 12)
+        self.assertIs(prediction["complete"], False)
+        self.assertIsNone(prediction["settlement_pending"])
+        self.assertEqual(prediction["progress_age_sec"], 120)
+        self.assertIs(prediction["fence_present"], True)
+        self.assertEqual(prediction["retry"]["attempt"], 2)
+        self.assertEqual(prediction["retry"]["http_code"], "401")
+        self.assertIs(prediction["retry"]["retry_active"], True)
+        rendered = json.dumps(data)
+        for secret in ("PRIVATE-PREDICTION", "PRIVATE-A", "PRIVATE-B", "PRIVATE-C", "PRIVATE-D"):
+            self.assertNotIn(secret, rendered)
+
+    def test_get_corners_flags_a_completed_prediction_awaiting_settlement(self):
+        self._write_weather_catalog_config()
+        now = time.time()
+        state_dir = self.soren / "tmp" / "state"
+        state = state_dir / "current_prediction.json"
+        state.write_text(json.dumps({
+            "round_version": 2, "games_completed": 48, "max_games": 48,
+            "created_at": now - 7200, "prediction_id": "PRIVATE-PREDICTION",
+        }))
+        os.utime(state, (now - 600, now - 600))
+        (state_dir / "corner_boundary_prediction.json").write_text(
+            json.dumps({"completed_at": now - 3600}))
+
+        status, data = self._request("GET", "/api/corners")
+
+        self.assertEqual(status, 200, data)
+        prediction = data["prediction"]
+        self.assertIs(prediction["complete"], True)
+        self.assertIs(prediction["settlement_pending"], True)
+        self.assertGreaterEqual(prediction["settlement_pending_sec"], 590)
+        self.assertNotIn("PRIVATE-PREDICTION", json.dumps(data))
 
     def test_get_corners_marks_a_latch_row_released_after_scheduler_settles_it(self):
         self._write_weather_catalog_config()

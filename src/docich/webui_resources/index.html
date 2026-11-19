@@ -2624,6 +2624,12 @@ function renderCorners(d){
   const r=d.rotation||{};
   const gsw=d.game_switch||{};
   const src=d.source||{};
+  const pred=d.prediction||{};
+  const predKnown=pred.present===true&&pred.readable===true&&pred.games_completed!=null&&pred.max_games;
+  const predCount=predKnown?`${pred.games_completed}/${pred.max_games}`:"";
+  const predWait=predKnown?(pred.complete===true
+    ? (pred.settlement_pending===true?`予想は${predCount}で完了・精算の反映待ち`:`予想は${predCount}で完了`)
+    : `予想の完了待ち ${predCount}${pred.remaining_games!=null?`（残り${pred.remaining_games}試合）`:""}`):"";
   const manual=r.manual_pending;
   const manualOwnerText={matched:"所有者一致",missing:"所有者の記録なし",mismatch:"所有者不一致",unreadable:"所有者を読み取れません",unknown:"所有者未確認"};
   const manualText=manual?`${manual.corner==="unknown"?"コーナー不明":manual.corner}（${jaStatus(manual.status)}・${manualOwnerText[manual.owner]||manualOwnerText.unknown}）`:"なし";
@@ -2649,7 +2655,10 @@ function renderCorners(d){
     const rows=[
       ["状態",`<span class="badge ${st[1]}">${esc(st[0])}</span>${r.reason?` <span class="help">${esc(ROT_REASON_JA[r.reason]||r.reason)}</span>`:""}${r.overdue?` <span class="badge warn">予定時刻を約${Math.round((r.overdue.overdue_sec||0)/60)}分超過</span>`:""}`],
       ["配信中のゲーム",`${esc(gsw.active_game||"なし")}${gsw.phase&&gsw.phase!=="ready"&&gsw.phase!=="idle"?` <span class="badge warn">切替中: ${esc(gsw.phase)}</span>`:""}`],
-      ["自動の選択/起動",r.pending?`${esc(r.pending.corner||"-")}（${r.pending.phase==="dispatched"?"起動要求済み":"選択済み"}、${r.pending.age_sec!=null?esc(Math.round(r.pending.age_sec/60))+"分前":"-"}）`:"なし"],
+      ["自動の選択/起動",r.pending?`${esc(r.pending.corner||"-")}（${r.pending.phase==="dispatched"?"起動要求済み":"選択済み"}、${r.pending.age_sec!=null?esc(Math.round(r.pending.age_sec/60))+"分前":"-"}${predWait?` / ${esc(predWait)}`:""}）`:"なし"],
+      ["予想の進行",predKnown
+        ? `${esc(predWait)}${pred.retry&&pred.retry.retry_active?" / 精算リトライ待ち":""}${pred.fence_present?" / 精算保留マーカーあり":""}`
+        : (pred.present===true?"予想状態を読み取れません":"予想なし")],
       ["手動の開始予約",esc(queuedText)],
       [blocked?"開始を待たせている手動要求":"手動の実行要求",esc(manualText)],
       ["方式",`${r.schedule_mode==="queue"?"キュー（空き次第つぎを起動）":r.schedule_mode==="interval"?`一定間隔${intervalText(r)}`:`${esc(r.schedule_mode||"-")}`} / cooldown ${r.cooldown_seconds!=null?Math.round(r.cooldown_seconds/3600)+"時間":"-"}`],
@@ -2664,6 +2673,8 @@ function renderCorners(d){
   if(adv){
     let t="";
     if(r.latch) t="⚠ ローテーションが安全のため停止しています。下の「コーナー状態ファイル」で要復旧/失敗のコーナーを確認し、そのコーナーを手動停止（または GitHub Actions の各 corner operator で recover）してから「ローテーション復旧」を押してください。";
+    else if(r.pending&&predKnown&&pred.complete!==true) t=`コーナーは予想の完了待ちです（${predWait}）。next_due はローテーションの目安で、実際の開始は予想の完了後になります。`;
+    else if(r.pending&&predKnown&&pred.complete===true&&pred.settlement_pending===true) t=`予想は${predCount}で完了していますが、精算がまだコーナー境界へ反映されていません（${pred.settlement_pending_sec!=null?Math.round(pred.settlement_pending_sec/60)+"分":"しばらく"}）。`;
     else if(blocked) t=`開始予約は未精算の手動要求を待っています。${manualText}。ゲーム切替が準備完了でも、予約の起動完了ではありません。`;
     else if(gsw.phase&&!["ready","idle"].includes(gsw.phase)) t="ゲーム切替の途中です。完了するまで手動開始はできません。";
     if(r.overdue){
@@ -2677,7 +2688,7 @@ function renderCorners(d){
   if(rotEl){
     rotEl.innerHTML=[
       `status=${esc(r.status||"-")} reason=${esc(r.reason||"-")} error_kind=${esc(r.error_kind||"-")} slot=${r.slot==null?"-":esc(r.slot)}`,
-      `next_due=${fmtTime(r.next_due_at)} last_slot=${fmtTime(r.last_slot_at)} last_seen=${fmtTime(r.last_seen_at)} reason_since=${fmtTime(r.reason_since)}${r.overdue?` overdue=${Math.round((r.overdue.overdue_sec||0)/60)}m`:""}`,
+      `next_due（目安）=${fmtTime(r.next_due_at)} last_slot=${fmtTime(r.last_slot_at)} last_seen=${fmtTime(r.last_seen_at)} reason_since=${fmtTime(r.reason_since)}${r.overdue?` overdue=${Math.round((r.overdue.overdue_sec||0)/60)}m`:""}`,
       `eligible=[${(r.eligible||[]).map(esc).join(", ")}]`,
     ].join("<br/>");
   }

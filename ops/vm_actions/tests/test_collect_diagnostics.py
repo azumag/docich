@@ -2487,6 +2487,102 @@ class ProgramCornerStateTests(CollectorFixture):
         self.assertEqual(boundary["improvement"]["age_sec"], 300)
         self.assertEqual(boundary["prediction"]["present"], False)
         self.assertEqual(boundary["prediction"]["age_sec"], -1)
+        self.assertNotIn("round", boundary["prediction"])
+
+    def test_boundary_reports_prediction_round_progress(self):
+        module = load_collector()
+        root = self.soren / "tmp" / "state"
+        (root / "corner_boundary_prediction.json").write_text(
+            json.dumps({"completed_at": self.now - 7200})
+        )
+        state = root / "current_prediction.json"
+        state.write_text(json.dumps({
+            "round_version": 2,
+            "games_completed": 36,
+            "max_games": 48,
+            "created_at": self.now - 5400,
+            "target_first_game": 10,
+            "last_game_num": 60,
+            "prediction_id": "PRIVATE-PREDICTION",
+            "outcome_ids": ["PRIVATE-A", "PRIVATE-B", "PRIVATE-C", "PRIVATE-D"],
+        }))
+        os.utime(state, (self.now - 120, self.now - 120))
+        retry_dir = root / "prediction_retry"
+        retry_dir.mkdir()
+        (retry_dir / "resolve.json").write_text(json.dumps({
+            "operation": "resolve", "attempt": 2,
+            "next_retry_at": self.now + 300, "http_code": "401",
+        }))
+        (root / "regression_check_in_progress").write_text("")
+
+        result = module._collect_boundary(root, self.now)
+
+        round_state = result["prediction"]["round"]
+        self.assertEqual(round_state["games_completed"], 36)
+        self.assertEqual(round_state["max_games"], 48)
+        self.assertEqual(round_state["remaining_games"], 12)
+        self.assertEqual(round_state["created_age_sec"], 5400)
+        self.assertEqual(round_state["progress_age_sec"], 120)
+        self.assertIs(round_state["complete"], False)
+        self.assertIsNone(round_state["settlement_pending"])
+        self.assertIs(round_state["fence_present"], True)
+        self.assertEqual(round_state["retry"]["attempt"], 2)
+        self.assertEqual(round_state["retry"]["http_code"], "401")
+        self.assertIs(round_state["retry"]["retry_active"], True)
+        rendered = json.dumps(result)
+        for secret in ("PRIVATE-PREDICTION", "PRIVATE-A", "PRIVATE-B",
+                       "PRIVATE-C", "PRIVATE-D"):
+            self.assertNotIn(secret, rendered)
+
+    def test_boundary_flags_a_completed_prediction_that_was_not_settled(self):
+        module = load_collector()
+        root = self.soren / "tmp" / "state"
+        (root / "corner_boundary_prediction.json").write_text(
+            json.dumps({"completed_at": self.now - 3600})
+        )
+        state = root / "current_prediction.json"
+        state.write_text(json.dumps({
+            "round_version": 2, "games_completed": 48, "max_games": 48,
+            "created_at": self.now - 7200,
+        }))
+        os.utime(state, (self.now - 600, self.now - 600))
+
+        result = module._collect_boundary(root, self.now)
+        round_state = result["prediction"]["round"]
+        self.assertIs(round_state["complete"], True)
+        self.assertIs(round_state["settlement_pending"], True)
+        self.assertGreaterEqual(round_state["settlement_pending_sec"], 590)
+
+        # A boundary published after the last game count is not pending.
+        (root / "corner_boundary_prediction.json").write_text(
+            json.dumps({"completed_at": self.now - 60})
+        )
+        result = module._collect_boundary(root, self.now)
+        round_state = result["prediction"]["round"]
+        self.assertIs(round_state["complete"], True)
+        self.assertIs(round_state["settlement_pending"], False)
+        self.assertIsNone(round_state["settlement_pending_sec"])
+
+    def test_prediction_projection_keeps_round_progress(self):
+        module = load_collector()
+        corners = {"boundary": {"prediction": {
+            "present": True, "readable": True, "completed_at": self.now - 7200,
+            "round": {
+                "present": True, "readable": True, "round_version": 2,
+                "games_completed": 48, "max_games": 48, "remaining_games": 0,
+                "created_age_sec": 7200, "progress_age_sec": 600,
+                "fence_present": False, "fence_age_sec": -1,
+                "retry": {"present": False, "readable": False, "attempt": None,
+                          "next_retry_at": None, "retry_active": None,
+                          "http_code": None},
+                "complete": True, "settlement_pending": True,
+                "settlement_pending_sec": 600,
+            }}}}
+        projection = module._prediction_projection(corners, self.now)
+        round_state = projection["boundary"]["round"]
+        self.assertEqual(round_state["games_completed"], 48)
+        self.assertIs(round_state["settlement_pending"], True)
+        self.assertEqual(round_state["settlement_pending_sec"], 600)
 
     def test_boundary_reports_the_shared_audio_queue(self):
         module = load_collector()
