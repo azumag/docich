@@ -922,6 +922,21 @@ def _hero_hub_move(mem, owned, garrison, busy, gate, home):
             'note': f"暫定: 主人公を{hub}へ移して将軍募集の拠点にする"}
 
 
+ARMY_FLOOR = 20   # docich#4681: below this the army refills before attacking
+
+def _army_below_floor(mem):
+    '''docich#4681: is the country's measured army too thin to attack?
+
+    ch2 famine 2026-11-19: soldiers 2 with gold 0, three early sorties and
+    then アルマムーン plus one castle left. An attack spends the army that
+    keeps the castles, so below the refill floor (economy.LOW_ARMY, 20) the
+    planner offers retakes and moves only.
+    '''
+    count = mem.get('soldiers_seen')
+    if type(count) is not int:
+        return False
+    return count < ARMY_FLOOR
+
 def interim_candidates(mem, allow_sole=False) -> dict:
     """Deterministic off-chart sorties while a chart is pending.
 
@@ -1658,6 +1673,11 @@ def interim_candidates(mem, allow_sole=False) -> dict:
         if (routes.is_road(chapter) and not chart.is_boss_castle(order.get('target'))
                 and not routes.order_allowed(mem, order, order['source'])):
             continue        # a road chapter's ``_ready`` would reject it on every tick
+        if (_army_below_floor(mem) and order.get('purpose') == 'attack'
+                and not order.get('retake')):
+            # docich#4681: an attack with the army under the floor loses the
+            # castle it marched from; refill first.
+            continue
         if chart_adjust.startable(order, situation) is not None:
             continue
         out[f"{order['purpose']}_{len(out) + 1}"] = order
