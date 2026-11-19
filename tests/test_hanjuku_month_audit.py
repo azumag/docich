@@ -387,3 +387,43 @@ def runtime_dir(tmp_path):
     directory = tmp_path / 'runtimes' / 'g1-abcd1234'
     directory.mkdir(parents=True)
     return directory
+
+
+def test_shrink_singleton_and_after_rows():
+    record = {'decisions': {'before': ['x' * audit.MAX_RECORD_BYTES]},
+              'after': {'rows': ['y' * audit.MAX_RECORD_BYTES]}}
+    result = audit._shrink(record)
+    assert result['decisions']['before'] == []
+    assert result['after']['rows'] == []
+    assert result['truncated'] is True
+    assert len(json.dumps(result, ensure_ascii=False).encode('utf-8')) <= audit.MAX_RECORD_BYTES
+
+
+def test_shrink_oversize_required_payload_fails_closed():
+    with pytest.raises(audit.AuditError):
+        audit._shrink({'required': 'x' * audit.MAX_RECORD_BYTES})
+
+
+def test_file_deduplicates_occurrence_in_issue_body(runtime_dir):
+    record = sealed_zero(runtime_dir)
+    gh = FakeGh(issues=[{'number': 7, 'body': audit.render(record)}])
+    result = audit.file_issue(runtime_dir, gh=gh, scanner=lambda path: True)
+    assert result['status'] == 'already_commented'
+    assert not any(call[:2] == ['issue', 'comment'] for call in gh.calls)
+
+
+def test_watch_retries_unchanged_log_after_cooldown(runtime_dir):
+    record = sealed_zero(runtime_dir)
+    now = time.time()
+    issue = {'number': 7, 'body': f"<!-- hanjuku-month-audit fingerprint={record['fingerprint']} -->"}
+    comments = [{'body': 'earlier', 'createdAt': time.strftime(
+        '%Y-%m-%dT%H:%M:%SZ', time.gmtime(now - 60))}]
+    gh = FakeGh(issues=[issue], comments=comments)
+    seen = {}
+    state_dir = runtime_dir.parent.parent
+    assert audit.watch_once(state_dir, gh=gh, scanner=lambda path: True,
+                            now=now, seen=seen)[0]['status'] == 'cooldown'
+    assert not seen
+    assert audit.watch_once(state_dir, gh=gh, scanner=lambda path: True,
+                            now=now + audit.COMMENT_COOLDOWN_SECONDS + 1,
+                            seen=seen)[0]['status'] == 'commented'
