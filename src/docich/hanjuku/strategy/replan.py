@@ -1702,6 +1702,44 @@ def interim_candidates(mem, allow_sole=False) -> dict:
         if chart_adjust.startable(order, situation) is not None:
             continue
         out[f"{order['purpose']}_{len(out) + 1}"] = order
+    # docich#4706: chapter 4's four boss sites unlock only when every other
+    # castle is captured, and each boss order must be sent from its own castle
+    # (ミヒラギアン→南西, ネクスドリア→南東, フヌイヌム→北東, アルカ→北西).
+    # With all non-boss castles taken, those four sources held 2, 3, 1 and 1
+    # generals: the one-general castles can send nobody and home cannot march
+    # to the sites, so no candidate was ever offered and the chapter waited.
+    # Move one spare into each starved boss source while the rest is settled.
+    if not out and not _army_below_floor(mem):
+        garrison_map = _world(mem).get('garrison') or {}
+        boss_sources = []
+        for order in chart.all_orders(chapter):
+            site = order.get('target')
+            src = order.get('source')
+            if (chart.is_boss_castle(site) and src in owned
+                    and src not in boss_sources):
+                boss_sources.append(src)
+        settled = all(c in owned for c in castles if not chart.is_boss_castle(c))
+        donors = [c for c in sorted(owned, key=lambda c: (-len(set(garrison_map.get(c) or ())), c))
+                  if len(set(garrison_map.get(c) or ())) >= 3
+                  and not chart.march_blocked(chapter, c, home, owned)]
+        for src in boss_sources:
+            kept = set(garrison_map.get(src) or ())
+            if len(kept) >= 2 or not settled:
+                continue
+            for donor in donors:
+                names = [g for g in (garrison_map.get(donor) or ())
+                         if g not in kept and g != NAME]
+                if not names:
+                    continue
+                free = [g for g in names if not _en_route(mem, g)]
+                if not free:
+                    continue
+                general = _strongest_first(mem, free)[0]
+                out[f'move_{len(out) + 1}'] = {
+                    'general': general, 'source': donor, 'target': src,
+                    'cards': [], 'after': None, 'purpose': 'move',
+                    'note': f'暫定: ボス注文の出撃元{src}が1将軍のため{donor}から増援を送る'}
+                break
     # docich#4689: every castle holding exactly one general can neither donate
     # nor attack, so a stuck army needs one read of a castle list to see the
     # generals it recruited. ch3 month 11-1..12-3 waited ten months with 31
