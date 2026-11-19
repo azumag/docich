@@ -599,6 +599,25 @@ def world_map_step(screen, mem, frame):
         if nearby != [goal]:
             gx, gy = chart.castles(chapter)[goal]
             dx, dy = gx / 8 + offset[0] - cursor[0], gy / 8 + offset[1] - cursor[1]
+            # docich#4700: the cursor can keep moving without getting closer —
+            # ch3 15-x logged 62 picker steps whose remaining offset never fell
+            # below 76 while 38 of them pressed left, so the recall spent
+            # minutes walking the ring and the month scene cut it. Track the
+            # best (smallest) offset reached; once several presses fail to
+            # improve it, stop steering and let the existing confirm-anywhere
+            # fallback settle the recall.
+            here_offset = abs(dx) + abs(dy)
+            reached = recall.get('picker_best_offset')
+            if type(reached) is not int or here_offset < reached:
+                recall['picker_best_offset'] = here_offset
+                recall['picker_no_progress'] = 0
+            else:
+                recall['picker_no_progress'] = int(recall.get('picker_no_progress') or 0) + 1
+                if (recall['picker_no_progress'] >= PICKER_NO_PROGRESS_LIMIT
+                        and not _picker_on_enemy(nearby, flags)):
+                    return _picker_fallback(
+                        mem, recall, nearby, cursor,
+                        'カーソルが目標に近づかないまま押し続けているため、今いる城で確定する')
             across = 'right' if dx > 0 else 'left'
             along = 'down' if dy > 0 else 'up'
             press, other = (across, along) if abs(dx) >= abs(dy) else (along, across)
@@ -743,6 +762,9 @@ def world_map_step(screen, mem, frame):
         return []
     mem.pop('world_map_skull_hold', None)
     return _close_world_map(mem)
+
+
+PICKER_NO_PROGRESS_LIMIT = 6   # presses without a smaller offset before settling
 
 
 def _picker_hold_frames(span):
