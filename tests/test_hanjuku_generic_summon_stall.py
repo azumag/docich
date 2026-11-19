@@ -59,15 +59,10 @@ def test_a_stall_returns_the_summon_after_the_bounded_total_turns():
     # enemy HP 30 while サマカンテ fell 614 -> 534 -> dead; a summon that never
     # moves the enemy panel returns instead of grinding to death.
     sc, mem = view(), {'chapter': 3, 'tick': 1}
-    actions, records = [], []
-    for _ in range(MONSTER_STALL_RETURN_TURNS + 1):
-        choice, recs = turn(sc, mem)
-        actions.append(choice)
-        records.append(recs)
+    actions = [turn(sc, mem)[0] for _ in range(MONSTER_STALL_RETURN_TURNS + 1)]
     assert actions[-1] == 'retreat'
     assert all(a in ('skill1', 'skill2') for a in actions[:-1])
-    assert ('monster_skill_stall', 'monster_stall_bounded_return') in [
-        (r.get('decision'), r.get('strategy_variant')) for recs in records for r in recs]
+    assert mem['monster_stall'].get('returned') == 'bounded'
     # The return latches: a redrawn menu keeps returning without recounting.
     turns = dict(mem['monster_stall']['turns'])
     assert turn(sc, mem)[0] == 'retreat'
