@@ -35,8 +35,11 @@ audio-worker へ読み上げさせる owner-only workflow です。
 ## VM 前提と失敗時の扱い
 
 - `status docich production <current-main>` が `configured` で、production baseline が
-  current main の reviewed ancestor であることを `check_operator_parity.py` で確認します。
-  drift / recovery_required / 50 commit を超える遅れは fail-closed です。
+  current main の reviewed ancestor（または、deploy が先行した場合は current main を
+  ancestor に持つ reviewed descendant）であることを `check_operator_parity.py` で確認します。
+  `--allow-newer-production` はこの workflow 専用の opt-in で、どちらの向きも
+  `PARITY_DEPTH`（50 commit）以内に限定します。drift / recovery_required / 範囲外は
+  fail-closed です。
 - 同じ push は deploy workflow も起動します。deploy が gateway の排他ロックを保持している間、
   `status` は `gateway_busy` で即時拒否されるため、この固定理由だけを最大 18 回
   （前半 5 秒・後半 15 秒の上限付きバックオフ）再試行します。drift・認可エラー・

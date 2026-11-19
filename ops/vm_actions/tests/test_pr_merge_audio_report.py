@@ -299,6 +299,7 @@ class WorkflowPolicyTests(unittest.TestCase):
             "control/ops/vm_actions/authorize_pr_merge_audio.py",
             "control/ops/vm_actions/pr_merge_audio_report.py",
             "control/ops/vm_actions/check_operator_parity.py",
+            "--allow-newer-production",
             "control/ops/vm_actions/report_pr_merge_audio.sh",
             "GH_TOKEN: ${{ github.token }}",
             "MERGE_SHA: ${{ github.sha }}",

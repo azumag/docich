@@ -139,7 +139,10 @@ jobs:
             cat "$error_file" >&2
             exit 1
           fi
-          python3 -I control/ops/vm_actions/check_operator_parity.py "$status_json" "$SHA" control
+          # A newer deployed main is still a reviewed main commit; allow it so a
+          # report does not fail merely because the deploy raced ahead.
+          python3 -I control/ops/vm_actions/check_operator_parity.py \
+            "$status_json" "$SHA" control --allow-newer-production
 
       - name: Queue the sentence for the VM audio-worker
         if: steps.report.outputs.found == 'true'

@@ -21,7 +21,15 @@ used, and a production baseline deeper than that window fails closed (deploy
 required). All refusals print fixed messages only; raw git output is never
 echoed.
 
+``--allow-newer-production`` is an explicit opt-in for a fixed data-only
+operator that may run while production has already advanced to a newer reviewed
+main commit (for example a pull-request merge report that races the deploy of
+the same push).  It accepts a production baseline that is a descendant of the
+expected main SHA, still within the same bounded history.  Without the flag the
+gate keeps its one-directional behaviour.
+
 Usage: check_operator_parity.py <status-json> <expected-main-sha> <control-dir>
+       [--allow-newer-production]
 """
 from __future__ import annotations
 
@@ -53,12 +61,20 @@ def _git(control: str, *argv: str) -> int:
         return 1
 
 
+ALLOW_NEWER_FLAG = "--allow-newer-production"
+
+
 def main() -> None:
-    if len(sys.argv) != 4:
+    args = sys.argv[1:]
+    allow_newer = ALLOW_NEWER_FLAG in args
+    if allow_newer:
+        args = [arg for arg in args if arg != ALLOW_NEWER_FLAG]
+    if len(args) != 3:
         raise SystemExit(
-            "usage: check_operator_parity.py <status-json> <expected-sha> <control-dir>"
+            "usage: check_operator_parity.py <status-json> <expected-sha> <control-dir> "
+            "[--allow-newer-production]"
         )
-    status_raw, expected, control = sys.argv[1], sys.argv[2], sys.argv[3]
+    status_raw, expected, control = args
     if not SHA_RE.fullmatch(expected):
         raise SystemExit("invalid expected sha")
     try:
@@ -75,14 +91,23 @@ def main() -> None:
         _refuse("status did not report a valid deployed sha")
     if deployed == expected:
         return
-    # The deployed baseline is behind (or diverged from) current main. Allow it
-    # only when it is a reviewed ancestor of the current main SHA.
+    # The deployed baseline may be behind (normal deploy lag) or, with the
+    # explicit opt-in, ahead of this workflow's checkout because a deploy of a
+    # newer main finished while the report was queued. Both are accepted only
+    # inside the bounded local main history.
     if _git(control, "fetch", "--quiet", "--no-tags", f"--deepen={PARITY_DEPTH}", "origin") != 0:
         _refuse("main history fetch failed")
-    if _git(control, "merge-base", "--is-ancestor", deployed, expected) != 0:
+    if _git(control, "merge-base", "--is-ancestor", deployed, expected) == 0:
+        return
+    if allow_newer and _git(control, "merge-base", "--is-ancestor", expected, deployed) == 0:
+        return
+    if allow_newer:
         _refuse(
-            f"production baseline is not an ancestor of current main within {PARITY_DEPTH} commits; deploy required"
+            f"production baseline is not within {PARITY_DEPTH} commits of current main; deploy required"
         )
+    _refuse(
+        f"production baseline is not an ancestor of current main within {PARITY_DEPTH} commits; deploy required"
+    )
 
 
 if __name__ == "__main__":
