@@ -33,7 +33,10 @@ jobs:
         with:
           persist-credentials: false
       - name: Compile Python
-        run: python3 -m compileall -q src tests
+        # ops/ is compiled too: #4740 pushed an unresolved conflict marker into
+        # ops/vm_actions/collect_diagnostics.py behind a green python-syntax job
+        # because only src/ and tests/ were checked (#4741).
+        run: python3 -m compileall -q src tests ops
 
   test-scope:
     # Most pull requests change only Hanjuku. .github/scripts/ci_test_scope.py
