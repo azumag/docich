@@ -220,8 +220,26 @@ def extract_body_parts(body: object) -> tuple[str, str]:
 
 
 def _first_sentence(text: str) -> str:
-    parts = re.split(r"(?<=[。！？!?])\s*", text, maxsplit=1)
-    return parts[0].strip() if parts else text
+    pairs = {
+        "「": "」",
+        "『": "』",
+        "（": "）",
+        "(": ")",
+        "[": "]",
+        "【": "】",
+        "《": "》",
+    }
+    closers = set(pairs.values())
+    stack: list[str] = []
+    for index, char in enumerate(text):
+        if char in pairs:
+            stack.append(pairs[char])
+        elif char in closers:
+            if stack and stack[-1] == char:
+                stack.pop()
+        elif char in "。！？!?" and not stack:
+            return text[: index + 1].strip()
+    return text.strip()
 
 
 def normalize_summary(raw: str, *, require_japanese: bool) -> str:

@@ -400,6 +400,13 @@ class SummaryValidationTests(unittest.TestCase):
             report.normalize_summary(synthetic + " の説明です。", require_japanese=True),
         )
 
+    def test_quoted_terminal_punctuation_does_not_split_sentence(self):
+        text = report.normalize_summary(
+            "PAPERでは「お金増えた?」という質問に答えます。次の文。",
+            require_japanese=True,
+        )
+        self.assertEqual(text, "PAPERでは『お金増えた?』という質問に答えます")
+
     def test_long_summary_is_bounded(self):
         text = report.build_summary_sentence("あ" * 400, 4691, require_japanese=True)
         self.assertIsNotNone(text)
