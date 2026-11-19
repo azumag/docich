@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from decimal import Decimal
-from typing import TYPE_CHECKING, Mapping
+from typing import TYPE_CHECKING, Iterable, Iterator, Mapping
 
 from .ledger import Intent
 
@@ -233,29 +233,29 @@ def _fill_order(fill_id: str, executed_at: float) -> tuple[float, int, int, str]
     return (executed_at, 1, 0, fill_id)
 
 
-def position_cost(ledger, position_id: str, max_fee_rate: Decimal | None) -> CostBasis:
-    """Average-cost basis of a position, rebuilt from its fills (a sell keeps the average price).
+def cost_basis_steps(fills: Iterable[FillRow], max_fee_rate: Decimal | None
+                     ) -> Iterator[tuple[FillRow, CostBasis]]:
+    """Yield each fill with the average-cost basis *after* it, in ledger order.
 
-    An unknown fee is estimated at ``max_fee_rate`` of the notional on a buy; without a rate the
-    cost cannot be bounded.
+    This is the one replay used by :func:`position_cost` and the realized-P&L view.  Fills
+    are ordered here: ``executed_at`` ascending, with numeric trade ids breaking exact ties
+    (see :func:`_fill_order`).
     """
-    with ledger.read_cursor() as cur:
-        rows = cur.execute(
-            "SELECT fill_id, symbol, side, amount, quote_notional, fee_status, fee_amount, fee_currency, executed_at "
-            "FROM fills WHERE position_id=? ORDER BY executed_at", (position_id,)).fetchall()
-    rows = [row[1:] for row in sorted(rows, key=lambda row: _fill_order(row[0], row[8]))]
     net_base = Decimal(0)
     cost = Decimal(0)
     avg_cost = Decimal(0)
     opened_at: float | None = None
-    for symbol, side, amount_text, notional_text, fee_status, fee_amount, fee_currency, executed_at in rows:
-        base = symbol.split("/")[0]
-        quote = symbol.split("/")[1]
-        amount = Decimal(amount_text)
-        notional = Decimal(notional_text)
-        if side == "buy":
+    for fill in sorted(fills, key=lambda fill: _fill_order(fill.fill_id, fill.executed_at)):
+        parts = fill.symbol.split("/")
+        base, quote = parts[0], parts[1]
+        amount = Decimal(fill.amount)
+        notional = Decimal(fill.quote_notional)
+        fee_status = fill.fee_status
+        fee_amount = fill.fee_amount
+        fee_currency = fill.fee_currency
+        if fill.side == "buy":
             if net_base <= 0:
-                opened_at = float(executed_at)
+                opened_at = float(fill.executed_at)
             net_base += amount
             if fee_status == "known" and fee_currency == base:
                 net_base -= Decimal(fee_amount)
@@ -279,7 +279,22 @@ def position_cost(ledger, position_id: str, max_fee_rate: Decimal | None) -> Cos
                 cost = Decimal(0)
                 avg_cost = Decimal(0)
                 opened_at = None
-    return CostBasis(net_base, cost, avg_cost, opened_at)
+        yield fill, CostBasis(net_base, cost, avg_cost, opened_at)
+
+
+def position_cost(ledger, position_id: str, max_fee_rate: Decimal | None) -> CostBasis:
+    """Average-cost basis of a position, rebuilt from its fills (a sell keeps the average price).
+
+    An unknown fee is estimated at ``max_fee_rate`` of the notional on a buy; without a rate the
+    cost cannot be bounded.
+    """
+    with ledger.read_cursor() as cur:
+        rows = cur.execute(f"SELECT {_FILL_COLS} FROM fills WHERE position_id=?",
+                           (position_id,)).fetchall()
+    basis = CostBasis(Decimal(0), Decimal(0), Decimal(0), None)
+    for _, basis in cost_basis_steps((_fill(row) for row in rows), max_fee_rate):
+        pass
+    return basis
 
 
 def deployed_cost(ledger, max_fee_rates: Mapping[str, Decimal | None]) -> Decimal:

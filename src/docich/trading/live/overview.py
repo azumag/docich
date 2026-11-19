@@ -23,6 +23,15 @@ stated by ``pnl.unknown_fee_treatment``).  A known fee in a third currency canno
 valued here: it is also treated as zero and counted in
 ``pnl.fee_other_currency_fills``.
 
+``trade_pnl`` is the realized result of finished sells, replayed per position with the
+same average-cost code as :func:`views.position_cost` (a numeric trade id breaks exact
+timestamp ties).  A sell order is one paged row; its fills are summed.  A sell consumes
+the basis allocated to the sold base (including a base fee paid from inventory), and its
+proceeds are reduced by a known quote fee.  Buy-only, open, unfilled, cashflow and opening
+rows never enter it.  An unknown or third-currency fee is zero for the estimate and is
+counted/marked; a sale whose inventory cannot be proved is surfaced but excluded from the
+numeric totals instead of being given a zero basis.
+
 Open-position cost basis comes from :func:`views.position_cost` with a zero fee rate,
 because this read-only view has no market metadata to bound an unknown fee.  The
 accounting is the same as the executor's; only an unknown fee is left unestimated.
@@ -44,6 +53,26 @@ from . import safety, views
 
 _ZERO = Decimal(0)
 _OPEN_INTENT_STATES = ("PLANNED", "SUBMITTING", "UNKNOWN_SUBMISSION", "ACKED", "PARTIALLY_FILLED")
+_TRADE_PAGE_SIZE = 20
+
+
+def _empty_trade_pnl(*, available: bool) -> dict:
+    return {
+        "available": available,
+        "total": "0" if available else None,
+        "by_symbol": {},
+        "rows": [],
+        "page": 1,
+        "page_count": 1,
+        "page_size": _TRADE_PAGE_SIZE,
+        "total_rows": 0,
+        "fee_unknown_fills": 0,
+        "fee_other_currency_fills": 0,
+        "unknown_fee_treatment": "zero",
+        "unaccounted_orders": 0,
+        "unaccounted_fills": 0,
+        "complete": False if not available else True,
+    }
 
 
 def _empty(*, readable: bool) -> dict:
@@ -61,6 +90,7 @@ def _empty(*, readable: bool) -> dict:
             "fee_other_currency_fills": 0,
             "unknown_fee_treatment": "zero",
         },
+        "trade_pnl": _empty_trade_pnl(available=readable),
         "recent_fills": [],
         "open_intents": {"buy": {}, "sell": {}},
         "safety": {"trips": [], "unresolved_unknown_submissions": 0},
@@ -122,12 +152,221 @@ def _dec(value: Decimal) -> str:
     return str(value)
 
 
-def live_overview(ledger, *, now: float) -> dict:
+def _trade_page_number(value) -> int:
+    """A 1-based page request; anything unparseable or below 1 means page 1."""
+    if isinstance(value, bool):
+        return 1
+    try:
+        page = int(value)
+    except (TypeError, ValueError):
+        return 1
+    return page if page >= 1 else 1
+
+
+def _trade_fee_flags(fill: views.FillRow) -> tuple[bool, bool]:
+    """(fee unknown, fee in a third currency), from the same policy as the cash view."""
+    if fill.fee_status != "known" or fill.fee_amount is None or fill.fee_currency is None:
+        return True, False
+    parts = _symbol_parts(fill.symbol)
+    if parts is None:
+        return False, True
+    base, quote = parts
+    if fill.fee_currency in (base, quote):
+        return False, False
+    return False, True
+
+
+def _sell_quote_fee(fill: views.FillRow) -> Decimal:
+    """A known quote fee on a sell, otherwise zero (the cash-view estimate policy)."""
+    if fill.fee_status != "known" or fill.fee_amount is None or fill.fee_currency is None:
+        return _ZERO
+    parts = _symbol_parts(fill.symbol)
+    if parts is None:
+        return _ZERO
+    return Decimal(fill.fee_amount) if fill.fee_currency == parts[1] else _ZERO
+
+
+def _sold_base(fill: views.FillRow) -> Decimal:
+    """Base inventory a sell consumes, including a known base fee paid from inventory."""
+    sold = Decimal(fill.amount)
+    parts = _symbol_parts(fill.symbol)
+    if (parts is not None and fill.fee_status == "known" and fill.fee_amount is not None
+            and fill.fee_currency == parts[0]):
+        sold += Decimal(fill.fee_amount)
+    return sold
+
+
+def _trade_row(rows: dict, fill: views.FillRow) -> dict:
+    row = rows.get(fill.exchange_order_id)
+    if row is None:
+        row = {
+            "_order_id": fill.exchange_order_id,
+            "at": fill.executed_at,
+            "symbol": fill.symbol,
+            "amount": _ZERO,
+            "fills": 0,
+            "accounted": True,
+            "unaccounted_reason": None,
+            "fee_unknown": False,
+            "fee_other_currency": False,
+            "pnl": _ZERO,
+        }
+        rows[fill.exchange_order_id] = row
+    if fill.executed_at > row["at"]:
+        row["at"] = fill.executed_at
+    if fill.symbol != row["symbol"]:
+        row["accounted"] = False
+        row["unaccounted_reason"] = "mixed_symbol"
+    row["amount"] += Decimal(fill.amount)
+    row["fills"] += 1
+    return row
+
+
+def _trade_pnl(fills: list[views.FillRow], known_positions: set[str], *, page) -> dict:
+    """Realized sell P&L, replayed per position with :func:`views.cost_basis_steps`.
+
+    A sell order is one row.  If any of its fills cannot be proved against a preceding
+    average-cost basis (unlinked position, missing/excess inventory), the whole order is
+    surfaced as unaccounted and contributes nothing to ``total``/``by_symbol``.
+    """
+    by_position: dict[str | None, list[views.FillRow]] = {}
+    for fill in fills:
+        parts = _symbol_parts(fill.symbol)
+        if parts is None or parts[1] != "JPY":
+            continue
+        if fill.position_id is None and fill.side != "sell":
+            continue
+        by_position.setdefault(fill.position_id, []).append(fill)
+
+    rows: dict[str, dict] = {}
+    unknown_fee_fills: set[str] = set()
+    other_fee_fills: set[str] = set()
+
+    for position_id, position_fills in by_position.items():
+        if position_id is None:
+            # Unlinked orders carry no inventory to replay, so their fills need no ordering.
+            for fill in position_fills:
+                if fill.side != "sell":
+                    continue
+                row = _trade_row(rows, fill)
+                row["accounted"] = False
+                row["unaccounted_reason"] = row["unaccounted_reason"] or "unlinked_position"
+                own_unknown, own_other = _trade_fee_flags(fill)
+                row["fee_unknown"] = row["fee_unknown"] or own_unknown
+                row["fee_other_currency"] = row["fee_other_currency"] or own_other
+                if own_unknown:
+                    unknown_fee_fills.add(fill.fill_id)
+                if own_other:
+                    other_fee_fills.add(fill.fill_id)
+            continue
+
+        before = views.CostBasis(_ZERO, _ZERO, _ZERO, None)
+        cycle_unknown: set[str] = set()
+        cycle_other: set[str] = set()
+        broken = False
+        for fill, after in views.cost_basis_steps(position_fills, _ZERO):
+            own_unknown, own_other = _trade_fee_flags(fill)
+            if fill.side == "buy":
+                # After a broken oversell a later buy can make net exactly zero while
+                # bad basis remains, so broken is sticky for that position, never reset.
+                if before.net_base == 0:
+                    cycle_unknown.clear()
+                    cycle_other.clear()
+                if own_unknown:
+                    cycle_unknown.add(fill.fill_id)
+                if own_other:
+                    cycle_other.add(fill.fill_id)
+                before = after
+                continue
+
+            row = _trade_row(rows, fill)
+            if cycle_unknown or own_unknown:
+                row["fee_unknown"] = True
+                unknown_fee_fills.update(cycle_unknown)
+                if own_unknown:
+                    unknown_fee_fills.add(fill.fill_id)
+            if cycle_other or own_other:
+                row["fee_other_currency"] = True
+                other_fee_fills.update(cycle_other)
+                if own_other:
+                    other_fee_fills.add(fill.fill_id)
+
+            reason = None
+            if position_id not in known_positions:
+                reason = "missing_position"
+            elif broken:
+                reason = "basis_unavailable"
+            elif before.net_base <= 0:
+                reason = "missing_basis"
+            elif _sold_base(fill) > before.net_base:
+                reason = "excess_basis"
+
+            if reason is None:
+                if row["accounted"]:
+                    row["pnl"] += (Decimal(fill.quote_notional) - _sell_quote_fee(fill)
+                                   - (before.cost - after.cost))
+            else:
+                row["accounted"] = False
+                row["unaccounted_reason"] = row["unaccounted_reason"] or reason
+                broken = True
+            before = after
+
+    ordered_rows = sorted(rows.values(), key=lambda row: (row["at"], row["_order_id"]), reverse=True)
+    unaccounted = [row for row in ordered_rows if not row["accounted"]]
+    total_rows = len(ordered_rows)
+    page_count = max(1, (total_rows + _TRADE_PAGE_SIZE - 1) // _TRADE_PAGE_SIZE)
+    page_number = min(_trade_page_number(page), page_count)
+    start = (page_number - 1) * _TRADE_PAGE_SIZE
+    paged = ordered_rows[start:start + _TRADE_PAGE_SIZE]
+
+    by_symbol: dict[str, Decimal] = {}
+    total = _ZERO
+    accounted = 0
+    for row in ordered_rows:
+        if row["accounted"]:
+            accounted += 1
+            by_symbol[row["symbol"]] = by_symbol.get(row["symbol"], _ZERO) + row["pnl"]
+            total += row["pnl"]
+
+    return {
+        "available": True,
+        # No sales is a valid zero; sales that all lack a provable basis are not a zero result.
+        "total": _dec(total) if (not total_rows or accounted) else None,
+        "by_symbol": {symbol: _dec(value) for symbol, value in sorted(by_symbol.items())},
+        "rows": [
+            {
+                "at": float(row["at"]),
+                "symbol": row["symbol"],
+                "amount": _dec(row["amount"]),
+                "pnl": _dec(row["pnl"]) if row["accounted"] else None,
+                "status": "accounted" if row["accounted"] else "unaccounted",
+                "unaccounted_reason": row["unaccounted_reason"],
+                "fee_unknown": bool(row["fee_unknown"]),
+                "fee_other_currency": bool(row["fee_other_currency"]),
+                "fills": int(row["fills"]),
+            }
+            for row in paged
+        ],
+        "page": page_number,
+        "page_count": page_count,
+        "page_size": _TRADE_PAGE_SIZE,
+        "total_rows": total_rows,
+        "fee_unknown_fills": len(unknown_fee_fills),
+        "fee_other_currency_fills": len(other_fee_fills),
+        "unknown_fee_treatment": "zero",
+        "unaccounted_orders": len(unaccounted),
+        "unaccounted_fills": sum(row["fills"] for row in unaccounted),
+        "complete": not unaccounted,
+    }
+
+
+def live_overview(ledger, *, now: float, trade_page=1) -> dict:
     """Return the documented, JSON-safe snapshot of ``ledger``; never raises.
 
     ``now`` is accepted for a uniform caller signature; nothing here is time relative.
-    A ledger passed as ``None`` or one whose reads fail returns ``ledger_readable: false``
-    with empty collections and zero cash result.
+    ``trade_page`` is a 1-based realized-P&L page; invalid or out-of-range values are
+    clamped to the first/last page.  A ledger passed as ``None`` or one whose reads fail
+    returns ``ledger_readable: false`` with empty collections and zero cash result.
     """
     del now  # the overview is a pure function of the ledger's recorded facts
     try:
@@ -146,9 +385,9 @@ def live_overview(ledger, *, now: float) -> dict:
         # (same formula as the symbol cash result).  The round-trip denominator is not every
         # closed row: an unfilled buy that was cancelled closes a row with no fills.
         with ledger.read_cursor() as cur:
-            closed_ids = [row[0] for row in
-                          cur.execute("SELECT position_id FROM positions WHERE status='closed'")]
-        closed = set(closed_ids)
+            position_rows = cur.execute("SELECT position_id, status FROM positions").fetchall()
+        known_positions = {row[0] for row in position_rows}
+        closed = {row[0] for row in position_rows if row[1] == "closed"}
         closed_fills: dict[str, list[views.FillRow]] = {}
         for fill in fills:
             if fill.position_id in closed:
@@ -222,9 +461,11 @@ def live_overview(ledger, *, now: float) -> dict:
         ]
 
         total = sum(by_symbol.values(), _ZERO)
+        trade_pnl = _trade_pnl(fills, known_positions, page=trade_page)
         return {
             "ledger_readable": True,
             "positions": positions,
+            "trade_pnl": trade_pnl,
             "pnl": {
                 "by_symbol": {symbol: _dec(value) for symbol, value in sorted(by_symbol.items())},
                 "total": _dec(total),

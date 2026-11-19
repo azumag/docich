@@ -3798,7 +3798,7 @@ class _Handler(BaseHTTPRequestHandler):
             elif path == "/api/corners":
                 status = self._handle_get_corners()
             elif path == "/api/live":
-                status = self._handle_get_live()
+                status = self._handle_get_live(query.get("trade_page", [None])[0])
             elif path == "/api/live/initial-policy/export":
                 status = self._handle_get_live_initial_export()
             elif path == "/api/special-corner":
@@ -4945,10 +4945,14 @@ class _Handler(BaseHTTPRequestHandler):
         )
         return 200
 
-    def _handle_get_live(self) -> int:
-        """Read-only LIVE snapshot (control file + worker status + ledger overview)."""
+    def _handle_get_live(self, trade_page=None) -> int:
+        """Read-only LIVE snapshot (control file + worker status + ledger overview).
+
+        ``trade_page`` is the optional 1-based realized-P&L page; the overview clamps it
+        before slicing so callers cannot request an out-of-range page.
+        """
         try:
-            snapshot = live_snapshot(self.g.state_dir, now=time.time())
+            snapshot = live_snapshot(self.g.state_dir, now=time.time(), trade_page=trade_page)
         except Exception as exc:                       # live_snapshot promises not to raise
             self._send_error_json(500, "live_snapshot_failed", type(exc).__name__)
             return 500

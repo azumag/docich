@@ -861,6 +861,22 @@ class TestLiveHttp(unittest.TestCase):
         self.assertEqual(data["control"]["state"], "unknown")
         self.assertFalse(data["ledger_present"])
 
+    def test_get_live_trade_page_is_clamped_and_available_to_viewers(self):
+        self.g.webui.read_only_token = "viewer-secret"
+        headers = {"Authorization": "Bearer viewer-secret"}
+        try:
+            for query in ("", "?trade_page=0", "?trade_page=999", "?trade_page=not-a-page"):
+                status, data = self._request("GET", "/api/live" + query, headers=headers)
+                self.assertEqual(status, 200, data)
+                trade = data["overview"]["trade_pnl"]
+                self.assertFalse(trade["available"])
+                self.assertIsNone(trade["total"])
+                self.assertEqual(trade["page"], 1)
+                self.assertEqual(trade["page_count"], 1)
+                self.assertEqual(trade["rows"], [])
+        finally:
+            self.g.webui.read_only_token = ""
+
     def test_post_without_csrf_is_403(self):
         body = json.dumps({"state": "on", "mode": "shadow"}).encode("utf-8")
         self.client.request("POST", "/api/live/control", body=body,
@@ -1070,6 +1086,107 @@ __SNIPPET__
             "確認後に候補・台帳・有効方針が変わったため、もう一度確認してください。")
         self.assertTrue(out["legacy_clears"])
 
+    def test_trade_pnl_card_renders_values_pages_and_empty_or_unavailable_states(self):
+        script = r"""
+const elements={};
+function fakeEl(){return {textContent:"",innerHTML:"",disabled:false,style:{},value:"",className:""};}
+const document={
+  getElementById(id){return elements[id]||(elements[id]=fakeEl());},
+  querySelector(){return fakeEl();},
+};
+const $=()=>fakeEl();
+function esc(s){
+  return String(s==null?"":s).replace(/[&<>"']/g, c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+}
+const fmtTime=x=>String(x);
+__SNIPPET__
+const out={};
+renderTradePnl({trade_pnl:{
+  available:true,total:"159",by_symbol:{"OAS/JPY":"159","X<Y/JPY":"1"},
+  rows:[
+    {at:1110,symbol:"OAS/JPY",amount:"5",pnl:"159",status:"accounted",
+     unaccounted_reason:null,fee_unknown:true,fee_other_currency:false,fills:2},
+    {at:1010,symbol:"X<Y/JPY",amount:"3",pnl:null,status:"unaccounted",
+     unaccounted_reason:"missing_basis",fee_unknown:false,fee_other_currency:true,fills:1},
+  ],
+  page:2,page_count:3,page_size:20,total_rows:41,fee_unknown_fills:2,
+  fee_other_currency_fills:1,unaccounted_orders:1,unaccounted_fills:1,complete:false,
+}});
+out.total=elements["live-trade-pnl-total"].textContent;
+out.state=elements["live-trade-pnl-state"].textContent;
+out.symbols=elements["live-trade-pnl-symbols"].innerHTML;
+out.rows=elements["live-trade-pnl-rows"].innerHTML;
+out.note=elements["live-trade-pnl-note"].textContent;
+out.page=elements["live-trade-page"].textContent;
+out.prev_disabled=elements["live-trade-prev"].disabled;
+out.next_disabled=elements["live-trade-next"].disabled;
+
+renderTradePnl({trade_pnl:{
+  available:true,total:"0",by_symbol:{},rows:[],page:1,page_count:1,page_size:20,
+  total_rows:0,fee_unknown_fills:0,fee_other_currency_fills:0,
+  unaccounted_orders:0,unaccounted_fills:0,complete:true,
+}});
+out.empty_total=elements["live-trade-pnl-total"].textContent;
+out.empty_state=elements["live-trade-pnl-state"].textContent;
+out.empty_symbols=elements["live-trade-pnl-symbols"].innerHTML;
+out.empty_rows=elements["live-trade-pnl-rows"].innerHTML;
+out.empty_prev_disabled=elements["live-trade-prev"].disabled;
+out.empty_next_disabled=elements["live-trade-next"].disabled;
+
+renderTradePnl({trade_pnl:{
+  available:true,total:null,by_symbol:{},rows:[
+    {at:1010,symbol:"OAS/JPY",amount:"5",pnl:null,status:"unaccounted",
+     unaccounted_reason:"missing_basis",fee_unknown:false,fee_other_currency:false,fills:1},
+  ],
+  page:1,page_count:1,page_size:20,total_rows:1,fee_unknown_fills:0,
+  fee_other_currency_fills:0,unaccounted_orders:1,unaccounted_fills:1,complete:false,
+}});
+out.unaccounted_total=elements["live-trade-pnl-total"].textContent;
+out.unaccounted_state=elements["live-trade-pnl-state"].textContent;
+out.unaccounted_symbols=elements["live-trade-pnl-symbols"].innerHTML;
+out.unaccounted_rows=elements["live-trade-pnl-rows"].innerHTML;
+
+renderTradePnl({trade_pnl:{available:false}});
+out.unavailable_total=elements["live-trade-pnl-total"].textContent;
+out.unavailable_state=elements["live-trade-pnl-state"].textContent;
+out.unavailable_rows=elements["live-trade-pnl-rows"].innerHTML;
+out.unavailable_note=elements["live-trade-pnl-note"].textContent;
+process.stdout.write(JSON.stringify(out));
+"""
+        script = script.replace("__SNIPPET__", self._live_script())
+        out = self._run_node(script)
+        self.assertEqual(out["total"], "159 JPY")
+        self.assertEqual(out["state"], "集計対象外あり")
+        self.assertIn("OAS/JPY", out["symbols"])
+        self.assertIn("X&lt;Y/JPY", out["symbols"])
+        self.assertNotIn("X<Y/JPY", out["symbols"])
+        self.assertIn("159 JPY", out["rows"])
+        self.assertIn("集計対象外", out["rows"])
+        self.assertIn("手数料不明", out["rows"])
+        self.assertIn("他通貨手数料", out["rows"])
+        self.assertIn("手数料不明 2 件", out["note"])
+        self.assertIn("集計対象外 1 件", out["note"])
+        self.assertEqual(out["page"], "2 / 3 ページ")
+        self.assertFalse(out["prev_disabled"])
+        self.assertFalse(out["next_disabled"])
+
+        self.assertEqual(out["empty_total"], "0 JPY")
+        self.assertEqual(out["empty_state"], "売却履歴なし")
+        self.assertIn("売却履歴なし", out["empty_symbols"])
+        self.assertIn("売却履歴なし", out["empty_rows"])
+        self.assertTrue(out["empty_prev_disabled"])
+        self.assertTrue(out["empty_next_disabled"])
+
+        self.assertEqual(out["unaccounted_total"], "計算不可")
+        self.assertEqual(out["unaccounted_state"], "集計対象外あり")
+        self.assertIn("算定可能な売却なし", out["unaccounted_symbols"])
+        self.assertIn("集計対象外", out["unaccounted_rows"])
+
+        self.assertEqual(out["unavailable_total"], "計算不可")
+        self.assertEqual(out["unavailable_state"], "台帳を読めません")
+        self.assertIn("計算不可", out["unavailable_rows"])
+        self.assertIn("台帳を読み取れない", out["unavailable_note"])
+
     def test_live_tab_panel_and_manifest_are_pinned(self):
         html = (ROOT / "src/docich/webui_resources/index.html").read_text(encoding="utf-8")
         nav = html.split('<nav id="tabs">', 1)[1].split("</nav>", 1)[0]
@@ -1080,6 +1197,9 @@ __SNIPPET__
             "live-state", "live-mode", "live-worker", "live-last-cycle",
             "live-trips", "live-policy", "live-ledger", "live-on-shadow", "live-on-trade",
             "live-off", "live-trade-confirm", "live-refresh", "live-pnl-total",
+            "live-trade-pnl-total", "live-trade-pnl-state", "live-trade-pnl-symbols",
+            "live-trade-pnl-rows", "live-trade-pnl-note", "live-trade-page",
+            "live-trade-prev", "live-trade-next",
             "live-pnl-round-trips", "live-pnl-win-rate", "live-pnl-symbols",
             "live-positions", "live-fills", "live-opening",
             "live-initial-load", "live-initial-download", "live-initial-preview",
@@ -1104,6 +1224,13 @@ __SNIPPET__
         self.assertIn("ラウンドトリップと勝率", panel)
         self.assertIn("約定による純収支", panel)
         self.assertIn("未決済の買い", panel)
+        self.assertIn("実現損益", panel)
+        self.assertIn("銘柄ごとの実現損益", panel)
+        self.assertIn("取引ごとの実現損益", panel)
+        self.assertIn("集計対象外", panel)
+        self.assertIn("<th>銘柄</th>", panel)
+        self.assertIn('id="live-trade-prev" data-keep-disabled="1" disabled', panel)
+        self.assertIn('id="live-trade-next" data-keep-disabled="1" disabled', panel)
         self.assertNotIn("realized", panel)
         self.assertIn("activeDigest", script)
         self.assertNotIn("activePrefix", script)
