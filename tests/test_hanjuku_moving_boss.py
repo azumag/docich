@@ -62,6 +62,86 @@ def test_a_chapter9_survey_holds_the_view_for_the_second_reading():
     assert actions and actions[0]['buttons'] == ['y']
     assert mem['boss_cell']['cell'] == [562, 365]
 
+def test_a_settled_single_reading_measures_the_moving_boss():
+    # The Y view closes on its own before a second readable world_map frame
+    # (live g1288 2026-11-20 05:20: the first survey frame was already
+    # settled and the next observation was the closing fade). A settled frame
+    # is as current as the two-reading rule, so it must register the cell.
+    from docich.hanjuku.flows import map as map_flow
+    from docich.hanjuku.os_layer.screen import Screen
+    screen = Screen([], None, '', kind='world_map')
+    # world_cursor(CH9_RED_EYE.resized()) with WORLD_MAP_OFFSET[9].
+    mem = {'chapter': 9, 'tick': 100, 'cursor': [-62, 316], '_records': []}
+    actions = map_flow.world_map_step(screen, mem, CH9_RED_EYE.resized())
+    assert actions and actions[0]['buttons'] == ['y']
+    assert mem['boss_cell'] == {'chapter': 9, 'cell': [562, 365],
+                                'tick': 100, 'readings': 1}
+    assert 'boss_cell_measured' in [r['decision'] for r in mem['_records']]
+
+
+def test_a_transition_frame_is_not_used_as_a_boss_measurement():
+    from docich.hanjuku.flows import map as map_flow
+    from docich.hanjuku.os_layer.screen import Screen
+    screen = Screen([], None, '', kind='world_map')
+    # The previous field cursor is far from the transition frame's G cursor.
+    mem = {'chapter': 9, 'tick': 100, 'cursor': [518, 436], '_records': []}
+    assert map_flow.world_map_step(screen, mem, CH9_RED_EYE.resized()) == []
+    assert not mem.get('boss_cell')
+    assert mem['world_map_skull_hold']['reads'] == 1
+
+
+def test_a_changed_skull_reading_keeps_the_survey_open():
+    # Live g1288 2026-11-20: the first Y frame is a camera transition whose
+    # skull cell belongs to the old view. The next settled frame reads another
+    # cell, and the old one-observation hold closed the view on that frame, so
+    # every survey ended with count 1 and the boss cell aged out. The view must
+    # stay open until two consecutive settled frames agree.
+    from docich.hanjuku.flows import map as map_flow
+    from docich.hanjuku.os_layer.screen import Screen
+    screen = Screen([], None, '', kind='world_map')
+    mem = {'chapter': 9, 'tick': 100, '_records': []}
+    assert map_flow.world_map_step(screen, mem, CH9_RED_EYE.resized()) == []
+    assert mem['boss_cell_streak'] == {'cell': [562, 365], 'count': 1}
+    assert not mem.get('boss_cell')
+    mem['tick'] = 101
+    assert map_flow.world_map_step(screen, mem, CH3) == []
+    assert mem['boss_cell_streak']['count'] == 1
+    assert not mem.get('boss_cell')
+    mem['tick'] = 102
+    actions = map_flow.world_map_step(screen, mem, CH3)
+    assert actions and actions[0]['buttons'] == ['y']
+    assert mem['boss_cell']['cell'] == [306, 141]
+
+
+def test_the_skull_hold_is_bounded_when_readings_keep_changing():
+    from docich.hanjuku.flows import map as map_flow
+    from docich.hanjuku.os_layer.screen import Screen
+    screen = Screen([], None, '', kind='world_map')
+    mem = {'chapter': 9, 'tick': 100, '_records': []}
+    frames = [CH9_RED_EYE.resized(), CH3]
+    for offset in range(map_flow.WORLD_MAP_SKULL_HOLD_LIMIT):
+        mem['tick'] = 100 + offset
+        assert map_flow.world_map_step(screen, mem, frames[offset % 2]) == []
+        assert mem['boss_cell_streak']['count'] == 1
+    mem['tick'] = 100 + map_flow.WORLD_MAP_SKULL_HOLD_LIMIT
+    actions = map_flow.world_map_step(screen, mem, frames[map_flow.WORLD_MAP_SKULL_HOLD_LIMIT % 2])
+    assert actions and actions[0]['buttons'] == ['y']
+
+
+def test_a_hold_left_by_a_closed_view_does_not_spend_the_next_survey():
+    # The Y view can close on its own between observations, leaving the
+    # previous visit's hold dict in memory. Its read budget belongs to that
+    # visit: the next survey must still get its full hold window.
+    from docich.hanjuku.flows import map as map_flow
+    from docich.hanjuku.os_layer.screen import Screen
+    screen = Screen([], None, '', kind='world_map')
+    mem = {'chapter': 9, 'tick': 500, '_records': [],
+           'world_map_skull_hold': {'tick': 100, 'reads': 4, 'cell': [562, 365]}}
+    assert map_flow.world_map_step(screen, mem, CH9_RED_EYE.resized()) == []
+    assert mem['world_map_skull_hold']['reads'] == 1
+    assert mem['world_map_skull_hold']['cell'] == [562, 365]
+
+
 def test_the_skull_hold_observes_again_quickly():
     # The Y view closes on its own after about a second; the 1500 ms default
     # would return to the field before the second reading.
