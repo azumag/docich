@@ -23,7 +23,12 @@ OPEN_RETRY_EVERY = 3
 OPEN_MENU_TRIES = 8
 OPEN_MENU_RESETS = 4    # docich#4658: per-visit budget resets per stage entry
 OPEN_MENU_GIVEUP_READS = 12   # docich#4658/#4680: release the field when the menu never opens
-POST_MONTH_FAILURE_SKIP_AFTER = 3   # docich#4677: giveups before skipping one arm
+POST_MONTH_FAILURE_SKIP_AFTER = 3   # docich#4677: giveups before skipping arms
+# docich#4684: every live arm so far ended in menu_never_opened (ch1 6/6, ch2 the
+# same), and each attempt spends the map's X presses and up to 24 reads. Skip
+# five arms per three failures (one retry about every eight months) until an
+# arm actually reaches the roster.
+POST_MONTH_SKIP_ARMS = 5
 # docich#4655: ups that reach the main menu's top row from any position.
 MAIN_MENU_BLIND_UPS = 6
 MAX_SCAN = receipts.MAX_GENERALS
@@ -1568,7 +1573,7 @@ def step(screen, mem, frame):
                 fails = int(mem.get('post_month_open_failures') or 0) + 1
                 if fails >= POST_MONTH_FAILURE_SKIP_AFTER:
                     mem['post_month_open_failures'] = 0
-                    mem['post_month_skip_arms'] = 1
+                    mem['post_month_skip_arms'] = POST_MONTH_SKIP_ARMS
                 else:
                     mem['post_month_open_failures'] = fails
                 _log(mem, 'post_month_open_giveup', screen=screen.kind,
