@@ -2327,9 +2327,20 @@ def _recall_goal(mem, flags=None):
     follows the recalling unit instead of fixing on the hero's garrison
     (#2907). Only when neither is known does the hero's castle apply, then
     the sole owned castle. ``hero_castle`` keeps the distance tie-break.
+
+    Chapter 9's boss phase is the exception (owner 2026-11-15, ``camp_stays``):
+    the cliffs block every castle but the last corridor castle from reaching
+    the moving boss, so every camp gathers at that last castle instead of the
+    nearest one. Without this, a camp beside アルマムーン/Y (the home) returned
+    north and spent the month there while the boss waves waited.
     """
     chapter = mem.get('chapter') or 0
     cells = chart.castles(chapter)
+    if chapter == chart.MOVING_BOSS_CHAPTER:
+        road = chart.corridor(chapter) or ()
+        owned = _owned(mem)
+        if road and all(c in owned for c in road):
+            return road[-1]
     state = _flow(mem).get('recall') or {}
     owned = _recall_owned(mem, chapter, sorted(c for c in _owned(mem) if c in cells
                                              and (flags is None or flags.get(c) == 'own')),

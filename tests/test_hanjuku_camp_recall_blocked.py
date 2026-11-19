@@ -32,3 +32,14 @@ def test_a_single_unconfirmed_recall_still_keeps_the_nearest_castle():
 def test_every_castle_blocked_falls_back_to_the_nearest():
     blocked = {c: 2 for c in ('オシロガ', 'サヌト', 'タオ', 'ハヤク', 'アルマムーン')}
     assert _recall_goal(memory(blocked)) == 'オシロガ'
+
+
+def test_boss_phase_gathers_at_the_last_corridor_castle():
+    # Owner 2026-11-15 (camp_stays): all road castles owned means the cliffs
+    # block every castle but the last from the moving boss, so a camp must
+    # gather at イデ！ even when アルマムーン (home) is nearer.
+    from docich import hanjuku_chart as chart
+    road = chart.corridor(9)
+    mem = {'chapter': 9, 'captured': list(road), '_records': []}
+    _flow(mem)['recall'] = {'origin': list(chart.castles(9)['アルマムーン'])}
+    assert _recall_goal(mem) == road[-1] == 'イデ！'
