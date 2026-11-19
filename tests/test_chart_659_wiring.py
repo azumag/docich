@@ -197,3 +197,25 @@ def test_malformed_payload_is_rejected(tmp_path, mutate):
     mutate(state)
     with pytest.raises(chart_view.ChartViewError):
         chart_view.build_view_payload(state)
+
+
+def test_frame_signal_timestamps_survive_payload_conversion(tmp_path):
+    state = _adapter(tmp_path).build_payload()
+    first = dict(state["animation_frames"][0])
+    state["animation_frames"] = [
+        {**first, "frame_index": 0, "signal": {"timestamp": 1700000002}},
+        {**first, "frame_index": 1, "signal": None},
+        {**first, "frame_index": 2, "signal": {"timestamp": 1700000003}},
+    ]
+    frames = chart_view.build_view_payload(state)["frames"]
+    assert [f["signal"] for f in frames] == [
+        {"timestamp": 1700000002}, None, {"timestamp": 1700000003},
+    ]
+
+
+@pytest.mark.parametrize("signal", [[], {}, {"timestamp": float("inf")}])
+def test_invalid_frame_signal_is_rejected(tmp_path, signal):
+    state = _adapter(tmp_path).build_payload()
+    state["animation_frames"][0]["signal"] = signal
+    with pytest.raises(chart_view.ChartViewError):
+        chart_view.build_view_payload(state)
