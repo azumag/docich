@@ -42,6 +42,9 @@ def _too_hurt_to_attack(mem, general):
     g1190 2026-11-17 20:4x (chapter 11): three of nine battles opened at ally
     HP 4/13/5 against 87/45/87 — the general was effectively dead on arrival
     and the sortie cost a month. Unread HP is not evidence either way.
+
+    An unread maximum HP cannot justify a low absolute HP: the 1-HP floor
+    let 7 HP attackers through (docich#4668).
     """
     hp = _current_hp(mem, general)
     if type(hp) is not int:
@@ -49,7 +52,11 @@ def _too_hurt_to_attack(mem, general):
     row = ((mem.get('general_statuses') or {}).get('statuses') or {}).get(general)
     maximum = row.get('max_hp') if isinstance(row, dict) else None
     if type(maximum) is not int or maximum <= 0:
-        return hp <= 1
+        # docich#4668: an unmeasured max HP left the floor at 1 HP, so
+        # 7-HP generals were sent and died on arrival (ch1 3-11:
+        # クランベリー 7 vs 37, コリアンダー 0 vs 24). Use an absolute
+        # floor until a full status panel names the general's maximum.
+        return hp < ATTACK_MIN_HP_ABS
     return hp < max(1, int(maximum * ATTACK_MIN_HP_RATIO))
 
 
@@ -247,6 +254,7 @@ STAGE_LOST_HUB_PER_PLAN = 4  # spares moved forward while the hub is the enemy's
 HUB_GATHER_PER_PLAN = 2      # spare generals moved into a chapter's hub per plan
 HUB_GATHER_ALL_PER_PLAN = 8  # owner 2026-11-18: gather the whole army at the hub
 ATTACK_MIN_HP_RATIO = 0.20   # measured HP/max below this is a wasted attack sortie
+ATTACK_MIN_HP_ABS = 20       # docich#4668: floor when max HP is unread
 # Owner 2026-11-05: the boss dies to volume, not strength. Half-ripe eggs are
 # so weak that a strong general and a weak one remove about the same HP, so
 # every spare goes at the boss, from as many castles as possible (each keeps
