@@ -53,6 +53,13 @@ class ParityGateTests(unittest.TestCase):
             check=True,
         )
 
+    def advance_src(self, count):
+        for index in range(count):
+            (self.src / "f.txt").write_text(f"ahead-{index}\n")
+            git(self.src, "add", "f.txt")
+            git(self.src, "commit", "-qm", f"ahead-{index}")
+        return git(self.src, "rev-parse", "HEAD").stdout.strip()
+
     def run_gate(self, status, expected, control=None, extra=()):
         if not isinstance(status, str):
             status = json.dumps(status)
@@ -167,6 +174,19 @@ class ParityGateTests(unittest.TestCase):
         self.assertIn("ancestor of current main", out)
         code, out = self.run_gate(status, self.main_sha, extra=("--allow-newer-production",))
         self.assertEqual(code, 0, out)
+
+    def test_newer_production_at_the_depth_limit_is_allowed(self):
+        newer = self.advance_src(parity.PARITY_DEPTH)
+        status = {"status": "configured", "sha": newer}
+        code, out = self.run_gate(status, self.main_sha, extra=("--allow-newer-production",))
+        self.assertEqual(code, 0, out)
+
+    def test_newer_production_beyond_the_depth_limit_refuses(self):
+        newer = self.advance_src(parity.PARITY_DEPTH + 1)
+        status = {"status": "configured", "sha": newer}
+        code, out = self.run_gate(status, self.main_sha, extra=("--allow-newer-production",))
+        self.assertEqual(code, 1)
+        self.assertIn("more than", out)
 
     def test_newer_production_flag_still_refuses_an_unrelated_commit(self):
         side = self.base / "side-newer"

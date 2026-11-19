@@ -64,6 +64,28 @@ def _git(control: str, *argv: str) -> int:
 ALLOW_NEWER_FLAG = "--allow-newer-production"
 
 
+def _git_stdout(control: str, *argv: str) -> tuple[int, str]:
+    try:
+        completed = subprocess.run(
+            ["git", "-C", control, *argv],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            timeout=GIT_TIMEOUT,
+        )
+    except (subprocess.SubprocessError, OSError):
+        return 1, ""
+    return completed.returncode, completed.stdout.strip()
+
+
+def _distance(control: str, base: str, tip: str) -> int | None:
+    code, output = _git_stdout(control, "rev-list", "--count", f"{base}..{tip}")
+    if code != 0 or not output.isdigit():
+        return None
+    return int(output)
+
+
 def main() -> None:
     args = sys.argv[1:]
     allow_newer = ALLOW_NEWER_FLAG in args
@@ -100,7 +122,12 @@ def main() -> None:
     if _git(control, "merge-base", "--is-ancestor", deployed, expected) == 0:
         return
     if allow_newer and _git(control, "merge-base", "--is-ancestor", expected, deployed) == 0:
-        return
+        ahead = _distance(control, expected, deployed)
+        if ahead is not None and 0 < ahead <= PARITY_DEPTH:
+            return
+        _refuse(
+            f"production baseline is more than {PARITY_DEPTH} commits ahead of current main; deploy required"
+        )
     if allow_newer:
         _refuse(
             f"production baseline is not within {PARITY_DEPTH} commits of current main; deploy required"
