@@ -250,8 +250,12 @@ def persist(runtime: Path, state: dict, records: list, obs_meta: dict, *, action
                        chart_decision_summary(record,now=now,identity=identity,
                                               decision_id=decision_id))
         if str(record.get('decision') or '').startswith(SORTIE_EVENT_PREFIX):
+            metric = record.get('observed_metric')
+            outcome = metric.get('outcome') if isinstance(metric, dict) else None
             append_log(runtime,'hanjuku_events',{
                 'schema':1,'event':'sortie_decision','at':now,
+                **({'outcome': outcome} if record.get('decision') == 'sortie_outcome'
+                   and isinstance(outcome, str) and len(outcome) <= 32 else {}),
                 'decision_id':decision_id,**identity,
                 **{k: record.get(k) for k in
                    ('decision','chart_step','general','source','target',
