@@ -1,10 +1,13 @@
 name: PR merge audio report
 
-# When a pull request is merged into protected main, read its title and queue
-# one short Japanese sentence for the VM audio-worker.  The pull request data
-# comes from the GitHub API after the owner/protected-main authorization check;
-# there is no free-form workflow input.  A push that is not a merged pull
-# request (for example a direct push) is a no-op: the VM steps are skipped.
+# When a pull request is merged into protected main, queue one short Japanese
+# sentence for the VM audio-worker.  The sentence prefers an owner-authored
+# "## 音声サマリー" section, then an optional owner-configured AI summary of the
+# title and body overview, then the body overview, then the cleaned title.
+# AI is disabled unless the owner configures the endpoint/model/key variables;
+# every failure falls back deterministically.  The pull request data comes from
+# the GitHub API after the owner/protected-main authorization check; there is no
+# free-form input.  A push that is not a merged pull request is a no-op.
 
 on:
   push:
@@ -74,6 +77,10 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           GITHUB_REPOSITORY: ${{ github.repository }}
           MERGE_SHA: ${{ github.sha }}
+          PR_MERGE_AUDIO_AI: ${{ vars.PR_MERGE_AUDIO_AI }}
+          PR_MERGE_AUDIO_LLM_ENDPOINT: ${{ vars.PR_MERGE_AUDIO_LLM_ENDPOINT }}
+          PR_MERGE_AUDIO_LLM_MODEL: ${{ vars.PR_MERGE_AUDIO_LLM_MODEL }}
+          PR_MERGE_AUDIO_LLM_API_KEY: ${{ secrets.PR_MERGE_AUDIO_LLM_API_KEY }}
         run: |
           set -euo pipefail
           pulls="$RUNNER_TEMP/pr-merge-pulls.json"
