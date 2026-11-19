@@ -37,6 +37,12 @@ audio-worker へ読み上げさせる owner-only workflow です。
 - `status docich production <current-main>` が `configured` で、production baseline が
   current main の reviewed ancestor であることを `check_operator_parity.py` で確認します。
   drift / recovery_required / 50 commit を超える遅れは fail-closed です。
+- 同じ push は deploy workflow も起動します。deploy が gateway の排他ロックを保持している間、
+  `status` は `gateway_busy` で即時拒否されるため、この固定理由だけを最大 18 回
+  （前半 5 秒・後半 15 秒の上限付きバックオフ）再試行します。drift・認可エラー・
+  gateway 不在など他の拒否は再試行しません。
+- 連続 merge の待機中 run が捨てられないよう、workflow に共有 concurrency group を置かず、
+  各 push が独立して実行されます。enqueue の実行は VM gateway の排他ロックで直列化されます。
 - merged pull request が無い push（direct push など）は VM に接続せず success で skip します。
 - 読み上げの失敗は merge 自体や deploy を止めません。Actions の run を確認し、一時障害なら
   同じ run を Re-run してください。**enqueue に成功した run を再実行すると二重に読まれ得ます**

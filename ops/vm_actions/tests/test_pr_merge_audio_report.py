@@ -305,11 +305,20 @@ class WorkflowPolicyTests(unittest.TestCase):
             "TEXT_B64: ${{ steps.report.outputs.text_b64 }}",
             "exec docich production $SHA",
             "persist-credentials: false",
+            "timeout-minutes: 8",
+            "grep -Fxq 'VM operation rejected: gateway_busy'",
+            "for attempt in $(seq 1 18)",
+            "sleep $(( attempt <= 6 ? 5 : 15 ))",
         ):
             self.assertIn(required, text)
         for forbidden in ("pull_request_target", "workflow_dispatch", "ssh-keyscan", "inputs."):
             self.assertNotIn(forbidden, text)
         self.assertEqual(text.count("if: steps.report.outputs.found == 'true'"), 3)
+
+    def test_no_shared_concurrency_group_drops_pending_reports(self):
+        text = WF.read_text(encoding="utf-8")
+        self.assertNotIn("concurrency:", text)
+        self.assertIn("Actions keeps only one running plus one pending", text)
 
     def test_vm_steps_run_only_after_a_merged_pr_is_found(self):
         text = WF.read_text(encoding="utf-8")
