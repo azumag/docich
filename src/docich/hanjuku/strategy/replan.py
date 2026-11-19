@@ -1731,7 +1731,11 @@ def interim_candidates(mem, allow_sole=False) -> dict:
                          if g not in kept and g != NAME]
                 if not names:
                     continue
-                free = [g for g in names if not _en_route(mem, g)]
+                # docich#4709: _en_route(mem) returns (generals, targets); the
+                # two-argument call added in #4706 raised TypeError whenever this
+                # branch was reached (no candidate and a settled boss source).
+                busy, _ = _en_route(mem)
+                free = [g for g in names if g not in busy]
                 if not free:
                     continue
                 general = _strongest_first(mem, free)[0]
