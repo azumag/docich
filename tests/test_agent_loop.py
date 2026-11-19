@@ -69,6 +69,22 @@ class TestRunIteration(unittest.TestCase):
         self.assertEqual(n, 1)
         self.assertEqual(adapter.acted, [act])
 
+    def test_sent_actions_are_appended_to_action_log(self):
+        import tempfile
+        from pathlib import Path
+
+        adapter = FakeAdapter()
+        brain = FakeBrain([Action(type="text", text="j"), Action(type="wait", ms=1)])
+        with tempfile.TemporaryDirectory() as tmp:
+            n = loop._run_iteration(
+                adapter, brain, 1000, state_dir=Path(tmp), game_name="nethack",
+            )
+            log = (Path(tmp) / "nethack" / "action_log.txt").read_text()
+        self.assertEqual(n, 2)
+        self.assertIn("key:j", log)
+        self.assertIn("2 件のアクションを実行", log)
+        self.assertNotIn("wait:", log)
+
     def test_multiple_actions_are_all_processed_in_order(self):
         adapter = FakeAdapter()
         acts = [
