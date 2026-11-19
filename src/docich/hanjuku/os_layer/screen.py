@@ -264,7 +264,11 @@ def _house_body(p) -> bool:
     # unlit background past the map's edge. Counting the void as a wall
     # would make any dark ground under a bare flag read as a hut
     # (docich#4737), so body pixels must be visibly dark, not just unlit.
-    return dark(*p) and max(p) >= HOUSE_BODY_FLOOR
+    # Require a near-neutral outline rather than chromatic terrain (e.g.
+    # grass RGB 16,72,57). This is a conservative candidate filter, not
+    # a sprite identity proof.
+    return (dark(*p) and max(p) >= HOUSE_BODY_FLOOR
+            and max(p) - min(p) <= 12)
 
 
 def house_roofs(frame: Frame, roofs=None) -> list[dict]:
@@ -308,7 +312,7 @@ def house_roofs(frame: Frame, roofs=None) -> list[dict]:
                for b in castle_boxes):
             continue            # a castle's flag fragment, not a house
         cx = (x0 + x1) // 2
-        body = sum(1 for y in range(y0, min(frame.height, y1 + HOUSE_BODY_DEPTH + 1))
+        body = sum(1 for y in range(y1 + 1, min(frame.height, y1 + HOUSE_BODY_DEPTH + 1))
                    for x in range(max(0, cx - HOUSE_BODY_HALF),
                                   min(frame.width, cx + HOUSE_BODY_HALF + 1))
                    if _house_body(frame.pixel(x, y)))
