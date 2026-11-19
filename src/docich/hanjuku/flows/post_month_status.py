@@ -1522,7 +1522,11 @@ def step(screen, mem, frame):
             # phase_reads grew past 30 with no input). up x6 returns to the top
             # row (ステータス) from anywhere in this menu, one down is しょうぐん,
             # and A opens it. Bounded per stage entry.
-            direction = menu_to(screen, 'しょうぐん') if screen.hand else None
+            # docich#4683: the parsed row word can carry a trailing space or a
+            # suffix; startswith still names the same row, while the exact match
+            # never returned 'here' and the scan pressed down until the give-up
+            # bound (live: main_menu opened 90 times, stage stayed open_menu).
+            direction = menu_to(screen, 'しょうぐん', exact=False) if screen.hand else None
             if direction == 'here':
                 state.pop('menu_blind', None)
                 _stage(state, 'roster')
@@ -1772,7 +1776,7 @@ def step(screen, mem, frame):
         return [pad('x')]
     if stage == 'task_menu':
         if screen.kind == 'main_menu' and screen.hand:
-            direction = menu_to(screen, 'しょうぐん')
+            direction = menu_to(screen, 'しょうぐん', exact=False)
             if direction == 'here':
                 _stage(state, 'task_select', seeks=0)
                 return [pad('a')]
