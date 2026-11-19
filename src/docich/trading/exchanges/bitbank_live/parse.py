@@ -12,7 +12,8 @@ from decimal import Decimal
 from typing import Mapping
 
 from ...live.exchange import (AssetBalance, BalanceSnapshot, DepositRecord, ExchangeDataError, FeeInfo,
-                              FeeStatus, Fill, MarketRules, OrderBook, OrderSnapshot, OrderStatus, dec)
+                              FeeStatus, Fill, MarketRules, OrderBook, OrderSnapshot, OrderStatus, SpotStatus,
+                              dec)
 
 _ZERO = Decimal(0)
 _JSON_SCALARS = (str, int, bool, type(None))
@@ -196,6 +197,31 @@ def book_from(depth_data: object, symbol: str, depth: int) -> OrderBook:
 
     return OrderBook(symbol=symbol, bids=side("bids", True), asks=side("asks", False),
                      exchange_ts_ms=ms_value(_field(depth_data, "timestamp", "timestamp"), "timestamp"))
+
+
+def spot_statuses(data: object, symbols_by_pair: Mapping[str, str]) -> dict[str, SpotStatus]:
+    """Strict ``GET /v1/spot/status`` rows: pair, status and the current minimum amount.
+
+    A missing row is not filled in from the cached pair rules: absence of this dynamic
+    evidence must stay visible to the caller, never become a guessed min_amount.
+    """
+    rows = _field(data, "statuses", "statuses")
+    if not isinstance(rows, list):
+        raise _bad("statuses")
+    out: dict[str, SpotStatus] = {}
+    for row in rows:
+        pair = _field(row, "pair", "pair")
+        if not isinstance(pair, str):
+            raise _bad("pair")
+        symbol = symbols_by_pair.get(pair)
+        if symbol is None:
+            continue                       # the exchange may report pairs this process does not watch
+        if symbol in out:
+            raise _bad(f"statuses[{symbol}].duplicate")
+        status = text_value(_field(row, "status", "status"), "status")
+        min_amount = dec_str(_field(row, "min_amount", "min_amount"), "min_amount", positive=True)
+        out[symbol] = SpotStatus(symbol=symbol, status=status, min_amount=min_amount)
+    return out
 
 
 def order_from(row: object, symbols_by_pair: Mapping[str, str]) -> OrderSnapshot:

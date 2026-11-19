@@ -17,7 +17,7 @@ from typing import Callable, Mapping, Protocol, Sequence
 
 from ...live.exchange import (BalanceSnapshot, Capabilities, DepositPage, ExchangeAmbiguous, ExchangeDataError,
                               ExchangeError, FillPage, MarketRules, OrderBook, OrderNotFound, OrderPage,
-                              OrderSnapshot)
+                              OrderSnapshot, SpotStatus)
 from . import parse
 
 
@@ -152,6 +152,17 @@ class BitbankReader:
     def fetch_order_book(self, symbol: str, *, depth: int = 20) -> OrderBook:
         self.market_rules(symbol)
         result = self._parsed(parse.book_from, self._get("depth", {"pair": parse.pair_id(symbol)}), symbol, depth)
+        self._ok()
+        return result
+
+    def fetch_spot_status(self, symbol: str) -> SpotStatus:
+        """The exchange's current pair status; the transport must opt into this GET endpoint."""
+        self.market_rules(symbol)
+        statuses = self._parsed(parse.spot_statuses, self._get("spot_status", {}), self._by_pair)
+        try:
+            result = statuses[symbol]
+        except KeyError:
+            raise ExchangeDataError("spot status missing for this pair") from None
         self._ok()
         return result
 

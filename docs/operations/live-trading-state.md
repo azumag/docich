@@ -187,8 +187,65 @@ ON/OFF、`trade`、control ファイル、worker は変更しない。
 - `run --spot-order-sender` は1回のプロセス起動時のサービス役割選択で、実行中の売買スイッチではない。付けた場合だけ、`bitbank_spot_order_key.json`(0600、owner 0700、symlink 不可、環境変数なし、`kind: docich-bitbank-spot-order-key`)を読み、同じ `Credentials` から GET 専用 `BitbankReader` と `BitbankSpotSender` を作る。reader と sender に別口座を混ぜない。
 - キーの権限は残高・注文・約定の参照と現物の注文作成・取消に限り、**出金権限は付けない**。ファイル名は発注可能なプロセス用であることだけを示し、取引所側スコープの証明ではない。
 - 既定の起動はキーが置かれていても reader だけを使い、sender を作らない。新規注文の実行時スイッチは従来どおり `live_control.json` の `on` + `trade` だけ。オプション付きセッションの起動失敗は config/auth/clock の既存の終了コードで fail-closed になり、reader 専用へフォールバックしない。
-- これは将来の F のプロセス選択肢。実注文 E はオーナーの別ハンドオフで、1注文ごとの明示承認を含む E の手順はここでは扱わない。ユニットテンプレート・デプロイ・自動化にこのフラグを設定しない。
+- これは将来の F のプロセス選択肢。実注文 E はオーナーの別ハンドオフで、1注文ごとの明示承認を含む E の手順はここでは扱わない(L4d の隔離 CLI を参照)。ユニットテンプレート・デプロイ・自動化にこのフラグを設定しない。
 
+
+## L4d: Phase E の単発買いプローブ(隔離 CLI、Issue #3623)
+
+グローバル制御が **OFF のまま**、1回だけ小さな現物買いを明示承認するための隔離コマンド。
+`live_worker` のサブコマンドではなく、アプリ・常駐 worker・自動売買から import されない。
+systemd の停止・起動もこの CLI は行わない。運用者が先に worker を短時間停止して writer
+lease を空け、実行後に元の OFF worker を戻す。
+
+### 事前条件
+
+- LIVE 台帳が既に作成済みで、有効な policy set に買いたい銘柄が含まれること。
+- 安全停止が無く、このプローブ以外の未完了 intent が無いこと。同一銘柄に異なる policy の
+  複数 open position が無いこと。
+- `live_control.json` が明示的な `off` であること(欠落・壊れ・不明は拒否)。
+- 価格・数量・上限・手数料・予備費はすべて 10 進文字列。float・指数表記は拒否される。
+
+### プレビュー(状態を変更しない)
+
+```bash
+python -m docich.trading.live_worker.probe_order \
+  --state-dir <state> --symbol <BASE/JPY> \
+  --amount <数量> --price <指値> --max-quote <上限> \
+  --fee <想定手数料> --reserve <予備費> [--monitor-seconds 30]
+```
+
+出力は銘柄・数量・指値・上限・policy の先頭12桁・既存 intent 状態・短い確認 token だけ。
+残高・口座番号・注文 ID・鍵・例外本文は出さない。プレビューは台帳・control・lease を
+書き換えない。token は銘柄・売買・数量・指値・上限・fee・reserve・policy digest・policy set
+digest・台帳 identity・固定 decision key に結び付き、残高や板は含まない。
+
+### 実行(確認 token が必要)
+
+プレビューと同じ引数に `--confirm <token>` を付ける。実行時は writer lease を取り、同じ
+台帳・policy・静的パラメータを再確認したうえで、動的な `/spot/status` が `NORMAL` で
+`min_amount` を満たすこと、板が新鮮で best ask が指値以内かつ数量分の厚みがあること、
+手数料が market rules の最大料率以上で、free JPY が「約定代金 + fee + reserve」以上あること、
+台帳の期待残高と取引所残高が対象通貨で一致することを再確認する。グローバル control は
+入口と送信直前に `off` を確認する。ON・不明なら POST しない。通常の on+trade ゲートへの
+フォールバックは無い。
+
+固定の decision key `probe1:phase-e-single-buy` を使う。同じ key の intent がどの状態に
+あっても 2 回目の POST は行わない。別パラメータでの再実行は拒否する。送信結果が不明な
+場合は再送せず `UNKNOWN_SUBMISSION` のまま照合を試みる。監視は既定 30 秒(1〜120 秒で指定可)
+で打ち切り、未約定の残りは既存 executor の cancel で取り消し、終端状態と記録済み約定を
+確認する。
+
+終了コード: `0` プレビュー成功または完全約定、`1` 拒否・注文なし、`2` 引数誤り、
+`5` 他の worker が writer lease を保持、`7` lease 喪失、`8` 未解決・部分約定・取消済み
+未約定。`8` のときは出力の `next: restore the OFF worker` に従い、通常の OFF worker を
+戻す。worker は起動時照合と TTL 取消を続ける。
+
+### 約定後の在庫
+
+完全約定または部分約定で得た base は、その intent を作った有効 policy の通常の open
+position に残る。この CLI は売りを作らない。グローバル制御は OFF のままなので、通常 worker
+を戻しても新規売買は制御が入るまで行われない。部分約定・取消済み部分約定は成功扱いに
+しない。恒久的な有効化・自動売買再開はこの手順の範囲外。
 
 ## L4c: shadow の模擬保有・資金・約定(Issue #3623)
 
