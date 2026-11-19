@@ -867,15 +867,20 @@ def _house_roof_delta(screen, mem, frame, expected=HOUSE_ROOF_DELTA):
     cursor = screen.marker or screen.cursor
     if cursor is None:
         return None
-    best = None
+    # Several own roofs can sit inside HOUSE_ROOF_MATCH on the own castle's
+    # field (the castle flag and the house flag are both own-coloured). The
+    # house is the one nearest the charted offset, so keep the closest match
+    # instead of discarding the whole reading as ambiguous (docich#4737).
+    best, best_dist = None, None
     for roof in castle_roofs(frame):
         if roof.get('clipped') or roof.get('kind') != 'own':
             continue
         delta = (cursor[0] - roof['target'][0], cursor[1] - roof['target'][1])
-        if all(abs(delta[a] - expected[a]) <= HOUSE_ROOF_MATCH for a in (0, 1)):
-            if best is not None:
-                return None
-            best = delta
+        if not all(abs(delta[a] - expected[a]) <= HOUSE_ROOF_MATCH for a in (0, 1)):
+            continue
+        dist = abs(delta[0] - expected[0]) + abs(delta[1] - expected[1])
+        if best_dist is None or dist < best_dist:
+            best, best_dist = delta, dist
     return best
 
 
