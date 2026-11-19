@@ -629,7 +629,11 @@ Y_JUMP_VIEW_KINDS = frozenset({'map', 'map_target', 'world_map'})
 
 
 CAMP_RECALL_SCENE_RESUMES = 2   # scenes may cut a recall twice before the camp is skipped
-UNKNOWN_HOLD_ADVANCE = 6      # identical unreadable frames before one A is sent
+# docich#4702: four identical unreadable frames are already ~0.7 s of a
+# transition; waiting six cost 8 s a minute in ch4 (82 situation_held in ten
+# minutes, mostly unknown screens). The burst bound below still limits blind
+# A presses on a screen that never reacts.
+UNKNOWN_HOLD_ADVANCE = 4      # identical unreadable frames before one A is sent
 UNKNOWN_BATTLE_ADVANCE = 10   # any unreadable frames inside a battle before one A
 # g1253 2026-11-16: an unclassified concert/dance screen sat on `unknown` and
 # took 23 A presses in one generation. One unchanged-digest episode gets at most
