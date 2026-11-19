@@ -7699,6 +7699,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v1169-menu-blind-nav",
             "hanjuku-chart-v1170-menu-ownership",
             "hanjuku-chart-v1171-jump-menu-wait",
+            "hanjuku-chart-v1172-jump-field-unstable",
             "hanjuku-chart-v1158-progress-regress",
             "hanjuku-chart-v1161-refill-collapse",
             "hanjuku-chart-v1160-chapter-probe-field",
