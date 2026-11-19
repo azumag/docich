@@ -41,6 +41,7 @@ KNOWN_PRICES.update({'フットバース': 999, 'ピッグローラー': 999})
 # 兵士は1G=1人で2桁入力が上限。チャート計画の無い月の残金はここまでの補充に使う。
 SOLDIER_CAP = 99
 SOLDIER_ENOUGH = 50   # owner 2026-10-11: with this many on hand, buy no more soldiers
+SOLDIER_TOPUP = 100   # the wider target _soldier_target asks for when cash allows
 # Owner 2026-10-17: 兵士がこの人数以下の月は、卵・将軍・切り札より補充を最優先する。
 LOW_ARMY = 20
 LOW_ARMY_KEY = 'low_army_refill'
@@ -885,6 +886,19 @@ def _stop_unneeded_recruit(mem, shop):
                          and _recruit_wage_hires(mem) > 0)):
             return False
     sufficient = _recruit_sufficient(mem)
+    if sufficient:
+        # docich#4724: a full roster is not a full army. ch6 23-x held 32
+        # generals, gold 9849 and only 50 soldiers, so every sortie left with
+        # the same thin army and the chapter ground on. When spare cash covers
+        # the soldier top-up the target already computes (the same rule the
+        # shop uses), keep the recruit open: the general brings its soldiers.
+        count_now = mem.get('soldiers_seen')
+        if (_soldier_target(mem, shop, mem.get('header') if isinstance(mem.get('header'), dict) else None)
+                > SOLDIER_ENOUGH and type(count_now) is int and count_now < SOLDIER_TOPUP):
+            _record(mem, 'recruit_soldier_topup', month=shop.get('key'),
+                    observed_metric={'soldiers': count_now, 'gold': mem.get('gold')},
+                    reason='将軍数は足りているが兵士が薄く余剰金があるため、兵士補充を兼ねて募集を続ける')
+            return False
     status = 'not_needed' if sufficient else 'deferred_roster'
     if shop.get('recruit') != status:
         _record(mem, 'recruit_not_needed' if sufficient else 'recruit_roster_unknown',
