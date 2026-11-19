@@ -61,3 +61,23 @@ def test_blob_inside_a_castle_box_is_excluded():
     _put(rgb, 156, 184, 16, 12, OUTLINE)
     roofs = [{'kind': 'own', 'sprite_box': (150, 170, 190, 200)}]
     assert house_roofs(_frame(rgb), roofs) == []
+
+
+def test_red_flag_on_grass_is_not_a_house():
+    rgb = bytearray(bytes((16, 72, 57)) * (256 * 224))
+    _put(rgb, 100, 100, 4, 3, HEART_RED)
+    assert house_roofs(_frame(rgb), []) == []
+
+
+def test_house_outline_on_grass_is_still_detected():
+    rgb = bytearray(bytes((16, 72, 57)) * (256 * 224))
+    _put(rgb, 100, 100, 4, 3, HEART_RED)
+    _put(rgb, 96, 104, 16, 12, OUTLINE)
+    assert [r['target'] for r in house_roofs(_frame(rgb), [])] == [(101, 94)]
+
+
+def test_outline_above_flag_does_not_prove_house():
+    rgb = _rgb()
+    _put(rgb, 96, 90, 16, 10, OUTLINE)
+    _put(rgb, 100, 100, 4, 3, HEART_RED)
+    assert house_roofs(_frame(rgb), []) == []
