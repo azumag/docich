@@ -22,6 +22,7 @@ MAX_STEPS = 900
 OPEN_RETRY_EVERY = 3
 OPEN_MENU_TRIES = 8
 OPEN_MENU_RESETS = 4    # docich#4658: per-visit budget resets per stage entry
+OPEN_MENU_GIVEUP_READS = 30   # docich#4658: release the field when the menu never opens
 # docich#4655: ups that reach the main menu's top row from any position.
 MAIN_MENU_BLIND_UPS = 6
 MAX_SCAN = receipts.MAX_GENERALS
@@ -1530,13 +1531,29 @@ def step(screen, mem, frame):
             state.pop('menu_blind', None)
             _stage(state, 'roster')
             return [pad('a')]
-        if screen.kind == 'map' and _open_retry_due(state, screen.kind):
-            if int(state.get('phase_reads') or 0) > 6:
-                _log(mem, 'post_month_open_retry', screen=screen.kind,
-                     observed_metric={'phase_reads': state['phase_reads'],
-                                      'open_tries': state.get('open_tries')},
-                     reason='月次確認のメニューを開くXが所定の読み取り位置を過ぎても済んでいないため、再試行する')
-            return [pad('x')]
+        if screen.kind == 'map':
+            if _open_retry_due(state, screen.kind):
+                if int(state.get('phase_reads') or 0) > 6:
+                    _log(mem, 'post_month_open_retry', screen=screen.kind,
+                         observed_metric={'phase_reads': state['phase_reads'],
+                                          'open_tries': state.get('open_tries')},
+                         reason='月次確認のメニューを開くXが所定の読み取り位置を過ぎても済んでいないため、再試行する')
+                return [pad('x')]
+            # docich#4658: once every attempt is spent and the menu still has
+            # not opened, the scan held the field for the rest of the month
+            # (live: phase_reads 102 with no input, 10-12 s map holds). Release
+            # the field to the sortie plan instead of waiting out MAX_STEPS.
+            tries = state.get('open_tries')
+            tries = tries if type(tries) is int and tries >= 0 else 0
+            if (tries >= OPEN_MENU_TRIES
+                    and int(state.get('phase_reads') or 0) > OPEN_MENU_GIVEUP_READS):
+                state['failure'] = 'menu_never_opened'
+                _log(mem, 'post_month_open_giveup', screen=screen.kind,
+                     observed_metric={'phase_reads': state.get('phase_reads'),
+                                      'open_tries': tries},
+                     reason='メニューが一度も開かないまま再試行を使い切ったため、当月のロスター確認を中止して出撃計画へ返す')
+                _finish(mem, state)
+                return None
         return []
     if stage == 'roster':
         names = house.roster(screen)
