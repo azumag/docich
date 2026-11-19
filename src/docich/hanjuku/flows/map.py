@@ -2235,14 +2235,13 @@ def map_step(screen: Screen, mem, frame):
         _record(mem, 'align_failed', chart_step=order['step'], target=source, screen=screen.kind,
                 reason='全体マップで選んだ出撃元の近くに屋根が無いため全体マップを開き直す')
     if screen.cursor and not screen.marker:
-        # The stalled しろ list offered this source once (#4338): the same
-        # trip continues through the whole-map Y jump when its budget allows,
-        # and falls back to the ordinary walk when it does not.
+        # Owner 2026-11-19: an own castle is reached with the しろ list's
+        # SELECT jump only — never through the whole-map Y view. A list that
+        # stalled (or a menu that never opened) re-opens the same menu jump;
+        # the existing cooldown bounds the retries.
         y_route = mem.pop('castle_jump_y', None)
-        if (isinstance(y_route, dict) and y_route.get('source') == source
-                and not y_jump_unreachable(mem, source)
-                and _want_y_jump(mem, order, source, 'map')):
-            return _start_y_jump(mem, order, source, 'map')
+        if isinstance(y_route, dict) and y_route.get('source') == source:
+            return _start_castle_jump(mem, order, source)
     # docich#4658: a field frame without the month/gold HUD is a camera pan,
     # battle announcement or other mode transition where X does nothing. The
     # jump used to start there, spend both presses and die with

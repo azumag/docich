@@ -999,33 +999,36 @@ def test_a_stalled_reanchor_keeps_scrolling_instead_of_taking_the_y_route():
     assert 'castle_jump_y' not in mem
 
 
-def test_the_y_route_is_taken_when_the_field_returns(monkeypatch):
+def test_a_stalled_own_castle_trip_reopens_the_x_menu(monkeypatch):
+    """Owner 2026-11-19: own castles use the しろ list's SELECT jump only.
+
+    The whole-map Y view is never used to reach an own castle, so a trip whose
+    list stalled re-opens the same menu jump instead of switching routes.
+    """
     mem = _memory()
     _allow_interrupted_order(monkeypatch)
     mem['castle_jump_y'] = {'step': 'J1', 'source': 'アルマムーン', 'tick': 10}
-    sent = {}
-    monkeypatch.setattr(M, '_want_y_jump', lambda *_args: True)
-    monkeypatch.setattr(M, 'y_jump_unreachable', lambda *_args: False)
+    started = {}
 
-    def start(_mem, _order, name, mode):
-        sent['args'] = (name, mode)
-        return [M.pad('y')]
+    def start(_mem, order, source):
+        started['args'] = (order['step'], source)
+        return [M.pad('x')]
 
-    monkeypatch.setattr(M, '_start_y_jump', start)
+    monkeypatch.setattr(M, '_start_castle_jump', start)
+    monkeypatch.setattr(M, '_start_y_jump', lambda *_args: [M.pad('y')])
     screen = _screen('map', [], cursor=(80, 90))
-    assert M.map_step(screen, mem, None) == [M.pad('y')]
-    assert sent['args'] == ('アルマムーン', 'map')
+    assert M.map_step(screen, mem, None) == [M.pad('x')]
+    assert started['args'] == ('J1', 'アルマムーン')
     assert 'castle_jump_y' not in mem
 
 
-def test_a_refused_y_route_is_offered_once_then_walks(monkeypatch):
+def test_without_the_marker_the_x_jump_is_offered_once(monkeypatch):
     mem = _memory()
     _allow_interrupted_order(monkeypatch)
     mem['castle_jump_y'] = {'step': 'J1', 'source': 'アルマムーン', 'tick': 10}
-    monkeypatch.setattr(M, '_want_y_jump', lambda *_args: False)
-    monkeypatch.setattr(M, 'nav_step', lambda *_args, **_kwargs: [M.pad('right')])
+    monkeypatch.setattr(M, '_start_castle_jump', lambda *_args: [M.pad('x')])
     screen = _screen('map', [], cursor=(80, 90))
-    assert M.map_step(screen, mem, None) == [M.pad('right')]
+    assert M.map_step(screen, mem, None) == [M.pad('x')]
     assert 'castle_jump_y' not in mem
 
 
