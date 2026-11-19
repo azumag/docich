@@ -1839,7 +1839,8 @@ def _end_general_jump(screen, mem, why):
             screen=screen.kind,
             observed_metric={'why': why, 'total': jump.get('total'),
                              'phase': jump.get('phase'),
-                             'scrolls': jump.get('scrolls')},
+                             'scrolls': jump.get('scrolls'),
+                             'text': (screen.text or '')[:48]},
             reason='しょうぐん一覧から将軍へSELECTで飛べないため、野営探索へ戻る')
     if screen.kind in ('main_menu', 'general_list', 'castle_menu'):
         return [pad('b')]
