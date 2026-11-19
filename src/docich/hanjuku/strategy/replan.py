@@ -2104,6 +2104,18 @@ def _mechanical_chart(mem, state, rid, digest):
                 reason='計画が自軍でない城を出撃元/移動先にしているため破棄して組み直す')
         _plan_region(mem)['chart_plan'] = None
         stored = {}
+    if stored.get('source') == 'mechanical' and stored.get('request_id') != rid:
+        # docich#4714: a mechanical plan whose request_id no longer matches the
+        # state is stale, and keeping it pins orders the state has outgrown —
+        # ch6 20-x held オケアナ→ボス(エシャロット) for many minutes while the
+        # castle's list read ビーツ/ポセイドン/ゼウス, so the boss never started.
+        # Drop it so the rebuilt plan re-picks a measured actor (v1211).
+        _record(mem, 'chart_plan_stale_request',
+                observed_metric={'stored': stored.get('request_id'),
+                                 'current': rid},
+                reason='計画のrequest_idが現在の状態と一致しないため破棄して組み直す')
+        _plan_region(mem)['chart_plan'] = None
+        stored = {}
     if stored.get('request_id') == rid and stored.get('source') == 'mechanical':
         # Even within the same month, rebuild an exhausted mechanical chart
         # against the current garrison and in-flight sorties (keep defenders).
