@@ -554,6 +554,16 @@ def marker_castle(frame, chapter, hint=None, evidence=None):
                 return {'castle': hint, 'field': [round(field[0]), round(field[1])],
                         'distance': round(hinted, 1), 'marker': list(marker['box']),
                         'offset': list(offset), 'icons': len(icons), 'point': list(point)}
+            if isinstance(evidence, dict):
+                evidence['hint'] = hint
+                evidence['hint_distance'] = round(hinted, 1)
+        if isinstance(evidence, dict):
+            # Near-miss geometry for the unverified-marker log (docich#4745):
+            # field position, nearest castle and its distance tell a
+            # systematic chapter-cell offset from a single bad marker.
+            evidence['field'] = [round(field[0]), round(field[1])]
+            evidence['distance'] = round(distance, 1)
+            evidence['nearest'] = name
         return _why('out_of_tolerance')
     if len(ordered) > 1:
         runner = ((ordered[1][1][0] - field[0]) ** 2
