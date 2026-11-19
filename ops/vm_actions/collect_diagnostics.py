@@ -7906,6 +7906,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v1229-house-roof-match",
             "hanjuku-chart-v1230-marker-diag",
             "hanjuku-chart-v1231-house-entry-door",
+            "hanjuku-chart-v1232-xmenu-close-guard",
             "hanjuku-chart-v1158-progress-regress",
             "hanjuku-chart-v1161-refill-collapse",
             "hanjuku-chart-v1160-chapter-probe-field",
