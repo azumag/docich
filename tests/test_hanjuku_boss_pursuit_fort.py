@@ -98,3 +98,29 @@ def test_a_fort_closed_back_to_the_map_closes_the_probe():
         bp.step(bare, mem, None)
     assert bp.step(bare, mem, None) == [bp.pad('b')]
     assert mem['boss_pursuit']['outcome'] == 'fort_menu_closed'
+
+
+def _row(y, x, word):
+    from docich.hanjuku.os_layer.screen import TextLine
+    return TextLine(y, tuple((x + 8 * i, ch) for i, ch in enumerate(word)))
+
+
+def test_a_fort_menu_drawn_right_of_x100_is_not_read_as_its_list():
+    # Live g1288 2026-11-20 05:46: the 砦 menu sat around x 93..133, so the
+    # old hand-x>100 test called it a list. _fort_step then read the menu's
+    # own しゅつげき/こうかん as the members and closed general_not_in_fort
+    # without ever opening the list.
+    from docich.hanjuku.os_layer.readers import fort_list_open, is_fort_menu
+    screen = Screen(lines=[_row(31, 104, 'しゅつげき'), _row(47, 104, 'こうかん')],
+                    hand=(96, 25, 116, 38), text='しゅつげきこうかん', kind='text')
+    assert is_fort_menu(screen)
+    assert fort_list_open(screen) is False
+
+
+def test_the_list_beside_a_shifted_menu_is_still_open():
+    from docich.hanjuku.os_layer.readers import fort_list_open
+    screen = Screen(lines=[_row(31, 104, 'しゅつげき'), _row(47, 104, 'こうかん'),
+                           _row(39, 144, 'カシス'), _row(55, 144, 'ピオーネ')],
+                    hand=(136, 33, 154, 46),
+                    text='しゅつげきカシスこうかんピオーネ', kind='text')
+    assert fort_list_open(screen) is True
