@@ -1459,20 +1459,7 @@ def castle_jump_step(screen, mem, frame):
 
     phase = jump.get('phase')
     if phase == 'menu':
-        if screen.kind == 'map' and screen.header is None:
-            # docich#4658: a field frame without the month/gold HUD is a
-            # camera pan or mode transition; X does nothing there. The
-            # jump used to spend both presses on such frames and then
-            # fail (total=12, screen=map, hand=None) before the field
-            # settled, which is why 106 of 106 trips died. Wait for a
-            # readable field instead of pressing, and end the trip as
-            # unstable (not as a cursor failure) when it never settles.
-            jump['unstable'] = int(jump.get('unstable') or 0) + 1
-            if jump['unstable'] <= CASTLE_JUMP_MENU_WAIT:
-                return []
-            return _end_castle_jump(screen, mem, 'field_unstable')
         if screen.kind == 'map':
-            jump['unstable'] = 0
             # Give the first X a few observations to draw the menu; a second
             # X too early would close the menu it just opened.
             # docich#4658: the X sent when the jump starts needs a few
@@ -1785,14 +1772,7 @@ def general_jump_step(screen, mem, frame):
     phase = jump.get('phase')
 
     if phase == 'menu':
-        if screen.kind == 'map' and screen.header is None:
-            # docich#4658: a HUD-less field is a transition; X is ignored.
-            jump['unstable'] = int(jump.get('unstable') or 0) + 1
-            if jump['unstable'] <= CASTLE_JUMP_MENU_WAIT:
-                return []
-            return _end_general_jump(screen, mem, 'field_unstable')
         if screen.kind == 'map':
-            jump['unstable'] = 0
             # docich#4658: the X sent when the jump starts needs a few
             # frames to draw the menu. A second X while the frame still
             # reads 'map' closed the menu it had just opened, and the
