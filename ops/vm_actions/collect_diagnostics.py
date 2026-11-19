@@ -6255,7 +6255,7 @@ def _chart_corner_projection(state_dir, state):
         status = "unknown"
 
     # Runtime identity - only game field, never secrets or manuscript
-    identity = state.get("runtime_identity") if isinstance(state.get("runtime_identity"), dict) else None
+    identity = state.get("chart_runtime_identity") if isinstance(state.get("chart_runtime_identity"), dict) else None
     runtime_game = identity.get("game") if identity and isinstance(identity.get("game"), str) and identity["game"] else None
 
     # Time fields - use _rotation_time for consistent formatting
@@ -6265,7 +6265,9 @@ def _chart_corner_projection(state_dir, state):
     # End reason - only allow known values, unknown otherwise
     end_reason = state.get("end_reason")
     if end_reason not in frozenset({"duration", "manual", "switch-terminal-before-corner-active",
-                                      "released-failure-before-retry", "unknown", None}):
+                                      "released-failure-before-retry", "operator-moved-after-start",
+                                      "operator-moved-during-chart", "operator-moved-before-restore",
+                                      "operator-stopped-before-start", "unknown", None}):
         end_reason = "unknown"
 
     return {
