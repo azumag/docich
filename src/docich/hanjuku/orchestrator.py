@@ -536,8 +536,7 @@ def plan_starved_rearm(mem, phase, kind):
     return True
 
 
-MENU_SCAN_STAGES = frozenset({'open_menu', 'task_menu', 'task_select',
-                                  'status', 'roster', 'roster_next'})
+MENU_SCAN_STAGES = frozenset({'open_menu', 'task_menu'})
 
 def _post_month_menu_owns(mem):
     '''docich#4658: does the monthly roster scan own this frame's menu?'''

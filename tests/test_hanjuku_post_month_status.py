@@ -1724,6 +1724,6 @@ def test_the_scan_owns_menu_frames_while_walking_them():
     # scan had just opened, so the scan never reached roster.
     from docich.hanjuku import orchestrator as O
     assert O._post_month_menu_owns({'post_month_status': {'stage': 'open_menu'}})
-    assert O._post_month_menu_owns({'post_month_status': {'stage': 'roster'}})
+    assert not O._post_month_menu_owns({'post_month_status': {'stage': 'roster'}})
     assert not O._post_month_menu_owns({'post_month_status': {'stage': 'await_map'}})
     assert not O._post_month_menu_owns({})
