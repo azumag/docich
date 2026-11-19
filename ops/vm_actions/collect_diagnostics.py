@@ -7724,6 +7724,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v1193-recruit-stuck",
             "hanjuku-chart-v1194-home-probe",
             "hanjuku-chart-v1195-probe-ready",
+            "hanjuku-chart-v1196-probe-first",
             "hanjuku-chart-v1158-progress-regress",
             "hanjuku-chart-v1161-refill-collapse",
             "hanjuku-chart-v1160-chapter-probe-field",
