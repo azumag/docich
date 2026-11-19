@@ -94,8 +94,10 @@ PYTHONPATH=src python3 -m docich.hanjuku.month_audit watch \
   場所は `AGENT_GUARDS` 環境変数、またはリポジトリの隣の `agent-guards/`。
 - `gh auth status` が失敗する場合も投稿しない。
 - ラベルは既存の `bug` と `auto-generated` を使う。新しいラベルは作らない。
-- 題名は `[半熟英雄] 月内出撃ゼロ: ch<章> <シグネチャ>`。同じ章・同じ
-  シグネチャの open issue があれば、新しいissueを作らずコメントする
+- 題名は `[半熟英雄] 月内出撃ゼロ: ch<章> <主シグネチャ>`。同じ章・同じ
+  主シグネチャの open issue があれば、新しいissueを作らずコメントする。主シグネチャは
+  plan_starved / departure_failure / monthly_scan / camp_recall / battle / unread /
+  no_source / stuck_march / ledger_unknown の優先順で1つ選ぶ（全signalsは本文に残す）
   （同じ incident の重複コメントはしない。コメントは1時間に1回まで）。
 - 既知の追跡issueへ寄せたい場合は、本文の `fingerprint` を確認して手動で
   コメントする。自動closeはしない。回復は次の完全な月の `confirmed > 0` で

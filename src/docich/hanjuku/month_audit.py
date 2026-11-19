@@ -82,6 +82,20 @@ SIGNAL_LABELS = {
     'unknown': '原因未分類',
 }
 SIGNAL_ORDER = tuple(SIGNAL_LABELS)
+# One stable issue signature per month: the first matching primary cause.
+# The full signal list stays in the record for the timeline and evidence.
+PRIMARY_SIGNALS = (
+    ('plan_starved', ('plan_all_settled', 'no_orders')),
+    ('departure_failure', ('order_start_without_launch', 'launch_confirmation_missing',
+                           'departure_cancelled')),
+    ('monthly_scan', ('monthly_scan_hold', 'monthly_scan_yield')),
+    ('camp_recall', ('camp_recall_loop',)),
+    ('battle', ('battle_grind',)),
+    ('unread', ('unread_hold',)),
+    ('no_source', ('no_source',)),
+    ('stuck_march', ('stuck_march',)),
+    ('ledger_unknown', ('ledger_unknown',)),
+)
 
 
 class AuditError(Exception):
@@ -630,6 +644,13 @@ def _month_summary(observed, close_at):
     }
 
 
+def _primary_signal(signals):
+    for name, members in PRIMARY_SIGNALS:
+        if any(signal in members for signal in signals):
+            return name
+    return 'unknown'
+
+
 def _incident_id(identity, chapter, month):
     raw = f"{identity.get('runtime_id')}|{identity.get('generation')}|{chapter}|{month}"
     return hashlib.sha256(raw.encode('utf-8')).hexdigest()[:20]
@@ -731,8 +752,9 @@ def _build_incident(runtime, observed, context, rows, close_at, identity, *, kin
         'created_at': float(close_at),
     }
     record['incident_id'] = _incident_id(identity, observed.get('chapter'), observed.get('month'))
-    record['signature'] = '+'.join(signals) if signals else 'unknown'
-    record['fingerprint'] = _fingerprint(observed.get('chapter'), kind, signals)
+    primary = _primary_signal(signals)
+    record['signature'] = primary
+    record['fingerprint'] = _fingerprint(observed.get('chapter'), kind, [primary])
     record['auto_file'] = kind == 'zero_sortie' and confidence == 'high'
     return _shrink(record)
 
@@ -1072,9 +1094,8 @@ def render_comment(record):
 
 
 def _issue_title(record):
-    labels = [SIGNAL_LABELS.get(name, name) for name in record.get('signals') or []]
-    suffix = '・'.join(labels[:2]) if labels else '原因未分類'
-    return f"{TITLE_PREFIX}: ch{record.get('chapter')} {suffix}"[:100]
+    label = SIGNAL_LABELS.get(record.get('signature'), '原因未分類')
+    return f"{TITLE_PREFIX}: ch{record.get('chapter')} {label}"[:100]
 
 
 class GhError(AuditError):
