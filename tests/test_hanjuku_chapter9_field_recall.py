@@ -335,3 +335,15 @@ def test_a_tent_beside_a_castle_is_still_recalled(monkeypatch):
                                         'target': (144, 127)}])
     mem = _mem(tick=500)
     assert recall_flow.camp_recall_step(MAP, mem, FRAME) is not None
+
+
+def test_the_boss_phase_recall_records_the_gather_castle(monkeypatch):
+    # Owner 2026-11-15: every boss-phase camp gathers at the last corridor
+    # castle. The visible-castle branch read state['gather'], but nothing set
+    # it, so a visible アルマムーン won the いどう and the camp went north.
+    monkeypatch.setattr(recall_flow, 'own_camps', lambda frame: [dict(CAMP)])
+    mem = _mem(captured=list(ROAD))
+    assert recall_flow.camp_recall_step(MAP, mem, FRAME) is not None
+    state = _flow(mem)['recall']
+    assert state.get('gather') == 'イデ！'
+    assert not state.get('boss')

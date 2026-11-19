@@ -1095,6 +1095,16 @@ def _camp_recall_step(screen: Screen, mem, frame, *, observed_camps=None):
             open_field = isinstance(frame, Frame) and not castle_roofs(frame)
             if near or any(g in actors for g in wave) or (wave and open_field):
                 state['boss'], state['goal'] = True, boss
+        if not state.get('boss'):
+            # Owner 2026-11-15 (camp_stays/gather_castle): outside the boss
+            # redirect every boss-phase camp still gathers at the last corridor
+            # castle. The visible-castle branch below only honoured a
+            # ``state['gather']`` that nothing ever set, so a camp beside home
+            # took the visible いどう to アルマムーン and the army waited in the
+            # north (live g1288 2026-11-20 07:5x). Set it once per recall.
+            gather = gather_castle(mem)
+            if gather:
+                state['gather'] = gather
         if _camp_target(state.get('camp_world')):
             _flow(mem)['camp_last_world'] = list(state['camp_world'])
         elapsed = (int(mem.get('tick') or 0) - mem['month_start_tick']
