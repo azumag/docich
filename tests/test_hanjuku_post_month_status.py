@@ -49,6 +49,24 @@ def test_map_yields_to_a_startable_order_until_the_month_has_a_launch():
     assert state['stage'] == 'open_menu'
 
 
+def test_map_yields_to_boss_waves_in_flight():
+    from docich import hanjuku_chart as chart
+    mem = memory(chapter=9, captured=list(chart.corridor(9)),
+                 month_sorties={'scope': [9, '2-6'], 'launches': 1},
+                 boss_wave_generals={'カシス': {'step': 'A', 'launched': 1}},
+                 boss_cell={'chapter': 9, 'cell': [770, 629], 'tick': 100})
+    post.arm(mem)
+    state = mem['post_month_status']
+    field = Screen([], None, '', kind='map')
+    assert post.step(field, mem, None) is None
+    assert state['stage'] == 'await_map'
+    assert state['boss_floor_yields'] == 1
+    assert any(r['decision'] == 'post_month_boss_floor' for r in mem['_records'])
+    state['boss_floor_yields'] = post.SORTIE_FLOOR_YIELDS
+    assert post.step(field, mem, None) == [pad('x')]
+    assert state['stage'] == 'open_menu'
+
+
 def test_individual_statuses_are_read_before_any_repair_or_recall():
     mem = memory()
     post.arm(mem)
