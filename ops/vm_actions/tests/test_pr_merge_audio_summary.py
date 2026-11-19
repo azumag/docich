@@ -139,6 +139,17 @@ class SummarySelectionTests(unittest.TestCase):
         _, overview = report.extract_body_parts("## 概要（任意）\n\n説明です。")
         self.assertEqual(overview, "説明です。")
 
+    def test_heading_inside_code_fence_is_not_a_section(self):
+        fence = chr(96) * 3
+        body = (
+            "## 概要\n\n"
+            f"{fence}\n## 音声サマリー\n偽の見出し\n{fence}\n\n"
+            "本当の概要です。"
+        )
+        override, overview = report.extract_body_parts(body)
+        self.assertEqual(override, "")
+        self.assertEqual(overview, "本当の概要です。")
+
 
 class AiSummaryTests(unittest.TestCase):
     def test_ai_summary_is_wrapped(self):
@@ -304,6 +315,7 @@ class SummaryValidationTests(unittest.TestCase):
         for kwargs in (
             {"token": "test-token"},
             {"token": "test-token", "endpoint": "http://example.test/v1/chat/completions", "model": TEST_MODEL},
+            {"token": "test-token", "endpoint": "https://user:pass@example.test/v1/chat/completions", "model": TEST_MODEL},
             {"token": "", "endpoint": TEST_ENDPOINT, "model": TEST_MODEL},
         ):
             with self.subTest(kwargs=kwargs):

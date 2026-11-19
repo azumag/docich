@@ -27,6 +27,7 @@ import socket
 import sys
 import unicodedata
 import urllib.error
+import urllib.parse
 import urllib.request
 from collections.abc import Callable
 from pathlib import Path
@@ -129,12 +130,26 @@ def normalize_prose(raw: str) -> str:
 
 
 def _sections(body: str) -> list[tuple[str, str]]:
-    """Split a Markdown body into (heading, content) pairs."""
+    """Split a Markdown body into (heading, content) pairs.
+
+    Headings inside fenced code blocks are data, not section boundaries.
+    """
     lines = body.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    fence = chr(96) * 3
     sections: list[tuple[str, str]] = []
     current: str | None = None
     buffer: list[str] = []
+    in_fence = False
     for line in lines:
+        if line.lstrip().startswith(fence):
+            in_fence = not in_fence
+            if current is not None:
+                buffer.append(line)
+            continue
+        if in_fence:
+            if current is not None:
+                buffer.append(line)
+            continue
         match = _HEADING_RE.match(line)
         if match:
             if current is not None:
@@ -256,7 +271,16 @@ def request_summary(
     """
     if not token or not endpoint or not model:
         return None, "ai_disabled"
-    if not endpoint.startswith("https://") or any(ch.isspace() for ch in endpoint):
+    try:
+        parsed = urllib.parse.urlsplit(endpoint)
+    except ValueError:
+        return None, "ai_disabled"
+    if (
+        parsed.scheme != "https"
+        or not parsed.hostname
+        or parsed.username is not None
+        or parsed.password is not None
+    ):
         return None, "ai_disabled"
     prompt = redact_secrets(prompt)
     payload = {
@@ -371,6 +395,7 @@ def generate_audio_text(
                 opener=opener,
             )
         if raw:
+            raw = redact_secrets(raw)
             text = build_summary_sentence(raw, number, require_japanese=True)
             if text:
                 return text, "ai", "ok"

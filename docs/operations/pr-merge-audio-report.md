@@ -101,6 +101,8 @@ PR本文に次のセクションを置くと、その内容を最優先で使い
 - トークン様文字列は送信前に redact し、プロンプト・応答・トークンはログに出しません。
 - AI の API キーは repository secret（`PR_MERGE_AUDIO_LLM_API_KEY`）だけで管理し、
   workflow・コード・ログへ書かない。endpoint は HTTPS のみを受け付けます。
+- `PR_MERGE_AUDIO_LLM_ENDPOINT` は owner だけが変更できる信頼済みの URL に限定してください。
+  任意の URL を設定すると、そのホストへ API キーが送信されます。
 - PR本文はデータとして `<change>` で区切り、固定指示と出力検証で prompt injection の
   影響を限定します。merge できるのは owner だけです。
 - AIはランナー上で実行し、VM の AI runtime / lane / registry は変更しません。
