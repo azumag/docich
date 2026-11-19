@@ -7733,6 +7733,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v1204-frontier-probe",
             "hanjuku-chart-v1205-boss-reinforce",
             "hanjuku-chart-v1206-card-delayed-confirm",
+            "hanjuku-chart-v1208-enroute-call",
             "hanjuku-chart-v1158-progress-regress",
             "hanjuku-chart-v1161-refill-collapse",
             "hanjuku-chart-v1160-chapter-probe-field",
