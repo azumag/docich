@@ -22,8 +22,11 @@ ambiguous and inconsistent reads are reported as not successful.  Inventory from
 left on the normal LIVE position under the active policy.  No sell is created here.
 
 Exit codes: 0 preview/confirmed full fill, 1 refused/no order, 2 usage, 5 lease held,
-7 lease lost, 8 unresolved/partial/unfilled (the normal OFF worker can continue reconciliation
-and TTL cancellation).
+7 lease lost, 8 unresolved/partial/unfilled.  For an outstanding ACKED, PARTIALLY_FILLED or
+unknown submission, restore the previously running spot-sender OFF worker, or rerun this
+identical probe with its confirm token to reconcile/cancel.  A read-only OFF worker cannot
+cancel, and the order must never be resent.  Cancellation-only recovery is allowed even when
+this trial's safety stop is active; a new POST still requires a clear safety latch.
 
 All exchange access in the default wiring goes through ``open_bitbank_spot_session`` so the
 GET-only reader and the order sender use the same fixed order-capable key file.  Tests inject
@@ -62,6 +65,11 @@ EXIT_UNRESOLVED = 8
 
 DECISION_KEY = "probe1:phase-e-single-buy"
 RULE_ID = "phase_e_single_buy"
+RECOVERY_NEXT = (
+    "restore the previously running spot-sender OFF worker, or rerun this identical probe "
+    "with the same --confirm token to reconcile/cancel; a read-only OFF worker cannot cancel. "
+    "Never resend."
+)
 SIDE = "buy"
 ORDER_TYPE = "limit"
 TOKEN_LEN = 10
@@ -126,13 +134,14 @@ class _ProbeSender:
     """One-shot sender wrapper: exact previewed request, and cancel only the acknowledged id."""
 
     def __init__(self, inner, plan: ProbePlan, *, state_dir, clock: Callable[[], float],
-                 allowed_order_id: str | None = None) -> None:
+                 allowed_order_id: str | None = None, book_ts_ms: int | None = None) -> None:
         self._inner = inner
         self._plan = plan
         self._state_dir = state_dir
         self._clock = clock
         self._posted = False
         self._order_id = allowed_order_id
+        self._book_ts_ms = book_ts_ms
 
     @property
     def kind(self):
@@ -148,6 +157,12 @@ class _ProbeSender:
             _require_control_off(self._state_dir, self._clock)
         except ProbeRefused:
             raise ExchangeRejected("probe_control_not_off") from None
+        if self._book_ts_ms is not None:
+            # The book was checked before the later balance/open-order GETs.  Recheck at the
+            # last possible moment: a stale book must never reach the POST.
+            problem = decide.book_age_problem(self._clock(), self._book_ts_ms)
+            if problem is not None:
+                raise ExchangeRejected("probe_book_stale")
         self._posted = True
         snapshot = self._inner.submit_order(req)
         self._order_id = str(snapshot.exchange_order_id)
@@ -262,13 +277,13 @@ def _require_control_off(state_dir, clock: Callable[[], float]) -> None:
         raise ProbeRefused("control_not_off")
 
 
-def _safety(ledger: LiveLedger):
+def _safety_gate(ledger: LiveLedger, existing: Intent | None) -> None:
+    """Refuse a new trial on a safety stop; an existing intent may still be reconciled/canceled."""
     state = safety.read_safety_state(ledger)
     if not state.ledger_readable:
         raise ProbeRefused("safety_unreadable")
-    if state.trips:
+    if existing is None and state.trips:
         raise ProbeRefused("safety_stops_active")
-    return state
 
 
 def _check_existing(intent: Intent | None, plan: ProbePlan, policy: LivePolicy) -> None:
@@ -397,7 +412,8 @@ def _require_empty_open_orders(reader, plan: ProbePlan) -> None:
 
 
 def _check_dynamic(ledger: LiveLedger, reader, plan: ProbePlan, policy_set: LivePolicySet,
-                   *, clock: Callable[[], float]) -> None:
+                   *, clock: Callable[[], float]) -> int:
+    """Check the live market and return the exchange timestamp of the book it approved."""
     rules = _rule_set(reader, policy_set)
     rule = rules.get(plan.symbol)
     if rule is None:
@@ -450,6 +466,14 @@ def _check_dynamic(ledger: LiveLedger, reader, plan: ProbePlan, policy_set: Live
     if quote is None or quote.free < plan.gross():
         raise ProbeRefused("insufficient_jpy")
     _require_empty_open_orders(reader, plan)
+    return book.exchange_ts_ms
+
+
+def _require_fresh_book(book_ts_ms: int, clock: Callable[[], float]) -> None:
+    """Recheck the approved book after the later GETs and before the POST."""
+    problem = decide.book_age_problem(clock(), book_ts_ms)
+    if problem is not None:
+        raise ProbeRefused(problem)
 
 
 def _check_status_for_resume(reader, plan: ProbePlan) -> None:
@@ -470,10 +494,10 @@ def preview(state_dir, plan: ProbePlan, *, clock: Callable[[], float] = time.tim
     try:
         ledger_id = _ledger_id(ledger)
         policy_set, policy = _active_policy(ledger, plan.symbol)
-        _safety(ledger)
         existing = views.intent_by_decision_key(ledger, DECISION_KEY)
         _check_existing(existing, plan, policy)
         _check_other_intents(ledger, existing)
+        _safety_gate(ledger, existing)
         _check_positions(ledger, plan, policy, existing)
         _require_control_off(state, clock)
         if existing is None:
@@ -508,12 +532,32 @@ def _prepare_existing(ledger: LiveLedger, lease, intent: Intent, *, now: float) 
     return intent
 
 
+def _executor_symbols(ledger: LiveLedger, plan: ProbePlan,
+                      policy_set: LivePolicySet) -> tuple[str, ...]:
+    """Every rule the balance proof may need: the active policy plus all recorded fill symbols.
+
+    ``reconcile`` cannot prove NOT_CREATED when a recorded fill has no market rule (the whole
+    balance comparison becomes indeterminate).  Monitoring and cancellation still use only the
+    exact durable probe intent.
+    """
+    symbols = set(policy_set.policies)
+    symbols.add(plan.symbol)
+    try:
+        symbols.update(fill.symbol for fill in views.all_fills(ledger))
+    except Exception:
+        raise ProbeRefused("ledger_unreadable") from None
+    return tuple(sorted(symbols))
+
+
 def _new_executor(ledger, lease, reader, sender, gate, plan: ProbePlan, state_dir,
-                  clock: Callable[[], float], *, allowed_order_id: str | None = None):
+                  clock: Callable[[], float], *, policy_set: LivePolicySet,
+                  book_ts_ms: int | None = None,
+                  allowed_order_id: str | None = None):
     wrapped = _ProbeSender(sender, plan, state_dir=state_dir, clock=clock,
-                           allowed_order_id=allowed_order_id)
+                           allowed_order_id=allowed_order_id, book_ts_ms=book_ts_ms)
     executor = OrderExecutor(ledger, lease, reader=reader, sender=wrapped, enable_check=gate,
-                             clock=clock, symbols=(plan.symbol,), config=ExecutorConfig())
+                             clock=clock, symbols=_executor_symbols(ledger, plan, policy_set),
+                             config=ExecutorConfig())
     return executor, wrapped
 
 
@@ -639,12 +683,12 @@ class _Outcome:
 def _outcome(ledger: LiveLedger, intent: Intent | None) -> _Outcome:
     if intent is None:
         return _Outcome("unresolved", "missing", Decimal(0), EXIT_UNRESOLVED,
-                        next="restore the OFF worker", problem="intent_missing")
+                        next=RECOVERY_NEXT, problem="intent_missing")
     state = intent.state
     live_safety = safety.read_safety_state(ledger)
     if not live_safety.ledger_readable or live_safety.trips:
         return _Outcome("unresolved", state, Decimal(0), EXIT_UNRESOLVED,
-                        next="restore the OFF worker", problem="safety_tripped")
+                        next=RECOVERY_NEXT, problem="safety_tripped")
     if state in ("REJECTED", "ABANDONED", "NOT_CREATED", "EXPIRED"):
         return _Outcome("no_order", state, Decimal(0), EXIT_REFUSED)
     if state == "FILLED":
@@ -656,7 +700,7 @@ def _outcome(ledger: LiveLedger, intent: Intent | None) -> _Outcome:
             problem = "fill_incomplete"
         if problem is not None:
             return _Outcome("unresolved", state, filled, EXIT_UNRESOLVED,
-                            next="restore the OFF worker", problem=problem)
+                            next=RECOVERY_NEXT, problem=problem)
         return _Outcome("filled", state, filled, EXIT_OK)
     if state == "CANCELED":
         problem, filled = _accounting(ledger, intent)
@@ -666,17 +710,17 @@ def _outcome(ledger: LiveLedger, intent: Intent | None) -> _Outcome:
             problem = "order_status"
         if problem is not None:
             return _Outcome("unresolved", state, filled, EXIT_UNRESOLVED,
-                            next="restore the OFF worker", problem=problem)
+                            next=RECOVERY_NEXT, problem=problem)
         if filled > 0:
             return _Outcome("partial", state, filled, EXIT_UNRESOLVED,
-                            next="restore the OFF worker")
+                            next=RECOVERY_NEXT)
         return _Outcome("canceled_unfilled", state, Decimal(0), EXIT_UNRESOLVED)
     if state in ("ACKED", "PARTIALLY_FILLED"):
         problem, filled = _accounting(ledger, intent)
         return _Outcome("unresolved", state, filled, EXIT_UNRESOLVED,
-                        next="restore the OFF worker", problem=problem or "not_terminal")
+                        next=RECOVERY_NEXT, problem=problem or "not_terminal")
     return _Outcome("unresolved", state, Decimal(0), EXIT_UNRESOLVED,
-                    next="restore the OFF worker", problem="not_terminal")
+                    next=RECOVERY_NEXT, problem="not_terminal")
 
 
 def _durable_outcome(ledger: LiveLedger, intent_id: str) -> _Outcome:
@@ -687,12 +731,12 @@ def _durable_outcome(ledger: LiveLedger, intent_id: str) -> _Outcome:
         intent = None
     if intent is None:
         return _Outcome("unresolved", "unknown", Decimal(0), EXIT_UNRESOLVED,
-                        next="restore the OFF worker", problem="state_unreadable")
+                        next=RECOVERY_NEXT, problem="state_unreadable")
     try:
         return _outcome(ledger, intent)
     except Exception:
         return _Outcome("unresolved", intent.state, Decimal(0), EXIT_UNRESOLVED,
-                        next="restore the OFF worker", problem="state_unreadable")
+                        next=RECOVERY_NEXT, problem="state_unreadable")
 
 
 def run(state_dir, plan: ProbePlan, confirm: object, *, clock: Callable[[], float] = time.time,
@@ -719,10 +763,13 @@ def run(state_dir, plan: ProbePlan, confirm: object, *, clock: Callable[[], floa
         if len(token) != TOKEN_LEN or not hmac.compare_digest(token, expected):
             raise ProbeRefused("stale_preview")
         _require_control_off(state, clock)
-        _safety(ledger)
         existing = views.intent_by_decision_key(ledger, DECISION_KEY)
         _check_existing(existing, plan, policy)
         _check_other_intents(ledger, existing)
+        # An existing intent may still be reconciled/canceled after its own safety stop tripped:
+        # cancellation only reduces exposure and never sends.  A new POST still requires a clear
+        # safety latch.
+        _safety_gate(ledger, existing)
         _check_positions(ledger, plan, policy, existing)
 
         if existing is not None and existing.state in TERMINAL_INTENT_STATES:
@@ -741,11 +788,13 @@ def run(state_dir, plan: ProbePlan, confirm: object, *, clock: Callable[[], floa
             if intent.state in ("ACKED", "PARTIALLY_FILLED") and not allowed:
                 raise ProbeRefused("order_id_missing")
             executor, wrapper = _new_executor(ledger, writer, reader, sender, gate, plan, state, clock,
-                                              allowed_order_id=allowed)
+                                              policy_set=policy_set, allowed_order_id=allowed)
         else:
             reader, sender = _open_session(state, plan, clock=clock, session_opener=session_opener)
-            _check_dynamic(ledger, reader, plan, policy_set, clock=clock)
-            executor, wrapper = _new_executor(ledger, writer, reader, sender, gate, plan, state, clock)
+            book_ts_ms = _check_dynamic(ledger, reader, plan, policy_set, clock=clock)
+            _require_fresh_book(book_ts_ms, clock)
+            executor, wrapper = _new_executor(ledger, writer, reader, sender, gate, plan, state, clock,
+                                              policy_set=policy_set, book_ts_ms=book_ts_ms)
             request = IntentRequest(decision_key=DECISION_KEY, symbol=plan.symbol, side=SIDE,
                                     order_type=ORDER_TYPE, amount=dec_text(plan.amount),
                                     price=dec_text(plan.price), policy_digest=policy.digest,

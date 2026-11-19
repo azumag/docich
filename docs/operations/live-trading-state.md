@@ -230,14 +230,19 @@ policy set digest・台帳 identity・固定 decision key に結び付き、残�
 「約定代金 + fee + reserve」以上あることを確認する。**最初の注文前だけ**、対象ペアの
 `fetch_open_orders` が complete かつ空であること、板の読み取り前後で JPY と base の total が
 安定していること、板の読み取り後に free JPY を再確認する。台帳の期待残高と取引所残高は
-対象通貨で一致することも確認する。グローバル control は入口と送信直前に `off` を確認する。
-ON・不明なら POST しない。通常の on+trade ゲートへのフォールバックは無い。これらの残高・
-open order 検査を通常 worker のサイクルへ広げない。
+対象通貨で一致することも確認する。板の採用時刻は残高・open order の後続 GET を越えて
+保持し、**すべての GET の後**と **POST 直前の sender 呼び出し**で `decide.book_age_problem`
+により鮮度を再確認する。どちらかで stale/未来時刻になれば POST しない。グローバル control は
+入口と送信直前に `off` を確認する。ON・不明なら POST しない。通常の on+trade ゲートへの
+フォールバックは無い。これらの残高・open order 検査を通常 worker のサイクルへ広げない。
 
 固定の decision key `probe1:phase-e-single-buy` を使う。同じ key の intent がどの状態に
 あっても 2 回目の POST は行わない。注文内容(銘柄・数量・指値・policy)が異なる再実行は
 拒否する。送信結果が不明な
-場合は再送せず `UNKNOWN_SUBMISSION` のまま照合を試みる。送信経路に入った後に想定外の
+場合は再送せず `UNKNOWN_SUBMISSION` のまま照合を試みる。照合の残高証明に使う market rules は
+有効 policy の全銘柄と、台帳に記録済みの約定銘柄を含める。これにより他通貨・他銘柄の約定が
+`indeterminate` を生んで NOT_CREATED を妨げない。監視と取消は引き続き、この固定 decision key
+の durable な intent だけを対象にする。送信経路に入った後に想定外の
 例外が出た場合も、preflight 拒否としては扱わない。台帳を安全に読めれば永続 state を報告し、
 読めなければ `unresolved` として終了コード `8` を返す。どちらの場合も同じプロセスから
 再送しない。監視は既定 30 秒(1〜120 秒で指定可)
@@ -248,8 +253,15 @@ open order 検査を通常 worker のサイクルへ広げない。
 order の `remaining_amount` が `0` であることも確認する。
 終了コード: `0` プレビュー成功または完全約定、`1` 拒否・注文なし、`2` 引数誤り、
 `5` 他の worker が writer lease を保持、`7` lease 喪失、`8` 未解決・部分約定・取消済み
-未約定。`8` のときは出力の `next: restore the OFF worker` に従い、通常の OFF worker を
-戻す。worker は起動時照合と TTL 取消を続ける。
+未約定。
+
+`8` で ACKED・PARTIALLY_FILLED・送信結果不明の注文が残る場合、出力の `next` に従い、
+**それまで動いていた spot sender 付きの OFF worker** を戻すか、同じ引数と `--confirm <token>`
+でこのプローブを再実行して照合・取消を行う。既定の OFF worker は `sender=None` の
+読み取り専用であり、**読み取り専用 worker は取消できない**。取消だけを目的とする再実行は、
+このプローブが起こした安全停止が有効なままでも許可される(グローバル control が明示的な
+`off` で、同じ writer lease・同じ intent の証明が揃う場合に限る)。安全停止が残る限り新規
+POST は行わない。注文を再送してはならない。
 
 ### 約定後の在庫
 

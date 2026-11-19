@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import io
+from dataclasses import replace
 from decimal import Decimal as D
 
 import pytest
@@ -9,9 +10,9 @@ import pytest
 from bitbank_live_support import FakeTransport, default_script
 from docich.trading.exchanges.bitbank_live import parse
 from docich.trading.exchanges.bitbank_live.reader import BitbankReader
-from docich.trading.live import views
-from docich.trading.live.exchange import (ExchangeAmbiguous, ExchangeDataError, ExchangeRejected,
-                                          OrderRequest, SpotStatus)
+from docich.trading.live import balance, views
+from docich.trading.live.exchange import (AssetBalance, ExchangeAmbiguous, ExchangeDataError,
+                                          ExchangeRejected, OrderPage, OrderRequest, SpotStatus)
 from docich.trading.live.ledger import Cashflow, IntentRequest, LiveLedger
 from docich.trading.live.lease import acquire_writer_lease, release_writer_lease
 from docich.trading import live_probe as probe_order
@@ -287,6 +288,54 @@ def test_ambiguous_submit_is_not_resent_on_rerun():
         _cleanup(ws)
 
 
+def test_outstanding_recovery_requires_a_spot_sender_or_the_same_probe_token():
+    ws, clock, mock, _ = _setup()
+    try:
+        view = _preview(ws, clock, mock)
+        result = _run(ws, clock, mock, view["token"], sender=OneShotAmbiguousSender())
+        guidance = result["next"]
+        assert "previously running spot-sender OFF worker" in guidance
+        assert "same --confirm token" in guidance
+        assert "read-only OFF worker cannot cancel" in guidance
+        assert "Never resend" in guidance
+        assert guidance != "restore the OFF worker"
+    finally:
+        _cleanup(ws)
+
+
+def test_existing_ack_is_canceled_even_when_its_safety_stop_is_active():
+    ws, clock, mock, ps = _setup()
+    try:
+        view = _preview(ws, clock, mock)
+        mock.set_book(SYMBOL, bids=(("99", "20"),), asks=())
+        ledger = ws.open_ledger(now=NOW)
+        lease = acquire_writer_lease(ledger, ws.layout, now=NOW)
+        gate = probe_order._ProbeGate(ws.state, clock=clock.seconds)
+        executor, _ = probe_order._new_executor(
+            ledger, lease, ProbeReader(mock), mock, gate, _plan(), ws.state, clock.seconds,
+            policy_set=ps)
+        intent = executor.plan(IntentRequest(
+            decision_key=probe_order.DECISION_KEY, symbol=SYMBOL, side="buy", order_type="limit",
+            amount="10", price="100", policy_digest=ps.policy_for(SYMBOL).digest,
+            rule_id=probe_order.RULE_ID))
+        executor.submit(intent.intent_id)
+        assert ledger.get_intent(intent.intent_id).state == "ACKED"
+        ledger.trip_safety(probe_order.safety.SafetyReason.UNKNOWN_ORDER,
+                           detail="synthetic stop from the probe", now=NOW)
+        release_writer_lease(ledger, lease, now=NOW)
+        ledger.close()
+
+        # Read-only preview still works for reconciliation after the stop; it never sends.
+        assert _preview(ws, clock, mock)["existing_state"] == "ACKED"
+        result = _run(ws, clock, mock, view["token"])
+        assert _intent(ws).state == "CANCELED"
+        assert len(mock.submissions) == 1  # only the setup ACK; no second POST
+        assert result["problem"] == "safety_tripped"
+        assert "read-only OFF worker cannot cancel" in result["next"]
+    finally:
+        _cleanup(ws)
+
+
 # ---- preconditions ----------------------------------------------------------------------
 def test_foreign_writer_lease_is_refused_without_a_post(monkeypatch):
     ws, clock, mock, _ = _setup()
@@ -348,11 +397,17 @@ def test_stopped_pair_bad_balance_and_missing_liquidity_are_refused():
 def test_a_new_submission_requires_a_complete_empty_open_order_list():
     ws, clock, mock, _ = _setup()
     try:
-        mock.submit_order(OrderRequest(SYMBOL, "buy", "limit", D("1"), D("99"), None))
+        # A real snapshot from a disconnected mock: the fixture order must not touch the
+        # funds or ledger the probe actually reads.
+        order_mock, _ = make_mock(clock, symbols=("OAS/JPY", "XYM/JPY"), jpy="10000")
+        fixture_order = order_mock.submit_order(
+            OrderRequest(SYMBOL, "buy", "limit", D("1"), D("99"), None))
+        reader = ProbeReader(mock)
+        reader.fetch_open_orders = lambda symbol: OrderPage((fixture_order,), True)
         with pytest.raises(probe_order.ProbeRefused) as err:
-            _preview(ws, clock, mock)
+            _preview(ws, clock, mock, reader=reader)
         assert err.value.code == "open_orders_present"
-        assert mock.submissions[-1]["outcome"] == "created"
+        assert mock.submissions == []
     finally:
         _cleanup(ws)
 
@@ -365,14 +420,57 @@ def test_balances_must_stay_stable_across_the_book_check_and_free_quote_is_reche
         with pytest.raises(probe_order.ProbeRefused) as err:
             _preview(ws, clock, mock, reader=unstable)
         assert err.value.code == "balance_unstable"
+        mock.adjust_balance("JPY", "-1")  # restore the synthetic total before the next branch
 
         locked = ProbeReader(mock)
-        # The total stays the same but an order locks most of the free quote between reads.
-        locked.after_book = lambda: mock.submit_order(
-            OrderRequest(SYMBOL, "buy", "limit", D("99"), D("100"), None))
+
+        def lock_quote():
+            # The total stays the same but most of the free quote becomes locked between reads.
+            original = mock.fetch_balance()
+            jpy = original.assets["JPY"]
+            assets = dict(original.assets)
+            assets["JPY"] = AssetBalance(jpy.total, D("500"), jpy.total - D("500"))
+            locked.fetch_balance = lambda: replace(original, assets=assets)
+
+        locked.after_book = lock_quote
         with pytest.raises(probe_order.ProbeRefused) as err:
             _preview(ws, clock, mock, reader=locked)
         assert err.value.code == "insufficient_jpy"
+    finally:
+        _cleanup(ws)
+
+
+def test_book_is_rechecked_after_later_gets_and_a_stale_one_never_posts():
+    ws, clock, mock, _ = _setup()
+    try:
+        view = _preview(ws, clock, mock)
+        reader = ProbeReader(mock)
+
+        def slow_open_orders(symbol):
+            # The balance/open-order GETs after the book check consume the freshness budget.
+            clock.advance(16)
+            return OrderPage((), True)
+
+        reader.fetch_open_orders = slow_open_orders
+        with pytest.raises(probe_order.ProbeRefused) as err:
+            _run(ws, clock, mock, view["token"], reader=reader)
+        assert err.value.code == "stale_book"
+        assert mock.submissions == []
+        assert _intent(ws) is None
+    finally:
+        _cleanup(ws)
+
+
+def test_sender_rechecks_the_book_at_the_last_moment_before_the_post():
+    ws, clock, mock, _ = _setup()
+    try:
+        stale_ms = int(clock.seconds() * 1000) - 16_000
+        wrapper = probe_order._ProbeSender(
+            mock, _plan(), state_dir=ws.state, clock=clock.seconds, book_ts_ms=stale_ms)
+        with pytest.raises(ExchangeRejected) as err:
+            wrapper.submit_order(OrderRequest(SYMBOL, "buy", "limit", D("10"), D("100"), None))
+        assert err.value.code == "probe_book_stale"
+        assert mock.submissions == []
     finally:
         _cleanup(ws)
 
@@ -403,6 +501,37 @@ def test_open_remainder_is_canceled_and_a_partial_fill_is_not_success():
 
 
 # ---- the locally scoped sender wrapper ------------------------------------------------
+def test_executor_rules_cover_other_fill_currencies_so_not_created_stays_provable():
+    ws, clock, mock, ps = _setup()
+    try:
+        ledger = ws.open_ledger(now=NOW)
+        lease = acquire_writer_lease(ledger, ws.layout, now=NOW)
+        gate = probe_order._ProbeGate(ws.state, clock=clock.seconds)
+        mock.set_book("XYM/JPY", bids=(("99", "20"),), asks=(("99", "20"),))
+        other, _ = probe_order._new_executor(
+            ledger, lease, ProbeReader(mock), mock, gate,
+            _plan(symbol="XYM/JPY", amount=D("1"), price=D("99")), ws.state, clock.seconds,
+            policy_set=ps)
+        other_intent = other.plan(IntentRequest(
+            decision_key="other-fill", symbol="XYM/JPY", side="buy", order_type="limit",
+            amount="1", price="99", policy_digest=ps.policy_for("XYM/JPY").digest,
+            rule_id="other-rule"))
+        other.submit(other_intent.intent_id)
+
+        probe_executor, _ = probe_order._new_executor(
+            ledger, lease, ProbeReader(mock), mock, gate, _plan(), ws.state, clock.seconds,
+            policy_set=ps)
+        assert set(probe_executor.symbols) == {"OAS/JPY", "XYM/JPY"}
+        check = balance.check_balances(ledger, mock.fetch_balance(), probe_executor.rules(),
+                                       currencies=("OAS", "JPY"))
+        # Without the XYM rule this fill makes every currency indeterminate.
+        assert check.proven({"OAS", "JPY"})
+        release_writer_lease(ledger, lease, now=NOW)
+        ledger.close()
+    finally:
+        _cleanup(ws)
+
+
 def test_sender_wrapper_refuses_a_different_order_and_only_posts_once():
     ws, clock, mock, _ = _setup()
     try:
