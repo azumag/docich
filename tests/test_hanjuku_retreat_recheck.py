@@ -26,6 +26,21 @@ def memory(name='ゼウス'):
     return mem
 
 
+def test_chapter9_boss_wave_generals_are_not_rechecked():
+    # The boss pursuit keeps these generals in boss_wave_generals; a recall
+    # recheck would send them home and drop them from the wave.
+    mem = memory()
+    mem['chapter'] = 9
+    _flow(mem)['retreat_rechecks']['ゼウス']['chapter'] = 9
+    mem['boss_wave_generals'] = {'ゼウス': {'step': 'A', 'launched': 1}}
+    assert 'ゼウス' not in camp_recheck._scope(mem)
+    other = memory()
+    other['chapter'] = 9
+    _flow(other)['retreat_rechecks']['ゼウス']['chapter'] = 9
+    other['boss_wave_generals'] = {}
+    assert 'ゼウス' in camp_recheck._scope(other)
+
+
 def main_menu():
     c = Canvas(); c.text(48, 47, 'しょうぐん'); c.hand(26, 41)
     screen = parse(c.frame()); screen.kind = 'main_menu'

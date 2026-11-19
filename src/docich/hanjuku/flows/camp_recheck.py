@@ -181,6 +181,13 @@ def _scope(mem):
         for name, row in queue.items():
             if len(valid) >= roster_receipts.MAX_GENERALS:
                 break
+            # Chapter 9's boss waves own their generals until the boss dies:
+            # a named recheck would recall them to a castle and drop them from
+            # boss_wave_generals while the pursuit still needs them (live g1288
+            # 2026-11-20 08:09: カシス/グレナデン/コンポート/ピオーネ were queued
+            # behind 30 other camps and the active boss order waited).
+            if chapter == 9 and name in (mem.get('boss_wave_generals') or {}):
+                continue
             if (not _clean_name(name) or not isinstance(row, dict)
                     or roster_receipts.run_identity(row.get('identity')) != identity
                     or type(row.get('chapter')) is not int or row['chapter'] != chapter
