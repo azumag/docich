@@ -2370,7 +2370,10 @@ def _recall_goal(mem, flags=None):
         return (1 if type(count) is int and count >= 2 else 0, distance,
                 c != hero_castle, c)
 
-    origin = state.get('origin')
+    # camp_world is the camp's own world cell measured through the field
+    # cursor; it resolves even when the roof-anchored origin never bound, so
+    # the Y-jump goal stops falling back to the きかん picker (docich#4755).
+    origin = state.get('origin') or state.get('camp_world')
     if (isinstance(origin, (list, tuple)) and len(origin) == 2
             and all(type(value) is int for value in origin)):
         # Units march directly; axis-summed distance can rank a diagonal
