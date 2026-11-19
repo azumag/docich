@@ -1467,18 +1467,14 @@ def test_a_hero_weakened_by_a_road_battle_is_recalled_before_his_next_fight(monk
     calm.pop('recall')
     policy._maybe_recall_weak_hero(calm, {'ally': policy.NAME}, 'win', 70)
     assert 'recall' not in calm
-    # SELECT, then A on the hero, then the menu walk to きかん.
-    assert policy.camp_recall_step(map_screen(140, 120), mem, FRAME) == [policy.pad('select')]
-    assert policy.camp_recall_step(map_screen(140, 120), mem, FRAME) == [policy.pad('a')]
-    from test_hanjuku_chart_bot import camp_menu
-    assert [policy.camp_recall_step(camp_menu(i), mem, FRAME) for i in range(4)] == [[policy.pad('down')]] * 3 + [[policy.pad('a')]]
-    # Destination marker with no own roof in view: jump to the castle he came from.
-    monkeypatch.setattr(policy, 'castle_roofs', lambda *_a, **_k: [])
-    marker = Screen(lines=[], hand=None, text='', kind='map_target', marker=(140, 120))
-    assert policy.camp_recall_step(marker, mem, FRAME) == [policy.pad('y')]
+    # Owner 2026-11-19: the recall leaves through いどう → whole-map Y at once,
+    # so the first input is Y rather than the SELECT/きかん menu walk.
+    assert policy.camp_recall_step(map_screen(140, 120), mem, FRAME) == [policy.pad('y')]
+    assert _flow(mem)['recall']['stage'] == 'y_route'
     assert mem['y_jump']['goal'] == 'キカンドン' and mem['y_jump']['mode'] == 'target'
     mem.pop('y_jump')
     mem.setdefault('y_jumped', {})['RECALL'] = 'キカンドン'          # the jump confirmed there
+    marker = Screen(lines=[], hand=None, text='', kind='map_target', marker=(140, 120))
     assert policy.camp_recall_step(marker, mem, FRAME) == [policy.pad('a')]
     assert _flow(mem)['recall']['stage'] == 'await_dispatch' and _sorties(mem)['1-A2']['status'] == 'en_route'
     assert decisions(mem, 'camp_recall_requested')[0]['observed_metric']['castle'] == 'キカンドン'

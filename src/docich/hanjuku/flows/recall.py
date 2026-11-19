@@ -1135,13 +1135,13 @@ def _camp_recall_step(screen: Screen, mem, frame, *, observed_camps=None):
     if stage == 'hero_focus':
         if screen.kind != 'map':
             return []                  # battle results and messages fade out first
-        # Owner 2026-11-19: returning from a camp through きかん takes too long
-        # — camp recalls go home through the whole-map Y jump instead. The
-        # menu route (SELECT → きかん) still owns the hero-rescue and
-        # weak-return recalls, whose retreat-recheck bookkeeping depends on it.
+        # Owner 2026-11-19: きかん is too slow for every return, not just the
+        # camp one — open the move (いどう) view and take the whole-map Y jump
+        # home instead. The menu route stays only as the bootstrapping fallback
+        # when no goal is measured yet.
         goal = state.get('goal') or (_fort_recall_goal(mem, state) if state.get('fort')
                                      else _recall_goal(mem))
-        if goal and (state.get('camp') or state.get('camp_world')):
+        if goal:
             state['goal'] = goal
             state['stage'], state['steps'] = 'y_route', 0
             _record(mem, 'camp_recall_y_route', observed_metric={'goal': goal},
