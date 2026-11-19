@@ -1955,9 +1955,18 @@ def general_jump_step(screen, mem, frame):
             # map cursor to the named general, so accept it here instead of
             # failing every attempt as unexpected_list (docich#4752).
             reading = menu_feedback.reading(screen)
-            roster_text = (screen.kind == 'text' and reading is not None
-                           and reading.get('kind') == 'text'
-                           and reading.get('menu') == 'global_roster')
+            roster_text = (screen.kind == 'text'
+                           and ((reading is not None
+                                 and reading.get('kind') == 'text'
+                                 and reading.get('menu') == 'global_roster')
+                                # g1241: the same panel sometimes draws without
+                                # the 'Aボタンでステータスひょうじ' help line, so
+                                # menu_feedback returns None. The roster still
+                                # shows a selected name plus x=168 name rows;
+                                # accept that shape too (docich#4752).
+                                or (screen.selected
+                                    and sum(1 for x, _y, _w in _options(screen)
+                                            if x == 168) >= 3)))
             if not roster_text:
                 if screen.kind == 'unknown':
                     return []
