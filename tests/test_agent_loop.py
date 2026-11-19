@@ -85,6 +85,30 @@ class TestRunIteration(unittest.TestCase):
         self.assertIn("2 件のアクションを実行", log)
         self.assertNotIn("wait:", log)
 
+    def test_key_and_special_action_details_are_logged(self):
+        self.assertEqual(loop._describe_action(Action(type="key", keys=["Left"])), "key:Left")
+        self.assertEqual(loop._describe_action(Action(type="key", keys=["Right"])), "key:Right")
+        self.assertEqual(loop._describe_action(Action(type="special", key="Escape")), "special:Escape")
+
+    def test_partial_cycle_preserves_successful_send(self):
+        import tempfile
+
+        class PartialAdapter(FakeAdapter):
+            def act(self, action):
+                if action.text == "k":
+                    raise RuntimeError("boom")
+                super().act(action)
+
+        adapter = PartialAdapter()
+        brain = FakeBrain([Action(type="text", text="j"), Action(type="text", text="k")])
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaisesRegex(RuntimeError, "boom"):
+                loop._run_iteration(adapter, brain, 1000, state_dir=Path(tmp), game_name="nethack")
+            log = (Path(tmp) / "nethack" / "action_log.txt").read_text()
+        self.assertIn("key:j", log)
+        self.assertNotIn("key:k", log)
+        self.assertIn("1 件のアクションを実行", log)
+
     def test_multiple_actions_are_all_processed_in_order(self):
         adapter = FakeAdapter()
         acts = [
