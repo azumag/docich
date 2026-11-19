@@ -1232,6 +1232,20 @@ def interim_candidates(mem, allow_sole=False) -> dict:
             # Reserve only an actor measured in this source castle. Unread chart
             # actors are alternative future candidates, not simultaneous commitments.
             present = (_world(mem).get('garrison') or {}).get(source) or ()
+            if (general != MOVE_ANY_GENERAL and general != NAME and present
+                    and general not in present):
+                # docich#4712: the chart names the general that took this castle
+                # when the chapter was mapped. By the boss stage that general
+                # has often moved or been lost, and the order then waits
+                # forever: ch6 20-x held オケアナ→ボス (エシャロット) while
+                # オケアナ's list read ビーツ/ポセイドン/ゼウス. Re-pick a
+                # measured actor from the same list; the strict boss checks in
+                # the deploy flow stay untouched because the plan now names
+                # somebody who is really there.
+                free = [g for g in present if g not in planned_busy and g != NAME]
+                if free:
+                    general = _strongest_first(mem, free)[0]
+                    present = tuple(present)
             if general in present:
                 planned_busy.add(general)
         purpose = 'retake' if target in lost else 'attack'
