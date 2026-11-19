@@ -1934,7 +1934,13 @@ def _mechanical_interim(mem, state, rid, digest, allow_sole=False):
     if not stable:
         state['interim_count'] = state.get('interim_count', 0) + 1
         digest = hashlib.sha256(identity.encode('utf-8')).hexdigest()[:8]
-        stable = f"{chart_adjust.INTERIM_PREFIX}{digest}"
+        # Namespace the identity by the request id: within one state the same
+        # order keeps its step (so a failure is not re-issued every rebuild),
+        # but a changed state starts a fresh namespace, so a retry is still
+        # possible after the board actually moved (docich#4729: the bare hash
+        # made ユージア→セレーネ permanently failed and next_order returned
+        # None while four candidates were ready).
+        stable = f"{chart_adjust.INTERIM_PREFIX}{rid[:6]}:{digest}"
         state['interim_steps'][identity] = stable
     step = stable
     state['interim_order'] = {**order, 'step': step}
