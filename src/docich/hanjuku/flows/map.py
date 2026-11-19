@@ -6,6 +6,7 @@ target under the sortie marker and reads world-map ownership surveys.
 from __future__ import annotations
 from copy import deepcopy
 
+from ..os_layer import menu_feedback
 from ..os_layer.pixels import Frame
 from ..os_layer.screen import Screen, castle_roofs, own_camps
 from ... import hanjuku_chart as chart
@@ -1940,10 +1941,21 @@ def general_jump_step(screen, mem, frame):
             if jump['age'] < 3:
                 return []
             return _end_general_jump(screen, mem, 'list_not_open')
+        roster_text = False
         if screen.kind not in ('general_list', 'castle_menu'):
-            if screen.kind == 'unknown':
-                return []
-            return _end_general_jump(screen, mem, 'unexpected_list')
+            # X -> しょうぐん opens the all-generals quick-select panel, which
+            # classifies as 'text' with a global_roster menu reading (the same
+            # panel the monthly status walk uses). Its SELECT still jumps the
+            # map cursor to the named general, so accept it here instead of
+            # failing every attempt as unexpected_list (docich#4752).
+            reading = menu_feedback.reading(screen)
+            roster_text = (screen.kind == 'text' and reading is not None
+                           and reading.get('kind') == 'text'
+                           and reading.get('menu') == 'global_roster')
+            if not roster_text:
+                if screen.kind == 'unknown':
+                    return []
+                return _end_general_jump(screen, mem, 'unexpected_list')
         if screen.hand is None:
             jump['blind'] = int(jump.get('blind') or 0) + 1
             if jump['blind'] <= CASTLE_JUMP_CURSOR_BLIND:
