@@ -678,7 +678,7 @@ def _shrink(record):
     while len(json.dumps(record, ensure_ascii=False).encode('utf-8')) > MAX_RECORD_BYTES:
         node = None
         path = None
-        for candidate in (('decisions', 'before'), ('decisions', 'after', 'rows'),
+        for candidate in (('decisions', 'before'), ('after', 'rows'),
                           ('plan', 'chart_plan', 'orders'), ('world', 'sortie_history'),
                           ('world', 'garrison')):
             node = record
@@ -688,15 +688,15 @@ def _shrink(record):
                 path = candidate
                 break
         if path is None:
-            break
+            raise AuditError('incident_exceeds_record_bound')
         node = record
         for key in path[:-1]:
             node = node[key]
         current = node[path[-1]]
         if isinstance(current, list):
-            node[path[-1]] = current[:max(1, len(current) // 2)]
+            node[path[-1]] = current[:len(current) // 2]
         else:
-            node[path[-1]] = dict(list(current.items())[:max(1, len(current) // 2)])
+            node[path[-1]] = dict(list(current.items())[:len(current) // 2])
         record['truncated'] = True
     return record
 
@@ -1235,7 +1235,7 @@ def file_issue(runtime, *, repo=DEFAULT_REPO, incident_id=None, dry_run=False,
     text = render_comment(record) if existing else render(record)
     if existing:
         comments = _issue_comments(repo, number, gh=gh)
-        if _occurrence_present(comments, record.get('incident_id')):
+        if _occurrence_present([existing, *comments], record.get('incident_id')):
             return {**result, 'status': 'already_commented', 'issue': number}
         latest = max((comment.get('createdAt') or '' for comment in comments), default='')
         if latest:
@@ -1297,7 +1297,7 @@ def watch_once(state_dir, *, repo=DEFAULT_REPO, gh=None, scanner=None, now=None,
                                 now=now, dry_run=dry_run)
         except (AuditError, GhError, OSError) as exc:
             result = {'status': 'error', 'error': str(exc)}
-        if result.get('status') != 'error':
+        if result.get('status') not in ('error', 'cooldown'):
             seen[str(entry)] = signature
         if result.get('status') != 'no_incident':
             results.append({'runtime_id': entry.name, **result})
