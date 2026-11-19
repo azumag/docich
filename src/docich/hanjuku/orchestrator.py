@@ -49,6 +49,14 @@ BATTLE_COMMAND_MENU_HOLD_MAX = 30
 # A message box over the field that no flow claims is acknowledged sooner:
 # the fallback presses A there anyway (g1067 11:13: a castle-progress notice).
 FIELD_TEXT_HOLD_MAX = 4
+# A map frame that plans no input is idle, not a scene. g1288 2026-11-20
+# 04:24:18-04:26:57 sat on a map for 101 frozen observations (~159 s) before
+# the generic 100-observation backstop pressed SELECT, and the month's first
+# sortie was delayed by the whole idle. Scan/sortie owners stay excluded
+# through ``bounded_wait``; the remaining map wait is bounded at ~60 s so the
+# bot resumes steering instead of standing still.
+MAP_NO_INPUT_HOLD_MAX = 40
+MAP_HOLD_KINDS = frozenset({'map', 'map_target', 'world_map', 'field_menu'})
 
 # The title screen's つづき (battery-save resume) gets this many tries before a
 # blind Start; a new game from the title must never happen while a save exists.
@@ -2166,6 +2174,8 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
     hold_max=(FIELD_TEXT_HOLD_MAX if kind=='text' and phase=='field' and screen.text and not bounded_wait
               else BATTLE_COMMAND_MENU_HOLD_MAX
               if kind in BATTLE_COMMAND_MENU_KINDS and not bounded_wait
+              else MAP_NO_INPUT_HOLD_MAX
+              if kind in MAP_HOLD_KINDS and not bounded_wait
               else NO_INPUT_HOLD_MAX)
     army_owned = month_flow.army_count_owned(mem)
     recruit_guard = month_flow.recruit_input_guard(screen, mem)

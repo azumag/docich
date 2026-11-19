@@ -15,7 +15,8 @@ from hanjuku_frame_read_cache import reuse_frame_reads
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
 
-from docich.hanjuku_bot import BOT_VERSION, NO_INPUT_HOLD_MAX, classify, decide, pad
+from docich.hanjuku_bot import (BOT_VERSION, MAP_HOLD_KINDS, MAP_NO_INPUT_HOLD_MAX,
+                              NO_INPUT_HOLD_MAX, classify, decide, pad)
 from docich.hanjuku_pixels import Frame
 
 from test_hanjuku_chart_bot import Canvas, monster_menu_frame
@@ -42,6 +43,21 @@ def flat(color):
 
 FIELD = flat((40, 140, 20))       # grass: classify -> field, parse -> unknown
 DARK = flat((0, 0, 0))            # classify -> transition
+
+
+def test_a_map_that_plans_nothing_resumes_within_a_minute():
+    # g1288 2026-11-20 04:24:18-04:26:57: a map with no planned input sat for
+    # 101 frozen observations (~159 s) before the generic 100-observation
+    # backstop pressed a key, so the month's first sortie lost the whole idle.
+    # The map bound is the shorter one, and the fallback's key ends the streak.
+    from test_hanjuku_off_chart import _world_map_frame
+    frame = _world_map_frame({'アルマムーン': 'own'})
+    actions, state = hold(frame, MAP_NO_INPUT_HOLD_MAX + 1)
+    assert state['screen_kind'] in MAP_HOLD_KINDS
+    assert MAP_NO_INPUT_HOLD_MAX < NO_INPUT_HOLD_MAX
+    assert not any(actions[:-1])
+    assert actions[-1] == [pad('b')]
+    assert state['no_input_streak'] == 0
 
 
 def red_border_menu():
