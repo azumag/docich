@@ -423,9 +423,13 @@ def test_only_the_mock_and_the_isolated_spot_adapter_define_send_methods_and_liv
                 if names & {"submit_order", "cancel_order"}:
                     definers.append((str(path.relative_to(src)), node.name))
     # exchange.py only declares the Protocol; the bitbank adapter is built only by the explicit paired session.
+    # live_probe._ProbeSender is the checked one-shot wrapper around that same adapter for the
+    # isolated operator command: it delegates submit/cancel, has no network API of its own, and
+    # is allowed here explicitly rather than widening discovery exclusions.
     assert sorted(definers) == [("trading/exchanges/bitbank_spot_sender.py", "BitbankSpotSender"),
                                 ("trading/live/exchange.py", "OrderSender"),
-                                ("trading/live/mock_exchange.py", "MockExchange")]
+                                ("trading/live/mock_exchange.py", "MockExchange"),
+                                ("trading/live_probe.py", "_ProbeSender")]
     for path in (src / "trading" / "live").glob("*.py"):
         text = path.read_text(encoding="utf-8")
         assert "trading.exchanges" not in text and "bitbank_ccxt" not in text.replace("bitbank_ccxt.py", ""), path

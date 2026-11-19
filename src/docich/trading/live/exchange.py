@@ -112,6 +112,14 @@ class BalanceSnapshot:
 
 
 @dataclass(frozen=True)
+class SpotStatus:
+    """The exchange's dynamic trading status for one spot pair (GET ``/spot/status``)."""
+    symbol: str
+    status: str
+    min_amount: Decimal
+
+
+@dataclass(frozen=True)
 class OrderRequest:
     symbol: str
     side: str
