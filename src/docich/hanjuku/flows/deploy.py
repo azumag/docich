@@ -777,8 +777,24 @@ def _deploy_input(screen, mem, order, actions, reason):
     return actions
 
 
+DEPLOY_HOLD_LIMIT = 12   # consecutive unclassified sortie screens before cancelling
+
+
 def _hold_deploy(screen, mem, order, reason, *, card=None, carried=None, hold_variant=None):
     context = _deploy_context(order, mem, expected_metric={'cards': _deploy_cards(order, mem)})
+    # docich#4715: an unclassified sortie screen held forever — the live run sat
+    # on `field hold` (map_target) for many minutes with months passing and no
+    # sortie. Count the holds per step and cancel like the general-list path
+    # does once the budget is spent, so the plan can move on.
+    holds = _flow(mem).setdefault('deploy_holds', {})
+    count = int(holds.get(order['step']) or 0) + 1
+    holds[order['step']] = count
+    if count > DEPLOY_HOLD_LIMIT:
+        holds.pop(order['step'], None)
+        context.update(observed_metric={'hold_count': count, 'screen': screen.kind})
+        return _hold_guarded_sortie(mem, order, 'sortie_hold_abandoned',
+                                    '出撃画面を分類できないまま保留上限に達したため取り消す',
+                                    {'hold_count': count, 'screen': screen.kind})
     if not (mem.get('retry_context') or {}).get(order['step']):
         context.update(strategy_variant='sortie_cards_unclassified' if screen.kind == 'sortie_confirm'
                        else 'sortie_menu_unclassified', deviation_reason=reason)
