@@ -1460,10 +1460,14 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
         updated['_experience'] = mem.pop('_experience', None)
         updated['policy'] = mem
         return actions, updated
+    # Snapshot menu ownership before any flow runs: a flow may pop its state
+    # mid-frame (house.step -> _finish/_exit), and the generic close rules
+    # below must still know this frame's menu belonged to a live owner.
+    menu_owner_active = (kind == 'main_menu'
+                         and (_roster_owner_active(mem) or _xmenu_owner_active(mem)))
     if (kind == 'main_menu'
             and 'わがくにのすべてのしょうぐんをみることができますぞ' in (screen.text or '')
-            and not _roster_owner_active(mem)
-            and not _xmenu_owner_active(mem)):
+            and not menu_owner_active):
         # The all-generals roster panel looks like the shop's main menu to the
         # pixel classifier and the shop phase held it every observation
         # (g1190 2026-11-19 67-4: minutes of holds with one decision). B closes
@@ -1991,8 +1995,7 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
         actions=[pad('a')]
     elif kind=='yes_no':
         actions=prompts_flow.yes_no_step(screen,mem)
-    elif (kind == 'main_menu'
-          and (_roster_owner_active(mem) or _xmenu_owner_active(mem))):
+    elif menu_owner_active:
         # docich#4748: a live X-menu owner that returned None for this frame
         # must not have its menu B-closed by the generic stray-panel rule.
         actions = []

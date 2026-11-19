@@ -58,4 +58,5 @@ def test_house_open_roster_menu_is_not_closed(monkeypatch):
     mem = memory()
     mem['house'] = {'phase': 'open_roster', 'age': 4}
     actions, updated = _decide(mem, monkeypatch)
-    assert not any(r.get('decision') == 'close_panel' for r in updated['_records'])
+    recs = [r for r in updated['_records'] if r.get('decision') == 'close_panel']
+    assert not recs, recs
