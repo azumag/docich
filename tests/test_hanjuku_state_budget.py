@@ -323,3 +323,68 @@ def test_compaction_logs_the_dropped_caches_with_size_and_source(capsys):
 def test_no_drop_log_is_emitted_when_the_record_fits(capsys):
     state_budget.compact_state(_state(tick=1), state_budget.OVERSIZED_READ_LIMIT)
     assert state_budget.DROP_LOG_TAG not in capsys.readouterr().err
+
+
+def test_history_and_bookkeeping_are_trimmed_before_the_status_caches():
+    """#4419: compressible bulk must go before the live status caches.
+
+    The bug dropped ``general_statuses`` while ``sortie_history`` still held
+    hundreds of trimmable entries, so the monthly status cache stayed empty
+    and the egg check and camp watch went blind.
+    """
+    state = _state(
+        sortie_history=[{'memo': 'x' * 100, 'n': i} for i in range(400)],
+        obs_cost={'k': 1},
+        general_statuses={'statuses': {'リーキ': {'hp': 50}}},
+        plan={'orders': {'S:1': 'pending'}},
+    )
+    limit = 4096
+    assert state_budget.size(state) > limit
+    out = state_budget.compact_state(state, limit)
+    policy = out['policy']
+    assert state_budget.size(out) <= state_budget.target(limit)
+    assert len(policy['sortie_history']) == state_budget.HISTORY_KEEP
+    assert policy['obs_cost'] == state['policy']['obs_cost']
+    assert policy['general_statuses'] == state['policy']['general_statuses']
+    assert policy['plan']['orders'] == {'S:1': 'pending'}
+
+
+def test_a_second_history_squeeze_precedes_general_statuses(capsys):
+    """Before ``general_statuses`` goes, the tail is tightened once more."""
+    state = _state(
+        sortie_history=[{'memo': 'y' * 300, 'n': i} for i in range(20)],
+        general_statuses={'statuses': {'リーキ': {'hp': 50}}},
+        plan={'orders': {'S:1': 'pending'}},
+    )
+    assert state_budget.size(state) > state_budget.target(8192)
+    out = state_budget.compact_state(state, 8192)
+    policy = out['policy']
+    assert len(policy['sortie_history']) == state_budget.HISTORY_LAST_RESORT_KEEP
+    assert policy['general_statuses'] == state['policy']['general_statuses']
+    lines = [line for line in capsys.readouterr().err.splitlines()
+             if state_budget.DROP_LOG_TAG in line]
+    assert len(lines) == 1
+    assert 'sortie_history' in lines[0]
+    assert 'general_statuses' not in lines[0]
+
+
+def test_general_statuses_is_dropped_only_after_all_compressible_bulk(capsys):
+    """#4419: the egg/camp cache is the last key an oversized record loses."""
+    state = _state(
+        general_statuses={f'将軍{i}': {'hp': i, 'memo': 'x' * 40}
+                          for i in range(500)},
+        plan={'orders': {'S:1': 'pending'}},
+    )
+    before = state_budget.size(state)
+    out = state_budget.compact_state(state, 4096)
+    assert 'general_statuses' not in out['policy']
+    assert out['policy']['plan']['orders'] == {'S:1': 'pending'}
+    lines = [line for line in capsys.readouterr().err.splitlines()
+             if state_budget.DROP_LOG_TAG in line]
+    assert len(lines) == 1
+    line = lines[0]
+    assert 'source=compact_state' in line
+    assert 'reason=size_over_limit' in line
+    assert f'before_bytes={before}' in line
+    assert 'after_bytes=' in line
+    assert 'general_statuses' in line
