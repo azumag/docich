@@ -637,6 +637,16 @@ def _ready(order, mem) -> bool:
         cells = chart.castles(mem.get('chapter') or 0)
         if _source(order, mem) not in cells or order.get('target') not in cells:
             return False
+    if (order.get('source_probe') is True
+            and order.get('general') == chart_adjust.PROBE_GENERAL):
+        # docich#4690: a source-list probe carries no named general, so every
+        # later readiness check answers for a general it has not read yet and
+        # the probe never starts (ch3 12-x: plan held one probe at
+        # アルマームーン with active None for hours). The deploy flow resolves
+        # the actual general from the source list; only the endpoints must be
+        # real castles of this chapter.
+        cells = chart.castles(mem.get('chapter') or 0)
+        return _source(order, mem) in cells and order.get('target') in cells
     if _sortie_cancelled_observed_suppressed(order, mem):
         return False
     if _source_defender_suppressed(order, mem):
