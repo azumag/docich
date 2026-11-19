@@ -1,4 +1,5 @@
 import base64
+import http.client
 import json
 import subprocess
 import sys
@@ -150,6 +151,24 @@ class SummarySelectionTests(unittest.TestCase):
         self.assertEqual(override, "")
         self.assertEqual(overview, "本当の概要です。")
 
+    def test_tilde_fence_and_html_comment_headings_are_ignored(self):
+        body = (
+            "## 概要\n\n"
+            "~~~\n## 音声サマリー\n例文\n~~~\n\n"
+            "本当の概要です。"
+        )
+        override, overview = report.extract_body_parts(body)
+        self.assertEqual(override, "")
+        self.assertEqual(overview, "本当の概要です。")
+        body = (
+            "## 概要\n\n"
+            "<!--\n## 音声サマリー\n例文\n-->\n\n"
+            "本当の概要です。"
+        )
+        override, overview = report.extract_body_parts(body)
+        self.assertEqual(override, "")
+        self.assertEqual(overview, "本当の概要です。")
+
 
 class AiSummaryTests(unittest.TestCase):
     def test_ai_summary_is_wrapped(self):
@@ -246,6 +265,40 @@ class AiSummaryTests(unittest.TestCase):
         )
         self.assertEqual((source, reason), ("body", "ai_invalid_text"))
 
+    def test_incomplete_read_falls_back(self):
+        class IncompleteResponse:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+            def read(self, limit=-1):
+                raise http.client.IncompleteRead(b"partial", 16)
+
+        def opener(request, timeout=None):
+            return IncompleteResponse()
+
+        text, source, reason = report.generate_audio_text(
+            pr(body="## 概要\n\nゲームが進まなくなっていた不具合を直しました。"),
+            token="test-token",
+            ai_enabled=True,
+            endpoint=TEST_ENDPOINT,
+            model=TEST_MODEL,
+            opener=opener,
+        )
+        self.assertEqual((source, reason), ("body", "ai_http_error"))
+
+    def test_invalid_endpoint_falls_back(self):
+        text, source, reason = report.generate_audio_text(
+            pr(body="## 概要\n\nゲームが進まなくなっていた不具合を直しました。"),
+            token="test-token",
+            ai_enabled=True,
+            endpoint="https://example.test:invalid/v1/chat/completions",
+            model=TEST_MODEL,
+        )
+        self.assertEqual((source, reason), ("body", "ai_http_error"))
+
     def test_ai_is_skipped_without_a_token(self):
         text, source, reason = report.generate_audio_text(
             pr(body="## 概要\n\n説明です。"),
@@ -298,6 +351,31 @@ class SummaryValidationTests(unittest.TestCase):
     def test_english_only_ai_output_is_rejected(self):
         self.assertEqual(
             report.normalize_summary("This fixes the bug.", require_japanese=True), ""
+        )
+
+    def test_leading_label_does_not_strip_a_normal_word(self):
+        self.assertIn(
+            "要約機能",
+            report.normalize_summary("要約機能を追加しました。", require_japanese=True),
+        )
+        self.assertEqual(
+            report.normalize_summary("要約: 不具合を直しました。", require_japanese=True),
+            "不具合を直しました",
+        )
+
+    def test_redaction_happens_before_underscore_normalization(self):
+        synthetic = "gho_" + "a" * 30
+        _, overview = report.extract_body_parts(
+            "## 概要\n\n" + synthetic + " を使った説明です。"
+        )
+        self.assertIn("[redacted]", overview)
+        self.assertNotIn(synthetic, overview)
+        prompt = report.build_prompt("説明", overview)
+        self.assertNotIn(synthetic, prompt)
+        self.assertIn("[redacted]", prompt)
+        self.assertIn(
+            "[redacted]",
+            report.normalize_summary(synthetic + " の説明です。", require_japanese=True),
         )
 
     def test_long_summary_is_bounded(self):

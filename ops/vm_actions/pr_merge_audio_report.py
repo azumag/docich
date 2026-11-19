@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import http.client
 import json
 import os
 import re
@@ -57,10 +58,7 @@ _LIST_RE = re.compile(r"^\s*(?:[-*+]|\d+[.)]|>)\s+")
 _TABLE_RE = re.compile(r"^\s*\|.*\|\s*$")
 _LEADING_PR_RE = re.compile(r"^\s*プルリクエスト\s*[0-9]+\s*[でのは、,：:]*\s*")
 _LEADING_ISSUE_RE = re.compile(r"^\s*issue\s*#?\s*[0-9]+\s*[。.:：]?\s*", re.IGNORECASE)
-_LEADING_LABEL_RE = re.compile(
-    r"^(?:要約|summary|以下(?:が|の)?(?:要約|説明|文)?(?:です)?)\s*[:：]?\s*",
-    re.IGNORECASE,
-)
+_LEADING_LABEL_RE = re.compile(r"^(?:要約|summary)\s*[:：]\s*", re.IGNORECASE)
 _SECRET_PATTERNS = (
     re.compile(r"\bgh[pousr]_[A-Za-z0-9]{20,}\b"),
     re.compile(r"\bgithub_pat_[A-Za-z0-9_]{20,}\b"),
@@ -129,27 +127,39 @@ def normalize_prose(raw: str) -> str:
     return text.strip(" 　-—–:：、,，.|")
 
 
+def _strip_fenced_blocks(text: str) -> str:
+    """Replace fenced code blocks with blank lines before section parsing."""
+    output: list[str] = []
+    fence: str | None = None
+    for line in text.splitlines(keepends=True):
+        stripped = line.lstrip()
+        marker = stripped[:3]
+        if fence is None:
+            if marker in ("```", "~~~"):
+                fence = marker
+                output.append("\n")
+            else:
+                output.append(line)
+            continue
+        if stripped.startswith(fence):
+            fence = None
+        output.append("\n")
+    return "".join(output)
+
+
 def _sections(body: str) -> list[tuple[str, str]]:
     """Split a Markdown body into (heading, content) pairs.
 
-    Headings inside fenced code blocks are data, not section boundaries.
+    Fenced code blocks and HTML comments are removed first, so an example
+    heading inside them is data rather than a section boundary.
     """
-    lines = body.replace("\r\n", "\n").replace("\r", "\n").split("\n")
-    fence = chr(96) * 3
+    text = _COMMENT_RE.sub("\n", body)
+    text = _strip_fenced_blocks(text)
+    lines = text.replace("\r\n", "\n").replace("\r", "\n").split("\n")
     sections: list[tuple[str, str]] = []
     current: str | None = None
     buffer: list[str] = []
-    in_fence = False
     for line in lines:
-        if line.lstrip().startswith(fence):
-            in_fence = not in_fence
-            if current is not None:
-                buffer.append(line)
-            continue
-        if in_fence:
-            if current is not None:
-                buffer.append(line)
-            continue
         match = _HEADING_RE.match(line)
         if match:
             if current is not None:
@@ -196,10 +206,11 @@ def extract_body_parts(body: object) -> tuple[str, str]:
     override = ""
     overview = ""
     for heading, content in _sections(body):
+        paragraph = _first_paragraph(content)
         if not override and _heading_matches(heading, _OVERRIDE_HEADINGS):
-            override = normalize_prose(_first_paragraph(content))
+            override = normalize_prose(redact_secrets(paragraph))
         elif not overview and _heading_matches(heading, _SUMMARY_HEADINGS):
-            overview = normalize_prose(_first_paragraph(content))
+            overview = normalize_prose(redact_secrets(paragraph))
     return override, overview
 
 
@@ -210,7 +221,7 @@ def _first_sentence(text: str) -> str:
 
 def normalize_summary(raw: str, *, require_japanese: bool) -> str:
     """Return a bounded one-sentence summary, or an empty string."""
-    text = normalize_prose(raw)
+    text = normalize_prose(redact_secrets(raw))
     text = _LEADING_LABEL_RE.sub("", text)
     text = text.strip("「」『』\"'")
     text = _first_sentence(text).rstrip("。！？!?")
@@ -289,16 +300,19 @@ def request_summary(
         "temperature": 0,
         "max_tokens": 300,
     }
-    request = urllib.request.Request(
-        endpoint,
-        data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
-        method="POST",
-        headers={
-            "Authorization": f"Bearer {token}",
-            "Content-Type": "application/json",
-            "Accept": "application/json",
-        },
-    )
+    try:
+        request = urllib.request.Request(
+            endpoint,
+            data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+            method="POST",
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Content-Type": "application/json",
+                "Accept": "application/json",
+            },
+        )
+    except (TypeError, ValueError):
+        return None, "ai_http_error"
     open_fn = opener or urllib.request.urlopen
     try:
         with open_fn(request, timeout=timeout) as response:
@@ -307,7 +321,9 @@ def request_summary(
         return None, "ai_http_429" if exc.code == 429 else "ai_http_error"
     except (socket.timeout, TimeoutError):
         return None, "ai_timeout"
-    except (urllib.error.URLError, OSError):
+    except http.client.HTTPException:
+        return None, "ai_http_error"
+    except (urllib.error.URLError, OSError, ValueError):
         return None, "ai_http_error"
     if len(raw) > MAX_RESPONSE_BYTES:
         return None, "ai_invalid_response"
