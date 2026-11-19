@@ -136,6 +136,88 @@ def test_failed_entry_count_survives_json_and_stops_same_candidate(route, monkey
     assert house._entry_failures(mem, (12, -8)) == 1
 
 
+def test_small_house_blob_authorizes_the_door_cell(route, monkeypatch):
+    """docich#4737: a blob under the castle scan's floor still identifies the
+    house; the marker is walked to the entry (door) cell, not the roof."""
+    mem, _ = setup(route, monkeypatch)
+    from docich.hanjuku.os_layer import screen as screen_mod
+    # marker() is (180, 180); the house anchor sits one entry delta behind
+    # it: (180 - 12, 180 + 8).
+    hut = {'kind': 'house', 'clipped': False, 'target': (168, 188)}
+    monkeypatch.setattr(screen_mod, 'castle_roofs', lambda frame: [])
+    monkeypatch.setattr(screen_mod, 'house_roofs', lambda frame, roofs=None: [hut])
+    assert house._repair_step(marker(), mem, FRAME) == [commands.pad('a')]
+    assert mem['house']['phase'] == 'travel' and mem['house']['departure_pending']
+    observation = mem['house']['target_observation']
+    assert observation['basis'] == 'house_sprite'
+    assert observation['entry'] == [12, -8]
+
+
+def test_door_cell_adjustment_steps_one_cell_per_press(route, monkeypatch):
+    """docich#4737: the post-Y fine adjustment approaches the door cell one
+    map cell per press instead of a long hold that can overshoot it."""
+    mem, _ = setup(route, monkeypatch)
+    from docich.hanjuku.os_layer import screen as screen_mod
+    # Anchor 20 px left of the expected delta: err = (-20, 0) on the marker.
+    hut = {'kind': 'house', 'clipped': False, 'target': (148, 188)}
+    monkeypatch.setattr(screen_mod, 'castle_roofs', lambda frame: [])
+    monkeypatch.setattr(screen_mod, 'house_roofs', lambda frame, roofs=None: [hut])
+    assert house._repair_step(marker(), mem, FRAME) == [commands.pad('left', 16)]
+    assert mem['house']['phase'] == 'house_confirm'
+    assert mem['house']['alignment_moves'] == 1
+
+
+def test_unreadable_marker_records_house_entry_failed(route, monkeypatch):
+    """docich#4737: a failed fine adjustment is recorded with the retry count."""
+    mem, _ = setup(route, monkeypatch)
+    s = marker()
+    s.marker = None
+    assert house._repair_step(s, mem, FRAME) == []
+    assert mem['house']['phase'] == 'close'
+    assert mem['house_entry_failed'] == {1: 1}
+    failed = [r for r in mem['_records'] if r['decision'] == 'house_entry_failed']
+    assert len(failed) == 1
+    assert failed[0]['observed_metric']['code'] == 'position_unread'
+    assert failed[0]['observed_metric']['retries'] == 1
+    mem = json.loads(json.dumps(mem))
+    # The next attempt may select the alternative (own) entry cell.
+    assert house._entry_delta(mem) == house.HOUSE_OWN_CELL_DELTA
+
+
+def test_alignment_limit_records_house_entry_failed(route, monkeypatch):
+    """docich#4737: exhausting the fine-adjustment budget is a counted failure."""
+    mem, _ = setup(route, monkeypatch)
+    for _ in range(8):
+        assert house._repair_step(marker(164), mem, FRAME) == [commands.pad('right', 16)]
+        mem = json.loads(json.dumps(mem))
+    assert house._repair_step(marker(164), mem, FRAME) == []
+    assert mem['house']['phase'] == 'close'
+    assert mem['house_entry_failed'] == {1: 1}
+    failed = [r for r in mem['_records'] if r['decision'] == 'house_entry_failed']
+    assert len(failed) == 1
+    assert failed[0]['observed_metric']['code'] == 'alignment_limit'
+    assert failed[0]['observed_metric']['retries'] == 1
+
+
+def test_arrival_seen_carries_the_retry_count(route, monkeypatch):
+    """docich#4737: the success metric pairs with the chapter's retry count."""
+    from types import SimpleNamespace
+    from docich.hanjuku.strategy import orders
+
+    mem, _ = setup(route, monkeypatch)
+    mem['house'].update(phase='travel', target_observation={
+        'entry': [12, -8], 'basis': 'house_sprite'})
+    mem['sorties'] = {'HOUSE_OUT:1': {
+        'general': 'ゼウス', 'purpose': 'house', 'status': 'en_route'}}
+    mem['house_entry_failed'] = {1: 2}
+    monkeypatch.setattr(house, 'gift_prices', lambda _: dict(house.GIFTS))
+    monkeypatch.setattr(orders, '_garrison_move', lambda *args, **kwargs: None)
+    screen = SimpleNamespace(kind='text', text='', header={'gold': 250})
+    assert house._repair_step(screen, mem, FRAME) == []
+    seen = [r for r in mem['_records'] if r['decision'] == 'house_arrival_seen']
+    assert len(seen) == 1 and seen[0]['observed_metric']['entry_retries'] == 2
+
+
 def test_gift_list_marks_arrival_before_purchase_or_return(route, monkeypatch):
     from types import SimpleNamespace
     from docich.hanjuku.strategy import orders
