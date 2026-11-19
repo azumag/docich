@@ -1621,6 +1621,7 @@ def next_order(mem):
                      and _ready(o, mem)), None)
     current = list(_orders(mem))
     steps = {o['step'] for o in current}
+    _drop_orphan_active(mem, steps, status)
     # A launched order put back to pending by a lost battle keeps its retry
     # even if a newer plan replaced the one it came from.
     retries = [o for step, o in (_world(mem).get('launched_orders') or {}).items()
@@ -1695,6 +1696,32 @@ def _follow_general(mem, order, garrison, owned):
                 observed_metric={'source': source, 'general_at': where},
                 reason=f'{general}は{where}にいると記録されているため、そこから出撃させる')
 
+
+def _drop_orphan_active(mem, steps, status):
+    '''docich#4678: release an active step that no plan order can run.
+
+    A rebuilt plan (new request id) can leave the previous step in
+    ``plan.active`` while that step no longer exists in the plan. Nothing
+    then starts: ``_order_for_step`` returns None and the month passes with
+    no sortie (ch1 4-8..5-5: active A:8d321713:M98bbef, plan rebuilt under
+    c8c514fd, gold 242->2 with ten sorties for the whole run). A march that
+    is still walking (``en_route``/``launched_unconfirmed``) is not orphaned.
+    '''
+    active = _plan_region(mem).get('active')
+    if active is None or active in steps:
+        return False
+    live = {s.get('step') for s in (_world(mem).get('sorties') or {}).values()
+            if isinstance(s, dict)
+            and s.get('status') in ('en_route', 'launched_unconfirmed')}
+    if active in live or status.get(active) == 'launched_unconfirmed':
+        return False
+    _plan_region(mem)['active'] = None
+    _plan_region(mem)['attack'] = None
+    _record(mem, 'order_active_orphan', chart_step=active,
+            observed_metric={'status': status.get(active),
+                             'plan_steps': len(steps)},
+            reason='計画の組み直しで消失した注文が active のまま残っていたため解放する')
+    return True
 
 def _order(mem):
     # A mechanical chart is a stand-in while the LLM answer is pending; once a
