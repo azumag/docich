@@ -536,6 +536,14 @@ def plan_starved_rearm(mem, phase, kind):
     return True
 
 
+MENU_SCAN_STAGES = frozenset({'open_menu', 'task_menu', 'task_select',
+                                  'status', 'roster', 'roster_next'})
+
+def _post_month_menu_owns(mem):
+    '''docich#4658: does the monthly roster scan own this frame's menu?'''
+    state = mem.get('post_month_status')
+    return isinstance(state, dict) and state.get('stage') in MENU_SCAN_STAGES
+
 def _recall_owns_dialog(kind, recall_dialog, ch9_field_recall):
     """A camp recall never takes the August vacation/bonus choice.
 
@@ -1772,6 +1780,13 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
         # regular paid prompts and recruitment introductions keep their owner.
         month_flow.interrupt_month_payment(mem)
         actions = prompts_flow.yes_no_step(screen, mem)
+    if actions is None and _post_month_menu_owns(mem):
+        # docich#4658: while the monthly roster scan is walking the main
+        # menu, its frames must not be handed to the monthly shop flow:
+        # month_sub answered them with its own keys (and a B), so the scan
+        # saw the menu for one frame and never reached roster.
+        from .flows import post_month_status as _pm_flow
+        actions = _pm_flow.step(screen, mem, frame)
     if actions is None:
         actions = (recall_flow.camp_recall_step(screen, mem, frame)
                    if _recall_owns_dialog(kind, recall_dialog, ch9_field_recall)
