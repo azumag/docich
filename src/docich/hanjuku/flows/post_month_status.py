@@ -21,6 +21,7 @@ MAX_STEPS = 900
 # docich#4653: menu-open retries per stage entry and the read interval between them.
 OPEN_RETRY_EVERY = 3
 OPEN_MENU_TRIES = 8
+OPEN_MENU_RESETS = 4    # docich#4658: per-visit budget resets per stage entry
 # docich#4655: ups that reach the main menu's top row from any position.
 MAIN_MENU_BLIND_UPS = 6
 MAX_SCAN = receipts.MAX_GENERALS
@@ -410,7 +411,7 @@ def arm(mem):
                  '既知の帰還・修理タスクのみ実行する'))
 
 
-def _open_retry_due(state):
+def _open_retry_due(state, kind=None):
     '''docich#4653: should this read (re)send the menu-open key?
 
     The monthly scan used to open its menu only on map reads 3 and 6. A
@@ -419,6 +420,19 @@ def _open_retry_due(state):
     open_menu past phase_reads 19 with the field idling). Retry every third
     read, bounded per stage entry; _stage resets the budget.
     '''
+    # docich#4658: a different screen means a new visit to the field, not the
+    # same one. Without this the eight attempts could all land inside one
+    # busy stretch (battle fade, menu hand-off) and the scan had none left
+    # for the rest of the month.
+    if kind is not None:
+        last = state.get('open_last_kind')
+        resets = state.get('open_resets')
+        resets = resets if type(resets) is int and resets >= 0 else 0
+        if (last is not None and last != kind
+                and resets < OPEN_MENU_RESETS):
+            state['open_tries'] = 0
+            state['open_resets'] = resets + 1
+        state['open_last_kind'] = kind
     reads = state.get('phase_reads')
     if type(reads) is not int or reads < 3 or reads % OPEN_RETRY_EVERY:
         return False
@@ -1516,7 +1530,7 @@ def step(screen, mem, frame):
             state.pop('menu_blind', None)
             _stage(state, 'roster')
             return [pad('a')]
-        if screen.kind == 'map' and _open_retry_due(state):
+        if screen.kind == 'map' and _open_retry_due(state, screen.kind):
             if int(state.get('phase_reads') or 0) > 6:
                 _log(mem, 'post_month_open_retry', screen=screen.kind,
                      observed_metric={'phase_reads': state['phase_reads'],
@@ -1727,7 +1741,7 @@ def step(screen, mem, frame):
                 _stage(state, 'task_select', seeks=0)
                 return [pad('a')]
             return [direction] if direction else []
-        if screen.kind == 'map' and _open_retry_due(state):
+        if screen.kind == 'map' and _open_retry_due(state, screen.kind):
             if int(state.get('phase_reads') or 0) > 6:
                 _log(mem, 'post_month_open_retry', screen=screen.kind,
                      observed_metric={'phase_reads': state['phase_reads'],
@@ -1838,7 +1852,7 @@ def step(screen, mem, frame):
         if screen.kind in ('castle_menu', 'castle_info'):
             _stage(state, 'locate_info')
             return []
-        if screen.kind == 'map' and _open_retry_due(state):
+        if screen.kind == 'map' and _open_retry_due(state, screen.kind):
             # The first A may have been swallowed while SELECT closed the
             # roster; press again only on a confirmed map, boundedly.
             return [pad('a')]
