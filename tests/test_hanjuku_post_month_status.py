@@ -49,14 +49,29 @@ def test_map_yields_to_a_startable_order_until_the_month_has_a_launch():
     assert state['stage'] == 'open_menu'
 
 
-def test_map_yields_to_boss_waves_in_flight():
+def test_arm_defers_the_whole_scan_while_boss_waves_are_in_flight():
     from docich import hanjuku_chart as chart
     mem = memory(chapter=9, captured=list(chart.corridor(9)),
                  month_sorties={'scope': [9, '2-6'], 'launches': 1},
                  boss_wave_generals={'カシス': {'step': 'A', 'launched': 1}},
                  boss_cell={'chapter': 9, 'cell': [770, 629], 'tick': 100})
     post.arm(mem)
+    assert 'post_month_status' not in mem
+    mem['boss_wave_generals'] = {}
+    post.arm(mem)
+    assert mem['post_month_status']['stage'] == 'await_map'
+
+
+def test_map_yields_to_boss_waves_in_flight():
+    # A scan that armed before the waves appeared still yields the map: the
+    # arm gate below covers the next month, this covers the current one.
+    from docich import hanjuku_chart as chart
+    mem = memory(chapter=9, captured=list(chart.corridor(9)),
+                 month_sorties={'scope': [9, '2-6'], 'launches': 1})
+    post.arm(mem)
     state = mem['post_month_status']
+    mem['boss_wave_generals'] = {'カシス': {'step': 'A', 'launched': 1}}
+    mem['boss_cell'] = {'chapter': 9, 'cell': [770, 629], 'tick': 100}
     field = Screen([], None, '', kind='map')
     assert post.step(field, mem, None) is None
     assert state['stage'] == 'await_map'

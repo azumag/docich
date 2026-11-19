@@ -254,6 +254,16 @@ def arm(mem):
         # march; no monthly status reads, repairs, recalls or locates.
         mem.pop('post_month_status', None)
         return
+    if (mem.get('chapter') == 9 and (mem.get('boss_wave_generals') or {})
+            and isinstance(mem.get('boss_cell'), dict)):
+        # Boss waves are in flight with a measured cell: the field belongs to
+        # map_step/boss_pursuit. The roster scan is bookkeeping the existing
+        # waves do not need (the companion/source probes read on demand), and
+        # it held the map for minutes every month while the waves camped
+        # (live g1288 2026-11-20 08:25-08:50). The scan arms again once the
+        # wave list empties.
+        mem.pop('post_month_status', None)
+        return
     # docich#4677: three consecutive months where the X menu never opened
     # mean the roster scan cannot run in this state; skip the next arm
     # instead of spending map ownership on the same failure again.
