@@ -156,7 +156,9 @@ def test_the_readonly_and_spot_order_files_do_not_stand_in_for_each_other(state)
     path = _setup(state, body=_good())
     assert _spot_reason(state) is cr.CredentialReason.FILE_MISSING
     path.unlink()
-    _setup(state, body=_spot_good(), filename=cr.SPOT_ORDER_KEY_FILENAME)
+    spot = path.with_name(cr.SPOT_ORDER_KEY_FILENAME)
+    spot.write_text(json.dumps(_spot_good()), encoding="utf-8")
+    os.chmod(spot, 0o600)
     with pytest.raises(cr.CredentialsUnavailable) as err:
         cr.load_credentials(state)
     assert err.value.reason is cr.CredentialReason.FILE_MISSING

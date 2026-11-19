@@ -330,7 +330,7 @@ def test_the_default_run_does_not_ask_for_the_paired_role(tmp_path):
 
     code = main_module.main(["run", "--state-dir", str(tmp_path)], wiring=wiring)
 
-    assert code == main_module.EXIT_OK == 0
+    assert code == runner_module.EXIT_OK == 0
     assert seen == [False]
     assert status_of(tmp_path)["phase"] == "inert"
 
@@ -356,7 +356,7 @@ def test_the_opt_in_flag_opens_the_pair_and_never_uses_the_reader_fallback(tmp_p
     code = main_module.main(
         ["run", "--state-dir", str(tmp_path), "--spot-order-sender"], wiring=wiring)
 
-    assert code == main_module.EXIT_OK == 0
+    assert code == runner_module.EXIT_OK == 0
     assert seen == [True]
     assert reader_calls == []
     assert status_of(tmp_path)["phase"] == "inert"
