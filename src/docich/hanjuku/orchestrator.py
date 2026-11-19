@@ -68,14 +68,21 @@ def _chapter9_field_recall(mem):
     from .strategy import corridor
     if corridor.mechanical(mem):
         return True
+    # docich#4675: any chapter needs the camp recall when the army cannot
+    # concentrate. ch1 3-3 ran with next_order None, four castles at one
+    # defender each and four generals unaccounted for: no castle could
+    # donate or attack, and the monthly pass had nothing to move. A
+    # visible camp's recall is then the only way back to two defenders.
+    from .state.regions import plan as _plan
+    if _plan(mem).get('active') is not None:
+        return False
+    garrison = (mem.get('world') or {}).get('garrison') or {}
+    rows = [names for names in garrison.values() if isinstance(names, list)]
+    if not rows:
+        return False
     # Owner 2026-11-09: a camped general is never recalled home in the moving
-    # boss's phase. The 2026-11-15 gather experiment (the field camp いどう to
-    # イデ！) only looped on this runtime: the camp menu recall never dispatched
-    # (the blocked table poisoned every castle, the whole-island picker could
-    # not confirm), and each month re-found the same tent. The monthly pass now
-    # owns the gather through the castle-to-castle forward moves, and the army
-    # is back in the castles; keep the field camps where they are.
-    return False
+    # boss's phase; recall.camp_stays already enforces that inside the flow.
+    return all(len(names) < 2 for names in rows)
 
 
 # Owner evidence #2076 (g713 UID16229): between a complete battle panel and the
