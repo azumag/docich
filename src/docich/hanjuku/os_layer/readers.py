@@ -62,6 +62,8 @@ def _current(screen: Screen):
     # stage stayed open_menu; roster opened 2 of 18 tries). Fall back to the
     # box's own row and span only when the historical match found nothing, so
     # every menu that works today keeps its exact behaviour.
+    if screen.kind != 'main_menu':
+        return (((x1 - 4 + 7) // 8) * 8, row, '')
     alt = [(x, y, w) for x, y, w in _options(screen)
            if abs(y - y0) <= 2 and x0 - 8 <= x <= x1 + 8]
     if alt:

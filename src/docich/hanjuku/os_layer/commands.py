@@ -61,12 +61,7 @@ def menu_navigation_reading(screen):
     Unknown cursors/rows and clipped/fading menus keep normal cadence.
     """
     semantic = menu_feedback.reading(screen)
-    if screen.kind == 'month_menu':
-        # A month editor without its じゅうじキー prompt is not a readable
-        # editor, whatever _current now matches (docich#4686 widened the row
-        # matching): keep the old 'no reading' answer for it.
-        return semantic if screen.has('じゅうじキー') else None
-    if semantic is not None:
+    if semantic is not None or (screen.kind == 'month_menu' and screen.has('じゅうじキー')):
         return semantic
     if screen.kind not in _FEEDBACK_MENU_KINDS:
         return None
