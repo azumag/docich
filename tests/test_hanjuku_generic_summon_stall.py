@@ -8,7 +8,7 @@ from types import SimpleNamespace
 import pytest
 
 from docich.hanjuku.flows import battle_menus as menus
-from docich.hanjuku.flows.battle_menus import MONSTER_STALL_TURNS
+from docich.hanjuku.flows.battle_menus import MONSTER_STALL_RETURN_TURNS, MONSTER_STALL_TURNS
 
 
 def view(*, cursor=160, enemy_hp=45):
@@ -52,3 +52,26 @@ def test_a_redraw_of_the_same_turn_keeps_its_choice_and_is_not_counted():
         choice = turn(sc, mem)[0]
         assert turn(sc, mem, observations=1)[0] == choice    # redraw: same choice
     assert mem['monster_stall']['turns'] == {choice: MONSTER_STALL_TURNS}
+
+
+def test_a_stall_returns_the_summon_after_the_bounded_total_turns():
+    # docich#4738: g1190-ch1v4 kept ホットないちげき vs リーキ 7+ own turns at
+    # enemy HP 30 while サマカンテ fell 614 -> 534 -> dead; a summon that never
+    # moves the enemy panel returns instead of grinding to death.
+    sc, mem = view(), {'chapter': 3, 'tick': 1}
+    actions = [turn(sc, mem)[0] for _ in range(MONSTER_STALL_RETURN_TURNS + 1)]
+    assert actions[-1] == 'retreat'
+    assert all(a in ('skill1', 'skill2') for a in actions[:-1])
+    assert mem['monster_stall'].get('returned') == 'bounded'
+    # The return latches: a redrawn menu keeps returning without recounting.
+    turns = dict(mem['monster_stall']['turns'])
+    assert turn(sc, mem)[0] == 'retreat'
+    assert mem['monster_stall']['turns'] == turns
+
+
+def test_a_stall_keeps_tanking_when_the_bound_general_is_wounded(monkeypatch):
+    monkeypatch.setattr(menus, '_summoner_return_risk',
+                        lambda *args: {'rule': 'wounded_general', 'general_hp': 3})
+    sc, mem = view(), {'chapter': 3, 'tick': 1}
+    actions = [turn(sc, mem)[0] for _ in range(MONSTER_STALL_RETURN_TURNS + 2)]
+    assert 'retreat' not in actions
