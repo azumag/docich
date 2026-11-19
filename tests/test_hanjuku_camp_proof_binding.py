@@ -256,13 +256,12 @@ def test_an_unrelated_queue_never_adopts_or_delays_the_existing_weak_hero_return
         _flow(mem)['retreat_rechecks']['ゼウス']['attempts'] = 3
         recheck._anonymous_budget(mem, _flow(mem)['retreat_rechecks'])['reads'] = 32
     _flow(mem)['recall'] = {'stage': 'hero_focus', 'hero': True, 'steps': 0, 'sorties': ['hero-old']}
-    assert p.camp_recall_step(MAP, mem, FRAME) == [p.pad('select')]
-    assert p.camp_recall_step(MAP, mem, FRAME) == [p.pad('a')]
+    # Owner 2026-11-19: every return leaves through いどう → whole-map Y, so
+    # the first input is Y even for a hero rescue; きかん is no longer used.
+    assert p.camp_recall_step(MAP, mem, FRAME) == [p.pad('y')]
+    assert _flow(mem)['recall']['stage'] == 'y_route'
+    assert _flow(mem)['recall']['goal'] == 'アルマムーン'
     assert not _flow(mem)['recall'].get('anonymous_recheck') and 'target' not in _flow(mem)['recall']
-    assert p.camp_recall_step(camp_menu(3), mem, FRAME) == [p.pad('a')]
-    frame = picker(); screen = parse(frame, phase='field')
-    assert p.camp_recall_step(screen, mem, frame) == [p.pad('a'), {'type': 'wait', 'ms': 700}, p.pad('a')]
-    assert _flow(mem)['recall']['stage'] == 'await_dispatch' and _flow(mem)['recall']['goal'] == 'アルマムーン'
     assert _flow(mem)['retreat_rechecks']['ゼウス']['status'] == 'needs_observation'
     assert not _flow(mem)['recall'].get('retreat_recheck') and not _flow(mem)['recall'].get('anonymous_recheck')
 
@@ -272,7 +271,7 @@ def test_legacy_hero_rescue_without_a_tent_in_view_is_not_blocked_by_the_queue()
     mem = memory()
     _flow(mem)['recall'] = {'stage': 'hero_focus', 'hero': True, 'steps': 0}
     frame = Canvas().frame()
-    assert p.camp_recall_step(MAP, mem, frame) == [p.pad('select')]
-    assert p.camp_recall_step(MAP, mem, frame) == [p.pad('a')]
-    assert p.camp_recall_step(camp_menu(3), mem, frame) == [p.pad('a')]
-    assert _flow(mem)['recall']['stage'] == 'dest' and _flow(mem)['retreat_rechecks']['ゼウス']['attempts'] == 0
+    # Owner 2026-11-19: the rescue walks home through the whole-map Y jump.
+    assert p.camp_recall_step(MAP, mem, frame) == [p.pad('y')]
+    assert _flow(mem)['recall']['stage'] == 'y_route'
+    assert _flow(mem)['retreat_rechecks']['ゼウス']['attempts'] == 0
