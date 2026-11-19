@@ -22,7 +22,7 @@ MAX_STEPS = 900
 OPEN_RETRY_EVERY = 3
 OPEN_MENU_TRIES = 8
 OPEN_MENU_RESETS = 4    # docich#4658: per-visit budget resets per stage entry
-OPEN_MENU_GIVEUP_READS = 30   # docich#4658: release the field when the menu never opens
+OPEN_MENU_GIVEUP_READS = 12   # docich#4658/#4680: release the field when the menu never opens
 POST_MONTH_FAILURE_SKIP_AFTER = 3   # docich#4677: giveups before skipping one arm
 # docich#4655: ups that reach the main menu's top row from any position.
 MAIN_MENU_BLIND_UPS = 6
@@ -1552,6 +1552,10 @@ def step(screen, mem, frame):
             # not opened, the scan held the field for the rest of the month
             # (live: phase_reads 102 with no input, 10-12 s map holds). Release
             # the field to the sortie plan instead of waiting out MAX_STEPS.
+            # docich#4680: every live month so far gave up here, so the scan
+            # now releases the field at 12 reads instead of 30 (about two
+            # seconds of map ownership saved per month); the X retries
+            # still get their budget inside that window.
             tries = state.get('open_tries')
             tries = tries if type(tries) is int and tries >= 0 else 0
             if (tries >= OPEN_MENU_TRIES
