@@ -1705,3 +1705,15 @@ def test_the_scan_keeps_its_own_reanchor_jump():
         'return_to': {'owner': 'post_month_status'}}
     field = Screen([], None, '', kind='map')
     assert post.step(field, mem, None) is not None
+
+
+def test_a_menu_without_a_locatable_row_walks_instead_of_idling():
+    # docich#4658: an unreadable label row used to return [] and freeze the
+    # scan on the menu; it must walk to しょうぐん deterministically.
+    mem = memory()
+    post.arm(mem)
+    state = mem['post_month_status']
+    state.update(stage='open_menu')
+    menu = Screen([], (146, 33, 166, 46), 'メニュー', kind='main_menu')
+    assert post.step(menu, mem, None) == [pad('up')]
+    assert state['menu_blind'] == 1
