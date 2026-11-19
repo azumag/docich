@@ -1863,7 +1863,7 @@ _CORNER_MANUAL_LAUNCHERS = {
     "paper": ("docich-paper-corner-manual", False, False),
 }
 # Weather uses the durable common queue; it has no detached one-off runner.
-_CORNER_QUEUED_MANUAL_ADAPTERS = frozenset({"weather", "tsuitate", "yoso", "doushi", "puyo", "trpg"})
+_CORNER_QUEUED_MANUAL_ADAPTERS = frozenset({"weather", "tsuitate", "yoso", "doushi", "puyo", "trpg", "chart"})
 # hanjuku-hero (#2024) は非CLIゲームのため one-off runner を使えない。開始は
 # docich.hanjuku_corner / start-hanjuku と同じ共通 coordinator への durable 予約
 # (CornerRotationManager.queue_manual) で行う。adapter が game のままなので
@@ -1877,6 +1877,7 @@ _CORNER_QUEUED_MANUAL_LABELS = {
     "doushi": ("doushi", "同志カード"),
     "puyo": ("puyo", "ぷよぷよクローン"),
     "trpg": ("trpg", "TRPG"),
+    "chart": ("chart", "チャート解説"),
     "mystery": ("mystery", "AI探偵ミステリー"),
 }
 _MANUAL_RESERVATION_CORNERS = frozenset({

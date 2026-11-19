@@ -5768,6 +5768,7 @@ CORNER_STATE_FILES = {
     "nethack_corner": "nethack_corner.json",
     "nethack_corner_manual": "nethack_corner_manual.json",
     "soren91_corner": "soren91_corner.json",
+    "chart": "chart_corner_659_runtime.json",
 }
 
 # Fixed enum of the switch result a corner recorded in its own state file.
@@ -6209,6 +6210,53 @@ def _weather_corner_projection(state_dir, rotation, rotation_readable):
 
 def _rotation_evidence_file(state_dir, relative):
     """Bounded fixed-path read; do not follow links to unrelated runtime data."""
+
+def _chart_corner_projection(state_dir, state):
+    """Read chart corner runtime state and project only status/time/end_reason/runtime ownership.
+
+    Projects exactly: status, started_at, completed_at, end_reason, runtime_identity (game only).
+    Never emits: generated manuscript, secrets, payload bodies, or arbitrary runtime fields.
+    """
+    if not isinstance(state, dict):
+        return {
+            "status": "unknown",
+            "started_at": None,
+            "completed_at": None,
+            "end_reason": None,
+            "runtime_identity": None,
+        }
+
+    # Status - bounded status string
+    status = state.get("status")
+    if status not in frozenset({"idle", "ready", "starting", "active", "restoring",
+                                 "preparing", "recovery_required", "failed",
+                                 "completed", "interrupted", "expired", "running",
+                                 "promoted", "kept", "improved", "dry-run", "skipped",
+                                 "ab-staged"}):
+        status = "unknown"
+
+    # Runtime identity - only game field, never secrets or manuscript
+    identity = state.get("runtime_identity") if isinstance(state.get("runtime_identity"), dict) else None
+    runtime_game = identity.get("game") if identity and isinstance(identity.get("game"), str) and identity["game"] else None
+
+    # Time fields - use _rotation_time for consistent formatting
+    started_at = _rotation_time(state.get("started_at"))
+    completed_at = _rotation_time(state.get("completed_at"))
+
+    # End reason - only allow known values, unknown otherwise
+    end_reason = state.get("end_reason")
+    if end_reason not in frozenset({"duration", "manual", "switch-terminal-before-corner-active",
+                                      "released-failure-before-retry", "unknown", None}):
+        end_reason = "unknown"
+
+    return {
+        "status": status,
+        "started_at": started_at,
+        "completed_at": completed_at,
+        "end_reason": end_reason,
+        "runtime_identity": runtime_game,
+    }
+
     path = state_dir / relative
     if any(parent.is_symlink() for parent in (path, *path.parents)):
         return True, False, None
@@ -8949,6 +8997,24 @@ def _collect_corner_files(state_dir, payload, now):
             }
         )
     payload["game_switch"] = entry
+
+    # Chart corner runtime projection (docich#4640)
+    chart_present, chart_readable, chart_data = _load_state_file(
+        state_dir / CORNER_STATE_FILES["chart"]
+    )
+    chart_projection = _chart_corner_projection(state_dir, chart_data) if chart_readable else {
+        "status": "unknown",
+        "started_at": None,
+        "completed_at": None,
+        "end_reason": None,
+        "runtime_identity": None,
+    }
+    payload["chart_corner"] = {
+        "present": chart_present,
+        "readable": chart_readable,
+        **chart_projection,
+    }
+
     payload["weather_corner"] = _weather_corner_projection(
         state_dir, rotation_data, rotation_data is not None
     )

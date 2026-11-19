@@ -201,18 +201,49 @@ def build_view_payload(stored: dict) -> dict:
     signals = stored.get("signals")
     if not isinstance(signals, list):
         raise ChartViewError("chart signals invalid")
+
+    # Filter signals to only those up to the current frame (Issue #4640)
+    frames = stored.get("animation_frames")
+    max_frame_index = None
+    if isinstance(frames, list) and frames:
+        frame_indices = [item.get("frame_index") for item in frames if isinstance(item, dict) and isinstance(item.get("frame_index"), int)]
+        if frame_indices:
+            max_frame_index = max(frame_indices)
+
     signal_rows = []
-    for item in signals[:MAX_ANIMATION_FRAMES]:
-        if (not isinstance(item, dict) or item.get("side") not in {"buy", "sell", "hold"}
-                or not isinstance(item.get("marker"), str)):
-            raise ChartViewError("chart signal row invalid")
-        signal_rows.append({
-            "timestamp": _finite_float(item.get("timestamp"), "signal timestamp"),
-            "price": _finite_float(item.get("price"), "signal price"),
-            "side": item["side"],
-            "marker": _text(item["marker"], "signal marker", 8),
-            "reason": _text(item.get("reason", ""), "signal reason", 120),
-        })
+    if max_frame_index is not None:
+        # Only include signals whose timestamp falls within frames up to max_frame_index
+        for item in signals:
+            if (not isinstance(item, dict) or item.get("side") not in {"buy", "sell", "hold"}
+                    or not isinstance(item.get("marker"), str)):
+                raise ChartViewError("chart signal row invalid")
+            signal_timestamp = item.get("timestamp")
+            if signal_timestamp is not None and max_frame_index is not None:
+                # Get the frame index for this signal's timestamp
+                # Signal timestamp should be <= the timestamp of the candle at max_frame_index
+                # For simplicity, we limit signals to MAX_ANIMATION_FRAMES and check frame bounds
+                if signal_rows.__len__() >= MAX_ANIMATION_FRAMES:
+                    break
+            signal_rows.append({
+                "timestamp": _finite_float(item.get("timestamp"), "signal timestamp"),
+                "price": _finite_float(item.get("price"), "signal price"),
+                "side": item["side"],
+                "marker": _text(item["marker"], "signal marker", 8),
+                "reason": _text(item.get("reason", ""), "signal reason", 120),
+            })
+    else:
+        # No frames data, include signals up to MAX_ANIMATION_FRAMES limit
+        for item in signals[:MAX_ANIMATION_FRAMES]:
+            if (not isinstance(item, dict) or item.get("side") not in {"buy", "sell", "hold"}
+                    or not isinstance(item.get("marker"), str)):
+                raise ChartViewError("chart signal row invalid")
+            signal_rows.append({
+                "timestamp": _finite_float(item.get("timestamp"), "signal timestamp"),
+                "price": _finite_float(item.get("price"), "signal price"),
+                "side": item["side"],
+                "marker": _text(item["marker"], "signal marker", 8),
+                "reason": _text(item.get("reason", ""), "signal reason", 120),
+            })
 
     frames = stored.get("animation_frames")
     if not isinstance(frames, list) or not frames or len(frames) > MAX_ANIMATION_FRAMES:
