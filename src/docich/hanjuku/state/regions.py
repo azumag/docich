@@ -292,6 +292,7 @@ KEY_OWNERSHIP = {
     'castle_jump': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 城ジャンプナビゲーション状態
     'castle_jump_skip': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 同上スキップ
     'castle_jump_y': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 同上 Y 経路退避
+    'castle_jump_menu_failures': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # Xメニュー失敗回数(step別)
     'general_jump': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # しょうぐん一覧SELECTジャンプ状態
     'general_jump_skip': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 同上スキップ
     'castle_status_as_list': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 城ステータスをリストとして読む手順状態
