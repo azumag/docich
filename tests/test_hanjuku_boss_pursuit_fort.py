@@ -58,12 +58,40 @@ def test_fort_list_selects_the_general_under_the_hand():
     assert mem['boss_pursuit']['fort_stage'] == 'status'
 
 
-def test_general_missing_from_the_fort_closes_without_a_loss():
+def test_general_missing_from_the_fort_scrolls_then_closes_without_a_loss():
     screen, frame = real('g1190-ch9-riesling-fort-list.png')
     mem = memory(general='ミント', fort_stage='list')
+    assert bp.step(screen, mem, frame) == [bp.pad('down')]
+    assert mem['boss_pursuit']['fort_seeks'] == 1
+    for _ in range(bp.FORT_LIST_SEEK_LIMIT - 1):
+        assert bp.step(screen, mem, frame) == [bp.pad('down')]
     assert bp.step(screen, mem, frame) == [bp.pad('b')]
     assert mem['boss_pursuit']['outcome'] == 'general_not_in_fort'
     assert 'ミント' not in (mem.get('generals_lost') or [])
+
+
+def _fort_list_screen(names, hand_y=39):
+    from docich.hanjuku.os_layer.screen import TextLine
+    lines = [_row(31, 64, 'しゅつげき'), _row(47, 64, 'こうかん')]
+    for i, name in enumerate(names):
+        lines.append(_row(39 + 16 * i, 144, name))
+    return Screen(lines=lines, hand=(122, hand_y - 6, 140, hand_y + 7),
+                  text='しゅつげき' + ''.join(names) + 'こうかん', kind='text')
+
+
+def test_the_fort_list_scrolls_to_a_target_on_the_next_page():
+    # Live g1288 2026-11-20 06:13: the 砦 showed four members in its window
+    # (アポロン/マーマレード/ヘスティア/ナストリーニ) and カシス was not among
+    # them. The fort can hold more than the window draws, so a missing target
+    # must scroll before it is called absent.
+    mem = memory(general='カシス', fort_stage='list')
+    first = _fort_list_screen(['アポロン', 'マーマレード', 'ヘスティア', 'ナストリーニ'])
+    assert bp.step(first, mem, None) == [bp.pad('down')]
+    second = _fort_list_screen(['マーマレード', 'ヘスティア', 'ナストリーニ', 'カシス'],
+                               hand_y=55)
+    actions = bp.step(second, mem, None)
+    assert actions != [bp.pad('b')]
+    assert mem['boss_pursuit'].get('outcome') != 'general_not_in_fort'
 
 
 def test_status_card_gets_one_a_then_waits():

@@ -19,7 +19,7 @@ from ..decision_log import _record
 from ..os_layer import roster as _roster
 from ..os_layer.commands import fort_list_batch, menu_to, pad
 from ..os_layer.readers import (
-    _current, _options, fort_list_open, is_camp_menu, is_fort_menu)
+    FORT_MENU_COMMANDS, _current, _options, fort_list_open, is_camp_menu, is_fort_menu)
 from ..state.regions import plan as _plan_region, world as _world
 from . import house
 
@@ -40,6 +40,7 @@ ABSENT_END_READS = 3          # identical roster reads at the list end = full pa
 PURSUIT_STEP = 'PURSUIT'      # step id of the pursuit's own Y jump (y_jump['step'])
 CLOSE_LIMIT = 12              # observations a closing probe waits for the map
 UNIT_MENU_WAIT = 14           # map reads waiting for the unit's menu to draw
+FORT_LIST_SEEK_LIMIT = 8      # list steps spent looking for the boss general in a 砦
 
 
 def _drop_probe(mem):
@@ -477,8 +478,21 @@ def _fort_step(screen, mem, probe):
         members = [word for x, _, word in _options(screen) if x > 100]
         wanted = probe['general']
         if wanted not in members:
-            _close(mem, probe, 'general_not_in_fort')
-            return [pad('b')]
+            # A 砦 can hold more generals than the four rows its window draws;
+            # the target may be on the next page. Live g1288 2026-11-20 06:13
+            # selected カシス and landed on a 砦 whose first page listed
+            # アポロン/マーマレード/ヘスティア/ナストリーニ; the old code closed
+            # general_not_in_fort without ever scrolling. Move the hand into
+            # the list (it can still be on しゅつげき) and scroll, bounded.
+            current = _current(screen)
+            if current is not None and current[2] in FORT_MENU_COMMANDS:
+                return [pad('right')]
+            seeks = int(probe.get('fort_seeks') or 0) + 1
+            probe['fort_seeks'] = seeks
+            if seeks > FORT_LIST_SEEK_LIMIT:
+                _close(mem, probe, 'general_not_in_fort')
+                return [pad('b')]
+            return [pad('down')]
         move = menu_to(screen, wanted)
         if move is None:
             return []
