@@ -34,12 +34,13 @@ def test_every_castle_blocked_falls_back_to_the_nearest():
     assert _recall_goal(memory(blocked)) == 'オシロガ'
 
 
-def test_boss_phase_gathers_at_the_last_corridor_castle():
-    # Owner 2026-11-15 (camp_stays): all road castles owned means the cliffs
-    # block every castle but the last from the moving boss, so a camp must
-    # gather at イデ！ even when アルマムーン (home) is nearer.
+def test_the_boss_phase_still_returns_a_camp_to_its_nearest_castle():
+    # Owner verification 2026-11-16 (test_hanjuku_chapter9_camp_boss_redirect):
+    # a direct field camp -> イデ！ いどう never moved the unit; field camps
+    # return to a nearby own castle and the castle-to-castle forward moves
+    # gather the army. #4766 forced イデ！ here and was reverted.
     from docich import hanjuku_chart as chart
     road = chart.corridor(9)
     mem = {'chapter': 9, 'captured': list(road), '_records': []}
     _flow(mem)['recall'] = {'origin': list(chart.castles(9)['アルマムーン'])}
-    assert _recall_goal(mem) == road[-1] == 'イデ！'
+    assert _recall_goal(mem) == 'アルマムーン'
