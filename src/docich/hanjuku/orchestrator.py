@@ -545,6 +545,28 @@ def plan_starved_rearm(mem, phase, kind):
 
 MENU_SCAN_STAGES = frozenset({'open_menu', 'task_menu'})
 
+def _roster_owner_active(mem):
+    """Is a flow currently walking this menu to read the roster?
+
+    docich#4695: the main menu's しょうぐん help line matches the all-generals
+    panel's text, so the generic close-with-B rule must stand down while the
+    monthly scan or a source-list probe is opening that row.
+    """
+    state = mem.get('post_month_status')
+    if isinstance(state, dict) and state.get('stage') in MENU_SCAN_STAGES:
+        return True
+    from .state.regions import plan as _plan_region
+    active = _plan_region(mem).get('active')
+    if not isinstance(active, str):
+        return False
+    plan = _plan_region(mem).get('chart_plan') or {}
+    for order in plan.get('orders') or ():
+        if isinstance(order, dict) and order.get('step') == active:
+            return order.get('source_probe') is True
+    interim = (mem.get('chart_adjust') or {}).get('interim_order')
+    return isinstance(interim, dict) and interim.get('source_probe') is True
+
+
 def _post_month_menu_owns(mem):
     '''docich#4658: does the monthly roster scan own this frame's menu?'''
     state = mem.get('post_month_status')
@@ -1406,11 +1428,19 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
         updated['policy'] = mem
         return actions, updated
     if (kind == 'main_menu'
-            and 'わがくにのすべてのしょうぐんをみることができますぞ' in (screen.text or '')):
+            and 'わがくにのすべてのしょうぐんをみることができますぞ' in (screen.text or '')
+            and not _roster_owner_active(mem)):
         # The all-generals roster panel looks like the shop's main menu to the
         # pixel classifier and the shop phase held it every observation
         # (g1190 2026-11-19 67-4: minutes of holds with one decision). B closes
         # the panel and returns to the field.
+        #
+        # docich#4695: that same sentence is the main menu's help line while
+        # the hand is on しょうぐん, so this rule closed the menu every time the
+        # monthly scan or a source probe reached the row (live: the probe opened
+        # the roster twice and each time the panel/menu was closed with B before
+        # A could open the list). While a roster owner is navigating, leave the
+        # frame to it.
         decision_log._record(mem, 'close_panel', screen=kind,
                              observed_metric={'text': (screen.text or '')[:60]},
                              reason='全将軍一覧のパネルを実画面文言で確認したためBで閉じる')
