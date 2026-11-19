@@ -362,6 +362,19 @@ class SummaryValidationTests(unittest.TestCase):
             report.normalize_summary("This fixes the bug.", require_japanese=True), ""
         )
 
+    def test_leading_pr_prefix_is_removed(self):
+        for raw in (
+            "プルリクエストNで、不具合を直しました。",
+            "プルリクエストで、不具合を直しました。",
+            "プルリクエスト4724で、不具合を直しました。",
+            "この変更では、不具合を直しました。",
+        ):
+            with self.subTest(raw=raw):
+                self.assertEqual(
+                    report.normalize_summary(raw, require_japanese=True),
+                    "不具合を直しました",
+                )
+
     def test_leading_label_does_not_strip_a_normal_word(self):
         self.assertIn(
             "要約機能",
