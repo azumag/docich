@@ -13,7 +13,7 @@ from pathlib import Path
 import re
 from typing import Mapping
 
-from . import game_profile
+from . import game_profile, paper_corner_profile
 from .contexts import GameContext, normalize_host_mode
 
 
@@ -28,6 +28,7 @@ GAME_BLURBS = {
     "robots": "Robots(bsdgames)。ロボットの追跡を避けるターン制パズル(いまは手動操作)",
     "nethack": "NetHack(CLIローグライク)",
     "hanjuku-hero": game_profile.HANJUKU_BLURB,
+    "paper-view": paper_corner_profile.BLURB,
     "external-video-view": (
         "特別コーナー。配信者のPCで遊んでいるゲームの映像をOBSから受けて映している。"
         "コメントには応援・プレイの様子・ゲームの印象で答え、画面から分からない仕掛けや数値は創作しない"
@@ -90,8 +91,9 @@ class SorenGameContextProvider:
 
     def build(self, *, host_mode: str) -> GameContext:
         mode = normalize_host_mode(host_mode)
-        canonical = self._read_json(self._path(
-            "DOCICH_GAME_SWITCH_CANONICAL_FILE", "/home/ubuntu/docich/run-soren-live/game_switch.json"))
+        canonical_path = self._path(
+            "DOCICH_GAME_SWITCH_CANONICAL_FILE", "/home/ubuntu/docich/run-soren-live/game_switch.json")
+        canonical = self._read_json(canonical_path)
         active = canonical.get("active")
         game = active.get("game") if isinstance(active, dict) else None
         if mode == "soren91":
@@ -99,7 +101,11 @@ class SorenGameContextProvider:
         elif game == "external-video-view":
             game_state = self._flyhome_state_context(canonical)
         elif isinstance(game, str) and game != "sorengame":
-            game_state = game_profile.non_soviet_game_state(game, GAME_BLURBS.get(game, ""))
+            profile = self._game_profile(game, state_dir=canonical_path.parent)
+            game_state = (
+                (profile or {}).get("game_state")
+                or game_profile.non_soviet_game_state(game, GAME_BLURBS.get(game, ""))
+            )
         else:
             game_state = self._game_state_context()
         return GameContext(
@@ -446,18 +452,22 @@ class SorenGameContextProvider:
         output = "\n".join(lines).strip() or "(運用状況メモなし)"
         if len(output) > max_chars:
             output = output[:max_chars].rstrip() + "…"
-        profile = None if host_mode == "soren91" or not current_game else self._game_profile(current_game)
+        profile = None if host_mode == "soren91" or not current_game else self._game_profile(
+            current_game, state_dir=self._path(
+                "DOCICH_GAME_SWITCH_CANONICAL_FILE",
+                "/home/ubuntu/docich/run-soren-live/game_switch.json",
+            ).parent)
         if profile and profile.get("ops_lines"):
             # 文字数上限は既存の行にだけ掛け、説明は切らない（メイン画面行・ルーティング行の直後へ入れる）。
             head = output.split("\n")
             output = "\n".join(head[:2] + profile["ops_lines"] + head[2:])
         return output
 
-    def _game_profile(self, game: str) -> dict | None:
+    def _game_profile(self, game: str, *, state_dir: Path | None = None) -> dict | None:
         """The docich-owned replacement profile for ``game`` (``None`` when it has none)."""
         # The provider's env is an allowlist: pass the config path explicitly, never via os.environ.
         config = self._path("DOCICH_HANJUKU_CONFIG_FILE", str(game_profile.REPO_HANJUKU_CONFIG))
-        return game_profile.build(game, config=config)
+        return game_profile.build(game, config=config, state_dir=state_dir)
 
     def _celebration_history_context(self) -> str:
         history_dir = self.env.get("TMP_HISTORY_DIR") or "tmp/history"

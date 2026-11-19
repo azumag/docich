@@ -22,9 +22,12 @@ import os
 import sys
 from pathlib import Path
 
+from . import paper_corner_profile
+
 SCHEMA = 1
 HANJUKU = "hanjuku-hero"
 HANJUKU_BLURB = "半熟英雄(SFCエミュレータ)"
+PAPER = paper_corner_profile.PAPER_VIEW
 
 # Same replacement lib/radio_game_context.py applies to radio prompts.
 PERSONA_REPLACE = (
@@ -109,8 +112,18 @@ def non_soviet_game_state(game: str, blurb: str) -> str:
     return f"現在のメイン画面: {game} — {blurb}。" + NON_SOVIET_STATE_SUFFIX
 
 
-def build(game: str, *, config: Path | None = None) -> dict | None:
-    """Return the replacement profile for ``game``; ``None`` when docich has none."""
+def build(game: str, *, config: Path | None = None, state_dir: Path | None = None,
+          now: float | None = None) -> dict | None:
+    """Return the replacement profile for ``game``; ``None`` when docich has none.
+
+    ``state_dir`` is the docich state directory (holding ``game_switch.json``
+    and ``trading/status.json``).  Only the PAPER profile reads it; the Hanjuku
+    profile stays config-only.
+    """
+    if game == PAPER:
+        profile = paper_corner_profile.build(state_dir, now=now)
+        profile["persona_replace"] = [list(pair) for pair in PERSONA_REPLACE]
+        return profile
     if game != HANJUKU:
         return None
     return {
@@ -126,12 +139,33 @@ def build(game: str, *, config: Path | None = None) -> dict | None:
     }
 
 
+def default_state_dir() -> Path:
+    """Resolve the docich state directory for the launcher.
+
+    Prefer the operator's explicit state directory, then the canonical switch
+    file's directory (the layout Soren's comment worker already uses), then the
+    shared resolver's checkout/VM defaults.  Never invent a path from the game
+    name.
+    """
+    configured = (os.environ.get("DOCICH_STATE_DIR") or "").strip()
+    if configured:
+        path = Path(configured).expanduser()
+        return path if path.is_absolute() else Path.cwd() / path
+    canonical = (os.environ.get("DOCICH_GAME_SWITCH_CANONICAL_FILE") or "").strip()
+    if canonical:
+        path = Path(canonical).expanduser()
+        return (path if path.is_absolute() else Path.cwd() / path).parent
+    from docich.soren_corner_stats import resolve_state_dir
+
+    return resolve_state_dir()
+
+
 def main(argv: list[str] | None = None) -> int:
     args = sys.argv[1:] if argv is None else argv
     if len(args) != 1:
         print("usage: docich-comment-profile <game>", file=sys.stderr)
         return 2
-    profile = build(args[0])
+    profile = build(args[0], state_dir=default_state_dir())
     if profile is not None:  # an unsupported game prints nothing: the shell keeps its own prompt
         sys.stdout.write(json.dumps(profile, ensure_ascii=False, separators=(",", ":")))
     return 0
