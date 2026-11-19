@@ -172,7 +172,7 @@ def _empty_overview() -> dict:
     return live_overview(None, now=0.0)
 
 
-def _overview(state_dir, *, now: float, ledger_present: bool) -> dict:
+def _overview(state_dir, *, now: float, ledger_present: bool, trade_page=1) -> dict:
     if not ledger_present:
         return _empty_overview()
     try:
@@ -180,7 +180,7 @@ def _overview(state_dir, *, now: float, ledger_present: bool) -> dict:
     except Exception:
         return _empty_overview()
     try:
-        return live_overview(ledger, now=now)
+        return live_overview(ledger, now=now, trade_page=trade_page)
     except Exception:                       # live_overview promises not to raise; belt and braces
         return _empty_overview()
     finally:
@@ -190,7 +190,7 @@ def _overview(state_dir, *, now: float, ledger_present: bool) -> dict:
             pass
 
 
-def live_snapshot(state_dir, *, now: float) -> dict:
+def live_snapshot(state_dir, *, now: float, trade_page=1) -> dict:
     """Return the WEBUI-facing LIVE snapshot.  Read-only and never raises.
 
     ``worker_alive`` is true only for an active phase (``starting``, ``running`` or
@@ -201,7 +201,8 @@ def live_snapshot(state_dir, *, now: float) -> dict:
     ``exited`` statuses are never alive, however recently they were written.  A missing
     ledger or status file is reported as ``ledger_present: false`` / ``status: null``;
     the control file missing or invalid is reported by ``describe_control`` as
-    ``unknown``.
+    ``unknown``.  ``trade_page`` is the optional 1-based realized-P&L page; the overview
+    clamps it and every page carries the same total/by-symbol figures.
     """
     try:
         control_view = control.describe_control(state_dir, now=now)
@@ -223,7 +224,8 @@ def live_snapshot(state_dir, *, now: float) -> dict:
         "status": status,
         "worker_alive": alive,
         "ledger_present": ledger_present,
-        "overview": _overview(state_dir, now=now, ledger_present=ledger_present),
+        "overview": _overview(state_dir, now=now, ledger_present=ledger_present,
+                              trade_page=trade_page),
     }
 
 

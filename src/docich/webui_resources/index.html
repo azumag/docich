@@ -290,6 +290,20 @@ input:checked+.slider:before{transform:translateX(20px)}
 <div id="live-initial-msg" class="help">履歴を読み取るか、エクスポート済み JSON を確認してください。</div>
 <p class="help">同じ policy set が既に有効なら何も書きません。別の有効な方針がある場合は上書きしません。確認 token は台帳 ID と有効な policy に結び付きます。初回のプレビュー後に空の台帳ができた場合（失敗した試行や別プロセス）は、もう一度「この方針を確認」でプレビューしてください。記録成功後の同じ確認は already_active として扱います。viewer / read-only は実行できません。LIVE worker が writer lease を保持している間は記録できません。</p>
 </div>
+<div class="card"><h3>実現損益</h3>
+<div class="card kpi"><h3>実現損益合計 (JPY)</h3><div class="val" id="live-trade-pnl-total">-</div><div class="subk" id="live-trade-pnl-state">-</div></div>
+<p class="help">売却分だけを平均取得原価と売却代金・既知の手数料で対応させた実現損益です。買付のみ・未約定・期首残高・入出金は含みません。手数料不明は0円概算、原価不明の売却は集計対象外です。</p>
+<h4>銘柄ごとの実現損益</h4>
+<div class="table-wrap"><table><thead><tr><th>銘柄</th><th>実現損益（JPY）</th></tr></thead><tbody id="live-trade-pnl-symbols"></tbody></table></div>
+<h4>取引ごとの実現損益</h4>
+<div class="table-wrap"><table><thead><tr><th>時刻</th><th>銘柄</th><th>売却数量</th><th>実現損益（JPY）</th></tr></thead><tbody id="live-trade-pnl-rows"></tbody></table></div>
+<p class="help" id="live-trade-pnl-note">-</p>
+<div class="actions">
+<button class="btn" id="live-trade-prev" data-keep-disabled="1" disabled>前へ</button>
+<span class="help" id="live-trade-page">-</span>
+<button class="btn" id="live-trade-next" data-keep-disabled="1" disabled>次へ</button>
+</div>
+</div>
 <div class="card"><h3>約定による純収支</h3>
 <div class="grid2">
 <div class="card kpi"><h3>純収支 (JPY)</h3><div class="val" id="live-pnl-total">-</div><div class="subk" id="live-pnl-since">-</div></div>
@@ -2246,6 +2260,72 @@ function liveDigestPrefix(value){
 function liveEmptyRow(colspan,text){
   return `<tr><td colspan="${colspan}" class="help">${esc(text)}</td></tr>`;
 }
+let LIVE_TRADE_PAGE=1;
+let LIVE_TRADE_SEQ=0;
+function liveTradeStep(delta){
+  const target=LIVE_TRADE_PAGE+delta;
+  if(target<1) return;
+  const tp=(LIVE_VIEW.overview&&LIVE_VIEW.overview.trade_pnl)||{};
+  if(tp.page_count && target>Number(tp.page_count)) return;
+  LIVE_TRADE_PAGE=target;
+  loadLive(target);
+}
+function renderTradePnl(overview){
+  const tp=(overview&&overview.trade_pnl)||{};
+  const available=tp.available===true;
+  const totalEl=document.getElementById("live-trade-pnl-total");
+  const stateEl=document.getElementById("live-trade-pnl-state");
+  const noteEl=document.getElementById("live-trade-pnl-note");
+  const symbolsEl=document.getElementById("live-trade-pnl-symbols");
+  const rowsEl=document.getElementById("live-trade-pnl-rows");
+  const pageEl=document.getElementById("live-trade-page");
+  const prevEl=document.getElementById("live-trade-prev");
+  const nextEl=document.getElementById("live-trade-next");
+  if(!available){
+    if(totalEl) totalEl.textContent="計算不可";
+    if(stateEl) stateEl.textContent="台帳を読めません";
+    if(symbolsEl) symbolsEl.innerHTML=liveEmptyRow(2,"計算不可");
+    if(rowsEl) rowsEl.innerHTML=liveEmptyRow(4,"計算不可");
+    if(noteEl) noteEl.textContent="台帳を読み取れないため、実現損益は表示できません。";
+    if(pageEl) pageEl.textContent="-";
+    if(prevEl) prevEl.disabled=true;
+    if(nextEl) nextEl.disabled=true;
+    return;
+  }
+  const page=Number(tp.page)||1;
+  const pages=Number(tp.page_count)||1;
+  const totalRows=Number(tp.total_rows)||0;
+  LIVE_TRADE_PAGE=page;
+  if(totalEl) totalEl.textContent=tp.total!=null?`${tp.total} JPY`:(totalRows?"計算不可":"0 JPY");
+  if(stateEl) stateEl.textContent=totalRows
+    ?(tp.complete===false?"集計対象外あり":`売却 ${totalRows} 件を集計`)
+    :"売却履歴なし";
+  const bySymbol=Object.entries(tp.by_symbol||{});
+  if(symbolsEl) symbolsEl.innerHTML=bySymbol.length
+    ?bySymbol.map(([symbol,value])=>`<tr><td class="mono">${esc(symbol)}</td><td class="mono">${esc(value)}</td></tr>`).join("")
+    :liveEmptyRow(2,totalRows?"算定可能な売却なし":"売却履歴なし");
+  const rows=Array.isArray(tp.rows)?tp.rows:[];
+  if(rowsEl) rowsEl.innerHTML=rows.length
+    ?rows.map(row=>{
+      const accounted=row.status==="accounted"&&row.pnl!=null;
+      const marks=[];
+      if(row.fee_unknown) marks.push("手数料不明");
+      if(row.fee_other_currency) marks.push("他通貨手数料");
+      const pnl=accounted?`${esc(row.pnl)} JPY`:"集計対象外";
+      const mark=marks.length?` <span class="help">(${esc(marks.join("・"))})</span>`:"";
+      return `<tr><td class="mono">${esc(liveTime(row.at))}</td><td class="mono">${esc(row.symbol)}</td><td class="mono">${esc(row.amount)}</td><td class="mono">${pnl}${mark}</td></tr>`;
+    }).join("")
+    :liveEmptyRow(4,totalRows?"このページに表示できる売却がありません":"売却履歴なし");
+  const notes=[];
+  notes.push(tp.fee_unknown_fills?`手数料不明 ${Number(tp.fee_unknown_fills)} 件 (0円換算)`:"手数料不明なし");
+  if(tp.fee_other_currency_fills) notes.push(`他通貨手数料 ${Number(tp.fee_other_currency_fills)} 件 (0円換算)`);
+  if(tp.unaccounted_orders) notes.push(`集計対象外 ${Number(tp.unaccounted_orders)} 件 (${Number(tp.unaccounted_fills)||0} fill)`);
+  else notes.push("集計対象外なし");
+  if(noteEl) noteEl.textContent=notes.join(" / ");
+  if(pageEl) pageEl.textContent=`${page} / ${pages} ページ`;
+  if(prevEl) prevEl.disabled=page<=1;
+  if(nextEl) nextEl.disabled=page>=pages;
+}
 function liveWorkerLabel(status,alive){
   if(!status) return "未接続 (status なし)";
   const phase=typeof status.phase==="string"?status.phase:"";
@@ -2301,6 +2381,8 @@ function renderLive(d){
   liveText("live-initial-active",policy.digest?`${String(policy.digest).slice(0,12)} (${(policy.symbols||[]).length||0} symbols)`:"なし");
   liveText("live-ledger",!d?"未接続":(!LIVE_VIEW.ledger_present?"台帳なし":(overview.ledger_readable?"読取OK":"台帳を読めません")));
 
+  renderTradePnl(overview);
+
   const pnl=overview.pnl||{};
   liveText("live-pnl-total",pnl.total!=null?`${pnl.total} JPY`:"-");
   liveText("live-pnl-since",pnl.since?`最初の fill ${liveTime(pnl.since)}`:"fill なし");
@@ -2333,10 +2415,17 @@ function renderLive(d){
     ?opening.map(o=>`<tr><td class="mono">${esc(o.currency)}</td><td class="mono">${esc(o.amount)}</td><td class="mono">${esc(liveTime(o.at))}</td></tr>`).join("")
     :liveEmptyRow(3,"期首残高の記録なし");
 }
-async function loadLive(){
+async function loadLive(page){
+  const requested=page==null?LIVE_TRADE_PAGE:page;
+  const seq=++LIVE_TRADE_SEQ;
   try{
-    renderLive(await api("/api/live"));
+    const d=await api(`/api/live?trade_page=${encodeURIComponent(String(requested))}`);
+    if(seq!==LIVE_TRADE_SEQ) return;   // a newer page request/reload already won
+    const tp=d&&d.overview&&d.overview.trade_pnl;
+    if(tp&&Number.isFinite(Number(tp.page))) LIVE_TRADE_PAGE=Number(tp.page);
+    renderLive(d);
   }catch(e){
+    if(seq!==LIVE_TRADE_SEQ) return;
     renderLive(null);
     liveText("live-msg",`LIVE を取得できません: ${String(e)}`);
   }
@@ -3618,6 +3707,10 @@ document.addEventListener("DOMContentLoaded",()=>{
   // live (owner switch; OFF never needs a clearing step)
   const lRefresh=document.getElementById("live-refresh");
   if(lRefresh) lRefresh.onclick=()=>loadLive();
+  const lTradePrev=document.getElementById("live-trade-prev");
+  if(lTradePrev) lTradePrev.onclick=()=>liveTradeStep(-1);
+  const lTradeNext=document.getElementById("live-trade-next");
+  if(lTradeNext) lTradeNext.onclick=()=>liveTradeStep(1);
   const lShadow=document.getElementById("live-on-shadow");
   if(lShadow) lShadow.onclick=()=>liveControl("on","shadow");
   const lTrade=document.getElementById("live-on-trade");
