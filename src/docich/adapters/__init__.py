@@ -80,6 +80,9 @@ def make_coordinator_adapter(g, spec: RuntimeSpec):
     if spec.game == "weather-view":
         from .weather_program import make_weather_view_adapter
         return make_weather_view_adapter(g, spec)
+    if spec.game == "chart-659":
+        from .chart_659_program import make_chart_view_adapter
+        return make_chart_view_adapter(g, spec)
     if spec.game == "tsuitate-view":
         from .tsuitate_program import make_tsuitate_view_adapter
         return make_tsuitate_view_adapter(g, spec)

@@ -283,6 +283,27 @@ def load_catalog(g) -> tuple[Corner, ...]:
                     type(item.duration_minutes) is not int
                     or not 1 <= item.duration_minutes <= 14):
                 raise CornerCatalogError("lawsim duration_minutes must be an integer 1-14")
+        elif item.adapter == "chart":
+            # チャート解説コーナー (issue #659): manual-only, non-live read-only
+            # view. Content is generated offline by the program adapter before
+            # the switch; fetch_on_start is rejected and speech stays opt-in
+            # for a future narration step.
+            if item.id != "chart-659" or item.game != "chart-659":
+                raise CornerCatalogError(
+                    "chart requires id=chart-659 and game=chart-659"
+                )
+            if item.fetch_on_start or type(item.audio_enabled) is not bool:
+                raise CornerCatalogError(
+                    "chart accepts no fetch_on_start; audio_enabled is a boolean opt-in"
+                )
+            if item.manual_only is not True:
+                raise CornerCatalogError(
+                    "chart stays manual-only until the owner approves auto rotation"
+                )
+            if item.duration_minutes is not None and (
+                    type(item.duration_minutes) is not int
+                    or not 1 <= item.duration_minutes <= 14):
+                raise CornerCatalogError("chart duration_minutes must be an integer 1-14")
         elif item.duration_minutes is not None or item.audio_enabled or item.fetch_on_start:
             raise CornerCatalogError("duration_minutes, audio_enabled and fetch_on_start require weather adapter")
         if item.target_matches is not None and (
