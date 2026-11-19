@@ -1130,6 +1130,7 @@ CASTLE_JUMP_SCROLL_LIMIT = 16   # list scrolls while looking for the source
 CASTLE_JUMP_SCROLL_PROOF = 2    # extra taps issued once the hand is on the last row
 CASTLE_JUMP_SCROLL_STALL = 2    # unchanged list readings before the Y route takes over
 CASTLE_JUMP_COOLDOWN = 40       # observations before retrying a failed source
+CASTLE_JUMP_ABANDON = 4         # menu failures before the step is given up
 Y_ANCHOR_ATTEMPTS = 2            # Y-view re-anchors before the castle-list jump
 Y_ANCHOR_CHAPTER_TOTAL = 6       # fruitless Y re-anchors allowed in one chapter
 REANCHOR_FAILURE_LIMIT = 3      # consecutive failed reanchors before backing off
@@ -1405,6 +1406,22 @@ def _end_castle_jump(screen, mem, why):
                     target=jump.get('source'), screen=screen.kind,
                     observed_metric={'failures': n, 'why': why},
                     reason='Xメニューが開かない状態が続くため、同じ出撃元へ全体マップ（Y）経由で向かう')
+        if why in ('menu_not_open', 'unexpected_menu') and n >= CASTLE_JUMP_ABANDON:
+            # docich#4717: own castles never use the Y view (owner 2026-11-19),
+            # so a menu that will not open used to retry the same X trip for as
+            # long as the order lived (ch6 23-x: 113 failures on ユージア and no
+            # sortie ever started). Give the step up instead: the planner picks
+            # another source on the next rebuild.
+            _plan_region(mem).setdefault('orders', {})[step_key] = 'failed'
+            _plan_region(mem)['active'] = None
+            fails.pop(step_key, None)
+            mem['castle_jump_menu_failures'] = fails
+            mem.pop('castle_jump_y', None)
+            mem['castle_jump_skip'] = {'step': step_key, 'tick': int(mem.get('tick') or 0)}
+            _record(mem, 'castle_jump_abandoned', chart_step=step_key,
+                    target=jump.get('source'), screen=screen.kind,
+                    observed_metric={'failures': n, 'why': why},
+                    reason='Xメニューが開かないまま上限に達したため、この出撃元の注文を諦めて別の城から組み直す')
     if screen.kind == 'main_menu' or _castle_list_rows(screen):
         return [pad('b')]
     return []
