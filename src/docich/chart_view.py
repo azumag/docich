@@ -232,7 +232,12 @@ def build_view_payload(stored: dict) -> dict:
     for item in frames:
         if not isinstance(item, dict) or not isinstance(item.get("frame_index"), int):
             raise ChartViewError("chart animation frame invalid")
+        signal = item.get("signal")
+        if signal is not None and not isinstance(signal, dict):
+            raise ChartViewError("chart frame signal invalid")
         frame_rows.append({
+            "signal": ({"timestamp": _finite_float(signal.get("timestamp"), "frame signal timestamp")}
+                       if signal is not None else None),
             "frameIndex": item["frame_index"],
             "price": _finite_float(item.get("price"), "frame price"),
             "symbol": _text(item.get("symbol", stored["symbol"]), "frame symbol", 32),
