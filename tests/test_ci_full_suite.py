@@ -32,17 +32,31 @@ def test_full_suite_runs_every_test_on_the_supported_python():
                                '"$TEST_SUITE")',
                                '--durations=50', '--durations-min=0.1',
                                '-n', '4', '--dist', 'loadfile',
-                               '--ignore=tests/test_hanjuku_scene_process.py']
+                               '--ignore=tests/test_hanjuku_scene_process.py',
+                               '--junitxml="${{runner.temp}}/junit-${{matrix.shard}}.xml"']
     assert 'continue-on-error:' not in text
 
 
-def test_the_suite_is_cut_into_two_shards_that_each_keep_the_whole_contract():
+def test_per_test_timings_survive_a_cancelled_run():
     text = WORKFLOW.read_text()
     job = text.split('\n  full-suite:\n', 1)[1].split('\n  ci-required:', 1)[0]
-    # Two runners, neither of which may cancel the other: a red shard must not hide
-    # a second red shard, and ci-required reads the aggregate result of the matrix.
+    # A cancelled or timed-out run never prints the --durations table, so the
+    # junit report is uploaded on every outcome, red or green (#4624).
+    assert '--junitxml=' in job
+    upload = job.split('      - name: Upload the pytest junit report\n', 1)[1]
+    assert '        if: always()\n' in upload
+    assert '        uses: actions/upload-artifact@' in upload
+
+
+def test_the_suite_is_cut_into_three_shards_that_each_keep_the_whole_contract():
+    text = WORKFLOW.read_text()
+    job = text.split('\n  full-suite:\n', 1)[1].split('\n  ci-required:', 1)[0]
+    # Three runners, none of which may cancel the others: a red shard must not hide
+    # another red shard, and ci-required reads the aggregate result of the matrix.
+    # A third shard costs nothing on a public repository and keeps the slowest
+    # shard inside the job timeout as the suite grows (#4624).
     assert '      fail-fast: false\n' in job
-    assert '        shard: [1, 2]\n' in job
+    assert '        shard: [1, 2, 3]\n' in job
     assert '      CI_SHARD: ${{ matrix.shard }}/${{ strategy.job-total }}\n' in job
     assert 'PYTHONPATH: .github/scripts' in job
     # The one-thread file is outside the sharded collection, so exactly one shard runs it.
@@ -70,7 +84,7 @@ def test_single_thread_sensitive_file_runs_on_the_serial_runner():
     # module proves the scene owner runs in a one-thread process, and every
     # pytest-xdist worker carries an execnet receiver thread.
     assert f'--ignore={ignored}' in text
-    assert f'run: python3 -m pytest -q {ignored}\n' in text
+    assert f'run: python3 -m pytest -q {ignored} --junitxml="${{{{runner.temp}}}}/junit-serial.xml"\n' in text
 
 
 def test_ci_starts_on_every_pull_request_because_main_requires_it():
@@ -151,6 +165,31 @@ def test_pip_cache_tracks_all_root_requirements_files():
     assert 'run: python3 -m pip install -r requirements-test.txt' in text
 
 
+def test_system_dependencies_restore_the_cached_apt_archives():
+    text = WORKFLOW.read_text()
+    job = text.split('\n  full-suite:\n', 1)[1].split('\n  ci-required:', 1)[0]
+    # A slow mirror can starve a large deb even inside the bounded retries
+    # (#4624, #4625 run 44370031644), so a green shard persists the .deb files
+    # the install stages through ~/apt-debs and the restore must run first.
+    cache_name = '      - name: Cache the downloaded apt archives\n'
+    assert job.index(cache_name) < job.index('      - name: Install system dependencies\n')
+    step = job.split(cache_name, 1)[1].split('      - name:', 1)[0]
+    # Same suite guard as the install: a hanjuku-scoped run skips both.
+    assert "        if: needs.test-scope.outputs.suite != 'hanjuku'\n" in step
+    assert '        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830\n' in step
+    assert '          path: ~/apt-debs\n' in step
+    assert '          key: apt-debs-ubuntu-24.04-full-suite-${{ matrix.shard }}-${{ github.run_id }}-${{ github.run_attempt }}\n' in step
+    # Shared prefix with the presenter-smoke apt caches so either workflow can
+    # seed the other's ffmpeg deb.
+    restore_keys = step.split('restore-keys: |', 1)[1]
+    assert '            apt-debs-ubuntu-24.04-full-suite-${{ matrix.shard }}-\n' in restore_keys
+    assert '            apt-debs-ubuntu-24.04-full-suite-\n' in restore_keys
+    assert '            apt-debs-ubuntu-24.04-\n' in restore_keys
+    body = _system_setup()
+    assert 'sudo cp -n ~/apt-debs/*.deb /var/cache/apt/archives/' in body
+    assert "trap 'cp -n /var/cache/apt/archives/*.deb ~/apt-debs/" in body
+
+
 def _run_setup(tmp_path: Path, available=(), *, fail=''):
     bindir = tmp_path / 'bin'
     bindir.mkdir()
@@ -176,6 +215,14 @@ fi
         path = bindir / name
         path.write_text(fake)
         path.chmod(0o755)
+    # The step bounds apt calls with `timeout` and paces retries with `sleep`.
+    # timeout drops its duration and runs the wrapped command; sleep is a
+    # no-op. Neither logs: the contract under test is the apt/ffmpeg sequence.
+    for name, body in [('timeout', '#!/bin/sh\nshift\nexec "$@"\n'),
+                       ('sleep', '#!/bin/sh\nexit 0\n')]:
+        path = bindir / name
+        path.write_text(body)
+        path.chmod(0o755)
     result = subprocess.run(
         ['/bin/bash', '--noprofile', '--norc', '-e', '-c', _system_setup()],
         env={'PATH': str(bindir), 'CI_SETUP_LOG': str(log), 'CI_SETUP_FAIL': fail},
@@ -195,13 +242,34 @@ def test_system_setup_installs_only_when_needed(tmp_path, available):
 
 
 @pytest.mark.skipif(os.name != 'posix' or not Path('/bin/bash').exists(), reason='bash required')
-@pytest.mark.parametrize('failure', ['update', 'install'])
-def test_system_setup_propagates_package_errors(tmp_path, failure):
-    result, commands = _run_setup(tmp_path, fail=failure)
-    assert result.returncode == 42
+def test_every_apt_call_is_bounded_and_the_index_refresh_is_retried():
+    step = _system_setup()
+    # A stalled mirror once hung the step until the job timeout killed it
+    # (#4624). Every apt call carries a bound, and the index refresh gets
+    # three bounded attempts before the step fails fast.
+    assert 'timeout 120 sudo apt-get update' in step
+    assert 'timeout 600 sudo apt-get install -y ffmpeg' in step
+    assert 'for i in 1 2 3' in step
+    assert 'apt-get install failed 3 times' in step
+
+
+@pytest.mark.skipif(os.name != 'posix' or not Path('/bin/bash').exists(), reason='bash required')
+def test_system_setup_propagates_package_errors(tmp_path):
+    result, commands = _run_setup(tmp_path, fail='install')
+    # A failing install is retried three times, then the step fails fast (#4624:
+    # a single 300 s bound killed a slow-but-working mirror in CI).
+    assert result.returncode == 1
+    assert commands == ['sudo apt-get update'] + ['sudo apt-get install -y ffmpeg'] * 3
+    assert 'apt-get install failed 3 times' in result.stderr
+
+
+@pytest.mark.skipif(os.name != 'posix' or not Path('/bin/bash').exists(), reason='bash required')
+def test_system_setup_retries_a_stuck_index_refresh_then_fails_fast(tmp_path):
+    result, commands = _run_setup(tmp_path, fail='update')
+    assert result.returncode == 1
+    assert commands == ['sudo apt-get update'] * 3
+    assert 'apt-get update failed 3 times' in result.stderr
     assert all(not line.startswith(('ffmpeg ', 'ffprobe ')) for line in commands)
-    if failure == 'update':
-        assert commands == ['sudo apt-get update']
 
 
 @pytest.mark.skipif(os.name != 'posix' or not Path('/bin/bash').exists(), reason='bash required')

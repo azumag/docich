@@ -97,16 +97,71 @@ concurrency:
 jobs:
   cli-nethack-presenter:
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
         with:
           persist-credentials: false
+      - name: Cache the downloaded apt archives
+        # The 300 s bound still lets a ~100 KB/s mirror starve a large deb
+        # (#4625 run 44370031644: libflite1, 13.6 MB, outlasted all three
+        # attempts). Persist the .deb files the install step stages through
+        # ~/apt-debs so one green job seeds the next; the shared restore-keys
+        # prefix lets every apt job on this image reuse another job's seed.
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830
+        with:
+          path: ~/apt-debs
+          key: apt-debs-ubuntu-24.04-cli-nethack-presenter-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            apt-debs-ubuntu-24.04-cli-nethack-presenter-
+            apt-debs-ubuntu-24.04-
       - name: Install isolated X11 and CLI presenter dependencies
         run: |
-          sudo apt-get update
+          # Hosted Ubuntu runners sometimes use a slow Azure apt mirror; apply
+          # the same swap ci.yml's system-dependency step makes (#4624). The
+          # unswapped mirror kept Get: lines crawling until the job timeout
+          # killed the job (#4625 run 44360312635).
+          if [ "${GITHUB_ACTIONS:-}" = "true" ] && [ -f /etc/apt/apt-mirrors.txt ]; then
+            sudo sed -i 's#azure.archive.ubuntu.com#archive.ubuntu.com#g' /etc/apt/apt-mirrors.txt
+          fi
+          # The actions/cache step above restores .deb files into ~/apt-debs
+          # (it cannot write the root-owned archive directory itself). Seed
+          # apt's real archives from it so the install below runs from the
+          # cache, and harvest whatever apt still downloads — the trap covers
+          # the failing-attempt exit path too — so the post-job save persists
+          # it for the next run. Guarded like the mirror swap so a hermetic
+          # replay of this step never touches a real archive directory.
+          if [ "${GITHUB_ACTIONS:-}" = "true" ]; then
+            mkdir -p ~/apt-debs || true
+            sudo cp -n ~/apt-debs/*.deb /var/cache/apt/archives/ 2>/dev/null || true
+            trap 'cp -n /var/cache/apt/archives/*.deb ~/apt-debs/ 2>/dev/null || true' EXIT
+          fi
+          # Bound every apt call and fail fast after the third failure. apt
+          # resumes downloads left under /var/cache/apt/archives/partial, so a
+          # 300 s bound abandons a stalled mirror early without losing the
+          # progress already made; three rounds still give a degraded-but-
+          # working mirror up to ~15 minutes of cumulative download time.
+          for i in 1 2 3; do
+            if timeout 120 sudo apt-get update; then
+              break
+            fi
+            if [ "$i" = 3 ]; then
+              echo 'apt-get update failed 3 times; giving up' >&2
+              exit 1
+            fi
+            sleep 10
+          done
           # x11-utils provides xdpyinfo, which `docich up` uses to wait for the display.
-          sudo apt-get install -y ffmpeg tmux xterm xdotool xvfb x11-utils nethack-console
+          for i in 1 2 3; do
+            if timeout 300 sudo apt-get install -y ffmpeg tmux xterm xdotool xvfb x11-utils nethack-console; then
+              break
+            fi
+            if [ "$i" = 3 ]; then
+              echo 'apt-get install failed 3 times; giving up' >&2
+              exit 1
+            fi
+            sleep 10
+          done
           # smoke_cli.sh resolves nethack from PATH or /usr/games.
           command -v nethack || test -x /usr/games/nethack
           command -v xdpyinfo
@@ -115,15 +170,57 @@ jobs:
 
   retroarch-presenter:
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
         with:
           persist-credentials: false
+      - name: Cache the downloaded apt archives
+        # Same archive persistence as cli-nethack-presenter (#4625 run
+        # 44370031644); the shared prefix trades seeds between the apt jobs.
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830
+        with:
+          path: ~/apt-debs
+          key: apt-debs-ubuntu-24.04-retroarch-presenter-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            apt-debs-ubuntu-24.04-retroarch-presenter-
+            apt-debs-ubuntu-24.04-
       - name: Install isolated X11 and RetroArch presenter dependencies
         run: |
-          sudo apt-get update
-          sudo apt-get install -y ffmpeg tmux xdotool xvfb x11-utils dbus-x11 retroarch
+          # Same slow-Azure-mirror swap and bounded retries as the
+          # cli-nethack-presenter step above (#4624, #4625 run 44360312635).
+          if [ "${GITHUB_ACTIONS:-}" = "true" ] && [ -f /etc/apt/apt-mirrors.txt ]; then
+            sudo sed -i 's#azure.archive.ubuntu.com#archive.ubuntu.com#g' /etc/apt/apt-mirrors.txt
+          fi
+          # Same apt-debs staging as the cli-nethack-presenter step above:
+          # seed /var/cache/apt/archives from the restored cache so the
+          # install runs from it, and harvest new downloads back for the
+          # post-job save (#4625 run 44370031644).
+          if [ "${GITHUB_ACTIONS:-}" = "true" ]; then
+            mkdir -p ~/apt-debs || true
+            sudo cp -n ~/apt-debs/*.deb /var/cache/apt/archives/ 2>/dev/null || true
+            trap 'cp -n /var/cache/apt/archives/*.deb ~/apt-debs/ 2>/dev/null || true' EXIT
+          fi
+          for i in 1 2 3; do
+            if timeout 120 sudo apt-get update; then
+              break
+            fi
+            if [ "$i" = 3 ]; then
+              echo 'apt-get update failed 3 times; giving up' >&2
+              exit 1
+            fi
+            sleep 10
+          done
+          for i in 1 2 3; do
+            if timeout 300 sudo apt-get install -y ffmpeg tmux xdotool xvfb x11-utils dbus-x11 retroarch; then
+              break
+            fi
+            if [ "$i" = 3 ]; then
+              echo 'apt-get install failed 3 times; giving up' >&2
+              exit 1
+            fi
+            sleep 10
+          done
       - name: Require the RetroArch presenter to be exercisable
         run: |
           # Fail loudly instead of silently skipping step 4 of smoke_brain.sh.
@@ -198,10 +295,52 @@ jobs:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
         with:
           persist-credentials: false
+      - name: Cache the downloaded apt archives
+        # Same archive persistence as cli-nethack-presenter (#4625 run
+        # 44370031644); the shared prefix trades seeds between the apt jobs.
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830
+        with:
+          path: ~/apt-debs
+          key: apt-debs-ubuntu-24.04-soren91-presenter-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            apt-debs-ubuntu-24.04-soren91-presenter-
+            apt-debs-ubuntu-24.04-
       - name: Install isolated X11 and SRT presenter dependencies
         run: |
-          sudo apt-get update
-          sudo apt-get install -y ffmpeg tmux xterm xdotool xvfb x11-utils iproute2 lsof
+          # Same slow-Azure-mirror swap and bounded retries as the
+          # cli-nethack-presenter step above (#4624, #4625 run 44360312635).
+          if [ "${GITHUB_ACTIONS:-}" = "true" ] && [ -f /etc/apt/apt-mirrors.txt ]; then
+            sudo sed -i 's#azure.archive.ubuntu.com#archive.ubuntu.com#g' /etc/apt/apt-mirrors.txt
+          fi
+          # Same apt-debs staging as the cli-nethack-presenter step above:
+          # seed /var/cache/apt/archives from the restored cache so the
+          # install runs from it, and harvest new downloads back for the
+          # post-job save (#4625 run 44370031644).
+          if [ "${GITHUB_ACTIONS:-}" = "true" ]; then
+            mkdir -p ~/apt-debs || true
+            sudo cp -n ~/apt-debs/*.deb /var/cache/apt/archives/ 2>/dev/null || true
+            trap 'cp -n /var/cache/apt/archives/*.deb ~/apt-debs/ 2>/dev/null || true' EXIT
+          fi
+          for i in 1 2 3; do
+            if timeout 120 sudo apt-get update; then
+              break
+            fi
+            if [ "$i" = 3 ]; then
+              echo 'apt-get update failed 3 times; giving up' >&2
+              exit 1
+            fi
+            sleep 10
+          done
+          for i in 1 2 3; do
+            if timeout 300 sudo apt-get install -y ffmpeg tmux xterm xdotool xvfb x11-utils iproute2 lsof; then
+              break
+            fi
+            if [ "$i" = 3 ]; then
+              echo 'apt-get install failed 3 times; giving up' >&2
+              exit 1
+            fi
+            sleep 10
+          done
       - name: Bind a 100.64.0.0/10 address for the renderer-agent contract
         run: |
           # is_tailscale_ipv4 accepts only 100.64.0.0/10. The test binds its stub
@@ -228,10 +367,52 @@ jobs:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
         with:
           persist-credentials: false
+      - name: Cache the downloaded apt archives
+        # Same archive persistence as cli-nethack-presenter (#4625 run
+        # 44370031644); the shared prefix trades seeds between the apt jobs.
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830
+        with:
+          path: ~/apt-debs
+          key: apt-debs-ubuntu-24.04-paper-view-presenter-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            apt-debs-ubuntu-24.04-paper-view-presenter-
+            apt-debs-ubuntu-24.04-
       - name: Install isolated X11 presenter dependencies
         run: |
-          sudo apt-get update
-          sudo apt-get install -y ffmpeg tmux xterm xdotool xvfb x11-utils
+          # Same slow-Azure-mirror swap and bounded retries as the
+          # cli-nethack-presenter step above (#4624, #4625 run 44360312635).
+          if [ "${GITHUB_ACTIONS:-}" = "true" ] && [ -f /etc/apt/apt-mirrors.txt ]; then
+            sudo sed -i 's#azure.archive.ubuntu.com#archive.ubuntu.com#g' /etc/apt/apt-mirrors.txt
+          fi
+          # Same apt-debs staging as the cli-nethack-presenter step above:
+          # seed /var/cache/apt/archives from the restored cache so the
+          # install runs from it, and harvest new downloads back for the
+          # post-job save (#4625 run 44370031644).
+          if [ "${GITHUB_ACTIONS:-}" = "true" ]; then
+            mkdir -p ~/apt-debs || true
+            sudo cp -n ~/apt-debs/*.deb /var/cache/apt/archives/ 2>/dev/null || true
+            trap 'cp -n /var/cache/apt/archives/*.deb ~/apt-debs/ 2>/dev/null || true' EXIT
+          fi
+          for i in 1 2 3; do
+            if timeout 120 sudo apt-get update; then
+              break
+            fi
+            if [ "$i" = 3 ]; then
+              echo 'apt-get update failed 3 times; giving up' >&2
+              exit 1
+            fi
+            sleep 10
+          done
+          for i in 1 2 3; do
+            if timeout 300 sudo apt-get install -y ffmpeg tmux xterm xdotool xvfb x11-utils; then
+              break
+            fi
+            if [ "$i" = 3 ]; then
+              echo 'apt-get install failed 3 times; giving up' >&2
+              exit 1
+            fi
+            sleep 10
+          done
       - name: Require a real Chromium-family browser
         run: |
           for name in google-chrome-stable google-chrome chromium chromium-browser; do
