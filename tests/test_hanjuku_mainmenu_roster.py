@@ -30,3 +30,32 @@ def test_the_roster_panel_is_closed_with_b(monkeypatch):
                                    run_identity=None)
     assert actions == [orch.pad('b')]
     assert any(r.get('decision') == 'close_panel' for r in updated['_records'])
+
+
+def _decide(mem, monkeypatch):
+    from docich.hanjuku.os_layer import screen as screen_mod
+    from docich.hanjuku.os_layer.pixels import Frame
+    import docich.hanjuku.orchestrator as orch
+    sc = screen_mod.Screen([], None, TEXT, kind='main_menu')
+    monkeypatch.setattr(screen_mod, 'parse', lambda *a, **k: sc)
+    monkeypatch.setattr(orch, 'parse', lambda *a, **k: sc, raising=False)
+    frame = Frame(256, 224, bytes(256 * 224 * 3))
+    return orch.decide(frame, {'policy': mem, 'step': 1}, run_identity=None)
+
+
+def test_castle_jump_menu_is_not_closed(monkeypatch):
+    """docich#4748: X opened the command menu for the castle jump; the
+    しょうぐん help line matched the roster panel signature and the stray
+    close-with-B rule killed the menu before the jump could reach しろ."""
+    mem = memory()
+    mem['castle_jump'] = {'phase': 'menu', 'step': 's1', 'source': 'ユージア',
+                          'age': 1, 'total': 1}
+    actions, updated = _decide(mem, monkeypatch)
+    assert not any(r.get('decision') == 'close_panel' for r in updated['_records'])
+
+
+def test_house_open_roster_menu_is_not_closed(monkeypatch):
+    mem = memory()
+    mem['house'] = {'phase': 'open_roster', 'age': 4}
+    actions, updated = _decide(mem, monkeypatch)
+    assert not any(r.get('decision') == 'close_panel' for r in updated['_records'])
