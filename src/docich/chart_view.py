@@ -102,12 +102,22 @@ function draw(){
   const step=w/candles.length;CTX.strokeStyle='#5f92bd';CTX.lineWidth=1.4;CTX.beginPath();
   candles.forEach((c,i)=>{const x=i*step+step/2;i?CTX.lineTo(x,y(c.close)):CTX.moveTo(x,y(c.close));});CTX.stroke();
  }
- const shown=page+1;
- const signals=(data.signals||[]).slice(0,Math.max(shown,1));
+ // Future-signal filter: only signals that have appeared by the current frame.
+ const shownSignalTs=new Set();
+ for(let i=0;i<=page && i<(data.frames||[]).length;i++){
+  const f=(data.frames||[])[i];
+  if(f && f.signal && typeof f.signal.timestamp==='number') shownSignalTs.add(f.signal.timestamp);
+ }
+ const signals=(data.signals||[]).filter(s=>shownSignalTs.has(s.timestamp));
  for(const s of signals){
-  const idx=Math.min((data.candles||[]).length-1,Math.max(0,Math.round(s.timestamp))%(data.candles||[]).length||0);
-  const step=(data.candles||[]).length?w/(data.candles||[]).length:w;
-  const x=(data.candles||[]).length?idx*step+step/2:w/2;
+  const candles=data.candles||[];
+  let idx=0;
+  for(let i=0;i<candles.length;i++){
+   if(typeof candles[i].timestamp==='number' && candles[i].timestamp<=s.timestamp) idx=i; else break;
+  }
+  idx=Math.min(candles.length-1,Math.max(0,idx));
+  const step=candles.length?w/candles.length:w;
+  const x=candles.length?idx*step+step/2:w/2;
   const cy=y(s.price);const col=COLORS[s.side]||'#8ea8c4';
   CTX.fillStyle=col;CTX.beginPath();CTX.arc(x,cy,5,0,Math.PI*2);CTX.fill();
   CTX.fillStyle='#08121e';CTX.font='bold 11px sans-serif';CTX.textAlign='center';CTX.fillText(s.marker,x,cy+3.5);
@@ -202,48 +212,18 @@ def build_view_payload(stored: dict) -> dict:
     if not isinstance(signals, list):
         raise ChartViewError("chart signals invalid")
 
-    # Filter signals to only those up to the current frame (Issue #4640)
-    frames = stored.get("animation_frames")
-    max_frame_index = None
-    if isinstance(frames, list) and frames:
-        frame_indices = [item.get("frame_index") for item in frames if isinstance(item, dict) and isinstance(item.get("frame_index"), int)]
-        if frame_indices:
-            max_frame_index = max(frame_indices)
-
     signal_rows = []
-    if max_frame_index is not None:
-        # Only include signals whose timestamp falls within frames up to max_frame_index
-        for item in signals:
-            if (not isinstance(item, dict) or item.get("side") not in {"buy", "sell", "hold"}
-                    or not isinstance(item.get("marker"), str)):
-                raise ChartViewError("chart signal row invalid")
-            signal_timestamp = item.get("timestamp")
-            if signal_timestamp is not None and max_frame_index is not None:
-                # Get the frame index for this signal's timestamp
-                # Signal timestamp should be <= the timestamp of the candle at max_frame_index
-                # For simplicity, we limit signals to MAX_ANIMATION_FRAMES and check frame bounds
-                if signal_rows.__len__() >= MAX_ANIMATION_FRAMES:
-                    break
-            signal_rows.append({
-                "timestamp": _finite_float(item.get("timestamp"), "signal timestamp"),
-                "price": _finite_float(item.get("price"), "signal price"),
-                "side": item["side"],
-                "marker": _text(item["marker"], "signal marker", 8),
-                "reason": _text(item.get("reason", ""), "signal reason", 120),
-            })
-    else:
-        # No frames data, include signals up to MAX_ANIMATION_FRAMES limit
-        for item in signals[:MAX_ANIMATION_FRAMES]:
-            if (not isinstance(item, dict) or item.get("side") not in {"buy", "sell", "hold"}
-                    or not isinstance(item.get("marker"), str)):
-                raise ChartViewError("chart signal row invalid")
-            signal_rows.append({
-                "timestamp": _finite_float(item.get("timestamp"), "signal timestamp"),
-                "price": _finite_float(item.get("price"), "signal price"),
-                "side": item["side"],
-                "marker": _text(item["marker"], "signal marker", 8),
-                "reason": _text(item.get("reason", ""), "signal reason", 120),
-            })
+    for item in signals[:MAX_ANIMATION_FRAMES]:
+        if (not isinstance(item, dict) or item.get("side") not in {"buy", "sell", "hold"}
+                or not isinstance(item.get("marker"), str)):
+            raise ChartViewError("chart signal row invalid")
+        signal_rows.append({
+            "timestamp": _finite_float(item.get("timestamp"), "signal timestamp"),
+            "price": _finite_float(item.get("price"), "signal price"),
+            "side": item["side"],
+            "marker": _text(item["marker"], "signal marker", 8),
+            "reason": _text(item.get("reason", ""), "signal reason", 120),
+        })
 
     frames = stored.get("animation_frames")
     if not isinstance(frames, list) or not frames or len(frames) > MAX_ANIMATION_FRAMES:
@@ -267,6 +247,7 @@ def build_view_payload(stored: dict) -> dict:
         if not isinstance(item, dict):
             raise ChartViewError("chart candle invalid")
         candle_rows.append({
+            "timestamp": _finite_float(item.get("timestamp"), "candle timestamp"),
             "low": _finite_float(item.get("low"), "candle low"),
             "high": _finite_float(item.get("high"), "candle high"),
             "close": _finite_float(item.get("close"), "candle close"),

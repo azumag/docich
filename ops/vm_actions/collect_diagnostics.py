@@ -6276,25 +6276,6 @@ def _chart_corner_projection(state_dir, state):
         "runtime_identity": runtime_game,
     }
 
-    path = state_dir / relative
-    if any(parent.is_symlink() for parent in (path, *path.parents)):
-        return True, False, None
-    try:
-        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
-        with os.fdopen(fd, "r", encoding="utf-8") as handle:
-            info = os.fstat(handle.fileno())
-            if not stat.S_ISREG(info.st_mode) or info.st_size > 65536:
-                return True, False, None
-            raw = handle.read(65537)
-            if len(raw) > 65536:
-                return True, False, None
-            data = json.loads(raw)
-            return True, isinstance(data, dict), data if isinstance(data, dict) else None
-    except FileNotFoundError:
-        return False, False, None
-    except (OSError, ValueError):
-        return True, False, None
-
 
 def _rotation_enum(value, allowed):
     return value if isinstance(value, str) and value in allowed else "unknown"

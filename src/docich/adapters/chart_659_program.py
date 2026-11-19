@@ -85,8 +85,8 @@ class ChartProgramViewAdapter(ProgramViewAdapter):
         # Candles are not part of the generated state file; attach the same
         # offline fixture snapshot so the view can draw the price line.
         state["candles"] = [
-            {"low": candle.low, "high": candle.high, "close": candle.close}
-            for candle in snapshot.candles
+            {"timestamp": candle.timestamp, "low": candle.low, "high": candle.high, "close": candle.close}
+            for candle in sorted(snapshot.candles, key=lambda c: c.timestamp)
         ]
         try:
             # Fail closed here as well as in the view: a malformed generation
