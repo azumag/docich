@@ -1523,6 +1523,20 @@ def castle_jump_step(screen, mem, frame):
             order = adopted
 
     phase = jump.get('phase')
+    # docich#4718: the X menu never opened because the field cursor estimate was
+    # already gone when the jump started — the failure metrics carried
+    # cursor:null for every one of the 113 attempts on ユージア. X opened from a
+    # cell whose position is unknown does nothing on this map. Re-anchor first
+    # (SELECT is measured to centre the cursor on the hero) and only then ask
+    # for the menu.
+    if (phase == 'menu' and screen.kind == 'map' and not mem.get('cursor')
+            and not jump.get('centered')):
+        jump['centered'] = True
+        _record(mem, 'castle_jump_center_cursor', chart_step=jump.get('step'),
+                target=jump.get('source'),
+                observed_metric={'cursor': mem.get('cursor')},
+                reason='カーソル位置が不明のままXを押しても開かないため、SELECTで主人公へカーソルを中央寄せしてから開く')
+        return [pad('select')]
     if phase == 'menu':
         if screen.kind == 'map':
             # Give the first X a few observations to draw the menu; a second
