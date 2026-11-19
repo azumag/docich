@@ -7790,6 +7790,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v1212-stale-plan-rebuild",
             "hanjuku-chart-v1213-bounded-deploy-hold",
             "hanjuku-chart-v1214-camp-recall-y",
+            "hanjuku-chart-v1215-monster-no-damage",
             "hanjuku-chart-v1158-progress-regress",
             "hanjuku-chart-v1161-refill-collapse",
             "hanjuku-chart-v1160-chapter-probe-field",
