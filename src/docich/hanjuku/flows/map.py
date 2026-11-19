@@ -1357,6 +1357,24 @@ def _end_castle_jump(screen, mem, why):
         _record(mem, 'castle_jump_failed', chart_step=jump.get('step'), target=jump.get('source'),
                 screen=screen.kind, observed_metric=metric,
                 reason='Xメニューの「しろ」から出撃元へ飛べないため、通常の移動に戻る')
+        # docich#4658: when the X menu itself will not open in this state,
+        # retrying X forever never launches the order (g1190 ch1 month 4-10:
+        # 106 of 106 trips died in 'menu'), so route the same source through
+        # the existing Y whole-map jump after a bounded number of failures.
+        fails = mem.get('castle_jump_menu_failures')
+        fails = fails if isinstance(fails, dict) else {}
+        step_key = jump.get('step')
+        n = int(fails.get(step_key) or 0) + 1
+        fails[step_key] = n
+        mem['castle_jump_menu_failures'] = fails
+        if why in ('menu_not_open', 'unexpected_menu') and n >= 2:
+            mem['castle_jump_y'] = {'step': step_key,
+                                    'source': jump.get('source'),
+                                    'tick': int(mem.get('tick') or 0)}
+            _record(mem, 'castle_jump_y_fallback', chart_step=step_key,
+                    target=jump.get('source'), screen=screen.kind,
+                    observed_metric={'failures': n, 'why': why},
+                    reason='Xメニューが開かない状態が続くため、同じ出撃元へ全体マップ（Y）経由で向かう')
     if screen.kind == 'main_menu' or _castle_list_rows(screen):
         return [pad('b')]
     return []

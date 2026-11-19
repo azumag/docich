@@ -1045,3 +1045,23 @@ def test_a_slow_menu_draw_is_not_declared_missing():
     # The menu finally draws: the jump keeps navigating instead of failing.
     assert M.castle_jump_step(_main_menu(hand_y=39), mem, None) == [M.pad('down')]
     assert mem['castle_jump'][ 'phase' ] == 'menu'
+
+
+def test_two_menu_failures_route_the_source_through_the_y_jump():
+    # docich#4658: X never opened the menu for months; after two failures
+    # the same source must continue through the whole-map Y jump.
+    mem = _memory()
+    mem['chart_plan']['orders'][0]['after'] = None
+    field = _screen('map', [])
+    for _ in range(2):
+        mem['castle_jump'] = {'step': 'J1', 'source': 'アルマムーン',
+                              'phase': 'menu', 'age': 0,
+                              'total': 0, 'tick': 0, 'menu_presses': 1}
+        for _ in range(M.CASTLE_JUMP_MENU_WAIT + 2):
+            if 'castle_jump' not in mem:
+                break
+            M.castle_jump_step(field, mem, None)
+        mem.pop('castle_jump', None)
+    assert mem.get('castle_jump_y', {}).get('source') == 'アルマムーン'
+    assert [r for r in mem['_records']
+            if r['decision'] == 'castle_jump_y_fallback']
