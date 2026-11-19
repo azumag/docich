@@ -2249,6 +2249,13 @@ def map_step(screen: Screen, mem, frame):
     # 'field_unstable' (or 'menu_not_open' before v1172), then start again on
     # the next frame. Only open the trip once the field is readable.
     if screen.cursor and not screen.marker and _want_castle_jump(mem, order, source, goal):
+        # Owner 2026-11-19: the whole-map (Y) jump is the default way to reach
+        # a castle; the field cursor is only for fine adjustment. The しろ list
+        # (X) walk is slow and frequently needs its own retries, so a far
+        # source now jumps through the Y view first and keeps the X jump as the
+        # fallback for the frames where the Y route is unavailable.
+        if _want_y_jump(mem, order, source, 'map'):
+            return _start_y_jump(mem, order, source, 'map')
         return _start_castle_jump(mem, order, source)
     result = nav_step(screen, mem, frame, goal, source, step=order['step'])
     if result == 'infeasible':

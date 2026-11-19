@@ -2884,9 +2884,11 @@ def test_map_step_does_not_preempt_orders_for_a_visible_camp():
            'tick': 500, 'world_map_tick': 400, 'active': 'I:test:1'}
     screen = Screen(lines=[], hand=None, text='', kind='map', cursor=(80, 90),
                     header={'chapter': 1, 'year': 1, 'month': 2, 'gold': 100})
-    # The source jump now opens X (しろ一覧) instead of the Y world map.
-    assert policy.map_step(screen, mem, frame) == [policy.pad('x')]
-    assert mem['castle_jump']['phase'] == 'menu'
+    # Owner 2026-11-19: the whole-map (Y) jump is the default way to reach a
+    # castle; the field cursor is only for fine adjustment. The しろ list (X)
+    # stays as the fallback when the Y route is unavailable.
+    assert policy.map_step(screen, mem, frame) == [policy.pad('y')]
+    assert mem['y_jump']['mode'] == 'map'
     assert 'recall' not in _flow(mem)
     assert not [r for r in mem['_records'] if r['decision'] == 'camp_found']
 
