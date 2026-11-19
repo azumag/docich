@@ -1832,3 +1832,22 @@ def test_a_probe_order_names_a_readable_actor_not_shogun():
     for legacy in ('しょうぐん', '余剰将軍', ''):
         assert ca._probe_actor(legacy) is True
     assert ca._probe_actor('ゼウス') is False
+
+
+def test_a_map_that_plans_nothing_resumes_within_a_minute():
+    # g1288 2026-11-20 04:24:18-04:26:57: a map with no planned input sat for
+    # 101 frozen observations (~159 s) before the generic 100-observation
+    # backstop pressed a key, so the month's first sortie lost the whole idle.
+    # The map bound is the shorter one, and the fallback's key ends the streak.
+    from docich.hanjuku_bot import MAP_HOLD_KINDS, MAP_NO_INPUT_HOLD_MAX, NO_INPUT_HOLD_MAX, pad
+    from docich import hanjuku_bot as bot, hanjuku_screen as screen
+    from hanjuku_frame_read_cache import reuse_frame_reads
+    from test_hanjuku_no_input_gate import hold
+    frame = _world_map_frame({'アルマムーン': 'own'})
+    with reuse_frame_reads(bot, screen):
+        actions, state = hold(frame, MAP_NO_INPUT_HOLD_MAX + 1)
+    assert state['screen_kind'] in MAP_HOLD_KINDS
+    assert MAP_NO_INPUT_HOLD_MAX < NO_INPUT_HOLD_MAX
+    assert not any(actions[:-1])
+    assert actions[-1] == [pad('b')]
+    assert state['no_input_streak'] == 0
