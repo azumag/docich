@@ -46,6 +46,10 @@ HOUSE_ENTRY_FIRST_OWN_CELL = frozenset({5})
 # Unconfirmed trips must not dispatch to the same entry indefinitely. A
 # candidate is retried once to tolerate transient missing arrival frames.
 HOUSE_ENTRY_FAILURE_CAP = 2
+# Post-Y-jump fine adjustment walks the marker toward the house's entry
+# (door) cell one map cell per press: a longer hold can overshoot the
+# one-cell doorway and land the general beside the hut (docich#4737).
+HOUSE_ALIGN_CELL = 16
 
 
 def _entry_failure_key(mem, entry):
@@ -64,6 +68,17 @@ def _entry_failures(mem, entry):
     return value if type(value) is int and 0 <= value <= HOUSE_ENTRY_FAILURE_CAP else 0
 
 
+def _entry_ledger_count(mem, key):
+    # The ledgers are persisted as JSON, whose object keys are strings, while
+    # an in-memory chapter is an int. Accept both so a reload does not
+    # silently reset the parity (g1139 2026-11-06 saved {"5": 1} and an int
+    # lookup kept returning the charted offset).
+    ledger = mem.get(key) or {}
+    chapter = mem.get('chapter')
+    value = ledger.get(chapter, ledger.get(str(chapter), 0))
+    return value if type(value) is int and value >= 0 else 0
+
+
 def _entry_delta(mem):
     chapter = mem.get('chapter')
     if chapter in HOUSE_ENTRY_FIRST_OWN_CELL:
@@ -71,13 +86,31 @@ def _entry_delta(mem):
         # the entry. Do not alternate back to the charted offset here: that
         # would repeat the observed camp-beside-house failure.
         return HOUSE_OWN_CELL_DELTA
-    misses = mem.get('house_entry_miss') or {}
-    # The ledger is persisted as JSON, whose object keys are strings, while an
-    # in-memory chapter is an int. Accept both so a reload does not silently
-    # reset the parity and repeat the charted cell forever (g1139 2026-11-06
-    # saved {"5": 1} and an int lookup kept returning the charted offset).
-    count = misses.get(chapter, misses.get(str(chapter), 0))
-    return HOUSE_OWN_CELL_DELTA if type(count) is int and count % 2 == 1 else HOUSE_ROOF_DELTA
+    # docich#4737: a failed fine adjustment counts toward the same parity as
+    # an unconfirmed arrival, so the alternative entry cell becomes
+    # selectable after either failure kind (the per-chapter extension of
+    # HOUSE_ENTRY_FIRST_OWN_CELL).
+    count = (_entry_ledger_count(mem, 'house_entry_miss')
+             + _entry_ledger_count(mem, 'house_entry_failed'))
+    return HOUSE_OWN_CELL_DELTA if count % 2 == 1 else HOUSE_ROOF_DELTA
+
+
+def _entry_exit(mem, reason, code, entry=None):
+    """docich#4737: a failed post-Y-jump fine adjustment, counted per chapter.
+
+    Every failure is recorded as ``house_entry_failed`` with the chapter's
+    running retry count, so the success rate against ``house_egg_seen`` and
+    the retries before a failure stay measurable, and the next attempt can
+    select the alternative entry cell through ``_entry_delta``.
+    """
+    retries = _entry_ledger_count(mem, 'house_entry_failed') + 1
+    mem.setdefault('house_entry_failed', {})[mem.get('chapter')] = retries
+    _record(mem, 'entry_failed', observed_metric={
+        'entry': entry, 'code': code, 'retries': retries},
+        reason='家の入口セルへの微調整が成立せず派遣を保留（次回は代替セルを選択可能）')
+    return _exit(mem, reason, diagnostic_code=code)
+
+
 GIFTS = (('スカーフ', 200), ('みずぎ', 100), ('ピアス', 50))
 ROSTER_LIMIT = receipts.MAX_GENERALS
 STEP_LIMIT = 24
@@ -851,36 +884,48 @@ def _house_route_problem(mem):
 
 
 def _house_roof_delta(screen, mem, frame, expected=HOUSE_ROOF_DELTA):
-    """Marker-to-house-roof screen delta, or None with no house in view.
+    """Marker-to-house screen delta and detection basis, or None.
 
     The house flies an own-coloured flag, so ``castle_roofs`` reports it as
     an 'own' roof; a castle's marker anchor sits on its own cell, not
     ``HOUSE_ROOF_DELTA`` away, so a roof matching the delta within
-    ``HOUSE_ROOF_MATCH`` is the house itself. The delta is camera-invariant
-    (marker and roof scroll together), so ``HOUSE_ROOF_DELTA - delta`` is
-    the screen move that walks the marker onto the building; a wrong
-    landing leaves no matching roof and defers through the bounded path.
+    ``HOUSE_ROOF_MATCH`` is the house itself. docich#4737: the hut's blob
+    often survives the marker's overlap only below the colour scan's
+    component floor, so ``house_roofs`` (the small-blob scan over the hut
+    outline) supplies candidates too. The delta is camera-invariant
+    (marker and roof scroll together), so ``expected - delta`` is the
+    screen move that walks the marker onto the entry cell; a wrong
+    landing leaves no matching anchor and defers through the bounded path.
     """
     if frame is None or screen.kind != 'map_target':
         return None
-    from ..os_layer.screen import castle_roofs
+    from ..os_layer.screen import castle_roofs, house_roofs
     cursor = screen.marker or screen.cursor
     if cursor is None:
         return None
+    roofs = castle_roofs(frame)
+    candidates = [(roof['target'], 'house_roof_delta') for roof in roofs
+                  if not roof.get('clipped') and roof.get('kind') == 'own']
+    for hut in house_roofs(frame, roofs):
+        if hut.get('clipped'):
+            continue
+        if any(all(abs(hut['target'][a] - anchor[a]) <= 4 for a in (0, 1))
+               for anchor, _ in candidates):
+            continue            # the castle scan already reported this blob
+        candidates.append((hut['target'], 'house_sprite'))
     # Several own roofs can sit inside HOUSE_ROOF_MATCH on the own castle's
     # field (the castle flag and the house flag are both own-coloured). The
     # house is the one nearest the charted offset, so keep the closest match
-    # instead of discarding the whole reading as ambiguous (docich#4737).
+    # instead of discarding the whole reading as ambiguous (docich#4737,
+    # #4744).
     best, best_dist = None, None
-    for roof in castle_roofs(frame):
-        if roof.get('clipped') or roof.get('kind') != 'own':
-            continue
-        delta = (cursor[0] - roof['target'][0], cursor[1] - roof['target'][1])
+    for anchor, basis in candidates:
+        delta = (cursor[0] - anchor[0], cursor[1] - anchor[1])
         if not all(abs(delta[a] - expected[a]) <= HOUSE_ROOF_MATCH for a in (0, 1)):
             continue
         dist = abs(delta[0] - expected[0]) + abs(delta[1] - expected[1])
         if best_dist is None or dist < best_dist:
-            best, best_dist = delta, dist
+            best, best_dist = (delta, basis), dist
     return best
 
 
@@ -2321,32 +2366,33 @@ def _repair_step(screen, mem, frame):
             if _defer_unsafe_house_route(mem):
                 return []
             from ..os_layer.world import observed_cursor_cell
-            from ..os_layer.navigation import Y_JUMP_OFFSET, MAX_HOLD_FRAMES
+            from ..os_layer.navigation import Y_JUMP_OFFSET
             # A on the Y view only proposes a landing. Measure the current
             # field marker before committing this unit's movement; the old
             # integrated cursor / house_view phase cannot authorize that A.
             position = observed_cursor_cell(screen, mem, frame, max_error=2, ambiguity=4)
             offset = Y_JUMP_OFFSET.get(mem.get('chapter'))
-            if offset is None or not screen.marker:
-                return _exit(mem, '家への実マーカー位置を現在の屋根配置で確認できないため派遣を保留',
-                             diagnostic_code='position_unread')
-            target = [(HOUSE_TARGET[mem['chapter']][a] - offset[a]) * 8 for a in (0, 1)]
-            # A roof matching the house's own-flag delta is the strongest
-            # evidence: walk the marker onto the building itself rather
-            # than the registered cell, which can sit a tile off on
-            # source-derived chapters.
             entry = _entry_delta(mem)
+            if offset is None or not screen.marker:
+                return _entry_exit(mem, '家への実マーカー位置を現在の屋根配置で確認できないため派遣を保留',
+                                   'position_unread', entry=entry)
+            target = [(HOUSE_TARGET[mem['chapter']][a] - offset[a]) * 8 for a in (0, 1)]
+            # A roof/heart anchor matching the entry delta is the strongest
+            # evidence: walk the marker onto the house's entry (door) cell
+            # one map cell at a time rather than the registered cell, which
+            # can sit a tile off on source-derived chapters (docich#4737).
             if _entry_failures(mem, entry) >= HOUSE_ENTRY_FAILURE_CAP:
                 _record(mem, 'entry_retry_blocked', observed_metric={
                     'entry': entry, 'unconfirmed_trips': _entry_failures(mem, entry)},
                     reason='同じ家の着地点への派遣で到着を連続して確認できず、再派遣を中止')
-                return _exit(mem, '家の着地点への未確認派遣が続いたため、再計測するまで同じ座標に派遣しない',
-                             diagnostic_code='position_unread')
-            roof_delta = _house_roof_delta(screen, mem, frame, entry)
-            if roof_delta is not None:
+                return _entry_exit(mem, '家の着地点への未確認派遣が続いたため、再計測するまで同じ座標に派遣しない',
+                                   'position_unread', entry=entry)
+            matched = _house_roof_delta(screen, mem, frame, entry)
+            if matched is not None:
+                roof_delta, basis = matched
                 err = [entry[a] - roof_delta[a] for a in (0, 1)]
                 position = [roof_delta[a] + target[a] - entry[a] for a in (0, 1)]
-                delta, accept, basis = err, 4, 'house_roof_delta'
+                delta, accept = err, 4
             elif entry != HOUSE_ROOF_DELTA:
                 # A confirmed wrong charted entry must never leak through the
                 # two-castle fallback when the house roof is not identified.
@@ -2355,13 +2401,13 @@ def _repair_step(screen, mem, frame):
                 _record(mem, 'entry_roof_unverified', observed_metric={
                     'entry': entry, 'position': position},
                     reason='補正した家セルの屋根を特定できず、旧登録座標での代替確定を禁止')
-                return _exit(mem, '家の屋根を識別できないため、補正前の座標には派遣しない',
-                             diagnostic_code='position_unread')
+                return _entry_exit(mem, '家の屋根を識別できないため、補正前の座標には派遣しない',
+                                   'position_unread', entry=entry)
             elif position is None:
                 reads = state.get('alignment_unread', 0)
                 if type(reads) is not int or not 0 <= reads < 2:
-                    return _exit(mem, '家への実マーカー位置を現在の屋根配置で確認できないため派遣を保留',
-                                 diagnostic_code='position_unread')
+                    return _entry_exit(mem, '家への実マーカー位置を現在の屋根配置で確認できないため派遣を保留',
+                                       'position_unread', entry=entry)
                 state['alignment_unread'] = reads + 1
                 return []
             else:
@@ -2370,13 +2416,15 @@ def _repair_step(screen, mem, frame):
             if any(abs(d) > accept for d in delta):
                 moves = state.get('alignment_moves', 0)
                 if type(moves) is not int or not 0 <= moves < 8:
-                    return _exit(mem, '家への実マーカー位置合わせが有限上限に達したため派遣を保留',
-                                 diagnostic_code='alignment_limit')
+                    return _entry_exit(mem, '家への実マーカー位置合わせが有限上限に達したため派遣を保留',
+                                       'alignment_limit', entry=entry)
                 state['alignment_moves'] = moves + 1
                 axis = 0 if abs(delta[0]) >= abs(delta[1]) else 1
                 button = ('right' if delta[axis] > 0 else 'left') if axis == 0 else (
                           'down' if delta[axis] > 0 else 'up')
-                return [pad(button, min(MAX_HOLD_FRAMES, abs(delta[axis])))]
+                # One cell per press toward the door cell: a longer hold can
+                # overshoot the one-cell doorway (docich#4737).
+                return [pad(button, min(HOUSE_ALIGN_CELL, abs(delta[axis])))]
             state['target_observation'] = {'position': position, 'target': target,
                                            'entry': list(entry), 'basis': basis,
                                            'tick': mem.get('tick')}
@@ -2430,8 +2478,11 @@ def _repair_step(screen, mem, frame):
             # house, so this is where the dispatch actually landed. The
             # garrison fact moves here from the old departure-time write.
             _garrison_move(mem, name, source=state.get('source'))
+            # docich#4737: pair the success with the chapter's entry-failure
+            # count, so the retry rate behind each house_egg_seen is legible.
             _record(mem, 'arrival_seen', screen=screen.kind,
-                    observed_metric={'prices': prices, 'gold': (screen.header or {}).get('gold')},
+                    observed_metric={'prices': prices, 'gold': (screen.header or {}).get('gold'),
+                                     'entry_retries': _entry_ledger_count(mem, 'house_entry_failed')},
                     reason='家の贈り物一覧と価格を実画面で確認')
             gold = (screen.header or {}).get('gold')
             gift = affordable_gift(gold, WAGE_SPEND_HOLD)

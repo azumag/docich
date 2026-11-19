@@ -338,6 +338,7 @@ KEY_OWNERSHIP = {
     'hero_broken_sortie_gates': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 同上ゲート
     'hero_select_miss': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 主人公選択ミス
     'house': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # ハウス手順セッション
+    'house_entry_failed': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # ハウス入口微調整失敗カウンタ(#4737)
     'house_entry_failures': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # ハウス侵入失敗カウンタ
     'house_entry_miss': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 同上ミス
     'house_field_scan': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # ハウスフィールド走査手順状態

@@ -39,6 +39,31 @@ def test_int_keyed_in_memory_misses_flip_the_same_way():
     assert house._entry_delta(mem(4, {4: 2})) == house.HOUSE_ROOF_DELTA
 
 
+def test_failed_fine_adjustment_alternates_the_entry_cell():
+    # docich#4737: a failed post-Y fine adjustment counts toward the same
+    # parity as an unconfirmed arrival, so the next attempt can select the
+    # alternative (own) cell — the per-chapter extension of
+    # HOUSE_ENTRY_FIRST_OWN_CELL.
+    value = mem(4)
+    value['house_entry_failed'] = {4: 1}
+    assert house._entry_delta(value) == house.HOUSE_OWN_CELL_DELTA
+    value = mem(4)
+    value['house_entry_failed'] = {'4': 2}
+    assert house._entry_delta(value) == house.HOUSE_ROOF_DELTA
+
+
+def test_miss_and_fine_adjustment_failure_counts_combine_for_parity():
+    value = mem(4, {'4': 1})
+    value['house_entry_failed'] = {4: 1}
+    assert house._entry_delta(value) == house.HOUSE_ROOF_DELTA
+
+
+def test_chapter5_keeps_the_own_cell_after_failed_adjustments():
+    value = mem(5)
+    value['house_entry_failed'] = {5: 3}
+    assert house._entry_delta(value) == house.HOUSE_OWN_CELL_DELTA
+
+
 @pytest.mark.parametrize('misses', [True, '1', 1.0, None])
 def test_non_integer_miss_counts_do_not_flip_the_current_cell(misses):
     value = mem(4)
@@ -52,6 +77,9 @@ def _roof_frame(monkeypatch, roofs):
     from types import SimpleNamespace
     from docich.hanjuku.os_layer import screen as os_screen
     monkeypatch.setattr(os_screen, 'castle_roofs', lambda _frame: roofs)
+    # No small-blob house candidates in these scenarios; the merged
+    # _house_roof_delta calls house_roofs too (#4744 + #4737).
+    monkeypatch.setattr(os_screen, 'house_roofs', lambda _frame, _roofs=None: [])
     frame = object()
     scr = SimpleNamespace(kind='map_target', marker=(200, 200), cursor=None)
     return scr, frame
@@ -68,7 +96,7 @@ def test_two_own_roofs_pick_the_one_nearest_the_charted_delta(monkeypatch):
     roofs = [{'kind': 'own', 'target': (186, 206), 'clipped': False},
              {'kind': 'own', 'target': (170, 190), 'clipped': False}]
     scr, frame = _roof_frame(monkeypatch, roofs)
-    assert house._house_roof_delta(scr, {'chapter': 6}, frame) == (14, -6)
+    assert house._house_roof_delta(scr, {'chapter': 6}, frame) == ((14, -6), 'house_roof_delta')
 
 
 def test_a_single_matching_roof_still_returns_its_delta(monkeypatch):
@@ -76,7 +104,7 @@ def test_a_single_matching_roof_still_returns_its_delta(monkeypatch):
     roofs = [{'kind': 'own', 'target': (186, 206), 'clipped': False},
              {'kind': 'enemy', 'target': (50, 50), 'clipped': False}]
     scr, frame = _roof_frame(monkeypatch, roofs)
-    assert house._house_roof_delta(scr, {'chapter': 6}, frame) == (14, -6)
+    assert house._house_roof_delta(scr, {'chapter': 6}, frame) == ((14, -6), 'house_roof_delta')
 
 
 def test_no_matching_roof_returns_none(monkeypatch):

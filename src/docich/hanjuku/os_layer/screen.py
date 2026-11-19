@@ -239,6 +239,90 @@ SLATE_MERGE_GAP = 6        # the tower and the body of one castle are separate r
 SLATE_BODY_BELOW = 9       # castle body below the slate roof's bottom edge, px
 
 
+# あたしの家: a hut flying an own-coloured roof/heart mark. castle_roofs keeps
+# a 25 px component floor and the deployment marker's 16x16 box is drawn over
+# the blob's lower-right corner exactly where the entry cell sits (the house
+# roof delta in flows/house.py), so the surviving blob often lands under the
+# floor just when it matters (docich#4737). The house scan keeps a lower
+# floor and the heart's brighter red, but requires the hut's dark outline
+# under the blob, so a bare flag fragment or banner row is never a house.
+HOUSE_RED_MIN = 8          # own-red pixels surviving the marker's overlap
+HOUSE_BLOB_BOX = (40, 30)  # same generous bounds as a castle roof piece
+HOUSE_BODY_DEPTH = 18    # px under the blob where the hut walls/door sit
+HOUSE_BODY_HALF = 16     # the hut is about this wide either side of the blob
+HOUSE_BODY_MIN = 8       # dark hut outline/door pixels required
+HOUSE_BODY_FLOOR = 8     # a visible wall's lowest channel; below it is the void
+
+
+def _house_red(pixel) -> bool:
+    # The own-roof red plus the heart mark's brighter banner red.
+    return _roof_kind(*pixel) == 'own' or _camp_flagish(pixel)
+
+
+def _house_body(p) -> bool:
+    # The hut's outline is a rendered dark tone, while pure black is the
+    # unlit background past the map's edge. Counting the void as a wall
+    # would make any dark ground under a bare flag read as a hut
+    # (docich#4737), so body pixels must be visibly dark, not just unlit.
+    return dark(*p) and max(p) >= HOUSE_BODY_FLOOR
+
+
+def house_roofs(frame: Frame, roofs=None) -> list[dict]:
+    """あたしの家 anchors under the castle scan's component floor.
+
+    Same record shape as a colour roof (bottom-centre anchor), with kind
+    'house', so the caller merges it with the castle_roofs candidates.
+    ``roofs`` is the caller's castle_roofs result; a blob inside a
+    sprite-verified castle box belongs to that castle's flags, not a hut.
+    """
+    if roofs is None:
+        roofs = castle_roofs(frame)
+    castle_boxes = [r['sprite_box'] for r in roofs if r.get('sprite_box')]
+    red = set()
+    for y in range(frame.height):
+        for x in range(frame.width):
+            if _house_red(frame.pixel(x, y)):
+                red.add((x, y))
+    seen, out = set(), []
+    for start in red:
+        if start in seen:
+            continue
+        stack, pts = [start], []
+        seen.add(start)
+        while stack:
+            q = stack.pop()
+            pts.append(q)
+            for dx in range(-3, 4):
+                for dy in range(-3, 4):
+                    n = (q[0] + dx, q[1] + dy)
+                    if n in red and n not in seen:
+                        seen.add(n)
+                        stack.append(n)
+        if len(pts) < HOUSE_RED_MIN:
+            continue
+        x0, x1 = min(p[0] for p in pts), max(p[0] for p in pts)
+        y0, y1 = min(p[1] for p in pts), max(p[1] for p in pts)
+        if x1 - x0 > HOUSE_BLOB_BOX[0] or y1 - y0 > HOUSE_BLOB_BOX[1]:
+            continue
+        if any(not (x1 < b[0] or x0 > b[2] or y1 < b[1] or y0 > b[3])
+               for b in castle_boxes):
+            continue            # a castle's flag fragment, not a house
+        cx = (x0 + x1) // 2
+        body = sum(1 for y in range(y0, min(frame.height, y1 + HOUSE_BODY_DEPTH + 1))
+                   for x in range(max(0, cx - HOUSE_BODY_HALF),
+                                  min(frame.width, cx + HOUSE_BODY_HALF + 1))
+                   if _house_body(frame.pixel(x, y)))
+        if body < HOUSE_BODY_MIN:
+            continue            # a bare flag or banner with no hut under it
+        clipped = x0 <= 1 or y0 <= 1 or x1 >= frame.width - 2 or y1 >= frame.height - 2
+        out.append({'kind': 'house', 'box': (x0, y0, x1, y1), 'clipped': clipped,
+                    'source': 'house',
+                    # Same convention as a colour roof: cursor top-left that
+                    # selects the building's entry cell.
+                    'target': (cx, y1 - 8)})
+    return out
+
+
 def _merge_boxes(boxes, gap):
     boxes = list(boxes)
     merged = True
