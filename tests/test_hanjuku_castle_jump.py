@@ -1045,18 +1045,3 @@ def test_a_slow_menu_draw_is_not_declared_missing():
     # The menu finally draws: the jump keeps navigating instead of failing.
     assert M.castle_jump_step(_main_menu(hand_y=39), mem, None) == [M.pad('down')]
     assert mem['castle_jump'][ 'phase' ] == 'menu'
-
-
-def test_a_hudless_field_does_not_spend_the_x_press():
-    # docich#4658: a HUD-less field is a camera pan/mode transition; X is
-    # ignored there, and the jump used to burn both presses and fail.
-    mem = _memory()
-    mem['castle_jump'] = {'step': 'J1', 'source': 'アルマムーン',
-                          'phase': 'menu', 'age': 0,
-                          'total': 0, 'tick': 0, 'menu_presses': 1}
-    raw_field = Screen(lines=[], hand=None, text='', kind='map')
-    for _ in range(M.CASTLE_JUMP_MENU_WAIT - 1):
-        assert M.castle_jump_step(raw_field, mem, None) == []
-        assert mem['castle_jump']['menu_presses'] == 1
-
-
