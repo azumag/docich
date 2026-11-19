@@ -377,6 +377,8 @@ class ChartCornerManager:
             state["restore_request_id"] = str(uuid.uuid4())
             state["switch_request_id"] = state["restore_request_id"]
             self._save(state)
+        else:
+            end_reason = state.get("end_reason", end_reason)
         request_id = state["restore_request_id"]
         if not isinstance(request_id, str) or request_id != state.get("switch_request_id"):
             raise ChartCornerRuntimeError("chart restore request owner is invalid")
