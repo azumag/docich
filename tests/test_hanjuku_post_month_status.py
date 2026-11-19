@@ -1795,3 +1795,26 @@ def test_the_scan_keeps_trying_before_the_giveup_bound():
     field = Screen([], None, '', kind='map')
     assert post.step(field, mem, None) == []
     assert 'post_month_status' in mem
+
+
+def test_three_open_failures_skip_the_next_arm():
+    # docich#4677: the scan failed every month; stop spending map
+    # ownership on the same failure without a bound.
+    mem = memory()
+    mem['post_month_open_failures'] = post.POST_MONTH_FAILURE_SKIP_AFTER - 1
+    post.arm(mem)
+    state = mem['post_month_status']
+    state.update(stage='open_menu', phase_reads=post.OPEN_MENU_GIVEUP_READS + 1,
+                 open_tries=post.OPEN_MENU_TRIES)
+    field = Screen([], None, '', kind='map')
+    assert post.step(field, mem, None) is None
+    assert mem['post_month_skip_arms'] == 1
+    assert mem['post_month_open_failures'] == 0
+    # The next arm is skipped, then the scan is allowed again.
+    mem['month'] = '1-3'
+    post.arm(mem)
+    assert 'post_month_status' not in mem
+    assert mem['post_month_skip_arms'] == 0
+    mem['month'] = '1-4'
+    post.arm(mem)
+    assert 'post_month_status' in mem

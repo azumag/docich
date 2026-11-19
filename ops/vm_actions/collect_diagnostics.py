@@ -7713,6 +7713,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v1182-hub-reinforce",
             "hanjuku-chart-v1183-card-row-walk",
             "hanjuku-chart-v1184-stuck-recall",
+            "hanjuku-chart-v1185-scan-open-backoff",
             "hanjuku-chart-v1158-progress-regress",
             "hanjuku-chart-v1161-refill-collapse",
             "hanjuku-chart-v1160-chapter-probe-field",

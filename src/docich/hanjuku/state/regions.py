@@ -395,6 +395,8 @@ KEY_OWNERSHIP = {
     'picked': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 選択済み手順状態
     'post_month_status': {'region': FLOW, 'lifetime': 'run', 'migrated': False},  # 月次ステータス手順・ラン同一性リセット管理
     'post_month_status_last': {'region': FLOW, 'lifetime': 'run', 'migrated': False},  # 同上の最終値
+    'post_month_open_failures': {'region': FLOW, 'lifetime': 'run', 'migrated': False},  # docich#4677 メニュー未開封の連続回数
+    'post_month_skip_arms': {'region': FLOW, 'lifetime': 'run', 'migrated': False},  # 同上の休止回数
     'rare_card_kit': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # レアカードキット手順状態
     'rare_scan': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # レア走査手順状態
     'rare_scan_month': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # レア走査月(リセット登録のみ)

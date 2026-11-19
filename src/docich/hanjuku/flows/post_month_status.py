@@ -23,6 +23,7 @@ OPEN_RETRY_EVERY = 3
 OPEN_MENU_TRIES = 8
 OPEN_MENU_RESETS = 4    # docich#4658: per-visit budget resets per stage entry
 OPEN_MENU_GIVEUP_READS = 30   # docich#4658: release the field when the menu never opens
+POST_MONTH_FAILURE_SKIP_AFTER = 3   # docich#4677: giveups before skipping one arm
 # docich#4655: ups that reach the main menu's top row from any position.
 MAIN_MENU_BLIND_UPS = 6
 MAX_SCAN = receipts.MAX_GENERALS
@@ -246,6 +247,14 @@ def arm(mem):
     if corridor.mechanical(mem):
         # Owner 2026-11-11: chapter 9 before its boss phase does nothing but
         # march; no monthly status reads, repairs, recalls or locates.
+        mem.pop('post_month_status', None)
+        return
+    # docich#4677: three consecutive months where the X menu never opened
+    # mean the roster scan cannot run in this state; skip the next arm
+    # instead of spending map ownership on the same failure again.
+    skip = int(mem.get('post_month_skip_arms') or 0)
+    if skip > 0:
+        mem['post_month_skip_arms'] = skip - 1
         mem.pop('post_month_status', None)
         return
     old = mem.get('post_month_status') or {}
@@ -1548,6 +1557,12 @@ def step(screen, mem, frame):
             if (tries >= OPEN_MENU_TRIES
                     and int(state.get('phase_reads') or 0) > OPEN_MENU_GIVEUP_READS):
                 state['failure'] = 'menu_never_opened'
+                fails = int(mem.get('post_month_open_failures') or 0) + 1
+                if fails >= POST_MONTH_FAILURE_SKIP_AFTER:
+                    mem['post_month_open_failures'] = 0
+                    mem['post_month_skip_arms'] = 1
+                else:
+                    mem['post_month_open_failures'] = fails
                 _log(mem, 'post_month_open_giveup', screen=screen.kind,
                      observed_metric={'phase_reads': state.get('phase_reads'),
                                       'open_tries': tries},
