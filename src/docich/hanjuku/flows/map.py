@@ -1934,6 +1934,14 @@ def general_jump_step(screen, mem, frame):
             return None
         if screen.kind in ('general_list', 'castle_menu'):
             return _end_general_jump(screen, mem, 'select_opens_status')
+        if screen.kind == 'month_menu':
+            # The self-arm on a month frame was removed in docich#4601, but a
+            # jump already in flight when the month menu appeared still waited
+            # out the whole 48-observation budget with no input (g1270
+            # 2026-11-18 22:08: a month_menu froze for 300 s and the run ended
+            # screen_stalled). The SELECT cannot land on this screen, so
+            # release it now and let the month flow own the frame.
+            return _end_general_jump(screen, mem, 'month_menu')
         return []
     return _end_general_jump(screen, mem, 'unknown_phase:' + str(phase))
 
