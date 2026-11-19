@@ -101,6 +101,15 @@ def test_ci_starts_on_every_pull_request_because_main_requires_it():
     assert '\n  workflow_dispatch:' in text
 
 
+def test_python_syntax_compiles_the_vm_control_plane():
+    # docich#4741: ops/vm_actions is the owner-only deploy path. A leftover
+    # conflict marker in collect_diagnostics.py once passed python-syntax
+    # (which only compiled src and tests) and only failed later test jobs.
+    text = WORKFLOW.read_text()
+    syntax = text.split('  python-syntax:\n', 1)[1].split('\n  test-scope:', 1)[0]
+    assert 'python3 -m compileall -q src tests ops' in syntax
+
+
 def _gate() -> str:
     text = WORKFLOW.read_text().split('  ci-required:\n', 1)[1]
     assert '    if: ${{ always() }}\n' in text

@@ -33,7 +33,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Compile Python
-        run: python3 -m compileall -q src tests
+        run: python3 -m compileall -q src tests ops
 
   test-scope:
     # Most pull requests change only Hanjuku. .github/scripts/ci_test_scope.py
