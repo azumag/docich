@@ -296,6 +296,10 @@ class WorkflowPolicyTests(unittest.TestCase):
             "github.ref_protected == true",
             "environment: vm-operations",
             "pull-requests: read",
+            "PR_MERGE_AUDIO_AI: ${{ vars.PR_MERGE_AUDIO_AI }}",
+            "PR_MERGE_AUDIO_LLM_ENDPOINT: ${{ vars.PR_MERGE_AUDIO_LLM_ENDPOINT }}",
+            "PR_MERGE_AUDIO_LLM_MODEL: ${{ vars.PR_MERGE_AUDIO_LLM_MODEL }}",
+            "PR_MERGE_AUDIO_LLM_API_KEY: ${{ secrets.PR_MERGE_AUDIO_LLM_API_KEY }}",
             "control/ops/vm_actions/authorize_pr_merge_audio.py",
             "control/ops/vm_actions/pr_merge_audio_report.py",
             "control/ops/vm_actions/check_operator_parity.py",
@@ -312,7 +316,13 @@ class WorkflowPolicyTests(unittest.TestCase):
             "sleep $(( attempt <= 6 ? 5 : 15 ))",
         ):
             self.assertIn(required, text)
-        for forbidden in ("pull_request_target", "workflow_dispatch", "ssh-keyscan", "inputs."):
+        for forbidden in (
+            "pull_request_target",
+            "workflow_dispatch",
+            "ssh-keyscan",
+            "inputs.",
+            "models: read",
+        ):
             self.assertNotIn(forbidden, text)
         self.assertEqual(text.count("if: steps.report.outputs.found == 'true'"), 3)
 
