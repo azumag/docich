@@ -7914,6 +7914,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v1237-month-audit",
             "hanjuku-chart-v1238-recall-goal-float",
             "hanjuku-chart-v1239-gjump-global-roster",
+            "hanjuku-chart-v1240-map-idle-bound",
             "hanjuku-chart-v1158-progress-regress",
             "hanjuku-chart-v1161-refill-collapse",
             "hanjuku-chart-v1160-chapter-probe-field",
