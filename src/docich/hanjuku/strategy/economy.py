@@ -581,6 +581,22 @@ def _prepare_recruit_egg_check(mem, shop, gold):
 
 def _defer_recruit_for_egg(mem, shop):
     if shop.get('recruit') in ('pending', 'check'):
+        wait = mem.get('defense_wait') or {}
+        cycles = wait.get('cycles') if isinstance(wait, dict) else None
+        gold = mem.get('gold')
+        reserve = shop.get('reserve') if type(shop.get('reserve')) is int else 0
+        if (type(cycles) is int and cycles >= 1 and type(gold) is int
+                and gold >= reserve + RECRUIT_COST):
+            # docich#4688: a castle holding one general can neither donate nor
+            # attack, so the army waited six months for a second general while
+            # 1501G sat unused and the egg check kept deferring recruitment
+            # (ch3 month 11-x: next_order null, no candidates, gold 1501).
+            # Recruit when the egg reserve is still paid for.
+            _record(mem, 'recruit_promoted_for_stuck_army', month=shop.get('key'),
+                    observed_metric={'cycles': cycles, 'gold': gold,
+                                     'reserve': reserve, 'egg': shop.get('egg')},
+                    reason='全城1将軍で候補が無いまま待機が続くため、卵の確保分を残して募集を優先する')
+            return
         shop['recruit'] = 'deferred_egg'
         _record(mem, 'recruit_deferred_egg', month=shop.get('key'),
                 observed_metric={'egg_status': shop.get('egg'), 'gold': mem.get('gold')},
