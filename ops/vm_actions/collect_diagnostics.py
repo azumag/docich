@@ -7701,6 +7701,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v1171-jump-menu-wait",
             "hanjuku-chart-v1172-jump-field-unstable",
             "hanjuku-chart-v1173-jump-hud-gate",
+            "hanjuku-chart-v1174-revert-hud-gate",
             "hanjuku-chart-v1158-progress-regress",
             "hanjuku-chart-v1161-refill-collapse",
             "hanjuku-chart-v1160-chapter-probe-field",

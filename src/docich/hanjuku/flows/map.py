@@ -1237,16 +1237,6 @@ def _start_reanchor_jump(mem, *, owner=None):
     return [pad('x')]
 
 
-def _jump_field_ready(screen):
-    '''docich#4658: may a castle jump open the X menu on this frame?
-
-    A field frame without the month/gold HUD is a camera pan, a battle
-    announcement or another mode transition where X does nothing. The
-    jump used to start there, spend both presses and die (106 of 106
-    trips before v1172, 'field_unstable' after).
-    '''
-    return bool(screen.header) and bool(screen.cursor) and not screen.marker
-
 
 def _want_castle_jump(mem, order, source, goal):
     chapter = mem.get('chapter') or 0
@@ -1469,20 +1459,7 @@ def castle_jump_step(screen, mem, frame):
 
     phase = jump.get('phase')
     if phase == 'menu':
-        if screen.kind == 'map' and screen.header is None:
-            # docich#4658: a field frame without the month/gold HUD is a
-            # camera pan or mode transition; X does nothing there. The
-            # jump used to spend both presses on such frames and then
-            # fail (total=12, screen=map, hand=None) before the field
-            # settled, which is why 106 of 106 trips died. Wait for a
-            # readable field instead of pressing, and end the trip as
-            # unstable (not as a cursor failure) when it never settles.
-            jump['unstable'] = int(jump.get('unstable') or 0) + 1
-            if jump['unstable'] <= CASTLE_JUMP_MENU_WAIT:
-                return []
-            return _end_castle_jump(screen, mem, 'field_unstable')
         if screen.kind == 'map':
-            jump['unstable'] = 0
             # Give the first X a few observations to draw the menu; a second
             # X too early would close the menu it just opened.
             # docich#4658: the X sent when the jump starts needs a few
@@ -1795,14 +1772,7 @@ def general_jump_step(screen, mem, frame):
     phase = jump.get('phase')
 
     if phase == 'menu':
-        if screen.kind == 'map' and screen.header is None:
-            # docich#4658: a HUD-less field is a transition; X is ignored.
-            jump['unstable'] = int(jump.get('unstable') or 0) + 1
-            if jump['unstable'] <= CASTLE_JUMP_MENU_WAIT:
-                return []
-            return _end_general_jump(screen, mem, 'field_unstable')
         if screen.kind == 'map':
-            jump['unstable'] = 0
             # docich#4658: the X sent when the jump starts needs a few
             # frames to draw the menu. A second X while the frame still
             # reads 'map' closed the menu it had just opened, and the
@@ -2238,7 +2208,7 @@ def map_step(screen: Screen, mem, frame):
     # jump used to start there, spend both presses and die with
     # 'field_unstable' (or 'menu_not_open' before v1172), then start again on
     # the next frame. Only open the trip once the field is readable.
-    if _jump_field_ready(screen) and _want_castle_jump(mem, order, source, goal):
+    if screen.cursor and not screen.marker and _want_castle_jump(mem, order, source, goal):
         return _start_castle_jump(mem, order, source)
     result = nav_step(screen, mem, frame, goal, source, step=order['step'])
     if result == 'infeasible':
