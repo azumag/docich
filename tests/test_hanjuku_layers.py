@@ -32,7 +32,7 @@ LAYER_RANK = {
     'os_layer': 1,
     'strategy': 2,
     'judgment': 3,
-    'flows': 4, 'reporting': 4,
+    'flows': 4, 'reporting': 4, 'month_audit': 4,
     'orchestrator': 5,
 }
 
@@ -43,6 +43,9 @@ LEGACY_LAYER = {
     'hanjuku_egg_stock': 'data',
     'hanjuku_map_sources': 'data',
     'hanjuku_chart_adjust': 'strategy', 'hanjuku_experience': 'strategy',
+    # The observer's run/lifecycle module; the month audit only appends its
+    # sealed record through the existing bounded append_log writer.
+    'hanjuku_run': 'flows',
 }
 LEGACY_RANK = {'data': 0, 'os_layer': 1, 'strategy': 2, 'flows': 4}
 # Compatibility names over this package; no layer module may depend on them.

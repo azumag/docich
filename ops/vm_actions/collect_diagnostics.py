@@ -7911,6 +7911,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v1234-gjump-diag-text",
             "hanjuku-chart-v1235-recall-goal-campworld",
             "hanjuku-chart-v1236-fort-list-row",
+            "hanjuku-chart-v1237-month-audit",
             "hanjuku-chart-v1158-progress-regress",
             "hanjuku-chart-v1161-refill-collapse",
             "hanjuku-chart-v1160-chapter-probe-field",

@@ -24,7 +24,7 @@ from docich import hanjuku_resume
 from docich.hanjuku_bot import BOT_VERSION, decide
 from docich.hanjuku_pixels import read_png
 from docich.hanjuku.decision_log import _record
-from docich.hanjuku import state_budget
+from docich.hanjuku import month_audit, state_budget
 from docich.hanjuku.os_layer.phase import classify
 from docich.hanjuku_run import append_log
 from docich import hanjuku_run
@@ -718,6 +718,9 @@ def main():
             # under the limit.
             state=state_budget.load_state(runtime/'hanjuku_bot.json',BOT_STATE_LIMIT)
             hanjuku_resume.inherit_running_chapter(runtime,state)
+            # The previous observation is the closed month's last complete
+            # state when this observation crosses the month boundary.
+            audit_before=month_audit.capture(state)
             experience_path=ROOT/'run'/hanjuku_experience.EXPERIENCE_FILE
             experience=hanjuku_experience.load(experience_path)
             actions,state=decide(frame,state,adjusted=hanjuku_chart_adjust.load(runtime),
@@ -758,6 +761,8 @@ def main():
                     ('persist_failed', lambda: persist(
                         runtime, state, records, meta, actions=actions,
                         frame_sha256=frame.digest(), frame=frame)),
+                    ('month_audit_failed', lambda: month_audit.observe(
+                        runtime, audit_before, state, records)),
                     ('adjust_request_failed', lambda: publish_adjust_request(runtime, records, meta)),
                     ('interim_failed', lambda: ask_interim(runtime, state, meta)),
                     ('state_write_failed', lambda: atomic_write_json(
