@@ -358,6 +358,7 @@ KEY_OWNERSHIP = {
     'menu_miss': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # メニューミス
     'monster_menu_choice': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # モンスターメニュー選択手順
     'monster_menu_choice_hp': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # モンスターメニュー選択HP記録
+    'monster_no_damage': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 実効なしの技カウント
     'monster_menu_choice_key': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 同上キー
     'monster_menu_choice_policy_epoch': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 同上ポリシーepoch
     'monster_menu_choice_scope': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 同上スコープ

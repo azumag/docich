@@ -2690,6 +2690,28 @@ def monster_menu_step(screen: Screen, mem):
         owner, ally, enemy, [''.join(line.known.split()) for line in skill_lines])
     damage_first = _monster_damage_first(
         owner, ally, enemy, [''.join(line.known.split()) for line in skill_lines])
+    # docich#4716: a skill whose predicted damage is high but whose real effect
+    # is zero (an immune enemy) was chosen turn after turn: the re-decide rule
+    # only fired when the panel HP changed, and it never did. Track the turns a
+    # chosen skill left the enemy HP untouched and drop it after two of them,
+    # so the other slot gets the turn while the reference table still gates it.
+    no_damage = mem.setdefault('monster_no_damage', {})
+    prev_choice = mem.get('monster_menu_choice')
+    if (owner == 'ally' and prev_choice in ('skill1', 'skill2')
+            and mem.get('monster_menu_choice_hp') == hp_state):
+        no_damage[prev_choice] = int(no_damage.get(prev_choice) or 0) + 1
+        _record(mem, 'monster_skill_no_damage',
+                observed_metric={'skill': prev_choice, 'enemy': enemy.name if enemy else None,
+                                 'enemy_hp': enemy.hp if enemy else None,
+                                 'count': no_damage[prev_choice]},
+                reason='同じ技で敵HPが動かないため、この技の実効なしを数える')
+    elif isinstance(prev_choice, str):
+        no_damage.pop(prev_choice, None)
+    if len(skill_lines) >= 2:
+        if int(no_damage.get('skill1') or 0) >= 2:
+            damage_first = False
+        if int(no_damage.get('skill2') or 0) >= 2:
+            damage_second = False
     # #3071: ちきゅうちゃん self-destructs only into a lone general.
     chikyu = _monster_chikyu_choice(
         owner, ally, enemy, [''.join(line.known.split()) for line in skill_lines])
@@ -2735,7 +2757,8 @@ def monster_menu_step(screen: Screen, mem):
             or (damage_second and mem.get('monster_menu_choice') not in ('skill2', 'retreat'))
             or (damage_first and mem.get('monster_menu_choice') not in ('skill1', 'retreat'))
             or (chikyu and mem.get('monster_menu_choice') not in (chikyu, 'retreat'))
-            or (lampkin and mem.get('monster_menu_choice') not in (lampkin, 'retreat'))):
+            or (lampkin and mem.get('monster_menu_choice') not in (lampkin, 'retreat'))
+            or int(no_damage.get(mem.get('monster_menu_choice')) or 0) >= 2):
         ally_hp = ally.hp if ally else None
         enemy_hp = enemy.hp if enemy else None
         behind = _behind({'ally_hp': ally_hp, 'enemy_hp': enemy_hp})
