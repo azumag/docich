@@ -116,7 +116,7 @@ ON/OFF、`trade`、control ファイル、worker は変更しない。
 
 ## L2b: 実行器・再起動時の照合・残高照合(まだどこからも呼ばれない)
 
-- `executor.py`(`OrderExecutor`): `plan`(意図を台帳へ)→ `submit`(`mark_submitting` のコミットのあとで送る)→ 結果を記録 → `step`(照会の1周)。送信は、取引所が**明示的に拒否**したときだけ REJECTED。それ以外の失敗(タイムアウト・切断・分類されない例外)は UNKNOWN_SUBMISSION で、**同じ意図は二度と送らない**。送信できる `sender` は許可リスト(`SENDER_KINDS_ALLOWED = {"mock"}`)にあるものだけ。フェーズ E でこの1行をオーナーのレビュー付きで変える。
+- `executor.py`(`OrderExecutor`): `plan`(意図を台帳へ)→ `submit`(`mark_submitting` のコミットのあとで送る)→ 結果を記録 → `step`(照会の1周)。送信は、取引所が**明示的に拒否**したときだけ REJECTED。それ以外の失敗(タイムアウト・切断・分類されない例外)は UNKNOWN_SUBMISSION で、**同じ意図は二度と送らない**。送信できる `sender` は許可リスト(`SENDER_KINDS_ALLOWED = {"mock", "bitbank_spot"}`)にあるものだけ。`bitbank_spot` は明示的な paired session が渡したときだけ通り、既存の `live_control` ゲートはそのまま適用される。
 - `reconcile.py`: 起動時の照合(PLANNED は未送信が確定しているので ABANDONED、SUBMITTING は UNKNOWN にしてから解決、ACKED/PARTIALLY_FILLED は取引所に照会して続行)。UNKNOWN は、見つかれば(クライアント注文IDの照会、または注文一覧・約定履歴との突き合わせ)ACKED にする。見つかる前に「作られていない」と決めるのは、(1) settle 時間(既定 120 秒)が経ち、(2) 取引所の答えが完全で該当なし(クライアントIDの方式は、settle 秒あけて2回の空の答え)、(3) 残高に説明できない変化が無い、の**全部**を満たしたときだけ(証拠は台帳に JSON で残す)。売りの証明は base 通貨の残高だけで足りる(JPY 側の不一致で手じまいが止まらない)。時間だけでは何も解除しない。
 - 未知の注文の掃除(`sweep`): 台帳に無い注文(オーナーの手動注文など)を見つけたら UNKNOWN_ORDER を trip(買い停止)。履歴の読み取り開始位置は**銘柄ごと**で、その銘柄を完全に読めたときだけ進む(読めなかった・飛ばした銘柄は、前回の位置から読み直す)。約定履歴の読み取り開始位置は、意図の送信時刻から固定(時計とともに動かさない)。クライアントIDが無い取引所で、注文一覧と約定履歴の突き合わせで見つけた1件を意図に結ぶのは、両方が**完全**なときだけ。
 - 終端の状態になった意図のポジションが空なら閉じる処理は、起動時と各 `step` でも冪等に行う(終端遷移とクローズの間で止まっても直る)。UNKNOWN_SUBMISSION の NOT_CREATED 証明に使う残高照合(`stable_check`)は、2回の残高読み取りの間に、その結果不明の送信を照合するための注文の照会(クライアント注文IDの照会、または未約定一覧・約定履歴の読み取り)だけを挟む。稼働中の未完了注文をすべて更新するものではなく、その照会が失敗したら判定しない。
@@ -136,7 +136,7 @@ ON/OFF、`trade`、control ファイル、worker は変更しない。
 
 `src/docich/trading/exchanges/bitbank_live/`(`live/` の外。`live/` はこのパッケージを import しない)。**読み取りだけ**で、送信・取消の経路は存在しない(AST のテストで固定)。
 
-- `credentials.py`: 読み取り専用キーの読み込み。置き場は `<state>/trading-live/owner/bitbank_readonly_key.json`(0600、owner ディレクトリは 0700、symlink 不可)。環境変数は `source="env"` と明示したときだけ使い、読んだら環境から消す。キーが無い・検査に通らない場合は fail-closed(理由コードだけを例外にし、値・パスは出さない)。`Credentials` は repr/str/pickle で何も出さない。
+- `credentials.py`: 読み取り専用キーの読み込み。置き場は `<state>/trading-live/owner/bitbank_readonly_key.json`(0600、owner ディレクトリは 0700、symlink 不可)。環境変数は `source="env"` と明示したときだけ使い、読んだら環境から消す。キーが無い・検査に通らない場合は fail-closed(理由コードだけを例外にし、値・パスは出さない)。`Credentials` は repr/str/pickle で何も出さない。同じ検査を共有する file-only の `load_spot_order_credentials` が、明示的な発注プロセス用の固定ファイル `bitbank_spot_order_key.json`(`kind: docich-bitbank-spot-order-key`)を読む。こちらは環境変数を使わない。
 - `parse.py`: bitbank の生の JSON → L2 の型。**文字列から Decimal**(float は拒否)、時刻は13桁のミリ秒だけ(秒・マイクロ秒は拒否)、注文の状態は bitbank の語彙そのまま、`remaining_amount` は送られた値のまま(正規化しない)。手数料は `fee_amount_base`/`fee_amount_quote` の生の文字列から決め、不明瞭なら UNKNOWN(両方非0、`fee_occurred_amount_quote` との不一致、符号が料率と逆、など)。`max_fee_rate` は4つの料率の絶対値の最大(1つでも読めなければ None)。
 - `errors.py`: 失敗の分類。読み取りが上げてよいのは `ExchangeAmbiguous`(既定)と `OrderNotFound`(注文の照会に対する 50009 だけ)で、`ExchangeRejected` は上げない。60002 を資金拘束のエラーとして扱わない。メッセージにはエンドポイント・種類・HTTP・コード・例外クラス名だけ。
 - `reader.py`: `BitbankReader`(`ExchangeReader` だけを実装)。**bitbank にクライアント注文 ID は無い**(`Capabilities(client_order_id=False, fetch_by_client_id=False, fills_by_order=True)`)ので、送信が失われた注文は一覧との突き合わせでしか見つけられない。**一覧の完全性は保守的**: 未約定の注文は件数が `count` 未満のときだけ完全、約定履歴は件数が1ページ未満か、最古の約定がすでに開始時刻より前のときだけ完全。`since` は取引所に送らず(単位の記述が文書間で食い違うため)、手元で絞る。市場ルール・料率は作るときに読み、`market_rules` はネットワークに出ない。作れなければ `ReaderUnavailable`。
@@ -180,7 +180,15 @@ ON/OFF、`trade`、control ファイル、worker は変更しない。
 - 定期的な残高照合・残高警告は行わない(残高警告の廃止 2026-11-19)。通常のサイクルは残高を1回だけ読み、不一致の通貨数などのフィールドを status に出さない。金額・残高そのものも status に書かない。残高の比較は UNKNOWN_SUBMISSION の NOT_CREATED 証明にだけ残り、比較自体は安全停止を trip せず、売買を止めない。
 - status(`live_status.json`)は実際の周期を `interval_ms`(30,000〜3,600,000 の整数)として残す。CLI の `--interval` は30〜3600秒で、ミリ秒に丸めることで 600.5 秒のような端数も失わない。WebUI は running status の鮮度を **3×`interval_ms`** とし、連続失敗時は `next_wait` の再試行待ち(interval 以上、interval が300秒以下なら300秒で頭打ち)を加える。`interval_ms` が無い旧 status や範囲外・非整数の値は、従来の60秒 / 180秒へフォールバックする。running status は cycle の終了時に書き、**lease を失った後は running も exited も書かない**。
 - 起動時の残高取得や自動記録が失敗しても inert にならず、終了もしない。周期ループで再試行する。inert になるのは方針セットが無い場合だけ(`no_active_policy_set`)。
-- 常駐化(systemd user unit)のテンプレートと終了コードの扱いは [live-worker-systemd.md](live-worker-systemd.md)。ユニットのインストール・enable はオーナーの作業で、`sender=None` の間は発注経路が無い。
+- 常駐化(systemd user unit)のテンプレートと終了コードの扱いは [live-worker-systemd.md](live-worker-systemd.md)。ユニットのインストール・enable はオーナーの作業。既定は `sender=None` で発注経路が無い。`run --spot-order-sender` を明示した別プロセスだけが、同じ1口座の固定キーから reader と spot sender の対を作る(下記 L4b-3)。
+
+## L4b-3: 明示的な spot session(将来の F、既定では使わない)
+
+- `run --spot-order-sender` は1回のプロセス起動時のサービス役割選択で、実行中の売買スイッチではない。付けた場合だけ、`bitbank_spot_order_key.json`(0600、owner 0700、symlink 不可、環境変数なし、`kind: docich-bitbank-spot-order-key`)を読み、同じ `Credentials` から GET 専用 `BitbankReader` と `BitbankSpotSender` を作る。reader と sender に別口座を混ぜない。
+- キーの権限は残高・注文・約定の参照と現物の注文作成・取消に限り、**出金権限は付けない**。ファイル名は発注可能なプロセス用であることだけを示し、取引所側スコープの証明ではない。
+- 既定の起動はキーが置かれていても reader だけを使い、sender を作らない。新規注文の実行時スイッチは従来どおり `live_control.json` の `on` + `trade` だけ。オプション付きセッションの起動失敗は config/auth/clock の既存の終了コードで fail-closed になり、reader 専用へフォールバックしない。
+- これは将来の F のプロセス選択肢。実注文 E はオーナーの別ハンドオフで、1注文ごとの明示承認を含む E の手順はここでは扱わない。ユニットテンプレート・デプロイ・自動化にこのフラグを設定しない。
+
 
 ## L4c: shadow の模擬保有・資金・約定(Issue #3623)
 

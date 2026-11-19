@@ -9,6 +9,8 @@ LIVE ワーカーを常駐させるための **user unit のテンプレート**
   存在すること。相対パス・親が無いパスは何も作らず終了コード `2` で拒否する。
 - `--interval` は 30〜3600 秒(既定 60)。サイクルの間隔で、停止フラグは最大 1 秒の
   スリープ片の間で見る。範囲外は引数検査で何も作らず終了コード `2` で拒否する。
+- 既定は読み取り専用。`--spot-order-sender` を付けたときだけ、同じ1口座の固定キーから
+  GET 専用 reader と spot 注文 sender の対を作る(下記「発注可能な spot session」)。
 - 状態ファイルは `<state>/trading-live/live_status.json`(0600、原子的に置き換え)。
   残高・金額・注文 ID・キーは入らない。
 
@@ -63,12 +65,35 @@ WantedBy=default.target
 
 ## キー
 
-`bitbank_live/credentials.py` が、`<state>/trading-live/owner/bitbank_readonly_key.json` を
-読む(0600、owner ディレクトリは 0700、symlink は追わない)。キーが無い・検査に通らない場合は
-値やパスを出さず、理由コードだけの `ReaderUnavailable(kind="config")` になり、ワーカーは
-終了コード `2` で止まる。**キーの値をユニット・環境変数・この文書・Issue に置かない。**
+既定の読み取り専用キーは `bitbank_live/credentials.py` が
+`<state>/trading-live/owner/bitbank_readonly_key.json` から読む(0600、owner ディレクトリは
+0700、symlink は追わない)。キーが無い・検査に通らない場合は値やパスを出さず、理由コードだけの
+`ReaderUnavailable(kind="config")` になり、ワーカーは終了コード `2` で止まる。
+**キーの値をユニット・環境変数・この文書・Issue に置かない。**
 環境変数 `DOCICH_BITBANK_RO_API_KEY` / `..._SECRET` は `source="env"` を明示した読み方だけが
 使い、このエントリポイントは使わない。
+
+## 発注可能な spot session(将来の F、既定では使わない)
+
+`run --spot-order-sender` は、1回のプロセス起動時にサービス役割を選ぶための明示オプションで、
+実行中の売買スイッチではない。付けた場合だけ、固定の
+`<state>/trading-live/owner/bitbank_spot_order_key.json` を読み、**同じ1口座の
+`Credentials` 1個**から GET 専用 reader と spot 注文 sender を作る。reader と sender に
+別々の口座を組み合わせる経路は無い。
+
+- ファイルは `kind: "docich-bitbank-spot-order-key"`、`schema_version: 1`、`api_key`、
+  `api_secret`、任意の `note`。0600 の通常ファイル、owner ディレクトリと LIVE root は
+  0700、同一 uid、symlink 不可。環境変数へのフォールバックは無い。ファイル名は
+  「発注可能なプロセス用に用意された」ことだけを示し、取引所側の権限の証明ではない。
+- API キーの権限は、**残高・注文・約定の参照と、現物の注文作成・取消**に限る。
+  **出金権限は付けない。**
+- 既定の起動は、このファイルが置かれていても reader だけを使い、sender を作らない。
+  発注には従来どおり `live_control.json` の `on` + `trade` が必要で、これはサイクルごとに
+  読まれる。オプションを付けたセッションが壊れている場合は reader 専用へフォールバックせず、
+  config/auth/clock の既存の終了コードで fail-closed になる。
+- これは将来の F(常駐の実運用)のプロセス選択肢。実注文 E はオーナーの別ハンドオフで、
+  1注文ごとの明示承認を含む E の手順はここでは扱わない。**このリポジトリのユニット
+  テンプレート・デプロイ・自動化にこのフラグを設定しない。**
 
 ## 終了コード
 
@@ -94,11 +119,11 @@ WantedBy=default.target
 `market_all_stale_seconds` を監視し、必要ならオーナーが
 `systemctl --user stop docich-live-worker.service` で止める。ユニットの設定は変更しない。
 
-## このワーカーができないこと(安全側の固定)
+## 既定のユニットができないこと(安全側の固定)
 
-- `runner.py` は `OrderExecutor(..., sender=None, ...)` を組み立て、送信できる種別は
-  `SENDER_KINDS_ALLOWED = {"mock"}` のまま。**有効化しても発注経路は無い**。取引所層は
-  読み取り専用(`submit_order`/`cancel_order` を持たない)。
+- 既定の `runner.py` は `sender=None` で executor を組み立てる。`--spot-order-sender` を
+  明示した別プロセスだけが、許可リストの `bitbank_spot` sender を既存のゲート付き executor に
+  渡す。取引所層の読み取り用 transport は GET だけで、`submit_order`/`cancel_order` を持たない。
 - 最初の有効な方針セットの有効化は**オーナーの手動の作業**。WebUI の LIVE タブ
   「初期方針のセットアップ」で export → preview → activate する(通常の経路)。任意の
   スナップショットを CLI で記録する場合は `python -m docich.trading.live_owner

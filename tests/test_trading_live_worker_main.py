@@ -281,13 +281,14 @@ def test_the_real_wiring_without_a_key_exits_config_without_the_network(tmp_path
     # missing file raises ReaderUnavailable(kind="config") before a transport is built.
 
 
-# ---- no order path in the entry point ----------------------------------------------------
+# ---- the default entry point has no order path; the paired role is explicit --------------
 FORBIDDEN_REFERENCES = frozenset({
-    "sender", "SENDER_KINDS_ALLOWED", "place_order", "create_order", "cancel_order",
+    "SENDER_KINDS_ALLOWED", "BitbankSpotSender", "bitbank_spot_sender",
+    "place_order", "create_order", "cancel_order", "submit_order",
 })
 
 
-def test_the_entry_point_never_references_a_sender_or_an_order_placing_name():
+def test_the_entry_point_never_references_an_order_placing_primitive():
     tree = ast.parse(Path(main_module.__file__).read_text(encoding="utf-8"))
     seen = set()
     for node in ast.walk(tree):
@@ -302,3 +303,60 @@ def test_the_entry_point_never_references_a_sender_or_an_order_placing_name():
         elif isinstance(node, ast.arg):
             seen.add(node.arg)
     assert seen & FORBIDDEN_REFERENCES == set()
+
+
+def test_the_default_cli_role_is_read_only_and_the_spot_pair_is_explicit(tmp_path):
+    default = main_module.real_wiring(tmp_path)
+    opted = main_module.real_wiring(tmp_path, spot_order_sender=True)
+
+    assert set(default) == {"open_reader", "make_market_data"}
+    assert "open_pair" not in default
+    assert set(opted) == {"open_reader", "open_pair", "make_market_data"}
+
+    args = main_module._parser().parse_args(["run", "--state-dir", str(tmp_path)])
+    assert args.spot_order_sender is False
+    args = main_module._parser().parse_args(
+        ["run", "--state-dir", str(tmp_path), "--spot-order-sender"])
+    assert args.spot_order_sender is True
+
+
+def test_the_default_run_does_not_ask_for_the_paired_role(tmp_path):
+    seen = []
+
+    def wiring(_state_dir, *, spot_order_sender=False):
+        seen.append(spot_order_sender)
+        return {"open_reader": lambda _: None,
+                "make_market_data": lambda _: None}
+
+    code = main_module.main(["run", "--state-dir", str(tmp_path)], wiring=wiring)
+
+    assert code == main_module.EXIT_OK == 0
+    assert seen == [False]
+    assert status_of(tmp_path)["phase"] == "inert"
+
+
+def test_the_opt_in_flag_opens_the_pair_and_never_uses_the_reader_fallback(tmp_path):
+    seen = []
+    reader_calls = []
+
+    def wiring(_state_dir, *, spot_order_sender=False):
+        seen.append(spot_order_sender)
+
+        def open_reader(_given):
+            reader_calls.append("reader")
+            return None
+
+        def open_pair(_given):
+            return object(), SimpleNamespace(kind="bitbank_spot")
+
+        return {"open_reader": open_reader,
+                "open_pair": open_pair,
+                "make_market_data": lambda _: None}
+
+    code = main_module.main(
+        ["run", "--state-dir", str(tmp_path), "--spot-order-sender"], wiring=wiring)
+
+    assert code == main_module.EXIT_OK == 0
+    assert seen == [True]
+    assert reader_calls == []
+    assert status_of(tmp_path)["phase"] == "inert"

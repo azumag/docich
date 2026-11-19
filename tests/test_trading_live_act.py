@@ -4,8 +4,8 @@ The ledger, lease, policy storage, mock exchange and executor are the real LIVE 
 the shared harness (the executor test rig, with the mock as the sender); only the reader
 hooks (health/rules/books) and the public market data are faked exactly as in the decide
 tests.  Every number is pinned against the hand calculation in the task; money is
-``Decimal`` and compared with ``==``.  Nothing here touches the network, and no real sender
-exists: ``SENDER_KINDS_ALLOWED`` stays mock-only.
+``Decimal`` and compared with ``==``.  Nothing here touches the network, and the default
+worker still wires no sender; the allow-list also names the explicit spot pair.
 """
 from __future__ import annotations
 
@@ -772,8 +772,8 @@ def test_imports_and_the_only_order_calls(tmp_path):
     assert decide_exits == []
     assert decide_calls & {".plan", ".submit", ".cancel", ".create_intent"} == set()
 
-    # The real sender does not exist yet: production wiring stays mock-only.
-    assert executor_module.SENDER_KINDS_ALLOWED == frozenset({"mock"})
+    # The mock plus the one explicitly paired bitbank spot kind; unrelated kinds stay refused.
+    assert executor_module.SENDER_KINDS_ALLOWED == frozenset({"mock", "bitbank_spot"})
 
 
 # ---- n1: a cycle already over budget still sells ---------------------------------------

@@ -1,9 +1,12 @@
 """The isolated pre-E bitbank spot order sender (Issue #3623).
 
-This module is an adapter only.  Nothing imports it from production wiring and
-``live.executor.SENDER_KINDS_ALLOWED`` deliberately does not contain ``"bitbank_spot"`` yet, so the
-executor refuses it.  A future explicit wiring has to pass the key and secret to the constructor;
-this module never reads a file, an environment variable or a CLI option.
+This module is an adapter only.  The default production wiring never builds it.  The explicit
+``live_worker run --spot-order-sender`` service role builds it together with the GET-only
+reader from the one fixed order-capable key file (``bitbank_spot_session``), and
+``live.executor.SENDER_KINDS_ALLOWED`` accepts this kind there; the existing ``live_control``
+on+trade gate still decides whether a cycle may send.  The constructor receives the key and
+secret; this module never reads a file, an environment variable or a CLI option.  There is no
+withdrawal path.
 
 Only two private spot endpoints exist, at the fixed HTTPS host: create and cancel.  Every call is
 one fresh ``HTTPSConnection``, one POST, a bounded read and a close; there are no redirects, no

@@ -4,8 +4,10 @@
 injected -- the reader factory, the public market-data factory, the clock, the stop flag and
 ``sleep`` -- so the whole runner is testable against the mock exchange with no network, no
 threads and no signals.  This module never imports an exchange adapter and never builds a
-sender: ``OrderExecutor(..., sender=None, ...)`` is the production wiring here.  The owner's
-on/off switch is read from ``live_control.json`` on every cycle.
+sender: the default path supplies ``sender=None`` to ``OrderExecutor``.  An explicit
+paired-session caller may inject ``open_pair`` returning a reader and an already-built sender;
+the same executor and the same ``live_control`` gate then apply.  The owner's on/off switch is
+read from ``live_control.json`` on every cycle.
 
 Exit codes (module constants)::
 
@@ -21,8 +23,8 @@ Exit codes (module constants)::
                           ``CycleConfig.market_gap_exit_s`` (Issue #4586); safe to restart
                           (systemd does not restart 2, 3 or 5)
 
-Startup order is fixed: ledger -> lease -> reader -> active policy set -> executor ->
-``reconcile.on_startup`` -> ``opening.record_auto_opening`` -> the cycle loop.  An INERT
+Startup order is fixed: ledger -> lease -> reader (or the injected pair) -> active policy set
+-> executor -> ``reconcile.on_startup`` -> ``opening.record_auto_opening`` -> the cycle loop.  An INERT
 start (no active policy set) writes the status, releases the lease and returns 0 without a
 safety row, an intent or an order.  Opening balances are recorded by the worker itself (one
 ``auto_opening:<CCY>`` cashflow with source ``exchange_history`` per watched currency with no
@@ -40,7 +42,7 @@ from pathlib import Path
 from ..live import act, reconcile, views
 from ..live.control import read_control
 from ..live.cycle import CycleConfig, CycleDeps, CycleOutcome, CycleState, next_wait, run_cycle
-from ..live.executor import OrderExecutor
+from ..live.executor import SENDER_KINDS_ALLOWED, OrderExecutor
 from ..live.ingest import ExecutorConfig
 from ..live.lease import (LeaseHeld, LeaseLost, acquire_writer_lease, release_writer_lease)
 from ..live.ledger import LiveLedger, LiveLedgerError
@@ -193,6 +195,31 @@ def _reader_kind(exc: BaseException) -> str | None:
         return None
 
 
+class _PairConfigError(RuntimeError):
+    """An opted-in pair opener returned something that is not a usable reader+sender pair."""
+
+    kind = "config"
+
+
+def _startup_exchange(state_dir, open_reader, open_pair):
+    """The selected startup shape: (reader, sender).  The default is read-only.
+
+    A present ``open_pair`` is the explicit one-time role selection.  If it fails, the error
+    propagates: there is no fallback to ``open_reader``, so a broken paired session cannot
+    quietly become a reader-only process.
+    """
+    if open_pair is None:
+        return open_reader(state_dir), None
+    pair = open_pair(state_dir)
+    if not isinstance(pair, (tuple, list)) or len(pair) != 2:
+        raise _PairConfigError()
+    reader, sender = pair
+    if (reader is None or sender is None
+            or getattr(sender, "kind", None) not in SENDER_KINDS_ALLOWED):
+        raise _PairConfigError()
+    return reader, sender
+
+
 def _opening_pending(reader, ledger, currencies) -> bool:
     """True while a watched currency still has no history and a positive exchange total."""
     try:
@@ -234,8 +261,12 @@ def _opening_attempt(ledger, lease, executor, clock) -> bool:
 
 
 def run_worker(*, state_dir, open_reader, make_market_data, clock, stop_requested,
-               sleep, interval_s=60.0, config=CycleConfig()) -> int:
-    """Run the LIVE worker until a stop, a terminal outcome or a configuration failure."""
+               sleep, interval_s=60.0, config=CycleConfig(), open_pair=None) -> int:
+    """Run the LIVE worker until a stop, a terminal outcome or a configuration failure.
+
+    ``open_pair`` is the explicit paired-session hook: it returns ``(reader, sender)`` from the
+    one account.  With no ``open_pair`` the worker uses ``open_reader`` and ``sender=None``.
+    """
     started_at = _safe_now(clock)
     ledger = None
     lease = None
@@ -267,9 +298,9 @@ def run_worker(*, state_dir, open_reader, make_market_data, clock, stop_requeste
         # 2b. a previous run's "exited" status must not look current any longer.
         _status(state_dir, clock, make_fields(phase="starting", started_at=started_at))
 
-        # 3. the exchange reader ----------------------------------------------------------
+        # 3. the exchange reader (or the explicit paired reader+sender) ------------------
         try:
-            reader = open_reader(state_dir)
+            reader, sender = _startup_exchange(state_dir, open_reader, open_pair)
         except Exception as exc:
             kind = _reader_kind(exc)
             code = (EXIT_CONFIG if kind == "config" else
@@ -295,9 +326,9 @@ def run_worker(*, state_dir, open_reader, make_market_data, clock, stop_requeste
                 reason=f"policy_load_failed:{type(exc).__name__}", digest=digest))
             return EXIT_CONFIG
 
-        # 5. the executor: production wiring is a read-only sender ------------------------
+        # 5. the executor: the selected sender (default: none, read-only) ----------------
         gate = lambda: read_control(state_dir, now=clock())
-        executor = OrderExecutor(ledger, lease, reader=reader, sender=None,
+        executor = OrderExecutor(ledger, lease, reader=reader, sender=sender,
                                  enable_check=gate, clock=clock,
                                  symbols=tuple(sorted(ps.policies)),
                                  config=ExecutorConfig())

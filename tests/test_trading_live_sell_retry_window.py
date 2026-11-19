@@ -35,7 +35,7 @@ Retry becomes possible again only when the decision-key stem changes:
 
 Everything runs on synthetic frames and the mock exchange through the real
 ``run_cycle``/``scan_live``/``decide_and_act``/``cancel_expired`` path: no network, no real
-orders, ``SENDER_KINDS_ALLOWED`` stays mock-only.
+orders, the default worker still wires no sender.
 """
 from __future__ import annotations
 

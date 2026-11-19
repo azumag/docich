@@ -422,7 +422,7 @@ def test_only_the_mock_and_the_isolated_spot_adapter_define_send_methods_and_liv
                 names = {n.name for n in node.body if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))}
                 if names & {"submit_order", "cancel_order"}:
                     definers.append((str(path.relative_to(src)), node.name))
-    # exchange.py only declares the Protocol; the bitbank adapter is isolated and not allow-listed.
+    # exchange.py only declares the Protocol; the bitbank adapter is built only by the explicit paired session.
     assert sorted(definers) == [("trading/exchanges/bitbank_spot_sender.py", "BitbankSpotSender"),
                                 ("trading/live/exchange.py", "OrderSender"),
                                 ("trading/live/mock_exchange.py", "MockExchange")]

@@ -6,8 +6,9 @@ and records the cycle's decisions (``decide.build_decisions``) and places the si
 through ``OrderExecutor.plan``/``submit``.  This is the only module that calls
 ``executor.plan``/``executor.submit``; monitor never reaches it.  With
 ``deps.executor.sender is None`` nothing is planned: one ``trade_unavailable_no_sender``
-decision is recorded per process and the cycle moves on.  There is no real sender yet:
-``executor.SENDER_KINDS_ALLOWED`` is mock-only.
+decision is recorded per process and the cycle moves on.  The default worker has no sender;
+an explicit paired session may supply the allow-listed ``bitbank_spot`` sender, and the same
+``live_control`` gate still applies.
 
 Known consequence for the owner (to be confirmed before phase E): sell proceeds raise the
 investment headroom but never the free quote. If a limit sell does not fill, the buys that
@@ -222,9 +223,9 @@ def decide_and_act(deps: "CycleDeps", state: "CycleState", ctx: "CycleContext") 
     if ctx.mode != "trade":
         return None
     if deps.executor.sender is None:
-        # There is no real sender yet.  One row for the whole process: the dedupe key is
-        # pinned (sys.maxsize, never pruned) so the runner's dedupe pruning cannot delete it
-        # and make the notice recordable again on a later cycle.
+        # No sender was selected for this process (the default).  One row for the whole process:
+        # the dedupe key is pinned (sys.maxsize, never pruned) so the runner's dedupe pruning
+        # cannot delete it and make the notice recordable again on a later cycle.
         if not _record(deps, state, ctx, "skip", "-", NO_SENDER_REASON, {
             "action": "skip",
             "side": "unknown",
