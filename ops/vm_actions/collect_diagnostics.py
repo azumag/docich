@@ -7722,6 +7722,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v1191-stock-cards",
             "hanjuku-chart-v1192-hand-row-offset",
             "hanjuku-chart-v1193-recruit-stuck",
+            "hanjuku-chart-v1194-home-probe",
             "hanjuku-chart-v1158-progress-regress",
             "hanjuku-chart-v1161-refill-collapse",
             "hanjuku-chart-v1160-chapter-probe-field",
