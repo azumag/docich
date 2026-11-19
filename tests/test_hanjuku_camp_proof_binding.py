@@ -71,7 +71,9 @@ def test_receipt_is_bound_to_actual_current_map_and_same_episode_and_survives_js
     assert proof['frame_sha256'] == FRAME.digest()
     mem = json.loads(json.dumps(mem))
     assert p.camp_recall_step(parse(status('ゼウス', 'エラベルエッグ0', main=False, hp=6)), mem, FRAME) == [p.pad('b')]
-    assert p.camp_recall_step(camp_menu(3), mem, FRAME) == [p.pad('a')]
+    # Owner 2026-11-19: the camp menu now targets いどう (one row up from
+    # きかん), so the first input is the cursor move rather than A on きかん.
+    assert p.camp_recall_step(camp_menu(3), mem, FRAME) == [p.pad('up')]
 
 
 def test_an_interrupted_receipt_cannot_be_replayed_into_a_later_episode():

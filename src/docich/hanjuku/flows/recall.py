@@ -1418,9 +1418,9 @@ def _camp_recall_step(screen: Screen, mem, frame, *, observed_camps=None):
                         observed_metric={'cell': list(relay['cell']), 'hub': relay.get('hub'),
                                          'camp': list(state.get('target') or ())},
                         reason='後半の自軍城が無くハブへ直行すると崖に詰まるため、まず後半中央へいどうで移動する')
-        choice = 'いどう' if (state.get('boss') or state.get('boss_move')
-                              or state.get('move_visible') or state.get('gather')
-                              or state.get('relay')) else 'きかん'
+        # Owner 2026-11-19: every return goes through いどう, never きかん —
+        # the move view is where the whole-map Y jump to an own castle starts.
+        choice = 'いどう'
         move = menu_to(screen, choice)
         if move is None:
             misses = state['cursor_misses'] = int(state.get('cursor_misses', 0)) + 1
