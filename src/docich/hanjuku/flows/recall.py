@@ -535,6 +535,10 @@ def _relay_road(mem, state, cell):
     presses = int(road.get('presses') or 0)
     dx, dy = int(road.get('dx') or 0), int(road.get('dy') or 0)
     if presses >= RELAY_ROAD_PRESS_MAX or (dx == 0 and dy == 0):
+        # #4533 (DSH follow-up): the road is spent. Leaving dx=dy=0 behind
+        # would make a later leg with `relay` still set answer a momentary
+        # roof-anchor loss with an immediate A instead of re-measuring.
+        state.pop('relay_road', None)
         return [pad('a')]
     if abs(dx) >= abs(dy):
         frames = min(RELAY_ROAD_STEP, abs(dx))

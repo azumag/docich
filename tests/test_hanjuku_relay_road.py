@@ -44,3 +44,14 @@ def test_a_camp_without_a_measured_world_cell_cannot_reckon():
     state = _flow(mem)['recall']
     state.pop('camp_world')
     assert r._relay_road(mem, state, [508, 264]) is None
+
+
+def test_a_spent_road_is_cleared_so_a_later_leg_cannot_reuse_dx_dy_zero():
+    mem = memory()
+    state = _flow(mem)['recall']
+    for _ in range(r.RELAY_ROAD_PRESS_MAX + 2):
+        if r._relay_road(mem, state, [508, 264]) == [pad('a')]:
+            break
+    else:
+        raise AssertionError('the spent road never confirmed')
+    assert 'relay_road' not in state

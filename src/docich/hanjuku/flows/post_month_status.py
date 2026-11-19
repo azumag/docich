@@ -1861,6 +1861,28 @@ def step(screen, mem, frame):
                                for a in (0, 1)) > 12):
                 _task_complete(mem, state, result='selected_general_camp_unconfirmed')
                 return []
+            # #4533: the picker-close grace and the relay leg both live in the
+            # single `flow.recall` dict. A later task for another general used
+            # to replace it here, losing the relay aim (and, since v1110, its
+            # dead-reckoned road) before いどう could be chosen. camp_recheck
+            # and battle already spare a relay-aimed recall; this handoff was
+            # the remaining gap. Hold the frame until that flow releases it.
+            active = _flow(mem).get('recall')
+            if (isinstance(active, dict)
+                    and (active.get('relay') or active.get('relay_menu_waits'))):
+                if not state.get('relay_hold_logged'):
+                    state['relay_hold_logged'] = True
+                    relay = active.get('relay')
+                    _log(mem, 'post_month_recall_held_for_relay', general=name,
+                         chart_step=None,
+                         observed_metric={'job': job['kind'],
+                                          'stage': active.get('stage'),
+                                          'relay': (list(relay.get('cell') or ())
+                                                    if isinstance(relay, dict) else []),
+                                          'menu_waits': active.get('relay_menu_waits')},
+                         reason='ピッカーを閉じた直後のrelay帰還フローが残っているため、別将軍の帰還でflow.recallを上書きしない')
+                return []
+            state.pop('relay_hold_logged', None)
             _flow(mem)['recall'] = {
                 'stage': 'to_camp', 'target': list(camp['target']),
                 'last_seen': list(camp['target']), 'steps': 0,
