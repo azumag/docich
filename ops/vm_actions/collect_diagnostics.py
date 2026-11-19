@@ -7903,6 +7903,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v1198-stuck-roster-probe",
             "hanjuku-chart-v1227-roster-probe",
             "hanjuku-chart-v1228-month-menu-release",
+            "hanjuku-chart-v1229-house-roof-match",
             "hanjuku-chart-v1158-progress-regress",
             "hanjuku-chart-v1161-refill-collapse",
             "hanjuku-chart-v1160-chapter-probe-field",
