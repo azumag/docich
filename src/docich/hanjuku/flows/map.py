@@ -1077,9 +1077,16 @@ def _watch_cursor_still(mem):
     # anchors the field cell directly, while the X reanchor needs アルマムーン
     # to be on the visible list and looped when it was not (g1190 2026-11-19
     # run 3/4: cursor_still_search repeated and no sortie ever started — #4611).
+    # docich#4711: the per-episode budget resets whenever the stillness
+    # episode ends, so a cursor the Y view never reads churned 66 re-anchors in
+    # ten minutes (ch6 19-x). A chapter-wide total stops that: after a few
+    # fruitless opens the field falls back to the castle-list search instead
+    # of re-opening the same unreadable view.
+    total = int(mem.get('y_anchor_total') or 0)
     attempts = int(mem.get('y_anchor_attempts') or 0)
-    if attempts < Y_ANCHOR_ATTEMPTS:
+    if attempts < Y_ANCHOR_ATTEMPTS and total < Y_ANCHOR_CHAPTER_TOTAL:
         mem['y_anchor_attempts'] = attempts + 1
+        mem['y_anchor_total'] = total + 1
         mem['y_anchor_due'] = True
         _record(mem, 'cursor_still_yview',
                 observed_metric={'cursor': list(cursor), 'still': watch['n'],
@@ -1124,6 +1131,7 @@ CASTLE_JUMP_SCROLL_PROOF = 2    # extra taps issued once the hand is on the last
 CASTLE_JUMP_SCROLL_STALL = 2    # unchanged list readings before the Y route takes over
 CASTLE_JUMP_COOLDOWN = 40       # observations before retrying a failed source
 Y_ANCHOR_ATTEMPTS = 2            # Y-view re-anchors before the castle-list jump
+Y_ANCHOR_CHAPTER_TOTAL = 6       # fruitless Y re-anchors allowed in one chapter
 REANCHOR_FAILURE_LIMIT = 3      # consecutive failed reanchors before backing off
 REANCHOR_FAILURE_BACKOFF = 600  # observations a tripped reanchor stays quiet
 CASTLE_JUMP_FAR = 48            # same distance gate as the Y jump (map px)

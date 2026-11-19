@@ -306,6 +306,7 @@ KEY_OWNERSHIP = {
     'chikujou_prompt_key': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 築城プロンプトの記録キー
     'reanchor_failures': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 再アンカー連続失敗の抑制カウンタ
     'y_anchor_attempts': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # Yビュー再アンカーの試行回数
+    'y_anchor_total': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 章内のY再アンカー累計
     'y_anchor_due': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 次の map 観測でYを押す印
     'goal_expired': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 期限切れ目標の再登録抑止
     'launch_unverified': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 行軍未確認の出撃カウンタ
