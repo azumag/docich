@@ -1991,6 +1991,11 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
         actions=[pad('a')]
     elif kind=='yes_no':
         actions=prompts_flow.yes_no_step(screen,mem)
+    elif (kind == 'main_menu'
+          and (_roster_owner_active(mem) or _xmenu_owner_active(mem))):
+        # docich#4748: a live X-menu owner that returned None for this frame
+        # must not have its menu B-closed by the generic stray-panel rule.
+        actions = []
     elif kind in {'castle_info','sealed_castle','main_menu'}:
         decision_log._record(mem,'close_panel',screen=kind,reason='意図しない情報画面を閉じる')
         actions=[pad('b')]
