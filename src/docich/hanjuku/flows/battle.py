@@ -684,6 +684,28 @@ def battle_step(screen: Screen, mem):
     cur = mem.get('battle')
     if cur:
         cur.pop('defeat_owner', None)  # a later complete combat panel invalidates the post-combat flag
+        # docich#4707: the announce banner covers the HP panel, so the drop a
+        # card causes is only readable after the menu closes. A use that timed
+        # out its announce therefore leaves a pending confirmation; the first
+        # complete battle frame after it decides the question by measurement.
+        pending = cur.get('card_pending_confirm')
+        if isinstance(pending, dict):
+            opening = pending.get('hp')
+            tick = int(mem.get('tick') or 0)
+            if type(opening) is int and type(b.enemy_hp) is int and b.enemy_hp < opening:
+                used = cur.setdefault('cards_used', [])
+                card = pending.get('card')
+                if card and card not in used:
+                    used.append(card)
+                cur['card_consumption_complete'] = True
+                _record(mem, 'battle_card_effect_confirmed',
+                        **_battle_labels(cur), card=card,
+                        observed_metric={'enemy_hp_at_open': opening, 'enemy_hp': b.enemy_hp},
+                        expected_metric='敵HPの低下',
+                        reason='告知が読めなかった切り札について、メニューが閉じた後の敵HP低下で使用を確定する')
+                cur.pop('card_pending_confirm', None)
+            elif tick - int(pending.get('tick') or 0) > 12:
+                cur.pop('card_pending_confirm', None)   # no drop seen: keep it unclassified
     if cur and (b.enemy, b.ally) != (cur['enemy'], cur['ally']):
         if not (_entered_battle_successor(mem, cur, b) or _defender_successor(mem, cur, b)
                 or _attack_defender_successor(mem, cur, b) or _unlocated_successor(mem, cur, b)):

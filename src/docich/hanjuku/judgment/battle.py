@@ -165,6 +165,12 @@ def _card_use_unclassified(mem, cur, reason):
         return
     if card:
         cur.setdefault('cards_unclassified', []).append(card)
+        # The banner hides the HP panel, so the drop is only visible once the
+        # menu closes; leave a pending confirmation for battle_step.
+        if type(flow.get('enemy_hp_at_open')) is int:
+            cur['card_pending_confirm'] = {'card': card,
+                                           'hp': flow['enemy_hp_at_open'],
+                                           'tick': int(mem.get('tick') or 0)}
         # A selected card with no calibrated receipt still leaves the kit for
         # this sortie: re-planning it would open an empty list next battle.
         step = cur.get('step')
