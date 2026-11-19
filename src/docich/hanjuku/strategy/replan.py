@@ -1923,8 +1923,20 @@ def _mechanical_interim(mem, state, rid, digest, allow_sole=False):
                 goals.note_attempt(mem, goal['kind'], 'unavailable', target=goal.get('target'))
         return
     label, order = next(iter(candidates.items()))
-    state['interim_count'] = state.get('interim_count', 0) + 1
-    step = f"{chart_adjust.INTERIM_PREFIX}{rid[:6]}:{state['interim_count']}"
+    # docich#4728: the step number used to grow with every rebuild
+    # (I:5ae4d9:57 → :61 for the same ユージア→セレーネ retake), so the failed
+    # status never carried over and the plan re-issued the same doomed sortie
+    # forever. Name the interim step after the order itself: an identical
+    # (purpose, source, target, general) keeps its step, and a failed one is
+    # skipped instead of re-tried.
+    identity = '|'.join(str(order.get(k) or '') for k in ('purpose', 'source', 'target', 'general'))
+    stable = state.setdefault('interim_steps', {}).get(identity)
+    if not stable:
+        state['interim_count'] = state.get('interim_count', 0) + 1
+        digest = hashlib.sha256(identity.encode('utf-8')).hexdigest()[:8]
+        stable = f"{chart_adjust.INTERIM_PREFIX}{digest}"
+        state['interim_steps'][identity] = stable
+    step = stable
     state['interim_order'] = {**order, 'step': step}
     if order.get('hero_hub_move') is True:
         _note_hero_hub_move(mem)
