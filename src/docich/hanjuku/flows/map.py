@@ -25,7 +25,7 @@ from ..os_layer.commands import (VISIBLE_LIST_RELEASE_MS, castle_list_batch, men
 from ..os_layer.navigation import (Y_JUMP_LIMIT, Y_JUMP_OFFSET, Y_JUMP_TOL, _align_on_roof, _drop_stale_y_jump, _start_y_jump,
                                    _forget_failed_jump, _want_y_jump, _y_jump_step, boss_probe_cell, nav_step,
                                    y_jump_unreachable)
-from ..os_layer.readers import (UNDER_CURSOR_PX, WORLD_MAP_OFFSET, _canonical_general, _cursor,
+from ..os_layer.readers import (UNDER_CURSOR_PX, WORLD_MAP_OFFSET, _canonical_general, _cursor, _options,
                                 _roof_under_cursor, season_sites, world_cursor, world_flags,
                                 world_markers)
 from ..os_layer.world import (NAME, _apply_season_sites, _apply_skull_boss, _apply_world_flags,
@@ -1836,11 +1836,17 @@ def _end_general_jump(screen, mem, why):
         return []
     mem['general_jump_skip'] = {'general': jump.get('general'),
                                 'tick': int(mem.get('tick') or 0)}
+    # docich#4752: for general_missing distinguish "target absent from the
+    # roster" from "target visible but selected never matched" — record the
+    # highlighted name and the visible roster rows (x=168 column).
+    rows = sorted({w for x, y, w in _options(screen) if x == 168})[:12] if screen.kind == 'text' else []
     _record(mem, 'general_jump_failed', target=jump.get('general'),
             screen=screen.kind,
             observed_metric={'why': why, 'total': jump.get('total'),
                              'phase': jump.get('phase'),
                              'scrolls': jump.get('scrolls'),
+                             'selected': screen.selected,
+                             'rows': rows,
                              'text': (screen.text or '')[:48]},
             reason='しょうぐん一覧から将軍へSELECTで飛べないため、野営探索へ戻る')
     if screen.kind in ('main_menu', 'general_list', 'castle_menu'):
