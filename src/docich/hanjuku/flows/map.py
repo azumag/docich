@@ -159,6 +159,8 @@ def observe_sortie_transition(screen, mem, previous_kind=None):
     attempt['interrupted'] = True
     mem.pop('expect_menu', None)
 WORLD_SURVEY_TICKS = 200       # observations between surveys (~5 min at 1.5 s)
+WORLD_MAP_SKULL_HOLD_LIMIT = 4  # observations a chapter-9 survey keeps the skull view open
+WORLD_MAP_ANCHOR_SETTLED_PX = 64  # Y-view world position this close to the field cursor = settled frame
 WORLD_MAP_WAIT = 4             # fade frames before giving up a reading
 WORLD_MAP_CLOSE_LIMIT = 3      # Y presses before the view is known not to close with Y
 PICKER_AXIS_SWITCH = 2         # unchanged recall-picker readings before pressing the other axis
@@ -711,9 +713,21 @@ def world_map_step(screen, mem, frame):
     # destination was aimed off-screen until this anchor was taken.
     y_cursor = world_cursor(frame) if hasattr(frame, 'pixel') else None
     y_offset = WORLD_MAP_OFFSET.get(mem.get('chapter') or 0)
+    settled = False
     if y_cursor and y_offset:
-        mem['cursor'] = [int(round((y_cursor[0] - y_offset[0]) * 8)),
-                         int(round((y_cursor[1] - y_offset[1]) * 8))]
+        previous_cursor = mem.get('cursor')
+        world = [int(round((y_cursor[0] - y_offset[0]) * 8)),
+                 int(round((y_cursor[1] - y_offset[1]) * 8))]
+        # The first Y frame can still be the camera transition: its G cursor
+        # is the old field position rather than the settled island view. The
+        # field cursor the map flow already holds is the reference that tells
+        # the two apart (g1288 2026-11-20: transition [838,568] vs field
+        # [518,436], then the next frame matched exactly).
+        if (isinstance(previous_cursor, (list, tuple)) and len(previous_cursor) == 2
+                and all(type(v) in (int, float) for v in previous_cursor)):
+            settled = (abs(world[0] - previous_cursor[0]) <= WORLD_MAP_ANCHOR_SETTLED_PX
+                       and abs(world[1] - previous_cursor[1]) <= WORLD_MAP_ANCHOR_SETTLED_PX)
+        mem['cursor'] = world
         mem['uncertain'] = False
         mem.pop('anchor', None)
         mem.pop('y_anchor_attempts', None)
@@ -747,18 +761,44 @@ def world_map_step(screen, mem, frame):
     # Chapter 9's moving boss draws chapter 3's skull with red pupils. One
     # reading only starts the streak (BOSS_SKULL_READINGS=2), so a survey
     # that closes here can never confirm a boss that moves between Y visits.
-    # Hold this same view for one observation: the identical frame supplies
-    # the second reading in the same visit.
+    # The first Y frame can still be the camera transition: its skull cell is
+    # read from the old view. A settled frame is accepted directly below; when
+    # the frame is not settled, keep the view open for a bounded number of
+    # readings until two consecutive frames agree. The old one-observation
+    # hold closed the view on the changed second cell every time (live g1288
+    # 2026-11-20: 12 surveys, every one ended after one hold with count 1, and
+    # the last cell aged out; no pursuit could start).
     streak = mem.get('boss_cell_streak') or {}
     hold = mem.get('world_map_skull_hold') or {}
     now = int(mem.get('tick') or 0)
+    # A settled frame is already authoritative: the boss moved less than one
+    # observation since the skull was drawn, so the cell is as current as the
+    # two-reading rule was. The survey cannot always supply a second readable
+    # frame (the Y view closes on its own, live g1288 2026-11-20: the first
+    # frame was settled but the next observation was already the closing
+    # fade), so accept this one rather than losing the whole survey.
+    cell = streak.get('cell')
+    if ((mem.get('chapter') or 0) == 9 and settled and streak.get('count') == 1
+            and isinstance(cell, (list, tuple)) and len(cell) == 2
+            and all(type(v) is int for v in cell)):
+        mem['boss_cell'] = {'chapter': 9, 'cell': list(cell),
+                            'tick': now, 'readings': 1}
+        mem.pop('world_map_skull_hold', None)
+        _record(mem, 'boss_cell_measured', observed_metric={
+                    'chapter': 9, 'cell': list(cell), 'readings': 1, 'settled': True},
+                resulting_event=f'boss_cell:{cell[0]},{cell[1]}',
+                reason='全島マップの遷移が終わったフレームでドクロ位置を実測した')
+        return _close_world_map(mem)
+    recent = (isinstance(hold, dict) and 0 <= now - int(hold.get('tick') or 0) <= 3)
+    reads = int(hold.get('reads') or 0) if recent else 0
     if ((mem.get('chapter') or 0) == 9 and streak.get('count') == 1
-            and not (isinstance(hold, dict)
-                     and 0 <= now - int(hold.get('tick') or 0) <= 3)):
-        mem['world_map_skull_hold'] = {'tick': now}
+            and reads < WORLD_MAP_SKULL_HOLD_LIMIT):
+        mem['world_map_skull_hold'] = {'tick': now, 'reads': reads + 1,
+                                       'cell': streak.get('cell')}
         _record(mem, 'world_map_skull_hold',
-                observed_metric={'cell': streak.get('cell'), 'count': streak.get('count')},
-                reason='第9話の移動ボスを同じ全島マップでもう1観測し、ドクロ位置の2回一致を同じ訪問で成立させる')
+                observed_metric={'cell': streak.get('cell'), 'count': streak.get('count'),
+                                 'reads': reads + 1},
+                reason='第9話の移動ボスを同じ全島マップでもう1観測し、遷移フレームを挟んでもドクロ位置の2回一致を成立させる')
         return []
     mem.pop('world_map_skull_hold', None)
     return _close_world_map(mem)
