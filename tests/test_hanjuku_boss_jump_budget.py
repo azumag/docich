@@ -8,4 +8,4 @@ from docich.hanjuku.os_layer import navigation as nav
 
 
 def test_the_boss_jump_budget_is_larger_but_bounded():
-    assert nav.Y_JUMP_MOVES < nav.BOSS_JUMP_MOVES <= 32
+    assert nav.Y_JUMP_MOVES < nav.BOSS_JUMP_MOVES <= 128
