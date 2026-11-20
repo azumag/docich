@@ -1,0 +1,11 @@
+[Unit]
+Description=Run the Hanjuku audit issue filer every five minutes
+
+[Timer]
+OnCalendar=*:0/5
+AccuracySec=30s
+Persistent=false
+Unit=docich-hanjuku-month-audit.service
+
+[Install]
+WantedBy=timers.target
