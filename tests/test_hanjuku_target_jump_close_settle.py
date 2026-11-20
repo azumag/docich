@@ -64,3 +64,35 @@ def test_the_fade_after_the_close_holds_the_default_a_boundedly():
     actions, state = decide(fade, state)
     assert actions == [pad('a')]
     assert not holds(state) and 'y_jump_target_closed' not in state['policy']
+
+
+def test_a_boss_jump_keeps_moving_past_the_castle_move_limit():
+    # g1288 2026-11-20: the boss Y jump ended 8 moves off (residual [-11.5, 3.5])
+    # and every new boss order was abandoned; a boss cell may need more steps
+    # than an ordinary castle.
+    from docich import hanjuku_chart as chart
+    chart.set_boss_cell(9, (810, 629))
+    try:
+        mem = {'chapter': 9, 'tick': 100,
+               'y_jump': {'goal': 'ボス', 'mode': 'target', 'step': 'A:x',
+                          'moves': navigation.Y_JUMP_MOVES, 'wait': 0,
+                          'tick': 100, 'seen': True}}
+        goal = navigation.boss_probe_cell(mem, 'ボス', 'A:x')
+        ox, oy = navigation.Y_JUMP_OFFSET[9]
+        far = (goal[0] / 8 + ox - 11.5, goal[1] / 8 + oy + 3.5)
+        with patch.object(navigation, 'world_cursor', return_value=far), \
+                patch.object(navigation, 'world_flags', return_value={}):
+            actions = navigation._y_jump_step(mem, object())
+        assert 'y_jump' in mem
+        assert actions
+    finally:
+        chart.set_boss_cell(9, None)
+
+
+def test_a_boss_unreachable_mark_does_not_outlive_a_fresh_cell():
+    mem = {'chapter': 9, 'tick': 300,
+           'y_jump_unreachable': {'ボス': {'count': 2, 'residual': [-11.5, 3.5], 'tick': 100}},
+           'boss_cell': {'chapter': 9, 'cell': [810, 629], 'tick': 200}}
+    assert navigation.y_jump_unreachable(mem, 'ボス') is False
+    mem['boss_cell']['tick'] = 50
+    assert navigation.y_jump_unreachable(mem, 'ボス') is True
