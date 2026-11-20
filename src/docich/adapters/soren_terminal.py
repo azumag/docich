@@ -20,10 +20,12 @@ runner is what keeps ``not terminal or runner_alive`` waiting, so
   (``game_terminal.is_terminal``: ``GAMEOVER``, or a non-founding STOP with
   ``makeSorenCount == 0`` quiet for >= 30s) is enough.
 
-Every field is compared with ``is True`` / exact types, so a truthy string,
-number or dict is never accepted, and the adapter additionally requires the
-snapshot to belong to the current request and to be fresh.  This module
-performs no I/O; the Soren adapter and its regression tests share the gate.
+This is an unwired reference predicate, not a production authorization
+for early cancellation. It performs no I/O and cannot establish snapshot
+freshness or request/generation identity. A future adapter must establish
+those properties and revalidate them atomically at cancellation time.
+Until that producer contract exists, keep the Soren early-cancel capability
+unwired and fail closed.
 """
 from __future__ import annotations
 
@@ -47,7 +49,7 @@ def _founding_witness(snapshot: Mapping) -> bool:
 
 
 def soren_round_terminal(snapshot: object) -> bool:
-    """True only when a Soren snapshot proves no boundary can still arrive.
+    """Evaluate terminal evidence in a snapshot; not a cancellation proof.
 
     ``snapshot`` is the object Soren's lifecycle broker builds from its own
     evidence (``_read_game_snapshot``); anything else -- a raw state mapping, a
