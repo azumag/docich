@@ -45,6 +45,7 @@ def test_a_field_camp_recall_is_deferred_while_boss_waves_are_in_flight():
                             'last_seen': [40, 40], 'steps': 0}
     assert recall_flow.camp_recall_step(MAP, mem, FRAME) is None
     assert 'recall' not in _flow(mem)
+    assert _flow(mem).get('recall_skip')          # do not re-detect the same tent next frame
     assert any(r['decision'] == 'camp_recall_deferred_for_boss' for r in mem['_records'])
 
 
