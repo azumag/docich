@@ -137,9 +137,11 @@ def test_the_interrupted_recall_resumes_and_reaches_a_destination(monkeypatch):
 
     # 4. 野営メニュー: 実カーソル位置を毎回観測して「きかん」（最下行）へ1押し
     #    ずつ合わせ、乗った所でAして帰還先ピッカーを開く。
-    for selected in range(3):
-        assert recall_flow._camp_recall_step(camp_menu(selected), mem, frame) == [pad('down')]
-    assert recall_flow._camp_recall_step(camp_menu(3), mem, frame) == [pad('a')]
+    # Owner 2026-11-19 (#4736): the target is いどう (row 0), so the cursor
+    # walks up and the A lands on row 0.
+    for selected in (3, 2, 1):
+        assert recall_flow._camp_recall_step(camp_menu(selected), mem, frame) == [pad('up')]
+    assert recall_flow._camp_recall_step(camp_menu(0), mem, frame) == [pad('a')]
     assert _flow(mem)['recall']['stage'] == 'dest'
 
     # 5. 帰還先決定: ピッカーのマーカーが自軍城の屋根に乗った map_target でAし、
