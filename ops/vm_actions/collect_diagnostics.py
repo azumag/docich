@@ -7957,7 +7957,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v1279-dense-boss-track",
             "hanjuku-chart-v1280-pursuit-origin-cell",
             "hanjuku-chart-v1281-unconfirmed-rearm",
-            "hanjuku-chart-v1282-boss-panel-hp",
+            "hanjuku-chart-v1289-boss-panel-hp",
             "hanjuku-chart-v1282-no-ambush-wait",
             "hanjuku-chart-v1283-boss-jump-64",
             "hanjuku-chart-v1284-pursuit-6h",
