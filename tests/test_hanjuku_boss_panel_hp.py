@@ -35,3 +35,24 @@ def test_an_invalid_hp_is_ignored():
     battle._note_boss_panel_hp(mem, fake('ハデス', 0))
     battle._note_boss_panel_hp(mem, fake('ハデス', None))
     assert 'boss_hp_seen' not in mem
+
+
+def test_malformed_history_tail_does_not_prevent_recording():
+    mem = {'chapter': 9, 'boss_hp_history': [None]}
+    battle._note_boss_panel_hp(mem, fake('ハデス', 420))
+    assert mem['boss_hp_history'][-1] == mem['boss_hp_seen']
+
+
+def test_different_boss_with_same_hp_and_general_is_recorded():
+    other = next(name for name in chart.BOSSES.values() if name != 'ハデス')
+    mem = {'chapter': 9}
+    battle._note_boss_panel_hp(mem, fake('ハデス', 420))
+    battle._note_boss_panel_hp(mem, fake(other, 420))
+    battle._note_boss_panel_hp(mem, fake(other, 420))
+    assert [row['monster'] for row in mem['boss_hp_history']] == ['ハデス', other]
+
+
+def test_missing_battle_is_ignored():
+    mem = {'chapter': 9}
+    battle._note_boss_panel_hp(mem, None)
+    assert 'boss_hp_seen' not in mem
