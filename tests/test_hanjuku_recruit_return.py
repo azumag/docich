@@ -156,3 +156,13 @@ def test_bright_month_background_without_restored_cursor_also_waits():
     assert month_sub_step(s, m) == []
     assert m['month_sub']['recruit_paid_gold'] == 182
     assert not m['month_sub'].get('aborted')
+
+
+def test_own_recruit_roster_is_not_a_foreign_purchase():
+    """#4633: the recruit candidate list 「どの しょうぐんを かいこに?」 can
+    classify as a shop kind; the own screen must not be guarded as foreign."""
+    m = memory(False)
+    for text, kind in [('どの しょうぐんを かいこに?', 'shop_list'),
+                        ('しょうぐんのぼしゅうでございますね?', 'text')]:
+        s = Screen([], None, text, kind=kind)
+        assert recruit_input_guard(s, m) is None, (kind, text)

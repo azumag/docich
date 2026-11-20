@@ -1551,6 +1551,12 @@ def recruit_input_guard(screen, mem):
     sub = mem.get('month_sub')
     if not isinstance(sub, dict) or sub.get('kind') != 'recruit':
         return None
+    # #4633: the recruit candidate roster reads like a price list
+    # (「どの しょうぐんを かいこに?」 + nameG rows) and can classify as a
+    # shop kind; that own screen must not be treated as a foreign purchase
+    # (1079 consecutive holds on the local ch1 run).
+    if screen.has('かいこに') or screen.has('ぼしゅう'):
+        return None
     if screen.kind in RECRUIT_SHOP_KINDS or screen.has('じゅうじキー'):
         return 'foreign_purchase'
     if (screen.kind == 'unknown'
