@@ -938,6 +938,14 @@ def _step_flow(screen, mem, frame, existing):
                 reason='ボス波が飛んでいるため野営帰還を保留し、フィールドをボス追撃へ明け渡す')
         return [pad('b')] if (is_camp_menu(screen) or is_fort_menu(screen)
                               or screen.kind in ('world_map', 'map_target')) else None
+    if (not state and mem.get('chapter') == 9
+            and (mem.get('boss_wave_generals') or {})
+            and isinstance(mem.get('boss_cell'), dict)):
+        # Do not start a new field-camp recall while boss waves are in flight:
+        # the tent detector would re-create the state the gate above just
+        # deferred (live g1288 2026-11-20 10:0x: camp_found/deferred repeated
+        # on every map frame, so boss_pursuit never owned the field).
+        return None
     if (not state and screen.kind == 'map' and frame is not None
             and not any(mem.get(key) for key in ('battle', 'month_sub', 'house', 'y_jump'))
             and not _plan_region(mem).get('attack')
