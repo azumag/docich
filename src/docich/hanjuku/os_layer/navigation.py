@@ -659,10 +659,24 @@ def _y_jump_step(mem, frame):
                 reason='全体マップのカーソルを目的の城に合わせて決定')
         return [pad('a')]
     jump['moves'] += 1
+    scales = jump.get('axis_scale')
+    if not (isinstance(scales, list) and len(scales) == 2):
+        scales = [1.0, 1.0]
+    prev_delta = jump.get('last_delta')
+    if isinstance(prev_delta, list) and len(prev_delta) == 2 and jump['moves'] > 1:
+        for i, (prev_d, cur_d) in enumerate(((prev_delta[0], dx), (prev_delta[1], dy))):
+            if abs(prev_d) > Y_JUMP_TOL and prev_d * cur_d < 0:
+                # Overshot the target on this axis: halve the hold gain so a
+                # fast world-map cursor converges instead of bouncing forever
+                # (#4853: 64-move left+up <-> right+down limit cycle).
+                scales[i] = max(0.08, scales[i] * 0.5)
+    jump['axis_scale'] = scales
+    jump['last_delta'] = [dx, dy]
     actions = []
-    for d, neg, pos in ((dx, 'left', 'right'), (dy, 'up', 'down')):
+    for i, (d, neg, pos) in enumerate(((dx, 'left', 'right'), (dy, 'up', 'down'))):
         if abs(d) > Y_JUMP_TOL:
-            actions.append(pad(pos if d > 0 else neg, _jump_hold_frames(d)))
+            frames = max(1, round(_jump_hold_frames(d) * scales[i]))
+            actions.append(pad(pos if d > 0 else neg, frames))
     if actions:
         mem['_nav_hold_feedback'] = {'kind': 'world_map', 'actions': actions}
     return actions
