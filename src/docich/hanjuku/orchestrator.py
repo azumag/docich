@@ -145,7 +145,7 @@ MENU_HOLD_KINDS = frozenset({
     'month_menu', 'main_menu', 'castle_menu', 'castle_info', 'general_list',
     'card_select', 'sortie_confirm', 'discharge_menu', 'shop_exit_confirm',
     'shop_quantity_prompt', 'shop_quantity', 'shop_list', 'gift_request',
-    'summer_bonus', 'yes_no', 'name_entry', 'password',
+    'summer_bonus', 'yes_no', 'name_entry', 'password_entry',
     'sealed_castle', 'boss_attack_started', 'field_encounter_started',
     'attack_started', 'defense_started', 'barrier_removed',
 })
@@ -2080,7 +2080,7 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
         actions=prompts_flow.summer_bonus_step(screen,mem)
     elif kind=='summer_bonus_message':
         actions=[pad('a')]
-    elif kind=='password':
+    elif kind=='password_entry':
         actions=prompts_flow.password_step(screen,mem)
     elif kind=='yes_no':
         actions=prompts_flow.yes_no_step(screen,mem)
