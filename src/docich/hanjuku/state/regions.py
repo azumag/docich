@@ -111,6 +111,8 @@ KEY_OWNERSHIP = {
     'boss_pursuit': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # ボス追撃probe手順状態
     'boss_pursuit_start_tick': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 追撃開始の間隔制御 (v1251)
     'boss_wave_stale_noted': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # ボス波の停滞記録 (v1257)
+    'boss_pursuit_fail_streak': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 追撃名簿失敗の連続数 (v1265)
+    'boss_pursuit_suspended': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 追撃を一時休止する期限 (v1265)
     'boss_pursuit_misses': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # ボス追撃のメニュー未出現回数
     'boss_wave_generals': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # ボス行軍将軍の追撃対象リスト
     'generals_lost': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 名簿一巡で不在と確認した将軍 (v985)

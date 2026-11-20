@@ -64,3 +64,17 @@ v1258/v1259 の後、本番で新しいボス出撃（エストラゴン、tick 
 古い波の後ろに回っていた。`_candidate` で `PURSUIT_STALE_TICKS` を超えた entry を
 個別に除外し、新鮮な波だけを追撃する。全 entry が古い場合の一括停止（v1258）は
 そのまま残る。
+
+## 追記（v1266）: 名簿ジャンプが連続で失敗したら野営経路へ明け渡す
+
+本番 g1288 17:1x〜17:2x、新しいボス波（ビシソワーズ／ジェラート）の追撃が
+毎回 `roster_unreadable` で終わった。X→しょうぐんの画面にイベント会話が出て
+名簿が読めず、一方で野営帰還は「ボス波が飛んでいる」として保留されていた。
+
+- `PURSUIT_FAIL_SUSPEND = 2` / `PURSUIT_SUSPEND_TICKS = 300`。
+  名簿系の失敗が2回続いたら `boss_pursuit_suspended` を立て、追撃を300 tick休止。
+- 休止中は `wave_active` が False になり、卵・名簿・月次・野営帰還の保留が解ける。
+  可視野営（テント）からの `いどう`→Y 経路で再照準できる。
+- 追撃が成功（redirected）したら失敗数と休止をクリア。
+- `state/regions.py` に `boss_pursuit_fail_streak` / `boss_pursuit_suspended` を宣言。
+- `tests/test_hanjuku_boss_pursuit_suspend.py`（3件）。関連 80 + 356 passed。

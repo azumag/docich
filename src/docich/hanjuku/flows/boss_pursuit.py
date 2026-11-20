@@ -43,6 +43,16 @@ PURSUIT_START_GAP = 90        # ticks between two pursuit starts (~1.5 min)
 # A wave this old is not making progress: stop chasing, let the camp recall
 # take the generals back to a castle and launch fresh sorties from there.
 PURSUIT_STALE_TICKS = 3600    # one hour without a fresh wave entry
+# Live g1288 2026-11-20 17:1x-17:2x: the roster route failed repeatedly
+# (roster_unreadable / an event dialogue where the roster should be) while the
+# camp recall was told to stand down for the "flying" waves. Nothing reached a
+# general. After two failures in a row the pursuit steps aside for a bounded
+# window so the visible-camp recall (a different menu route) can re-arm the
+# wave; the pursuit resumes afterwards.
+PURSUIT_FAIL_SUSPEND = 2
+PURSUIT_SUSPEND_TICKS = 300
+ROSTER_FAILURES = frozenset({'roster_unreadable', 'general_menu_missing',
+                             'x_not_open', 'read_limit', 'roster_top_unconfirmed'})
 # Chapter 9's boss sweeps north-south (y 157 <-> 853 in about 330 s, measured
 # 2026-11-17) while a camped general walks ~1.3 px/s. v990 tried to commit a
 # redirect only while the boss was in the northern band; the next run refuted
@@ -200,7 +210,15 @@ def wave_active(mem):
     no longer outranks them, otherwise stopping the pursuit would leave the
     field idle behind deferrals nothing serves (live g1288 2026-11-20 15:2x).
     """
-    return bool(mem.get(LIST_KEY)) and not wave_stale(mem)
+    if not mem.get(LIST_KEY) or wave_stale(mem):
+        return False
+    return not pursuit_suspended(mem)
+
+
+def pursuit_suspended(mem):
+    """The roster route failed twice; let the camp recall own the field."""
+    until = mem.get('boss_pursuit_suspended')
+    return type(until) is int and int(mem.get('tick') or 0) < until
 
 
 def _note_stale_wave(mem):
@@ -265,9 +283,26 @@ def _close(mem, probe, reason):
     entry = (mem.get(LIST_KEY) or {}).get(probe.get('general'))
     if entry is not None:
         entry['pursuit_tick'] = int(mem.get('tick') or 0)
+    _note_failure(mem, probe, reason)
     _record(mem, 'boss_pursuit_unverified', chart_step=probe.get('step'),
             general=probe.get('general'), resulting_event=reason,
             reason='将軍へのSELECTジャンプが成立しないため位置を推測せずメニューを閉じる')
+
+
+def _note_failure(mem, probe, reason):
+    if reason not in ROSTER_FAILURES:
+        return
+    streak = int(mem.get('boss_pursuit_fail_streak') or 0) + 1
+    mem['boss_pursuit_fail_streak'] = streak
+    if streak < PURSUIT_FAIL_SUSPEND:
+        return
+    now = int(mem.get('tick') or 0)
+    mem['boss_pursuit_suspended'] = now + PURSUIT_SUSPEND_TICKS
+    mem['boss_pursuit_fail_streak'] = 0
+    _record(mem, 'boss_pursuit_suspended', chart_step=probe.get('step'),
+            general=probe.get('general'),
+            observed_metric={'reason': reason, 'until': now + PURSUIT_SUSPEND_TICKS},
+            reason='名簿ジャンプが連続で成立しないため、一定時間は野営メニュー経由の再照準へ明け渡す')
 
 
 ACTIONABLE = frozenset({'map', 'main_menu', 'general_list', 'castle_menu',
@@ -280,6 +315,8 @@ def step(screen, mem, frame):
     if (mem.get('chapter') or 0) != 9:
         return None
     track(mem)
+    if pursuit_suspended(mem):
+        return None
     kind = screen.kind
     shop = mem.get('shop')
     busy = (mem.get('house') or mem.get('post_month_status')
@@ -536,6 +573,8 @@ def step(screen, mem, frame):
             entry = (mem.get(LIST_KEY) or {}).get(probe['general'])
             if entry is not None:
                 entry['pursuit_tick'] = int(mem.get('tick') or 0)
+            mem['boss_pursuit_fail_streak'] = 0
+            mem['boss_pursuit_suspended'] = None
             _record(mem, 'boss_pursuit_redirected', chart_step=probe.get('step'),
                     general=probe['general'],
                     observed_metric=_redirect_metric(mem, probe, marker),
