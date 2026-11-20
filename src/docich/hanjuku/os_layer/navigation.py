@@ -224,6 +224,7 @@ Y_JUMP_LIMIT = 6               # jumps per order and screen mode (reset when the
 Y_JUMP_TOTAL_LIMIT = 18        # jumps per order and mode for the whole run (never reset).
                                # 2 ran out mid-order and left roof walking (g421 15:25: SELECT loops)
 Y_JUMP_MOVES = 8               # D-pad steps inside one jump before confirming anyway
+BOSS_JUMP_MOVES = 14           # a moving-boss cell can sit farther from the jump origin
 Y_JUMP_WAIT = 6                # frames without a readable cursor before closing Y
 Y_JUMP_FINAL_TOL = 3.0         # view px: beyond this at the move limit the jump is abandoned
 Y_JUMP_OPEN_GRACE = 6          # observations the old screen may still show after Y
@@ -504,6 +505,15 @@ def y_jump_unreachable(mem, goal):
         return False
     now = int(mem.get('tick') or 0)
     tick = entry.get('tick')
+    if chart.is_boss_castle(goal):
+        # The mark was made against one cell of a moving boss; a fresh Y-view
+        # measurement is a different cell and must get the full (larger) boss
+        # move budget. Without this the first residual marked ボス for 1800
+        # ticks and every new boss order was abandoned.
+        reading = mem.get('boss_cell') or {}
+        measured = reading.get('tick') if isinstance(reading, dict) else None
+        if type(measured) is int and type(tick) is int and measured > tick:
+            return False
     return type(tick) is not int or now - tick < Y_JUMP_UNREACHABLE_TICKS
 
 
@@ -578,7 +588,8 @@ def _y_jump_step(mem, frame):
                 observed_metric={'moves': jump['moves'], 'stationary_reads': jump['still']},
                 reason='移動入力後も検出カーソルが動かないため決定せず閉じて通常の移動に戻る')
         return _close_target_jump(mem, jump)
-    if jump['moves'] >= Y_JUMP_MOVES and not (abs(dx) <= Y_JUMP_FINAL_TOL and abs(dy) <= Y_JUMP_FINAL_TOL):
+    limit = BOSS_JUMP_MOVES if chart.is_boss_castle(jump.get('goal') or '') else Y_JUMP_MOVES
+    if jump['moves'] >= limit and not (abs(dx) <= Y_JUMP_FINAL_TOL and abs(dy) <= Y_JUMP_FINAL_TOL):
         # Never confirm far from the goal (g419 10:49: 50 px off after a misread).
         mem.pop('y_jump', None)
         _note_failed_jump(mem, jump, 'residual')
@@ -588,7 +599,7 @@ def _y_jump_step(mem, frame):
                 reason='全体マップのカーソルが目的の城に合わないため決定せず閉じる')
         _note_unreachable_goal(mem, jump['goal'], (dx, dy), step=jump.get('step'))
         return _close_target_jump(mem, jump)
-    if (abs(dx) <= Y_JUMP_TOL and abs(dy) <= Y_JUMP_TOL) or jump['moves'] >= Y_JUMP_MOVES:
+    if (abs(dx) <= Y_JUMP_TOL and abs(dy) <= Y_JUMP_TOL) or jump['moves'] >= limit:
         mem.pop('y_jump', None)
         mem['y_jump_return'] = jump['mode']
         if jump['mode'] == 'target':
