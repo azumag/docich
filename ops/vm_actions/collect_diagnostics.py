@@ -7932,6 +7932,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v1255-unowned-recenter-periodic",
             "hanjuku-chart-v1256-event-hold-release",
             "hanjuku-chart-v1258-boss-wave-stale",
+            "hanjuku-chart-v1259-stale-wave-defer",
             "hanjuku-chart-v1257-issue-on-seal",
             "hanjuku-chart-v1158-progress-regress",
             "hanjuku-chart-v1161-refill-collapse",

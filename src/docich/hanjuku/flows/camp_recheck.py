@@ -923,7 +923,8 @@ def _step_flow(screen, mem, frame, existing):
     # boss_pursuit could not own the map). Leave the general camped; the
     # boss pursuit can send him at the boss. Hero/boss/retry recalls keep
     # their own routes.
-    if (mem.get('chapter') == 9 and (mem.get('boss_wave_generals') or {})
+    from .boss_pursuit import wave_active
+    if (mem.get('chapter') == 9 and wave_active(mem)
             and isinstance(mem.get('boss_cell'), dict)
             and state and not named and not state.get('boss') and not state.get('hero')):
         from ..decision_log import _record
@@ -939,7 +940,7 @@ def _step_flow(screen, mem, frame, existing):
         return [pad('b')] if (is_camp_menu(screen) or is_fort_menu(screen)
                               or screen.kind in ('world_map', 'map_target')) else None
     if (not state and mem.get('chapter') == 9
-            and (mem.get('boss_wave_generals') or {})
+            and wave_active(mem)
             and isinstance(mem.get('boss_cell'), dict)):
         # Do not start a new field-camp recall while boss waves are in flight:
         # the tent detector would re-create the state the gate above just

@@ -1306,8 +1306,9 @@ def step(screen, mem, frame):
     never accepts input is left (``house_idle_escape``) instead of spinning.
     """
     state = mem.get('house')
+    from .boss_pursuit import wave_active
     if (isinstance(state, dict) and mem.get('chapter') == 9
-            and (mem.get('boss_wave_generals') or {})
+            and wave_active(mem)
             and isinstance(mem.get('boss_cell'), dict)
             and state.get('phase') in HOUSE_BOSS_DEFER_PHASES):
         # The house's egg/roster walk owns the map for dozens of observations

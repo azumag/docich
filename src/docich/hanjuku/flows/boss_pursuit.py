@@ -191,6 +191,17 @@ def wave_stale(mem):
     return now - max(launched) >= PURSUIT_STALE_TICKS
 
 
+def wave_active(mem):
+    """A boss wave still deserves the field: entries exist and are fresh.
+
+    The house/roster/monthly/camp owners defer to the boss pursuit only while
+    this is true. A stale wave (see :func:`wave_stale`) keeps its entries but
+    no longer outranks them, otherwise stopping the pursuit would leave the
+    field idle behind deferrals nothing serves (live g1288 2026-11-20 15:2x).
+    """
+    return bool(mem.get(LIST_KEY)) and not wave_stale(mem)
+
+
 def _note_stale_wave(mem):
     now = int(mem.get('tick') or 0)
     if mem.get('boss_wave_stale_noted') is not None:
