@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+from docich import hanjuku_chart as chart
 from docich.hanjuku import month_audit as audit
 
 IDENTITY = {'game': 'hanjuku-hero', 'runtime_id': 'g1-abcd1234',
@@ -233,6 +234,118 @@ def test_capture_is_bounded(runtime_dir):
     assert len(value['world']['garrison']) <= 12
     assert all(len(names) <= 12 for names in value['world']['garrison'].values())
     assert len(value['world']['sorties']) <= audit.MAX_LIST
+
+
+def _boss_state(chapter=9, month='1-1', tick=0, captured=None):
+    value = state(chapter, month, tick)
+    value['policy']['captured'] = list(captured if captured is not None else chart.corridor(9))
+    value['policy']['boss_cell'] = {'cell': [10, 10], 'chapter': chapter, 'tick': 0}
+    return value
+
+
+def test_boss_phase_is_the_last_boss_target_in_chapter_nine():
+    phase = audit._boss_phase(_boss_state()['policy'])
+    assert phase['chapter'] == 9
+    assert phase['boss_name'] == 'ハデス'
+    assert phase['bosses'] == ['ボス']
+    missing = _boss_state(captured=list(chart.corridor(9))[:-1])['policy']
+    assert audit._boss_phase(missing) is None
+
+
+def test_boss_phase_generic_chapter_and_defeat():
+    chapter = 7
+    bosses = set(chart.boss_sites(chapter))
+    normal = [name for name in chart.castles(chapter) if name not in bosses]
+    value = state(chapter, '1-1', 0)
+    value['policy']['captured'] = normal
+    assert audit._boss_phase(value['policy'])['bosses'] == ['ボス']
+    value['policy']['boss_defeated'] = chapter
+    assert audit._boss_phase(value['policy']) is None
+
+
+def test_boss_phase_ends_when_the_boss_is_owned():
+    value = _boss_state()
+    value['policy']['captured'] = list(chart.corridor(9)) + ['ボス']
+    assert audit._boss_phase(value['policy']) is None
+
+
+def test_boss_battle_evidence_is_not_only_battle_start():
+    value = _boss_state()['policy']
+    assert audit._boss_battle_seen(value, [], 9, 'ハデス') is False
+    assert audit._boss_battle_seen(value, [{'decision': 'battle_start', 'enemy': 'ハデス'}],
+                                   9, 'ハデス') is True
+    value['boss_hp_seen'] = {'hp': 100, 'castle': 'ボス', 'tick': 1}
+    assert audit._boss_battle_seen(value, [], 9, 'ハデス') is True
+    value['boss_hp_seen'] = None
+    value['boss_victories'] = {'ハデス': {'tick': 1}}
+    assert audit._boss_battle_seen(value, [], 9, 'ハデス') is True
+
+
+def _run_boss(runtime, count=401, *, battle_at=None, hp=False):
+    for index in range(count):
+        at = 1000 + index * STEP
+        value = _boss_state(month='1-1', tick=index)
+        if hp:
+            value['policy']['boss_hp_seen'] = {'hp': 50, 'castle': 'ボス', 'tick': index}
+        records = []
+        if battle_at == index:
+            records = [{'decision': 'battle_start', 'enemy': 'ハデス', 'at': at}]
+        audit.observe(runtime, audit.capture(value), value, records, now=at)
+    return value
+
+
+def test_boss_phase_without_a_battle_is_recorded_after_the_grace(runtime_dir):
+    _run_boss(runtime_dir)
+    records = audit.load_incidents(runtime_dir)
+    assert len(records) == 1
+    record = records[0]
+    assert record['kind'] == 'boss_phase_no_battle'
+    assert record['confidence'] == 'high'
+    assert record['auto_file'] is True
+    assert record['boss_phase']['battle_count'] == 0
+    assert record['boss_phase']['boss_name'] == 'ハデス'
+    assert record['boss_phase']['observed_s'] >= audit.BOSS_NO_BATTLE_SECONDS
+    assert 'ボスフェーズでボス戦闘ゼロ' in audit._issue_title(record)
+    assert '### ボスフェーズ' in audit.render(record)
+
+
+def test_boss_phase_with_a_battle_is_not_recorded(runtime_dir):
+    _run_boss(runtime_dir, battle_at=100)
+    assert audit.load_incidents(runtime_dir) == []
+
+
+def test_boss_phase_with_hp_evidence_is_not_recorded(runtime_dir):
+    _run_boss(runtime_dir, hp=True)
+    assert audit.load_incidents(runtime_dir) == []
+
+
+def test_boss_render_comment_has_the_boss_line(runtime_dir):
+    _run_boss(runtime_dir)
+    record = audit.load_incidents(runtime_dir)[0]
+    text = audit.render_comment(record)
+    assert 'ボス:' in text and 'ハデス' in text
+    assert '翌5分' not in text
+
+
+def test_file_creates_a_boss_issue(runtime_dir):
+    _run_boss(runtime_dir)
+    gh = FakeGh()
+    result = audit.file_issue(runtime_dir, gh=gh, scanner=lambda path: True, now=time.time())
+    assert result['status'] == 'created'
+    create = [call for call in gh.calls if call[:2] == ['issue', 'create']]
+    assert len(create) == 1
+
+
+def test_boss_phase_leaving_clears_the_tracker(runtime_dir):
+    _run_boss(runtime_dir, count=20)
+    saved = json.loads((runtime_dir / audit.AUDIT_FILE).read_text())
+    assert saved['boss']['reported'] is False
+    value = _boss_state(tick=20)
+    value['policy']['captured'] = list(chart.corridor(9)) + ['ボス']
+    audit.observe(runtime_dir, audit.capture(value), value, [], now=1030)
+    saved = json.loads((runtime_dir / audit.AUDIT_FILE).read_text())
+    assert saved['boss'] is None
+    assert saved['last_boss']['chapter'] == 9
 
 
 def test_capture_reads_unmigrated_world_fields():

@@ -1,4 +1,4 @@
-# 半熟英雄: 月内出撃ゼロ監査（v1250）
+# 半熟英雄: 月内出撃ゼロ・ボスフェーズ無戦闘監査（v1252）
 
 ## 目的
 
@@ -41,6 +41,25 @@ JSONLで保存し、必要なときに `gh` で修正用 issue を発行する�
 `confidence` は `high / medium / low`。`observation_gap` と
 `decision_log_coverage` だけのときは `medium`、それ以外の理由が付くと `low`。
 issue化の既定は `high` のみ。
+
+## ボスフェーズ無戦闘（v1252）
+
+通常城をすべて確保し、ボスの城（第4話は四季王サイト）だけが残った状態を
+**ボスフェーズ**とする。第9話の移動ボスは街道の全城が自軍になった時点。
+ボスフェーズが600秒以上連続して観測され、その間にボス戦闘の証拠が一度も
+出なかった場合に `boss_phase_no_battle` を1回記録する。
+
+ボス戦闘の証拠（いずれか1つ）:
+
+- `battle_start` の `enemy` が章ボス名 / `BOSS_GENERALS` / `BOSS_MONSTERS`
+- `boss_hp_seen` または `boss_hp_history`（ボスHPパネルを読めた）
+- `boss_victories` または `boss_defeated`
+
+600秒はボス城への行軍・突入を待つ猶予。phaseが途切れた場合（通常城を失った、
+章が変わった、ボスを撃破した）はリセットし、同じphaseで一度だけ記録する。
+記録は `world` / `plan` / `flow` とフェーズ中の決定を含み、既定でissue対象
+（confidence high）。issue題名は
+`[半熟英雄] ボスフェーズでボス戦闘ゼロ: ch<章> <ボス名>`。
 
 ## 保存先
 
