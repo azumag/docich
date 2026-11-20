@@ -43,7 +43,13 @@ PURSUIT_START_GAP = 90        # ticks between two pursuit starts (~1.5 min)
 # spare and no second wave could start (month audit 64-3..65-x: launches 0).
 # A wave this old is not making progress: stop chasing, let the camp recall
 # take the generals back to a castle and launch fresh sorties from there.
-PURSUIT_STALE_TICKS = 3600    # one hour without a fresh wave entry
+# Owner 2026-11-21: 波状攻撃でも削れるので将軍待ちはしない. The one-hour
+# stale bound stopped the pursuit exactly when the wave needed to keep moving
+# (live g1288 02:3x-03:x: six boss contacts on the ambush cells, no battle,
+# and then the pursuit stood down because the newest entry was 1.9 hours old).
+# Keep driving the wave for six hours; truly ancient records are still skipped
+# and the roster walk drops generals that left.
+PURSUIT_STALE_TICKS = 21600
 # Owner 2026-11-16: the army reaches the moving boss from the north waypoint.
 # Chasing the boss's last measured cell lets it walk away during the march
 # (live g1288 2026-11-20: boss (938,461) -> (762,629) in ten minutes while a
@@ -55,9 +61,15 @@ PURSUIT_LEAD_MAX = 240        # px, total offset cap
 # round: re-aiming it every PURSUIT_COOLDOWN (4 min) would move it before the
 # boss arrives. Owner 2026-11-20: the track is fixed, so waiting on it is the
 # plan. Measured: the first boss contact (g1288 2026-11-20 20:46, battle_count
-# 1) came about 46 minutes after the placement; 20 minutes was too short for
-# a full lap, so the wait covers an hour.
-AMBUSH_WAIT_TICKS = 3600
+# 1) came about 46 minutes after the placement. That general had already been
+# re-aimed twice and still contacted, so re-aiming does not lose the ambush:
+# each redirect keeps the unit on a tracked cell and yields a fresh
+# unit_world reading (owner 2026-11-21 wants the placement verified). 15
+# minutes samples the placement often while staying on the orbit.
+# Owner 2026-11-21: 波状攻撃でも削れるので、将軍待ちやバルムンク待ちは絶対に
+# しない. No waiting on the orbit: re-aim every PURSUIT_COOLDOWN so the waves
+# keep hitting the boss instead of parking.
+AMBUSH_WAIT_TICKS = 0
 # Live g1288 2026-11-20 17:1x-17:2x: the roster route failed repeatedly
 # (roster_unreadable / an event dialogue where the roster should be) while the
 # camp recall was told to stand down for the "flying" waves. Nothing reached a
@@ -262,8 +274,13 @@ def ambush_contact(mem):
         if type(last) is int and now - last < PURSUIT_COOLDOWN:
             continue
         entry['contact_tick'] = now
+        metric = {'boss_cell': list(cell), 'aim': list(aim)}
+        unit = entry.get('unit_world')
+        if isinstance(unit, (list, tuple)) and len(unit) == 2:
+            metric['unit_world'] = list(unit)
+            metric['unit_dist'] = [cell[0] - unit[0], cell[1] - unit[1]]
         _record(mem, 'boss_ambush_contact', general=general,
-                observed_metric={'boss_cell': list(cell), 'aim': list(aim)},
+                observed_metric=metric,
                 reason='待ち伏せセルにボスの実測が到達した')
 
 
@@ -722,6 +739,8 @@ def step(screen, mem, frame):
             metric = _redirect_metric(mem, probe, marker)
             if placed:
                 metric['aim'] = list(placed)
+            if entry is not None and isinstance(metric.get('unit_world'), list):
+                entry['unit_world'] = list(metric['unit_world'])
             _record(mem, 'boss_pursuit_redirected', chart_step=probe.get('step'),
                     general=probe['general'],
                     observed_metric=metric,

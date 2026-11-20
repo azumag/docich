@@ -78,14 +78,13 @@ def test_generals_are_spread_over_the_track():
     assert len(points) == 3
 
 
-def test_an_ambush_placement_keeps_the_general_waiting(monkeypatch):
+def test_a_placement_no_longer_parks_the_general(monkeypatch):
+    # Owner 2026-11-21: 波状攻撃でも削れるので将軍待ちはしない. A placement
+    # must not block the next wave: the pursuit re-aims on its normal cooldown.
     mem = memory()
     entry = mem[bp.LIST_KEY]['ミント']
     entry['ambush_until'] = 10000 + bp.AMBUSH_WAIT_TICKS
     monkeypatch.setattr(bp.chart, 'moving_boss_cell', lambda ch: (900, 420))
-    assert bp.step(SimpleNamespace(kind='map', marker=None, cursor=None, text='',
-                                   hand=None, selected=None), mem, None) is None
-    entry.pop('ambush_until', None)
     assert bp.step(SimpleNamespace(kind='map', marker=None, cursor=None, text='',
                                    hand=None, selected=None), mem, None) == []
 
@@ -128,3 +127,16 @@ def test_the_redirect_keeps_the_ambush_cell_and_logs_the_aim(monkeypatch):
     record = [r for r in mem.get('_records', [])
               if r['decision'] == 'boss_pursuit_redirected'][-1]
     assert record['observed_metric']['aim'] == [800, 180]
+
+
+def test_a_contact_records_where_the_general_actually_is():
+    mem = memory()
+    entry = mem[bp.LIST_KEY]['ミント']
+    entry['ambush_cell'] = [900, 420]
+    entry['unit_world'] = [880, 400]
+    mem['boss_cell'] = {'cell': [908, 420], 'tick': 10000}
+    bp.ambush_contact(mem)
+    rec = [r for r in mem.get('_records', [])
+           if r['decision'] == 'boss_ambush_contact'][-1]
+    assert rec['observed_metric']['unit_world'] == [880, 400]
+    assert rec['observed_metric']['unit_dist'] == [28, 20]
