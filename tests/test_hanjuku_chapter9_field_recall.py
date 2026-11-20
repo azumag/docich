@@ -37,6 +37,17 @@ def test_the_boss_phase_leaves_the_field_camps_alone():
     assert orchestrator._chapter9_field_recall(_mem(captured=list(ROAD))) is False
 
 
+def test_a_field_camp_recall_is_deferred_while_boss_waves_are_in_flight():
+    mem = _mem(captured=list(ROAD),
+               boss_wave_generals={'カシス': {'step': 'A', 'launched': 1}},
+               boss_cell={'chapter': 9, 'cell': [770, 629], 'tick': 100})
+    _flow(mem)['recall'] = {'stage': 'to_camp', 'target': [40, 40],
+                            'last_seen': [40, 40], 'steps': 0}
+    assert recall_flow.camp_recall_step(MAP, mem, FRAME) is None
+    assert 'recall' not in _flow(mem)
+    assert any(r['decision'] == 'camp_recall_deferred_for_boss' for r in mem['_records'])
+
+
 def test_other_chapters_are_unchanged():
     mem = _mem()
     mem['chapter'] = 4

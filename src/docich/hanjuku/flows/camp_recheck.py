@@ -917,6 +917,22 @@ def _step_flow(screen, mem, frame, existing):
                   or state.get('recheck_tick') != queue[state['general']]['tick']):
         _flow(mem).pop('recall', None)
         return [pad('b')] if (is_camp_menu(screen) or screen.kind in ('world_map', 'map_target')) else None
+    # Boss waves with a measured cell outrank an ordinary field-camp recall:
+    # the recall walks the cursor to a tent and opens menus for a minute while
+    # the waves camp (live g1288 2026-11-20 09:10: recall true, five waves,
+    # boss_pursuit could not own the map). Leave the general camped; the
+    # boss pursuit can send him at the boss. Hero/boss/retry recalls keep
+    # their own routes.
+    if (mem.get('chapter') == 9 and (mem.get('boss_wave_generals') or {})
+            and isinstance(mem.get('boss_cell'), dict)
+            and state and not named and not state.get('boss') and not state.get('hero')):
+        from ..decision_log import _record
+        _flow(mem).pop('recall', None)
+        _record(mem, 'camp_recall_deferred_for_boss',
+                observed_metric={'camp': state.get('target'), 'stage': state.get('stage')},
+                reason='ボス波が飛んでいるため野営帰還を保留し、フィールドをボス追撃へ明け渡す')
+        return [pad('b')] if (is_camp_menu(screen) or is_fort_menu(screen)
+                              or screen.kind in ('world_map', 'map_target')) else None
     if (not state and screen.kind == 'map' and frame is not None
             and not any(mem.get(key) for key in ('battle', 'month_sub', 'house', 'y_jump'))
             and not _plan_region(mem).get('attack')
