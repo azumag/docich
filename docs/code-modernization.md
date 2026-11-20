@@ -131,6 +131,15 @@ Claude Codeプラグインを起動する前の、手動での隔離単体テス
 
 これは既存テストの基準と一部の感度確認にすぎない。プラグインのインストール・preflight・assess・verify、旧新比較、全体CI、実機統合、独立レビュー、本番反映はこの記録では未実施。`PROVEN` 判定や人による承認・署名は付与していない。
 
+## 実CLI preflight の追記（2026-10-21 JST）
+
+PR #2219 の [実行報告](https://github.com/azumag/docich/pull/2219#issuecomment-6308539936) に基づく記録。Claude Code 2.1.306 と code-modernization 1.0.0 を隔離 workspace の local scope に導入し、telemetry を無効化した。既存 user plugins は変更していない。
+
+- main `977ca219` の対象2ファイルは上記の blob と一致し、隔離単体テストは42 passed / 0 failure / 0 skip（JUnit 照合）。
+- 実CLI preflight は初回の plugin 定義読取不足を修正して再実行。構文検証、使い捨てプロジェクトの1テスト、ソース編集拒否、実行前後の blob 一致を確認。CLI が拒否した legacy リンクは終了後に親担当が指定先を検証して作成した。これは実行記録であり、権限拒否を自動回避する手順ではない。
+- preflight の人による5回答は未回答、scc/cloc/lizard は未導入、外部 caller の影響範囲は未評価。assess・verify・依存追加・ソース変更・本番操作は未実施。PROVEN や計画承認済みとは扱わない。
+- この checkout の project 設定で有効化された plugin の hook は、当該プラグインを読み込む他の Claude Code セッションにも適用され得る。local scope の試行結果は project scope での検証に代わらない。
+
 ## 証拠の公開範囲
 
 `legacy/`、`analysis/`、`modernized/` と個人の `.claude/settings.local.json` は誤追加防止のためrootでignoreする。通常は上記のようにcheckout外で作業する。レポート、テスト入力、ログ、セキュリティ指摘を一括で `git add` しない。秘密・内部運用情報・個人情報を確認したうえで、公開可能な結果・SHA・実行コマンド・制約だけをPRや `docs/` に選んで記録する。未加工の証拠は承認済みの非公開領域に置く。
