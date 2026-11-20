@@ -798,6 +798,7 @@ def battle_step(screen: Screen, mem):
                 enemy_hp=b.enemy_hp, ally_hp=b.ally_hp, castle=cur['castle'],
                 ally_soldiers=army[0], enemy_soldiers=army[1],
                 reason='戦闘パネルの将軍名とHPを確認')
+        _note_boss_panel_hp(mem, b)
         _mark_defense_seen(mem, cur)
         _tally(mem, 'battles_started')
         # 将軍 (最大HP) と携行切り札 (卵落・ID合計) の組み合わせで、この戦闘の
@@ -1983,3 +1984,31 @@ def message_step(screen: Screen, mem):
         _plan_region(mem)['attack'] = {'general': None, 'castle': castle, 'side': 'defense', 'step': None}
         return [pad('a')]
     return None
+
+
+def _note_boss_panel_hp(mem, battle):
+    """Remember the boss HP shown on an opening battle panel.
+
+    The ch9 boss (ハデス) is met by a field ambush, not a charted boss sortie,
+    so ``battle_menus.note_boss_monster_hp`` — which keys off
+    ``plan.attack.castle`` being a boss castle — never records the reading
+    (live g1288 2026-11-20 20:46: the first boss battle happened but
+    ``boss_hp_seen`` stayed None). Key off the enemy name instead so the
+    remaining HP, and whether a wave hurt the boss, is measurable.
+    """
+    enemy, hp = getattr(battle, 'enemy', None), getattr(battle, 'enemy_hp', None)
+    if not isinstance(enemy, str) or type(hp) is not int or not 0 < hp <= 9999:
+        return
+    names = set(chart.BOSSES.values()) | set(reference.BOSS_GENERALS)
+    names.add(chart.boss_castle(mem.get('chapter') or 0))
+    if enemy not in names and not reference.is_boss_target(enemy):
+        return
+    seen = {'monster': enemy, 'hp': hp, 'general': getattr(battle, 'ally', None),
+            'tick': int(mem.get('tick') or 0)}
+    mem['boss_hp_seen'] = seen
+    history = mem.get('boss_hp_history')
+    history = history if isinstance(history, list) else []
+    last = history[-1] if history else None
+    if not isinstance(last, dict) or any(last.get(key) != seen[key] for key in ('monster', 'hp', 'general')):
+        history.append(seen)
+        mem['boss_hp_history'] = history[-8:]
