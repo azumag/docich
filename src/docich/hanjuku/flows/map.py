@@ -2270,13 +2270,6 @@ def map_step(screen: Screen, mem, frame):
         if (mem.get('chart_adjust') or {}).get('request_id') == chart_adjust.request_id(mem):
             _off_chart(mem)
             order = _order(mem) or next_order(mem) or order
-    if order is None and _cursor(screen) and not screen.marker and _world_map_wanted(mem):
-        # Before choosing what to do next, read every castle's owner at once.
-        mem['world_map_tick'] = int(mem.get('tick') or 0)   # bounded even if Y shows nothing
-        mem.pop('world_map_due', None)
-        _record(mem, 'world_map_open', screen=screen.kind,
-                reason='全城の所有を全体マップで確認するためYを押す')
-        return [pad('y')]
     if order is None:
         from ..strategy import corridor
         # Chapter 9's march does not reopen a source list to settle an
@@ -2293,10 +2286,22 @@ def map_step(screen: Screen, mem, frame):
                                    or (_plan_region(mem).get('chart_plan') or {}).get('source') == 'mechanical'))):
             _off_chart(mem)
             order = next_order(mem) or order
-        if order is None:
-            update_world(screen, mem, frame)
-            goals.note_map_idle(mem)
-            return []           # nothing charted: let real time advance
+    if order is None and _cursor(screen) and not screen.marker and _world_map_wanted(mem):
+        # Before choosing what to do next, read every castle's owner at once.
+        # Order evaluation runs first: a startable sortie must not wait behind
+        # the owner survey (g1190 ch1v4: world_map_open / units / skull_hold
+        # repeated while next_order held a pending interim order, and months
+        # passed with no departure — docich#4826).
+        mem['world_map_tick'] = int(mem.get('tick') or 0)   # bounded even if Y shows nothing
+        mem.pop('world_map_due', None)
+        _record(mem, 'world_map_open', screen=screen.kind,
+                reason='全城の所有を全体マップで確認するためYを押す')
+        return [pad('y')]
+    if order is None:
+        update_world(screen, mem, frame)
+        goals.note_map_idle(mem)
+        return []           # nothing charted: let real time advance
+    if order is not None:
         if not _order_start_due(mem, order['step']):
             _tally(mem, 'map_hold_order_due')
             return []
