@@ -7931,6 +7931,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v1254-pursuit-own-yjump",
             "hanjuku-chart-v1255-unowned-recenter-periodic",
             "hanjuku-chart-v1256-event-hold-release",
+            "hanjuku-chart-v1257-defense-egg-kit",
             "hanjuku-chart-v1158-progress-regress",
             "hanjuku-chart-v1161-refill-collapse",
             "hanjuku-chart-v1160-chapter-probe-field",

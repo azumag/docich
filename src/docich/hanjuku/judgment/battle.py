@@ -911,7 +911,15 @@ def _egg_threat(triggers):
 def _carried_kit(mem, cur):
     """この戦闘で実際に携行している切り札。出撃注文が特定できない戦闘は None。"""
     order = _order_for_step(mem, cur.get('step'))
-    return None if order is None else _deploy_cards(order, mem)
+    if order is not None:
+        return _deploy_cards(order, mem)
+    # #4456: a defense battle has no launched order; the observed castle card
+    # stock is what the defender can field, so model it as the carried kit.
+    if cur.get('side') == 'defense':
+        stock = mem.get('card_stock') if isinstance(mem.get('card_stock'), dict) else {}
+        return [name for name, n in stock.items()
+                if type(n) is int and n > 0 for _ in range(n)]
+    return None
 
 
 # #4456: a defense battle has no sortie order, so its kit is unknown until the
