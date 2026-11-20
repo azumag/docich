@@ -1555,7 +1555,7 @@ def recruit_input_guard(screen, mem):
     # (「どの しょうぐんを かいこに?」 + nameG rows) and can classify as a
     # shop kind; that own screen must not be treated as a foreign purchase
     # (1079 consecutive holds on the local ch1 run).
-    if screen.has('かいこに') or screen.has('ぼしゅう'):
+    if screen.has('かいこに'):
         return None
     if screen.kind in RECRUIT_SHOP_KINDS or screen.has('じゅうじキー'):
         return 'foreign_purchase'
