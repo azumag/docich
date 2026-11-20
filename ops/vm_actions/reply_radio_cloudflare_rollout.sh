@@ -63,6 +63,9 @@ for name, code in (
     if state.get(name) is not True:
         raise SystemExit(code)
 PY
+# Codes 73–76 identify known missing capabilities. Unexpected readiness
+# failures (e.g. Python import/runtime errors, normally exit 1) propagate
+# unchanged as infrastructure errors, before external calls or mutation.
 [[ "$capability_rc" -eq 0 ]] || exit "$capability_rc"
 
 # readiness verifies exactly one direct credential namespace. If the selected
