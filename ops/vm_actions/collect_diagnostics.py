@@ -7923,6 +7923,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v1246-recall-goal-diag",
             "hanjuku-chart-v1247-recall-unconfirmed",
             "hanjuku-chart-v1248-unowned-scene-settle",
+            "hanjuku-chart-v1249-text-menu-settle",
             "hanjuku-chart-v1158-progress-regress",
             "hanjuku-chart-v1161-refill-collapse",
             "hanjuku-chart-v1160-chapter-probe-field",
