@@ -1592,6 +1592,60 @@ def _rearm_phantom_boss_steps(mem):
                 reason='行軍記録が消えたボスstepは完了できないため、次の出撃のために開き直す')
 
 
+def _clear_stale_pending_overrides(mem):
+    """Drop stale general_override entries on unstarted pending orders (#4849).
+
+    A cancelled/interrupted move or rebuilt mechanical plan can keep an old
+    ``general_override[step]`` pointing at a general who has already left the
+    source castle (g1190 ch9 34-x..35-12: all 8 イソ->イデ！ orders were
+    pinned to シフォン/チキータ even though 8 other generals stood at イソ,
+    so ``_source_spare_missing`` rejected every order forever). Only clear
+    when the order is unstarted (not active, status None/'pending', no live
+    sortie) and the source castle's confirmed garrison does not hold the
+    overridden general.
+    """
+    overrides = _plan_region(mem).get('general_override')
+    if not isinstance(overrides, dict) or not overrides:
+        return []
+    status = _plan_region(mem).get('orders') or {}
+    active = _plan_region(mem).get('active')
+    sorties = _world(mem).get('sorties') or {}
+    garrison = _world(mem).get('garrison') or {}
+    unavailable = _en_route(mem)[0] | set(_world(mem).get('general_location_unknown') or ())
+    current = list(_orders(mem))
+    steps = {o['step'] for o in current if isinstance(o, dict) and o.get('step')}
+    retries = [o for step, o in (_world(mem).get('launched_orders') or {}).items()
+               if step not in steps and status.get(step) == 'pending']
+    cleared = []
+    for order in (*current, *retries):
+        if not isinstance(order, dict):
+            continue
+        step = order.get('step')
+        override = overrides.get(step)
+        if not isinstance(override, str) or not override or step == active:
+            continue
+        if status.get(step) not in (None, 'pending'):
+            continue
+        sortie = sorties.get(step)
+        if isinstance(sortie, dict) and sortie.get('status') in ('en_route', 'launched_unconfirmed'):
+            continue
+        source = _source(order, mem)
+        present = garrison.get(source)
+        if not isinstance(present, (list, tuple)):
+            continue
+        partial = (_world(mem).get('garrison_partial') or {}).get(source) or ()
+        if override in present or override in partial or override in unavailable:
+            continue
+        overrides.pop(step, None)
+        cleared.append(step)
+        _record(mem, 'stale_general_override_cleared', chart_step=step,
+                general=order.get('general'), target=order.get('target'),
+                observed_metric={'stale_override': override, 'source': source,
+                                 'present': list(present)[:8]},
+                reason='未発射注文に残った不在将軍のgeneral_overrideを解除し、現在の駐留将軍で出撃可能にする')
+    return cleared
+
+
 def next_order(mem):
     # A measured しんぐんちゅうです reading restarts the age of a live march
     # before the fixed windows can relaunch it while it is still walking.
@@ -1602,6 +1656,7 @@ def next_order(mem):
     _relaunch_overdue_march(mem)
     _expire_spent_sorties(mem)
     _redirect_blocked_sources(mem)
+    _clear_stale_pending_overrides(mem)
     # The maintenance above settles marches by writing 'failed' directly;
     # drop the settled steps' plan context in the same pass (docich#4054).
     drop_retired_step_context(mem)
@@ -2038,12 +2093,16 @@ def _source_spare_missing(order, mem, *, allow_probe=False):
     # he died, so next_order kept returning it and no fresh order ran).
     named = (_plan_region(mem).get('general_override', {}).get(order['step'])
              or order.get('general'))
+    partial = (_world(mem).get('garrison_partial') or {}).get(source) or ()
+    picked_live = (_plan_region(mem).get('active') == order.get('step')
+                   and _plan_region(mem).get('sortie_general', {}).get(order['step']) == named)
     if (present is not None and isinstance(named, str)
             and named not in (chart_adjust.PROBE_GENERAL, NAME, 'しょうぐん')
             and order.get('source_probe') is not True
             and order['step'] not in (_plan_region(mem).get('source_override') or {})
             and not chart.is_boss_castle(order.get('target'))
-            and named not in present and named not in unavailable):
+            and not picked_live
+            and named not in present and named not in partial and named not in unavailable):
         return True   # a boss retry may still substitute a fit general from the list
     if (present is not None and _unplaced_castle_generals(mem)
             and source == _arrival_castle(mem, _owned(mem))):

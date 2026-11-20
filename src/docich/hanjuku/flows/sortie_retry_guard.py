@@ -62,6 +62,7 @@ def _cancel_fingerprint(order, mem):
     owned = _owned(mem)
     return {
         'chapter': mem.get('chapter'),
+        'month': mem.get('month'),
         'source': source,
         'target': target,
         'purpose': _purpose(order),
@@ -81,6 +82,7 @@ def _launch_fingerprint(order, mem, probe):
     owned = _owned(mem)
     return {
         'chapter': mem.get('chapter'),
+        'month': mem.get('month'),
         'source': source,
         'target': target,
         'purpose': _purpose(order),
