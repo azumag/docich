@@ -564,6 +564,22 @@ def marker_castle(frame, chapter, hint=None, evidence=None):
             evidence['field'] = [round(field[0]), round(field[1])]
             evidence['distance'] = round(distance, 1)
             evidence['nearest'] = name
+        # #4745: chapters 7-12 use source-map-estimated castle cells, so a
+        # systematic chart error throws every marker out of tolerance and the
+        # monthly walk pays a status panel for each one (65 fallbacks in one
+        # walk). On those chapters accept a unique nearest castle inside a
+        # wider bound only when the runner-up is clearly farther away, so an
+        # ambiguous reading still stays unbound.
+        if chapter >= 7:
+            runner = ((ordered[1][1][0] - field[0]) ** 2
+                      + (ordered[1][1][1] - field[1]) ** 2) ** 0.5 if len(ordered) > 1 else None
+            if distance <= MAP_CASTLE_TOLERANCE * 2 and (runner is None or runner >= distance * 2):
+                if isinstance(evidence, dict):
+                    evidence['reason'] = 'out_of_tolerance_estimated_ch'
+                return {'castle': name, 'field': [round(field[0]), round(field[1])],
+                        'distance': round(distance, 1), 'marker': list(marker['box']),
+                        'offset': list(offset), 'icons': len(icons), 'point': list(point),
+                        'estimated_cell': True}
         return _why('out_of_tolerance')
     if len(ordered) > 1:
         runner = ((ordered[1][1][0] - field[0]) ** 2
