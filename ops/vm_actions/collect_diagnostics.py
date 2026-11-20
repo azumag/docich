@@ -7937,6 +7937,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v1257-issue-on-seal",
             "hanjuku-chart-v1260-marker-est-tol",
             "hanjuku-chart-v1261-pursuit-skip-stale",
+            "hanjuku-chart-v1262-recruit-own-screen",
             "hanjuku-chart-v1158-progress-regress",
             "hanjuku-chart-v1161-refill-collapse",
             "hanjuku-chart-v1160-chapter-probe-field",
