@@ -48,6 +48,7 @@ AUDIT_FILE = 'hanjuku_month_audit.json'
 LOG_NAME = 'hanjuku_month_audit'
 TITLE_PREFIX = '[半熟英雄] 月内出撃ゼロ'
 AFTER_WINDOW_SECONDS = 300
+BOSS_NO_BATTLE_SECONDS = 600
 MIN_MONTH_SECONDS = 120
 MAX_GAP_SECONDS = 60
 MIN_OBSERVATIONS = 20
@@ -79,6 +80,10 @@ SIGNAL_LABELS = {
     'no_source': '出撃元の将軍がいない',
     'stuck_march': '行軍が停滞',
     'ledger_unknown': '月内出撃数を確認できない',
+    'boss_no_battle': 'ボス戦闘が発生しない',
+    'boss_cell_missing': 'ボス位置が未測定',
+    'boss_hp_missing': 'ボスHPが未観測',
+    'boss_pursuit_idle': 'ボス追跡が動いていない',
     'unknown': '原因未分類',
 }
 SIGNAL_ORDER = tuple(SIGNAL_LABELS)
@@ -94,9 +99,14 @@ PRIMARY_LABELS = {
     'no_source': '出撃元の将軍がいない',
     'stuck_march': '行軍が停滞',
     'ledger_unknown': '月内出撃数を確認できない',
+    'boss_no_battle': 'ボス戦闘が発生しない',
+    'boss_cell_missing': 'ボス位置が未測定',
+    'boss_hp_missing': 'ボスHPが未観測',
+    'boss_pursuit_idle': 'ボス追跡が動いていない',
     'unknown': '原因未分類',
 }
 PRIMARY_SIGNALS = (
+    ('boss_no_battle', ('boss_no_battle',)),
     ('plan_starved', ('plan_all_settled', 'no_orders')),
     ('departure_failure', ('order_start_without_launch', 'launch_confirmation_missing',
                            'departure_cancelled')),
@@ -333,7 +343,297 @@ def _world_snapshot(mem):
     return data
 
 
+
+def _boss_phase(mem):
+    """The boss is the only remaining target, or None.
+
+    Chapter 9's castles exclude the moving ボス tile, while chapters 1-3 and
+    5-12 keep it in the castle table and chapter 4 has four 四季王 sites.
+    The phase starts only when every non-boss castle is owned and at least
+    one boss site is still not ours. A lost normal castle leaves the phase.
+    """
+    from .. import hanjuku_chart as chart
+    chapter = mem.get('chapter')
+    if type(chapter) is not int or chapter <= 0:
+        return None
+    castles = set(chart.castles(chapter) or ())
+    bosses = set(chart.boss_sites(chapter) or ())
+    if not castles or not bosses or mem.get('boss_defeated') == chapter:
+        return None
+    owned = set(mem.get('captured') or [])
+    owned -= set(mem.get('lost') or [])
+    if not mem.get('home_lost'):
+        home = chart.home_castle(chapter)
+        if home:
+            owned.add(home)
+    normal = castles - bosses
+    if not normal or not normal <= owned:
+        return None
+    remaining = bosses - owned
+    if not remaining:
+        return None
+    return {
+        'chapter': chapter,
+        'boss_name': chart.BOSSES.get(chapter),
+        'bosses': sorted(remaining),
+        'normal_castles': len(normal),
+        'owned_count': len(owned),
+    }
+
+
+def _boss_battle_seen(mem, records, chapter, boss_name):
+    """True when this boss phase produced any observed boss fight."""
+    from .. import hanjuku_chart as chart
+    from .. import hanjuku_reference as reference
+    if mem.get('boss_defeated') == chapter:
+        return True
+    victories = mem.get('boss_victories')
+    if isinstance(victories, dict) and victories:
+        return True
+    if mem.get('boss_hp_seen') is not None:
+        return True
+    history = mem.get('boss_hp_history')
+    if isinstance(history, list) and history:
+        return True
+    boss_sites = set(chart.boss_sites(chapter) or ())
+    for row in mem.get('sortie_history') or ():
+        if isinstance(row, dict) and (row.get('target') in boss_sites
+                                      or row.get('castle') in boss_sites):
+            return True
+    boss_names = {boss_name} | set(chart.BOSSES.values()) | set(reference.BOSS_GENERALS)
+    for record in records or ():
+        if not isinstance(record, dict):
+            continue
+        if record.get('decision') == 'battle_start':
+            enemy = record.get('enemy')
+            if enemy in boss_names or reference.is_boss_target(enemy):
+                return True
+        elif record.get('decision') == 'sortie_outcome':
+            metric = record.get('observed_metric')
+            castle = record.get('castle') or (metric.get('castle')
+                                              if isinstance(metric, dict) else None)
+            if castle in boss_sites:
+                return True
+        elif record.get('decision') in ('boss_defeated', 'boss_victory', 'boss_defeated_observed'):
+            return True
+    return False
+
+
+def _rows_boss_battle(rows, chapter, boss_name):
+    """Boss battle evidence in a decision window (persisted across observations)."""
+    from .. import hanjuku_chart as chart
+    from .. import hanjuku_reference as reference
+    boss_sites = set(chart.boss_sites(chapter) or ())
+    boss_names = {boss_name} | set(chart.BOSSES.values()) | set(reference.BOSS_GENERALS)
+    for row in rows or ():
+        if not isinstance(row, dict):
+            continue
+        if row.get('decision') == 'battle_start':
+            enemy = row.get('enemy')
+            if enemy in boss_names or reference.is_boss_target(enemy):
+                return True
+        elif row.get('decision') == 'sortie_outcome':
+            metric = row.get('observed_metric')
+            castle = row.get('castle') or (metric.get('castle')
+                                           if isinstance(metric, dict) else None)
+            if castle in boss_sites:
+                return True
+        elif row.get('decision') in ('boss_defeated', 'boss_victory', 'boss_defeated_observed'):
+            return True
+    return False
+
+
+def _boss_incident_id(identity, current):
+    raw = (f"{identity.get('runtime_id')}|{identity.get('generation')}|boss|"
+           f"{current.get('chapter')}|{current.get('started_at')}")
+    return hashlib.sha256(raw.encode('utf-8')).hexdigest()[:20]
+
+
+def _build_boss_incident(runtime, state, after, records, now, current, rows=None):
+    mem = after.get('policy') or {}
+    context = _context(after)
+    if rows is None:
+        rows = _read_decisions(runtime, current.get('started_at') or now, now,
+                               state.get('identity'))
+    counts = _decision_counts(rows)
+    departures, launch_events = _departures(rows)
+    battle_starts = counts.get('battle_start', 0)
+    from .. import hanjuku_reference as reference
+    boss_battles = sum(1 for row in rows if row.get('decision') == 'battle_start'
+                       and (row.get('enemy') == current.get('boss_name')
+                            or row.get('enemy') in reference.BOSS_GENERALS))
+    signals = ['boss_no_battle']
+    if not mem.get('boss_cell'):
+        signals.append('boss_cell_missing')
+    if not (mem.get('boss_hp_seen') or mem.get('boss_hp_history')):
+        signals.append('boss_hp_missing')
+    if not any(name.startswith('boss_pursuit') for name in counts):
+        signals.append('boss_pursuit_idle')
+    for name in _signals(context, counts, 0, 0, battle_starts):
+        if name not in signals:
+            signals.append(name)
+    signals = signals[:8]
+    confidence = 'high'
+    reasons = []
+    if float(current.get('max_gap_s') or 0) > MAX_GAP_SECONDS:
+        reasons.append('observation_gap')
+    if int(current.get('observations') or 0) < 20:
+        reasons.append('few_observations')
+    if context is None:
+        reasons.append('context_missing')
+    if reasons:
+        confidence = 'medium' if reasons == ['observation_gap'] else 'low'
+    observed = state.get('observed') if isinstance(state.get('observed'), dict) else None
+    if observed is not None:
+        month = _month_summary(observed, now)
+    else:
+        month = {'chapter': current.get('chapter'), 'month': mem.get('month'),
+                 'first_at': current.get('started_at'), 'last_at': now,
+                 'closed_at': now, 'duration_s': max(0.0, now - current.get('started_at')),
+                 'first_tick': current.get('first_tick'), 'last_tick': current.get('last_tick'),
+                 'duration_ticks': None, 'observations': current.get('observations'),
+                 'max_gap_s': current.get('max_gap_s'), 'started_clean': True}
+    move_launches = sum(1 for row in rows if row.get('decision') == 'order_launched'
+                        and row.get('purpose') == 'move')
+    month_sorties = (context or {}).get('month_sorties') or {}
+    confirmed = month_sorties.get('launches') if isinstance(month_sorties, dict) else None
+    identity = state.get('identity') or {}
+    signal_text = '+'.join(signals) if signals else 'boss_no_battle'
+    record = {
+        'schema': SCHEMA,
+        'event': 'boss_phase_no_battle',
+        'kind': 'boss_phase_no_battle',
+        'confidence': confidence,
+        'confidence_reasons': reasons,
+        'chapter': current.get('chapter'),
+        'month': mem.get('month'),
+        'month_summary': month,
+        'boss_phase': {
+            'chapter': current.get('chapter'),
+            'boss_name': current.get('boss_name'),
+            'bosses': list(current.get('bosses') or []),
+            'started_at': current.get('started_at'),
+            'first_tick': current.get('first_tick'),
+            'last_at': now,
+            'last_tick': current.get('last_tick'),
+            'observed_s': max(0.0, now - (current.get('started_at') or now)),
+            'observations': current.get('observations'),
+            'max_gap_s': current.get('max_gap_s'),
+            'battle_count': 0,
+            'battle_starts': battle_starts,
+            'boss_hp_seen': mem.get('boss_hp_seen'),
+            'boss_hp_history_count': len(mem.get('boss_hp_history') or []),
+            'boss_cell': mem.get('boss_cell'),
+            'captured_count': len(mem.get('captured') or []),
+        },
+        'sorties': {
+            'confirmed': confirmed,
+            'departures': departures,
+            'launch_events': launch_events,
+            'order_start': counts.get('order_start', 0),
+            'order_launched': counts.get('order_launched', 0),
+            'battle_starts': battle_starts,
+            'boss_battles': boss_battles,
+            'moves': move_launches,
+            'house_dispatches': counts.get('goal_dispatch', 0),
+        },
+        'plan': copy.deepcopy((context or {}).get('plan') or {}),
+        'world': copy.deepcopy((context or {}).get('world') or {}),
+        'flow': copy.deepcopy((context or {}).get('flow') or {}),
+        'stats': copy.deepcopy((context or {}).get('stats') or {}),
+        'battles': {'decisions': battle_starts, 'boss_battles': boss_battles},
+        'signals': signals,
+        'decisions': {
+            'total': len(rows),
+            'counts': counts,
+            'coverage': None,
+            'before': _decision_rows(rows, 30),
+            'after': None,
+        },
+        'evidence': {
+            'runtime_dir': str(Path(runtime).name),
+            'decisions': 'hanjuku_decisions.jsonl',
+            'events': 'hanjuku_events.jsonl',
+            'frames': 'hanjuku_frames/',
+            'bot_version': current.get('bot_version') or after.get('bot_version'),
+            'identity': identity,
+        },
+        'context_missing': context is None,
+        'created_at': float(now),
+    }
+    record['incident_id'] = _boss_incident_id(identity, current)
+    record['signature'] = 'boss_no_battle'
+    record['fingerprint'] = _fingerprint(current.get('chapter'), 'boss_phase_no_battle',
+                                          ['boss_no_battle'])
+    record['auto_file'] = confidence == 'high'
+    return _shrink(record)
+
+
+def _track_boss(runtime, state, after, records, now):
+    mem = after.get('policy') or {}
+    phase = _boss_phase(mem)
+    current = state.get('boss') if isinstance(state.get('boss'), dict) else None
+    if phase is None:
+        if current:
+            state['last_boss'] = {**current, 'ended_at': now}
+            state['boss'] = None
+        return
+    restart = (not current or current.get('chapter') != phase['chapter']
+               or list(current.get('bosses') or []) != list(phase['bosses']))
+    tick = _bounded_int(mem.get('tick'), 0, 10 ** 9)
+    if restart:
+        current = {
+            'chapter': phase['chapter'],
+            'boss_name': phase['boss_name'],
+            'bosses': list(phase['bosses']),
+            'started_at': float(now),
+            'first_tick': tick,
+            'last_at': float(now),
+            'last_tick': tick,
+            'observations': 1,
+            'max_gap_s': 0.0,
+            'battle_count': 0,
+            'battle_at': None,
+            'reported': False,
+            'incident_id': None,
+            'bot_version': _bounded_text(after.get('bot_version'), 80),
+        }
+        state['boss'] = current
+    else:
+        gap = max(0.0, float(now) - float(current.get('last_at') or now))
+        current['max_gap_s'] = max(float(current.get('max_gap_s') or 0.0), gap)
+        current['last_at'] = float(now)
+        current['last_tick'] = tick
+        current['observations'] = int(current.get('observations') or 0) + 1
+        version = _bounded_text(after.get('bot_version'), 80)
+        if version:
+            current['bot_version'] = version
+    if _boss_battle_seen(mem, records, phase['chapter'], phase['boss_name']):
+        if not current.get('battle_at'):
+            current['battle_count'] = 1
+            current['battle_at'] = float(now)
+            current['battle_tick'] = tick
+        return
+    if current.get('battle_at') or current.get('reported'):
+        return
+    if float(now) - float(current.get('started_at') or now) < BOSS_NO_BATTLE_SECONDS:
+        return
+    rows = _read_decisions(runtime, current.get('started_at') or now, now,
+                           state.get('identity'))
+    if _rows_boss_battle(rows, phase['chapter'], phase['boss_name']):
+        current['battle_count'] = 1
+        current['battle_at'] = float(now)
+        current['battle_source'] = 'decision_log'
+        return
+    incident = _build_boss_incident(runtime, state, after, records, now, current, rows=rows)
+    _append_incident(runtime, incident)
+    current['reported'] = True
+    current['incident_id'] = incident.get('incident_id')
+    current['reported_at'] = float(now)
+
+
 def _context(state):
+
     """Bounded game context from one observation; never copies the whole mem."""
     if not isinstance(state, dict):
         return None
@@ -392,6 +692,7 @@ def _new_state(identity):
         'schema': SCHEMA,
         'identity': identity or {},
         'observed': None,
+        'boss': None,
         'pending': None,
         'last_close': None,
         'last_sealed': None,
@@ -964,6 +1265,7 @@ def observe(runtime, before, after, records=None, *, now=None):
         force = True
     else:
         _touch_month(observed, after, now)
+    _track_boss(runtime, state, after, records, now)
     state['write_tick'] = int(state.get('write_tick') or 0) + 1
     # The open-month counters only advance if every observation persists them:
     # a write every tenth observation restarted from the last file and could
@@ -1037,7 +1339,7 @@ def render(record):
     body = [
         f"<!-- hanjuku-month-audit fingerprint={record.get('fingerprint')} -->",
         f"<!-- hanjuku-month-audit occurrence={record.get('incident_id')} -->",
-        f"## {TITLE_PREFIX}: ch{record.get('chapter')} {record.get('month')}",
+        f"## {_issue_title(record)}",
         '',
         f"- 判定: **{kind}** (confidence: {BT}{confidence}{BT})",
         f"- シグネチャ: {labels_text}",
@@ -1046,9 +1348,22 @@ def render(record):
         f"- 出撃: 確定 {sorties.get('confirmed')} / 発射 {sorties.get('departures')} / order_start {sorties.get('order_start')} / order_launched {sorties.get('order_launched')}",
         f"- 判定理由: {', '.join(record.get('confidence_reasons') or []) or 'なし'}",
         '',
-        '### 月内の決定',
-        '',
     ]
+    boss = record.get('boss_phase') or {}
+    if boss:
+        body += [
+            '### ボスフェーズ',
+            '',
+            f"- ボス: {boss.get('boss_name') or 'ボス'} / 対象: {', '.join(boss.get('bosses') or [])}",
+            f"- 継続: {round(float(boss.get('observed_s') or 0), 1)}秒 / 観測 {boss.get('observations')}回"
+            f" / max gap {round(float(boss.get('max_gap_s') or 0), 1)}秒",
+            f"- ボス戦闘: {boss.get('battle_count')} / battle_start 全体: {boss.get('battle_starts')}",
+            f"- ボスHP観測: {bool(boss.get('boss_hp_seen') or boss.get('boss_hp_history_count'))}"
+            f" / 残りボス城: {', '.join(boss.get('bosses') or [])}",
+            '',
+        ]
+    body.append('### フェーズ中の決定' if kind == 'boss_phase_no_battle' else '### 月内の決定')
+    body.append('')
     rows, filtered = _timeline(record)
     if filtered:
         body.append('定常的な保留（situation_held など）は決定内訳に集計し、ここでは省略する。')
@@ -1059,7 +1374,7 @@ def render(record):
     ]
     for row in rows:
         body.append(f"| {_clock(row.get('at'))} | {_cell(row.get('decision'))} | {_cell(row.get('chart_step'))} | {_md(row.get('general'))} | {_md(row.get('target'))} | {_md(row.get('reason'))} |")
-    body += ['', '### 前月の計画', '',
+    body += ['', '### 現在の計画' if kind == 'boss_phase_no_battle' else '### 前月の計画', '',
              '| step | 状態 | 目的 | 出撃元 | 対象 | 将軍 |',
              '| --- | --- | --- | --- | --- | --- |']
     plan = record.get('plan') or {}
@@ -1107,7 +1422,8 @@ def render_comment(record):
     sorties = record.get('sorties') or {}
     labels = [SIGNAL_LABELS.get(name, name) for name in record.get('signals') or []]
     after = record.get('after') or {}
-    return '\n'.join([
+    boss = record.get('boss_phase') or {}
+    lines = [
         f"<!-- hanjuku-month-audit fingerprint={record.get('fingerprint')} -->",
         f"<!-- hanjuku-month-audit occurrence={record.get('incident_id')} -->",
         f"### 再発: ch{record.get('chapter')} {record.get('month')}",
@@ -1118,12 +1434,21 @@ def render_comment(record):
         f"- シグナル: {' / '.join(labels) if labels else '未分類'}",
         f"- 月: 観測 {month.get('observations')}回 / {round(float(month.get('duration_s') or 0), 1)}秒"
         f" / max gap {round(float(month.get('max_gap_s') or 0), 1)}秒",
-        f"- 翌5分: 出撃 {after.get('departures')} / 回復 {'yes' if after.get('recovered') else 'no'}",
         f"- incident_id: {BT}{record.get('incident_id')}{BT}",
-    ])
+    ]
+    if record.get('kind') == 'boss_phase_no_battle':
+        lines.insert(5, f"- ボス: {boss.get('boss_name') or 'ボス'}"
+                        f" / 継続 {round(float(boss.get('observed_s') or 0), 1)}秒")
+    else:
+        lines.insert(-1, f"- 翌5分: 出撃 {after.get('departures')}"
+                         f" / 回復 {'yes' if after.get('recovered') else 'no'}")
+    return '\n'.join(lines)
 
 
 def _issue_title(record):
+    if record.get('kind') == 'boss_phase_no_battle':
+        boss = (record.get('boss_phase') or {}).get('boss_name') or 'ボス'
+        return f"[半熟英雄] ボスフェーズでボス戦闘ゼロ: ch{record.get('chapter')} {boss}"[:100]
     label = PRIMARY_LABELS.get(record.get('signature'), '原因未分類')
     return f"{TITLE_PREFIX}: ch{record.get('chapter')} {label}"[:100]
 
