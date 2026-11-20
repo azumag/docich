@@ -651,6 +651,46 @@ class HelperCliTests(unittest.TestCase):
             HELPER_MODULE.recover(root, "failed", False)
         self.assertEqual(ctx.exception.code, HELPER_MODULE.EX_INVALID_RESULT)
 
+    def test_cli_zero_stop_recovery_preserves_active_lineage(self):
+        result = {
+            "request_id": "", "operation": "recover", "status": "succeeded",
+            "from_game": "sorengame", "to_game": None, "generation": 1,
+            "error_code": None, "detail": None,
+        }
+        cases = [
+            ({}, 9, True),
+            ({"from_game": "other"}, 9, False),
+            ({"generation": 2}, 9, False),
+            ({"generation": True}, 9, False),
+            ({"operation": "stop"}, 9, False),
+            ({"status": "failed"}, 9, False),
+            ({}, 8, False),
+        ]
+        for overrides, revision, succeeds in cases:
+            with self.subTest(overrides=overrides, revision=revision):
+                root = self._root_with_launcher()
+                write_state(root, canonical(
+                    revision=8, active=runtime(seat_generation=1),
+                    last_result={"request_id": "0f5d2a1c-3b4e-4a5d-8f6a-1b2c3d4e5f60",
+                                 "status": "failed"},
+                ))
+                post = canonical(phase="idle", revision=revision,
+                                 last_result={**result, **overrides})
+                launcher = root / HELPER_MODULE.LAUNCHER_REL
+                launcher.write_text(
+                    "#!/bin/sh\n"
+                    f"printf '%s' '{json.dumps(post)}' "
+                    f"> '{root / HELPER_MODULE.STATE_REL}'\n"
+                    "exit 0\n", encoding="utf-8",
+                )
+                launcher.chmod(0o755)
+                if succeeds:
+                    self.assertEqual(HELPER_MODULE.recover(root, "failed", False), 0)
+                else:
+                    with self.assertRaises(HELPER_MODULE.FixedRecoverExit) as ctx:
+                        HELPER_MODULE.recover(root, "failed", False)
+                    self.assertEqual(ctx.exception.code, HELPER_MODULE.EX_INVALID_RESULT)
+
     def test_cli_one_remains_pending_even_if_state_is_ready(self):
         root = self._root_with_launcher(exit_code=1)
         launcher = root / HELPER_MODULE.LAUNCHER_REL
