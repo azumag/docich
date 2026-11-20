@@ -52,8 +52,11 @@ PURSUIT_LEAD_TICKS = 360      # march time the lead covers (~6 min)
 PURSUIT_LEAD_MAX = 240        # px, total offset cap
 # A general placed on the orbit must be allowed to wait for the boss to come
 # round: re-aiming it every PURSUIT_COOLDOWN (4 min) would move it before the
-# boss arrives. This is the per-general wait after an ambush placement.
-AMBUSH_WAIT_TICKS = 1200
+# boss arrives. Owner 2026-11-20: the track is fixed, so waiting on it is the
+# plan. Measured: the first boss contact (g1288 2026-11-20 20:46, battle_count
+# 1) came about 46 minutes after the placement; 20 minutes was too short for
+# a full lap, so the wait covers an hour.
+AMBUSH_WAIT_TICKS = 3600
 # Live g1288 2026-11-20 17:1x-17:2x: the roster route failed repeatedly
 # (roster_unreadable / an event dialogue where the roster should be) while the
 # camp recall was told to stand down for the "flying" waves. Nothing reached a

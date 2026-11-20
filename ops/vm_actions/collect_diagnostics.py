@@ -7950,6 +7950,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v1272-house-marker-hint",
             "hanjuku-chart-v1273-ambush-contact",
             "hanjuku-chart-v1274-boss-jump-moves",
+            "hanjuku-chart-v1275-ambush-wait",
             "hanjuku-chart-v1158-progress-regress",
             "hanjuku-chart-v1161-refill-collapse",
             "hanjuku-chart-v1160-chapter-probe-field",
