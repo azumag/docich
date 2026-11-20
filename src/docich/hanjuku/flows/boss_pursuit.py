@@ -18,6 +18,7 @@ from ... import hanjuku_chart as chart
 from ..decision_log import _record
 from ..os_layer import roster as _roster
 from ..os_layer.commands import fort_list_batch, menu_to, pad
+from ..os_layer.navigation import Y_JUMP_OFFSET
 from ..os_layer.readers import (
     FORT_MENU_COMMANDS, _current, _options, fort_list_open, is_camp_menu, is_fort_menu)
 from ..state.regions import plan as _plan_region, world as _world
@@ -374,6 +375,17 @@ def _redirect_metric(mem, probe, marker):
         metric['boss_cell'] = list(cell)
         if type(reading.get('tick')) is int:
             metric['boss_cell_age'] = int(mem.get('tick') or 0) - reading['tick']
+    world = probe.get('unit_world')
+    origin = probe.get('origin_cursor')
+    if (not isinstance(world, (list, tuple)) and isinstance(origin, (list, tuple))
+            and len(origin) == 2):
+        ox, oy = Y_JUMP_OFFSET.get(9, (63.0, 47.5))
+        world = [int(round((origin[0] - ox) * 8)), int(round((origin[1] - oy) * 8))]
+    if isinstance(world, (list, tuple)) and len(world) == 2:
+        metric['unit_world'] = list(world)
+        aim = probe.get('aim_cell')
+        if isinstance(aim, (list, tuple)) and len(aim) == 2:
+            metric['unit_to_aim'] = [aim[0] - world[0], aim[1] - world[1]]
     if isinstance(unit, (list, tuple)) and len(unit) == 2:
         metric['unit_cell'] = list(unit)
         if 'boss_cell' in metric:
@@ -602,6 +614,15 @@ def step(screen, mem, frame):
 
     if probe['phase'] == 'field_open':
         if kind == 'map':
+            # The SELECT jump centred the view on this general; the map's own
+            # anchor estimate at this frame is the general's world cell. Keep
+            # it so the redirect record can show whether the unit really
+            # stands on its ambush cell (owner 2026-11-21: the placement was
+            # never verified, only the aim).
+            cell = mem.get('cursor')
+            if (isinstance(cell, (list, tuple)) and len(cell) == 2
+                    and all(type(v) is int for v in cell)):
+                probe['unit_world'] = list(cell)
             probe['phase'] = 'unit_move'
             return [pad('a')]
         if kind == 'text':
@@ -714,6 +735,7 @@ def step(screen, mem, frame):
             # Fixed placement on the orbit: the general waits where the boss
             # will come round instead of following today's cell.
             mem['pursuit_aim'] = list(aim)
+            probe['aim_cell'] = list(aim)
             mem.pop('pursuit_lead', None)
         else:
             mem.pop('pursuit_aim', None)

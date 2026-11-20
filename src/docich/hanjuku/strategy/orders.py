@@ -1569,7 +1569,12 @@ def _rearm_phantom_boss_steps(mem):
     rearmed = mem.setdefault('boss_step_rearm', {})
     for order in _orders(mem):
         step, target = order.get('step'), order.get('target')
-        if (status.get(step) != 'launched' or not chart.is_boss_castle(target)
+        # 'launched_unconfirmed' orphans the same way once the spend-expiry
+        # drops the sortie record: g1190 2026-11-21 イデ！→ボス stayed
+        # launched_unconfirmed ~800 ticks after the record vanished, so no
+        # wave could restart (#4832). Treat it like a phantom launch.
+        if (status.get(step) not in ('launched', 'launched_unconfirmed')
+                or not chart.is_boss_castle(target)
                 or step in sorties or _boss_fight_live(mem, step)):
             continue
         tick = started.get(step)

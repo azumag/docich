@@ -1,0 +1,17 @@
+"""The ch9 boss track is sampled densely while a wave is out.
+
+Owner 2026-11-21: the trajectory and lap time must be measured; the ordinary
+five-minute survey leaves too few points on the lap to place generals.
+"""
+from docich.hanjuku.flows import map as M
+
+
+def test_a_ch9_wave_densifies_the_survey():
+    mem = {'chapter': 9, 'boss_wave_generals': {'ミント': {'step': 'A'}}}
+    assert M.survey_interval(mem) == M.BOSS_TRACK_SURVEY_TICKS
+    assert M.BOSS_TRACK_SURVEY_TICKS < M.WORLD_SURVEY_TICKS
+
+
+def test_other_chapters_keep_the_ordinary_cadence():
+    assert M.survey_interval({'chapter': 9}) == M.WORLD_SURVEY_TICKS
+    assert M.survey_interval({'chapter': 5, 'boss_wave_generals': {'x': {}}}) == M.WORLD_SURVEY_TICKS
