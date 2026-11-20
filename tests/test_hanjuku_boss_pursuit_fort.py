@@ -152,3 +152,15 @@ def test_the_list_beside_a_shifted_menu_is_still_open():
                     hand=(136, 33, 154, 46),
                     text='しゅつげきカシスこうかんピオーネ', kind='text')
     assert fort_list_open(screen) is True
+
+
+def test_an_unreadable_roster_closes_and_retries_after_a_bound():
+    # The global roster can fail the wage/hand checks for a frame or two; the
+    # probe must not wait forever inside the owner guard.
+    screen = Screen([], None, '', kind='text')
+    mem = memory(general='ギー', phase='roster', reads=1, roster_top=True)
+    for _ in range(bp.ROSTER_WAIT_LIMIT):
+        assert bp.step(screen, mem, None) == []
+    assert bp.step(screen, mem, None) == [bp.pad('b')]
+    assert mem['boss_pursuit']['phase'] == 'close'
+    assert any(r.get('resulting_event') == 'roster_unreadable' for r in mem['_records'])

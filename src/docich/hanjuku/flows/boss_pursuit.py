@@ -24,6 +24,7 @@ from ..state.regions import plan as _plan_region, world as _world
 from . import house
 
 PURSUIT_READ_LIMIT = 90
+ROSTER_WAIT_LIMIT = 6         # unparsed roster frames before closing and retrying
 PURSUIT_LIST_LIMIT = 48
 PURSUIT_COOLDOWN = 240        # ticks before the same general is pursued again
 PURSUIT_MARCH_MIN = 400       # a just-launched march is left alone this long
@@ -280,6 +281,15 @@ def step(screen, mem, frame):
         if house.roster(screen):
             probe['phase'] = 'pick'
         else:
+            # A valid-looking global roster can still fail the wage/hand
+            # checks for a frame or two; waiting forever inside the owner
+            # guard held the field with no input (live g1288 2026-11-20
+            # 10:37, ギー/バルムンク). Close and retry the X menu.
+            waits = int(probe.get('roster_waits') or 0) + 1
+            probe['roster_waits'] = waits
+            if waits > ROSTER_WAIT_LIMIT:
+                _close(mem, probe, 'roster_unreadable')
+                return [pad('b')]
             return []
 
     if probe['phase'] == 'pick':
