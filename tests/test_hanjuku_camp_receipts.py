@@ -45,18 +45,20 @@ def pending():
     return actions, state
 
 
-@pytest.mark.parametrize('selected,button', [(0, 'down'), (1, 'down'), (2, 'down'), (3, 'a')])
+# Owner 2026-11-19 (#4736): the menu target is いどう (row 0), so the cursor
+# walks up and the A lands on row 0 instead of walking down to きかん.
+@pytest.mark.parametrize('selected,button', [(0, 'a'), (1, 'up'), (2, 'up'), (3, 'up')])
 def test_recall_menu_uses_observed_cursor_instead_of_saved_down_count(selected, button):
     mem = {'chapter': 2, '_records': [], 'recall': {'stage': 'menu', 'steps': 0, 'downs': 3}}
     assert p.camp_recall_step(camp_menu(selected), mem, None) == [p.pad(button)]
-    assert _flow(mem)['recall']['stage'] == ('dest' if selected == 3 else 'menu')
+    assert _flow(mem)['recall']['stage'] == ('dest' if selected == 0 else 'menu')
 
 
 def test_repeated_same_cursor_never_becomes_confirmation_and_stops_finitely():
     mem = {'chapter': 2, 'tick': 100, '_records': [], 'recall': {'stage': 'menu', 'steps': 0}}
-    screen = camp_menu(0)
+    screen = camp_menu(3)
     for _ in range(p.RECALL_LIMIT):
-        assert p.camp_recall_step(screen, mem, None) == [p.pad('down')]
+        assert p.camp_recall_step(screen, mem, None) == [p.pad('up')]
     assert p.camp_recall_step(screen, mem, None) == [p.pad('b')]
     assert not _flow(mem).get('recall') and _flow(mem)['recall_skip']['tick'] == 100
 

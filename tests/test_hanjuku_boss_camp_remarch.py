@@ -105,8 +105,11 @@ def test_normal_recall_menu_still_picks_the_return_row():
     mem = memory()
     mem['flow'] = {'recall': {'stage': 'menu', 'steps': 0,
                               'target': [26, 66]}}
+    # Owner 2026-11-19 (#4736): the target is いどう (row 0); walk up, then A.
     assert recall_flow.camp_recall_step(
-        _camp_menu_screen(3), mem, object()) == [pad('a')]
+        _camp_menu_screen(3), mem, object()) == [pad('up')]
+    assert recall_flow.camp_recall_step(
+        _camp_menu_screen(0), mem, object()) == [pad('a')]
     assert _flow(mem)['recall']['stage'] == 'dest'
 
 
