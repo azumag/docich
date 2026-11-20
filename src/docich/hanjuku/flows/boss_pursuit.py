@@ -227,6 +227,12 @@ def _candidate(mem):
         launched = e.get('launched')
         if type(launched) is int and now - launched < PURSUIT_MARCH_MIN:
             continue
+        # A fresh wave must not be queued behind the abandoned ones: the oldest
+        # entry used to win the pick, so the new sortie waited while the stale
+        # generals were re-aimed again (live g1288 2026-11-20 15:33: エストラゴン
+        # launched, カシス from tick 1475 was still selected first).
+        if type(launched) is int and now - launched >= PURSUIT_STALE_TICKS:
+            continue
         last = e.get('pursuit_tick')
         if type(last) is int and now - last < PURSUIT_COOLDOWN:
             continue
