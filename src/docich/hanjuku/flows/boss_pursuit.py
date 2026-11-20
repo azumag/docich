@@ -55,9 +55,15 @@ PURSUIT_LEAD_MAX = 240        # px, total offset cap
 # round: re-aiming it every PURSUIT_COOLDOWN (4 min) would move it before the
 # boss arrives. Owner 2026-11-20: the track is fixed, so waiting on it is the
 # plan. Measured: the first boss contact (g1288 2026-11-20 20:46, battle_count
-# 1) came about 46 minutes after the placement; 20 minutes was too short for
-# a full lap, so the wait covers an hour.
-AMBUSH_WAIT_TICKS = 3600
+# 1) came about 46 minutes after the placement. That general had already been
+# re-aimed twice and still contacted, so re-aiming does not lose the ambush:
+# each redirect keeps the unit on a tracked cell and yields a fresh
+# unit_world reading (owner 2026-11-21 wants the placement verified). 15
+# minutes samples the placement often while staying on the orbit.
+# Owner 2026-11-21: 波状攻撃でも削れるので、将軍待ちやバルムンク待ちは絶対に
+# しない. No waiting on the orbit: re-aim every PURSUIT_COOLDOWN so the waves
+# keep hitting the boss instead of parking.
+AMBUSH_WAIT_TICKS = 0
 # Live g1288 2026-11-20 17:1x-17:2x: the roster route failed repeatedly
 # (roster_unreadable / an event dialogue where the roster should be) while the
 # camp recall was told to stand down for the "flying" waves. Nothing reached a
