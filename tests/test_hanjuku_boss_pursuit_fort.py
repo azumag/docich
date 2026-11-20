@@ -185,3 +185,17 @@ def test_a_closed_shop_kept_for_reuse_does_not_block_the_probe():
     mem['shop'] = {'closed': True, 'key': '63-1'}
     bp.step(screen, mem, None)
     assert mem['boss_pursuit']['reads'] == 2
+
+
+def test_two_missing_generals_drop_the_wave_record():
+    # The X menu lacks しょうぐん for this general; once the absence repeats
+    # the stale boss_wave_generals entry must not keep consuming pursuits
+    # (live g1288 2026-11-20 13:0x, ギー/コリアンダー).
+    screen = Screen([], None, '', kind='main_menu')
+    mem = memory(general='ギー', phase='roster')
+    assert bp.step(screen, mem, None) is not None
+    mem['boss_pursuit']['phase'] = 'roster'
+    assert bp.step(screen, mem, None) is not None
+    assert 'ギー' not in mem[bp.LIST_KEY]
+    assert any(r.get('decision') == 'boss_wave_general_missing'
+               for r in mem.get('_records') or [])

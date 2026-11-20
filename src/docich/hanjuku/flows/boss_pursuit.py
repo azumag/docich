@@ -25,6 +25,7 @@ from . import house
 
 PURSUIT_READ_LIMIT = 90
 ROSTER_WAIT_LIMIT = 6         # unparsed roster frames before closing and retrying
+BOSS_GENERAL_MISS_LIMIT = 2   # absent-from-menu sightings before dropping a stale wave
 PURSUIT_LIST_LIMIT = 48
 PURSUIT_COOLDOWN = 240        # ticks before the same general is pursued again
 PURSUIT_MARCH_MIN = 400       # a just-launched march is left alone this long
@@ -356,6 +357,19 @@ def step(screen, mem, frame):
             if move:
                 return [move]
             _close(mem, probe, 'general_menu_missing')
+            # A general that stays absent from the 将軍 menu has left the
+            # field (defeated or withdrawn); keeping the stale wave record
+            # made the pursuit loop on it and skip the live waves
+            # (live g1288 2026-11-20 13:0x, ギー/コリアンダー).
+            general = probe.get('general')
+            if general:
+                misses = mem.setdefault('boss_pursuit_misses', {})
+                misses[general] = int(misses.get(general) or 0) + 1
+                if misses[general] >= BOSS_GENERAL_MISS_LIMIT:
+                    (mem.get(LIST_KEY) or {}).pop(general, None)
+                    misses.pop(general, None)
+                    _record(mem, 'boss_wave_general_missing', general=general,
+                            reason='将軍メニューに将軍が現れないためボス波の記録を終了する')
             return [pad('b')]
         if house.roster(screen):
             probe['phase'] = 'pick'
