@@ -164,3 +164,24 @@ def test_an_unreadable_roster_closes_and_retries_after_a_bound():
     assert bp.step(screen, mem, None) == [bp.pad('b')]
     assert mem['boss_pursuit']['phase'] == 'close'
     assert any(r.get('resulting_event') == 'roster_unreadable' for r in mem['_records'])
+
+
+def test_a_shop_phase_does_not_spend_the_pursuit_reads():
+    # The monthly shop's text screens were ACTIONABLE, so a probe kept
+    # reading through them and hit read_limit before the field returned
+    # (live g1288 2026-11-20 12:2x: ギー read_limit during the shop).
+    screen = Screen([], None, '', kind='text')
+    mem = memory(general='ギー', phase='roster', reads=1)
+    mem['shop'] = {'closed': False, 'key': '63-1'}
+    assert bp.step(screen, mem, None) is None
+    assert mem['boss_pursuit']['reads'] == 1
+
+
+def test_a_closed_shop_kept_for_reuse_does_not_block_the_probe():
+    # month end keeps the shop dict with closed=True so the purchase plan can
+    # be reused; the field is back then, so the probe must keep reading.
+    screen = Screen([], None, '', kind='map')
+    mem = memory(general='ギー', phase='roster', reads=1)
+    mem['shop'] = {'closed': True, 'key': '63-1'}
+    bp.step(screen, mem, None)
+    assert mem['boss_pursuit']['reads'] == 2

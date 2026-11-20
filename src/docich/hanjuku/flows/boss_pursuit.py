@@ -217,9 +217,13 @@ def step(screen, mem, frame):
         return None
     track(mem)
     kind = screen.kind
+    shop = mem.get('shop')
     busy = (mem.get('house') or mem.get('post_month_status')
             or mem.get('month_sub') or mem.get('month_nav')
-            or mem.get('month_blind_nav'))
+            or mem.get('month_blind_nav')
+            # The shop dict survives month end with closed=True for purchase
+            # reuse, so presence alone is not screen ownership.
+            or (isinstance(shop, dict) and not shop.get('closed')))
     probe = mem.get('boss_pursuit')
     if isinstance(probe, dict):
         # A menu/battle/shop phase owns the screen now: wait it out without
