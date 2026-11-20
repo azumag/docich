@@ -942,6 +942,17 @@ def _month_chikujou(screen, mem, shop):
     from ..os_layer.roster import run_identity
     if shop.get('chikujou') != 'check':
         return None
+    # A refused list is stable while the castle set holds: the refusal was
+    # observed with this exact candidate list (live g1190 ch9: identical
+    # refusal text for 20+ months). Reopening cost ~6 s plus two
+    # chikujou_leftover records. Retry when the candidates change and every
+    # third month anyway, so a transient cause is rediscovered bounded-late.
+    refused = mem.get('chikujou_refused') or {}
+    if (refused.get('castles') == sorted(_chikujou_candidates(mem))
+            and int(refused.get('skips') or 0) < 2):
+        refused['skips'] = int(refused.get('skips') or 0) + 1
+        shop['chikujou'] = 'skipped'
+        return None
     tried = shop.setdefault('chikujou_tried', [])
     if not any(c not in tried for c in _chikujou_candidates(mem)):
         shop['chikujou'] = 'done' if shop.get('chikujou_upgrades') else 'skipped'
@@ -1522,6 +1533,7 @@ def chikujou_leftover(screen, mem) -> bool:
                 observed_metric={'text': screen.text[-60:]},
                 deviation_reason='chikujou_state_lost',
                 reason='ちくじょうの画面を方策状態なしで確認したためBで閉じる')
+    mem['chikujou_refused'] = {'castles': sorted(_chikujou_candidates(mem)), 'skips': 0}
     return True
 
 
