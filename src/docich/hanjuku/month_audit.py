@@ -63,6 +63,11 @@ DEFAULT_REPO = 'azumag/docich'
 BT = chr(96)
 LAUNCH_DECISIONS = frozenset({
     'order_launched', 'sortie_departed_observed', 'sortie_launch_confirmed',
+    # A kept march is a real departure even when the ▲ unit could not be
+    # confirmed on the Y view (g1190-ch1v4: マサラ イデ！→ボス marched while
+    # the audit read departures=0 — docich#4826). Months that only have
+    # unconfirmed launches still classify as 'unconfirmed_launches'.
+    'sortie_launch_unconfirmed_kept',
 })
 MONTH_RE = re.compile(r'^([0-9]{1,2})-([0-9]{1,2})$')
 SIGNAL_LABELS = {
