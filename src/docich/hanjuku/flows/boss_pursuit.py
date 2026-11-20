@@ -43,6 +43,13 @@ PURSUIT_START_GAP = 90        # ticks between two pursuit starts (~1.5 min)
 # A wave this old is not making progress: stop chasing, let the camp recall
 # take the generals back to a castle and launch fresh sorties from there.
 PURSUIT_STALE_TICKS = 3600    # one hour without a fresh wave entry
+# Owner 2026-11-16: the army reaches the moving boss from the north waypoint.
+# Chasing the boss's last measured cell lets it walk away during the march
+# (live g1288 2026-11-20: boss (938,461) -> (762,629) in ten minutes while a
+# march takes about six). Aim one measured displacement ahead instead, clamped
+# so the lead cell stays on the island.
+PURSUIT_LEAD_TICKS = 360      # march time the lead covers (~6 min)
+PURSUIT_LEAD_MAX = 240        # px, total offset cap
 # Live g1288 2026-11-20 17:1x-17:2x: the roster route failed repeatedly
 # (roster_unreadable / an event dialogue where the roster should be) while the
 # camp recall was told to stand down for the "flying" waves. Nothing reached a
@@ -76,6 +83,7 @@ def _drop_probe(mem):
     remembered y_jump_return / y_jumped record reads as a finished jump.
     """
     mem.pop('boss_pursuit', None)
+    mem.pop('pursuit_lead', None)
     jump = mem.get('y_jump')
     if isinstance(jump, dict) and jump.get('step') == PURSUIT_STEP:
         mem.pop('y_jump', None)
@@ -219,6 +227,32 @@ def pursuit_suspended(mem):
     """The roster route failed twice; let the camp recall own the field."""
     until = mem.get('boss_pursuit_suspended')
     return type(until) is int and int(mem.get('tick') or 0) < until
+
+
+def _lead(mem, probe):
+    """One measured boss displacement ahead, or None when it is unusable."""
+    cur = mem.get('boss_cell') or {}
+    prev = probe.get('boss_cell0') or {}
+    cell, tick = cur.get('cell'), cur.get('tick')
+    pcell, ptick = prev.get('cell'), prev.get('tick')
+    if not (isinstance(cell, (list, tuple)) and len(cell) == 2
+            and all(type(v) is int for v in cell) and type(tick) is int):
+        return None
+    if not (isinstance(pcell, (list, tuple)) and len(pcell) == 2
+            and all(type(v) is int for v in pcell) and type(ptick) is int):
+        return None
+    gap = tick - ptick
+    if gap <= 0 or gap > PURSUIT_STALE_TICKS:
+        return None
+    lx = int(round((cell[0] - pcell[0]) * PURSUIT_LEAD_TICKS / gap))
+    ly = int(round((cell[1] - pcell[1]) * PURSUIT_LEAD_TICKS / gap))
+    span = abs(lx) + abs(ly)
+    if span < 24:
+        return None
+    if span > PURSUIT_LEAD_MAX:
+        lx = int(round(lx * PURSUIT_LEAD_MAX / span))
+        ly = int(round(ly * PURSUIT_LEAD_MAX / span))
+    return (lx, ly)
 
 
 def _note_stale_wave(mem):
@@ -367,6 +401,10 @@ def step(screen, mem, frame):
             'general': general, 'step': entry.get('step'), 'phase': 'open',
             'reads': 0, 'seeks': 0, 'x_retries': 0}
         mem['boss_pursuit_start_tick'] = now
+        reading = mem.get('boss_cell') or {}
+        probe['boss_cell0'] = {'cell': list(reading.get('cell') or ()),
+                               'tick': reading.get('tick')}
+        mem.pop('pursuit_lead', None)
         _record(mem, 'boss_pursuit_queued', chart_step=entry.get('step'), general=general,
                 observed_metric={'since_last_start': now - last if type(last) is int else None},
                 reason='ボスへ出撃した将軍へX→しょうぐん→SELECTでジャンプし、動くボスの現在セルへいどうを出し直す')
@@ -580,6 +618,7 @@ def step(screen, mem, frame):
                 entry['pursuit_tick'] = int(mem.get('tick') or 0)
             mem['boss_pursuit_fail_streak'] = 0
             mem['boss_pursuit_suspended'] = None
+            mem.pop('pursuit_lead', None)
             _record(mem, 'boss_pursuit_redirected', chart_step=probe.get('step'),
                     general=probe['general'],
                     observed_metric=_redirect_metric(mem, probe, marker),
@@ -588,6 +627,9 @@ def step(screen, mem, frame):
             probe['outcome'] = 'redirected'
             return [pad('a')]
         from ..os_layer.navigation import _start_y_jump
+        lead = _lead(mem, probe)
+        if lead:
+            mem['pursuit_lead'] = list(lead)
         if (mem.get('y_jumps') or {}).get('PURSUIT:target', 0) < 3:
             return _start_y_jump(mem, pseudo, goal, 'target')
         _close(mem, probe, 'boss_jump_failed')
