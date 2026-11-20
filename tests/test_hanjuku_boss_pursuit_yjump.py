@@ -107,8 +107,9 @@ def test_read_limit_is_recorded_once_while_closing():
 
 
 def test_new_pursuit_resets_the_spent_jump_budget(monkeypatch):
+    # a fresh wave: the stale-wave gate (v1258) stops pursuit of old entries
     mem = {'chapter': 9, 'tick': 5000, 'y_jumps': {'PURSUIT:target': 3},
-           bp.LIST_KEY: {'ミント': {'step': 'A', 'launched': 0}}}
+           bp.LIST_KEY: {'ミント': {'step': 'A', 'launched': 4500}}}
     monkeypatch.setattr(bp.chart, 'moving_boss_cell', lambda ch: (1, 2))
     monkeypatch.setattr(bp, '_plan_region', lambda m: {})
     screen = SimpleNamespace(kind='map', hand=None, selected=None, text='')
