@@ -374,6 +374,15 @@ def step(screen, mem, frame):
     if probe['phase'] == 'pick':
         names = house.roster(screen)
         if names is None:
+            if kind == 'world_map':
+                # The probe has no way to read a whole-island view mid-roster,
+                # and waiting on it spends the read budget without input (live
+                # g1288 2026-11-20 16:11: a battle and the month menus
+                # interrupted the walk, the field returned as world_map and the
+                # pursuit ended read_limit). Close the view; the next field
+                # frame can start the X menu again.
+                _close(mem, probe, 'world_map_returned')
+                return [pad('y')]
             return []
         if probe['general'] not in names:
             # A loss needs a full top-to-end walk. A list opened mid-way
