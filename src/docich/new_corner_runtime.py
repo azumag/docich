@@ -532,6 +532,7 @@ def render_overlay(data: dict, corner_id: str | None = None) -> dict:
         "caveats": _caveats(data, spec),
         "limits": container.get("limitations"),
         "uncertainty": container.get("uncertainty"),
+        "figureOrDiagram": container.get("figureOrDiagram"),
     }
 
 
@@ -652,3 +653,89 @@ def validate_status(data: dict, frames=None, corner_id: str | None = None) -> di
     if sorted(frames[-1]["caveats"]) != entry["caveatKeys"]:
         raise CornerRuntimeError("corner caveats do not match the status overlay")
     return entry
+
+
+# ---------------------------------------------------------------------------
+# Theme candidate management (「構造と原理」 corner: issue #1707)
+#
+# A small, passive data layer: load the fixed theme-candidate list, enumerate
+# candidates, and select one as ``本日のテーマ`` (today's theme).  No network,
+# no LLM, no clock, no writes outside the process.  A production scheduler or
+# WebUI can call these behind its own gates to pick the theme shown by the
+# engineering corner each day.
+# ---------------------------------------------------------------------------
+
+THEME_CANDIDATE_FIXTURE = (
+    "tests",
+    "fixtures",
+    "engineering_structure_principles_corner",
+    "theme_candidates.json",
+)
+
+
+def theme_candidate_path(root: Path | None = None) -> Path:
+    root = root or repo_root()
+    return root.joinpath(*THEME_CANDIDATE_FIXTURE)
+
+
+def load_theme_candidates(root: Path | None = None) -> dict:
+    """Load the fixed theme-candidate list and validate its envelope.
+
+    Returns the parsed JSON object with a ``candidates`` list.  Each candidate
+    carries ``id``, ``title``, ``domain``, ``description`` and an optional
+    ``fixtureId`` referencing the fixed fixture that supplies its draft data.
+    """
+    path = theme_candidate_path(root)
+    if not path.is_file():
+        raise FileNotFoundError(f"missing theme candidate list: {path}")
+    data = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(data, dict):
+        raise CornerRuntimeError("theme candidate list must be a JSON object")
+    if data.get("isSyntheticFixture") is not True:
+        raise CornerRuntimeError("theme candidate list must be marked as synthetic")
+    candidates = data.get("candidates")
+    if not isinstance(candidates, list) or not candidates:
+        raise CornerRuntimeError("theme candidate list must contain at least one candidate")
+    seen: set[str] = set()
+    for cand in candidates:
+        if not isinstance(cand, dict):
+            raise CornerRuntimeError("each theme candidate must be an object")
+        cid = cand.get("id")
+        if not isinstance(cid, str) or not cid or cid in seen:
+            raise CornerRuntimeError("each theme candidate needs a unique non-empty id")
+        seen.add(cid)
+        for key in ("title", "domain", "description"):
+            if not isinstance(cand.get(key), str) or not cand.get(key).strip():
+                raise CornerRuntimeError(f"theme candidate {cid!r} needs non-empty {key}")
+    return data
+
+
+def list_theme_candidates(root: Path | None = None) -> list[dict]:
+    """Return a copy of the theme-candidate summaries (id, title, domain, description)."""
+    data = load_theme_candidates(root)
+    return [
+        {
+            "id": cand["id"],
+            "title": cand["title"],
+            "domain": cand["domain"],
+            "description": cand["description"],
+            "fixtureId": cand.get("fixtureId"),
+        }
+        for cand in data["candidates"]
+    ]
+
+
+def select_theme(candidate_id: str, root: Path | None = None) -> dict:
+    """Select one theme candidate by id and return its full record.
+
+    Raises ``CornerRuntimeError`` when the id is unknown.  The caller then
+    resolves the candidate's ``fixtureId`` (if any) through ``load_corner_fixture``
+    to obtain the draft data for the selected theme.
+    """
+    if not isinstance(candidate_id, str) or not candidate_id:
+        raise CornerRuntimeError("theme candidate id must be a non-empty string")
+    data = load_theme_candidates(root)
+    for cand in data["candidates"]:
+        if cand.get("id") == candidate_id:
+            return dict(cand)
+    raise CornerRuntimeError(f"unknown theme candidate id: {candidate_id!r}")

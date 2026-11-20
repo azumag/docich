@@ -1,0 +1,49 @@
+{
+  "schemaVersion": 1,
+  "corner": "engineering",
+  "fixtureId": "fixed-engineering-theme-candidates-001",
+  "isSyntheticFixture": true,
+  "scopeNote": "Non-production synthetic theme candidate list for the 「構造と原理」 engineering corner. Candidates are planning input only; titles/URLs/quantities must not be presented as verified engineering data.",
+  "candidates": [
+    {
+      "id": "train-nose-air-pressure",
+      "title": "高速列車の先端形状とトンネル進入時の空気圧",
+      "domain": "railway",
+      "description": "高速列車がトンネルに入る際の圧力波、微気圧波、騒音を先端形状と断面積変化の設計で抑える。",
+      "fixtureId": "fixed-engineering-structure-principles-001"
+    },
+    {
+      "id": "bridge-seismic-safety",
+      "title": "橋梁の耐震・免震構造と安全設計",
+      "domain": "architecture",
+      "description": "橋の耐震・免震設計、基礎・支承・上部構造、地震時の変形と安全余裕。",
+      "fixtureId": null
+    },
+    {
+      "id": "circuit-power-electronics",
+      "title": "電力変換回路の損失・ノイズ・熱設計",
+      "domain": "electronics",
+      "description": "スイッチング電源・インバータの回路構造、損失・ノイズ・熱対策、保護協調。",
+      "fixtureId": null
+    },
+    {
+      "id": "information-system-architecture",
+      "title": "情報システムの構造と故障・冗長設計",
+      "domain": "information_engineering",
+      "description": "システム構成要素、入力→機構→出力、故障モード、冗長・フェイルセーフ設計。",
+      "fixtureId": null
+    },
+    {
+      "id": "dam-water-pressure",
+      "title": "ダム構造物の水圧・安定・安全設計",
+      "domain": "mega_infrastructure",
+      "description": "重力式ダムの水圧・すべり・転倒安定、ひび割れ・漏水、監視と保守計画。",
+      "fixtureId": null
+    }
+  ],
+  "nonProductionAcceptance": {
+    "requiresReviewerApproval": true,
+    "mustNotPresentSyntheticAsReal": true,
+    "mustKeepSourceUrls": true
+  }
+}
