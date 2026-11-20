@@ -127,3 +127,16 @@ def test_the_redirect_keeps_the_ambush_cell_and_logs_the_aim(monkeypatch):
     record = [r for r in mem.get('_records', [])
               if r['decision'] == 'boss_pursuit_redirected'][-1]
     assert record['observed_metric']['aim'] == [800, 180]
+
+
+def test_a_contact_records_where_the_general_actually_is():
+    mem = memory()
+    entry = mem[bp.LIST_KEY]['ミント']
+    entry['ambush_cell'] = [900, 420]
+    entry['unit_world'] = [880, 400]
+    mem['boss_cell'] = {'cell': [908, 420], 'tick': 10000}
+    bp.ambush_contact(mem)
+    rec = [r for r in mem.get('_records', [])
+           if r['decision'] == 'boss_ambush_contact'][-1]
+    assert rec['observed_metric']['unit_world'] == [880, 400]
+    assert rec['observed_metric']['unit_dist'] == [28, 20]
