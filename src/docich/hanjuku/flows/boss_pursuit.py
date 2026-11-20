@@ -234,6 +234,35 @@ def pursuit_suspended(mem):
     return type(until) is int and int(mem.get('tick') or 0) < until
 
 
+def ambush_contact(mem):
+    """Record a boss reading that reaches a placed ambush cell.
+
+    Owner 2026-11-20: generals wait on the measured orbit and the boss comes
+    to them. This surfaces the arrival so the run log shows whether the track
+    is really shared (contact) or the boss never comes (wrong point).
+    """
+    reading = mem.get('boss_cell') or {}
+    cell = reading.get('cell')
+    if not (isinstance(cell, (list, tuple)) and len(cell) == 2):
+        return
+    now = int(mem.get('tick') or 0)
+    for general, entry in (mem.get(LIST_KEY) or {}).items():
+        if not isinstance(entry, dict):
+            continue
+        aim = entry.get('ambush_cell')
+        if not (isinstance(aim, (list, tuple)) and len(aim) == 2):
+            continue
+        if abs(aim[0] - cell[0]) + abs(aim[1] - cell[1]) > 16:
+            continue
+        last = entry.get('contact_tick')
+        if type(last) is int and now - last < PURSUIT_COOLDOWN:
+            continue
+        entry['contact_tick'] = now
+        _record(mem, 'boss_ambush_contact', general=general,
+                observed_metric={'boss_cell': list(cell), 'aim': list(aim)},
+                reason='待ち伏せセルにボスの実測が到達した')
+
+
 def _ambush(mem, general=None):
     """A fixed point on the measured boss track for this general.
 
@@ -387,6 +416,7 @@ def step(screen, mem, frame):
     if (mem.get('chapter') or 0) != 9:
         return None
     track(mem)
+    ambush_contact(mem)
     if pursuit_suspended(mem):
         return None
     kind = screen.kind
@@ -664,9 +694,13 @@ def step(screen, mem, frame):
                     entry = (mem.get(LIST_KEY) or {}).get(probe['general'])
                 if entry is not None:
                     entry['ambush_until'] = int(mem.get('tick') or 0) + AMBUSH_WAIT_TICKS
+                    entry['ambush_cell'] = list(placed)
+            metric = _redirect_metric(mem, probe, marker)
+            if placed:
+                metric['aim'] = list(placed)
             _record(mem, 'boss_pursuit_redirected', chart_step=probe.get('step'),
                     general=probe['general'],
-                    observed_metric=_redirect_metric(mem, probe, marker),
+                    observed_metric=metric,
                     reason='将軍ジャンプした部隊のいどう先を、実測ボスセルへ合わせて確定する')
             probe['phase'] = 'close'
             probe['outcome'] = 'redirected'

@@ -88,3 +88,43 @@ def test_an_ambush_placement_keeps_the_general_waiting(monkeypatch):
     entry.pop('ambush_until', None)
     assert bp.step(SimpleNamespace(kind='map', marker=None, cursor=None, text='',
                                    hand=None, selected=None), mem, None) == []
+
+
+def test_a_boss_reading_on_the_ambush_cell_is_recorded_once():
+    mem = memory()
+    mem[bp.LIST_KEY]['ミント']['ambush_cell'] = [900, 420]
+    mem['boss_cell'] = {'cell': [908, 420], 'tick': 10000}
+    bp.ambush_contact(mem)
+    hits = [r for r in mem.get('_records', []) if r['decision'] == 'boss_ambush_contact']
+    assert len(hits) == 1
+    assert hits[0]['general'] == 'ミント'
+    bp.ambush_contact(mem)
+    assert len([r for r in mem.get('_records', [])
+                if r['decision'] == 'boss_ambush_contact']) == 1
+
+
+def test_a_far_reading_is_not_a_contact():
+    mem = memory()
+    mem[bp.LIST_KEY]['ミント']['ambush_cell'] = [900, 420]
+    mem['boss_cell'] = {'cell': [700, 300], 'tick': 10000}
+    bp.ambush_contact(mem)
+    assert not [r for r in mem.get('_records', [])
+                if r['decision'] == 'boss_ambush_contact']
+
+
+def test_the_redirect_keeps_the_ambush_cell_and_logs_the_aim(monkeypatch):
+    mem = memory(boss_pursuit={'general': 'ミント', 'step': 'A', 'phase': 'dest',
+                               'reads': 5, 'seeks': 0, 'x_retries': 0},
+                 pursuit_aim=[800, 180])
+    monkeypatch.setattr(bp.chart, 'moving_boss_cell', lambda ch: (900, 420))
+    import docich.hanjuku.flows.map as m
+    monkeypatch.setattr(m, '_target_roof_under_marker', lambda *a, **k: True)
+    picker = SimpleNamespace(kind='map_target', marker=(132, 113), cursor=None,
+                             text='', hand=None, selected=None)
+    assert bp.step(picker, mem, object()) == [bp.pad('a')]
+    entry = mem[bp.LIST_KEY]['ミント']
+    assert entry['ambush_cell'] == [800, 180]
+    assert entry['ambush_until'] == 10000 + bp.AMBUSH_WAIT_TICKS
+    record = [r for r in mem.get('_records', [])
+              if r['decision'] == 'boss_pursuit_redirected'][-1]
+    assert record['observed_metric']['aim'] == [800, 180]
