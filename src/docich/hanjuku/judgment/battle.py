@@ -15,7 +15,7 @@ from ...hanjuku_egg_reference import GENERAL_EGGS, enemy_egg_triggers, general_m
 from ... import hanjuku_chart as chart, hanjuku_reference as reference
 from ...hanjuku_egg_stock import observed_uses
 from ..decision_log import _record
-from ..os_layer.readers import CARD_NAMES
+from ..os_layer.readers import ALL_CARD_NAMES, CARD_NAMES
 from ..os_layer.world import NAME, SORTIE_BUSY_TICKS
 from ..strategy.kit import CARD_IDS, ENEMY_EGG_CARD_ID_SUM, _deploy_cards, _is_boss_order
 from ..strategy.orders import _order_for_step, _sortie_step_for, _tactics
@@ -66,15 +66,24 @@ def _boss_tactics_allowed(mem, cur):
     if cur.get('entry_evidence') == 'measured_boss_entry':
         return True
     chapter = mem.get('chapter')
+    enemy = cur.get('enemy')
     boss = chart.BOSSES.get(chapter)
-    if not boss or cur.get('enemy') != boss:
+    is_chapter_boss = bool(
+        enemy and (
+            enemy == boss
+            or (enemy in reference.BOSS_GENERALS
+                and (reference.general_profile(enemy) or {}).get('debut') == chapter)
+        )
+    )
+    if not is_chapter_boss:
         return False
     if _is_boss_order(_order_for_step(mem, cur.get('step')), mem):
         return True
     # Owner 2026-11-21: 卵を使われる前にバルムンク×2. Chapter 9's boss is met
     # by a field ambush, so there is no charted boss order; the panel reading
-    # ハデス is the authorization. Other chapters keep the matching-sortie
-    # contract (test_hanjuku_boss_events).
+    # せいめいたい (boss general) or ハデス (chart boss) is the authorization
+    # (#4855). Other chapters keep the matching-sortie contract
+    # (test_hanjuku_boss_events).
     return chapter == chart.MOVING_BOSS_CHAPTER
 
 
@@ -563,7 +572,9 @@ def _card_damage_gate(mem, cur, card, *, listed_cards=None):
         # number of クースカン selections or from inferred soldier HP loss.
         followups = []
         for other in dict.fromkeys(listed_cards):
-            if other == card or other not in CARD_NAMES or other in CARD_CONTROL_SETUP:
+            if (other == card or other not in ALL_CARD_NAMES
+                    or other in CARD_CONTROL_SETUP
+                    or (other in reference.BOSS_ONLY_CARDS and not measured_boss)):
                 continue
             predicted = reference.card_damage_estimate(other, **context)
             raw = predicted.get('raw_damage_min')
@@ -846,9 +857,11 @@ def _behind(cur: dict) -> bool:
 
 
 # Only non-sacrificial cards are eligible for automatic survival use. Rank
-# healing first, then control/damage; this is not a guaranteed damage model.
-# Effects: https://gcgx.games/hanjuku/kirihuda.html
-SURVIVAL_CARDS = ('エンジェリン', 'キャトルミュー', 'ミックミー', 'マグネガキン', 'クースカン',
+# healing first, then boss-only バルムンク (gated to measured bosses by
+# _card_damage_gate, #4855), then control/damage; this is not a guaranteed
+# damage model. Effects: https://gcgx.games/hanjuku/kirihuda.html
+SURVIVAL_CARDS = ('エンジェリン', 'バルムンク', 'キャトルミュー', 'ミックミー',
+                  'マグネガキン', 'クースカン',
                   'グリンボー', 'ゼンマイン', 'ブラッキー', 'ファイアーボイス',
                   'ハリケーン', 'ブンシーン', 'ピッグローラー', 'イッテツーン',
                   'カンケリン', 'フットバース', 'ダイチスイム', 'ノリウツール')

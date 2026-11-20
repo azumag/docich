@@ -1772,7 +1772,7 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
     # enough to let card_list_step back out with B.
     card_list=bool(flow) and kind in {'text','unknown'} and (
         (flow.get('stage') == 'list' and (kind == 'text' or flow.get('survival')))
-        or any(w in readers.CARD_NAMES for line in screen.lines for _,w in line.spans()))
+        or any(w in readers.ALL_CARD_NAMES for line in screen.lines for _,w in line.spans()))
     # Egg/card announcements and fades inside a battle are not its end; only
     # a return to the map or a following event/menu closes the record.
     if kind != 'battle_menu_pending':
