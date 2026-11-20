@@ -12,6 +12,7 @@ from ... import hanjuku_chart as chart
 from ..os_layer.world import SORTIE_BUSY_TICKS, _owned
 
 PROBE_INTERVAL = 40
+ROAD_ARRIVAL_PROBE_DELAY = 200   # ch9 road hop arrives well before SORTIE_BUSY_TICKS (800)
 
 
 ROAD_CHAPTERS = frozenset({3, 9})     # marches follow a road table, not a straight line
@@ -162,11 +163,28 @@ def arrival_probe_due(mem, castle, *, cooldown=False):
     *orders* a candidate builder mints; the order already running is not
     affected (``_source_list_open`` calls without it).
     """
-    if incoming(mem, castle) or not unread_dispatches(mem, castle):
+    now = int(mem.get('tick') or 0)
+    unread = unread_dispatches(mem, castle)
+    if not unread:
         return False
+    if incoming(mem, castle):
+        # Non-road chapters wait until every in-flight move leaves the busy
+        # window (#3515 / #2841 contract). In a road chapter (ch9), hops are
+        # short and follow-up moves run back-to-back, so waiting for incoming()
+        # to drain hides already-arrived units at the front castle (#4851).
+        last_read = (mem.get('route_probe_read_tick') or {}).get(castle)
+        road_ready = (
+            is_road(mem.get('chapter'))
+            and (last_read is None or now - int(last_read) >= PROBE_INTERVAL)
+            and any(now - sortie['tick'] >= ROAD_ARRIVAL_PROBE_DELAY
+                    or sortie.get('status') == 'overdue'
+                    for _, sortie in unread)
+        )
+        if not road_ready:
+            return False
     if cooldown:
         asked = (mem.get('arrival_probe_tick') or {}).get(castle)
-        return asked is None or int(mem.get('tick') or 0) - int(asked) >= PROBE_INTERVAL
+        return asked is None or now - int(asked) >= PROBE_INTERVAL
     return True
 
 
