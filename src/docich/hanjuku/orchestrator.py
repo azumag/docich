@@ -2130,7 +2130,13 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
         if close_hold is not None:
             actions = close_hold
         plain_text = plain_text_hold(screen)
+        # #4632: scripted event phases (concert/event/dialogue) already have a
+        # bounded advance path (legacy confirm + event_text_advance + concert
+        # picker guard). The generic unreadable-screen hold suppressed that
+        # input and froze the corner for 100+ observations.
+        event_phase = phase in EVENT_TEXT_ADVANCE_PHASES
         if (kind in {'unknown'} or plain_text) \
+                and not event_phase \
                 and (mem.get('chapter') or mem.get('resume_chapter_pending')) \
                 and (phase not in {'transition', 'title', 'title_or_intro'} or mem.get('battle')):
             hold_digest = frame.digest()
