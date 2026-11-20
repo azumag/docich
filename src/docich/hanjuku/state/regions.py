@@ -115,6 +115,7 @@ KEY_OWNERSHIP = {
     'boss_pursuit_suspended': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 追撃を一時休止する期限 (v1265)
     'pursuit_lead': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 移動ボスへの先行オフセット (v1268)
     'boss_pursuit_misses': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # ボス追撃のメニュー未出現回数
+    'password_sweep': {'region': FLOW, 'lifetime': 'run', 'migrated': False},  # パスワード掃引の有界カウンタ (v1268)
     'boss_wave_generals': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # ボス行軍将軍の追撃対象リスト
     'generals_lost': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 名簿一巡で不在と確認した将軍 (v985)
     'generals_lost_garrison': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 喪失確定時にその将軍を載せていた守備隊の城 (v994)
