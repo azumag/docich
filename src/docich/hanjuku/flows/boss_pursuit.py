@@ -18,6 +18,7 @@ from ... import hanjuku_chart as chart
 from ..decision_log import _record
 from ..os_layer import roster as _roster
 from ..os_layer.commands import fort_list_batch, menu_to, pad
+from ..os_layer.navigation import Y_JUMP_OFFSET
 from ..os_layer.readers import (
     FORT_MENU_COMMANDS, _current, _options, fort_list_open, is_camp_menu, is_fort_menu)
 from ..state.regions import plan as _plan_region, world as _world
@@ -375,6 +376,11 @@ def _redirect_metric(mem, probe, marker):
         if type(reading.get('tick')) is int:
             metric['boss_cell_age'] = int(mem.get('tick') or 0) - reading['tick']
     world = probe.get('unit_world')
+    origin = probe.get('origin_cursor')
+    if (not isinstance(world, (list, tuple)) and isinstance(origin, (list, tuple))
+            and len(origin) == 2):
+        ox, oy = Y_JUMP_OFFSET.get(9, (63.0, 47.5))
+        world = [int(round((origin[0] - ox) * 8)), int(round((origin[1] - oy) * 8))]
     if isinstance(world, (list, tuple)) and len(world) == 2:
         metric['unit_world'] = list(world)
         aim = probe.get('aim_cell')

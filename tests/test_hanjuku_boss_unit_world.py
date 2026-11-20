@@ -47,3 +47,14 @@ def test_the_redirect_metric_compares_the_unit_with_the_aim(monkeypatch):
               if r['decision'] == 'boss_pursuit_redirected'][-1]
     assert record['observed_metric']['unit_world'] == [700, 640]
     assert record['observed_metric']['unit_to_aim'] == [94, 213]
+
+
+def test_the_origin_cursor_of_the_y_jump_is_the_unit_cell():
+    # The first world-map cursor reading sits on the field view centre (the
+    # general). Convert it with the Y-view offset: (163.5,93.5) -> (804,368).
+    mem = memory()
+    probe = {'general': 'ミント', 'step': 'A', 'phase': 'dest',
+             'origin_cursor': [163.5, 93.5], 'aim_cell': [770, 853]}
+    metric = bp._redirect_metric(mem, probe, (132, 113))
+    assert metric['unit_world'] == [804, 368]
+    assert metric['unit_to_aim'] == [-34, 485]

@@ -7955,6 +7955,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v1277-unit-world",
             "hanjuku-chart-v1278-audit-unconfirmed",
             "hanjuku-chart-v1279-dense-boss-track",
+            "hanjuku-chart-v1280-pursuit-origin-cell",
             "hanjuku-chart-v1158-progress-regress",
             "hanjuku-chart-v1161-refill-collapse",
             "hanjuku-chart-v1160-chapter-probe-field",
