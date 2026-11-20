@@ -1330,6 +1330,10 @@ def classify_text(s: Screen) -> str:
         return 'barrier_removed'
     if 'なまえのかきとり' in t:
         return 'name_entry'
+    if 'パスワードヲ' in t and 'ジュンバンニ' in t:
+        # #4564: オヴァリウム入城パスワード入力。リスト+3x3グリッド画面で
+        # shop 系に誤分類されると B 連打で 300 秒停止する。
+        return 'password'
     if 'パスワードヲ' in t and 'イレテクダサイ' in t:
         # Chapter clear: the word list on the right is entered in the story's
         # order (g1190 2026-11-18 62-2: the bot pressed B there for 20 minutes).
