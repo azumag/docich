@@ -1859,6 +1859,15 @@ def _end_general_jump(screen, mem, why):
     rows = sorted({w for x, y, w in _options(screen) if x == 168})[:12] if screen.kind == 'text' else []
     seen = jump.get('seen') or []
     target_seen = any(_canonical_general(w) == jump.get('general') for w in seen)
+    if not target_seen and jump.get('scrolls', 0) >= GENERAL_JUMP_SCROLL_LIMIT:
+        # The roster was walked to the end and the target is not in it: the
+        # general left the country. The plain 200-tick skip re-armed the same
+        # absent target every minute for an hour (live g1288 2026-11-21
+        # 04:13-05:11: 50+ general_jump_failed, all target_seen=false), so
+        # remember the absence for a long window.
+        mem['general_jump_skip'] = {'general': jump.get('general'),
+                                    'tick': int(mem.get('tick') or 0),
+                                    'absent': True}
     _record(mem, 'general_jump_failed', target=jump.get('general'),
             screen=screen.kind,
             observed_metric={'why': why, 'total': jump.get('total'),
@@ -1902,12 +1911,13 @@ def general_jump_step(screen, mem, frame):
             return None
         tick = int(mem.get('tick') or 0)
         skip = mem.get('general_jump_skip') or {}
+        skip_ticks = 3600 if skip.get('absent') else 200
         general = next((_canonical_general(s['general'])
                         for s in _sorties(mem).values()
                         if isinstance(s, dict) and s.get('target') == boss_target
                         and s.get('status') == 'overdue' and s.get('general')
                         and not (skip.get('general') == _canonical_general(s['general'])
-                                 and tick - int(skip.get('tick') or 0) < 200)), None)
+                                 and tick - int(skip.get('tick') or 0) < skip_ticks)), None)
         if general is None:
             return None
         mem['general_jump'] = jump = {'general': general, 'phase': 'menu',

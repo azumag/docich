@@ -7966,6 +7966,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v1288-revert-friendly-fire-guard",
             "hanjuku-chart-v1290-frozen-boss-aim",
             "hanjuku-chart-v1290-boss-unit-contact",
+            "hanjuku-chart-v1291-gjump-absent",
             "hanjuku-chart-v1158-progress-regress",
             "hanjuku-chart-v1161-refill-collapse",
             "hanjuku-chart-v1160-chapter-probe-field",
