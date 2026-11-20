@@ -160,6 +160,11 @@ def observe_sortie_transition(screen, mem, previous_kind=None):
     attempt['interrupted'] = True
     mem.pop('expect_menu', None)
 WORLD_SURVEY_TICKS = 200       # observations between surveys (~5 min at 1.5 s)
+# Owner 2026-11-21: the ch9 boss runs a fixed track; to place generals on it
+# the trace has to be dense. While a boss wave is out, survey the whole-island
+# view far more often so boss_cell_track records the lap instead of a handful
+# of points. The ordinary 200-tick survey stays for everything else.
+BOSS_TRACK_SURVEY_TICKS = 40
 WORLD_MAP_SKULL_HOLD_LIMIT = 4  # observations a chapter-9 survey keeps the skull view open
 WORLD_MAP_ANCHOR_SETTLED_PX = 64  # Y-view world position this close to the field cursor = settled frame
 WORLD_MAP_WAIT = 4             # fade frames before giving up a reading
@@ -174,13 +179,24 @@ SELECT_FOCUS_INTERVAL = 300    # observations between hero re-focuses (~7.5 min)
 MAP_BLIND_ADVANCE = 12         # cursorless/HUD-less map reads before pressing A (#3721)
 
 
+def survey_interval(mem) -> int:
+    """Observations between whole-island surveys.
+
+    Chapter 9's moving boss needs a dense skull trace while a wave is out;
+    every other chapter keeps the ordinary cadence.
+    """
+    if (mem.get('chapter') or 0) == 9 and mem.get('boss_wave_generals'):
+        return BOSS_TRACK_SURVEY_TICKS
+    return WORLD_SURVEY_TICKS
+
+
 def _world_map_wanted(mem) -> bool:
     if (mem.get('chapter') or 0) not in WORLD_MAP_OFFSET:
         return False
     last = mem.get('world_map_tick')
     tick = int(mem.get('tick') or 0)
     return (last is None or bool(mem.get('world_map_due'))
-            or tick - int(last) >= WORLD_SURVEY_TICKS)
+            or tick - int(last) >= survey_interval(mem))
 
 
 BOSS_STALL_ESCAPE_TICKS = 400   # one bounded back-out per ~10 min while parked
