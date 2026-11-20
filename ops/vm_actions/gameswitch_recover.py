@@ -459,8 +459,29 @@ def recover(root: Path, declared_phase: str, declared_cleanup_pending: bool) -> 
             )
         before_result = state.get("last_result")
         after_result = post_state.get("last_result")
+        # Canonical stop recovery writes an anonymous success result.
+        active = state.get("active")
+        stopped_active = (
+            state["phase"] == "failed"
+            and state.get("previous") is None
+            and isinstance(active, dict)
+            and post_state["phase"] == "idle"
+            and post_state["revision"] > state["revision"]
+            and isinstance(after_result, dict)
+            and after_result.get("request_id") == ""
+            and after_result.get("operation") == "recover"
+            and after_result.get("status") == "succeeded"
+            and after_result.get("from_game") == active["game"]
+            and "to_game" in after_result
+            and after_result["to_game"] is None
+            and _is_int(after_result.get("generation"))
+            and after_result["generation"] == active["generation"]
+            and "error_code" in after_result
+            and after_result["error_code"] is None
+        )
         if (isinstance(before_result, dict)
                 and _request_id_ok(before_result.get("request_id"))
+                and not stopped_active
                 and (not isinstance(after_result, dict)
                      or after_result.get("request_id") != before_result["request_id"])):
             raise FixedRecoverExit(
