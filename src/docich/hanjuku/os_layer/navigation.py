@@ -224,7 +224,12 @@ Y_JUMP_LIMIT = 6               # jumps per order and screen mode (reset when the
 Y_JUMP_TOTAL_LIMIT = 18        # jumps per order and mode for the whole run (never reset).
                                # 2 ran out mid-order and left roof walking (g421 15:25: SELECT loops)
 Y_JUMP_MOVES = 8               # D-pad steps inside one jump before confirming anyway
-BOSS_JUMP_MOVES = 14           # a moving-boss cell can sit farther from the jump origin
+# A moving-boss cell can sit farther from the jump origin than a castle, and
+# an orbit ambush point can be on the far side of the island. Live g1288
+# 2026-11-20 19:50: the waypoint/ambush jump stopped at moves=14 with residual
+# [-5.2,-8.4] view px (42-67 world px) short; a larger bounded budget lets the
+# same jump finish instead of abandoning and retrying from the same origin.
+BOSS_JUMP_MOVES = 24
 Y_JUMP_WAIT = 6                # frames without a readable cursor before closing Y
 Y_JUMP_FINAL_TOL = 3.0         # view px: beyond this at the move limit the jump is abandoned
 Y_JUMP_OPEN_GRACE = 6          # observations the old screen may still show after Y
