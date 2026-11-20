@@ -2235,11 +2235,13 @@ def _mechanical_chart(mem, state, rid, digest):
     # A kept plan still needs its stale 'launched' steps released: the early
     # return below must not make an in-flight marker permanent (#3729).
     _release_stale_steps(mem, [chart_adjust.execution_step(rid, o['step']) for o in orders])
+    from .orders import _clear_stale_pending_overrides
     if (stored.get('source') == 'mechanical' and previous_local
             and None not in previous_local
             and [o['step'] for o in orders] == previous_local):
         _carry_hero_permission(stored, orders)
         _plan_region(mem)['chart_plan'] = stored
+        _clear_stale_pending_overrides(mem)
         if any(o.get('hero_hub_move') is True for o in stored.get('orders') or ()):
             _note_hero_hub_move(mem)
         if any(o.get('hub_first') is True for o in stored.get('orders') or ()):
@@ -2503,6 +2505,8 @@ def _adopt_plan(mem, doc, rid):
         'recruitment': doc.get('recruitment'),
         'purchases': ({**purchases, 'month': list(purchases['month']),
                        'cards': [list(c) for c in purchases['cards']]} if purchases else None)}
+    from .orders import _clear_stale_pending_overrides
+    _clear_stale_pending_overrides(mem)
     mem['chart_plan_tick'] = int(mem.get('tick') or 0)
     mem.pop('plan_stale_signature', None)
     # Several boss waves march at once, so each new boss order takes the next
