@@ -361,6 +361,11 @@ def boss_probe_cell(mem, name, step=None):
     if (chapter == 9 and chart.corridor(chapter) and name
             and chart.is_boss_castle(name)):
         if step in ('RECALL', 'PURSUIT'):
+            if step == 'PURSUIT':
+                aim = mem.get('pursuit_aim')
+                if (isinstance(aim, (list, tuple)) and len(aim) == 2
+                        and all(type(v) is int for v in aim)):
+                    return (aim[0], aim[1])
             lead = mem.get('pursuit_lead') if step == 'PURSUIT' else None
             if (isinstance(lead, (list, tuple)) and len(lead) == 2
                     and all(type(v) is int for v in lead) and cell):

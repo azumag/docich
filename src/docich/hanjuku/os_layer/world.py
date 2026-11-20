@@ -732,6 +732,17 @@ def _apply_skull_boss(mem, frame):
     previous = mem.get('boss_cell') or {}
     mem['boss_cell'] = {'chapter': chapter, 'cell': list(cell),
                         'tick': int(mem.get('tick') or 0), 'readings': count}
+    # Owner 2026-11-20: the moving boss looks random but runs a fixed orbit,
+    # so keep the measured track and let the pursuit place a general on it
+    # instead of chasing the current cell. One entry per distinct cell keeps
+    # the ring compact (16 is more than a full orbit of the observed sweep).
+    track = mem.get('boss_cell_track')
+    track = list(track) if isinstance(track, list) else []
+    last = track[-1] if track else None
+    if not (isinstance(last, dict) and isinstance(last.get('cell'), (list, tuple))
+            and abs(last['cell'][0] - cell[0]) + abs(last['cell'][1] - cell[1]) < 16):
+        track.append({'cell': list(cell), 'tick': int(mem.get('tick') or 0)})
+        mem['boss_cell_track'] = track[-16:]
     if previous.get('chapter') != chapter or previous.get('cell') != list(cell):
         _record(mem, 'boss_cell_measured',
                 observed_metric={'chapter': chapter, 'cell': list(cell), 'readings': count},
