@@ -743,7 +743,9 @@ def _capture_selection_marker(state, mem, frame, name):
         state.pop('pending_marker', None)
         return
     state['pending_marker'] = {'general': name, 'marker': marker,
-                               'mapped': marker_castle(frame, mem.get('chapter')),
+                               'mapped': marker_castle(frame, mem.get('chapter'),
+                                                      hint=((mem.get('house_eggs') or {})
+                                                            .get(name) or {}).get('castle')),
                                'tick': mem.get('tick')}
 
 
