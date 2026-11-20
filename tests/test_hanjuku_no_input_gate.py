@@ -44,6 +44,24 @@ FIELD = flat((40, 140, 20))       # grass: classify -> field, parse -> unknown
 DARK = flat((0, 0, 0))            # classify -> transition
 
 
+def test_unowned_text_in_a_menu_uses_the_short_settle():
+    # g1288 2026-11-20 11:00-11:02: an unowned field_menu text frame waited
+    # 101 frozen observations (~150 s) for the generic backstop, which then
+    # pressed the same B the short settle would have pressed. The menu phase
+    # joins the field on the short bound; event/concert text keeps its own
+    # pacing, and guarded frames keep the long bound.
+    from types import SimpleNamespace
+    from docich.hanjuku.orchestrator import (_no_input_hold_max, FIELD_TEXT_HOLD_MAX,
+                                             MAP_NO_INPUT_HOLD_MAX)
+    readable = SimpleNamespace(text='つづけますか？')
+    assert _no_input_hold_max('text', 'field_menu', readable, False) == FIELD_TEXT_HOLD_MAX
+    assert _no_input_hold_max('text', 'field', readable, False) == FIELD_TEXT_HOLD_MAX
+    assert _no_input_hold_max('text', 'event', readable, False) == NO_INPUT_HOLD_MAX
+    assert _no_input_hold_max('text', 'field_menu', SimpleNamespace(text=None), False) == NO_INPUT_HOLD_MAX
+    assert _no_input_hold_max('text', 'field_menu', readable, True) == NO_INPUT_HOLD_MAX
+    assert _no_input_hold_max('map', 'field', readable, False) == MAP_NO_INPUT_HOLD_MAX
+
+
 def red_border_menu():
     """A map menu identified by its stable red border (sortie/roster/castle)."""
     rgb = bytearray(bytes((40, 140, 20)) * (256 * 224))

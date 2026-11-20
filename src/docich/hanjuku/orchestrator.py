@@ -1315,6 +1315,26 @@ def legacy_actions(frame: Frame, phase: str, state: dict, mem: dict | None = Non
     return [pad('a')]
 
 
+def _no_input_hold_max(kind, phase, screen, bounded_wait):
+    """No-input bound for a frame no flow claimed.
+
+    A readable field/menu message box is acknowledged after the short settle:
+    g1288 2026-11-20 11:00-11:02 sat on an unowned text frame in field_menu
+    for 101 frozen observations (~150 s) before the generic backstop pressed
+    the same B it would have pressed at the short bound. Event/concert text
+    keeps its own pacing (event_text_advance), so it stays on the generic
+    bound here.
+    """
+    if (kind == 'text' and phase in ('field', 'field_menu')
+            and screen.text and not bounded_wait):
+        return FIELD_TEXT_HOLD_MAX
+    if kind in BATTLE_COMMAND_MENU_KINDS and not bounded_wait:
+        return BATTLE_COMMAND_MENU_HOLD_MAX
+    if kind in MAP_HOLD_KINDS and not bounded_wait:
+        return MAP_NO_INPUT_HOLD_MAX
+    return NO_INPUT_HOLD_MAX
+
+
 def decide(frame: Frame, state: dict, *, adjusted: dict | None = None,
            interim: dict | None = None, experience: dict | None = None,
            recall_inputs: dict | None = None, card_scroll_input: dict | None = None,
@@ -2225,12 +2245,7 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
         nudge = map_unsteerable_nudge(screen, mem, kind, phase, streak, digest)
         if nudge is not None:
             actions = nudge
-    hold_max=(FIELD_TEXT_HOLD_MAX if kind=='text' and phase=='field' and screen.text and not bounded_wait
-              else BATTLE_COMMAND_MENU_HOLD_MAX
-              if kind in BATTLE_COMMAND_MENU_KINDS and not bounded_wait
-              else MAP_NO_INPUT_HOLD_MAX
-              if kind in MAP_HOLD_KINDS and not bounded_wait
-              else NO_INPUT_HOLD_MAX)
+    hold_max = _no_input_hold_max(kind, phase, screen, bounded_wait)
     army_owned = month_flow.army_count_owned(mem)
     recruit_guard = month_flow.recruit_input_guard(screen, mem)
     if (not actions and streak > hold_max and kind == 'month_menu'
