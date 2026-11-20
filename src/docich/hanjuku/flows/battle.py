@@ -1996,8 +1996,6 @@ def _note_boss_panel_hp(mem, battle):
     ``boss_hp_seen`` stayed None). Key off the enemy name instead so the
     remaining HP, and whether a wave hurt the boss, is measurable.
     """
-    if not isinstance(battle, object):
-        return
     enemy, hp = getattr(battle, 'enemy', None), getattr(battle, 'enemy_hp', None)
     if not isinstance(enemy, str) or type(hp) is not int or not 0 < hp <= 9999:
         return
@@ -2010,6 +2008,7 @@ def _note_boss_panel_hp(mem, battle):
     mem['boss_hp_seen'] = seen
     history = mem.get('boss_hp_history')
     history = history if isinstance(history, list) else []
-    if not history or history[-1].get('hp') != hp or history[-1].get('general') != seen['general']:
+    last = history[-1] if history else None
+    if not isinstance(last, dict) or any(last.get(key) != seen[key] for key in ('monster', 'hp', 'general')):
         history.append(seen)
         mem['boss_hp_history'] = history[-8:]
