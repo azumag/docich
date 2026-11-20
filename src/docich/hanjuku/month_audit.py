@@ -317,6 +317,22 @@ def _summarize_stats(mem):
     }
 
 
+def _world_snapshot(mem):
+    """WORLD region plus un-migrated top-level observation keys.
+
+    gold, captured, lost, castle_ownership and sortie_history still live at
+    the policy top level in long runs (the region migration is gradual).  A
+    record that read only mem['world'] showed gold=None and no captures even
+    though the state had them.
+    """
+    from .state.regions import WORLD, region
+    data = dict(region(mem, WORLD))
+    for key in ('gold', 'captured', 'lost', 'castle_ownership', 'sortie_history'):
+        if data.get(key) is None:
+            data[key] = mem.get(key)
+    return data
+
+
 def _context(state):
     """Bounded game context from one observation; never copies the whole mem."""
     if not isinstance(state, dict):
@@ -327,8 +343,8 @@ def _context(state):
     scope = _scope(state)
     if scope is None:
         return None
-    from .state.regions import FLOW, PLAN, WORLD, region
-    world = region(mem, WORLD)
+    from .state.regions import FLOW, PLAN, region
+    world = _world_snapshot(mem)
     plan = region(mem, PLAN)
     flow = region(mem, FLOW)
     tick = _bounded_int(mem.get('tick'), 0, 10 ** 9)
@@ -1032,13 +1048,15 @@ def render(record):
         '',
         '### 月内の決定',
         '',
-        '| 時刻 | 決定 | step | 将軍 | 対象 | 理由 |',
-        '| --- | --- | --- | --- | --- | --- |',
     ]
     rows, filtered = _timeline(record)
     if filtered:
         body.append('定常的な保留（situation_held など）は決定内訳に集計し、ここでは省略する。')
         body.append('')
+    body += [
+        '| 時刻 | 決定 | step | 将軍 | 対象 | 理由 |',
+        '| --- | --- | --- | --- | --- | --- |',
+    ]
     for row in rows:
         body.append(f"| {_clock(row.get('at'))} | {_cell(row.get('decision'))} | {_cell(row.get('chart_step'))} | {_md(row.get('general'))} | {_md(row.get('target'))} | {_md(row.get('reason'))} |")
     body += ['', '### 前月の計画', '',

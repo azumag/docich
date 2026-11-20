@@ -235,6 +235,29 @@ def test_capture_is_bounded(runtime_dir):
     assert len(value['world']['sorties']) <= audit.MAX_LIST
 
 
+def test_capture_reads_unmigrated_world_fields():
+    state_value = state(1, '1-1', 10)
+    state_value['policy']['world']['gold'] = None
+    state_value['policy']['gold'] = 321
+    state_value['policy']['captured'] = ['A']
+    state_value['policy']['lost'] = ['B']
+    state_value['policy']['castle_ownership'] = {'A': 'own'}
+    state_value['policy']['sortie_history'] = [
+        {'outcome': 'won', 'general': 'G', 'target': 'A', 'tick': 5}]
+    value = audit.capture(state_value)
+    assert value['world']['gold'] == 321
+    assert value['world']['captured'] == ['A']
+    assert value['world']['lost'] == ['B']
+    assert value['world']['castle_ownership'] == {'A': 'own'}
+    assert value['world']['sortie_history'][0]['outcome'] == 'won'
+
+
+def test_render_puts_the_noise_note_before_the_table(runtime_dir):
+    record = sealed_zero(runtime_dir)
+    text = audit.render(record)
+    assert text.index('定常的な保留') < text.index('| 時刻 |')
+
+
 def test_render_contains_markers_and_evidence(runtime_dir):
     record = sealed_zero(runtime_dir)
     text = audit.render(record)
