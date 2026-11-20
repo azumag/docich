@@ -842,6 +842,13 @@ def restore(adapter, deadline, cancel):
             policy['resume_sortie_cancel'] = {'readings': 0}
         if battle_menu_without_chapter:
             policy['resume_battle_menu'] = {'readings': 0}
+        if unknown_without_chapter:
+            # #4423: an unreadable restored foreground (e.g. a mid-battle
+            # scene that never parsed) must not sit inputless forever. The
+            # bounded battle-menu owner already accepts 'unknown' screens
+            # and releases its allowance, so it doubles as the generic
+            # pending-advance owner here.
+            policy['resume_battle_menu'] = {'readings': 0}
     atomic_write_json(spec.runtime_dir / 'hanjuku_bot.json', {'policy': policy})
     adapter._check_active(deadline, cancel, "restore")
     send_ra_cmd('PAUSE_TOGGLE', port=adapter._network_port())

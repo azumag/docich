@@ -7940,6 +7940,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v1262-recruit-own-screen",
             "hanjuku-chart-v1263-scroll-arrow",
             "hanjuku-chart-v1264-pursuit-pick-escape",
+            "hanjuku-chart-v1265-resume-unknown",
             "hanjuku-chart-v1158-progress-regress",
             "hanjuku-chart-v1161-refill-collapse",
             "hanjuku-chart-v1160-chapter-probe-field",
