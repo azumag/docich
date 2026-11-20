@@ -767,3 +767,13 @@ def test_prices_without_dispatch_leaves_garrison_unchanged():
     _world(mem)['garrison'] = {'アルマムーン': ['ゼウス', 'どうし']}
     feed(mem, gifts())
     assert _world(mem).get('garrison') == {'アルマムーン': ['ゼウス', 'どうし']}
+
+
+def test_a_boss_wave_defers_the_house_scan():
+    mem = {'chapter': 9, 'tick': 100, '_records': [],
+           'house': {'phase': 'roster_next', 'roster_month': '62-7'},
+           'boss_wave_generals': {'カシス': {'step': 'A', 'launched': 1}},
+           'boss_cell': {'chapter': 9, 'cell': [770, 629], 'tick': 100}}
+    assert house.step(Screen([], None, '', kind='text'), mem, None) is None
+    assert 'house' not in mem
+    assert any(r['decision'] == 'house_scan_deferred_for_boss' for r in mem['_records'])

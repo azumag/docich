@@ -1279,6 +1279,7 @@ MAX_INPUT_FREE_HOPS = 2
 # retries at age 3/6, travel), so a long wait there is not a spin.
 HOUSE_IDLE_LIMIT = 10
 HOUSE_IDLE_PHASES = frozenset({'roster', 'roster_next', 'roster_advance', 'status'})
+HOUSE_BOSS_DEFER_PHASES = frozenset({'roster', 'roster_next', 'roster_advance'})
 
 
 def _corridor_march(mem) -> bool:
@@ -1304,6 +1305,21 @@ def step(screen, mem, frame):
     Consecutive observations that issue no pad are counted as well: a menu that
     never accepts input is left (``house_idle_escape``) instead of spinning.
     """
+    state = mem.get('house')
+    if (isinstance(state, dict) and mem.get('chapter') == 9
+            and (mem.get('boss_wave_generals') or {})
+            and isinstance(mem.get('boss_cell'), dict)
+            and state.get('phase') in HOUSE_BOSS_DEFER_PHASES):
+        # The house's egg/roster walk owns the map for dozens of observations
+        # while the boss waves camp (live g1288 2026-11-20 09:2x: five waves,
+        # house roster_next, no pursuit). Leave the scan; the next month/reason
+        # re-arms it after the waves settle.
+        mem.pop('house', None)
+        _record(mem, 'scan_deferred_for_boss',
+                observed_metric={'phase': state.get('phase'),
+                                 'roster_month': state.get('roster_month')},
+                reason='ボス波が飛んでいるため卵・名簿スキャンを保留し、フィールドをボス追撃へ明け渡す')
+        return None
     actions = _step_chain(screen, mem, frame)
     state = mem.get('house')
     if state is None:
