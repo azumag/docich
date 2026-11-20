@@ -7959,6 +7959,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v1281-unconfirmed-rearm",
             "hanjuku-chart-v1282-no-ambush-wait",
             "hanjuku-chart-v1283-boss-jump-64",
+            "hanjuku-chart-v1284-pursuit-6h",
             "hanjuku-chart-v1158-progress-regress",
             "hanjuku-chart-v1161-refill-collapse",
             "hanjuku-chart-v1160-chapter-probe-field",

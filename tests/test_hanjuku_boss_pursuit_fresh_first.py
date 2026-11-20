@@ -22,7 +22,7 @@ def memory(**extra):
         'tick': 10000,
         'world': {'sorties': {}, 'garrison': {}},
         bp.LIST_KEY: {
-            'カシス': {'step': 'A', 'launched': 1475},
+            'カシス': {'step': 'A', 'launched': -20000},
             'エストラゴン': {'step': 'B', 'launched': 9500},
         },
         'boss_cell': {'chapter': 9, 'cell': [810, 645], 'tick': 9990, 'readings': 2},
@@ -43,7 +43,7 @@ def test_the_fresh_entry_wins_over_an_abandoned_one(monkeypatch):
 def test_with_only_stale_entries_the_wave_gate_still_stops_everything(monkeypatch):
     monkeypatch.setattr(bp.chart, 'moving_boss_cell', lambda ch: (810, 645))
     mem = memory()
-    mem[bp.LIST_KEY] = {'カシス': {'step': 'A', 'launched': 1475}}
+    mem[bp.LIST_KEY] = {'カシス': {'step': 'A', 'launched': -20000}}
     assert bp.step(map_screen(), mem, None) is None
     assert mem.get('boss_wave_stale_noted') == 10000
 

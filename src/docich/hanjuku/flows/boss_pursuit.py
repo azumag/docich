@@ -43,7 +43,13 @@ PURSUIT_START_GAP = 90        # ticks between two pursuit starts (~1.5 min)
 # spare and no second wave could start (month audit 64-3..65-x: launches 0).
 # A wave this old is not making progress: stop chasing, let the camp recall
 # take the generals back to a castle and launch fresh sorties from there.
-PURSUIT_STALE_TICKS = 3600    # one hour without a fresh wave entry
+# Owner 2026-11-21: 波状攻撃でも削れるので将軍待ちはしない. The one-hour
+# stale bound stopped the pursuit exactly when the wave needed to keep moving
+# (live g1288 02:3x-03:x: six boss contacts on the ambush cells, no battle,
+# and then the pursuit stood down because the newest entry was 1.9 hours old).
+# Keep driving the wave for six hours; truly ancient records are still skipped
+# and the roster walk drops generals that left.
+PURSUIT_STALE_TICKS = 21600
 # Owner 2026-11-16: the army reaches the moving boss from the north waypoint.
 # Chasing the boss's last measured cell lets it walk away during the march
 # (live g1288 2026-11-20: boss (938,461) -> (762,629) in ten minutes while a
