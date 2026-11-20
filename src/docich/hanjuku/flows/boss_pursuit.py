@@ -346,13 +346,13 @@ def step(screen, mem, frame):
         # pursuit -> no re-measure -> cell stays stale -> marches overdue.
         # _candidate still needs a marched wave general, so non-ch9 phases
         # never reach this code anyway.
-        pick = _candidate(mem)
-        if pick is None:
-            return None
         if wave_stale(mem):
             _note_stale_wave(mem)
             return None
         mem.pop('boss_wave_stale_noted', None)
+        pick = _candidate(mem)
+        if pick is None:
+            return None
         now = int(mem.get('tick') or 0)
         last = mem.get('boss_pursuit_start_tick')
         if type(last) is int and 0 <= now - last < PURSUIT_START_GAP:
