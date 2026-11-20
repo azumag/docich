@@ -15,7 +15,8 @@ from ... import (hanjuku_chart as chart, hanjuku_chart_adjust as chart_adjust,
 from ..decision_log import _record, _tally
 from ..os_layer.world import NAME, SORTIE_BUSY_TICKS, _en_route, _owned
 from . import routes
-from .orders import (_arrival_castle, _boss_companion_source, _boss_egg_depleted,
+from .orders import (RETIRED_ORDER_STATES,
+                               _arrival_castle, _boss_companion_source, _boss_egg_depleted,
                                drop_retired_step_context,
                                _distance, _hero_egg_broken, _holds_egg,
                                _hero_source_alternative, _orders, _plan_pending, _ready, _reserved_targets, _source,
@@ -1929,27 +1930,65 @@ def _mechanical_interim(mem, state, rid, digest, allow_sole=False):
             for goal in goals.pending(mem, {'retake', 'move'}):
                 goals.note_attempt(mem, goal['kind'], 'unavailable', target=goal.get('target'))
         return
-    label, order = next(iter(candidates.items()))
     # docich#4728: the step number used to grow with every rebuild
     # (I:5ae4d9:57 → :61 for the same ユージア→セレーネ retake), so the failed
     # status never carried over and the plan re-issued the same doomed sortie
     # forever. Name the interim step after the order itself: an identical
     # (purpose, source, target, general) keeps its step, and a failed one is
     # skipped instead of re-tried.
-    identity = '|'.join(str(order.get(k) or '') for k in ('purpose', 'source', 'target', 'general'))
-    stable = state.setdefault('interim_steps', {}).get(identity)
-    if not stable:
-        state['interim_count'] = state.get('interim_count', 0) + 1
-        digest = hashlib.sha256(identity.encode('utf-8')).hexdigest()[:8]
-        # Namespace the identity by the request id: within one state the same
-        # order keeps its step (so a failure is not re-issued every rebuild),
-        # but a changed state starts a fresh namespace, so a retry is still
-        # possible after the board actually moved (docich#4729: the bare hash
-        # made ユージア→セレーネ permanently failed and next_order returned
-        # None while four candidates were ready).
-        stable = f"{chart_adjust.INTERIM_PREFIX}{rid[:6]}:{digest}"
-        state['interim_steps'][identity] = stable
-    step = stable
+    steps = state.setdefault('interim_steps', {})
+
+    def stable_step(order):
+        identity = '|'.join(str(order.get(k) or '')
+                            for k in ('purpose', 'source', 'target', 'general'))
+        stable = steps.get(identity)
+        if not stable:
+            state['interim_count'] = state.get('interim_count', 0) + 1
+            digest = hashlib.sha256(identity.encode('utf-8')).hexdigest()[:8]
+            # Namespace the identity by the request id: within one state the
+            # same order keeps its step (so a failure is not re-issued every
+            # rebuild), but a changed state starts a fresh namespace, so a
+            # retry is still possible after the board actually moved
+            # (docich#4729: the bare hash made ユージア→セレーネ permanently
+            # failed and next_order returned None while four candidates were
+            # ready).
+            stable = f"{chart_adjust.INTERIM_PREFIX}{rid[:6]}:{digest}"
+            steps[identity] = stable
+        return stable
+
+    # A settled interim step must not be re-issued: the top candidate whose
+    # step already read 'failed' was re-picked on every rebuild, so
+    # ``chart_interim_order`` looped and the slot never advanced to the next
+    # candidate (g1190 ch1v4: ゼウス イソ→イデ！ step I:381454:0115cf0a stayed
+    # 'failed' while 16 identical orders were recorded and the month saw no
+    # departure). Walk the candidates and take the first whose step is still
+    # live; a settled step can only run again once its status is re-armed.
+    picked = None
+    for label, order in candidates.items():
+        step = stable_step(order)
+        if status.get(step) in RETIRED_ORDER_STATES:
+            continue
+        picked = (label, order, step)
+        break
+    if picked is None:
+        # Every candidate's step already settled. Hold like the no-candidate
+        # case (once per request revision); the stale-failure windows re-arm
+        # the statuses before this slot can retry.
+        if state.get('interim_hold_digest') != digest:
+            state['interim_hold_digest'] = digest
+            _record(mem, 'chart_interim_hold', chart_step=None,
+                    strategy_variant='chart_adjust_pending',
+                    request_id=rid, choice=None, confidence=None,
+                    jev_status='all_settled',
+                    deviation_reason='interim_all_settled',
+                    reason='暫定候補の全注文が失敗・完了済みのため再発行せず調整チャートを待つ')
+        return
+    label, order, step = picked
+    if interim and interim.get('step') == step:
+        # The slot already holds this order: re-setting it would record the
+        # same chart_interim_order again without changing anything.
+        state['interim_order'] = {**order, 'step': step}
+        return
     state['interim_order'] = {**order, 'step': step}
     if order.get('hero_hub_move') is True:
         _note_hero_hub_move(mem)
