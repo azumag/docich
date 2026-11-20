@@ -729,9 +729,17 @@ def _capture_selection_marker(state, mem, frame, name):
     """Read the list's selection triangle before A replaces the map."""
     if frame is None or not isinstance(state, dict):
         return
-    from ..os_layer.readers import marker_castle, selection_marker
+    from ..os_layer.readers import MAP_PANEL_RIGHT, marker_castle, selection_marker
     marker = selection_marker(frame)
     if marker is None:
+        state.pop('pending_marker', None)
+        return
+    # The fallback triangle right of the map panel is the list's scroll
+    # arrow, not a position: mapping it costs a status panel every month
+    # (g1190 box (192,161) on every walk). Skip it before it can queue a
+    # castle check.
+    box = marker.get('box') or ()
+    if box and box[0] >= MAP_PANEL_RIGHT:
         state.pop('pending_marker', None)
         return
     state['pending_marker'] = {'general': name, 'marker': marker,
