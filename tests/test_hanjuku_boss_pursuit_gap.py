@@ -23,7 +23,8 @@ def memory(tick=10000, **extra):
         'chapter': 9,
         'tick': tick,
         'world': {'sorties': {}, 'garrison': {}},
-        bp.LIST_KEY: {'ミント': {'step': 'A', 'launched': 3000}},
+        # a fresh wave: the stale-wave gate has its own test file
+        bp.LIST_KEY: {'ミント': {'step': 'A', 'launched': tick - 500}},
         'boss_cell': {'chapter': 9, 'cell': [810, 645], 'tick': tick - 10,
                       'readings': 2},
         'plan': {'active': None},
