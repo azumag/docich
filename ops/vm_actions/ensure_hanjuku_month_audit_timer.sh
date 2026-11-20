@@ -12,6 +12,7 @@ timer="docich-hanjuku-month-audit.timer"
 command -v getent >/dev/null 2>&1 || exit 2
 home="$(getent passwd "$(id -u)" | cut -d: -f6)" || exit 2
 [[ "$home" == "${DOCICH_PROD_HOME:-/home/ubuntu}" ]] || exit 2
+export PATH="/usr/local/bin:/usr/bin:/bin:/snap/bin:$home/.local/bin:$PATH"
 unit_dir="${XDG_CONFIG_HOME:-$home/.config}/systemd/user"
 [[ "$unit_dir" == "$home"/* ]] || exit 2
 

@@ -27,7 +27,7 @@ class UnitTests(unittest.TestCase):
         text = SERVICE.read_text(encoding="utf-8")
         self.assertIn("Type=oneshot", text)
         self.assertIn("Environment=XDG_RUNTIME_DIR=%t", text)
-        self.assertIn("Environment=PATH=/usr/local/bin:/usr/bin:/bin", text)
+        self.assertIn("Environment=PATH=/usr/local/bin:/usr/bin:/bin:/snap/bin:%h/.local/bin", text)
         self.assertIn("Environment=AGENT_GUARDS=%h/agent-guards", text)
         self.assertIn("WorkingDirectory=__DOCICH_ROOT__", text)
         self.assertIn(

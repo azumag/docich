@@ -5,7 +5,7 @@ After=network-online.target
 [Service]
 Type=oneshot
 Environment=XDG_RUNTIME_DIR=%t
-Environment=PATH=/usr/local/bin:/usr/bin:/bin
+Environment=PATH=/usr/local/bin:/usr/bin:/bin:/snap/bin:%h/.local/bin
 Environment=AGENT_GUARDS=%h/agent-guards
 WorkingDirectory=__DOCICH_ROOT__
 ExecStart=/usr/bin/python3 __DOCICH_ROOT__/ops/vm_actions/hanjuku_month_audit_watch.py
