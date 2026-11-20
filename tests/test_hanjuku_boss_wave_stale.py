@@ -73,3 +73,11 @@ def test_a_stale_wave_stops_the_camp_boss_redirect(monkeypatch):
     assert recall.boss_redirect_goal(fresh) == chart.boss_castle(9)
     stale = memory(launched=10000 - bp.PURSUIT_STALE_TICKS)
     assert recall.boss_redirect_goal(stale) is None
+
+
+def test_wave_active_is_false_for_a_stale_wave_and_true_for_a_fresh_one():
+    assert bp.wave_active(memory(launched=10000 - bp.PURSUIT_STALE_TICKS)) is False
+    assert bp.wave_active(memory(launched=10000 - 500)) is True
+    empty = memory()
+    empty[bp.LIST_KEY] = {}
+    assert bp.wave_active(empty) is False

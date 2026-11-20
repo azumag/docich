@@ -1389,7 +1389,8 @@ def step(screen, mem, frame):
     # keep the field for minutes: a boss wave with a measured cell outranks
     # the remaining roster reads. #4779 stops the next arm; this ends the
     # current one after a bounded number of observations.
-    if (mem.get('chapter') == 9 and (mem.get('boss_wave_generals') or {})
+    from .boss_pursuit import wave_active
+    if (mem.get('chapter') == 9 and wave_active(mem)
             and isinstance(mem.get('boss_cell'), dict)
             and int(state.get('steps') or 0) >= BOSS_WAVE_SCAN_STEPS):
         _log(mem, 'post_month_boss_scan_abandoned',

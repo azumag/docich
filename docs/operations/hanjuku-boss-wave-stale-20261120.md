@@ -42,3 +42,17 @@
 - 実機で停滞判定後に野営が城へ戻り、城からの出撃が再開するかは未確認。
   `boss_wave_stale` の記録、`boss_wave_generals` の減少、`order_start` の再出現で確かめる。
 - ボスへの入城そのもの（移動ボスへの追いつき）は別問題として残る。
+
+## 追記（v1259）: 停滞した波には他の担当を譲らせない
+
+v1258 を本番へ反映した直後（2026-11-20 15:20〜15:26）、追撃は止まったが
+`house_scan_deferred_for_boss` と野営帰還の保留が残り、フィールドが
+「止まった追撃」へ明け渡されたままになった。保留の条件は
+`boss_wave_generals` が空でないことだけを見ており、停滞判定を見ていなかった。
+
+- `boss_pursuit.wave_active(mem)` を追加（波があり、かつ停滞していない）。
+- `house.py` / `camp_recheck.py`（2か所）/ `post_month_status.py` の
+  「ボス波が飛んでいるため保留」を `wave_active` に置き換え。
+- 停滞中は卵・名簿スキャン、野営帰還、月次確認が通常どおり動き、野営が城へ戻る。
+- `BOT_VERSION` は v1259。`tests/test_hanjuku_boss_wave_stale.py` に
+  `wave_active` の判定を追加。関連 139 + 269 passed。
