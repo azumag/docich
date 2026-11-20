@@ -50,6 +50,10 @@ PURSUIT_STALE_TICKS = 3600    # one hour without a fresh wave entry
 # so the lead cell stays on the island.
 PURSUIT_LEAD_TICKS = 360      # march time the lead covers (~6 min)
 PURSUIT_LEAD_MAX = 240        # px, total offset cap
+# A general placed on the orbit must be allowed to wait for the boss to come
+# round: re-aiming it every PURSUIT_COOLDOWN (4 min) would move it before the
+# boss arrives. This is the per-general wait after an ambush placement.
+AMBUSH_WAIT_TICKS = 1200
 # Live g1288 2026-11-20 17:1x-17:2x: the roster route failed repeatedly
 # (roster_unreadable / an event dialogue where the roster should be) while the
 # camp recall was told to stand down for the "flying" waves. Nothing reached a
@@ -84,6 +88,7 @@ def _drop_probe(mem):
     """
     mem.pop('boss_pursuit', None)
     mem.pop('pursuit_lead', None)
+    mem.pop('pursuit_aim', None)
     jump = mem.get('y_jump')
     if isinstance(jump, dict) and jump.get('step') == PURSUIT_STEP:
         mem.pop('y_jump', None)
@@ -229,6 +234,36 @@ def pursuit_suspended(mem):
     return type(until) is int and int(mem.get('tick') or 0) < until
 
 
+def _ambush(mem, general=None):
+    """A fixed point on the measured boss track for this general.
+
+    Owner 2026-11-20: the boss looks random but orbits a fixed track, so
+    generals placed *on* that track meet it as it comes round; chasing the
+    current cell only follows it. The wave is spread over the track: each
+    general takes a different tracked cell (its index in the sorted wave),
+    so the orbit is covered instead of every unit marching to one point.
+    None until the track has a real extent.
+    """
+    cur = (mem.get('boss_cell') or {}).get('cell')
+    track = mem.get('boss_cell_track')
+    if not (isinstance(cur, (list, tuple)) and len(cur) == 2 and isinstance(track, list)):
+        return None
+    cells = [tuple(e['cell']) for e in track
+             if isinstance(e, dict) and isinstance(e.get('cell'), (list, tuple))
+             and len(e['cell']) == 2 and all(type(v) is int for v in e['cell'])]
+    distinct = sorted(set(cells))
+    if len(distinct) < 3:
+        return None
+    far = max(distinct, key=lambda c: abs(c[0] - cur[0]) + abs(c[1] - cur[1]))
+    if abs(far[0] - cur[0]) + abs(far[1] - cur[1]) < 160:
+        return None
+    if general is None:
+        return far
+    names = sorted((mem.get(LIST_KEY) or {}).keys())
+    index = names.index(general) if general in names else 0
+    return distinct[index % len(distinct)]
+
+
 def _lead(mem, probe):
     """One measured boss displacement ahead, or None when it is unusable."""
     cur = mem.get('boss_cell') or {}
@@ -288,6 +323,9 @@ def _candidate(mem):
             continue
         last = e.get('pursuit_tick')
         if type(last) is int and now - last < PURSUIT_COOLDOWN:
+            continue
+        wait = e.get('ambush_until')
+        if type(wait) is int and now < wait:
             continue
         if best is None or (launched or 0) < (best[1].get('launched') or 0):
             best = (general, e)
@@ -405,6 +443,7 @@ def step(screen, mem, frame):
         probe['boss_cell0'] = {'cell': list(reading.get('cell') or ()),
                                'tick': reading.get('tick')}
         mem.pop('pursuit_lead', None)
+        mem.pop('pursuit_aim', None)
         _record(mem, 'boss_pursuit_queued', chart_step=entry.get('step'), general=general,
                 observed_metric={'since_last_start': now - last if type(last) is int else None},
                 reason='ボスへ出撃した将軍へX→しょうぐん→SELECTでジャンプし、動くボスの現在セルへいどうを出し直す')
@@ -619,6 +658,12 @@ def step(screen, mem, frame):
             mem['boss_pursuit_fail_streak'] = 0
             mem['boss_pursuit_suspended'] = None
             mem.pop('pursuit_lead', None)
+            placed = mem.pop('pursuit_aim', None)
+            if placed:
+                if entry is None:
+                    entry = (mem.get(LIST_KEY) or {}).get(probe['general'])
+                if entry is not None:
+                    entry['ambush_until'] = int(mem.get('tick') or 0) + AMBUSH_WAIT_TICKS
             _record(mem, 'boss_pursuit_redirected', chart_step=probe.get('step'),
                     general=probe['general'],
                     observed_metric=_redirect_metric(mem, probe, marker),
@@ -627,9 +672,17 @@ def step(screen, mem, frame):
             probe['outcome'] = 'redirected'
             return [pad('a')]
         from ..os_layer.navigation import _start_y_jump
-        lead = _lead(mem, probe)
-        if lead:
-            mem['pursuit_lead'] = list(lead)
+        aim = _ambush(mem, probe.get('general'))
+        if aim:
+            # Fixed placement on the orbit: the general waits where the boss
+            # will come round instead of following today's cell.
+            mem['pursuit_aim'] = list(aim)
+            mem.pop('pursuit_lead', None)
+        else:
+            mem.pop('pursuit_aim', None)
+            lead = _lead(mem, probe)
+            if lead:
+                mem['pursuit_lead'] = list(lead)
         if (mem.get('y_jumps') or {}).get('PURSUIT:target', 0) < 3:
             return _start_y_jump(mem, pseudo, goal, 'target')
         _close(mem, probe, 'boss_jump_failed')

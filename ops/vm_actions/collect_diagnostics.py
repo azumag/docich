@@ -7946,6 +7946,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v1268-pursuit-lead",
             "hanjuku-chart-v1269-password-sweep",
             "hanjuku-chart-v1270-house-scroll-arrow",
+            "hanjuku-chart-v1271-boss-ambush-track",
             "hanjuku-chart-v1158-progress-regress",
             "hanjuku-chart-v1161-refill-collapse",
             "hanjuku-chart-v1160-chapter-probe-field",
