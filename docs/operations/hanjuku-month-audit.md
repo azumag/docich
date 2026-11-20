@@ -132,6 +132,32 @@ production checkout 上の `gh` 実行はしない。
 2. そのディレクトリを `HANJUKU_RUNTIME` にして `render` / `file --dry-run` で本文を確認する。
 3. `secret_scan` の clean を確認して `file` を実行する。
 
+## 本番VMでの自動発行（v1253）
+
+production VM（botが動いているマシン）では、systemd user timerが5分ごとに
+`run-soren-live` 配下のsealed監査recordを走査し、VM上の `gh` でissueを発行する。
+MacへのコピーやGitHub Actionsからの発行は行わない。
+
+| unit | 役割 |
+| --- | --- |
+| `docich-hanjuku-month-audit.service` | `ops/vm_actions/hanjuku_month_audit_watch.py --dry-run` ではなく通常の `watch_once` を1回実行 |
+| `docich-hanjuku-month-audit.timer` | 5分ごと（`OnCalendar=*:0/5`）にserviceを起動 |
+
+- 配置: `scripts/systemd/` のunitをproduction deploy時に
+  `ops/vm_actions/ensure_hanjuku_month_audit_timer.sh` が
+  `~/.config/systemd/user/` へ配置し、timerをenableする。serviceはdeploy中に起動しない。
+- 実行ユーザー: deploy user（`ubuntu`）。`gh` はこのユーザーの認証を使う。
+- 投稿前スキャン: `agent-guards/secret_scan.py` を優先し、VMに無い場合は
+  repo内の `ops/vm_actions/secret_scan.py`（同一scannerのvendored copy）を使う。
+- state_dir: `config/docich.soren-live.toml` の `paths.state_dir` をrepo root配下に
+  解決する。絶対pathやroot外は拒否。
+- 確認: `journalctl --user -u docich-hanjuku-month-audit.service`。
+  `systemctl --user list-timers docich-hanjuku-month-audit.timer`。
+- 停止: `systemctl --user disable --now docich-hanjuku-month-audit.timer`。
+- deploy hookは `gh` が無い場合にfail-closedする。`gh auth status` は
+  非対話SSHでkeyringに触れられない場合があるためhookでは確認せず、serviceの
+  journalで確認する。
+
 ## 検証
 
 - 合成ログ: `python3 -m pytest -q tests/test_hanjuku_month_audit.py`。

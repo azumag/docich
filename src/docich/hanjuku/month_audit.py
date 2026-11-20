@@ -1493,6 +1493,9 @@ def _secret_scanner():
         candidates += [root.parent / 'agent-guards',
                        root.parent.parent / 'agent-guards',
                        root.parent.parent.parent / 'agent-guards',
+                       # Vendored copy for the production VM timer; the
+                       # workspace agent-guards above stays preferred.
+                       root / 'ops' / 'vm_actions',
                        Path.cwd().parent / 'agent-guards',
                        Path.cwd() / 'agent-guards']
     except (IndexError, OSError):
