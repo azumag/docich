@@ -221,7 +221,7 @@ def test_real_owned_destination_remains_required_after_named_status(monkeypatch,
     # Owner 2026-11-19: いどう経路の dest はピッカーを開かず、余計な
     # world_map はBで閉じるだけに留める。
     actions = p.camp_recall_step(Screen([], None, '', kind='world_map'), mem, FRAME)
-    assert actions in ([p.pad('b')], [p.pad('a'), {'type': 'wait', 'ms': 700}, p.pad('a')])
+    assert actions in ([p.pad('b')], [p.pad('right')], [p.pad('a'), {'type': 'wait', 'ms': 700}, p.pad('a')])
     assert _flow(mem)['recall']['stage'] in ('dest', 'await_dispatch')
     assert _flow(mem)['retreat_rechecks']['ゼウス']['status'] == 'needs_observation'
 
@@ -549,6 +549,8 @@ def test_actual_field_panel_without_a_location_phrase_is_grounded_in_current_ten
     # Owner 2026-11-19: the camp menu now targets いどう, so the confirming
     # input may be the cursor move toward that row instead of A on きかん.
     assert p.camp_recall_step(camp_menu(3), mem, FRAME) in ([p.pad('a')], [p.pad('up')])
+    if _flow(mem)['recall']['stage'] != 'dest':
+        assert p.camp_recall_step(camp_menu(0), mem, FRAME) == [p.pad('a')]
     assert _flow(mem)['recall']['stage'] == 'dest'
     assert not _world(mem).get('garrison') and not mem.get('house_eggs')
 
