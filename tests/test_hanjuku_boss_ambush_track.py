@@ -140,3 +140,21 @@ def test_a_contact_records_where_the_general_actually_is():
            if r['decision'] == 'boss_ambush_contact'][-1]
     assert rec['observed_metric']['unit_world'] == [880, 400]
     assert rec['observed_metric']['unit_dist'] == [28, 20]
+
+
+def test_a_true_touch_requires_the_general_and_boss_on_the_same_cell():
+    # Boss on the aim but the general far away: aim-reached only.
+    mem = memory()
+    mem[bp.LIST_KEY]['ミント']['ambush_cell'] = [900, 420]
+    mem[bp.LIST_KEY]['ミント']['unit_world'] = [700, 300]
+    mem['boss_cell'] = {'cell': [902, 421], 'tick': 10000}
+    bp.ambush_contact(mem)
+    kinds = [r['decision'] for r in mem.get('_records', [])]
+    assert 'boss_ambush_contact' in kinds
+    assert 'boss_unit_contact' not in kinds
+    # Boss on the general's measured cell: a real touch.
+    mem[bp.LIST_KEY]['ミント']['unit_world'] = [900, 420]
+    mem['boss_cell'] = {'cell': [902, 421], 'tick': 11000}
+    bp.ambush_contact(mem)
+    kinds = [r['decision'] for r in mem.get('_records', [])]
+    assert 'boss_unit_contact' in kinds
