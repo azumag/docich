@@ -665,27 +665,22 @@ def validate_status(data: dict, frames=None, corner_id: str | None = None) -> di
 # engineering corner each day.
 # ---------------------------------------------------------------------------
 
-THEME_CANDIDATE_FIXTURE = (
-    "tests",
-    "fixtures",
-    "engineering_structure_principles_corner",
-    "theme_candidates.json",
-)
-
-
-def theme_candidate_path(root: Path | None = None) -> Path:
+def theme_candidate_path(corner_id: str = "engineering", root: Path | None = None) -> Path:
     root = root or repo_root()
-    return root.joinpath(*THEME_CANDIDATE_FIXTURE)
+    spec = spec_for(corner_id)
+    # theme_candidates.json sits alongside the corner's fixed fixture.
+    parts = list(spec.fixture_parts[:-1]) + ["theme_candidates.json"]
+    return root.joinpath(*parts)
 
 
-def load_theme_candidates(root: Path | None = None) -> dict:
+def load_theme_candidates(corner_id: str = "engineering", root: Path | None = None) -> dict:
     """Load the fixed theme-candidate list and validate its envelope.
 
     Returns the parsed JSON object with a ``candidates`` list.  Each candidate
     carries ``id``, ``title``, ``domain``, ``description`` and an optional
     ``fixtureId`` referencing the fixed fixture that supplies its draft data.
     """
-    path = theme_candidate_path(root)
+    path = theme_candidate_path(corner_id, root)
     if not path.is_file():
         raise FileNotFoundError(f"missing theme candidate list: {path}")
     data = json.loads(path.read_text(encoding="utf-8"))
@@ -693,6 +688,10 @@ def load_theme_candidates(root: Path | None = None) -> dict:
         raise CornerRuntimeError("theme candidate list must be a JSON object")
     if data.get("isSyntheticFixture") is not True:
         raise CornerRuntimeError("theme candidate list must be marked as synthetic")
+    if data.get("corner") != corner_id:
+        raise CornerRuntimeError(
+            f"theme candidate list corner {data.get('corner')!r} does not match {corner_id!r}"
+        )
     candidates = data.get("candidates")
     if not isinstance(candidates, list) or not candidates:
         raise CornerRuntimeError("theme candidate list must contain at least one candidate")
@@ -710,9 +709,9 @@ def load_theme_candidates(root: Path | None = None) -> dict:
     return data
 
 
-def list_theme_candidates(root: Path | None = None) -> list[dict]:
+def list_theme_candidates(corner_id: str = "engineering", root: Path | None = None) -> list[dict]:
     """Return a copy of the theme-candidate summaries (id, title, domain, description)."""
-    data = load_theme_candidates(root)
+    data = load_theme_candidates(corner_id, root)
     return [
         {
             "id": cand["id"],
@@ -725,7 +724,7 @@ def list_theme_candidates(root: Path | None = None) -> list[dict]:
     ]
 
 
-def select_theme(candidate_id: str, root: Path | None = None) -> dict:
+def select_theme(candidate_id: str, corner_id: str = "engineering", root: Path | None = None) -> dict:
     """Select one theme candidate by id and return its full record.
 
     Raises ``CornerRuntimeError`` when the id is unknown.  The caller then
@@ -734,7 +733,7 @@ def select_theme(candidate_id: str, root: Path | None = None) -> dict:
     """
     if not isinstance(candidate_id, str) or not candidate_id:
         raise CornerRuntimeError("theme candidate id must be a non-empty string")
-    data = load_theme_candidates(root)
+    data = load_theme_candidates(corner_id, root)
     for cand in data["candidates"]:
         if cand.get("id") == candidate_id:
             return dict(cand)

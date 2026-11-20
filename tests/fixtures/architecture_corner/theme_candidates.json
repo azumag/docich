@@ -1,0 +1,49 @@
+{
+  "schemaVersion": 1,
+  "corner": "architecture",
+  "fixtureId": "fixed-architecture-theme-candidates-001",
+  "isSyntheticFixture": true,
+  "scopeNote": "Non-production synthetic theme candidate list for the 建築・建築工学 corner. Candidates are planning input only; titles/URLs/quantities must not be presented as verified engineering data.",
+  "candidates": [
+    {
+      "id": "high-rise-seismic",
+      "title": "超高層ビルはどう地震に耐えるか",
+      "domain": "architecture",
+      "description": "超高層ビルの耐震・免震・制震設計、構造フレーム、地震時の応答と安全余裕。",
+      "fixtureId": "fixed-architecture-example-001"
+    },
+    {
+      "id": "wooden-house-seismic",
+      "title": "木造住宅の耐震",
+      "domain": "architecture",
+      "description": "木造住宅の耐力壁、接合部、基礎、地震時の変形と補強方法。",
+      "fixtureId": null
+    },
+    {
+      "id": "long-span-roof",
+      "title": "大空間の屋根",
+      "domain": "architecture",
+      "description": "大空間屋根の構造、応力、施工、耐風・耐震と材料選定。",
+      "fixtureId": null
+    },
+    {
+      "id": "base-isolation-vs-damping",
+      "title": "免震と制震の違い",
+      "domain": "architecture",
+      "description": "免震・制震の原理、適用条件、効果と限界、設計上のトレードオフ。",
+      "fixtureId": null
+    },
+    {
+      "id": "hospital-airport-station-circulation",
+      "title": "病院/空港/駅の動線設計",
+      "domain": "architecture",
+      "description": "複雑建築の動線計画、ゾーニング、災害時の避難と運用。",
+      "fixtureId": null
+    }
+  ],
+  "nonProductionAcceptance": {
+    "requiresReviewerApproval": true,
+    "mustNotPresentSyntheticAsReal": true,
+    "mustKeepSourceUrls": true
+  }
+}
