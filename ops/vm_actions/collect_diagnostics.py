@@ -7962,6 +7962,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v1284-pursuit-6h",
             "hanjuku-chart-v1285-boss-panel-kit",
             "hanjuku-chart-v1286-contact-pos",
+            "hanjuku-chart-v1287-friendly-fire",
             "hanjuku-chart-v1158-progress-regress",
             "hanjuku-chart-v1161-refill-collapse",
             "hanjuku-chart-v1160-chapter-probe-field",

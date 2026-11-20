@@ -284,6 +284,28 @@ def ambush_contact(mem):
                 reason='待ち伏せセルにボスの実測が到達した')
 
 
+def friend_on_boss_cell(mem, radius=16):
+    """A remembered wave general stands within ``radius`` of the boss cell.
+
+    The boss cell is where an attack sortie aims; a friendly unit there is hit
+    first, so the attack must not be confirmed (live g1288 2026-11-21: the
+    hero fought トレビス on the track and the wave lost ten generals).
+    """
+    reading = mem.get('boss_cell') or {}
+    cell = reading.get('cell')
+    if not (isinstance(cell, (list, tuple)) and len(cell) == 2):
+        return False
+    for entry in (mem.get(LIST_KEY) or {}).values():
+        if not isinstance(entry, dict):
+            continue
+        for key in ('unit_world', 'ambush_cell'):
+            pos = entry.get(key)
+            if (isinstance(pos, (list, tuple)) and len(pos) == 2
+                    and abs(pos[0] - cell[0]) + abs(pos[1] - cell[1]) <= radius):
+                return True
+    return False
+
+
 def _ambush(mem, general=None):
     """A fixed point on the measured boss track for this general.
 
