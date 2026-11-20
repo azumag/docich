@@ -109,6 +109,7 @@ KEY_OWNERSHIP = {
     'boss_no_damage': {'region': WORLD, 'lifetime': 'chapter', 'migrated': False},  # ボス無ダメージ観測
     'boss_victories': {'region': WORLD, 'lifetime': 'chapter', 'migrated': False},  # ボス勝利観測
     'boss_pursuit': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # ボス追撃probe手順状態
+    'boss_pursuit_misses': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # ボス追撃のメニュー未出現回数
     'boss_wave_generals': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # ボス行軍将軍の追撃対象リスト
     'generals_lost': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 名簿一巡で不在と確認した将軍 (v985)
     'generals_lost_garrison': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 喪失確定時にその将軍を載せていた守備隊の城 (v994)
