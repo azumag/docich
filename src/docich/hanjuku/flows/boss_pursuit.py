@@ -265,6 +265,20 @@ def ambush_contact(mem):
     for general, entry in (mem.get(LIST_KEY) or {}).items():
         if not isinstance(entry, dict):
             continue
+        unit = entry.get('unit_world')
+        # Owner 2026-11-21: ボスが将軍に触れられていないだけ. Reaching the
+        # aim cell is NOT a contact with the general; record the two
+        # separately so the run log can tell "boss reached the aim" from
+        # "boss touched the general's measured cell".
+        if (isinstance(unit, (list, tuple)) and len(unit) == 2
+                and abs(unit[0] - cell[0]) + abs(unit[1] - cell[1]) <= 16):
+            last = entry.get('unit_contact_tick')
+            if not (type(last) is int and now - last < PURSUIT_COOLDOWN):
+                entry['unit_contact_tick'] = now
+                _record(mem, 'boss_unit_contact', general=general,
+                        observed_metric={'boss_cell': list(cell),
+                                         'unit_world': list(unit)},
+                        reason='ボスの実測セルが将軍の実測セルに重なった')
         aim = entry.get('ambush_cell')
         if not (isinstance(aim, (list, tuple)) and len(aim) == 2):
             continue
@@ -275,13 +289,12 @@ def ambush_contact(mem):
             continue
         entry['contact_tick'] = now
         metric = {'boss_cell': list(cell), 'aim': list(aim)}
-        unit = entry.get('unit_world')
         if isinstance(unit, (list, tuple)) and len(unit) == 2:
             metric['unit_world'] = list(unit)
             metric['unit_dist'] = [cell[0] - unit[0], cell[1] - unit[1]]
         _record(mem, 'boss_ambush_contact', general=general,
                 observed_metric=metric,
-                reason='待ち伏せセルにボスの実測が到達した')
+                reason='ボスが待ち伏せの狙いセルに到達（将軍との接触とは別）')
 
 
 def _ambush(mem, general=None):
