@@ -584,6 +584,17 @@ def _y_jump_step(mem, frame):
         if isinstance(probe, dict) and 'origin_cursor' not in probe:
             probe['origin_cursor'] = list(jump['origin_cursor'])
     gx, gy = boss_probe_cell(mem, jump['goal'], jump.get('step'))
+    # A moving-boss goal is re-measured while this jump is open (the pursuit
+    # keeps calling _apply_skull_boss), so the live probe cell walks away from
+    # the aim the jump started from and the landing residual can never
+    # converge (issue #4796: 10 months of measure→jump→fail→re-measure with
+    # the residual pinned at 5-7 view px). Freeze the first computed cell for
+    # the jump's lifetime; the redirect order is issued at that cell and the
+    # next pursuit cycle re-aims, which still beats never issuing the order.
+    if chart.is_boss_castle(jump.get('goal') or ''):
+        if 'goal_cell' not in jump:
+            jump['goal_cell'] = [gx, gy]
+        gx, gy = jump['goal_cell']
     ox, oy = Y_JUMP_OFFSET[chapter]
     dx, dy = gx / 8 + ox - cursor[0], gy / 8 + oy - cursor[1]
     # A roof misread as the G stays fixed even while the real cursor moves
