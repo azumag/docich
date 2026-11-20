@@ -274,8 +274,13 @@ def ambush_contact(mem):
         if type(last) is int and now - last < PURSUIT_COOLDOWN:
             continue
         entry['contact_tick'] = now
+        metric = {'boss_cell': list(cell), 'aim': list(aim)}
+        unit = entry.get('unit_world')
+        if isinstance(unit, (list, tuple)) and len(unit) == 2:
+            metric['unit_world'] = list(unit)
+            metric['unit_dist'] = [cell[0] - unit[0], cell[1] - unit[1]]
         _record(mem, 'boss_ambush_contact', general=general,
-                observed_metric={'boss_cell': list(cell), 'aim': list(aim)},
+                observed_metric=metric,
                 reason='待ち伏せセルにボスの実測が到達した')
 
 
@@ -734,6 +739,8 @@ def step(screen, mem, frame):
             metric = _redirect_metric(mem, probe, marker)
             if placed:
                 metric['aim'] = list(placed)
+            if entry is not None and isinstance(metric.get('unit_world'), list):
+                entry['unit_world'] = list(metric['unit_world'])
             _record(mem, 'boss_pursuit_redirected', chart_step=probe.get('step'),
                     general=probe['general'],
                     observed_metric=metric,
