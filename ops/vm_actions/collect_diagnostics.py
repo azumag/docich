@@ -7968,6 +7968,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v1290-boss-unit-contact",
             "hanjuku-chart-v1291-gjump-absent",
             "hanjuku-chart-v1293-chikujou-refusal-cache",
+            "hanjuku-chart-v1294-gjump-skip-map",
             "hanjuku-chart-v1158-progress-regress",
             "hanjuku-chart-v1161-refill-collapse",
             "hanjuku-chart-v1160-chapter-probe-field",
