@@ -348,6 +348,19 @@ def step(screen, mem, frame):
         if move == 'here':
             # SELECT on the roster jumps the field view to this general —
             # a field SELECT alone would always focus the hero (house.py).
+            # The jump moves the camera without the map flow measuring it, so
+            # the previous cursor estimate (the boss cell from the last Y view)
+            # must not survive: update_world dead-reckons the marker's screen
+            # position (still near the centre) and would keep the boss cell,
+            # letting the dest phase confirm the unit's own tile with no Y jump.
+            # Live g1288 2026-11-20 13:48-13:56: every redirect pressed A right
+            # after いどう (no Y), the marker stayed on the unit and no new ▲
+            # ever appeared - 65 redirects, zero marches.
+            mem.pop('cursor', None)
+            mem['uncertain'] = True
+            (mem.get('y_jumped') or {}).pop(PURSUIT_STEP, None)
+            (mem.get('y_jumped_res') or {}).pop(PURSUIT_STEP, None)
+            mem.pop('y_jump_return', None)
             probe['phase'] = 'field_open'
             return [pad('select')]
         return [move] if move else []

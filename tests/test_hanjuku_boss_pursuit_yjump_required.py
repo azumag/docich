@@ -1,0 +1,94 @@
+"""A pursuit must place the marker with its own Y jump before confirming.
+
+Live g1288 2026-11-20 13:48-13:56 (v1251): the pursuit pressed A on the いどう
+picker immediately after opening it (no Y press), and the destination was the
+unit's own tile. The camera had been following the roster SELECT jump, but
+``update_world`` integrates the marker's *screen* position (still near the
+screen centre), so the cursor estimate kept the boss cell from the previous Y
+view and ``_target_roof_under_marker`` confirmed it. No new ▲ army marker ever
+appeared: 65 "redirects" produced zero marches.
+
+The SELECT jump now drops the stale estimate and the previous receipt, so the
+dest phase has to run its own Y jump and lands the marker on the boss.
+"""
+from types import SimpleNamespace
+
+from docich.hanjuku.flows import boss_pursuit as bp
+
+
+class FakeFrame:
+    pass
+
+
+def map_screen():
+    return SimpleNamespace(kind='map', marker=None, cursor=(120, 120), text='',
+                           hand=None, selected=None)
+
+
+def picker():
+    return SimpleNamespace(kind='map_target', marker=(132, 113), cursor=None,
+                           text='', hand=None, selected=None)
+
+
+def memory(**extra):
+    mem = {
+        'chapter': 9,
+        'tick': 5000,
+        'world': {'sorties': {}, 'garrison': {}},
+        bp.LIST_KEY: {'ミント': {'step': 'A', 'launched': 3000}},
+        'boss_cell': {'chapter': 9, 'cell': [802, 629], 'tick': 4990, 'readings': 2},
+        'plan': {'active': None},
+        'cursor': [802, 629],
+        'uncertain': False,
+        'y_jumped': {bp.PURSUIT_STEP: 'ボス', 'A': 'イソ'},
+        'y_jumped_res': {bp.PURSUIT_STEP: [0.5, -0.5]},
+        'y_jump_return': True,
+        'boss_pursuit': {'general': 'ミント', 'step': 'A', 'phase': 'pick',
+                         'reads': 10, 'seeks': 0, 'x_retries': 0, 'roster_top': True},
+    }
+    mem.update(extra)
+    return mem
+
+
+def test_the_select_jump_drops_the_stale_camera_and_receipt(monkeypatch):
+    monkeypatch.setattr(bp.house, 'roster', lambda screen: ['ミント'])
+    monkeypatch.setattr(bp, 'menu_to', lambda screen, name: 'here')
+    mem = memory()
+    assert bp.step(map_screen(), mem, None) == [bp.pad('select')]
+    assert 'cursor' not in mem
+    assert mem['uncertain'] is True
+    assert bp.PURSUIT_STEP not in (mem.get('y_jumped') or {})
+    assert bp.PURSUIT_STEP not in (mem.get('y_jumped_res') or {})
+    assert 'y_jump_return' not in mem
+    assert mem['boss_pursuit']['phase'] == 'field_open'
+
+
+def test_without_a_receipt_the_dest_phase_starts_its_own_y_jump(monkeypatch):
+    monkeypatch.setattr(bp.chart, 'moving_boss_cell', lambda ch: (802, 629))
+    import docich.hanjuku.flows.map as m
+    seen = {}
+
+    def roof(screen, mem, frame, order):
+        seen['world'] = mem.get('cursor')
+        return False
+
+    monkeypatch.setattr(m, '_target_roof_under_marker', roof)
+    import docich.hanjuku.os_layer.navigation as nav
+    monkeypatch.setattr(nav, '_start_y_jump', lambda *a, **k: ['jump'])
+    mem = memory(boss_pursuit={'general': 'ミント', 'step': 'A', 'phase': 'dest',
+                               'reads': 10, 'seeks': 0, 'x_retries': 0})
+    mem.pop('y_jumped')
+    mem.pop('y_jumped_res')
+    assert bp.step(picker(), mem, FakeFrame()) == ['jump']
+    assert not [r for r in mem.get('_records', [])
+                if r['decision'] == 'boss_pursuit_redirected']
+
+
+def test_a_fresh_receipt_still_confirms_immediately(monkeypatch):
+    monkeypatch.setattr(bp.chart, 'moving_boss_cell', lambda ch: (802, 629))
+    import docich.hanjuku.flows.map as m
+    monkeypatch.setattr(m, '_target_roof_under_marker', lambda *a, **k: True)
+    mem = memory(boss_pursuit={'general': 'ミント', 'step': 'A', 'phase': 'dest',
+                               'reads': 10, 'seeks': 0, 'x_retries': 0})
+    assert bp.step(picker(), mem, FakeFrame()) == [bp.pad('a')]
+    assert mem['boss_pursuit']['outcome'] == 'redirected'
