@@ -7927,6 +7927,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v1250-month-audit-world",
             "hanjuku-chart-v1251-pursuit-start-gap",
             "hanjuku-chart-v1252-boss-phase-audit",
+            "hanjuku-chart-v1253-recall-idou",
             "hanjuku-chart-v1158-progress-regress",
             "hanjuku-chart-v1161-refill-collapse",
             "hanjuku-chart-v1160-chapter-probe-field",
