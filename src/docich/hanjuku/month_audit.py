@@ -419,17 +419,42 @@ def _boss_battle_seen(mem, records, chapter, boss_name):
     return False
 
 
+def _rows_boss_battle(rows, chapter, boss_name):
+    """Boss battle evidence in a decision window (persisted across observations)."""
+    from .. import hanjuku_chart as chart
+    from .. import hanjuku_reference as reference
+    boss_sites = set(chart.boss_sites(chapter) or ())
+    boss_names = {boss_name} | set(chart.BOSSES.values()) | set(reference.BOSS_GENERALS)
+    for row in rows or ():
+        if not isinstance(row, dict):
+            continue
+        if row.get('decision') == 'battle_start':
+            enemy = row.get('enemy')
+            if enemy in boss_names or reference.is_boss_target(enemy):
+                return True
+        elif row.get('decision') == 'sortie_outcome':
+            metric = row.get('observed_metric')
+            castle = row.get('castle') or (metric.get('castle')
+                                           if isinstance(metric, dict) else None)
+            if castle in boss_sites:
+                return True
+        elif row.get('decision') in ('boss_defeated', 'boss_victory', 'boss_defeated_observed'):
+            return True
+    return False
+
+
 def _boss_incident_id(identity, current):
     raw = (f"{identity.get('runtime_id')}|{identity.get('generation')}|boss|"
            f"{current.get('chapter')}|{current.get('started_at')}")
     return hashlib.sha256(raw.encode('utf-8')).hexdigest()[:20]
 
 
-def _build_boss_incident(runtime, state, after, records, now, current):
+def _build_boss_incident(runtime, state, after, records, now, current, rows=None):
     mem = after.get('policy') or {}
     context = _context(after)
-    rows = _read_decisions(runtime, current.get('started_at') or now, now,
-                           state.get('identity'))
+    if rows is None:
+        rows = _read_decisions(runtime, current.get('started_at') or now, now,
+                               state.get('identity'))
     counts = _decision_counts(rows)
     departures, launch_events = _departures(rows)
     battle_starts = counts.get('battle_start', 0)
@@ -593,7 +618,14 @@ def _track_boss(runtime, state, after, records, now):
         return
     if float(now) - float(current.get('started_at') or now) < BOSS_NO_BATTLE_SECONDS:
         return
-    incident = _build_boss_incident(runtime, state, after, records, now, current)
+    rows = _read_decisions(runtime, current.get('started_at') or now, now,
+                           state.get('identity'))
+    if _rows_boss_battle(rows, phase['chapter'], phase['boss_name']):
+        current['battle_count'] = 1
+        current['battle_at'] = float(now)
+        current['battle_source'] = 'decision_log'
+        return
+    incident = _build_boss_incident(runtime, state, after, records, now, current, rows=rows)
     _append_incident(runtime, incident)
     current['reported'] = True
     current['incident_id'] = incident.get('incident_id')

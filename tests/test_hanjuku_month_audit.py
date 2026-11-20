@@ -314,6 +314,12 @@ def test_boss_phase_with_a_battle_is_not_recorded(runtime_dir):
     assert audit.load_incidents(runtime_dir) == []
 
 
+def test_boss_battle_in_the_decision_log_prevents_the_record(runtime_dir):
+    note(runtime_dir, 1000, 'battle_start', enemy='ハデス')
+    _run_boss(runtime_dir)
+    assert audit.load_incidents(runtime_dir) == []
+
+
 def test_boss_phase_with_hp_evidence_is_not_recorded(runtime_dir):
     _run_boss(runtime_dir, hp=True)
     assert audit.load_incidents(runtime_dir) == []
