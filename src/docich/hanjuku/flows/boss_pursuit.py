@@ -94,6 +94,14 @@ PURSUIT_STEP = 'PURSUIT'      # step id of the pursuit's own Y jump (y_jump['ste
 CLOSE_LIMIT = 12              # observations a closing probe waits for the map
 UNIT_MENU_WAIT = 14           # map reads waiting for the unit's menu to draw
 FORT_LIST_SEEK_LIMIT = 8      # list steps spent looking for the boss general in a 砦
+# #4861 (live g1190 46-9..46-12): a black impassable cliff line splits the
+# イデ！ pocket (x<640, y>260) and the north corridor (x<640, y<=260) from
+# the east boss-orbit area (x>=640); the corridor mouth is the only join.
+# Redirects confirmed perfectly while the pocket generals never moved a
+# pixel - a straight march at an east aim just walks into the wall.
+CH9_CLIFF_EAST_X = 640
+CH9_CLIFF_POCKET_Y = 260
+CH9_EAST_MOUTH = (674, 212)   # the east area's north entrance off the corridor
 
 
 def _drop_probe(mem):
@@ -351,6 +359,29 @@ def _lead(mem, probe):
         lx = int(round(lx * PURSUIT_LEAD_MAX / span))
         ly = int(round(ly * PURSUIT_LEAD_MAX / span))
     return (lx, ly)
+
+
+def _ch9_cliff_detour(unit_world, aim):
+    """The first leg a cliff-blocked ch9 unit must walk, or None.
+
+    #4861: a measured unit west of the cliff line whose aim is east of it
+    can never get there directly, so the pursuit re-aims it in two stages -
+    the pocket climbs out through the north-corridor waypoint, the corridor
+    steps due east to the mouth. A unit already east of the line (or one
+    whose world position was not measured this jump) keeps its aim.
+    """
+    if not (isinstance(unit_world, (list, tuple)) and len(unit_world) == 2
+            and isinstance(aim, (list, tuple)) and len(aim) == 2):
+        return None
+    ux, uy = unit_world
+    ax, ay = aim
+    if ux >= CH9_CLIFF_EAST_X or ax < CH9_CLIFF_EAST_X:
+        return None
+    if uy > CH9_CLIFF_POCKET_Y:
+        return chart.CH9_BOSS_WAYPOINT
+    if ay > CH9_CLIFF_POCKET_Y:
+        return CH9_EAST_MOUTH
+    return None
 
 
 def _note_stale_wave(mem):
@@ -767,15 +798,29 @@ def step(screen, mem, frame):
             return [pad('a')]
         from ..os_layer.navigation import _start_y_jump
         aim = _ambush(mem, probe.get('general'))
-        if aim:
-            # Fixed placement on the orbit: the general waits where the boss
-            # will come round instead of following today's cell.
+        lead = None
+        if aim is None:
+            # No measured orbit yet: aim one displacement ahead of the boss.
+            # The lead is kept as an offset so the jump follows a fresher
+            # boss reading, unless the detour below replaces it with a leg.
+            lead = _lead(mem, probe)
+            cell = (mem.get('boss_cell') or {}).get('cell')
+            if lead and isinstance(cell, (list, tuple)) and len(cell) == 2:
+                aim = (cell[0] + lead[0], cell[1] + lead[1])
+        detour = _ch9_cliff_detour(probe.get('unit_world'), aim)
+        if detour is not None:
+            # The unit stands west of the ch9 cliff line and the aim is east
+            # of it: the next leg is the corridor, not the boss (#4861).
+            aim, lead = detour, None
+        if aim is not None and lead is None:
+            # Fixed placement on the orbit (or the detour leg): the general
+            # waits where the boss will come round instead of following
+            # today's cell.
             mem['pursuit_aim'] = list(aim)
             probe['aim_cell'] = list(aim)
             mem.pop('pursuit_lead', None)
         else:
             mem.pop('pursuit_aim', None)
-            lead = _lead(mem, probe)
             if lead:
                 mem['pursuit_lead'] = list(lead)
         if (mem.get('y_jumps') or {}).get('PURSUIT:target', 0) < 3:
