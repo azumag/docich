@@ -23,3 +23,13 @@ def test_out_of_tolerance_estimated_ch_accepts_unique_nearest(monkeypatch):
     assert out['castle'] == 'シマウ' and why['reason'] == 'out_of_tolerance_estimated_ch'
     out2 = readers.marker_castle(object(), 5, evidence={})
     assert out2 is None
+
+
+def test_scroll_arrow_marker_is_rejected_before_calibration(monkeypatch):
+    """#4410: the 「more names」 arrow past the map panel never binds."""
+    monkeypatch.setattr(readers.chart, 'castles', lambda _c: {'甲': (0, 0)})
+    monkeypatch.setattr(readers, 'selection_marker',
+                        lambda _f: {'box': (192, 161, 198, 167), 'tip': (195, 167)})
+    why = {}
+    assert readers.marker_castle(object(), 9, evidence=why) is None
+    assert why['reason'] == 'scroll_arrow'

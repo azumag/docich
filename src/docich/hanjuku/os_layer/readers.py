@@ -525,6 +525,12 @@ def marker_castle(frame, chapter, hint=None, evidence=None):
     marker = selection_marker(frame)
     if not marker or not castles:
         return _why('no_marker')
+    # A triangle outside the map panel is the roster's 「more names」 scroll
+    # arrow, never a position marker: it can never bind a castle, so reject
+    # it here instead of letting every monthly read burn an out_of_tolerance
+    # fallback (#4410: the same box [192,161,198,167] repeated all walk).
+    if marker['box'][2] >= MAP_PANEL_RIGHT:
+        return _why('scroll_arrow')
     icons = _map_icon_centres(frame)
     offset = _map_view_offset(icons, castles)
     tip = marker['tip']
