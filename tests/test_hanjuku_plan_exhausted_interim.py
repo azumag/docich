@@ -200,6 +200,59 @@ def test_an_exhausted_mechanical_plan_is_rebuilt_with_new_sorties():
     assert 'ゴーメン' not in targets or _plan_region(mem)['orders'].get(step) != 'launched'
 
 
+def test_a_settled_interim_step_is_skipped_for_the_next_candidate():
+    """g1190 ch1v4: the top interim candidate's step stayed 'failed' and
+    ``chart_interim_order`` re-issued it on every rebuild while the month saw
+    no departure. The slot must advance to the next live candidate instead of
+    re-issuing a settled step forever."""
+    mem = memory()
+    state = mem.setdefault('chart_adjust', {})
+    rid = chart_adjust.request_id(mem)
+
+    replan._mechanical_interim(mem, state, rid, 'digest-a')
+    first = interim(mem)
+    assert first is not None
+    first_step = first['step']
+
+    # The issued sortie settled as failed (cancel, lost battle, dead general).
+    _plan_region(mem).setdefault('orders', {})[first_step] = 'failed'
+
+    replan._mechanical_interim(mem, state, rid, 'digest-a')
+    second = interim(mem)
+    assert second is not None
+    assert second['step'] != first_step
+    assert _plan_region(mem)['orders'][first_step] == 'failed'
+
+
+def test_all_settled_interim_steps_hold_once_without_reissue():
+    mem = memory(garrison={HOME: ['ゼウス']})
+    state = mem.setdefault('chart_adjust', {})
+    rid = chart_adjust.request_id(mem)
+
+    # Settle every candidate the slot can pick: each call issues the next
+    # live step and we fail it until nothing live remains.
+    candidates = replan.interim_candidates(mem)
+    assert candidates
+    for _ in range(len(candidates) + 1):
+        current = interim(mem)
+        if current is not None:
+            _plan_region(mem).setdefault('orders', {})[current['step']] = 'failed'
+        replan._mechanical_interim(mem, state, rid, 'digest-a')
+
+    # Every issued step is settled and the hold is recorded once per digest.
+    issued = [r for r in mem['_records'] if r['decision'] == 'chart_interim_order']
+    assert len(issued) <= len(candidates)
+    assert all(_plan_region(mem)['orders'].get(r['chart_step']) == 'failed'
+               for r in issued)
+    holds = [r for r in mem['_records'] if r['decision'] == 'chart_interim_hold'
+             and r.get('jev_status') == 'all_settled']
+    assert len(holds) == 1
+    replan._mechanical_interim(mem, state, rid, 'digest-a')
+    holds = [r for r in mem['_records'] if r['decision'] == 'chart_interim_hold'
+             and r.get('jev_status') == 'all_settled']
+    assert len(holds) == 1
+
+
 def test_a_multi_defender_castle_gets_more_than_four_wave_sorties():
     """しまばら kept producing successor defenders (g1163 2026-11-10 08-10).
 
