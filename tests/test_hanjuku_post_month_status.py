@@ -49,6 +49,20 @@ def test_map_yields_to_a_startable_order_until_the_month_has_a_launch():
     assert state['stage'] == 'open_menu'
 
 
+def test_an_armed_scan_yields_after_the_boss_wave_cap():
+    from docich import hanjuku_chart as chart
+    mem = memory(chapter=9, captured=list(chart.corridor(9)),
+                 month_sorties={'scope': [9, '2-6'], 'launches': 1})
+    post.arm(mem)
+    state = mem['post_month_status']
+    mem['boss_wave_generals'] = {'カシス': {'step': 'A', 'launched': 1}}
+    mem['boss_cell'] = {'chapter': 9, 'cell': [770, 629], 'tick': 100}
+    state['steps'] = post.BOSS_WAVE_SCAN_STEPS
+    assert post.step(Screen([], None, '', kind='text'), mem, None) is None
+    assert 'post_month_status' not in mem
+    assert any(r['decision'] == 'post_month_boss_scan_abandoned' for r in mem['_records'])
+
+
 def test_arm_defers_the_whole_scan_while_boss_waves_are_in_flight():
     from docich import hanjuku_chart as chart
     mem = memory(chapter=9, captured=list(chart.corridor(9)),

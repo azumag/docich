@@ -18,6 +18,7 @@ from . import house, recall as recall_flow, map_registration
 from copy import deepcopy
 
 MAX_STEPS = 900
+BOSS_WAVE_SCAN_STEPS = 60   # boss waves in flight: do not let the scan own the field past this
 # docich#4653: menu-open retries per stage entry and the read interval between them.
 OPEN_RETRY_EVERY = 3
 OPEN_MENU_TRIES = 8
@@ -1382,6 +1383,19 @@ def step(screen, mem, frame):
         return None
     if (state.get('scope') != [mem.get('chapter'), mem.get('month')]
             or state.get('identity') != receipts.run_identity(mem.get('_run_identity'))):
+        mem.pop('post_month_status', None)
+        return None
+    # An already-armed scan (from before the boss waves appeared) must not
+    # keep the field for minutes: a boss wave with a measured cell outranks
+    # the remaining roster reads. #4779 stops the next arm; this ends the
+    # current one after a bounded number of observations.
+    if (mem.get('chapter') == 9 and (mem.get('boss_wave_generals') or {})
+            and isinstance(mem.get('boss_cell'), dict)
+            and int(state.get('steps') or 0) >= BOSS_WAVE_SCAN_STEPS):
+        _log(mem, 'post_month_boss_scan_abandoned',
+             observed_metric={'steps': state.get('steps'), 'stage': state.get('stage'),
+                              'waves': len(mem.get('boss_wave_generals') or {})},
+             reason='ボス波が飛んでいるため月次確認を打ち切り、フィールドをボス追撃へ明け渡す')
         mem.pop('post_month_status', None)
         return None
     # docich#4658: a sortie's castle jump owns the field and its menus. The
