@@ -2822,9 +2822,9 @@ def test_camp_recall_walks_cursor_menu_and_own_castle(monkeypatch):
     assert _flow(mem)['recall']['steps'] == 0               # each stage restarts the budget
     assert [r['decision'] for r in mem['_records']][-1] == 'camp_enter'
 
-    for i in range(3):
-        assert policy.camp_recall_step(camp_menu(i), mem, frame) == [policy.pad('down')]
-    assert policy.camp_recall_step(camp_menu(3), mem, frame) == [policy.pad('a')]
+    # Owner 2026-11-19: the menu target is いどう (first row), so the A lands
+    # at once instead of walking down three rows to きかん.
+    assert policy.camp_recall_step(camp_menu(0), mem, frame) == [policy.pad('a')]
     assert _flow(mem)['recall']['stage'] == 'dest'
     assert _flow(mem)['recall']['steps'] == 0               # destination gets a full budget too
 

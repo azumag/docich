@@ -1104,6 +1104,7 @@ def _camp_recall_step(screen: Screen, mem, frame, *, observed_camps=None):
         if usable:
             estimate = max(usable)
         roofs_seen = len(castle_roofs(frame)) if isinstance(frame, Frame) else 0
+        state['move_only'] = True
         _record(mem, 'camp_found', observed_metric={'camp': list(camp['target']),
                                                     **({'month_elapsed': elapsed} if elapsed is not None else {}),
                                                     **({'month_estimate': estimate} if estimate else {}),
@@ -1430,9 +1431,9 @@ def _camp_recall_step(screen: Screen, mem, frame, *, observed_camps=None):
                         observed_metric={'cell': list(relay['cell']), 'hub': relay.get('hub'),
                                          'camp': list(state.get('target') or ())},
                         reason='後半の自軍城が無くハブへ直行すると崖に詰まるため、まず後半中央へいどうで移動する')
-        choice = 'いどう' if (state.get('boss') or state.get('boss_move')
-                              or state.get('move_visible') or state.get('gather')
-                              or state.get('relay')) else 'きかん'
+        choice = 'いどう' if (state.get('move_only') or state.get('boss')
+                              or state.get('boss_move') or state.get('move_visible')
+                              or state.get('gather') or state.get('relay')) else 'きかん'
         move = menu_to(screen, choice)
         if move is None:
             misses = state['cursor_misses'] = int(state.get('cursor_misses', 0)) + 1

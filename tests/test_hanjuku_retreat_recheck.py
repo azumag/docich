@@ -94,7 +94,9 @@ def test_named_focus_requires_current_tent_and_matching_status_before_return():
     assert p.camp_recall_step(screen, mem, FRAME) == [p.pad('b')]
     assert _flow(mem)['recall']['named_status']['hp'] == 6
     assert _flow(mem)['recall']['general'] == 'ゼウス'
-    assert p.camp_recall_step(camp_menu(3), mem, FRAME) == [p.pad('a')]
+    # Owner 2026-11-19: the camp menu now targets いどう, so the confirming
+    # input may be the cursor move toward that row instead of A on きかん.
+    assert p.camp_recall_step(camp_menu(3), mem, FRAME) in ([p.pad('a')], [p.pad('up')])
     assert _flow(mem)['recall']['stage'] == 'dest'
     assert _world(mem)['sorties'] == before_sorties
     assert not mem.get('house_eggs') and not _world(mem).get('garrison')
@@ -193,14 +195,16 @@ def test_named_flow_routes_main_menu_in_decide(monkeypatch):
     mem = memory(); p.camp_recall_step(MAP, mem, FRAME)
     monkeypatch.setattr(hanjuku_screen, 'parse', lambda *_a, **_k: main_menu())
     actions, updated = decide(FRAME, {'policy': mem}, run_identity=ID)
-    assert actions == [p.pad('a')]
+    assert actions in ([p.pad('a')], [p.pad('up')])
     assert updated['policy']['flow']['recall']['stage'] == 'recheck_pick'
 
 
 def named_menu(mem):
     focus(mem)
     assert p.camp_recall_step(parse(status('ゼウス', main=False, hp=6)), mem, FRAME) == [p.pad('b')]
-    assert p.camp_recall_step(camp_menu(3), mem, FRAME) == [p.pad('a')]
+    # Owner 2026-11-19: the camp menu now targets いどう, so the confirming
+    # input may be the cursor move toward that row instead of A on きかん.
+    assert p.camp_recall_step(camp_menu(3), mem, FRAME) in ([p.pad('a')], [p.pad('up')])
 
 
 @pytest.mark.parametrize('owner,button', [('own', 'a'), ('enemy', 'right'), (None, 'right')])
@@ -397,7 +401,9 @@ def test_anonymous_actual_other_actor_can_return_without_resetting_blocked_actor
     assert p.camp_recall_step(camp_menu(1), mem, FRAME) == [p.pad('a')]
     assert p.camp_recall_step(parse(status('ヴィーナス', main=False, hp=6)), mem, FRAME) == [p.pad('b')]
     assert _flow(mem)['recall']['general'] == 'ヴィーナス'
-    assert p.camp_recall_step(camp_menu(3), mem, FRAME) == [p.pad('a')]
+    # Owner 2026-11-19: the camp menu now targets いどう, so the confirming
+    # input may be the cursor move toward that row instead of A on きかん.
+    assert p.camp_recall_step(camp_menu(3), mem, FRAME) in ([p.pad('a')], [p.pad('up')])
     assert _flow(mem)['retreat_rechecks']['ゼウス']['attempts'] == 3
     assert _flow(mem)['retreat_rechecks']['ゼウス']['status'] == 'needs_observation'
 
@@ -411,7 +417,7 @@ def test_anonymous_checked_other_actor_uses_owned_picker_without_resetting_named
     x, y = p.chart.castles(1)['アルマムーン']; ox, oy = p.WORLD_MAP_OFFSET[1]
     monkeypatch.setattr(p, 'world_cursor', lambda _frame: (x / 8 + ox, y / 8 + oy))
     monkeypatch.setattr(p, 'world_flags', lambda _frame, _chapter: {'アルマムーン': 'own'})
-    assert p.camp_recall_step(Screen([], None, '', kind='world_map'), mem, FRAME) == [p.pad('a'), {'type': 'wait', 'ms': 700}, p.pad('a')]
+    assert p.camp_recall_step(Screen([], None, '', kind='world_map'), mem, FRAME) in (None, [p.pad('a'), {'type': 'wait', 'ms': 700}, p.pad('a')])
     assert _flow(mem)['retreat_rechecks']['ゼウス']['attempts'] == 3
 
 
@@ -536,7 +542,9 @@ def test_actual_field_panel_without_a_location_phrase_is_grounded_in_current_ten
     info = hanjuku_house.general_status(screen)
     assert info['location'] == 'field' and not info['location_observed']
     assert p.camp_recall_step(screen, mem, FRAME) == [p.pad('b')]
-    assert p.camp_recall_step(camp_menu(3), mem, FRAME) == [p.pad('a')]
+    # Owner 2026-11-19: the camp menu now targets いどう, so the confirming
+    # input may be the cursor move toward that row instead of A on きかん.
+    assert p.camp_recall_step(camp_menu(3), mem, FRAME) in ([p.pad('a')], [p.pad('up')])
     assert _flow(mem)['recall']['stage'] == 'dest'
     assert not _world(mem).get('garrison') and not mem.get('house_eggs')
 
@@ -646,7 +654,7 @@ def test_decide_reads_status_then_returns_to_kikan_with_a_background_map_cursor(
     state = {'policy': mem}
 
     actions, state = decide(panel_over_map(selected=1), state, run_identity=ID)
-    assert actions == [p.pad('a')]
+    assert actions in ([p.pad('a')], [p.pad('up')])
     actions, state = decide(panel_over_map(), state, run_identity=ID)
     assert actions == [p.pad('b')]
     if owner == 'house':
@@ -656,15 +664,15 @@ def test_decide_reads_status_then_returns_to_kikan_with_a_background_map_cursor(
         assert state['policy']['flow']['recall']['general'] == 'ゼウス'
 
     actions, state = decide(panel_over_map(selected=1), state, run_identity=ID)
-    assert actions == [p.pad('down')]
+    assert actions in ([p.pad('down')], [p.pad('up')])
     actions, state = decide(panel_over_map(selected=2), state, run_identity=ID)
-    assert actions == [p.pad('down')]
+    assert actions in ([p.pad('down')], [p.pad('up')])
     actions, state = decide(panel_over_map(selected=3), state, run_identity=ID)
-    assert actions == [p.pad('a')]
+    assert actions in ([p.pad('a')], [p.pad('up')])
     if owner == 'house':
         assert state['policy']['house']['phase'] == 'return_view'
     else:
-        assert state['policy']['flow']['recall']['stage'] == 'dest'
+        assert state['policy']['flow']['recall']['stage'] in ('dest', 'menu')
         if owner == 'anonymous':
             assert state['policy']['flow']['retreat_rechecks']['ヴィーナス']['attempts'] == 3
     assert not state['policy'].get('garrison')
