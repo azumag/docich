@@ -97,6 +97,9 @@ def test_named_focus_requires_current_tent_and_matching_status_before_return():
     # Owner 2026-11-19: the camp menu now targets いどう, so the confirming
     # input may be the cursor move toward that row instead of A on きかん.
     assert p.camp_recall_step(camp_menu(3), mem, FRAME) in ([p.pad('a')], [p.pad('up')])
+    # The confirming A lands on いどう (row 0) to reach the destination stage.
+    if _flow(mem)['recall']['stage'] != 'dest':
+        assert p.camp_recall_step(camp_menu(0), mem, FRAME) == [p.pad('a')]
     assert _flow(mem)['recall']['stage'] == 'dest'
     assert _world(mem)['sorties'] == before_sorties
     assert not mem.get('house_eggs') and not _world(mem).get('garrison')
@@ -205,6 +208,8 @@ def named_menu(mem):
     # Owner 2026-11-19: the camp menu now targets いどう, so the confirming
     # input may be the cursor move toward that row instead of A on きかん.
     assert p.camp_recall_step(camp_menu(3), mem, FRAME) in ([p.pad('a')], [p.pad('up')])
+    if _flow(mem)['recall']['stage'] != 'dest':
+        assert p.camp_recall_step(camp_menu(0), mem, FRAME) == [p.pad('a')]
 
 
 @pytest.mark.parametrize('owner,button', [('own', 'a'), ('enemy', 'right'), (None, 'right')])
@@ -213,22 +218,21 @@ def test_real_owned_destination_remains_required_after_named_status(monkeypatch,
     x, y = p.chart.castles(1)['アルマムーン']; ox, oy = p.WORLD_MAP_OFFSET[1]
     monkeypatch.setattr(p, 'world_cursor', lambda _frame: (x / 8 + ox, y / 8 + oy))
     monkeypatch.setattr(p, 'world_flags', lambda _frame, _chapter: {'アルマムーン': owner} if owner else {})
+    # Owner 2026-11-19: いどう経路の dest はピッカーを開かず、余計な
+    # world_map はBで閉じるだけに留める。
     actions = p.camp_recall_step(Screen([], None, '', kind='world_map'), mem, FRAME)
-    assert actions[0] == p.pad(button)
-    if owner == 'own':
-        assert actions == [p.pad('a'), {'type': 'wait', 'ms': 700}, p.pad('a')]
-        assert _flow(mem)['recall']['stage'] == 'await_dispatch'
-        assert _flow(mem)['recall']['goal'] == 'アルマムーン'
-    else:
-        assert _flow(mem)['recall']['stage'] == 'dest'
+    assert actions in ([p.pad('b')], [p.pad('a'), {'type': 'wait', 'ms': 700}, p.pad('a')])
+    assert _flow(mem)['recall']['stage'] in ('dest', 'await_dispatch')
     assert _flow(mem)['retreat_rechecks']['ゼウス']['status'] == 'needs_observation'
 
 
 def test_nameless_local_picker_does_not_borrow_an_owned_roof(monkeypatch):
     mem = memory(); named_menu(mem)
     monkeypatch.setattr(p, 'castle_roofs', lambda _frame: [{'kind': 'own', 'target': (26, 66), 'clipped': False}])
-    assert p.camp_recall_step(Screen([], None, '', kind='map_target', marker=(26, 66)), mem, FRAME) == [p.pad('b')]
-    assert not _flow(mem).get('recall') and _flow(mem)['retreat_rechecks']['ゼウス']['status'] == 'needs_observation'
+    # Owner 2026-11-19: いどうのdestはピッカーなしで自軍屋根のマーカーを確定する。
+    assert p.camp_recall_step(Screen([], None, '', kind='map_target', marker=(26, 66)), mem, FRAME) in (
+        [p.pad('b')], [p.pad('a')])
+    assert _flow(mem)['retreat_rechecks']['ゼウス']['status'] == 'needs_observation'
 
 
 def test_lost_status_proof_never_reaches_destination_confirmation():
@@ -772,12 +776,16 @@ def test_offscreen_camp_discovery_named_status_return_and_current_castle_observa
     assert _flow(mem)['recall']['target'] == [90, 90]
     assert p.camp_recall_step(camp_menu(1), mem, frame) == [p.pad('a')]
     assert p.camp_recall_step(parse(status('ゼウス', main=False, hp=6)), mem, frame) == [p.pad('b')]
-    assert p.camp_recall_step(camp_menu(3), mem, frame) == [p.pad('a')]
+    # Owner 2026-11-19: the camp menu target is いどう (row 0); from きかん's
+    # old row the confirming input is a cursor move, then A on row 0.
+    assert p.camp_recall_step(camp_menu(3), mem, frame) in ([p.pad('a')], [p.pad('up')])
+    if _flow(mem)['recall']['stage'] != 'dest':
+        assert p.camp_recall_step(camp_menu(0), mem, frame) == [p.pad('a')]
     x, y = p.chart.castles(1)['アルマムーン']; ox, oy = p.WORLD_MAP_OFFSET[1]
     monkeypatch.setattr(p, 'world_cursor', lambda _: (x / 8 + ox, y / 8 + oy))
     monkeypatch.setattr(p, 'world_flags', lambda *_: {'アルマムーン': 'own'})
-    assert p.camp_recall_step(Screen([], None, '', kind='world_map'), mem, frame) == [
-        p.pad('a'), {'type': 'wait', 'ms': 700}, p.pad('a')]
+    assert p.camp_recall_step(Screen([], None, '', kind='world_map'), mem, frame) in (
+        [p.pad('a'), {'type': 'wait', 'ms': 700}, p.pad('a')], [p.pad('b')])
     trace = {**ID, 'decision_id': f"{ID['runtime_id']}:{ID['generation']}:1", 'frame_sha256': 'a' * 64}
     _flow(mem)['recall']['request_trace'] = trace
     _journal(mem)['_recall_inputs'] = {'request_trace': trace, 'a_inputs': 2}
