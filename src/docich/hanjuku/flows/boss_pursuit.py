@@ -35,6 +35,13 @@ PURSUIT_MARCH_MIN = 400       # a just-launched march is left alone this long
 # with zero sorties (month 64-3 audit: launches 0, departures 0). Leave a gap
 # between pursuit starts so the ordinary owners get the map frames back.
 PURSUIT_START_GAP = 90        # ticks between two pursuit starts (~1.5 min)
+# Live g1288 2026-11-20: the seven wave entries were launched at ticks
+# 1475..23839 and were still being re-aimed past tick 32000. No redirect ever
+# entered the boss, and because the generals never came home no castle had a
+# spare and no second wave could start (month audit 64-3..65-x: launches 0).
+# A wave this old is not making progress: stop chasing, let the camp recall
+# take the generals back to a castle and launch fresh sorties from there.
+PURSUIT_STALE_TICKS = 3600    # one hour without a fresh wave entry
 # Chapter 9's boss sweeps north-south (y 157 <-> 853 in about 330 s, measured
 # 2026-11-17) while a camped general walks ~1.3 px/s. v990 tried to commit a
 # redirect only while the boss was in the northern band; the next run refuted
@@ -168,6 +175,38 @@ def _camped_since(mem, general, launched):
             and (type(launched) is not int or row['tick'] >= launched))
 
 
+def wave_stale(mem):
+    """True when even the newest remembered boss wave is past the stale bound.
+
+    Uses the newest entry: one old record must not block fresh waves that a
+    rebuilt sortie just added. An empty list is not stale (there is nothing to
+    chase and camp recall keeps its ordinary rule).
+    """
+    now = int(mem.get('tick') or 0)
+    launched = [e.get('launched') for e in (mem.get(LIST_KEY) or {}).values()
+                if isinstance(e, dict)]
+    launched = [t for t in launched if type(t) is int]
+    if not launched:
+        return False
+    return now - max(launched) >= PURSUIT_STALE_TICKS
+
+
+def _note_stale_wave(mem):
+    now = int(mem.get('tick') or 0)
+    if mem.get('boss_wave_stale_noted') is not None:
+        return
+    mem['boss_wave_stale_noted'] = now
+    launched = [e.get('launched') for e in (mem.get(LIST_KEY) or {}).values()
+                if isinstance(e, dict)]
+    launched = [t for t in launched if type(t) is int]
+    newest = max(launched) if launched else None
+    _record(mem, 'boss_wave_stale',
+            observed_metric={'newest_launched': newest,
+                             'age': now - newest if type(newest) is int else None},
+            reason='ボス波の全隊が上限時間を超えて入城していないため追撃を止め、'
+                   '野営回収で城へ戻して次の波を編成する')
+
+
 def _candidate(mem):
     """The oldest boss-bound general that has marched long enough to re-aim."""
     now = int(mem.get('tick') or 0)
@@ -247,6 +286,10 @@ def step(screen, mem, frame):
         if (kind != 'map' or _plan_region(mem).get('active')
                 or not chart.moving_boss_cell(9) or busy):
             return None
+        if wave_stale(mem):
+            _note_stale_wave(mem)
+            return None
+        mem.pop('boss_wave_stale_noted', None)
         pick = _candidate(mem)
         if pick is None:
             return None
