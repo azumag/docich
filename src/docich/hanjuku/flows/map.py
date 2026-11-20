@@ -3103,17 +3103,6 @@ def _target_roof_under_marker(screen, mem, frame, order) -> bool:
     if not s or frame is None:
         return True
     if chart.is_boss_castle(order['target']):
-        # Owner 2026-11-21: ボスは卵を使われる前にバルムンク×2 / 将軍待ちはしない.
-        # A wave general standing on the boss's cell is attacked by our own
-        # sortie instead of the boss (live g1288: 10 wave generals lost, the
-        # hero repeatedly fought トレビス/ポセイドン/コリアンダー on the track).
-        # Never confirm an attack onto a friendly unit.
-        from .boss_pursuit import friend_on_boss_cell
-        if order.get('step') not in ('PURSUIT', 'RECALL') and friend_on_boss_cell(mem):
-            _record(mem, 'boss_target_friendly_held', chart_step=order.get('step'),
-                    target=order.get('target'),
-                    reason='ボスセルに味方将軍がいるため、同士討ちを避けて攻撃を確定しない')
-            return False
         # The boss tower has no own/enemy roof (g421 13:48: two cancels).
         # Accept it when a Y jump placed the marker on it, or when the marker
         # already stands on the measured cell: g1133 2026-11-05 had three jump
