@@ -13,6 +13,17 @@ def test_the_settle_is_far_inside_the_no_input_backstop():
     assert O.MAP_UNOWNED_HOLD_MAX < O.NO_INPUT_HOLD_MAX
 
 
+def test_the_recenter_fires_once_per_settle_window_not_every_observation():
+    # g1288 2026-11-20 13:57: the map stayed unowned, so the caller's streak kept
+    # rising (24, 25, ...) and this rule pressed SELECT on every observation.
+    # A settled map now recenters once per 11 observations instead.
+    settle = O.MAP_UNOWNED_HOLD_MAX + 1
+    assert O.map_unowned_input("map", settle) == "select"
+    assert O.map_unowned_input("map", settle + 1) is None
+    assert O.map_unowned_input("map", settle + 5) is None
+    assert O.map_unowned_input("map", settle * 2) == "select"
+
+
 def test_other_screens_are_never_answered_by_this_rule():
     for kind in ("shop_exit_confirm", "shop_list", "gift_request",
                  "yes_no", "text"):

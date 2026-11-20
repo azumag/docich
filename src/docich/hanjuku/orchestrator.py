@@ -291,7 +291,12 @@ def map_unowned_input(kind, streak, *, guarded=False, army_owned=False,
         return None
     if guarded or army_owned or map_registration_hold or orphan_battle_menu:
         return None
-    return 'select'
+    # One recenter per settle window, not one per observation: the caller
+    # keeps no_input_streak running while the map stays unowned, so returning
+    # 'select' for every streak above the bound pressed SELECT every ~1.5 s
+    # (g1288 2026-11-20 13:57: streak 24..29, 19 records in one frozen map).
+    # The streak is not reset by this key, so gate on its period instead.
+    return 'select' if streak % (MAP_UNOWNED_HOLD_MAX + 1) == 0 else None
 
 def scene_hold_advance(mem, phase, kind, digest, actions, guarded, *,
                         blocked=False):
