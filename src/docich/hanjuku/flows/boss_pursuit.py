@@ -219,7 +219,7 @@ def step(screen, mem, frame):
     kind = screen.kind
     busy = (mem.get('house') or mem.get('post_month_status')
             or mem.get('month_sub') or mem.get('month_nav')
-            or mem.get('month_blind_nav'))
+            or mem.get('month_blind_nav') or mem.get('shop'))
     probe = mem.get('boss_pursuit')
     if isinstance(probe, dict):
         # A menu/battle/shop phase owns the screen now: wait it out without
