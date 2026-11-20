@@ -16,12 +16,26 @@ def memory():
                              'seen': ['エストラゴン', 'ギー', 'ココット']}}
 
 
+def _screen(selected):
+    return SimpleNamespace(kind='general_list', selected=selected, text='',
+                           options=[], lines=[], hand=None)
+
+
 def test_an_absent_target_gets_a_long_skip():
     mem = memory()
-    screen = SimpleNamespace(kind='general_list', selected='キッシュ', text='',
-                             options=[], lines=[], hand=None)
-    M._end_general_jump(screen, mem, 'limit')
-    skip = mem['general_jump_skip']
-    assert skip['general'] == 'キッシュ'
+    M._end_general_jump(_screen('キッシュ'), mem, 'limit')
+    skip = mem['general_jump_skip']['キッシュ']
     assert skip['absent'] is True
     assert skip['tick'] == 1000
+
+
+def test_two_absent_generals_do_not_overwrite_each_other():
+    mem = memory()
+    M._end_general_jump(_screen('キッシュ'), mem, 'limit')
+    mem['general_jump'] = {'general': 'タルタル', 'phase': 'list', 'age': 5,
+                           'total': 10, 'scrolls': M.GENERAL_JUMP_SCROLL_LIMIT,
+                           'seen': ['エストラゴン']}
+    M._end_general_jump(_screen('タルタル'), mem, 'limit')
+    skip = mem['general_jump_skip']
+    assert skip['キッシュ']['absent'] is True
+    assert skip['タルタル']['absent'] is True
