@@ -67,8 +67,15 @@ def _boss_tactics_allowed(mem, cur):
         return True
     chapter = mem.get('chapter')
     boss = chart.BOSSES.get(chapter)
-    return bool(boss and cur.get('enemy') == boss
-                and _is_boss_order(_order_for_step(mem, cur.get('step')), mem))
+    if not boss or cur.get('enemy') != boss:
+        return False
+    if _is_boss_order(_order_for_step(mem, cur.get('step')), mem):
+        return True
+    # Owner 2026-11-21: 卵を使われる前にバルムンク×2. Chapter 9's boss is met
+    # by a field ambush, so there is no charted boss order; the panel reading
+    # ハデス is the authorization. Other chapters keep the matching-sortie
+    # contract (test_hanjuku_boss_events).
+    return chapter == chart.MOVING_BOSS_CHAPTER
 
 
 def _battle_labels(cur):
