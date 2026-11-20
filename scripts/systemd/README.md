@@ -24,8 +24,6 @@ tmux 常駐 (architecture.md §2) を主に systemd --user ユニットで包む
 | `docich-paper-improve.timer` | 毎日06:20 JSTに1回実行（Persistent）。停止は `trading/paper_improve_scheduled.disabled` を置く（`docs/operations/paper-experiment-feedback.md`） |
 | `docich-host-metrics.service` | ホスト指標 (load/CPU/meminfo/PSI/disk/固定unit状態) を1回だけ採取するoneshot。ゲーム・配信・他unitは操作しない |
 | `docich-host-metrics.timer` | 毎分00秒に1点採取し、候補順（`~/.local/state/docich/host-metrics` → `~/.local/share/docich/host-metrics` → `~/docich-host-metrics`）で最初に書けた ring (0600/0700、最大240点・256KiB) へ追記 |
-| `docich-hanjuku-month-audit.service` | 半熟英雄の月内出撃ゼロ・ボスフェーズ無戦闘のsealed監査recordを1回走査し、VMのghでissue化するoneshot |
-| `docich-hanjuku-month-audit.timer` | 5分ごとに監査recordのissue化を実行（`OnCalendar=*:0/5`） |
 | `docich-webui.service` | `docich webui` を常駐させる simple ユニット (Tailscale serve で公開する場合のみ利用) |
 
 `docich-free-strategy-worker.service` だけはDocker socketを使うためsystem scopeのunitです。

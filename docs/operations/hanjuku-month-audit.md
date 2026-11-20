@@ -1,4 +1,4 @@
-# 半熟英雄: 月内出撃ゼロ・ボスフェーズ無戦闘監査（v1252）
+# 半熟英雄: 月内出撃ゼロ・ボスフェーズ無戦闘監査（v1257）
 
 ## 目的
 
@@ -42,7 +42,7 @@ JSONLで保存し、必要なときに `gh` で修正用 issue を発行する�
 `decision_log_coverage` だけのときは `medium`、それ以外の理由が付くと `low`。
 issue化の既定は `high` のみ。
 
-## ボスフェーズ無戦闘（v1252）
+## ボスフェーズ無戦闘（v1257）
 
 通常城をすべて確保し、ボスの城（第4話は四季王サイト）だけが残った状態を
 **ボスフェーズ**とする。第9話の移動ボスは街道の全城が自軍になった時点。
@@ -132,31 +132,27 @@ production checkout 上の `gh` 実行はしない。
 2. そのディレクトリを `HANJUKU_RUNTIME` にして `render` / `file --dry-run` で本文を確認する。
 3. `secret_scan` の clean を確認して `file` を実行する。
 
-## 本番VMでの自動発行（v1253）
+## botからの自動発行（v1257）
 
-production VM（botが動いているマシン）では、systemd user timerが5分ごとに
-`run-soren-live` 配下のsealed監査recordを走査し、VM上の `gh` でissueを発行する。
-MacへのコピーやGitHub Actionsからの発行は行わない。
+月内出撃ゼロ・ボスフェーズ無戦闘のsealed recordを保存した直後、**その観測を
+実行しているbotプロセス**が、detachedの子プロセスで
 
-| unit | 役割 |
-| --- | --- |
-| `docich-hanjuku-month-audit.service` | `ops/vm_actions/hanjuku_month_audit_watch.py --dry-run` ではなく通常の `watch_once` を1回実行 |
-| `docich-hanjuku-month-audit.timer` | 5分ごと（`OnCalendar=*:0/5`）にserviceを起動 |
+```
+python3 -m docich.hanjuku.month_audit --runtime <runtime> file --incident <id>
+```
 
-- 配置: `scripts/systemd/` のunitをproduction deploy時に
-  `ops/vm_actions/ensure_hanjuku_month_audit_timer.sh` が
-  `~/.config/systemd/user/` へ配置し、timerをenableする。serviceはdeploy中に起動しない。
-- 実行ユーザー: deploy user（`ubuntu`）。`gh` はこのユーザーの認証を使う。
-- 投稿前スキャン: `agent-guards/secret_scan.py` を優先し、VMに無い場合は
-  repo内の `ops/vm_actions/secret_scan.py`（同一scannerのvendored copy）を使う。
-- state_dir: `config/docich.soren-live.toml` の `paths.state_dir` をrepo root配下に
-  解決する。絶対pathやroot外は拒否。
-- 確認: `journalctl --user -u docich-hanjuku-month-audit.service`。
-  `systemctl --user list-timers docich-hanjuku-month-audit.timer`。
-- 停止: `systemctl --user disable --now docich-hanjuku-month-audit.timer`。
-- deploy hookは `gh` が無い場合にfail-closedする。`gh auth status` は
-  非対話SSHでkeyringに触れられない場合があるためhookでは確認せず、serviceの
-  journalで確認する。
+を起動する。子プロセスはbot終了後も継続し、botのマシンの `gh` でissueを発行する。
+タイマーやGitHub Actionsは使わないため、コーナーが動いていない時間には何も実行しない。
+
+- 対象は `auto_file=true` のrecord（zero_sortie high / boss_phase_no_battle high）だけ。
+- 子プロセスは `start_new_session=True` で切り離し、botは待たない。
+  入出力はruntime内の `hanjuku_month_audit_issue.log`（1MBでrotate）。
+- 投稿前スキャンは `agent-guards/secret_scan.py` を優先し、無い場合は
+  repo内の `ops/vm_actions/secret_scan.py`（vendored copy）を使う。
+- `gh` はbotと同じユーザーの認証を使う。tokenはrepo・unit・envへ置かない。
+- 同じrecordの重複起動は、sealed/pending状態とissue本文のoccurrence markerで防ぐ。
+- 旧5分timerは廃止。`ops/vm_actions/disable_hanjuku_month_audit_timer.sh` が
+  production deploy時に残存unitをdisable/removeする。
 
 ## 検証
 

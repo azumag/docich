@@ -762,7 +762,9 @@ def main():
                         runtime, state, records, meta, actions=actions,
                         frame_sha256=frame.digest(), frame=frame)),
                     ('month_audit_failed', lambda: month_audit.observe(
-                        runtime, audit_before, state, records)),
+                        runtime, audit_before, state, records,
+                        on_sealed=lambda record: month_audit.spawn_issue_filer(
+                            runtime, record))),
                     ('adjust_request_failed', lambda: publish_adjust_request(runtime, records, meta)),
                     ('interim_failed', lambda: ask_interim(runtime, state, meta)),
                     ('state_write_failed', lambda: atomic_write_json(

@@ -5,6 +5,8 @@ import json
 import time
 from pathlib import Path
 
+from unittest.mock import patch
+
 import pytest
 
 from docich import hanjuku_chart as chart
@@ -187,6 +189,43 @@ def test_short_month_is_not_auto_filed(runtime_dir):
     record = json.loads((runtime_dir / audit.AUDIT_FILE).read_text())['pending']['incident']
     assert record['kind'] == 'zero_unverified'
     assert 'short_month' in record['confidence_reasons']
+
+
+def test_observe_reports_the_sealed_incident_to_the_caller(runtime_dir):
+    old, new = prepare_zero(runtime_dir)
+    later = state(1, '1-3', 500, launches=0)
+    seen = []
+    audit.observe(runtime_dir, audit.capture(new), later, [], now=1700,
+                  on_sealed=seen.append)
+    assert len(seen) == 1
+    assert seen[0]['kind'] == 'zero_sortie'
+    assert seen[0]['auto_file'] is True
+
+
+def test_spawn_issue_filer_detaches_with_the_incident_id(runtime_dir):
+    record = {'auto_file': True, 'incident_id': 'abc123'}
+    with patch.object(audit.subprocess, 'Popen') as popen:
+        assert audit.spawn_issue_filer(runtime_dir, record) is True
+    popen.assert_called_once()
+    command = popen.call_args.args[0]
+    assert command[:3] == [audit.sys.executable, '-m', 'docich.hanjuku.month_audit']
+    assert '--incident' in command and 'abc123' in command
+    assert popen.call_args.kwargs['start_new_session'] is True
+    assert popen.call_args.kwargs['stdin'] == audit.subprocess.DEVNULL
+    assert (runtime_dir / audit.ISSUE_LOG).exists()
+
+
+def test_spawn_issue_filer_skips_non_auto_file_records(runtime_dir):
+    with patch.object(audit.subprocess, 'Popen') as popen:
+        assert audit.spawn_issue_filer(runtime_dir, {'auto_file': False,
+                                                     'incident_id': 'x'}) is False
+    popen.assert_not_called()
+
+
+def test_spawn_issue_filer_survives_a_process_start_failure(runtime_dir):
+    with patch.object(audit.subprocess, 'Popen', side_effect=OSError('no gh')):
+        assert audit.spawn_issue_filer(runtime_dir, {'auto_file': True,
+                                                     'incident_id': 'x'}) is False
 
 
 def test_pending_is_sealed_once_and_has_after_window(runtime_dir):

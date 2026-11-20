@@ -569,7 +569,7 @@ def _build_boss_incident(runtime, state, after, records, now, current, rows=None
     return _shrink(record)
 
 
-def _track_boss(runtime, state, after, records, now):
+def _track_boss(runtime, state, after, records, now, on_sealed=None):
     mem = after.get('policy') or {}
     phase = _boss_phase(mem)
     current = state.get('boss') if isinstance(state.get('boss'), dict) else None
@@ -626,7 +626,7 @@ def _track_boss(runtime, state, after, records, now):
         current['battle_source'] = 'decision_log'
         return
     incident = _build_boss_incident(runtime, state, after, records, now, current, rows=rows)
-    _append_incident(runtime, incident)
+    _append_incident(runtime, incident, on_sealed)
     current['reported'] = True
     current['incident_id'] = incident.get('incident_id')
     current['reported_at'] = float(now)
@@ -1109,12 +1109,65 @@ def _after_summary(rows, close_at, window_end):
     }
 
 
-def _append_incident(runtime, record):
+def _append_incident(runtime, record, on_sealed=None):
     from ..hanjuku_run import append_log
     append_log(Path(runtime), LOG_NAME, record)
+    if callable(on_sealed):
+        on_sealed(record)
 
 
-def _seal(runtime, state, now):
+ISSUE_LOG = 'hanjuku_month_audit_issue.log'
+ISSUE_LOG_LIMIT = 1024 * 1024
+
+
+def spawn_issue_filer(runtime, record):
+    """Start the gh filing CLI for one sealed incident, without waiting.
+
+    Called from the command bot's effect loop only while the corner is
+    running. The child is detached and writes its result to the runtime log;
+    the game observation never waits for gh.
+    """
+    if not isinstance(record, dict) or record.get('auto_file') is not True:
+        return False
+    incident_id = record.get('incident_id')
+    if not isinstance(incident_id, str) or not incident_id:
+        return False
+    root = Path(__file__).resolve().parents[3]
+    runtime = Path(runtime)
+    log_path = runtime / ISSUE_LOG
+    if log_path.is_symlink():
+        return False
+    try:
+        if log_path.exists() and log_path.stat().st_size > ISSUE_LOG_LIMIT:
+            os.replace(log_path, runtime / (ISSUE_LOG + '.previous'))
+    except OSError:
+        pass
+    env = os.environ.copy()
+    pythonpath = str(root / 'src')
+    if env.get('PYTHONPATH'):
+        pythonpath += os.pathsep + env['PYTHONPATH']
+    env['PYTHONPATH'] = pythonpath
+    path_parts = ['/usr/local/bin', '/usr/bin', '/bin', '/snap/bin',
+                  str(Path.home() / '.local' / 'bin')]
+    current = [part for part in env.get('PATH', '').split(os.pathsep) if part]
+    env['PATH'] = os.pathsep.join(path_parts + [part for part in current
+                                                if part not in path_parts])
+    command = [sys.executable, '-m', 'docich.hanjuku.month_audit',
+               '--runtime', str(runtime), 'file',
+               '--incident', incident_id, '--repo', 'azumag/docich']
+    try:
+        fd = os.open(log_path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
+        with os.fdopen(fd, 'ab') as output:
+            subprocess.Popen(command, cwd=str(root), env=env,
+                             stdin=subprocess.DEVNULL, stdout=output,
+                             stderr=subprocess.STDOUT, start_new_session=True,
+                             close_fds=True)
+    except OSError:
+        return False
+    return True
+
+
+def _seal(runtime, state, now, on_sealed=None):
     pending = state.get('pending')
     if not isinstance(pending, dict):
         return False
@@ -1129,7 +1182,7 @@ def _seal(runtime, state, now):
     record['sealed_at'] = float(now)
     record['after']['early'] = float(now) < float(pending.get('window_end_at') or now)
     record = _shrink(record)
-    _append_incident(runtime, record)
+    _append_incident(runtime, record, on_sealed)
     state['pending'] = None
     state['last_sealed'] = {
         'incident_id': record.get('incident_id'),
@@ -1141,16 +1194,16 @@ def _seal(runtime, state, now):
     return True
 
 
-def _seal_if_due(runtime, state, now):
+def _seal_if_due(runtime, state, now, on_sealed=None):
     pending = state.get('pending')
     if not isinstance(pending, dict):
         return False
     if float(now) < float(pending.get('window_end_at') or 0):
         return False
-    return _seal(runtime, state, now)
+    return _seal(runtime, state, now, on_sealed)
 
 
-def _close_month(runtime, state, before, after, now):
+def _close_month(runtime, state, before, after, now, on_sealed=None):
     observed = state.get('observed')
     if not isinstance(observed, dict):
         return
@@ -1217,7 +1270,7 @@ def _close_month(runtime, state, before, after, now):
     }
     if kind in ('zero_sortie', 'zero_unverified', 'unconfirmed_launches'):
         if state.get('pending'):
-            _seal(runtime, state, close_at)
+            _seal(runtime, state, close_at, on_sealed)
         record = _build_incident(
             runtime, observed, context, rows, close_at, state.get('identity'), kind=kind,
             confirmed=confirmed, departures=departures, launch_events=launch_events,
@@ -1234,7 +1287,7 @@ def _close_month(runtime, state, before, after, now):
     state['_next_started_clean'] = not chapter_changed and not irregular
 
 
-def observe(runtime, before, after, records=None, *, now=None):
+def observe(runtime, before, after, records=None, *, now=None, on_sealed=None):
     """Update the audit for one observation; never raises into the game loop."""
     runtime = Path(runtime)
     now = time.time() if now is None else float(now)
@@ -1252,20 +1305,20 @@ def observe(runtime, before, after, records=None, *, now=None):
             or _identity_key(state.get('identity')) != _identity_key(identity)):
         state = _new_state(identity)
     force = False
-    if _seal_if_due(runtime, state, now):
+    if _seal_if_due(runtime, state, now, on_sealed):
         force = True
     observed = state.get('observed')
     if not isinstance(observed, dict):
         state['observed'] = _open_month(before, after, now, started_clean=False)
         force = True
     elif (observed.get('chapter'), observed.get('month')) != (chapter, month):
-        _close_month(runtime, state, before, after, now)
+        _close_month(runtime, state, before, after, now, on_sealed)
         started = bool(state.pop('_next_started_clean', False))
         state['observed'] = _open_month(before, after, now, started_clean=started)
         force = True
     else:
         _touch_month(observed, after, now)
-    _track_boss(runtime, state, after, records, now)
+    _track_boss(runtime, state, after, records, now, on_sealed)
     state['write_tick'] = int(state.get('write_tick') or 0) + 1
     # The open-month counters only advance if every observation persists them:
     # a write every tenth observation restarted from the last file and could
