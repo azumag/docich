@@ -40,6 +40,12 @@ NO_INPUT_HOLD_MAX = 100
 # NO_INPUT_HOLD_MAX first -- 150 s in production -- for a key that has no
 # alternative. Answer it after a short settle; guarded screens keep the hold.
 SHOP_EXIT_HOLD_MAX = 4
+# docich#4650: the remaining unowned screens get the same short settle. Each
+# helper returns its screen's measured default key only when no flow owns the
+# screen; guarded scenes stay fail-closed.
+SHOP_LIST_HOLD_MAX = 4
+GIFT_REQUEST_HOLD_MAX = 4
+MAP_UNOWNED_HOLD_MAX = 10
 # A battle command menu owns the screen: it is a decision point, not a scene.
 # The g1190 chapter-9 attacks froze on one for 101 observations (minutes) before
 # the generic fallback pressed one key. Bound the battle menu's no-input wait
@@ -239,8 +245,56 @@ def shop_exit_unowned_input(kind, streak, *, guarded=False, army_owned=False,
     return 'a'
 
 
+def shop_list_unowned_input(kind, streak, *, guarded=False, army_owned=False,
+                            map_registration_hold=False,
+                            orphan_battle_menu=False):
+    '''docich#4650: the key an unowned shop list should get.
+
+    Returns 'b' (leave the shop) past a short settle and None otherwise. The
+    shop flow owns the list while it plans purchases; when no flow owns it the
+    no-input backstop waited NO_INPUT_HOLD_MAX. Guarded scenes stay fail-closed.
+    '''
+    if kind != 'shop_list' or streak <= SHOP_LIST_HOLD_MAX:
+        return None
+    if guarded or army_owned or map_registration_hold or orphan_battle_menu:
+        return None
+    return 'b'
+
+
+def gift_request_unowned_input(kind, streak, *, guarded=False,
+                              bijin_gift_hold=False, army_owned=False,
+                              map_registration_hold=False,
+                              orphan_battle_menu=False):
+    '''docich#4650: the key an unowned gift request should get.
+
+    Returns 'a' (accept the default) past a short settle and None otherwise.
+    The bijin gift flow owns the screen while it decides; guarded scenes and an
+    active bijin gift hold stay fail-closed.
+    '''
+    if kind != 'gift_request' or streak <= GIFT_REQUEST_HOLD_MAX:
+        return None
+    if (guarded or bijin_gift_hold or army_owned or map_registration_hold
+            or orphan_battle_menu):
+        return None
+    return 'a'
+
+
+def map_unowned_input(kind, streak, *, guarded=False, army_owned=False,
+                      map_registration_hold=False, orphan_battle_menu=False):
+    '''docich#4650: the key an unowned field map should get.
+
+    Returns 'select' (recenter the cursor) past a short settle and None
+    otherwise, mirroring the field no-input fallback for an idle map. Guarded
+    scenes stay fail-closed.
+    '''
+    if kind != 'map' or streak <= MAP_UNOWNED_HOLD_MAX:
+        return None
+    if guarded or army_owned or map_registration_hold or orphan_battle_menu:
+        return None
+    return 'select'
+
 def scene_hold_advance(mem, phase, kind, digest, actions, guarded, *,
-                       blocked=False):
+                        blocked=False):
     """Bounded A for an unreadable scripted-scene frame an owner keeps held.
 
     Like scene_hold_forced_step, ``blocked`` marks screens an active bounded
@@ -2229,6 +2283,46 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
             decision_log._record(mem, 'shop_exit_unowned_confirm', screen=kind,
                 phase=phase, observed_metric={'streak': streak},
                 reason='商店の退出確認を所有者なしで検出したため、既定のAで閉じて再観測する')
+            actions = [pad(hint)]
+    if not actions:
+        hint = shop_list_unowned_input(
+            kind, streak,
+            guarded=(trade_guard_hold or bijin_guard_hold or bounded_wait
+                     or event_guarded),
+            army_owned=army_owned,
+            map_registration_hold=bool(mem.get('_map_registration_hold')),
+            orphan_battle_menu=isinstance(mem.get('orphan_battle_menu'), dict))
+        if hint:
+            decision_log._record(mem, 'shop_list_unowned_exit', screen=kind,
+                phase=phase, observed_metric={'streak': streak},
+                reason='商店の一覧を所有者なしで検出したため、既定のBで退出して再観測する')
+            actions = [pad(hint)]
+    if not actions:
+        hint = gift_request_unowned_input(
+            kind, streak,
+            guarded=(trade_guard_hold or bijin_guard_hold or bounded_wait
+                     or event_guarded),
+            bijin_gift_hold=mem.get('bijin_gift_hold') is True,
+            army_owned=army_owned,
+            map_registration_hold=bool(mem.get('_map_registration_hold')),
+            orphan_battle_menu=isinstance(mem.get('orphan_battle_menu'), dict))
+        if hint:
+            decision_log._record(mem, 'gift_request_unowned_accept', screen=kind,
+                phase=phase, observed_metric={'streak': streak},
+                reason='贈り物要求を所有者なしで検出したため、既定のAで受諾して再観測する')
+            actions = [pad(hint)]
+    if not actions:
+        hint = map_unowned_input(
+            kind, streak,
+            guarded=(trade_guard_hold or bijin_guard_hold or bounded_wait
+                     or event_guarded),
+            army_owned=army_owned,
+            map_registration_hold=bool(mem.get('_map_registration_hold')),
+            orphan_battle_menu=isinstance(mem.get('orphan_battle_menu'), dict))
+        if hint:
+            decision_log._record(mem, 'map_unowned_recenter', screen=kind,
+                phase=phase, observed_metric={'streak': streak},
+                reason='戦闘後の地図を所有者なしで検出したため、SELECTで再フォーカスして再観測する')
             actions = [pad(hint)]
     if (not actions and streak>hold_max and not trade_guard_hold and not bijin_guard_hold
             and not (kind == 'gift_request' and mem.get('bijin_gift_hold') is True)
