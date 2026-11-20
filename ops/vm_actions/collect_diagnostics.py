@@ -7975,6 +7975,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v1298-arrival-probe-incoming",
             "hanjuku-chart-v1299-yjump-overshoot-damping",
             "hanjuku-chart-v1300-boss-seimeitai-balmung",
+            "hanjuku-chart-v1301-gjump-pursuit-isolation",
             "hanjuku-chart-v1158-progress-regress",
             "hanjuku-chart-v1161-refill-collapse",
             "hanjuku-chart-v1160-chapter-probe-field",

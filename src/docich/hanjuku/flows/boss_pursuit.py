@@ -390,9 +390,13 @@ def _candidate(mem):
         wait = e.get('ambush_until')
         if type(wait) is int and now < wait:
             continue
-        if best is None or (launched or 0) < (best[1].get('launched') or 0):
-            best = (general, e)
-    return best
+        # Round-robin by least-recent pursuit attempt (unpursued generals first,
+        # then oldest pursuit_tick, breaking ties by oldest launch) so a few
+        # repeatedly failing veterans cannot starve fresh waves (#4857).
+        key = (last if type(last) is int else -1, launched or 0)
+        if best is None or key < best[0]:
+            best = (key, (general, e))
+    return best[1] if best is not None else None
 
 
 def _redirect_metric(mem, probe, marker):

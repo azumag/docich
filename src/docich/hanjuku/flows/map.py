@@ -1908,7 +1908,7 @@ def general_jump_step(screen, mem, frame):
         # out of the cursor's reach. The X menu only opens from the field,
         # so a month/menu frame must not arm it: arming there fires
         # 'unexpected_menu' and retries every observation.
-        if screen.kind != 'map':
+        if screen.kind != 'map' or isinstance(mem.get('boss_pursuit'), dict):
             return None
         boss_castle = getattr(chart, 'boss_castle', None)
         boss_target = boss_castle(mem.get('chapter') or 0) if boss_castle else None
@@ -2057,8 +2057,16 @@ def general_jump_step(screen, mem, frame):
         if screen.kind == 'map':
             # The SELECT landed the cursor on the named general's field or
             # camp; leave the state so the visible tent can feed the recall's
-            # boss-redirect chase on the normal dispatch.
+            # boss-redirect chase on the normal dispatch. Record a normal
+            # cooldown so the same overdue sortie does not immediately re-arm
+            # general_jump on the next map frame (#4857).
             mem.pop('general_jump', None)
+            if target:
+                skips = mem.get('general_jump_skip')
+                if not isinstance(skips, dict) or 'general' in skips:
+                    skips = {}
+                skips[target] = {'tick': int(mem.get('tick') or 0), 'absent': False}
+                mem['general_jump_skip'] = skips
             _record(mem, 'general_jump_confirm', target=target,
                     observed_metric={'cursor': list(_cursor(screen) or ())},
                     reason='しょうぐん一覧のSELECTで将軍へ飛んだため、その野営を野営→ボス追撃へ回す')
