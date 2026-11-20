@@ -46,3 +46,12 @@ def test_with_only_stale_entries_the_wave_gate_still_stops_everything(monkeypatc
     mem[bp.LIST_KEY] = {'カシス': {'step': 'A', 'launched': 1475}}
     assert bp.step(map_screen(), mem, None) is None
     assert mem.get('boss_wave_stale_noted') == 10000
+
+
+def test_stale_boss_cell_still_queues_the_pursuit(monkeypatch):
+    """#4558: an expired cell must not block the pursuit whose own Y view
+    re-measures it; before this fix the gate was self-reinforcing."""
+    monkeypatch.setattr(bp.chart, 'moving_boss_cell', lambda ch: None)
+    mem = memory()
+    assert bp.step(map_screen(), mem, None) == []
+    assert mem['boss_pursuit']['general'] == 'エストラゴン'

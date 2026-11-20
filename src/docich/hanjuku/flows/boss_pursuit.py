@@ -338,9 +338,14 @@ def step(screen, mem, frame):
     else:
         # No other order may be running: stealing the field mid-deploy breaks
         # the active sortie, and the pursuit only starts from the field map.
-        if (kind != 'map' or _plan_region(mem).get('active')
-                or not chart.moving_boss_cell(9) or busy):
+        if (kind != 'map' or _plan_region(mem).get('active') or busy):
             return None
+        # #4558: don't gate on a fresh boss cell here — the pursuit's own
+        # SELECT whole-map jump re-measures it (_apply_skull_boss). Requiring
+        # a fresh cell made a stale/expired reading self-reinforcing: no
+        # pursuit -> no re-measure -> cell stays stale -> marches overdue.
+        # _candidate still needs a marched wave general, so non-ch9 phases
+        # never reach this code anyway.
         if wave_stale(mem):
             _note_stale_wave(mem)
             return None
