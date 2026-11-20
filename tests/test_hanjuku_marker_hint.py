@@ -102,5 +102,7 @@ def test_a_recorded_castle_past_the_tolerance_still_binds():
          mock.patch.object(readers, '_map_view_offset', lambda icons, castles: (0, 0)):
         plain = readers.marker_castle(frame, 8, evidence=evidence)
         hinted = readers.marker_castle(frame, 8, hint='甲', evidence={})
-    assert plain is None and evidence.get('reason') == 'out_of_tolerance'
+    # #4745: on estimated chapters the unique nearest castle inside the wider
+    # bound now binds even without a recorded castle.
+    assert plain is not None and evidence.get('reason') == 'out_of_tolerance_estimated_ch'
     assert hinted is not None and hinted['castle'] == '甲'
