@@ -374,6 +374,12 @@ def _redirect_metric(mem, probe, marker):
         metric['boss_cell'] = list(cell)
         if type(reading.get('tick')) is int:
             metric['boss_cell_age'] = int(mem.get('tick') or 0) - reading['tick']
+    world = probe.get('unit_world')
+    if isinstance(world, (list, tuple)) and len(world) == 2:
+        metric['unit_world'] = list(world)
+        aim = probe.get('aim_cell')
+        if isinstance(aim, (list, tuple)) and len(aim) == 2:
+            metric['unit_to_aim'] = [aim[0] - world[0], aim[1] - world[1]]
     if isinstance(unit, (list, tuple)) and len(unit) == 2:
         metric['unit_cell'] = list(unit)
         if 'boss_cell' in metric:
@@ -602,6 +608,15 @@ def step(screen, mem, frame):
 
     if probe['phase'] == 'field_open':
         if kind == 'map':
+            # The SELECT jump centred the view on this general; the map's own
+            # anchor estimate at this frame is the general's world cell. Keep
+            # it so the redirect record can show whether the unit really
+            # stands on its ambush cell (owner 2026-11-21: the placement was
+            # never verified, only the aim).
+            cell = mem.get('cursor')
+            if (isinstance(cell, (list, tuple)) and len(cell) == 2
+                    and all(type(v) is int for v in cell)):
+                probe['unit_world'] = list(cell)
             probe['phase'] = 'unit_move'
             return [pad('a')]
         if kind == 'text':
@@ -714,6 +729,7 @@ def step(screen, mem, frame):
             # Fixed placement on the orbit: the general waits where the boss
             # will come round instead of following today's cell.
             mem['pursuit_aim'] = list(aim)
+            probe['aim_cell'] = list(aim)
             mem.pop('pursuit_lead', None)
         else:
             mem.pop('pursuit_aim', None)
