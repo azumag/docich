@@ -927,6 +927,11 @@ def _step_flow(screen, mem, frame, existing):
             and isinstance(mem.get('boss_cell'), dict)
             and state and not named and not state.get('boss') and not state.get('hero')):
         from ..decision_log import _record
+        from .recall import _arm_recall_skip
+        # Arm the ordinary failed-camp hold; without it the next map frame
+        # re-detects the same tent and the deferral loops two observations at
+        # a time (live g1288 2026-11-20 09:4x).
+        _arm_recall_skip(mem, state)
         _flow(mem).pop('recall', None)
         _record(mem, 'camp_recall_deferred_for_boss',
                 observed_metric={'camp': state.get('target'), 'stage': state.get('stage')},
