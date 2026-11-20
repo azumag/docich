@@ -571,6 +571,16 @@ def _y_jump_step(mem, frame):
         _record(mem, 'y_jump_failed', chart_step=jump['step'], target=jump['goal'],
                 reason='全体マップのカーソルを読めないため閉じて通常の移動に戻る')
         return _close_target_jump(mem, jump)
+    # The world-map cursor starts on the field view's centre, i.e. the unit
+    # the pursuit jumped to. Keep that first reading: it is the only way to
+    # learn where the general actually stands before the jump moves the cursor
+    # to the ambush cell (owner 2026-11-21: placement was never measured).
+    if (not jump.get('moves') and jump.get('step') == 'PURSUIT'
+            and 'origin_cursor' not in jump):
+        jump['origin_cursor'] = [round(cursor[0], 1), round(cursor[1], 1)]
+        probe = mem.get('boss_pursuit')
+        if isinstance(probe, dict) and 'origin_cursor' not in probe:
+            probe['origin_cursor'] = list(jump['origin_cursor'])
     gx, gy = boss_probe_cell(mem, jump['goal'], jump.get('step'))
     ox, oy = Y_JUMP_OFFSET[chapter]
     dx, dy = gx / 8 + ox - cursor[0], gy / 8 + oy - cursor[1]
