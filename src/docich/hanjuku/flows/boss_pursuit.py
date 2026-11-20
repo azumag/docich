@@ -28,6 +28,13 @@ ROSTER_WAIT_LIMIT = 6         # unparsed roster frames before closing and retryi
 PURSUIT_LIST_LIMIT = 48
 PURSUIT_COOLDOWN = 240        # ticks before the same general is pursued again
 PURSUIT_MARCH_MIN = 400       # a just-launched march is left alone this long
+# Live g1288 2026-11-20 12:00-13:30: the pursuit restarted on nearly every map
+# frame (77 queued / 65 redirected in 1 h 40 m) and no redirect ever entered the
+# boss. The map flow therefore never got the field to start a wave from a
+# castle or to hand a visible camp to the recall owner, and the month closed
+# with zero sorties (month 64-3 audit: launches 0, departures 0). Leave a gap
+# between pursuit starts so the ordinary owners get the map frames back.
+PURSUIT_START_GAP = 90        # ticks between two pursuit starts (~1.5 min)
 # Chapter 9's boss sweeps north-south (y 157 <-> 853 in about 330 s, measured
 # 2026-11-17) while a camped general walks ~1.3 px/s. v990 tried to commit a
 # redirect only while the boss was in the northern band; the next run refuted
@@ -243,6 +250,12 @@ def step(screen, mem, frame):
         pick = _candidate(mem)
         if pick is None:
             return None
+        now = int(mem.get('tick') or 0)
+        last = mem.get('boss_pursuit_start_tick')
+        if type(last) is int and 0 <= now - last < PURSUIT_START_GAP:
+            # The owner is not this flow for the moment: the map belongs to
+            # the camp recall and the sortie plan (see PURSUIT_START_GAP).
+            return None
         general, entry = pick
         # A fresh pursuit gets a fresh jump budget; three spent jumps would
         # otherwise end every later pursuit in boss_jump_failed.
@@ -250,7 +263,9 @@ def step(screen, mem, frame):
         probe = mem['boss_pursuit'] = {
             'general': general, 'step': entry.get('step'), 'phase': 'open',
             'reads': 0, 'seeks': 0, 'x_retries': 0}
+        mem['boss_pursuit_start_tick'] = now
         _record(mem, 'boss_pursuit_queued', chart_step=entry.get('step'), general=general,
+                observed_metric={'since_last_start': now - last if type(last) is int else None},
                 reason='ボスへ出撃した将軍へX→しょうぐん→SELECTでジャンプし、動くボスの現在セルへいどうを出し直す')
         return []
 
