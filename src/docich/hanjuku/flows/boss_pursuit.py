@@ -316,6 +316,33 @@ def ambush_contact(mem):
                 reason='ボスが待ち伏せの狙いセルに到達（将軍との接触とは別）')
 
 
+def _note_redirect_move(mem, entry, probe, metric):
+    """Remember the unit's measured cell and drop an aim the いどう never moved.
+
+    Owner 2026-11-21: a general ordered onto the track that never moves means
+    the order was not accepted (cliff/blocked), not that the boss missed it.
+    Live g1288 19:0x-19:2x: three units kept the same [668,312]/[676,208]
+    across many redirects while their aims sat on the track.
+    """
+    if entry is None:
+        return
+    unit = metric.get('unit_world')
+    if not (isinstance(unit, list) and len(unit) == 2):
+        return
+    prior = entry.get('move_from')
+    entry['unit_world'] = list(unit)
+    if (isinstance(prior, (list, tuple)) and len(prior) == 2
+            and abs(unit[0] - prior[0]) + abs(unit[1] - prior[1]) < 8
+            and entry.get('ambush_cell')):
+        entry.pop('ambush_cell', None)
+        metric['no_move'] = True
+        _record(mem, 'boss_pursuit_no_move', chart_step=probe.get('step'),
+                general=probe.get('general'),
+                observed_metric={'unit_world': list(unit), 'prior': list(prior)},
+                reason='いどう後も将軍の実位置が変わらないため、この待ち伏せセルを諦めて別セルへ再照準する')
+    entry['move_from'] = list(unit)
+
+
 def _ambush(mem, general=None):
     """A fixed point on the measured boss track for this general.
 
@@ -836,8 +863,7 @@ def step(screen, mem, frame):
             metric = _redirect_metric(mem, probe, marker)
             if placed:
                 metric['aim'] = list(placed)
-            if entry is not None and isinstance(metric.get('unit_world'), list):
-                entry['unit_world'] = list(metric['unit_world'])
+            _note_redirect_move(mem, entry, probe, metric)
             _record(mem, 'boss_pursuit_redirected', chart_step=probe.get('step'),
                     general=probe['general'],
                     observed_metric=metric,
