@@ -437,6 +437,64 @@ MERIKEN_BUSINESS_SPEC = CornerRuntimeSpec(
 )
 
 
+ENGLISH_SPEC = CornerRuntimeSpec(
+    corner_id="english",
+    fixture_parts=(
+        "tests",
+        "fixtures",
+        "english_corner",
+        "fixed_english_example.json",
+    ),
+    container="topic",
+    title_key="title",
+    question_key="todayExample",
+    summary_key="thirtySecondSummary",
+    sections=(
+        Section("todayExample", "fact", "今日の実例"),
+        Section("keyPhrases", "fact", "キーフレーズ"),
+        Section("meaning", "analysis", "意味"),
+        Section("grammarUsage", "analysis", "文法・用法"),
+        Section("nuance", "analysis", "ニュアンス"),
+        Section("differenceFromSimilar", "analysis", "類似表現との違い"),
+        Section("alternativeExample", "application", "もう一つの自然な例文"),
+        Section("sourceMaterialBrief", "fact", "出典素材の概要"),
+    ),
+    required_fields=(
+        "title",
+        "topicId",
+        "sourceType",
+        "sourceTitle",
+        "url",
+        "publishedDate",
+        "domainCategory",
+        "todayExample",
+        "thirtySecondSummary",
+        "oneLineSummary",
+        "sourceMaterialBrief",
+        "keyPhrases",
+        "keyExpressions",
+        "meaning",
+        "grammarUsage",
+        "nuance",
+        "similarExpressions",
+        "differenceFromSimilar",
+        "alternativeExample",
+        "limitations",
+        "uncertainty",
+        "citationKeepUrl",
+        "citationRange",
+        "quotePolicy",
+        "shortQuote",
+        "primarySources",
+        "sourcePriority",
+        "figureOrDiagram",
+        "youtubeIndependentDraft",
+    ),
+    caveat_keys=("limitations", "uncertainty"),
+    labels=("fact", "analysis", "application"),
+)
+
+
 CORNER_SPECS = {
     WORLD_HISTORY_SPEC.corner_id: WORLD_HISTORY_SPEC,
     RESEARCH_PAPER_SPEC.corner_id: RESEARCH_PAPER_SPEC,
@@ -446,6 +504,7 @@ CORNER_SPECS = {
     ARCHITECTURE_SPEC.corner_id: ARCHITECTURE_SPEC,
     MERIKEN_ECONOMICS_SPEC.corner_id: MERIKEN_ECONOMICS_SPEC,
     MERIKEN_BUSINESS_SPEC.corner_id: MERIKEN_BUSINESS_SPEC,
+    ENGLISH_SPEC.corner_id: ENGLISH_SPEC,
 }
 
 
