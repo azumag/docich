@@ -670,9 +670,7 @@ def _upper_card_boundary(mem, order, card, inventory):
         return False
     scope = {'identity': identity, 'chapter': mem.get('chapter'), 'step': order['step'],
              'card': card, 'rows': [[r['card'], r['stock']] for r in rows],
-             'remaining': inventory['remaining'],
-             'more_above': inventory.get('more_above'),
-             'more_below': inventory.get('more_below')}
+             'remaining': inventory['remaining']}
     state = mem.get('card_upper_boundary')
     if not isinstance(state, dict) or state.get('scope') != scope:
         state = mem['card_upper_boundary'] = {'scope': scope, 'confirmed': 0}
@@ -686,8 +684,7 @@ def _upper_card_boundary(mem, order, card, inventory):
         if state['confirmed'] == 2:
             _record(mem, 'card_upper_boundary_verified', chart_step=order['step'], card=card,
                     observed_metric={'rows': scope['rows'], 'delivered_up_inputs': 2,
-                                     'more_above': scope['more_above'],
-                                     'more_below': scope['more_below']},
+                                     **_card_arrow_metric(inventory)},
                     reason='一覧先頭で上入力を2回送っても同じ実在庫のため、この札は上に存在しない')
     return state.get('confirmed') == 2
 
