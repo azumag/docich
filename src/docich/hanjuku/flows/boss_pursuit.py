@@ -763,7 +763,7 @@ def step(screen, mem, frame):
                             origin = [round((cursor[0] - ox) * 8),
                                       round((cursor[1] - oy) * 8)]
                             probe['unit_world'] = origin
-                            current_aim = mem.get('pursuit_aim')
+                            current_aim = probe.get('pre_detour_aim') or mem.get('pursuit_aim')
                             if current_aim is None:
                                 current_aim = jump.get('goal_cell')
                             if current_aim is None:
@@ -775,6 +775,12 @@ def step(screen, mem, frame):
                                 probe['aim_cell'] = list(detour)
                                 mem.pop('pursuit_lead', None)
                                 jump['goal_cell'] = list(detour)
+                            elif probe.get('pre_detour_aim') is not None:
+                                # A cached origin can be stale. The live Y
+                                # reading wins, even when it removes a detour.
+                                mem['pursuit_aim'] = list(current_aim)
+                                probe['aim_cell'] = list(current_aim)
+                                jump['goal_cell'] = list(current_aim)
                     return _y_jump_step(mem, frame)
                 return [pad('b')]
             if kind == 'map':
@@ -833,6 +839,7 @@ def step(screen, mem, frame):
                 aim = (cell[0] + lead[0], cell[1] + lead[1])
         entry = (mem.get(LIST_KEY) or {}).get(probe['general']) or {}
         origin = probe.get('unit_world') or entry.get('unit_world')
+        probe['pre_detour_aim'] = list(aim) if aim is not None else None
         detour = _ch9_cliff_detour(origin, aim)
         if detour is not None:
             # The unit stands west of the ch9 cliff line and the aim is east
