@@ -1379,7 +1379,10 @@ def _survival_needed(cur):
     hp, enemy, start = (cur.get(k) for k in ('ally_hp', 'enemy_hp', 'start_ally_hp'))
     if any(type(n) is not int or n <= 0 for n in (hp, enemy)):
         return False
-    # Sword practice has no resource menu. Preserve its released A bursts.
+    # Sword practice and monthly event duels have no B command menu; trying to
+    # open it wastes every frame until the hero dies (#4867: どうし 83->0 vs 92).
+    if cur.get('event_duel'):
+        return False
     if (cur.get('enemy'), cur.get('ally'), start, cur.get('start_enemy_hp'), cur.get('step')) == (
             'だいじん', 'どうし', 90, 90, None):
         return False
@@ -1521,7 +1524,7 @@ def _general_egg_rescue_recheck(mem, cur):
             or cur.get('ally') in (None, NAME, 'しじんこう', 'しゅじんこう', 'だいじん')
             or cur.get('enemy') in chart.BOSSES.values()
             or cur.get('enemy') in reference.BOSS_GENERALS
-            or cur.get('egg_battle') or mem.get('egg_battle')
+            or cur.get('egg_battle') or mem.get('egg_battle') or cur.get('event_duel')
             or cur.get('card_summon_observed') or cur.get('card_flow') or cur.get('planned_cards')
             or cur.get('card_hp_unread') or cur.get('card_context_unclassified')
             or cur.get('resource_menu_observed') or cur.get('okunote_only_observed')
@@ -1617,7 +1620,7 @@ def _melee_continuation_evidence(mem, cur):
     scope = [identity, cur.get('ally'), cur.get('enemy'), start, enemy_start]
     if (identity is None or cur.get('melee_opening_scope') != scope
             or cur.get('ally') in (NAME, 'しゅじんこう') or cur.get('enemy') in chart.BOSSES.values()
-            or cur.get('egg_battle') or mem.get('egg_battle') or cur.get('card_summon_observed')
+            or cur.get('egg_battle') or mem.get('egg_battle') or cur.get('event_duel') or cur.get('card_summon_observed')
             or cur.get('card_hp_unread') or cur.get('card_context_unclassified')
             or cur.get('card_flow') or cur.get('card_damage_rescue_needed')
             or any(type(n) is not int or n <= 0 for n in
@@ -1676,7 +1679,7 @@ def _healthy_melee_margin_evidence(mem, cur):
     if (cur.get('melee_opening_scope') != [identity, ally, enemy_name, start, enemy_start]
             or cur.get('card_soldiers_current') is not True
             or cur.get('card_hp_unread') or cur.get('card_context_unclassified')
-            or cur.get('egg_battle') or mem.get('egg_battle') or cur.get('card_summon_observed')
+            or cur.get('egg_battle') or mem.get('egg_battle') or cur.get('event_duel') or cur.get('card_summon_observed')
             or enemy_name in chart.BOSSES.values() or enemy_name in reference.BOSS_GENERALS
             or cur.get('card_flow') or cur.get('planned_cards') or cur.get('card_damage_rescue_needed')
             or _own_egg_empty(mem, cur)
@@ -1768,7 +1771,7 @@ def _stale_army_melee_hold(mem, cur):
     enemy_maximum = general_max_hp(enemy_name)
     ours, theirs = cur.get('ally_soldiers'), cur.get('enemy_soldiers')
     if (cur.get('melee_opening_scope') != [identity, ally, enemy_name, start, enemy_start]
-            or cur.get('egg_battle') or mem.get('egg_battle') or cur.get('card_summon_observed')
+            or cur.get('egg_battle') or mem.get('egg_battle') or cur.get('event_duel') or cur.get('card_summon_observed')
             or enemy_name in chart.BOSSES.values() or enemy_name in reference.BOSS_GENERALS
             or cur.get('card_flow') or cur.get('planned_cards') or cur.get('card_damage_rescue_needed')
             or _own_egg_empty(mem, cur)
@@ -1851,7 +1854,7 @@ def _hold_melee_egg(mem, cur, labels):
     if (_enemy_transformed(mem, cur)
             or _critical_survival_needed(cur)
             or _own_egg_empty(mem, cur)
-            or cur.get('egg_battle') or mem.get('egg_battle')
+            or cur.get('egg_battle') or mem.get('egg_battle') or cur.get('event_duel')
             or cur.get('card_summon_observed')
             or cur.get('enemy') in chart.BOSSES.values()
             or cur.get('enemy') in reference.BOSS_GENERALS):
@@ -1910,7 +1913,7 @@ def _conserved_army_recheck(mem, cur):
             or cur.get('card_flow') or cur.get('command_open_pending')
             or cur.get('card_damage_rescue_needed')
             or cur.get('card_hp_unread') or cur.get('card_context_unclassified')
-            or cur.get('egg_battle') or mem.get('egg_battle') or cur.get('card_summon_observed')
+            or cur.get('egg_battle') or mem.get('egg_battle') or cur.get('event_duel') or cur.get('card_summon_observed')
             or cur.get('card_soldiers_current') is not True
             or any(cur.get(k) is not None and
                    (type(cur.get(k)) is not int or not 0 <= cur[k] <= 6)
@@ -2032,7 +2035,8 @@ def _egg_before_retreat(mem, cur, *, menu=False):
     # A legacy flag without the counter means the menu was already used: only
     # the counted attempts (v726) may retry once.
     spent = attempts >= EGG_ATTEMPT_LIMIT or (rescue.get('egg_attempted') and not attempts)
-    return (not cur.get('egg_battle') and _survival_needed(cur)
+    return (not cur.get('egg_battle') and not cur.get('event_duel')
+            and _survival_needed(cur)
             # #4606: against an observed summon/large enemy the retreat must not
             # wait behind another probe of the same unreliable command box.
             and not _summon_class_enemy(cur)
@@ -2332,7 +2336,7 @@ def _defender_egg_window(mem, cur, *, menu_open=False):
             or cur.get('side') != 'defense'
             or cur.get('castle') not in (*chart.castles(chapter), *chart.CASTLE_NAMES.get(chapter, ()))
             or cur.get('ally') in (None, 'だいじん') or cur.get('enemy') in chart.BOSSES.values()
-            or cur.get('egg_battle') or mem.get('egg_battle') or cur.get('card_flow')
+            or cur.get('egg_battle') or mem.get('egg_battle') or cur.get('event_duel') or cur.get('card_flow')
             or cur.get('enemy_summon_observed')
             or not cur.get('okunote_only_observed')
             or guard.get('selected') or guard.get('exhausted') or guard.get('unavailable')):
