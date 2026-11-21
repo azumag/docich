@@ -538,6 +538,16 @@ def test_sortie_repeat_is_cooled_down(runtime_dir):
     assert len(audit.load_incidents(runtime_dir)) == 2
 
 
+
+def test_sortie_order_failure_skips_move_orders(runtime_dir):
+    value = state(9, '1-1', 0,
+                  plan={'orders': {}, 'chart_plan': {'orders': [
+                      {'step': 'A:1:1', 'purpose': 'move', 'target': 'X'}]}})
+    audit.observe(runtime_dir, audit.capture(value), value,
+                  [_sortie_record('order_failed', deviation='城メニューが開かない')],
+                  now=1000)
+    assert audit.load_incidents(runtime_dir) == []
+
 def test_capture_reads_unmigrated_world_fields():
     state_value = state(1, '1-1', 10)
     state_value['policy']['world']['gold'] = None

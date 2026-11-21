@@ -946,12 +946,35 @@ def _build_sortie_incident(runtime, state, after, event, now):
     return _shrink(record)
 
 
+SORTIE_NON_PURPOSES = frozenset({'move', 'house', 'repair', 'recall', 'defend'})
+
+
+def _context_order(after, step):
+    context = _context(after)
+    chart = ((context or {}).get('plan') or {}).get('chart_plan') or {}
+    orders = chart.get('orders') if isinstance(chart.get('orders'), list) else []
+    for order in orders:
+        if isinstance(order, dict) and order.get('step') == step:
+            return order
+    return {}
+
+
 def _track_sortie(runtime, state, after, records, now, on_sealed=None):
     events = [event for event in (_sortie_event(record) for record in records or ()) if event]
     if not events:
         return
     events.sort(key=lambda event: 0 if event['outcome'] == 'failed' else 1)
     event = events[0]
+    if event['decision'] in ('order_failed', 'situation_held'):
+        order = _context_order(after, event.get('step'))
+        purpose = event.get('purpose') or (order or {}).get('purpose')
+        if purpose in SORTIE_NON_PURPOSES:
+            return
+        if purpose:
+            event['purpose'] = purpose
+        for key in ('general', 'source', 'target'):
+            if not event.get(key) and order.get(key):
+                event[key] = _bounded_text(order.get(key), 48)
     chapter = (after.get('policy') or {}).get('chapter')
     key = '|'.join(str(part or '') for part in (
         chapter, event['kind'], event['reason_code'], event.get('step_local'),
