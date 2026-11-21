@@ -39,3 +39,24 @@ def test_two_failed_reopens_switch_the_retry_to_the_tent_body():
             policy.camp_recall_step(bare, mem, frame)
     assert state['target'] == body and body != flag_target
     assert any(r.get('decision') == 'camp_enter_body_retry' for r in mem['_records'])
+
+
+def test_the_body_retry_survives_the_next_to_camp_pass():
+    # docich#4901 (ch10 v1317): to_camp re-detection restored the flag cell on
+    # the very next pass, so every reopen pressed the dead cell again and the
+    # recall looped camp_menu_not_opened until it gave up.
+    frame = _camp_frame()
+    mem = memory()
+    tent = Screen([], None, '', kind='map', cursor=(27, 67))
+    policy.camp_recall_step(tent, mem, frame)
+    state = _flow(mem)['recall']
+    bare = Screen([], None, '', kind='map', cursor=(50, 50))
+    for _ in range(3):
+        state['stage'] = 'menu'
+        for _ in range(3):
+            policy.camp_recall_step(bare, mem, frame)
+    body = list(state['camp_body'])
+    assert state['target'] == body and state['stage'] == 'to_camp'
+    # The re-pick still sees the same tent but must keep the armed body cell.
+    policy.camp_recall_step(bare, mem, frame)
+    assert state['target'] == body and state['last_seen'] == body

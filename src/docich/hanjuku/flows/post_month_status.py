@@ -11,7 +11,7 @@ from ..os_layer import roster as receipts
 from ..os_layer import status_return
 from ..os_layer.commands import menu_to, pad
 from ..os_layer.readers import world_markers
-from ..os_layer.screen import castle_roofs, own_camps
+from ..os_layer.screen import camp_body_target, castle_roofs, own_camps
 from ..os_layer.world import NAME
 from ..state.regions import flow as _flow, world as _world, plan as _plan_region
 from . import house, recall as recall_flow, map_registration
@@ -1955,6 +1955,12 @@ def step(screen, mem, frame):
                 'stage': 'to_camp', 'target': list(camp['target']),
                 'last_seen': list(camp['target']), 'steps': 0,
                 'general': name, 'camp_kind': camp.get('kind'),
+                # #4901: without the measured body cell the menu stage's
+                # flag->body retry can never arm on a task recall, so a tent
+                # whose flag cell does not open the menu loops
+                # camp_menu_not_opened until it aborts.
+                **({'camp_body': body}
+                   if (body := camp_body_target(frame, camp['target'])) else {}),
                 **({'boss_move': True} if job['kind'] == 'boss_move' else {})}
             _stage(state, 'wait_recall', recall_started=True)
             recall = recall_flow.camp_recall_step(screen, mem, frame)
