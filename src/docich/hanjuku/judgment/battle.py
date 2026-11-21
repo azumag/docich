@@ -2405,6 +2405,10 @@ DEFENDER_SUMMON_OPEN_LIMIT = 3
 # greyed たまごをつかう (owner-confirmed layout, v362). Bounded downward
 # presses until it is visible.
 DEFENDER_SUMMON_SCROLL_LIMIT = 4
+# Presses sent in one observation on that bounded scroll. Two is measured safe:
+# the box clamps its hand on the last row, the pair is the same input order as
+# two single downs, and the labels are re-read before any confirm.
+SUMMON_SCROLL_BATCH = 2
 
 
 def _defender_summon_preempt(mem, cur):

@@ -155,13 +155,30 @@ def test_spent_egg_in_a_castle_defense_summon_fight_scrolls_down_never_b():
     mem = egg_fight_memory()
     actions = p.egg_battle_step(egg_menu_screen(mem), mem)
     cur = mem['battle']
-    assert actions == [p.pad('down')]
+    # One observation carries the bounded pair; the next look re-reads the
+    # labels, so the reach of おくのて halves without a blind confirm.
+    assert actions == [p.pad('down')] * p.SUMMON_SCROLL_BATCH
     assert cur['summon_egg_unavailable'] is True
-    assert cur['okunote_summon_preempt']['downs'] == 1
+    assert cur['okunote_summon_preempt']['downs'] == p.SUMMON_SCROLL_BATCH
     assert cur['okunote_summon_preempt']['stage'] == 'scrolling'
     scroll = [r for r in mem['_records'] if r['decision'] == 'battle_okunote_summon_scroll']
-    assert scroll and scroll[-1]['observed_metric']['down_attempt'] == 1
+    assert scroll
+    assert scroll[-1]['observed_metric']['down_attempt'] == p.SUMMON_SCROLL_BATCH
+    assert scroll[-1]['observed_metric']['batch'] == p.SUMMON_SCROLL_BATCH
     assert p._defender_summon_preempt(mem, cur)['resources_basis'] == 'summon_menu_egg_unavailable'
+
+
+def test_a_batch_never_presses_past_the_scroll_limit():
+    mem = egg_fight_memory()
+    # One press of room left: the batch shrinks to it instead of overshooting.
+    mem['battle']['okunote_summon_preempt'] = {
+        'opens': 0, 'downs': p.DEFENDER_SUMMON_SCROLL_LIMIT - 1}
+    actions = p.egg_battle_step(egg_menu_screen(mem), mem)
+    assert actions == [p.pad('down')]
+    guard = mem['battle']['okunote_summon_preempt']
+    assert guard['downs'] == p.DEFENDER_SUMMON_SCROLL_LIMIT
+    scroll = [r for r in mem['_records'] if r['decision'] == 'battle_okunote_summon_scroll']
+    assert scroll[-1]['observed_metric']['batch'] == 1
 
 
 def test_the_scrolled_box_selects_okunote_under_the_cursor():
@@ -196,6 +213,9 @@ def test_the_scroll_is_bounded_and_then_the_old_attack_resumes():
             break
     guard = mem['battle']['okunote_summon_preempt']
     assert guard['exhausted'] and guard['downs'] == p.DEFENDER_SUMMON_SCROLL_LIMIT
+    # The whole reach is two observations (2 + 2), not four single downs.
+    scroll = [r for r in mem['_records'] if r['decision'] == 'battle_okunote_summon_scroll']
+    assert len(scroll) * p.SUMMON_SCROLL_BATCH == p.DEFENDER_SUMMON_SCROLL_LIMIT
     assert any(r['decision'] == 'battle_okunote_summon_open_failed' for r in mem['_records'])
     # Exhausted: the old attack path runs and never sends B on this box.
     actions = p.egg_battle_step(egg_menu_screen(mem, ally_hp=50), mem)

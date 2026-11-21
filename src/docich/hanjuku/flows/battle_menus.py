@@ -19,7 +19,8 @@ from ..judgment.battle import (BEHIND_EGG_RATIO_TENTHS, CARD_ANNOUNCE_LIMIT, CAR
                                OKUNOTE_MAX_SELF_DAMAGE, SURVIVAL_CARDS, _available_rare_tactic, _battle_labels,
                                _behind, _card_damage_gate, _card_gate_alternatives, _card_gate_choice,
                                _card_gate_refused, _card_use_unclassified, _command_open_wait, _confirmed_carried_kit, _critical_safe_card,
-                               DEFENDER_EGG_OPEN_LIMIT, DEFENDER_SUMMON_SCROLL_LIMIT, DEFENSE_MENU_READ_LIMIT, EGG_WALL_DAMAGE,
+                               DEFENDER_EGG_OPEN_LIMIT, DEFENDER_SUMMON_SCROLL_LIMIT, DEFENSE_MENU_READ_LIMIT,
+                               EGG_WALL_DAMAGE, SUMMON_SCROLL_BATCH,
                                _critical_survival_needed, _defender_egg_window, _defender_last_resort, _defender_summon_preempt,
                                _defender_summon_last_resort, _defense_kit_read_unread, _egg_drop_trace,
                                _egg_before_retreat, _egg_rescue_pending, _egg_drop_evidence, _hero_retreat_needed, _hold_melee_egg, _melee_balance,
@@ -2057,14 +2058,24 @@ def _defender_summon_egg_menu(screen, mem, battle):
             return _emit_moves(move)
         # Cursor unread: keep scrolling like the no-label case, never confirm.
     downs = int(guard.get('downs') or 0)
-    if downs < DEFENDER_SUMMON_SCROLL_LIMIT:
-        guard['downs'] = downs + 1
+    room = DEFENDER_SUMMON_SCROLL_LIMIT - downs
+    if room > 0:
+        # The grey たまご row sits above おくのて and the box needs three to four
+        # downs (owner-confirmed layout, v362). One down per observation spent
+        # four looks (x 1.5 s) on every draw of the live g1288 summon fight
+        # (2026-11-22 02:09-02:11: four battle_okunote_summon_scroll rows
+        # between each おくのて selection; 68 such rows per day). Batch a
+        # bounded pair: the same presses reach the same clamped row, and the
+        # next observation still re-reads the labels, so a visible おくのて is
+        # moved to instead of overshot. Never more than the existing limit.
+        batch = min(SUMMON_SCROLL_BATCH, room)
+        guard['downs'] = downs + batch
         guard['stage'] = 'scrolling'
         _record(mem, 'battle_okunote_summon_scroll', **_battle_labels(battle),
                 observed_metric={'cursor_y': screen.menu_cursor, 'visible': labels,
-                                 'down_attempt': downs + 1},
+                                 'down_attempt': downs + batch, 'batch': batch},
                 reason='たまごをつかう（灰色）の下のおくのて行へカーソルを下げる')
-        return [pad('down')]
+        return [pad('down') for _ in range(batch)]
     guard['exhausted'] = True
     _record(mem, 'battle_okunote_summon_open_failed', **_battle_labels(battle),
             observed_metric={**window, 'down_attempts': downs},
