@@ -1750,7 +1750,12 @@ def _boss_move_dest_step(screen, mem, frame, state, marker):
         return _abort_boss_redirect(mem, state, 'boss_position_lost',
                                     'ボスの位置を確認できないため再移動を取り消す')
     pseudo = {'step': 'RECALL', 'target': goal, 'source': None}
-    if _map._target_roof_under_marker(screen, mem, frame, pseudo):
+    # #4922: chapter 10's White House requires a Y-jump receipt so _y_jump_step
+    # measures the camp's actual position on the ring and picks the walkable leg;
+    # never short-circuit confirm near the wall without jumping first.
+    ch10_need_jump = ((mem.get('chapter') or 0) == 10
+                      and (mem.get('y_jumped') or {}).get('RECALL') != goal)
+    if not ch10_need_jump and _map._target_roof_under_marker(screen, mem, frame, pseudo):
         _reset_boss_jump(mem)
         return _request_recall(mem, state, goal, [pad('a')], target_cell=list(marker), boss=True)
     if (mem.get('y_jumps') or {}).get('RECALL:target', 0) < BOSS_JUMP_LIMIT:

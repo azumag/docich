@@ -85,12 +85,16 @@ def test_whitehouse_leg_relays_the_outer_ring_to_the_gate():
                          chart.CH10_WALL_NE)
     # The measured west detour: outer road -> south road -> gate -> boss.
     assert chart.ch10_whitehouse_leg((300, 400), BOSS_CELL) == sw
+    assert chart.ch10_whitehouse_leg((395, 380), BOSS_CELL) == sw
     assert chart.ch10_whitehouse_leg(sw, BOSS_CELL) == wp
     assert chart.ch10_whitehouse_leg(wp, BOSS_CELL) == BOSS_CELL
-    # The eastern mirror and a camp anywhere along the south road.
+    # The eastern mirror and a camp anywhere along the south road (including
+    # far south of the cliff/lava on the x=492 column).
     assert chart.ch10_whitehouse_leg((700, 350), BOSS_CELL) == se
+    assert chart.ch10_whitehouse_leg((575, 380), BOSS_CELL) == se
     assert chart.ch10_whitehouse_leg(se, BOSS_CELL) == wp
     assert chart.ch10_whitehouse_leg((350, 440), BOSS_CELL) == wp
+    assert chart.ch10_whitehouse_leg((492, 560), BOSS_CELL) == wp
     # The ring's southern apron still walks to the gate, not the roof.
     assert chart.ch10_whitehouse_leg((450, 400), BOSS_CELL) == wp
     # Behind the north wall the nearer northern corner comes first.
@@ -277,3 +281,19 @@ def test_boss_waves_continue_while_a_castle_is_being_retaken(monkeypatch):
     m.pop('boss_cell')
     cands = list(replan.interim_candidates(m).values())
     assert not any(c.get('target') == BOSS for c in cands)
+
+
+def test_ch10_boss_move_requires_y_jump_before_confirm(monkeypatch):
+    from docich.hanjuku.flows import map as _map
+    monkeypatch.setattr(_map, '_target_roof_under_marker', lambda s, m, f, p: True)
+    m = mem()
+    screen = Screen(lines=[], hand=None, text='', kind='map', cursor=(128, 112))
+    state = {'boss_move': True, 'goal': BOSS, 'target': [128, 112]}
+    actions = recall_flow._boss_move_dest_step(screen, m, _Frame(), state, (128, 112))
+    assert m.get('y_jump', {}).get('goal') == BOSS
+    assert actions and actions[0]['buttons'] == ['y']
+    # Once the Y jump receipt is recorded, the confirm fires.
+    m.pop('y_jump', None)
+    m['y_jumped'] = {'RECALL': BOSS}
+    confirm = recall_flow._boss_move_dest_step(screen, m, _Frame(), state, (128, 112))
+    assert confirm and confirm[0]['buttons'] == ['a']
