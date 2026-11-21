@@ -437,6 +437,62 @@ MERIKEN_BUSINESS_SPEC = CornerRuntimeSpec(
 )
 
 
+INTERNATIONAL_POLITICS_SPEC = CornerRuntimeSpec(
+    corner_id="international-politics",
+    fixture_parts=(
+        "tests",
+        "fixtures",
+        "international_politics_corner",
+        "fixed_international_politics_example.json",
+    ),
+    container="topic",
+    title_key="title",
+    question_key="whatHappened",
+    summary_key="thirtySecondSummary",
+    sections=(
+        Section("whatHappened", "fact", "何が起きたか"),
+        Section("partyClaims", "fact", "当事者の主張"),
+        Section("institutionalLegalPosition", "analysis", "制度・国際法上の位置づけ"),
+        Section("historicalBackground", "analysis", "歴史的背景"),
+        Section("geoEconomicSecurityConditions", "analysis", "地理・経済・安全保障条件"),
+        Section("keyDisputes", "analysis", "主要な争点"),
+        Section("japanImpact", "analysis", "日本への影響"),
+        Section("indicatorsAndEvents", "forecast", "見るべき指標・イベント"),
+    ),
+    required_fields=(
+        "title",
+        "topicId",
+        "eventDate",
+        "geography",
+        "actors",
+        "thirtySecondSummary",
+        "oneLineSummary",
+        "whatHappened",
+        "partyClaims",
+        "institutionalLegalPosition",
+        "historicalBackground",
+        "geoEconomicSecurityConditions",
+        "keyDisputes",
+        "opposingViewpoints",
+        "japanImpact",
+        "indicatorsAndEvents",
+        "labelsPolicy",
+        "segmentLabels",
+        "limitations",
+        "uncertainty",
+        "figureOrDiagram",
+        "youtubeIndependentDraft",
+        "primarySources",
+        "sourcePriority",
+        "citationKeepUrl",
+        "url",
+        "materialContract",
+    ),
+    caveat_keys=("limitations", "uncertainty"),
+    labels=("fact", "analysis", "forecast"),
+)
+
+
 CORNER_SPECS = {
     WORLD_HISTORY_SPEC.corner_id: WORLD_HISTORY_SPEC,
     RESEARCH_PAPER_SPEC.corner_id: RESEARCH_PAPER_SPEC,
@@ -446,6 +502,7 @@ CORNER_SPECS = {
     ARCHITECTURE_SPEC.corner_id: ARCHITECTURE_SPEC,
     MERIKEN_ECONOMICS_SPEC.corner_id: MERIKEN_ECONOMICS_SPEC,
     MERIKEN_BUSINESS_SPEC.corner_id: MERIKEN_BUSINESS_SPEC,
+    INTERNATIONAL_POLITICS_SPEC.corner_id: INTERNATIONAL_POLITICS_SPEC,
 }
 
 
