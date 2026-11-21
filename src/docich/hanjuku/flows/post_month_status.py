@@ -806,6 +806,12 @@ def _static_marker(state, marker):
     box = tuple(marker.get('box') or ()) if isinstance(marker, dict) else ()
     if not box:
         return False
+    # The roster's persistent scroll arrow is outside the minimap.  It is
+    # visible while the selected general's triangle blinks off, so treating
+    # it as a static failed marker prematurely exhausts the retry window.
+    from ..os_layer.readers import MAP_PANEL_RIGHT
+    if marker.get('marker_reason') == 'scroll_arrow' or box[2] >= MAP_PANEL_RIGHT:
+        return False
     if marker.get('castle_candidate'):
         state.pop('static_marker', None)   # this box can resolve; remember nothing
         return False
