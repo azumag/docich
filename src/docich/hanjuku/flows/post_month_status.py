@@ -10,7 +10,7 @@ from .. import decision_log
 from ..os_layer import roster as receipts
 from ..os_layer import status_return
 from ..os_layer.commands import menu_to, pad
-from ..os_layer.readers import world_markers
+from ..os_layer.readers import MAP_PANEL_RIGHT, world_markers
 from ..os_layer.screen import camp_body_target, castle_roofs, own_camps
 from ..os_layer.world import NAME
 from ..state.regions import flow as _flow, world as _world, plan as _plan_region
@@ -802,9 +802,21 @@ def _static_marker(state, marker):
     transient sprite miss: re-reading it costs one observation per read and
     cannot give any general a castle (g1163 2026-11-09 09:58-10:02: box
     [59,120,64,125] repeated for twenty generals, four reads each).
+
+    The roster list's own scroll arrow (outside ``MAP_PANEL_RIGHT`` / reason
+    ``scroll_arrow``) is NOT a map decoration: ``selection_marker`` falls back
+    to it whenever the real in-map triangle is blinked off for a frame, so
+    memorising it would skip the blink retry loop and force an expensive
+    per-general SELECT locate (#4910).
     """
-    box = tuple(marker.get('box') or ()) if isinstance(marker, dict) else ()
+    if not isinstance(marker, dict):
+        return False
+    if marker.get('marker_reason') == 'scroll_arrow':
+        return False
+    box = tuple(marker.get('box') or ())
     if not box:
+        return False
+    if len(box) >= 3 and box[2] >= MAP_PANEL_RIGHT:
         return False
     if marker.get('castle_candidate'):
         state.pop('static_marker', None)   # this box can resolve; remember nothing
