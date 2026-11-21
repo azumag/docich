@@ -8,7 +8,7 @@ from docich.hanjuku.os_layer.commands import pad
 from docich.hanjuku.os_layer.screen import Screen, parse
 
 from test_hanjuku_house import Canvas, roster, status
-from docich.hanjuku.state.regions import world as _world, plan as _plan_region
+from docich.hanjuku.state.regions import flow as _flow, world as _world, plan as _plan_region
 
 
 def memory(**fields):
@@ -47,6 +47,47 @@ def test_map_yields_to_a_startable_order_until_the_month_has_a_launch():
     state['floor_yields'] = post.SORTIE_FLOOR_YIELDS
     assert post.step(field, mem, None) == [pad('x')]
     assert state['stage'] == 'open_menu'
+
+
+def test_idle_floor_yields_stop_so_the_scan_can_recall_the_camped_source():
+    """docich#5000: a startable order the garrison cannot crew must not own the month.
+
+    g1288 ch10 93-2 sealed zero_sortie and 93-1..93-4 filed camp_abandoned
+    while the scan sat in await_map: every yield handed the map back to an
+    order whose source general was camped, so the roster walk (and with it the
+    recall task) never ran.
+    """
+    mem = memory(month_sorties={'scope': [1, '2-6'], 'launches': 0})
+    post.arm(mem)
+    state = mem['post_month_status']
+    field = Screen([], None, '', kind='map')
+    for i in range(post.SORTIE_FLOOR_IDLE_YIELDS):
+        assert post.step(field, mem, None) is None, i
+        assert state['floor_idle_yields'] == i + 1, i
+    # No attempt in flight: the next map observation belongs to the scan, not
+    # to the order that cannot start.
+    assert post.step(field, mem, None) == [pad('x')]
+    assert state['stage'] == 'open_menu'
+    assert any(r['decision'] == 'post_month_sortie_floor_reclaimed' for r in mem['_records'])
+
+
+def test_an_in_flight_sortie_attempt_keeps_the_floor_yield_open():
+    """docich#5000: a real attempt still gets the map past the idle cap."""
+    mem = memory(month_sorties={'scope': [1, '2-6'], 'launches': 0})
+    post.arm(mem)
+    state = mem['post_month_status']
+    field = Screen([], None, '', kind='map')
+    # First observation: the planner gets the map, one idle yield counted.
+    assert post.step(field, mem, None) is None
+    assert state['floor_idle_yields'] == 1
+    # From here the order is actually being attempted; the idle counter must
+    # freeze (not reclaim the map) even past the idle cap.
+    _flow(mem)['sortie_attempt'] = {'step': 'A'}
+    for i in range(post.SORTIE_FLOOR_IDLE_YIELDS + 3):
+        assert post.step(field, mem, None) is None, i
+    assert state['floor_yields'] == post.SORTIE_FLOOR_IDLE_YIELDS + 4
+    assert state['floor_idle_yields'] == 1
+    assert state['stage'] == 'await_map'
 
 
 def test_task_stages_yield_the_map_to_a_startable_order():
