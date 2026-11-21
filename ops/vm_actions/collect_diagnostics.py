@@ -8016,6 +8016,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v1338-camp-abandon",
             "hanjuku-chart-v1340-whitehouse-south-gate",
             "hanjuku-chart-v1339-boss-first",
+            "hanjuku-chart-v1341-boss-no-onehit",
             "hanjuku-chart-v985-roster-lost",
             "hanjuku-chart-v982-gbox",
             "hanjuku-chart-v984-roster-map-anchor",

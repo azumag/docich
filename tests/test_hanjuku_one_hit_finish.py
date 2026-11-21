@@ -86,3 +86,14 @@ def test_unread_or_summon_context_is_not_trusted(flag):
 @pytest.mark.parametrize('enemy_hp,ally_hp', [(0, 30), (None, 30), (1, 0), (1, None)])
 def test_missing_or_finished_hp_is_not_one_hit_lethal(enemy_hp, ally_hp):
     assert not p._one_hit_lethal({'enemy_hp': enemy_hp, 'ally_hp': ally_hp})
+
+
+def test_a_low_hp_boss_is_not_a_safe_melee_finish():
+    # Live g1288 2026-11-21/22: the boss (せいめいたい) at HP 1 beat three
+    # generals who pushed with the one-hit melee (its counterattack still
+    # killed them), so a boss must not take the shortcut.
+    from docich import hanjuku_chart as chart
+    boss = chart.boss_castle(9)
+    assert not p._one_hit_lethal({'enemy_hp': 1, 'ally_hp': 98, 'castle': boss})
+    assert not p._one_hit_lethal({'enemy_hp': 1, 'ally_hp': 98, 'enemy': 'せいめいたい'})
+    assert p._one_hit_lethal({'enemy_hp': 1, 'ally_hp': 98, 'castle': 'イデ！'})
