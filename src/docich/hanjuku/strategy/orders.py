@@ -444,6 +444,11 @@ def _boss_path_captured(mem):
     with their retakes once every castle the chain marches through is held.
     """
     chapter = mem.get('chapter') or 0
+    # #4915: Chapters 10-12 only open/spawn the boss castle once EVERY normal
+    # castle is captured; holding the boss order's immediate source chain while
+    # other enemy castles remain must not unlock the boss assault early.
+    if chapter in (10, 11, 12):
+        return False
     all_orders = chart.all_orders(chapter)
     path = {o.get('target') for o in all_orders
             if chart.is_boss_castle(o.get('target'))}
