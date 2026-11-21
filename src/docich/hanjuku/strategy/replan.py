@@ -1323,7 +1323,12 @@ def interim_candidates(mem, allow_sole=False) -> dict:
         else:
             # Reserve only an actor measured in this source castle. Unread chart
             # actors are alternative future candidates, not simultaneous commitments.
-            present = (_world(mem).get('garrison') or {}).get(source) or ()
+            # docich#4967: a general picked from a PARTIAL roster
+            # (garrison_partial) was not registered in planned_busy here, so
+            # every retake in the plan named the same general and the later
+            # castles stalled after the first sortie. Use the same resident
+            # resolution the actor picker uses.
+            present = _known_residents(mem, _world(mem).get('garrison') or {}, source) or ()
             if (general != MOVE_ANY_GENERAL and general != NAME and present
                     and general not in present):
                 # docich#4712: the chart names the general that took this castle
