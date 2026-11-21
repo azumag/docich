@@ -944,7 +944,8 @@ def parked_boss_steps(mem):
             continue
         target = sortie.get('target') or sortie.get('planned_target')
         status = sortie.get('status')
-        if (orders_status.get(step) != 'launched' or not chart.is_boss_castle(target)
+        if (orders_status.get(step) not in ('launched', 'launched_unconfirmed')
+                or not chart.is_boss_castle(target)
                 or status not in ('overdue', 'arrived')
                 or (status == 'arrived' and _boss_fight_live(mem, step))
                 or type(sortie.get('tick')) is not int
@@ -1083,7 +1084,8 @@ def _relaunch_overdue_boss(mem):
         target = sortie.get('target') or sortie.get('planned_target')
         if sortie.get('status') == 'overdue':
             _drop_spent_sortie_attempt(mem, step)
-        if (status.get(step) != 'launched' or not chart.is_boss_castle(target)
+        if (status.get(step) not in ('launched', 'launched_unconfirmed')
+                or not chart.is_boss_castle(target)
                 or type(sortie.get('tick')) is not int
                 or now - sortie['tick'] < _arrival_limit(mem, sortie)):
             continue
@@ -1261,7 +1263,7 @@ def _relaunch_overdue_march(mem):
                     'target': target, 'marching': now - sortie['tick'],
                     'relaunches': relaunches.get(step, 0),
                     **({'road_defeat': True} if road_defeat else {})}
-        if status.get(step) != 'launched':
+        if status.get(step) not in ('launched', 'launched_unconfirmed'):
             _record(mem, 'sortie_march_overdue_settled', chart_step=step,
                     observed_metric=observed,
                     reason='出撃が上限の観測内に決着しないため、保留中のままの行軍を済ませたものとして片付ける')
