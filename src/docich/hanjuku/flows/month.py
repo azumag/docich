@@ -238,6 +238,27 @@ def _month_opened(move, mem, label: str):
     return False
 
 
+def _blind_nav_exhausted(mem, label) -> bool:
+    """The blind walk for this label already spent its tries this month."""
+    state = mem.get('month_blind_nav_exhausted')
+    return (isinstance(state, dict) and state.get('label') == label
+            and state.get('month') == mem.get('month'))
+
+
+def blind_nav_active(mem) -> bool:
+    """A blind month-menu walk may still take the next input.
+
+    An exhausted walk (tries at the limit) no longer owns the screen. The
+    leftover state used to stay in the policy for the rest of the chapter and
+    boss_pursuit read any month_blind_nav as a busy month menu (live g1288
+    2026-11-21 21:02), so the pursuit stayed off while the boss wave stood on
+    its waypoint. Field owners use this accessor instead of the raw key.
+    """
+    state = mem.get('month_blind_nav')
+    return (isinstance(state, dict)
+            and int(state.get('tries') or 0) < MONTH_BLIND_NAV_LIMIT)
+
+
 def _month_menu_move(screen: Screen, mem, label: str):
     hand = screen.hand
     # The hand can also sit on a menu row (g1190 2026-11-16 19-9: menu_nav_stuck
@@ -255,7 +276,9 @@ def _month_menu_move(screen: Screen, mem, label: str):
     # hint line; any other foreground text is owned by _month_text_advance or
     # the hold path.
     dialogue_free = _month_menu_quiet(screen) or screen.has('じゅうじキー')
-    if (((hand and hand[1] >= 175) or _month_nav_stuck(mem))
+    exhausted = _blind_nav_exhausted(mem, label)
+    if (not exhausted
+            and ((hand and hand[1] >= 175) or _month_nav_stuck(mem))
             and (screen.has('じゅうじキー') or screen.has('メインメニュー'))
             and screen.has(label.replace('!', '').replace('！', ''))
             and dialogue_free):
@@ -290,6 +313,20 @@ def _month_menu_move(screen: Screen, mem, label: str):
             for key in keys:
                 steps += [pad(key), {'type': 'wait', 'ms': MONTH_BLIND_NAV_WAIT_MS}]
             return steps
+        if row_col is not None and not exhausted:
+            # The blind walk spent its tries and took no input. Release the
+            # screen: the leftover state used to stay in the policy for the
+            # rest of the chapter, and boss_pursuit treats any
+            # month_blind_nav as a busy month menu. One exhausted しょうにん
+            # walk therefore stopped every boss pursuit (live g1288
+            # 2026-11-21 21:02): the wave kept standing on its waypoint while
+            # the measured boss had 1 HP left. The give-up marker keeps the
+            # same label from restarting the same blind plan this month; a
+            # new month may try the measured layout again.
+            mem.pop('month_blind_nav', None)
+            mem['month_blind_nav_exhausted'] = {
+                'label': label, 'month': mem.get('month'),
+                'tick': int(mem.get('tick') or 0)}
     mem.pop('month_blind_opened', None)
     move = guarded_menu_to(screen, mem, label, key='month_nav')
     if move == []:
