@@ -797,7 +797,8 @@ def test_structurally_complete_prefix_rows_are_not_labelled_as_measured_four_row
     record = mem['_records'][-1]
     assert record['resulting_event'] == 'selection_planned_not_yet_confirmed'
     assert record['observed_metric'] == {'stock': 2, 'remaining': 3,
-        'inventory_evidence': 'structured_card_select', 'observed_rows': row_count}
+        'inventory_evidence': 'structured_card_select', 'observed_rows': row_count,
+        'more_above': None, 'more_below': None}
 
 
 @pytest.mark.parametrize('change', ['blank_cursor', 'zero_rows', 'missing_first', 'missing_middle',
