@@ -17,7 +17,7 @@ from ..version import BOT_VERSION
 from .deploy import (_cancel_broken_hero_sortie, _deploy_context, _deploy_input, _hold_deploy,
                             _hold_guarded_sortie, _hold_locked_boss, _hold_unrouted_sortie)
 from .recall import (MENU_HOLD_LIMIT, RECALL_LIMIT, _hold_after_picker, _recall_dispatch_step, _request_recall,
-                    RELAY_MENU_WAIT,
+                    RELAY_MENU_WAIT, _relay_target, _y_route_step,
                     relay_from_picker,
                             camp_recall_step)
 from ..os_layer.commands import (VISIBLE_LIST_RELEASE_MS, castle_list_batch, menu_to, pad,
@@ -386,6 +386,41 @@ def _recall_picker_cycles(chapter, flags, nearby, goal):
             and all(flags.get(name) in ('own', 'enemy') for name in castles))
 
 
+def _picker_y_route(screen, mem, recall, goal):
+    """Delegate the open recall picker to the whole-map Y route (docich#4755).
+
+    DSH 方針(1): when the destination goal and the camp's own world cell are
+    both measured, ``_y_route_step`` — the same step the hero_focus y_route
+    uses — jumps this picker's cursor onto the goal instead of the ring being
+    walked castle by castle.  The layer stays additive: it spends the
+    ``RECALL:target`` jump budget the map_target route uses (recall.py:1516),
+    never starts while another jump is in flight, and returns ``None`` so the
+    ordinary picker walk keeps the screen whenever it cannot act.
+    """
+    camp_world = recall.get('camp_world')
+    if not (isinstance(goal, str) and goal
+            and isinstance(camp_world, (list, tuple)) and len(camp_world) == 2
+            and all(type(axis) in (int, float) for axis in camp_world)):
+        return None
+    if (recall.get('boss') or recall.get('boss_move') or recall.get('gather')
+            or recall.get('relay') or recall.get('move_visible')):
+        return None                     # dedicated routes own these recalls
+    if _relay_target(mem, recall) is not None:
+        # The camp sits across the cliff: jumping the marker at the goal would
+        # send the march into the wall the relay leg exists to avoid.
+        return None
+    if ((mem.get('y_jumps') or {}).get('RECALL:target', 0) >= 2
+            or mem.get('y_jump') or mem.get('castle_jump')):
+        return None
+    recall['goal'] = goal
+    stepped = _y_route_step(screen, mem, recall)
+    if not stepped:
+        return None
+    _record(mem, 'camp_recall_picker_y_route',
+            observed_metric={'goal': goal, 'camp_world': list(camp_world)},
+            reason='帰還先と野営の世界座標が計測済みのため、ピッカー歩行ではなく全体マップYジャンプ経路へ委譲する')
+    return stepped
+
 
 UNVERIFIED_LAUNCH_LIMIT = 3   # Y-view observations without the unit before rearm
 
@@ -564,6 +599,9 @@ def world_map_step(screen, mem, frame):
             return [pad('b')]
         goal = recall.get('gather') or _picker_goal(mem, flags, recall)
         goal = _goal_after_failures(mem, flags, recall, goal)
+        delegated = _picker_y_route(screen, mem, recall, goal)
+        if delegated is not None:
+            return delegated
         if goal is None:
             # The picker cannot aim and the hero's castle is the missing
             # position (g1163 2026-11-14 08:59/09:01, statuses null in ch.9).
