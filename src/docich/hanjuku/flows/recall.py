@@ -88,14 +88,11 @@ def boss_redirect_goal(mem):
     chapter = mem.get('chapter')
     if not boss_phase(mem) or not chart.moving_boss_cell(chapter):
         return None
-    # A wave that has not produced an entry within the stale bound is not a
-    # march to re-arm: sending another camp at the boss would repeat the same
-    # miss forever (live g1288 2026-11-20). Skip the boss goal so this camp
-    # takes the ordinary recall to a castle; the fresh sortie from there is
-    # the next wave.
-    from .boss_pursuit import wave_stale
-    if wave_stale(mem):
-        return None
+    # Owner 2026-11-21: ９話のボスフェーズにおいては野営から軌道に移動するべき。
+    # A camped general must go back to the moving boss's cell, not home: the
+    # home recall cannot cross the cliffs (the camps sat for hours at 1
+    # garrison), while the boss track is what the wave is for. The old
+    # stale-wave gate sent the camp home instead and the field stalled.
     return chart.boss_castle(chapter)
 
 

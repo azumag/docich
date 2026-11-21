@@ -67,12 +67,14 @@ def test_no_entries_is_not_a_stale_wave():
     assert bp.wave_stale({'chapter': 9, 'tick': 99999, bp.LIST_KEY: {}}) is False
 
 
-def test_a_stale_wave_stops_the_camp_boss_redirect(monkeypatch):
+def test_a_stale_wave_keeps_the_camp_on_the_boss_track(monkeypatch):
+    # Owner 2026-11-21: ９話のボスフェーズにおいては野営から軌道に移動するべき。
+    # Even an old wave entry still sends the camp back at the moving boss.
     arm(monkeypatch)
     fresh = memory(launched=10000 - 500)
     assert recall.boss_redirect_goal(fresh) == chart.boss_castle(9)
     stale = memory(launched=10000 - bp.PURSUIT_STALE_TICKS)
-    assert recall.boss_redirect_goal(stale) is None
+    assert recall.boss_redirect_goal(stale) == chart.boss_castle(9)
 
 
 def test_wave_active_is_false_for_a_stale_wave_and_true_for_a_fresh_one():
