@@ -24,6 +24,7 @@ from ..judgment.battle import (BEHIND_EGG_RATIO_TENTHS, CARD_ANNOUNCE_LIMIT, CAR
                                _critical_survival_needed, _defender_egg_window, _defender_last_resort, _defender_summon_preempt,
                                _defender_summon_last_resort, _defense_kit_read_unread, _egg_drop_trace,
                                _egg_before_retreat, _egg_rescue_pending, _egg_drop_evidence, _hero_retreat_needed, _hold_melee_egg, _melee_balance,
+                               _retreat_cards_to_spend, _retreat_immediate_loss, _retreat_remaining_cards,
                                _healthy_melee_margin_evidence, _melee_continuation_evidence,
                                _stale_army_melee_hold,
                                _dying_with_egg, _migrate_card_evidence, _one_hit_lethal, _own_egg_empty,
@@ -333,6 +334,18 @@ def _hero_retreat_menu(screen, mem, cur):
     flow = cur.setdefault('hero_retreat', {})
     if flow.get('unavailable') or flow.get('exhausted'):
         return None
+    # docich#4999 (owner 2026-11-22): spend resources before the retreat row.
+    # A pending selection on this menu screen means its announce already
+    # ended without a receipt — settle it honestly, then give remaining
+    # cards one bounded retry through the survival menu before choosing
+    # たいきゃく. Below the immediate-loss floor the detour stops.
+    card_flow = cur.get('card_flow') or {}
+    if card_flow.get('selection_planned'):
+        _card_use_unclassified(mem, cur, '実使用告知がないまま戦闘メニューへ戻ったため未分類として保持')
+    else:
+        cur['card_flow'] = None
+    if not _retreat_immediate_loss(cur) and _retreat_cards_to_spend(cur):
+        return _survival_menu(screen, mem, cur)
     if 'たいきゃく' not in {w for _, _, w in _options(screen)}:
         flow['unavailable'] = True
         _record(mem, 'battle_hero_retreat_unavailable', **_battle_labels(cur),
@@ -354,10 +367,7 @@ def _hero_retreat_menu(screen, mem, cur):
     move = _battle_menu_move(screen, mem, 'たいきゃく')
     if move != 'here':
         return _emit_moves(move)
-    if (cur.get('card_flow') or {}).get('selection_planned'):
-        _card_use_unclassified(mem, cur, '退却を優先し切り札の実使用は未確認')
-    else:
-        cur['card_flow'] = None
+    cur['card_flow'] = None
     flow['selected'] = flow.get('selected', 0) + 1
     flow['wait'] = 0
     _record(mem, 'battle_hero_retreat_select', **_battle_labels(cur),
@@ -558,10 +568,26 @@ def _survival_card_list(screen, mem, cur, flow, names):
                               and counts[c] < previous[c]
                               and flow['count_readings'] >= 2))]
     uncertain = [c for c in counts if c in attempted and c not in candidates]
+    # docich#4999 (owner 2026-11-22): while a retreat is pending, a listed
+    # card whose earlier use was never confirmed is most likely still
+    # carried — an unchanged count proves nothing either way. It gets
+    # exactly one more selection (cards_spend_retry) before the retreat
+    # proceeds instead of staying on the audit's remaining list. The same
+    # two-reading settle applies: a flickering list is not a re-pick.
+    retry = []
+    if uncertain and (egg_bait.retreat_due(mem, cur) or _hero_retreat_needed(cur)):
+        retried = cur.get('cards_spend_retry') or ()
+        remaining = set(_retreat_remaining_cards(cur))
+        retry = [c for c in uncertain if c in remaining and c not in retried]
+        if retry:
+            uncertain = [c for c in uncertain if c not in retry]
     rescue['cards_uncertain'] = bool(uncertain)
-    if (not candidates and uncertain and flow['count_readings'] < 2
-            and flow['list_ticks'] <= 10):
+    if (not candidates and (uncertain or retry)
+            and flow['count_readings'] < 2 and flow['list_ticks'] <= 10):
         return []
+    if not candidates and retry:
+        cur.setdefault('cards_spend_retry', []).extend(retry)
+        candidates = retry
     if not candidates:
         if not names and flow['list_ticks'] <= 3:
             return []
@@ -1612,7 +1638,13 @@ def card_list_step(screen: Screen, mem):
     if (cur.get('side') != 'defense' and _hero_retreat_needed(cur)
             and flow and flow.get('stage') == 'list'
             and not flow.get('announce_retried')
-            and not _critical_safe_card(mem, cur, rescue)
+            # docich#4999: retreat now defers to any listed card the gate
+            # permits (for_retreat) and to a survival list still spending
+            # the remaining selections; the immediate-loss floor keeps the
+            # g460 emergency close inside both rules.
+            and not _critical_safe_card(mem, cur, rescue, for_retreat=True)
+            and not (flow.get('survival') and not _retreat_immediate_loss(cur)
+                     and _retreat_cards_to_spend(cur))
             and not (cur.get('hero_retreat') or {}).get('unavailable')
             and not (cur.get('hero_retreat') or {}).get('exhausted')):
         cur['card_flow'] = None

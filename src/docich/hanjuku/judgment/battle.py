@@ -1362,6 +1362,17 @@ def _rescue_card(candidates, cur):
 
 BEHIND_EGG_RATIO_TENTHS = 7    # ally HP at or below 70% of the enemy's: rescue (egg) now
 GENERAL_CRITICAL_RETREAT_HP = 12
+# docich#4999 (owner 2026-11-22): spend the remaining egg/cards before the
+# retreat row. A committed card selection keeps its bounded announce
+# lifecycle instead of an instant preemption, and a listed leftover card
+# gets one bounded retry through the survival menu. The floor is the g460
+# counterweight: one melee contact has been observed removing ≥10 HP, so
+# under RETREAT_RESOURCE_FLOOR_HP any further card wait or menu detour only
+# costs the general; there the retreat preempts again. The own egg stays
+# eligible at any HP because its transform is itself the survival
+# mechanism (_egg_before_retreat keeps its own EGG_ATTEMPT_LIMIT bound).
+RETREAT_RESOURCE_FLOOR_HP = 4    # immediate-loss band: card waits/detours stop
+RETREAT_CARD_GRACE_LIMIT = 6     # battle observations a pending card may hold the retreat
 
 
 def _unarmed_clash_risk(cur):
@@ -1937,22 +1948,88 @@ def _conserved_army_recheck(mem, cur):
     return True
 
 
+def _retreat_immediate_loss(cur):
+    """Ally HP in the immediate-loss band: no card wait or spend detour (#4999).
+
+    One melee contact has removed ≥10 HP in a single observation (g460),
+    so at or below RETREAT_RESOURCE_FLOOR_HP the next contact is almost
+    certainly lethal and only the retreat itself (and the egg's transform,
+    which is survival not spending) is still worth the frames.
+    """
+    hp = cur.get('ally_hp')
+    return type(hp) is int and 0 < hp <= RETREAT_RESOURCE_FLOOR_HP
+
+
+def _retreat_remaining_cards(cur):
+    """Selected cards with no confirmed use — the audit's remaining list.
+
+    Unclassified selections stay in the remainder: an unconfirmed use is
+    not a receipt (month_audit._remaining_cards applies the same rule).
+    """
+    used = [card for card in (cur.get('cards_used') or ()) if isinstance(card, str)]
+    remaining = []
+    for card in cur.get('cards_selected') or ():
+        if not isinstance(card, str):
+            continue
+        if card in used:
+            used.remove(card)
+        else:
+            remaining.append(card)
+    return remaining
+
+
+def _retreat_cards_to_spend(cur):
+    """#4999: audit-visible remaining cards that still have a spend path.
+
+    Each name consumes at most one spend retry (cards_spend_retry); a card
+    picked from the live list again lands in cards_attempted and then needs
+    the same retry flag, so the detour cannot loop. The survival menu's own
+    bounds (cards_checked, cards_exhausted, exhausted) cap the detour too.
+    """
+    rescue = cur.get('survival') or {}
+    if (rescue.get('exhausted') or rescue.get('cards_exhausted')
+            or int(rescue.get('cards_checked') or 0) >= 3):
+        return False
+    retried = cur.get('cards_spend_retry') or ()
+    return any(card not in retried for card in _retreat_remaining_cards(cur))
+
+
 def _critical_safe_card(mem, cur, rescue, *, for_retreat=False):
     # Only the observed list, not a chart kit, licenses delaying an active
     # egg for a heal/proven finishing blow. Selection is still not a use.
+    # The bounded-failure guards apply to every card: a stale inventory
+    # must not suppress retreat indefinitely.
     if for_retreat and (rescue.get('cards_checked', 0) >= 3
             or rescue.get('cards_exhausted')
             or (rescue.get('exhausted') and rescue.get('critical_menu_recheck'))):
-        return False  # stale inventory must not suppress retreat indefinitely
+        return False
     names = rescue.get('listed_cards') or []
     for card in names:
         if (card not in SURVIVAL_CARDS or card in rescue.get('cards_attempted', [])
                 or card in cur.get('cards_selected', [])):
             continue
         gate = _card_damage_gate(mem, cur, card, listed_cards=names)
-        if gate['allowed'] and (gate['role'] == 'single_card_lethal'
+        if not gate['allowed']:
+            continue
+        # A proven finisher (or a needed heal) defers retreat at any HP:
+        # the observed kill lands on this turn, before the enemy's next
+        # hit (test_hanjuku_finish_before_retreat). The immediate-loss
+        # floor below only cuts off the speculative spend-before-retreat
+        # detour (#4999), never a confirmed kill.
+        if (gate['role'] == 'single_card_lethal'
                 or (gate['role'] == 'healing_not_a_kill' and _card_healing_needed(cur))):
             return True
+        if for_retreat:
+            # docich#4999: before the retreat row, spend any unattempted
+            # card the gate permits (lethal, damage, control, drop, heal) —
+            # not only a proven finisher. A heal still needs a wound.
+            # Below the immediate-loss floor the gamble stops and the
+            # retreat proceeds (g460: the general died 24 -> 12 -> 0 while
+            # waiting in card menus).
+            if _retreat_immediate_loss(cur):
+                continue
+            if gate['role'] != 'healing_not_a_kill' or _card_healing_needed(cur):
+                return True
     return False
 
 

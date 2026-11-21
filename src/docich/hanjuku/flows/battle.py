@@ -22,6 +22,7 @@ from ..decision_log import _record, _tally
 from ..judgment.battle import (EGG_WALL_DAMAGE, DEFENDER_SUMMON_OPEN_LIMIT, CARD_MENU_OPEN_RETRIES, CARD_LIST_OPEN_WAITS, DEFENDER_EGG_OPEN_LIMIT, DUEL_EVENT_TOKENS,
                                _conserved_army_recheck,
                                ENTRY_RETURN_KINDS, GENERAL_CRITICAL_RETREAT_HP, HERO_RECALL_MIN_HP,
+                               RETREAT_CARD_GRACE_LIMIT, _retreat_cards_to_spend, _retreat_immediate_loss,
                                HERO_RECALL_RATIO_TENTHS, MELEE_HOLD_LIMIT, MELEE_HP_HOLD_DIVISOR,
                                MELEE_HP_HOLD_FLOOR, _battle_context, _battle_labels, _bind_battle_strategy,
                                _bind_event_duel, _bind_substitute_defender, _boss_tactics_allowed,
@@ -1346,12 +1347,28 @@ def _hero_retreat_open(mem, cur):
     card_flow = cur.get('card_flow') or {}
     if card_flow.get('stage') == 'announce':
         # Preserve a selected card's receipt while HP is above the critical
-        # threshold. At critical HP, waiting for an uncalibrated receipt can
-        # cost the general before the retreat menu opens (g460: ココット
-        # 24 -> 12 -> 0 while stuck in card menus). Unknown card use stays
-        # unknown; survival takes precedence over continuing that selection.
+        # threshold. Unknown card use stays unknown; survival takes
+        # precedence over continuing that selection.
         hp = cur.get('ally_hp')
         if type(hp) is not int or hp > GENERAL_CRITICAL_RETREAT_HP:
+            return None
+        # docich#4999 (owner 2026-11-22): spend the card before retreating.
+        # A committed selection keeps its bounded announce lifecycle for up
+        # to RETREAT_CARD_GRACE_LIMIT battle observations instead of an
+        # instant preemption. The g460 counterweight stays: below
+        # RETREAT_RESOURCE_FLOOR_HP, or once the grace is spent, the wait is
+        # cut and the retreat preempts (24 -> 12 -> 0 while stuck in card
+        # menus). Unknown card use stays unknown.
+        if (card_flow.get('selection_planned') and not _retreat_immediate_loss(cur)
+                and int(cur.get('retreat_card_grace') or 0) < RETREAT_CARD_GRACE_LIMIT):
+            cur['retreat_card_grace'] = int(cur.get('retreat_card_grace') or 0) + 1
+            if cur['retreat_card_grace'] == 1:
+                _record(mem, 'battle_retreat_card_wait', **_battle_labels(cur),
+                        general=cur.get('ally'), enemy=cur.get('enemy'),
+                        card=card_flow.get('card'),
+                        observed_metric={'ally_hp': hp, 'enemy_hp': cur.get('enemy_hp'),
+                                         'grace_limit': RETREAT_CARD_GRACE_LIMIT},
+                        reason='選択済み切り札の有界な使用確認を待ってから退却する (#4999)')
             return None
         pending_card = card_flow.get('card')
         _card_use_unclassified(mem, cur, '危険HPに達したため未確認の切り札を保留し、退却を優先')
@@ -1361,6 +1378,24 @@ def _hero_retreat_open(mem, cur):
                                  'card_confirmation': 'unclassified'},
                 resulting_event='retreat_preempted_card_use',
                 reason='切り札の使用確認を待つ間に将軍を失わず、主人公の敗北も避けるため退却を優先')
+    elif (not _retreat_immediate_loss(cur) and _retreat_cards_to_spend(cur)):
+        # docich#4999: selected-but-unconfirmed cards get one bounded spend
+        # retry through the survival menu before the retreat menu opens.
+        # The same opens/pending_opens bounds as the egg path apply.
+        rescue = _survival_state(mem, cur)
+        if int(rescue.get('opens') or 0) < 12 and int(rescue.get('pending_opens') or 0) < 3:
+            rescue.update(opens=rescue['opens'] + 1,
+                          pending_opens=rescue.get('pending_opens', 0) + 1,
+                          menu_ticks=0)
+            _record(mem, 'battle_cards_before_retreat', **_battle_labels(cur),
+                    general=cur.get('ally'), enemy=cur.get('enemy'),
+                    observed_metric={'ally_hp': cur.get('ally_hp'),
+                                     'enemy_hp': cur.get('enemy_hp'),
+                                     'cards_selected': cur.get('cards_selected', []),
+                                     'cards_used': cur.get('cards_used', []),
+                                     'cards_unclassified': cur.get('cards_unclassified', [])},
+                    reason='使用未確認の切り札が残るため、退却より先に救済メニューで1回だけ使用を試行 (#4999)')
+            return _human_menu_open(cur, 'survival', mem)
     flow = cur.setdefault('hero_retreat', {})
     flow['opens'] = flow.get('opens', 0) + 1
     cur['card_flow'] = None  # supersede an unselected chart card intention

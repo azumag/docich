@@ -7,6 +7,10 @@ battle_retreat_with_resources は「選択済みだが使用未確定の札」�
 
 このファイルは、その状況で bot がたどる各分岐が現行の設計どおりであることを
 固定する。修正ではない (欠陥ではなく正しい判断、の裏付け)。
+
+docich#4999 (owner 2026-11-22) で退却前の資源使用ルールが拡張されたため、
+本ファイルの各テストは新しい規則 (for_retreat はゲート許可の全札、
+選択済み告知の有界 grace、残り札の有界な使用試行) を反映済み。
 """
 from pathlib import Path
 import sys
@@ -43,23 +47,32 @@ def test_micmy_gate_against_eggless_anise():
     assert gate['estimate']['lethal'] is False
 
 
-def test_critical_safe_card_defers_retreat_only_for_lethal_or_heal():
+def test_critical_safe_card_defers_retreat_for_any_permitted_card():
     mem = {'chapter': 10, 'tick': 1}
     rescue = {'listed_cards': ['ミックミー'], 'cards_attempted': [], 'cards_checked': 0}
-    # 非致死の残り札は退却を遅らせない (HP6の将軍を救わない札を温存する)。
-    assert rules._critical_safe_card(mem, _cur(3), rescue, for_retreat=True) is False
-    # 一覧に読めた致死札なら退却より先に救済メニューへ送る (g460 の教訓の逆側)。
+    # docich#4999: ゲートが許可する未選択の一覧札は致死・回復に限らず退却行より先に使う。
+    assert rules._critical_safe_card(mem, _cur(3), rescue, for_retreat=True) is True
     assert rules._critical_safe_card(mem, _cur(2), rescue, for_retreat=True) is True
     # ただし同名札が attempt/selected 済みなら消費未確定として数えない。
     rescue['cards_attempted'] = ['ミックミー']
     assert rules._critical_safe_card(mem, _cur(2), rescue, for_retreat=True) is False
+    # g460 の線引き: 即死帯 (RETREAT_RESOURCE_FLOOR_HP=4) では非致死札の
+    # 救済探索を打ち切り退却を優先する (兵数 3 のミックミーは非致死)。
+    rescue['cards_attempted'] = []
+    assert rules._critical_safe_card(mem, _cur(3, ally_hp=4), rescue, for_retreat=True) is False
+    # ただし観測済みの致死札は即死帯でも退却を遅らせる (兵数 2 のミックミーは
+    # single_card_lethal)。確定した一撃はこの手番で決まるため、待機による
+    # g460 型の死亡とは別物 (test_hanjuku_finish_before_retreat)。
+    assert rules._critical_safe_card(mem, _cur(2, ally_hp=4), rescue, for_retreat=True) is True
 
 
-def test_pending_second_copy_is_preempted_at_critical_hp():
+def test_pending_second_copy_keeps_bounded_window_then_spends():
     """2枚目の選択Aを送った直後にHPが危険域へ下がった incident の主経路。
 
-    使用告知は未校正のまま待てない (g460: メニュー待ちで将軍が死ぬ) ので、
-    退却を優先して記録する。card は unclassified＝使用実績なしで監査の残り札に載る。
+    docich#4999 (owner 2026-11-22): HP6 は即死帯 (RETREAT_RESOURCE_FLOOR_HP=4)
+    の上にあるため、選択済みの使用告知は有界な grace で完走を待ち、残りの
+    1枚は退却の前に救済メニューで1回だけ使用を試行する。未確認は依然
+    unclassified＝使用実績なしとして監査の残り札に載る。
     """
     mem = panel_memory(6, 37)
     mem['battle'].update(ally='シャルドネ', enemy='アニス', start_ally_hp=56,
@@ -69,16 +82,20 @@ def test_pending_second_copy_is_preempted_at_critical_hp():
                          card_flow={'stage': 'announce', 'card': 'ミックミー',
                                     'selection_planned': True,
                                     'enemy_hp_at_open': 37})
-    assert p.battle_step(battle_screen(mem), mem) == [p.pad('b')]
+    # grace 内では退却メニューを開かず、選択済み告知のライフサイクルを待つ。
+    assert p.battle_step(battle_screen(mem), mem) == []
     cur = mem['battle']
+    assert cur['retreat_card_grace'] == 1
+    assert not cur.get('cards_unclassified')
+    assert any(r['decision'] == 'battle_retreat_card_wait' for r in mem['_records'])
+    # 告知フロー自身の2観測 bound が使用未確認を正直に確定する。
+    assert p.battle_step(battle_screen(mem), mem) == []
     assert cur['cards_used'] == ['ミックミー']
     assert cur['cards_unclassified'] == ['ミックミー']
-    preempted = next(r for r in mem['_records']
-                     if r['decision'] == 'battle_retreat_preempted_card')
-    assert preempted['card'] == 'ミックミー'
-    event = audit._battle_resource_event(preempted)
-    assert event['kind'] == 'battle_retreat_with_resources'
-    assert event['resources'] == ['card'] and event['cards_remaining'] == ['ミックミー']
+    # 残り1枚は退却メニュー開放の前に救済メニューの使用試行へ回る。
+    assert p.battle_step(battle_screen(mem), mem) == [p.pad('b')]
+    assert cur['command_open_pending']['owner'] == 'survival'
+    assert any(r['decision'] == 'battle_cards_before_retreat' for r in mem['_records'])
 
 
 def test_critical_retreat_select_reports_the_unconfirmed_copy():
@@ -87,7 +104,9 @@ def test_critical_retreat_select_reports_the_unconfirmed_copy():
     cur = mem['battle']
     cur.update(ally='シャルドネ', enemy='アニス', start_ally_hp=56, side='attack',
                cards_selected=['ミックミー', 'ミックミー'],
-               cards_used=['ミックミー'], hero_retreat={'opens': 1})
+               cards_used=['ミックミー'],
+               # docich#4999: 残り札の有界な使用試行は消化済み → 退却行へ進む。
+               cards_spend_retry=['ミックミー'], hero_retreat={'opens': 1})
     assert p.battle_menu_step(menu(selected=2), mem) == [p.pad('a')]
     record = next(r for r in mem['_records'] if r['decision'] == 'battle_hero_retreat_select')
     event = audit._battle_resource_event(record)
