@@ -118,3 +118,60 @@ def test_an_unmeasured_unit_keeps_the_lead(monkeypatch):
     _dest_step(mem, monkeypatch)
     assert 'pursuit_aim' not in mem
     assert mem['pursuit_lead'] == [150, -90]
+
+
+def test_dest_phase_falls_back_to_remembered_entry_unit_world(monkeypatch):
+    probe = _probe()
+    mem = memory(boss_pursuit=probe, boss_cell_track=_orbit_track())
+    mem[bp.LIST_KEY][probe['general']]['unit_world'] = list(CORRIDOR)
+    _dest_step(mem, monkeypatch)
+    assert mem['pursuit_aim'] == list(MOUTH)
+    assert 'pursuit_lead' not in mem
+
+
+def test_y_view_opening_cursor_applies_cliff_detour_when_unit_world_was_unmeasured(monkeypatch):
+    """#4871: SELECT pops mem['cursor'], leaving unit_world None until Y opens."""
+    from docich.hanjuku.os_layer import readers, world
+    ox, oy = nav.Y_JUMP_OFFSET[9]
+    corridor_cursor = (564 / 8 + ox, 216 / 8 + oy)
+    mem = memory(
+        boss_pursuit=_probe(),
+        pursuit_aim=[906, 629],
+        y_jump={'goal': 'ボス', 'mode': 'target', 'step': bp.PURSUIT_STEP, 'moves': 0, 'wait': 0},
+    )
+    monkeypatch.setattr(world, '_apply_skull_boss', lambda m, f: None)
+    monkeypatch.setattr(readers, 'world_cursor', lambda f, ch=None: corridor_cursor)
+    monkeypatch.setattr(nav, '_y_jump_step', lambda m, f: ['y_step'])
+    screen = SimpleNamespace(kind='world_map', marker=None, cursor=None,
+                             text='', hand=None, selected=None)
+    frame = SimpleNamespace(pixel=lambda x, y: (0, 0, 0))
+    assert bp.step(screen, mem, frame) == ['y_step']
+    assert mem['boss_pursuit']['unit_world'] == [564, 216]
+    assert mem['pursuit_aim'] == list(MOUTH)
+    assert mem['y_jump']['goal_cell'] == list(MOUTH)
+
+
+def test_y_view_opening_cursor_clears_stale_cached_detour_when_unit_is_east(monkeypatch):
+    """Cached unit_world west of cliff is overridden when live Y cursor is already east."""
+    from docich.hanjuku.os_layer import readers, world
+    ox, oy = nav.Y_JUMP_OFFSET[9]
+    east_world = [850, 500]
+    east_cursor = (east_world[0] / 8 + ox, east_world[1] / 8 + oy)
+    probe = _probe(pre_detour_aim=[906, 629], unit_world_from_cache=True)
+    mem = memory(
+        boss_pursuit=probe,
+        pursuit_aim=list(MOUTH),
+        y_jump={'goal': 'ボス', 'mode': 'target', 'step': bp.PURSUIT_STEP,
+                'goal_cell': list(MOUTH), 'moves': 0, 'wait': 0},
+    )
+    monkeypatch.setattr(world, '_apply_skull_boss', lambda m, f: None)
+    monkeypatch.setattr(readers, 'world_cursor', lambda f, ch=None: east_cursor)
+    monkeypatch.setattr(nav, '_y_jump_step', lambda m, f: ['y_step'])
+    screen = SimpleNamespace(kind='world_map', marker=None, cursor=None,
+                             text='', hand=None, selected=None)
+    frame = SimpleNamespace(pixel=lambda x, y: (0, 0, 0))
+    assert bp.step(screen, mem, frame) == ['y_step']
+    assert mem['boss_pursuit']['unit_world'] == east_world
+    assert not mem['boss_pursuit'].get('unit_world_from_cache')
+    assert mem['pursuit_aim'] == [906, 629]
+    assert mem['y_jump']['goal_cell'] == [906, 629]
