@@ -530,5 +530,130 @@ class TestOrphanSweepOnSessionTeardown(unittest.TestCase):
         )
 
 
+class TestOwnedProcessesAlive(unittest.TestCase):
+    """docich#4693 death proof: live PIDs the runtime still provably owns.
+
+    ``None`` is the fail-closed verdict: every enumeration or revalidation
+    failure must refuse the proof, never fabricate a corpse.
+    """
+
+    def setUp(self):
+        self.tmux = tmux_mod.Tmux("docich-game-g1")
+        self.ownership = tmux_mod.TmuxOwnership("g1-abcdef", 1, "adapter")
+        self.tags = {
+            "DOCICH_TMUX_RUNTIME_ID": "g1-abcdef",
+            "DOCICH_TMUX_GENERATION": "1",
+        }
+
+    def _probe(self, *, windows, panes, env_hits, verdicts, protected=frozenset()):
+        state = {"panes": panes, "verdicts": verdicts}
+        with (
+            mock.patch.object(self.tmux, "list_windows", return_value=windows),
+            mock.patch.object(
+                self.tmux,
+                "pane_states_checked",
+                side_effect=lambda target: state["panes"][target],
+            ),
+            mock.patch.object(
+                self.tmux,
+                "_protected_teardown_pids",
+                return_value=tmux_mod.ProtectedTeardownPids(protected),
+            ),
+            mock.patch("docich.tmux.process_ids", return_value=[100, 200, 300]),
+            mock.patch("docich.tmux.process_table", return_value={100: None, 200: None}),
+            mock.patch("docich.tmux.descendant_pids", return_value=[]),
+            mock.patch("docich.tmux.processes_with_env", return_value=env_hits),
+            mock.patch(
+                "docich.tmux.pidfd_process_running",
+                side_effect=lambda pid: state["verdicts"][pid],
+            ) as tree_mock,
+            mock.patch(
+                "docich.tmux.pidfd_tagged_process_running",
+                side_effect=lambda pid, tags: state["verdicts"][pid],
+            ) as tagged_mock,
+        ):
+            result = self.tmux.owned_processes_alive(self.ownership)
+        return result, (tree_mock, tagged_mock)
+
+    def test_every_candidate_dead_proves_the_runtime_gone(self):
+        panes = {
+            "docich-game-g1:w1": [tmux_mod.PaneState(dead=True, pid=100)],
+            "docich-game-g1:w2": [tmux_mod.PaneState(dead=True, pid=200)],
+        }
+        result, _mock = self._probe(
+            windows=["w1", "w2"], panes=panes, env_hits=[], verdicts={100: False, 200: False}
+        )
+        self.assertEqual(result, ())
+
+    def test_a_live_tagged_orphan_blocks_the_proof(self):
+        panes = {"docich-game-g1:w1": [tmux_mod.PaneState(dead=True, pid=100)]}
+        result, _mock = self._probe(
+            windows=["w1"], panes=panes, env_hits=[300],
+            verdicts={100: False, 300: True},
+        )
+        self.assertEqual(result, (300,))
+
+    def test_a_protected_pid_is_never_a_survivor(self):
+        panes = {"docich-game-g1:w1": [tmux_mod.PaneState(dead=True, pid=100)]}
+        result, (tree_mock, tagged_mock) = self._probe(
+            windows=["w1"], panes=panes, env_hits=[300],
+            verdicts={100: False}, protected=frozenset({300}),
+        )
+        self.assertEqual(result, ())
+        for call in tagged_mock.call_args_list:
+            self.assertNotEqual(call.args[0], 300)
+
+    def test_a_live_untagged_descendant_still_blocks_the_proof(self):
+        # A tree member is owned by position, not by tags: an alive
+        # descendant whose env was scrubbed must not read as "dead".
+        panes = {"docich-game-g1:w1": [tmux_mod.PaneState(dead=True, pid=100)]}
+        with (
+            mock.patch.object(self.tmux, "list_windows", return_value=["w1"]),
+            mock.patch.object(
+                self.tmux, "pane_states_checked", return_value=panes["docich-game-g1:w1"]
+            ),
+            mock.patch.object(
+                self.tmux,
+                "_protected_teardown_pids",
+                return_value=tmux_mod.ProtectedTeardownPids(frozenset()),
+            ),
+            mock.patch("docich.tmux.process_ids", return_value=[100, 200]),
+            mock.patch("docich.tmux.process_table", return_value={100: None}),
+            mock.patch("docich.tmux.descendant_pids", return_value=[200]),
+            mock.patch("docich.tmux.processes_with_env", return_value=[]),
+            mock.patch(
+                "docich.tmux.pidfd_process_running",
+                side_effect=lambda pid: {100: False, 200: True}[pid],
+            ),
+            mock.patch("docich.tmux.pidfd_tagged_process_running") as tagged_mock,
+        ):
+            self.assertEqual(
+                self.tmux.owned_processes_alive(self.ownership), (200,)
+            )
+            tagged_mock.assert_not_called()
+
+    def test_a_missing_window_list_is_unprovable(self):
+        result, _mock = self._probe(
+            windows=[], panes={}, env_hits=[], verdicts={}
+        )
+        self.assertIsNone(result)
+
+    def test_a_failed_pane_probe_is_unprovable(self):
+        with (
+            mock.patch.object(self.tmux, "list_windows", return_value=["w1"]),
+            mock.patch.object(
+                self.tmux, "pane_states_checked", side_effect=tmux_mod.TmuxError("gone")
+            ),
+        ):
+            self.assertIsNone(self.tmux.owned_processes_alive(self.ownership))
+
+    def test_an_unverifiable_candidate_is_unprovable(self):
+        panes = {"docich-game-g1:w1": [tmux_mod.PaneState(dead=True, pid=100)]}
+        result, _mock = self._probe(
+            windows=["w1"], panes=panes, env_hits=[], verdicts={100: None}
+        )
+        self.assertIsNone(result)
+
+
 if __name__ == "__main__":
     unittest.main()

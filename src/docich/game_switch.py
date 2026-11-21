@@ -2511,7 +2511,10 @@ class GameSwitchCoordinator:
                     )
                     recovered = self._recover_draining_locked(tx, state, deadline)
                     current, _migrated = self.store.canonical.load()
-                    if current.get("phase") != "ready":
+                    # A released drain must keep the FIFO moving from either
+                    # landing state: ``ready`` when the old runtime was
+                    # retained, ``idle`` when the death proof retired it.
+                    if current.get("phase") not in {"ready", "idle"}:
                         return recovered
                 elif phase in {"idle", "ready"}:
                     pass
@@ -3733,6 +3736,37 @@ class GameSwitchCoordinator:
             return None
         return bool(result)
 
+    def _probe_processes_gone(
+        self, adapter: CoordinatorAdapter, deadline: float
+    ) -> bool | None:
+        """Adapter death proof; only a conclusive True retires the runtime.
+
+        Adapters may expose ``runtime_processes_gone`` (docich#4693): a
+        fail-closed check that zero runtime-owned processes -- pane leaders,
+        their descendants and env-tagged orphans -- are still alive.  ``None``
+        covers a missing capability, a probe error and an inconclusive adapter
+        answer; all of them must keep the conservative retained-active path
+        because a stalled-but-live runtime is never a corpse.
+        """
+
+        method = getattr(adapter, "runtime_processes_gone", None)
+        if not callable(method):
+            return None
+        try:
+            result = self._call_adapter(
+                lambda cancel: method(deadline, cancel),
+                deadline,
+                self.step_timeouts.probe_s,
+                "runtime_processes_gone",
+            )
+        except Exception:
+            return None
+        if result is True:
+            return True
+        if result is False:
+            return False
+        return None
+
     def _make_adapter(self, spec: RuntimeSpec, deadline: float) -> CoordinatorAdapter:
         adapter = self._call_adapter(
             lambda cancel: self.adapter_factory(spec), deadline, self.step_timeouts.start_s, "factory"
@@ -4191,7 +4225,9 @@ class GameSwitchCoordinator:
         ) is False:
             return self._retire_dead_active_locked(
                 tx,
-                acceptance,
+                acceptance.request_id,
+                str(acceptance.receipt["operation"]),
+                acceptance.generation,
                 target,
                 old_active,
                 old_adapter,
@@ -4241,7 +4277,9 @@ class GameSwitchCoordinator:
     def _retire_dead_active_locked(
         self,
         tx: GameSwitchTransaction,
-        acceptance: RequestAcceptance,
+        request_id: str,
+        operation: str,
+        generation: int | None,
         target: str | None,
         old_active: Mapping[str, object],
         old_adapter: CoordinatorAdapter,
@@ -4289,12 +4327,12 @@ class GameSwitchCoordinator:
         if not torn_down:
             warnings.append("停止確認済みruntimeの回収を確認できませんでした")
         last_result = {
-            "request_id": acceptance.request_id,
-            "operation": str(acceptance.receipt["operation"]),
+            "request_id": request_id,
+            "operation": operation,
             "status": "failed",
             "from_game": old_active["game"],
             "to_game": target,
-            "generation": acceptance.generation,
+            "generation": generation,
             "error_code": error_code,
             "detail": detail,
             "failure_phase": "round_boundary",
@@ -4318,7 +4356,7 @@ class GameSwitchCoordinator:
             },
             crash_hook=self.crash_hook,
         )
-        receipt = tx.finish_request(acceptance.request_id, "failed", last_result)
+        receipt = tx.finish_request(request_id, "failed", last_result)
         if torn_down:
             self._write_retire_marker(retiring_entry, warnings, "idle")
         try:
@@ -5742,6 +5780,33 @@ class GameSwitchCoordinator:
                 receipt=copy.deepcopy(dict(receipt)),
             )
 
+        # The cancel was acknowledged.  When the adapter can additionally
+        # prove that no runtime-owned process survives anywhere (docich#4693),
+        # re-publishing that corpse as ``active`` would leave a dead game
+        # tracked as live forever -- nothing re-queues the drain and rotation
+        # never resumes.  Route the acknowledged drain through the same
+        # retire path a boundary failure uses for a dead runtime: a probe
+        # that is missing, inconclusive or sees a survivor keeps the
+        # conservative retained-active path below.
+        current_state, _migrated = self.store.canonical.load()
+        if (
+            self._probe_processes_gone(adapter, deadline) is True
+            and current_state.get("phase") == "draining"
+        ):
+            return self._retire_dead_active_locked(
+                tx,
+                request_id,
+                str(receipt.get("operation") or state.get("operation") or "switch"),
+                receipt.get("generation"),
+                receipt.get("target"),
+                active,
+                adapter,
+                current_state,
+                error_code=ERROR_TIMEOUT,
+                detail="試合終了境界のdeadlineが経過し、runtimeの全process消滅を確認したため回収しました",
+                boundary_cancelled=True,
+            )
+
         last_result = {
             "request_id": request_id,
             "operation": str(receipt.get("operation") or state.get("operation") or "switch"),
@@ -5761,7 +5826,6 @@ class GameSwitchCoordinator:
         # adapter cancel above.  In that case the transition is already done;
         # do not raise ``InvalidTransitionError`` (ready -> ready).  Finish
         # the receipt idempotently and report the same timeout result.
-        current_state, _migrated = self.store.canonical.load()
         if current_state.get("phase") == "draining":
             tx.transition(
                 {"draining"},

@@ -47,6 +47,12 @@ class _FakeTmux:
         self.session = session
         self.capture_raises = capture_raises
         self.calls: list[tuple[list[str], bool]] = []
+        # Preset answer for the docich#4693 death proof; ``None`` means the
+        # proof could not be completed (the fail-closed default).
+        self.survivors = None
+
+    def owned_processes_alive(self, _ownership):
+        return self.survivors
 
     def session_target_exists(self, _target):
         return self.session
@@ -69,7 +75,7 @@ def _adapter(runtime_dir: Path, tmux: _FakeTmux, *, generation: int = 301):
         adapter_session="adapter",
         runtime_dir=runtime_dir,
         generation=generation,
-        runtime_id=f"g{generation}-test",
+        runtime_id=f"g{generation}-abcdef",
         game="nethack",
     )
     adapter.tmux = tmux
@@ -192,6 +198,7 @@ class RefusedCancelIsObservedTests(unittest.TestCase):
                     "prompt_class",
                     "save_signature_changed",
                     "boundary_outcome",
+                    "orphan_processes_present",
                     "generation",
                     "runtime_id",
                     "recorded_at",
@@ -226,6 +233,124 @@ class RefusedCancelIsObservedTests(unittest.TestCase):
                 save_signature_changed=False,
             )
             self.assertFalse((runtime_dir / BOUNDARY_DIAG_FILENAME).exists())
+
+
+class DeadRuntimeCancelTests(unittest.TestCase):
+    """docich#4693: an abandoned drain over a dead runtime may be released.
+
+    The proof is fail closed: only a verified ``()`` survivor list -- every
+    pane leader, descendant and env-tagged orphan revalidated dead under a
+    pidfd -- may acknowledge.  A live runtime-owned process keeps the
+    refusal and reports the count; an unprovable check refuses uncounted.
+    """
+
+    def test_live_orphans_keep_the_cancel_refused_with_their_count(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            runtime_dir = Path(tmp)
+            tmux = _FakeTmux(PANE_WITHOUT_PROMPT)
+            tmux.survivors = (4242, 4343)
+            adapter = _adapter(runtime_dir, tmux)
+            refused = adapter.cancel_round_boundary(
+                "req", time.monotonic() + 5.0, None
+            )
+            self.assertFalse(refused)
+            self.assertEqual(tmux.calls, [])  # still no key on refusal
+            diag = _read_diag(runtime_dir)
+            self.assertEqual(diag["reason"], "prompt_not_pending")
+            self.assertEqual(diag["orphan_processes_present"], 2)
+
+    def test_an_unprovable_process_check_refuses_without_a_count(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            runtime_dir = Path(tmp)
+            tmux = _FakeTmux(PANE_WITHOUT_PROMPT)
+            adapter = _adapter(runtime_dir, tmux)  # survivors stays None
+            self.assertFalse(
+                adapter.cancel_round_boundary("req", time.monotonic() + 5.0, None)
+            )
+            diag = _read_diag(runtime_dir)
+            self.assertEqual(diag["reason"], "prompt_not_pending")
+            self.assertIsNone(diag["orphan_processes_present"])
+
+    def test_a_proven_dead_runtime_is_acknowledged_without_a_key(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            runtime_dir = Path(tmp) / "runtime"
+            runtime_dir.mkdir()
+            save_dir = Path(tmp) / "save"
+            save_dir.mkdir()
+            tmux = _FakeTmux(PANE_WITHOUT_PROMPT)
+            tmux.survivors = ()
+            adapter = _adapter(runtime_dir, tmux)
+            adapter.save_dir = save_dir
+            acknowledged = adapter.cancel_round_boundary(
+                "req-dead", time.monotonic() + 5.0, None
+            )
+            self.assertTrue(acknowledged)
+            self.assertEqual(tmux.calls, [])
+            diag = _read_diag(runtime_dir)
+            self.assertEqual(diag["reason"], "runtime_processes_gone")
+            self.assertEqual(diag["orphan_processes_present"], 0)
+            self.assertEqual(diag["boundary_outcome"], "ended")
+            # The terminal boundary is recorded before the ack, so the
+            # recovery path releases the drain with evidence, not hope.
+            result = json.loads(
+                (runtime_dir / "nethack_boundary.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(result["request_id"], "req-dead")
+            self.assertEqual(result["outcome"], "ended")
+
+    def test_a_dead_runtime_with_a_save_acknowledges_as_suspended(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            runtime_dir = Path(tmp) / "runtime"
+            runtime_dir.mkdir()
+            save_dir = Path(tmp) / "save"
+            save_dir.mkdir()
+            (save_dir / "1000docich").write_bytes(b"save")
+            tmux = _FakeTmux(PANE_WITHOUT_PROMPT)
+            tmux.survivors = ()
+            adapter = _adapter(runtime_dir, tmux)
+            adapter.save_dir = save_dir
+            self.assertTrue(
+                adapter.cancel_round_boundary("req", time.monotonic() + 5.0, None)
+            )
+            diag = _read_diag(runtime_dir)
+            self.assertEqual(diag["reason"], "runtime_processes_gone")
+            self.assertEqual(diag["boundary_outcome"], "suspended")
+
+    def test_a_dead_runtime_whose_evidence_cannot_be_recorded_still_refuses(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            runtime_dir = Path(tmp) / "runtime"
+            runtime_dir.mkdir()
+            tmux = _FakeTmux(PANE_WITHOUT_PROMPT)
+            tmux.survivors = ()
+            adapter = _adapter(runtime_dir, tmux)
+            adapter.save_dir = Path(tmp) / "missing" / "save"
+            self.assertFalse(
+                adapter.cancel_round_boundary("req", time.monotonic() + 5.0, None)
+            )
+            diag = _read_diag(runtime_dir)
+            self.assertEqual(diag["reason"], "prompt_not_pending")
+
+    def test_a_gone_process_after_the_key_can_still_acknowledge_death(self) -> None:
+        """Post-key ``process_gone`` gets the same death-proof escape."""
+        with tempfile.TemporaryDirectory() as tmp:
+            runtime_dir = Path(tmp) / "runtime"
+            runtime_dir.mkdir()
+            save_dir = Path(tmp) / "save"
+            save_dir.mkdir()
+            tmux = _FakeTmux(SAVE_PROMPT_PANE)
+            tmux.survivors = ()
+            adapter = _adapter(runtime_dir, tmux)
+            adapter.save_dir = save_dir
+            probes = iter([True, False])
+            tmux.window_target_exists = lambda _t, strict=False: next(probes)
+            acknowledged = adapter.cancel_round_boundary(
+                "req", time.monotonic() + 5.0, None
+            )
+            self.assertTrue(acknowledged)
+            diag = _read_diag(runtime_dir)
+            self.assertEqual(diag["reason"], "runtime_processes_gone")
 
 
 class SaveTimeoutObservationTests(unittest.TestCase):

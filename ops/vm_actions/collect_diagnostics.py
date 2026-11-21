@@ -7978,6 +7978,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v1301-gjump-pursuit-isolation",
             "hanjuku-chart-v1303-pursuit-cliff-detour",
             "hanjuku-chart-v1304-recall-picker-yroute",
+            "hanjuku-chart-v1305-recovery-dead-proof",
             "hanjuku-chart-v1158-progress-regress",
             "hanjuku-chart-v1161-refill-collapse",
             "hanjuku-chart-v1160-chapter-probe-field",
@@ -12520,6 +12521,7 @@ _BOUNDARY_DIAG_REASONS = frozenset(
         "post_key_probe_failed",
         "post_key_capture_failed",
         "wait_timeout",
+        "runtime_processes_gone",
     }
 )
 _BOUNDARY_DIAG_PROMPT_CLASSES = frozenset(
@@ -14922,6 +14924,7 @@ def _collect_nethack_boundary(state_dir, now):
         "process_alive": None,
         "save_signature_changed": None,
         "boundary_outcome": None,
+        "orphan_processes_present": None,
         "generation": None,
         "age_sec": None,
     }
@@ -14964,6 +14967,9 @@ def _collect_nethack_boundary(state_dir, now):
         value = diag.get(key)
         if isinstance(value, bool):
             result[key] = value
+    orphan_count = diag.get("orphan_processes_present")
+    if type(orphan_count) is int and orphan_count >= 0:
+        result["orphan_processes_present"] = orphan_count
     recorded = diag.get("recorded_at")
     if isinstance(recorded, str):
         try:
