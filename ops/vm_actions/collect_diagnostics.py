@@ -7981,6 +7981,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v1305-recovery-dead-proof",
             "hanjuku-chart-v1306-world-cursor-blue-g-priority",
             "hanjuku-chart-v1307-event-duel-no-menu",
+            "hanjuku-chart-v1308-boss-wave-arrival-probe",
             "hanjuku-chart-v1158-progress-regress",
             "hanjuku-chart-v1161-refill-collapse",
             "hanjuku-chart-v1160-chapter-probe-field",

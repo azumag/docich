@@ -1188,6 +1188,21 @@ def interim_candidates(mem, allow_sole=False) -> dict:
             choices.sort()
             _, _, _, _, _, _, source, general = choices[0]
             return source, general
+        # #4869: when transfers have reached a front castle whose recorded
+        # garrison is still stale (e.g., 1 known defender at イデ！ while a
+        # whole wave arrived from イソ), choices stays empty (need=2) and the
+        # unread-only probe below is skipped because garrison[c] is non-empty.
+        # Probe any eligible owned castle with arrival_probe_due like
+        # _interim_source does, so the arrived generals become visible and launch.
+        if allow_probe:
+            boss = chart.boss_castle(chapter)
+            arrivals = sorted(
+                (c for c in owned if c not in prefer_not
+                 and routes.arrival_probe_due(mem, c, cooldown=True)),
+                key=lambda c: (c == home, _distance(chapter, c, boss), c),
+            )
+            if arrivals:
+                return arrivals[0], MOVE_ANY_GENERAL
         # Owner 2026-11-05 (差分管理): when no castle knows a spare, read one
         # castle's list instead of idling. The sortie menu opens the roster
         # (general_list_scanned) and the deploy step then picks a measured
