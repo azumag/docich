@@ -436,6 +436,68 @@ MERIKEN_BUSINESS_SPEC = CornerRuntimeSpec(
     labels=("fact", "analysis", "forecast"),
 )
 
+MEGA_INFRASTRUCTURE_SPEC = CornerRuntimeSpec(
+    corner_id="mega-infrastructure",
+    fixture_parts=(
+        "tests",
+        "fixtures",
+        "mega_infrastructure_corner",
+        "fixed_mega_infrastructure_example.json",
+    ),
+    container="topic",
+    title_key="title",
+    question_key="infrastructureTheme",
+    summary_key="thirtySecondSummary",
+    sections=(
+        Section("infrastructureTheme", "fact", "今日のインフラ"),
+        Section("whatItSupports", "fact", "何を支えるインフラか"),
+        Section("demand", "fact", "需要と必要能力"),
+        Section("geographyAndSite", "fact", "地理・立地条件"),
+        Section("scaleAndCapacity", "fact", "規模と能力"),
+        Section("structureAndMethod", "analysis", "構造と工法"),
+        Section("operation", "analysis", "運用"),
+        Section("bottleneck", "analysis", "ボトルネック"),
+        Section("redundancy", "analysis", "冗長性"),
+        Section("failureAndDisaster", "analysis", "故障・災害時の挙動"),
+        Section("maintenanceAndRenewal", "analysis", "保守・更新"),
+        Section("socialEconomicImpact", "analysis", "社会・経済への影響"),
+    ),
+    required_fields=(
+        "title",
+        "topicId",
+        "infrastructureTheme",
+        "whatItSupports",
+        "demand",
+        "geographyAndSite",
+        "scaleAndCapacity",
+        "structureAndMethod",
+        "operation",
+        "bottleneck",
+        "redundancy",
+        "failureAndDisaster",
+        "maintenanceAndRenewal",
+        "socialEconomicImpact",
+        "thirtySecondSummary",
+        "oneLineSummary",
+        "requirementsAndConstraints",
+        "mapAndDiagramHandling",
+        "labelsPolicy",
+        "segmentLabels",
+        "limitations",
+        "uncertainty",
+        "figureOrDiagram",
+        "youtubeIndependentDraft",
+        "primarySources",
+        "sourcePriority",
+        "citationKeepUrl",
+        "materialContract",
+        "sourceAccessNote",
+        "url",
+    ),
+    caveat_keys=("limitations", "uncertainty"),
+    labels=("fact", "analysis", "forecast"),
+)
+
 
 INTERNATIONAL_POLITICS_SPEC = CornerRuntimeSpec(
     corner_id="international-politics",
@@ -503,6 +565,7 @@ CORNER_SPECS = {
     MERIKEN_ECONOMICS_SPEC.corner_id: MERIKEN_ECONOMICS_SPEC,
     MERIKEN_BUSINESS_SPEC.corner_id: MERIKEN_BUSINESS_SPEC,
     INTERNATIONAL_POLITICS_SPEC.corner_id: INTERNATIONAL_POLITICS_SPEC,
+    MEGA_INFRASTRUCTURE_SPEC.corner_id: MEGA_INFRASTRUCTURE_SPEC,
 }
 
 
