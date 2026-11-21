@@ -1994,7 +1994,16 @@ def _recall_dispatch_step(screen, mem, state):
     if state.get('input_sent') and screen.kind == 'map':
         state['picker_closed'] = True
     if state.get('picker_closed') or state['steps'] >= 6:
-        status = 'arrival_unconfirmed' if state.get('input_sent') else 'dispatch_unconfirmed'
+        # picker_closed means the destination picker already dropped back to
+        # the field map — the game accepted the dispatch and the general is
+        # walking home in game time, which this bounded wait cannot verify.
+        # That is a dispatch, not an unconfirmed recall: arrival is confirmed
+        # later through recall_verification -> camp_recheck's roster re-read
+        # (docich#4978).
+        if state.get('picker_closed'):
+            status = 'dispatched'
+        else:
+            status = 'arrival_unconfirmed' if state.get('input_sent') else 'dispatch_unconfirmed'
         interrupted = _flow(mem).pop('recall_interrupted', None) is not None
         goal = state.get('goal')
         if not interrupted and status == 'dispatch_unconfirmed' and isinstance(goal, str):
@@ -2013,23 +2022,33 @@ def _recall_dispatch_step(screen, mem, state):
         _arm_recall_skip(mem, state,
                          BOSS_RETRY_TICKS if state.get('boss')
                          else FORT_RETRY_TICKS if (state.get('fort') or interrupted) else None)
-        mem['uncertain'] = True
-        _record(mem, 'camp_recall_unconfirmed', chart_step=None, observed_metric={'castle': state.get('goal'),
-                'input_sent': bool(state.get('input_sent')), 'picker_closed': bool(state.get('picker_closed')),
-                'interrupted': interrupted,
-                'general': state.get('general') if state.get('fort') else None}, resulting_event=status,
-                reason='帰還の本人・移動・到着を確認できず未確認として保持し、有限な操作を終了')
-        if status == 'arrival_unconfirmed' and not state.get('picker_closed'):
+        # Only a send that never left is uncertain enough to drop the map
+        # anchor; a sent or accepted recall keeps the field position (#4978).
+        if status == 'dispatch_unconfirmed':
+            mem['uncertain'] = True
+        if status == 'dispatched':
+            _record(mem, 'camp_recall_dispatched', chart_step=None,
+                    observed_metric={'castle': state.get('goal'),
+                            'input_sent': True, 'picker_closed': True,
+                            'interrupted': interrupted,
+                            'general': state.get('general') if state.get('fort') else None},
+                    resulting_event='dispatched',
+                    reason='ピッカーが閉じてマップへ戻り帰還送信の受理を確認。本人の城内到着は camp_recheck の再読で確認する')
+        else:
+            _record(mem, 'camp_recall_unconfirmed', chart_step=None, observed_metric={'castle': state.get('goal'),
+                    'input_sent': bool(state.get('input_sent')), 'picker_closed': bool(state.get('picker_closed')),
+                    'interrupted': interrupted,
+                    'general': state.get('general') if state.get('fort') else None}, resulting_event=status,
+                    reason='帰還の本人・移動・到着を確認できず未確認として保持し、有限な操作を終了')
+        if status == 'arrival_unconfirmed':
             # The same camp was sent at the same castle month after month
             # (g1190 2026-11-17 21:1x: リーキ -> アルマムーン three times) and the
             # general never moved. Remember the pair so the next attempt picks
             # a different castle instead of repeating a silent failure.
-            # picker_closed means the destination picker already dropped back
-            # to the field map — the game accepted the dispatch and the
-            # general is walking home in game time, which the 6-step window
-            # cannot verify. Counting those as failures poisoned every
-            # (camp, castle) pair until _recall_exhausted abandoned the camp
-            # (docich#4755 follow-up: generals stuck in field camps).
+            # A picker_closed dispatch never reaches this branch: counting
+            # those as failures poisoned every (camp, castle) pair until
+            # _recall_exhausted abandoned the camp (docich#4755 follow-up:
+            # generals stuck in field camps).
             camp = state.get('target')
             goal = state.get('goal')
             if (isinstance(camp, (list, tuple)) and len(camp) == 2

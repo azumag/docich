@@ -89,7 +89,7 @@ def test_actual_recall_picker_keeps_proposal_without_changing_sortie_or_owner():
     assert p.world_map_step(screen, mem, frame) == []
 
 
-def test_actual_sender_receipts_bind_request_then_leave_arrival_unconfirmed(tmp_path):
+def test_actual_sender_receipts_bind_request_then_mark_dispatched(tmp_path):
     module = command_bot(); actions, state = pending(); frame = picker()
     atomic_write_json(tmp_path / 'hanjuku_run.json', {**ID, 'frame_sha256': frame.digest()})
     module.persist(tmp_path, state, state.pop('_records'), {'hanjuku': ID},
@@ -108,8 +108,9 @@ def test_actual_sender_receipts_bind_request_then_leave_arrival_unconfirmed(tmp_
     assert p.camp_recall_step(Screen([], None, '', kind='map'), mem, None) == []
     assert not _flow(mem).get('recall')
     assert _flow(mem)['recall_verification']['input_sent'] and _flow(mem)['recall_verification']['picker_closed']
-    assert _flow(mem)['recall_verification']['status'] == 'arrival_unconfirmed'
-    assert [r['decision'] for r in mem['_records']] == ['camp_recall_input_sent', 'camp_recall_unconfirmed']
+    assert _flow(mem)['recall_verification']['status'] == 'dispatched'
+    assert [r['decision'] for r in mem['_records']] == ['camp_recall_input_sent', 'camp_recall_dispatched']
+    assert not mem.get('uncertain')
 
 
 def test_unread_cursor_snapshot_uses_existing_ring_without_an_unrelated_chart_context(tmp_path):
