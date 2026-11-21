@@ -118,3 +118,38 @@ def test_an_unmeasured_unit_keeps_the_lead(monkeypatch):
     _dest_step(mem, monkeypatch)
     assert 'pursuit_aim' not in mem
     assert mem['pursuit_lead'] == [150, -90]
+
+
+def test_dest_falls_back_to_last_measured_unit_world(monkeypatch):
+    mem = memory(boss_pursuit=_probe(),
+                 boss_cell_track=_orbit_track())
+    mem[bp.LIST_KEY]['ミント']['unit_world'] = list(CORRIDOR)
+    _dest_step(mem, monkeypatch)
+    assert mem['pursuit_aim'] == list(MOUTH)
+
+
+def test_first_y_frame_retargets_before_jump_moves(monkeypatch):
+    from docich.hanjuku.os_layer import readers
+    from docich.hanjuku.os_layer import world as world_layer
+    mem = memory(boss_pursuit=_probe(), boss_cell_track=_orbit_track(),
+                 y_jump={'step': bp.PURSUIT_STEP, 'goal': 'ボス',
+                         'mode': 'target', 'moves': 0})
+    mem['pursuit_aim'] = [810, 645]
+    ox, oy = nav.Y_JUMP_OFFSET[9]
+    monkeypatch.setattr(readers, 'world_cursor',
+                        lambda frame, chapter: (CORRIDOR[0] / 8 + ox,
+                                                CORRIDOR[1] / 8 + oy))
+    monkeypatch.setattr(world_layer, '_apply_skull_boss', lambda *args: None)
+    seen = {}
+
+    def fake_jump(state, frame):
+        seen['goal_cell'] = list(state['y_jump']['goal_cell'])
+        return ['steer']
+
+    monkeypatch.setattr(nav, '_y_jump_step', fake_jump)
+    screen = SimpleNamespace(kind='world_map', marker=None, cursor=None,
+                             text='', hand=None, selected=None)
+    assert bp.step(screen, mem, object()) == ['steer']
+    assert mem['boss_pursuit']['unit_world'] == list(CORRIDOR)
+    assert seen['goal_cell'] == list(MOUTH)
+    assert mem['pursuit_aim'] == list(MOUTH)
