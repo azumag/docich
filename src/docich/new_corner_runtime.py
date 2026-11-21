@@ -715,6 +715,70 @@ GEOGRAPHY_WORLD_SPEC = CornerRuntimeSpec(
 )
 
 
+MATHEMATICS_SPEC = CornerRuntimeSpec(
+    corner_id="math",
+    fixture_parts=(
+        "tests",
+        "fixtures",
+        "math_corner",
+        "fixed_math_example.json",
+    ),
+    container="topic",
+    title_key="title",
+    question_key="todaysQuestion",
+    summary_key="thirtySecondSummary",
+    sections=(
+        Section("todaysQuestion", "fact", "今日の問い"),
+        Section("intuitivePrediction", "fact", "直感の予想"),
+        Section("observedPhenomenon", "fact", "実際に観測される現象"),
+        Section("smallExample", "fact", "小さい例で確かめる"),
+        Section("mathematicalModel", "analysis", "数学的モデル"),
+        Section("generalization", "analysis", "一般化"),
+        Section("realWorldApplication", "analysis", "実世界への応用"),
+        Section("intuitiveSummary", "analysis", "直感的なまとめ"),
+    ),
+    required_fields=(
+        "title",
+        "topicId",
+        "mathField",
+        "mathematicsField",
+        "todaysQuestion",
+        "intuitivePrediction",
+        "observedPhenomenon",
+        "smallExample",
+        "mathematicalPrinciple",
+        "mathematicalModel",
+        "mathematicalLaw",
+        "formulaAndModel",
+        "generalization",
+        "experimentAndTechnologyApplication",
+        "application",
+        "realWorldApplication",
+        "intuitionFailurePoint",
+        "intuitiveSummary",
+        "thirtySecondSummary",
+        "oneLineSummary",
+        "requirementsAndConstraints",
+        "formulaEntries",
+        "figureAndFormulaHandling",
+        "labelsPolicy",
+        "segmentLabels",
+        "limitations",
+        "uncertainty",
+        "figureOrDiagram",
+        "youtubeIndependentDraft",
+        "primarySources",
+        "sourcePriority",
+        "citationKeepUrl",
+        "url",
+        "materialContract",
+        "sourceAccessNote",
+    ),
+    caveat_keys=("limitations", "uncertainty"),
+    labels=("fact", "analysis", "forecast"),
+)
+
+
 CORNER_SPECS = {
     WORLD_HISTORY_SPEC.corner_id: WORLD_HISTORY_SPEC,
     RESEARCH_PAPER_SPEC.corner_id: RESEARCH_PAPER_SPEC,
@@ -729,6 +793,7 @@ CORNER_SPECS = {
     ENGLISH_SPEC.corner_id: ENGLISH_SPEC,
     GEOGRAPHY_WORLD_SPEC.corner_id: GEOGRAPHY_WORLD_SPEC,
     MEGA_INFRASTRUCTURE_SPEC.corner_id: MEGA_INFRASTRUCTURE_SPEC,
+    MATHEMATICS_SPEC.corner_id: MATHEMATICS_SPEC,
 }
 
 
