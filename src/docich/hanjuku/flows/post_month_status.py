@@ -58,6 +58,15 @@ STRAY_MENU_BACKOUTS = 12
 # the scan yields these map observations to the sortie plan; the cap keeps
 # the deferral finite when a picked order can never launch.
 SORTIE_FLOOR_YIELDS = 48
+# docich#5000: yielding is only useful while a launch is actually being
+# attempted. When every source general is camped or lost, the planner has
+# nothing to send, and the scan handed the whole month's map back to an order
+# that could not start: the roster walk never ran, so no recall task was ever
+# queued and the camped general stayed camped (g1288 ch10 93-2 zero_sortie,
+# 93-1..93-4 camp_abandoned 3 months). After this many yields without any
+# sortie attempt, launch probe or deploy hold on the flow, the scan takes the
+# map back so its recall/repair tasks can unblock the source.
+SORTIE_FLOOR_IDLE_YIELDS = 3
 # docich#3659: the #3505 boss-adjacent camp exemption was indefinite, so a
 # general camped on the boss castle could neither be recalled nor re-ordered
 # toward it (no camp->boss route exists). Bound the exemption: after this many
@@ -1539,12 +1548,31 @@ def step(screen, mem, frame):
             if (not (map_flow._month_sorties(mem).get('launches') or 0)
                     and int(state.get('floor_yields') or 0) < SORTIE_FLOOR_YIELDS
                     and _orders.next_order(mem) is not None):
-                state['floor_yields'] = int(state.get('floor_yields') or 0) + 1
-                if state['floor_yields'] == 1:
-                    _log(mem, 'post_month_sortie_floor',
-                         observed_metric={'stage': state['stage'], 'month': mem.get('month')},
-                         reason='当月に成立した出撃がまだ無く開始可能な指示があるため、月次確認を延期してマップを出撃計画へ明け渡す')
-                return None
+                # docich#5000: count only the yields that give the planner a
+                # real attempt. No attempt in flight means the order cannot
+                # start from the current garrison; handing the map back again
+                # cannot fix that, while the roster walk (recall/repair/
+                # recruit tasks) can.
+                in_flight = bool(_flow(mem).get('sortie_attempt')
+                                 or _flow(mem).get('launch_probe')
+                                 or _flow(mem).get('deploy_holds'))
+                idle = 0 if in_flight else int(state.get('floor_idle_yields') or 0)
+                if idle >= SORTIE_FLOOR_IDLE_YIELDS:
+                    if not state.get('floor_idle_logged'):
+                        state['floor_idle_logged'] = True
+                        _log(mem, 'post_month_sortie_floor_reclaimed',
+                             observed_metric={'stage': state['stage'], 'month': mem.get('month'),
+                                              'idle_yields': idle,
+                                              'launches': int(map_flow._month_sorties(mem).get('launches') or 0)},
+                             reason='出撃の試行が無いまま延期だけが続くため、マップを月次確認へ戻して帰還・修理のタスクで出撃元を作る')
+                else:
+                    state['floor_idle_yields'] = idle + 1
+                    state['floor_yields'] = int(state.get('floor_yields') or 0) + 1
+                    if state['floor_yields'] == 1:
+                        _log(mem, 'post_month_sortie_floor',
+                             observed_metric={'stage': state['stage'], 'month': mem.get('month')},
+                             reason='当月に成立した出撃がまだ無く開始可能な指示があるため、月次確認を延期してマップを出撃計画へ明け渡す')
+                    return None
     # The monthly workflow owns this map.  A lost cursor is a temporary
     # navigation interrupt, not a reason to let the sortie planner take over.
     if (screen.kind == 'map' and screen.cursor and not screen.marker
