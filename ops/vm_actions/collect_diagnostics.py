@@ -8020,6 +8020,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v1342-fort-picker-from-menu",
             "hanjuku-chart-v1343-ch10-wh-wall-detour",
             "hanjuku-chart-v1342-onehit-soldiers",
+            "hanjuku-chart-v1344-ch9-recall-cliff-fort",
             "hanjuku-chart-v985-roster-lost",
             "hanjuku-chart-v982-gbox",
             "hanjuku-chart-v984-roster-map-anchor",

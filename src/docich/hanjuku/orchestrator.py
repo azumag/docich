@@ -1865,7 +1865,9 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
     # visible camp when no recall is in flight, and its own gates
     # (``boss_phase``/``camp_stays`` redirect, skip cooldowns, the named
     # recheck queue of #3008) still apply inside.
-    ch9_field_recall = (not recall_dialog and phase != 'concert' and kind == 'map'
+    ch9_field_recall = (not recall_dialog and not _sortie_owns_the_field(mem)
+                        and not mem.get('month_sub')
+                        and phase != 'concert' and kind == 'map'
                         and frame is not None and _chapter9_field_recall(mem))
     # Cancel an outstanding repair before an emergency recall can move its
     # general; the old house route must not resume afterwards.
@@ -1885,14 +1887,18 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
     actions = None
     if isinstance(recall_in_flight, dict):
         stage = recall_in_flight.get('stage')
-        camp_menu = (stage == 'menu' and recall_flow.is_camp_menu(screen))
+        camp_menu = (stage == 'menu'
+                     and (recall_flow.is_camp_menu(screen)
+                          or recall_flow.is_fort_menu(screen)))
+        fort_route = (recall_flow.in_fort_route(recall_in_flight)
+                      and kind in ('text', 'unknown') and phase != 'concert')
         # The menu stage also owns the field frames: when the A on the tent
         # did not open the menu, the recall has to re-centre the tent; the
         # sortie's castle jump otherwise consumed the frame (g1190 77-10
         # 178836 camp_enter -> 178838 castle_jump_confirm).
         field_picker = ((stage in ('to_camp', 'dest', 'menu')
                          and kind in ('map', 'map_target') and phase != 'concert'))
-        if camp_menu or field_picker:
+        if camp_menu or fort_route or field_picker:
             actions = recall_flow.camp_recall_step(screen, mem, frame)
     if actions is None:
         actions = map_flow.general_jump_step(screen, mem, frame)
