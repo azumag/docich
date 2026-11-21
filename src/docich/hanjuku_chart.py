@@ -277,8 +277,8 @@ CH9_BOSS_WAYPOINT = (568, 212)
 # through the measured south-west corner (386,436); the remaining ring
 # corners mirror it about the gate axis and the roof centre.
 CH10_BOSS_WAYPOINT = (492, 436)    # 南門前: below the red carpet's south foot
-CH10_WALL_SW = (386, 436)          # west outer road meets the south road (measured)
-CH10_WALL_SE = (598, 436)          # mirrored about the gate axis x=492
+CH10_WALL_SW = (386, 452)          # west outer road meets the south road below bastion (measured)
+CH10_WALL_SE = (598, 452)          # mirrored about the gate axis x=492
 CH10_WALL_NW = (386, 294)          # mirrored about the roof centre y=365
 CH10_WALL_NE = (598, 294)
 CH10_GATE_STRIP_PX = 24            # on the carpet/gate axis: enter straight
@@ -297,15 +297,17 @@ def ch10_whitehouse_leg(origin, boss_cell):
 
     - on the red carpet / at the south gate (gate axis, below the roof):
       straight in to the boss cell;
-    - on or below the southern outer road: the south gate;
-    - pinned at the west (east) wall: the nearer southern corner, which the
-      next leg then turns along the south road to the gate;
-    - inside the ring's southern apron: the south gate;
-    - behind the north wall: the nearer northern corner, whose next legs
-      walk the outer road down to the southern corner.
+    - strictly south of the southern bastion wall (``y >= 444``): the south gate;
+    - pinned behind the north wall: the nearer northern corner;
+    - west / east outer roads: the corresponding southern corner (``y = 452``)
+      below the bastion wall before turning toward the south gate;
+    - inside the SW/SE alcove (``420 < ox < 468`` or ``516 < ox < 564``,
+      ``by <= oy < 444``): straight south to ``y = 452`` outside the bastion;
+    - behind the inner north wall: the nearer northern corner.
 
     Repeated calls from each new position therefore relay the general
-    corner -> gate -> front door. ``None`` for an unmeasured origin/cell.
+    corner -> outer south road -> gate -> front door. ``None`` for an
+    unmeasured origin/cell.
     """
     if (not isinstance(origin, (list, tuple)) or len(origin) != 2
             or not isinstance(boss_cell, (list, tuple)) or len(boss_cell) != 2):
@@ -314,17 +316,48 @@ def ch10_whitehouse_leg(origin, boss_cell):
     bx, by = int(boss_cell[0]), int(boss_cell[1])
     if abs(ox - CH10_BOSS_WAYPOINT[0]) <= CH10_GATE_STRIP_PX and by < oy <= 468:
         return (bx, by)                    # red carpet / south gate: enter
-    if oy >= CH10_WALL_SW[1]:
-        return CH10_BOSS_WAYPOINT          # the southern outer road is open
+    if oy >= CH10_WALL_SW[1] - 8:
+        return CH10_BOSS_WAYPOINT          # south of the bastion wall (y >= 444): open to gate
     if oy < CH10_WALL_NW[1] - 16:
         return CH10_WALL_NW if ox < CH10_BOSS_WAYPOINT[0] else CH10_WALL_NE
     if ox <= 420:
-        return CH10_BOSS_WAYPOINT if oy >= CH10_WALL_SW[1] - 16 else CH10_WALL_SW
+        return CH10_WALL_SW                # clear south past the bastion wall to y=452 first
     if ox >= 564:
-        return CH10_BOSS_WAYPOINT if oy >= CH10_WALL_SE[1] - 16 else CH10_WALL_SE
+        return CH10_WALL_SE
     if oy >= by:
-        return CH10_BOSS_WAYPOINT          # the ring's southern apron
+        return (ox, CH10_WALL_SW[1])       # straight south out of SW/SE alcove before turning
     return CH10_WALL_NW if ox < CH10_BOSS_WAYPOINT[0] else CH10_WALL_NE
+
+
+def ch10_whitehouse_recall_leg(origin, goal_cell):
+    """Detour around chapter 10 White House walls for non-boss recalls.
+
+    A camper behind or flanking the White House (e.g. north wall -> アルマムーン)
+    walks into the impassable ring when aiming directly at a castle on the
+    opposite side. Returns the next outer corner/apron waypoint, or ``None``
+    when the direct line does not cross the walled block.
+    """
+    if (not isinstance(origin, (list, tuple)) or len(origin) != 2
+            or not isinstance(goal_cell, (list, tuple)) or len(goal_cell) != 2):
+        return None
+    ox, oy = int(origin[0]), int(origin[1])
+    gx, gy = int(goal_cell[0]), int(goal_cell[1])
+    if 360 <= ox <= 624 and oy <= 316 and gy >= 436:
+        if ox < CH10_BOSS_WAYPOINT[0]:
+            return CH10_WALL_SW if ox <= 400 else CH10_WALL_NW
+        return CH10_WALL_SE if ox >= 584 else CH10_WALL_NE
+    if 360 <= ox <= 624 and oy >= 420 and gy <= 294:
+        if ox < CH10_BOSS_WAYPOINT[0]:
+            return CH10_WALL_NW if ox <= 400 else CH10_WALL_SW
+        return CH10_WALL_NE if ox >= 584 else CH10_WALL_SE
+    if (360 <= ox <= 624 and 316 < oy < 444 and gy >= 436
+            and abs(ox - CH10_BOSS_WAYPOINT[0]) > CH10_GATE_STRIP_PX):
+        if ox <= 420:
+            return CH10_WALL_SW
+        if ox >= 564:
+            return CH10_WALL_SE
+        return (ox, CH10_WALL_SW[1])
+    return None
 
 
 HOUSE_VIEW = {1: (118.5, 126.5), 2: (128.5, 94.5), 3: (116.5, 108.5),

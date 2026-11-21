@@ -83,12 +83,13 @@ def test_whitehouse_leg_relays_the_outer_ring_to_the_gate():
     wp, sw, se, nw, ne = (chart.CH10_BOSS_WAYPOINT, chart.CH10_WALL_SW,
                          chart.CH10_WALL_SE, chart.CH10_WALL_NW,
                          chart.CH10_WALL_NE)
-    # The measured west detour: outer road -> south road -> gate -> boss.
+    # The measured west detour: outer road -> south road (y=452, clear of bastion) -> gate -> boss.
     assert chart.ch10_whitehouse_leg((300, 400), BOSS_CELL) == sw
     assert chart.ch10_whitehouse_leg((395, 380), BOSS_CELL) == sw
-    # Landing near SW/NE corners with minor Y-map residual advances to next leg instead of looping.
-    assert chart.ch10_whitehouse_leg((388, 432), BOSS_CELL) == wp
-    assert chart.ch10_whitehouse_leg((408, 424), BOSS_CELL) == wp
+    # Alcove/corner positions above y=444 still clear south to y=452 first instead of hitting the L bastion.
+    assert chart.ch10_whitehouse_leg((388, 432), BOSS_CELL) == sw
+    assert chart.ch10_whitehouse_leg((408, 424), BOSS_CELL) == sw
+    assert chart.ch10_whitehouse_leg((388, 444), BOSS_CELL) == wp
     assert chart.ch10_whitehouse_leg(sw, BOSS_CELL) == wp
     assert chart.ch10_whitehouse_leg(wp, BOSS_CELL) == BOSS_CELL
     # The eastern mirror and a camp anywhere along the south road (including
@@ -96,12 +97,17 @@ def test_whitehouse_leg_relays_the_outer_ring_to_the_gate():
     assert chart.ch10_whitehouse_leg((700, 350), BOSS_CELL) == se
     assert chart.ch10_whitehouse_leg((575, 380), BOSS_CELL) == se
     assert chart.ch10_whitehouse_leg((596, 288), BOSS_CELL) == se
-    assert chart.ch10_whitehouse_leg((596, 424), BOSS_CELL) == wp
+    assert chart.ch10_whitehouse_leg((596, 424), BOSS_CELL) == se
+    assert chart.ch10_whitehouse_leg((596, 446), BOSS_CELL) == wp
     assert chart.ch10_whitehouse_leg(se, BOSS_CELL) == wp
-    assert chart.ch10_whitehouse_leg((350, 440), BOSS_CELL) == wp
+    assert chart.ch10_whitehouse_leg((350, 444), BOSS_CELL) == wp
     assert chart.ch10_whitehouse_leg((492, 560), BOSS_CELL) == wp
-    # The ring's southern apron still walks to the gate, not the roof.
-    assert chart.ch10_whitehouse_leg((450, 400), BOSS_CELL) == wp
+    # Inside the SW/SE alcoves (420 < x < 468 / 516 < x < 564, oy < 444), step straight south to y=452.
+    assert chart.ch10_whitehouse_leg((456, 416), BOSS_CELL) == (456, 452)
+    assert chart.ch10_whitehouse_leg((456, 452), BOSS_CELL) == wp
+    assert chart.ch10_whitehouse_leg((540, 416), BOSS_CELL) == (540, 452)
+    assert chart.ch10_whitehouse_leg((540, 452), BOSS_CELL) == wp
+    assert chart.ch10_whitehouse_leg((450, 400), BOSS_CELL) == (450, 452)
     # Behind the north wall the nearer northern corner comes first.
     assert chart.ch10_whitehouse_leg((400, 250), BOSS_CELL) == nw
     assert chart.ch10_whitehouse_leg((550, 250), BOSS_CELL) == ne
@@ -335,3 +341,36 @@ def test_fort_in_whitehouse_ring_uses_boss_move_instead_of_home_recall():
     assert st['fort'] is True
     assert st['boss_move'] is True
     assert st['goal'] == BOSS
+
+
+def test_whitehouse_recall_leg_detours_north_camp_to_home():
+    home = tuple(chart.castles(10)['アルマムーン'])
+    nw, ne, sw, se = (chart.CH10_WALL_NW, chart.CH10_WALL_NE,
+                      chart.CH10_WALL_SW, chart.CH10_WALL_SE)
+    # Behind north wall (e.g. カシュー east half -> アルマムーン): NE -> SE -> アルマムーン.
+    assert chart.ch10_whitehouse_recall_leg((520, 280), home) == ne
+    assert chart.ch10_whitehouse_recall_leg((590, 294), home) == se
+    assert chart.ch10_whitehouse_recall_leg(se, home) is None
+    # West half behind north wall -> アルマムーン: NW -> SW -> アルマムーン.
+    assert chart.ch10_whitehouse_recall_leg((440, 270), home) == nw
+    assert chart.ch10_whitehouse_recall_leg((392, 294), home) == sw
+    assert chart.ch10_whitehouse_recall_leg(sw, home) is None
+    # Normal south-of-White-House recall stays direct.
+    assert chart.ch10_whitehouse_recall_leg((492, 520), home) is None
+    assert chart.ch10_whitehouse_recall_leg(chart.CH10_BOSS_WAYPOINT, home) is None
+
+
+def test_recall_jump_for_north_camp_detours_via_whitehouse_corners(monkeypatch):
+    home_name = chart.home_castle(10)
+    m = mem(y_jump={'goal': home_name, 'mode': 'target', 'step': 'RECALL',
+                    'moves': 0, 'wait': 0, 'tick': 100})
+    _patch_view(monkeypatch, (520, 280))
+    nav._y_jump_step(m, _Frame())
+    assert m['y_jump']['goal_cell'] == list(chart.CH10_WALL_NE)
+
+    # Normal southern recall keeps アルマムーン's actual cell.
+    m2 = mem(y_jump={'goal': home_name, 'mode': 'target', 'step': 'RECALL',
+                     'moves': 0, 'wait': 0, 'tick': 100})
+    _patch_view(monkeypatch, (492, 520))
+    nav._y_jump_step(m2, _Frame())
+    assert m2['y_jump']['goal_cell'] == list(chart.castles(10)[home_name])

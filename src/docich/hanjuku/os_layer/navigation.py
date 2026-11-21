@@ -620,6 +620,16 @@ def _y_jump_step(mem, frame):
                     gx, gy = leg
             jump['goal_cell'] = [gx, gy]
         gx, gy = jump['goal_cell']
+    elif (chapter == 10 and jump.get('step') == 'RECALL'
+            and isinstance(gx, int) and isinstance(gy, int)):
+        if 'goal_cell' not in jump:
+            origin = (int(round((cursor[0] - ox) * 8)),
+                      int(round((cursor[1] - oy) * 8)))
+            leg = chart.ch10_whitehouse_recall_leg(origin, (gx, gy))
+            if leg is not None:
+                gx, gy = leg
+            jump['goal_cell'] = [gx, gy]
+        gx, gy = jump['goal_cell']
     dx, dy = gx / 8 + ox - cursor[0], gy / 8 + oy - cursor[1]
     # A roof misread as the G stays fixed even while the real cursor moves
     # (#2915). Count observations after issued inputs, not the initial read.
