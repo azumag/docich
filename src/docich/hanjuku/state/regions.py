@@ -130,6 +130,13 @@ KEY_OWNERSHIP = {
     'card_bought_unseen': {'region': WORLD, 'lifetime': 'chapter', 'migrated': False},  # 未確認購入カード台帳
     'card_held_floor': {'region': WORLD, 'lifetime': 'chapter', 'migrated': False},  # 廃止(v1352)。読まない・書かない(同上)
     'card_stock': {'region': WORLD, 'lifetime': 'chapter', 'migrated': False},  # フィールド在庫の台帳(未知=キー無し)
+    # v1353/S3: フィールドの「きりふだ」一覧で全所持を読む手順と、その予約・中止。
+    # 予約は章の始めに作り直すので章寿命、手順状態は中断で消える procedure 寿命。
+    'card_census': {'region': FLOW, 'lifetime': 'procedure', 'migrated': False},  # 全所持読みの手順状態 (v1353)
+    'card_census_due': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 全所持読みの予約 (v1353)
+    'card_census_abort': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 中止した月 (v1353)
+    'card_census_abort_prev': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 連続中止の章 (v1353)
+    'card_census_disabled': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 章で無効化 (v1353)
     'castle_defenders': {'region': WORLD, 'lifetime': 'chapter', 'migrated': False},  # 城防衛者観測
     'castle_income': {'region': WORLD, 'lifetime': 'chapter', 'migrated': False},  # 城収入観測
     'castle_ownership': {'region': WORLD, 'lifetime': 'chapter', 'migrated': False},  # 城所有観測

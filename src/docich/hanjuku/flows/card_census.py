@@ -1,0 +1,382 @@
+"""全所持の読み直し手順: map → X →「きりふだ」一覧を末尾まで送って台帳を埋める。
+
+owner 2026-11-22 (S3)。``card_stock`` はフィールド在庫の台帳で、商人での
+購入と出撃の携行だけが bot の意思で動かす。予約 (``strategy.card_census``)
+が立ったときだけ、map の空き観測で X メニューを開き、「きりふだ」の一覧を
+読む。一覧は 8 行/ページ、1 行ずつスクロールし、カード ID 昇順、末尾は
+▼が消える (S0 実測)。
+
+観測を減らすため、``more_below`` が True のページでは ↓ を 7 回まとめて
+送る (別々の tap、押しっぱなしにしない)。7 行送った次のページとは必ず
+1 行以上重なるので、ID の重なりで「行を飛ばしていない」ことを確かめる。
+重なりが無ければ ↑ で 1 行ずつ戻し、そのあとは 1 行ずつの ↓ に切り替える。
+重なりが多い (tap が落ちた) のはかまわない。
+
+中止 (台帳は変えない):
+- 同じページが 2 回続いて ``more_below`` が True のまま (tap が落ちた)
+- 読めない画面が 3 回続く
+- 観測 40 回
+- メニュー/一覧の遷移が上限に達する
+中止したら同じ月にはもう試さず、章で 2 回続けて中止したらその章では
+試さない (``card_census_abort`` / ``card_census_disabled``)。
+
+この一覧の画面はほかの手順が知らない。読んでいないときに現れたら B で
+閉じる (``field_card_list_step``)。どの手順も無入力を残さない。
+"""
+from __future__ import annotations
+
+import time
+
+from ..decision_log import _record
+from ..os_layer.commands import menu_to, pad
+from ..os_layer.readers import _measured_field_card_list
+from ..strategy import card_census as booking
+from ..strategy.kit import CARD_IDS, observe_full_card_inventory
+
+# 1 回の読みの上限。「観測 40 回まで」なので 41 回目で中止する。
+OBSERVATION_LIMIT = 40
+# まとめて送る行数。1 ページ 8 行なので、7 行で次のページと 1 行重なる。
+SCROLL_BATCH = 7
+# X メニューで「きりふだ」まで動く回数 / 上端・重なり回復で ↑ を押す回数。
+MENU_PRESS_LIMIT = 8
+RECOVER_LIMIT = 10
+CLOSE_LIMIT = 6
+UNREADABLE_LIMIT = 3
+YIELD_LIMIT = 4
+
+FOREGROUND_KINDS = frozenset({'map', 'main_menu', 'field_card_list'})
+
+# 「ほかの手順が今まさに進んでいる」印。値が真なら、その観測では読まない。
+# 章スコープの残骸 (card_scroll など) は手順終了時に消えるものだけで、
+# 予約済みでも読みを永久に止めるキーは入れない。
+BUSY_KEYS = (
+    'active', 'sortie_attempt', 'departure_request', 'launch_probe', 'departure_miss',
+    'recall', 'recall_verification', 'recall_skip', 'battle',
+    'month_sub', 'month_exit', 'post_month_status', 'house', 'map_registration',
+    'general_jump', 'castle_jump', 'y_jump', 'card_scroll', 'boss_pursuit',
+    'boss_stock_restart', 'boss_stock_cancelled', 'egg_recovery', 'arrival_status_probe',
+    'camp_hp_probe', 'sortie_retry_guard',
+)
+
+
+def _busy(mem):
+    """Keys of procedures that are in flight right now."""
+    return [key for key in BUSY_KEYS if mem.get(key)]
+
+
+def _disabled(mem):
+    value = mem.get('card_census_disabled')
+    return isinstance(value, dict) and value.get('chapter') == mem.get('chapter')
+
+
+def _aborted_this_month(mem):
+    value = mem.get('card_census_abort')
+    return (isinstance(value, dict) and value.get('month') == mem.get('month')
+            and value.get('chapter') == mem.get('chapter'))
+
+
+def _note_overdue(mem, due):
+    """Record once when a reservation survived more than one measured month."""
+    if due.get('overdue') is True:
+        return
+    booked = booking.month_index(due.get('month'))
+    now = booking.month_index(mem.get('month'))
+    if booked is None or now is None or now - booked <= 1:
+        return
+    due['overdue'] = True
+    _record(mem, 'card_census_overdue', observed_metric={
+        'booked_month': due.get('month'), 'month': mem.get('month'),
+        'reason': due.get('reason'), 'waits': due.get('wait_key')},
+        reason='全所持の読みを予約してから1か月を過ぎても実行できていない')
+
+
+def _post_month_ready(mem):
+    """The month's menu/merchant work is over and the map is the next month.
+
+    ``month_done`` (flows.month) marks the shop closed, then the exit advances
+    the header to the next month. ``shop['key'] == mem['month']`` means the
+    month menu is still on screen, so the X menu cannot be opened yet.
+
+    A missing shop is *not* the frame either: a chapter transition drops
+    ``shop`` (chapter lifetime), and the new chapter's month menu creates it
+    again before any field observation. Requiring the closed past-month shop
+    keeps the read at the measured post-month frame and out of every other
+    map observation (restore, resume, a test's bare map).
+    """
+    if mem.get('month_exit') or mem.get('month_sub'):
+        return False
+    shop = mem.get('shop')
+    if not isinstance(shop, dict) or shop.get('closed') is not True:
+        return False
+    return shop.get('key') != mem.get('month')
+
+
+def wait_step(screen, mem):
+    """Record a wait when the reservation's fixed frame is busy. Never acts."""
+    due = booking.due(mem)
+    if due is None or mem.get('card_census') or not mem.get('chapter'):
+        return
+    _note_overdue(mem, due)
+    if screen.kind != 'map' or not _post_month_ready(mem):
+        return
+    if _disabled(mem) or _aborted_this_month(mem):
+        return
+    blockers = _busy(mem)
+    if not blockers:
+        return
+    key = f"{mem.get('month')}|{'|'.join(blockers)}"
+    if due.get('wait_key') == key:
+        return
+    due['wait_key'] = key
+    _record(mem, 'card_census_wait', observed_metric={
+        'blockers': blockers, 'month': mem.get('month'), 'reason': due.get('reason')},
+        reason='全所持の読みの枠にほかの手順が進んでいるため、その観測では読まず次の空きを待つ')
+
+
+def start_step(screen, mem, frame=None):
+    """Open the field list on the first idle map after the month's actions."""
+    due = booking.due(mem)
+    if due is None or mem.get('card_census') or not mem.get('chapter'):
+        return None
+    _note_overdue(mem, due)
+    if screen.kind != 'map' or not _post_month_ready(mem):
+        return None
+    if _disabled(mem) or _aborted_this_month(mem):
+        return None
+    if _busy(mem):
+        return None
+    mem['card_census'] = {
+        'stage': 'menu', 'observations': 0,
+        'started_at': time.time(), 'pages': [], 'rows': [],
+        'last_page': None, 'await': None, 'menu': 0, 'close': 0,
+        'unreadable': 0, 'tops': 0, 'recover': 0, 'mode': None,
+        'step': SCROLL_BATCH, 'yields': 0,
+    }
+    _record(mem, 'card_census_start', observed_metric={
+        'reason': due.get('reason'), 'month': mem.get('month'),
+        'booked_month': due.get('month')},
+        reason='章の始め・読みのずれなどで台帳を信じられないため、フィールドのきりふだ一覧を全量で読む')
+    return [pad('x')]
+
+
+def resume_step(screen, mem, frame=None):
+    """Continue an active census. None when the screen belongs to someone else.
+
+    Returns [] to hold the census's own frame (menu hand not drawn yet, page
+    settling) without letting the generic no-input fallback take it.
+    """
+    state = mem.get('card_census')
+    if not isinstance(state, dict):
+        return None
+    if screen.kind not in FOREGROUND_KINDS:
+        # A battle, a message or an unreadable transition: never press B
+        # blindly and never hold input. Yield to the owner; a census that was
+        # interrupted for good is abandoned without touching the ledger.
+        state['yields'] = int(state.get('yields') or 0) + 1
+        if state['yields'] >= YIELD_LIMIT:
+            return _abort(mem, state, 'interrupted', close=False)
+        return None
+    state['yields'] = 0
+    if screen.kind == 'map':
+        if state.get('stage') in ('close', 'abort_close'):
+            mem.pop('card_census', None)
+            return None
+        if state.get('stage') == 'menu' and int(state.get('observations') or 0) == 0:
+            return [pad('x')]
+        return _abort(mem, state, 'left_list', close=False)
+    state['observations'] = int(state.get('observations') or 0) + 1
+    if state['observations'] > OBSERVATION_LIMIT:
+        return _abort(mem, state, 'observation_limit')
+    if screen.kind == 'main_menu':
+        if state.get('stage') in ('close', 'abort_close'):
+            return _close_step(screen, mem, state)
+        return _menu_step(screen, mem, state)
+    return _list_step(screen, mem, state, frame)
+
+
+def field_card_list_step(screen, mem, frame=None):
+    """The new kind's cleanup: B out when no census owns the screen."""
+    state = mem.get('card_census')
+    if isinstance(state, dict):
+        return resume_step(screen, mem, frame)
+    _record(mem, 'close_panel', screen='field_card_list',
+            reason='全所持の読みの手順が持っていないきりふだ一覧のため、Bでメニューへ戻る')
+    return [pad('b')]
+
+
+def _menu_step(screen, mem, state):
+    if screen.hand is None:
+        # X draws the hand ~34 frames later; pressing before it settles is a
+        # measured no-op and would cost an observation per press.
+        return []
+    move = menu_to(screen, 'きりふだ')
+    if move == 'here':
+        state['stage'] = 'open_list'
+        return [pad('a')]
+    state['menu'] = int(state.get('menu') or 0) + 1
+    if state['menu'] > MENU_PRESS_LIMIT:
+        return _abort(mem, state, 'menu_unreachable')
+    return [move] if move else []
+
+
+def _overlap(rows, page):
+    known = {row['card'] for row in rows}
+    return any(row['card'] in known for row in page)
+
+
+def _merge(rows, page):
+    """Add the unseen rows of ``page``; returns False when an overlap disagrees."""
+    values = {row['card']: row['stock'] for row in rows}
+    for row in page:
+        if row['card'] in values and values[row['card']] != row['stock']:
+            return False
+    for row in page:
+        if row['card'] not in values:
+            rows.append({'card': row['card'], 'stock': row['stock']})
+            values[row['card']] = row['stock']
+    rows.sort(key=lambda row: CARD_IDS[row['card']])
+    ids = [CARD_IDS[row['card']] for row in rows]
+    return ids == sorted(ids) and len(set(ids)) == len(ids)
+
+
+def _signature(page):
+    """JSON-stable page identity (lists, not tuples, survive the policy file)."""
+    return [[row['card'], row['stock']] for row in page]
+
+
+def _list_step(screen, mem, state, frame):
+    if state.get('stage') in ('close', 'abort_close'):
+        return _close_step(screen, mem, state)
+    page = _measured_field_card_list(screen, frame)
+    if page is None:
+        return _unreadable(mem, state)
+    rows = page['rows']
+    signature = _signature(rows)
+    last, awaiting = state.get('last_page'), state.get('await')
+    state['await'] = None
+    if last == signature:
+        # The same page came back. If it followed our own scroll batch and
+        # still claims hidden rows below, the taps were lost: abort rather
+        # than scroll the same page forever (measured taps settle in 1-2
+        # observations; 7 separate taps in one observation are accepted).
+        if page['more_below'] is None:
+            return _unreadable(mem, state)
+        if page['more_below'] is False:
+            return _complete(mem, state)
+        if awaiting == 'scroll':
+            return _abort(mem, state, 'same_page')
+        if awaiting == 'up' and state.get('mode') in ('top', 'recover'):
+            # A lost ↑ keeps the same page; retry it within the same bound.
+            key = 'tops' if state['mode'] == 'top' else 'recover'
+            state[key] = int(state.get(key) or 0) + 1
+            if state[key] > RECOVER_LIMIT:
+                return _abort(mem, state,
+                              'top_unreachable' if key == 'tops' else 'overlap_unrecovered')
+            state['await'] = 'up'
+            return [pad('up')]
+        return []
+    state['last_page'] = signature
+    state['unreadable'] = 0
+    # A list that opens mid-way can only prove a suffix; go to the top first.
+    if not state['rows'] and page['more_above'] is True:
+        state['mode'] = 'top'
+        state['tops'] = int(state.get('tops') or 0) + 1
+        if state['tops'] > RECOVER_LIMIT:
+            return _abort(mem, state, 'top_unreachable')
+        state['await'] = 'up'
+        return [pad('up')]
+    if state.get('mode') == 'recover':
+        if not _overlap(state['rows'], rows):
+            state['recover'] = int(state.get('recover') or 0) + 1
+            if state['recover'] > RECOVER_LIMIT:
+                return _abort(mem, state, 'overlap_unrecovered')
+            state['await'] = 'up'
+            return [pad('up')]
+        state['mode'] = None
+        state['step'] = 1
+    if state['rows']:
+        if not _overlap(state['rows'], rows):
+            state['mode'] = 'recover'
+            state['recover'] = 0
+            state['step'] = 1
+            _record(mem, 'card_census_overlap_miss', observed_metric={
+                'page': signature, 'known': [row['card'] for row in state['rows']]},
+                reason='7行送った次のページが前のページと1行も重ならないため、送りすぎとみなして↑で戻す')
+            state['await'] = 'up'
+            return [pad('up')]
+        if not _merge(state['rows'], rows):
+            return _abort(mem, state, 'page_changed')
+    else:
+        state['rows'] = [{'card': row['card'], 'stock': row['stock']} for row in rows]
+    state['pages'].append(signature)
+    if page['more_below'] is False:
+        return _complete(mem, state)
+    if page['more_below'] is True:
+        step = int(state.get('step') or SCROLL_BATCH)
+        state['await'] = 'scroll'
+        return [pad('down') for _ in range(step)]
+    return _unreadable(mem, state)
+
+
+def _unreadable(mem, state):
+    state['unreadable'] = int(state.get('unreadable') or 0) + 1
+    if state['unreadable'] >= UNREADABLE_LIMIT:
+        return _abort(mem, state, 'unreadable')
+    return []
+
+
+def _close_step(screen, mem, state):
+    state['close'] = int(state.get('close') or 0) + 1
+    if state['close'] > CLOSE_LIMIT:
+        mem.pop('card_census', None)
+        _record(mem, 'card_census_close_unverified', screen=screen.kind,
+                reason='きりふだ一覧を閉じるBを上限まで送ってもmapへ戻れないため、手順を終える')
+        return []
+    return [pad('b')]
+
+
+def _complete(mem, state):
+    rows = sorted(({'card': row['card'], 'stock': row['stock']} for row in state['rows']),
+                  key=lambda row: CARD_IDS[row['card']])
+    _, dropped = observe_full_card_inventory(mem, rows)
+    observations = int(state.get('observations') or 0)
+    started = state.get('started_at')
+    seconds = round(max(0.0, time.time() - started), 3) if type(started) in (int, float) else None
+    _record(mem, 'card_census', observed_metric={
+        'kinds': len(rows), 'total': sum(row['stock'] for row in rows),
+        'observations': observations, 'seconds': seconds,
+        'pages': len(state.get('pages') or []), 'dropped': dropped},
+        reason='フィールドのきりふだ一覧を末尾まで読み、全所持で台帳を上書きした')
+    booking.clear(mem)
+    mem.pop('card_census_abort_prev', None)
+    state['stage'] = 'close'
+    state['close'] = 0
+    state['rows'] = rows
+    return [pad('b')]
+
+
+def _abort(mem, state, reason, *, close=True):
+    _record(mem, 'card_census_abort', observed_metric={
+        'reason': reason, 'pages': state.get('pages') or [],
+        'observations': state.get('observations'), 'month': mem.get('month')},
+        reason='全所持の読みを完了できないため中止し、台帳は変えずにmapへ戻る')
+    mem['card_census_abort'] = {'month': mem.get('month'), 'chapter': mem.get('chapter'),
+                                'reason': reason}
+    previous = mem.get('card_census_abort_prev')
+    streak = (int(previous.get('streak') or 1) + 1
+              if isinstance(previous, dict)
+              and previous.get('chapter') == mem.get('chapter') else 1)
+    mem['card_census_abort_prev'] = {'chapter': mem.get('chapter'), 'streak': streak,
+                                     'reason': reason}
+    if streak >= 2 and not _disabled(mem):
+        mem['card_census_disabled'] = {'chapter': mem.get('chapter'), 'reason': reason,
+                                       'streak': streak}
+        _record(mem, 'card_census_disabled', observed_metric={
+            'chapter': mem.get('chapter'), 'streak': streak, 'reason': reason},
+            reason='全所持の読みが同じ章で2回続けて中止したため、その章では試さない')
+    if close:
+        state['stage'] = 'abort_close'
+        state['close'] = 0
+        return [pad('b')]
+    mem.pop('card_census', None)
+    return None

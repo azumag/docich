@@ -170,6 +170,10 @@ def _learn_holding_limit(screen: Screen, mem, shop):
         stock = mem.get('card_stock')
         if isinstance(stock, dict):
             stock.pop(name, None)
+        # S3: the refusal proved the ledger wrong for this kind; re-read the
+        # whole field list instead of trusting the remaining entries.
+        from ..strategy import card_census as _card_census
+        _card_census.book(mem, 'holding_limit_refusal')
         dropped = [r for r in items if r[0] == name]
         items = [r for r in items if r[0] != name]
     # Full holdings snapshot so a later refusal can be split between a

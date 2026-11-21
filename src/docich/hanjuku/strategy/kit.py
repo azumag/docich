@@ -210,6 +210,8 @@ def _note_ledger_drift(mem, card, read, basis):
             observed_metric={'ledger': previous, 'read': read, 'basis': basis},
             reason='切り札の台帳と実測の在庫が食い違ったため、読みを正として台帳を上書きする'
                    '(購入・携行・帰還のいずれかで台帳が動いた証拠)')
+    from . import card_census as _card_census
+    _card_census.book(mem, 'ledger_drift')
     return True
 
 
@@ -268,3 +270,48 @@ def _observe_card_stock(mem, inventory):
     while len(stock) > CARD_STOCK_LIMIT:
         stock.pop(next(iter(stock)))
     return revived
+
+
+def observe_full_card_inventory(mem, rows):
+    """Replace the field-inventory ledger from a complete field-list read.
+
+    The field list (X → きりふだ) is the whole inventory: every catalogue card
+    absent from it is proven at 0, and every shown row is its measured count.
+    A difference from the previous ledger is recorded per card as
+    ``ledger_drift`` with ``basis='full'`` before the read wins (a purchase the
+    merchant refused, a card returned or spent outside the bot's ledger).
+
+    Returns ``(read_cards, dropped)``: the cards written, and the entries the
+    unchanged ``CARD_STOCK_LIMIT`` (24) dropped -- the read is still the proof,
+    the dropped names are only reported so a truncated ledger stays visible.
+
+    The limit keeps the cards the bot can actually use first: positive stock
+    (in count order) before proven zeros, then card ID. S2's window reads only
+    inserted the rows they saw, but a full read always rebuilds all 32
+    catalogue kinds, so dropping the lowest IDs would have thrown away the
+    common 99s (イッテツーン at ID 0) that sorties carry. Ties stay in card-ID
+    order, the list's own order, so the choice is deterministic.
+    """
+    shown = {row['card']: row['stock'] for row in rows}
+    stock = mem.setdefault('card_stock', {})
+    for card, read in shown.items():
+        _note_ledger_drift(mem, card, read, 'full')
+    ordered = sorted(CARD_IDS, key=lambda name: CARD_IDS[name])
+    for card in ordered:
+        if card not in shown:
+            _note_ledger_drift(mem, card, 0, 'full')
+    keep = sorted(ordered, key=lambda name: (shown.get(name, 0) <= 0,
+                                            -shown.get(name, 0), CARD_IDS[name]))
+    keep = set(keep[:CARD_STOCK_LIMIT])
+    dropped = {card: shown.get(card, 0) for card in ordered if card not in keep}
+    stock.clear()
+    for card in ordered:
+        if card in keep:
+            stock[card] = shown.get(card, 0)
+    unseen = mem.get('card_bought_unseen')
+    if isinstance(unseen, dict):
+        unseen.clear()
+    zero = mem.get('card_zero_at_start')
+    if isinstance(zero, dict) and isinstance(zero.get('cards'), list):
+        zero['cards'] = [c for c in zero['cards'] if stock.get(c, 0) <= 0]
+    return [card for card in ordered if card in keep], dropped

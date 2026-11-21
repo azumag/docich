@@ -13,6 +13,7 @@ import re
 
 from .font import UNKNOWN, TextLine, attached_mark_cells, dark, joined, light, read_lines, row_masks, white
 from .pixels import Frame, band_bits, bit_points, near_bits, union_bits
+from ... import hanjuku_reference as _reference
 
 HEADER = re.compile(r'(?:(\d+)わ)?(\d+)ねん(\d+)のつき(\d+)G')
 PRICE = re.compile(r'^(\S+?)(\d+)G$')
@@ -661,6 +662,108 @@ class Screen:
 
     def has(self, needle: str) -> bool:
         return needle.replace(' ', '') in self.text
+
+
+# フィールドで X →「きりふだ」を選ぶと出る全所持一覧 (v1352/S3 で実測)。
+# 左の枠に 8 行 (y=39,55,...,151)、各行は「カタカナの札名 (x=40) + 枚数
+# (x=104/112 の右詰め)」。右の枠に X メニューの語 (x=168)、下の窓に
+# 「コマンドせんたくに もどりますぞ!」を描く。カーソルの手は無い。
+FIELD_CARD_LIST_ROWS = (39, 55, 71, 87, 103, 119, 135, 151)
+FIELD_CARD_LIST_MENU = ('ステータス', 'しょうぐん', 'しろ', 'きりふだ', 'システム',
+                        'けんのけいこ', 'セーブ')
+FIELD_CARD_LIST_FOOTER = ('コマンドせんたくに', 'もどりますぞ')
+
+
+def field_card_list_row(screen: Screen, y: int):
+    """(card, stock) for one measured list row, or None when anything is unread.
+
+    The name occupies the eight-pixel tiles from x=40; the stock is right
+    aligned at x=112 with its tens digit at x=104 (live 19/17-kind pages,
+    probe 2026-11-22). The longest catalogue name is ファイアーボイス (8
+    tiles, x=40..96), so the name window ends before the tens tile. Any other
+    readable tile in the left panel row makes the row unreadable: it could be
+    a second word, a clipped glyph or a layout this reader was not measured on.
+    """
+    line = next((line for line in screen.lines if line.y == y), None)
+    if line is None or not line.cells:
+        return None
+    cells = dict(line.cells)
+    ones = cells.get(112)
+    if ones not in tuple('0123456789'):
+        return None
+    tens = cells.get(104)
+    if tens in tuple('123456789'):
+        stock = int(tens + ones)
+        stock_xs = (104, 112)
+    else:
+        stock = int(ones)
+        stock_xs = (112,)
+    name_cells = [(x, ch) for x, ch in line.cells if 40 <= x < 104]
+    if not name_cells or name_cells[0][0] != 40:
+        return None
+    if [x for x, _ in name_cells] != list(range(40, 40 + 8 * len(name_cells), 8)):
+        return None
+    if any(ch == UNKNOWN for _, ch in name_cells):
+        return None
+    name = ''.join(ch for _, ch in name_cells)
+    if name not in _reference.ALL_CARD_IDS:
+        return None
+    allowed = set(range(40, 104, 8)) | set(stock_xs)
+    if any(x < 160 and x not in allowed for x in cells):
+        return None
+    return name, stock
+
+
+def field_card_list_rows(screen: Screen, *, min_rows: int = 1):
+    """Every readable row of one page in card-ID order, or None if any is bad.
+
+    The list is top-packed: a blank line is only the trailing padding of a
+    short last page, never a hole between rows. A row that is present but
+    partially readable rejects the whole page, and the caller treats it as an
+    unreadable observation instead of inventing a missing card.
+    """
+    rows, blank = [], False
+    for y in FIELD_CARD_LIST_ROWS:
+        row = field_card_list_row(screen, y)
+        if row is None:
+            line = next((line for line in screen.lines if line.y == y), None)
+            if line is not None and any(x < 160 for x, _ in line.cells):
+                return None
+            blank = True
+            continue
+        if blank:
+            return None
+        rows.append(row)
+    if len(rows) < min_rows:
+        return None
+    ids = [_reference.ALL_CARD_IDS[card] for card, _ in rows]
+    if ids != sorted(ids) or len(set(ids)) != len(ids):
+        return None
+    return rows
+
+
+def _field_card_list_panel(screen: Screen) -> bool:
+    """The field きりふだ list, never the X menu that opened it.
+
+    The hand cursor is the menu's; the list has none. The unique footer text
+    is the strongest cue, but a dropped glyph must not turn the list into
+    ``main_menu`` (the generic close rule would then press B and lose the
+    census), so the right menu labels plus six readable rows are accepted as
+    the second, independent form.
+    """
+    if screen.hand is not None:
+        return False
+    labels = {word for line in screen.lines for x, word in line.spans()
+              if x == 168 and word in FIELD_CARD_LIST_MENU}
+    if len(labels) < 4:
+        return False
+    readable = sum(1 for y in FIELD_CARD_LIST_ROWS if field_card_list_row(screen, y))
+    if not readable:
+        return False
+    flat = (screen.text or '').replace(' ', '')
+    if any(needle in flat for needle in FIELD_CARD_LIST_FOOTER):
+        return True
+    return readable >= 6
 
 
 def fake_hero_announcement_chapter(screen: Screen) -> int | None:
@@ -1456,6 +1559,11 @@ def classify_text(s: Screen) -> str:
         return 'sealed_castle'
     if 'じょう' in t and 'しゅうにゅう' in t and 'しょうぐん' in t:
         return 'castle_info'
+    if _field_card_list_panel(s):
+        # The list keeps the X menu's own labels on the right, so the main
+        # menu rule below would claim it and the generic panel close would
+        # press B. The hand-less left rows plus the footer prove the list.
+        return 'field_card_list'
     if 'ステータス' in t and 'システム' in t:
         return 'main_menu'
     if s.battle:

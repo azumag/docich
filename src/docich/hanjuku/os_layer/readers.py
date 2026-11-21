@@ -8,7 +8,8 @@ from __future__ import annotations
 
 import re
 
-from .screen import SUMMER_BONUS_CHOICES, Screen, castle_roofs, month_confirmation_positions
+from .screen import (SUMMER_BONUS_CHOICES, Screen, castle_roofs, field_card_list_rows,
+                     month_confirmation_positions)
 # The policy's map readers. Flows import them from here (not from .screen) so a
 # rebinding through the hanjuku_policy facade reaches every policy caller while
 # screen.parse keeps its own binding, as in the single-module policy.
@@ -1088,8 +1089,46 @@ def _measured_card_select(screen, frame=None):
                                    else 'structured_card_select'), 'observed_rows': len(rows)}
 
 
-GENERAL_LIST_UI = frozenset({'しゅつげき', 'ステータス', 'しょうぐんは', 'おりません', 'おりません……'})
+# フィールドの「きりふだ」一覧 (v1352/S3 で実測)。▲ は x=72..78,
+# y=25..28、▼ は x=72..78, y=161..164。S1 のパネルと同じく、矢印は
+# 16 個の近白色 (248,252,248) 画素で、緑のパネル地紋の輝度上限 87 とは
+# 140 で分かれる。点滅しない (先頭・中間・末尾で各 180 フレーム静止)。
+#
+# ▼ の箱は y=161..162 の 2 行だけにする。一覧の下枠は y=163..165 が
+# 明るい 1 本の罫線で、実測では末尾ページでも x=72..78 の罫線が 18 画素
+# 点く。S1 と同じ 6 行の箱 (y=161..166) では「▼が無い」を 0 画素で
+# 読めないので、矢印自身が太い上 2 行 (7+5=12 画素) だけを数える。
+# 矢印があるページは 12、無いページは罫線の下なので 0。
+FIELD_CARD_SCROLL_ABOVE = (72, 25, 79, 29)
+FIELD_CARD_SCROLL_BELOW = (72, 161, 79, 163)
 
+
+def _measured_field_card_list(screen, frame=None):
+    """Read one page of the field きりふだ list, or None when it is unreadable.
+
+    The list is the whole-inventory proof S3 needs: eight rows in card-ID
+    order, each a card name from ``CARD_IDS`` and a 0..99 count. One bad row,
+    a duplicate ID, or an out-of-order page is unreadable -- a partial page
+    must never become "this card is absent". The arrows are True/False/None
+    (S1's pixel rule with the field-list boxes); only False for both proves
+    the visible rows are the whole list.
+    """
+    if screen.kind != 'field_card_list':
+        return None
+    rows = field_card_list_rows(screen)
+    if rows is None:
+        return None
+    if frame is not None:
+        more_above = _card_scroll_arrow(frame, FIELD_CARD_SCROLL_ABOVE)
+        more_below = _card_scroll_arrow(frame, FIELD_CARD_SCROLL_BELOW)
+    else:
+        more_above = getattr(screen, 'card_more_above', None)
+        more_below = getattr(screen, 'card_more_below', None)
+    return {'rows': [{'card': card, 'stock': stock} for card, stock in rows],
+            'more_above': more_above, 'more_below': more_below}
+
+
+GENERAL_LIST_UI = frozenset({'しゅつげき', 'ステータス', 'しょうぐんは', 'おりません', 'おりません……'})
 
 GENERAL_LIST_KINDS = frozenset({'general_list', 'castle_menu'})
 

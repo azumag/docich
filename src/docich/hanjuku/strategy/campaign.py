@@ -11,6 +11,7 @@ from ... import hanjuku_chart as chart
 from ...hanjuku_egg_reference import general_debut_chapter
 from ..decision_log import _record
 from ..os_layer.readers import STATUS_NAMES
+from . import card_census as _card_census
 
 
 # Phases of the free monthly country-status visit (house.step level_only).
@@ -58,6 +59,10 @@ def _enter_chapter(mem, chapter, *, reason, evidence=None):
     # blanking 現在収入 / 総賃金.
     _reset_chapter_scope(mem)
     mem['chapter'] = chapter
+    # S3: the chapter reset above drops ``card_stock`` (chapter lifetime), so
+    # the field inventory of the new chapter is unknown. Book the full read;
+    # the first free map after the month's actions performs it.
+    _card_census.book(mem, 'chapter_start')
     if month_scan is not None:
         month_scan['chapter'] = chapter
         mem['house'] = month_scan

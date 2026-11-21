@@ -18,6 +18,7 @@ import zlib
 from .adapters.base import AdapterError
 from .game_switch import atomic_write_json
 from .naming import runtime_id_generation
+from .hanjuku.strategy import card_census as _card_census
 from .retroarch_boundary import (BOUNDARY_FILE, MANUAL_SAVE_FILE, checkpoint_digest,
                                 identity, matches, read_record)
 
@@ -832,6 +833,9 @@ def restore(adapter, deadline, cancel):
     # These verified chapterless panels seed only their measured foreground
     # owner; route and any old transaction need fresh evidence.
     policy = {'name': {'done': True}}
+    # S3: a restored save state may hold a field inventory the old policy
+    # never saw. The ledger starts unknown here, so book the full read.
+    _card_census.book(policy, 'checkpoint_restore')
     if chapter is not None:
         policy['chapter'] = chapter
     else:
