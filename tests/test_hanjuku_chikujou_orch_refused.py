@@ -11,6 +11,7 @@ from types import SimpleNamespace
 from docich import hanjuku_policy as policy, hanjuku_screen
 from docich.hanjuku.flows import month as month_flow
 from docich.hanjuku_screen import Screen
+from tests import test_hanjuku_multi_chikujou as multi
 from tests.test_hanjuku_chart_bot import decide, month_canvas
 
 
@@ -45,3 +46,40 @@ def test_orchestrator_chikujou_prompt_records_refused_and_skips_next_months(monk
         assert month_flow._month_chikujou(month_screen, pol, shop) is None
         assert shop['chikujou'] == 'skipped'
         assert pol['chikujou_refused']['skips'] == expected_skips
+
+
+def test_a_live_chikujou_sub_owns_the_prompt_and_picks_the_next_castle(monkeypatch):
+    """docich#4982: the early B closed the just-opened list with untried castles.
+
+    The ordinary castle list reads 「…などのしろをぞうちくなさいますか?」, which
+    _is_chikujou_prompt also matches. While a tracked chikujou month_sub is
+    live the prompt is its screen: _chikujou_step picks an untried castle
+    instead of closing the list.
+    """
+    mem = multi.memory()
+    multi.open_build(mem)
+    sc = multi.castles()
+    monkeypatch.setattr(hanjuku_screen, 'parse', lambda *a, **k: sc)
+    actions, state = decide(month_canvas(9999), {'policy': mem})
+    assert actions == [policy.pad('a')]
+    pol = state['policy']
+    assert pol['month_sub']['chosen'] == multi.HOME
+    assert 'chikujou_refused' not in pol
+    assert not any(r['decision'] == 'chikujou_leftover' for r in state['_records'])
+
+
+def test_a_non_chikujou_month_sub_still_closes_the_prompt_with_b(monkeypatch):
+    """#4591 still holds: another month's leftover sub does not own the list."""
+    sc = Screen(
+        lines=[],
+        hand=None,
+        kind='text',
+        header=None,
+        text='アルマムーン3これいじょうのぞうちくはできませんぞ!!どのしろをぞうちくなさいますか?',
+    )
+    monkeypatch.setattr(hanjuku_screen, 'parse', lambda *a, **k: sc)
+    mem = {'chapter': 9, '_records': [],
+           'month_sub': {'kind': 'recruit', 'key': '9-1', 'presses': 0}}
+    actions, state = decide(month_canvas(9999), {'policy': mem})
+    assert actions == [policy.pad('b')]
+    assert state['_records'][0]['decision'] == 'chikujou_leftover'

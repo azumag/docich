@@ -1605,11 +1605,18 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
         updated['_experience'] = mem.pop('_experience', None)
         updated['policy'] = mem
         return actions, updated
-    if _is_chikujou_prompt(screen.text):
+    month_sub = mem.get('month_sub')
+    if _is_chikujou_prompt(screen.text) and not (
+            isinstance(month_sub, dict) and month_sub.get('kind') == 'chikujou'):
         # The 築城 castle list runs out of room and asks which castle to
         # expand; nothing on it can be chosen and the dialogue flow holds it
         # (g1190 2026-11-18 66-10: 「これいじょうのぞうちくはできませんぞ!!
         # どのしろをぞうちくなさいますか?」 sat for minutes). B closes it.
+        # A live chikujou month_sub owns the same prompt: the ordinary list
+        # reads 「…などのしろをぞうちくなさいますか?」 and a leftover refusal
+        # line can sit above a still-selectable list, so _chikujou_step must
+        # keep picking untried castles and scrolling (docich#4982: this early
+        # B closed the just-opened list with 8 candidates and gold to spare).
         if mem.get('chikujou_prompt_key') != (screen.text or '')[:40]:
             mem['chikujou_prompt_key'] = (screen.text or '')[:40]
             decision_log._record(mem, 'chikujou_leftover', screen=kind,

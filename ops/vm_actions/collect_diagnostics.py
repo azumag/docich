@@ -8035,6 +8035,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v1352-card-ledger-diff",
             "hanjuku-chart-v1357-card-ledger-census",
             "hanjuku-chart-v1358-boss-month-issue",
+            "hanjuku-chart-v1365-chikujou-list-limit",
             "hanjuku-chart-v1360-spend-resources-before-retreat",
             "hanjuku-chart-v1362-camp-recall-ch2",
             "hanjuku-chart-v1363-chikujou-at-month-end",
