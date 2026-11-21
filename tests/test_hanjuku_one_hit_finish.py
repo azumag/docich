@@ -10,14 +10,25 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 import pytest
 
 from docich import hanjuku_policy as p
-from test_hanjuku_survival import battle, memory, menu
+from test_hanjuku_survival import battle as _survival_battle, memory, menu
+
+
+def battle(mem, soldiers=(90, 0)):
+    # Owner 2026-11-22: a one-hit finish needs a measured ZERO enemy soldiers;
+    # the synthetic panel carries no soldier row otherwise, so make it explicit.
+    screen = _survival_battle(mem)
+    screen.field_soldiers = soldiers
+    return screen
 
 A_BURST = p._power_mash({}, {'power_mash': True})
 
 
 def danger(enemy_hp):
     # Critical own HP (the survival path would open the menu) with a threatening enemy.
-    return memory(hp=5, enemy=enemy_hp)
+    # Owner 2026-11-22: a one-hit finish needs a measured ZERO enemy soldiers.
+    mem = memory(hp=5, enemy=enemy_hp)
+    mem['battle']['enemy_soldiers'] = 0
+    return mem
 
 
 def test_battle_step_melees_instead_of_opening_the_menu_at_one_hp():
@@ -88,12 +99,9 @@ def test_missing_or_finished_hp_is_not_one_hit_lethal(enemy_hp, ally_hp):
     assert not p._one_hit_lethal({'enemy_hp': enemy_hp, 'ally_hp': ally_hp})
 
 
-def test_a_low_hp_boss_is_not_a_safe_melee_finish():
-    # Live g1288 2026-11-21/22: the boss (せいめいたい) at HP 1 beat three
-    # generals who pushed with the one-hit melee (its counterattack still
-    # killed them), so a boss must not take the shortcut.
-    from docich import hanjuku_chart as chart
-    boss = chart.boss_castle(9)
-    assert not p._one_hit_lethal({'enemy_hp': 1, 'ally_hp': 98, 'castle': boss})
-    assert not p._one_hit_lethal({'enemy_hp': 1, 'ally_hp': 98, 'enemy': 'せいめいたい'})
-    assert p._one_hit_lethal({'enemy_hp': 1, 'ally_hp': 98, 'castle': 'イデ！'})
+def test_remaining_enemy_soldiers_are_not_a_one_hit_finish():
+    # Owner 2026-11-22: ボスだからではなく、ボス兵士が残っているとHPが削れない.
+    # Live g1288: HP1のボスに3連敗（兵士が残っていた）。
+    assert not p._one_hit_lethal({'enemy_hp': 1, 'ally_hp': 98, 'enemy_soldiers': 3})
+    assert not p._one_hit_lethal({'enemy_hp': 1, 'ally_hp': 98, 'enemy_soldiers': None})
+    assert p._one_hit_lethal({'enemy_hp': 1, 'ally_hp': 98, 'enemy_soldiers': 0})
