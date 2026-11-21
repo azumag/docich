@@ -193,8 +193,30 @@ def _card_panel_complete(inventory) -> bool:
     return inventory.get('more_above') is False and inventory.get('more_below') is False
 
 
+def _note_ledger_drift(mem, card, read, basis):
+    """Record a read that contradicts the field-inventory ledger before fixing it.
+
+    The read wins (the panel is the measurement), but a difference means the
+    ledger moved without the bot's own actions: a purchase the merchant did
+    not actually take, a card returned by a cancelled sortie, or a kind the
+    bot wrote twice. One record per card and read, so a whole-window read
+    leaves each mismatch visible in the decision log.
+    """
+    from .bargains import held
+    previous = held(mem, card)
+    if previous is None or previous == read:
+        return False
+    _record(mem, 'ledger_drift', card=card,
+            observed_metric={'ledger': previous, 'read': read, 'basis': basis},
+            reason='切り札の台帳と実測の在庫が食い違ったため、読みを正として台帳を上書きする'
+                   '(購入・携行・帰還のいずれかで台帳が動いた証拠)')
+    from . import card_census as _card_census
+    _card_census.book(mem, 'ledger_drift')
+    return True
+
+
 def _observe_card_stock(mem, inventory):
-    """Remember the stocks a sortie card panel showed (chart-adjust grounding).
+    """Remember the stocks a sortie card panel showed and reconcile the ledger.
 
     A complete panel -- neither the ▲ nor the ▼ scroll arrow is drawn -- lists
     the whole inventory (depleted items disappear), so a known card absent
@@ -216,12 +238,15 @@ def _observe_card_stock(mem, inventory):
     from ブラッキー/フットバース/ノリウツール(11)/バルムンク(16) panels while
     card_stock kept its stale 1, so no month saw the boss card missing.
     A card read here is no longer an unseen purchase (``boss_cards.UNSEEN``).
-    Only the shown rows and the cards this proof makes 0 clear their ledgers.
+    ``card_stock`` is the field-inventory ledger (unknown = no key), so a read
+    that differs from it is logged as ``ledger_drift`` before the read wins.
     """
     stock = mem.setdefault('card_stock', {})
     shown = {row['card']: row['stock'] for row in inventory['rows']}
+    for card, read in shown.items():
+        _note_ledger_drift(mem, card, read, 'window')
     stock.update(shown)
-    read = set(shown)
+    read_cards = set(shown)
     unseen = mem.get('card_bought_unseen')
     unseen = unseen if isinstance(unseen, dict) else {}
     ids = [CARD_IDS.get(row['card']) for row in inventory['rows']]
@@ -230,15 +255,11 @@ def _observe_card_stock(mem, inventory):
     for card in [*stock, *(c for c in unseen if c not in stock)]:
         if card not in shown and (complete or (
                 ordered and min(ids) < CARD_IDS.get(card, -1) < max(ids))):
+            _note_ledger_drift(mem, card, 0, 'proof')
             stock[card] = 0
-            read.add(card)
-    for card in read.intersection(unseen):
+            read_cards.add(card)
+    for card in read_cards.intersection(unseen):
         unseen.pop(card)
-    for ledger in (mem.get('card_bought_since_read'), mem.get('card_held_floor'),
-                   mem.get('card_used_since_read')):
-        if isinstance(ledger, dict):
-            for card in read:
-                ledger.pop(card, None)   # a panel read is the truth again
     revived = False
     zero = mem.get('card_zero_at_start')
     if isinstance(zero, dict) and isinstance(zero.get('cards'), list):
@@ -249,3 +270,82 @@ def _observe_card_stock(mem, inventory):
     while len(stock) > CARD_STOCK_LIMIT:
         stock.pop(next(iter(stock)))
     return revived
+
+
+def _buy_targets(mem):
+    """Card kinds some current plan can still ask a merchant to sell.
+
+    A proven 0 that no plan will ever buy may be dropped when the ledger is
+    trimmed, but a 0 the month plan can buy must stay: S2 skips an unknown
+    kind, so a dropped 0 is never bought again (owner policy: 99 copies of
+    each kind). Imports are local: bargains/boss_cards both read this module.
+    """
+    from .bargains import BARGAIN_TARGETS, RICH_MERCHANT_CARDS
+    targets = set(RICH_MERCHANT_CARDS) | set(BARGAIN_TARGETS)
+    from .boss_cards import boss_kit
+    kit = boss_kit(mem)
+    if kit is not None:
+        targets.update(kit[1])
+    chapter = mem.get('chapter')
+    if type(chapter) is int:
+        for plan in chart.purchases(chapter):
+            for row in plan.get('cards') or ():
+                if row:
+                    targets.add(row[0])
+    return targets
+
+
+def observe_full_card_inventory(mem, rows):
+    """Replace the field-inventory ledger from a complete field-list read.
+
+    The field list (X → きりふだ) is the whole inventory: every catalogue card
+    absent from it is proven at 0, and every shown row is its measured count.
+    A difference from the previous ledger is recorded per card as
+    ``ledger_drift`` with ``basis='full'`` before the read wins (a purchase the
+    merchant refused, a card returned or spent outside the bot's ledger).
+
+    Returns ``(read_cards, dropped)``: the cards written, and the entries the
+    unchanged ``CARD_STOCK_LIMIT`` (24) dropped -- the read is still the proof,
+    the dropped names are only reported so a truncated ledger stays visible.
+
+    The limit keeps the cards the bot can actually use first: positive stock
+    (in count order), then the proven zeros some plan can still buy
+    (``_buy_targets``), then the other zeros; card ID inside each rank.
+    S2's window reads only inserted the rows they saw, but a full read always
+    rebuilds all 32 catalogue kinds. Dropping the lowest IDs threw away the
+    common 99s (イッテツーン at ID 0) that sorties carry; dropping a usable
+    0 loses it for good, because S2 never buys an unknown kind (ファバード
+    and エンジェリン are high-ID rich-merchant cards). Ties stay in card-ID
+    order, the list's own order, so the choice is deterministic.
+    """
+    shown = {row['card']: row['stock'] for row in rows}
+    stock = mem.setdefault('card_stock', {})
+    for card, read in shown.items():
+        _note_ledger_drift(mem, card, read, 'full')
+    ordered = sorted(CARD_IDS, key=lambda name: CARD_IDS[name])
+    for card in ordered:
+        if card not in shown:
+            _note_ledger_drift(mem, card, 0, 'full')
+    targets = _buy_targets(mem)
+
+    def rank(name):
+        count = shown.get(name, 0)
+        if count > 0:
+            return (0, -count, CARD_IDS[name])
+        if name in targets:
+            return (1, 0, CARD_IDS[name])
+        return (2, 0, CARD_IDS[name])
+
+    keep = set(sorted(ordered, key=rank)[:CARD_STOCK_LIMIT])
+    dropped = {card: shown.get(card, 0) for card in ordered if card not in keep}
+    stock.clear()
+    for card in ordered:
+        if card in keep:
+            stock[card] = shown.get(card, 0)
+    unseen = mem.get('card_bought_unseen')
+    if isinstance(unseen, dict):
+        unseen.clear()
+    zero = mem.get('card_zero_at_start')
+    if isinstance(zero, dict) and isinstance(zero.get('cards'), list):
+        zero['cards'] = [c for c in zero['cards'] if stock.get(c, 0) <= 0]
+    return [card for card in ordered if card in keep], dropped

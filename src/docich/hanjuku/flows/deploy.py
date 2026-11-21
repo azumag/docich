@@ -22,6 +22,7 @@ from ..os_layer.readers import (CASTLE_STATUS, STATUS_NAMES, _empty_sortie_inven
                                 _sortie_inventory, _current, month_menu_ready)
 from ..os_layer.world import NAME, _en_route, _owned
 from ..state import egg_memory
+from ..strategy.bargains import forget_picked, note_card_carried
 from ..strategy.boss_cards import UNSEEN, boss_card_reserved, boss_kit
 from ..strategy.kit import (CARD_IDS, CARD_MISS_LIMIT, CARD_SCROLL_LIMIT, CARD_UNREADABLE_LIMIT, CARRY_SLOTS,
                            NORMAL_CARD_UNREADABLE_LIMIT, SORTIE_CONFIRM_UNREADABLE_LIMIT,
@@ -122,7 +123,12 @@ def _verify_sortie_source(screen, mem, order):
             else '出撃元が無人と確認できたため出撃を確定、行先は未確認')
     _flow(mem).pop('sortie_attempt', None)
     _plan_region(mem)['active'] = None
-    mem['picked'] = []
+    if cancelled:
+        # The general is still home, so the carried cards may never have left
+        # the field: forget them rather than keep a count that may be ahead.
+        forget_picked(mem)
+    else:
+        mem['picked'] = []       # departed: the carried copies left the field (S0b)
     return [pad('b'), pad('b')]
 BOSS_ABSENT_LIMIT = 10         # general-list readings without the boss general before giving up
 
@@ -1428,6 +1434,7 @@ def _cursor_card_step(screen, mem, order, inventory, picked):
                 and total + need * card_id < ENEMY_EGG_CARD_ID_SUM):
             picked.extend([row['card']] * need)
             _plan_region(mem)['card_override'][step] = list(picked)
+            note_card_carried(mem, row['card'], row['stock'], need)
             _record(mem, 'card_pick', **_deploy_context(order, mem), card=row['card'],
                     observed_metric={'stock': row['stock'], 'remaining': need, 'count': need,
                                      'id_sum': total + need * card_id, 'cursor_order': True,
@@ -1443,6 +1450,7 @@ def _cursor_card_step(screen, mem, order, inventory, picked):
         if row['stock'] > 0 and card_id is not None and total + card_id < ENEMY_EGG_CARD_ID_SUM:
             picked.append(row['card'])
             _plan_region(mem)['card_override'][step] = list(picked)
+            note_card_carried(mem, row['card'], row['stock'], 1)
             _record(mem, 'card_pick', **_deploy_context(order, mem), card=row['card'],
                     observed_metric={'stock': row['stock'], 'remaining': inventory['remaining'],
                                      'id_sum': total + card_id, 'cursor_order': True,
@@ -1736,7 +1744,7 @@ def _keep_last_castle(screen, mem, order):
     mem['last_castle_hold'] = {'castle': source, 'tick': int(mem.get('tick') or 0)}
     _plan_region(mem)['orders'][order['step']] = 'pending'
     _plan_region(mem)['active'] = None
-    mem['picked'] = []
+    forget_picked(mem)
     _record(mem, 'sortie_held_last_castle', chart_step=order['step'], source=source,
             observed_metric=present[:4],
             reason=f'{source}の将軍が{len(present)}人で他の自軍城に待機将軍がいないため、全城を空にして落城・ゲームオーバーにならないよう出撃しない')
@@ -1750,7 +1758,9 @@ def _hold_guarded_sortie(mem, order, decision, reason, observed):
     if orders.get(order['step']) != 'failed':
         orders[order['step']] = 'failed' if order['step'].startswith('I:') else 'pending'
     _plan_region(mem)['active'] = None
-    mem['picked'] = []
+    # A sortie cancelled before its departure confirmation may return the
+    # cards it had taken, so those kinds become unknown (not a guess).
+    forget_picked(mem)
     _plan_region(mem).setdefault('sortie_general', {}).pop(order['step'], None)
     _plan_region(mem).setdefault('order_context', {}).pop(order['step'], None)
     # A step retired here ('failed') loses the rest of its plan context too;
@@ -2211,7 +2221,7 @@ def deploy_step(screen: Screen, mem, *, frame=None):
                                      'registered': sorted(cells)},
                     reason='このランの地図に出撃元・目標城の登録座標がそろわないため、未送信の出撃を取り消して指示を選び直す')
             _plan_region(mem)['active'] = None
-            mem['picked'] = []
+            forget_picked(mem)
             return []
     routed = _hold_unrouted_sortie(mem, order)
     if routed is not None:
@@ -2447,7 +2457,7 @@ def deploy_step(screen: Screen, mem, *, frame=None):
         # sortie that was chosen while its quantity was still unknown.
         _plan_region(mem).setdefault('orders', {})[order['step']] = 'pending'
         _plan_region(mem)['active'] = None
-        mem['picked'] = []
+        forget_picked(mem)
         _plan_region(mem).setdefault('order_context', {}).pop(order['step'], None)
         _record(mem, 'boss_sortie_cancelled_for_egg', chart_step=order['step'],
                 observed_metric={'general': NAME, 'egg_uses': egg_memory.current_uses(mem, NAME),
@@ -2612,6 +2622,9 @@ def deploy_step(screen: Screen, mem, *, frame=None):
         if inventory['selected_y'] == row['y']:
             picked.append(card)
             mem.pop('card_upper_boundary', None)
+            # The row shows the field stock before this A; the carried copy
+            # leaves the field now (S0b), so the ledger is the row minus one.
+            note_card_carried(mem, card, row['stock'], 1)
             # A new card is a new bounded search; selection still needs the
             # existing carried-card confirmation before departure.
             (mem.get('card_scroll') or {}).pop(order['step'], None)

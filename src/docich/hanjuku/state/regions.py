@@ -125,11 +125,21 @@ KEY_OWNERSHIP = {
     'generals_lost_at': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 喪失確定時刻 (garrison_observed_at と同じ時計, v998/#4415)
     'camp_status_seen': {'region': WORLD, 'lifetime': 'chapter', 'migrated': False},  # 観測済み野営ステータス
     'captured': {'region': WORLD, 'lifetime': 'chapter', 'migrated': False},  # 捕獲城の観測事実
-    'card_bought_since_read': {'region': WORLD, 'lifetime': 'chapter', 'migrated': False},  # 最終パネル読み以降の購入枚数台帳
-    'card_used_since_read': {'region': WORLD, 'lifetime': 'chapter', 'migrated': False},  # 最終パネル読み以降の使用枚数台帳
+    'card_bought_since_read': {'region': WORLD, 'lifetime': 'chapter', 'migrated': False},  # 廃止(v1352)。読まない・書かない(本番の保存stateに残るためキーは宣言だけ保持)
+    'card_used_since_read': {'region': WORLD, 'lifetime': 'chapter', 'migrated': False},  # 廃止(v1352)。読まない・書かない(同上)
     'card_bought_unseen': {'region': WORLD, 'lifetime': 'chapter', 'migrated': False},  # 未確認購入カード台帳
-    'card_held_floor': {'region': WORLD, 'lifetime': 'chapter', 'migrated': False},  # 商人拒否で証明された所持下限台帳
-    'card_stock': {'region': WORLD, 'lifetime': 'chapter', 'migrated': False},  # 観測した所持カード枚数
+    'card_held_floor': {'region': WORLD, 'lifetime': 'chapter', 'migrated': False},  # 廃止(v1352)。読まない・書かない(同上)
+    'card_stock': {'region': WORLD, 'lifetime': 'chapter', 'migrated': False},  # フィールド在庫の台帳(未知=キー無し)
+    # v1353/S3: フィールドの「きりふだ」一覧で全所持を読む手順と、その予約・中止。
+    # 予約は章の始めに作り直すので章寿命、手順状態は中断で消える procedure 寿命。
+    'card_census': {'region': FLOW, 'lifetime': 'procedure', 'migrated': False},  # 全所持読みの手順状態 (v1353)
+    'card_census_due': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 全所持読みの予約 (v1353)
+    'card_census_abort': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 中止した月 (v1353)
+    'card_census_abort_prev': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 連続中止の章 (v1353)
+    'card_census_disabled': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 章で無効化 (v1353)
+    # 台帳の意味の版 (v1356/S3b)。旧規則の card_stock を持つ policy に最初の観測で
+    # 印を立て、ledger_migration の全量読みを1回だけ予約する。ラン寿命。
+    'card_ledger_v': {'region': JOURNAL, 'lifetime': 'run', 'migrated': False},
     'castle_defenders': {'region': WORLD, 'lifetime': 'chapter', 'migrated': False},  # 城防衛者観測
     'castle_income': {'region': WORLD, 'lifetime': 'chapter', 'migrated': False},  # 城収入観測
     'castle_ownership': {'region': WORLD, 'lifetime': 'chapter', 'migrated': False},  # 城所有観測

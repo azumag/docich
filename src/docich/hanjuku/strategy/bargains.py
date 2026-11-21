@@ -59,53 +59,93 @@ def _rich_card(shop, name):
 # Owner 2026-11-06: each kind of card is held up to 99 copies. A merchant sells
 # no more than that ("それいじょうもてないようですな"), so a plan that ignores
 # what is already held is refused and, before #3589, froze the bot.
+# Owner 2026-11-22: buy only the difference to 99, per kind.
+#
+# ``card_stock`` is the ledger of the *field* inventory (owner 2026-11-22):
+# a carried card has already left the field when the sortie panel takes it
+# (S0b), and a battle spends the carried copy, so neither moves the field
+# stock again. A missing key is unknown, never 0.
 HOLD_CAP = 99
-SINCE_READ = 'card_bought_since_read'   # copies bought after the last panel read
-CARD_USED = 'card_used_since_read'      # copies spent since the last panel read
-HELD_FLOOR = 'card_held_floor'          # holding proved by a merchant refusal
 
 
-def _count(table, name):
-    value = table.get(name) if isinstance(table, dict) else None
-    return value if type(value) is int and value > 0 else 0
+def held(mem, name):
+    """Field-inventory copies of ``name`` from the ledger, or None when unknown.
 
-
-def held_estimate(mem, name):
-    """Copies of ``name`` held now: last panel read + purchases since - spent, never below a refusal's proof.
-
-    The panel is only read on a sortie, so merchant purchases do not show in
-    ``card_stock`` for a while; counting them here keeps a second visit from
-    asking for a full 99 on top of them. A card used in battle is consumed, so
-    its count drops the moment it is spent — the buy then asks for only the
-    deficit instead of re-probing a full 99 and backing off on refusals.
+    Only a card panel read, a confirmed purchase of a known kind, or a carried
+    card writes an entry. A kind the bot has never seen stays unknown so a
+    spare-cash buy is not planned from an invented 0 (g1288: 17 kinds were
+    zeroed by a window read and the next merchant was asked for 99 each).
     """
-    stock = _count(mem.get('card_stock'), name)
-    net = stock + _count(mem.get(SINCE_READ), name) - _count(mem.get(CARD_USED), name)
-    return max(net, _count(mem.get(HELD_FLOOR), name), 0)
-
-
-def note_card_bought(mem, name, qty):
-    if type(qty) is int and qty > 0 and isinstance(name, str):
-        ledger = mem.setdefault(SINCE_READ, {})
-        ledger[name] = min(_count(ledger, name) + qty, 10 ** 4)
-
-
-def note_card_used(mem, name):
-    """Record one copy of ``name`` consumed so the next buy asks only the deficit."""
-    if isinstance(name, str) and name:
-        ledger = mem.setdefault(CARD_USED, {})
-        ledger[name] = min(_count(ledger, name) + 1, 10 ** 4)
+    stock = mem.get('card_stock')
+    value = stock.get(name) if isinstance(stock, dict) else None
+    return value if type(value) is int and value >= 0 else None
 
 
 def hold_room(mem, name):
-    """Copies of ``name`` the hand can still take (merchant purchases included)."""
-    return max(0, HOLD_CAP - held_estimate(mem, name))
+    """Copies of ``name`` the field can still take, or None when unknown."""
+    count = held(mem, name)
+    return None if count is None else max(0, HOLD_CAP - count)
 
 
-def _rich_room(mem, name, stock, bought):
-    """Copies a rich merchant may still sell: the 99 assumption, then any learned ceiling."""
-    room = RICH_MERCHANT_MAX_COPIES - stock.get(name, 0) - bought.get(name, 0)
-    return min(room, hold_room(mem, name))
+def note_card_bought(mem, name, qty):
+    """A confirmed purchase enters the ledger only when the kind is known.
+
+    An unknown kind stays unknown: ``boss_cards.note_card_purchase`` records
+    such a copy as UNSEEN instead (one of the two, never both), so adding it
+    here would invent an observation. The caller must run this first; the
+    purchase ledger decides UNSEEN from the kind's state afterwards.
+    """
+    if not (type(qty) is int and qty > 0 and isinstance(name, str)):
+        return
+    count = held(mem, name)
+    if count is None:
+        return
+    mem.setdefault('card_stock', {})[name] = min(count + qty, HOLD_CAP)
+
+
+def note_card_carried(mem, name, shown, taken):
+    """The panel row is the ledger after taking ``taken`` copies.
+
+    ``shown`` is the row's stock before the A presses. The picked copies leave
+    the field inventory at that moment (S0b), so the next window reads the same
+    value; deriving it from the row instead of subtracting from the old ledger
+    keeps a stale ledger from being decremented twice.
+    """
+    if not isinstance(name, str) or not name or type(shown) is not int or type(taken) is not int:
+        return
+    mem.setdefault('card_stock', {})[name] = max(0, shown - taken)
+
+
+def forget_held(mem, names):
+    """Make ``names`` unknown in the ledger (a cancelled sortie's carried cards)."""
+    stock = mem.get('card_stock')
+    if not isinstance(stock, dict) or not names:
+        return 0
+    forgotten = 0
+    for name in names:
+        if isinstance(name, str) and name in stock:
+            stock.pop(name)
+            forgotten += 1
+    return forgotten
+
+
+def forget_picked(mem):
+    """Drop the cards a cancelled sortie carried and clear the attempt.
+
+    A confirmed sortie's carried copies are gone from the field (S0b), but
+    whether a sortie cancelled before the departure confirmation returns them
+    is not measured. Making every card taken in the attempt unknown beats
+    keeping a count that may be one sortie behind; the next panel read fills
+    the kind in again.
+    """
+    forgotten = forget_held(mem, mem.get('picked') or ())
+    mem['picked'] = []
+    return forgotten
+
+
+def _rich_room(mem, name):
+    """Copies a rich merchant may still sell: the 99 goal minus the ledger."""
+    return hold_room(mem, name)
 
 
 def _caps(shop):
@@ -203,14 +243,21 @@ def merchant_card_spendable(mem, shop, header, name, price):
     if cash is None or _charted_purchase_ahead(mem, header):
         return None
     # Revalidate quantities at the real quote, independently of cached plans.
+    # The ledger already counts every copy bought at this visit, so the billed
+    # rows are used only for the monthly caps, never as held stock.
+    room = hold_room(mem, name)
+    if room is None:
+        # Unknown kinds are never bought with spare cash: the ask would be a
+        # probe from an invented 0 (owner 2026-11-22).
+        return None
     bought = shop.get('bought', [])  # validated by bargain_spendable
     used = sum(q for n, q, _ in bought if n in extras and not _rich_card(shop, n))
-    same = sum(q for n, q, _ in bought if n == name)
     _, copy_cap, factor = _caps(shop)
-    copies = (max(0, (RICH_RANDOM_MAX_COPIES if name in shop.get('rich_random_cards', [])
-                      else RICH_MERCHANT_MAX_COPIES) - same) if rich else
-              max(0, min(copy_cap - used, BARGAIN_TARGETS[name] * factor - same)))
-    copies = min(copies, hold_room(mem, name))
+    if rich:
+        copies = (min(room, RICH_RANDOM_MAX_COPIES)
+                  if name in (shop.get('rich_random_cards') or []) else room)
+    else:
+        copies = max(0, min(copy_cap - used, BARGAIN_TARGETS[name] * factor, room))
     return min(cash, copies * price)
 
 
@@ -279,33 +326,40 @@ def plan_bargains(mem, shop, header, *, listed=None):
         bought[name] = bought.get(name, 0) + qty
     added, copies = [], 0
     _, copy_cap, factor = _caps(shop)
-    # Basis the plan actually used per card (panel stock plus, where the pass
-    # counts them, this visit's buys); logged so a refusal can be checked
-    # against what the planner believed was held.
+    # Basis the plan actually used per card (the ledger's field stock). The
+    # ledger already includes this visit's purchases, so the billed ``bought``
+    # rows are never added here; they only size the monthly gold/copy caps.
     seen_basis = {}
     # On the observed listing, buy both requested cards before optional extras.
     # Pair purchases prevent the cheaper card from monopolizing the budget.
     # The observed listing is authoritative. Round-robin the requested kinds
     # so a cheap first item cannot consume all cash before other requested
     # kinds get a chance. Stop at 99 held copies of each, or the real budget.
+    # Owner 2026-11-22: a rich merchant (1000G+) buys every strong card it
+    # knows, BARGAIN_TARGETS included, up to 99; the monthly 200G/8-copy caps
+    # belong to the ordinary merchant only. Without a readable listing there is
+    # no real price, so the provisional pass plans nothing here and the
+    # listing pass owns the rich visit.
+    rich_targets = [*RICH_MERCHANT_CARDS,
+                    *(name for name in BARGAIN_TARGETS if name not in RICH_MERCHANT_CARDS)]
     if rich and listed is not None:
         choices = []
-        for name in RICH_MERCHANT_CARDS:
-            price, seen = listed.get(name), stock.get(name, 0)
+        for name in rich_targets:
+            price = listed.get(name)
+            room = _rich_room(mem, name)
             if (name not in queued and type(price) is int and 0 < price <= KNOWN_PRICES[name]
-                    and type(seen) is int and 0 <= seen < RICH_MERCHANT_MAX_COPIES
-                    and _rich_room(mem, name, stock, bought) > 0):
-                seen_basis[name] = seen + bought.get(name, 0)
+                    and room):
+                seen_basis[name] = held(mem, name)
                 choices.append(name)
         amounts = {name: 0 for name in choices}
         remaining = rich_budget
         while True:
             changed = False
             for name in choices:
-                if (amounts[name] < _rich_room(mem, name, stock, bought)
-                        and remaining >= listed[name]):
+                price = listed[name]
+                if amounts[name] < _rich_room(mem, name) and remaining >= price:
                     amounts[name] += 1
-                    remaining -= listed[name]
+                    remaining -= price
                     changed = True
             if not changed:
                 break
@@ -316,20 +370,21 @@ def plan_bargains(mem, shop, header, *, listed=None):
 
         # Optional random purchases are allowed only after every available
         # requested card has exhausted its budget/holding room. A stable seed
-        # keeps retries and hotload from changing the chosen shopping list.
+        # keeps retries and hotload from changing the chosen list.
         random_names = list(shop.get('rich_random_cards', []))
-        candidates = [
-            name for name in sorted(listed) if name in RICH_RANDOM_CARDS
-            and name not in queued and name not in bought
-            and type(listed[name]) is int and 0 < listed[name] <= KNOWN_PRICES[name]
-            and hold_room(mem, name) > 0
-        ]
+        candidates = []
+        for name in sorted(listed):
+            if (name not in RICH_RANDOM_CARDS or name in queued or name in bought
+                    or type(listed[name]) is not int or not 0 < listed[name] <= KNOWN_PRICES[name]
+                    or not hold_room(mem, name)):
+                continue
+            candidates.append(name)
         rng = random.Random(f"{shop.get('key')}:{mem.get('chapter')}:{shop.get('gold_start')}")
         rng.shuffle(candidates)
         for name in candidates:
             if len(random_names) >= RICH_RANDOM_MAX_KINDS:
                 break
-            qty = min(RICH_RANDOM_MAX_COPIES, hold_room(mem, name),
+            qty = min(RICH_RANDOM_MAX_COPIES, hold_room(mem, name) or 0,
                       remaining // listed[name])
             if qty:
                 added.append([name, qty])
@@ -337,30 +392,30 @@ def plan_bargains(mem, shop, header, *, listed=None):
                 random_names.append(name)
                 remaining -= qty * listed[name]
         shop['rich_random_cards'] = random_names
-        budget = max(0, budget - (rich_budget - remaining))
-    for name, target in BARGAIN_TARGETS.items():
-        if rich and listed is not None and name in RICH_MERCHANT_CARDS:
-            continue
-        if name in queued or (name in bought and not cheap_pass):
-            continue  # chart quantities and already-attempted purchases stay untouched
-        seen = stock.get(name, 0) + (bought.get(name, 0) if cheap_pass else 0)
-        seen_basis[name] = seen
-        target = target * factor
-        price = KNOWN_PRICES[name] if listed is None else listed.get(name)
-        if (type(seen) is not int or seen < 0 or type(price) is not int
-                or not 0 < price <= KNOWN_PRICES[name]):
-            continue
-        need = max(0, target - seen)
-        if not need and budget > 0:
-            # Owner (2026-11-05): 目標在庫に達していても、チャートに関係なく
-            # 余剰資金で買い足す。月次の金額・枚数上限と実売価格の確認は同じ。
-            need = copy_cap
-        qty = min(need, copy_cap - copies, budget // price)
-        qty = min(qty, hold_room(mem, name))
-        if qty:
-            added.append([name, qty])
-            budget -= qty * price
-            copies += qty
+    if not rich:
+        for name, target in BARGAIN_TARGETS.items():
+            if name in queued or (name in bought and not cheap_pass):
+                continue  # chart quantities and already-attempted purchases stay untouched
+            count = held(mem, name)
+            if count is None:
+                # Unknown stock is not 0: asking 99 from a guess is exactly the
+                # refusal loop this ledger replaces (owner 2026-11-22).
+                continue
+            seen_basis[name] = count
+            target = target * factor
+            price = KNOWN_PRICES[name] if listed is None else listed.get(name)
+            if type(price) is not int or not 0 < price <= KNOWN_PRICES[name]:
+                continue
+            need = max(0, target - count)
+            if not need and budget > 0:
+                # Owner (2026-11-05): 目標在庫に達していても、チャートに関係なく
+                # 余剰資金で買い足す。月次の金額・枚数上限と実売価格の確認は同じ。
+                need = copy_cap
+            qty = min(need, copy_cap - copies, budget // price, hold_room(mem, name))
+            if qty:
+                added.append([name, qty])
+                budget -= qty * price
+                copies += qty
     shop['bargain_planned'] = True
     if listed is not None:
         shop['bargain_listing_planned'] = True

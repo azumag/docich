@@ -11,11 +11,12 @@ from __future__ import annotations
 from .os_layer.pixels import Frame
 from . import decision_log
 from .flows import (battle as battle_flow, battle_menus as battle_menus_flow,
+                    card_census as card_census_flow,
                     deploy as deploy_flow, egg_recovery as egg_recovery_flow, map as map_flow,
                     month as month_flow, name as name_flow, password as password_flow,
                     prompts as prompts_flow, recall as recall_flow, shop as shop_flow)
 from .judgment import battle as battle_judgment
-from .strategy import campaign, edition, goals
+from .strategy import campaign, card_census as card_census_booking, edition, goals
 from .os_layer import readers
 from .os_layer.navigation import observe_jump_foreground
 from .os_layer.phase import classify, shop_exit_confirmation
@@ -148,6 +149,7 @@ MENU_HOLD_KINDS = frozenset({
     'summer_bonus', 'yes_no', 'name_entry', 'password_entry',
     'sealed_castle', 'boss_attack_started', 'field_encounter_started',
     'attack_started', 'defense_started', 'barrier_removed',
+    'field_card_list',
 })
 
 
@@ -1458,6 +1460,11 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
     step=int(state.get('step',0))+1
     phase_step=int(state.get('phase_step',0))+1 if state.get('phase')==phase else 1
     mem=_memory
+    # v1356/S3b: a policy written before the field-inventory ledger's semantics
+    # changed carries an old ``card_stock``. There is no reservation on a
+    # hotload, so the first observation after the deploy books exactly one
+    # full read (the ledger itself is kept until that read overwrites it).
+    card_census_booking.note_ledger_version(mem)
     mem.pop('_map_registration_hold', None)
     mem.pop('_map_cursor_feedback', None)
     mem.pop('_nav_hold_feedback', None)
@@ -1485,6 +1492,14 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
         # A matching old trace may retain observed zero counts, but never
         # upgrades an old unbound roster into a complete reusable snapshot.
         mem['survey_run_identity'] = identity
+        if previous_identity is not None and previous_identity != identity:
+            # S3: a changed runtime identity means the emulator generation may
+            # carry a different game state. A *start* has no previous identity,
+            # so a bot start/hotload/deploy never clears the ledger (it keeps
+            # the same runtime identity across those events).
+            if mem.get('chapter') or mem.get('card_stock'):
+                card_census_booking.forget_ledger(mem)
+                card_census_booking.book(mem, 'runtime_generation')
     mem['_records']=[]
     if reset_native_map_scope and type(mem.get('chapter')) is int and mem['chapter'] in hanjuku_chart.CASTLE_NAMES:
         campaign._enter_chapter(mem, mem['chapter'], evidence='native_map_run_identity_changed',
@@ -1501,6 +1516,13 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
         # docich#4535: a title return that comes back through a battery save
         # rewinds the run's progress. Keep the episode open through its fades
         # (title_or_intro) so the load confirm can record resume_from_save.
+        if state.get('phase') not in ('title', 'title_or_intro') and mem.get('chapter'):
+            # S3: a title return after gameplay is the game-over signature
+            # (hanjuku_run latches terminal_reason='game_over' on the same
+            # evidence). The field inventory belongs to the run that ended, so
+            # it is unknown until the next full read.
+            card_census_booking.forget_ledger(mem)
+            card_census_booking.book(mem, 'game_over')
         mem['title_episode'] = True
     elif phase in ('field', 'field_menu', 'battle', 'battle_intro'):
         # A title episode ends only when the run is back in the game world.
@@ -1528,6 +1550,10 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
     # updated, before any owner runs: an interrupted or deferred want must be
     # visible to this observation's idle-time scheduling.
     goals.refresh(mem)
+    # S3: a booked full-card read waits at the month's first idle map. Record
+    # what held it, but take no input here -- the owners below still own the
+    # frame and the read starts only when the map is actually free.
+    card_census_flow.wait_step(screen, mem)
     kind=screen.kind
     if _is_quantity_confirm(kind, screen.text):
         # The purchase confirmation (「1こで50Gになりまんな! よろしでっか?」)
@@ -1889,6 +1915,10 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
     # castle_jump_failed text) and closed it before いどう could be chosen.
     recall_in_flight = _flow(mem).get('recall') or {}
     actions = None
+    # S3: an open census owns its map/menu/list frames before every other
+    # owner. It returns None on anything else (a battle, a message), so the
+    # screen goes to its real owner and the census never holds input.
+    actions = card_census_flow.resume_step(screen, mem, frame)
     if isinstance(recall_in_flight, dict):
         stage = recall_in_flight.get('stage')
         camp_menu = (stage == 'menu'
@@ -2004,6 +2034,10 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
         actions = map_registration.step(screen, mem, frame)
     if actions is None and not concert_house_event:
         actions = hanjuku_house.step(screen, mem, frame)
+    if actions is None:
+        # S3: every owner declined, the map is free and the month's actions
+        # are over -- this is the fixed frame for the full inventory read.
+        actions = card_census_flow.start_step(screen, mem, frame)
     if actions is not None:
         pass
     elif phase=='name' and kind!='name_entry':
@@ -2105,6 +2139,11 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
     elif kind in {'castle_info','sealed_castle','main_menu'}:
         decision_log._record(mem,'close_panel',screen=kind,reason='意図しない情報画面を閉じる')
         actions=[pad('b')]
+    elif kind=='field_card_list':
+        # S3: nobody owns this list (the census finished or never ran). It is
+        # still a closable panel, never a no-input hold: B returns to the
+        # menu and the next frame's own owner closes the menu.
+        actions=card_census_flow.field_card_list_step(screen,mem,frame)
     elif kind == 'text' and mem.get('shop') and shop_flow.holding_limit_message(screen):
         actions=shop_flow.shop_step(screen,mem)
     elif kind == 'text' and month_flow.chikujou_leftover(screen, mem):

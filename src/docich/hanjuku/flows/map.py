@@ -16,6 +16,7 @@ from ..decision_log import _record, _tally
 from ..version import BOT_VERSION
 from .deploy import (_cancel_broken_hero_sortie, _deploy_context, _deploy_input, _hold_deploy,
                             _hold_guarded_sortie, _hold_locked_boss, _hold_unrouted_sortie)
+from ..strategy.bargains import forget_picked
 from .recall import (MENU_HOLD_LIMIT, RECALL_LIMIT, _hold_after_picker, _recall_dispatch_step, _request_recall,
                     RELAY_MENU_WAIT, _relay_target, _y_route_step,
                     relay_from_picker,
@@ -973,7 +974,7 @@ def _measured_goal(mem, order, castle):
     goal = chart.castles(mem.get('chapter') or 0).get(castle)
     if goal is None:
         _plan_region(mem)['active'] = None
-        mem['picked'] = []
+        forget_picked(mem)
         mem['_map_registration_hold'] = True
         _record(mem, 'map_coordinates_unavailable', chart_step=order['step'], castle=castle,
                 reason='現在のランで有効な座標がないため入力せず、既存注文の実行を停止')
@@ -1083,7 +1084,7 @@ def _release_stale_active(mem):
         if step in live or _plan_region(mem).get('active') != step:
             return False
         _plan_region(mem)['active'] = None
-        mem['picked'] = []
+        forget_picked(mem)
         _drop_jump_state(mem, step)
         _record(mem, 'stale_active_released', chart_step=step,
                 observed_metric={'live_steps': sorted(live)[:8]},
@@ -1094,7 +1095,7 @@ def _release_stale_active(mem):
     if not plan_steps or step in plan_steps:
         return False
     _plan_region(mem)['active'] = None
-    mem['picked'] = []
+    forget_picked(mem)
     _drop_jump_state(mem, step)
     _record(mem, 'stale_active_released', chart_step=step,
             observed_metric={'plan_steps': sorted(plan_steps)[:8]},
@@ -2352,7 +2353,7 @@ def map_step(screen: Screen, mem, frame):
                                  'source': _source(order, mem)},
                 reason='実行中の指示の前提が失われたため指示を選び直す')
         _plan_region(mem)['active'] = None
-        mem['picked'] = []
+        forget_picked(mem)
         order = None
     if isinstance(order, dict) and (str(order.get('step', '')).startswith(chart_adjust.INTERIM_PREFIX)
                                     or (_plan_region(mem).get('chart_plan') or {}).get('source') == 'mechanical'):
@@ -2501,7 +2502,7 @@ def map_step(screen: Screen, mem, frame):
                 mem['approx_fallback'] = True
                 mem.pop('approx_localize_miss', None)
                 _plan_region(mem)['active'] = None
-                mem['picked'] = []
+                forget_picked(mem)
                 mem['uncertain'] = True
                 mem.pop('cursor', None)
                 _record(mem, 'approx_map_fallback', chart_step=order_step,

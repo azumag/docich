@@ -131,21 +131,27 @@ def test_unreadable_or_one_sided_arrows_are_not_the_whole_inventory():
         assert mem['card_stock']['イッテツーン'] == 99
 
 
-def test_only_shown_and_id_proven_absent_cards_clear_the_ledgers():
-    """Requirement 3: the read set is the shown rows plus the ID-gap proof."""
+def test_only_shown_and_id_proven_absent_cards_change_the_ledger():
+    """Requirement 3: the read set is the shown rows plus the ID-gap proof.
+
+    v1352 made ``card_stock`` the field-inventory ledger, so a read overwrites
+    it (and logs ``ledger_drift``) instead of clearing the retired purchase /
+    use / floor ledgers.
+    """
     rows = (('イッテツーン', 7), ('ブラッキー', 2), ('ダンスライン', 4))
     inv = inventory(rows, more_above=True, more_below=True)
     # フットバース(3) lies between イッテツーン(0) and ダンスライン(4), so it is
     # proven absent. ハリケーン(30) is outside the window and stays unknown.
-    mem = {'card_stock': {'イッテツーン': 5, 'フットバース': 5, 'ハリケーン': 5},
-           'card_bought_since_read': {'イッテツーン': 1, 'フットバース': 1, 'ハリケーン': 1},
-           'card_used_since_read': {'イッテツーン': 1, 'フットバース': 1, 'ハリケーン': 1},
-           'card_held_floor': {'イッテツーン': 1, 'フットバース': 1, 'ハリケーン': 1}}
+    mem = {'card_stock': {'イッテツーン': 5, 'フットバース': 5, 'ハリケーン': 5}}
     _observe_card_stock(mem, inv)
     assert mem['card_stock'] == {'イッテツーン': 7, 'ブラッキー': 2, 'ダンスライン': 4,
                                  'フットバース': 0, 'ハリケーン': 5}
+    drift = {r['card']: r['observed_metric']
+             for r in mem['_records'] if r['decision'] == 'ledger_drift'}
+    assert drift == {'イッテツーン': {'ledger': 5, 'read': 7, 'basis': 'window'},
+                     'フットバース': {'ledger': 5, 'read': 0, 'basis': 'proof'}}
     for ledger in ('card_bought_since_read', 'card_used_since_read', 'card_held_floor'):
-        assert mem[ledger] == {'ハリケーン': 1}, ledger
+        assert ledger not in mem
 
 
 def test_card_scroll_decision_records_both_arrow_readings():
