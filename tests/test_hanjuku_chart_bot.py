@@ -2830,8 +2830,11 @@ def test_camp_recall_walks_cursor_menu_and_own_castle(monkeypatch):
 
     monkeypatch.setattr(policy, 'castle_roofs',
                         lambda frame, exclude=None: [{'kind': 'own', 'target': (165, 117), 'clipped': False}])
+    # Owner 2026-11-21: 屋根が見えていても帰還は先にYジャンプで自城へ戻る。
     far = Screen(lines=[], hand=None, text='', kind='map_target', marker=(160, 110))
-    assert policy.camp_recall_step(far, mem, frame) == [policy.pad('down', 6)]
+    assert policy.camp_recall_step(far, mem, frame) == [policy.pad('y')]
+    assert mem['y_jumps']['RECALL:target'] == 1
+    mem['y_jumped'] = {'RECALL': _flow(mem)['recall']['goal']}
     near = Screen(lines=[], hand=None, text='', kind='map_target', marker=(163, 115))
     assert policy.camp_recall_step(near, mem, frame) == [policy.pad('a')]
     assert _flow(mem)['recall']['stage'] == 'await_dispatch'
