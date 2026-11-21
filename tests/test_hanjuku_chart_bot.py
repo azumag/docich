@@ -2835,10 +2835,17 @@ def test_camp_recall_walks_cursor_menu_and_own_castle(monkeypatch):
     assert _flow(mem)['recall']['steps'] == 0               # each stage restarts the budget
     assert [r['decision'] for r in mem['_records']][-1] == 'camp_enter'
 
-    # Owner 2026-11-19: the menu target is いどう (first row), so the A lands
-    # at once instead of walking down three rows to きかん.
+    # Chapter 1 without move_visible now uses きかん (not いどう), so the
+    # cursor walks down from row 0 (いどう) to row 3 (きかん).
+    assert policy.camp_recall_step(camp_menu(0), mem, frame) == [policy.pad('down')]
+    assert _flow(mem)['recall']['stage'] == 'menu'
+
+    # With move_visible set (corridor/relay), いどう is still used and A lands
+    # at once on the first row.
+    _flow(mem)['recall']['move_visible'] = {'castle': 'アルマムーン'}
     assert policy.camp_recall_step(camp_menu(0), mem, frame) == [policy.pad('a')]
     assert _flow(mem)['recall']['stage'] == 'dest'
+    assert _flow(mem)['recall']['steps'] == 0
     assert _flow(mem)['recall']['steps'] == 0               # destination gets a full budget too
 
     monkeypatch.setattr(policy, 'castle_roofs',

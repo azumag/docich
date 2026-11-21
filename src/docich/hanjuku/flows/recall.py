@@ -1561,9 +1561,15 @@ def _camp_recall_step(screen: Screen, mem, frame, *, observed_camps=None):
                         observed_metric={'cell': list(relay['cell']), 'hub': relay.get('hub'),
                                          'camp': list(state.get('target') or ())},
                         reason='後半の自軍城が無くハブへ直行すると崖に詰まるため、まず後半中央へいどうで移動する')
-        # Owner 2026-11-19 (#4736): every camp return goes いどう -> whole-map Y;
-        # きかん's whole-island picker is never chosen.
-        choice = 'いどう'
+        # Owner 2026-11-19 (#4736): いどう opens the field cursor (screen.kind=='map').
+        # The 'dest' stage only handles 'map' when move_visible is set (corridor ch9,
+        # gateway ch11, relay). For chapters without move_visible (including ch2),
+        # いどう abandons the recall immediately. Use きかん's whole-island picker
+        # (map_target) instead, which 'dest' handles for every chapter.
+        if state.get('move_visible'):
+            choice = 'いどう'
+        else:
+            choice = 'きかん'
         move = menu_to(screen, choice)
         if move is None:
             misses = state['cursor_misses'] = int(state.get('cursor_misses', 0)) + 1
