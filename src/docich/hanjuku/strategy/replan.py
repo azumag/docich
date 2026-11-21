@@ -823,23 +823,85 @@ def _garrison_rotation(mem, owned, busy, heading, taken=()):
 
 INTERIM_CARDS = ('イッテツーン', 'イッテツーン')
 
+def _strong_stock_kit(mem, stock):
+    """docich#4895: spare strong cards for the interim opener, use order first.
+
+    クースカン・ミックミーが潤沢にあるのに暫定攻撃注文が弱い再挑戦用開幕札
+    (イッテツーンx2) のまま終盤の敵将軍に押し負けた。実在庫が余裕を持つ強い
+    切り札で開幕札を組み替える: ``STRONG_CARDS`` の使用優先順に各1枚ずつ取り、
+    残り携行枠はIDの小さい側 (同順の逆) からID合計48未満に収まる限り重ねる。
+    クースカンとミックミーが潤沢なら推奨組の クースカン+ミックミーx2 (ID合計47)
+    になる。
+    未完了のボス注文が必要とする枚数は残し (``boss_kit``、g825)、携行ID合計は
+    敵卵の閾値48未満を守る。
+    """
+    from .boss_cards import boss_kit
+    from .kit import CARRY_SLOTS
+    kit = boss_kit(mem)
+    need = kit[1] if kit else {}
+    spare = {name: stock[name] - int(need.get(name) or 0)
+             for name in reference.STRONG_CARDS if type(stock.get(name)) is int}
+    ids, limit = reference.ALL_CARD_IDS, reference.ENEMY_EGG_CARD_ID_SUM
+    cards, total = [], 0
+    for name in reference.STRONG_CARDS:
+        if (len(cards) < CARRY_SLOTS and spare.get(name, 0) > cards.count(name)
+                and total + ids.get(name, limit) < limit):
+            cards.append(name)
+            total += ids[name]
+    for name in reversed(reference.STRONG_CARDS):
+        while (len(cards) < CARRY_SLOTS and spare.get(name, 0) > cards.count(name)
+               and total + ids.get(name, limit) < limit):
+            cards.append(name)
+            total += ids[name]
+    # The opener is replaced only when every weak copy becomes a strong card.
+    return cards if len(cards) >= len(INTERIM_CARDS) else None
+
+
 def _stock_cards(mem, wanted):
-    '''docich#4685: carry cards the country actually holds.
+    '''docich#4685 + #4895: carry cards the country actually holds; the
+    interim opener upgrades to spare strong cards when they are abundant.
 
     The planned cards were dropped at the list when out of stock, so an
     attack could march with an empty kit: ch2 2026-11-19 sent 37/38 HP
     generals at アウスパジア (enemy HP 85) twice while ノリウツール 21 and
     バグストーム 25 sat in stock, and both waves retreated. Keep the
     wanted cards that are in stock, else carry the best-stocked ones.
+
+    A ``None`` wanted is the generic interim opener (イッテツーンx2, the same
+    kit a lost melee's retry carries): #4895 lost to the late enemy generals
+    on it while クースカン・ミックミー sat abundant in stock, so it upgrades
+    to ``_strong_stock_kit``. A pinned chart card list never upgrades, even
+    when it happens to name the identical イッテツーンx2.
     '''
+    generic = wanted is None
+    wanted = list(INTERIM_CARDS) if generic else list(wanted)
     stock = mem.get('card_stock') or {}
     if not isinstance(stock, dict) or not stock:
-        return list(wanted)   # unread stock is not evidence of an empty one
-    held = [c for c in wanted if isinstance(stock.get(c), int) and stock.get(c) > 0]
+        return wanted         # unread stock is not evidence of an empty one
+    if generic:
+        strong = _strong_stock_kit(mem, stock)
+        if strong is not None:
+            return strong
+    # One planned copy per measured copy: planning イッテツーンx2 on a stock
+    # of 1 stalled the list on the second, never-held copy before the drop.
+    held = []
+    for card in wanted:
+        if type(stock.get(card)) is int and stock[card] > held.count(card):
+            held.append(card)
     if held:
         return held
+    # Generic fallback must not consume cards reserved for a pending boss kit.
+    # The strong opener above already subtracts those copies; apply the same
+    # constraint when no wanted card is held and we rank the remaining stock.
+    if generic:
+        from .boss_cards import boss_kit
+        kit = boss_kit(mem)
+        reserved = kit[1] if kit else {}
+    else:
+        reserved = {}
     ranked = sorted(((n, q) for n, q in stock.items()
-                     if isinstance(q, int) and q > 0 and isinstance(n, str)),
+                     if type(q) is int and q > int(reserved.get(n) or 0)
+                     and isinstance(n, str)),
                     key=lambda row: -row[1])
     return [n for n, _ in ranked[:2]]
    # same opener as a lost melee's retry
@@ -1273,7 +1335,7 @@ def interim_candidates(mem, allow_sole=False) -> dict:
         # this castle, else the retry opener (two イッテツーン). Cards out of
         # stock are dropped at the card list (card_drop), never waited for.
         base = chart_orders.get(target) or card_orders.get(target)
-        cards = _stock_cards(mem, list(base['cards']) if base and base.get('cards') else list(INTERIM_CARDS))
+        cards = _stock_cards(mem, list(base['cards']) if base and base.get('cards') else None)
         if chart.is_boss_castle(target):
             cards = []   # 波: strict kit waits for nobody — carry what is there
         sorties[purpose].append({
@@ -1582,7 +1644,7 @@ def interim_candidates(mem, allow_sole=False) -> dict:
         wave_busy = busy | planned_busy | committed
         purpose = 'retake' if wave_target in lost else 'attack'
         base = chart_orders.get(wave_target) or card_orders.get(wave_target)
-        cards = _stock_cards(mem, list(base['cards']) if base and base.get('cards') else list(INTERIM_CARDS))
+        cards = _stock_cards(mem, list(base['cards']) if base and base.get('cards') else None)
         extra = 0
         while extra < INTERIM_WAVE_LIMIT:
             more = _wave_pick(mem, wave_target, owned, wave_busy, allow_sole)

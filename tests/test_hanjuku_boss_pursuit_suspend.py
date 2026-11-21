@@ -20,7 +20,7 @@ def memory(tick=10000, **extra):
     mem = {
         'chapter': 9,
         'tick': tick,
-        'world': {'sorties': {}, 'garrison': {}},
+        'world': {'sorties': {}, 'garrison': {'イデ！': ['どうし', 'ゼウス']}},
         bp.LIST_KEY: {'ミント': {'step': 'A', 'launched': tick - 500}},
         'boss_cell': {'chapter': 9, 'cell': [810, 645], 'tick': tick - 10,
                       'readings': 2},

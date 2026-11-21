@@ -692,6 +692,8 @@ CLIFF_DETOUR_FRAMES = 16    # one short perpendicular step away from the cliff
 CLIFF_DETOUR_MAX = 6        # wall-sliding steps before the goal is unreachable
 CLIFF_RADIUS = 28           # px around the tent body searched for cliff pixels
 CLIFF_MIN_PIXELS = 40       # dark pixels in that disc that make the tent cliff-bound
+CLIFF_MIN_SOLID = 8         # 3x3 solid dark core pixels (filters sparse ch10 ground dots)
+CLIFF_OVERSCAN_PX = 8       # SNES border margin ignored for cliff detection
 CLIFF_ESCAPE_PX = 24        # distance of the perpendicular escape cell
 _DIRS = {'left': (-1, 0), 'right': (1, 0), 'up': (0, -1), 'down': (0, 1)}
 
@@ -702,9 +704,12 @@ def _cliff_escape(frame, cell):
     Owner 2026-11-15/16: a camp standing against a cliff must first step
     perpendicular away; marching straight home stays pinned to the wall.
     g1190 2026-11-16 (タオ): the tent sat under the end of a diagonal wall
-    with the lake below it. The wall's direction is the centroid of the dark
-    pixels around the tent body; the escape is the 4-way step most opposite
-    to it whose landing stands on the tent's own ground colours (not the
+    with the lake below it. The wall's direction is the centroid of the solid
+    3x3 dark wall-core pixels around the tent body; requiring solid 3x3 cores
+    and skipping the 8px SNES overscan border prevents ch10's dark-speckled
+    ground tiles ((32, 40, 40)) and screen-edge black bars from triggering
+    false cliff detours (#4907). The escape is the 4-way step most opposite
+    to the wall whose landing stands on the tent's own ground colours (not the
     lake, not another wall). ``cell`` is the camp's selecting cell (the
     body is about (8, 12) px further).
     """
@@ -712,23 +717,29 @@ def _cliff_escape(frame, cell):
         return None
     cx, cy = cell[0] + 8, cell[1] + 12
     w, h = frame.width, frame.height
+    margin = CLIFF_OVERSCAN_PX if min(w, h) >= 64 else 1
     body = (cx - 9, cy - 16, cx + 9, cy + 6)     # the tent sprite itself
-    dark, ring = [], {}
+    dark, solid, ring = [], [], {}
     r2 = CLIFF_RADIUS * CLIFF_RADIUS
-    for y in range(max(0, cy - CLIFF_RADIUS), min(h, cy + CLIFF_RADIUS + 1)):
-        for x in range(max(0, cx - CLIFF_RADIUS), min(w, cx + CLIFF_RADIUS + 1)):
+    y_lo, y_hi = max(margin, cy - CLIFF_RADIUS), min(h - margin, cy + CLIFF_RADIUS + 1)
+    x_lo, x_hi = max(margin, cx - CLIFF_RADIUS), min(w - margin, cx + CLIFF_RADIUS + 1)
+    for y in range(y_lo, y_hi):
+        for x in range(x_lo, x_hi):
             d2 = (x - cx) ** 2 + (y - cy) ** 2
             if d2 > r2 or (body[0] <= x <= body[2] and body[1] <= y <= body[3]):
                 continue
             p = frame.pixel(x, y)
             if CLIFF_DARK(*p[:3]):
                 dark.append((x, y))
+                if all(CLIFF_DARK(*frame.pixel(x + dx, y + dy)[:3])
+                       for dy in (-1, 0, 1) for dx in (-1, 0, 1)):
+                    solid.append((x, y))
             elif 100 <= d2 <= 256:
                 ring[p] = ring.get(p, 0) + 1
-    if len(dark) < CLIFF_MIN_PIXELS or not ring:
+    if len(dark) < CLIFF_MIN_PIXELS or len(solid) < CLIFF_MIN_SOLID or not ring:
         return None
-    ax = cx - sum(x for x, _ in dark) / len(dark)
-    ay = cy - sum(y for _, y in dark) / len(dark)
+    ax = cx - sum(x for x, _ in solid) / len(solid)
+    ay = cy - sum(y for _, y in solid) / len(solid)
     ground = {c for c, _ in sorted(ring.items(), key=lambda kv: -kv[1])[:4]}
     best = None
     for side, (dx, dy) in _DIRS.items():
@@ -1279,10 +1290,21 @@ def _camp_recall_step(screen: Screen, mem, frame, *, observed_camps=None):
         if camp is None:
             camp = min(camps, key=lambda c: (abs(c['target'][0] - cursor[0])
                                              + abs(c['target'][1] - cursor[1])) if cursor else 0)
-        state['target'] = list(camp['target'])
-        # The cursor sprite can cover the tent once the servo is on it; keep
-        # the last real detection so the arrival step can trust it.
-        state['last_seen'] = list(camp['target'])
+        body = camp_body_target(frame, camp['target'])
+        if body:
+            state['camp_body'] = body
+        else:
+            state.pop('camp_body', None)
+        if (body is not None and _camp_target(stored) and list(stored) == list(body)):
+            # #4901: the menu stage's body retry retargeted this same camp.
+            # Restoring its flag cell here pressed the dead cell again, so the
+            # recall looped camp_menu_not_opened until it gave up (ch10 v1317).
+            state['last_seen'] = list(stored)
+        else:
+            state['target'] = list(camp['target'])
+            # The cursor sprite can cover the tent once the servo is on it; keep
+            # the last real detection so the arrival step can trust it.
+            state['last_seen'] = list(camp['target'])
         if camp.get('kind'):
             state['camp_kind'] = camp['kind']
         else:
@@ -1476,6 +1498,7 @@ def _camp_recall_step(screen: Screen, mem, frame, *, observed_camps=None):
         (mem.get('y_jumped') or {}).pop('RECALL', None)
         (mem.get('y_jumped_res') or {}).pop('RECALL', None)
         state.pop('picker_confirmed', None)
+        state['picker_from_menu'] = True
         return [pad('a')]
     if stage == 'relay':
         # いどう opened a field-cursor move. Steer it to the relay cell; the
@@ -1500,7 +1523,21 @@ def _camp_recall_step(screen: Screen, mem, frame, *, observed_camps=None):
         # #4885: 一度本物の行き先ピッカーを確認した後は、camp_cliff_detour 等で
         # 赤いテント・砦・自軍城の真下へマーカーを動かしても赤い屋根を将軍旗と
         # 誤認して帰還ピッカーを中断しない（初回フレームの偽G検出 #4468 は維持）。
-        marker = screen.marker if state.get('picker_confirmed') else _picker_marker(screen, frame)
+        # #4917: さらに、キャンプメニューから いどう を確定した直後（steps<=2）に
+        # そのキャンプ自身の座標上（<=8px）へ出たピッカーは、キャンプ直上の赤い城屋根や
+        # 溶岩・別テント旗が重なっていても本物のピッカーとして確定する。
+        if state.get('picker_confirmed'):
+            marker = screen.marker
+        else:
+            marker = _picker_marker(screen, frame)
+            if (not marker and screen.marker and state.get('picker_from_menu')
+                    and int(state.get('steps') or 0) <= 2):
+                camp = state.get('target')
+                if (_camp_target(camp)
+                        and abs(screen.marker[0] - camp[0]) <= 8
+                        and abs(screen.marker[1] - camp[1]) <= 8):
+                    marker = screen.marker
+            state.pop('picker_from_menu', None)
         if screen.marker and not marker:
             # #4468: the blue G belongs to a field general, not an open picker.
             # Never send the recall A here — there is no destination to confirm

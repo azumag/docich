@@ -49,6 +49,44 @@ def test_map_yields_to_a_startable_order_until_the_month_has_a_launch():
     assert state['stage'] == 'open_menu'
 
 
+def test_task_stages_yield_the_map_to_a_startable_order():
+    """docich#4888: the per-general task loop defers between tasks too.
+
+    Once the roster walk ends the scan owns the field through 'process',
+    'manifest' and 'locate_reset', which were outside the #4642 deferral, so
+    a month spent cycling recalls/locates/repairs never yielded the map.
+    Each of those stages only opens the menu or pops the next queued task on
+    the field, so pausing there strands no transaction in flight.
+    """
+    mem = memory(month_sorties={'scope': [1, '2-6'], 'launches': 0})
+    post.arm(mem)
+    state = mem['post_month_status']
+    field = Screen([], None, '', kind='map')
+    for stage in ('process', 'manifest', 'locate_reset'):
+        state['stage'] = stage
+        state['tasks'] = [{'kind': 'recall', 'name': 'ヴィーナス'}]
+        state['floor_yields'] = 0
+        assert post.step(field, mem, None) is None, stage
+        assert state['floor_yields'] == 1, stage
+    # The deferral stays bounded inside the task loop as well: a spent cap
+    # lets 'process' pick up the next queued task exactly as before.
+    state['stage'] = 'process'
+    state['floor_yields'] = post.SORTIE_FLOOR_YIELDS
+    assert post.step(field, mem, None) == [pad('x')]
+    assert state['stage'] == 'task_menu'
+
+
+def test_process_with_no_tasks_finishes_instead_of_deferring():
+    """docich#4888: an empty queue releases the owner, not the sortie window."""
+    mem = memory(month_sorties={'scope': [1, '2-6'], 'launches': 0})
+    post.arm(mem)
+    state = mem['post_month_status']
+    state['stage'] = 'process'
+    state['tasks'] = []
+    assert post.step(Screen([], None, '', kind='map'), mem, None) == []
+    assert 'post_month_status' not in mem
+
+
 def test_an_armed_scan_yields_after_the_boss_wave_cap():
     from docich import hanjuku_chart as chart
     mem = memory(chapter=9, captured=list(chart.corridor(9)),
@@ -56,6 +94,7 @@ def test_an_armed_scan_yields_after_the_boss_wave_cap():
     post.arm(mem)
     state = mem['post_month_status']
     mem['boss_wave_generals'] = {'カシス': {'step': 'A', 'launched': 1}}
+    mem.setdefault('world', {})['garrison'] = {'イデ！': ['どうし', 'ゼウス']}
     mem['boss_cell'] = {'chapter': 9, 'cell': [770, 629], 'tick': 100}
     state['steps'] = post.BOSS_WAVE_SCAN_STEPS
     assert post.step(Screen([], None, '', kind='text'), mem, None) is None
@@ -68,6 +107,7 @@ def test_arm_defers_the_whole_scan_while_boss_waves_are_in_flight():
     mem = memory(chapter=9, captured=list(chart.corridor(9)),
                  month_sorties={'scope': [9, '2-6'], 'launches': 1},
                  boss_wave_generals={'カシス': {'step': 'A', 'launched': 1}},
+                 world={'garrison': {'イデ！': ['どうし', 'ゼウス']}},
                  boss_cell={'chapter': 9, 'cell': [770, 629], 'tick': 100})
     post.arm(mem)
     assert 'post_month_status' not in mem
@@ -882,6 +922,28 @@ def test_recall_task_starts_the_named_return_on_the_selected_camp(monkeypatch):
     assert state['stage'] == 'wait_recall'
 
 
+def test_recall_task_seeds_the_tent_body_cell_for_the_flag_retry(monkeypatch):
+    # docich#4901: a task recall without camp_body can never arm the
+    # flag->body retry, so a tent whose flag cell does not open the menu
+    # loops camp_menu_not_opened until it aborts (ch10 v1317).
+    from docich.hanjuku.state.regions import flow as _flow
+    mem = memory(month='2-12')
+    post.arm(mem)
+    state = mem['post_month_status']
+    state.update(stage='task_jump',
+                 job={'kind': 'recall', 'name': 'ヴィーナス'},
+                 statuses={'ヴィーナス': {'location': 'camp', 'broken': True}})
+    screen = Screen(lines=[], hand=None, text='', kind='map', cursor=(150, 100))
+    monkeypatch.setattr(post, 'own_camps',
+                        lambda _frame: [{'target': [150, 100], 'kind': 'tent'}])
+    monkeypatch.setattr(post, 'camp_body_target',
+                        lambda _frame, _t: [160, 110])
+    monkeypatch.setattr(post.recall_flow, 'camp_recall_step',
+                        lambda _screen, _mem, _frame: [pad('a')])
+    assert post.step(screen, mem, object()) == [pad('a')]
+    assert _flow(mem)['recall']['camp_body'] == [160, 110]
+
+
 def test_boss_adjacent_camp_exemption_expires_into_a_recall():
     # docich#3659: ボス城至近の野営除外に期限を設ける。除外が
     # BOSS_CAMP_EXEMPT_MONTHS か月連続した野営は、翌月の月次処理で
@@ -1629,6 +1691,42 @@ def test_a_static_unresolvable_marker_is_not_re_read_for_every_general():
     resolved = {'box': [70, 120, 75, 125], 'castle_candidate': 'アルマムーン'}
     assert post._static_marker(state, resolved) is False
     assert post._static_marker(state, {}) is False
+
+
+def test_scroll_arrow_fallback_never_triggers_static_marker_skip():
+    """#4910: the list scroll arrow appears whenever the in-map triangle blinks off."""
+    state = {}
+    scroll_arrow = {'box': [192, 161, 198, 167], 'source': 'selection_marker',
+                    'marker_reason': 'scroll_arrow'}
+    assert post._static_marker(state, scroll_arrow) is False
+    assert 'static_marker' not in state
+    assert post._static_marker(state, scroll_arrow) is False
+    outside = {'box': [192, 161, 198, 167], 'source': 'selection_marker'}
+    assert post._static_marker(state, outside) is False
+    assert 'static_marker' not in state
+
+
+def test_boss_move_and_exemption_are_suppressed_until_boss_is_unlocked():
+    """#4912: ch10 central boss enclosure is empty until all normal castles are captured."""
+    statuses = {
+        'マンゴスチン': {'location': 'camp', 'marker': {'castle_candidate': 'ボス'},
+                     'hp': 85, 'max_hp': 85, 'broken': False},
+        'ローズマリー': {'location': 'camp', 'marker': {'castle_candidate': 'ボス'},
+                     'hp': 2, 'max_hp': 98, 'broken': False},
+    }
+    locked_tasks = post._tasks(statuses, list(statuses), boss_unlocked=False)
+    assert locked_tasks == [
+        {'kind': 'recall', 'name': 'ローズマリー'},
+        {'kind': 'recall', 'name': 'マンゴスチン'},
+    ]
+    unlocked_tasks = post._tasks(statuses, list(statuses), boss_unlocked=True)
+    assert unlocked_tasks == [{'kind': 'boss_move', 'name': 'マンゴスチン'}]
+
+    mem = {'chapter': 10, 'captured': ['マカリア', 'コッカーニュ', 'ファルゲ']}
+    assert post._boss_unlocked(mem) is False
+    from docich import hanjuku_chart as chart
+    all_normal = sorted(set(chart.CASTLE_NAMES[10]) - {chart.home_castle(10), chart.boss_castle(10)})
+    assert post._boss_unlocked({'chapter': 10, 'captured': all_normal}) is True
 
 
 def test_a_same_month_house_read_skips_the_individual_reopen():
