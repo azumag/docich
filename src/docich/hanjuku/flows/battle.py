@@ -1333,8 +1333,7 @@ def _hero_retreat_open(mem, cur):
         _record(mem, 'battle_retreat_preempted_card', **_battle_labels(cur),
                 general=cur.get('ally'), enemy=cur.get('enemy'), card=pending_card,
                 observed_metric={'ally_hp': hp, 'enemy_hp': cur.get('enemy_hp'),
-                                 'card_confirmation': 'unclassified',
-                                 'egg_uses': (mem.get('egg_uses') or {}).get(cur.get('ally'))},
+                                 'card_confirmation': 'unclassified'},
                 resulting_event='retreat_preempted_card_use',
                 reason='切り札の使用確認を待つ間に将軍を失わず、主人公の敗北も避けるため退却を優先')
     flow = cur.setdefault('hero_retreat', {})
