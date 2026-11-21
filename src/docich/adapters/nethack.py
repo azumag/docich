@@ -67,6 +67,7 @@ CANCEL_REFUSAL_REASONS = frozenset(
         "post_key_probe_failed",
         "post_key_capture_failed",
         "wait_timeout",
+        "runtime_processes_gone",
     }
 )
 PROMPT_CLASSES = frozenset(
@@ -771,6 +772,7 @@ class NethackCoordinatorAdapter(CliCoordinatorAdapter):
         prompt_class: str,
         save_signature_changed: bool | None,
         boundary_outcome: str | None = None,
+        orphan_processes_present: int | None = None,
     ) -> None:
         """Best-effort bounded observation for owner-only diagnostics (#1015).
 
@@ -795,6 +797,11 @@ class NethackCoordinatorAdapter(CliCoordinatorAdapter):
                 "prompt_class": prompt_class,
                 "save_signature_changed": save_signature_changed,
                 "boundary_outcome": boundary_outcome,
+                "orphan_processes_present": (
+                    orphan_processes_present
+                    if type(orphan_processes_present) is int
+                    else None
+                ),
                 "generation": self.spec.generation,
                 "runtime_id": self.spec.runtime_id,
                 "recorded_at": dt.datetime.now(dt.timezone.utc)
@@ -813,11 +820,14 @@ class NethackCoordinatorAdapter(CliCoordinatorAdapter):
         present: bool | None,
         alive: bool | None,
         prompt_class: str,
+        orphan_processes_present: int | None = None,
     ) -> None:
         """Record a bounded observation for a refused cancel (#1015).
 
         Best effort: the caller still returns ``False`` / re-raises exactly as
         before, so a diagnostic problem can never turn a refusal into success.
+        ``orphan_processes_present`` is the live runtime-owned process count
+        the death proof observed (docich#4693); ``None`` stays "unmeasured".
         """
         self._record_boundary_diag(
             "cancel",
@@ -826,7 +836,49 @@ class NethackCoordinatorAdapter(CliCoordinatorAdapter):
             process_alive=alive,
             prompt_class=prompt_class,
             save_signature_changed=self._save_signature_changed(),
+            orphan_processes_present=orphan_processes_present,
         )
+
+    def _ack_dead_runtime_cancel(
+        self,
+        request_id: str,
+        *,
+        present: bool | None,
+        alive: bool | None,
+        prompt_class: str,
+        refuse_reason: str,
+    ) -> bool:
+        """Acknowledge a cancel whose runtime is proven dead (docich#4693).
+
+        When the death proof shows no runtime-owned process survives -- inside
+        or outside the birth window -- no save prompt can be pending and no
+        save can be in flight, so the drain is safe to release.  The same
+        terminal boundary the request path derives from ended-process evidence
+        is recorded first; when that record cannot be written the cancel still
+        refuses with the caller's original reason.  This path never sends a
+        key and never kills a process.
+        """
+        try:
+            outcome = self._record_ended_process_boundary(request_id)
+        except Exception:
+            self._refuse_cancel(
+                refuse_reason,
+                present=present,
+                alive=alive,
+                prompt_class=prompt_class,
+            )
+            return False
+        self._record_boundary_diag(
+            "cancel",
+            reason="runtime_processes_gone",
+            process_target_present=present,
+            process_alive=alive,
+            prompt_class=prompt_class,
+            save_signature_changed=self._save_signature_changed(),
+            boundary_outcome=outcome,
+            orphan_processes_present=0,
+        )
+        return True
 
     def _at_character_creation(self, process_target: str) -> bool:
         try:
@@ -957,6 +1009,16 @@ class NethackCoordinatorAdapter(CliCoordinatorAdapter):
         boundary as above.  A process that does not exit, a changed process
         identity or any probe failure still refuses.
 
+        A fourth acknowledgment closes the abandoned-drain gap (docich#4693):
+        a pane that shows no pending prompt, or a process the post-key probe
+        reports as gone, is acknowledged once the death proof shows *zero*
+        live processes still owned by this runtime -- pane leaders, their
+        descendants and env-tagged orphans, all revalidated under pidfds so a
+        recycled PID cannot forge the proof.  A live game that merely left
+        the save prompt (stalled-but-live), any surviving orphan and any
+        unprovable check keep refusing; the refusal records the live owned
+        count as ``orphan_processes_present`` for the owner.
+
         Every refusal path records a bounded observation first (#1015) so the
         owner can classify *why* the cancel was refused without pane text.
         """
@@ -1050,11 +1112,30 @@ class NethackCoordinatorAdapter(CliCoordinatorAdapter):
                 request_id, process_target, deadline, cancel
             )
         if not _is_save_prompt_pending(text):
+            # A pane without the save prompt normally means a live game in a
+            # different UI state, so the cancel refuses.  The exception is a
+            # runtime whose owned processes are *all* verifiably gone --
+            # inside and outside the birth window (docich#4693): no process
+            # can still be sitting on the prompt or mid-save, and keeping
+            # ``draining`` durable would wedge recovery on a corpse.  Any
+            # survivor or an incomplete proof refuses exactly as before.
+            survivors = self._runtime_process_survivors()
+            if survivors == ():
+                return self._ack_dead_runtime_cancel(
+                    request_id,
+                    present=present,
+                    alive=alive,
+                    prompt_class=prompt_class,
+                    refuse_reason="prompt_not_pending",
+                )
             self._refuse_cancel(
                 "prompt_not_pending",
                 present=present,
                 alive=alive,
                 prompt_class=prompt_class,
+                orphan_processes_present=(
+                    None if survivors is None else len(survivors)
+                ),
             )
             return False
 
@@ -1084,12 +1165,28 @@ class NethackCoordinatorAdapter(CliCoordinatorAdapter):
                 )
                 return False
             if not alive:
-                # The save went through anyway; nothing was cancelled.
+                # The save went through anyway; nothing was cancelled -- but
+                # when no runtime-owned process survives anywhere the runtime
+                # is provably dead and the drain can still be released
+                # (docich#4693).  A live survivor or an unprovable check
+                # refuses with the original reason.
+                survivors = self._runtime_process_survivors()
+                if survivors == ():
+                    return self._ack_dead_runtime_cancel(
+                        request_id,
+                        present=present,
+                        alive=False,
+                        prompt_class="unknown",
+                        refuse_reason="process_gone",
+                    )
                 self._refuse_cancel(
                     "process_gone",
                     present=present,
                     alive=False,
                     prompt_class="unknown",
+                    orphan_processes_present=(
+                        None if survivors is None else len(survivors)
+                    ),
                 )
                 return False
             try:

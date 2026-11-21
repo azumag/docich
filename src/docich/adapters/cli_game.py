@@ -642,6 +642,36 @@ class CliCoordinatorAdapter:
             return False
         return not any(pane.dead for pane in states)
 
+    def _runtime_process_survivors(self) -> tuple[int, ...] | None:
+        """PIDs still provably owned by this runtime; ``None`` when unprovable.
+
+        Every pane leader of the adapter session, every descendant and every
+        process still carrying this runtime's ownership tags must be checked
+        before "dead" can be claimed (docich#4693).  ``None`` means the proof
+        could not be completed and callers must treat the runtime as still
+        possibly alive.
+        """
+        try:
+            return self.tmux.owned_processes_alive(self._ownership("adapter"))
+        except Exception:  # noqa: BLE001 - an unprovable check fails closed
+            return None
+
+    def runtime_processes_gone(self, deadline: float, cancel) -> bool | None:
+        """True only when every process owned by this runtime is provably gone.
+
+        Optional coordinator capability (docich#4693): an accepted drain whose
+        game process died before terminal evidence can then be retired instead
+        of re-publishing a corpse as ``active``.  ``False`` means a live
+        survivor was found; ``None`` means the proof could not be completed
+        (a probe failure or missing pidfd support) and the coordinator must
+        keep the conservative retained-active path.
+        """
+        self._check_active(deadline, cancel)
+        survivors = self._runtime_process_survivors()
+        if survivors is None:
+            return None
+        return not survivors
+
     def cleanup_runtime(self, deadline: float, cancel) -> None:
         marker = Path(self.g.state_dir) / "resolver" / "active" / f"{self.game.name}.json"
         while marker.exists():

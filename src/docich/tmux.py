@@ -31,9 +31,13 @@ from .process_tree import (
     ancestor_pids,
     descendant_pids,
     is_running,
+    pidfd_process_running,
+    pidfd_tagged_process_running,
     process_cgroup,
     process_environ,
+    process_ids,
     process_pgid,
+    process_table,
     processes_in_pane_scopes,
     processes_with_env,
     terminate_owned_processes,
@@ -1013,6 +1017,77 @@ class Tmux:
             and (process_pgid(pid), process_cgroup(pid))
             in {(scope.pgid, scope.cgroup) for scope in pane_groups.values()}
         )
+
+    def owned_processes_alive(
+        self, ownership: TmuxOwnership
+    ) -> tuple[int, ...] | None:
+        """Live PIDs this runtime still provably owns; ``None`` when unprovable.
+
+        The death proof behind the refused-cancel escape hatch (docich#4693):
+        a drain may only be released once it is shown that *no* process
+        belonging to the runtime survives — not in its panes, not as a
+        reparented orphan carrying the ownership tags, nowhere.  Discovery
+        uses the same attribution as a teardown sweep: the pane leaders of
+        every window in this session, their descendant tree, and the env-tag
+        scan filtered by the protected set (the shared tmux server and the
+        panes of every *other* session inherit the same tags, Issue #1105).
+        Each candidate's identity is then revalidated under a pidfd so a
+        recycled PID can be counted neither as a survivor nor as the corpse.
+        ``None`` means the proof could not be completed — a missing window
+        list, a failed pane probe, an empty process table or a platform
+        without pidfd — and the caller must fail closed; it never means
+        "dead".
+        """
+
+        tags = {
+            OWNERSHIP_RUNTIME_ID_ENV: ownership.runtime_id,
+            OWNERSHIP_GENERATION_ENV: str(ownership.generation),
+        }
+        try:
+            names = self.list_windows()
+            if not names:
+                return None
+            leaders: list[int] = []
+            for name in names:
+                leaders.extend(
+                    pane.pid
+                    for pane in self.pane_states_checked(f"{self.session}:{name}")
+                )
+            protected = self._protected_teardown_pids(leaders).expanded()
+            visible = process_ids()
+            # An empty host listing is an enumeration failure, not an empty
+            # process table: treating it as such would fabricate a death
+            # proof for a runtime that is still running.
+            if not visible or not process_table():
+                return None
+            tree_candidates = set(leaders)
+            tree_candidates.update(descendant_pids(leaders))
+            # Env-tag attribution is only needed for reparented orphans that
+            # left the descendant tree.  A leader or descendant is owned by
+            # position, so its verdict is plain pidfd liveness -- requiring
+            # the tags there would call a running process "dead" the moment
+            # a child scrubbed them.
+            tagged_candidates = {
+                pid
+                for pid in processes_with_env(tags, pids=visible)
+                if pid not in protected
+            } - tree_candidates
+        except Exception:  # noqa: BLE001 - an incomplete proof is no proof
+            return None
+        live: list[int] = []
+        for pid in sorted(tree_candidates | tagged_candidates):
+            if pid <= 1 or pid in protected:
+                continue
+            verdict = (
+                pidfd_process_running(pid)
+                if pid in tree_candidates
+                else pidfd_tagged_process_running(pid, tags)
+            )
+            if verdict is None:
+                return None
+            if verdict:
+                live.append(pid)
+        return tuple(live)
 
     def _reap_escaped_processes(
         self,
