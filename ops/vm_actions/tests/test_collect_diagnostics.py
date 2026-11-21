@@ -1785,6 +1785,7 @@ def test_hanjuku_hotload_versions_are_fixed_values_not_an_arbitrary_prefix():
                  "hanjuku-chart-v1355-math-corner",
                  "hanjuku-chart-v1360-spend-resources-before-retreat",
                  "hanjuku-chart-v1362-camp-recall-ch2",
+                 "hanjuku-chart-v1363-chikujou-at-month-end",
 )
     for version in versions:
         assert module._project_corner_state({'bot_version': version})['bot_version'] == version
