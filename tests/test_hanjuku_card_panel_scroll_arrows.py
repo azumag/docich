@@ -146,3 +146,24 @@ def test_only_shown_and_id_proven_absent_cards_clear_the_ledgers():
                                  'フットバース': 0, 'ハリケーン': 5}
     for ledger in ('card_bought_since_read', 'card_used_since_read', 'card_held_floor'):
         assert mem[ledger] == {'ハリケーン': 1}, ledger
+
+
+def test_card_scroll_decision_records_both_arrow_readings():
+    """Production must see the ▲/▼ values behind a scroll decision.
+
+    1-B1 wants クースカン (ID 13) below the visible four rows (0..11), so the
+    flow takes the visible ノリウツール first and then scrolls. Both arrows are
+    measured on this panel and must appear in the card_scroll record; the
+    decision itself (one Down) is unchanged.
+    """
+    from test_hanjuku_sortie_evidence import measured_card_select, memory
+    mem = memory()
+    panel = measured_card_select(('イッテツーン', 'ブラッキー', 'フットバース', 'ノリウツール'),
+                                 stocks=('11', '1', '1', '2'), selected=3,
+                                 more_above=True, more_below=True)
+    assert policy.deploy_step(panel, mem) == [policy.pad('a')]
+    assert policy.deploy_step(panel, mem) == [policy.pad('down')]
+    record = mem['_records'][-1]
+    assert record['decision'] == 'card_scroll'
+    assert record['observed_metric']['more_above'] is True
+    assert record['observed_metric']['more_below'] is True

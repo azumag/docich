@@ -131,6 +131,19 @@ BOSS_ABSENT_LIMIT = 10         # general-list readings without the boss general 
 BALMUNG_HELD = 'balmung_held'
 
 
+def _card_arrow_metric(inventory):
+    """The measured ▲/▼ readings of this panel, recorded but never acted on.
+
+    True / False is a measured scroll arrow; None means it could not be read.
+    The flow already consults them through ``_card_panel_complete`` when it
+    decides whether the visible rows are the whole inventory. Copying them
+    into ``observed_metric`` lets production verify that reading afterwards;
+    it changes no decision.
+    """
+    return {'more_above': inventory.get('more_above'),
+            'more_below': inventory.get('more_below')}
+
+
 def _note_balmung_stock(mem, month, inventory):
     """Remember a measured バルムンク stock for this month's boss sorties.
 
@@ -204,7 +217,8 @@ def _boss_balmung_kit(mem, order, inventory):
                              'boss_damage': reference.boss_damage_card('バルムンク'),
                              'id_sum': sum(CARD_IDS[c] for c in kit),
                              'inventory_evidence': inventory.get('inventory_evidence'),
-                             'observed_rows': inventory.get('observed_rows')},
+                             'observed_rows': inventory.get('observed_rows'),
+                             **_card_arrow_metric(inventory)},
             reason='未選択の実在庫にバルムンク(ボス250)を確認したため、ボス注文の先頭に携行して積極的に使う')
     return []
 
@@ -256,7 +270,8 @@ def _chapter_two_balmung_inventory(mem, order, inventory):
                              'id_sum': sum(CARD_IDS[c] for c in kit),
                              'stocks': {c: stocks[c] for c in set(kit)},
                              'inventory_evidence': inventory['inventory_evidence'],
-                             'observed_rows': inventory['observed_rows']},
+                             'observed_rows': inventory['observed_rows'],
+                             **_card_arrow_metric(inventory)},
             reason='実在庫のイベント札2枚と道中用の安価な札を確認し、第2話ボスの実測装備を携行する')
     return []  # the following observation selects and verifies the actual kit
 
@@ -322,7 +337,8 @@ def _rare_card_inventory(screen, mem, order, inventory):
                                  'stock_source': 'panel' if row else 'card_stock',
                                  'cards': kit,
                                  'original_cards': original,
-                                 'id_sum': sum(CARD_IDS[c] for c in kit)},
+                                 'id_sum': sum(CARD_IDS[c] for c in kit),
+                                 **_card_arrow_metric(inventory)},
                 reason='実在庫と携行枠を確認し、イベント札を1枚携行して活用する')
         return []
     if not isinstance(month, str) or mem.get(scan_field) == scan_key:
@@ -362,7 +378,7 @@ def _rare_card_inventory(screen, mem, order, inventory):
     scan.update(presses=scan['presses'] + frames, rows=rows, was_bottom=at_bottom)
     _record(mem, 'sortie_input', **_deploy_context(order, mem), screen='card_select',
             observed_metric={'rare_scan': 'discover', 'presses': scan['presses'], 'rows': rows,
-                             'frames': frames},
+                             'frames': frames, **_card_arrow_metric(inventory)},
             reason='未選択の実在庫を有限回探索し、隠れたイベント札の有無を確認する')
     return [pad('down') for _ in range(frames)]
 
@@ -448,7 +464,8 @@ def _dropper_card_inventory(mem, order, inventory, wanted) -> bool:
                              'cards': carried, 'id_sum': sum(CARD_IDS[c] for c in carried),
                              'remaining': inventory['remaining'], 'defender': enemy,
                              'defender_evidence': 'castle_defenders',
-                             'max_hp_sum': plan['max_hp_sum'], 'threshold': plan['threshold']},
+                             'max_hp_sum': plan['max_hp_sum'], 'threshold': plan['threshold'],
+                             **_card_arrow_metric(inventory)},
             reason='実測した守備将軍の最大HPから卵落の閾値を算出し、卵落札を1枠に加えて開幕の卵ディニアルに備える')
     return True
 
@@ -522,7 +539,8 @@ def _strong_card_inventory(mem, order, inventory, wanted) -> bool:
     _record(mem, 'strong_card_kit', **_deploy_context(order, mem), chart_step=step, card=card,
             observed_metric={'stock': int(stock.get(card, 0) or 0), 'planned': list(wanted),
                              'cards': carried, 'id_sum': sum(CARD_IDS[c] for c in carried),
-                             'remaining': inventory['remaining']},
+                             'remaining': inventory['remaining'],
+                             **_card_arrow_metric(inventory)},
             reason='実在庫の強い切り札を携行枠に加え、強い将軍との戦闘で開幕に使う')
     return True
 
@@ -559,7 +577,8 @@ def _drop_card(screen, mem, order, card, inventory):
                              'remaining': inventory['remaining'],
                              # only the measured absence of both scroll arrows is complete
                              'complete_list': _card_panel_complete(inventory),
-                             'readings': CARD_MISS_LIMIT},
+                             'readings': CARD_MISS_LIMIT,
+                             **_card_arrow_metric(inventory)},
             reason='予定切り札の在庫・携行枠を確認できない状態が続いたため、その札を外して出撃を続ける')
     return []
 
@@ -651,7 +670,9 @@ def _upper_card_boundary(mem, order, card, inventory):
         return False
     scope = {'identity': identity, 'chapter': mem.get('chapter'), 'step': order['step'],
              'card': card, 'rows': [[r['card'], r['stock']] for r in rows],
-             'remaining': inventory['remaining']}
+             'remaining': inventory['remaining'],
+             'more_above': inventory.get('more_above'),
+             'more_below': inventory.get('more_below')}
     state = mem.get('card_upper_boundary')
     if not isinstance(state, dict) or state.get('scope') != scope:
         state = mem['card_upper_boundary'] = {'scope': scope, 'confirmed': 0}
@@ -664,7 +685,9 @@ def _upper_card_boundary(mem, order, card, inventory):
         state.pop('await_input', None)
         if state['confirmed'] == 2:
             _record(mem, 'card_upper_boundary_verified', chart_step=order['step'], card=card,
-                    observed_metric={'rows': scope['rows'], 'delivered_up_inputs': 2},
+                    observed_metric={'rows': scope['rows'], 'delivered_up_inputs': 2,
+                                     'more_above': scope['more_above'],
+                                     'more_below': scope['more_below']},
                     reason='一覧先頭で上入力を2回送っても同じ実在庫のため、この札は上に存在しない')
     return state.get('confirmed') == 2
 
@@ -1412,7 +1435,8 @@ def _cursor_card_step(screen, mem, order, inventory, picked):
                     observed_metric={'stock': row['stock'], 'remaining': need, 'count': need,
                                      'id_sum': total + need * card_id, 'cursor_order': True,
                                      'inventory_evidence': inventory['inventory_evidence'],
-                                     'observed_rows': inventory['observed_rows']},
+                                     'observed_rows': inventory['observed_rows'],
+                                     **_card_arrow_metric(inventory)},
                     resulting_event='selection_planned_not_yet_confirmed',
                     reason='第9話は一覧のカーソル位置の札を上から順に携行し、残り枠をまとめて取る')
             actions = [pad('a')]
@@ -1426,7 +1450,8 @@ def _cursor_card_step(screen, mem, order, inventory, picked):
                     observed_metric={'stock': row['stock'], 'remaining': inventory['remaining'],
                                      'id_sum': total + card_id, 'cursor_order': True,
                                      'inventory_evidence': inventory['inventory_evidence'],
-                                     'observed_rows': inventory['observed_rows']},
+                                     'observed_rows': inventory['observed_rows'],
+                                     **_card_arrow_metric(inventory)},
                     resulting_event='selection_planned_not_yet_confirmed',
                     reason='第9話は切り札を選ばず、一覧のカーソル位置の札を上から順に携行する')
             return [pad('a')]
@@ -2547,7 +2572,8 @@ def deploy_step(screen: Screen, mem, *, frame=None):
             scrolls[order['step']] = scrolls.get(order['step'], 0) + 1
             _record(mem, 'card_scroll', **_deploy_context(order, mem), card=card,
                     observed_metric={'rows': [[r['card'], r['stock']] for r in inventory['rows']],
-                                     'selected_y': inventory['selected_y'], 'scrolls': scrolls[order['step']]},
+                                     'selected_y': inventory['selected_y'], 'scrolls': scrolls[order['step']],
+                                     **_card_arrow_metric(inventory)},
                     reason='予定切り札が一覧に見えないため下へ送って隠れた行を表示する')
             direction = ('up' if CARD_IDS.get(card, 99) <
                          min(CARD_IDS[r['card']] for r in inventory['rows']) else 'down')
@@ -2595,7 +2621,8 @@ def deploy_step(screen: Screen, mem, *, frame=None):
             _record(mem, 'card_pick', **_deploy_context(order, mem), card=card,
                     observed_metric={'stock': row['stock'], 'remaining': inventory['remaining'],
                                      'inventory_evidence': inventory['inventory_evidence'],
-                                 'observed_rows': inventory['observed_rows']},
+                                     'observed_rows': inventory['observed_rows'],
+                                     **_card_arrow_metric(inventory)},
                     resulting_event='selection_planned_not_yet_confirmed', reason=order['note'])
             return [pad('a')]
         move = pad('down' if row['y'] > inventory['selected_y'] else 'up')
@@ -2607,7 +2634,8 @@ def deploy_step(screen: Screen, mem, *, frame=None):
                                  'selected_card': selected['card'], 'target_y': row['y'],
                                  'target_stock': row['stock'], 'remaining': inventory['remaining'],
                                  'inventory_evidence': inventory['inventory_evidence'],
-                                 'observed_rows': inventory['observed_rows']},
+                                 'observed_rows': inventory['observed_rows'],
+                                 **_card_arrow_metric(inventory)},
                 reason='実測配置の正数在庫と携行余枠を確認し、予定切り札へカーソルを移動')
         return [move]
     if kind == 'sortie_confirm':

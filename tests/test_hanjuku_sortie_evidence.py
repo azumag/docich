@@ -517,7 +517,8 @@ def test_measured_card_menu_ignores_background_and_moves_to_footbath():
     assert record['decision'] == 'card_pick'
     assert record['resulting_event'] == 'selection_planned_not_yet_confirmed'
     assert record['observed_metric'] == {'stock': 2, 'remaining': 3,
-                                         'inventory_evidence': 'measured_four_row_card_select', 'observed_rows': 4}
+                                         'inventory_evidence': 'measured_four_row_card_select', 'observed_rows': 4,
+                                         'more_above': None, 'more_below': None}
     assert not _plan_region(mem).get('order_context')
 
 
@@ -600,7 +601,8 @@ def test_calibrated_card_cursor_decision_is_joined_to_action_plan(tmp_path, retr
     assert record['decision'] == 'sortie_input' and record['reason']
     observed = {'desired_card': 'フットバース', 'selected_y': 55, 'selected_card': 'イッテツーン',
                 'target_y': 103, 'target_stock': 2, 'remaining': 3,
-                'inventory_evidence': 'measured_four_row_card_select', 'observed_rows': 4}
+                'inventory_evidence': 'measured_four_row_card_select', 'observed_rows': 4,
+                'more_above': None, 'more_below': None}
     assert record['observed_metric'] == observed
     if retry:
         assert all(record[key] == value for key, value in context.items())
