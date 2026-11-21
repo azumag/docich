@@ -385,7 +385,8 @@ def observe_camp_status(screen, mem):
     verification = _flow(mem).get('recall_verification') or {}
     if (isinstance(verification, dict) and verification.get('general') == actor
             and verification.get('input_sent') is True
-            and verification.get('status') in ('arrival_unconfirmed', 'dispatch_unconfirmed')
+            and verification.get('status') in ('arrival_unconfirmed', 'dispatch_unconfirmed',
+                                               'dispatched')
             and roster_receipts.run_identity(verification.get('identity')) == identity
             and type(verification.get('chapter')) is int and verification['chapter'] == chapter):
         return
@@ -867,7 +868,8 @@ def _arrival_request(mem, actor, row):
     proof = row.get('arrival_request', _flow(mem).get('recall_verification'))
     identity = roster_receipts.run_identity(mem.get('_run_identity'))
     if (not isinstance(proof, dict) or identity is None
-            or proof.get('input_sent') is not True or proof.get('status') != 'arrival_unconfirmed'
+            or proof.get('input_sent') is not True
+            or proof.get('status') not in ('arrival_unconfirmed', 'dispatched')
             or proof.get('general') != actor
             or roster_receipts.run_identity(proof.get('identity')) != identity
             or type(proof.get('chapter')) is not int or proof['chapter'] != mem.get('chapter')
@@ -1058,8 +1060,11 @@ def _step_flow(screen, mem, frame, existing):
             request = _arrival_request(mem, state['general'], {**row, 'arrival_request': verification})
             if request is not None and row.get('arrival_request') != request:
                 row.update(arrival_request=request, arrival_reads=0)
+        # 'dispatched' falls through to needs_observation on purpose: that is
+        # the status _recheck_due starts the arrival X-probe from.
         _defer(mem, state, '操作の有限終了後も本人の到着は未確認として再観測へ残す',
-               status=status if status in ('arrival_unconfirmed', 'dispatch_unconfirmed') else 'needs_observation')
+               status=status if status in ('arrival_unconfirmed', 'dispatch_unconfirmed')
+               else 'needs_observation')
     return actions
 
 

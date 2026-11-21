@@ -1994,8 +1994,18 @@ def _recall_dispatch_step(screen, mem, state):
     if state.get('input_sent') and screen.kind == 'map':
         state['picker_closed'] = True
     if state.get('picker_closed') or state['steps'] >= 6:
-        status = 'arrival_unconfirmed' if state.get('input_sent') else 'dispatch_unconfirmed'
         interrupted = _flow(mem).pop('recall_interrupted', None) is not None
+        # docich#4978: the destination picker dropping back to the field map is
+        # the game accepting the return (the code below already says so). When
+        # that acceptance is the *same* observation that saw our A, the old
+        # terminal still called it 未確認 and filed a camp_recall_unconfirmed
+        # incident per recall (g1190 2026-11-21 16:59:45: input_sent and
+        # unconfirmed in one second) while also forcing a map re-anchor
+        # (mem['uncertain']) that the accepted dispatch never needed.
+        accepted = bool(state.get('input_sent')) and bool(state.get('picker_closed')) and not interrupted
+        status = ('dispatched' if accepted
+                  else 'arrival_unconfirmed' if state.get('input_sent')
+                  else 'dispatch_unconfirmed')
         goal = state.get('goal')
         if not interrupted and status == 'dispatch_unconfirmed' and isinstance(goal, str):
             # Only a dispatch that never left counts as a refused castle. The
@@ -2013,12 +2023,22 @@ def _recall_dispatch_step(screen, mem, state):
         _arm_recall_skip(mem, state,
                          BOSS_RETRY_TICKS if state.get('boss')
                          else FORT_RETRY_TICKS if (state.get('fort') or interrupted) else None)
-        mem['uncertain'] = True
-        _record(mem, 'camp_recall_unconfirmed', chart_step=None, observed_metric={'castle': state.get('goal'),
-                'input_sent': bool(state.get('input_sent')), 'picker_closed': bool(state.get('picker_closed')),
-                'interrupted': interrupted,
-                'general': state.get('general') if state.get('fort') else None}, resulting_event=status,
-                reason='帰還の本人・移動・到着を確認できず未確認として保持し、有限な操作を終了')
+        if accepted:
+            # The dispatch was accepted; only its arrival is still unknown, and
+            # camp_recheck's named roster read owns that (arrival_request).
+            _record(mem, 'camp_recall_dispatched', chart_step=None,
+                    observed_metric={'castle': state.get('goal'),
+                                     'camp': state.get('target'),
+                                     'general': state.get('general') if state.get('fort') else None},
+                    resulting_event='accepted_awaiting_arrival',
+                    reason='帰還ピッカーが閉じて受理されたため、到着は名簿の実読みで確認する')
+        else:
+            mem['uncertain'] = True
+            _record(mem, 'camp_recall_unconfirmed', chart_step=None, observed_metric={'castle': state.get('goal'),
+                    'input_sent': bool(state.get('input_sent')), 'picker_closed': bool(state.get('picker_closed')),
+                    'interrupted': interrupted,
+                    'general': state.get('general') if state.get('fort') else None}, resulting_event=status,
+                    reason='帰還の本人・移動・到着を確認できず未確認として保持し、有限な操作を終了')
         if status == 'arrival_unconfirmed' and not state.get('picker_closed'):
             # The same camp was sent at the same castle month after month
             # (g1190 2026-11-17 21:1x: リーキ -> アルマムーン three times) and the
