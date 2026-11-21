@@ -49,6 +49,44 @@ def test_map_yields_to_a_startable_order_until_the_month_has_a_launch():
     assert state['stage'] == 'open_menu'
 
 
+def test_task_stages_yield_the_map_to_a_startable_order():
+    """docich#4888: the per-general task loop defers between tasks too.
+
+    Once the roster walk ends the scan owns the field through 'process',
+    'manifest' and 'locate_reset', which were outside the #4642 deferral, so
+    a month spent cycling recalls/locates/repairs never yielded the map.
+    Each of those stages only opens the menu or pops the next queued task on
+    the field, so pausing there strands no transaction in flight.
+    """
+    mem = memory(month_sorties={'scope': [1, '2-6'], 'launches': 0})
+    post.arm(mem)
+    state = mem['post_month_status']
+    field = Screen([], None, '', kind='map')
+    for stage in ('process', 'manifest', 'locate_reset'):
+        state['stage'] = stage
+        state['tasks'] = [{'kind': 'recall', 'name': 'ヴィーナス'}]
+        state['floor_yields'] = 0
+        assert post.step(field, mem, None) is None, stage
+        assert state['floor_yields'] == 1, stage
+    # The deferral stays bounded inside the task loop as well: a spent cap
+    # lets 'process' pick up the next queued task exactly as before.
+    state['stage'] = 'process'
+    state['floor_yields'] = post.SORTIE_FLOOR_YIELDS
+    assert post.step(field, mem, None) == [pad('x')]
+    assert state['stage'] == 'task_menu'
+
+
+def test_process_with_no_tasks_finishes_instead_of_deferring():
+    """docich#4888: an empty queue releases the owner, not the sortie window."""
+    mem = memory(month_sorties={'scope': [1, '2-6'], 'launches': 0})
+    post.arm(mem)
+    state = mem['post_month_status']
+    state['stage'] = 'process'
+    state['tasks'] = []
+    assert post.step(Screen([], None, '', kind='map'), mem, None) == []
+    assert 'post_month_status' not in mem
+
+
 def test_an_armed_scan_yields_after_the_boss_wave_cap():
     from docich import hanjuku_chart as chart
     mem = memory(chapter=9, captured=list(chart.corridor(9)),
