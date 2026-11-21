@@ -56,7 +56,11 @@ def test_a_different_candidate_list_still_replaces_the_plan():
     # The stored plan can no longer start (_plan_pending False) and the
     # situation changed: an owned castle is now empty.
     _plan_region(mem)['orders'] = {step: 'failed' for step in first}
+    # Closing the boss removes the boss-first candidate (owner 2026-11-21),
+    # and a lost castle seeds a retake in its place.
+    mem['boss_victories'] = {'ボス': 1}
     mem["captured"].remove("トウトウ")      # a normal castle becomes a target again
+    mem["lost"].append("トウトウ")          # lost castles seed the retake candidates
     adopt(mem, 1001)
     assert [o['step'] for o in _plan_region(mem)['chart_plan']['orders']] != first
     assert len(records(mem)) >= 2

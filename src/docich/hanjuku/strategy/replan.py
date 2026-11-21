@@ -1131,7 +1131,11 @@ def interim_candidates(mem, allow_sole=False) -> dict:
                      and (chain_held or retakes_stalled or _whitehouse_open(mem))
                      and not (mem.get('boss_victories') or {}))
     if boss_open:
-        targets = [*targets, boss]
+        # Owner 2026-11-21: そもそもボス攻撃を最優先に. The boss used to sit
+        # last in the candidate list, so every retake/staffing order ran first
+        # and the boss waves only started once the rest was done. Put the boss
+        # first so the wave goes out even while other targets remain.
+        targets = [boss, *targets]
     # An interim sortie that has already gone out (launched/en route) must not be
     # re-issued while it is still in flight: otherwise the same target would be
     # attacked twice and the candidate list would never advance. Only recent

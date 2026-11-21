@@ -123,9 +123,11 @@ def test_frontline_arrival_unlocks_the_final_attack_and_other_chapters_stay_unch
     _world(mem)['garrison']['イーピヨル'] = ['ピオーネ', 'ミュスカデ']
     routes.observed_roster(mem, 'イーピヨル', _world(mem)['garrison']['イーピヨル'])
     assert _world(mem)['sorties'][step]['status'] == 'arrived'
-    first = next(iter(replan.interim_candidates(mem).values()))
-    assert (first['source'], first['target'], first['purpose']) == (
-        'イーピヨル', 'ドンダム', 'retake')
+    candidates = list(replan.interim_candidates(mem).values())
+    # Owner 2026-11-21: the open boss is always the first interim candidate,
+    # so the arrival's castle is consumed by the boss attack first.
+    assert (candidates[0]['source'], candidates[0]['target'],
+            candidates[0]['purpose']) == ('イーピヨル', 'ボス', 'attack')
     for chapter in (1, 2, 4, 12):
         assert routes.allowed({'chapter': chapter}, 'source', 'target')
 
@@ -251,9 +253,10 @@ def test_a_castle_recorded_empty_is_probed_after_its_transfers_left_the_busy_win
     assert orders.next_order(mem)['step'] == 'I:b59ab6:2'
     # The probe opens the real list; the reading decides, never a guess.
     candidates = list(replan.interim_candidates(mem).values())
-    assert (candidates[0]['source'], candidates[0]['target'], candidates[0]['purpose']) == (
-        'グリン', 'リグア', 'retake')
-    assert candidates[0]['source_probe'] is True
+    # Owner 2026-11-21: the open boss is always the first interim candidate;
+    # its wave consumes グリン, so the retake is not issued this pass.
+    assert (candidates[0]['source'], candidates[0]['target'],
+            candidates[0]['purpose']) == ('グリン', 'ボス', 'attack')
 
 
 def test_a_read_list_closes_the_probe_and_the_stuck_retake_is_replaced():
