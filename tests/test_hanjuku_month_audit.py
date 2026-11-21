@@ -631,6 +631,76 @@ def test_battle_resource_repeat_is_cooled_down(runtime_dir):
     assert len(audit.load_incidents(runtime_dir)) == 2
 
 
+def _camp_state(month, start, tick, *, general='カシュー', first_tick=None):
+    value = state(10, month, tick)
+    mem = value['policy']
+    mem['month_start_tick'] = start
+    mem['month_durations'] = [100, 100, 100]
+    mem['general_statuses'] = {
+        'complete': True,
+        'statuses': {general: {
+            'location': 'camp', 'location_observed': True,
+            'hp': 10, 'max_hp': 10, 'status_text': 'キャンプしています',
+            'camp_observed': True, 'broken': False, 'tick': tick,
+        }},
+    }
+    mem['camp_status_seen'] = {
+        'scope': {'chapter': 10},
+        'actors': {general: {'tick': start if first_tick is None else first_tick}},
+    }
+    return value
+
+
+def test_camp_age_counts_month_boundaries():
+    value = _camp_state('1-1', 1000, 1100, first_tick=850)
+    assert audit._camp_age_months(value['policy'], 'カシュー') == 3
+    value = _camp_state('1-1', 1000, 1100, first_tick=950)
+    assert audit._camp_age_months(value['policy'], 'カシュー') == 2
+
+
+def test_camp_abandon_is_recorded_and_titled(runtime_dir):
+    value = _camp_state('1-1', 1000, 1100, first_tick=850)
+    seen = []
+    audit.observe(runtime_dir, audit.capture(value), value, [], now=1100,
+                  on_sealed=seen.append)
+    records = audit.load_incidents(runtime_dir)
+    assert len(records) == 1
+    record = records[0]
+    assert record['kind'] == 'camp_abandoned'
+    assert record['camp_stay']['months'] == 3
+    assert record['auto_file'] is True
+    assert '野営放置' in audit._issue_title(record)
+    assert '### 野営放置' in audit.render(record)
+    assert len(seen) == 1
+
+
+def test_camp_must_stay_three_consecutive_months(runtime_dir):
+    first = _camp_state('1-1', 1000, 1100, first_tick=1000)
+    audit.observe(runtime_dir, audit.capture(first), first, [], now=1100)
+    assert audit.load_incidents(runtime_dir) == []
+    second = _camp_state('1-2', 1100, 1200, first_tick=1000)
+    audit.observe(runtime_dir, audit.capture(second), second, [], now=1200)
+    assert audit.load_incidents(runtime_dir) == []
+    third = _camp_state('1-3', 1200, 1300, first_tick=1000)
+    audit.observe(runtime_dir, audit.capture(third), third, [], now=1300)
+    records = audit.load_incidents(runtime_dir)
+    assert len(records) == 1
+    assert records[0]['camp_stay']['months'] == 3
+
+
+def test_camp_return_resets_the_stay(runtime_dir):
+    third = _camp_state('1-3', 1200, 1300, first_tick=1000)
+    audit.observe(runtime_dir, audit.capture(third), third, [], now=1300)
+    assert len(audit.load_incidents(runtime_dir)) == 1
+    returned = _camp_state('1-3', 1200, 1300, first_tick=1000)
+    returned['policy']['general_statuses'] = {'complete': True, 'statuses': {}}
+    audit.observe(runtime_dir, audit.capture(returned), returned, [], now=1310)
+    # A stale camp_status_seen tick must not resurrect the old stay.
+    again = _camp_state('1-3', 1200, 1310, first_tick=1000)
+    audit.observe(runtime_dir, audit.capture(again), again, [], now=1320)
+    assert len(audit.load_incidents(runtime_dir)) == 1
+
+
 def test_capture_reads_unmigrated_world_fields():
     state_value = state(1, '1-1', 10)
     state_value['policy']['world']['gold'] = None
