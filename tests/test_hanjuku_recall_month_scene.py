@@ -144,12 +144,15 @@ def test_the_interrupted_recall_resumes_and_reaches_a_destination(monkeypatch):
     assert recall_flow._camp_recall_step(camp_menu(0), mem, frame) == [pad('a')]
     assert _flow(mem)['recall']['stage'] == 'dest'
 
-    # 5. 帰還先決定: ピッカーのマーカーが自軍城の屋根に乗った map_target でAし、
+    # 5. 帰還先決定: goal解決済みなら先にYジャンプ(RECALL)で自城へ戻り
+    #   （v1333）、受領後にマーカーが自軍城の屋根に乗った map_target でAし、
     #    帰還要求が未送信のまま await_dispatch へ進む（送信・到着は別契約）。
     monkeypatch.setattr(p, 'castle_roofs',
                         lambda _f, exclude=None: [{'kind': 'own', 'target': (163, 115),
                                                    'clipped': False}])
     target = Screen([], None, '', kind='map_target', marker=(163, 115))
+    assert recall_flow._camp_recall_step(target, mem, frame) == [pad('y')]
+    mem['y_jumped'] = {'RECALL': _flow(mem)['recall']['goal']}
     assert recall_flow._camp_recall_step(target, mem, frame) == [pad('a')]
     done = _flow(mem)['recall']
     assert done['stage'] == 'await_dispatch' and done['target_cell'] == [163, 115]
