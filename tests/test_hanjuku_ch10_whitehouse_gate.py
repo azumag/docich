@@ -315,12 +315,12 @@ def test_broken_or_low_hp_camper_not_hijacked_into_whitehouse():
 
 def test_fort_in_whitehouse_ring_uses_boss_move_instead_of_home_recall():
     # Without camp_world or castle roofs, a fort holding a general whose roster
-    # marker mapped near ボス turns into a boss_move upon entering 'dest'.
+    # marker mapped near White House (including [328, 384] quantized west road)
+    # turns into a boss_move upon entering 'dest'.
     m = mem(post_month_status={'statuses': {
         'フェットチーネ': {
             'broken': False, 'hp': 67, 'max_hp': 67,
-            'marker': {'castle_candidate': BOSS,
-                       'mapping': {'castle': BOSS, 'field': [408, 424]}},
+            'marker': {'castle_candidate': None, 'marker_field': [328, 384]},
         },
     }})
     _flow(m)['recall'] = {

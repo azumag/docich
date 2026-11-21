@@ -284,8 +284,9 @@ CH10_WALL_NE = (598, 294)
 CH10_GATE_STRIP_PX = 24            # on the carpet/gate axis: enter straight
 # A camp cell inside this box belongs to the White House's approach, not an
 # ordinary castle's field: the wall ring plus the outer road and enough
-# margin to catch camps pinned against its north/west/east faces.
-CH10_WH_AREA = (330, 250, 660, 500)
+# margin to catch roster-triangle quantization (e.g. west road measured at
+# field [328, 384]) while staying disjoint from every normal castle.
+CH10_WH_AREA = (280, 220, 680, 520)
 
 
 def ch10_whitehouse_leg(origin, boss_cell):
