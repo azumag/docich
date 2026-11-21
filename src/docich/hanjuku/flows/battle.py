@@ -1767,6 +1767,42 @@ def battle_end(mem, next_kind, *, defense_continues=False, actor_continues=False
                     observed_metric={'target': target, 'retreat': retreat,
                                      'ally_hp': ally_hp, 'enemy_hp': enemy_hp},
                     reason='目的地に着く前の戦闘で出撃した将軍が敗北・退却したため、行軍の期限を待たずに出撃を決着させる')
+        elif (target and castle != target and cur.get('ally') == sortie.get('general')
+                and outcome == 'unclassified'
+                and sortie.get('status') in ('en_route', 'launched_unconfirmed')
+                and type(sortie.get('road_defeat')) is not int):
+            # g1190-ch1v4 #4927 ch10 47-9: an interception that closes with
+            # neither HP at 0 (a draw or a forced separation) leaves the
+            # march 'en_route', and the two units re-collide on the next
+            # map frames. Chained unresolved road fights keep the battle
+            # count climbing while the march ages past the stuck bound, so
+            # the month can close with zero new sorties. A single unclosed
+            # end is ambiguous — the unit may still be advancing — but a
+            # chain means the march is pinned, so the next one settles it
+            # the way the measured road defeat above does.
+            sortie['road_stalemates'] = int(sortie.get('road_stalemates') or 0) + 1
+            if sortie['road_stalemates'] >= ROAD_STALEMATE_LIMIT:
+                sortie['road_defeat'] = int(mem.get('tick') or 0)
+                history = mem.setdefault('sortie_history', [])
+                history.append({'step': step, 'general': sortie.get('general'),
+                                'source': sortie.get('source'), 'target': target,
+                                'outcome': 'lost', 'tick': int(mem.get('tick') or 0),
+                                'castle': castle, 'ally_hp': ally_hp, 'enemy_hp': enemy_hp,
+                                'road': True, 'stalemates': sortie['road_stalemates']})
+                del history[:-40]
+                _record(mem, 'sortie_road_stalemate_settled', chart_step=step,
+                        general=sortie.get('general'), castle=castle,
+                        observed_metric={'target': target, 'ally_hp': ally_hp,
+                                         'enemy_hp': enemy_hp,
+                                         'stalemates': sortie['road_stalemates']},
+                        reason='道上の戦闘が決着なく繰り返されて行軍が進まないため、敗北と同様に出撃を決着させる')
+            else:
+                _record(mem, 'sortie_road_stalemate', chart_step=step,
+                        general=sortie.get('general'), castle=castle,
+                        observed_metric={'target': target, 'ally_hp': ally_hp,
+                                         'enemy_hp': enemy_hp,
+                                         'stalemates': sortie['road_stalemates']},
+                        reason='道上の戦闘が決着なく終わったため、行軍の継続か再戦の可能性を残して回数を記録する')
     # One judged battle per started battle, whatever the verdict. The gap
     # against battles_started is the set the status panel must disclose.
     _tally(mem, 'battles_judged')
@@ -1815,6 +1851,7 @@ def _maybe_recall_weak_hero(mem, cur, outcome, ally_hp):
 ATTACK = re.compile(r'(\S+?)しょうぐんが(\S+?)じょうにのりこんだ')
 DEFENSE = re.compile(r'(\S+?)じょうがてきにせめこまれ')
 BOSS_ENTRY_HOLD_LIMIT = 8   # unmatched boss entry messages before the screen is closed anyway
+ROAD_STALEMATE_LIMIT = 2    # unclosed road engagements on one march before it is settled as stopped
 OPENING_DIALOGUE_WAIT_LIMIT = 12   # consecutive taunt-visible panels before the existing judgment resumes (chosen bound, not measured)
 
 
