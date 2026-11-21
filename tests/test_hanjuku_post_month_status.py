@@ -920,6 +920,28 @@ def test_recall_task_starts_the_named_return_on_the_selected_camp(monkeypatch):
     assert state['stage'] == 'wait_recall'
 
 
+def test_recall_task_seeds_the_tent_body_cell_for_the_flag_retry(monkeypatch):
+    # docich#4901: a task recall without camp_body can never arm the
+    # flag->body retry, so a tent whose flag cell does not open the menu
+    # loops camp_menu_not_opened until it aborts (ch10 v1317).
+    from docich.hanjuku.state.regions import flow as _flow
+    mem = memory(month='2-12')
+    post.arm(mem)
+    state = mem['post_month_status']
+    state.update(stage='task_jump',
+                 job={'kind': 'recall', 'name': 'ヴィーナス'},
+                 statuses={'ヴィーナス': {'location': 'camp', 'broken': True}})
+    screen = Screen(lines=[], hand=None, text='', kind='map', cursor=(150, 100))
+    monkeypatch.setattr(post, 'own_camps',
+                        lambda _frame: [{'target': [150, 100], 'kind': 'tent'}])
+    monkeypatch.setattr(post, 'camp_body_target',
+                        lambda _frame, _t: [160, 110])
+    monkeypatch.setattr(post.recall_flow, 'camp_recall_step',
+                        lambda _screen, _mem, _frame: [pad('a')])
+    assert post.step(screen, mem, object()) == [pad('a')]
+    assert _flow(mem)['recall']['camp_body'] == [160, 110]
+
+
 def test_boss_adjacent_camp_exemption_expires_into_a_recall():
     # docich#3659: ボス城至近の野営除外に期限を設ける。除外が
     # BOSS_CAMP_EXEMPT_MONTHS か月連続した野営は、翌月の月次処理で

@@ -1279,10 +1279,21 @@ def _camp_recall_step(screen: Screen, mem, frame, *, observed_camps=None):
         if camp is None:
             camp = min(camps, key=lambda c: (abs(c['target'][0] - cursor[0])
                                              + abs(c['target'][1] - cursor[1])) if cursor else 0)
-        state['target'] = list(camp['target'])
-        # The cursor sprite can cover the tent once the servo is on it; keep
-        # the last real detection so the arrival step can trust it.
-        state['last_seen'] = list(camp['target'])
+        body = camp_body_target(frame, camp['target'])
+        if body:
+            state['camp_body'] = body
+        else:
+            state.pop('camp_body', None)
+        if (body is not None and _camp_target(stored) and list(stored) == list(body)):
+            # #4901: the menu stage's body retry retargeted this same camp.
+            # Restoring its flag cell here pressed the dead cell again, so the
+            # recall looped camp_menu_not_opened until it gave up (ch10 v1317).
+            state['last_seen'] = list(stored)
+        else:
+            state['target'] = list(camp['target'])
+            # The cursor sprite can cover the tent once the servo is on it; keep
+            # the last real detection so the arrival step can trust it.
+            state['last_seen'] = list(camp['target'])
         if camp.get('kind'):
             state['camp_kind'] = camp['kind']
         else:
