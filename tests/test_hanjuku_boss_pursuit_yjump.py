@@ -33,6 +33,9 @@ def test_dest_on_world_map_continues_its_own_y_jump(monkeypatch):
     calls = []
     import docich.hanjuku.os_layer.navigation as nav
     monkeypatch.setattr(nav, '_y_jump_step', lambda m, f: calls.append(f) or ['jump-step'])
+    # This contract exercises jump ownership, not pixel-based Y cursor reading.
+    from docich.hanjuku.os_layer import readers
+    monkeypatch.setattr(readers, 'world_cursor', lambda *_a: None)
     frame = FakeFrame()
     assert bp.step(world_map(), mem, frame) == ['jump-step']
     assert calls == [frame]
