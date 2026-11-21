@@ -292,8 +292,55 @@ v922 で追加したタイトル分岐（down+wait+A＝つづき）が走る前�
 ## 8. 定期監視のチェックリスト
 
 - [ ] `/status` が 5 秒以内に返る（ビューア生存）
+- [ ] **`step` が 60 秒で 1 回以上進む**（§8.1 の停止検出）
 - [ ] `ps` で core_driver が 1 本だけ動いている
 - [ ] ログ末尾が `hold` の連続になっていない（停滞していないか）
 - [ ] `hanjuku_decisions.jsonl` の mtime が数分以内（判断が進んでいる）
 - [ ] `captured` が減っていないか（失陥の監視）
 - [ ] `.state` / `.srm` の mtime が更新されている（保存が続いている）
+
+## 8.1 step が進まない停止の検出（2026-11-22 実測）
+
+ビューアは読み取り専用で、ドライバが死んでも**最後のフレームを表示し続ける**。
+そのため「画面が動かない」だけでは生死を判別できない。次の 2 つを必ず組み合わせる。
+
+```bash
+# 1) step が進むか（60 秒あけて 2 回）
+curl -sS -m 5 http://127.0.0.1:8765/status | head -1
+sleep 60
+curl -sS -m 5 http://127.0.0.1:8765/status | head -1
+
+# 2) フレームが変わるか（3 秒あけて md5 比較）
+curl -sS -m 5 "http://127.0.0.1:8765/frame.png?t=$(date +%s)" -o /tmp/f1.png
+sleep 3
+curl -sS -m 5 "http://127.0.0.1:8765/frame.png?t=$(date +%s)" -o /tmp/f2.png
+md5sum /tmp/f1.png /tmp/f2.png
+```
+
+判定:
+
+| step | frame | 判定 |
+|---|---|---|
+| 進む | 変わる | 正常 |
+| 進む | 変わらない | ゲームが入力待ち（bot の判断を確認する。`last=` とログ末尾を見る） |
+| **進まない** | **変わらない** | **ドライバ停止/ハング**。§5 の手順で停止→復帰する |
+
+2026-11-22 04:11 JST の実例（docich#4993）:
+
+```
+bot=hanjuku-chart-v1351-duel-dim-mash step=1007077 phase=concert screen=password_entry
+chapter=11 month=62-5  last=None | log: Map_LoROMMap
+```
+
+- `step` は 5 サンプル（60 秒）で完全に不変、`frame.png` もバイト一致
+  （md5 `c28ad9cb7594676fb1deb57098133426`）。
+- 画面は「パスワードヲ ジュンバンニ イレテクダサイ。」のテキストのみで、
+  パーサは `password_entry`・`hand=None`。
+- ログ末尾がコアの `Map_LoROMMap` のまま更新されず、以後の観測ログが無い。
+
+復旧は §5 の SIGTERM → state/SRAM の mtime 確認 → 必要なら
+`HANJUKU_LOAD_FLOW=1` + `HANJUKU_SRAM_IN` で復帰。**blind な START 連打はしない**。
+監視を自動化する場合は、この 2 条件（step と frame）を 60 秒周期で見て
+2 周期連続で不動なら SIGTERM する外部 watchdog をドライバの外に置く
+（ドライバは未追跡ツールなので、リポジトリ内の bot からは検出できない）。
+
