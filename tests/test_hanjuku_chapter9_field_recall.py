@@ -174,6 +174,8 @@ def test_a_roof_destination_is_named_so_the_arrival_is_read(monkeypatch):
     monkeypatch.setattr(recall_flow, '_recall_goal', lambda mem: 'タオ')
     mem = _mem(tick=100)
     mem['flow'] = {'recall': {'stage': 'dest', 'steps': 0, 'target': [84, 73]}}
+    # 帰還は先にYジャンプする（v1333）ため、受領済みとして屋根確定へ進める。
+    mem['y_jumped'] = {'RECALL': 'タオ'}
     screen = Screen([], None, '', kind='map_target', marker=(90, 80))
     recall_flow.camp_recall_step(screen, mem, FRAME)
     record = next(r for r in mem['_records'] if r['decision'] == 'camp_recall_requested')
