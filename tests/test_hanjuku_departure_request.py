@@ -464,3 +464,9 @@ def test_a_held_card_scroll_crosses_only_measured_rows():
     assert d._card_scroll_frames(mem, deep, {'rows': rows[:3], 'remaining': 3}) == 1
     assert d._card_scroll_frames(mem, deep, {'rows': [{**rows[0], 'card': 'x'}, *rows[1:]],
                                              'remaining': 3}) == 1
+    # #4884: cursor at top row includes the 3-row cursor travel to the bottom edge + target row.
+    near = names[5]  # 1 card between rows[3] (index 3) and near (index 5)
+    inv_top = {'rows': rows, 'selected_y': rows[0]['y'], 'remaining': 3}
+    inv_bot = {'rows': rows, 'selected_y': rows[-1]['y'], 'remaining': 3}
+    assert d._card_scroll_frames(mem, near, inv_bot) == 2   # 1 between + 1 target
+    assert d._card_scroll_frames(mem, near, inv_top) == 5   # 3 edge + 1 between + 1 target
