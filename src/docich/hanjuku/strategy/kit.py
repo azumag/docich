@@ -181,16 +181,34 @@ SORTIE_CONFIRM_LIMIT = 8      # readings before a readable but mismatched kit is
 CARD_STOCK_LIMIT = 24         # observed card names kept for the adjusted-chart request
 
 
+def _card_panel_complete(inventory) -> bool:
+    """True only when the measured panel drew neither scroll arrow.
+
+    A きりふだ panel is a four-row window, so a short panel is not a complete
+    inventory when a row above disappeared (▲) or more rows follow (▼). Only
+    the measured absence of both arrows proves the visible rows are all rows;
+    a missing key or None means the arrows could not be read and is never
+    treated as complete.
+    """
+    return inventory.get('more_above') is False and inventory.get('more_below') is False
+
+
 def _observe_card_stock(mem, inventory):
     """Remember the stocks a sortie card panel showed (chart-adjust grounding).
 
-    Fewer than four rows is the whole inventory (depleted items disappear), so
-    a known card absent from it is out of stock now and recorded as 0; a
-    four-row panel is a window and only its rows are updated. g438 04:04: the
-    adjusted chart planned ミックミー and エンジェリン for chapter 1, where
-    neither was ever in the panel -- the model was never told what the player
-    actually holds. The request now carries this so it plans from observed
-    stock.
+    A complete panel -- neither the ▲ nor the ▼ scroll arrow is drawn -- lists
+    the whole inventory (depleted items disappear), so a known card absent
+    from it is out of stock now and recorded as 0. A panel with either arrow,
+    or with unreadable arrows (None), is a window and only its rows are
+    updated. Row count alone proves nothing: g1288 2026-11-21 23:10:40 read a
+    three-row tail (キャトルミュー was carried, ▲ still drawn) and the old
+    "fewer than four rows is everything" rule zeroed the 17 cards above it,
+    including イッテツーン at 99.
+
+    g438 04:04: the adjusted chart planned ミックミー and エンジェリン for
+    chapter 1, where neither was ever in the panel -- the model was never told
+    what the player actually holds. The request now carries this so it plans
+    from observed stock.
 
     Rows are listed in card-ID order, so a known card whose ID lies between
     two shown rows' IDs is out of stock too (the proof of #2374's
@@ -198,6 +216,7 @@ def _observe_card_stock(mem, inventory):
     from ブラッキー/フットバース/ノリウツール(11)/バルムンク(16) panels while
     card_stock kept its stale 1, so no month saw the boss card missing.
     A card read here is no longer an unseen purchase (``boss_cards.UNSEEN``).
+    Only the shown rows and the cards this proof makes 0 clear their ledgers.
     """
     stock = mem.setdefault('card_stock', {})
     shown = {row['card']: row['stock'] for row in inventory['rows']}
@@ -207,8 +226,9 @@ def _observe_card_stock(mem, inventory):
     unseen = unseen if isinstance(unseen, dict) else {}
     ids = [CARD_IDS.get(row['card']) for row in inventory['rows']]
     ordered = bool(ids) and None not in ids and ids == sorted(ids)
+    complete = _card_panel_complete(inventory)
     for card in [*stock, *(c for c in unseen if c not in stock)]:
-        if card not in shown and (len(inventory['rows']) < 4 or (
+        if card not in shown and (complete or (
                 ordered and min(ids) < CARD_IDS.get(card, -1) < max(ids))):
             stock[card] = 0
             read.add(card)

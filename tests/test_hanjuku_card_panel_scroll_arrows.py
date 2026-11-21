@@ -1,0 +1,148 @@
+"""きりふだパネルの ▲/▼ スクロール矢印で「全所持」を判定する (S1, g1288).
+
+The panel is a four-row window. A row above is hidden when ▲ is drawn; rows
+below when ▼ is. Only the measured absence of both proves the visible rows are
+the whole inventory. Production 2026-11-21 23:10:40 read a three-row tail
+after carrying キャトルミュー and the old "fewer than four rows" rule zeroed
+the 17 cards above the window, including イッテツーン at 99.
+"""
+from pathlib import Path
+
+import pytest
+
+from docich import hanjuku_policy as policy
+from docich.hanjuku.flows.deploy import _card_proven_absent
+from docich.hanjuku.os_layer.pixels import read_png
+from docich.hanjuku.os_layer.screen import parse
+from docich.hanjuku.strategy.kit import _observe_card_stock
+
+FIXTURES = Path(__file__).parent / 'fixtures/hanjuku'
+
+
+def inventory(rows, *, more_above=None, more_below=None, remaining=3):
+    return {'rows': [{'y': 55 + 16 * i, 'card': card, 'stock': stock}
+                     for i, (card, stock) in enumerate(rows)],
+            'selected_y': 55, 'remaining': remaining,
+            'more_above': more_above, 'more_below': more_below}
+
+
+@pytest.mark.parametrize('name,above,below,rows', [
+    # Measured from the isolated 256x224 probes: ▲ is drawn only with hidden
+    # rows above, ▼ only with hidden rows below. 180 frames each were static.
+    ('s1-card-arrows-end-3rows.png', True, False, 3),   # live-shape 3-row tail
+    ('s1-card-arrows-start.png', False, True, 4),       # top of the list
+    ('s1-card-arrows-mid.png', True, True, 4),          # middle window
+    # Production-derived g700/g706 card_select frames: exactly the four cards
+    # are held, so the pixel boxes contain only the green panel dither.
+    ('g700-balmung-stock-panel.png', False, False, 4),
+    ('g706-resume-card-select.png', False, False, 4),
+])
+def test_reader_reports_the_measured_scroll_arrows(name, above, below, rows):
+    frame = read_png(FIXTURES / name)
+    screen = parse(frame)
+    assert screen.kind == 'card_select'
+    result = policy._measured_card_select(screen, frame)
+    assert result is not None and len(result['rows']) == rows
+    assert result['more_above'] is above
+    assert result['more_below'] is below
+
+
+def test_reader_without_a_frame_keeps_the_arrows_unknown():
+    """No pixels is unreadable, never "nothing is scrolled off"."""
+    frame = read_png(FIXTURES / 's1-card-arrows-end-3rows.png')
+    result = policy._measured_card_select(parse(frame))
+    assert result is not None
+    assert result['more_above'] is None and result['more_below'] is None
+
+
+# 2026-11-21 23:09:18..23:10:40 live windows (runtime g1288, v1333). The last
+# one is the 23:10:40 three-row tail after キャトルミュー was carried; ▲ is
+# still drawn because 14 rows remain above it.
+LIVE_WINDOWS = [
+    (False, True, (('イッテツーン', 99), ('ブラッキー', 99),
+                   ('フットバース', 99), ('ダンスライン', 99))),
+    (True, True, (('ブラッキー', 99), ('フットバース', 99),
+                  ('ダンスライン', 99), ('グリンボー', 99))),
+    (True, True, (('カルゲンジー', 99), ('ピッグローラー', 99),
+                  ('ラピニアール', 99), ('ノリウツール', 99))),
+    (True, True, (('クースカン', 99), ('ゼンマイン', 99),
+                  ('ミックミー', 99), ('グルミー', 99))),
+    (True, True, (('グルミー', 99), ('ブラックホール', 99),
+                  ('ころぼぐんだん', 99), ('バグストーム', 99))),
+    (False, True, (('イッテツーン', 99), ('ブラッキー', 99),
+                   ('フットバース', 99), ('ダンスライン', 99))),
+    (True, True, (('カルゲンジー', 99), ('ピッグローラー', 99),
+                  ('ラピニアール', 99), ('ノリウツール', 99))),
+    (True, True, (('ブラックホール', 99), ('ころぼぐんだん', 99),
+                  ('バグストーム', 99), ('リューキーシ', 72))),
+    (True, False, (('バグストーム', 99), ('リューキーシ', 72),
+                   ('キャトルミュー', 1), ('ビッグウェイブ', 68))),
+    (True, False, (('バグストーム', 99), ('リューキーシ', 72),
+                   ('ビッグウェイブ', 68))),
+]
+
+
+def test_live_three_row_tail_does_not_zero_cards_above_the_window():
+    mem = {'card_stock': {}}
+    for above, below, rows in LIVE_WINDOWS:
+        _observe_card_stock(mem, inventory(rows, more_above=above, more_below=below))
+    stock = mem['card_stock']
+    # The 17 cards above the last window keep their 99s.
+    for card in ('イッテツーン', 'ブラッキー', 'フットバース', 'ダンスライン', 'グリンボー',
+                 'カルゲンジー', 'ピッグローラー', 'ラピニアール', 'ノリウツール',
+                 'クースカン', 'ゼンマイン', 'ミックミー', 'グルミー', 'ブラックホール',
+                 'ころぼぐんだん'):
+        assert stock[card] == 99, card
+    assert stock['バグストーム'] == 99
+    assert stock['リューキーシ'] == 72
+    assert stock['ビッグウェイブ'] == 68
+    # キャトルミュー(28) is the one card proved absent by the ID order:
+    # バグストーム(24) < 28 < ビッグウェイブ(29). The carried copy is gone.
+    assert stock['キャトルミュー'] == 0
+    assert len([value for value in stock.values() if value]) == 18
+
+
+def test_no_arrows_on_three_rows_is_the_whole_inventory_early_game():
+    """#2374 / g825 early game: the whole list is visible and a boss card is gone."""
+    rows = (('ブラッキー', 1), ('ノリウツール', 1), ('クースカン', 1))
+    inv = inventory(rows, more_above=False, more_below=False)
+    mem = {'card_stock': {'イッテツーン': 99, 'ブラッキー': 1, 'ノリウツール': 1,
+                          'クースカン': 1}}
+    _observe_card_stock(mem, inv)
+    assert mem['card_stock']['イッテツーン'] == 0
+    assert _card_proven_absent('イッテツーン', inv) is True
+
+
+def test_four_rows_without_arrows_are_also_the_whole_inventory():
+    inv = inventory((('イッテツーン', 3), ('ブラッキー', 1), ('フットバース', 2),
+                     ('クースカン', 3)), more_above=False, more_below=False)
+    assert _card_proven_absent('ハリケーン', inv) is True
+
+
+def test_unreadable_or_one_sided_arrows_are_not_the_whole_inventory():
+    rows = (('ブラッキー', 1), ('フットバース', 2), ('ダンスライン', 3))
+    for arrows in ({'more_above': None, 'more_below': None},
+                   {'more_above': True, 'more_below': None},
+                   {'more_above': True, 'more_below': False}):
+        inv = inventory(rows, **arrows)
+        assert _card_proven_absent('イッテツーン', inv) is False
+        mem = {'card_stock': {'イッテツーン': 99}}
+        _observe_card_stock(mem, inv)
+        assert mem['card_stock']['イッテツーン'] == 99
+
+
+def test_only_shown_and_id_proven_absent_cards_clear_the_ledgers():
+    """Requirement 3: the read set is the shown rows plus the ID-gap proof."""
+    rows = (('イッテツーン', 7), ('ブラッキー', 2), ('ダンスライン', 4))
+    inv = inventory(rows, more_above=True, more_below=True)
+    # フットバース(3) lies between イッテツーン(0) and ダンスライン(4), so it is
+    # proven absent. ハリケーン(30) is outside the window and stays unknown.
+    mem = {'card_stock': {'イッテツーン': 5, 'フットバース': 5, 'ハリケーン': 5},
+           'card_bought_since_read': {'イッテツーン': 1, 'フットバース': 1, 'ハリケーン': 1},
+           'card_used_since_read': {'イッテツーン': 1, 'フットバース': 1, 'ハリケーン': 1},
+           'card_held_floor': {'イッテツーン': 1, 'フットバース': 1, 'ハリケーン': 1}}
+    _observe_card_stock(mem, inv)
+    assert mem['card_stock'] == {'イッテツーン': 7, 'ブラッキー': 2, 'ダンスライン': 4,
+                                 'フットバース': 0, 'ハリケーン': 5}
+    for ledger in ('card_bought_since_read', 'card_used_since_read', 'card_held_floor'):
+        assert mem[ledger] == {'ハリケーン': 1}, ledger

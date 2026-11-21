@@ -647,6 +647,11 @@ class Screen:
     # compare it with the previous observation to tell "the same picture came
     # back" from a real redraw; Screen objects built by hand leave it None.
     frame_sha256: str | None = None
+    # きりふだ panel scroll arrows (▲/▼) when a caller builds a Screen without
+    # pixels. Production measures them in _measured_card_select; None means no
+    # arrow evidence and is never treated as "nothing is scrolled off".
+    card_more_above: bool | None = None
+    card_more_below: bool | None = None
 
     def has(self, needle: str) -> bool:
         return needle.replace(' ', '') in self.text

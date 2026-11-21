@@ -26,7 +26,8 @@ from ..strategy.boss_cards import UNSEEN, boss_card_reserved, boss_kit
 from ..strategy.kit import (CARD_IDS, CARD_MISS_LIMIT, CARD_SCROLL_LIMIT, CARD_UNREADABLE_LIMIT, CARRY_SLOTS,
                            NORMAL_CARD_UNREADABLE_LIMIT, SORTIE_CONFIRM_UNREADABLE_LIMIT,
                             ENEMY_EGG_CARD_ID_SUM, RARE_SCAN_LIMIT, SORTIE_CONFIRM_LIMIT, _cap_card_ids,
-                            _deploy_cards, _extra_card_name, _is_boss_order, _observe_card_stock,
+                            _card_panel_complete, _deploy_cards, _extra_card_name, _is_boss_order,
+                            _observe_card_stock,
                             _sortie_defender, _strict_boss_cards)
 from ..strategy.orders import (SOURCE_LOCATION_RECHECK_LIMIT, SORTIE_CANCELLED_OBSERVED_LIMIT,
                                SOURCE_DEFENDER_CANCEL_LIMIT, HERO_BROKEN_SORTIE_CANCEL_LIMIT,
@@ -135,7 +136,7 @@ def _note_balmung_stock(mem, month, inventory):
 
     The rare-card sweep shows the whole list over several readings, but the
     boss order may not be the sortie that sweeps. A shown row sets / clears the
-    record; a panel that proves the card absent (fewer than four rows, or
+    record; a panel that proves the card absent (no ▲/▼ scroll arrow, or
     sandwiched between rows of the ID order) clears it too.
     """
     rows = inventory['rows']
@@ -556,8 +557,8 @@ def _drop_card(screen, mem, order, card, inventory):
     _record(mem, 'card_dropped', **context, card=card, dropped=dropped,
             observed_metric={'rows': [[r['card'], r['stock']] for r in inventory['rows']],
                              'remaining': inventory['remaining'],
-                             # fewer than 4 rows is the whole stock; 4 may hide more
-                             'complete_list': len(inventory['rows']) < 4,
+                             # only the measured absence of both scroll arrows is complete
+                             'complete_list': _card_panel_complete(inventory),
                              'readings': CARD_MISS_LIMIT},
             reason='予定切り札の在庫・携行枠を確認できない状態が続いたため、その札を外して出撃を続ける')
     return []
@@ -567,8 +568,10 @@ def _card_proven_absent(card, inventory, *, bottom=False):
     """The readable panel proves this card is out of stock, not scrolled off.
 
     Rows are listed in card-ID order and depleted cards disappear. A card shown
-    with stock 0, missing from a panel of fewer than four rows, or whose ID
-    falls between two visible rows' IDs cannot be elsewhere in the list.
+    with stock 0, missing from a panel that drew neither the ▲ nor the ▼ scroll
+    arrow (so nothing is hidden above or below), or whose ID falls between two
+    visible rows' IDs cannot be elsewhere in the list. Row count alone is not
+    proof: a three-row tail with ▲ is still a window (g1288 23:10:40).
     g825 2-9 (2026-10-17 09:3x): 1-B1 wanted クースカン(13); the panel showed
     ブラッキー/フットバース/ノリウツール(11)/バルムンク(16) and the strict boss
     kit held for good.
@@ -583,7 +586,8 @@ def _card_proven_absent(card, inventory, *, bottom=False):
     target = CARD_IDS.get(card)
     if target is None or None in ids or ids != sorted(ids):
         return False
-    return len(rows) < 4 or min(ids) < target < max(ids) or (bottom and target > max(ids))
+    return (_card_panel_complete(inventory) or min(ids) < target < max(ids)
+            or (bottom and target > max(ids)))
 
 
 def _card_scroll_frames(mem, card, inventory):
@@ -2146,7 +2150,7 @@ def boss_stock_restart_step(screen: Screen, mem):
     return [] if fade else [pad('b')]
 
 
-def deploy_step(screen: Screen, mem):
+def deploy_step(screen: Screen, mem, *, frame=None):
     restart = boss_stock_restart_step(screen, mem)
     if restart is not None:
         return restart
@@ -2443,7 +2447,11 @@ def deploy_step(screen: Screen, mem):
             if card in wanted:
                 wanted.remove(card)
         card = wanted[0] if wanted else None
-        inventory = _measured_card_select(screen)
+        # Pass the frame only when the caller has one: synthetic screens carry
+        # their arrow evidence in card_more_above/below, and several tests
+        # monkeypatch this reader with a one-argument callable.
+        inventory = (_measured_card_select(screen, frame) if frame is not None
+                     else _measured_card_select(screen))
         if inventory is None:
             if _strict_boss_cards(order, mem):
                 return _hold_boss_card_selection(screen, mem, order,
