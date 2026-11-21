@@ -692,6 +692,8 @@ CLIFF_DETOUR_FRAMES = 16    # one short perpendicular step away from the cliff
 CLIFF_DETOUR_MAX = 6        # wall-sliding steps before the goal is unreachable
 CLIFF_RADIUS = 28           # px around the tent body searched for cliff pixels
 CLIFF_MIN_PIXELS = 40       # dark pixels in that disc that make the tent cliff-bound
+CLIFF_MIN_SOLID = 8         # 3x3 solid dark core pixels (filters sparse ch10 ground dots)
+CLIFF_OVERSCAN_PX = 8       # SNES border margin ignored for cliff detection
 CLIFF_ESCAPE_PX = 24        # distance of the perpendicular escape cell
 _DIRS = {'left': (-1, 0), 'right': (1, 0), 'up': (0, -1), 'down': (0, 1)}
 
@@ -702,9 +704,12 @@ def _cliff_escape(frame, cell):
     Owner 2026-11-15/16: a camp standing against a cliff must first step
     perpendicular away; marching straight home stays pinned to the wall.
     g1190 2026-11-16 (タオ): the tent sat under the end of a diagonal wall
-    with the lake below it. The wall's direction is the centroid of the dark
-    pixels around the tent body; the escape is the 4-way step most opposite
-    to it whose landing stands on the tent's own ground colours (not the
+    with the lake below it. The wall's direction is the centroid of the solid
+    3x3 dark wall-core pixels around the tent body; requiring solid 3x3 cores
+    and skipping the 8px SNES overscan border prevents ch10's dark-speckled
+    ground tiles ((32, 40, 40)) and screen-edge black bars from triggering
+    false cliff detours (#4907). The escape is the 4-way step most opposite
+    to the wall whose landing stands on the tent's own ground colours (not the
     lake, not another wall). ``cell`` is the camp's selecting cell (the
     body is about (8, 12) px further).
     """
@@ -712,23 +717,29 @@ def _cliff_escape(frame, cell):
         return None
     cx, cy = cell[0] + 8, cell[1] + 12
     w, h = frame.width, frame.height
+    margin = CLIFF_OVERSCAN_PX if min(w, h) >= 64 else 1
     body = (cx - 9, cy - 16, cx + 9, cy + 6)     # the tent sprite itself
-    dark, ring = [], {}
+    dark, solid, ring = [], [], {}
     r2 = CLIFF_RADIUS * CLIFF_RADIUS
-    for y in range(max(0, cy - CLIFF_RADIUS), min(h, cy + CLIFF_RADIUS + 1)):
-        for x in range(max(0, cx - CLIFF_RADIUS), min(w, cx + CLIFF_RADIUS + 1)):
+    y_lo, y_hi = max(margin, cy - CLIFF_RADIUS), min(h - margin, cy + CLIFF_RADIUS + 1)
+    x_lo, x_hi = max(margin, cx - CLIFF_RADIUS), min(w - margin, cx + CLIFF_RADIUS + 1)
+    for y in range(y_lo, y_hi):
+        for x in range(x_lo, x_hi):
             d2 = (x - cx) ** 2 + (y - cy) ** 2
             if d2 > r2 or (body[0] <= x <= body[2] and body[1] <= y <= body[3]):
                 continue
             p = frame.pixel(x, y)
             if CLIFF_DARK(*p[:3]):
                 dark.append((x, y))
+                if all(CLIFF_DARK(*frame.pixel(x + dx, y + dy)[:3])
+                       for dy in (-1, 0, 1) for dx in (-1, 0, 1)):
+                    solid.append((x, y))
             elif 100 <= d2 <= 256:
                 ring[p] = ring.get(p, 0) + 1
-    if len(dark) < CLIFF_MIN_PIXELS or not ring:
+    if len(dark) < CLIFF_MIN_PIXELS or len(solid) < CLIFF_MIN_SOLID or not ring:
         return None
-    ax = cx - sum(x for x, _ in dark) / len(dark)
-    ay = cy - sum(y for _, y in dark) / len(dark)
+    ax = cx - sum(x for x, _ in solid) / len(solid)
+    ay = cy - sum(y for _, y in solid) / len(solid)
     ground = {c for c, _ in sorted(ring.items(), key=lambda kv: -kv[1])[:4]}
     best = None
     for side, (dx, dy) in _DIRS.items():
