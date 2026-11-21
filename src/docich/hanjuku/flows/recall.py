@@ -30,6 +30,10 @@ FORT_STATUS_PRESS_EVERY = 4    # observations of the status panel between two A 
 MENU_OPEN_WAIT = 3             # bare map observations after A on the tent before pressing again
 MENU_REOPEN_LIMIT = 3          # presses again per recall
 DOME_SCREEN_WAIT = 6           # other-screen observations after A on a dome before B
+# docich#4938: a cell that answered A with the bare map is a doubted detection,
+# not a camp. Its sighting is dropped from re-detection so another visible camp
+# can be used; a different camp's cell is never this close (dedup merges ≤8 px).
+DOUBTED_CAMP_PX = 12           # screen pixels a doubted detection's sighting may jitter
 BOSS_RETRY_TICKS = 120         # first wait before a camp is sent at the moving boss again
 BOSS_JUMP_LIMIT = 2            # Y jumps to the boss per redirect
 RELAY_ARRIVE_PX = 32           # a camp this close to the back-half relay cell has finished leg one
@@ -330,6 +334,46 @@ def _filter_recall_skip(mem, camps):
     else:
         flow.pop('recall_skip_history', None)
     return [camp for camp in camps if not any(_same_skipped_camp(camp, h) for h in alive)]
+
+
+def _doubted_sightings(state):
+    """Sightings that spent their own cells and opened no camp menu."""
+    return [f for f in (state.get('menu_failed_sightings') or [])
+            if len(f.get('cells') or []) >= 2
+            or int(f.get('presses') or 0) >= MENU_REOPEN_LIMIT]
+
+
+def _exclude_doubted_camps(mem, state, camps):
+    """Drop a sighting whose own cells all answered A with the bare map.
+
+    docich#4938 (g1288): a dome-shaped castle-sprite detection at [134,117]
+    spent its whole retry budget on one dead cell while a real camp stood
+    beside it at [121,141]. Once a detection's flag and body cells failed —
+    or three presses on one cell did — the sighting is doubted, removed from
+    re-detection, and the recall retargets another visible camp. With nothing
+    else on screen the empty list ends the recall as unobserved instead of
+    pressing the dead cell a fourth time. Only the doubted sighting is
+    dropped: the camp that takes over gets its own probe.
+    """
+    doubted = _doubted_sightings(state)
+    if not doubted:
+        return camps
+    dead = [list(f['key']) for f in doubted if _camp_target(f.get('key'))]
+    dead += [list(c) for f in doubted for c in (f.get('cells') or []) if _camp_target(c)]
+    kept = [camp for camp in camps if not any(
+        _camp_target(camp.get('target'))
+        and abs(camp['target'][0] - d[0]) <= DOUBTED_CAMP_PX
+        and abs(camp['target'][1] - d[1]) <= DOUBTED_CAMP_PX for d in dead)]
+    if len(kept) != len(camps) and len(doubted) > int(state.get('doubted_logged') or 0):
+        state['doubted_logged'] = len(doubted)
+        _record(mem, 'camp_detection_doubted',
+                observed_metric={'dropped': [list(camp['target']) for camp in camps
+                                             if _camp_target(camp.get('target'))
+                                             and camp not in kept][:4],
+                                 'failed': dead[:4]},
+                reason='決定しても野営メニューが開かない検出セルを疑い、その検出を除外して野営を検出し直す')
+    return kept
+
 
 def camp_recall_step(screen: Screen, mem, frame):
     """Observe named retreaters before reusing the existing camp recall route."""
@@ -1158,6 +1202,7 @@ def _camp_recall_step(screen: Screen, mem, frame, *, observed_camps=None):
                                          + abs(c['target'][1] - cursor[1])) if cursor else 0)
         state = _flow(mem)['recall'] = {'stage': 'to_camp', 'target': list(camp['target']),
                                  'last_seen': list(camp['target']), 'steps': 0,
+                                 'camp_detect': list(camp['target']),
                                  **({'camp_body': body} if (body := camp_body_target(frame, camp['target'])) else {}),
                                  **({'camp_kind': camp['kind']} if camp.get('kind') else {})}
         # A fresh recall starts a fresh destination-jump budget and receipt:
@@ -1299,6 +1344,7 @@ def _camp_recall_step(screen: Screen, mem, frame, *, observed_camps=None):
         # failed-camp cooldown applied here too, not only at initial selection.
         camps = (own_camps(frame) if frame is not None else []) if observed_camps is None else observed_camps
         camps = _filter_recall_skip(mem, camps)
+        camps = _exclude_doubted_camps(mem, state, camps)
         if not camps:
             # Owner 2026-11-04: キャンプにカーソルが重なると野営画像を失い、
             # 帰還が中断していた。直前の実測でカーソル位置にあると確認できた
@@ -1398,6 +1444,15 @@ def _camp_recall_step(screen: Screen, mem, frame, *, observed_camps=None):
             # The cursor sprite can cover the tent once the servo is on it; keep
             # the last real detection so the arrival step can trust it.
             state['last_seen'] = list(camp['target'])
+        detect = list(camp['target'])
+        if (_camp_target(state.get('camp_detect'))
+                and (abs(state['camp_detect'][0] - detect[0]) > DOUBTED_CAMP_PX
+                     or abs(state['camp_detect'][1] - detect[1]) > DOUBTED_CAMP_PX)):
+            # A different sighting took over after the doubted one was dropped:
+            # it probes with its own bounded reopen count, not the dead
+            # sprite's spent budget.
+            state['menu_reopens'] = 0
+        state['camp_detect'] = detect
         if camp.get('kind'):
             state['camp_kind'] = camp['kind']
         else:
@@ -1476,6 +1531,26 @@ def _camp_recall_step(screen: Screen, mem, frame, *, observed_camps=None):
                 waits = state['menu_map_waits'] = int(state.get('menu_map_waits') or 0) + 1
                 if waits >= MENU_OPEN_WAIT:
                     reopens = state['menu_reopens'] = int(state.get('menu_reopens') or 0) + 1
+                    # docich#4938: this pressed cell opened nothing. Failures
+                    # are kept per sighting so a doubted sprite can be dropped
+                    # without ending the replacement camp's own probe.
+                    key = state.get('camp_detect')
+                    if not _camp_target(key):
+                        key = state.get('target')
+                    entry = None
+                    if _camp_target(key):
+                        sightings = state.setdefault('menu_failed_sightings', [])
+                        entry = next((f for f in sightings
+                                      if _camp_target(f.get('key'))
+                                      and abs(f['key'][0] - key[0]) <= DOUBTED_CAMP_PX
+                                      and abs(f['key'][1] - key[1]) <= DOUBTED_CAMP_PX), None)
+                        if entry is None:
+                            entry = {'key': list(key), 'cells': [], 'presses': 0}
+                            sightings.append(entry)
+                        entry['presses'] = int(entry.get('presses') or 0) + 1
+                        if (_camp_target(state.get('target'))
+                                and list(state['target']) not in entry['cells']):
+                            entry['cells'].append(list(state['target']))
                     body = state.get('camp_body')
                     if (isinstance(body, list) and len(body) == 2
                             and reopens >= 2 and state.get('target') != body):

@@ -438,6 +438,7 @@ def own_camps(frame: Frame) -> list[dict]:
         if not any(abs(t['target'][0] - dome['target'][0]) <= 8
                    and abs(t['target'][1] - dome['target'][1]) <= 8 for t in found):
             found.append(dome)
+    bodies.update(_DOME_BODIES.get(frame.digest()) or {})
     _CAMP_BODIES[frame.digest()] = bodies
     return found
 
@@ -485,7 +486,7 @@ DOME_OUTLINE = (32, 32, 32)
 def _dome_camps(frame: Frame) -> list[dict]:
     door = set(bit_points(frame, near_bits(frame, DOME_DOOR, DOME_565_TOLERANCE)))
     near = lambda p, c: all(abs(int(a) - int(b)) <= DOME_565_TOLERANCE for a, b in zip(p, c))
-    found, seen = [], set()
+    found, seen, bodies = [], set(), {}
     for start in sorted(door):
         if start in seen:
             continue
@@ -522,14 +523,24 @@ def _dome_camps(frame: Frame) -> list[dict]:
         if not clipped and (len(red) < 2 or len(orange) < 2):
             continue
         shape = body + outline
+        # docich#4938: the door is the dome's other selectable cell. A tent
+        # retry re-aims at the body centre, but a dome registered no body, so
+        # every failed select pressed the same dead cell again.
+        entrance = ((x0 + x1) // 2, (y0 + y1) // 2)
         if clipped:
             target = (min(c[0] for c in shape) - 8, y0 - 6)
             found.append({'target': target, 'clipped': True, 'kind': 'dome'})
+            bodies[target] = entrance
             continue
         # Same cell as the small tent: one left of the body, bottom-aligned 16 px.
         target = (min(c[0] for c in shape) - 1, max(c[1] for c in shape) - 15)
         found.append({'target': target, 'clipped': False, 'kind': 'dome'})
+        bodies[target] = entrance
+    _DOME_BODIES[frame.digest()] = bodies
     return found
+
+
+_DOME_BODIES = {}
 
 
 @dataclass
