@@ -1948,6 +1948,10 @@ def general_jump_step(screen, mem, frame):
         # 'unexpected_menu' and retries every observation.
         if screen.kind != 'map' or isinstance(mem.get('boss_pursuit'), dict):
             return None
+        if (mem.get('chapter') or 0) == 9:
+            from . import boss_pursuit as _boss_pursuit
+            if _boss_pursuit.wave_active(mem) and _boss_pursuit._candidate(mem) is not None:
+                return None
         boss_castle = getattr(chart, 'boss_castle', None)
         boss_target = boss_castle(mem.get('chapter') or 0) if boss_castle else None
         if boss_target is None:

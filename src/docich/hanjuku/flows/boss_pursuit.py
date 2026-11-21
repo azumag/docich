@@ -99,9 +99,9 @@ FORT_LIST_SEEK_LIMIT = 8      # list steps spent looking for the boss general in
 # the east boss-orbit area (x>=640); the corridor mouth is the only join.
 # Redirects confirmed perfectly while the pocket generals never moved a
 # pixel - a straight march at an east aim just walks into the wall.
-CH9_CLIFF_EAST_X = 640
-CH9_CLIFF_POCKET_Y = 260
-CH9_EAST_MOUTH = (674, 212)   # the east area's north entrance off the corridor
+CH9_CLIFF_EAST_X = chart.CH9_CLIFF_EAST_X
+CH9_CLIFF_POCKET_Y = chart.CH9_CLIFF_POCKET_Y
+CH9_EAST_MOUTH = chart.CH9_EAST_MOUTH   # the east area's north entrance off the corridor
 
 
 def _drop_probe(mem):
@@ -408,18 +408,7 @@ def _ch9_cliff_detour(unit_world, aim):
     steps due east to the mouth. A unit already east of the line (or one
     whose world position was not measured this jump) keeps its aim.
     """
-    if not (isinstance(unit_world, (list, tuple)) and len(unit_world) == 2
-            and isinstance(aim, (list, tuple)) and len(aim) == 2):
-        return None
-    ux, uy = unit_world
-    ax, ay = aim
-    if ux >= CH9_CLIFF_EAST_X or ax < CH9_CLIFF_EAST_X:
-        return None
-    if uy > CH9_CLIFF_POCKET_Y:
-        return chart.CH9_BOSS_WAYPOINT
-    if ay > CH9_CLIFF_POCKET_Y:
-        return CH9_EAST_MOUTH
-    return None
+    return chart.ch9_cliff_detour(unit_world, aim)
 
 
 def _note_stale_wave(mem):

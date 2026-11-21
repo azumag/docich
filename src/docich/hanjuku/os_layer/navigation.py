@@ -606,18 +606,25 @@ def _y_jump_step(mem, frame):
     # next pursuit cycle re-aims, which still beats never issuing the order.
     if chart.is_boss_castle(jump.get('goal') or ''):
         if 'goal_cell' not in jump:
-            if (chapter == 10 and jump.get('step') == 'RECALL'
+            if (jump.get('step') == 'RECALL'
                     and isinstance(gx, int) and isinstance(gy, int)):
-                # Issue #4922: this first cursor read is where the camped
-                # general actually stands, so the White House boss jump aims
-                # at the hop he can walk next — straight in from the carpet,
-                # the south gate, or an outer corner first — not the walled
-                # roof cell. Each recall recomputes it from the new position.
                 origin = (int(round((cursor[0] - ox) * 8)),
                           int(round((cursor[1] - oy) * 8)))
-                leg = chart.ch10_whitehouse_leg(origin, (gx, gy))
-                if leg is not None:
-                    gx, gy = leg
+                if chapter == 10:
+                    # Issue #4922: this first cursor read is where the camped
+                    # general actually stands, so the White House boss jump aims
+                    # at the hop he can walk next — straight in from the carpet,
+                    # the south gate, or an outer corner first — not the walled
+                    # roof cell. Each recall recomputes it from the new position.
+                    leg = chart.ch10_whitehouse_leg(origin, (gx, gy))
+                    if leg is not None:
+                        gx, gy = leg
+                elif chapter == 9:
+                    # Issue #4937: ch9 boss redirects west of the central cliff
+                    # line must climb out through the north corridor and east mouth.
+                    leg = chart.ch9_cliff_detour(origin, (gx, gy))
+                    if leg is not None:
+                        gx, gy = leg
             jump['goal_cell'] = [gx, gy]
         gx, gy = jump['goal_cell']
     elif (chapter == 10 and jump.get('step') == 'RECALL'

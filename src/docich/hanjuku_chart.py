@@ -266,6 +266,28 @@ del _chapter
 # pinched by the dark forest band (x~125-137, y~76-84), so aim the open grass
 # row north-east of it instead. View (134.0, 74.0) -> cell.
 CH9_BOSS_WAYPOINT = (568, 212)
+# Issue #4861 / #4937: a black impassable cliff line splits chapter 9's イデ！
+# pocket (x < 640, y > 260) and north corridor (x < 640, y <= 260) from the
+# east boss-orbit area (x >= 640); the corridor mouth is the only join.
+CH9_CLIFF_EAST_X = 640
+CH9_CLIFF_POCKET_Y = 260
+CH9_EAST_MOUTH = (674, 212)
+
+
+def ch9_cliff_detour(unit_world, aim):
+    """First corridor/mouth leg for a cliff-blocked ch9 unit, or None."""
+    if not (isinstance(unit_world, (list, tuple)) and len(unit_world) == 2
+            and isinstance(aim, (list, tuple)) and len(aim) == 2):
+        return None
+    ux, uy = unit_world
+    ax, ay = aim
+    if ux >= CH9_CLIFF_EAST_X or ax < CH9_CLIFF_EAST_X:
+        return None
+    if uy > CH9_CLIFF_POCKET_Y:
+        return CH9_BOSS_WAYPOINT
+    if ay > CH9_CLIFF_POCKET_Y:
+        return CH9_EAST_MOUTH
+    return None
 
 # Issue #4922 (chapter 10): the White House (boss ホワイトハウス/だいとうりょう,
 # measured boss_cell ≈ (482,365), its roof centre) is ringed by an impassable

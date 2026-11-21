@@ -1748,7 +1748,12 @@ def _boss_redirect_dest_step(screen, mem, frame, state, marker):
         return _abort_boss_redirect(mem, state, 'boss_position_lost',
                                     'ボスの現在位置を確認できないため再出撃を取り消す')
     pseudo = {'step': 'RECALL', 'target': goal, 'source': None}
-    if _map._target_roof_under_marker(screen, mem, frame, pseudo):
+    # #4937: chapter 9's RECALL jump must also measure the unit's position on
+    # the Y view so _ch9_cliff_detour can pick the north corridor / east mouth
+    # leg when needed instead of confirming directly into the central cliff.
+    ch9_need_jump = ((mem.get('chapter') or 0) == 9
+                     and (mem.get('y_jumped') or {}).get('RECALL') != goal)
+    if not ch9_need_jump and _map._target_roof_under_marker(screen, mem, frame, pseudo):
         _reset_boss_jump(mem)       # the receipt is spent by this confirmation
         return _request_recall(mem, state, goal, [pad('a')], target_cell=list(marker), boss=True)
     if (mem.get('y_jumps') or {}).get('RECALL:target', 0) < BOSS_JUMP_LIMIT:
