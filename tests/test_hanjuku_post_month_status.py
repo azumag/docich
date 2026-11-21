@@ -94,6 +94,7 @@ def test_an_armed_scan_yields_after_the_boss_wave_cap():
     post.arm(mem)
     state = mem['post_month_status']
     mem['boss_wave_generals'] = {'カシス': {'step': 'A', 'launched': 1}}
+    mem.setdefault('world', {})['garrison'] = {'イデ！': ['どうし', 'ゼウス']}
     mem['boss_cell'] = {'chapter': 9, 'cell': [770, 629], 'tick': 100}
     state['steps'] = post.BOSS_WAVE_SCAN_STEPS
     assert post.step(Screen([], None, '', kind='text'), mem, None) is None
@@ -106,6 +107,7 @@ def test_arm_defers_the_whole_scan_while_boss_waves_are_in_flight():
     mem = memory(chapter=9, captured=list(chart.corridor(9)),
                  month_sorties={'scope': [9, '2-6'], 'launches': 1},
                  boss_wave_generals={'カシス': {'step': 'A', 'launched': 1}},
+                 world={'garrison': {'イデ！': ['どうし', 'ゼウス']}},
                  boss_cell={'chapter': 9, 'cell': [770, 629], 'tick': 100})
     post.arm(mem)
     assert 'post_month_status' not in mem

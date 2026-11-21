@@ -249,6 +249,17 @@ def wave_active(mem):
     """
     if not mem.get(LIST_KEY) or wave_stale(mem):
         return False
+    # Live g1288 2026-11-21 13:0x: every general stood camped on the track and
+    # the garrisons were empty (only イデ！ had どうし), so no sortie could
+    # start (order_failed: 移動元の将軍が1人以下) and the chart went starved
+    # (奪還・攻撃・移動のいずれも作れない) for hours. The camp recall that
+    # rebuilds the garrisons was deferred by this very gate. When the castles
+    # hold at most one general, hand the field back so the recall can bring
+    # the camps home and the next wave can launch.
+    garrison = _world(mem).get('garrison') or {}
+    stationed = sum(len(row) for row in garrison.values() if isinstance(row, list))
+    if stationed <= 1:
+        return False
     return not pursuit_suspended(mem)
 
 
