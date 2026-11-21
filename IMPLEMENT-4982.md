@@ -46,9 +46,11 @@ chikujou の sub 自身は `_chikujou_wait`（CHIKUJOU_WAIT_LIMIT=6）、
   sub 無し・他 kind の sub の場合は従来どおり B で閉じ `chikujou_refused` を記録。
 - `src/docich/hanjuku/version.py`
   `BOT_VERSION = 'hanjuku-chart-v1353-chikujou-list-limit'`。
+  マージ時に v1365 へ付け直してマージ: PR #4990、merge commit aad135ee。
 - `ops/vm_actions/collect_diagnostics.py`
   許可リストに `"hanjuku-chart-v1353-chikujou-list-limit",` を追加
   （v1350 エントリ直後、末尾カンマ付き、既存エントリ保持）。
+  マージ時は v1365 へ付け直し（PR #4990）。
 - `tests/test_hanjuku_chikujou_orch_refused.py`
   回帰テスト2件追加:
   - `test_a_live_chikujou_sub_owns_the_prompt_and_picks_the_next_castle`
@@ -78,6 +80,7 @@ chikujou の sub 自身は `_chikujou_wait`（CHIKUJOU_WAIT_LIMIT=6）、
 
 - 関連テストのローカル実行（上記コマンド）を可能な環境で実施し、結果を
   確認すること。特に新規2テストが想定どおり緑になること。
-- 本番観測: v1353 反映後、`chikujou_cancelled_with_resources` が解消し、
+- 本番観測: v1353（PR #4990 マージ時に v1365 へ付け直し）反映後、
+  `chikujou_cancelled_with_resources` が解消し、
   `chikujou_confirm` / `chikujou_continue` / `chikujou_scroll` が記録されること。
 - コミット・push・PR は本指示の制約により未実施（worktree に未コミットで残置）。

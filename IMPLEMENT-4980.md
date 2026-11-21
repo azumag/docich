@@ -1,7 +1,8 @@
 # docich#4980 「[半熟英雄] 築城可能なまま月一終了: ch10 93-1」 調査・実装
 
 判定: **欠陥** — `month_sub_abandoned` 自体は設計どおりだが、それが生んだ終端状態を
-切り札・築城の保留機構が永久化してしまう順序の欠陥。修正済み（v1352）。
+切り札・築城の保留機構が永久化してしまう順序の欠陥。修正済み（v1352、衝突により
+v1363 へ付け直してマージ: PR #4989、merge commit 9541422）。
 
 ## 事象
 
@@ -65,9 +66,11 @@ month_extras_plan → month_plan → army_count_check → soldier_refill_outcome
     `month_cards_released` の observed_metric に `chikujou` を追加。
 - `src/docich/hanjuku/version.py`
   - `BOT_VERSION = 'hanjuku-chart-v1352-chikujou-at-month-end'`
+    （マージ時に衝突が生じ、v1363 へ付け直してマージ: PR #4989、merge commit 9541422）。
 - `ops/vm_actions/collect_diagnostics.py`
   - 許可リストに `"hanjuku-chart-v1352-chikujou-at-month-end",` を追加
-    （v1349 エントリ直後、末尾カンマあり・既存エントリ保持）。
+    （v1349 エントリ直後、末尾カンマあり・既存エントリ保持）。マージ時は v1363 へ
+    付け直し（PR #4989）。
 - `tests/test_hanjuku_month_status_single_read.py`
   - `test_cards_are_held_while_the_recruit_question_is_unresolved`:
     `deferred_egg` の優先条件を卵の生きた状態（pending/check/opened）に
