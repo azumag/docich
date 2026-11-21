@@ -3,30 +3,47 @@ from types import SimpleNamespace
 from docich.hanjuku.flows import password
 
 
-def test_sweep_counts_actual_selections(monkeypatch):
-    monkeypatch.setattr(password, "pad", lambda key: key)
+def test_top_then_the_measured_order_opens_the_door(monkeypatch):
+    monkeypatch.setattr(password, "pad", lambda key, frames=6: key)
     monkeypatch.setattr(password, "_record", lambda *a, **kw: None)
     screen = SimpleNamespace(kind="password_entry")
-    mem = {"password_entry": {"tops": password._TOP_PRESSES}}
-    actions = []
-    for _ in range(7):
-        actions.extend(password.password_step(screen, mem))
-    assert actions.count("a") == password._SWEEP_PICKS == 14
-    assert mem["password_entry"]["picks"] == 14
-    assert password.password_step(screen, mem) == ["up"] * 4
+    mem = {}
+    for _ in range(password._TOP_PRESSES):
+        assert password.password_step(screen, mem) == ["up"]
+    a_presses = 0
+    seen = []
+    while a_presses < len(password._TARGET_ORDER):
+        acts = password.password_step(screen, mem)
+        assert acts, "sweep must not hold before all target words"
+        seen.append(acts[0])
+        if acts[0] == "a":
+            a_presses += 1
+    assert a_presses == len(password._TARGET_ORDER) == 10
+    assert mem["password_entry"]["step"] == len(password._TARGET_ORDER)
+    # 15 ups, then the live-list movement for [1,0,5,3,2,4,9,8,6,7].
+    assert seen.count("a") == 10
+    assert seen.count("down") + seen.count("up") == 21
 
 
-def test_exhausted_sweep_stays_held(monkeypatch):
-    monkeypatch.setattr(password, "pad", lambda key: key)
+def test_cycle_cap_holds_instead_of_spamming(monkeypatch):
+    monkeypatch.setattr(password, "pad", lambda key, frames=6: key)
+    screen = SimpleNamespace(kind="password_entry")
+    mem = {"password_entry": {"cycles": password._MAX_CYCLES}}
+    for _ in range(5):
+        assert password.password_step(screen, mem) == []
+
+
+def test_a_failed_cycle_re_tops_and_records(monkeypatch):
+    monkeypatch.setattr(password, "pad", lambda key, frames=6: key)
     events = []
     monkeypatch.setattr(password, "_record", lambda _, event, **kw: events.append(event))
     screen = SimpleNamespace(kind="password_entry")
     mem = {"password_entry": {
         "tops": password._TOP_PRESSES,
-        "picks": password._SWEEP_PICKS,
-        "cycles": password._MAX_CYCLES - 1,
+        "idx": 7,
+        "step": len(password._TARGET_ORDER),
+        "advance": password._ADVANCE_PRESSES,
     }}
-    for _ in range(10):
-        assert password.password_step(screen, mem) == []
-    assert mem["password_entry"]["cycles"] == password._MAX_CYCLES
-    assert events.count("situation_held") == 1
+    assert password.password_step(screen, mem) == ["up"]
+    assert mem["password_entry"]["cycles"] == 1
+    assert events == ["password_entry_resweep"]

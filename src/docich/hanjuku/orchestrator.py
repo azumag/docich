@@ -1681,6 +1681,10 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
             mem.pop(key, None)
         _journal(mem).pop('_departure_input', None)
         _journal(mem).pop('_recall_inputs', None)
+        # 2026-11-22: the measured chapter-11 order (list indices
+        # 1,0,5,3,2,4,9,8,6,7) is the only one that opens the door; the old
+        # "A+down over the display order" was rejected as too long.  The flow
+        # moves one list step per observation and presses A on the target.
         actions = password_flow.password_step(screen, mem)
         updated['_records'] = mem.pop('_records')
         updated['_experience'] = mem.pop('_experience', None)
