@@ -701,6 +701,91 @@ def test_camp_return_resets_the_stay(runtime_dir):
     assert len(audit.load_incidents(runtime_dir)) == 1
 
 
+def _chikujou_state(month='1-1', gold=1000, *, staffed=True, candidates=True):
+    value = state(10, month, 0)
+    mem = value['policy']
+    home = chart.home_castle(10)
+    other = next(c for c in chart.CASTLE_NAMES[10] if c != home)
+    mem['captured'] = [other] if candidates else []
+    mem['world']['garrison'] = ({home: ['A'], other: ['B']} if staffed else {})
+    mem['general_statuses'] = {
+        'complete': True,
+        'statuses': ({home: {'location': 'castle', 'castle': home},
+                      other: {'location': 'castle', 'castle': other}}
+                     if staffed else {}),
+    }
+    mem['shop'] = {
+        'key': month, 'chikujou': 'skipped', 'gold_start': gold,
+        'hero_repair_reserve': 0, 'egg': 'done', 'soldiers_done': True,
+        'soldiers': 0, 'recruit': 'done', 'recruit_reserve': 0,
+        'merchant_done': True, 'items': [],
+    }
+    value['gold'] = gold
+    return value
+
+
+def test_chikujou_month_end_with_resources_is_recorded(runtime_dir):
+    value = _chikujou_state()
+    seen = []
+    audit.observe(runtime_dir, audit.capture(value), value,
+                  [{'decision': 'month_done', 'month': '1-1',
+                    'reason': '月一の購入を終了', 'at': 1000}],
+                  now=1000, on_sealed=seen.append)
+    records = audit.load_incidents(runtime_dir)
+    assert len(records) == 1
+    record = records[0]
+    assert record['kind'] == 'chikujou_available_at_end'
+    assert record['chikujou_event']['gold'] == 1000
+    assert record['chikujou_event']['staffed_candidates']
+    assert '築城可能なまま月一終了' in audit._issue_title(record)
+    assert '### 築城' in audit.render(record)
+    assert len(seen) == 1
+
+
+def test_chikujou_month_end_without_resources_is_not_recorded(runtime_dir):
+    value = _chikujou_state(gold=0)
+    audit.observe(runtime_dir, audit.capture(value), value,
+                  [{'decision': 'month_done', 'month': '1-1', 'at': 1000}], now=1000)
+    assert audit.load_incidents(runtime_dir) == []
+
+
+def test_chikujou_month_end_without_staff_is_not_recorded(runtime_dir):
+    value = _chikujou_state(staffed=False)
+    audit.observe(runtime_dir, audit.capture(value), value,
+                  [{'decision': 'month_done', 'month': '1-1', 'at': 1000}], now=1000)
+    assert audit.load_incidents(runtime_dir) == []
+
+
+def test_chikujou_per_castle_decline_does_not_end_the_month(runtime_dir):
+    value = _chikujou_state()
+    value['policy']['shop']['chikujou'] = 'check'
+    audit.observe(runtime_dir, audit.capture(value), value,
+                  [{'decision': 'chikujou_declined',
+                    'reason': '築城の実費が不明か必要資金を割るため、支払わず見送る',
+                    'at': 1000}], now=1000)
+    assert audit.load_incidents(runtime_dir) == []
+
+
+def test_chikujou_terminal_decline_with_resources_is_recorded(runtime_dir):
+    value = _chikujou_state()
+    audit.observe(runtime_dir, audit.capture(value), value,
+                  [{'decision': 'chikujou_declined',
+                    'reason': '当月未試行で増築候補となる所有城がなくなったため、築城を終える',
+                    'at': 1000}], now=1000)
+    records = audit.load_incidents(runtime_dir)
+    assert len(records) == 1
+    assert records[0]['kind'] == 'chikujou_cancelled_with_resources'
+    assert '築城可能なのにキャンセル' in audit._issue_title(records[0])
+
+
+def test_chikujou_month_end_is_reported_once(runtime_dir):
+    value = _chikujou_state()
+    record = {'decision': 'month_done', 'month': '1-1', 'at': 1000}
+    audit.observe(runtime_dir, audit.capture(value), value, [record], now=1000)
+    audit.observe(runtime_dir, audit.capture(value), value, [record], now=1100)
+    assert len(audit.load_incidents(runtime_dir)) == 1
+
+
 def test_capture_reads_unmigrated_world_fields():
     state_value = state(1, '1-1', 10)
     state_value['policy']['world']['gold'] = None
