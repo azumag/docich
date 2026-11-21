@@ -134,7 +134,7 @@ def test_unreadable_or_one_sided_arrows_are_not_the_whole_inventory():
 def test_only_shown_and_id_proven_absent_cards_change_the_ledger():
     """Requirement 3: the read set is the shown rows plus the ID-gap proof.
 
-    v1351 made ``card_stock`` the field-inventory ledger, so a read overwrites
+    v1352 made ``card_stock`` the field-inventory ledger, so a read overwrites
     it (and logs ``ledger_drift``) instead of clearing the retired purchase /
     use / floor ledgers.
     """

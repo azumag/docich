@@ -340,7 +340,9 @@ def test_retry_context_follows_every_sortie_input_and_action_plan(tmp_path, monk
                menu('general_list', ['ゼウス', 'どうし']),
                menu('general_list', ['どうし']),
                measured_card_select(), measured_card_select(selected=3),
-               measured_card_select(), measured_loaded_sortie(),
+               # v1352: carrying フットバース on the previous screen takes one
+               # copy off the row, so the next window reads 1 (not the stale 2).
+               measured_card_select(stocks=[2, 2, 2, 1]), measured_loaded_sortie(),
                menu('map_target', []), menu('map_target', [])]
     seen = set()
     for step, screen in enumerate(screens):

@@ -21,7 +21,7 @@ def ready(monkeypatch):
     mem['egg_zero_owners'] = []
     mem['shop'].update(items=[], want=None, soldiers=50, soldiers_done=False,
                        reserve=0, recruit_reserve=0)
-    # v1351: spare cash is only spent on a kind the field ledger knows. These
+    # v1352: spare cash is only spent on a kind the field ledger knows. These
     # unit cases start from a panel that read every bargain target at 0 — the
     # same starting point the old "unknown means 0" reading gave them.
     mem['card_stock'] = {name: 0 for name in b.BARGAIN_TARGETS}
@@ -159,7 +159,7 @@ def test_exact_quote_rechecks_cash_and_does_not_repeat_after_hotload(ready):
     assert p.quantity_step(quote(142, count=3, cost=54), ready) == [p.pad('b')]
     assert p.shop_step(listing(88), ready) == [p.pad('b')]
     assert ready['shop']['bought'] == [['ノリウツール', 3, 18]]
-    # v1351: a confirmed purchase of a known kind enters the field ledger (the
+    # v1352: a confirmed purchase of a known kind enters the field ledger (the
     # old "observed inventory only" receipt is retired; the read overwrites it).
     assert ready['card_stock'] == {'ノリウツール': 3, **{name: 0 for name in b.BARGAIN_TARGETS
                                                          if name != 'ノリウツール'}}
@@ -280,34 +280,31 @@ def test_a_half_price_cart_after_the_month_pass_gets_a_pass_of_its_own(ready):
     assert shop['cheap_vendor_planned'] is True
     planned = dict(shop['items'])
     # This synthetic four-row canvas clips the fourth (ミックミー) row; only the
-    # three visible cards may be planned from the actual listing. v1351 puts
+    # three visible cards may be planned from the actual listing. v1352 puts
     # BARGAIN_TARGETS on the rich path too, so the two bargain targets go to 99
     # with the rich budget instead of the cart's smaller caps.
     for name in ('ノリウツール', 'クースカン', 'ゼンマイン'):
         assert planned.get(name) == b.RICH_MERCHANT_MAX_COPIES, name
-    assert set(planned) <= set(HALF)
+    assert set(planned) <= {name for name, _ in HALF}
     ordinary = [(n, q) for n, q in shop['items']
                 if n not in b.RICH_MERCHANT_CARDS and n not in b.BARGAIN_TARGETS]
     assert ordinary == []
     assert not shop.get('bought')                       # selecting is not payment
 
 
-def test_the_larger_caps_are_only_for_that_pass_and_still_bound_the_spend(ready):
+def test_the_rich_pass_bounds_the_spend_on_a_cheap_cart(ready):
     month_pass_spent(ready)
     prices = {name: 1 for name in b.BARGAIN_TARGETS}            # absurdly cheap: only the caps bind
     b.plan_bargains(ready, ready['shop'], listing(9999).header, listed=prices)
-    rich = {n: q for n, q in ready['shop']['items'] if n in b.RICH_MERCHANT_CARDS}
-    # This synthetic listing contains only BARGAIN_TARGETS; a rich merchant
-    # cannot buy requested cards that do not appear in the observed shop.
-    assert rich == {n: b.RICH_MERCHANT_MAX_COPIES for n in b.RICH_MERCHANT_CARDS
-                    if n in prices}
-    ordinary = [(n, q) for n, q in ready['shop']['items'] if n not in b.RICH_MERCHANT_CARDS]
-    # Four of the bargain names are now rich-priority cards, so only the
-    # remaining kinds count against the ordinary capped bargain quantities.
-    available_target_copies = sum(b.BARGAIN_TARGETS[n] * b.CHEAP_VENDOR_TARGET_FACTOR
-                                  for n in prices if n not in b.RICH_MERCHANT_CARDS)
-    assert sum(q for _, q in ordinary) == min(b.CHEAP_VENDOR_COPIES, available_target_copies)
-    assert sum(prices[n] * q for n, q in ordinary) <= b.CHEAP_VENDOR_GOLD
+    shop = ready['shop']
+    planned = dict(shop['items'])
+    # v1352: at 9999G every listed BARGAIN_TARGETS kind is rich-priority (the
+    # monthly 200G/8-copy caps are for the ordinary merchant only), so each is
+    # stocked to 99 and the rich budget is what bounds the spend.
+    assert set(planned) == set(prices)
+    assert all(qty == b.RICH_MERCHANT_MAX_COPIES for qty in planned.values())
+    assert sum(prices[n] * q for n, q in planned.items()) <= b.bargain_spendable(
+        ready, shop, listing(9999).header, rich=True)
 
 
 def test_a_normally_priced_cart_after_the_month_pass_is_still_skipped(ready):

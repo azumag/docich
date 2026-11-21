@@ -81,7 +81,7 @@ def test_g825_short_boss_card_is_bought_first_and_returns_to_the_boss_kit():
     assert mem['shop']['bought'] == [['クースカン', 1, 24]]
     assert mem['card_drop'] == {'1-B1': []}
     assert '1-B1' not in mem['card_scroll'] and '1-B1:クースカン' not in mem['card_miss']
-    # v1351: a known kind's purchase goes into the field ledger, not UNSEEN
+    # v1352: a known kind's purchase goes into the field ledger, not UNSEEN
     # (a missing key is unknown; a key at 0 means the panel read it at 0).
     assert not mem.get('card_bought_unseen')
     assert mem['card_stock']['クースカン'] == 1
