@@ -68,3 +68,29 @@ def test_a_cliff_bound_camp_steps_off_the_wall_before_the_visible_move(monkeypat
     here['cell'] = [225, 554]
     recall._visible_move_dest_step(screen, mem, frame, state)
     assert 'escape_world' not in state
+
+
+def test_sparse_ch10_ground_speckles_do_not_trigger_cliff_escape():
+    """#4907: ch10's dark ground speckles (32,40,40) have >40 dark pixels but no 3x3 cliff wall."""
+    from docich.hanjuku.os_layer.pixels import Frame
+    rgb = bytearray(bytes((24, 80, 88)) * (256 * 224))
+    # Scatter 1x2 dark ground texture dots every 4x4 pixels (like ch10 plains).
+    for y in range(0, 224, 4):
+        for x in range(0, 256, 4):
+            for dx in (0, 1):
+                i = (y * 256 + x + dx) * 3
+                rgb[i:i + 3] = bytes((32, 40, 40))
+    frame = Frame(256, 224, bytes(rgb))
+    assert recall._cliff_escape(frame, [120, 112]) is None
+
+
+def test_overscan_black_border_does_not_trigger_cliff_escape():
+    """#4907: screen-edge black overscan bars (x>=248) are not a cliff wall."""
+    from docich.hanjuku.os_layer.pixels import Frame
+    rgb = bytearray(bytes((24, 80, 88)) * (256 * 224))
+    for y in range(224):
+        for x in range(248, 256):
+            i = (y * 256 + x) * 3
+            rgb[i:i + 3] = bytes((0, 0, 0))
+    frame = Frame(256, 224, bytes(rgb))
+    assert recall._cliff_escape(frame, [220, 154]) is None
