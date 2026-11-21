@@ -602,6 +602,11 @@ def _survival_card_list(screen, mem, cur, flow, names):
         _card_gate_refused(mem, cur, card, gate, listed_cards=names)
         return _card_gate_close(mem, cur, names)
     flow.update(card=card, stage='announce', selection_planned=True)
+    # docich#4977: same evidence base as chart selections — the announce
+    # banner is uncalibrated for survival cards too.
+    flow.setdefault('enemy_hp_at_open', cur.get('enemy_hp'))
+    flow.setdefault('enemy_soldiers_at_open', cur.get('enemy_soldiers'))
+    flow['names_at_select'] = list(names)
     cur['card_damage_rescue_needed'] = False
     rescue['cards_attempted'].append(card)
     previous[card] = counts[card]
@@ -1037,7 +1042,8 @@ def battle_menu_step(screen: Screen, mem):
             tid = rare['tactic_id']
             cur.setdefault('tactics_done', []).append(tid)
             cur['card_flow'] = {'card': 'キャトルミュー', 'stage': 'list' if move == 'here' else 'down',
-                                'tactic_id': tid, 'enemy_hp_at_open': cur.get('enemy_hp')}
+                                'tactic_id': tid, 'enemy_hp_at_open': cur.get('enemy_hp'),
+                                'enemy_soldiers_at_open': cur.get('enemy_soldiers')}
             _record(mem, 'battle_card', **_battle_labels(cur), card='キャトルミュー',
                     observed_metric={'enemy_hp': cur.get('enemy_hp'), 'egg_battle': True},
                     reason=('実携行のキャトルミューをボスへ使用し90ダメージを狙う'
@@ -1632,7 +1638,14 @@ def card_list_step(screen: Screen, mem):
             # lists must agree twice, and unreadable lists back out boundedly.
             absent = any(text in ''.join(screen.text.split()) for text in
                          ('きりふだはありません', 'きりふだなし'))
-            flow['list_observations'] = int(flow.get('list_observations', 0)) + 1
+            # docich#4977: an unchanged frame is the same observation, not a
+            # new one — identical sha256 repeats must not spend the bounded
+            # wait that exists to give the list time to become readable.
+            list_sha = getattr(screen, 'frame_sha256', None)
+            if list_sha is None or list_sha != flow.get('list_obs_sha'):
+                flow['list_observations'] = int(flow.get('list_observations', 0)) + 1
+            if list_sha is not None:
+                flow['list_obs_sha'] = list_sha
             previous = flow.get('missing_list_names')
             flow['missing_list_names'] = names
             if not absent and (not names or previous != names):
@@ -1685,6 +1698,13 @@ def card_list_step(screen: Screen, mem):
             return _emit_moves(move)
         flow['stage'] = 'announce'
         flow['selection_planned'] = True
+        # docich#4977: snapshot the panel and the visible list the card will
+        # be judged against. Flows opened without an open-time reading
+        # (survival, older bots) still get the same evidence base as chart
+        # flows.
+        flow.setdefault('enemy_hp_at_open', cur.get('enemy_hp'))
+        flow.setdefault('enemy_soldiers_at_open', cur.get('enemy_soldiers'))
+        flow['names_at_select'] = list(names)
         cur['card_damage_rescue_needed'] = False
         cur['card_consumption_complete'] = False
         cur.setdefault('cards_selected', []).append(flow['card'])
@@ -1702,6 +1722,26 @@ def card_list_step(screen: Screen, mem):
         return [pad('a')]
     if flow['stage'] == 'announce' and flow.get('selection_planned'):
         flow['announce_ticks'] = flow.get('announce_ticks', 0) + 1
+        # docich#4977: the announce banner is uncalibrated, but the list that
+        # stays open behind it is itself evidence — a fired card leaves its
+        # row. Accumulate the distinct frames on which a readable list (or
+        # the explicit empty-list text) no longer shows the selected card.
+        # The visible rows must stay inside the list seen at selection: a
+        # scrolled window or a misread into another real card name is not a
+        # consumption receipt.
+        absent_text = any(text in ''.join(screen.text.split()) for text in
+                          ('きりふだはありません', 'きりふだなし'))
+        sha = getattr(screen, 'frame_sha256', None)
+        at_select = flow.get('names_at_select')
+        card = flow.get('card')
+        row_gone = (card and isinstance(at_select, list) and card in at_select
+                    and ((names and card not in names
+                          and set(names) <= set(at_select) - {card})
+                         or (absent_text and not names)))
+        if row_gone and type(sha) is str:
+            absent_frames = flow.setdefault('announce_absent_frames', [])
+            if sha not in absent_frames:
+                absent_frames.append(sha)
         if flow['announce_ticks'] > CARD_ANNOUNCE_LIMIT:
             # docich#4703: a measured enemy HP drop after the selection is
             # evidence the card fired even when the announce banner was not
@@ -1711,17 +1751,37 @@ def card_list_step(screen: Screen, mem):
             # card up) on sight alone.
             opening = flow.get('enemy_hp_at_open')
             now_hp = cur.get('enemy_hp')
+            soldiers_open = flow.get('enemy_soldiers_at_open')
+            now_soldiers = cur.get('enemy_soldiers')
+            observed = expected = reason = None
             if type(opening) is int and type(now_hp) is int and now_hp < opening:
+                observed = {'evidence': 'enemy_hp_drop',
+                            'enemy_hp_at_open': opening, 'enemy_hp': now_hp}
+                expected = '敵HPの低下'
+                reason = '選択後に敵HPが低下したため、使用告知の代わりに実測で切り札の使用を確定する'
+            elif len(flow.get('announce_absent_frames') or ()) >= 2:
+                # Two distinct frames must agree: a single flickered OCR row
+                # is not a consumption receipt.
+                observed = {'evidence': 'card_row_absent', 'listed_cards': names,
+                            'distinct_absent_frames': len(flow['announce_absent_frames'])}
+                expected = '選択した札の行が一覧から消えること'
+                reason = '異なる2フレームで選択した札の行が一覧から消えたため、使用告知の代わりに実測で切り札の使用を確定する'
+            elif (type(soldiers_open) is int and type(now_soldiers) is int
+                    and now_soldiers < soldiers_open):
+                observed = {'evidence': 'enemy_soldiers_drop',
+                            'enemy_soldiers_at_open': soldiers_open,
+                            'enemy_soldiers': now_soldiers}
+                expected = '敵の兵士数の減少'
+                reason = '選択後に敵の兵士数が減ったため、使用告知の代わりに実測で切り札の使用を確定する'
+            if observed is not None:
                 flow['stage'] = 'done'
                 cur['card_consumption_complete'] = True
                 used = cur.setdefault('cards_used', [])
                 if flow.get('card') and flow['card'] not in used:
                     used.append(flow['card'])
                 _record(mem, 'battle_card_effect_confirmed', **_battle_labels(cur),
-                        card=flow.get('card'),
-                        observed_metric={'enemy_hp_at_open': opening, 'enemy_hp': now_hp},
-                        expected_metric='敵HPの低下',
-                        reason='選択後に敵HPが低下したため、使用告知の代わりに実測で切り札の使用を確定する')
+                        card=flow.get('card'), observed_metric=observed,
+                        expected_metric=expected, reason=reason)
                 cur['card_flow'] = None
                 return []
             # Owner 2026-11-02 (VSヴィーナス at オトラント): a timed-out
@@ -1732,7 +1792,8 @@ def card_list_step(screen: Screen, mem):
             if not flow.get('announce_retried'):
                 flow['announce_retried'] = True
                 flow.update(stage='list', selection_planned=False,
-                            announce_ticks=0, cursor_ticks=0, list_observations=0)
+                            announce_ticks=0, cursor_ticks=0, list_observations=0,
+                            list_obs_sha=None, announce_absent_frames=[])
                 _record(mem, 'battle_card_announce_retry', **_battle_labels(cur),
                         card=flow['card'],
                         expected_metric='実使用告知または一覧からの消失',

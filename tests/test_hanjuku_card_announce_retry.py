@@ -3,6 +3,7 @@ import pytest
 the list is still open — the carry may never have fired. Retry the same card
 once instead of backing out and retreating with it unused."""
 from docich import hanjuku_policy as p
+from docich.hanjuku_screen import Battle
 from test_hanjuku_card_damage_gate import memory, cards
 
 
@@ -19,6 +20,22 @@ def _first_timeout(mem, names):
     # CARD_ANNOUNCE_LIMIT is 6: the 7th call hits the retry branch.
     for _ in range(7):
         p.card_list_step(cards(names), mem)
+
+
+def _sha(n):
+    return f'{n:064x}'
+
+
+def _card_screen(names, sha=None):
+    screen = cards(names)
+    if sha is not None:
+        screen.frame_sha256 = sha
+    return screen
+
+
+def _effect_confirmed(mem):
+    return next(r for r in mem['_records']
+                if r['decision'] == 'battle_card_effect_confirmed')
 
 
 def test_announce_timeout_retries_same_card_once():
@@ -88,3 +105,93 @@ def test_announce_retry_is_bounded_to_one_attempt():
         if last == [p.pad('b')]:
             break
     assert last == [p.pad('b')]
+
+
+def test_announce_timeout_row_absent_on_two_frames_confirms_use():
+    # docich#4977: the card fired and its row left the still-open list, but
+    # the announce banner stayed unreadable. Two distinct frames without the
+    # row confirm the use instead of retrying.
+    mem = memory(enemy_hp=32, soldiers=(0, 0))
+    cur = mem['battle']
+    flow = cur['card_flow']
+    flow.update(stage='announce', selection_planned=True,
+                names_at_select=['ゼンマイン', 'イッテツーン'])
+    for i in range(7):
+        p.card_list_step(_card_screen(['イッテツーン'], sha=_sha(i + 1)), mem)
+    assert cur['card_flow'] is None
+    assert cur['cards_used'] == ['ゼンマイン']
+    assert cur['card_consumption_complete'] is True
+    assert _effect_confirmed(mem)['observed_metric']['evidence'] == 'card_row_absent'
+
+
+def test_announce_timeout_single_absent_frame_still_retries():
+    # A lone flickered reading is not a receipt: one absent frame leaves the
+    # bounded retry in place.
+    mem = memory(enemy_hp=32, soldiers=(0, 0))
+    flow = mem['battle']['card_flow']
+    flow.update(stage='announce', selection_planned=True,
+                names_at_select=['ゼンマイン', 'イッテツーン'])
+    for i in range(6):
+        p.card_list_step(_card_screen(['ゼンマイン'], sha=_sha(i + 1)), mem)
+    p.card_list_step(_card_screen(['イッテツーン'], sha=_sha(7)), mem)
+    assert flow.get('announce_retried') is True and flow['stage'] == 'list'
+    assert mem['battle']['cards_used'] == []
+
+
+def test_announce_absent_evidence_requires_distinct_frames():
+    # The same frame re-observed is one observation; identical sha256 repeats
+    # cannot stack into the two-frame row-absence evidence.
+    mem = memory(enemy_hp=32, soldiers=(0, 0))
+    flow = mem['battle']['card_flow']
+    flow.update(stage='announce', selection_planned=True,
+                names_at_select=['ゼンマイン', 'イッテツーン'])
+    for _ in range(7):
+        p.card_list_step(_card_screen(['イッテツーン'], sha=_sha(1)), mem)
+    assert flow.get('announce_retried') is True and flow['stage'] == 'list'
+    assert mem['battle']['cards_used'] == []
+
+
+def test_announce_absent_outside_the_selected_list_is_not_evidence():
+    # A scrolled window or an OCR misread can show a real card name that was
+    # not in the list at selection — that is not the selected row leaving.
+    mem = memory(enemy_hp=32, soldiers=(0, 0))
+    flow = mem['battle']['card_flow']
+    flow.update(stage='announce', selection_planned=True,
+                names_at_select=['ゼンマイン', 'イッテツーン'])
+    for i in range(7):
+        p.card_list_step(_card_screen(['イッテツーン', 'キャトルミュー'], sha=_sha(i + 1)), mem)
+    assert flow.get('announce_retried') is True and flow['stage'] == 'list'
+    assert mem['battle']['cards_used'] == []
+
+
+def test_announce_timeout_enemy_soldiers_drop_confirms_use():
+    # docich#4977: a live panel on the list shows the enemy soldier count
+    # fell after the selection — the card fired even without the banner.
+    mem = memory(enemy_hp=32, soldiers=(0, 6))
+    cur = mem['battle']
+    flow = cur['card_flow']
+    flow.update(stage='announce', selection_planned=True,
+                enemy_hp_at_open=32, enemy_soldiers_at_open=6,
+                names_at_select=['ゼンマイン'])
+    for i in range(7):
+        screen = _card_screen(['ゼンマイン'], sha=_sha(i + 1))
+        screen.battle = Battle('クミン', 32, 'ココット', 22)
+        screen.field_soldiers = (0, 3)
+        p.card_list_step(screen, mem)
+    assert cur['card_flow'] is None
+    assert cur['cards_used'] == ['ゼンマイン']
+    assert _effect_confirmed(mem)['observed_metric']['evidence'] == 'enemy_soldiers_drop'
+
+
+def test_unreadable_list_wait_counts_only_distinct_frames():
+    # docich#4977: battle_card_list_unclassified waits for four observations,
+    # but the same frame re-observed is not a new one — identical sha256
+    # repeats must not spend the bounded wait.
+    mem = memory(enemy_hp=32, soldiers=(0, 0))
+    flow = mem['battle']['card_flow']
+    for _ in range(8):
+        assert p.card_list_step(_card_screen((), sha=_sha(1)), mem) == []
+    assert flow.get('list_observations') == 1
+    outs = [p.card_list_step(_card_screen((), sha=_sha(i)), mem) for i in (2, 3, 4)]
+    assert outs == [[], [], [p.pad('b'), p.pad('b')]]
+    assert any(r['decision'] == 'battle_card_list_unclassified' for r in mem['_records'])
