@@ -2303,6 +2303,12 @@ def _one_hit_lethal(cur):
     if not isinstance(cur, dict):
         return False
     hp, enemy = cur.get('ally_hp'), cur.get('enemy_hp')
+    # Live g1288 2026-11-21/22: the boss (せいめいたい) sat at HP 1 and the
+    # one-hit melee finish LOST three fights in a row (シャルドネ/ローズマリー/
+    # マンゴスチン) because its counterattack killed the general anyway. A
+    # low-HP BOSS is not a safe melee: let the card/egg tactics take it.
+    if chart.is_boss_castle(cur.get('castle') or '') or reference.is_boss_target(cur.get('enemy') or ''):
+        return False
     return (type(enemy) is int and 0 < enemy <= EGG_WALL_DAMAGE
             and type(hp) is int and hp > EGG_WALL_DAMAGE
             and not (cur.get('card_hp_unread') or cur.get('card_context_unclassified')
