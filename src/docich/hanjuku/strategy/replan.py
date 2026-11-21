@@ -890,8 +890,18 @@ def _stock_cards(mem, wanted):
             held.append(card)
     if held:
         return held
+    # Generic fallback must not consume cards reserved for a pending boss kit.
+    # The strong opener above already subtracts those copies; apply the same
+    # constraint when no wanted card is held and we rank the remaining stock.
+    if generic:
+        from .boss_cards import boss_kit
+        kit = boss_kit(mem)
+        reserved = kit[1] if kit else {}
+    else:
+        reserved = {}
     ranked = sorted(((n, q) for n, q in stock.items()
-                     if isinstance(q, int) and q > 0 and isinstance(n, str)),
+                     if type(q) is int and q > int(reserved.get(n) or 0)
+                     and isinstance(n, str)),
                     key=lambda row: -row[1])
     return [n for n, _ in ranked[:2]]
    # same opener as a lost melee's retry
