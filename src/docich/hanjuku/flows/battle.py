@@ -1078,6 +1078,7 @@ def battle_step(screen: Screen, mem):
                     cur['deviation_reason'] = '前の切り札の実使用告知が未校正のため、選択記録を根拠に連続使用を継続'
             cur['card_flow'] = {'card': tactic['card'], 'stage': 'menu', 'note': note,
                                 'enemy_hp_at_open': b.enemy_hp, 'tactic_id': tid,
+                                'enemy_soldiers_at_open': cur.get('enemy_soldiers'),
                                 'egg_drop_only': bool(tactic.get('egg_drop_only')),
                                 'kit_source': egg_plan.get('kit_source')}
             # 卵落が最大HP合計の余りを超える札は、命中すれば敵の卵を落とす。
