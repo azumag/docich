@@ -1321,9 +1321,10 @@ def interim_candidates(mem, allow_sole=False) -> dict:
             except Exception:
                 roster_probe = False
         else:
-            # Reserve only an actor measured in this source castle. Unread chart
+            # Reserve only an actor measured in this source castle (including
+            # measured partial rosters used by _interim_source). Unread chart
             # actors are alternative future candidates, not simultaneous commitments.
-            present = (_world(mem).get('garrison') or {}).get(source) or ()
+            present = _known_residents(mem, _world(mem).get('garrison') or {}, source) or ()
             if (general != MOVE_ANY_GENERAL and general != NAME and present
                     and general not in present):
                 # docich#4712: the chart names the general that took this castle
