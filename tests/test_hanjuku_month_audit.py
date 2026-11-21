@@ -786,6 +786,56 @@ def test_chikujou_month_end_is_reported_once(runtime_dir):
     assert len(audit.load_incidents(runtime_dir)) == 1
 
 
+def boss_state(chapter=9, month='1-1', tick=0, *, launches=0):
+    value = state(chapter, month, tick)
+    bosses = set(chart.boss_sites(chapter))
+    normal = [name for name in chart.castles(chapter) if name not in bosses]
+    value['policy']['captured'] = normal
+    value['policy']['lost'] = []
+    value['policy']['month_sorties'] = {'scope': [chapter, month], 'launches': launches}
+    return value
+
+
+def run_boss_month(runtime, chapter, month, start, count, *, launches=0, boss_at=None):
+    last = None
+    for index in range(count):
+        at = start + index * STEP
+        last = boss_state(chapter, month, index, launches=launches)
+        audit.observe(runtime, audit.capture(last), last, [], now=at)
+        if boss_at == index:
+            note(runtime, at, 'order_launched', chart_step='A:1:M1',
+                 purpose='boss', general='G', target='ボス')
+        else:
+            note(runtime, at)
+    return last
+
+
+def test_boss_phase_month_with_zero_boss_sorties_is_recorded(runtime_dir):
+    old = run_boss_month(runtime_dir, 9, '1-1', 1000, 100)
+    boundary(runtime_dir, old, boss_state(9, '1-2', 200), 1200)
+    old = run_boss_month(runtime_dir, 9, '1-2', 1200, 100)
+    boundary(runtime_dir, old, boss_state(9, '1-3', 400), 1380)
+    record = json.loads((runtime_dir / audit.AUDIT_FILE).read_text())['pending']['incident']
+    assert record['kind'] == 'boss_month_zero_sortie'
+    assert record['confidence'] == 'high'
+    assert record['auto_file'] is True
+    assert record['boss_month']['boss_name'] == chart.BOSSES[9]
+    assert record['boss_month']['departures'] == 0
+    assert 'ボスフェーズで月内ボス出撃ゼロ' in audit._issue_title(record)
+    assert '### ボスフェーズ月次' in audit.render(record)
+
+
+def test_boss_phase_month_with_a_boss_sortie_is_not_flagged(runtime_dir):
+    old = run_boss_month(runtime_dir, 9, '1-1', 1000, 100)
+    boundary(runtime_dir, old, boss_state(9, '1-2', 200), 1200)
+    old = run_boss_month(runtime_dir, 9, '1-2', 1200, 100,
+                         launches=1, boss_at=40)
+    boundary(runtime_dir, old, boss_state(9, '1-3', 400), 1380)
+    saved = json.loads((runtime_dir / audit.AUDIT_FILE).read_text())
+    assert saved['last_close']['kind'] == 'ok'
+    assert saved['pending'] is None
+
+
 def test_capture_reads_unmigrated_world_fields():
     state_value = state(1, '1-1', 10)
     state_value['policy']['world']['gold'] = None

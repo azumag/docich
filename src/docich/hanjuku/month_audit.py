@@ -131,6 +131,8 @@ SIGNAL_LABELS = {
     'chikujou_available_at_end': '築城可能なまま月一終了',
     'chikujou_cancelled_with_resources': '築城可能なのにキャンセル',
     'chikujou_candidate': '未試行の築城候補',
+    'boss_month_zero_sortie': 'ボスフェーズで月内ボス出撃ゼロ',
+    'boss_sortie_missing': 'ボスへの出撃がない',
     'unknown': '原因未分類',
 }
 SIGNAL_ORDER = tuple(SIGNAL_LABELS)
@@ -187,9 +189,12 @@ PRIMARY_LABELS = {
     'chikujou_available_at_end': '築城可能なまま月一終了',
     'chikujou_cancelled_with_resources': '築城可能なのにキャンセル',
     'chikujou_candidate': '未試行の築城候補',
+    'boss_month_zero_sortie': 'ボスフェーズで月内ボス出撃ゼロ',
+    'boss_sortie_missing': 'ボスへの出撃がない',
     'unknown': '原因未分類',
 }
 PRIMARY_SIGNALS = (
+    ('boss_month_zero_sortie', ('boss_month_zero_sortie',)),
     ('chikujou_available_at_end', ('chikujou_available_at_end',)),
     ('chikujou_cancelled_with_resources', ('chikujou_cancelled_with_resources',)),
     ('camp_abandoned', ('camp_abandoned',)),
@@ -1944,6 +1949,32 @@ def _departures(rows):
     return len(keys), events
 
 
+def _boss_departures(rows, chapter):
+    from .. import hanjuku_chart as chart
+    bosses = set(chart.boss_sites(chapter) or ())
+    keys = set()
+    events = 0
+    for row in rows:
+        decision = row.get('decision')
+        if decision not in LAUNCH_DECISIONS:
+            continue
+        if row.get('purpose') == 'move':
+            continue
+        metric = row.get('observed_metric')
+        metric = metric if isinstance(metric, dict) else {}
+        target = row.get('target') or metric.get('target')
+        purpose = row.get('purpose') or metric.get('purpose')
+        if purpose != 'boss' and target not in bosses:
+            continue
+        events += 1
+        step = row.get('chart_step')
+        if isinstance(step, str) and step:
+            keys.add(step)
+        else:
+            keys.add(f"{decision}:{row.get('at')}")
+    return len(keys), events
+
+
 def _decision_counts(rows):
     counts = Counter(row.get('decision') for row in rows
                      if isinstance(row.get('decision'), str))
@@ -2129,17 +2160,22 @@ def _shrink(record):
 
 def _build_incident(runtime, observed, context, rows, close_at, identity, *, kind, confirmed,
                     departures, launch_events, coverage, confidence, reasons,
-                    chapter_changed, irregular):
+                    chapter_changed, irregular, boss_month=None):
     counts = _decision_counts(rows)
     battle_count = sum(counts.get(name, 0) for name in counts
                        if name.startswith('battle_') or name == 'monster_menu_choice')
     signals = _signals(context, counts, confirmed, departures, battle_count)
+    if kind in ('boss_month_zero_sortie', 'boss_month_zero_unverified'):
+        signals = ['boss_month_zero_sortie'] + [name for name in signals
+                                               if name != 'boss_month_zero_sortie']
     move_launches = sum(1 for row in rows if row.get('decision') == 'order_launched'
                         and row.get('purpose') == 'move')
     record = {
         'schema': SCHEMA,
         'event': {'zero_sortie': 'month_zero_sortie',
                   'zero_unverified': 'month_zero_unverified',
+                  'boss_month_zero_sortie': 'month_boss_zero_sortie',
+                  'boss_month_zero_unverified': 'month_boss_zero_unverified',
                   'unconfirmed_launches': 'month_unconfirmed_launches'}.get(
                       kind, 'month_unconfirmed_launches'),
         'kind': kind,
@@ -2168,6 +2204,7 @@ def _build_incident(runtime, observed, context, rows, close_at, identity, *, kin
         'flow': copy.deepcopy((context or {}).get('flow') or {}),
         'stats': copy.deepcopy((context or {}).get('stats') or {}),
         'battles': {'decisions': battle_count},
+        'boss_month': boss_month or {},
         'signals': signals,
         'decisions': {
             'total': len(rows),
@@ -2193,7 +2230,8 @@ def _build_incident(runtime, observed, context, rows, close_at, identity, *, kin
     primary = _primary_signal(signals)
     record['signature'] = primary
     record['fingerprint'] = _fingerprint(observed.get('chapter'), kind, [primary])
-    record['auto_file'] = kind == 'zero_sortie' and confidence == 'high'
+    record['auto_file'] = (kind in ('zero_sortie', 'boss_month_zero_sortie')
+                            and confidence == 'high')
     return _shrink(record)
 
 
@@ -2351,6 +2389,19 @@ def _close_month(runtime, state, before, after, now, on_sealed=None):
     rows = _read_decisions(runtime, since, until, state.get('identity'))
     coverage = _coverage(rows, since, until)
     departures, launch_events = _departures(rows)
+    boss_phase = _boss_phase(after_mem)
+    boss_departures, boss_events = _boss_departures(rows, chapter)
+    boss_month = None
+    if boss_phase is not None:
+        tracker = state.get('boss') if isinstance(state.get('boss'), dict) else {}
+        boss_month = {
+            'boss_name': boss_phase.get('boss_name'),
+            'bosses': boss_phase.get('bosses'),
+            'departures': boss_departures,
+            'launch_events': boss_events,
+            'started_at': tracker.get('started_at'),
+            'observations': tracker.get('observations'),
+        }
     duration_s = max(0.0, until - since)
     confidence, reasons = _confidence(observed, context, ledger_ok, chapter_changed,
                                       irregular, coverage, duration_s)
@@ -2360,6 +2411,9 @@ def _close_month(runtime, state, before, after, now, on_sealed=None):
         kind = 'skipped'
     elif irregular:
         kind = 'skipped'
+    elif boss_month is not None and boss_departures == 0:
+        kind = ('boss_month_zero_sortie' if confidence == 'high'
+                else 'boss_month_zero_unverified')
     elif departures == 0 and confirmed == 0 and confidence == 'high':
         kind = 'zero_sortie'
     elif departures == 0 and (confirmed is None or confidence != 'high'):
@@ -2377,14 +2431,16 @@ def _close_month(runtime, state, before, after, now, on_sealed=None):
         'departures': departures,
         'at': close_at,
     }
-    if kind in ('zero_sortie', 'zero_unverified', 'unconfirmed_launches'):
+    if kind in ('zero_sortie', 'zero_unverified', 'unconfirmed_launches',
+                'boss_month_zero_sortie', 'boss_month_zero_unverified'):
         if state.get('pending'):
             _seal(runtime, state, close_at, on_sealed)
         record = _build_incident(
             runtime, observed, context, rows, close_at, state.get('identity'), kind=kind,
             confirmed=confirmed, departures=departures, launch_events=launch_events,
             coverage=coverage, confidence=confidence, reasons=reasons,
-            chapter_changed=chapter_changed, irregular=irregular)
+            chapter_changed=chapter_changed, irregular=irregular,
+            boss_month=boss_month)
         state['pending'] = {
             'incident': record,
             'window_start_at': close_at,
@@ -2508,6 +2564,7 @@ def render(record):
     battle = record.get('battle_event') or {}
     stay = record.get('camp_stay') or {}
     chikujou = record.get('chikujou_event') or {}
+    boss_month = record.get('boss_month') or {}
     boss = record.get('boss_phase') or {}
     body = [
         f"<!-- hanjuku-month-audit fingerprint={record.get('fingerprint')} -->",
@@ -2523,6 +2580,18 @@ def render(record):
     if not camp:
         body.append(f"- 出撃: 確定 {sorties.get('confirmed')} / 発射 {sorties.get('departures')} / order_start {sorties.get('order_start')} / order_launched {sorties.get('order_launched')}")
     body.append('')
+    if boss_month:
+        body += [
+            '### ボスフェーズ月次',
+            '',
+            f"- ボス: {boss_month.get('boss_name') or 'ボス'}"
+            f" / 残り: {', '.join(boss_month.get('bosses') or [])}",
+            f"- 月内ボス出撃: {boss_month.get('departures')}"
+            f" / launch_events {boss_month.get('launch_events')}",
+            f"- フェーズ開始: {boss_month.get('started_at')}"
+            f" / 観測 {boss_month.get('observations')}回",
+            '',
+        ]
     if chikujou:
         body += [
             '### 築城',
@@ -2598,7 +2667,10 @@ def render(record):
             '',
         ]
     body.append('### 直前の決定' if (camp or sortie or battle or stay or chikujou) else
-                ('### フェーズ中の決定' if kind == 'boss_phase_no_battle' else '### 月内の決定'))
+                ('### ボスフェーズの決定' if kind in ('boss_month_zero_sortie',
+                                                     'boss_month_zero_unverified')
+                 else '### フェーズ中の決定' if kind == 'boss_phase_no_battle'
+                 else '### 月内の決定'))
     body.append('')
     rows, filtered = _timeline(record)
     if filtered:
@@ -2610,7 +2682,9 @@ def render(record):
     ]
     for row in rows:
         body.append(f"| {_clock(row.get('at'))} | {_cell(row.get('decision'))} | {_cell(row.get('chart_step'))} | {_md(row.get('general'))} | {_md(row.get('target'))} | {_md(row.get('reason'))} |")
-    body += ['', '### 現在の計画' if (camp or sortie or battle or stay or chikujou or kind == 'boss_phase_no_battle') else '### 前月の計画', '',
+    body += ['', '### 現在の計画' if (camp or sortie or battle or stay or chikujou
+                                     or boss_month or kind == 'boss_phase_no_battle')
+             else '### 前月の計画', '',
              '| step | 状態 | 目的 | 出撃元 | 対象 | 将軍 |',
              '| --- | --- | --- | --- | --- | --- |']
     plan = record.get('plan') or {}
@@ -2677,7 +2751,11 @@ def render_comment(record):
     battle = record.get('battle_event') or {}
     stay = record.get('camp_stay') or {}
     chikujou = record.get('chikujou_event') or {}
-    if record.get('kind') in ('chikujou_available_at_end', 'chikujou_cancelled_with_resources'):
+    boss_month = record.get('boss_month') or {}
+    if record.get('kind') in ('boss_month_zero_sortie', 'boss_month_zero_unverified'):
+        lines.insert(5, f"- ボス月次: {boss_month.get('departures')}"
+                        f" / {boss_month.get('boss_name') or 'ボス'}")
+    elif record.get('kind') in ('chikujou_available_at_end', 'chikujou_cancelled_with_resources'):
         lines.insert(5, f"- 築城: {chikujou.get('outcome')} / gold {chikujou.get('gold')}"
                         f" / reserve {chikujou.get('reserve')}"
                         f" / 候補 {chikujou.get('staffed_candidates')}")
@@ -2705,6 +2783,11 @@ def render_comment(record):
 
 def _issue_title(record):
     kind = record.get('kind')
+    if kind in ('boss_month_zero_sortie', 'boss_month_zero_unverified'):
+        boss_month = record.get('boss_month') or {}
+        boss = boss_month.get('boss_name') or 'ボス'
+        return (f"[半熟英雄] ボスフェーズで月内ボス出撃ゼロ: ch{record.get('chapter')} "
+                f"{boss}")[:100]
     if kind in ('chikujou_available_at_end', 'chikujou_cancelled_with_resources'):
         label = ('築城可能なまま月一終了' if kind == 'chikujou_available_at_end'
                  else '築城可能なのにキャンセル')

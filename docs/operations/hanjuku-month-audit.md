@@ -1,4 +1,4 @@
-# 半熟英雄: 月内出撃ゼロ・ボスフェーズ無戦闘監査（v1347）
+# 半熟英雄: 月内出撃ゼロ・ボスフェーズ無戦闘監査（v1358）
 
 ## 目的
 
@@ -42,7 +42,7 @@ JSONLで保存し、必要なときに `gh` で修正用 issue を発行する�
 `decision_log_coverage` だけのときは `medium`、それ以外の理由が付くと `low`。
 issue化の既定は `high` のみ。
 
-## ボスフェーズ無戦闘（v1347）
+## ボスフェーズ無戦闘（v1358）
 
 通常城をすべて確保し、ボスの城（第4話は四季王サイト）だけが残った状態を
 **ボスフェーズ**とする。第9話の移動ボスは街道の全城が自軍になった時点。
@@ -61,7 +61,7 @@ issue化の既定は `high` のみ。
 （confidence high）。issue題名は
 `[半熟英雄] ボスフェーズでボス戦闘ゼロ: ch<章> <ボス名>`。
 
-## キャンプ帰還の失敗・キャンセル（v1347）
+## キャンプ帰還の失敗・キャンセル（v1358）
 
 キャンプ（野営）からの帰還が terminal に失敗/取消/未確認になった観測で、
 `camp_*` のrecordを1件保存する。対象decision:
@@ -84,7 +84,7 @@ issue化の既定は `high` のみ。
   は通常経路なので対象外。
 - 保存後のissue発行はbotのseal時callback（v1257以降）と同じ。
 
-## 出撃失敗・キャンセル（v1347）
+## 出撃失敗・キャンセル（v1358）
 
 terminal な出撃失敗/取消のdecisionを、`sortie_*` のrecordとして保存する。
 
@@ -103,7 +103,7 @@ terminal な出撃失敗/取消のdecisionを、`sortie_*` のrecordとして保
   `order_retry`（戦闘再試行）はterminalでないため対象外。
 - issue発行はbotのseal時callback（v1257以降）と同じ。
 
-## 卵・切り札を残した退却/敗北（v1347）
+## 卵・切り札を残した退却/敗北（v1358）
 
 戦闘結果が退却または敗北なのに、本人の卵残数が正数、または切り札が未使用で
 残っている場合に `battle_retreat_with_resources` / `battle_loss_with_resources`
@@ -123,7 +123,7 @@ terminal な出撃失敗/取消のdecisionを、`sortie_*` のrecordとして保
 - 題名は `[半熟英雄] 卵/切り札を残して退却/敗北: ch<章> <将軍またはstep>`。
 - 卵・切り札の残数はbattle結果/退却metricへ追加し、実測値だけを使う。
 
-## 野営放置（3ヶ月以上連続）（v1347）
+## 野営放置（3ヶ月以上連続）（v1358）
 
 `general_statuses.statuses` で `location=camp` の将軍を月ごとに追跡し、
 同じ将軍が**3ヶ月以上連続**で野営のままなら `camp_abandoned` を1回保存する。
@@ -141,7 +141,7 @@ terminal な出撃失敗/取消のdecisionを、`sortie_*` のrecordとして保
 - 題名は `[半熟英雄] 野営放置: ch<章> <将軍> (<n>ヶ月)`。
 - issue発行はbotのseal時callback（v1257以降）と同じ。
 
-## 築城可能なのにキャンセル/月一終了（v1347）
+## 築城可能なのにキャンセル/月一終了（v1358）
 
 月一メニューの `month_done` / `month_confirm`、または terminal な
 `chikujou_declined` / `chikujou_leftover` の時点で、**資金・将軍・未試行の
@@ -160,6 +160,23 @@ terminal な出撃失敗/取消のdecisionを、`sortie_*` のrecordとして保
   flow/計画/在城/統計を1件32KB以内で残す。
 - 題名は `[半熟英雄] 築城可能なまま月一終了: ch<章> <月>` または
   `築城可能なのにキャンセル: ...`。
+
+## ボスフェーズで月内ボス出撃ゼロ（v1358）
+
+月を閉じた時点で `_boss_phase` が成立している（通常城をすべて確保し、ボス城が
+残っている）のに、その月の **ボス向け出撃が0** の場合、
+`boss_month_zero_sortie` を保存する。
+
+- ボス向け出撃は `order_launched` / `sortie_departed_observed` /
+  `sortie_launch_confirmed` / `sortie_launch_unconfirmed_kept` のうち、
+  `target` が `chart.boss_sites(chapter)` に一致するか `purpose='boss'` のもの。
+- 月内の全出撃が0でボスフェーズでも、汎用 `zero_sortie` ではなく
+  `boss_month_zero_sortie` を優先する。
+- ボス向け出撃が1回でもあればこのissueは出さない。
+- ボス名・残りボス城・月内ボス出撃数・フェーズ開始tick・観測回数・
+  計画/在城/flow/統計・決定を1件32KB以内で保存。
+- 題名は `[半熟英雄] ボスフェーズで月内ボス出撃ゼロ: ch<章> <ボス名>`。
+- 既存の「ボスフェーズでボス戦闘ゼロ（600秒）」とは別シグネチャ。
 
 ## 保存先
 
@@ -232,7 +249,7 @@ production checkout 上の `gh` 実行はしない。
 2. そのディレクトリを `HANJUKU_RUNTIME` にして `render` / `file --dry-run` で本文を確認する。
 3. `secret_scan` の clean を確認して `file` を実行する。
 
-## botからの自動発行（v1347）
+## botからの自動発行（v1358）
 
 月内出撃ゼロ・ボスフェーズ無戦闘のsealed recordを保存した直後、**その観測を
 実行しているbotプロセス**が、detachedの子プロセスで
