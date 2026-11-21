@@ -14,6 +14,16 @@ from docich.hanjuku.os_layer import navigation, phase as phase_module
 from docich.hanjuku.os_layer.pixels import read_png
 from docich.hanjuku.os_layer.screen import castle_roofs, parse
 from docich.hanjuku.strategy import goals
+
+# The production default pauses repair goals (EGG_REPAIR_DISABLED); these
+# tests exercise the repair machinery, so they opt back in.
+import pytest as _pytest
+
+
+@_pytest.fixture(autouse=True)
+def _repair_goals_enabled(monkeypatch):
+    monkeypatch.setattr(goals, 'EGG_REPAIR_DISABLED', False)
+
 from docich.hanjuku_screen import Screen
 
 FIXTURES = Path(__file__).parent / 'fixtures' / 'hanjuku'
