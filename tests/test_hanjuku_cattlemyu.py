@@ -227,3 +227,15 @@ def test_cached_cattlemyu_does_not_close_rare_scan_month_and_scroll_captures_bal
     screen = SimpleNamespace(kind='card_select', text='', lines=(), cursor=None, hand=None, selected=None)
     deploy.deploy_step(screen, mem)
     assert mem.get('balmung_held') == {'month': '41-9', 'stock': 40}
+
+
+def test_move_order_does_not_spend_cattlemyu():
+    """#4891: 自軍城への移動注文(purpose=='move')ではキャトルミューを携行・消費しない。"""
+    order, mem = memory(boss=False)
+    move_order = {**order, 'purpose': 'move', 'cards': ()}
+    mem.pop('rare_card_kit')
+    mem['card_stock'] = {RARE: 18}
+    top_four = inventory([('イッテツーン', 99), ('ブラッキー', 99), ('フットバース', 99), ('ダンスライン', 99)])
+    assert policy._rare_card_inventory(None, mem, move_order, top_four) is None
+    assert policy._rare_card_inventory(None, mem, move_order, inventory([(RARE, 18)])) is None
+    assert not mem.get('rare_card_kit')

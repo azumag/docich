@@ -532,6 +532,28 @@ def test_boss_order_still_waits_when_its_chain_is_broken():
     assert not orders._ready(b1, mem)
 
 
+def test_chapters_10_to_12_require_all_normal_castles_before_boss_unlock():
+    """#4915: ch10-12 boss sites stay closed until every normal castle is captured."""
+    cases = [
+        (10, '10-B1', ['ファルゲ', 'ケントルム']),
+        (11, '11-B1', ['ゴンダル', 'ジャンセニア', 'トリフェ', 'ネペンテ']),
+        (12, '12-B1', ['ブラックランド', 'ヘリオポリス', 'ディランダ']),
+    ]
+    for ch, step, partial in cases:
+        b1 = next(o for o in chart.all_orders(ch) if o['step'] == step)
+        mem = {'chapter': ch, 'month': '42-6', 'tick': 100,
+               'captured': list(partial), 'lost': [],
+               'orders': {}, 'launched_orders': {}, 'sorties': {}, 'garrison': {},
+               '_records': [], 'house_eggs': {}, 'general_location_unknown': []}
+        assert not orders._boss_path_captured(mem), ch
+        assert not orders._ready(b1, mem), ch
+        all_normal = sorted(
+            set(chart.CASTLE_NAMES[ch]) - {chart.home_castle(ch), chart.boss_castle(ch)})
+        mem['captured'] = all_normal
+        assert orders._all_normal_captured(mem), ch
+        assert orders._boss_target_unlocked(b1, mem), ch
+
+
 def aiaie_stall():
     """g1097 2026-11-03 00:25 JST, chapter 5: ジュメルズ/クロチェット/カルーン are lost,
     アルマムーン holds six, アイアイエー is recorded empty from a reading 26k ticks

@@ -10,8 +10,8 @@ from .. import decision_log
 from ..os_layer import roster as receipts
 from ..os_layer import status_return
 from ..os_layer.commands import menu_to, pad
-from ..os_layer.readers import world_markers
-from ..os_layer.screen import castle_roofs, own_camps
+from ..os_layer.readers import MAP_PANEL_RIGHT, world_markers
+from ..os_layer.screen import camp_body_target, castle_roofs, own_camps
 from ..os_layer.world import NAME
 from ..state.regions import flow as _flow, world as _world, plan as _plan_region
 from . import house, recall as recall_flow, map_registration
@@ -150,7 +150,23 @@ def _road_skips_checks(mem):
     return chart.guard_free(chapter) and bool(chart.corridor(chapter)) and not boss_phase(mem)
 
 
-def _tasks(statuses, names, boss_camp_months=None, camp_stays=False, road=False):
+def _boss_unlocked(mem):
+    """True once the chapter's boss castle is actually reachable/open (#4912).
+
+    Chapters 10-12 spawn the boss castle only after every normal castle is
+    captured (``all_captured``); before that, a general camped near ch10's
+    central boss enclosure must be recalled home instead of ordered to
+    ``boss_move`` into an empty site or exempted from recall.
+    """
+    from ..strategy.orders import _all_normal_captured
+    chapter = mem.get('chapter')
+    if chapter in (10, 11, 12):
+        return _all_normal_captured(mem)
+    return True
+
+
+def _tasks(statuses, names, boss_camp_months=None, camp_stays=False, road=False,
+           boss_unlocked=True):
     """``camp_stays``: a moving-boss chapter never recalls a camp home (owner
     2026-11-09); the camp is re-sent at the boss by the camp flow instead.
     ``road``: chapter 9 before the boss phase keeps only repairs."""
@@ -175,7 +191,9 @@ def _tasks(statuses, names, boss_camp_months=None, camp_stays=False, road=False)
             # consecutive observed months (docich#3659): a siege that never
             # resolves must not pin him to the camp forever. A broken general
             # never holds the siege (docich#3659 follow-up: ヴィーナス).
-            if (_boss_camp_holds_siege(info)
+            # #4912: only apply siege exemption / boss_move once the chapter's
+            # boss castle is actually unlocked.
+            if (boss_unlocked and _boss_camp_holds_siege(info)
                     and int(months.get(name) or 0) <= BOSS_CAMP_EXEMPT_MONTHS):
                 # #3505: an intact siege camper marches on to the boss by the
                 # camp menu's いどう instead of idling the exempt months away.
@@ -384,11 +402,13 @@ def arm(mem):
     # ``arm`` can also be re-entered inside the same month after ``_finish``
     # dropped the owner state, so gate the increment on the counted scope —
     # never on the presence of a live owner.
+    boss_unlocked = _boss_unlocked(mem)
     if mem.get('boss_camp_exempt_scope') != scope:
         mem['boss_camp_exempt_scope'] = list(scope)
-        camping = {
+        camping = ({
             name for name, row in statuses.items()
             if row.get('location') == 'camp' and _boss_camp_holds_siege(row)}
+            if boss_unlocked else set())
         previous = mem.get('boss_camp_exempt') or {}
         counted = {name: int(previous.get(name) or 0) + 1 for name in camping}
         if counted:
@@ -396,7 +416,8 @@ def arm(mem):
         else:
             mem.pop('boss_camp_exempt', None)
     tasks = _tasks(statuses, list(statuses), mem.get('boss_camp_exempt'),
-                   camp_stays=_camp_stays(mem), road=_road_skips_checks(mem))
+                   camp_stays=_camp_stays(mem), road=_road_skips_checks(mem),
+                   boss_unlocked=boss_unlocked)
     if not scan and not manifest_due and not tasks:
         # Common case: zero input and zero roster navigation this month.
         mem['post_month_status_last'] = {
@@ -802,9 +823,21 @@ def _static_marker(state, marker):
     transient sprite miss: re-reading it costs one observation per read and
     cannot give any general a castle (g1163 2026-11-09 09:58-10:02: box
     [59,120,64,125] repeated for twenty generals, four reads each).
+
+    The roster list's own scroll arrow (outside ``MAP_PANEL_RIGHT`` / reason
+    ``scroll_arrow``) is NOT a map decoration: ``selection_marker`` falls back
+    to it whenever the real in-map triangle is blinked off for a frame, so
+    memorising it would skip the blink retry loop and force an expensive
+    per-general SELECT locate (#4910).
     """
-    box = tuple(marker.get('box') or ()) if isinstance(marker, dict) else ()
+    if not isinstance(marker, dict):
+        return False
+    if marker.get('marker_reason') == 'scroll_arrow':
+        return False
+    box = tuple(marker.get('box') or ())
     if not box:
+        return False
+    if len(box) >= 3 and box[2] >= MAP_PANEL_RIGHT:
         return False
     if marker.get('castle_candidate'):
         state.pop('static_marker', None)   # this box can resolve; remember nothing
@@ -1140,7 +1173,8 @@ def _complete_scan(mem, state):
             mem.pop('carry_tracking', None)
     state['tasks'] = _tasks(state['statuses'], state['names'],
                             mem.get('boss_camp_exempt'), camp_stays=_camp_stays(mem),
-                            road=_road_skips_checks(mem))
+                            road=_road_skips_checks(mem),
+                            boss_unlocked=_boss_unlocked(mem))
     mem['general_statuses'] = {
         'scope': list(state['scope']), 'identity': state['identity'],
         'statuses': state['statuses'], 'dirty': {}, 'pending_joins': [],
@@ -1464,7 +1498,19 @@ def step(screen, mem, frame):
     # month still lacks a confirmed launch toward an enemy castle and a
     # charted order can start, release the field map (and never cancel the
     # sortie flow's own menus) so map_step/deploy_step drive that order.
-    if state['stage'] in {'await_map', 'open_menu', 'task_menu'}:
+    # docich#4888: the deferral only covered the menu-walk stages, so a month
+    # spent in the per-general task loop never yielded. 'process', 'manifest'
+    # and 'locate_reset' only open the menu or pop the next task on the map --
+    # pausing there strands nothing, so they defer while the task queue still
+    # holds work. An empty queue means the stage is itself the month's last
+    # bounded action (the manifest's X-open, the scan's finish): deferring it
+    # would only stall the release, and 'manifest' must keep opening X on the
+    # field map. Stages already inside a bounded sub-transaction (task_jump,
+    # locate_*, wait_repair, wait_recall) keep the field; deferring there
+    # would abandon a SELECT or a recall mid-flight.
+    if (state['stage'] in {'await_map', 'open_menu', 'task_menu'}
+            or (state['stage'] in {'process', 'manifest', 'locate_reset'}
+                and state.get('tasks'))):
         if (screen.kind in STRAY_MENU_KINDS | {'card_select', 'sortie_confirm'}
                 and _plan_region(mem).get('active') is not None):
             return None
@@ -1943,6 +1989,12 @@ def step(screen, mem, frame):
                 'stage': 'to_camp', 'target': list(camp['target']),
                 'last_seen': list(camp['target']), 'steps': 0,
                 'general': name, 'camp_kind': camp.get('kind'),
+                # #4901: without the measured body cell the menu stage's
+                # flag->body retry can never arm on a task recall, so a tent
+                # whose flag cell does not open the menu loops
+                # camp_menu_not_opened until it aborts.
+                **({'camp_body': body}
+                   if (body := camp_body_target(frame, camp['target'])) else {}),
                 **({'boss_move': True} if job['kind'] == 'boss_move' else {})}
             _stage(state, 'wait_recall', recall_started=True)
             recall = recall_flow.camp_recall_step(screen, mem, frame)
