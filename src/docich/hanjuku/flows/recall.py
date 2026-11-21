@@ -1583,10 +1583,12 @@ def _camp_recall_step(screen: Screen, mem, frame, *, observed_camps=None):
                 # goal castle, so confirm it. This covers the ordinary camp
                 # too — a real own castle beats the confirm-anywhere fallback.
                 return _finish_hero_recall(mem, state, goal)
-            if (goal and not roofs and not jumped and not state.get('cliff_detour')
+            if (goal and not jumped and not state.get('cliff_detour')
                     and (mem.get('y_jumps') or {}).get('RECALL:target', 0) < 2):
-                # A cliff detour moves the marker first; the ordinary confirm
-                # follows on the next observation instead of a Y jump.
+                # Owner 2026-11-19/21: 帰還は見えている城へのカーソル移動ではなく
+                # 全体マップ（Y）で自城へ直接戻る。屋根が見えていても先にジャンプし、
+                # 受領後に _finish_hero_recall が確定する。崖離脱だけは先に
+                # マーカーを動かすためジャンプしない（次観測で確定へ）。
                 return _start_y_jump(mem, {'step': 'RECALL'}, goal, 'target')
         enemy_under_marker = marker and frame is not None and any(
             r['kind'] == 'enemy' and abs(r['target'][0] - marker[0]) <= 12
