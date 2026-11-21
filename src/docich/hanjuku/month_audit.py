@@ -53,6 +53,7 @@ CAMP_ISSUE_COOLDOWN_SECONDS = 900
 SORTIE_ISSUE_COOLDOWN_SECONDS = 900
 BATTLE_RESOURCE_ISSUE_COOLDOWN_SECONDS = 900
 CAMP_ABANDON_MONTHS = 3
+CHIKUJOU_ISSUE_COOLDOWN_SECONDS = 900
 MIN_MONTH_SECONDS = 120
 MAX_GAP_SECONDS = 60
 MIN_OBSERVATIONS = 20
@@ -127,6 +128,9 @@ SIGNAL_LABELS = {
     'battle_loss_with_card': '切り札を残して敗北',
     'camp_abandoned': '野営放置',
     'camp_abandon_3months': '3ヶ月以上野営',
+    'chikujou_available_at_end': '築城可能なまま月一終了',
+    'chikujou_cancelled_with_resources': '築城可能なのにキャンセル',
+    'chikujou_candidate': '未試行の築城候補',
     'unknown': '原因未分類',
 }
 SIGNAL_ORDER = tuple(SIGNAL_LABELS)
@@ -180,9 +184,14 @@ PRIMARY_LABELS = {
     'battle_loss_with_card': '切り札を残して敗北',
     'camp_abandoned': '野営放置',
     'camp_abandon_3months': '3ヶ月以上野営',
+    'chikujou_available_at_end': '築城可能なまま月一終了',
+    'chikujou_cancelled_with_resources': '築城可能なのにキャンセル',
+    'chikujou_candidate': '未試行の築城候補',
     'unknown': '原因未分類',
 }
 PRIMARY_SIGNALS = (
+    ('chikujou_available_at_end', ('chikujou_available_at_end',)),
+    ('chikujou_cancelled_with_resources', ('chikujou_cancelled_with_resources',)),
     ('camp_abandoned', ('camp_abandoned',)),
     ('battle_retreat_with_resources', ('battle_retreat_with_resources',)),
     ('battle_loss_with_resources', ('battle_loss_with_resources',)),
@@ -1354,6 +1363,218 @@ def _build_camp_abandon_incident(runtime, state, after, stay, now):
     return _shrink(record)
 
 
+
+def _chikujou_staffed(mem):
+    world = _world_snapshot(mem)
+    garrison = world.get('garrison') if isinstance(world.get('garrison'), dict) else {}
+    staffed = {name for name, roster in garrison.items()
+               if isinstance(name, str) and isinstance(roster, list) and roster}
+    statuses = ((mem.get('general_statuses') or {}).get('statuses') or {})
+    for name, row in statuses.items():
+        if (isinstance(name, str) and isinstance(row, dict)
+                and row.get('location') == 'castle' and row.get('castle')):
+            staffed.add(row['castle'])
+    return staffed
+
+
+def _chikujou_snapshot(after, before, record, records):
+    from .strategy import economy
+    month = record.get('month') if isinstance(record.get('month'), str) else None
+    chosen = None
+    for state in (after, before):
+        if not isinstance(state, dict):
+            continue
+        mem = state.get('policy')
+        if not isinstance(mem, dict):
+            continue
+        shop = mem.get('shop')
+        if not isinstance(shop, dict):
+            continue
+        if month is not None and shop.get('key') not in (None, month):
+            continue
+        chosen = (state, mem, shop)
+        if shop.get('key') == month:
+            break
+    if chosen is None:
+        return None
+    state, mem, shop = chosen
+    metric = record.get('observed_metric') if isinstance(record.get('observed_metric'), dict) else {}
+    gold = next((value for value in (metric.get('gold_end'), metric.get('gold_after'),
+                                     metric.get('gold'), state.get('gold'))
+                 if type(value) is int), None)
+    if type(gold) is not int:
+        gold = shop.get('gold_end') if type(shop.get('gold_end')) is int else shop.get('gold_start')
+    reserve = economy._chikujou_reserve(mem, shop)
+    if type(gold) is not int or reserve is None:
+        return None
+    tried = {name for name in (shop.get('chikujou_tried') or []) if isinstance(name, str)}
+    upgrades = {entry.get('castle') for entry in (shop.get('chikujou_upgrades') or [])
+                if isinstance(entry, dict)}
+    maxed, unavailable = set(), set()
+    for row in records or ():
+        if not isinstance(row, dict):
+            continue
+        metric = row.get('observed_metric')
+        metric = metric if isinstance(metric, dict) else {}
+        if row.get('decision') == 'chikujou_max_level_seen':
+            maxed.update(name for name in (metric.get('castles') or []) if isinstance(name, str))
+        if row.get('decision') == 'chikujou_castle_unavailable':
+            name = metric.get('castle')
+            if isinstance(name, str):
+                unavailable.add(name)
+    staffed = _chikujou_staffed(mem)
+    candidates = economy._chikujou_candidates(mem)
+    candidates = [name for name in candidates
+                  if name not in tried and name not in upgrades
+                  and name not in maxed and name not in unavailable]
+    staffed_candidates = [name for name in candidates if name in staffed]
+    affordable = economy._chikujou_affordable(gold, reserve)
+    return {
+        'month': month or shop.get('key'),
+        'gold': gold,
+        'reserve': reserve,
+        'shop_status': shop.get('chikujou'),
+        'candidates': candidates[:8],
+        'staffed_candidates': staffed_candidates[:8],
+        'tried': sorted(tried)[:8],
+        'upgrades': sorted(name for name in upgrades if isinstance(name, str))[:8],
+        'maxed': sorted(maxed)[:8],
+        'unavailable': sorted(unavailable)[:8],
+        'affordable': affordable,
+        'buildable': bool(affordable and staffed_candidates),
+    }
+
+
+def _chikujou_event(record, after, before, records):
+    if not isinstance(record, dict):
+        return None
+    decision = record.get('decision')
+    if decision == 'month_confirm' and record.get('choice') not in (None, 'うむッ!'):
+        return None
+    if decision not in ('month_done', 'month_confirm', 'chikujou_declined',
+                         'chikujou_leftover'):
+        return None
+    snapshot = _chikujou_snapshot(after, before, record, records)
+    if not snapshot or not snapshot.get('buildable'):
+        return None
+    if decision == 'chikujou_declined':
+        reason = record.get('reason') if isinstance(record.get('reason'), str) else ''
+        if '候補' not in reason and snapshot.get('shop_status') not in ('done', 'skipped'):
+            return None
+        outcome = 'cancelled'
+    elif decision == 'chikujou_leftover':
+        outcome = 'cancelled'
+    else:
+        outcome = 'ended'
+    snapshot['outcome'] = outcome
+    snapshot['decision'] = decision
+    snapshot['reason'] = _bounded_text(record.get('reason'), 200)
+    return snapshot
+
+
+def _build_chikujou_incident(runtime, state, after, event, now):
+    mem = after.get('policy') or {}
+    context = _context(after)
+    rows = _read_decisions(runtime, max(0.0, float(now) - 120), now,
+                           state.get('identity'))
+    counts = _decision_counts(rows)
+    departures, launch_events = _departures(rows)
+    month_sorties = (context or {}).get('month_sorties') or {}
+    confirmed = month_sorties.get('launches') if isinstance(month_sorties, dict) else None
+    battle_count = sum(counts.get(name, 0) for name in counts
+                       if name.startswith('battle_') or name == 'monster_menu_choice')
+    kind = ('chikujou_available_at_end' if event.get('outcome') == 'ended'
+            else 'chikujou_cancelled_with_resources')
+    signals = [kind, 'chikujou_candidate']
+    for name in _signals(context, counts, confirmed, departures, battle_count):
+        if name not in signals:
+            signals.append(name)
+    signals = signals[:8]
+    observed = state.get('observed') if isinstance(state.get('observed'), dict) else None
+    if observed is not None:
+        month = _month_summary(observed, now)
+    else:
+        month = {'chapter': mem.get('chapter'), 'month': mem.get('month'),
+                 'first_at': now, 'last_at': now, 'closed_at': now,
+                 'duration_s': 0.0, 'first_tick': mem.get('tick'),
+                 'last_tick': mem.get('tick'), 'duration_ticks': None,
+                 'observations': 0, 'max_gap_s': 0.0, 'started_clean': True}
+    identity = state.get('identity') or {}
+    record = {
+        'schema': SCHEMA,
+        'event': kind,
+        'kind': kind,
+        'confidence': 'high',
+        'confidence_reasons': [],
+        'chapter': mem.get('chapter'),
+        'month': mem.get('month'),
+        'month_summary': month,
+        'chikujou_event': dict(event),
+        'sorties': {
+            'confirmed': confirmed,
+            'departures': departures,
+            'launch_events': launch_events,
+            'order_start': counts.get('order_start', 0),
+            'order_launched': counts.get('order_launched', 0),
+        },
+        'plan': copy.deepcopy((context or {}).get('plan') or {}),
+        'world': copy.deepcopy((context or {}).get('world') or {}),
+        'flow': copy.deepcopy((context or {}).get('flow') or {}),
+        'stats': copy.deepcopy((context or {}).get('stats') or {}),
+        'battles': {'decisions': battle_count},
+        'signals': signals,
+        'decisions': {
+            'total': len(rows),
+            'counts': counts,
+            'coverage': None,
+            'before': _decision_rows(rows, 30),
+            'after': None,
+        },
+        'evidence': {
+            'runtime_dir': str(Path(runtime).name),
+            'decisions': 'hanjuku_decisions.jsonl',
+            'events': 'hanjuku_events.jsonl',
+            'frames': 'hanjuku_frames/',
+            'bot_version': after.get('bot_version'),
+            'identity': identity,
+        },
+        'context_missing': context is None,
+        'created_at': float(now),
+    }
+    raw = (f"{identity.get('runtime_id')}|{identity.get('generation')}|"
+           f"{kind}|{event.get('month')}|{mem.get('chapter')}")
+    record['incident_id'] = hashlib.sha256(raw.encode('utf-8')).hexdigest()[:20]
+    record['signature'] = kind
+    record['fingerprint'] = _fingerprint(mem.get('chapter'), kind, [kind])
+    record['auto_file'] = True
+    return _shrink(record)
+
+
+def _track_chikujou(runtime, state, before, after, records, now, on_sealed=None):
+    mem = after.get('policy') or {}
+    chapter, month = mem.get('chapter'), mem.get('month')
+    events = [event for event in
+              (_chikujou_event(record, after, before, records) for record in records or ())
+              if event]
+    if not events:
+        return
+    events.sort(key=lambda event: 0 if event.get('outcome') == 'ended' else 1)
+    event = events[0]
+    event_month = event.get('month') or month
+    watch = state.get('chikujou_watch')
+    if (not isinstance(watch, dict) or watch.get('chapter') != chapter
+            or watch.get('month') != event_month):
+        watch = {'chapter': chapter, 'month': event_month, 'reported': False}
+        state['chikujou_watch'] = watch
+    if watch.get('reported'):
+        return
+    incident = _build_chikujou_incident(runtime, state, after, event, now)
+    _append_incident(runtime, incident, on_sealed)
+    watch['reported'] = True
+    watch['reported_at'] = float(now)
+    watch['kind'] = incident.get('kind')
+
+
 def _track_camp_abandon(runtime, state, after, now, on_sealed=None):
     mem = after.get('policy') or {}
     chapter, month = mem.get('chapter'), mem.get('month')
@@ -2211,6 +2432,7 @@ def observe(runtime, before, after, records=None, *, now=None, on_sealed=None):
     _track_sortie(runtime, state, after, records, now, on_sealed)
     _track_battle_resources(runtime, state, after, records, now, on_sealed)
     _track_camp_abandon(runtime, state, after, now, on_sealed)
+    _track_chikujou(runtime, state, before, after, records, now, on_sealed)
     state['write_tick'] = int(state.get('write_tick') or 0) + 1
     # The open-month counters only advance if every observation persists them:
     # a write every tenth observation restarted from the last file and could
@@ -2285,6 +2507,7 @@ def render(record):
     sortie = record.get('sortie_event') or {}
     battle = record.get('battle_event') or {}
     stay = record.get('camp_stay') or {}
+    chikujou = record.get('chikujou_event') or {}
     boss = record.get('boss_phase') or {}
     body = [
         f"<!-- hanjuku-month-audit fingerprint={record.get('fingerprint')} -->",
@@ -2300,6 +2523,19 @@ def render(record):
     if not camp:
         body.append(f"- 出撃: 確定 {sorties.get('confirmed')} / 発射 {sorties.get('departures')} / order_start {sorties.get('order_start')} / order_launched {sorties.get('order_launched')}")
     body.append('')
+    if chikujou:
+        body += [
+            '### 築城',
+            '',
+            f"- 結果: {chikujou.get('outcome')} / 決定: {BT}{chikujou.get('decision')}{BT}"
+            f" / 月: {chikujou.get('month')}",
+            f"- 所持金: {chikujou.get('gold')} / 必要残し: {chikujou.get('reserve')}"
+            f" / 状態: {chikujou.get('shop_status')}",
+            f"- 未試行の候補: {chikujou.get('staffed_candidates') or chikujou.get('candidates')}",
+            f"- 試行済み: {chikujou.get('tried')} / 増築済み: {chikujou.get('upgrades')}",
+            f"- 理由: {chikujou.get('reason') or '不明'}",
+            '',
+        ]
     if stay:
         body += [
             '### 野営放置',
@@ -2361,7 +2597,7 @@ def render(record):
             f" / 残りボス城: {', '.join(boss.get('bosses') or [])}",
             '',
         ]
-    body.append('### 直前の決定' if (camp or sortie or battle or stay) else
+    body.append('### 直前の決定' if (camp or sortie or battle or stay or chikujou) else
                 ('### フェーズ中の決定' if kind == 'boss_phase_no_battle' else '### 月内の決定'))
     body.append('')
     rows, filtered = _timeline(record)
@@ -2374,7 +2610,7 @@ def render(record):
     ]
     for row in rows:
         body.append(f"| {_clock(row.get('at'))} | {_cell(row.get('decision'))} | {_cell(row.get('chart_step'))} | {_md(row.get('general'))} | {_md(row.get('target'))} | {_md(row.get('reason'))} |")
-    body += ['', '### 現在の計画' if (camp or sortie or battle or stay or kind == 'boss_phase_no_battle') else '### 前月の計画', '',
+    body += ['', '### 現在の計画' if (camp or sortie or battle or stay or chikujou or kind == 'boss_phase_no_battle') else '### 前月の計画', '',
              '| step | 状態 | 目的 | 出撃元 | 対象 | 将軍 |',
              '| --- | --- | --- | --- | --- | --- |']
     plan = record.get('plan') or {}
@@ -2440,7 +2676,12 @@ def render_comment(record):
     sortie = record.get('sortie_event') or {}
     battle = record.get('battle_event') or {}
     stay = record.get('camp_stay') or {}
-    if record.get('kind') == 'camp_abandoned':
+    chikujou = record.get('chikujou_event') or {}
+    if record.get('kind') in ('chikujou_available_at_end', 'chikujou_cancelled_with_resources'):
+        lines.insert(5, f"- 築城: {chikujou.get('outcome')} / gold {chikujou.get('gold')}"
+                        f" / reserve {chikujou.get('reserve')}"
+                        f" / 候補 {chikujou.get('staffed_candidates')}")
+    elif record.get('kind') == 'camp_abandoned':
         lines.insert(5, f"- 野営: {stay.get('months')}ヶ月 / {stay.get('general')}"
                         f" / first {stay.get('first_tick')}")
     elif record.get('kind') in ('battle_retreat_with_resources', 'battle_loss_with_resources'):
@@ -2464,6 +2705,11 @@ def render_comment(record):
 
 def _issue_title(record):
     kind = record.get('kind')
+    if kind in ('chikujou_available_at_end', 'chikujou_cancelled_with_resources'):
+        label = ('築城可能なまま月一終了' if kind == 'chikujou_available_at_end'
+                 else '築城可能なのにキャンセル')
+        event = record.get('chikujou_event') or {}
+        return (f"[半熟英雄] {label}: ch{record.get('chapter')} {event.get('month') or ''}")[:100]
     if kind == 'camp_abandoned':
         stay = record.get('camp_stay') or {}
         return (f"[半熟英雄] 野営放置: ch{record.get('chapter')} "
