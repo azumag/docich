@@ -7987,7 +7987,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v1311-cattlemyu-stock-reuse",
             "hanjuku-chart-v1312-defense-no-stale-cards",
             "hanjuku-chart-v1313-camp-recheck-idou-dest",
-            "hanjuku-chart-v1325-boss-path-all-captured",
+            "hanjuku-chart-v1326-picker-from-menu",
             "hanjuku-chart-v1320-camp-body-retry-keep",
             "hanjuku-chart-v1319-castle-verify-paged",
             "hanjuku-chart-v1318-strong-stock-opener",
