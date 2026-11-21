@@ -26,6 +26,20 @@ def state_bytes(mem=b'serialized core'):
             + b'\0' * (-len(mem) % 8) + b'END ' + b'\0' * 4)
 
 
+# S3: every restored policy books the field-inventory read, because a loaded
+# save state may hold cards the old policy never saw. The foreground-seeding
+# tests below assert the rest of the policy; this helper checks the reservation
+# and removes it so each expected literal stays about what it is testing.
+CENSUS_DUE = {'reason': 'checkpoint_restore', 'reasons': ['checkpoint_restore'],
+              'month': None, 'tick': None, 'wait_key': None}
+
+
+def checkpoint_policy(policy):
+    policy = dict(policy)
+    assert policy.pop('card_census_due') == CENSUS_DUE
+    return policy
+
+
 def compressed(data):
     return b'#RZIPv\x01#' + struct.pack('<IQ', 131072, len(data)) + struct.pack('<I', len(zlib.compress(data))) + zlib.compress(data)
 
@@ -296,7 +310,7 @@ def test_native_roundtrip_must_match_before_ai_unpause_and_fresh_policy(setup):
     assert commands.index('LOAD_STATE_SLOT 0')<commands.index('SAVE_STATE')<commands.index('FRAMEADVANCE')<commands.index('PAUSE_TOGGLE')
     receipt=read_record(s.spec.runtime_dir/resume.RECEIPT_FILE)
     assert receipt['status']=='verified' and receipt['chapter']==1
-    assert read_record(s.spec.runtime_dir/'hanjuku_bot.json')=={'policy':{'chapter':1,'name':{'done':True}}}
+    assert checkpoint_policy(read_record(s.spec.runtime_dir/'hanjuku_bot.json')['policy'])=={'chapter':1,'name':{'done':True}}
     assert s.source.read_bytes()==compressed(state_bytes())
     resume.require_verified(s.spec)
 
@@ -380,8 +394,8 @@ def test_native_fake_hero_checkpoint_restores_with_only_observed_chapter(setup):
     receipt=read_record(setup.spec.runtime_dir/resume.RECEIPT_FILE)
     assert receipt['status']=='verified' and receipt['chapter']==2
     assert receipt['frame_sha256']==frame.digest()
-    assert read_record(setup.spec.runtime_dir/'hanjuku_bot.json')=={
-        'policy': {'name': {'done': True}, 'chapter': 2}}
+    assert checkpoint_policy(read_record(setup.spec.runtime_dir/'hanjuku_bot.json')['policy'])=={
+        'name': {'done': True}, 'chapter': 2}
 
 
 def test_fake_hero_stale_core_write_is_retried_without_a_second_load(setup):
@@ -406,8 +420,8 @@ def test_fake_hero_stale_core_write_is_retried_without_a_second_load(setup):
     receipt=read_record(setup.spec.runtime_dir/resume.RECEIPT_FILE)
     assert receipt['status']=='verified' and receipt['chapter']==2
     assert receipt['frame_sha256']==frame.digest()
-    assert read_record(setup.spec.runtime_dir/'hanjuku_bot.json')=={
-        'policy': {'name': {'done': True}, 'chapter': 2}}
+    assert checkpoint_policy(read_record(setup.spec.runtime_dir/'hanjuku_bot.json')['policy'])=={
+        'name': {'done': True}, 'chapter': 2}
     assert setup.source.read_bytes()==compressed(state_bytes())
     resume.require_verified(setup.spec)
 
@@ -422,7 +436,7 @@ def test_native_starter_checkpoint_restores_without_inventing_chapter(setup):
     receipt=read_record(setup.spec.runtime_dir/resume.RECEIPT_FILE)
     assert receipt['status']=='verified' and receipt['chapter'] is None
     policy=read_record(setup.spec.runtime_dir/'hanjuku_bot.json')['policy']
-    assert policy=={'name':{'done':True},'resume_chapter_pending':True}
+    assert checkpoint_policy(policy) =={'name':{'done':True},'resume_chapter_pending':True}
     assert 'garrison' not in policy and 'chapter' not in policy
 
 
@@ -435,7 +449,7 @@ def test_native_mid_selection_checkpoint_restores_with_only_fresh_cancellation_o
     receipt=read_record(setup.spec.runtime_dir/resume.RECEIPT_FILE)
     assert receipt['status']=='verified' and receipt['chapter'] is None
     policy=read_record(setup.spec.runtime_dir/'hanjuku_bot.json')['policy']
-    assert policy=={'name':{'done':True},'resume_chapter_pending':True,
+    assert checkpoint_policy(policy) =={'name':{'done':True},'resume_chapter_pending':True,
                    'resume_sortie_cancel':{'readings':0}}
     assert setup.source.read_bytes()==compressed(state_bytes())
 
@@ -1003,7 +1017,7 @@ def test_native_priest_stall_restores_without_inventing_chapter_or_old_payment(s
     receipt = read_record(setup.spec.runtime_dir / resume.RECEIPT_FILE)
     assert receipt['status'] == 'verified' and receipt['chapter'] is None
     policy = read_record(setup.spec.runtime_dir / 'hanjuku_bot.json')['policy']
-    assert policy == {'name': {'done': True}, 'resume_chapter_pending': True,
+    assert checkpoint_policy(policy) == {'name': {'done': True}, 'resume_chapter_pending': True,
                       'resume_egg_ritual': {'readings': 0, 'month': '1-5'}}
     actions, state = decide(frame, {'policy': policy})
     assert actions == [{'type': 'pad', 'buttons': ['a'], 'hold_ms': 100}]
@@ -1023,7 +1037,7 @@ def test_gift_menu_checkpoint_restores_existing_policy_without_guessing_chapter(
     receipt=read_record(setup.spec.runtime_dir/resume.RECEIPT_FILE)
     assert receipt['status']=='verified' and receipt['chapter'] is None
     policy=read_record(setup.spec.runtime_dir/'hanjuku_bot.json')['policy']
-    assert policy=={'name':{'done':True},'resume_chapter_pending':True}
+    assert checkpoint_policy(policy) =={'name':{'done':True},'resume_chapter_pending':True}
     actions,state=decide(frame,{'policy':policy})
     assert state['policy']['bijin_gift_hold'] is True
     assert state['policy'].get('chapter') is None
@@ -1057,7 +1071,7 @@ def test_castle_event_dialogue_checkpoint_restores_without_guessing_chapter(setu
     receipt = read_record(setup.spec.runtime_dir / resume.RECEIPT_FILE)
     assert receipt['status'] == 'verified' and receipt['chapter'] is None
     policy = read_record(setup.spec.runtime_dir / 'hanjuku_bot.json')['policy']
-    assert policy == {'name': {'done': True}, 'resume_chapter_pending': True}
+    assert checkpoint_policy(policy) == {'name': {'done': True}, 'resume_chapter_pending': True}
     actions, state = decide(frame, {'policy': policy})
     assert actions == [{'type': 'pad', 'buttons': ['a'], 'hold_ms': 100}]
     assert state['policy'].get('chapter') is None
@@ -1077,7 +1091,7 @@ def test_stalled_field_notice_restores_with_the_source_chapter(setup, monkeypatc
     restore_test(setup, chapter=None, native_frame=frame)
     receipt = read_record(setup.spec.runtime_dir / resume.RECEIPT_FILE)
     assert receipt['status'] == 'verified' and receipt['chapter'] == 3
-    assert read_record(setup.spec.runtime_dir / 'hanjuku_bot.json')['policy'] == {
+    assert checkpoint_policy(read_record(setup.spec.runtime_dir / 'hanjuku_bot.json')['policy']) == {
         'name': {'done': True}, 'chapter': 3}
 
 
@@ -1156,7 +1170,7 @@ def test_native_namaste_stall_can_restore_only_bounded_foreground(setup):
     receipt = read_record(setup.spec.runtime_dir / resume.RECEIPT_FILE)
     assert receipt['status'] == 'verified' and receipt['chapter'] is None
     policy = read_record(setup.spec.runtime_dir / 'hanjuku_bot.json')['policy']
-    assert policy == {'name': {'done': True}, 'resume_chapter_pending': True,
+    assert checkpoint_policy(policy) == {'name': {'done': True}, 'resume_chapter_pending': True,
                       'resume_egg_ritual': {'readings': 0, 'month': '1-5'}}
     actions, state = decide(frame, {'policy': policy})
     assert actions == [{'type': 'pad', 'buttons': ['a'], 'hold_ms': 100}]
@@ -1207,9 +1221,9 @@ def test_disabled_battle_parent_checkpoint_seeds_only_finite_reobservation(setup
     assert receipt['frame_sha256']==frame.resized().digest()
     assert commands.count('LOAD_STATE_SLOT 0')==1
     assert writes[0]==b'boot state' and all(b==b'serialized core' for b in writes[1:])
-    assert read_record(setup.spec.runtime_dir/'hanjuku_bot.json')=={'policy':{
+    assert checkpoint_policy(read_record(setup.spec.runtime_dir/'hanjuku_bot.json')['policy'])=={
         'name':{'done':True},'resume_chapter_pending':True,
-        'resume_battle_menu':{'readings':0}}}
+        'resume_battle_menu':{'readings':0}}
     assert setup.source.read_bytes()==compressed(state_bytes())
 
 

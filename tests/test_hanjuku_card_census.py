@@ -82,11 +82,11 @@ def map_screen():
     return Screen(lines=[], hand=None, text='', kind='map')
 
 
-def started(month='9-51', **extra):
+def started(month='9-2', **extra):
     """A booked reservation on the first free map after the month's actions."""
     mem = {'chapter': 9, 'month': month, 'tick': 100,
-           'shop': {'key': '9-50', 'closed': True}, **extra}
-    booking.book(mem, 'chapter_start', month='9-50')
+           'shop': {'key': '9-1', 'closed': True}, **extra}
+    booking.book(mem, 'chapter_start', month='9-1')
     assert census_flow.start_step(map_screen(), mem) == [pad('x')]
     assert census_flow.resume_step(menu_screen(), mem) == [pad('a')]
     return mem
@@ -160,7 +160,7 @@ def test_a_non_catalogue_name_is_not_an_inventory_row():
 def test_field_card_list_without_a_census_is_closed_with_b():
     frame = read_png(FIXTURES / 'field-card-list-top.png')
     screen = parse(frame)
-    mem = {'chapter': 9, 'month': '9-50'}
+    mem = {'chapter': 9, 'month': '9-1'}
     actions, out = decide(frame, {'step': 0, 'phase': 'field', 'policy': mem,
                                  'hanjuku': IDENTITY}, run_identity=IDENTITY)
     assert actions == [pad('b')]
@@ -172,7 +172,7 @@ def test_field_card_list_without_a_census_is_closed_with_b():
 
 def test_an_abandoned_census_list_is_still_closed_with_b():
     screen = parse(read_png(FIXTURES / 'field-card-list-top.png'))
-    mem = {'chapter': 9, 'card_census_abort': {'chapter': 9, 'month': '9-50',
+    mem = {'chapter': 9, 'card_census_abort': {'chapter': 9, 'month': '9-1',
                                                'reason': 'same_page'}}
     assert census_flow.field_card_list_step(screen, mem, None) == [pad('b')]
 
@@ -206,7 +206,7 @@ def test_three_pages_fill_the_ledger_and_log_full_drift():
     assert drift and all(r['observed_metric']['basis'] == 'full' for r in drift)
     assert booking.due(mem) is None                  # the reservation is consumed
     assert mem['card_stock']['エンジェリン'] == 0     # absent from the whole list
-    assert mem['card_bought_unseen'] in (None, {})
+    assert mem.get('card_bought_unseen') in (None, {})
     # B (list) -> B (menu) -> map, then the census state is gone.
     assert census_flow.resume_step(
         list_screen(stock_rows(range(14, 22)), True, False), mem, arrow_frame(True, False)) == [pad('b')]
@@ -248,7 +248,7 @@ def test_the_same_page_twice_aborts_without_touching_the_ledger():
     abort = [r for r in mem['_records'] if r['decision'] == 'card_census_abort'][0]
     assert abort['observed_metric']['reason'] == 'same_page'
     assert abort['observed_metric']['pages']
-    assert mem['card_census_abort']['month'] == '9-51'
+    assert mem['card_census_abort']['month'] == '9-2'
     assert booking.due(mem) is not None              # not consumed by an abort
     # The abort frame is closed with B, never left without input.
     assert census_flow.resume_step(page, mem, arrow_frame(False, True)) == [pad('b')]
@@ -265,6 +265,18 @@ def test_the_forty_observation_limit_aborts():
     assert abort['observed_metric']['reason'] == 'observation_limit'
 
 
+def test_a_map_that_never_opens_the_menu_aborts():
+    mem = {'chapter': 9, 'month': '9-2', 'tick': 100,
+           'shop': {'key': '9-1', 'closed': True}}
+    booking.book(mem, 'chapter_start', month='9-1')
+    assert census_flow.start_step(map_screen(), mem) == [pad('x')]
+    for _ in range(census_flow.MENU_OPEN_LIMIT):
+        assert census_flow.resume_step(map_screen(), mem) == [pad('x')]
+    assert census_flow.resume_step(map_screen(), mem) is None
+    assert mem.get('card_census') is None
+    assert mem['card_census_abort']['reason'] == 'menu_not_opened'
+
+
 def test_three_unreadable_screens_abort():
     mem = started()
     unreadable = list_screen([], False, False)       # no rows at all
@@ -275,10 +287,10 @@ def test_three_unreadable_screens_abort():
 
 
 def test_an_in_flight_procedure_keeps_the_read_for_the_next_free_map():
-    mem = {'chapter': 9, 'month': '9-51', 'tick': 100,
-           'shop': {'key': '9-50', 'closed': True},
-           'post_month_status': {'stage': 'roster', 'scope': [9, '9-51']}}
-    booking.book(mem, 'chapter_start', month='9-50')
+    mem = {'chapter': 9, 'month': '9-2', 'tick': 100,
+           'shop': {'key': '9-1', 'closed': True},
+           'post_month_status': {'stage': 'roster', 'scope': [9, '9-2']}}
+    booking.book(mem, 'chapter_start', month='9-1')
     assert census_flow.start_step(map_screen(), mem) is None
     census_flow.wait_step(map_screen(), mem)
     waits = [r for r in mem['_records'] if r['decision'] == 'card_census_wait']
@@ -289,18 +301,18 @@ def test_an_in_flight_procedure_keeps_the_read_for_the_next_free_map():
 
 
 def test_the_month_actions_must_be_over_before_the_read():
-    mem = {'chapter': 9, 'month': '9-50', 'shop': {'key': '9-50', 'closed': True}}
-    booking.book(mem, 'chapter_start', month='9-50')
+    mem = {'chapter': 9, 'month': '9-1', 'shop': {'key': '9-1', 'closed': True}}
+    booking.book(mem, 'chapter_start', month='9-1')
     assert census_flow.start_step(map_screen(), mem) is None   # menu still open
-    mem['month'] = '9-51'
+    mem['month'] = '9-2'
     assert census_flow.start_step(map_screen(), mem) == [pad('x')]
 
 
 def test_two_consecutive_aborts_disable_the_chapter():
-    mem = {'chapter': 9, 'month': '9-51', 'tick': 100,
-           'shop': {'key': '9-50', 'closed': True},
+    mem = {'chapter': 9, 'month': '9-2', 'tick': 100,
+           'shop': {'key': '9-1', 'closed': True},
            'card_census_abort_prev': {'chapter': 9, 'streak': 1}}
-    booking.book(mem, 'chapter_start', month='9-50')
+    booking.book(mem, 'chapter_start', month='9-1')
     census_flow.start_step(map_screen(), mem)
     census_flow.resume_step(menu_screen(), mem)
     page = list_screen(stock_rows(range(0, 8)), False, True)
@@ -323,7 +335,7 @@ def test_a_new_chapter_clears_the_ledger_and_books_the_read():
 def test_a_holding_limit_refusal_unknowns_the_kind_and_books_the_read():
     screen = Screen(lines=[], hand=None, header={'gold': 100}, kind='text',
                     text='う〜ん それいじょうもてないようですな!')
-    mem = {'chapter': 9, 'month': '9-50', 'card_stock': {'イッテツーン': 99}}
+    mem = {'chapter': 9, 'month': '9-1', 'card_stock': {'イッテツーン': 99}}
     shop = {'want': ['イッテツーン', 2, 5], 'items': [['イッテツーン', 2]], 'bought': []}
     _holding_limit_step(screen, mem, shop)
     assert 'イッテツーン' not in mem['card_stock']
@@ -331,18 +343,18 @@ def test_a_holding_limit_refusal_unknowns_the_kind_and_books_the_read():
 
 
 def test_a_ledger_drift_books_the_read():
-    mem = {'chapter': 9, 'month': '9-50', 'card_stock': {'ブラッキー': 99}}
+    mem = {'chapter': 9, 'month': '9-1', 'card_stock': {'ブラッキー': 99}}
     _observe_card_stock(mem, inventory([('ブラッキー', 5)], more_above=None, more_below=None))
     assert mem['card_stock']['ブラッキー'] == 5
     assert mem['card_census_due']['reason'] == 'ledger_drift'
 
 
 def test_the_reservation_records_its_first_month_and_survives_rebooking():
-    mem = {'month': '9-50'}
-    booking.book(mem, 'chapter_start', month='9-50')
-    booking.book(mem, 'ledger_drift', month='9-53')
+    mem = {'month': '9-1'}
+    booking.book(mem, 'chapter_start', month='9-1')
+    booking.book(mem, 'ledger_drift', month='9-4')
     due = mem['card_census_due']
-    assert due['month'] == '9-50'
+    assert due['month'] == '9-1'
     assert due['reason'] == 'ledger_drift'
     assert due['reasons'] == ['chapter_start', 'ledger_drift']
 
@@ -350,7 +362,7 @@ def test_the_reservation_records_its_first_month_and_survives_rebooking():
 def test_a_hotload_of_the_same_runtime_keeps_the_ledger():
     """A bot start/hotload/deploy keeps its runtime identity: no clear, no book."""
     frame = read_png(FIXTURES / 'g1075-ch4-snow-field.png')
-    mem = {'chapter': 9, 'month': '9-50', 'tick': 100,
+    mem = {'chapter': 9, 'month': '9-1', 'tick': 100,
            'survey_run_identity': IDENTITY, 'card_stock': {'イッテツーン': 42}}
     state = {'step': 0, 'phase': 'field', 'policy': mem, 'hanjuku': IDENTITY}
     actions, out = decide(frame, state, run_identity=IDENTITY)
@@ -360,7 +372,7 @@ def test_a_hotload_of_the_same_runtime_keeps_the_ledger():
 
 def test_a_changed_runtime_generation_clears_the_ledger_and_books():
     frame = read_png(FIXTURES / 'g1075-ch4-snow-field.png')
-    mem = {'chapter': 9, 'month': '9-50', 'tick': 100,
+    mem = {'chapter': 9, 'month': '9-1', 'tick': 100,
            'survey_run_identity': {**IDENTITY, 'runtime_id': 'g1287-abcdef', 'generation': 1287},
            'card_stock': {'イッテツーン': 42}}
     state = {'step': 0, 'phase': 'field', 'policy': mem, 'hanjuku': IDENTITY}
@@ -372,7 +384,7 @@ def test_a_changed_runtime_generation_clears_the_ledger_and_books():
 def test_the_title_return_after_gameplay_clears_the_ledger():
     """The game-over signature: the title comes back over a played run."""
     frame = read_png(FIXTURES / 'g1190-title-after-chapter.png')
-    mem = {'chapter': 9, 'month': '9-50', 'tick': 100,
+    mem = {'chapter': 9, 'month': '9-1', 'tick': 100,
            'survey_run_identity': IDENTITY, 'card_stock': {'イッテツーン': 42}}
     state = {'step': 0, 'phase': 'field', 'policy': mem, 'hanjuku': IDENTITY}
     actions, out = decide(frame, state, run_identity=IDENTITY)
@@ -381,10 +393,10 @@ def test_the_title_return_after_gameplay_clears_the_ledger():
 
 
 def test_a_missing_or_overdue_reservation_does_not_start_an_old_month():
-    mem = {'chapter': 9, 'month': '9-53',
-           'shop': {'key': '9-52', 'closed': True}}
+    mem = {'chapter': 9, 'month': '9-4',
+           'shop': {'key': '9-3', 'closed': True}}
     assert census_flow.start_step(map_screen(), mem) is None
-    booking.book(mem, 'chapter_start', month='9-50')
+    booking.book(mem, 'chapter_start', month='9-1')
     census_flow.wait_step(map_screen(), mem)
     overdue = [r for r in mem['_records'] if r['decision'] == 'card_census_overdue']
-    assert overdue and overdue[0]['observed_metric']['booked_month'] == '9-50'
+    assert overdue and overdue[0]['observed_metric']['booked_month'] == '9-1'

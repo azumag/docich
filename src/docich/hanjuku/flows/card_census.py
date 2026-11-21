@@ -39,6 +39,7 @@ OBSERVATION_LIMIT = 40
 SCROLL_BATCH = 7
 # X メニューで「きりふだ」まで動く回数 / 上端・重なり回復で ↑ を押す回数。
 MENU_PRESS_LIMIT = 8
+MENU_OPEN_LIMIT = 5
 RECOVER_LIMIT = 10
 CLOSE_LIMIT = 6
 UNREADABLE_LIMIT = 3
@@ -181,7 +182,15 @@ def resume_step(screen, mem, frame=None):
         if state.get('stage') in ('close', 'abort_close'):
             mem.pop('card_census', None)
             return None
-        if state.get('stage') == 'menu' and int(state.get('observations') or 0) == 0:
+        if state.get('stage') == 'menu':
+            # The X press is not confirmed yet. Count it: a map that never
+            # opens the menu must not send X forever.
+            state['observations'] = int(state.get('observations') or 0) + 1
+            state['open_tries'] = int(state.get('open_tries') or 0) + 1
+            if state['observations'] > OBSERVATION_LIMIT:
+                return _abort(mem, state, 'observation_limit', close=False)
+            if state['open_tries'] > MENU_OPEN_LIMIT:
+                return _abort(mem, state, 'menu_not_opened', close=False)
             return [pad('x')]
         return _abort(mem, state, 'left_list', close=False)
     state['observations'] = int(state.get('observations') or 0) + 1

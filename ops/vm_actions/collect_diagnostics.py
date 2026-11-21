@@ -10667,7 +10667,7 @@ HANJUKU_DECISION_SCREEN_KINDS = frozenset({
     "attack_started", "barrier_removed", "battle", "battle_menu",
     "battle_menu_pending", "boss_attack_started", "field_encounter_started", "card_select", "castle_info",
     "castle_menu", "defense_started", "discharge_menu", "egg_battle_menu",
-    "egg_choice_menu", "general_list", "gift_request", "main_menu", "map",
+    "egg_choice_menu", "field_card_list", "general_list", "gift_request", "main_menu", "map",
     "map_target", "monster_menu", "monster_menu_pending", "month_menu", "name_entry", "okunote_menu", "password_entry",
     "password_entry",
     "sealed_castle", "shop_exit_confirm", "shop_list", "shop_quantity",
