@@ -363,6 +363,11 @@ def _hero_retreat_menu(screen, mem, cur):
             general=cur.get('ally'), enemy=cur.get('enemy'),
             castle=cur.get('castle'), side=cur.get('side'), choice='たいきゃく',
             observed_metric={'ally_hp': cur['ally_hp'], 'enemy_hp': cur['enemy_hp'],
+                             'egg_uses': (mem.get('egg_uses') or {}).get(cur.get('ally')),
+                             'cards_selected': cur.get('cards_selected', []),
+                             'cards_used': cur.get('cards_used', []),
+                             'card_pending': (cur.get('card_flow') or {}).get('card')
+                             if isinstance(cur.get('card_flow'), dict) else None,
                              'retreat_assessment': dict(cur.get('retreat_assessment') or {})},
             resulting_event='retreat_selected_not_yet_confirmed',
             reason='主人公または将軍の危険な敗北を避けるため有効な退却行とカーソルを確認して決定')

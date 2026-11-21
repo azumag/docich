@@ -919,7 +919,7 @@ g749の募集終了付近では、ヘッダーだけの画像1883と暗転1885/1
 
 味方HP欄が消えたメニュー切替中でも、実青色の敵将軍HP欄が一つだけ読め、左x32/40のコマンドが連続した正規項目なら入力を保留する。両HP欄が完全な場合も、実既知の味方monsterと敵generalが読めて左列が移動中のx32なら保留する（元g749/6027）。x40へ到着した完全画面は既存の所有者判定に委ねる。味方の召喚獣名やHPは補完せず、旧卵選択の入力段階を破棄する。再観測は31で飽和して既存停滞検出へ委ね、画面が変われば実表示から再評価する。右側の味方コマンド、未知・重複・色不明のHP欄を敵の操作と認定しない。元g749/5561のAが新waitになる比較は反実仮想で、戦果や消費を証明しない。
 
-### 月内出撃ゼロ・ボスフェーズ無戦闘の監査（v1333）
+### 月内出撃ゼロ・ボスフェーズ無戦闘の監査（v1335）
 
 - 月境界で、敵城向けの確定出撃（`month_sorties.launches`）と発射記録
   （`order_launched` / `sortie_departed_observed` / `sortie_launch_confirmed`）が
@@ -929,6 +929,10 @@ g749の募集終了付近では、ヘッダーだけの画像1883と暗転1885/1
 - 通常城をすべて確保してボス城だけが残るボスフェーズが600秒続き、
   `battle_start`（章ボス）/ `boss_hp_seen` / `boss_victories` の証拠が
   一度も出ない場合、`boss_phase_no_battle` を1回記録する。
+- 卵残数が正数、または切り札が未使用のまま「たいきゃく」/敗北した場合、
+  `battle_retreat_with_resources` / `battle_loss_with_resources` を記録する。
+  同じ章・資源・将軍/stepは900秒cooldown。卵確認だけの
+  `battle_egg_before_retreat` は単独ではissue化しない。
 - 出撃の terminal な失敗/取消
   （`sortie_launch_failed` / `order_failed` / 再試行上限の `situation_held` /
   `sortie_cancelled_observed`）を `sortie_*` として記録する。

@@ -1,4 +1,4 @@
-# 半熟英雄: 月内出撃ゼロ・ボスフェーズ無戦闘監査（v1333）
+# 半熟英雄: 月内出撃ゼロ・ボスフェーズ無戦闘監査（v1335）
 
 ## 目的
 
@@ -42,7 +42,7 @@ JSONLで保存し、必要なときに `gh` で修正用 issue を発行する�
 `decision_log_coverage` だけのときは `medium`、それ以外の理由が付くと `low`。
 issue化の既定は `high` のみ。
 
-## ボスフェーズ無戦闘（v1333）
+## ボスフェーズ無戦闘（v1335）
 
 通常城をすべて確保し、ボスの城（第4話は四季王サイト）だけが残った状態を
 **ボスフェーズ**とする。第9話の移動ボスは街道の全城が自軍になった時点。
@@ -61,7 +61,7 @@ issue化の既定は `high` のみ。
 （confidence high）。issue題名は
 `[半熟英雄] ボスフェーズでボス戦闘ゼロ: ch<章> <ボス名>`。
 
-## キャンプ帰還の失敗・キャンセル（v1333）
+## キャンプ帰還の失敗・キャンセル（v1335）
 
 キャンプ（野営）からの帰還が terminal に失敗/取消/未確認になった観測で、
 `camp_*` のrecordを1件保存する。対象decision:
@@ -84,7 +84,7 @@ issue化の既定は `high` のみ。
   は通常経路なので対象外。
 - 保存後のissue発行はbotのseal時callback（v1257以降）と同じ。
 
-## 出撃失敗・キャンセル（v1333）
+## 出撃失敗・キャンセル（v1335）
 
 terminal な出撃失敗/取消のdecisionを、`sortie_*` のrecordとして保存する。
 
@@ -102,6 +102,26 @@ terminal な出撃失敗/取消のdecisionを、`sortie_*` のrecordとして保
 - `sortie_launch_unverified`（再試行中）、`target_not_under_marker`（位置再測定）、
   `order_retry`（戦闘再試行）はterminalでないため対象外。
 - issue発行はbotのseal時callback（v1257以降）と同じ。
+
+## 卵・切り札を残した退却/敗北（v1335）
+
+戦闘結果が退却または敗北なのに、本人の卵残数が正数、または切り札が未使用で
+残っている場合に `battle_retreat_with_resources` / `battle_loss_with_resources`
+を保存する。
+
+| decision | 条件 | 意味 |
+| --- | --- | --- |
+| `battle_hero_retreat_select`（choice=たいきゃく） | `egg_uses>0` または切り札が未使用 | 卵/切り札を残して退却 |
+| `battle_retreat_preempted_card` | 切替待ちの切り札が未確認 | 切り札を残して退却 |
+| `battle_result`（outcome=loss） | `egg_uses>0` または `cards_selected` に未使用札 | 卵/切り札を残して敗北 |
+
+- 将軍・敵・城・side・HP・卵残数・切り札の選択/使用/残り/pending・
+  退却選択・理由・直前120秒の決定・計画/在城/flow/statsを1件32KB以内で保存する。
+- `battle_egg_before_retreat` は「退却より先に卵を確認する」 proactiveな記録なので
+  単独ではissue化しない。実際の退却選択または敗北だけを対象にする。
+- 同じ `(chapter, kind, resources, general, step)` は900秒cooldown。
+- 題名は `[半熟英雄] 卵/切り札を残して退却/敗北: ch<章> <将軍またはstep>`。
+- 卵・切り札の残数はbattle結果/退却metricへ追加し、実測値だけを使う。
 
 ## 保存先
 
@@ -174,7 +194,7 @@ production checkout 上の `gh` 実行はしない。
 2. そのディレクトリを `HANJUKU_RUNTIME` にして `render` / `file --dry-run` で本文を確認する。
 3. `secret_scan` の clean を確認して `file` を実行する。
 
-## botからの自動発行（v1333）
+## botからの自動発行（v1335）
 
 月内出撃ゼロ・ボスフェーズ無戦闘のsealed recordを保存した直後、**その観測を
 実行しているbotプロセス**が、detachedの子プロセスで

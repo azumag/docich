@@ -548,6 +548,89 @@ def test_sortie_order_failure_skips_move_orders(runtime_dir):
                   now=1000)
     assert audit.load_incidents(runtime_dir) == []
 
+def _battle_record(decision, *, outcome=None, metric=None, general=None,
+                   choice=None, card=None, step='A:1:1'):
+    return {'decision': decision, 'outcome': outcome, 'observed_metric': metric or {},
+            'general': general, 'choice': choice, 'card': card,
+            'chart_step': step, 'reason': 'battle result', 'at': 1000.0}
+
+
+def test_battle_resource_events_are_classified():
+    loss_egg = audit._battle_resource_event(_battle_record(
+        'battle_result', outcome='loss',
+        metric={'egg_uses': 2, 'ally_hp': 0, 'enemy_hp': 40}, general='バゲット'))
+    assert loss_egg['kind'] == 'battle_loss_with_resources'
+    assert loss_egg['resources'] == ['egg']
+    loss_card = audit._battle_resource_event(_battle_record(
+        'battle_result', outcome='loss',
+        metric={'cards_selected': ['A', 'B'], 'cards_used': ['A'],
+                'ally_hp': 0, 'enemy_hp': 40}))
+    assert loss_card['kind'] == 'battle_loss_with_resources'
+    assert loss_card['resources'] == ['card']
+    assert loss_card['cards_remaining'] == ['B']
+    used = audit._battle_resource_event(_battle_record(
+        'battle_result', outcome='loss',
+        metric={'cards_selected': ['A'], 'cards_used': ['A'],
+                'ally_hp': 0, 'enemy_hp': 40}))
+    assert used is None
+    win = audit._battle_resource_event(_battle_record(
+        'battle_result', outcome='win', metric={'egg_uses': 2}))
+    assert win is None
+    retreat = audit._battle_resource_event(_battle_record(
+        'battle_hero_retreat_select', choice='たいきゃく',
+        metric={'egg_uses': 2, 'ally_hp': 5, 'enemy_hp': 50}, general='ブラウニー'))
+    assert retreat['kind'] == 'battle_retreat_with_resources'
+    assert retreat['resources'] == ['egg']
+    preempted = audit._battle_resource_event(_battle_record(
+        'battle_retreat_preempted_card', card='クースカン',
+        metric={'ally_hp': 12, 'enemy_hp': 41}, general='マフィン'))
+    assert preempted['resources'] == ['card']
+    assert audit._battle_resource_event(_battle_record(
+        'battle_egg_before_retreat', metric={'egg_uses': 2})) is None
+
+
+def test_battle_loss_with_egg_is_recorded_and_titled(runtime_dir):
+    value = state(10, '1-1', 0)
+    seen = []
+    audit.observe(runtime_dir, audit.capture(value), value,
+                  [_battle_record('battle_result', outcome='loss',
+                                  metric={'egg_uses': 2, 'ally_hp': 0,
+                                          'enemy_hp': 40}, general='バゲット')],
+                  now=1000, on_sealed=seen.append)
+    records = audit.load_incidents(runtime_dir)
+    assert len(records) == 1
+    record = records[0]
+    assert record['kind'] == 'battle_loss_with_resources'
+    assert record['auto_file'] is True
+    assert '卵を残して敗北' in audit._issue_title(record)
+    assert '### 戦闘結果' in audit.render(record)
+    assert len(seen) == 1
+
+
+def test_battle_retreat_with_card_is_recorded(runtime_dir):
+    value = state(10, '1-1', 0)
+    audit.observe(runtime_dir, audit.capture(value), value,
+                  [_battle_record('battle_retreat_preempted_card',
+                                  card='クースカン',
+                                  metric={'ally_hp': 12, 'enemy_hp': 41},
+                                  general='マフィン')], now=1000)
+    record = audit.load_incidents(runtime_dir)[0]
+    assert record['kind'] == 'battle_retreat_with_resources'
+    assert '切り札を残して退却' in audit._issue_title(record)
+
+
+def test_battle_resource_repeat_is_cooled_down(runtime_dir):
+    value = state(10, '1-1', 0)
+    record = _battle_record('battle_result', outcome='loss',
+                            metric={'egg_uses': 2, 'ally_hp': 0, 'enemy_hp': 40})
+    for now in (1000, 1100):
+        audit.observe(runtime_dir, audit.capture(value), value, [record], now=now)
+    assert len(audit.load_incidents(runtime_dir)) == 1
+    audit.observe(runtime_dir, audit.capture(value), value, [record],
+                  now=1000 + audit.BATTLE_RESOURCE_ISSUE_COOLDOWN_SECONDS + 1)
+    assert len(audit.load_incidents(runtime_dir)) == 2
+
+
 def test_capture_reads_unmigrated_world_fields():
     state_value = state(1, '1-1', 10)
     state_value['policy']['world']['gold'] = None
