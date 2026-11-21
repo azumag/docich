@@ -8033,7 +8033,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v1355-math-corner",
             "hanjuku-chart-v1356-scan-floor-idle-cap",
             "hanjuku-chart-v1352-card-ledger-diff",
-            "hanjuku-chart-v1356-card-ledger-census",
+            "hanjuku-chart-v1357-card-ledger-census",
             "hanjuku-chart-v985-roster-lost",
             "hanjuku-chart-v982-gbox",
             "hanjuku-chart-v984-roster-map-anchor",
