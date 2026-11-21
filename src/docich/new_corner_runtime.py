@@ -338,6 +338,49 @@ ARCHITECTURE_SPEC = CornerRuntimeSpec(
     labels=("fact", "analysis", "caveat"),
 )
 
+MERIKEN_ECONOMICS_SPEC = CornerRuntimeSpec(
+    corner_id="meriken-economics",
+    fixture_parts=(
+        "tests",
+        "fixtures",
+        "meriken_economics_corner",
+        "fixed_meriken_economics_example.json",
+    ),
+    container="topic",
+    title_key="title",
+    question_key="todayQuestion",
+    summary_key="thirtySecondSummary",
+    sections=(
+        Section("todayQuestion", "fact", "今日の問い"),
+        Section("merikenView", "analysis", "メリケンの見方"),
+        Section("economicModel", "analysis", "経済学上のモデル"),
+        Section("dataEvidence", "fact", "データ/実証"),
+        Section("counterArguments", "analysis", "反対論・条件"),
+        Section("distributionalImpact", "analysis", "誰が得て誰が負担するか"),
+        Section("newsApplication", "forecast", "現実のニュースへの適用"),
+    ),
+    required_fields=(
+        "title",
+        "topicId",
+        "todayQuestion",
+        "merikenView",
+        "economicModel",
+        "dataEvidence",
+        "counterArguments",
+        "distributionalImpact",
+        "newsApplication",
+        "thirtySecondSummary",
+        "oneLineSummary",
+        "primarySources",
+        "sourcePriority",
+        "citationKeepUrl",
+        "figureOrDiagram",
+        "youtubeIndependentDraft",
+    ),
+    caveat_keys=("limitations", "uncertainty"),
+    labels=("fact", "analysis", "forecast"),
+)
+
 CORNER_SPECS = {
     WORLD_HISTORY_SPEC.corner_id: WORLD_HISTORY_SPEC,
     RESEARCH_PAPER_SPEC.corner_id: RESEARCH_PAPER_SPEC,
@@ -345,6 +388,7 @@ CORNER_SPECS = {
     INFORMATION_ENGINEERING_SPEC.corner_id: INFORMATION_ENGINEERING_SPEC,
     ELECTRONICS_SPEC.corner_id: ELECTRONICS_SPEC,
     ARCHITECTURE_SPEC.corner_id: ARCHITECTURE_SPEC,
+    MERIKEN_ECONOMICS_SPEC.corner_id: MERIKEN_ECONOMICS_SPEC,
 }
 
 
