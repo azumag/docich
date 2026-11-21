@@ -311,3 +311,27 @@ def test_broken_or_low_hp_camper_not_hijacked_into_whitehouse():
         'カシュー': {'broken': True, 'hp': 7, 'max_hp': 39},
     }}
     assert not recall_flow._whitehouse_camp(m, screen, state, object())
+
+
+def test_fort_in_whitehouse_ring_uses_boss_move_instead_of_home_recall():
+    # Without camp_world or castle roofs, a fort holding a general whose roster
+    # marker mapped near ボス turns into a boss_move upon entering 'dest'.
+    m = mem(post_month_status={'statuses': {
+        'フェットチーネ': {
+            'broken': False, 'hp': 67, 'max_hp': 67,
+            'marker': {'castle_candidate': BOSS,
+                       'mapping': {'castle': BOSS, 'field': [408, 424]}},
+        },
+    }})
+    _flow(m)['recall'] = {
+        'stage': 'fort_status', 'target': [133, 116],
+        'fort_members': ['フェットチーネ', 'カペリーニ'],
+        'general': 'フェットチーネ', 'steps': 0,
+    }
+    screen = Screen(lines=[], hand=None, text='', kind='map_target',
+                    cursor=(133, 116), marker=(133, 116))
+    recall_flow.camp_recall_step(screen, m, None)
+    st = _flow(m)['recall']
+    assert st['fort'] is True
+    assert st['boss_move'] is True
+    assert st['goal'] == BOSS

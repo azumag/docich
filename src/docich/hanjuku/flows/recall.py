@@ -144,6 +144,21 @@ def _whitehouse_camp(mem, screen, state, frame):
         if info.get('broken') is True or (
                 type(hp) is int and type(mhp) is int and mhp > 0 and hp <= mhp // 2):
             return False
+    area = chart.CH10_WH_AREA
+    # A measured roster marker on the general (or any member of a fort) places
+    # a White House camp even when the frame has no castle roofs around it.
+    for who in ((gen,) if gen else ()) + tuple(state.get('fort_members') or ()):
+        w_info = statuses.get(who) if isinstance(statuses, dict) else None
+        if not isinstance(w_info, dict):
+            continue
+        marker = w_info.get('marker')
+        if isinstance(marker, dict):
+            if marker.get('castle_candidate') == chart.boss_castle(10):
+                return True
+            mf = marker.get('marker_field') or (marker.get('mapping') or {}).get('field')
+            if (isinstance(mf, (list, tuple)) and len(mf) == 2
+                    and area[0] <= mf[0] <= area[2] and area[1] <= mf[1] <= area[3]):
+                return True
     camp = state.get('camp_world')
     if not _camp_target(camp):
         # The two-roof origin may not bind inside the ring (the White House
@@ -157,7 +172,6 @@ def _whitehouse_camp(mem, screen, state, frame):
             camp = [int(round(origin[0] + target[0] - cursor[0])),
                     int(round(origin[1] + target[1] - cursor[1]))]
             state['camp_world'] = camp
-    area = chart.CH10_WH_AREA
     if (isinstance(camp, (list, tuple)) and len(camp) == 2
             and area[0] <= camp[0] <= area[2] and area[1] <= camp[1] <= area[3]):
         return True
@@ -1416,6 +1430,9 @@ def _camp_recall_step(screen: Screen, mem, frame, *, observed_camps=None):
         if actions is not None:
             return actions
         stage = state.get('stage')
+        if (stage == 'dest' and not state.get('boss') and not state.get('boss_move')
+                and _whitehouse_camp(mem, screen, state, frame)):
+            state['boss_move'], state['goal'] = True, chart.boss_castle(mem.get('chapter') or 0)
     if stage == 'menu' and state.get('relay') and not is_camp_menu(screen):
         # The whole-island picker closes one or more frames after the B that
         # #4534 sends when it re-aims a camp at the relay; the picker screen
