@@ -597,6 +597,12 @@ def _carried_opening_tactics(mem, cur, existing):
                 # yet). Fall back to the newest launched snapshot of this exact
                 # actor so the carried cards are not wasted (owner 2026-11-15:
                 # the castle attack never used them).
+                # #4879: Never reuse an earlier attack sortie snapshot during a
+                # castle defense battle — defense battles read their real kit
+                # via _defense_kit_read_window (#4456) instead of inventing
+                # stale attack cards that cause repeated B-menu open/decline loops.
+                if cur.get('side') == 'defense':
+                    return []
                 ally = cur.get('ally')
                 recent = [(snap.get('confirmation_tick') or 0, snap) for snap in
                           (_world(mem).get('launched_orders') or {}).values()

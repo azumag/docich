@@ -977,7 +977,8 @@ def battle_menu_step(screen: Screen, mem):
     probe = _disabled_defense_probe(screen, mem, cur)
     if probe is not None:
         return probe
-    if screen.hidden_battle_commands or screen.has('おくのて'):
+    if (screen.hidden_battle_commands or screen.has('おくのて')) and not (
+            flow and 'きりふだ' in _labels):
         cur.pop('card_damage_list_blocked', None)
         res = okunote_step(screen, mem)
         if res is not None:
