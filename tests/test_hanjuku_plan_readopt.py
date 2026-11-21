@@ -57,6 +57,7 @@ def test_a_different_candidate_list_still_replaces_the_plan():
     # situation changed: an owned castle is now empty.
     _plan_region(mem)['orders'] = {step: 'failed' for step in first}
     mem["captured"].remove("トウトウ")      # a normal castle becomes a target again
+    mem["lost"].append("トウトウ")          # lost castles seed the retake candidates
     adopt(mem, 1001)
     assert [o['step'] for o in _plan_region(mem)['chart_plan']['orders']] != first
     assert len(records(mem)) >= 2
