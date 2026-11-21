@@ -1706,6 +1706,29 @@ def test_scroll_arrow_fallback_never_triggers_static_marker_skip():
     assert 'static_marker' not in state
 
 
+def test_boss_move_and_exemption_are_suppressed_until_boss_is_unlocked():
+    """#4912: ch10 central boss enclosure is empty until all normal castles are captured."""
+    statuses = {
+        'マンゴスチン': {'location': 'camp', 'marker': {'castle_candidate': 'ボス'},
+                     'hp': 85, 'max_hp': 85, 'broken': False},
+        'ローズマリー': {'location': 'camp', 'marker': {'castle_candidate': 'ボス'},
+                     'hp': 2, 'max_hp': 98, 'broken': False},
+    }
+    locked_tasks = post._tasks(statuses, list(statuses), boss_unlocked=False)
+    assert locked_tasks == [
+        {'kind': 'recall', 'name': 'ローズマリー'},
+        {'kind': 'recall', 'name': 'マンゴスチン'},
+    ]
+    unlocked_tasks = post._tasks(statuses, list(statuses), boss_unlocked=True)
+    assert unlocked_tasks == [{'kind': 'boss_move', 'name': 'マンゴスチン'}]
+
+    mem = {'chapter': 10, 'captured': ['マカリア', 'コッカーニュ', 'ファルゲ']}
+    assert post._boss_unlocked(mem) is False
+    from docich import hanjuku_chart as chart
+    all_normal = sorted(set(chart.CASTLE_NAMES[10]) - {chart.home_castle(10), chart.boss_castle(10)})
+    assert post._boss_unlocked({'chapter': 10, 'captured': all_normal}) is True
+
+
 def test_a_same_month_house_read_skips_the_individual_reopen():
     """g1163 2026-11-09: the house pass read at 09:55, this walk at 09:58."""
     mem = memory(tick=1000, month='2-6')

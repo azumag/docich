@@ -150,7 +150,23 @@ def _road_skips_checks(mem):
     return chart.guard_free(chapter) and bool(chart.corridor(chapter)) and not boss_phase(mem)
 
 
-def _tasks(statuses, names, boss_camp_months=None, camp_stays=False, road=False):
+def _boss_unlocked(mem):
+    """True once the chapter's boss castle is actually reachable/open (#4912).
+
+    Chapters 10-12 spawn the boss castle only after every normal castle is
+    captured (``all_captured``); before that, a general camped near ch10's
+    central boss enclosure must be recalled home instead of ordered to
+    ``boss_move`` into an empty site or exempted from recall.
+    """
+    from ..strategy.orders import _all_normal_captured
+    chapter = mem.get('chapter')
+    if chapter in (10, 11, 12):
+        return _all_normal_captured(mem)
+    return True
+
+
+def _tasks(statuses, names, boss_camp_months=None, camp_stays=False, road=False,
+           boss_unlocked=True):
     """``camp_stays``: a moving-boss chapter never recalls a camp home (owner
     2026-11-09); the camp is re-sent at the boss by the camp flow instead.
     ``road``: chapter 9 before the boss phase keeps only repairs."""
@@ -175,7 +191,9 @@ def _tasks(statuses, names, boss_camp_months=None, camp_stays=False, road=False)
             # consecutive observed months (docich#3659): a siege that never
             # resolves must not pin him to the camp forever. A broken general
             # never holds the siege (docich#3659 follow-up: ヴィーナス).
-            if (_boss_camp_holds_siege(info)
+            # #4912: only apply siege exemption / boss_move once the chapter's
+            # boss castle is actually unlocked.
+            if (boss_unlocked and _boss_camp_holds_siege(info)
                     and int(months.get(name) or 0) <= BOSS_CAMP_EXEMPT_MONTHS):
                 # #3505: an intact siege camper marches on to the boss by the
                 # camp menu's いどう instead of idling the exempt months away.
@@ -384,11 +402,13 @@ def arm(mem):
     # ``arm`` can also be re-entered inside the same month after ``_finish``
     # dropped the owner state, so gate the increment on the counted scope —
     # never on the presence of a live owner.
+    boss_unlocked = _boss_unlocked(mem)
     if mem.get('boss_camp_exempt_scope') != scope:
         mem['boss_camp_exempt_scope'] = list(scope)
-        camping = {
+        camping = ({
             name for name, row in statuses.items()
             if row.get('location') == 'camp' and _boss_camp_holds_siege(row)}
+            if boss_unlocked else set())
         previous = mem.get('boss_camp_exempt') or {}
         counted = {name: int(previous.get(name) or 0) + 1 for name in camping}
         if counted:
@@ -396,7 +416,8 @@ def arm(mem):
         else:
             mem.pop('boss_camp_exempt', None)
     tasks = _tasks(statuses, list(statuses), mem.get('boss_camp_exempt'),
-                   camp_stays=_camp_stays(mem), road=_road_skips_checks(mem))
+                   camp_stays=_camp_stays(mem), road=_road_skips_checks(mem),
+                   boss_unlocked=boss_unlocked)
     if not scan and not manifest_due and not tasks:
         # Common case: zero input and zero roster navigation this month.
         mem['post_month_status_last'] = {
@@ -1152,7 +1173,8 @@ def _complete_scan(mem, state):
             mem.pop('carry_tracking', None)
     state['tasks'] = _tasks(state['statuses'], state['names'],
                             mem.get('boss_camp_exempt'), camp_stays=_camp_stays(mem),
-                            road=_road_skips_checks(mem))
+                            road=_road_skips_checks(mem),
+                            boss_unlocked=_boss_unlocked(mem))
     mem['general_statuses'] = {
         'scope': list(state['scope']), 'identity': state['identity'],
         'statuses': state['statuses'], 'dirty': {}, 'pending_joins': [],
