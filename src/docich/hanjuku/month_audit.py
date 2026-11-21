@@ -52,6 +52,7 @@ BOSS_NO_BATTLE_SECONDS = 600
 CAMP_ISSUE_COOLDOWN_SECONDS = 900
 SORTIE_ISSUE_COOLDOWN_SECONDS = 900
 BATTLE_RESOURCE_ISSUE_COOLDOWN_SECONDS = 900
+CAMP_ABANDON_MONTHS = 3
 MIN_MONTH_SECONDS = 120
 MAX_GAP_SECONDS = 60
 MIN_OBSERVATIONS = 20
@@ -124,6 +125,8 @@ SIGNAL_LABELS = {
     'battle_retreat_with_card': '切り札を残して退却',
     'battle_loss_with_egg': '卵を残して敗北',
     'battle_loss_with_card': '切り札を残して敗北',
+    'camp_abandoned': '野営放置',
+    'camp_abandon_3months': '3ヶ月以上野営',
     'unknown': '原因未分類',
 }
 SIGNAL_ORDER = tuple(SIGNAL_LABELS)
@@ -175,9 +178,12 @@ PRIMARY_LABELS = {
     'battle_retreat_with_card': '切り札を残して退却',
     'battle_loss_with_egg': '卵を残して敗北',
     'battle_loss_with_card': '切り札を残して敗北',
+    'camp_abandoned': '野営放置',
+    'camp_abandon_3months': '3ヶ月以上野営',
     'unknown': '原因未分類',
 }
 PRIMARY_SIGNALS = (
+    ('camp_abandoned', ('camp_abandoned',)),
     ('battle_retreat_with_resources', ('battle_retreat_with_resources',)),
     ('battle_loss_with_resources', ('battle_loss_with_resources',)),
     ('sortie_failed', ('sortie_failed',)),
@@ -1209,6 +1215,221 @@ def _track_sortie(runtime, state, after, records, now, on_sealed=None):
             table.pop(stale, None)
 
 
+
+def _camp_generals(mem):
+    statuses = ((mem.get('general_statuses') or {}).get('statuses') or {})
+    current = {}
+    for name, row in statuses.items():
+        if not isinstance(name, str) or not isinstance(row, dict):
+            continue
+        if row.get('location') != 'camp':
+            continue
+        if row.get('location_observed') is False:
+            continue
+        hp = row.get('hp')
+        if type(hp) is int and hp <= 0:
+            continue
+        current[name] = row
+    return current
+
+
+def _camp_month_starts(mem):
+    start = mem.get('month_start_tick')
+    if type(start) is not int or start <= 0:
+        return []
+    durations = mem.get('month_durations')
+    durations = durations if isinstance(durations, list) else []
+    starts = [start]
+    for duration in reversed(durations[-6:]):
+        if type(duration) is not int or duration <= 0:
+            break
+        previous = starts[-1] - duration
+        if previous < 0:
+            break
+        starts.append(previous)
+    return starts
+
+
+def _camp_age_months(mem, general):
+    seen = ((mem.get('camp_status_seen') or {}).get('actors') or {})
+    entry = seen.get(general) if isinstance(seen, dict) else None
+    first_tick = entry.get('tick') if isinstance(entry, dict) else None
+    if type(first_tick) is not int or first_tick <= 0:
+        return None
+    starts = _camp_month_starts(mem)
+    if not starts:
+        return None
+    return min(1 + sum(1 for start in starts if start > first_tick), 24)
+
+
+def _build_camp_abandon_incident(runtime, state, after, stay, now):
+    mem = after.get('policy') or {}
+    context = _context(after)
+    rows = _read_decisions(runtime, max(0.0, float(now) - 120), now,
+                           state.get('identity'))
+    counts = _decision_counts(rows)
+    departures, launch_events = _departures(rows)
+    month_sorties = (context or {}).get('month_sorties') or {}
+    confirmed = month_sorties.get('launches') if isinstance(month_sorties, dict) else None
+    battle_count = sum(counts.get(name, 0) for name in counts
+                       if name.startswith('battle_') or name == 'monster_menu_choice')
+    signals = ['camp_abandoned', 'camp_abandon_3months']
+    for name in _signals(context, counts, confirmed, departures, battle_count):
+        if name not in signals:
+            signals.append(name)
+    signals = signals[:8]
+    observed = state.get('observed') if isinstance(state.get('observed'), dict) else None
+    if observed is not None:
+        month = _month_summary(observed, now)
+    else:
+        month = {'chapter': mem.get('chapter'), 'month': mem.get('month'),
+                 'first_at': now, 'last_at': now, 'closed_at': now,
+                 'duration_s': 0.0, 'first_tick': mem.get('tick'),
+                 'last_tick': mem.get('tick'), 'duration_ticks': None,
+                 'observations': 0, 'max_gap_s': 0.0, 'started_clean': True}
+    identity = state.get('identity') or {}
+    row = stay.get('row') or {}
+    record = {
+        'schema': SCHEMA,
+        'event': 'camp_abandoned',
+        'kind': 'camp_abandoned',
+        'confidence': 'high',
+        'confidence_reasons': [],
+        'chapter': mem.get('chapter'),
+        'month': mem.get('month'),
+        'month_summary': month,
+        'camp_stay': {
+            'general': stay.get('general'),
+            'months': stay.get('months'),
+            'first_tick': stay.get('first_tick'),
+            'first_month': stay.get('first_month'),
+            'hp': row.get('hp'),
+            'max_hp': row.get('max_hp'),
+            'egg': row.get('egg'),
+            'broken': row.get('broken'),
+            'status_text': _bounded_text(row.get('status_text'), 80),
+            'castle_candidate': _bounded_text(
+                (row.get('marker') or {}).get('castle_candidate'), 48),
+            'camp_observed': row.get('camp_observed') is True,
+            'last_tick': _bounded_int(row.get('tick'), 0, 10 ** 9),
+        },
+        'sorties': {
+            'confirmed': confirmed,
+            'departures': departures,
+            'launch_events': launch_events,
+            'order_start': counts.get('order_start', 0),
+            'order_launched': counts.get('order_launched', 0),
+        },
+        'plan': copy.deepcopy((context or {}).get('plan') or {}),
+        'world': copy.deepcopy((context or {}).get('world') or {}),
+        'flow': copy.deepcopy((context or {}).get('flow') or {}),
+        'stats': copy.deepcopy((context or {}).get('stats') or {}),
+        'battles': {'decisions': battle_count},
+        'signals': signals,
+        'decisions': {
+            'total': len(rows),
+            'counts': counts,
+            'coverage': None,
+            'before': _decision_rows(rows, 30),
+            'after': None,
+        },
+        'evidence': {
+            'runtime_dir': str(Path(runtime).name),
+            'decisions': 'hanjuku_decisions.jsonl',
+            'events': 'hanjuku_events.jsonl',
+            'frames': 'hanjuku_frames/',
+            'bot_version': after.get('bot_version'),
+            'identity': identity,
+        },
+        'context_missing': context is None,
+        'created_at': float(now),
+    }
+    raw = (f"{identity.get('runtime_id')}|{identity.get('generation')}|"
+           f"camp_abandoned|{stay.get('general')}|{stay.get('first_tick')}")
+    record['incident_id'] = hashlib.sha256(raw.encode('utf-8')).hexdigest()[:20]
+    record['signature'] = 'camp_abandoned'
+    record['fingerprint'] = _fingerprint(mem.get('chapter'), 'camp_abandoned',
+                                         ['camp_abandoned'])
+    record['auto_file'] = True
+    return _shrink(record)
+
+
+def _track_camp_abandon(runtime, state, after, now, on_sealed=None):
+    mem = after.get('policy') or {}
+    chapter, month = mem.get('chapter'), mem.get('month')
+    if type(chapter) is not int or not isinstance(month, str):
+        return
+    current = _camp_generals(mem)
+    if not current and not isinstance(state.get('camp_watch'), dict):
+        return
+    complete = (mem.get('general_statuses') or {}).get('complete') is True
+    watch = state.get('camp_watch')
+    if (not isinstance(watch, dict) or watch.get('chapter') != chapter
+            or not isinstance(watch.get('generals'), dict)):
+        watch = {'chapter': chapter, 'month': month, 'generals': {}, 'departed': []}
+        state['camp_watch'] = watch
+    generals = watch['generals']
+    departed = watch.get('departed')
+    if not isinstance(departed, list):
+        departed = watch['departed'] = []
+    if watch.get('month') != month:
+        for name, entry in list(generals.items()):
+            if name in current:
+                entry['months'] = int(entry.get('months') or 1) + 1
+                entry['last_month'] = month
+            elif complete:
+                generals.pop(name, None)
+                if name not in departed:
+                    departed.append(name)
+        watch['month'] = month
+    seen = ((mem.get('camp_status_seen') or {}).get('actors') or {})
+    for name, row in current.items():
+        entry = generals.get(name)
+        age = _camp_age_months(mem, name)
+        first_tick = seen.get(name, {}).get('tick') if isinstance(seen.get(name), dict) else None
+        if entry is None:
+            if name in departed:
+                departed.remove(name)
+                months = 1
+                first_tick = mem.get('tick') if type(mem.get('tick')) is int else first_tick
+            else:
+                months = max(1, age or 1)
+            entry = {'months': months, 'first_month': month,
+                     'first_tick': first_tick, 'reported': False,
+                     'last_month': month}
+            generals[name] = entry
+        else:
+            entry['months'] = max(int(entry.get('months') or 1), age or 1)
+            if not entry.get('first_tick'):
+                entry['first_tick'] = first_tick
+        entry['hp'] = row.get('hp')
+    if complete:
+        for name in list(generals):
+            if name not in current:
+                generals.pop(name, None)
+                if name not in departed:
+                    departed.append(name)
+    if len(departed) > 50:
+        del departed[:-50]
+    for name, row in current.items():
+        entry = generals.get(name)
+        if not isinstance(entry, dict) or entry.get('reported'):
+            continue
+        if int(entry.get('months') or 0) < CAMP_ABANDON_MONTHS:
+            continue
+        incident = _build_camp_abandon_incident(
+            runtime, state, after,
+            {'general': name, 'months': entry.get('months'),
+             'first_tick': entry.get('first_tick'),
+             'first_month': entry.get('first_month'), 'row': row}, now)
+        _append_incident(runtime, incident, on_sealed)
+        entry['reported'] = True
+        entry['reported_at'] = float(now)
+    if len(generals) > 30:
+        for stale in sorted(generals, key=lambda name: generals[name].get('first_tick') or 0)[:-30]:
+            generals.pop(stale, None)
+
+
 def _track_camp(runtime, state, after, records, now, on_sealed=None):
     events = [event for event in (_camp_event(record) for record in records or ()) if event]
     if not events:
@@ -1989,6 +2210,7 @@ def observe(runtime, before, after, records=None, *, now=None, on_sealed=None):
     _track_camp(runtime, state, after, records, now, on_sealed)
     _track_sortie(runtime, state, after, records, now, on_sealed)
     _track_battle_resources(runtime, state, after, records, now, on_sealed)
+    _track_camp_abandon(runtime, state, after, now, on_sealed)
     state['write_tick'] = int(state.get('write_tick') or 0) + 1
     # The open-month counters only advance if every observation persists them:
     # a write every tenth observation restarted from the last file and could
@@ -2062,6 +2284,7 @@ def render(record):
     camp = record.get('camp_event') or {}
     sortie = record.get('sortie_event') or {}
     battle = record.get('battle_event') or {}
+    stay = record.get('camp_stay') or {}
     boss = record.get('boss_phase') or {}
     body = [
         f"<!-- hanjuku-month-audit fingerprint={record.get('fingerprint')} -->",
@@ -2077,6 +2300,18 @@ def render(record):
     if not camp:
         body.append(f"- 出撃: 確定 {sorties.get('confirmed')} / 発射 {sorties.get('departures')} / order_start {sorties.get('order_start')} / order_launched {sorties.get('order_launched')}")
     body.append('')
+    if stay:
+        body += [
+            '### 野営放置',
+            '',
+            f"- 将軍: {stay.get('general')} / 継続: {stay.get('months')}ヶ月"
+            f" / 初回: {stay.get('first_month')} ({stay.get('first_tick')})",
+            f"- HP: {stay.get('hp')}/{stay.get('max_hp')} / 卵: {stay.get('egg')}"
+            f" / 壊れ: {bool(stay.get('broken'))} / 状態: {stay.get('status_text') or '不明'}",
+            f"- 城候補: {stay.get('castle_candidate') or '不明'}"
+            f" / 最終観測tick: {stay.get('last_tick')}",
+            '',
+        ]
     if battle:
         body += [
             '### 戦闘結果',
@@ -2126,7 +2361,7 @@ def render(record):
             f" / 残りボス城: {', '.join(boss.get('bosses') or [])}",
             '',
         ]
-    body.append('### 直前の決定' if (camp or sortie or battle) else
+    body.append('### 直前の決定' if (camp or sortie or battle or stay) else
                 ('### フェーズ中の決定' if kind == 'boss_phase_no_battle' else '### 月内の決定'))
     body.append('')
     rows, filtered = _timeline(record)
@@ -2139,7 +2374,7 @@ def render(record):
     ]
     for row in rows:
         body.append(f"| {_clock(row.get('at'))} | {_cell(row.get('decision'))} | {_cell(row.get('chart_step'))} | {_md(row.get('general'))} | {_md(row.get('target'))} | {_md(row.get('reason'))} |")
-    body += ['', '### 現在の計画' if (camp or sortie or battle or kind == 'boss_phase_no_battle') else '### 前月の計画', '',
+    body += ['', '### 現在の計画' if (camp or sortie or battle or stay or kind == 'boss_phase_no_battle') else '### 前月の計画', '',
              '| step | 状態 | 目的 | 出撃元 | 対象 | 将軍 |',
              '| --- | --- | --- | --- | --- | --- |']
     plan = record.get('plan') or {}
@@ -2204,7 +2439,11 @@ def render_comment(record):
     camp = record.get('camp_event') or {}
     sortie = record.get('sortie_event') or {}
     battle = record.get('battle_event') or {}
-    if record.get('kind') in ('battle_retreat_with_resources', 'battle_loss_with_resources'):
+    stay = record.get('camp_stay') or {}
+    if record.get('kind') == 'camp_abandoned':
+        lines.insert(5, f"- 野営: {stay.get('months')}ヶ月 / {stay.get('general')}"
+                        f" / first {stay.get('first_tick')}")
+    elif record.get('kind') in ('battle_retreat_with_resources', 'battle_loss_with_resources'):
         lines.insert(5, f"- 戦闘: {battle.get('outcome')} / 資源 {battle.get('resources')}"
                         f" / {battle.get('general') or '不明'}")
     elif record.get('kind') in ('sortie_failed', 'sortie_cancelled'):
@@ -2225,6 +2464,10 @@ def render_comment(record):
 
 def _issue_title(record):
     kind = record.get('kind')
+    if kind == 'camp_abandoned':
+        stay = record.get('camp_stay') or {}
+        return (f"[半熟英雄] 野営放置: ch{record.get('chapter')} "
+                f"{stay.get('general') or '将軍不明'} ({stay.get('months')}ヶ月)")[:100]
     if kind in ('battle_retreat_with_resources', 'battle_loss_with_resources'):
         battle = record.get('battle_event') or {}
         resources = battle.get('resources') or []

@@ -1,4 +1,4 @@
-# 半熟英雄: 月内出撃ゼロ・ボスフェーズ無戦闘監査（v1335）
+# 半熟英雄: 月内出撃ゼロ・ボスフェーズ無戦闘監査（v1338）
 
 ## 目的
 
@@ -42,7 +42,7 @@ JSONLで保存し、必要なときに `gh` で修正用 issue を発行する�
 `decision_log_coverage` だけのときは `medium`、それ以外の理由が付くと `low`。
 issue化の既定は `high` のみ。
 
-## ボスフェーズ無戦闘（v1335）
+## ボスフェーズ無戦闘（v1338）
 
 通常城をすべて確保し、ボスの城（第4話は四季王サイト）だけが残った状態を
 **ボスフェーズ**とする。第9話の移動ボスは街道の全城が自軍になった時点。
@@ -61,7 +61,7 @@ issue化の既定は `high` のみ。
 （confidence high）。issue題名は
 `[半熟英雄] ボスフェーズでボス戦闘ゼロ: ch<章> <ボス名>`。
 
-## キャンプ帰還の失敗・キャンセル（v1335）
+## キャンプ帰還の失敗・キャンセル（v1338）
 
 キャンプ（野営）からの帰還が terminal に失敗/取消/未確認になった観測で、
 `camp_*` のrecordを1件保存する。対象decision:
@@ -84,7 +84,7 @@ issue化の既定は `high` のみ。
   は通常経路なので対象外。
 - 保存後のissue発行はbotのseal時callback（v1257以降）と同じ。
 
-## 出撃失敗・キャンセル（v1335）
+## 出撃失敗・キャンセル（v1338）
 
 terminal な出撃失敗/取消のdecisionを、`sortie_*` のrecordとして保存する。
 
@@ -103,7 +103,7 @@ terminal な出撃失敗/取消のdecisionを、`sortie_*` のrecordとして保
   `order_retry`（戦闘再試行）はterminalでないため対象外。
 - issue発行はbotのseal時callback（v1257以降）と同じ。
 
-## 卵・切り札を残した退却/敗北（v1335）
+## 卵・切り札を残した退却/敗北（v1338）
 
 戦闘結果が退却または敗北なのに、本人の卵残数が正数、または切り札が未使用で
 残っている場合に `battle_retreat_with_resources` / `battle_loss_with_resources`
@@ -122,6 +122,24 @@ terminal な出撃失敗/取消のdecisionを、`sortie_*` のrecordとして保
 - 同じ `(chapter, kind, resources, general, step)` は900秒cooldown。
 - 題名は `[半熟英雄] 卵/切り札を残して退却/敗北: ch<章> <将軍またはstep>`。
 - 卵・切り札の残数はbattle結果/退却metricへ追加し、実測値だけを使う。
+
+## 野営放置（3ヶ月以上連続）（v1338）
+
+`general_statuses.statuses` で `location=camp` の将軍を月ごとに追跡し、
+同じ将軍が**3ヶ月以上連続**で野営のままなら `camp_abandoned` を1回保存する。
+
+- 現在の月は `general_statuses` のcamp行で判定する。月が変わってもcamp行が
+  残っていれば継続月数を+1し、城・行軍・死亡（hp<=0）・一覧から消えた場合は
+  その滞在を終了する。
+- 初回導入時は `camp_status_seen.actors[name].tick` と
+  `month_start_tick` / `month_durations` から通過した月境界数を推定し、
+  すでに3ヶ月以上の滞在は即時記録する。それ以外は月境界で数える。
+- 一度issue化した滞在は `reported` で再発行しない。城へ戻った後に再び
+  野営になった場合は新しい滞在として1ヶ月から数え直す。
+- 将軍・継続月数・初回tick/月・HP・卵・壊れ・状態文・城候補・最終観測tick・
+  現在のflow/計画/在城/統計を1件32KB以内で保存する。
+- 題名は `[半熟英雄] 野営放置: ch<章> <将軍> (<n>ヶ月)`。
+- issue発行はbotのseal時callback（v1257以降）と同じ。
 
 ## 保存先
 
@@ -194,7 +212,7 @@ production checkout 上の `gh` 実行はしない。
 2. そのディレクトリを `HANJUKU_RUNTIME` にして `render` / `file --dry-run` で本文を確認する。
 3. `secret_scan` の clean を確認して `file` を実行する。
 
-## botからの自動発行（v1335）
+## botからの自動発行（v1338）
 
 月内出撃ゼロ・ボスフェーズ無戦闘のsealed recordを保存した直後、**その観測を
 実行しているbotプロセス**が、detachedの子プロセスで
