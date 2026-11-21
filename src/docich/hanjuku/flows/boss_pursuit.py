@@ -343,7 +343,14 @@ def _ambush(mem, general=None):
         return far
     names = sorted((mem.get(LIST_KEY) or {}).keys())
     index = names.index(general) if general in names else 0
-    return distinct[index % len(distinct)]
+    # Spread the wave across the whole track: the plain index picked the first
+    # cells of the sorted list, so every general crowded the western edge
+    # (live g1288 2026-11-21 18:5x: four ambush cells all at x=674 while the
+    # boss roamed x 658-874). Stride the sorted cells instead.
+    if not names:
+        return distinct[0]
+    pos = (index * len(distinct)) // len(names)
+    return distinct[min(pos, len(distinct) - 1)]
 
 
 def _lead(mem, probe):
