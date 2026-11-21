@@ -90,7 +90,10 @@ def _deploy_cards(order, mem):
     # during the attempt keeps its bounded readings (flows.deploy._drop_card).
     zero = mem.get('card_zero_at_start')
     if isinstance(zero, dict) and zero.get('step') == order['step']:
-        cards = [card for card in cards if card not in (zero.get('cards') or ())]
+        live_stock = mem.get('card_stock') if isinstance(mem.get('card_stock'), dict) else {}
+        zero_cards = {c for c in (zero.get('cards') or ())
+                      if int(live_stock.get(c) or 0) <= 0}
+        cards = [card for card in cards if card not in zero_cards]
     capped = _cap_card_ids(cards)
     if capped != cards and (mem.get('cards_capped') or {}).get(order['step']) != capped:
         mem.setdefault('cards_capped', {})[order['step']] = capped
@@ -216,5 +219,13 @@ def _observe_card_stock(mem, inventory):
         if isinstance(ledger, dict):
             for card in read:
                 ledger.pop(card, None)   # a panel read is the truth again
+    revived = False
+    zero = mem.get('card_zero_at_start')
+    if isinstance(zero, dict) and isinstance(zero.get('cards'), list):
+        kept = [c for c in zero['cards'] if shown.get(c, 0) <= 0]
+        if len(kept) != len(zero['cards']):
+            zero['cards'] = kept
+            revived = True
     while len(stock) > CARD_STOCK_LIMIT:
         stock.pop(next(iter(stock)))
+    return revived
