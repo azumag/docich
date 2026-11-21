@@ -315,16 +315,12 @@ def ch10_whitehouse_leg(origin, boss_cell):
         return (bx, by)                    # red carpet / south gate: enter
     if oy >= CH10_WALL_SW[1]:
         return CH10_BOSS_WAYPOINT          # the southern outer road is open
-    if ox <= CH10_WALL_SW[0]:
-        return CH10_WALL_SW                # down the west road to the gate
-    if ox >= CH10_WALL_SE[0]:
-        return CH10_WALL_SE                # down the east road to the gate
-    if oy < CH10_WALL_NW[1]:
+    if oy < CH10_WALL_NW[1] - 16:
         return CH10_WALL_NW if ox < CH10_BOSS_WAYPOINT[0] else CH10_WALL_NE
     if ox <= 420:
-        return CH10_WALL_SW                # west outer road beside the wall
+        return CH10_BOSS_WAYPOINT if oy >= CH10_WALL_SW[1] - 16 else CH10_WALL_SW
     if ox >= 564:
-        return CH10_WALL_SE                # east outer road beside the wall
+        return CH10_BOSS_WAYPOINT if oy >= CH10_WALL_SE[1] - 16 else CH10_WALL_SE
     if oy >= by:
         return CH10_BOSS_WAYPOINT          # the ring's southern apron
     return CH10_WALL_NW if ox < CH10_BOSS_WAYPOINT[0] else CH10_WALL_NE

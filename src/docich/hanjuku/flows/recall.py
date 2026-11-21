@@ -136,6 +136,14 @@ def _whitehouse_camp(mem, screen, state, frame):
     from ..strategy.orders import _whitehouse_open
     if not _whitehouse_open(mem):
         return False
+    gen = state.get('general')
+    statuses = (mem.get('post_month_status') or {}).get('statuses') or {}
+    info = statuses.get(gen) if isinstance(gen, str) and isinstance(statuses, dict) else None
+    if isinstance(info, dict):
+        hp, mhp = info.get('hp'), info.get('max_hp')
+        if info.get('broken') is True or (
+                type(hp) is int and type(mhp) is int and mhp > 0 and hp <= mhp // 2):
+            return False
     camp = state.get('camp_world')
     if not _camp_target(camp):
         # The two-roof origin may not bind inside the ring (the White House

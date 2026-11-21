@@ -86,12 +86,17 @@ def test_whitehouse_leg_relays_the_outer_ring_to_the_gate():
     # The measured west detour: outer road -> south road -> gate -> boss.
     assert chart.ch10_whitehouse_leg((300, 400), BOSS_CELL) == sw
     assert chart.ch10_whitehouse_leg((395, 380), BOSS_CELL) == sw
+    # Landing near SW/NE corners with minor Y-map residual advances to next leg instead of looping.
+    assert chart.ch10_whitehouse_leg((388, 432), BOSS_CELL) == wp
+    assert chart.ch10_whitehouse_leg((408, 424), BOSS_CELL) == wp
     assert chart.ch10_whitehouse_leg(sw, BOSS_CELL) == wp
     assert chart.ch10_whitehouse_leg(wp, BOSS_CELL) == BOSS_CELL
     # The eastern mirror and a camp anywhere along the south road (including
     # far south of the cliff/lava on the x=492 column).
     assert chart.ch10_whitehouse_leg((700, 350), BOSS_CELL) == se
     assert chart.ch10_whitehouse_leg((575, 380), BOSS_CELL) == se
+    assert chart.ch10_whitehouse_leg((596, 288), BOSS_CELL) == se
+    assert chart.ch10_whitehouse_leg((596, 424), BOSS_CELL) == wp
     assert chart.ch10_whitehouse_leg(se, BOSS_CELL) == wp
     assert chart.ch10_whitehouse_leg((350, 440), BOSS_CELL) == wp
     assert chart.ch10_whitehouse_leg((492, 560), BOSS_CELL) == wp
@@ -297,3 +302,12 @@ def test_ch10_boss_move_requires_y_jump_before_confirm(monkeypatch):
     m['y_jumped'] = {'RECALL': BOSS}
     confirm = recall_flow._boss_move_dest_step(screen, m, _Frame(), state, (128, 112))
     assert confirm and confirm[0]['buttons'] == ['a']
+
+
+def test_broken_or_low_hp_camper_not_hijacked_into_whitehouse():
+    m, screen, state = _whitehouse_camp_state(chart.CH10_WALL_NE)
+    state['general'] = 'カシュー'
+    m['post_month_status'] = {'statuses': {
+        'カシュー': {'broken': True, 'hp': 7, 'max_hp': 39},
+    }}
+    assert not recall_flow._whitehouse_camp(m, screen, state, object())
