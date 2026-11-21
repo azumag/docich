@@ -293,15 +293,30 @@ def _rare_card_inventory(screen, mem, order, inventory):
         mem[scan_field] = scan_key
         return []                        # バルムンクを確認: 次の観測で選択する
     row = next((r for r in inventory['rows'] if r['card'] == 'キャトルミュー'), None)
-    if row and row['stock'] > 0 and inventory['remaining'] > 0:
+    dropped = (mem.get('card_drop') or {}).get(order['step']) or ()
+    stock_cattle = int((mem.get('card_stock') or {}).get('キャトルミュー') or 0)
+    use_cached_cattle = (
+        row is None
+        and len(inventory['rows']) == 4
+        and stock_cattle > 0
+        and 'キャトルミュー' not in dropped
+        and not boss_generic
+        and not _strict_boss_cards(order, mem)
+        and not _card_proven_absent('キャトルミュー', inventory)
+    )
+    if ((row and row['stock'] > 0) or use_cached_cattle) and inventory['remaining'] > 0:
         original = _deploy_cards(order, mem)
         kit = _cap_card_ids(['キャトルミュー', *[c for c in original if c != 'キャトルミュー']])[:3]
         mem.setdefault('rare_card_kit', {})[order['step']] = kit
         mem[scan_field] = scan_key
         mem.pop('rare_scan', None)
         _record(mem, 'rare_card_kit', **_deploy_context(order, mem), chart_step=order['step'],
-                observed_metric={'card': row['card'], 'stock': row['stock'], 'cards': kit,
-                                 'original_cards': original, 'id_sum': sum(CARD_IDS[c] for c in kit)},
+                observed_metric={'card': 'キャトルミュー',
+                                 'stock': row['stock'] if row else stock_cattle,
+                                 'stock_source': 'panel' if row else 'card_stock',
+                                 'cards': kit,
+                                 'original_cards': original,
+                                 'id_sum': sum(CARD_IDS[c] for c in kit)},
                 reason='実在庫と携行枠を確認し、イベント札を1枚携行して活用する')
         return []
     if not isinstance(month, str) or mem.get(scan_field) == scan_key:

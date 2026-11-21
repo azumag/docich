@@ -169,3 +169,39 @@ def test_zero_slots_never_trigger_discovery_input():
     assert policy._rare_card_inventory(None,mem,order,inventory([
         ('イッテツーン',3),('ブラッキー',2),('ノリウツール',1),('クースカン',1)],remaining=0)) is None
     assert not mem.get('rare_scan')
+
+
+def test_second_sortie_in_same_month_reuses_measured_cattlemyu_card_stock():
+    """#4877: measured positive card_stock carries キャトルミュー even after rare_scan_month is set."""
+    order, mem = memory(boss=False)
+    mem.pop('rare_card_kit')
+    mem['rare_scan_month'] = mem['month']
+    mem['card_stock'] = {RARE: 36, 'イッテツーン': 99}
+    top_four = inventory([('イッテツーン', 99), ('ブラッキー', 99), ('フットバース', 99), ('ダンスライン', 99)])
+    assert policy._rare_card_inventory(None, mem, order, top_four) == []
+    kit = mem['rare_card_kit'][order['step']]
+    assert kit[0] == RARE
+    assert sum(policy.CARD_IDS[c] for c in kit) < 48
+    assert mem['_records'][-1]['observed_metric']['stock_source'] == 'card_stock'
+
+
+def test_cached_cattlemyu_is_not_used_when_panel_short_or_dropped_or_boss():
+    top_four = inventory([('イッテツーン', 99), ('ブラッキー', 99), ('フットバース', 99), ('ダンスライン', 99)])
+    # Short panel (<4 rows) without キャトルミュー proves it absent.
+    order, mem = memory(boss=False)
+    mem.pop('rare_card_kit')
+    mem['rare_scan_month'] = mem['month']
+    mem['card_stock'] = {RARE: 5}
+    assert policy._rare_card_inventory(None, mem, order, inventory([('イッテツーン', 99), ('ブラッキー', 99)])) is None
+    assert not mem.get('rare_card_kit')
+    # Dropped in this sortie: do not re-add.
+    mem['card_drop'] = {order['step']: [RARE]}
+    assert policy._rare_card_inventory(None, mem, order, top_four) is None
+    assert not mem.get('rare_card_kit')
+    # Boss order keeps Balmung/strict boss priority when キャトルミュー is off-screen.
+    border, bmem = memory(boss=True)
+    bmem.pop('rare_card_kit')
+    bmem['rare_scan_month'] = bmem['month']
+    bmem['card_stock'] = {RARE: 36}
+    assert policy._rare_card_inventory(None, bmem, border, top_four) is None
+    assert not bmem.get('rare_card_kit')
