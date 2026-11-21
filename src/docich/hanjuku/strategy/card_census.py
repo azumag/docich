@@ -24,7 +24,9 @@ X→「きりふだ」一覧を末尾まで読む予約を置く (owner 2026-11-
   台帳の意味が v1356/S3 で変わったことの1回だけの移行。旧規則で作られた
   ``card_stock`` を持つ policy の最初の観測で印 (``card_ledger_v``) を立て、
   理由 ``ledger_migration`` を予約する。台帳は消さない (全量の読みが上書き
-  する)。印が付いた後のホットロード・デプロイでは予約しない。
+  する)。印が付いた後のホットロード・デプロイでは予約しない。v3 (#4988)
+  では、旧版で付いた「一覧に入る前の中止」込みの章無効
+  (``card_census_disabled`` / ``card_census_abort_prev``) も1回だけ消す。
 
 予約の中身::
 
@@ -49,23 +51,34 @@ from __future__ import annotations
 # cannot repair it because no reservation fires there. The first observation
 # without the marker books one full read instead; ``card_stock`` is kept until
 # that read overwrites it (owner 2026-11-22).
-CARD_LEDGER_VERSION = 2
+#
+# v3 (#4988): the v2 census disabled a chapter after two aborts, and the first
+# of those was a pre-list ``interrupted`` read that the generic all-generals B
+# caused. A policy that carries such a disable is given the one retry the
+# broken count denied it: the migration clears ``card_census_disabled`` and
+# ``card_census_abort_prev`` (never ``card_stock``) and books the read once.
+CARD_LEDGER_VERSION = 3
 
 
 def note_ledger_version(mem):
     """Stamp the ledger version; book a one-time full read for an old ledger.
 
-    Only a policy that already carries a ``card_stock`` has something to
-    migrate: a fresh/restored policy has no ledger yet (the normal reservation
-    paths build it), so it is stamped on the observation that first has one.
-    Returns True when this observation booked the migration read. A policy
-    that already has the marker never books again, so a hotload/deploy of the
-    same runtime is not a reason to drop a usable ledger.
+    A policy needs the migration when it already carries a ``card_stock``, or
+    when a v2 chapter disable has to be undone even after the ledger itself was
+    dropped (the #4988 bug cleared both). A fresh/restored policy has neither,
+    so it is stamped on the observation that first has one. Returns True when
+    this observation booked the migration read. A policy that already has the
+    marker never books again, so a hotload/deploy of the same runtime is not a
+    reason to drop a usable ledger.
     """
     if mem.get('card_ledger_v') == CARD_LEDGER_VERSION:
         return False
-    if not isinstance(mem.get('card_stock'), dict):
+    disabled = isinstance(mem.get('card_census_disabled'), dict)
+    if not isinstance(mem.get('card_stock'), dict) and not disabled:
         return False
+    # #4988 v3: undo the pre-list strike and the chapter disable exactly once.
+    mem.pop('card_census_disabled', None)
+    mem.pop('card_census_abort_prev', None)
     mem['card_ledger_v'] = CARD_LEDGER_VERSION
     book(mem, 'ledger_migration')
     return True
