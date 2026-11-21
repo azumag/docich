@@ -6,7 +6,8 @@ recall on 'map' without move_visible, so chapter 2 (and every non-corridor,
 non-gateway chapter) could not return from camp.
 
 Fix: when move_visible is not set, fall back to きかん's whole-island picker
-(map_target), which 'dest' handles for every chapter.
+(map_target), which 'dest' handles for every chapter. A boss redirect or
+boss_move keeps いどう (owner-measured #4736 path to the boss).
 """
 from docich import hanjuku_chart as chart
 from docich.hanjuku.flows import recall as recall_flow
@@ -76,3 +77,14 @@ def test_chapter1_menu_chooses_kikan_without_move_visible():
     actions = recall_flow.camp_recall_step(screen, mem, None)
     assert actions == [recall_flow.pad('down')]
     assert _flow(mem)['recall']['stage'] == 'menu'
+
+
+def test_boss_redirect_keeps_idou_without_move_visible():
+    """#4736 (owner 2026-11-19) measured the boss redirect via いどう.
+    A boss / boss_move recall keeps いどう even without move_visible."""
+    for flag in ('boss', 'boss_move'):
+        mem = memory(chapter=9)
+        _flow(mem)['recall'][flag] = True
+        assert recall_flow.camp_recall_step(_camp_menu_screen(3), mem, None) == [recall_flow.pad('up')]
+        assert recall_flow.camp_recall_step(_camp_menu_screen(0), mem, None) == [recall_flow.pad('a')]
+        assert _flow(mem)['recall']['stage'] == 'dest'

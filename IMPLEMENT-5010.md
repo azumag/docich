@@ -18,6 +18,32 @@ PR #4736 (2026-11-19) 以降、キャンプ帰還は無条件で `いどう` を
 場合のみ `いどう` を選び、無い場合は `きかん` の全島ピッカー (`map_target`)
 を選ぶ。`dest` は `map_target` を全章で処理する。
 
+**例外**: boss への再出撃 (`boss` / `boss_move`) は `move_visible` が無くても
+`いどう` のまま。#4736 (owner 2026-11-19) で測定済みのボスへの経路で、
+ボスへの Y ジャンプはフィールドカーソルを要するため。
+
+## CI 修正 (2026-11-22 06:40)
+
+初回 CI は full-suite 3 shard 全滅。原因は #4736 の「常にいどう」を
+pin していた既存テスト群が、通常帰還のメニュー目標を `いどう` (0行目)
+としていたこと。#5010 は通常帰還で `いどう` が `dest` で帰還を破棄する
+ことを本番で示しているため、通常帰還のテストを `きかん` (3行目) へ
+更新した。ボス系のテスト (chapter9 の boss redirect、boss_camp_remarch
+の boss_move) は例外により `いどう` のままで green。更新したテスト:
+
+- `test_hanjuku_chapter9_camp_boss_redirect.py`: 通常帰還は きかん へ
+  (`test_the_ordinary_recall_also_confirms_idou` を
+  `test_the_ordinary_recall_uses_kikan_without_a_visible_target` へ改名)、
+  既存の home 帰還 2件は下向きへ。
+- `test_hanjuku_boss_camp_remarch.py`: 通常帰還は きかん へ。
+- `test_hanjuku_camp_receipts.py`: 観測カーソルのテストを きかん へ
+  (意図はカーソル観測のまま)、繰り返し同一カーソルのテストは
+  row 0 に固定して下向きへ。
+- `test_hanjuku_recall_month_scene.py`: 月初中断の復帰テストを
+  きかん へ (元々のコメント意図どおり)。
+- `test_hanjuku_return_status_close.py`: 2件を きかん へ。
+- `test_hanjuku_camp_recall_ch2.py` (新規): boss 例外のテストを追加。
+
 ## 変更ファイル
 
 - `src/docich/hanjuku/flows/recall.py`: `move_visible` 有無による `いどう` / `きかん` の分岐。

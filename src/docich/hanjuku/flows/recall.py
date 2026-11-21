@@ -1563,10 +1563,12 @@ def _camp_recall_step(screen: Screen, mem, frame, *, observed_camps=None):
                         reason='後半の自軍城が無くハブへ直行すると崖に詰まるため、まず後半中央へいどうで移動する')
         # Owner 2026-11-19 (#4736): いどう opens the field cursor (screen.kind=='map').
         # The 'dest' stage only handles 'map' when move_visible is set (corridor ch9,
-        # gateway ch11, relay). For chapters without move_visible (including ch2),
-        # いどう abandons the recall immediately. Use きかん's whole-island picker
-        # (map_target) instead, which 'dest' handles for every chapter.
-        if state.get('move_visible'):
+        # gateway ch11, relay) or when the recall is a boss redirect / boss_move
+        # (the Y-jump to the boss needs the field cursor; owner-measured).
+        # For an ordinary recall without move_visible, いどう abandons the
+        # recall immediately, so use きかん's whole-island picker (map_target)
+        # instead, which 'dest' handles for every chapter (#5010).
+        if state.get('boss') or state.get('boss_move') or state.get('move_visible'):
             choice = 'いどう'
         else:
             choice = 'きかん'
