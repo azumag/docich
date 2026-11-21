@@ -986,6 +986,7 @@ def _next_general(mem):
                  returning=False)
     state.pop('return_goal', None)
     state.pop('sole_defender', None)
+    state.pop('pick_scan', None)
     # Re-routing a marching army was measured not to reach the house: the
     # 2026-10-01 06:48 dispatch re-aimed ヴィーナス while en_route, and she
     # instead charged キカンドン at 07:08 instead of the house. Wait for her
@@ -2208,6 +2209,16 @@ def _income_step(screen, mem, frame):
     return []
 
 
+# docich#4894: the castle status panel shows four clean name rows per page
+# while 「しょうぐんNめい」 counts every resident. The sortie list pages at the
+# same four rows. A full page shorter than the count is truncation, not a
+# misread.
+CASTLE_STATUS_PAGE_NAMES = 4
+GENERAL_LIST_PAGE = 4
+CASTLE_PICK_SCAN_PRESSES = 16
+CASTLE_PICK_SCAN_STALLS = 3
+
+
 def _sole_defender_repair_due(mem, name, source):
     """Repair immediately unless this is the hero or last-castle sole defender.
 
@@ -2229,7 +2240,8 @@ def _sole_defender_repair_due(mem, name, source):
 def _repair_step(screen, mem, frame):
     from ..os_layer.commands import menu_to, pad
     from ..os_layer.navigation import Y_JUMP_TOL, _align_on_roof
-    from ..os_layer.readers import CASTLE_STATUS, STATUS_NAMES, _empty_sortie_inventory, _present_generals, is_camp_menu
+    from ..os_layer.readers import (CASTLE_STATUS, STATUS_NAMES, _current, _empty_sortie_inventory,
+                                    _present_generals, is_camp_menu)
     from ..os_layer.world import NAME, VENUS_NAME, _owned
     from ..strategy.economy import WAGE_SPEND_HOLD
     from ..strategy.orders import _garrison_move
@@ -2278,17 +2290,32 @@ def _repair_step(screen, mem, frame):
                 return [pad('b')]
             count = re.search(r'しょうぐん(\d+)めい', screen.text)
             names = _general_names(_names_at(screen, 144, 95, 159))
-            if not count or len(names) != int(count[1]) or any(UNKNOWN in g for g in names):
+            total = int(count[1]) if count else None
+            complete = total is not None and len(names) == total
+            # docich#4894: 「しょうぐんNめい」 is the resident total while the
+            # panel's name column fits four rows. A full page shorter than the
+            # count is truncation, not a misread; a page that could hold the
+            # whole garrison still must match it.
+            if (not count or len(names) > total or any(UNKNOWN in g for g in names)
+                    or len(names) < min(total, CASTLE_STATUS_PAGE_NAMES)):
                 return _exit(mem, '出撃元の在城人数を完全に読めないため派遣しない')
-            _world(mem).setdefault('garrison', {})[source] = names
-            if name not in names:
+            if complete:
+                _world(mem).setdefault('garrison', {})[source] = names
+            if name not in names and complete:
                 _phase(state, 'find_castle')
-            elif len(names) < 2 and not _sole_defender_repair_due(mem, name, source):
+            elif total < 2 and not _sole_defender_repair_due(mem, name, source):
                 _record(mem, 'general_deferred', reason='主人公または最後の自軍城の唯一の守将を残す')
                 _next_general(mem)
             else:
                 from ..os_layer.world import VENUS_NAME as _VENUS_NAME
-                if len(names) < 2:
+                if name not in names:
+                    # The page verified the castle but cannot prove membership;
+                    # the sortie list is the complete manifest (docich#4894).
+                    _record(mem, 'castle_verify_partial', castle=source,
+                            observed_metric={'count': total, 'names': list(names)},
+                            reason='城ステータスの氏名列は1頁4名までしか出さないため、対象の在城は出撃一覧で確かめる')
+                    state.pop('sole_defender', None)
+                elif total < 2:
                     state['sole_defender'] = True
                     if name == _VENUS_NAME:
                         _record(mem, 'repair_sole_defender', castle=source,
@@ -2312,7 +2339,7 @@ def _repair_step(screen, mem, frame):
         if screen.kind == 'castle_menu':
             actions = _choose(screen, 'しゅつげき')
             if actions == [pad('a')]:
-                _phase(state, 'castle_pick')
+                _phase(state, 'castle_pick', pick_scan=None)
             return actions
         return []
     if phase == 'castle_pick':
@@ -2321,10 +2348,43 @@ def _repair_step(screen, mem, frame):
         present = _present_generals(screen)
         if present is None:
             return []
-        if ((len(present) < 2 and not _sole_defender_repair_due(mem, name, state['source'])) or name not in present
+        if name not in present:
+            # docich#4894: a crowded castle pages the sortie list too, so an
+            # absent name on the current page is not absence. A short page is
+            # the whole list; a full one is walked once, like the carry
+            # manifest, before moving on to the next castle.
+            scan = state.get('pick_scan')
+            if len(present) < GENERAL_LIST_PAGE and not (isinstance(scan, dict) and scan['presses']):
+                _phase(state, 'find_castle')
+                return [pad('b')]
+            cur = _current(screen)
+            if not cur or cur[2] not in present:
+                return []
+            if not isinstance(scan, dict):
+                scan = state['pick_scan'] = {'anchor': cur[2], 'last': cur[2], 'names': [],
+                                             'presses': 0, 'stalls': 0, 'end': None}
+            scan['names'] += [g for g in present if g not in scan['names']]
+            if cur[2] != scan['last']:
+                scan['last'] = cur[2]
+                scan['stalls'] = 0
+                if cur[2] == scan['anchor']:
+                    scan['end'] = 'wrapped'
+            elif scan['presses']:
+                scan['stalls'] += 1
+                if scan['stalls'] >= CASTLE_PICK_SCAN_STALLS:
+                    scan['end'] = 'stalled'
+            if not scan['end'] and scan['presses'] >= CASTLE_PICK_SCAN_PRESSES:
+                scan['end'] = 'limit'
+            if scan['end']:
+                _phase(state, 'find_castle')
+                return [pad('b')]
+            scan['presses'] += 1
+            return [pad('down')]
+        seen = set(present) | set((state.get('pick_scan') or {}).get('names') or ())
+        if ((len(seen) < 2 and not _sole_defender_repair_due(mem, name, state['source']))
                 or state['source'] not in _owned(mem)):
             return _exit(mem, '出撃直前の在城・守備条件を満たさないため派遣しない')
-        if len(present) < 2:
+        if len(seen) < 2:
             state['sole_defender'] = True
             from ..os_layer.world import _owned as _owned_fn, VENUS_NAME as _VENUS_NAME
             if name == _VENUS_NAME:
