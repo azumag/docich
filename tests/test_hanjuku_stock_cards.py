@@ -74,3 +74,15 @@ def test_the_upgrade_leaves_the_pending_boss_kit_its_copies(monkeypatch):
     assert replan._stock_cards(mem, None) == ['クースカン', 'ミックミー', 'ミックミー']
     mem = {'card_stock': {'クースカン': 1, 'ミックミー': 5}}
     assert replan._stock_cards(mem, None) == ['ミックミー', 'ミックミー']
+
+
+def test_generic_fallback_does_not_spend_boss_reserved_stock(monkeypatch):
+    from collections import Counter
+    from docich.hanjuku.strategy import boss_cards
+    monkeypatch.setattr(boss_cards, 'boss_kit',
+                        lambda mem: ('x-B1', Counter({'クースカン': 2})))
+    mem = {'card_stock': {'イッテツーン': 0, 'クースカン': 2,
+                          'ノリウツール': 1}}
+    assert replan._stock_cards(mem, None) == ['ノリウツール']
+    # Pinned chart orders retain the pre-existing fallback semantics.
+    assert replan._stock_cards(mem, ['イッテツーン']) == ['クースカン', 'ノリウツール']
