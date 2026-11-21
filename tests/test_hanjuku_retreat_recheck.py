@@ -187,8 +187,10 @@ def test_matching_inputs_do_not_mark_camp_or_arrival_complete():
     _flow(mem)['recall'].update(stage='await_dispatch', a_inputs=2, request_trace=trace)
     _journal(mem)['_recall_inputs'] = {'request_trace': trace, 'a_inputs': 2}
     assert p.camp_recall_step(MAP, mem, FRAME) == []
-    assert _flow(mem)['retreat_rechecks']['ゼウス']['status'] == 'arrival_unconfirmed'
-    assert _flow(mem)['recall_verification']['status'] == 'arrival_unconfirmed'
+    # docich#4978: an accepted dispatch leaves the row due for the arrival read
+    # (needs_observation), not parked as a failure.
+    assert _flow(mem)['retreat_rechecks']['ゼウス']['status'] == 'needs_observation'
+    assert _flow(mem)['recall_verification']['status'] == 'dispatched'
     assert _world(mem)['sorties']['old']['status'] == 'arrived'
     assert not _world(mem).get('garrison')
 
@@ -794,7 +796,8 @@ def test_offscreen_camp_discovery_named_status_return_and_current_castle_observa
     _flow(mem)['recall']['request_trace'] = trace
     _journal(mem)['_recall_inputs'] = {'request_trace': trace, 'a_inputs': 2}
     assert p.camp_recall_step(MAP, mem, empty) == []
-    assert _flow(mem)['recall_verification']['status'] == 'arrival_unconfirmed'
+    # docich#4978: accepted dispatch; the arrival read below still starts.
+    assert _flow(mem)['recall_verification']['status'] == 'dispatched'
     mem['tick'] += c.RETRY_TICKS
     assert p.camp_recall_step(MAP, mem, empty) == [p.pad('x')]
     assert _flow(mem)['recall']['arrival_check_only'] is True
