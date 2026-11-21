@@ -7986,6 +7986,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v1310-card-zero-live-stock",
             "hanjuku-chart-v1311-cattlemyu-stock-reuse",
             "hanjuku-chart-v1312-defense-no-stale-cards",
+            "hanjuku-chart-v1313-camp-recheck-idou-dest",
             "hanjuku-chart-v1158-progress-regress",
             "hanjuku-chart-v1161-refill-collapse",
             "hanjuku-chart-v1160-chapter-probe-field",
