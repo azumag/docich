@@ -744,6 +744,7 @@ def step(screen, mem, frame):
                     if frame is None:
                         return []
                     from ..os_layer.navigation import _y_jump_step
+                    from ..os_layer.readers import world_cursor
                     from ..os_layer.world import _apply_skull_boss
                     # The map flow reads the skull on every Y view, but this
                     # jump is ours: without the read the northern-band check
@@ -751,6 +752,43 @@ def step(screen, mem, frame):
                     # the measurement landed after the redirect it should have
                     # gated).
                     _apply_skull_boss(mem, frame)
+                    # #4871: SELECT pops mem['cursor'], so field_open often
+                    # leaves probe['unit_world'] unset on the first pursuit
+                    # (all four ch9 waves at [564, 216] bypassed _ch9_cliff_detour).
+                    # The Y view's opening cursor IS the unit's live world cell:
+                    # measure it before _y_jump_step freezes goal_cell so the
+                    # detour applies (or clears a stale cached detour) on the
+                    # very first jump.
+                    if (jump.get('moves', 0) == 0
+                            and (not probe.get('unit_world')
+                                 or probe.get('unit_world_from_cache'))
+                            and callable(getattr(frame, 'pixel', None))):
+                        cur = world_cursor(frame, 9)
+                        if cur is not None:
+                            ox, oy = Y_JUMP_OFFSET.get(9, (63.0, 47.5))
+                            origin_world = [int(round((cur[0] - ox) * 8)),
+                                            int(round((cur[1] - oy) * 8))]
+                            probe['unit_world'] = origin_world
+                            probe.pop('unit_world_from_cache', None)
+                            entry = (mem.get(LIST_KEY) or {}).get(probe.get('general'))
+                            if isinstance(entry, dict):
+                                entry['unit_world'] = list(origin_world)
+                            current_aim = (probe.get('pre_detour_aim')
+                                           or mem.get('pursuit_aim')
+                                           or jump.get('goal_cell')
+                                           or (mem.get('boss_cell') or {}).get('cell'))
+                            detour = _ch9_cliff_detour(origin_world, current_aim)
+                            if detour is not None:
+                                mem['pursuit_aim'] = list(detour)
+                                probe['aim_cell'] = list(detour)
+                                mem.pop('pursuit_lead', None)
+                                jump['goal_cell'] = list(detour)
+                            elif probe.get('pre_detour_aim') is not None:
+                                # Cached origin was stale (unit already east of cliff):
+                                # restore the original pre-detour aim.
+                                mem['pursuit_aim'] = list(current_aim)
+                                probe['aim_cell'] = list(current_aim)
+                                jump['goal_cell'] = list(current_aim)
                     return _y_jump_step(mem, frame)
                 return [pad('b')]
             if kind == 'map':
@@ -807,7 +845,13 @@ def step(screen, mem, frame):
             cell = (mem.get('boss_cell') or {}).get('cell')
             if lead and isinstance(cell, (list, tuple)) and len(cell) == 2:
                 aim = (cell[0] + lead[0], cell[1] + lead[1])
-        detour = _ch9_cliff_detour(probe.get('unit_world'), aim)
+        entry = (mem.get(LIST_KEY) or {}).get(probe.get('general')) or {}
+        unit_world = probe.get('unit_world') or entry.get('unit_world')
+        probe['pre_detour_aim'] = list(aim) if aim is not None else None
+        probe['unit_world_from_cache'] = bool(
+            probe.get('unit_world') is None and entry.get('unit_world') is not None
+        )
+        detour = _ch9_cliff_detour(unit_world, aim)
         if detour is not None:
             # The unit stands west of the ch9 cliff line and the aim is east
             # of it: the next leg is the corridor, not the boss (#4861).
