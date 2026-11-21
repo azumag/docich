@@ -7989,6 +7989,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v1313-camp-recheck-idou-dest",
             "hanjuku-chart-v1314-balmung-scroll-capture",
             "hanjuku-chart-v1315-recall-yjump-hardening",
+            "hanjuku-chart-v1319-castle-verify-paged",
             "hanjuku-chart-v1318-strong-stock-opener",
             "hanjuku-chart-v1317-post-month-task-yield",
             "hanjuku-chart-v1316-card-scroll-speed",
