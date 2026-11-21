@@ -83,6 +83,9 @@ def test_the_pursuit_reads_the_skull_on_its_own_y_view(monkeypatch):
     import docich.hanjuku.os_layer.world as world
     monkeypatch.setattr(world, '_apply_skull_boss', lambda m, f: seen.append(f))
     monkeypatch.setattr(nav, '_y_jump_step', lambda m, f: ['jump-step'])
+    # The fake frame has no pixels; cursor geometry is tested separately.
+    from docich.hanjuku.os_layer import readers
+    monkeypatch.setattr(readers, 'world_cursor', lambda *_a: None)
     frame = FakeFrame()
     on_world_map = SimpleNamespace(kind='world_map', hand=None, selected=None, text='')
     assert bp.step(on_world_map, mem, frame) == ['jump-step']
