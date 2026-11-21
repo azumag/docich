@@ -391,6 +391,7 @@ KEY_OWNERSHIP = {
     'month_sub': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 月サブ状態
     'month_text_advance': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 月テキスト送り手順状態
     'month_blind_nav': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 月メニュー盲操作の試行回数
+    'month_blind_nav_exhausted': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 盲操作の試行を使い切った月の記録(v1329)
     'month_blind_opened': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 盲操作で確定した月メニュー項目(1tickマーカー)
     'month_merchant_confirm': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 商人入口のうむッ確認意図
     'month_amount_back': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 金額設定オーバーレイからの復帰回数

@@ -539,9 +539,13 @@ def step(screen, mem, frame):
         return None
     kind = screen.kind
     shop = mem.get('shop')
+    from . import month as _month
     busy = (mem.get('house') or mem.get('post_month_status')
             or mem.get('month_sub') or mem.get('month_nav')
-            or mem.get('month_blind_nav')
+            # Only a walk that can still press owns the screen: an exhausted
+            # blind month walk once stayed in the policy for a whole chapter
+            # and kept this pursuit off the field (see month.blind_nav_active).
+            or _month.blind_nav_active(mem)
             # The shop dict survives month end with closed=True for purchase
             # reuse, so presence alone is not screen ownership.
             or (isinstance(shop, dict) and not shop.get('closed')))
