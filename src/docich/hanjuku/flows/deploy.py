@@ -2459,7 +2459,11 @@ def deploy_step(screen: Screen, mem):
             return _hold_deploy(screen, mem, order,
                                 '切り札一覧の名前・数量・配置またはカーソルが実測構造と一致しないため保留', card=card)
         mem.get('card_unreadable', {}).pop(order['step'], None)
-        _observe_card_stock(mem, inventory)
+        if _observe_card_stock(mem, inventory):
+            wanted = _deploy_cards(order, mem)
+            for card in picked:
+                if card in wanted:
+                    wanted.remove(card)
         if _cursor_order_cards(order, mem):
             return _cursor_card_step(screen, mem, order, inventory, picked)
         boss_actions = _chapter_two_balmung_inventory(mem, order, inventory)
