@@ -45,9 +45,10 @@ def test_decide_delayed_status_close_keeps_owner_and_returns_without_reopening_s
     assert actions == []
     assert (state['policy'].get('flow') or {}).get('recall'), 'one delayed B must not abandon the named UI'
     state = json.loads(json.dumps(state))
-    # Owner 2026-11-19: the menu target is いどう (first row), so the cursor
-    # walks up from きかん's old row instead of down.
-    for selected, expected in [(3, 'up'), (2, 'up'), (1, 'up'), (0, 'a')]:
+    # docich#5010: the menu target is きかん (row 3) for an ordinary recall
+    # with no visible target, so the cursor walks down from いどう's old row
+    # instead of up.
+    for selected, expected in [(0, 'down'), (1, 'down'), (2, 'down'), (3, 'a')]:
         actions, state = decide(panel_over_map(selected=selected), state, run_identity=ID)
         assert actions == [p.pad(expected)]
     assert state['policy']['flow']['recall']['stage'] == 'dest'
@@ -64,9 +65,9 @@ def test_decide_ignored_first_b_has_one_bounded_retry_then_accepts_actual_menu(m
         actions, state = decide(field_status(actor), json.loads(json.dumps(state)), run_identity=ID)
         assert actions == expected
         assert (state['policy'].get('flow') or {}).get('recall')
-    # Owner 2026-11-19: いどう is the first row, so the confirming A lands
-    # when the cursor sits on row 0 (きかん's old row 3 is not the target).
-    actions, state = decide(panel_over_map(selected=0), state, run_identity=ID)
+    # docich#5010: きかん is row 3, so the confirming A lands when the cursor
+    # sits on row 3 (いどう's old row 0 is not the target).
+    actions, state = decide(panel_over_map(selected=3), state, run_identity=ID)
     assert actions == [p.pad('a')]
     assert state['policy']['flow']['recall']['stage'] == 'dest'
 
