@@ -435,6 +435,26 @@ def _season_site_ready(order, mem):
     return _normal_missing(mem) <= SEASON_SITE_MISSING_LIMIT
 
 
+def _whitehouse_open(mem):
+    """Chapter 10's White House has spawned and stays attackable (#4922).
+
+    The castle only appears once every normal castle is held, so the
+    #4912/#4915 pre-spawn guard stands until ``_all_normal_captured`` has
+    held or the boss cell has been measured (the Y-view skull reading
+    recorded in ``mem['boss_cell']``). Once either happened, a later
+    recapture of a normal castle cannot un-spawn it: boss orders and camp
+    ``boss_move``s keep running.
+    """
+    if (mem.get('chapter') or 0) != 10:
+        return False
+    if _all_normal_captured(mem):
+        return True
+    reading = mem.get('boss_cell')
+    return (isinstance(reading, dict) and reading.get('chapter') == 10
+            and isinstance(reading.get('cell'), (list, tuple))
+            and len(reading['cell']) == 2)
+
+
 def _boss_path_captured(mem):
     """Every castle on the order chain toward the boss is held.
 
@@ -447,7 +467,11 @@ def _boss_path_captured(mem):
     # #4915: Chapters 10-12 only open/spawn the boss castle once EVERY normal
     # castle is captured; holding the boss order's immediate source chain while
     # other enemy castles remain must not unlock the boss assault early.
-    if chapter in (10, 11, 12):
+    # #4922: once chapter 10's White House has actually spawned (all castles
+    # captured, or its cell measured), a recapture does not close it again.
+    if chapter == 10:
+        return _whitehouse_open(mem)
+    if chapter in (11, 12):
         return False
     all_orders = chart.all_orders(chapter)
     path = {o.get('target') for o in all_orders

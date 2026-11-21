@@ -122,6 +122,75 @@ def gather_castle(mem):
     return road[-1] if road else None
 
 
+def _whitehouse_camp(mem, screen, state, frame):
+    """A detected camp that belongs to chapter 10's open White House (#4922).
+
+    The White House admits a march only through the south gate's red carpet,
+    so every general who marched straight at its walled boss cell is camped
+    somewhere in or beside the ring. While the castle is open — all normal
+    castles held, or its cell measured this chapter — such a camp is an
+    expired boss march, never an ordinary straggler to recall home.
+    """
+    if (mem.get('chapter') or 0) != 10:
+        return False
+    from ..strategy.orders import _whitehouse_open
+    if not _whitehouse_open(mem):
+        return False
+    gen = state.get('general')
+    statuses = (mem.get('post_month_status') or {}).get('statuses') or {}
+    info = statuses.get(gen) if isinstance(gen, str) and isinstance(statuses, dict) else None
+    if isinstance(info, dict):
+        hp, mhp = info.get('hp'), info.get('max_hp')
+        if info.get('broken') is True or (
+                type(hp) is int and type(mhp) is int and mhp > 0 and hp <= mhp // 2):
+            return False
+    area = chart.CH10_WH_AREA
+    # A measured roster marker on the general (or any member of a fort) places
+    # a White House camp even when the frame has no castle roofs around it.
+    for who in ((gen,) if gen else ()) + tuple(state.get('fort_members') or ()):
+        w_info = statuses.get(who) if isinstance(statuses, dict) else None
+        if not isinstance(w_info, dict):
+            continue
+        marker = w_info.get('marker')
+        if isinstance(marker, dict):
+            if marker.get('castle_candidate') == chart.boss_castle(10):
+                return True
+            mf = marker.get('marker_field') or (marker.get('mapping') or {}).get('field')
+            if (isinstance(mf, (list, tuple)) and len(mf) == 2
+                    and area[0] <= mf[0] <= area[2] and area[1] <= mf[1] <= area[3]):
+                return True
+    camp = state.get('camp_world')
+    if not _camp_target(camp):
+        # The two-roof origin may not bind inside the ring (the White House
+        # is a boss tower, not a castle roof); the maintained world estimate
+        # plus the camp's screen delta still places it.
+        cursor = _cursor(screen)
+        origin, target = mem.get('cursor'), state.get('target')
+        if (cursor and not mem.get('uncertain')
+                and isinstance(origin, (list, tuple)) and len(origin) == 2
+                and isinstance(target, (list, tuple)) and len(target) == 2):
+            camp = [int(round(origin[0] + target[0] - cursor[0])),
+                    int(round(origin[1] + target[1] - cursor[1]))]
+            state['camp_world'] = camp
+    if (isinstance(camp, (list, tuple)) and len(camp) == 2
+            and area[0] <= camp[0] <= area[2] and area[1] <= camp[1] <= area[3]):
+        return True
+    # A boss-wave general camping is an expired boss march wherever the tent
+    # stands: the White House legs walk him back to the south gate.
+    wave = {s.get('general') for s in _sorties(mem).values()
+            if isinstance(s, dict) and s.get('target') == chart.boss_castle(10)
+            and s.get('status') not in ('arrived', 'cancelled') and s.get('general')}
+    if not wave:
+        return False
+    actors = ((mem.get('camp_status_seen') or {}).get('actors') or {})
+    if any(g in actors for g in wave):
+        return True
+    # By the chapter-9 boss-redirect reasoning a roofless camp is off-road:
+    # castle camping parks beside its own roof, so while a wave is in flight
+    # an open-field tent is another expired boss march.
+    return isinstance(frame, Frame) and not castle_roofs(frame)
+
+
 def _camp_target(value):
     return (isinstance(value, (list, tuple)) and len(value) == 2
             and all(type(axis) is int for axis in value))
@@ -1127,6 +1196,12 @@ def _camp_recall_step(screen: Screen, mem, frame, *, observed_camps=None):
             open_field = isinstance(frame, Frame) and not castle_roofs(frame)
             if near or any(g in actors for g in wave) or (wave and open_field):
                 state['boss'], state['goal'] = True, boss
+        # Issue #4922: while chapter 10's White House is open, a camp in its
+        # wall ring — or any expired boss march — is not recalled home. The
+        # camp menu's いどう turns it into a boss_move whose RECALL jump picks
+        # the White House leg (gate -> front door, or an outer corner first).
+        if not state.get('boss') and _whitehouse_camp(mem, screen, state, frame):
+            state['boss_move'], state['goal'] = True, chart.boss_castle(mem.get('chapter') or 0)
         if _camp_target(state.get('camp_world')):
             _flow(mem)['camp_last_world'] = list(state['camp_world'])
         elapsed = (int(mem.get('tick') or 0) - mem['month_start_tick']
@@ -1150,6 +1225,15 @@ def _camp_recall_step(screen: Screen, mem, frame, *, observed_camps=None):
                                                        and len(mem['cursor']) == 2 else {}),
                                                     **({'kind': camp['kind']} if camp.get('kind') else {})},
                 reason='画面に自軍の野営を見つけたため補給できる自軍城への帰還を指示する')
+    # Issue #4922: the monthly task's recall state (post_month_status) never
+    # passes the creation-time classification above, so a White House camp it
+    # queued as an ordinary recall is reclassified here while the destination
+    # is still unchosen.
+    if (state.get('stage') in ('to_camp', 'hero_focus', 'hero_open', 'y_route', 'menu')
+            and not (state.get('boss') or state.get('boss_move') or state.get('fort')
+                     or state.get('gather') or state.get('hero') or state.get('move_visible'))
+            and _whitehouse_camp(mem, screen, state, frame)):
+        state['boss_move'], state['goal'] = True, chart.boss_castle(mem.get('chapter') or 0)
     if state.get('stage') == 'await_dispatch':
         return _recall_dispatch_step(screen, mem, state)
     state['steps'] = int(state.get('steps') or 0) + 1
@@ -1346,6 +1430,9 @@ def _camp_recall_step(screen: Screen, mem, frame, *, observed_camps=None):
         if actions is not None:
             return actions
         stage = state.get('stage')
+        if (stage == 'dest' and not state.get('boss') and not state.get('boss_move')
+                and _whitehouse_camp(mem, screen, state, frame)):
+            state['boss_move'], state['goal'] = True, chart.boss_castle(mem.get('chapter') or 0)
     if stage == 'menu' and state.get('relay') and not is_camp_menu(screen):
         # The whole-island picker closes one or more frames after the B that
         # #4534 sends when it re-aims a camp at the relay; the picker screen
@@ -1688,7 +1775,12 @@ def _boss_move_dest_step(screen, mem, frame, state, marker):
         return _abort_boss_redirect(mem, state, 'boss_position_lost',
                                     'ボスの位置を確認できないため再移動を取り消す')
     pseudo = {'step': 'RECALL', 'target': goal, 'source': None}
-    if _map._target_roof_under_marker(screen, mem, frame, pseudo):
+    # #4922: chapter 10's White House requires a Y-jump receipt so _y_jump_step
+    # measures the camp's actual position on the ring and picks the walkable leg;
+    # never short-circuit confirm near the wall without jumping first.
+    ch10_need_jump = ((mem.get('chapter') or 0) == 10
+                      and (mem.get('y_jumped') or {}).get('RECALL') != goal)
+    if not ch10_need_jump and _map._target_roof_under_marker(screen, mem, frame, pseudo):
         _reset_boss_jump(mem)
         return _request_recall(mem, state, goal, [pad('a')], target_cell=list(marker), boss=True)
     if (mem.get('y_jumps') or {}).get('RECALL:target', 0) < BOSS_JUMP_LIMIT:

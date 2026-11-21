@@ -157,10 +157,14 @@ def _boss_unlocked(mem):
     captured (``all_captured``); before that, a general camped near ch10's
     central boss enclosure must be recalled home instead of ordered to
     ``boss_move`` into an empty site or exempted from recall.
+    #4922: once chapter 10's White House has spawned — all castles held, or
+    its boss cell measured — a recapture does not lock it again.
     """
-    from ..strategy.orders import _all_normal_captured
+    from ..strategy.orders import _all_normal_captured, _whitehouse_open
     chapter = mem.get('chapter')
-    if chapter in (10, 11, 12):
+    if chapter == 10:
+        return _whitehouse_open(mem)
+    if chapter in (11, 12):
         return _all_normal_captured(mem)
     return True
 
