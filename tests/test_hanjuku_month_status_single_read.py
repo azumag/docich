@@ -110,10 +110,54 @@ def test_missing_page1_still_allows_the_bounded_retry():
 
 def test_cards_are_held_while_the_recruit_question_is_unresolved():
     assert not month_flow._recruit_precedes_cards({'recruit': 'deferred_roster'})
-    assert month_flow._recruit_precedes_cards({'recruit': 'deferred_egg'})
+    assert month_flow._recruit_precedes_cards({'recruit': 'deferred_egg', 'egg': 'pending'})
+    assert month_flow._recruit_precedes_cards({'recruit': 'deferred_egg', 'egg': 'check'})
+    assert month_flow._recruit_precedes_cards({'recruit': 'deferred_egg', 'egg': 'opened'})
+    assert not month_flow._recruit_precedes_cards({'recruit': 'deferred_egg', 'egg': 'done'})
+    assert not month_flow._recruit_precedes_cards({'recruit': 'deferred_egg', 'egg': 'not_needed'})
+    assert not month_flow._recruit_precedes_cards({'recruit': 'deferred_egg', 'egg': 'skipped'})
+    # 'unverified' stays preceding: the recovery payment may have been spent
+    # but its completion is unconfirmed, and the recovery-before-recruit
+    # design freezes sub-screen opening until that question resolves.
+    assert month_flow._recruit_precedes_cards({'recruit': 'deferred_egg', 'egg': 'unverified'})
+    assert not month_flow._recruit_precedes_cards({'recruit': 'deferred_egg'})
     assert month_flow._recruit_precedes_cards({'recruit': 'pending'})
     assert not month_flow._recruit_precedes_cards({'recruit': 'not_needed'})
     assert not month_flow._recruit_precedes_cards({'recruit': 'done'})
+
+
+def test_settled_egg_deferral_releases_the_held_castle():
+    """docich#4980: an abandoned recovery makes deferred_egg final; the held
+    cards/castle must be released so 築城 can still run that month."""
+    from test_hanjuku_chart_bot import _short_recruit_memory
+    mem = _short_recruit_memory()
+    for key, count in (('country_general_count', 2), ('country_soldier_count', 70)):
+        mem[key] = {'scope': [1, '1-7'], 'identity': None,
+                    'tick': mem['tick'], 'count': count}
+    mem['captured'] = ['ジョンリギ']
+    mem['garrison'] = {'アルマムーン': ['どうし', 'ゼウス'], 'ジョンリギ': ['ココット']}
+    mem['shop'] = {'key': '1-7', 'items': [], 'merchant_done': True,
+                   'soldiers': 0, 'soldiers_done': True, 'gold_start': 9949,
+                   'egg': 'skipped', 'egg_before_recruit': True,
+                   'recruit': 'check', 'recruit_reserve': 0,
+                   'chikujou': 'check', 'reserve': 0, 'hero_repair_reserve': 0}
+    screen = parse(month_canvas(9949, on='ちくじょう'))
+    # The abandoned recovery cannot be confirmed: recruit defers to next
+    # month, which is final for this one - the cards/castle hold it latched
+    # must be released and the demoted 築城 tried, not left 'skipped'.
+    actions = month_flow.month_step(screen, mem)
+    shop = mem['shop']
+    assert shop['recruit'] == 'deferred_egg'
+    assert 'cards_held' not in shop
+    assert shop['chikujou'] == 'opened'
+    assert mem['month_sub']['kind'] == 'chikujou'
+    assert actions == [p.pad('a')]
+    decisions = [r.get('decision') for r in mem['_records']]
+    assert 'month_cards_held_for_recruit' in decisions
+    assert 'month_cards_released' in decisions
+    assert 'month_done' not in decisions
+    assert any(r.get('decision') == 'month_sub_open' and r.get('choice') == 'ちくじょう'
+               for r in mem['_records'])
 
 
 def test_hold_month_cards_is_once_and_keeps_the_plan_for_diagnostics():

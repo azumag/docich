@@ -538,9 +538,12 @@ def month_step(screen: Screen, mem):
         # keeps the normal purchase order (comment above), so the cards and
         # merchant must be released or the menu loops forever (g1190 40-8).
         shop.pop('cards_held')
+        if shop.pop('chikujou_held', None) and shop.get('chikujou') == 'skipped':
+            shop['chikujou'] = 'check'
         _record(mem, 'month_cards_released', month=shop.get('key'),
-                observed_metric={'recruit': shop.get('recruit')},
-                reason='将軍募集が人数未確認で当月実行不能に延期されたため、保留していた切り札・商人を解放する')
+                observed_metric={'recruit': shop.get('recruit'),
+                                 'chikujou': shop.get('chikujou')},
+                reason='将軍募集が当月実行不能に確定したため、保留していた切り札・商人・築城を解放する')
     if shop and not shop.get('merchant_done') and not shop.get('items'):
         # Nothing to buy: the merchant gate below needs shop['items'], so with an
         # empty list the merchant never runs and merchant_done never clears — the
@@ -725,6 +728,15 @@ RECRUIT_BEFORE_CARDS = frozenset({'pending', 'check', 'deferred_egg'})
 
 def _recruit_precedes_cards(shop):
     """Owner: an unresolved general recruitment outranks 商人 cards / 築城."""
+    if shop.get('recruit') == 'deferred_egg':
+        # docich#4980: deferred_egg re-pends only while this month's recovery
+        # question is still live. A settled egg (done/not_needed/skipped)
+        # or no egg question at all makes the deferral final, so the cards
+        # and castle must not stay held for it. 'unverified' stays
+        # preceding: the payment may have been spent but its completion is
+        # unconfirmed, and the recovery-before-recruit design freezes
+        # sub-screen opening until that question resolves.
+        return shop.get('egg') not in ('done', 'not_needed', 'skipped', None)
     return shop.get('recruit') in RECRUIT_BEFORE_CARDS
 
 
@@ -735,6 +747,7 @@ def _hold_month_cards(mem, shop):
     shop['cards_held'] = 'recruit_pending'
     if shop.get('chikujou') == 'check':
         shop['chikujou'] = 'skipped'
+        shop['chikujou_held'] = True
     held = [list(row) for row in (shop.get('items') or [])[:4]]
     _record(mem, 'month_cards_held_for_recruit', month=shop.get('key'),
             observed_metric={'recruit': shop.get('recruit'), 'planned': held},
