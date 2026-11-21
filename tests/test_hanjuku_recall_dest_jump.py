@@ -96,3 +96,44 @@ def test_a_missing_marker_still_cancels(monkeypatch):
     screen = Screen([], None, '', kind='map_target')
     assert recall_flow._camp_recall_step(screen, mem, None) == [pad('b')]
     assert 'recall' not in _flow(mem)
+
+
+def test_cliff_detour_does_not_fire_after_y_jump_lands_on_goal_castle(monkeypatch):
+    """#4886: Yジャンプ(RECALL)で自城へ着地済みの画面で崖離脱を発火させない。"""
+    mem = memory()
+    mem['y_jumped'] = {'RECALL': 'アルマムーン'}
+    _flow(mem)['recall']['goal'] = 'アルマムーン'
+    _flow(mem)['recall']['target'] = [136, 114]
+    monkeypatch.setattr(recall_flow, '_cliff_escape', lambda _f, _b: ('right', (160, 114)))
+    monkeypatch.setattr(recall_flow, 'castle_roofs', lambda *_a, **_k: [])
+    screen = Screen([], None, '', kind='map_target', marker=(128, 114))
+    actions = recall_flow._camp_recall_step(screen, mem, None)
+    assert actions == [pad('a')]
+    assert not any(r.get('decision') == 'camp_cliff_detour' for r in mem['_records'])
+
+
+def test_menu_idou_confirm_clears_stale_recall_y_jump_state(monkeypatch):
+    """#4890: いどう確定時に前回帰還の RECALL y_jumps/y_jumped を消去し次フレームでYジャンプする。"""
+    from docich.hanjuku_font import TextLine
+    mem = memory()
+    mem['y_jumps'] = {'RECALL:target': 2}
+    mem['y_jumped'] = {'RECALL': 'アルマムーン'}
+    mem['y_jumped_res'] = {'RECALL': [-0.5, -1.0]}
+    _flow(mem)['recall'] = {'stage': 'menu', 'steps': 0, 'target': [139, 115],
+                            'goal': 'アルマムーン', 'picker_confirmed': True}
+    line = TextLine(31, tuple((72 + i * 8, ch) for i, ch in enumerate('いどう')))
+    menu_screen = Screen([line], hand=(56, 31, 68, 43), text='いどう きかん ステータス', kind='text')
+    monkeypatch.setattr(recall_flow, 'is_camp_menu', lambda _s: True)
+    monkeypatch.setattr(recall_flow, 'menu_to', lambda _s, _label: 'here')
+    assert recall_flow._camp_recall_step(menu_screen, mem, None) == [pad('a')]
+    assert 'RECALL:target' not in mem['y_jumps']
+    assert 'RECALL' not in mem['y_jumped']
+    assert 'RECALL' not in mem['y_jumped_res']
+    assert 'picker_confirmed' not in _flow(mem)['recall']
+
+    # 次フレームで屋根が見えない map_target なら、足元確定ではなく必ず Y ジャンプを開く。
+    no_roofs(monkeypatch)
+    monkeypatch.setattr(recall_flow, '_recall_goal', lambda _m: 'アルマムーン')
+    target_screen = Screen([], None, '', kind='map_target', marker=(139, 115))
+    assert recall_flow._camp_recall_step(target_screen, mem, None) == [pad('y')]
+    assert (mem.get('y_jump') or {}).get('step') == 'RECALL'

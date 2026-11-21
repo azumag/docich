@@ -820,6 +820,10 @@ def _cliff_detour_step(screen, mem, frame, state, marker):
     """
     if state.get('gather'):
         return None
+    if (mem.get('y_jumped') or {}).get('RECALL'):
+        # #4886: Yジャンプで目的の自城へ移動済みの画面はキャンプ画面ではないため、
+        # ジャンプ前のキャンプ座標で崖スキャンして自城屋根から逸らさない。
+        return None
     camp_key = _detour_camp_key(state)
     if camp_key and _detour_count(mem, camp_key) >= CLIFF_DETOUR_MAX:
         _record(mem, 'camp_cliff_detour_done', chart_step=None,
@@ -1465,6 +1469,13 @@ def _camp_recall_step(screen: Screen, mem, frame, *, observed_camps=None):
             return [move]
         state['stage'] = 'relay' if state.get('relay') else 'dest'
         state['steps'] = 0            # each stage gets the full observation budget
+        # #4890: 新しい「いどう」ピッカーを開く瞬間に前回帰還の RECALL Yジャンプ履歴を
+        # 必ずクリアする（名前付き帰還で前の将軍の y_jumped/y_jumps が残ると、
+        # 未ジャンプのまま現在地キャンプの足元を自城と誤認して確定してしまう）。
+        (mem.get('y_jumps') or {}).pop('RECALL:target', None)
+        (mem.get('y_jumped') or {}).pop('RECALL', None)
+        (mem.get('y_jumped_res') or {}).pop('RECALL', None)
+        state.pop('picker_confirmed', None)
         return [pad('a')]
     if stage == 'relay':
         # いどう opened a field-cursor move. Steer it to the relay cell; the
@@ -1486,7 +1497,10 @@ def _camp_recall_step(screen: Screen, mem, frame, *, observed_camps=None):
                 mem['uncertain'] = True
                 _hold_after_picker(mem, state)
             return [pad('b')] if screen.kind == 'world_map' else []
-        marker = _picker_marker(screen, frame)
+        # #4885: 一度本物の行き先ピッカーを確認した後は、camp_cliff_detour 等で
+        # 赤いテント・砦・自軍城の真下へマーカーを動かしても赤い屋根を将軍旗と
+        # 誤認して帰還ピッカーを中断しない（初回フレームの偽G検出 #4468 は維持）。
+        marker = screen.marker if state.get('picker_confirmed') else _picker_marker(screen, frame)
         if screen.marker and not marker:
             # #4468: the blue G belongs to a field general, not an open picker.
             # Never send the recall A here — there is no destination to confirm
@@ -1498,6 +1512,8 @@ def _camp_recall_step(screen: Screen, mem, frame, *, observed_camps=None):
                     observed_metric={'marker': list(screen.marker), 'stage': 'dest'},
                     reason='青いGはフィールド将軍のバッジで行き先ピッカーが開いていないため、帰還Aを送らず中断する')
             return []
+        if marker:
+            state['picker_confirmed'] = True
         if state.get('boss'):
             return _boss_redirect_dest_step(screen, mem, frame, state, marker)
         if state.get('boss_move'):
