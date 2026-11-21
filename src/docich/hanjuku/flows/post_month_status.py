@@ -1465,15 +1465,18 @@ def step(screen, mem, frame):
     # charted order can start, release the field map (and never cancel the
     # sortie flow's own menus) so map_step/deploy_step drive that order.
     # docich#4888: the deferral only covered the menu-walk stages, so a month
-    # spent in the per-general task loop never yielded. 'process' with queued
-    # tasks, 'manifest' and 'locate_reset' only open the menu or pop the next
-    # task on the map -- pausing there strands nothing. Stages already inside
-    # a bounded sub-transaction (task_jump, locate_*, wait_repair,
-    # wait_recall) keep the field; deferring there would abandon a SELECT or
-    # a recall mid-flight. An empty 'process' finishes the scan instead.
-    if (state['stage'] in {'await_map', 'open_menu', 'task_menu',
-                           'manifest', 'locate_reset'}
-            or (state['stage'] == 'process' and state.get('tasks'))):
+    # spent in the per-general task loop never yielded. 'process', 'manifest'
+    # and 'locate_reset' only open the menu or pop the next task on the map --
+    # pausing there strands nothing, so they defer while the task queue still
+    # holds work. An empty queue means the stage is itself the month's last
+    # bounded action (the manifest's X-open, the scan's finish): deferring it
+    # would only stall the release, and 'manifest' must keep opening X on the
+    # field map. Stages already inside a bounded sub-transaction (task_jump,
+    # locate_*, wait_repair, wait_recall) keep the field; deferring there
+    # would abandon a SELECT or a recall mid-flight.
+    if (state['stage'] in {'await_map', 'open_menu', 'task_menu'}
+            or (state['stage'] in {'process', 'manifest', 'locate_reset'}
+                and state.get('tasks'))):
         if (screen.kind in STRAY_MENU_KINDS | {'card_select', 'sortie_confirm'}
                 and _plan_region(mem).get('active') is not None):
             return None
