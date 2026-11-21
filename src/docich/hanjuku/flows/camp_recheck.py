@@ -1038,9 +1038,9 @@ def _step_flow(screen, mem, frame, existing):
         return [pad('b')] if is_camp_menu(screen) or screen.kind in ('world_map', 'map_target') else []
     if screen.kind == 'unknown' and state['stage'] != 'await_dispatch':
         return _wait(mem, state, '未知前景では帰還menuを選択しない')
-    if state['stage'] == 'dest' and screen.kind == 'map_target' and not state.get('gather'):
-        _defer(mem, state, '名前付き帰還先を実R pickerで確認できないため確定しない')
-        return [pad('b')]
+    # #4881: 帰還は「きかん」(Rピッカー)ではなく「いどう」→ map_target →
+    # 自軍城屋根またはYジャンプ(RECALL)で確定するため、dest の map_target を
+    # ここで無条件キャンセルせず recall.py の dest 処理へ委ねる。
     skip_before = _flow(mem).get('recall_skip')
     actions = (world_map_step(screen, mem, frame) if screen.kind == 'world_map'
                else existing(screen, mem, frame))

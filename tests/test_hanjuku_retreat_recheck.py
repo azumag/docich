@@ -1063,3 +1063,22 @@ def test_a_gather_goal_may_confirm_the_local_picker(monkeypatch):
     actions = p.camp_recall_step(Screen([], None, '', kind='map_target', marker=(26, 66)), mem, FRAME)
     assert actions != [p.pad('b')]
     assert _flow(mem)['recall'].get('stage') in ('dest', 'await_dispatch')
+
+
+def test_named_idou_dest_confirms_own_roof_and_starts_y_jump_when_offscreen(monkeypatch):
+    """#4881: 名前付きキャンプ帰還のいどうdest(map_target)を旧RピッカーガードでBキャンセルしない。"""
+    mem = memory()
+    named_menu(mem)
+    monkeypatch.setattr(p, 'castle_roofs', lambda _frame: [{'kind': 'own', 'target': (26, 66), 'clipped': False}])
+    actions = p.camp_recall_step(Screen([], None, '', kind='map_target', marker=(26, 66)), mem, FRAME)
+    assert actions == [p.pad('a')]
+    assert not any(r.get('decision') == 'retreat_recheck_unconfirmed' for r in mem['_records'])
+
+    # 自軍城の屋根が画面外なら Y ジャンプ(RECALL) を開いて自城へ帰還する。
+    mem2 = memory()
+    named_menu(mem2)
+    monkeypatch.setattr(p, 'castle_roofs', lambda _frame: [])
+    actions2 = p.camp_recall_step(Screen([], None, '', kind='map_target', marker=(90, 80)), mem2, FRAME)
+    assert actions2 == [p.pad('y')]
+    assert (mem2.get('y_jump') or {}).get('step') == 'RECALL'
+    assert not any(r.get('decision') == 'retreat_recheck_unconfirmed' for r in mem2['_records'])
