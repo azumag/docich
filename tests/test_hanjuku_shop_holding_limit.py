@@ -129,18 +129,16 @@ def test_retry_never_exceeds_the_room_the_floor_leaves(ready):
     assert ready['shop']['items'] == [['ノリウツール', 49]]    # weak floor: halved, still <= room
 
 
-def test_tight_floor_retries_the_full_room_in_one_refusal(ready):
-    """One refusal is enough when the learned floor is the binding estimate."""
+def test_tight_floor_retry_bisects_the_refused_ask(ready):
+    """The retry bisects the refused ask instead of betting on a tight floor."""
     ready['card_stock'] = {'ノリウツール': 60}
     _refused_after(ready, 'ノリウツール', 39, stock=60, since=0)
-    # 39 on top of >=61 broke 99; the floor (61) exceeds the panel stock (60),
-    # so hold_room() is 99 - 61 = 38 and the retry is that whole room.
+    # 39 on top of >=61 broke 99; the refusal only proves held >= 61, so the
+    # retry halves the refused ask (39 // 2 = 19) rather than assuming held is
+    # exactly 61 and asking the whole room (38) in one more dialog.
     assert ready['card_held_floor'] == {'ノリウツール': 61}
     assert b.held_estimate(ready, 'ノリウツール') == 61
-    assert ready['shop']['items'] == [['ノリウツール', 38]]
-    # If the true holding equals the proven floor, the single retry is exactly
-    # the largest quantity the merchant can still sell (no halving needed).
-    assert ready['card_held_floor']['ノリウツール'] + ready['shop']['items'][0][1] == b.HOLD_CAP
+    assert ready['shop']['items'] == [['ノリウツール', 19]]
 
 
 def _refusal_sequence(ready, name, held, first, stock=0):
@@ -188,18 +186,17 @@ def test_full_hand_refusals_stay_bounded_and_terminate(ready):
     assert ready['card_held_floor']['ノリウツール'] == 99
 
 
-def test_strong_floor_from_a_stale_estimate_can_add_one_refusal(ready):
-    """H=80, q=39, stock=0: the learned floor is >=50 but still below truth.
+def test_strong_floor_from_a_stale_estimate_bisects(ready):
+    """H=80, q=39, stock=0: bisection reaches a sellable ask in one retry.
 
-    The first room-only retry is refused, then the geometric guard takes over;
-    this is the one-refusal cost of using the room when the floor is strong but
-    the starting estimate was stale. The old halving accepted on its first
-    retry here, so the regression is bounded at one extra refusal.
+    The old room-first retry asked 38, was refused (80 + 38 > 99), and only
+    then halved to 19 - one wasted dialog. Halving immediately asks 19, which
+    the merchant accepts on the first retry.
     """
     refusals, terminal = _refusal_sequence(ready, 'ノリウツール', 80, 39, stock=0)
-    assert refusals == 2                    # 39 (refused) -> 38 (refused) -> 19 (accepted)
+    assert refusals == 1                    # 39 (refused) -> 19 (accepted)
     assert terminal == 19
-    assert ready['card_held_floor']['ノリウツール'] == 62
+    assert ready['card_held_floor']['ノリウツール'] == 61
 
 
 def test_full_kind_drops_only_that_card(ready):
