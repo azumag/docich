@@ -467,6 +467,77 @@ def test_camp_repeat_is_cooled_down(runtime_dir):
     assert len(audit.load_incidents(runtime_dir)) == 2
 
 
+def _sortie_record(decision, *, reason=None, deviation=None, metric=None,
+                   general=None, step='A:1:1', variant=None, event=None):
+    return {'decision': decision, 'reason': reason, 'deviation_reason': deviation,
+            'observed_metric': metric or {}, 'general': general,
+            'chart_step': step, 'strategy_variant': variant,
+            'resulting_event': event, 'screen_kind': 'map', 'at': 1000.0}
+
+
+def test_sortie_terminal_decisions_are_classified():
+    failed = audit._sortie_event(_sortie_record(
+        'sortie_launch_failed', reason='出撃確定後に部隊が現れない',
+        metric={'misses': 6}, general='キャンディー'))
+    assert failed['kind'] == 'sortie_failed'
+    assert failed['reason_code'] == 'sortie_launch_not_observed'
+    assert failed['general'] == 'キャンディー'
+    order = audit._sortie_event(_sortie_record(
+        'order_failed', deviation='出撃元で決定しても城メニューが3回開かない'))
+    assert order['kind'] == 'sortie_failed'
+    assert order['reason_code'] == 'sortie_source_menu'
+    cancelled = audit._sortie_event(_sortie_record('sortie_cancelled_observed'))
+    assert cancelled['kind'] == 'sortie_cancelled'
+    assert cancelled['reason_code'] == 'sortie_unit_stayed'
+    retry = audit._sortie_event(_sortie_record(
+        'situation_held', variant='attack_retry_exhausted'))
+    assert retry['kind'] == 'sortie_failed'
+    assert retry['reason_code'] == 'sortie_retry_exhausted'
+    assert audit._sortie_event(_sortie_record('sortie_launch_unverified')) is None
+    assert audit._sortie_event(_sortie_record('order_retry')) is None
+    assert audit._sortie_event(_sortie_record('situation_held')) is None
+
+
+def test_sortie_failure_is_recorded_and_titled(runtime_dir):
+    value = state(9, '1-1', 0)
+    seen = []
+    audit.observe(runtime_dir, audit.capture(value), value,
+                  [_sortie_record('sortie_launch_failed',
+                                  reason='出撃確定後に部隊が現れない',
+                                  metric={'misses': 6}, general='キャンディー')],
+                  now=1000, on_sealed=seen.append)
+    records = audit.load_incidents(runtime_dir)
+    assert len(records) == 1
+    record = records[0]
+    assert record['kind'] == 'sortie_failed'
+    assert record['auto_file'] is True
+    assert record['sortie_event']['general'] == 'キャンディー'
+    assert '出撃失敗' in audit._issue_title(record)
+    assert '### 出撃失敗 / キャンセル' in audit.render(record)
+    assert len(seen) == 1
+
+
+def test_sortie_cancel_is_recorded(runtime_dir):
+    value = state(9, '1-1', 0)
+    audit.observe(runtime_dir, audit.capture(value), value,
+                  [_sortie_record('sortie_cancelled_observed', general='カシス')],
+                  now=1000)
+    record = audit.load_incidents(runtime_dir)[0]
+    assert record['kind'] == 'sortie_cancelled'
+    assert '出撃キャンセル' in audit._issue_title(record)
+
+
+def test_sortie_repeat_is_cooled_down(runtime_dir):
+    value = state(9, '1-1', 0)
+    record = _sortie_record('order_failed', deviation='城メニューが開かない')
+    for now in (1000, 1100):
+        audit.observe(runtime_dir, audit.capture(value), value, [record], now=now)
+    assert len(audit.load_incidents(runtime_dir)) == 1
+    audit.observe(runtime_dir, audit.capture(value), value, [record],
+                  now=1000 + audit.SORTIE_ISSUE_COOLDOWN_SECONDS + 1)
+    assert len(audit.load_incidents(runtime_dir)) == 2
+
+
 def test_capture_reads_unmigrated_world_fields():
     state_value = state(1, '1-1', 10)
     state_value['policy']['world']['gold'] = None

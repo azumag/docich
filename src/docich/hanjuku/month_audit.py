@@ -50,6 +50,7 @@ TITLE_PREFIX = '[半熟英雄] 月内出撃ゼロ'
 AFTER_WINDOW_SECONDS = 300
 BOSS_NO_BATTLE_SECONDS = 600
 CAMP_ISSUE_COOLDOWN_SECONDS = 900
+SORTIE_ISSUE_COOLDOWN_SECONDS = 900
 MIN_MONTH_SECONDS = 120
 MAX_GAP_SECONDS = 60
 MIN_OBSERVATIONS = 20
@@ -102,6 +103,20 @@ SIGNAL_LABELS = {
     'camp_arrival_unconfirmed': '帰還到着を確認できない',
     'camp_battle_interrupt': '戦闘で帰還が中断',
     'camp_in_flight': '帰還操作が残っている',
+    'sortie_failed': '出撃失敗',
+    'sortie_cancelled': '出撃キャンセル',
+    'sortie_launch_not_observed': '出撃後に部隊が現れない',
+    'sortie_source_menu': '出撃元の城メニューが開かない',
+    'sortie_no_source': '出撃元の将軍がいない',
+    'sortie_general_missing': '出撃一覧に将軍がいない',
+    'sortie_card_menu': '切り札一覧から抜けられない',
+    'sortie_card_unread': '携行札を読めない',
+    'sortie_no_spare': '移動元に残す将軍がいない',
+    'sortie_status_screen': '城ステータスが開き続ける',
+    'sortie_hero_egg': '主人公の卵破損で出撃できない',
+    'sortie_retry_exhausted': '出撃再試行の上限',
+    'sortie_unit_stayed': '将軍が在城のまま',
+    'sortie_order_failed': '指示が失敗',
     'unknown': '原因未分類',
 }
 SIGNAL_ORDER = tuple(SIGNAL_LABELS)
@@ -133,9 +148,25 @@ PRIMARY_LABELS = {
     'camp_arrival_unconfirmed': '帰還到着を確認できない',
     'camp_battle_interrupt': '戦闘で帰還が中断',
     'camp_in_flight': '帰還操作が残っている',
+    'sortie_failed': '出撃失敗',
+    'sortie_cancelled': '出撃キャンセル',
+    'sortie_launch_not_observed': '出撃後に部隊が現れない',
+    'sortie_source_menu': '出撃元の城メニューが開かない',
+    'sortie_no_source': '出撃元の将軍がいない',
+    'sortie_general_missing': '出撃一覧に将軍がいない',
+    'sortie_card_menu': '切り札一覧から抜けられない',
+    'sortie_card_unread': '携行札を読めない',
+    'sortie_no_spare': '移動元に残す将軍がいない',
+    'sortie_status_screen': '城ステータスが開き続ける',
+    'sortie_hero_egg': '主人公の卵破損で出撃できない',
+    'sortie_retry_exhausted': '出撃再試行の上限',
+    'sortie_unit_stayed': '将軍が在城のまま',
+    'sortie_order_failed': '指示が失敗',
     'unknown': '原因未分類',
 }
 PRIMARY_SIGNALS = (
+    ('sortie_failed', ('sortie_failed',)),
+    ('sortie_cancelled', ('sortie_cancelled',)),
     ('camp_recall_failed', ('camp_recall_failed',)),
     ('camp_recall_cancelled', ('camp_recall_cancelled',)),
     ('camp_recall_unconfirmed', ('camp_recall_unconfirmed',)),
@@ -754,6 +785,192 @@ def _build_camp_incident(runtime, state, after, event, now):
     record['fingerprint'] = _fingerprint(mem.get('chapter'), event['kind'], [event['kind']])
     record['auto_file'] = True
     return _shrink(record)
+
+
+
+SORTIE_TERMINAL = {
+    'sortie_launch_failed': ('sortie_failed', 'failed'),
+    'order_failed': ('sortie_failed', 'failed'),
+    'sortie_cancelled_observed': ('sortie_cancelled', 'cancelled'),
+}
+
+
+def _sortie_reason_code(decision, record):
+    text = ' '.join(str(record.get(key) or '') for key in
+                    ('deviation_reason', 'reason', 'resulting_event'))
+    if decision == 'sortie_launch_failed':
+        return 'sortie_launch_not_observed'
+    if decision == 'sortie_cancelled_observed':
+        return 'sortie_unit_stayed'
+    if decision == 'situation_held':
+        return 'sortie_retry_exhausted'
+    if '城メニュー' in text or '開かず' in text:
+        return 'sortie_source_menu'
+    if '本城も出せない' in text:
+        return 'sortie_no_source'
+    if '出撃一覧に見えない' in text:
+        return 'sortie_general_missing'
+    if '切り札一覧' in text:
+        return 'sortie_card_menu'
+    if '携行札を読めない' in text:
+        return 'sortie_card_unread'
+    if '移動元に残す将軍がいない' in text:
+        return 'sortie_no_spare'
+    if 'ステータス表示が開き続けた' in text:
+        return 'sortie_status_screen'
+    if '卵破損' in text:
+        return 'sortie_hero_egg'
+    return 'sortie_order_failed'
+
+
+def _sortie_event(record):
+    """One terminal sortie failure/cancel decision, or None."""
+    if not isinstance(record, dict):
+        return None
+    decision = record.get('decision')
+    variant = record.get('strategy_variant')
+    if decision == 'situation_held':
+        if variant not in ('attack_retry_exhausted', 'boss_retry_exhausted'):
+            return None
+        kind, outcome = 'sortie_failed', 'failed'
+    elif decision in SORTIE_TERMINAL:
+        kind, outcome = SORTIE_TERMINAL[decision]
+    else:
+        return None
+    metric = record.get('observed_metric')
+    metric = metric if isinstance(metric, dict) else {}
+    step = _bounded_text(record.get('chart_step') or metric.get('step'), 64)
+    general = _bounded_text(record.get('general') or metric.get('general'), 48)
+    source = _bounded_text(record.get('source') or metric.get('source'), 48)
+    target = _bounded_text(record.get('target') or metric.get('target'), 48)
+    purpose = _bounded_text(record.get('purpose') or metric.get('purpose'), 32)
+    reason = record.get('deviation_reason') or record.get('reason')
+    return {
+        'kind': kind,
+        'outcome': outcome,
+        'decision': decision,
+        'reason_code': _sortie_reason_code(decision, record),
+        'reason': _bounded_text(reason, 200),
+        'step': step,
+        'step_local': step.rsplit(':', 1)[-1] if step else None,
+        'general': general,
+        'source': source,
+        'target': target,
+        'purpose': purpose,
+        'misses': _bounded_int(metric.get('misses'), 0, 10 ** 6),
+        'strategy_variant': _bounded_text(variant, 40),
+        'at': record.get('at') if type(record.get('at')) in (int, float) else None,
+        'screen': _bounded_text(record.get('screen_kind'), 32),
+    }
+
+
+def _build_sortie_incident(runtime, state, after, event, now):
+    mem = after.get('policy') or {}
+    context = _context(after)
+    rows = _read_decisions(runtime, max(0.0, float(now) - 120), now,
+                           state.get('identity'))
+    counts = _decision_counts(rows)
+    departures, launch_events = _departures(rows)
+    month_sorties = (context or {}).get('month_sorties') or {}
+    confirmed = month_sorties.get('launches') if isinstance(month_sorties, dict) else None
+    battle_count = sum(counts.get(name, 0) for name in counts
+                       if name.startswith('battle_') or name == 'monster_menu_choice')
+    signals = [event['kind']]
+    if event.get('reason_code'):
+        signals.append(event['reason_code'])
+    for name in _signals(context, counts, confirmed, departures, battle_count):
+        if name not in signals:
+            signals.append(name)
+    signals = signals[:8]
+    observed = state.get('observed') if isinstance(state.get('observed'), dict) else None
+    if observed is not None:
+        month = _month_summary(observed, now)
+    else:
+        month = {'chapter': mem.get('chapter'), 'month': mem.get('month'),
+                 'first_at': now, 'last_at': now, 'closed_at': now,
+                 'duration_s': 0.0, 'first_tick': mem.get('tick'),
+                 'last_tick': mem.get('tick'), 'duration_ticks': None,
+                 'observations': 0, 'max_gap_s': 0.0, 'started_clean': True}
+    identity = state.get('identity') or {}
+    record = {
+        'schema': SCHEMA,
+        'event': event['kind'],
+        'kind': event['kind'],
+        'confidence': 'high',
+        'confidence_reasons': [],
+        'chapter': mem.get('chapter'),
+        'month': mem.get('month'),
+        'month_summary': month,
+        'sortie_event': dict(event),
+        'sorties': {
+            'confirmed': confirmed,
+            'departures': departures,
+            'launch_events': launch_events,
+            'order_start': counts.get('order_start', 0),
+            'order_launched': counts.get('order_launched', 0),
+            'sortie_launch_failed': counts.get('sortie_launch_failed', 0),
+            'sortie_cancelled_observed': counts.get('sortie_cancelled_observed', 0),
+            'sortie_launch_unverified': counts.get('sortie_launch_unverified', 0),
+        },
+        'plan': copy.deepcopy((context or {}).get('plan') or {}),
+        'world': copy.deepcopy((context or {}).get('world') or {}),
+        'flow': copy.deepcopy((context or {}).get('flow') or {}),
+        'stats': copy.deepcopy((context or {}).get('stats') or {}),
+        'battles': {'decisions': battle_count},
+        'signals': signals,
+        'decisions': {
+            'total': len(rows),
+            'counts': counts,
+            'coverage': None,
+            'before': _decision_rows(rows, 30),
+            'after': None,
+        },
+        'evidence': {
+            'runtime_dir': str(Path(runtime).name),
+            'decisions': 'hanjuku_decisions.jsonl',
+            'events': 'hanjuku_events.jsonl',
+            'frames': 'hanjuku_frames/',
+            'bot_version': after.get('bot_version'),
+            'identity': identity,
+        },
+        'context_missing': context is None,
+        'created_at': float(now),
+    }
+    raw = (f"{identity.get('runtime_id')}|{identity.get('generation')}|"
+           f"{event['kind']}|{event['reason_code']}|{event.get('step_local')}|"
+           f"{event.get('general')}|{event.get('target')}|{int(float(now))}")
+    record['incident_id'] = hashlib.sha256(raw.encode('utf-8')).hexdigest()[:20]
+    record['signature'] = event['kind']
+    record['fingerprint'] = _fingerprint(mem.get('chapter'), event['kind'], [event['kind']])
+    record['auto_file'] = True
+    return _shrink(record)
+
+
+def _track_sortie(runtime, state, after, records, now, on_sealed=None):
+    events = [event for event in (_sortie_event(record) for record in records or ()) if event]
+    if not events:
+        return
+    events.sort(key=lambda event: 0 if event['outcome'] == 'failed' else 1)
+    event = events[0]
+    chapter = (after.get('policy') or {}).get('chapter')
+    key = '|'.join(str(part or '') for part in (
+        chapter, event['kind'], event['reason_code'], event.get('step_local'),
+        event.get('general'), event.get('target')))
+    table = state.setdefault('sortie_events', {})
+    if not isinstance(table, dict):
+        table = state['sortie_events'] = {}
+    last = table.get(key)
+    if isinstance(last, dict) and float(now) - float(last.get('at') or 0) < SORTIE_ISSUE_COOLDOWN_SECONDS:
+        last['count'] = int(last.get('count') or 1) + 1
+        last['last_at'] = float(now)
+        return
+    incident = _build_sortie_incident(runtime, state, after, event, now)
+    _append_incident(runtime, incident, on_sealed)
+    table[key] = {'at': float(now), 'kind': event['kind'],
+                  'reason': event['reason_code'], 'count': 1}
+    if len(table) > 30:
+        for stale in sorted(table, key=lambda name: table[name].get('at') or 0)[:-30]:
+            table.pop(stale, None)
 
 
 def _track_camp(runtime, state, after, records, now, on_sealed=None):
@@ -1534,6 +1751,7 @@ def observe(runtime, before, after, records=None, *, now=None, on_sealed=None):
         _touch_month(observed, after, now)
     _track_boss(runtime, state, after, records, now, on_sealed)
     _track_camp(runtime, state, after, records, now, on_sealed)
+    _track_sortie(runtime, state, after, records, now, on_sealed)
     state['write_tick'] = int(state.get('write_tick') or 0) + 1
     # The open-month counters only advance if every observation persists them:
     # a write every tenth observation restarted from the last file and could
@@ -1605,6 +1823,7 @@ def render(record):
     kind = record.get('kind')
     confidence = record.get('confidence')
     camp = record.get('camp_event') or {}
+    sortie = record.get('sortie_event') or {}
     boss = record.get('boss_phase') or {}
     body = [
         f"<!-- hanjuku-month-audit fingerprint={record.get('fingerprint')} -->",
@@ -1620,6 +1839,18 @@ def render(record):
     if not camp:
         body.append(f"- 出撃: 確定 {sorties.get('confirmed')} / 発射 {sorties.get('departures')} / order_start {sorties.get('order_start')} / order_launched {sorties.get('order_launched')}")
     body.append('')
+    if sortie:
+        body += [
+            '### 出撃失敗 / キャンセル',
+            '',
+            f"- 結果: {sortie.get('outcome')} / 決定: {BT}{sortie.get('decision')}{BT}",
+            f"- step: {sortie.get('step') or '不明'}",
+            f"- 将軍: {sortie.get('general') or '不明'} / 出撃元: {sortie.get('source') or '不明'}"
+            f" / 対象: {sortie.get('target') or '不明'} / 目的: {sortie.get('purpose') or '不明'}",
+            f"- 理由: {sortie.get('reason') or '不明'} ({sortie.get('reason_code')})"
+            f" / misses: {sortie.get('misses')}",
+            '',
+        ]
     if camp:
         body += [
             '### キャンプ帰還',
@@ -1643,7 +1874,7 @@ def render(record):
             f" / 残りボス城: {', '.join(boss.get('bosses') or [])}",
             '',
         ]
-    body.append('### 直前の決定' if camp else
+    body.append('### 直前の決定' if (camp or sortie) else
                 ('### フェーズ中の決定' if kind == 'boss_phase_no_battle' else '### 月内の決定'))
     body.append('')
     rows, filtered = _timeline(record)
@@ -1656,7 +1887,7 @@ def render(record):
     ]
     for row in rows:
         body.append(f"| {_clock(row.get('at'))} | {_cell(row.get('decision'))} | {_cell(row.get('chart_step'))} | {_md(row.get('general'))} | {_md(row.get('target'))} | {_md(row.get('reason'))} |")
-    body += ['', '### 現在の計画' if (camp or kind == 'boss_phase_no_battle') else '### 前月の計画', '',
+    body += ['', '### 現在の計画' if (camp or sortie or kind == 'boss_phase_no_battle') else '### 前月の計画', '',
              '| step | 状態 | 目的 | 出撃元 | 対象 | 将軍 |',
              '| --- | --- | --- | --- | --- | --- |']
     plan = record.get('plan') or {}
@@ -1719,8 +1950,12 @@ def render_comment(record):
         f"- incident_id: {BT}{record.get('incident_id')}{BT}",
     ]
     camp = record.get('camp_event') or {}
-    if record.get('kind') in ('camp_recall_failed', 'camp_recall_cancelled',
-                              'camp_recall_unconfirmed'):
+    sortie = record.get('sortie_event') or {}
+    if record.get('kind') in ('sortie_failed', 'sortie_cancelled'):
+        lines.insert(5, f"- 出撃: {sortie.get('outcome')} / {sortie.get('reason_code')}"
+                        f" / {sortie.get('general') or sortie.get('step_local') or '不明'}")
+    elif record.get('kind') in ('camp_recall_failed', 'camp_recall_cancelled',
+                                'camp_recall_unconfirmed'):
         lines.insert(5, f"- キャンプ: {camp.get('outcome')} / {camp.get('reason_code')}"
                         f" / 将軍 {camp.get('general') or '不明'}")
     elif record.get('kind') == 'boss_phase_no_battle':
@@ -1734,6 +1969,11 @@ def render_comment(record):
 
 def _issue_title(record):
     kind = record.get('kind')
+    if kind in ('sortie_failed', 'sortie_cancelled'):
+        sortie = record.get('sortie_event') or {}
+        label = '出撃失敗' if kind == 'sortie_failed' else '出撃キャンセル'
+        who = sortie.get('general') or sortie.get('step_local') or '不明'
+        return f"[半熟英雄] {label}: ch{record.get('chapter')} {who}"[:100]
     if kind in ('camp_recall_failed', 'camp_recall_cancelled', 'camp_recall_unconfirmed'):
         camp = record.get('camp_event') or {}
         label = {'camp_recall_failed': 'キャンプ帰還失敗',
