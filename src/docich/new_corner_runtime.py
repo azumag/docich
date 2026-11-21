@@ -437,6 +437,59 @@ MERIKEN_BUSINESS_SPEC = CornerRuntimeSpec(
 )
 
 
+PHYSICS_SPEC = CornerRuntimeSpec(
+    corner_id="physics",
+    fixture_parts=(
+        "tests",
+        "fixtures",
+        "physics_corner",
+        "fixed_physics_example.json",
+    ),
+    container="topic",
+    title_key="title",
+    question_key="todaysQuestion",
+    summary_key="thirtySecondSummary",
+    sections=(
+        Section("todaysQuestion", "fact", "今日の問い"),
+        Section("intuitivePrediction", "fact", "直感の予想"),
+        Section("observedPhenomenon", "fact", "実際に観測される現象"),
+        Section("physicalLaw", "fact", "物理法則"),
+        Section("formulaAndModel", "analysis", "最も単純な式・モデル"),
+        Section("experimentAndTechnologyApplication", "analysis", "実験と技術応用"),
+        Section("intuitionFailurePoint", "analysis", "直感が外れる点"),
+    ),
+    required_fields=(
+        "title",
+        "topicId",
+        "physicsField",
+        "todaysQuestion",
+        "intuitivePrediction",
+        "observedPhenomenon",
+        "physicalLaw",
+        "formulaAndModel",
+        "experimentAndTechnologyApplication",
+        "intuitionFailurePoint",
+        "thirtySecondSummary",
+        "oneLineSummary",
+        "requirementsAndConstraints",
+        "figureAndFormulaHandling",
+        "formulaEntries",
+        "limitations",
+        "uncertainty",
+        "figureOrDiagram",
+        "youtubeIndependentDraft",
+        "primarySources",
+        "sourcePriority",
+        "citationKeepUrl",
+        "url",
+        "materialContract",
+        "sourceAccessNote",
+    ),
+    caveat_keys=("limitations", "uncertainty"),
+    labels=("fact", "analysis", "forecast"),
+)
+
+
 CORNER_SPECS = {
     WORLD_HISTORY_SPEC.corner_id: WORLD_HISTORY_SPEC,
     RESEARCH_PAPER_SPEC.corner_id: RESEARCH_PAPER_SPEC,
@@ -446,6 +499,7 @@ CORNER_SPECS = {
     ARCHITECTURE_SPEC.corner_id: ARCHITECTURE_SPEC,
     MERIKEN_ECONOMICS_SPEC.corner_id: MERIKEN_ECONOMICS_SPEC,
     MERIKEN_BUSINESS_SPEC.corner_id: MERIKEN_BUSINESS_SPEC,
+    PHYSICS_SPEC.corner_id: PHYSICS_SPEC,
 }
 
 
