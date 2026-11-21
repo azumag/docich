@@ -49,6 +49,7 @@ LOG_NAME = 'hanjuku_month_audit'
 TITLE_PREFIX = '[半熟英雄] 月内出撃ゼロ'
 AFTER_WINDOW_SECONDS = 300
 BOSS_NO_BATTLE_SECONDS = 600
+CAMP_ISSUE_COOLDOWN_SECONDS = 900
 MIN_MONTH_SECONDS = 120
 MAX_GAP_SECONDS = 60
 MIN_OBSERVATIONS = 20
@@ -89,6 +90,18 @@ SIGNAL_LABELS = {
     'boss_cell_missing': 'ボス位置が未測定',
     'boss_hp_missing': 'ボスHPが未観測',
     'boss_pursuit_idle': 'ボス追跡が動いていない',
+    'camp_recall_failed': 'キャンプ帰還失敗',
+    'camp_recall_cancelled': 'キャンプ帰還キャンセル',
+    'camp_recall_unconfirmed': 'キャンプ帰還未確認',
+    'camp_no_roof': '帰還先の城が見えない',
+    'camp_menu_unread': '野営メニューを読めない',
+    'camp_cursor_unread': '野営メニューのカーソルを読めない',
+    'camp_recall_limit': '帰還操作が上限に達する',
+    'camp_boss_redirect': 'ボス再出撃の帰還が失敗',
+    'camp_unclassified_screen': '未分類画面で帰還を取り消す',
+    'camp_arrival_unconfirmed': '帰還到着を確認できない',
+    'camp_battle_interrupt': '戦闘で帰還が中断',
+    'camp_in_flight': '帰還操作が残っている',
     'unknown': '原因未分類',
 }
 SIGNAL_ORDER = tuple(SIGNAL_LABELS)
@@ -108,9 +121,24 @@ PRIMARY_LABELS = {
     'boss_cell_missing': 'ボス位置が未測定',
     'boss_hp_missing': 'ボスHPが未観測',
     'boss_pursuit_idle': 'ボス追跡が動いていない',
+    'camp_recall_failed': 'キャンプ帰還失敗',
+    'camp_recall_cancelled': 'キャンプ帰還キャンセル',
+    'camp_recall_unconfirmed': 'キャンプ帰還未確認',
+    'camp_no_roof': '帰還先の城が見えない',
+    'camp_menu_unread': '野営メニューを読めない',
+    'camp_cursor_unread': '野営メニューのカーソルを読めない',
+    'camp_recall_limit': '帰還操作が上限に達する',
+    'camp_boss_redirect': 'ボス再出撃の帰還が失敗',
+    'camp_unclassified_screen': '未分類画面で帰還を取り消す',
+    'camp_arrival_unconfirmed': '帰還到着を確認できない',
+    'camp_battle_interrupt': '戦闘で帰還が中断',
+    'camp_in_flight': '帰還操作が残っている',
     'unknown': '原因未分類',
 }
 PRIMARY_SIGNALS = (
+    ('camp_recall_failed', ('camp_recall_failed',)),
+    ('camp_recall_cancelled', ('camp_recall_cancelled',)),
+    ('camp_recall_unconfirmed', ('camp_recall_unconfirmed',)),
     ('boss_no_battle', ('boss_no_battle',)),
     ('plan_starved', ('plan_all_settled', 'no_orders')),
     ('departure_failure', ('order_start_without_launch', 'launch_confirmation_missing',
@@ -572,6 +600,187 @@ def _build_boss_incident(runtime, state, after, records, now, current, rows=None
                                           ['boss_no_battle'])
     record['auto_file'] = confidence == 'high'
     return _shrink(record)
+
+
+
+CAMP_TERMINAL = {
+    'camp_recall_aborted': ('camp_recall_failed', 'failed'),
+    'camp_boss_redirect_aborted': ('camp_recall_failed', 'failed'),
+    'camp_recall_skipped': ('camp_recall_cancelled', 'cancelled'),
+    'camp_recall_unconfirmed': ('camp_recall_unconfirmed', 'unconfirmed'),
+}
+CAMP_OUTCOME_RANK = {'failed': 0, 'cancelled': 1, 'unconfirmed': 2}
+
+
+def _camp_reason_code(decision, event, reason):
+    text = f"{event or ''} {reason or ''}"
+    if 'camp_menu_not_opened' in text or 'メニューが開かない' in text:
+        return 'camp_menu_unread'
+    if 'cursor_unconfirmed' in text or 'カーソル' in text:
+        return 'camp_cursor_unread'
+    if '上限' in text:
+        return 'camp_recall_limit'
+    if '屋根' in text or 'no_roof' in text:
+        return 'camp_no_roof'
+    if 'unclassified_screen' in text or '未分類' in text:
+        return 'camp_unclassified_screen'
+    if 'arrival_unconfirmed' in text or '到着' in text:
+        return 'camp_arrival_unconfirmed'
+    if decision == 'camp_boss_redirect_aborted':
+        return 'camp_boss_redirect'
+    return 'other'
+
+
+def _camp_event(record):
+    """One terminal camp-recall failure/cancel/unconfirmed decision, or None."""
+    if not isinstance(record, dict):
+        return None
+    decision = record.get('decision')
+    if decision not in CAMP_TERMINAL and decision != 'camp_group_screen':
+        return None
+    event = record.get('resulting_event') if isinstance(record.get('resulting_event'), str) else None
+    if decision == 'camp_group_screen' and event != 'unclassified_screen_closed':
+        return None
+    metric = record.get('observed_metric')
+    metric = metric if isinstance(metric, dict) else {}
+    if decision in CAMP_TERMINAL:
+        kind, outcome = CAMP_TERMINAL[decision]
+    else:
+        kind, outcome = 'camp_recall_cancelled', 'cancelled'
+    reason = record.get('reason') if isinstance(record.get('reason'), str) else None
+    camp = metric.get('camp')
+    camp = list(camp) if (isinstance(camp, list) and len(camp) == 2
+                          and all(type(value) is int for value in camp)) else None
+    castle = _bounded_text(metric.get('castle'), 48)
+    general = _bounded_text(record.get('general') or metric.get('general'), 48)
+    return {
+        'kind': kind,
+        'outcome': outcome,
+        'decision': decision,
+        'reason_code': _camp_reason_code(decision, event, reason),
+        'reason': _bounded_text(reason, 200),
+        'resulting_event': _bounded_text(event, 64),
+        'general': general,
+        'camp': camp,
+        'castle': castle,
+        'stage': _bounded_text(metric.get('stage'), 32),
+        'steps': _bounded_int(metric.get('steps'), 0, 10 ** 6),
+        'input_sent': metric.get('input_sent') is True,
+        'interrupted': metric.get('interrupted') is True,
+        'at': record.get('at') if type(record.get('at')) in (int, float) else None,
+        'screen': _bounded_text(record.get('screen_kind'), 32),
+    }
+
+
+def _build_camp_incident(runtime, state, after, event, now):
+    mem = after.get('policy') or {}
+    context = _context(after)
+    rows = _read_decisions(runtime, max(0.0, float(now) - 120), now,
+                           state.get('identity'))
+    counts = _decision_counts(rows)
+    signals = [event['kind']]
+    if event.get('reason_code') and event['reason_code'] != 'other':
+        signals.append(event['reason_code'])
+    flow = (context or {}).get('flow') or {}
+    if flow.get('recall'):
+        signals.append('camp_in_flight')
+    if counts.get('camp_menu_unread'):
+        signals.append('camp_menu_unread')
+    if counts.get('camp_recall_battle') or counts.get('camp_recall_interrupted'):
+        signals.append('camp_battle_interrupt')
+    seen, unique = set(), []
+    for name in signals:
+        if name not in seen:
+            seen.add(name)
+            unique.append(name)
+    signals = unique[:8]
+    observed = state.get('observed') if isinstance(state.get('observed'), dict) else None
+    if observed is not None:
+        month = _month_summary(observed, now)
+    else:
+        month = {'chapter': mem.get('chapter'), 'month': mem.get('month'),
+                 'first_at': now, 'last_at': now, 'closed_at': now,
+                 'duration_s': 0.0, 'first_tick': mem.get('tick'),
+                 'last_tick': mem.get('tick'), 'duration_ticks': None,
+                 'observations': 0, 'max_gap_s': 0.0, 'started_clean': True}
+    month_sorties = (context or {}).get('month_sorties') or {}
+    confirmed = month_sorties.get('launches') if isinstance(month_sorties, dict) else None
+    identity = state.get('identity') or {}
+    record = {
+        'schema': SCHEMA,
+        'event': event['kind'],
+        'kind': event['kind'],
+        'confidence': 'high',
+        'confidence_reasons': [],
+        'chapter': mem.get('chapter'),
+        'month': mem.get('month'),
+        'month_summary': month,
+        'camp_event': dict(event),
+        'sorties': {
+            'confirmed': confirmed,
+            'departures': None,
+            'order_start': counts.get('order_start', 0),
+            'order_launched': counts.get('order_launched', 0),
+        },
+        'plan': copy.deepcopy((context or {}).get('plan') or {}),
+        'world': copy.deepcopy((context or {}).get('world') or {}),
+        'flow': copy.deepcopy((context or {}).get('flow') or {}),
+        'stats': copy.deepcopy((context or {}).get('stats') or {}),
+        'battles': {},
+        'signals': signals,
+        'decisions': {
+            'total': len(rows),
+            'counts': counts,
+            'coverage': None,
+            'before': _decision_rows(rows, 30),
+            'after': None,
+        },
+        'evidence': {
+            'runtime_dir': str(Path(runtime).name),
+            'decisions': 'hanjuku_decisions.jsonl',
+            'events': 'hanjuku_events.jsonl',
+            'frames': 'hanjuku_frames/',
+            'bot_version': after.get('bot_version'),
+            'identity': identity,
+        },
+        'context_missing': context is None,
+        'created_at': float(now),
+    }
+    raw = (f"{identity.get('runtime_id')}|{identity.get('generation')}|"
+           f"{event['kind']}|{event['reason_code']}|{event.get('camp')}|"
+           f"{event.get('general')}|{int(float(now))}")
+    record['incident_id'] = hashlib.sha256(raw.encode('utf-8')).hexdigest()[:20]
+    record['signature'] = event['kind']
+    record['fingerprint'] = _fingerprint(mem.get('chapter'), event['kind'], [event['kind']])
+    record['auto_file'] = True
+    return _shrink(record)
+
+
+def _track_camp(runtime, state, after, records, now, on_sealed=None):
+    events = [event for event in (_camp_event(record) for record in records or ()) if event]
+    if not events:
+        return
+    events.sort(key=lambda event: CAMP_OUTCOME_RANK.get(event['outcome'], 9))
+    event = events[0]
+    chapter = (after.get('policy') or {}).get('chapter')
+    key = '|'.join(str(part or '') for part in (
+        chapter, event['kind'], event['reason_code'], event.get('camp'),
+        event.get('general'), event.get('castle')))
+    table = state.setdefault('camp_events', {})
+    if not isinstance(table, dict):
+        table = state['camp_events'] = {}
+    last = table.get(key)
+    if isinstance(last, dict) and float(now) - float(last.get('at') or 0) < CAMP_ISSUE_COOLDOWN_SECONDS:
+        last['count'] = int(last.get('count') or 1) + 1
+        last['last_at'] = float(now)
+        return
+    incident = _build_camp_incident(runtime, state, after, event, now)
+    _append_incident(runtime, incident, on_sealed)
+    table[key] = {'at': float(now), 'kind': event['kind'],
+                  'reason': event['reason_code'], 'count': 1}
+    if len(table) > 30:
+        for stale in sorted(table, key=lambda name: table[name].get('at') or 0)[:-30]:
+            table.pop(stale, None)
 
 
 def _track_boss(runtime, state, after, records, now, on_sealed=None):
@@ -1324,6 +1533,7 @@ def observe(runtime, before, after, records=None, *, now=None, on_sealed=None):
     else:
         _touch_month(observed, after, now)
     _track_boss(runtime, state, after, records, now, on_sealed)
+    _track_camp(runtime, state, after, records, now, on_sealed)
     state['write_tick'] = int(state.get('write_tick') or 0) + 1
     # The open-month counters only advance if every observation persists them:
     # a write every tenth observation restarted from the last file and could
@@ -1394,6 +1604,8 @@ def render(record):
     identity = (record.get('evidence') or {}).get('identity') or {}
     kind = record.get('kind')
     confidence = record.get('confidence')
+    camp = record.get('camp_event') or {}
+    boss = record.get('boss_phase') or {}
     body = [
         f"<!-- hanjuku-month-audit fingerprint={record.get('fingerprint')} -->",
         f"<!-- hanjuku-month-audit occurrence={record.get('incident_id')} -->",
@@ -1403,11 +1615,22 @@ def render(record):
         f"- シグネチャ: {labels_text}",
         f"- ラン: {BT}{identity.get('runtime_id')}{BT} / generation {BT}{identity.get('generation')}{BT} / {BT}{(record.get('evidence') or {}).get('bot_version')}{BT}",
         f"- 月: ch{month.get('chapter')} {month.get('month')}（観測 {month.get('observations')}回 / {round(float(month.get('duration_s') or 0), 1)}秒 / max gap {round(float(month.get('max_gap_s') or 0), 1)}秒）",
-        f"- 出撃: 確定 {sorties.get('confirmed')} / 発射 {sorties.get('departures')} / order_start {sorties.get('order_start')} / order_launched {sorties.get('order_launched')}",
         f"- 判定理由: {', '.join(record.get('confidence_reasons') or []) or 'なし'}",
-        '',
     ]
-    boss = record.get('boss_phase') or {}
+    if not camp:
+        body.append(f"- 出撃: 確定 {sorties.get('confirmed')} / 発射 {sorties.get('departures')} / order_start {sorties.get('order_start')} / order_launched {sorties.get('order_launched')}")
+    body.append('')
+    if camp:
+        body += [
+            '### キャンプ帰還',
+            '',
+            f"- 結果: {camp.get('outcome')} / 決定: {BT}{camp.get('decision')}{BT}",
+            f"- 将軍: {camp.get('general') or '不明'} / 野営: {camp.get('camp')} / 帰還先: {camp.get('castle') or '不明'}",
+            f"- 理由: {camp.get('reason') or '不明'} ({camp.get('reason_code')})",
+            f"- stage: {camp.get('stage') or '不明'} / steps: {camp.get('steps')}"
+            f" / input_sent: {bool(camp.get('input_sent'))} / interrupted: {bool(camp.get('interrupted'))}",
+            '',
+        ]
     if boss:
         body += [
             '### ボスフェーズ',
@@ -1420,7 +1643,8 @@ def render(record):
             f" / 残りボス城: {', '.join(boss.get('bosses') or [])}",
             '',
         ]
-    body.append('### フェーズ中の決定' if kind == 'boss_phase_no_battle' else '### 月内の決定')
+    body.append('### 直前の決定' if camp else
+                ('### フェーズ中の決定' if kind == 'boss_phase_no_battle' else '### 月内の決定'))
     body.append('')
     rows, filtered = _timeline(record)
     if filtered:
@@ -1432,7 +1656,7 @@ def render(record):
     ]
     for row in rows:
         body.append(f"| {_clock(row.get('at'))} | {_cell(row.get('decision'))} | {_cell(row.get('chart_step'))} | {_md(row.get('general'))} | {_md(row.get('target'))} | {_md(row.get('reason'))} |")
-    body += ['', '### 現在の計画' if kind == 'boss_phase_no_battle' else '### 前月の計画', '',
+    body += ['', '### 現在の計画' if (camp or kind == 'boss_phase_no_battle') else '### 前月の計画', '',
              '| step | 状態 | 目的 | 出撃元 | 対象 | 将軍 |',
              '| --- | --- | --- | --- | --- | --- |']
     plan = record.get('plan') or {}
@@ -1494,7 +1718,12 @@ def render_comment(record):
         f" / max gap {round(float(month.get('max_gap_s') or 0), 1)}秒",
         f"- incident_id: {BT}{record.get('incident_id')}{BT}",
     ]
-    if record.get('kind') == 'boss_phase_no_battle':
+    camp = record.get('camp_event') or {}
+    if record.get('kind') in ('camp_recall_failed', 'camp_recall_cancelled',
+                              'camp_recall_unconfirmed'):
+        lines.insert(5, f"- キャンプ: {camp.get('outcome')} / {camp.get('reason_code')}"
+                        f" / 将軍 {camp.get('general') or '不明'}")
+    elif record.get('kind') == 'boss_phase_no_battle':
         lines.insert(5, f"- ボス: {boss.get('boss_name') or 'ボス'}"
                         f" / 継続 {round(float(boss.get('observed_s') or 0), 1)}秒")
     else:
@@ -1504,7 +1733,15 @@ def render_comment(record):
 
 
 def _issue_title(record):
-    if record.get('kind') == 'boss_phase_no_battle':
+    kind = record.get('kind')
+    if kind in ('camp_recall_failed', 'camp_recall_cancelled', 'camp_recall_unconfirmed'):
+        camp = record.get('camp_event') or {}
+        label = {'camp_recall_failed': 'キャンプ帰還失敗',
+                 'camp_recall_cancelled': 'キャンプ帰還キャンセル',
+                 'camp_recall_unconfirmed': 'キャンプ帰還未確認'}[kind]
+        who = camp.get('general') or camp.get('castle') or '将軍不明'
+        return f"[半熟英雄] {label}: ch{record.get('chapter')} {who}"[:100]
+    if kind == 'boss_phase_no_battle':
         boss = (record.get('boss_phase') or {}).get('boss_name') or 'ボス'
         return f"[半熟英雄] ボスフェーズでボス戦闘ゼロ: ch{record.get('chapter')} {boss}"[:100]
     label = PRIMARY_LABELS.get(record.get('signature'), '原因未分類')

@@ -1,4 +1,4 @@
-# 半熟英雄: 月内出撃ゼロ・ボスフェーズ無戦闘監査（v1257）
+# 半熟英雄: 月内出撃ゼロ・ボスフェーズ無戦闘監査（v1332）
 
 ## 目的
 
@@ -42,7 +42,7 @@ JSONLで保存し、必要なときに `gh` で修正用 issue を発行する�
 `decision_log_coverage` だけのときは `medium`、それ以外の理由が付くと `low`。
 issue化の既定は `high` のみ。
 
-## ボスフェーズ無戦闘（v1257）
+## ボスフェーズ無戦闘（v1332）
 
 通常城をすべて確保し、ボスの城（第4話は四季王サイト）だけが残った状態を
 **ボスフェーズ**とする。第9話の移動ボスは街道の全城が自軍になった時点。
@@ -60,6 +60,29 @@ issue化の既定は `high` のみ。
 記録は `world` / `plan` / `flow` とフェーズ中の決定を含み、既定でissue対象
 （confidence high）。issue題名は
 `[半熟英雄] ボスフェーズでボス戦闘ゼロ: ch<章> <ボス名>`。
+
+## キャンプ帰還の失敗・キャンセル（v1332）
+
+キャンプ（野営）からの帰還が terminal に失敗/取消/未確認になった観測で、
+`camp_*` のrecordを1件保存する。対象decision:
+
+| decision | kind | 意味 |
+| --- | --- | --- |
+| `camp_recall_aborted` | `camp_recall_failed` | 操作上限・野営メニュー未開放・カーソル未確認で断念 |
+| `camp_boss_redirect_aborted` | `camp_recall_failed` | ボス再出撃の帰還失敗 |
+| `camp_recall_skipped` | `camp_recall_cancelled` | 自軍城の屋根が見えず帰還先を選べず取消 |
+| `camp_group_screen`（`unclassified_screen_closed`） | `camp_recall_cancelled` | 未分類画面で帰還を閉じる |
+| `camp_recall_unconfirmed` | `camp_recall_unconfirmed` | A送信後の本人・到着を確認できない |
+
+- 将軍・野営位置・帰還先・stage/steps・input_sent/interrupted・理由・
+  直前120秒の決定・計画/在城/flowを1件に保存する。
+- 同じ `(chapter, kind, reason_code, camp, general, castle)` は900秒cooldown。
+  連続する同一事象でissueを乱発しない。
+- issue題名は `[半熟英雄] キャンプ帰還失敗/キャンセル/未確認: ch<章> <将軍または城>`。
+  fingerprintは章＋kindで、既存issueにはコメントする。
+- `hero_recall_skipped`（城内の主人公）や `retreat_recheck_invalidated`（加入で名簿変更）
+  は通常経路なので対象外。
+- 保存後のissue発行はbotのseal時callback（v1257以降）と同じ。
 
 ## 保存先
 
@@ -132,7 +155,7 @@ production checkout 上の `gh` 実行はしない。
 2. そのディレクトリを `HANJUKU_RUNTIME` にして `render` / `file --dry-run` で本文を確認する。
 3. `secret_scan` の clean を確認して `file` を実行する。
 
-## botからの自動発行（v1257）
+## botからの自動発行（v1332）
 
 月内出撃ゼロ・ボスフェーズ無戦闘のsealed recordを保存した直後、**その観測を
 実行しているbotプロセス**が、detachedの子プロセスで

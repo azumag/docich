@@ -393,6 +393,80 @@ def test_boss_phase_leaving_clears_the_tracker(runtime_dir):
     assert saved['last_boss']['chapter'] == 9
 
 
+def _camp_record(decision, *, reason='帰還できなかった', event=None, metric=None, general=None):
+    return {'decision': decision, 'reason': reason, 'resulting_event': event,
+            'observed_metric': metric or {}, 'general': general,
+            'screen_kind': 'map', 'at': 1000.0}
+
+
+def test_camp_terminal_decisions_are_classified():
+    failed = audit._camp_event(_camp_record(
+        'camp_recall_aborted', reason='野営の帰還指示が上限内に完了しない',
+        metric={'stage': 'menu', 'steps': 91}))
+    assert failed['kind'] == 'camp_recall_failed'
+    assert failed['reason_code'] == 'camp_recall_limit'
+    cancelled = audit._camp_event(_camp_record(
+        'camp_recall_skipped', reason='可視範囲に自軍城の屋根がなく帰還先を選べない'))
+    assert cancelled['kind'] == 'camp_recall_cancelled'
+    assert cancelled['reason_code'] == 'camp_no_roof'
+    unconfirmed = audit._camp_event(_camp_record(
+        'camp_recall_unconfirmed', event='arrival_unconfirmed',
+        metric={'castle': 'アルマムーン', 'input_sent': True}))
+    assert unconfirmed['kind'] == 'camp_recall_unconfirmed'
+    assert unconfirmed['reason_code'] == 'camp_arrival_unconfirmed'
+    assert unconfirmed['input_sent'] is True
+    group = audit._camp_event(_camp_record(
+        'camp_group_screen', event='unclassified_screen_closed', reason='未分類'))
+    assert group['kind'] == 'camp_recall_cancelled'
+    assert group['reason_code'] == 'camp_unclassified_screen'
+    assert audit._camp_event(_camp_record('hero_recall_skipped')) is None
+    assert audit._camp_event(_camp_record('retreat_recheck_invalidated')) is None
+
+
+def test_camp_failure_is_recorded_and_titled(runtime_dir):
+    value = state(9, '1-1', 0)
+    seen = []
+    audit.observe(runtime_dir, audit.capture(value), value,
+                  [_camp_record('camp_recall_aborted', reason='上限',
+                                metric={'stage': 'menu', 'steps': 91})],
+                  now=1000, on_sealed=seen.append)
+    records = audit.load_incidents(runtime_dir)
+    assert len(records) == 1
+    record = records[0]
+    assert record['kind'] == 'camp_recall_failed'
+    assert record['auto_file'] is True
+    assert record['camp_event']['reason_code'] == 'camp_recall_limit'
+    assert 'キャンプ帰還失敗' in audit._issue_title(record)
+    assert '### キャンプ帰還' in audit.render(record)
+    assert len(seen) == 1
+
+
+def test_camp_cancel_and_unconfirmed_are_recorded(runtime_dir):
+    value = state(9, '1-1', 0)
+    audit.observe(runtime_dir, audit.capture(value), value,
+                  [_camp_record('camp_recall_skipped',
+                                reason='可視範囲に自軍城の屋根がなく帰還先を選べない')],
+                  now=1000)
+    value = state(9, '1-1', 1)
+    audit.observe(runtime_dir, audit.capture(value), value,
+                  [_camp_record('camp_recall_unconfirmed', event='arrival_unconfirmed')],
+                  now=2000)
+    kinds = [row['kind'] for row in audit.load_incidents(runtime_dir)]
+    assert kinds == ['camp_recall_cancelled', 'camp_recall_unconfirmed']
+
+
+def test_camp_repeat_is_cooled_down(runtime_dir):
+    value = state(9, '1-1', 0)
+    record = _camp_record('camp_recall_skipped',
+                          reason='可視範囲に自軍城の屋根がなく帰還先を選べない')
+    for now in (1000, 1100):
+        audit.observe(runtime_dir, audit.capture(value), value, [record], now=now)
+    assert len(audit.load_incidents(runtime_dir)) == 1
+    audit.observe(runtime_dir, audit.capture(value), value, [record],
+                  now=1000 + audit.CAMP_ISSUE_COOLDOWN_SECONDS + 1)
+    assert len(audit.load_incidents(runtime_dir)) == 2
+
+
 def test_capture_reads_unmigrated_world_fields():
     state_value = state(1, '1-1', 10)
     state_value['policy']['world']['gold'] = None
