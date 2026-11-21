@@ -55,3 +55,25 @@ def test_a_stale_event_or_a_castle_battle_is_not_a_duel():
     policy.note_duel_event(Screen([], None, 'はたしあい', kind='text'), mem)
     fight(mem)
     assert not mem['battle'].get('event_duel')
+
+
+def test_event_duel_behind_or_critical_hp_never_opens_b_menu_and_mashes_a():
+    """#4867: event duels have no B menu; どうし 83->0 vs 92 died pressing B 20 times."""
+    mem = {'chapter': 9, 'tick': 100, 'egg_uses': {'どうし': 4}}
+    policy.note_duel_event(
+        Screen([], None, '59ねん4のつき9993Gいってごあいてねがえぬか?うむッ!いかんッ!', kind='yes_no'),
+        mem,
+    )
+    outputs = []
+    for ally_hp, enemy_hp in ((83, 92), (83, 92), (62, 71), (37, 50), (16, 29), (9, 22)):
+        mem['tick'] += 1
+        screen = Screen(lines=[], hand=None, text='', kind='battle',
+                        battle=Battle(ENEMY, enemy_hp, 'どうし', ally_hp))
+        acts = policy.battle_step(screen, mem)
+        outputs.append(acts)
+        assert not any(a.get('buttons') == ['b'] for a in acts), f'Must not open B menu in duel, got {acts}'
+    assert all(any(a.get('buttons') == ['a'] for a in acts) for acts in outputs[1:])
+    decisions = {r['decision'] for r in mem.get('_records', [])}
+    assert 'battle_event_duel' in decisions
+    assert not ({'battle_egg_before_retreat', 'battle_hero_retreat_open',
+                 'battle_survival', 'battle_command_open_requested'} & decisions)

@@ -1291,6 +1291,8 @@ def note_duel_event(screen, mem):
 
 
 def _hero_retreat_open(mem, cur):
+    if cur.get('event_duel'):
+        return None
     if not (egg_bait.retreat_due(mem, cur) or _hero_retreat_needed(cur)) or cur.get('side') == 'defense':
         return None
     ally = cur.get('ally')
