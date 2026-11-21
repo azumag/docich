@@ -3,14 +3,15 @@
 画面構成 (g1190 2026-11-19, #4564 を実機プローブで解明):
 - 右上: 収集したパスワード語のスクロール可能リスト + 語を指す手カーソル。
 - 左下: 未入力の残り語を並べた 3×3 グリッド。
-- A = 手が指す語を入力 (下グリッドから消える)。up/down = 手カーソル移動。
-- 全語を入力すると扉が開きフィールドへ戻る。失敗時はパネルが閉じて
-  「パスワードヲ…」の再タイプで先頭からやり直す。
+- up/down = 手カーソル移動、A = 手が指す語を入力。
+- 全語を **決められた順** で入力すると扉が開く。リスト表示順ではない。
 
-従来は「A/B/START では進まない」と判断して保留 (return []) していたが、
-手カーソルをリスト先頭まで上げて A+down で全語を上から順に入力すれば
-解けることを実機プローブで確認した (state: prod1190.ch11-password-solved)。
-語の入力順は問われず、全語を選び切れば扉が開く。
+2026-11-22 の実機プローブで、第11話オヴァリウムの
+正解順がリスト index [1,0,5,3,2,4,9,8,6,7] であることを確認した。
+旧実装の「上から A+down で全語」は、語順が違うため
+「パスワードガ ナガイマス。ヤリナオシマスカ?」で失敗し、6サイクル後に
+保留 (screen_stalled) していた。ここでは 1入力/観測で index を移動し、
+A で確定する。扉が開いて screen_kind が変わればこの flow は呼ばれない。
 """
 from __future__ import annotations
 
@@ -18,38 +19,43 @@ from ..decision_log import _record
 from ..os_layer.commands import pad
 
 
-# 手カーソルは画面上で見えているが語の位置は OCR から読まず、上から順に
-# 掃引するだけで全語を網羅できる。up は先頭で無操作なので打ち過ぎても安全。
-_TOP_PRESSES = 18          # 10語リスト: どの位置からでも先頭へ届く回数
-_SWEEP_PICKS = 14          # 全語 + スクロール端の余分な down を吸収する余裕
-_MAX_CYCLES = 6            # 失敗再タイプのループ上限 (これを超えたら保留へ)
+# 第11話オヴァリウムの実測順 (リスト先頭を 0 とする)。
+_TARGET_ORDER = (1, 0, 5, 3, 2, 4, 9, 8, 6, 7)
+_TOP_PRESSES = 15          # どの位置からでも先頭へ届く (実測 up×15)
+_MAX_CYCLES = 2            # 扉が開かない場合のやり直し上限
+_ADVANCE_PRESSES = 2       # 扉演出を進める A の上限
 
 
 def password_step(screen, mem):
-    """リスト先頭まで上げてから A+down で全語を上から順に入力する。"""
+    """リスト先頭へ上げ、実測順に A で語を確定する。1入力/観測。"""
     st = mem.setdefault('password_entry', {})
     if st.get('cycles', 0) >= _MAX_CYCLES:
         return []
     tops = st.get('tops', 0)
-    picks = st.get('picks', 0)
     if tops < _TOP_PRESSES:
-        st['tops'] = tops + 4
-        return [pad('up')] * 4
-    if picks < _SWEEP_PICKS:
-        st['picks'] = picks + 2
-        return [pad('a'), pad('down'), pad('a'), pad('down')]
+        st['tops'] = tops + 1
+        return [pad('up')]
+    idx = st.get('idx', 0)
+    step = st.get('step', 0)
+    if step < len(_TARGET_ORDER):
+        target = _TARGET_ORDER[step]
+        if idx < target:
+            st['idx'] = idx + 1
+            return [pad('down')]
+        if idx > target:
+            st['idx'] = idx - 1
+            return [pad('up')]
+        st['step'] = step + 1
+        return [pad('a', 10)]
+    advance = st.get('advance', 0)
+    if advance < _ADVANCE_PRESSES:
+        st['advance'] = advance + 1
+        return [pad('a', 10)]
     cycles = st.get('cycles', 0) + 1
     _record(mem, 'password_entry_resweep', screen=screen.kind,
-            observed_metric={'cycles': cycles},
-            reason='全語掃引後もパスワード画面のため先頭から再入力')
-    if cycles >= _MAX_CYCLES:
-        _record(mem, 'situation_held', screen=screen.kind,
-                observed_metric={'cycles': cycles},
-                reason='パスワード入力の掃引を繰り返しても扉が開かないため保留')
-        st['cycles'] = cycles
-        return []
-    # 失敗で先頭へ戻る。手カーソル位置は不明なので上げ直す。
+            observed_metric={'cycles': cycles, 'target_order': list(_TARGET_ORDER)},
+            reason='実測順の入力後もパスワード画面のため先頭から再試行')
     st.clear()
     st['cycles'] = cycles
-    st['tops'] = 4
-    return [pad('up')] * 4
+    st['tops'] = 1
+    return [pad('up')]
