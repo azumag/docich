@@ -1693,6 +1693,34 @@ def test_a_static_unresolvable_marker_is_not_re_read_for_every_general():
     assert post._static_marker(state, {}) is False
 
 
+
+def test_roster_scroll_arrow_does_not_short_circuit_blink_retries():
+    """#4910: the persistent list arrow is not the blinking map triangle."""
+    state = {}
+    arrow = {'box': [192, 161, 198, 167], 'source': 'selection_marker',
+             'marker_reason': 'scroll_arrow'}
+    for _ in range(post.MARKER_RETRIES):
+        assert post._static_marker(state, arrow) is False
+        assert 'static_marker' not in state
+
+    # Even without a reason, any box crossing the minimap's right edge is
+    # decoration, not evidence of a permanently unresolvable map marker.
+    outside = {'box': [150, 161, 198, 167], 'source': 'selection_marker'}
+    assert post._static_marker(state, outside) is False
+    assert 'static_marker' not in state
+
+
+def test_roster_scroll_arrow_does_not_overwrite_real_static_marker():
+    """An off-map arrow must not erase the existing in-map cache."""
+    state = {}
+    inside = {'box': [59, 120, 64, 125], 'source': 'selection_marker'}
+    arrow = {'box': [192, 161, 198, 167], 'marker_reason': 'scroll_arrow'}
+    assert post._static_marker(state, inside) is False
+    assert post._static_marker(state, arrow) is False
+    assert state['static_marker'] == inside['box']
+    assert post._static_marker(state, inside) is True
+
+
 def test_a_same_month_house_read_skips_the_individual_reopen():
     """g1163 2026-11-09: the house pass read at 09:55, this walk at 09:58."""
     mem = memory(tick=1000, month='2-6')
