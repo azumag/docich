@@ -76,8 +76,12 @@ def test_a_stale_wave_stops_the_camp_boss_redirect(monkeypatch):
 
 
 def test_wave_active_is_false_for_a_stale_wave_and_true_for_a_fresh_one():
-    assert bp.wave_active(memory(launched=10000 - bp.PURSUIT_STALE_TICKS)) is False
-    assert bp.wave_active(memory(launched=10000 - 500)) is True
+    def staffed(**kw):
+        mem = memory(**kw)
+        mem.setdefault('world', {})['garrison'] = {'イデ！': ['どうし', 'ゼウス']}
+        return mem
+    assert bp.wave_active(staffed(launched=10000 - bp.PURSUIT_STALE_TICKS)) is False
+    assert bp.wave_active(staffed(launched=10000 - 500)) is True
     empty = memory()
     empty[bp.LIST_KEY] = {}
     assert bp.wave_active(empty) is False

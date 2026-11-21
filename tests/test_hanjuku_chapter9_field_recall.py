@@ -40,6 +40,7 @@ def test_the_boss_phase_leaves_the_field_camps_alone():
 def test_a_field_camp_recall_is_deferred_while_boss_waves_are_in_flight():
     mem = _mem(captured=list(ROAD),
                boss_wave_generals={'カシス': {'step': 'A', 'launched': 1}},
+               world={'garrison': {'イデ！': ['どうし', 'ゼウス']}},
                boss_cell={'chapter': 9, 'cell': [770, 629], 'tick': 100})
     _flow(mem)['recall'] = {'stage': 'to_camp', 'target': [40, 40],
                             'last_seen': [40, 40], 'steps': 0}
@@ -53,6 +54,7 @@ def test_no_new_field_recall_starts_while_boss_waves_are_in_flight(monkeypatch):
     monkeypatch.setattr(recall_flow, 'own_camps', lambda frame: [dict(CAMP)])
     mem = _mem(captured=list(ROAD),
                boss_wave_generals={'カシス': {'step': 'A', 'launched': 1}},
+               world={'garrison': {'イデ！': ['どうし', 'ゼウス']}},
                boss_cell={'chapter': 9, 'cell': [770, 629], 'tick': 100})
     assert recall_flow.camp_recall_step(MAP, mem, FRAME) is None
     assert 'recall' not in _flow(mem)
