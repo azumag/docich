@@ -595,10 +595,17 @@ def test_hero_disabled_retreat_falls_back_to_an_egg_and_other_generals_keep_figh
 
 def test_hero_retreat_cancels_unselected_cards_and_preempts_critical_pending_card():
     mem=memory(12,50)
-    mem['battle']['card_flow']={'stage':'list','card':'グリンボー'}
-    assert p.card_list_step(menu(('グリンボー',),kind='text'),mem)==[p.pad('b')]
+    # docich#4999: ゲートが許可する一覧札は退却より先に使うため、閉じるのは
+    # 使用できない札 (ボス専用バルムンク) の一覧だけに固定する。
+    mem['battle']['card_flow']={'stage':'list','card':'バルムンク'}
+    assert p.card_list_step(menu(('バルムンク',),kind='text'),mem)==[p.pad('b')]
     assert mem['battle']['card_flow'] is None
     mem['battle']['card_flow']={'stage':'announce','card':'グリンボー','selection_planned':True}
+    # docich#4999: 即死帯 (HP4以下) の上では、選択済み告知は有界な grace で
+    # 完走を待ち、使い切ってから preempt へ戻る。
+    for _ in range(p.RETREAT_CARD_GRACE_LIMIT):
+        assert p._hero_retreat_open(mem,mem['battle']) is None
+    assert mem['battle']['card_flow'] is not None
     assert p._hero_retreat_open(mem,mem['battle']) == [p.pad('b')]
     assert mem['battle']['card_flow'] is None
     assert mem['battle']['cards_used'] == []
@@ -610,7 +617,9 @@ def test_hero_retreat_cancels_unselected_cards_and_preempts_critical_pending_car
 
 @pytest.mark.parametrize('general', ['どうし', 'ココット', 'ヴィーナス', 'ゼウス'])
 def test_critical_hp_preempts_unconfirmed_card_for_every_general(general):
-    mem = memory(12, 50)
+    # docich#4999: HP4以下の即死帯では有界な grace を待たず即座に preempt
+    # する (g460: メニュー待ちで将軍を失わない線引き)。
+    mem = memory(4, 50)
     mem['battle'].update(ally=general, enemy='タピオカ', start_ally_hp=24,
                          side='attack', card_flow={
                              'stage': 'announce', 'card': 'グリンボー',
@@ -623,7 +632,7 @@ def test_critical_hp_preempts_unconfirmed_card_for_every_general(general):
     assert record['general'] == general
     assert record['enemy'] == 'タピオカ'
     assert record['observed_metric'] == {
-        'ally_hp': 12, 'enemy_hp': 50, 'card_confirmation': 'unclassified'}
+        'ally_hp': 4, 'enemy_hp': 50, 'card_confirmation': 'unclassified'}
 
 
 def test_pending_card_is_preserved_above_critical_general_hp():
