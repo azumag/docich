@@ -8009,6 +8009,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v1330-blind-nav-release",
             "hanjuku-chart-v1331-egg-repair-disabled",
             "hanjuku-chart-v1332-camp-issue",
+            "hanjuku-chart-v1333-sortie-issue",
             "hanjuku-chart-v985-roster-lost",
             "hanjuku-chart-v982-gbox",
             "hanjuku-chart-v984-roster-map-anchor",

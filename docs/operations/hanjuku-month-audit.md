@@ -1,4 +1,4 @@
-# 半熟英雄: 月内出撃ゼロ・ボスフェーズ無戦闘監査（v1332）
+# 半熟英雄: 月内出撃ゼロ・ボスフェーズ無戦闘監査（v1333）
 
 ## 目的
 
@@ -42,7 +42,7 @@ JSONLで保存し、必要なときに `gh` で修正用 issue を発行する�
 `decision_log_coverage` だけのときは `medium`、それ以外の理由が付くと `low`。
 issue化の既定は `high` のみ。
 
-## ボスフェーズ無戦闘（v1332）
+## ボスフェーズ無戦闘（v1333）
 
 通常城をすべて確保し、ボスの城（第4話は四季王サイト）だけが残った状態を
 **ボスフェーズ**とする。第9話の移動ボスは街道の全城が自軍になった時点。
@@ -61,7 +61,7 @@ issue化の既定は `high` のみ。
 （confidence high）。issue題名は
 `[半熟英雄] ボスフェーズでボス戦闘ゼロ: ch<章> <ボス名>`。
 
-## キャンプ帰還の失敗・キャンセル（v1332）
+## キャンプ帰還の失敗・キャンセル（v1333）
 
 キャンプ（野営）からの帰還が terminal に失敗/取消/未確認になった観測で、
 `camp_*` のrecordを1件保存する。対象decision:
@@ -83,6 +83,25 @@ issue化の既定は `high` のみ。
 - `hero_recall_skipped`（城内の主人公）や `retreat_recheck_invalidated`（加入で名簿変更）
   は通常経路なので対象外。
 - 保存後のissue発行はbotのseal時callback（v1257以降）と同じ。
+
+## 出撃失敗・キャンセル（v1333）
+
+terminal な出撃失敗/取消のdecisionを、`sortie_*` のrecordとして保存する。
+
+| decision | kind | 意味 |
+| --- | --- | --- |
+| `sortie_launch_failed` | `sortie_failed` | 出撃確定後も部隊▲が現れず、再試行上限で指示失敗 |
+| `order_failed` | `sortie_failed` | 出撃元メニュー・将軍不在・切り札・携行札などで指示失敗 |
+| `situation_held`（`attack_retry_exhausted` / `boss_retry_exhausted`） | `sortie_failed` | 戦闘再試行の上限で指示失敗 |
+| `sortie_cancelled_observed` | `sortie_cancelled` | 出撃元の将軍一覧に将軍が残り、出撃取消を観測 |
+
+- 将軍・出撃元・対象・目的・step・misses・理由・直前120秒の決定・
+  計画/在城/flow/statsを1件32KB以内で保存する。
+- 同じ `(chapter, kind, reason_code, step_local, general, target)` は900秒cooldown。
+- issue題名は `[半熟英雄] 出撃失敗/キャンセル: ch<章> <将軍またはstep>`。
+- `sortie_launch_unverified`（再試行中）、`target_not_under_marker`（位置再測定）、
+  `order_retry`（戦闘再試行）はterminalでないため対象外。
+- issue発行はbotのseal時callback（v1257以降）と同じ。
 
 ## 保存先
 
@@ -155,7 +174,7 @@ production checkout 上の `gh` 実行はしない。
 2. そのディレクトリを `HANJUKU_RUNTIME` にして `render` / `file --dry-run` で本文を確認する。
 3. `secret_scan` の clean を確認して `file` を実行する。
 
-## botからの自動発行（v1332）
+## botからの自動発行（v1333）
 
 月内出撃ゼロ・ボスフェーズ無戦闘のsealed recordを保存した直後、**その観測を
 実行しているbotプロセス**が、detachedの子プロセスで
