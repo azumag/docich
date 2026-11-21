@@ -1333,7 +1333,8 @@ def _hero_retreat_open(mem, cur):
         _record(mem, 'battle_retreat_preempted_card', **_battle_labels(cur),
                 general=cur.get('ally'), enemy=cur.get('enemy'), card=pending_card,
                 observed_metric={'ally_hp': hp, 'enemy_hp': cur.get('enemy_hp'),
-                                 'card_confirmation': 'unclassified'},
+                                 'card_confirmation': 'unclassified',
+                                 'egg_uses': (mem.get('egg_uses') or {}).get(cur.get('ally'))},
                 resulting_event='retreat_preempted_card_use',
                 reason='切り札の使用確認を待つ間に将軍を失わず、主人公の敗北も避けるため退却を優先')
     flow = cur.setdefault('hero_retreat', {})
@@ -1344,6 +1345,11 @@ def _hero_retreat_open(mem, cur):
             castle=cur.get('castle'), side=cur.get('side'),
             observed_metric={'ally_hp': cur['ally_hp'], 'enemy_hp': cur['enemy_hp'],
                              'start_ally_hp': cur.get('start_ally_hp'),
+                             'egg_uses': (mem.get('egg_uses') or {}).get(cur.get('ally')),
+                             'cards_selected': cur.get('cards_selected', []),
+                             'cards_used': cur.get('cards_used', []),
+                             'card_pending': (cur.get('card_flow') or {}).get('card')
+                             if isinstance(cur.get('card_flow'), dict) else None,
                              'melee_balance': _melee_balance(cur),
                              'retreat_assessment': dict(cur.get('retreat_assessment') or {})},
             reason='主人公の敗北によるゲームオーバーまたは一般将軍の喪失を避けるため退却の可否を確認')
@@ -1689,6 +1695,7 @@ def battle_end(mem, next_kind, *, defense_continues=False, actor_continues=False
             expected_metric=cur.get('strategy_expected'),
             ally=cur.get('ally'), castle=castle, side=cur.get('side'), outcome=outcome,
             observed_metric={'enemy_hp': enemy_hp, 'ally_hp': ally_hp,
+                             'egg_uses': (mem.get('egg_uses') or {}).get(cur.get('ally')),
                              'cards_used': cur.get('cards_used', []),
                              'cards_selected': cur.get('cards_selected', []),
                              'cards_missing': cur.get('cards_missing', []),

@@ -51,6 +51,7 @@ AFTER_WINDOW_SECONDS = 300
 BOSS_NO_BATTLE_SECONDS = 600
 CAMP_ISSUE_COOLDOWN_SECONDS = 900
 SORTIE_ISSUE_COOLDOWN_SECONDS = 900
+BATTLE_RESOURCE_ISSUE_COOLDOWN_SECONDS = 900
 MIN_MONTH_SECONDS = 120
 MAX_GAP_SECONDS = 60
 MIN_OBSERVATIONS = 20
@@ -117,6 +118,12 @@ SIGNAL_LABELS = {
     'sortie_retry_exhausted': '出撃再試行の上限',
     'sortie_unit_stayed': '将軍が在城のまま',
     'sortie_order_failed': '指示が失敗',
+    'battle_retreat_with_resources': '卵/切り札を残して退却',
+    'battle_loss_with_resources': '卵/切り札を残して敗北',
+    'battle_retreat_with_egg': '卵を残して退却',
+    'battle_retreat_with_card': '切り札を残して退却',
+    'battle_loss_with_egg': '卵を残して敗北',
+    'battle_loss_with_card': '切り札を残して敗北',
     'unknown': '原因未分類',
 }
 SIGNAL_ORDER = tuple(SIGNAL_LABELS)
@@ -162,9 +169,17 @@ PRIMARY_LABELS = {
     'sortie_retry_exhausted': '出撃再試行の上限',
     'sortie_unit_stayed': '将軍が在城のまま',
     'sortie_order_failed': '指示が失敗',
+    'battle_retreat_with_resources': '卵/切り札を残して退却',
+    'battle_loss_with_resources': '卵/切り札を残して敗北',
+    'battle_retreat_with_egg': '卵を残して退却',
+    'battle_retreat_with_card': '切り札を残して退却',
+    'battle_loss_with_egg': '卵を残して敗北',
+    'battle_loss_with_card': '切り札を残して敗北',
     'unknown': '原因未分類',
 }
 PRIMARY_SIGNALS = (
+    ('battle_retreat_with_resources', ('battle_retreat_with_resources',)),
+    ('battle_loss_with_resources', ('battle_loss_with_resources',)),
     ('sortie_failed', ('sortie_failed',)),
     ('sortie_cancelled', ('sortie_cancelled',)),
     ('camp_recall_failed', ('camp_recall_failed',)),
@@ -957,6 +972,204 @@ def _context_order(after, step):
         if isinstance(order, dict) and order.get('step') == step:
             return order
     return {}
+
+
+
+def _remaining_cards(selected, used):
+    used = [card for card in (used or []) if isinstance(card, str)]
+    remaining = []
+    for card in selected or ():
+        if not isinstance(card, str):
+            continue
+        if card in used:
+            used.remove(card)
+        else:
+            remaining.append(card)
+    return remaining[:12]
+
+
+def _battle_resources(record):
+    metric = record.get('observed_metric')
+    metric = metric if isinstance(metric, dict) else {}
+    egg = _bounded_int(metric.get('egg_uses'), 0, 10 ** 6)
+    selected = [card for card in (metric.get('cards_selected') or [])
+                if isinstance(card, str)][:12]
+    used = [card for card in (metric.get('cards_used') or [])
+            if isinstance(card, str)][:12]
+    pending = record.get('card')
+    if not isinstance(pending, str):
+        pending = metric.get('card_pending') if isinstance(metric.get('card_pending'), str) else None
+    remaining = _remaining_cards(selected, used)
+    if pending and pending not in remaining and pending not in used:
+        remaining.append(pending)
+    resources = []
+    if egg:
+        resources.append('egg')
+    if remaining:
+        resources.append('card')
+    return {
+        'resources': resources,
+        'egg_uses': egg,
+        'cards_selected': selected,
+        'cards_used': used,
+        'cards_remaining': remaining[:12],
+        'card_pending': pending,
+    }
+
+
+def _battle_resource_event(record):
+    """Loss/retreat while eggs or cards remain, or None."""
+    if not isinstance(record, dict):
+        return None
+    decision = record.get('decision')
+    metric = record.get('observed_metric')
+    metric = metric if isinstance(metric, dict) else {}
+    if decision == 'battle_hero_retreat_select':
+        if record.get('choice') != 'たいきゃく':
+            return None
+        outcome = 'retreat'
+    elif decision == 'battle_retreat_preempted_card':
+        outcome = 'retreat'
+    elif decision == 'battle_result':
+        if record.get('outcome') != 'loss':
+            return None
+        outcome = 'loss'
+    else:
+        return None
+    resources = _battle_resources(record)
+    if not resources['resources']:
+        return None
+    general = _bounded_text(record.get('general') or record.get('ally')
+                            or metric.get('general'), 48)
+    return {
+        'kind': ('battle_loss_with_resources' if outcome == 'loss'
+                 else 'battle_retreat_with_resources'),
+        'outcome': outcome,
+        'decision': decision,
+        'resources': resources['resources'],
+        'egg_uses': resources['egg_uses'],
+        'cards_selected': resources['cards_selected'],
+        'cards_used': resources['cards_used'],
+        'cards_remaining': resources['cards_remaining'],
+        'card_pending': resources['card_pending'],
+        'general': general,
+        'enemy': _bounded_text(record.get('enemy') or metric.get('enemy'), 48),
+        'castle': _bounded_text(record.get('castle') or metric.get('castle'), 48),
+        'side': _bounded_text(record.get('side') or metric.get('side'), 16),
+        'step': _bounded_text(record.get('chart_step') or metric.get('step'), 64),
+        'ally_hp': _bounded_int(metric.get('ally_hp'), 0, 10 ** 6),
+        'enemy_hp': _bounded_int(metric.get('enemy_hp'), 0, 10 ** 6),
+        'retreat_selected': metric.get('hero_retreat_selected') is True,
+        'reason': _bounded_text(record.get('reason'), 200),
+        'at': record.get('at') if type(record.get('at')) in (int, float) else None,
+    }
+
+
+def _build_battle_resource_incident(runtime, state, after, event, now):
+    mem = after.get('policy') or {}
+    context = _context(after)
+    rows = _read_decisions(runtime, max(0.0, float(now) - 120), now,
+                           state.get('identity'))
+    counts = _decision_counts(rows)
+    departures, launch_events = _departures(rows)
+    month_sorties = (context or {}).get('month_sorties') or {}
+    confirmed = month_sorties.get('launches') if isinstance(month_sorties, dict) else None
+    battle_count = sum(counts.get(name, 0) for name in counts
+                       if name.startswith('battle_') or name == 'monster_menu_choice')
+    signals = [event['kind']]
+    for resource in event['resources']:
+        signals.append(f"{event['kind']}_with_{resource}")
+    for name in _signals(context, counts, confirmed, departures, battle_count):
+        if name not in signals:
+            signals.append(name)
+    signals = signals[:8]
+    observed = state.get('observed') if isinstance(state.get('observed'), dict) else None
+    if observed is not None:
+        month = _month_summary(observed, now)
+    else:
+        month = {'chapter': mem.get('chapter'), 'month': mem.get('month'),
+                 'first_at': now, 'last_at': now, 'closed_at': now,
+                 'duration_s': 0.0, 'first_tick': mem.get('tick'),
+                 'last_tick': mem.get('tick'), 'duration_ticks': None,
+                 'observations': 0, 'max_gap_s': 0.0, 'started_clean': True}
+    identity = state.get('identity') or {}
+    record = {
+        'schema': SCHEMA,
+        'event': event['kind'],
+        'kind': event['kind'],
+        'confidence': 'high',
+        'confidence_reasons': [],
+        'chapter': mem.get('chapter'),
+        'month': mem.get('month'),
+        'month_summary': month,
+        'battle_event': dict(event),
+        'sorties': {
+            'confirmed': confirmed,
+            'departures': departures,
+            'launch_events': launch_events,
+            'order_start': counts.get('order_start', 0),
+            'order_launched': counts.get('order_launched', 0),
+        },
+        'plan': copy.deepcopy((context or {}).get('plan') or {}),
+        'world': copy.deepcopy((context or {}).get('world') or {}),
+        'flow': copy.deepcopy((context or {}).get('flow') or {}),
+        'stats': copy.deepcopy((context or {}).get('stats') or {}),
+        'battles': {'decisions': battle_count},
+        'signals': signals,
+        'decisions': {
+            'total': len(rows),
+            'counts': counts,
+            'coverage': None,
+            'before': _decision_rows(rows, 30),
+            'after': None,
+        },
+        'evidence': {
+            'runtime_dir': str(Path(runtime).name),
+            'decisions': 'hanjuku_decisions.jsonl',
+            'events': 'hanjuku_events.jsonl',
+            'frames': 'hanjuku_frames/',
+            'bot_version': after.get('bot_version'),
+            'identity': identity,
+        },
+        'context_missing': context is None,
+        'created_at': float(now),
+    }
+    raw = (f"{identity.get('runtime_id')}|{identity.get('generation')}|"
+           f"{event['kind']}|{','.join(event['resources'])}|"
+           f"{event.get('general')}|{event.get('step')}|{int(float(now))}")
+    record['incident_id'] = hashlib.sha256(raw.encode('utf-8')).hexdigest()[:20]
+    record['signature'] = event['kind']
+    record['fingerprint'] = _fingerprint(mem.get('chapter'), event['kind'], [event['kind']])
+    record['auto_file'] = True
+    return _shrink(record)
+
+
+def _track_battle_resources(runtime, state, after, records, now, on_sealed=None):
+    events = [event for event in (_battle_resource_event(record) for record in records or ())
+              if event]
+    if not events:
+        return
+    events.sort(key=lambda event: 0 if event['outcome'] == 'loss' else 1)
+    event = events[0]
+    chapter = (after.get('policy') or {}).get('chapter')
+    key = '|'.join(str(part or '') for part in (
+        chapter, event['kind'], ','.join(event['resources']),
+        event.get('general'), event.get('step')))
+    table = state.setdefault('battle_resource_events', {})
+    if not isinstance(table, dict):
+        table = state['battle_resource_events'] = {}
+    last = table.get(key)
+    if isinstance(last, dict) and float(now) - float(last.get('at') or 0) < BATTLE_RESOURCE_ISSUE_COOLDOWN_SECONDS:
+        last['count'] = int(last.get('count') or 1) + 1
+        last['last_at'] = float(now)
+        return
+    incident = _build_battle_resource_incident(runtime, state, after, event, now)
+    _append_incident(runtime, incident, on_sealed)
+    table[key] = {'at': float(now), 'kind': event['kind'],
+                  'resources': list(event['resources']), 'count': 1}
+    if len(table) > 30:
+        for stale in sorted(table, key=lambda name: table[name].get('at') or 0)[:-30]:
+            table.pop(stale, None)
 
 
 def _track_sortie(runtime, state, after, records, now, on_sealed=None):
@@ -1775,6 +1988,7 @@ def observe(runtime, before, after, records=None, *, now=None, on_sealed=None):
     _track_boss(runtime, state, after, records, now, on_sealed)
     _track_camp(runtime, state, after, records, now, on_sealed)
     _track_sortie(runtime, state, after, records, now, on_sealed)
+    _track_battle_resources(runtime, state, after, records, now, on_sealed)
     state['write_tick'] = int(state.get('write_tick') or 0) + 1
     # The open-month counters only advance if every observation persists them:
     # a write every tenth observation restarted from the last file and could
@@ -1847,6 +2061,7 @@ def render(record):
     confidence = record.get('confidence')
     camp = record.get('camp_event') or {}
     sortie = record.get('sortie_event') or {}
+    battle = record.get('battle_event') or {}
     boss = record.get('boss_phase') or {}
     body = [
         f"<!-- hanjuku-month-audit fingerprint={record.get('fingerprint')} -->",
@@ -1862,6 +2077,20 @@ def render(record):
     if not camp:
         body.append(f"- 出撃: 確定 {sorties.get('confirmed')} / 発射 {sorties.get('departures')} / order_start {sorties.get('order_start')} / order_launched {sorties.get('order_launched')}")
     body.append('')
+    if battle:
+        body += [
+            '### 戦闘結果',
+            '',
+            f"- 結果: {battle.get('outcome')} / 決定: {BT}{battle.get('decision')}{BT}",
+            f"- 将軍: {battle.get('general') or '不明'} / 敵: {battle.get('enemy') or '不明'}"
+            f" / 城: {battle.get('castle') or '不明'} / side: {battle.get('side') or '不明'}",
+            f"- HP: ally {battle.get('ally_hp')} / enemy {battle.get('enemy_hp')}",
+            f"- 卵残数: {battle.get('egg_uses')} / 切り札: 選択 {battle.get('cards_selected')}"
+            f" / 使用 {battle.get('cards_used')} / 残り {battle.get('cards_remaining')}"
+            f" / pending {battle.get('card_pending')}",
+            f"- 退却選択: {bool(battle.get('retreat_selected'))} / 理由: {battle.get('reason') or '不明'}",
+            '',
+        ]
     if sortie:
         body += [
             '### 出撃失敗 / キャンセル',
@@ -1897,7 +2126,7 @@ def render(record):
             f" / 残りボス城: {', '.join(boss.get('bosses') or [])}",
             '',
         ]
-    body.append('### 直前の決定' if (camp or sortie) else
+    body.append('### 直前の決定' if (camp or sortie or battle) else
                 ('### フェーズ中の決定' if kind == 'boss_phase_no_battle' else '### 月内の決定'))
     body.append('')
     rows, filtered = _timeline(record)
@@ -1910,7 +2139,7 @@ def render(record):
     ]
     for row in rows:
         body.append(f"| {_clock(row.get('at'))} | {_cell(row.get('decision'))} | {_cell(row.get('chart_step'))} | {_md(row.get('general'))} | {_md(row.get('target'))} | {_md(row.get('reason'))} |")
-    body += ['', '### 現在の計画' if (camp or sortie or kind == 'boss_phase_no_battle') else '### 前月の計画', '',
+    body += ['', '### 現在の計画' if (camp or sortie or battle or kind == 'boss_phase_no_battle') else '### 前月の計画', '',
              '| step | 状態 | 目的 | 出撃元 | 対象 | 将軍 |',
              '| --- | --- | --- | --- | --- | --- |']
     plan = record.get('plan') or {}
@@ -1974,7 +2203,11 @@ def render_comment(record):
     ]
     camp = record.get('camp_event') or {}
     sortie = record.get('sortie_event') or {}
-    if record.get('kind') in ('sortie_failed', 'sortie_cancelled'):
+    battle = record.get('battle_event') or {}
+    if record.get('kind') in ('battle_retreat_with_resources', 'battle_loss_with_resources'):
+        lines.insert(5, f"- 戦闘: {battle.get('outcome')} / 資源 {battle.get('resources')}"
+                        f" / {battle.get('general') or '不明'}")
+    elif record.get('kind') in ('sortie_failed', 'sortie_cancelled'):
         lines.insert(5, f"- 出撃: {sortie.get('outcome')} / {sortie.get('reason_code')}"
                         f" / {sortie.get('general') or sortie.get('step_local') or '不明'}")
     elif record.get('kind') in ('camp_recall_failed', 'camp_recall_cancelled',
@@ -1992,6 +2225,13 @@ def render_comment(record):
 
 def _issue_title(record):
     kind = record.get('kind')
+    if kind in ('battle_retreat_with_resources', 'battle_loss_with_resources'):
+        battle = record.get('battle_event') or {}
+        resources = battle.get('resources') or []
+        text = 'と'.join('卵' if name == 'egg' else '切り札' for name in resources) or '資源'
+        label = f"{text}を残して{'敗北' if kind == 'battle_loss_with_resources' else '退却'}"
+        who = battle.get('general') or battle.get('step') or '不明'
+        return f"[半熟英雄] {label}: ch{record.get('chapter')} {who}"[:100]
     if kind in ('sortie_failed', 'sortie_cancelled'):
         sortie = record.get('sortie_event') or {}
         label = '出撃失敗' if kind == 'sortie_failed' else '出撃キャンセル'
