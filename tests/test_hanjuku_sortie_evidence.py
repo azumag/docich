@@ -29,7 +29,8 @@ def menu(kind, words, hand=True):
 
 
 def measured_card_select(names=('イッテツーン', 'ダイチスイム', 'ブラッキー', 'フットバース'),
-                         *, selected=0, stock='2', remaining='3', stocks=None):
+                         *, selected=0, stock='2', remaining='3', stocks=None,
+                         more_above=None, more_below=None):
     rows = {31: [(136 + 8*i, ch) for i, ch in enumerate('きりふだセレクト')]
                   + [(208 + 8*i, ch) for i, ch in enumerate(f'あと{remaining}こ')],
             127: [(136 + 8*i, ch) for i, ch in enumerate('バトルようのきりふだです')]}
@@ -48,7 +49,8 @@ def measured_card_select(names=('イッテツーン', 'ダイチスイム', 'ブ
         rows.setdefault(y, []).append((x, UNKNOWN))
     lines = [TextLine(y, tuple(sorted(cells))) for y, cells in sorted(rows.items())]
     return actor_panel(Screen(lines=lines, text=''.join(line.known for line in lines), kind='card_select',
-                  hand=(138, 49 + selected*16, 158, 62 + selected*16)), 'ゼウス')
+                  hand=(138, 49 + selected*16, 158, 62 + selected*16),
+                  card_more_above=more_above, card_more_below=more_below), 'ゼウス')
 
 
 def memory():
@@ -155,12 +157,13 @@ def test_sortie_card_stock_is_recorded_for_the_adjusted_chart():
     assert mem['card_stock'] == {'イッテツーン': 10, 'ブラッキー': 1,
                                  'フットバース': 2, 'クースカン': 2}
     assert policy._adjust_situation(mem)['card_stock'] == mem['card_stock']
-    # Fewer than four rows is the whole inventory: a known card that is no
+    # No ▲/▼ scroll arrow is the whole inventory: a known card that is no
     # longer shown is out of stock now (depleted items disappear).
-    policy.deploy_step(measured_card_select(('ブラッキー', 'クースカン'), stocks=[1, 1]), mem)
+    policy.deploy_step(measured_card_select(('ブラッキー', 'クースカン'), stocks=[1, 1],
+                                            more_above=False, more_below=False), mem)
     assert mem['card_stock'] == {'イッテツーン': 0, 'ブラッキー': 1,
                                  'フットバース': 0, 'クースカン': 1}
-    # A four-row panel is a window: only the rows it shows are updated.
+    # A panel with an unread arrow is a window: only the rows it shows update.
     policy.deploy_step(measured_card_select(('イッテツーン', 'ブラッキー', 'フットバース', 'クースカン'),
                                             stocks=[1, 1, 1, 1]), mem)
     policy.deploy_step(measured_card_select(('イッテツーン', 'ブラッキー', 'フットバース', 'クースカン'),
@@ -514,7 +517,8 @@ def test_measured_card_menu_ignores_background_and_moves_to_footbath():
     assert record['decision'] == 'card_pick'
     assert record['resulting_event'] == 'selection_planned_not_yet_confirmed'
     assert record['observed_metric'] == {'stock': 2, 'remaining': 3,
-                                         'inventory_evidence': 'measured_four_row_card_select', 'observed_rows': 4}
+                                         'inventory_evidence': 'measured_four_row_card_select', 'observed_rows': 4,
+                                         'more_above': None, 'more_below': None}
     assert not _plan_region(mem).get('order_context')
 
 
@@ -597,7 +601,8 @@ def test_calibrated_card_cursor_decision_is_joined_to_action_plan(tmp_path, retr
     assert record['decision'] == 'sortie_input' and record['reason']
     observed = {'desired_card': 'フットバース', 'selected_y': 55, 'selected_card': 'イッテツーン',
                 'target_y': 103, 'target_stock': 2, 'remaining': 3,
-                'inventory_evidence': 'measured_four_row_card_select', 'observed_rows': 4}
+                'inventory_evidence': 'measured_four_row_card_select', 'observed_rows': 4,
+                'more_above': None, 'more_below': None}
     assert record['observed_metric'] == observed
     if retry:
         assert all(record[key] == value for key, value in context.items())
@@ -792,7 +797,8 @@ def test_structurally_complete_prefix_rows_are_not_labelled_as_measured_four_row
     record = mem['_records'][-1]
     assert record['resulting_event'] == 'selection_planned_not_yet_confirmed'
     assert record['observed_metric'] == {'stock': 2, 'remaining': 3,
-        'inventory_evidence': 'structured_card_select', 'observed_rows': row_count}
+        'inventory_evidence': 'structured_card_select', 'observed_rows': row_count,
+        'more_above': None, 'more_below': None}
 
 
 @pytest.mark.parametrize('change', ['blank_cursor', 'zero_rows', 'missing_first', 'missing_middle',

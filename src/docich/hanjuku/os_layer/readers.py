@@ -956,12 +956,50 @@ def _sortie_inventory(screen):
     return cards
 
 
-def _measured_card_select(screen):
+# きりふだセレクト is a four-row window (y=55,71,87,103). A ▲ at
+# x=184..190, y=41..44 means rows above are hidden; a ▼ at x=184..190,
+# y=113..116 means rows below are hidden. Isolated probes of 180 frames each
+# at the top, middle and bottom of the list found both arrows static (never a
+# missing frame; prod1190 and ch9-local, 2026-11-22). The drawn arrow is 16
+# near-white pixels (248,252,248), luminance 250. The green panel dither in
+# the same boxes peaks at (0,149,0), luminance 87, so 140 separates them.
+# Count lit pixels rather than match one bitmap: a one-pixel clip leaves 9-15
+# lit, while an absent arrow has 0. Anything between is unreadable (None).
+CARD_SCROLL_ABOVE = (184, 41, 191, 45)
+CARD_SCROLL_BELOW = (184, 113, 191, 117)
+CARD_ARROW_LUMINANCE = 140
+CARD_ARROW_LIT = 8
+
+
+def _card_scroll_arrow(frame, box):
+    """True when the arrow is drawn, False when absent, None if unreadable."""
+    if frame is None or box[2] > frame.width or box[3] > frame.height:
+        return None
+    lit = 0
+    for y in range(box[1], box[3]):
+        for x in range(box[0], box[2]):
+            r, g, b = frame.pixel(x, y)
+            if (r * 299 + g * 587 + b * 114) // 1000 > CARD_ARROW_LUMINANCE:
+                lit += 1
+    if lit >= CARD_ARROW_LIT:
+        return True
+    if lit == 0:
+        return False
+    return None
+
+
+def _measured_card_select(screen, frame=None):
     """Read contiguous rows in the measured g328 panel, never infer stock.
 
     Stock is right-aligned at x=232; live tens for 10-99 sit at x=224.
     Depleted final items disappear. Empty baselines must form a trailing
     suffix; UNKNOWN cells are unreadable rows, not evidence of emptiness.
+
+    The returned inventory also carries ``more_above`` / ``more_below`` from
+    the panel's ▲/▼ pixels (True/False/None). Only False for both proves the
+    visible rows are the whole list. A Screen built without a frame reads the
+    ``card_more_above`` / ``card_more_below`` attributes instead; None there
+    means the caller supplied no arrow evidence, never "no hidden rows".
     """
     if screen.kind != 'card_select':
         return None
@@ -1038,7 +1076,14 @@ def _measured_card_select(screen):
     if (x0 not in (138, 139) or x1 not in (156, 158) or y1 != selected_y + 7
             or selected_y not in {row['y'] for row in rows}):
         return None
+    if frame is not None:
+        more_above = _card_scroll_arrow(frame, CARD_SCROLL_ABOVE)
+        more_below = _card_scroll_arrow(frame, CARD_SCROLL_BELOW)
+    else:
+        more_above = getattr(screen, 'card_more_above', None)
+        more_below = getattr(screen, 'card_more_below', None)
     return {'rows': rows, 'selected_y': selected_y, 'remaining': int(remaining),
+            'more_above': more_above, 'more_below': more_below,
             'inventory_evidence': ('measured_four_row_card_select' if len(rows) == 4
                                    else 'structured_card_select'), 'observed_rows': len(rows)}
 

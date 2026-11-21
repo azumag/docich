@@ -2073,7 +2073,9 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
     elif kind in {'shop_list','shop_quantity_prompt','shop_quantity','shop_exit_confirm'}:
         actions=shop_flow.shop_step(screen,mem)
     elif kind in {'castle_menu','general_list','card_select','sortie_confirm'} and mem.get('chapter'):
-        actions=deploy_flow.deploy_step(screen,mem)
+        # Only the card panel has scroll arrows; other menus keep the old call.
+        actions=(deploy_flow.deploy_step(screen,mem,frame=frame) if kind=='card_select'
+                 else deploy_flow.deploy_step(screen,mem))
     elif kind=='map_target' and mem.get('chapter'):
         actions=map_flow.target_step(screen,mem,frame)
     elif kind=='world_map' and mem.get('chapter'):

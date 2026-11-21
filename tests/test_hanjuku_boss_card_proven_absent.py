@@ -19,9 +19,11 @@ def memory(picked=('ノリウツール',)):
             'sortie_general': {'1-B1': 'アンディーブ'}}
 
 
-def panel(names=G825, stocks=None, remaining='2', selected=3):
+def panel(names=G825, stocks=None, remaining='2', selected=3, **arrows):
     screen = measured_card_select(names, stocks=stocks or [1] * len(names),
-                                  remaining=remaining, selected=selected)
+                                  remaining=remaining, selected=selected,
+                                  more_above=arrows.get('more_above'),
+                                  more_below=arrows.get('more_below'))
     return actor_panel(screen, 'アンディーブ')
 
 
@@ -49,17 +51,18 @@ def test_exhausted_scroll_budget_from_the_live_stall_also_drops():
     assert mem['card_drop'] == {'1-B1': ['クースカン']}
 
 
-@pytest.mark.parametrize('names,stocks,remaining,expected', [
-    (G825, None, '2', True),                                          # 11 < 13 < 16
-    (('ブラッキー', 'ノリウツール'), None, '2', True),                     # whole short list
-    (('ブラッキー', 'ノリウツール', 'クースカン'), [1, 1, 0], '2', True),   # shown at zero
-    (('イッテツーン', 'ブラッキー', 'フットバース', 'ノリウツール'), None, '2', False),  # may be below
-    (('クースカン', 'ノリウツール'), None, '2', False),                  # in stock
-    (G825, None, '0', False),                                         # no carry slot left
-    (('ノリウツール', 'ブラッキー', 'フットバース', 'バルムンク'), None, '2', False),   # not ID order
+@pytest.mark.parametrize('names,stocks,remaining,expected,arrows', [
+    (G825, None, '2', True, {}),                                          # 11 < 13 < 16
+    (('ブラッキー', 'ノリウツール'), None, '2', True,
+     {'more_above': False, 'more_below': False}),                         # whole short list
+    (('ブラッキー', 'ノリウツール', 'クースカン'), [1, 1, 0], '2', True, {}),   # shown at zero
+    (('イッテツーン', 'ブラッキー', 'フットバース', 'ノリウツール'), None, '2', False, {}),  # may be below
+    (('クースカン', 'ノリウツール'), None, '2', False, {}),                  # in stock
+    (G825, None, '0', False, {}),                                         # no carry slot left
+    (('ノリウツール', 'ブラッキー', 'フットバース', 'バルムンク'), None, '2', False, {}),   # not ID order
 ])
-def test_absence_needs_a_readable_id_ordered_proof(names, stocks, remaining, expected):
-    inventory = policy._measured_card_select(panel(names, stocks, remaining, selected=0))
+def test_absence_needs_a_readable_id_ordered_proof(names, stocks, remaining, expected, arrows):
+    inventory = policy._measured_card_select(panel(names, stocks, remaining, selected=0, **arrows))
     assert _card_proven_absent('クースカン', inventory) is expected
 
 

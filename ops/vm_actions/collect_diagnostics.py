@@ -8025,6 +8025,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v1343-planned-busy-partial",
             "hanjuku-chart-v1347-chikujou-issue",
             "hanjuku-chart-v1348-summon-scroll-batch",
+            "hanjuku-chart-v1349-card-panel-scroll-arrows",
             "hanjuku-chart-v985-roster-lost",
             "hanjuku-chart-v982-gbox",
             "hanjuku-chart-v984-roster-map-anchor",

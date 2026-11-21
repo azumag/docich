@@ -10,9 +10,10 @@ from docich import hanjuku_reference as reference
 from docich.hanjuku.state.regions import plan as _plan_region
 
 
-def inventory(rows, remaining=3):
+def inventory(rows, remaining=3, more_above=None, more_below=None):
     return {'rows': [{'y': 55 + 16 * i, 'card': c, 'stock': n} for i, (c, n) in enumerate(rows)],
             'selected_y': 55, 'remaining': remaining,
+            'more_above': more_above, 'more_below': more_below,
             'inventory_evidence': 'measured_four_row_card_select', 'observed_rows': len(rows)}
 
 
@@ -94,7 +95,8 @@ def test_a_balmung_measured_this_month_counts_when_the_window_hides_it():
     assert p._boss_balmung_kit(mem, order, hidden) is None
     # 一覧が不在を証明したら記録は消える。
     mem['balmung_held'] = {'month': '2-6', 'stock': 2}
-    p._note_balmung_stock(mem, '2-6', inventory([('イッテツーン', 3), ('ブラッキー', 2)]))
+    p._note_balmung_stock(mem, '2-6', inventory([('イッテツーン', 3), ('ブラッキー', 2)],
+                                               more_above=False, more_below=False))
     assert 'balmung_held' not in mem
 
 
