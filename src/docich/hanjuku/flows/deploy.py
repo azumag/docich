@@ -40,7 +40,7 @@ from ..strategy.orders import (SOURCE_LOCATION_RECHECK_LIMIT, SORTIE_CANCELLED_O
                                _staffed_elsewhere, _unplaced_castle_generals)
 
 
-CARD_SCROLL_HOLD_MAX = 4        # rows one held scroll may cross
+CARD_SCROLL_HOLD_MAX = 8        # rows one burst scroll may cross (#4884)
 RARE_REWIND_STEPS = 4           # rows one rewind observation may return
 
 
@@ -268,6 +268,7 @@ def _rare_card_inventory(screen, mem, order, inventory):
     Never change an already picked/in-flight sortie or invent event stock.
     """
     if (mem.get('picked') or inventory['remaining'] == 0
+            or order.get('purpose') == 'move'
             or (mem.get('rare_card_kit') or {}).get(order['step']) is not None):
         return None
     month = mem.get('month') or f"chapter-{mem.get('chapter')}:unknown"
@@ -604,7 +605,16 @@ def _card_scroll_frames(mem, card, inventory):
     stock = mem.get('card_stock') if isinstance(mem.get('card_stock'), dict) else {}
     between = [c for c, cid in CARD_IDS.items()
                if type(cid) is int and lo < cid < hi and int(stock.get(c, 0) or 0) > 0]
-    return max(1, min(len(between), CARD_SCROLL_HOLD_MAX))
+    target_held = int(stock.get(card, 0) or 0) > 0
+    if not between and not target_held:
+        return 1
+    steps = len(between) + (1 if target_held else 0)
+    selected_y = inventory.get('selected_y')
+    if type(selected_y) is int:
+        edge_y = rows[-1]['y'] if down else rows[0]['y']
+        if type(edge_y) is int:
+            steps += max(0, min(3, abs(edge_y - selected_y) // 16))
+    return max(1, min(steps, CARD_SCROLL_HOLD_MAX))
 
 
 def _lower_card_boundary(mem, order, inventory):
