@@ -602,10 +602,12 @@ def _survival_card_list(screen, mem, cur, flow, names):
         _card_gate_refused(mem, cur, card, gate, listed_cards=names)
         return _card_gate_close(mem, cur, names)
     flow.update(card=card, stage='announce', selection_planned=True)
-    # docich#4977: same evidence base as chart selections — the announce
-    # banner is uncalibrated for survival cards too.
-    flow.setdefault('enemy_hp_at_open', cur.get('enemy_hp'))
-    flow.setdefault('enemy_soldiers_at_open', cur.get('enemy_soldiers'))
+    # docich#4977: the row-disappearance evidence needs the list seen at
+    # selection. The HP/soldier baselines are deliberately NOT snapshotted
+    # here: a selection-time reading would attribute melee-caused drops
+    # during the announce wait to the card (a fake receipt — the control
+    # melee tests forbid it). Those evidences stay limited to flows whose
+    # baseline was recorded when the battle menu opened.
     flow['names_at_select'] = list(names)
     cur['card_damage_rescue_needed'] = False
     rescue['cards_attempted'].append(card)
@@ -1698,12 +1700,12 @@ def card_list_step(screen: Screen, mem):
             return _emit_moves(move)
         flow['stage'] = 'announce'
         flow['selection_planned'] = True
-        # docich#4977: snapshot the panel and the visible list the card will
-        # be judged against. Flows opened without an open-time reading
-        # (survival, older bots) still get the same evidence base as chart
-        # flows.
-        flow.setdefault('enemy_hp_at_open', cur.get('enemy_hp'))
-        flow.setdefault('enemy_soldiers_at_open', cur.get('enemy_soldiers'))
+        # docich#4977: snapshot the visible list the card will be judged
+        # against (row-disappearance evidence). The HP/soldier baselines
+        # are deliberately NOT snapshotted at selection time: a drop
+        # during the announce wait can come from melee, and attributing
+        # it to the card would fabricate a use receipt. Those evidences
+        # use only the baseline recorded when the battle menu opened.
         flow['names_at_select'] = list(names)
         cur['card_damage_rescue_needed'] = False
         cur['card_consumption_complete'] = False

@@ -117,3 +117,22 @@ handoff: `DOCICH_HANDOFF_PATH` 未設定のため正本は未読（AGENTS.md §1
   解消は別 issue で継続。
 - 月次オーディットで `battle_card_list_unclassified` / `battle_loss_with_resources` の
   前後比較、および `battle_card_effect_confirmed` の `observed_metric.evidence` 内訳確認が必要。
+
+## 検品ゲートでの CI 修正（2026-11-22、主担当）
+
+PR #4981 の CI で full-suite / prediction-regressions が 4 件失敗した
+（`test_hanjuku_card_damage_gate.py`、`test_hanjuku_control_melee.py`、
+`test_hanjuku_control_chain_melee.py`、`test_hanjuku_delayed_control_melee.py`、
+いずれも `cards_used == ['クースカン']` で未確定のはずの制御札が確定扱い）。
+
+原因: 選択遷移（`card_list_step` と `_survival_card_list`）で追加した
+`enemy_hp_at_open` / `enemy_soldiers_at_open` の setdefault スナップショット。
+選択時点の読みを基準にすると、announce 待機中の白兵による HP・兵士数の
+減少まで札の効果と誤認し、受領書を捏造する（制御札の followup テストが
+明示的に禁止している挙動）。
+
+修正: 選択遷移の setdefault を両方とも除去した。HP・兵士数の証拠は、
+戦闘メニュー開放時に記録された基準値を持つ flow でのみ発火する
+（fail-closed）。`names_at_select`（行消失証拠用）は選択時点の一覧が
+正しい基準なので両経路とも維持する。修正後、関連 7 ファイル 172 件と
+新規 6 件を含む札・戦闘・白兵・制御系の広域実行で確認する。
