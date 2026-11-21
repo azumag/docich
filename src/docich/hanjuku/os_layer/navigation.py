@@ -625,6 +625,34 @@ def _y_jump_step(mem, frame):
                 observed_metric={'moves': jump['moves'], 'stationary_reads': jump['still']},
                 reason='移動入力後も検出カーソルが動かないため決定せず閉じて通常の移動に戻る')
         return _close_target_jump(mem, jump)
+    scales = jump.get('axis_scale')
+    if not (isinstance(scales, list) and len(scales) == 2):
+        scales = [1.0, 1.0]
+    settled = jump.get('min_step_settled')
+    if not (isinstance(settled, list) and len(settled) == 2):
+        settled = [False, False]
+    prev_delta = jump.get('last_delta')
+    prev_frames = jump.get('last_frames')
+    if isinstance(prev_delta, list) and len(prev_delta) == 2 and jump['moves'] >= 1:
+        for i, (prev_d, cur_d) in enumerate(((prev_delta[0], dx), (prev_delta[1], dy))):
+            if abs(cur_d) > Y_JUMP_FINAL_TOL:
+                settled[i] = False
+            if abs(prev_d) > Y_JUMP_TOL and prev_d * cur_d < 0:
+                # Overshot the target on this axis: halve the hold gain so a
+                # fast world-map cursor converges instead of bouncing forever
+                # (#4853: 64-move left+up <-> right+down limit cycle).
+                scales[i] = max(0.01, scales[i] * 0.5)
+                if (isinstance(prev_frames, list) and len(prev_frames) == 2
+                        and prev_frames[i] == 1 and abs(cur_d) <= Y_JUMP_FINAL_TOL):
+                    # A 1-frame minimum tap already straddled the goal within
+                    # Y_JUMP_FINAL_TOL: no finer step exists (#4859).
+                    settled[i] = True
+    jump['axis_scale'] = scales
+    jump['min_step_settled'] = settled
+    axis_done = [
+        abs(dx) <= Y_JUMP_TOL or (settled[0] and abs(dx) <= Y_JUMP_FINAL_TOL),
+        abs(dy) <= Y_JUMP_TOL or (settled[1] and abs(dy) <= Y_JUMP_FINAL_TOL),
+    ]
     limit = BOSS_JUMP_MOVES if chart.is_boss_castle(jump.get('goal') or '') else Y_JUMP_MOVES
     if jump['moves'] >= limit and not (abs(dx) <= Y_JUMP_FINAL_TOL and abs(dy) <= Y_JUMP_FINAL_TOL):
         # Never confirm far from the goal (g419 10:49: 50 px off after a misread).
@@ -636,7 +664,7 @@ def _y_jump_step(mem, frame):
                 reason='全体マップのカーソルが目的の城に合わないため決定せず閉じる')
         _note_unreachable_goal(mem, jump['goal'], (dx, dy), step=jump.get('step'))
         return _close_target_jump(mem, jump)
-    if (abs(dx) <= Y_JUMP_TOL and abs(dy) <= Y_JUMP_TOL) or jump['moves'] >= limit:
+    if all(axis_done) or jump['moves'] >= limit:
         mem.pop('y_jump', None)
         mem['y_jump_return'] = jump['mode']
         if jump['mode'] == 'target':
@@ -659,24 +687,15 @@ def _y_jump_step(mem, frame):
                 reason='全体マップのカーソルを目的の城に合わせて決定')
         return [pad('a')]
     jump['moves'] += 1
-    scales = jump.get('axis_scale')
-    if not (isinstance(scales, list) and len(scales) == 2):
-        scales = [1.0, 1.0]
-    prev_delta = jump.get('last_delta')
-    if isinstance(prev_delta, list) and len(prev_delta) == 2 and jump['moves'] > 1:
-        for i, (prev_d, cur_d) in enumerate(((prev_delta[0], dx), (prev_delta[1], dy))):
-            if abs(prev_d) > Y_JUMP_TOL and prev_d * cur_d < 0:
-                # Overshot the target on this axis: halve the hold gain so a
-                # fast world-map cursor converges instead of bouncing forever
-                # (#4853: 64-move left+up <-> right+down limit cycle).
-                scales[i] = max(0.08, scales[i] * 0.5)
-    jump['axis_scale'] = scales
     jump['last_delta'] = [dx, dy]
+    issued_frames = [0, 0]
     actions = []
     for i, (d, neg, pos) in enumerate(((dx, 'left', 'right'), (dy, 'up', 'down'))):
-        if abs(d) > Y_JUMP_TOL:
+        if not axis_done[i]:
             frames = max(1, round(_jump_hold_frames(d) * scales[i]))
+            issued_frames[i] = frames
             actions.append(pad(pos if d > 0 else neg, frames))
+    jump['last_frames'] = issued_frames
     if actions:
         mem['_nav_hold_feedback'] = {'kind': 'world_map', 'actions': actions}
     return actions

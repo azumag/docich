@@ -688,21 +688,32 @@ def world_cursor(frame, chapter=None):
             continue
         corners = ((min(xs), min(ys)), (max(xs), min(ys)),
                    (min(xs), max(ys)), (max(xs), max(ys)))
+        occupied_corners = sum(
+            1 for x0, y0 in corners
+            if any(abs(x - x0) <= 3 and abs(y - y0) <= 3 for x, y in inside))
         at_corner = sum(1 for x, y in inside
                         if any(abs(x - x0) <= 3 and abs(y - y0) <= 3
                                for x0, y0 in corners))
-        scored.append((at_corner / len(inside), len(inside),
-                       (min(xs) + max(xs)) / 2, (min(ys) + max(ys)) / 2))
+        ratio = at_corner / len(inside)
+        if ratio >= 0.7:
+            scored.append((occupied_corners == 4, ratio, len(inside),
+                           (min(xs) + max(xs)) / 2, (min(ys) + max(ys)) / 2))
     scored.sort(reverse=True)
-    if scored and scored[0][0] >= 0.7:
-        return (scored[0][2], scored[0][3])
-    # The blue "G" box cursor is not chapter 9's alone: the same icon steers
-    # the chapter-11 target jump (g1190 2026-11-18 03:13: the Y view showed it
-    # at (85,95) while world_cursor returned None, so every クラボニア jump
-    # aborted as unreadable).
+    # The solid blue "G" box cursor is unambiguous on every Y view (zero false
+    # positives across all saved fixtures). Prefer it over unrelated gold unit
+    # clusters elsewhere on the map (#4859: two unit ▲s produced 0.94-0.95
+    # corner-fill false gold at (131.5, 70.0)/(151.0, 98.0), hijacking Y jumps
+    # even while the real blue G box was visible). When a matching gold corner
+    # box surrounds the blue G, keep its exact corner-box centre.
     blue_g = _blue_g_box_cursor(frame)
     if blue_g is not None:
+        near = [cand for cand in scored
+                if abs(cand[3] - blue_g[0]) <= 3 and abs(cand[4] - blue_g[1]) <= 3]
+        if near:
+            return (near[0][3], near[0][4])
         return blue_g
+    if scored:
+        return (scored[0][3], scored[0][4])
     if chapter == 9:
         # Otherwise unreadable is safer than a false cursor.
         return None
