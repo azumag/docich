@@ -4,6 +4,16 @@ import pytest
 from docich.hanjuku.flows import house, month
 from docich.hanjuku.strategy import campaign, goals
 from docich.hanjuku.strategy.goals import GOAL_LIMIT, STARVE_ATTEMPTS
+
+# The production default pauses repair goals (EGG_REPAIR_DISABLED); these
+# tests exercise the repair machinery, so they opt back in.
+import pytest as _pytest
+
+
+@_pytest.fixture(autouse=True)
+def _repair_goals_enabled(monkeypatch):
+    monkeypatch.setattr(goals, 'EGG_REPAIR_DISABLED', False)
+
 from docich.hanjuku_screen import Screen
 from docich.hanjuku.state.regions import world as _world
 

@@ -28,6 +28,8 @@ MAP_IDLE_WINDOW = 2        # observations a "nothing to sortie" reading stays cu
 
 # The fact store that keeps each kind's intent alive, and the flow that owns it:
 #   repair      house_eggs[name].broken            -> flows/house.py session
+
+EGG_REPAIR_DISABLED = True            # 2026-11-21: 「アタシの家」修復出撃が進行を阻害するため一時停止
 #   egg_recover economy._egg_recovery_targets      -> flows/month.py sub
 #   recruit     economy._recruit_shortage          -> flows/month.py sub
 #   retake      mem['lost']                        -> replan interim candidates
@@ -89,7 +91,8 @@ def _wanted(mem):
             wanted[('retake', None, castle)] = {'kind': 'retake', 'target': castle}
     departed = _departed(mem, chapter)
     for name, info in (mem.get('house_eggs') or {}).items():
-        if isinstance(info, dict) and info.get('broken') is True and name not in departed:
+        if (not EGG_REPAIR_DISABLED and isinstance(info, dict)
+                and info.get('broken') is True and name not in departed):
             wanted[('repair', name, None)] = {'kind': 'repair', 'actor': name}
     from .economy import _egg_recovery_targets, _recruit_shortage
     targets = _egg_recovery_targets(mem)
@@ -276,6 +279,8 @@ def _repair_goal_due(mem, goal):
 
 def repair_due(mem):
     """A deferred broken-egg repair is waiting for idle map time."""
+    if EGG_REPAIR_DISABLED:
+        return False
     return any(g.get('kind') == 'repair' and _repair_goal_due(mem, g)
                for g in _goals(mem))
 

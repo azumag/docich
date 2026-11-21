@@ -8007,6 +8007,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v1328-recall-jump-skip",
             "hanjuku-chart-v1329-hold-limit-bisect",
             "hanjuku-chart-v1330-blind-nav-release",
+            "hanjuku-chart-v1331-egg-repair-disabled",
             "hanjuku-chart-v985-roster-lost",
             "hanjuku-chart-v982-gbox",
             "hanjuku-chart-v984-roster-map-anchor",
