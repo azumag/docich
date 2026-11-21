@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import time
+from datetime import datetime, timezone
+from pathlib import Path
 
 from . import brains
 from . import telemetry as telemetry_mod
@@ -39,8 +41,47 @@ def _timed_observe(adapter, tel):
         tel.count("observes")
 
 
+def _describe_action(action) -> str:
+    kind = getattr(action, "type", "")
+    if kind == "text":
+        return f"key:{getattr(action, 'text', '')}"
+    if kind == "key":
+        return "key:" + "+".join(str(k) for k in getattr(action, "keys", []) or [])
+    if kind == "special":
+        return f"special:{getattr(action, 'key', '')}"
+    if kind == "pad":
+        return "pad:" + "+".join(str(b) for b in getattr(action, "buttons", []) or [])
+    if kind == "wait":
+        return f"wait:{int(getattr(action, 'ms', 0))}ms"
+    return kind or "action"
+
+
+def _write_action_log(state_dir, game_name: str, lines) -> None:
+    """Append bounded action-log lines for the broadcast overlay feed.
+
+    Observation-side only: a write failure must never stop gameplay.  The file
+    is kept to a bounded tail so a long corner cannot grow it without limit.
+    """
+    if state_dir is None or not lines:
+        return
+    try:
+        path = Path(state_dir) / str(game_name) / "action_log.txt"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as fh:
+            for line in lines:
+                fh.write(str(line) + "\n")
+        try:
+            content = path.read_text(encoding="utf-8").splitlines()
+        except OSError:
+            return
+        if len(content) > 200:
+            path.write_text("\n".join(content[-200:]) + "\n", encoding="utf-8")
+    except OSError:
+        pass
+
+
 def _run_iteration(adapter, brain, interval_ms: int, *, fence=None, state_dir=None,
-                   telemetry=None) -> int:
+                   telemetry=None, game_name: str | None = None) -> int:
     """Run a single observe -> decide -> act cycle, returning the action count.
 
     When a fence is bound, the canonical state is resolved first: a worker
@@ -100,7 +141,9 @@ def _run_iteration(adapter, brain, interval_ms: int, *, fence=None, state_dir=No
     # Other brains retain their existing observation/action protocol.
     guarded = isinstance(brain, brains.NethackPolicyBrain)
     completed = 0
+    sent_actions: list[str] = []
     act_start = tel.now()
+    cycle_finished = False
     try:
         if fence is not None:
             _check_loop_fence(fence, state_dir)
@@ -127,6 +170,7 @@ def _run_iteration(adapter, brain, interval_ms: int, *, fence=None, state_dir=No
                     if not brain.validate_action(single, fresh, canonical=canonical):
                         return False
                 adapter.act(single)
+                sent_actions.append(_describe_action(single))
                 if guarded:
                     brain.action_sent(single)
                 return True
@@ -137,8 +181,17 @@ def _run_iteration(adapter, brain, interval_ms: int, *, fence=None, state_dir=No
             sent = shared_section(state_dir, _act) if locked_send else _act()
             completed += int(sent)
         tel.count("actions_completed", completed)
+        cycle_finished = True
         return completed
     finally:
+        log_lines = [
+            f"{datetime.now(timezone.utc).strftime('%H:%M:%S')} {desc}"
+            for desc in sent_actions
+        ]
+        if cycle_finished or sent_actions:
+            logged_count = completed if cycle_finished else len(sent_actions)
+            log_lines.append(f"--- {logged_count} 件のアクションを実行 ---")
+            _write_action_log(state_dir, game_name or "agent", log_lines)
         tel.add_time("act_s", act_start)
         if guarded:
             # Includes fresh rejection, observe/act errors and terminal fence
@@ -225,7 +278,7 @@ def run_agent(
         effective_interval = interval_ms
         try:
             n = _run_iteration(adapter, brain, interval_ms, fence=fence, state_dir=g.state_dir,
-                               telemetry=tel)
+                               telemetry=tel, game_name=name)
             next_interval = getattr(brain, "observation_interval_ms", None)
             if type(next_interval) is int and next_interval in (500, 1500):
                 effective_interval = next_interval
