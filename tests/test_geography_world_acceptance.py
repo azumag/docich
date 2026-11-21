@@ -15,7 +15,6 @@ on the structured draft, overlay payload, and progression frames.
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 from docich.new_corner_runtime import (
@@ -27,12 +26,6 @@ from docich.new_corner_runtime import (
 )
 
 FIXTURE_ROOT = Path(__file__).resolve().parents[1]
-FIXTURE = (
-    FIXTURE_ROOT
-    / "fixtures"
-    / "geography_world_corner"
-    / "fixed_geography_example.json"
-)
 
 # The 8 required sections from the design doc, in order.
 EIGHT_SECTIONS = (
@@ -45,10 +38,6 @@ EIGHT_SECTIONS = (
     "historyPoliticsImpact",
     "currentMeaning",
 )
-
-
-def load_fixture() -> dict:
-    return json.loads(FIXTURE.read_text(encoding="utf-8"))
 
 
 def _section_text_nonempty(record: dict) -> bool:
