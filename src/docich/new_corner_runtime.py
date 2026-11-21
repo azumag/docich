@@ -381,6 +381,62 @@ MERIKEN_ECONOMICS_SPEC = CornerRuntimeSpec(
     labels=("fact", "analysis", "forecast"),
 )
 
+MERIKEN_BUSINESS_SPEC = CornerRuntimeSpec(
+    corner_id="meriken-business",
+    fixture_parts=(
+        "tests",
+        "fixtures",
+        "meriken_business_corner",
+        "fixed_meriken_business_example.json",
+    ),
+    container="topic",
+    title_key="title",
+    question_key="businessQuestion",
+    summary_key="thirtySecondSummary",
+    sections=(
+        Section("businessQuestion", "fact", "今日の問い"),
+        Section("merikenView", "analysis", "メリケンの見方"),
+        Section("customer", "fact", "顧客は誰か"),
+        Section("offering", "fact", "何を売るか"),
+        Section("revenueModel", "analysis", "どう課金するか"),
+        Section("costStructure", "fact", "主なコスト"),
+        Section("competitiveAdvantage", "analysis", "競争優位・moat"),
+        Section("unitEconomics", "analysis", "ユニットエコノミクス"),
+        Section("scalingDynamics", "forecast", "成長すると何が変わるか"),
+        Section("vulnerabilities", "caveat", "弱点・規制・競合"),
+        Section("counterArguments", "analysis", "反対論・制約"),
+        Section("stakeholderImpact", "analysis", "ステークホルダー影響"),
+        Section("newsApplication", "forecast", "現実のニュースへの適用"),
+    ),
+    required_fields=(
+        "title",
+        "topicId",
+        "businessQuestion",
+        "merikenView",
+        "customer",
+        "offering",
+        "revenueModel",
+        "costStructure",
+        "competitiveAdvantage",
+        "unitEconomics",
+        "scalingDynamics",
+        "vulnerabilities",
+        "counterArguments",
+        "stakeholderImpact",
+        "newsApplication",
+        "thirtySecondSummary",
+        "oneLineSummary",
+        "primarySources",
+        "sourcePriority",
+        "citationKeepUrl",
+        "figureOrDiagram",
+        "youtubeIndependentDraft",
+    ),
+    caveat_keys=("limitations", "uncertainty"),
+    labels=("fact", "analysis", "forecast"),
+)
+
+
 CORNER_SPECS = {
     WORLD_HISTORY_SPEC.corner_id: WORLD_HISTORY_SPEC,
     RESEARCH_PAPER_SPEC.corner_id: RESEARCH_PAPER_SPEC,
@@ -389,6 +445,7 @@ CORNER_SPECS = {
     ELECTRONICS_SPEC.corner_id: ELECTRONICS_SPEC,
     ARCHITECTURE_SPEC.corner_id: ARCHITECTURE_SPEC,
     MERIKEN_ECONOMICS_SPEC.corner_id: MERIKEN_ECONOMICS_SPEC,
+    MERIKEN_BUSINESS_SPEC.corner_id: MERIKEN_BUSINESS_SPEC,
 }
 
 
