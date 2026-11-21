@@ -1693,6 +1693,19 @@ def test_a_static_unresolvable_marker_is_not_re_read_for_every_general():
     assert post._static_marker(state, {}) is False
 
 
+def test_scroll_arrow_fallback_never_triggers_static_marker_skip():
+    """#4910: the list scroll arrow appears whenever the in-map triangle blinks off."""
+    state = {}
+    scroll_arrow = {'box': [192, 161, 198, 167], 'source': 'selection_marker',
+                    'marker_reason': 'scroll_arrow'}
+    assert post._static_marker(state, scroll_arrow) is False
+    assert 'static_marker' not in state
+    assert post._static_marker(state, scroll_arrow) is False
+    outside = {'box': [192, 161, 198, 167], 'source': 'selection_marker'}
+    assert post._static_marker(state, outside) is False
+    assert 'static_marker' not in state
+
+
 def test_a_same_month_house_read_skips_the_individual_reopen():
     """g1163 2026-11-09: the house pass read at 09:55, this walk at 09:58."""
     mem = memory(tick=1000, month='2-6')
