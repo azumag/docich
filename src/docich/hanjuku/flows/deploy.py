@@ -308,7 +308,11 @@ def _rare_card_inventory(screen, mem, order, inventory):
         original = _deploy_cards(order, mem)
         kit = _cap_card_ids(['キャトルミュー', *[c for c in original if c != 'キャトルミュー']])[:3]
         mem.setdefault('rare_card_kit', {})[order['step']] = kit
-        mem[scan_field] = scan_key
+        if row is not None:
+            # 実パネルでキャトルミューを確認したときだけ当月探索を完了扱いにする
+            # (#4882: キャッシュ採用で rare_scan_month を早閉じすると同月のボス出撃で
+            # バルムンク探索が走らなくなる)。
+            mem[scan_field] = scan_key
         mem.pop('rare_scan', None)
         _record(mem, 'rare_card_kit', **_deploy_context(order, mem), chart_step=order['step'],
                 observed_metric={'card': 'キャトルミュー',
@@ -2479,6 +2483,7 @@ def deploy_step(screen: Screen, mem):
             for card in picked:
                 if card in wanted:
                     wanted.remove(card)
+        _note_balmung_stock(mem, mem.get('month') or f"chapter-{mem.get('chapter')}:unknown", inventory)
         if _cursor_order_cards(order, mem):
             return _cursor_card_step(screen, mem, order, inventory, picked)
         boss_actions = _chapter_two_balmung_inventory(mem, order, inventory)
