@@ -1,0 +1,72 @@
+"""#4879: 防衛戦で過去の攻撃launched_ordersを誤流用しないこと、きりふだ可視時にokunoteがcard_flowを奪わないことを検証する。"""
+from pathlib import Path
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
+from docich import hanjuku_policy as p
+from docich.hanjuku.flows import battle, battle_menus
+from docich.hanjuku.state.regions import world as _world
+from docich.hanjuku_font import TextLine
+from docich.hanjuku_screen import Screen
+
+
+def _mem_with_launched_order():
+    mem = {'chapter': 10, 'tick': 757414, '_records': []}
+    _world(mem)['launched_orders'] = {
+        'A:prev:M1': {
+            'step': 'A:prev:M1',
+            'general': 'マサラ',
+            'cards': ['イッテツーン', 'イッテツーン', 'キャトルミュー'],
+            'confirmation_tick': 756000,
+        }
+    }
+    return mem
+
+
+def test_defense_battle_does_not_reuse_stale_attack_launched_orders():
+    mem = _mem_with_launched_order()
+    cur = {'step': None, 'side': 'defense', 'castle': 'ファルゲ',
+           'ally': 'マサラ', 'enemy': 'ガルバンゾー', 'ally_hp': 77, 'enemy_hp': 30}
+    assert battle._carried_opening_tactics(mem, cur, []) == []
+
+
+def test_attack_battle_still_uses_launched_orders_fallback_when_step_differs():
+    mem = _mem_with_launched_order()
+    cur = {'step': 'A:retry:M2', 'side': 'attack', 'castle': 'ピランドリア',
+           'ally': 'マサラ', 'enemy': 'ガルバンゾー', 'ally_hp': 77, 'enemy_hp': 30}
+    tactics = battle._carried_opening_tactics(mem, cur, [])
+    assert [t['card'] for t in tactics] == ['イッテツーン', 'イッテツーン', 'キャトルミュー']
+
+
+def test_visible_kirifuda_with_okunote_does_not_let_okunote_close_card_flow():
+    """攻撃戦などで きりふだ と おくのて が同居する画面で card_flow を B 閉鎖させない。"""
+    def line(y, text):
+        return TextLine(y, tuple((16 + i * 8, ch) for i, ch in enumerate(text)))
+
+    screen = Screen(
+        lines=[line(176, 'きりふだ'), line(192, 'たいきゃく'), line(208, 'おくのて')],
+        hand=None,
+        text='きりふだ たいきゃく おくのて',
+    )
+    screen.kind = 'battle_menu'
+    screen.menu_cursor = 176
+    mem = {
+        'chapter': 10,
+        'tick': 757562,
+        '_records': [],
+        'battle': {
+            'side': 'attack',
+            'ally': 'マサラ',
+            'enemy': 'ガルバンゾー',
+            'ally_hp': 75,
+            'enemy_hp': 30,
+            'start_ally_hp': 77,
+            'start_enemy_hp': 30,
+            'planned_cards': ['キャトルミュー'],
+            'card_flow': {'card': 'キャトルミュー', 'stage': 'menu', 'ticks': 0},
+        },
+    }
+    actions = battle_menus.battle_menu_step(screen, mem)
+    assert actions == [p.pad('a')]
+    assert mem['battle']['card_flow']['stage'] == 'list'
+    assert not any(r.get('decision') == 'battle_okunote_risk_declined' for r in mem['_records'])
