@@ -1498,6 +1498,7 @@ def _camp_recall_step(screen: Screen, mem, frame, *, observed_camps=None):
         (mem.get('y_jumped') or {}).pop('RECALL', None)
         (mem.get('y_jumped_res') or {}).pop('RECALL', None)
         state.pop('picker_confirmed', None)
+        state['picker_from_menu'] = True
         return [pad('a')]
     if stage == 'relay':
         # いどう opened a field-cursor move. Steer it to the relay cell; the
@@ -1522,7 +1523,21 @@ def _camp_recall_step(screen: Screen, mem, frame, *, observed_camps=None):
         # #4885: 一度本物の行き先ピッカーを確認した後は、camp_cliff_detour 等で
         # 赤いテント・砦・自軍城の真下へマーカーを動かしても赤い屋根を将軍旗と
         # 誤認して帰還ピッカーを中断しない（初回フレームの偽G検出 #4468 は維持）。
-        marker = screen.marker if state.get('picker_confirmed') else _picker_marker(screen, frame)
+        # #4917: さらに、キャンプメニューから いどう を確定した直後（steps<=2）に
+        # そのキャンプ自身の座標上（<=8px）へ出たピッカーは、キャンプ直上の赤い城屋根や
+        # 溶岩・別テント旗が重なっていても本物のピッカーとして確定する。
+        if state.get('picker_confirmed'):
+            marker = screen.marker
+        else:
+            marker = _picker_marker(screen, frame)
+            if (not marker and screen.marker and state.get('picker_from_menu')
+                    and int(state.get('steps') or 0) <= 2):
+                camp = state.get('target')
+                if (_camp_target(camp)
+                        and abs(screen.marker[0] - camp[0]) <= 8
+                        and abs(screen.marker[1] - camp[1]) <= 8):
+                    marker = screen.marker
+            state.pop('picker_from_menu', None)
         if screen.marker and not marker:
             # #4468: the blue G belongs to a field general, not an open picker.
             # Never send the recall A here — there is no destination to confirm
