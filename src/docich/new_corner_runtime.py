@@ -493,6 +493,59 @@ INTERNATIONAL_POLITICS_SPEC = CornerRuntimeSpec(
 )
 
 
+GEOGRAPHY_WORLD_SPEC = CornerRuntimeSpec(
+    corner_id="geography-world",
+    fixture_parts=(
+        "tests",
+        "fixtures",
+        "geography_world_corner",
+        "fixed_geography_example.json",
+    ),
+    container="topic",
+    title_key="title",
+    question_key="mapFocus",
+    summary_key="thirtySecondSummary",
+    sections=(
+        Section("mapFocus", "fact", "地図"),
+        Section("terrainClimate", "fact", "地形と気候"),
+        Section("population", "fact", "人口"),
+        Section("resources", "fact", "資源"),
+        Section("transportRoutes", "fact", "交通路"),
+        Section("industry", "fact", "産業"),
+        Section("historyPoliticsImpact", "analysis", "歴史・政治への影響"),
+        Section("currentMeaning", "analysis", "現在の意味"),
+    ),
+    required_fields=(
+        "title",
+        "topicId",
+        "region",
+        "mapFocus",
+        "thirtySecondSummary",
+        "oneLineSummary",
+        "terrainClimate",
+        "population",
+        "resources",
+        "transportRoutes",
+        "industry",
+        "historyPoliticsImpact",
+        "currentMeaning",
+        "mapHandling",
+        "labelsPolicy",
+        "segmentLabels",
+        "limitations",
+        "uncertainty",
+        "figureOrDiagram",
+        "youtubeIndependentDraft",
+        "primarySources",
+        "sourcePriority",
+        "citationKeepUrl",
+        "url",
+    ),
+    caveat_keys=("mapHandling", "limitations", "uncertainty"),
+    labels=("fact", "analysis", "forecast"),
+)
+
+
 CORNER_SPECS = {
     WORLD_HISTORY_SPEC.corner_id: WORLD_HISTORY_SPEC,
     RESEARCH_PAPER_SPEC.corner_id: RESEARCH_PAPER_SPEC,
@@ -503,6 +556,7 @@ CORNER_SPECS = {
     MERIKEN_ECONOMICS_SPEC.corner_id: MERIKEN_ECONOMICS_SPEC,
     MERIKEN_BUSINESS_SPEC.corner_id: MERIKEN_BUSINESS_SPEC,
     INTERNATIONAL_POLITICS_SPEC.corner_id: INTERNATIONAL_POLITICS_SPEC,
+    GEOGRAPHY_WORLD_SPEC.corner_id: GEOGRAPHY_WORLD_SPEC,
 }
 
 
