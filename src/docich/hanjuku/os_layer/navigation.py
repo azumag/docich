@@ -382,6 +382,18 @@ def boss_probe_cell(mem, name, step=None):
         last = chart.castles(chapter).get(corridor[-1]) if corridor else None
         if last:
             return chart.CH9_BOSS_WAYPOINT
+    # Issue #4922: chapter 10's White House admits a march only through the
+    # south gate's red carpet; the measured boss cell is the roof centre and
+    # a sortie aimed there camps against the ring wall forever. A
+    # castle-origin boss hop (an order step) aims at the south gate instead;
+    # the camp then turns boss_move, whose RECALL jump picks the last leg
+    # (gate -> front door, or an outer corner first) at its start.
+    if chapter == 10 and name and chart.is_boss_castle(name):
+        if step in ('RECALL', 'PURSUIT'):
+            # The RECALL jump routes the hop itself: give it the real boss
+            # cell, never a probe-jittered candidate.
+            return chart.castles(chapter).get(name) or cell
+        return chart.CH10_BOSS_WAYPOINT
     return cell
 
 
@@ -584,6 +596,7 @@ def _y_jump_step(mem, frame):
         if isinstance(probe, dict) and 'origin_cursor' not in probe:
             probe['origin_cursor'] = list(jump['origin_cursor'])
     gx, gy = boss_probe_cell(mem, jump['goal'], jump.get('step'))
+    ox, oy = Y_JUMP_OFFSET[chapter]
     # A moving-boss goal is re-measured while this jump is open (the pursuit
     # keeps calling _apply_skull_boss), so the live probe cell walks away from
     # the aim the jump started from and the landing residual can never
@@ -593,9 +606,20 @@ def _y_jump_step(mem, frame):
     # next pursuit cycle re-aims, which still beats never issuing the order.
     if chart.is_boss_castle(jump.get('goal') or ''):
         if 'goal_cell' not in jump:
+            if (chapter == 10 and jump.get('step') == 'RECALL'
+                    and isinstance(gx, int) and isinstance(gy, int)):
+                # Issue #4922: this first cursor read is where the camped
+                # general actually stands, so the White House boss jump aims
+                # at the hop he can walk next — straight in from the carpet,
+                # the south gate, or an outer corner first — not the walled
+                # roof cell. Each recall recomputes it from the new position.
+                origin = (int(round((cursor[0] - ox) * 8)),
+                          int(round((cursor[1] - oy) * 8)))
+                leg = chart.ch10_whitehouse_leg(origin, (gx, gy))
+                if leg is not None:
+                    gx, gy = leg
             jump['goal_cell'] = [gx, gy]
         gx, gy = jump['goal_cell']
-    ox, oy = Y_JUMP_OFFSET[chapter]
     dx, dy = gx / 8 + ox - cursor[0], gy / 8 + oy - cursor[1]
     # A roof misread as the G stays fixed even while the real cursor moves
     # (#2915). Count observations after issued inputs, not the initial read.

@@ -110,12 +110,15 @@ def test_an_arrived_boss_relaunch_keeps_the_same_candidate():
 
 
 # Chapter 5's cell is WRAM-measured and chapter 9's boss moves, so neither may
-# probe. Chapters 6, 7, 8, 10, 11 and 12 carry a source-map or Y-view estimate
+# probe. Chapters 6, 7, 8, 11 and 12 carry a source-map or Y-view estimate
 # and a miss there would re-send the same tile until the chapter can never end.
+# Chapter 10 left this list with #4922: its White House admits a march only
+# through the south gate, so the first hop is the fixed waypoint below and
+# the roof-cell probe candidates around it would camp against the ring wall.
 import pytest
 
 
-@pytest.mark.parametrize('chapter', [6, 7, 8, 10, 11, 12])
+@pytest.mark.parametrize('chapter', [6, 7, 8, 11, 12])
 def test_every_estimated_boss_cell_can_be_probed(chapter):
     cell = chart.castles(chapter)['ボス']
     assert N.boss_probe_cell({'chapter': chapter, 'boss_step_probe': {}}, 'ボス', 'A:x:M1') == cell
@@ -128,7 +131,7 @@ def test_a_measured_or_moving_boss_never_probes(chapter):
     assert chapter not in chart.BOSS_CELL_PROBES
 
 
-@pytest.mark.parametrize('chapter', [7, 10, 12])
+@pytest.mark.parametrize('chapter', [7, 12])
 def test_an_unentered_endgame_boss_relaunch_advances_its_candidate(chapter):
     cell = chart.castles(chapter)['ボス']
     mem = {'chapter': chapter, 'tick': 100000, '_records': [],
@@ -166,6 +169,22 @@ def test_the_corridor_boss_first_leg_steps_to_the_ide_north_house():
     # direct leg sat in the pocket beside イデ！).
     mem['boss_relaunch'] = {'A:x:M1': 1}
     assert N.boss_probe_cell(mem, 'ボス', 'A:x:M1') == waypoint
+
+
+def test_the_whitehouse_first_leg_steps_to_the_south_gate():
+    # #4922: chapter 10's White House (boss だいとうりょう) is ringed by an
+    # impassable blue-white wall; the only entrance is the south gate's red
+    # carpet. A castle-origin boss hop aims at the gate, never at the roof
+    # cell or a probe-jittered candidate around it — those would camp against
+    # the wall forever. The RECALL jump routes the last leg itself, so it
+    # takes the real boss cell.
+    mem = {'chapter': 10}
+    waypoint = chart.CH10_BOSS_WAYPOINT
+    assert N.boss_probe_cell(mem, 'ボス', 'A:x:M1') == waypoint
+    mem['boss_step_probe'] = {'A:x:M1': 1}
+    assert N.boss_probe_cell(mem, 'ボス', 'A:x:M1') == waypoint
+    assert N.boss_probe_cell(mem, 'ボス', 'RECALL') == chart.castles(10)['ボス']
+    assert N.boss_probe_cell(mem, 'ボス', 'PURSUIT') == chart.castles(10)['ボス']
 
 
 def test_pursuit_pseudo_step_aims_the_boss_like_a_camp_redirect():

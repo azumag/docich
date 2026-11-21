@@ -266,6 +266,64 @@ del _chapter
 # pinched by the dark forest band (x~125-137, y~76-84), so aim the open grass
 # row north-east of it instead. View (134.0, 74.0) -> cell.
 CH9_BOSS_WAYPOINT = (568, 212)
+
+# Issue #4922 (chapter 10): the White House (boss ホワイトハウス/だいとうりょう,
+# measured boss_cell ≈ (482,365), its roof centre) is ringed by an impassable
+# blue-white wall on the north, west, east and both southern flanks; the only
+# entrance is the southern central red carpet to the front door. A march aimed
+# straight at the boss cell camps against the wall forever; one routed to the
+# south gate first walks up the carpet into 「ボスじょうに せめこんだ！！」 every
+# time (offline verified, g1190-ch1v4). The west outer road reaches the gate
+# through the measured south-west corner (386,436); the remaining ring
+# corners mirror it about the gate axis and the roof centre.
+CH10_BOSS_WAYPOINT = (492, 436)    # 南門前: below the red carpet's south foot
+CH10_WALL_SW = (386, 436)          # west outer road meets the south road (measured)
+CH10_WALL_SE = (598, 436)          # mirrored about the gate axis x=492
+CH10_WALL_NW = (386, 294)          # mirrored about the roof centre y=365
+CH10_WALL_NE = (598, 294)
+CH10_GATE_STRIP_PX = 24            # on the carpet/gate axis: enter straight
+# A camp cell inside this box belongs to the White House's approach, not an
+# ordinary castle's field: the wall ring plus the outer road and enough
+# margin to catch camps pinned against its north/west/east faces.
+CH10_WH_AREA = (330, 250, 660, 500)
+
+
+def ch10_whitehouse_leg(origin, boss_cell):
+    """The next hop a chapter-10 march can reach without crossing the wall.
+
+    ``origin`` is the general's measured field cell and ``boss_cell`` the
+    White House cell. The return is one leg the field march can walk:
+
+    - on the red carpet / at the south gate (gate axis, below the roof):
+      straight in to the boss cell;
+    - on or below the southern outer road: the south gate;
+    - pinned at the west (east) wall: the nearer southern corner, which the
+      next leg then turns along the south road to the gate;
+    - inside the ring's southern apron: the south gate;
+    - behind the north wall: the nearer northern corner, whose next legs
+      walk the outer road down to the southern corner.
+
+    Repeated calls from each new position therefore relay the general
+    corner -> gate -> front door. ``None`` for an unmeasured origin/cell.
+    """
+    if (not isinstance(origin, (list, tuple)) or len(origin) != 2
+            or not isinstance(boss_cell, (list, tuple)) or len(boss_cell) != 2):
+        return None
+    ox, oy = int(origin[0]), int(origin[1])
+    bx, by = int(boss_cell[0]), int(boss_cell[1])
+    if abs(ox - CH10_BOSS_WAYPOINT[0]) <= CH10_GATE_STRIP_PX and oy > by:
+        return (bx, by)                    # red carpet / south gate: enter
+    if oy >= CH10_WALL_SW[1]:
+        return CH10_BOSS_WAYPOINT          # the southern outer road is open
+    if ox <= CH10_WALL_SW[0]:
+        return CH10_WALL_SW                # down the west road to the gate
+    if ox >= CH10_WALL_SE[0]:
+        return CH10_WALL_SE                # down the east road to the gate
+    if oy >= by:
+        return CH10_BOSS_WAYPOINT          # the ring's southern apron
+    return CH10_WALL_NW if ox < CH10_BOSS_WAYPOINT[0] else CH10_WALL_NE
+
+
 HOUSE_VIEW = {1: (118.5, 126.5), 2: (128.5, 94.5), 3: (116.5, 108.5),
               4: (134.0, 87.5), 5: (124.5, 80.5), 6: (110.5, 138.5),
               7: (144.5, 98.5), 8: (146.5, 104.5), 9: (118.5, 76.5),
@@ -856,7 +914,11 @@ CHAPTER_10_ORDERS = (
      'cards': ('グリンボー', 'クースカン', 'エンジェリン'),
      'target': 'ケントルム', 'after': ('captured', 'ファルゲ'),
      'note': '主人公 右上方面へ 対敵将軍迎撃'},
-    {'step': '10-B1', 'general': HERO, 'source': 'ケントルム',
+    # #4922: ケントルム sits behind the White House's north-east wall, so a
+    # boss march from it camps against the ring forever; トルストリア is the
+    # southern castle with a straight field to the south gate
+    # (CH10_BOSS_WAYPOINT), which the order's first hop now targets.
+    {'step': '10-B1', 'general': HERO, 'source': 'トルストリア',
      'cards': ('エンジェリン', 'マグネガキン', 'ファバード'),
      'target': 'ボス', 'after': ('all_captured',),
      'note': 'だいとうりょう 将軍全員で攻略'},

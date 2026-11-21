@@ -17,6 +17,7 @@ from ..os_layer.world import NAME, SORTIE_BUSY_TICKS, _en_route, _owned
 from . import routes
 from .orders import (RETIRED_ORDER_STATES,
                                _arrival_castle, _boss_companion_source, _boss_egg_depleted,
+                               _whitehouse_open,
                                drop_retired_step_context,
                                _distance, _hero_egg_broken, _holds_egg,
                                _hero_source_alternative, _orders, _plan_pending, _ready, _reserved_targets, _source,
@@ -1124,7 +1125,10 @@ def interim_candidates(mem, allow_sole=False) -> dict:
     # Owner 2026-11-04: a castle whose retake keeps failing to launch must
     # not hold the boss waves forever (g1133 17:48-18:50, クロチェット).
     retakes_stalled = (not chain_held) and _retakes_stalled(mem, blocking)
-    boss_open = bool(boss in castles and boss_path and (chain_held or retakes_stalled)
+    # #4922: once chapter 10's White House is open (all castles held, or its
+    # cell measured), a recapture must not stop the boss waves again.
+    boss_open = bool(boss in castles and boss_path
+                     and (chain_held or retakes_stalled or _whitehouse_open(mem))
                      and not (mem.get('boss_victories') or {}))
     if boss_open:
         targets = [*targets, boss]
@@ -1244,11 +1248,17 @@ def interim_candidates(mem, allow_sole=False) -> dict:
                     # A general whose boss wave left the monster's HP unchanged
                     # is ranked behind one that has not been tried there.
                     hurtless = 1 if g in (mem.get('boss_no_damage') or ()) else 0
-                    choices.append((c in prefer_not, c == home, dead, hurtless,
+                    # #4922: chapter 10's White House opens only at the south
+                    # gate's red carpet, so a wave from a castle south of its
+                    # wall (y >= the gate) marches the open road instead of
+                    # camping behind the ring. Other chapters are unaffected.
+                    north_of_wall = bool(chapter == 10 and xy
+                                         and xy[1] < chart.CH10_BOSS_WAYPOINT[1])
+                    choices.append((c in prefer_not, north_of_wall, c == home, dead, hurtless,
                                     _boss_egg_rank(mem, g), distance, c, g))
         if choices:
             choices.sort()
-            _, _, _, _, _, _, source, general = choices[0]
+            _, _, _, _, _, _, _, source, general = choices[0]
             return source, general
         # #4869: when transfers have reached a front castle whose recorded
         # garrison is still stale (e.g., 1 known defender at イデ！ while a
