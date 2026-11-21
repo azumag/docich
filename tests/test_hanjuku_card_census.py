@@ -20,7 +20,8 @@ from docich.hanjuku.os_layer.readers import _measured_field_card_list
 from docich.hanjuku.os_layer.screen import FIELD_CARD_LIST_ROWS, Screen, parse
 from docich.hanjuku.strategy import card_census as booking
 from docich.hanjuku.strategy.campaign import _enter_chapter
-from docich.hanjuku.strategy.kit import CARD_IDS, _observe_card_stock
+from docich.hanjuku.strategy.kit import (CARD_IDS, CARD_STOCK_LIMIT, _observe_card_stock,
+                                         observe_full_card_inventory)
 from docich.hanjuku_bot import decide
 
 FIXTURES = Path(__file__).parent / 'fixtures/hanjuku'
@@ -300,11 +301,58 @@ def test_an_in_flight_procedure_keeps_the_read_for_the_next_free_map():
     assert len([r for r in mem['_records'] if r['decision'] == 'card_census_wait']) == 1
 
 
-def test_the_month_actions_must_be_over_before_the_read():
-    mem = {'chapter': 9, 'month': '9-1', 'shop': {'key': '9-1', 'closed': True}}
-    booking.book(mem, 'chapter_start', month='9-1')
+def test_the_current_months_closed_menu_is_the_read_frame():
+    """The game opens the next month's menu itself: the header advances there.
+
+    Live g1163 2026-11-21: ``month_seen`` is always on ``month_menu`` and the
+    map after ``も〜おしまい`` is still the same month, with ``month_done``'s
+    closed shop key equal to ``mem['month']``. The read starts there, never
+    during an open menu.
+    """
+    mem = {'chapter': 9, 'month': '9-1', 'shop': {'key': '9-1', 'closed': False}}
+    booking.book(mem, 'ledger_migration', month='9-1')
     assert census_flow.start_step(map_screen(), mem) is None   # menu still open
+    mem['shop']['closed'] = True
+    assert census_flow.start_step(map_screen(), mem) == [pad('x')]
+
+
+@pytest.mark.parametrize('name,shop,month', [
+    # 商人を飛ばした月 (month_step: month_merchant_skipped -> month_done).
+    ('merchant_skipped', {'key': '9-1', 'closed': True, 'merchant_done': True,
+                          'items': []}, '9-1'),
+    # 商人に入ったが買う物が無い月 (shop.py: nothing_planned sets closed).
+    ('nothing_planned', {'key': '9-1', 'closed': True, 'merchant_done': True}, '9-1'),
+    # 商人に入って買った月.
+    ('merchant_bought', {'key': '9-1', 'closed': True,
+                         'bought': [['イッテツーン', 1]]}, '9-1'),
+    # 月メニューを開けなかった月: the header moved on with the old closed shop.
+    ('menu_not_opened', {'key': '8-12', 'closed': True}, '9-1'),
+])
+def test_every_month_end_path_leaves_the_read_frame(name, shop, month):
+    mem = {'chapter': 9, 'month': month, 'tick': 100, 'shop': shop}
+    booking.book(mem, 'ledger_migration', month=month)
+    assert census_flow.start_step(map_screen(), mem) == [pad('x')], name
+
+
+def test_a_chapter_change_without_a_month_menu_waits_for_the_new_one():
+    mem = {'chapter': 9, 'month': '9-1', 'shop': {'key': '9-1', 'closed': True}}
+    _enter_chapter(mem, 10, reason='unit test')
+    assert 'shop' not in mem                       # chapter lifetime
+    assert booking.due(mem)['reason'] == 'chapter_start'
+    assert census_flow.start_step(map_screen(), mem) is None
     mem['month'] = '9-2'
+    mem['shop'] = {'key': '9-2', 'closed': True}   # the new menu's closed plan
+    assert census_flow.start_step(map_screen(), mem) == [pad('x')]
+
+
+def test_an_exit_or_a_month_sub_still_blocks_the_read():
+    mem = {'chapter': 9, 'month': '9-1', 'tick': 100,
+           'shop': {'key': '9-1', 'closed': True}}
+    booking.book(mem, 'ledger_migration', month='9-1')
+    for key in ('month_exit', 'month_sub'):
+        mem[key] = {'kind': 'recruit'} if key == 'month_sub' else True
+        assert census_flow.start_step(map_screen(), mem) is None
+        mem.pop(key)
     assert census_flow.start_step(map_screen(), mem) == [pad('x')]
 
 
@@ -321,6 +369,39 @@ def test_two_consecutive_aborts_disable_the_chapter():
     assert mem['card_census_disabled'] == {'chapter': 9, 'reason': 'same_page', 'streak': 2}
     mem.pop('card_census', None)
     assert census_flow.start_step(map_screen(), mem) is None
+
+
+def test_a_zero_buy_target_survives_the_stock_limit():
+    """20 positive kinds leave four slots; ファバード/エンジェリン keep two.
+
+    S2 never buys an unknown kind, so a usable 0 dropped by the trim would
+    never be bought again -- the opposite of the owner's 99-copies policy.
+    """
+    positives = [card for card in ORDER
+                 if card not in ('ファバード', 'エンジェリン')][:20]
+    rows = [{'card': card, 'stock': 99 - i} for i, card in enumerate(positives)]
+    mem = {'chapter': 9, 'month': '9-3', 'card_stock': {}}
+    written, dropped = observe_full_card_inventory(mem, rows)
+    assert mem['card_stock'].get('ファバード') == 0
+    assert mem['card_stock'].get('エンジェリン') == 0
+    assert 'ファバード' not in dropped and 'エンジェリン' not in dropped
+    assert 'ファバード' in written and 'エンジェリン' in written
+    assert len(mem['card_stock']) == CARD_STOCK_LIMIT
+    assert dropped, 'the other proven zeros still overflow the limit'
+
+
+def test_a_drifted_full_read_clears_its_own_reservation():
+    """1d: the read books ledger_drift mid-write; completion still clears it."""
+    mem = {'chapter': 9, 'month': '9-2', 'tick': 100,
+           'card_stock': {'ブラッキー': 99, 'イッテツーン': 12},
+           'shop': {'key': '9-2', 'closed': True}}
+    booking.book(mem, 'ledger_migration', month='9-2')
+    assert census_flow.start_step(map_screen(), mem) == [pad('x')]
+    page = list_screen(stock_rows(range(0, 8)), False, False)
+    assert census_flow.resume_step(page, mem, arrow_frame(False, False)) == [pad('b')]
+    assert mem.get('card_census_due') is None
+    drift = [r for r in mem['_records'] if r['decision'] == 'ledger_drift']
+    assert drift and all(r['observed_metric']['basis'] == 'full' for r in drift)
 
 
 # ---------------------------------------------------------------- booking
@@ -360,14 +441,38 @@ def test_the_reservation_records_its_first_month_and_survives_rebooking():
 
 
 def test_a_hotload_of_the_same_runtime_keeps_the_ledger():
-    """A bot start/hotload/deploy keeps its runtime identity: no clear, no book."""
+    """With the marker, a hotload neither clears the ledger nor re-books."""
     frame = read_png(FIXTURES / 'g1075-ch4-snow-field.png')
     mem = {'chapter': 9, 'month': '9-1', 'tick': 100,
-           'survey_run_identity': IDENTITY, 'card_stock': {'イッテツーン': 42}}
+           'survey_run_identity': IDENTITY, 'card_stock': {'イッテツーン': 42},
+           'card_ledger_v': booking.CARD_LEDGER_VERSION}
     state = {'step': 0, 'phase': 'field', 'policy': mem, 'hanjuku': IDENTITY}
     actions, out = decide(frame, state, run_identity=IDENTITY)
     assert out['policy']['card_stock'] == {'イッテツーン': 42}
     assert 'card_census_due' not in out['policy']
+
+
+def test_the_first_observation_books_one_ledger_migration_and_keeps_the_stock():
+    """S3b: an old policy's stock is re-read once, not dropped at hotload."""
+    frame = read_png(FIXTURES / 'g1075-ch4-snow-field.png')
+    mem = {'chapter': 9, 'month': '9-1', 'tick': 100,
+           'survey_run_identity': IDENTITY,
+           'card_stock': {'イッテツーン': 42, 'エンジェリン': 0}}
+    state = {'step': 0, 'phase': 'field', 'policy': mem, 'hanjuku': IDENTITY}
+    _, out = decide(frame, state, run_identity=IDENTITY)
+    due = out['policy']['card_census_due']
+    assert due['reason'] == 'ledger_migration'
+    assert due['reasons'] == ['ledger_migration']
+    assert out['policy']['card_ledger_v'] == booking.CARD_LEDGER_VERSION
+    assert out['policy']['card_stock'] == {'イッテツーン': 42, 'エンジェリン': 0}
+    # Reloading the policy as-is (a hotload of the same runtime) has the
+    # marker: the reservation is neither replaced nor booked again.
+    state2 = {'step': 1, 'phase': 'field', 'policy': out['policy'],
+              'hanjuku': IDENTITY}
+    _, out2 = decide(frame, state2, run_identity=IDENTITY)
+    again = out2['policy']['card_census_due']
+    assert again['reasons'] == ['ledger_migration']
+    assert again['tick'] == due['tick']
 
 
 def test_a_changed_runtime_generation_clears_the_ledger_and_books():

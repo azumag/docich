@@ -20,6 +20,11 @@ X→「きりふだ」一覧を末尾まで読む予約を置く (owner 2026-11-
   (``survey_run_identity`` の変化) とゲームオーバー後のタイトル復帰
 - ``flows.shop._holding_limit_step``       商人の所持上限の拒否
 - ``strategy.kit._note_ledger_drift``      読みと台帳の食い違い
+- ``strategy.card_census.note_ledger_version``
+  台帳の意味が v1356/S3 で変わったことの1回だけの移行。旧規則で作られた
+  ``card_stock`` を持つ policy の最初の観測で印 (``card_ledger_v``) を立て、
+  理由 ``ledger_migration`` を予約する。台帳は消さない (全量の読みが上書き
+  する)。印が付いた後のホットロード・デプロイでは予約しない。
 
 予約の中身::
 
@@ -36,6 +41,34 @@ X→「きりふだ」一覧を末尾まで読む予約を置く (owner 2026-11-
 ``mem['card_census_disabled']`` が止める。
 """
 from __future__ import annotations
+
+# The ledger semantics this policy writes: purchases and carried cards move
+# the field stock, a complete field-list read overwrites it, and an unknown
+# kind is never bought. A policy written before this version kept the stock
+# from an older rule (purchases invisible, unknown kinds as 0), and a hotload
+# cannot repair it because no reservation fires there. The first observation
+# without the marker books one full read instead; ``card_stock`` is kept until
+# that read overwrites it (owner 2026-11-22).
+CARD_LEDGER_VERSION = 2
+
+
+def note_ledger_version(mem):
+    """Stamp the ledger version; book a one-time full read for an old ledger.
+
+    Only a policy that already carries a ``card_stock`` has something to
+    migrate: a fresh/restored policy has no ledger yet (the normal reservation
+    paths build it), so it is stamped on the observation that first has one.
+    Returns True when this observation booked the migration read. A policy
+    that already has the marker never books again, so a hotload/deploy of the
+    same runtime is not a reason to drop a usable ledger.
+    """
+    if mem.get('card_ledger_v') == CARD_LEDGER_VERSION:
+        return False
+    if not isinstance(mem.get('card_stock'), dict):
+        return False
+    mem['card_ledger_v'] = CARD_LEDGER_VERSION
+    book(mem, 'ledger_migration')
+    return True
 
 
 def month_index(month):

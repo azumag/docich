@@ -92,24 +92,29 @@ def _note_overdue(mem, due):
 
 
 def _post_month_ready(mem):
-    """The month's menu/merchant work is over and the map is the next month.
+    """The month's menu work is over and the map is the month's field play.
 
-    ``month_done`` (flows.month) marks the shop closed, then the exit advances
-    the header to the next month. ``shop['key'] == mem['month']`` means the
-    month menu is still on screen, so the X menu cannot be opened yet.
+    S3 first required ``shop['key'] != mem['month']``, assuming the exit
+    advanced the header. The live log disproves it: ``month_seen`` always
+    appears on ``month_menu`` (g1163 2026-11-21, 46-8..47-9), because the game
+    opens the next month's menu itself and the header advances with it. A map
+    after ``も〜おしまい`` is still that month, with ``month_done``'s closed
+    shop key equal to ``mem['month']``; the old frame never occurred and the
+    read could never start.
 
-    A missing shop is *not* the frame either: a chapter transition drops
-    ``shop`` (chapter lifetime), and the new chapter's month menu creates it
-    again before any field observation. Requiring the closed past-month shop
-    keeps the read at the measured post-month frame and out of every other
-    map observation (restore, resume, a test's bare map).
+    A closed shop for this month -- or an older one, when the menu was missed
+    and the header moved on -- means one month's actions are over. Its key is
+    kept (chapter lifetime); only a chapter transition/restore drops ``shop``,
+    and the new month menu then creates and closes one before any read.
     """
     if mem.get('month_exit') or mem.get('month_sub'):
         return False
     shop = mem.get('shop')
     if not isinstance(shop, dict) or shop.get('closed') is not True:
         return False
-    return shop.get('key') != mem.get('month')
+    here = booking.month_index(mem.get('month'))
+    done = booking.month_index(shop.get('key'))
+    return here is not None and done is not None and done <= here
 
 
 def wait_step(screen, mem):

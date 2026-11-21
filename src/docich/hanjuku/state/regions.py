@@ -137,6 +137,9 @@ KEY_OWNERSHIP = {
     'card_census_abort': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 中止した月 (v1353)
     'card_census_abort_prev': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 連続中止の章 (v1353)
     'card_census_disabled': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 章で無効化 (v1353)
+    # 台帳の意味の版 (v1356/S3b)。旧規則の card_stock を持つ policy に最初の観測で
+    # 印を立て、ledger_migration の全量読みを1回だけ予約する。ラン寿命。
+    'card_ledger_v': {'region': JOURNAL, 'lifetime': 'run', 'migrated': False},
     'castle_defenders': {'region': WORLD, 'lifetime': 'chapter', 'migrated': False},  # 城防衛者観測
     'castle_income': {'region': WORLD, 'lifetime': 'chapter', 'migrated': False},  # 城収入観測
     'castle_ownership': {'region': WORLD, 'lifetime': 'chapter', 'migrated': False},  # 城所有観測

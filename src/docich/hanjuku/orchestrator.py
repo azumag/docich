@@ -1460,6 +1460,11 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
     step=int(state.get('step',0))+1
     phase_step=int(state.get('phase_step',0))+1 if state.get('phase')==phase else 1
     mem=_memory
+    # v1356/S3b: a policy written before the field-inventory ledger's semantics
+    # changed carries an old ``card_stock``. There is no reservation on a
+    # hotload, so the first observation after the deploy books exactly one
+    # full read (the ledger itself is kept until that read overwrites it).
+    card_census_booking.note_ledger_version(mem)
     mem.pop('_map_registration_hold', None)
     mem.pop('_map_cursor_feedback', None)
     mem.pop('_nav_hold_feedback', None)
