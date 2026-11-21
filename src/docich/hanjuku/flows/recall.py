@@ -1894,7 +1894,7 @@ def _fort_step(screen, mem, state):
                 reason='砦の中の将軍を一人選び、しゅつげきで補給できる自軍城へ帰す')
         return [pad('a')]
     if screen.kind == 'map_target':
-        state.update(stage='dest', steps=0, fort=True)
+        state.update(stage='dest', steps=0, fort=True, picker_from_menu=True)
         return None
     if screen.kind == 'map':
         return _leave_fort(mem, state, '砦のしゅつげきが閉じてマップへ戻ったため見送る', [])
