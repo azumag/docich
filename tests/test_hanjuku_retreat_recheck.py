@@ -229,9 +229,11 @@ def test_real_owned_destination_remains_required_after_named_status(monkeypatch,
 def test_nameless_local_picker_does_not_borrow_an_owned_roof(monkeypatch):
     mem = memory(); named_menu(mem)
     monkeypatch.setattr(p, 'castle_roofs', lambda _frame: [{'kind': 'own', 'target': (26, 66), 'clipped': False}])
-    # Owner 2026-11-19: いどうのdestはピッカーなしで自軍屋根のマーカーを確定する。
-    assert p.camp_recall_step(Screen([], None, '', kind='map_target', marker=(26, 66)), mem, FRAME) in (
-        [p.pad('b')], [p.pad('a')])
+    # Owner 2026-11-21: 名前なしでも goal が解決できれば先にYジャンプ(RECALL)
+    # で測定済みの自城へ戻り、目の前の屋根を借りて確定しない。
+    assert p.camp_recall_step(Screen([], None, '', kind='map_target', marker=(26, 66)), mem, FRAME) == [
+        p.pad('y')]
+    assert (mem.get('y_jump') or {}).get('step') == 'RECALL'
     assert _flow(mem)['retreat_rechecks']['ゼウス']['status'] == 'needs_observation'
 
 
@@ -1070,8 +1072,10 @@ def test_named_idou_dest_confirms_own_roof_and_starts_y_jump_when_offscreen(monk
     mem = memory()
     named_menu(mem)
     monkeypatch.setattr(p, 'castle_roofs', lambda _frame: [{'kind': 'own', 'target': (26, 66), 'clipped': False}])
+    # Owner 2026-11-21: 屋根が見えていても先にYジャンプ(RECALL)で自城へ戻る。
     actions = p.camp_recall_step(Screen([], None, '', kind='map_target', marker=(26, 66)), mem, FRAME)
-    assert actions == [p.pad('a')]
+    assert actions == [p.pad('y')]
+    assert (mem.get('y_jump') or {}).get('step') == 'RECALL'
     assert not any(r.get('decision') == 'retreat_recheck_unconfirmed' for r in mem['_records'])
 
     # 自軍城の屋根が画面外なら Y ジャンプ(RECALL) を開いて自城へ帰還する。
