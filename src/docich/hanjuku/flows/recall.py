@@ -997,7 +997,16 @@ def _camp_recall_step(screen: Screen, mem, frame, *, observed_camps=None):
                                     and s.get('target') == boss_target
                                     and s.get('status') == 'overdue'
                                     and s.get('general')), None)
-            if overdue_general and not mem.get('general_jump'):
+            skips = mem.get('general_jump_skip')
+            skip_row = (skips.get(overdue_general)
+                        if overdue_general and isinstance(skips, dict) else None)
+            skip_ticks = 3600 if isinstance(skip_row, dict) and skip_row.get('absent') else 200
+            skipping = (isinstance(skip_row, dict)
+                        and int(mem.get('tick') or 0) - int(skip_row.get('tick') or 0) < skip_ticks)
+            # Live g1288 2026-11-21 19:47-19:52: the recall started the roster
+            # jump for an absent general (アニス) every ~2 minutes, ignoring the
+            # general_jump_skip that map's arming honours, so the field stalled.
+            if overdue_general and not skipping and not mem.get('general_jump'):
                 mem['general_jump'] = {'general': overdue_general, 'phase': 'menu',
                                        'age': 0, 'total': 0, 'scrolls': 0,
                                        'menu_presses': 0}
