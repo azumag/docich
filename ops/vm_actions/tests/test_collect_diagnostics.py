@@ -1783,7 +1783,7 @@ def test_hanjuku_hotload_versions_are_fixed_values_not_an_arbitrary_prefix():
                  "hanjuku-chart-v830-picker-month-timing",
                  "hanjuku-chart-v1354-card-announce-evidence",
                  "hanjuku-chart-v1355-math-corner",
-                 "hanjuku-chart-v1359-chikujou-list-limit",
+                 "hanjuku-chart-v1365-chikujou-list-limit",
                  "hanjuku-chart-v1360-spend-resources-before-retreat",
                  "hanjuku-chart-v1362-camp-recall-ch2",
                  "hanjuku-chart-v1363-chikujou-at-month-end",
