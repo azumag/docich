@@ -205,3 +205,25 @@ def test_cached_cattlemyu_is_not_used_when_panel_short_or_dropped_or_boss():
     bmem['card_stock'] = {RARE: 36}
     assert policy._rare_card_inventory(None, bmem, border, top_four) is None
     assert not bmem.get('rare_card_kit')
+
+
+def test_cached_cattlemyu_does_not_close_rare_scan_month_and_scroll_captures_balmung(monkeypatch):
+    """#4882: キャッシュ採用では rare_scan_month を早閉じせず、スクロール通過時のバルムンク在庫も記録する。"""
+    from types import SimpleNamespace
+    from docich.hanjuku.flows import deploy
+    order, mem = memory(boss=False)
+    mem.pop('rare_card_kit')
+    mem['month'] = '41-9'
+    mem['card_stock'] = {RARE: 18}
+    top_four = inventory([('イッテツーン', 99), ('ブラッキー', 99), ('フットバース', 99), ('ダンスライン', 99)])
+    assert policy._rare_card_inventory(None, mem, order, top_four) == []
+    assert mem['rare_card_kit'][order['step']][0] == RARE
+    assert mem.get('rare_scan_month') != '41-9'
+
+    # rare_card_kit 確定後の card_scroll 中に バルムンク が映ったら balmung_held を更新する。
+    mid_rows = inventory([('ゼンマイン', 99), ('バルムンク', 40), ('ミックミー', 99), ('グルミー', 9)])
+    monkeypatch.setattr(deploy, '_order', lambda _m: order)
+    monkeypatch.setattr(deploy, '_measured_card_select', lambda _s: mid_rows)
+    screen = SimpleNamespace(kind='card_select', text='', lines=(), cursor=None, hand=None, selected=None)
+    deploy.deploy_step(screen, mem)
+    assert mem.get('balmung_held') == {'month': '41-9', 'stock': 40}
