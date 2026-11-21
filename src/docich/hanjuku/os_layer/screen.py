@@ -554,6 +554,11 @@ CLASH_GAUGE_BOX = {'enemy': (24, 86), 'ally': (152, 214)}
 CLASH_GAUGE_RED = ((205, 40, 16), (222, 80, 16))
 CLASH_GAUGE_GREEN = ((189, 206, 156), (148, 133, 139))
 CLASH_GAUGE_DARK_RED = ((164, 32, 16),)
+# Owner 2026-11-22: the blue contact window exists only in the chapter-1
+# tutorial. Later fights are normally red and the window instead dims
+# slightly. This tone (a lighter red measured in the local decision log) is
+# that dim window; it is a cue, not a calibrated blue palette.
+CLASH_GAUGE_DIM = ((216, 80, 16),)
 CLASH_GAUGE_BLUE: tuple = ()      # UNCALIBRATED: live blue frames only
 # 判定に必要な彩色の下限。メニューや会話で枠が隠れた観測を状態扱いしない。
 CLASH_GAUGE_MIN_FILL = 0.5
@@ -573,7 +578,7 @@ class ClashGauge:
     box: tuple[int, int, int, int]
     filled: float | None            # colored extent / measured bar width
     tones: tuple
-    state: str | None               # 'red' | 'green' | 'dark_red' | 'blue' | None
+    state: str | None               # 'red' | 'green' | 'dark_red' | 'blue' | 'dim' | None
 
 
 def _clash_gauge(frame: Frame, side: str) -> ClashGauge | None:
@@ -596,6 +601,7 @@ def _clash_gauge(frame: Frame, side: str) -> ClashGauge | None:
         return None                 # hidden or absent: no gauge fact
     dominant = tuple(tone for tone, _ in tones.most_common(2))
     state = next((name for name, table in (('blue', CLASH_GAUGE_BLUE),
+                                            ('dim', CLASH_GAUGE_DIM),
                                             ('red', CLASH_GAUGE_RED),
                                             ('green', CLASH_GAUGE_GREEN),
                                             ('dark_red', CLASH_GAUGE_DARK_RED))

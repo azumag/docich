@@ -77,3 +77,52 @@ def test_event_duel_behind_or_critical_hp_never_opens_b_menu_and_mashes_a():
     assert 'battle_event_duel' in decisions
     assert not ({'battle_egg_before_retreat', 'battle_hero_retreat_open',
                  'battle_survival', 'battle_command_open_requested'} & decisions)
+
+def _duel_screen_with_dim(dim):
+    from docich.hanjuku_screen import ClashGauge
+    screen = Screen(lines=[], hand=None, text='', kind='battle',
+                    battle=Battle(ENEMY, 40, 'どうし', 90))
+    if dim:
+        screen.clash_gauges = [ClashGauge('ally', (152, 195, 214, 203), 1.0,
+                                          ((216, 80, 16),), 'dim')]
+    return screen
+
+
+def _duel_actions(mem, screen, n=3):
+    out = []
+    for _ in range(n):
+        mem['tick'] = int(mem.get('tick') or 0) + 1
+        out.append(policy.battle_step(screen, mem))
+    return out
+
+
+def test_duel_uses_frame_length_released_taps_across_the_observation():
+    from docich.hanjuku.flows.battle import (DUEL_POWER_FRAMES, DUEL_POWER_TAPS,
+                                             DUEL_POWER_WAIT_MS)
+    mem = {'chapter': 1, 'tick': 100}
+    policy.note_duel_event(
+        Screen([], None, '1ねん4のつき100Gいってごあいてねがえぬか?', kind='yes_no'), mem)
+    out = _duel_actions(mem, _duel_screen_with_dim(False))
+    pads = [a for a in out[-1] if a.get('type') == 'pad']
+    assert len(pads) == DUEL_POWER_TAPS
+    assert all(a.get('buttons') == ['a'] for a in pads)
+    assert all(a.get('hold_ms') == max(16, round(DUEL_POWER_FRAMES * 1000 / 60))
+               for a in pads)
+    waits = [a for a in out[-1] if a.get('type') == 'wait']
+    assert waits and all(w.get('ms') == DUEL_POWER_WAIT_MS for w in waits)
+    melee = [r for r in mem['_records'] if r['decision'] == 'battle_melee']
+    assert melee and melee[-1]['a_frames_sent'] == DUEL_POWER_TAPS * DUEL_POWER_FRAMES
+
+
+def test_duel_dim_window_is_recorded_and_uses_the_single_window_press():
+    from docich.hanjuku.flows.battle import DUEL_DIM_TAPS, DUEL_POWER_FRAMES
+    mem = {'chapter': 1, 'tick': 100}
+    policy.note_duel_event(
+        Screen([], None, '1ねん4のつき100Gいってごあいてねがえぬか?', kind='yes_no'), mem)
+    out = _duel_actions(mem, _duel_screen_with_dim(True))
+    pads = [a for a in out[-1] if a.get('type') == 'pad']
+    assert len(pads) == DUEL_DIM_TAPS
+    assert all(a.get('hold_ms') == max(16, round(DUEL_POWER_FRAMES * 1000 / 60))
+               for a in pads)
+    melee = [r for r in mem['_records'] if r['decision'] == 'battle_melee']
+    assert melee and melee[-1]['duel_gauge_dim'] is True

@@ -1245,8 +1245,22 @@ def _melee_step(mem, cur):
             return _human_menu_open(cur, 'survival', mem)
     mode = 'card_damage_probe' if probe else 'power_mash' if safe else 'egg_safe_hold'
     egg_window = _defender_egg_window(mem, cur)
-    taps = 1 if probe or egg_window and egg_window['short_burst'] else POWER_TAPS
-    actions = _power_mash(mem, cur, taps=taps) if safe else []
+    # Owner 2026-11-22: a monthly duel is always accepted (a betrayal event can
+    # start one anyway).  The blue window exists only in the chapter-1
+    # tutorial; later the red bar instead dims briefly.  When that dim is on
+    # screen, press inside it; otherwise keep a denser released burst across
+    # the whole 500 ms melee observation so the short window is not missed.
+    ally_gauge = (cur.get('clash_gauge') or {}).get('ally')
+    duel_dim = isinstance(ally_gauge, dict) and ally_gauge.get('state') == 'dim'
+    if duel:
+        taps = DUEL_DIM_TAPS if duel_dim else DUEL_POWER_TAPS
+        frames = DUEL_POWER_FRAMES
+        wait_ms = DUEL_POWER_WAIT_MS
+    else:
+        taps = 1 if probe or egg_window and egg_window['short_burst'] else POWER_TAPS
+        frames = 3
+        wait_ms = 50
+    actions = _power_mash(mem, cur, taps=taps, frames=frames, wait_ms=wait_ms) if safe else []
     # Per returned action batch, not just the first use in a fight. These are
     # requested A frames; the executor's fence/delivery result remains separate.
     _record(mem, 'battle_melee', **_battle_labels(cur),
@@ -1255,8 +1269,9 @@ def _melee_step(mem, cur):
             egg_risk_flags=asdict(triggers), melee_control_mode=mode,
             enemy_egg_dropped=None,
             enemy_egg_drop_expected=cur.get('enemy_egg_drop_expected') is True,
-            a_frames_sent=taps * 3 if safe else 0,
+            a_frames_sent=taps * frames if safe else 0,
             clash_gauge=cur.get('clash_gauge'),
+            duel_gauge_dim=duel_dim if duel else None,
             **({'defender_egg_window': egg_window} if egg_window else {}),
             hold_hp_budget=hp_budget, hold_hp_bled=hp_bled,
             reason=('札での撃破を未保証のため、保持予算内の短い入力で実HP・兵数を再観測' if probe
@@ -1275,19 +1290,29 @@ def _melee_step(mem, cur):
 # card/egg menus still use their own policies. Six taps without release waits
 # lost the isolated RetroArch tutorial, despite winning a frame-stepped replay.
 POWER_TAPS = 4
+# A duel can end the run: spread released A presses across the 500 ms melee
+# observation, and press once immediately when the red bar's dim window is on
+# screen.  The ordinary 4-tap burst spends most of the interval idle and can
+# miss a short window.
+DUEL_POWER_TAPS = 6
+DUEL_DIM_TAPS = 1
+DUEL_POWER_FRAMES = 3          # 50 ms press; pad() takes frames, not ms
+DUEL_POWER_WAIT_MS = 30
 
 
-def _power_mash(mem, cur, *, taps=POWER_TAPS):
+def _power_mash(mem, cur, *, taps=POWER_TAPS, frames=3, wait_ms=50):
     if not cur.get('power_mash'):
         cur['power_mash'] = True
         _record(mem, 'battle_power', **_battle_labels(cur),
-                expected_metric={'taps': taps, 'hold_ms': 50, 'release_ms': 50},
+                expected_metric={'taps': taps, 'frames': frames,
+                                 'hold_ms': max(16, round(frames * 1000 / 60)),
+                                 'release_ms': wait_ms},
                 observed_metric={'enemy_hp': cur.get('enemy_hp'), 'ally_hp': cur.get('ally_hp')},
                 reason='白兵のぶつかり合いで押し負けないようA連打で踏ん張る')
     # xdotool's keyup/next keydown can fall between emulator polls. An
-    # explicit release is necessary for four distinct presses, not a hold.
+    # explicit release is necessary for distinct presses, not a hold.
     return [action for _ in range(taps)
-            for action in (pad('a', 3), {'type': 'wait', 'ms': 50})]
+            for action in (pad('a', frames), {'type': 'wait', 'ms': wait_ms})]
 
 
 def note_duel_event(screen, mem):

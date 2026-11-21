@@ -17,8 +17,8 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
 from docich import hanjuku_policy as policy
 from docich.hanjuku_screen import (CLASH_GAUGE_BLUE, CLASH_GAUGE_BOX, CLASH_GAUGE_DARK_RED,
-                                   CLASH_GAUGE_GREEN, CLASH_GAUGE_RED, ClashGauge,
-                                   _clash_gauge, parse)
+                                   CLASH_GAUGE_DIM, CLASH_GAUGE_GREEN, CLASH_GAUGE_RED,
+                                   ClashGauge, _clash_gauge, parse)
 from docich.hanjuku_clash_gauge import calibrate_blue, gauge_report
 from test_hanjuku_chart_bot import Canvas
 from test_hanjuku_survival import battle, memory
@@ -48,7 +48,9 @@ def test_measured_geometry_and_states_are_recorded_verbatim():
     assert CLASH_GAUGE_RED == ((205, 40, 16), (222, 80, 16))
     assert CLASH_GAUGE_GREEN == ((189, 206, 156), (148, 133, 139))
     assert CLASH_GAUGE_DARK_RED == ((164, 32, 16),)
-    # 接触の青は未校正: 表は空のまま出荷する (#1180 Phase 1 の契約)。
+    # 2026-11-22 owner: 青窓は1話チュートリアルのみ。以降は赤が少し薄くなる
+    # ので、その薄い赤を dim として読む (青の未校正契約はそのまま)。
+    assert CLASH_GAUGE_DIM == ((216, 80, 16),)
     assert CLASH_GAUGE_BLUE == ()
 
 
@@ -70,6 +72,12 @@ def test_battle_panel_bars_read_with_measured_states():
         for x in range(24, 87):
             c.put(x, y, (189, 206, 156) if (x + y) % 4 else (148, 133, 139))
     assert [(g.side, g.state, g.filled) for g in parse(c.frame()).clash_gauges][0] == ('enemy', 'green', 1.0)
+
+
+def test_dim_red_window_is_reported_as_dim():
+    s = parse(battle_canvas(enemy=(216, 80, 16)).frame())
+    assert [(g.side, g.state, g.tones) for g in s.clash_gauges] == [
+        ('enemy', 'dim', ((216, 80, 16),))]
 
 
 def test_absent_or_hidden_bars_report_no_gauge():
