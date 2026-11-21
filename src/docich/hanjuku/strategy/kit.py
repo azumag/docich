@@ -193,8 +193,28 @@ def _card_panel_complete(inventory) -> bool:
     return inventory.get('more_above') is False and inventory.get('more_below') is False
 
 
+def _note_ledger_drift(mem, card, read, basis):
+    """Record a read that contradicts the field-inventory ledger before fixing it.
+
+    The read wins (the panel is the measurement), but a difference means the
+    ledger moved without the bot's own actions: a purchase the merchant did
+    not actually take, a card returned by a cancelled sortie, or a kind the
+    bot wrote twice. One record per card and read, so a whole-window read
+    leaves each mismatch visible in the decision log.
+    """
+    from .bargains import held
+    previous = held(mem, card)
+    if previous is None or previous == read:
+        return False
+    _record(mem, 'ledger_drift', card=card,
+            observed_metric={'ledger': previous, 'read': read, 'basis': basis},
+            reason='切り札の台帳と実測の在庫が食い違ったため、読みを正として台帳を上書きする'
+                   '(購入・携行・帰還のいずれかで台帳が動いた証拠)')
+    return True
+
+
 def _observe_card_stock(mem, inventory):
-    """Remember the stocks a sortie card panel showed (chart-adjust grounding).
+    """Remember the stocks a sortie card panel showed and reconcile the ledger.
 
     A complete panel -- neither the ▲ nor the ▼ scroll arrow is drawn -- lists
     the whole inventory (depleted items disappear), so a known card absent
@@ -216,12 +236,15 @@ def _observe_card_stock(mem, inventory):
     from ブラッキー/フットバース/ノリウツール(11)/バルムンク(16) panels while
     card_stock kept its stale 1, so no month saw the boss card missing.
     A card read here is no longer an unseen purchase (``boss_cards.UNSEEN``).
-    Only the shown rows and the cards this proof makes 0 clear their ledgers.
+    ``card_stock`` is the field-inventory ledger (unknown = no key), so a read
+    that differs from it is logged as ``ledger_drift`` before the read wins.
     """
     stock = mem.setdefault('card_stock', {})
     shown = {row['card']: row['stock'] for row in inventory['rows']}
+    for card, read in shown.items():
+        _note_ledger_drift(mem, card, read, 'window')
     stock.update(shown)
-    read = set(shown)
+    read_cards = set(shown)
     unseen = mem.get('card_bought_unseen')
     unseen = unseen if isinstance(unseen, dict) else {}
     ids = [CARD_IDS.get(row['card']) for row in inventory['rows']]
@@ -230,15 +253,11 @@ def _observe_card_stock(mem, inventory):
     for card in [*stock, *(c for c in unseen if c not in stock)]:
         if card not in shown and (complete or (
                 ordered and min(ids) < CARD_IDS.get(card, -1) < max(ids))):
+            _note_ledger_drift(mem, card, 0, 'proof')
             stock[card] = 0
-            read.add(card)
-    for card in read.intersection(unseen):
+            read_cards.add(card)
+    for card in read_cards.intersection(unseen):
         unseen.pop(card)
-    for ledger in (mem.get('card_bought_since_read'), mem.get('card_held_floor'),
-                   mem.get('card_used_since_read')):
-        if isinstance(ledger, dict):
-            for card in read:
-                ledger.pop(card, None)   # a panel read is the truth again
     revived = False
     zero = mem.get('card_zero_at_start')
     if isinstance(zero, dict) and isinstance(zero.get('cards'), list):

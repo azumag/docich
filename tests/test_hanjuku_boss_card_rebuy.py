@@ -81,8 +81,10 @@ def test_g825_short_boss_card_is_bought_first_and_returns_to_the_boss_kit():
     assert mem['shop']['bought'] == [['クースカン', 1, 24]]
     assert mem['card_drop'] == {'1-B1': []}
     assert '1-B1' not in mem['card_scroll'] and '1-B1:クースカン' not in mem['card_miss']
-    assert mem['card_bought_unseen'] == {'クースカン': 1}
-    assert mem['card_stock']['クースカン'] == 0  # a purchase is not an observed stock
+    # v1351: a known kind's purchase goes into the field ledger, not UNSEEN
+    # (a missing key is unknown; a key at 0 means the panel read it at 0).
+    assert not mem.get('card_bought_unseen')
+    assert mem['card_stock']['クースカン'] == 1
     assert records(mem, 'boss_card_restored')[0]['observed_metric']['restored'] == 1
     assert _deploy_cards(BOSS, mem) == ['クースカン', 'ノリウツール']
 
@@ -96,7 +98,7 @@ def test_bought_copy_is_not_bought_again_until_a_panel_reads_it():
     # The next card panel reads the copy: the observation replaces the receipt.
     _observe_card_stock(mem, {'rows': [{'card': 'ノリウツール', 'stock': 2, 'y': 55},
                                        {'card': 'クースカン', 'stock': 1, 'y': 71}], 'remaining': 3})
-    assert mem['card_stock']['クースカン'] == 1 and mem['card_bought_unseen'] == {}
+    assert mem['card_stock']['クースカン'] == 1 and not mem.get('card_bought_unseen')
     open_month(mem, 92, month=11)
     assert mem['shop']['items'] == []
 
@@ -109,7 +111,8 @@ def test_restored_card_is_carried_by_the_next_boss_sortie():
     shown = ('ブラッキー', 'フットバース', 'ノリウツール', 'クースカン')
     assert p.deploy_step(panel(shown, selected=3), mem) == [p.pad('a')]
     assert mem['picked'] == ['ノリウツール', 'クースカン']
-    assert mem['card_stock']['クースカン'] == 1 and not mem['card_drop']['1-B1']
+    # The panel showed 1 and the pick took it: the carriage leaves the ledger at 0.
+    assert mem['card_stock']['クースカン'] == 0 and not mem['card_drop']['1-B1']
 
 
 def test_restored_card_below_the_panel_is_searched_not_held():

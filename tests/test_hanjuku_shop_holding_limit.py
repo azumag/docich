@@ -2,6 +2,11 @@
 
 No live purchase is claimed. The refusal message sits over the still-visible
 price list, so it classifies as shop_list while the hand cursor is hidden.
+
+Owner 2026-11-22: a refusal is proof that the kind's field ledger was too low,
+so the kind becomes unknown and this visit stops asking for it. The v1329
+bisection (learn a holding floor, halve the ask, retry) is gone; the retired
+``card_held_floor`` / ``card_bought_since_read`` ledgers are never written.
 """
 import pytest
 
@@ -33,6 +38,20 @@ def refused_list(gold=300, rows=(('ノリウツール', 18), ('ミックミー',
     c.text(16, 191, message)          # message window hides the hand cursor
     screen = parse(c.frame())
     return screen
+
+
+def _refused_after(ready, name, qty, stock=None, gold_before=300, rest=()):
+    """A refused buy whose quote was confirmed (`bought`) but never paid for."""
+    shop = ready['shop']
+    if stock is not None:
+        ready['card_stock'] = stock
+    shop.update(items=[[name, qty], *[list(r) for r in rest]], want=None,
+                bought=[[name, qty, 18]],
+                bargain_listing_planned=True, bargain_planned=True,
+                last_buy={'row': [name, qty, 18], 'gold': gold_before})
+    screen = refused_list(gold=gold_before)   # gold unchanged: nothing was paid
+    screen.kind = 'shop_list'
+    return p.shop_step(screen, ready), screen
 
 
 def test_refusal_message_is_read_over_the_price_list(ready):
@@ -100,196 +119,67 @@ def test_message_press_is_bounded(ready):
     assert outs[-1] == [p.pad('b')]   # give up on the message and leave the shop
 
 
-def _refused_after(ready, name, qty, stock=None, gold_before=300, rest=(), since=None):
+def test_refusal_makes_the_kind_unknown_and_drops_it_for_this_visit(ready):
+    actions, _ = _refused_after(ready, 'ノリウツール', 39, stock={'ノリウツール': 60},
+                                rest=[['ミックミー', 2]])
+    assert actions == [p.pad('a')]     # the message is closed; no second quote
     shop = ready['shop']
-    if stock is not None:
-        ready['card_stock'] = {name: stock}
-    ready['card_bought_since_read'] = {name: qty if since is None else since}  # confirm added it
-    shop.update(items=[list(r) for r in rest], want=None, bought=[[name, qty, 18]],
-                bargain_listing_planned=True, bargain_planned=True,
-                last_buy={'row': [name, qty, 18], 'gold': gold_before})
-    screen = refused_list(gold=gold_before)   # gold unchanged: nothing was paid
-    screen.kind = 'shop_list'
-    return p.shop_step(screen, ready), screen
-
-
-def test_refusal_records_a_holding_floor_and_retries_half(ready):
-    actions, _ = _refused_after(ready, 'ノリウツール', 60, stock=0, rest=[['ミックミー', 50]])
-    assert actions == [p.pad('a')]
-    shop = ready['shop']
-    assert shop['bought'] == []
-    assert ready['card_bought_since_read'] == {'ノリウツール': 0}      # refused copies are not held
-    assert ready['card_held_floor'] == {'ノリウツール': 40}            # 60 on top of >=40 broke 99
-    # floor 40 is below the strong-floor threshold, so the geometric halving stands.
-    assert shop['items'] == [['ノリウツール', 30], ['ミックミー', 50]]
-
-
-def test_retry_never_exceeds_the_room_the_floor_leaves(ready):
-    _refused_after(ready, 'ノリウツール', 99, stock=0)         # floor 1, room 98
-    assert ready['shop']['items'] == [['ノリウツール', 49]]    # weak floor: halved, still <= room
-
-
-def test_tight_floor_retry_bisects_the_refused_ask(ready):
-    """The retry bisects the refused ask instead of betting on a tight floor."""
-    ready['card_stock'] = {'ノリウツール': 60}
-    _refused_after(ready, 'ノリウツール', 39, stock=60, since=0)
-    # 39 on top of >=61 broke 99; the refusal only proves held >= 61, so the
-    # retry halves the refused ask (39 // 2 = 19) rather than assuming held is
-    # exactly 61 and asking the whole room (38) in one more dialog.
-    assert ready['card_held_floor'] == {'ノリウツール': 61}
-    assert b.held_estimate(ready, 'ノリウツール') == 61
-    assert ready['shop']['items'] == [['ノリウツール', 19]]
-
-
-def _refusal_sequence(ready, name, held, first, stock=0):
-    """Drive repeated refusals with a synthetic true holding.
-
-    Returns (refusals, terminal_qty): terminal_qty is the first ask the shop
-    would accept, or 0 when the card was dropped after the bounded search.
-    """
-    ready['card_stock'] = {name: stock}
-    q = first
-    refusals = 0
-    while q > 0 and refusals < 20:
-        if held + q <= b.HOLD_CAP:
-            return refusals, q
-        shop = ready['shop']
-        ready['card_bought_since_read'] = {name: q}
-        shop.update(items=[], want=None, bought=[[name, q, 18]],
-                    bargain_listing_planned=True, bargain_planned=True,
-                    last_buy={'row': [name, q, 18], 'gold': 300})
-        screen = refused_list(gold=300); screen.kind = 'shop_list'
-        p.shop_step(screen, ready)
-        refusals += 1
-        clean = parse(Canvas().frame()); clean.kind = 'shop_list'
-        p.shop_step(clean, ready)          # close this refusal episode
-        row = next((r for r in ready['shop'].get('items') or [] if r[0] == name), None)
-        if row is None:
-            return refusals, 0             # retry exhausted: this card is dropped
-        q = row[1]
-    return refusals, q
-
-
-def test_weak_floor_keeps_halving_for_a_large_first_ask(ready):
-    """H=60, q=99: no extra refusal versus the old halving path."""
-    refusals, terminal = _refusal_sequence(ready, 'ノリウツール', 60, 99)
-    assert refusals == 2                    # 99 -> 49 (refused) -> 24 (accepted)
-    assert terminal == 24
-    assert ready['card_held_floor']['ノリウツール'] == 51
-
-
-def test_full_hand_refusals_stay_bounded_and_terminate(ready):
-    """H=99, q=99: the card is dropped instead of decrementing one copy at a time."""
-    refusals, terminal = _refusal_sequence(ready, 'ノリウツール', 99, 99)
-    assert refusals == 7                    # 99, 49, 24, 12, 6, 3, 1 all refused
-    assert terminal == 0                    # retry 0 drops this card
-    assert ready['card_held_floor']['ノリウツール'] == 99
-
-
-def test_strong_floor_from_a_stale_estimate_bisects(ready):
-    """H=80, q=39, stock=0: bisection reaches a sellable ask in one retry.
-
-    The old room-first retry asked 38, was refused (80 + 38 > 99), and only
-    then halved to 19 - one wasted dialog. Halving immediately asks 19, which
-    the merchant accepts on the first retry.
-    """
-    refusals, terminal = _refusal_sequence(ready, 'ノリウツール', 80, 39, stock=0)
-    assert refusals == 1                    # 39 (refused) -> 19 (accepted)
-    assert terminal == 19
-    assert ready['card_held_floor']['ノリウツール'] == 61
-
-
-def test_full_kind_drops_only_that_card(ready):
-    _refused_after(ready, 'ノリウツール', 1, stock=0, rest=[['ミックミー', 3]])
-    assert ready['card_held_floor']['ノリウツール'] == 99
-    assert ready['shop']['items'] == [['ミックミー', 3]]       # another kind is unaffected
+    assert shop['bought'] == []                      # refused copies were not paid
+    assert 'ノリウツール' not in ready['card_stock']  # unknown again, not 60 or 61
+    assert shop['items'] == [['ミックミー', 2]]       # another kind is unaffected
+    # The retired refusal/bisection state is not written any more.
+    assert 'card_held_floor' not in ready
+    assert 'card_bought_since_read' not in ready
+    assert 'hold_limit_retry' not in shop
 
 
 def test_a_second_refusal_in_the_same_visit_is_handled_again(ready):
-    _refused_after(ready, 'ノリウツール', 99, stock=0)          # weak floor, retry 49
+    ready['card_stock'] = {'ノリウツール': 60, 'ミックミー': 5}
+    _refused_after(ready, 'ノリウツール', 39, rest=[['ミックミー', 2]])
     shop = ready['shop']
     clean = parse(Canvas().frame()); clean.kind = 'shop_list'
-    p.shop_step(clean, ready)
+    p.shop_step(clean, ready)          # close this refusal episode
     assert shop['hold_limit_open'] is False
-    ready['card_bought_since_read'] = {'ノリウツール': 49}
-    shop.update(bought=[['ノリウツール', 49, 18]], last_buy={'row': ['ノリウツール', 49, 18], 'gold': 300})
+    shop.update(bought=[['ミックミー', 2, 40]],
+                last_buy={'row': ['ミックミー', 2, 40], 'gold': 300})
     screen = refused_list(); screen.kind = 'shop_list'
     assert p.shop_step(screen, ready) == [p.pad('a')]
-    assert ready['card_held_floor']['ノリウツール'] == 51      # >=51 held, 49 more broke 99
-    assert shop['items'] == [['ノリウツール', 24]]
+    assert 'ミックミー' not in ready['card_stock']
+    assert shop['items'] == []
 
 
-def test_purchase_confirmation_counts_toward_the_estimate(ready):
-    b.note_card_bought(ready, 'ノリウツール', 60)
-    ready['card_stock'] = {'ノリウツール': 30}
-    assert b.held_estimate(ready, 'ノリウツール') == 90
-    assert b.hold_room(ready, 'ノリウツール') == 9
+def test_full_kind_refusal_drops_only_that_card(ready):
+    _refused_after(ready, 'ノリウツール', 1, stock={'ノリウツール': 99},
+                   rest=[['ミックミー', 3]])
+    record = next(r for r in reversed(ready['_records'])
+                  if r.get('deviation_reason') == 'holding_limit')
+    assert record['observed_metric']['held_before'] == 99
+    assert ready['shop']['items'] == [['ミックミー', 3]]   # another kind is unaffected
 
 
-def test_panel_read_replaces_the_purchase_ledger(ready):
-    from docich.hanjuku.strategy.kit import _observe_card_stock
-    ready['card_bought_since_read'] = {'ノリウツール': 60, 'ミックミー': 5}
-    ready['card_held_floor'] = {'ノリウツール': 70}
-    _observe_card_stock(ready, {'rows': [{'card': 'ノリウツール', 'stock': 62}]})
-    assert 'ノリウツール' not in ready['card_bought_since_read']
-    assert 'ノリウツール' not in ready['card_held_floor']
-    assert ready['card_bought_since_read'] == {'ミックミー': 5}   # unread kinds keep theirs
-    assert b.held_estimate(ready, 'ノリウツール') == 62
-
-
-def test_second_rich_visit_cannot_ask_for_more_than_99(ready):
-    ready['card_stock'] = {'ノリウツール': 0, 'ミックミー': 0}
-    ready['card_bought_since_read'] = {'ノリウツール': 90, 'ミックミー': 40}   # first visit, panel unread
-    shop = ready['shop']
-    shop.update(items=[], want=None, rich_merchant=True)
-    b.plan_bargains(ready, shop, {'year': 1, 'month': 6, 'gold': 9000},
-                    listed={'ノリウツール': 18, 'ミックミー': 40})
-    planned = dict(shop['items'])
-    assert planned.get('ノリウツール', 0) <= 9 and planned.get('ミックミー', 0) <= 59
-
-
-def test_revalidation_at_the_quote_respects_the_cap(ready):
-    ready['card_stock'] = {'ノリウツール': 0}
-    ready['card_bought_since_read'] = {'ノリウツール': 95}
-    shop = ready['shop']
-    shop.update(items=[['ノリウツール', 20]], bargain_cards=['ノリウツール'], rich_merchant=True)
-    hdr = {'year': 1, 'month': 5, 'gold': 5000}
-    assert b.merchant_card_spendable(ready, shop, hdr, 'ノリウツール', 18) <= 4 * 18
-
-
-def test_confirmed_purchase_enters_the_held_ledger_and_cap_declines_overflow(monkeypatch):
-    from test_hanjuku_merchant_reserve import quote
-    monkeypatch.setattr(b, '_charted_purchase_ahead', lambda mem, header: False)
-    mem = memory(complete=True)
-    mem['card_stock'] = {'ノリウツール': 0}
-    mem['shop'].update(egg='done', bargain_cards=['ノリウツール'],
-                       items=[['ノリウツール', 3]], want=['ノリウツール', 3, 18])
-    assert p.quantity_step(quote(999, count=3, cost=54), mem) == [p.pad('a')]
-    assert mem['card_bought_since_read'] == {'ノリウツール': 3}
-    assert mem['shop']['last_buy']['row'] == ['ノリウツール', 3, 18]
-
-
-
-def test_refusal_records_full_shop_context_after_retry(ready):
-    """Evidence includes the complete queue and state after a refused buy."""
+def test_refusal_records_the_queue_and_the_pre_refusal_ledger(ready):
+    """Evidence includes the complete queue and the pre-refusal count."""
     ready['card_stock'] = {'ノリウツール': 3, 'ミックミー': 8}
-    shop = ready['shop']
     rest = [['ミックミー', 2], ['クースカン', 3]]
     actions, _ = _refused_after(ready, 'ノリウツール', 60, rest=rest)
     assert actions == [p.pad('a')]
     record = next(r for r in reversed(ready['_records'])
                   if r.get('deviation_reason') == 'holding_limit')
     metric = record['observed_metric']
-    assert metric['card_stock_total'] == 11
-    assert metric['items'] == [['ノリウツール', 30], *rest]
+    assert metric['held_before'] == 3
+    assert metric['card_stock'] == {'ミックミー': 8}
+    assert metric['card_stock_total'] == 8
+    assert metric['items'] == [['ミックミー', 2], ['クースカン', 3]]
+    for retired in ('retry', 'held_floor', 'held_estimate', 'card_bought_since_read'):
+        assert retired not in metric
     assert metric['shop_state']['hold_limit'] == 1
     assert metric['shop_state']['hold_limit_open'] is True
     assert metric['shop_state']['want'] is None
     assert metric['shop_state']['last_buy'] == {'row': ['ノリウツール', 60, 18], 'gold': 300}
     assert metric['shop_state']['gold'] == 300
     # Snapshots must not change when the live queue changes.
-    shop['items'][0][1] = 1
-    assert metric['items'][0][1] == 30
+    ready['shop']['items'][0][1] = 1
+    assert metric['items'][0][1] == 2
 
 
 def test_refusal_shop_snapshot_detaches_nested_purchase_row(ready):
@@ -310,26 +200,24 @@ def test_refusal_shop_snapshot_detaches_nested_purchase_row(ready):
     assert metric['shop_state']['want'][1] == 60
 
 
-def test_used_card_lowers_the_buy_deficit(ready):
-    """A spent copy opens hold_room so the next ask is the deficit, not a 99 probe."""
-    mem = ready
-    mem['card_stock'] = {'ノリウツール': 40}
-    b.note_card_used(mem, 'ノリウツール')
-    b.note_card_used(mem, 'ノリウツール')
-    assert b.held_estimate(mem, 'ノリウツール') == 38
-    assert b.hold_room(mem, 'ノリウツール') == 61
+def test_a_known_kind_purchase_moves_the_ledger_to_the_cap(ready):
+    from test_hanjuku_merchant_reserve import quote
+    ready['card_stock'] = {'ノリウツール': 90}
+    ready['shop'].update(egg='done', items=[['ノリウツール', 9]],
+                         want=['ノリウツール', 9, 18])
+    assert p.quantity_step(quote(999, count=9, cost=162), ready) == [p.pad('a')]
+    assert ready['card_stock']['ノリウツール'] == 99
+    assert 'card_bought_since_read' not in ready
 
 
-def test_used_ledger_resets_on_a_panel_read(ready):
-    """A fresh panel read is the truth; the used-since-read count is dropped."""
-    mem = ready
-    mem['card_stock'] = {'ノリウツール': 40}
-    b.note_card_used(mem, 'ノリウツール')
-    mem['card_stock'] = {'ノリウツール': 40}
-    # A panel read of 40 overrides the used count (the copy is back in stock or
-    # the count was already reflected): the used ledger is cleared for it.
-    mem.setdefault('card_bought_since_read', {})
-    mem.setdefault('card_held_floor', {})
-    from docich.hanjuku.strategy.kit import _observe_card_stock
-    _observe_card_stock(mem, {'rows': [{'card': 'ノリウツール', 'stock': 40}]})
-    assert b.held_estimate(mem, 'ノリウツール') == 40
+def test_a_purchase_of_an_unknown_kind_is_not_credited_to_the_ledger(ready):
+    ready['card_stock'] = {}
+    b.note_card_bought(ready, 'ノリウツール', 3)
+    assert b.held(ready, 'ノリウツール') is None
+    assert b.hold_room(ready, 'ノリウツール') is None
+
+
+def test_a_known_kind_purchase_never_goes_past_99(ready):
+    ready['card_stock'] = {'ノリウツール': 95}
+    b.note_card_bought(ready, 'ノリウツール', 12)
+    assert ready['card_stock']['ノリウツール'] == 99

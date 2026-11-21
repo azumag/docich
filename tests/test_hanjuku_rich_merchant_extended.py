@@ -22,6 +22,7 @@ RICH_ROWS = {
 
 
 def test_all_nine_requested_cards_are_considered_before_random(ready):
+    ready['card_stock'] = {name: 0 for name in RICH_ROWS}   # a panel read them at 0
     shop = ready['shop']
     header = listing(9000).header
     b.plan_bargains(ready, shop, header, listed=RICH_ROWS)
@@ -34,6 +35,7 @@ def test_all_nine_requested_cards_are_considered_before_random(ready):
 
 
 def test_unknown_reference_price_is_not_assumed_without_a_listing(ready):
+    ready['card_stock'] = {'フットバース': 0, 'ピッグローラー': 0}
     shop = ready['shop']
     header = listing(1000).header
     b.plan_bargains(ready, shop, header)  # only preliminary, no invented stock
@@ -52,6 +54,7 @@ def test_requested_special_cards_only_use_rich_budget(ready):
 def test_spare_cash_may_buy_random_observed_cards_reproducibly(ready):
     header = listing(1000).header
     rows = {'ダンスライン': 5, 'カルゲンジー': 8, 'ラピニアール': 12, 'ビッグウェイブ': 88}
+    ready['card_stock'] = {name: 0 for name in rows}       # a panel read them at 0
     initial = deepcopy(ready)
     b.plan_bargains(ready, ready['shop'], header, listed=rows)
     b.plan_bargains(initial, initial['shop'], header, listed=rows)

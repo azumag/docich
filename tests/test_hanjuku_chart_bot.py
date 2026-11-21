@@ -171,20 +171,29 @@ def test_hand_hiding_the_target_glyph_still_navigates_by_measured_layout():
     assert policy.name_step(parse(c.frame()), {})[0]['buttons'] == ['left']
 
 
+def _known_bargains():
+    """A ledger where every bargain target was read at 0 (v1351: unknown is not 0)."""
+    from docich.hanjuku.strategy.bargains import BARGAIN_TARGETS
+    return {name: 0 for name in BARGAIN_TARGETS}
+
+
 def test_budget_plan_prioritises_boss_kit_and_records_deviation():
-    mem = {'chapter': 1}
+    mem = {'chapter': 1, 'card_stock': _known_bargains()}
     shop = policy._plan(mem, {'year': 1, 'month': 5, 'gold': 137})
     assert shop['items'][:3] == [['クースカン', 1], ['ノリウツール', 1], ['イッテツーン', 6]]
     rec = mem['_records'][-1]
     assert rec['strategy_variant'] == 'budget_boss_kit_first'
     assert '214' in rec['deviation_reason'] and rec['expected_metric']['chart_gold'] == 214
-    full = policy._plan({'chapter': 1}, {'year': 1, 'month': 5, 'gold': 214})
+    full = policy._plan({'chapter': 1, 'card_stock': _known_bargains()},
+                        {'year': 1, 'month': 5, 'gold': 214})
     assert full['items'] == [list(i) for i in chart.CHAPTER_1_PURCHASES['cards']]
     assert full['soldiers'] == 41  # no wage reserve
     # Before the charted month the gold is reserved for it.
-    assert policy._plan({'chapter': 1}, {'year': 1, 'month': 4, 'gold': 999}) is None
+    assert policy._plan({'chapter': 1, 'card_stock': _known_bargains()},
+                        {'year': 1, 'month': 4, 'gold': 999}) is None
     # Afterwards every month refills soldiers with the gold left (up to 99).
-    refill = policy._plan({'chapter': 1}, {'year': 1, 'month': 6, 'gold': 999})
+    refill = policy._plan({'chapter': 1, 'card_stock': _known_bargains()},
+                          {'year': 1, 'month': 6, 'gold': 999})
     # BARGAIN_TARGETS (2026-11-02): spare cash stocks useful cards to target.
     assert refill['items'] == [['ノリウツール', 3], ['クースカン', 3], ['ゼンマイン', 2]]
     assert refill['soldiers'] == 99  # optional cards do not take the refill budget
@@ -192,7 +201,7 @@ def test_budget_plan_prioritises_boss_kit_and_records_deviation():
 
 
 def test_uncovered_month_refills_soldiers_and_plans_spare_cash_cards():
-    mem = {'chapter': 1}
+    mem = {'chapter': 1, 'card_stock': _known_bargains()}
     shop = policy._plan(mem, {'year': 1, 'month': 7, 'gold': 130})
     assert shop['items'] == [['ノリウツール', 1]]
     assert shop['soldiers'] == 50 and shop['soldiers_done'] is False

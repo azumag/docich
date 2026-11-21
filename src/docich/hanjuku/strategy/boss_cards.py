@@ -26,12 +26,14 @@ from ... import hanjuku_chart as chart
 from ... import hanjuku_reference as reference
 from ..decision_log import _record
 from .economy import KNOWN_PRICES, _merchant_spendable, _soldier_spendable
+from .bargains import held, hold_room
 from .kit import _is_boss_order
 from ..state.regions import plan as _plan_region
 
-# Copies bought (confirmed at the merchant's quote) that no card panel has shown
-# yet. card_stock stays an observation; this keeps a bought card from being
-# bought again before a sortie panel reads it.
+# Copies bought (confirmed at the merchant's quote) whose kind the ledger does
+# not know. ``card_stock`` is the field-inventory ledger: a purchase of a known
+# kind is added there, and only an unknown kind lands here, so the two never
+# count the same copy twice.
 UNSEEN = 'card_bought_unseen'
 
 
@@ -69,11 +71,18 @@ def _chart_purchase_ahead(mem, header):
 
 
 def _shortage(mem, kit, items):
-    """Copies to buy per card: measured stock + unseen purchases + this month's plan."""
+    """Copies to buy per card: the field ledger + this month's plan.
+
+    A known kind's confirmed purchases are already in the ledger
+    (``bargains.note_card_bought``), so ``UNSEEN`` is not added on top: that
+    sum counted a purchase twice whenever a stale receipt outlived the panel
+    read that folded it into the ledger. A kind the ledger has never seen is
+    not a measured shortage (as before); a charted purchase, which is the
+    other necessity, still asks without stock knowledge.
+    """
     stock = mem.get('card_stock')
     if not isinstance(stock, dict):
         return {}
-    unseen = _unseen(mem)
     planned = Counter()
     for row in items:
         if isinstance(row, (list, tuple)) and len(row) == 2 and type(row[1]) is int:
@@ -83,8 +92,7 @@ def _shortage(mem, kit, items):
         seen = stock.get(card)
         if type(seen) is not int or seen < 0:
             continue  # never measured: no evidence that the copy is missing
-        bought = unseen.get(card, 0)
-        have = seen + (bought if type(bought) is int and bought > 0 else 0) + planned[card]
+        have = seen + planned[card]
         if have < need:
             short[card] = need - have
     return short
@@ -131,7 +139,9 @@ def plan_boss_card_rebuy(mem, shop):
         price = KNOWN_PRICES.get(card)
         if card not in short or type(price) is not int or price <= 0 or budget is None:
             continue
-        qty = min(short[card], budget // price)
+        # The ledger is known here (an unknown kind has no measured shortage),
+        # so never ask past the room the 99-copy cap leaves.
+        qty = min(short[card], budget // price, hold_room(mem, card) or 0)
         if qty > 0:
             rows.append([card, qty])
             budget -= qty * price
@@ -160,8 +170,10 @@ def plan_boss_card_rebuy(mem, shop):
 def note_card_purchase(mem, card, qty):
     """A confirmed merchant purchase of a boss-kit card returns it to the boss kit.
 
-    The quote was matched and うむッ pressed (the same basis as ``bought``); the
-    stock itself is read again on the next card panel. Removing the copy from
+    The quote was matched and うむッ pressed (the same basis as ``bought``).
+    ``bargains.note_card_bought`` has already added the copies to the ledger
+    when the kind was known; only an unknown kind is recorded as UNSEEN here,
+    so a copy is counted once (owner 2026-11-22). Removing the copy from
     ``card_drop`` lets the next boss sortie look for it; its scroll budget and
     miss count restart so a proven-absent copy is dropped again, not held for.
     """
@@ -169,11 +181,15 @@ def note_card_purchase(mem, card, qty):
     if kit is None or type(qty) is not int or qty <= 0 or card not in kit[1]:
         return
     step = kit[0]
-    ledger = mem.get(UNSEEN)
-    if not isinstance(ledger, dict):
-        ledger = mem[UNSEEN] = {}
-    previous = ledger.get(card, 0)
-    ledger[card] = (previous if type(previous) is int and previous > 0 else 0) + qty
+    unseen_copies = None
+    if held(mem, card) is None:
+        # Unknown kind: the field ledger cannot take the copies yet.
+        ledger = mem.get(UNSEEN)
+        if not isinstance(ledger, dict):
+            ledger = mem[UNSEEN] = {}
+        previous = ledger.get(card, 0)
+        ledger[card] = (previous if type(previous) is int and previous > 0 else 0) + qty
+        unseen_copies = ledger[card]
     dropped = (mem.get('card_drop') or {}).get(step)
     restored = 0
     while isinstance(dropped, list) and card in dropped and restored < qty:
@@ -185,9 +201,9 @@ def note_card_purchase(mem, card, qty):
     _record(mem, 'boss_card_restored' if restored else 'boss_card_bought', chart_step=step,
             card=card, qty=qty,
             observed_metric={'restored': restored, 'card_drop': list(dropped or ()),
-                             'bought_unseen': ledger[card],
+                             'bought_unseen': unseen_copies,
                              'card_stock': (mem.get('card_stock') or {}).get(card)},
-            reason=('買い直したボス札を外した札から戻し、次のボス出撃で携行する。在庫は次の札一覧で確認する'
+            reason=('買い直したボス札を外した札から戻し、次のボス出撃で携行する。在庫は台帳と次の札一覧で確認する'
                     if restored else 'ボス札の購入を記録し、札一覧で在庫を確認するまで重ねて買わない'))
 
 

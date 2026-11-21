@@ -21,6 +21,10 @@ def ready(monkeypatch):
     mem['egg_zero_owners'] = []
     mem['shop'].update(items=[], want=None, soldiers=50, soldiers_done=False,
                        reserve=0, recruit_reserve=0)
+    # v1351: spare cash is only spent on a kind the field ledger knows. These
+    # unit cases start from a panel that read every bargain target at 0 — the
+    # same starting point the old "unknown means 0" reading gave them.
+    mem['card_stock'] = {name: 0 for name in b.BARGAIN_TARGETS}
     return mem
 
 
@@ -42,6 +46,7 @@ def test_empty_plan_buys_a_visible_strong_card_with_spare_cash(ready):
 
 def test_monthly_plan_opens_merchant_without_a_chart_card_order():
     mem = {'chapter': 1, 'month': '99-5', 'tick': 1, 'egg_uses': {},
+           'card_stock': {name: 0 for name in b.BARGAIN_TARGETS},
            'soldiers_seen': 100, 'soldiers_seen_key': '99-5'}
     shop = p._plan(mem, {'year': 99, 'month': 5, 'gold': 500})
     assert shop['items'] and shop['merchant_done'] is False
@@ -154,7 +159,10 @@ def test_exact_quote_rechecks_cash_and_does_not_repeat_after_hotload(ready):
     assert p.quantity_step(quote(142, count=3, cost=54), ready) == [p.pad('b')]
     assert p.shop_step(listing(88), ready) == [p.pad('b')]
     assert ready['shop']['bought'] == [['ノリウツール', 3, 18]]
-    assert not ready.get('card_stock')  # never invent an observed inventory receipt
+    # v1351: a confirmed purchase of a known kind enters the field ledger (the
+    # old "observed inventory only" receipt is retired; the read overwrites it).
+    assert ready['card_stock'] == {'ノリウツール': 3, **{name: 0 for name in b.BARGAIN_TARGETS
+                                                         if name != 'ノリウツール'}}
 
 
 @pytest.mark.parametrize('change', ['cash', 'repair', 'soldiers', 'recruit', 'month', 'price'])
@@ -270,14 +278,17 @@ def test_a_half_price_cart_after_the_month_pass_gets_a_pass_of_its_own(ready):
     shop = ready['shop']
     assert shop['want'][0] in dict(HALF) and shop['cheap_vendor'] is True
     assert shop['cheap_vendor_planned'] is True
-    planned = dict(HALF)
-    rich = dict((n, q) for n, q in shop['items'] if n in b.RICH_MERCHANT_CARDS)
-    # This synthetic four-row canvas clips the fourth (ミックミー) row;
-    # only the three visible cards may be planned from the actual listing.
-    assert rich == {'ノリウツール': b.RICH_MERCHANT_MAX_COPIES}
-    ordinary = [(n, q) for n, q in shop['items'] if n not in b.RICH_MERCHANT_CARDS]
-    assert sum(planned[n] * q for n, q in ordinary) <= b.CHEAP_VENDOR_GOLD
-    assert sum(q for _, q in ordinary) <= b.CHEAP_VENDOR_COPIES
+    planned = dict(shop['items'])
+    # This synthetic four-row canvas clips the fourth (ミックミー) row; only the
+    # three visible cards may be planned from the actual listing. v1351 puts
+    # BARGAIN_TARGETS on the rich path too, so the two bargain targets go to 99
+    # with the rich budget instead of the cart's smaller caps.
+    for name in ('ノリウツール', 'クースカン', 'ゼンマイン'):
+        assert planned.get(name) == b.RICH_MERCHANT_MAX_COPIES, name
+    assert set(planned) <= set(HALF)
+    ordinary = [(n, q) for n, q in shop['items']
+                if n not in b.RICH_MERCHANT_CARDS and n not in b.BARGAIN_TARGETS]
+    assert ordinary == []
     assert not shop.get('bought')                       # selecting is not payment
 
 
