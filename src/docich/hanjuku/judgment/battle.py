@@ -1997,11 +1997,12 @@ def _retreat_cards_to_spend(cur):
 def _critical_safe_card(mem, cur, rescue, *, for_retreat=False):
     # Only the observed list, not a chart kit, licenses delaying an active
     # egg for a heal/proven finishing blow. Selection is still not a use.
+    # The bounded-failure guards apply to every card: a stale inventory
+    # must not suppress retreat indefinitely.
     if for_retreat and (rescue.get('cards_checked', 0) >= 3
             or rescue.get('cards_exhausted')
-            or (rescue.get('exhausted') and rescue.get('critical_menu_recheck'))
-            or _retreat_immediate_loss(cur)):
-        return False  # stale inventory must not suppress retreat indefinitely
+            or (rescue.get('exhausted') and rescue.get('critical_menu_recheck'))):
+        return False
     names = rescue.get('listed_cards') or []
     for card in names:
         if (card not in SURVIVAL_CARDS or card in rescue.get('cards_attempted', [])
@@ -2010,15 +2011,25 @@ def _critical_safe_card(mem, cur, rescue, *, for_retreat=False):
         gate = _card_damage_gate(mem, cur, card, listed_cards=names)
         if not gate['allowed']:
             continue
+        # A proven finisher (or a needed heal) defers retreat at any HP:
+        # the observed kill lands on this turn, before the enemy's next
+        # hit (test_hanjuku_finish_before_retreat). The immediate-loss
+        # floor below only cuts off the speculative spend-before-retreat
+        # detour (#4999), never a confirmed kill.
+        if (gate['role'] == 'single_card_lethal'
+                or (gate['role'] == 'healing_not_a_kill' and _card_healing_needed(cur))):
+            return True
         if for_retreat:
             # docich#4999: before the retreat row, spend any unattempted
             # card the gate permits (lethal, damage, control, drop, heal) —
             # not only a proven finisher. A heal still needs a wound.
+            # Below the immediate-loss floor the gamble stops and the
+            # retreat proceeds (g460: the general died 24 -> 12 -> 0 while
+            # waiting in card menus).
+            if _retreat_immediate_loss(cur):
+                continue
             if gate['role'] != 'healing_not_a_kill' or _card_healing_needed(cur):
                 return True
-        elif (gate['role'] == 'single_card_lethal'
-                or (gate['role'] == 'healing_not_a_kill' and _card_healing_needed(cur))):
-            return True
     return False
 
 

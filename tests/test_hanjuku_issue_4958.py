@@ -56,9 +56,14 @@ def test_critical_safe_card_defers_retreat_for_any_permitted_card():
     # ただし同名札が attempt/selected 済みなら消費未確定として数えない。
     rescue['cards_attempted'] = ['ミックミー']
     assert rules._critical_safe_card(mem, _cur(2), rescue, for_retreat=True) is False
-    # g460 の線引き: 即死帯 (RETREAT_RESOURCE_FLOOR_HP=4) では救済探索を打ち切り退却を優先する。
+    # g460 の線引き: 即死帯 (RETREAT_RESOURCE_FLOOR_HP=4) では非致死札の
+    # 救済探索を打ち切り退却を優先する (兵数 3 のミックミーは非致死)。
     rescue['cards_attempted'] = []
-    assert rules._critical_safe_card(mem, _cur(2, ally_hp=4), rescue, for_retreat=True) is False
+    assert rules._critical_safe_card(mem, _cur(3, ally_hp=4), rescue, for_retreat=True) is False
+    # ただし観測済みの致死札は即死帯でも退却を遅らせる (兵数 2 のミックミーは
+    # single_card_lethal)。確定した一撃はこの手番で決まるため、待機による
+    # g460 型の死亡とは別物 (test_hanjuku_finish_before_retreat)。
+    assert rules._critical_safe_card(mem, _cur(2, ally_hp=4), rescue, for_retreat=True) is True
 
 
 def test_pending_second_copy_keeps_bounded_window_then_spends():
