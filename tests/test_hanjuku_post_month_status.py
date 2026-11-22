@@ -1728,6 +1728,39 @@ def test_a_battle_interruption_does_not_spend_the_recall_retry_budget():
     assert state['stage'] == 'process'
 
 
+def test_dispatch_terminal_preserves_interrupt_for_monthly_retry_budget():
+    # #5135: recall finalization consumes recall_interrupted before wait_recall
+    # runs. The scoped verification must preserve that proof without spending
+    # the monthly retry budget.
+    from docich.hanjuku.flows import recall as recall_flow
+    from docich.hanjuku.state.regions import flow as _flow
+    mem = memory(month='2-12')
+    state = _wait_recall_state(mem)
+    state['started_tick'] = 100
+    state['recall_task_retries'] = {'ヴィーナス': post.RECALL_TASK_RETRIES}
+    mem['tick'] = 160
+    dispatch = {'stage': 'await_dispatch', 'steps': 6, 'goal': 'オケアナ',
+                'requested_tick': 120, 'target': [139, 113], 'input_sent': False}
+    _flow(mem)['recall'] = dispatch
+    _flow(mem)['recall_interrupted'] = 150
+
+    recall_flow._recall_dispatch_step(Screen([], None, '', kind='map'), mem, dispatch)
+
+    verification = _flow(mem)['recall_verification']
+    assert verification['status'] == 'dispatch_unconfirmed'
+    assert verification['input_sent'] is False
+    assert verification['interrupted'] is True
+    assert verification['interrupted_tick'] == 150
+    assert 'recall_interrupted' not in _flow(mem)
+
+    assert post.step(Screen([], None, '', kind='map'), mem, None) == []
+    assert state['tasks'] == [{'kind': 'recall', 'name': 'ヴィーナス'}]
+    assert state['recall_task_retries'] == {'ヴィーナス': post.RECALL_TASK_RETRIES}
+    record = [r for r in mem['_records']
+              if r['decision'] == 'post_month_recall_requeued'][-1]
+    assert record['observed_metric']['battle_interrupt'] is True
+
+
 def test_a_static_unresolvable_marker_is_not_re_read_for_every_general():
     """g1163 2026-11-09: box [59,120,64,125] repeated for twenty generals."""
     state = {}
