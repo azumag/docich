@@ -2124,7 +2124,10 @@ def _fort_step(screen, mem, state):
         return None
     if screen.kind == 'map':
         return _leave_fort(mem, state, '砦のしゅつげきが閉じてマップへ戻ったため見送る', [])
-    if house.general_status(screen):
+    info = house.general_status(screen)
+    # The status panel must belong to the general selected in the fort list.
+    # A stale/adjacent panel is not permission to confirm the sortie picker.
+    if info and info.get('general') == state.get('general'):
         reads = state['fort_status_reads'] = int(state.get('fort_status_reads') or 0) + 1
         return [pad('a')] if reads % FORT_STATUS_PRESS_EVERY == 1 else []
     return []
