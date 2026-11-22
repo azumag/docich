@@ -2152,6 +2152,21 @@ def step(screen, mem, frame):
             used = used if type(used) is int and used >= 0 else 0
             interrupted_at = _flow(mem).get('recall_interrupted')
             tick = mem.get('tick')
+            verification = _flow(mem).get('recall_verification') or {}
+            if (type(interrupted_at) is not int and isinstance(verification, dict)
+                    and verification.get('status') == 'dispatch_unconfirmed'
+                    and verification.get('input_sent') is not True
+                    and verification.get('interrupted') is True):
+                requested = verification.get('requested_tick')
+                recorded = verification.get('interrupted_tick')
+                started = state.get('started_tick')
+                if (type(requested) is int and type(started) is int and requested >= started
+                        and type(recorded) is int and requested <= recorded
+                        and type(tick) is int and recorded <= tick):
+                    # recall.py consumes the transient marker when it finalizes
+                    # the attempt. Keep the scoped terminal proof so this
+                    # monthly task can still recognize the interruption.
+                    interrupted_at = recorded
             interrupted = (type(interrupted_at) is int and type(tick) is int
                            and 0 <= tick - interrupted_at <= RECALL_INTERRUPT_GRACE)
             if (interrupted or used < RECALL_TASK_RETRIES) and not _recall_was_dispatched(
