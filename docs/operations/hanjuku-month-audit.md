@@ -241,7 +241,7 @@ terminal な出撃失敗/取消のdecisionを、`sortie_*` のrecordとして保
   `observed_metric.cards`、確定出撃スナップショット
   `world.launched_orders[step]` の `departure_binding.cards`
   （binding付きsnapshotの `cards` も同じ実測値）、および同一stepの
-  `sortie_confirm` decision の `cards`（v1387/#5118）。
+  `sortie_confirm` decision の `cards`（v1394/#5118）。
 - 在庫は `card_stock` の正数。計画 `chart_plan.orders[].cards` は
   「計画」であり、実携行の証拠にはしない。`departure_binding` を持たない
   `launched_orders` snapshot の `cards` も `departure_snapshot` が写した
