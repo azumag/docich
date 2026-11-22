@@ -1295,7 +1295,7 @@ def _chikujou_step(screen, mem, sub):
             move = menu_to(screen, 'いかんッ!')
             if not sub.get('decline_recorded'):
                 sub['decline_recorded'] = True
-                _record(mem, 'chikujou_declined',
+                _record(mem, 'chikujou_declined', month=key,
                         observed_metric={'cost': cost, 'gold': gold, 'reserve': reserve},
                         reason='築城の実費が不明か必要資金を割るため、支払わず見送る')
             if move == 'here':

@@ -1417,6 +1417,67 @@ def _chikujou_hold(shop, records, month):
     return 'recruit_pending'
 
 
+_CHIKUJOU_COST_DECLINE = '築城の実費が不明か必要資金を割るため、支払わず見送る'
+
+
+def _chikujou_cost_declined(records, month):
+    """The native quote was declined as unaffordable this month (docich#5081).
+
+    `affordable` only compares gold with reserve + a fixed spare; it cannot
+    see the real per-castle price the bot read in the うむッ/いかんッ frame.
+    A month that ended after the bot declined that price is not a missed
+    build, the same way a month skipped for an observed refusal is not
+    (#5061). Only a decline recorded for this month counts: decisions are
+    read in a 120 s window that can span a month boundary.
+    """
+    last_decline = None
+    for row in records or ():
+        if not isinstance(row, dict) or row.get('decision') != 'chikujou_declined':
+            continue
+        if row.get('reason') != _CHIKUJOU_COST_DECLINE:
+            continue
+        if month is not None and row.get('month') not in (None, month):
+            continue
+        at = row.get('at')
+        if type(at) in (int, float) and (last_decline is None or at > last_decline):
+            last_decline = at
+        if last_decline is None:
+            return True  # undated record: the decline still stands
+    if last_decline is None:
+        return False
+    # A later quote/confirm in the same month means the bot reopened 築城
+    # after the decline; that month can still be a real missed build.
+    for row in records or ():
+        if not isinstance(row, dict) or row.get('decision') not in (
+                'chikujou_confirm', 'chikujou_continue'):
+            continue
+        if month is not None and row.get('month') not in (None, month):
+            continue
+        at = row.get('at')
+        if type(at) in (int, float) and at > last_decline:
+            return False
+    return True
+
+
+def _chikujou_menu_unreadable(records, month):
+    """The ちくじょう row stayed unreadable until the month was closed.
+
+    docich#5079 makes the bounded wait and the final skipped month visible
+    in `chikujou_menu_unreadable`; the audit must name that cause instead of
+    reporting a reason-less high-confidence missed build (docich#5097).
+    Only the terminal `skipped` record counts, not the retry observations.
+    """
+    for row in records or ():
+        if not isinstance(row, dict) or row.get('decision') != 'chikujou_menu_unreadable':
+            continue
+        if month is not None and row.get('month') not in (None, month):
+            continue
+        metric = row.get('observed_metric')
+        if isinstance(metric, dict) and metric.get('skipped') is True:
+            return True
+    return False
+
+
 def _chikujou_snapshot(after, before, record, records):
     from .strategy import economy
     month = record.get('month') if isinstance(record.get('month'), str) else None
@@ -1489,6 +1550,7 @@ def _chikujou_snapshot(after, before, record, records):
     refusal_covered = (isinstance(refused_castles, list) and bool(refused_castles)
                        and sorted(refused_castles) == sorted(raw_candidates))
     affordable = economy._chikujou_affordable(gold, reserve)
+    cost_declined = _chikujou_cost_declined(records, month)
     return {
         'month': month or shop.get('key'),
         'gold': gold,
@@ -1502,8 +1564,11 @@ def _chikujou_snapshot(after, before, record, records):
         'unavailable': sorted(unavailable)[:8],
         'affordable': affordable,
         'refusal_covered': refusal_covered,
+        'cost_declined': cost_declined,
+        'menu_unreadable': _chikujou_menu_unreadable(records, month),
         'held_for': _chikujou_hold(shop, records, month),
-        'buildable': bool(affordable and staffed_candidates and not refusal_covered),
+        'buildable': bool(affordable and staffed_candidates and not refusal_covered
+                          and not cost_declined),
     }
 
 
@@ -1553,10 +1618,16 @@ def _build_chikujou_incident(runtime, state, after, event, now):
     # judged on counts, but do not file it as a high-confidence alarm (the
     # issue filer defaults to min_confidence=high).
     held_for = event.get('held_for') if event.get('outcome') == 'ended' else None
+    menu_unreadable = (event.get('menu_unreadable')
+                       if event.get('outcome') == 'ended' else None)
     confidence, confidence_reasons = 'high', []
     if held_for:
         confidence = 'medium'
         confidence_reasons = [f'chikujou_held_for_{held_for}']
+    elif menu_unreadable:
+        # docich#5097: the row was unreadable, not a reason-less missed build.
+        confidence = 'medium'
+        confidence_reasons = ['chikujou_menu_unreadable']
     signals = [kind, 'chikujou_candidate']
     for name in _signals(context, counts, confirmed, departures, battle_count):
         if name not in signals:
@@ -1579,6 +1650,7 @@ def _build_chikujou_incident(runtime, state, after, event, now):
         'confidence': confidence,
         'confidence_reasons': confidence_reasons,
         'chikujou_held_for': held_for,
+        'chikujou_menu_unreadable': menu_unreadable,
         'chapter': mem.get('chapter'),
         'month': mem.get('month'),
         'month_summary': month,
@@ -2674,6 +2746,8 @@ def render(record):
             *([f"- 保留: {_CHIKUJOU_HOLD_LABELS.get(chikujou['held_for'], chikujou['held_for'])}"
                 '（卵/募集の未決で築城を開かない fail-closed 設計・docich#5045）']
                if chikujou.get('held_for') else []),
+            *(['- 築城行の読取り: 不可（有限回の再観測後も未読・docich#5079/#5097）']
+               if chikujou.get('menu_unreadable') else []),
             '',
         ]
     if stay:

@@ -921,6 +921,86 @@ def test_chikujou_skip_after_refusal_rearms_when_a_castle_is_added(runtime_dir):
     assert records[0]['kind'] == 'chikujou_available_at_end'
 
 
+def test_chikujou_month_end_after_cost_decline_is_not_recorded(runtime_dir):
+    """docich#5081: the native quote the bot declined is not visible to the
+    gold>=reserve+spare heuristic, so that month end is not a missed build."""
+    value = _chikujou_state()
+    audit.observe(runtime_dir, audit.capture(value), value,
+                  [{'decision': 'chikujou_declined', 'month': '1-1', 'at': 999,
+                    'reason': '築城の実費が不明か必要資金を割るため、支払わず見送る',
+                    'observed_metric': {'cost': None, 'gold': 32, 'reserve': 30}},
+                   {'decision': 'month_done', 'month': '1-1',
+                    'reason': '月一の購入を終了', 'at': 1000}], now=1000)
+    assert audit.load_incidents(runtime_dir) == []
+
+
+def test_chikujou_decline_followed_by_a_later_quote_still_records(runtime_dir):
+    """A reopened 築城 sub after the decline can still be a real missed build."""
+    value = _chikujou_state()
+    audit.observe(runtime_dir, audit.capture(value), value,
+                  [{'decision': 'chikujou_declined', 'month': '1-1', 'at': 990,
+                    'reason': '築城の実費が不明か必要資金を割るため、支払わず見送る'},
+                   {'decision': 'chikujou_confirm', 'month': '1-1', 'at': 995},
+                   {'decision': 'month_done', 'month': '1-1', 'at': 1000}], now=1000)
+    records = audit.load_incidents(runtime_dir)
+    assert len(records) == 1
+    assert records[0]['kind'] == 'chikujou_available_at_end'
+
+
+def test_chikujou_cost_decline_from_another_month_still_records(runtime_dir):
+    """The 120 s decision window spans month boundaries; only this month's
+    decline may suppress the alert."""
+    value = _chikujou_state()
+    audit.observe(runtime_dir, audit.capture(value), value,
+                  [{'decision': 'chikujou_declined', 'month': '1-0', 'at': 999,
+                    'reason': '築城の実費が不明か必要資金を割るため、支払わず見送る'},
+                   {'decision': 'month_done', 'month': '1-1',
+                    'reason': '月一の購入を終了', 'at': 1000}], now=1000)
+    records = audit.load_incidents(runtime_dir)
+    assert len(records) == 1
+    assert records[0]['kind'] == 'chikujou_available_at_end'
+
+
+def test_chikujou_terminal_decline_is_not_a_cost_decline(runtime_dir):
+    value = _chikujou_state()
+    audit.observe(runtime_dir, audit.capture(value), value,
+                  [{'decision': 'chikujou_declined', 'month': '1-1', 'at': 999,
+                    'reason': '当月未試行で増築候補となる所有城がなくなったため、築城を終える'},
+                   {'decision': 'month_done', 'month': '1-1', 'at': 1000}], now=1000)
+    assert audit.load_incidents(runtime_dir)[0]['kind'] == 'chikujou_available_at_end'
+
+
+def test_chikujou_month_end_with_unreadable_menu_row_is_medium_confidence(runtime_dir):
+    """docich#5097 / #5079: a bounded wait that still could not read ちくじょう
+    is a named, medium-confidence occurrence rather than a reason-less alarm."""
+    value = _chikujou_state()
+    audit.observe(runtime_dir, audit.capture(value), value,
+                  [{'decision': 'chikujou_menu_unreadable', 'month': '1-1', 'at': 999,
+                    'observed_metric': {'skipped': True, 'waits': 4},
+                    'reason': '有限回待ってもちくじょう行を読めないため、当月は築城せずに月を終える'},
+                   {'decision': 'month_done', 'month': '1-1',
+                    'reason': '月一の購入を終了', 'at': 1000}], now=1000)
+    records = audit.load_incidents(runtime_dir)
+    assert len(records) == 1
+    record = records[0]
+    assert record['kind'] == 'chikujou_available_at_end'
+    assert record['confidence'] == 'medium'
+    assert record['confidence_reasons'] == ['chikujou_menu_unreadable']
+    assert record['chikujou_menu_unreadable'] is True
+    assert '築城行の読取り: 不可' in audit.render(record)
+
+
+def test_chikujou_menu_unreadable_retry_without_skip_stays_high(runtime_dir):
+    value = _chikujou_state()
+    audit.observe(runtime_dir, audit.capture(value), value,
+                  [{'decision': 'chikujou_menu_unreadable', 'month': '1-1', 'at': 999,
+                    'observed_metric': {'skipped': False, 'waits': 1}},
+                   {'decision': 'month_done', 'month': '1-1', 'at': 1000}], now=1000)
+    record = audit.load_incidents(runtime_dir)[0]
+    assert record['confidence'] == 'high'
+    assert record['chikujou_menu_unreadable'] is False
+
+
 def test_chikujou_month_end_is_reported_once(runtime_dir):
     value = _chikujou_state()
     record = {'decision': 'month_done', 'month': '1-1', 'at': 1000}
