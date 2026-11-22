@@ -164,6 +164,7 @@ def test_a_battle_return_restarts_the_to_camp_budget():
 
 
 def test_a_battle_return_marker_survives_resumable_text_until_map():
+    """A menu-stage status panel is resumable; reset only on the later map."""
     mem = memory(stage='menu')
     state = _flow(mem)['recall']
     state['steps'] = 89                              # text takes this to 90; map would abort at 91
