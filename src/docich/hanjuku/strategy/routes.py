@@ -198,6 +198,29 @@ def probe_due(mem, castle):
             and (last is None or now - int(last) >= PROBE_INTERVAL))
 
 
+# A recall's destination read is due only this long; an old entry must not
+# keep minting an unbudgeted probe (the read pops only a complete roster).
+ROSTER_READ_DUE_TTL = 900
+
+
+def roster_read_due(mem):
+    """Castles whose roster read has come due, keyed by their due tick.
+
+    ``roster_read_due[castle]`` stores the read's *due time* — a recall lands
+    after its walking delay — not the request tick, so an entry counts only
+    once ``tick <= now``. An entry past ``ROSTER_READ_DUE_TTL`` is stale: the
+    read pops a due only on a complete roster, so an old one would keep an
+    unbudgeted probe in front of every plan. It is dropped here for every
+    chapter, not just chapter 9's corridor (docich#5127).
+    """
+    now = int(mem.get('tick') or 0)
+    raw = mem.get('roster_read_due') or {}
+    for castle, tick in list(raw.items()):
+        if type(tick) is not int or now - tick > ROSTER_READ_DUE_TTL:
+            raw.pop(castle, None)          # stale past due: drop, never re-read
+    return {castle: tick for castle, tick in raw.items() if tick <= now}
+
+
 def _remember_residents(mem, castle, names):
     """Mark the generals standing in a read roster as resident in that castle.
 
