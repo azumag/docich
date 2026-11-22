@@ -1100,6 +1100,60 @@ def test_boss_phase_month_with_a_boss_sortie_is_not_flagged(runtime_dir):
     assert saved['pending'] is None
 
 
+def _kikan_record(choice='きかん', move='here'):
+    return {'decision': 'camp_recall_cursor',
+            'observed_metric': {'current': [72, 31, choice],
+                                'choice': choice, 'move': move},
+            'reason': '野営の実手カーソルを帰還項目へ合わせる', 'at': 1000}
+
+
+def test_recall_kikan_selection_is_classified():
+    event = audit._recall_kikan_event(_kikan_record())
+    assert event is not None
+    assert event['choice'] == 'きかん'
+    assert audit._recall_kikan_event(_kikan_record(choice='いどう')) is None
+    assert audit._recall_kikan_event(_kikan_record(move='down')) is None
+
+
+def test_recall_kikan_selection_is_recorded_and_titled(runtime_dir):
+    value = state(10, '1-1', 0,
+                  flow={'recall': {'stage': 'menu', 'target': [135, 125],
+                                   'goal': 'アルマムーン', 'general': 'カシュー'}})
+    value['policy']['y_jumps'] = {'RECALL:target': 1}
+    seen = []
+    audit.observe(runtime_dir, audit.capture(value), value, [_kikan_record()],
+                  now=1000, on_sealed=seen.append)
+    records = audit.load_incidents(runtime_dir)
+    assert len(records) == 1
+    record = records[0]
+    assert record['kind'] == 'recall_kikan_selected'
+    assert record['auto_file'] is True
+    assert record['recall_event']['goal'] == 'アルマムーン'
+    assert record['recall_event']['general'] == 'カシュー'
+    assert '「きかん」を選択' in audit._issue_title(record)
+    assert '### 帰還手段' in audit.render(record)
+    assert len(seen) == 1
+
+
+def test_recall_kikan_is_reported_once_per_episode(runtime_dir):
+    value = state(10, '1-1', 0,
+                  flow={'recall': {'stage': 'menu', 'target': [135, 125],
+                                   'goal': 'アルマムーン', 'general': 'カシュー'}})
+    record = _kikan_record()
+    audit.observe(runtime_dir, audit.capture(value), value, [record], now=1000)
+    audit.observe(runtime_dir, audit.capture(value), value, [record], now=1100)
+    assert len(audit.load_incidents(runtime_dir)) == 1
+
+
+def test_recall_with_idou_is_not_recorded(runtime_dir):
+    value = state(10, '1-1', 0,
+                  flow={'recall': {'stage': 'menu', 'target': [135, 125],
+                                   'goal': 'アルマムーン'}})
+    audit.observe(runtime_dir, audit.capture(value), value,
+                  [_kikan_record(choice='いどう')], now=1000)
+    assert audit.load_incidents(runtime_dir) == []
+
+
 def test_capture_reads_unmigrated_world_fields():
     state_value = state(1, '1-1', 10)
     state_value['policy']['world']['gold'] = None
