@@ -175,11 +175,10 @@ document.addEventListener('visibilitychange',function(){if(document.hidden)stopS
 startScene();
 
 function showUnavailable(on){document.getElementById('unavailable').hidden=!on;}
-function effectiveDeltas(turn){
+function effectiveDeltas(turn,before){
  const d={};
- if(!turn)return d;
- for(const key of METRIC_KEYS){if(turn.deltas[key])d[key]=turn.deltas[key];}
- if(turn.planGain)d.planProgress=(d.planProgress||0)+turn.planGain;
+ if(!turn||!before)return d;
+ for(const key of METRIC_KEYS){d[key]=turn.metricsAfter[key]-before[key];}
  return d;
 }
 function bars(metrics,labels,deltas){
@@ -205,7 +204,7 @@ function render(data,index){
  const totalTurns=data.turns.length;
  document.getElementById('frame-kind').textContent=isTurn?`第${frame.index}回会議（全${totalTurns}回）`:frame.kind==='start'?'開会':'閉会';
  // 進行中に結果を先出ししない: 最終状態は閉会フレームで初めて表示する
- document.getElementById('status-text').textContent=isEnd?data.finalStatusText:(isTurn?`審議中・残り${totalTurns-frame.index+1}法案`:'審議の開始を待機中');
+ document.getElementById('status-text').textContent=isEnd?data.finalStatusText:(isTurn?(frame.index<totalTurns?`審議中・残り${totalTurns-frame.index}法案`:'閉会と結果発表を待機中'):'審議の開始を待機中');
  document.getElementById('lawline-text').textContent=frame.heading;
  const cat=document.getElementById('cat');
  cat.hidden=!turn;if(turn)cat.textContent=data.categoryLabels[turn.category]||turn.category;
@@ -246,7 +245,7 @@ function render(data,index){
  }else if(isEnd){deltas.textContent='';}
  else{deltas.textContent=frame.text;}
  const metrics=frame.kind==='start'?data.initialMetrics:isEnd?data.finalMetrics:(turn?turn.metricsAfter:data.finalMetrics);
- bars(metrics,data.metricLabels,effectiveDeltas(turn));
+ bars(metrics,data.metricLabels,effectiveDeltas(turn,frame.index===1?data.initialMetrics:data.turns[frame.index-2]?.metricsAfter));
  const events=document.getElementById('events');events.replaceChildren();
  if(turn&&turn.events.length){
   for(const e of turn.events){
@@ -259,7 +258,7 @@ function render(data,index){
  const agenda=document.getElementById('agenda');
  if(turn){agenda.textContent=frame.index<totalTurns?`次の議題: ${data.turns[frame.index].lawName}`:'これが最後の議題。次は閉会と結果発表';}
  else{agenda.textContent=frame.kind==='start'?'':'—— 会期終了 ——';}
- document.getElementById('statusline2').textContent=isEnd?'':(turn?`状態: ${turn.status==='in_session'?'審議続行中':data.finalStatusText}`:'');
+ document.getElementById('statusline2').textContent=turn&&frame.index<totalTurns?'状態: 審議続行中':'';
  document.getElementById('caveat').textContent=data.caveatFooter;
  const dots=document.getElementById('page-dots');dots.replaceChildren();
  for(let i=0;i<data.frames.length;i++){const d=document.createElement('i');d.className='page-dot'+(i===index?' on':'');dots.append(d);}
@@ -315,12 +314,13 @@ def _votes_for(before: dict, turn: dict) -> int:
 
     Ties the chamber's mood to the same state the engine computed: popular
     laws and a supportive public raise the tally, support-cutting laws lower
-    it.  Bounded to [25, 99] so it always reads as a contested vote.
+    it.  Bounded to [51, 99] because every displayed law is applied by the engine;
+    this synthetic tally is not an independent pass/fail decision.
     """
 
     support_delta = turn["deltas"].get("support", 0)
     value = round(55 + before["support"] * 0.3 + support_delta * 1.2)
-    return max(25, min(99, value))
+    return max(51, min(99, value))
 
 
 def _reaction(turn: dict) -> str:
