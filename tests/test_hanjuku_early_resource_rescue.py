@@ -110,7 +110,11 @@ def test_battle_step_opens_the_bounded_early_rescue_before_melee(monkeypatch):
     assert actions == [p.pad('b')]
     assert mem['battle']['survival']['early_resource_triggered'] is True
     assert mem['battle']['survival']['opens'] == 1
-    assert mem['_records'][-1]['decision'] == 'battle_survival_early_resource'
+    decisions = [record['decision'] for record in mem['_records']]
+    # The rescue decision is recorded before the shared menu-open helper adds
+    # its own request receipt; assert both events in their causal order.
+    assert 'battle_survival_early_resource' in decisions
+    assert decisions[-1] == 'battle_command_open_requested'
 
 
 def test_early_egg_retry_shares_the_existing_hard_limit_and_requires_new_hp_loss(monkeypatch):
