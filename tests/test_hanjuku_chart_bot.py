@@ -2341,16 +2341,19 @@ def test_spending_month_menu_navigation_that_never_moves_is_bounded_too():
     assert policy.month_step(parse(frame), mem) == [policy.pad('b')]
     assert [r['decision'] for r in mem['_records']][-1] == 'menu_nav_stuck'
     assert mem['_records'][-1]['observed_metric']['route'] == 'month_nav'
-    # A stuck walk now escapes via the measured two-column blind plan (the
-    # trailing 'a' opens へいしほじゅう), bounded by MONTH_BLIND_NAV_LIMIT;
-    # once the tries are spent the guarded hold resumes and still never fires
-    # an unbounded confirm.
-    blind = ['up'] * 4 + ['left', 'down', 'a']
-    for _ in range(policy.MONTH_BLIND_NAV_LIMIT):
-        plan = policy.month_step(parse(frame), mem)
-        assert [a['buttons'][0] for a in plan if a['type'] == 'pad'] == blind
+    # A blind walk only positions the cursor. It must not confirm while the
+    # old frame still shows しょうにん; the next fresh frame must show the
+    # exact intended row under the hand before A is sent.
+    blind = ['up'] * 4 + ['left', 'down']
+    plan = policy.month_step(parse(frame), mem)
+    assert [a['buttons'][0] for a in plan if a['type'] == 'pad'] == blind
+    assert 'month_blind_opened' not in mem
     assert [r['decision'] for r in mem['_records']][-1] == 'month_blind_nav'
-    assert policy.month_step(parse(frame), mem) == []
+
+    target = parse(month_canvas(59, on='へいしほじゅう'))
+    move = policy._month_menu_move(target, mem, 'へいしほじゅう')
+    assert move == [policy.pad('a')]
+    assert policy._month_opened(move, mem, 'へいしほじゅう')
 
 
 def test_menu_nav_guard_never_cuts_off_navigation_that_keeps_closing_in():
