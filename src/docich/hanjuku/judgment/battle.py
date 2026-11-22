@@ -1450,15 +1450,14 @@ def _early_resource_rescue_needed(mem, cur):
     Only current, named evidence can license this: the actor is behind, has
     lost at least 30% of its opening HP, and a positive personal egg or a
     confirmed carried survival card still has a path through the damage gate.
-    Charted/boss fights, event duels, critical HP and already-spent rescue
+    Charted/boss fights, event duels, the immediate-retreat HP floor and spent rescue
     budgets keep their existing timing.
     """
     if not isinstance(mem, dict) or not isinstance(cur, dict):
         return False
     hp, start, enemy = (cur.get(k) for k in ('ally_hp', 'start_ally_hp', 'enemy_hp'))
     if (type(hp) is not int or type(start) is not int or type(enemy) is not int
-            or hp <= GENERAL_CRITICAL_RETREAT_HP or start <= 0 or enemy <= 0
-            or hp <= RETREAT_RESOURCE_FLOOR_HP
+            or start <= 0 or enemy <= 0 or hp <= RETREAT_RESOURCE_FLOOR_HP
             or hp * 10 > start * EARLY_RESOURCE_RESCUE_REMAINING_TENTHS):
         return False
     if (cur.get('event_duel') or cur.get('egg_battle') or mem.get('egg_battle')
