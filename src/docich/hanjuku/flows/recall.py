@@ -266,7 +266,16 @@ def _arm_recall_skip(mem, state, base=None):
     _remember_recall_target(mem, state)
     _flow(mem).pop('recall_skip_ticks', None)
     scoped = _flow(mem).get('recall_skip_target')
-    if base is None or scoped is None:
+    if base is None:
+        _flow(mem).pop('recall_retry', None)
+        return
+    if scoped is None:
+        # An interrupted dispatch can lack a measured camp coordinate (for
+        # example a hero return). Keep the recovery hold short even when it
+        # must be global; otherwise the default 400-tick cooldown suppresses
+        # every visible camp after a battle that never sent the return A.
+        if type(base) is int and base > 0:
+            _flow(mem)['recall_skip_ticks'] = min(RECALL_SKIP_TICKS, base)
         _flow(mem).pop('recall_retry', None)
         return
     old = _flow(mem).get('recall_retry')
