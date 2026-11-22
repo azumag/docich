@@ -52,3 +52,26 @@ def test_before_the_bound_the_sub_action_stays_tracked():
         policy.month_sub_step(screen, mem)
     assert mem.get('month_sub', {}).get('kind') == 'egg'
     assert mem['shop']['egg'] == 'opened'
+
+
+def test_a_paid_recovery_abandoned_mid_ritual_stays_unverified():
+    """docich#5046: 'skipped' claims no recovery happened and lets the same
+    month reopen and repay it. An accepted quote means the payment may have
+    gone through, so the entry stays 'unverified' (never retried)."""
+    mem = memory(stage='recovering', quoted_cost=150)
+    screen = text_frame(200)
+    for _ in range(MONTH_SUB_ABANDON_BACKS):
+        policy.month_sub_step(screen, mem)
+    assert 'month_sub' not in mem
+    assert mem['shop']['egg'] == 'unverified'
+    rec = next(r for r in mem['_records'] if r['decision'] == 'month_sub_abandoned')
+    assert rec['observed_metric']['shop_status'] == 'unverified'
+
+
+def test_an_unconfirmed_recovery_still_abandons_as_skipped():
+    mem = memory(stage='choosing', full_quote_short=True)
+    screen = text_frame(200)
+    for _ in range(MONTH_SUB_ABANDON_BACKS):
+        policy.month_sub_step(screen, mem)
+    assert 'month_sub' not in mem
+    assert mem['shop']['egg'] == 'skipped'

@@ -1814,11 +1814,18 @@ def month_sub_step(screen: Screen, mem):
             # repetition detector latched screen_stalled. Drop the sub for this
             # month, mark its menu entry done and let the month plan move on.
             shop = mem.get('shop')
+            # docich#5046: a recovery abandoned after its quote was accepted
+            # may already have been paid. 'skipped' claims it was not done and
+            # lets the same month reopen and repay it; the payment stays
+            # 'unverified' instead (never retried, like a lost receipt).
+            status = ('unverified' if sub.get('kind') == 'egg'
+                      and sub.get('stage') == 'recovering' else 'skipped')
             if isinstance(shop, dict) and sub.get('kind') in shop:
-                shop[sub['kind']] = 'skipped'
+                shop[sub['kind']] = status
             mem.pop('month_sub', None)
             _record(mem, 'month_sub_abandoned', screen=kind,
-                    observed_metric={'backs': backs, 'kind': sub.get('kind')},
+                    observed_metric={'backs': backs, 'kind': sub.get('kind'),
+                                     'shop_status': status},
                     reason='離脱のBで閉じない月一画面を上限回数で諦め、今月は実行しない')
             return [pad('b')]
         # B cannot close a plain message box (g662: 109 B, 300 s, corner
