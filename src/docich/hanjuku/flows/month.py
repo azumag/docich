@@ -277,7 +277,7 @@ def _month_menu_move(screen: Screen, mem, label: str):
     # the hold path.
     dialogue_free = _month_menu_quiet(screen) or screen.has('じゅうじキー')
     exhausted = _blind_nav_exhausted(mem, label)
-    if (not exhausted
+    if (not exhausted and screen.kind != 'discharge_menu'
             and ((hand and hand[1] >= 175) or _month_nav_stuck(mem))
             and (screen.has('じゅうじキー') or screen.has('メインメニュー'))
             and screen.has(label.replace('!', '').replace('！', ''))
@@ -292,27 +292,50 @@ def _month_menu_move(screen: Screen, mem, label: str):
         state = mem.get('month_blind_nav')
         if not isinstance(state, dict) or state.get('label') != label:
             state = mem['month_blind_nav'] = {'label': label, 'tries': 0}
-        if row_col is not None and state['tries'] < MONTH_BLIND_NAV_LIMIT:
-            state['tries'] += 1
+        if row_col is not None:
             row, col = row_col
-            _record(mem, 'month_blind_nav', screen=screen.kind, choice=label,
-                    observed_metric={'tries': state['tries'], 'hand': list(hand) if hand else None,
-                                     'row': row, 'col': col,
-                                     'limit': MONTH_BLIND_NAV_LIMIT},
-                    reason='月メニューのカーソル位置が読めないため、実測2列レイアウトを盲操作で目標行へ進む')
-            # Give each press time to reach the menu's own scan: a rapid
-            # burst is dropped (the same cadence lesson as the しろ list, v920).
-            keys = (['up'] * 4 + ['right' if col else 'left']
-                    + ['down'] * row + ['a'])
-            # The blind 'a' opens the target like the 'here' branch's A: mark
-            # which label it confirmed so the caller applies the same
-            # opened-state (month_sub, refill stage, exit/merchant flags)
-            # instead of returning the steps with the open unrecorded.
-            mem['month_blind_opened'] = label
-            steps = []
-            for key in keys:
-                steps += [pad(key), {'type': 'wait', 'ms': MONTH_BLIND_NAV_WAIT_MS}]
-            return steps
+            # The old blind walk appended A to the same batch as its cursor
+            # positioning. If one directional press was dropped or the menu
+            # was covered by a foreground panel, A could confirm a different
+            # row (live g1190 ch9 73-8: the supposed ちくじょう open produced
+            # a discharge_menu). A fresh frame must show the exact target row
+            # under the hand before the confirm is allowed.
+            current = _current(screen)
+            current_row_col = None
+            if current is not None:
+                current_row = (current[1] - 47) // 16
+                if 0 <= current_row <= 3:
+                    current_row_col = (current_row, 1 if current[0] >= 128 else 0)
+            norm = lambda value: (value or '').replace('!', '').replace('！', '').replace('〜', '～')
+            if (screen.kind == 'month_menu' and current is not None
+                    and norm(current[2]) == norm(label) and current_row_col == row_col):
+                mem.pop('month_blind_nav', None)
+                mem['month_blind_opened'] = label
+                _record(mem, 'month_blind_nav_confirmed', screen=screen.kind, choice=label,
+                        observed_metric={'row': row, 'col': col,
+                                         'tries': int(state.get('tries') or 0)},
+                        reason='盲操作後の新しい観測で対象行のカーソルを確認したため確定する')
+                return [pad('a')]
+            if (not isinstance(state, dict) or state.get('label') != label
+                    or state.get('month') != mem.get('month')
+                    or state.get('row_col') != list(row_col)):
+                state = mem['month_blind_nav'] = {
+                    'label': label, 'month': mem.get('month'),
+                    'row_col': list(row_col), 'tries': 0}
+            tries = int(state.get('tries') or 0)
+            if tries < MONTH_BLIND_NAV_LIMIT:
+                state['tries'] = tries + 1
+                _record(mem, 'month_blind_nav', screen=screen.kind, choice=label,
+                        observed_metric={'tries': state['tries'], 'hand': list(hand) if hand else None,
+                                         'row': row, 'col': col, 'confirmed': False,
+                                         'limit': MONTH_BLIND_NAV_LIMIT},
+                        reason='月メニューのカーソル位置が読めないため、対象行まで移動して次の画面で選択を照合する')
+                # Position only. Never combine blind navigation with a purchase/exit confirm.
+                keys = (['up'] * 4 + ['right' if col else 'left'] + ['down'] * row)
+                steps = []
+                for key in keys:
+                    steps += [pad(key), {'type': 'wait', 'ms': MONTH_BLIND_NAV_WAIT_MS}]
+                return steps
         if row_col is not None and not exhausted:
             # The blind walk spent its tries and took no input. Release the
             # screen: the leftover state used to stay in the policy for the
