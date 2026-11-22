@@ -515,7 +515,11 @@ class TestNethackReleasedFinishSettle(NethackReleasedSettleTestBase):
         self.assertIs(mgr.settle_released_failure(request_id, corner_id="nethack"), None)
         state = mgr._read_state()
         self.assertEqual(state["status"], "failed")
+        self.assertEqual(state["switch_request_id"], restore_request)
+        self.assertEqual(state["completed_at"], self.now_value.isoformat())
+        self.assertNotIn("end_reason", state)
         self.assertEqual(state["released_settle_pending"]["request_id"], request_id)
+        self.assertEqual(state["released_settle_pending"]["corner_id"], "nethack")
 
     def test_settle_refuses_the_start_failure_shape(self):
         # switch_request_id == rotation_request_id is a start failure: it
