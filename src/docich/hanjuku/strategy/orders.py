@@ -1707,6 +1707,9 @@ def _clear_stale_pending_overrides(mem):
 # so the dispatch block can run ``next_order`` and start it. The wait used to
 # be unbounded: g1190 ch1 9-10 sat 600 s / 5,622 observations with two
 # startable move orders pending and zero ``order_start``.
+# docich#5125: the same wait is now measured in every phase so the audit can
+# see starvation in contested months too (g1314 ch10 94-9: ~16 pending orders,
+# zero ``order_start``); only the yield stays boss-phase-only.
 ORDER_DISPATCH_STARVE_TICKS = 60   # observations (~90 s) a pending order may wait undispatched
 
 
@@ -1753,11 +1756,14 @@ def order_dispatch_starved(mem) -> bool:
     The counter starts the first observation a pending order is seen waiting
     and is cleared when nothing is pending, when ``next_order`` finds nothing
     startable (map_step pops the key itself), and when ``order_start``
-    records the dispatch. The record fires once per episode (per ``since``);
-    while starved the caller's repeated foreground work yields every frame.
+    records the dispatch. docich#5125: the wait is measured in every phase —
+    outside the boss phase a starved wait still records
+    ``order_dispatch_starved`` once per episode (per ``since``, flagged
+    ``boss_phase`` = False) so the month audit can separate "pending orders
+    that never reached dispatch" from "no startable order". Only the True
+    return stays boss-phase-only: while starved there the caller's repeated
+    foreground work yields every frame.
     """
-    if not boss_only_phase(mem):
-        return False
     pending = _dispatch_pending(mem)
     if not pending:
         mem.pop('order_dispatch_since', None)
@@ -1768,6 +1774,19 @@ def order_dispatch_starved(mem) -> bool:
         since = mem['order_dispatch_since'] = tick
     wait = tick - int(since)
     if wait < ORDER_DISPATCH_STARVE_TICKS:
+        return False
+    if not boss_only_phase(mem):
+        # docich#5125: a contested month records the same starvation once
+        # per episode but never yields — the survey/refocus/camp-hunt
+        # foreground work keeps its frames.
+        if mem.get('order_dispatch_noted_at') != since:
+            mem['order_dispatch_noted_at'] = since
+            _record(mem, 'order_dispatch_starved',
+                    observed_metric={'wait': wait,
+                                     'pending': [str(s) for s in pending[:6]],
+                                     'boss_phase': False},
+                    reason='通常フェーズで pending 指示が order_start に届かないまま上限を超えたため、'
+                           'dispatch 枯渇を記録する（前景ワークへの譲りはボスフェーズ限定）')
         return False
     if mem.get('order_dispatch_starved_at') != since:
         mem['order_dispatch_starved_at'] = since
