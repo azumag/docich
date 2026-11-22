@@ -49,7 +49,7 @@ export COMMENT_CLASSIFIER_BACKEND=jev
 # Reuse PAPER's existing secret-free readiness contract so a missing capability
 # has a distinct fixed exit code without printing credential values or paths.
 capability_rc=0
-PYTHONPATH="$docich_root/src" python3 - <<'PY' || capability_rc=$?
+PYTHONPATH="$docich_root/src" python3 -P - <<'PY' || capability_rc=$?
 import os
 from docich.trading.paper_ai_canary import readiness
 
