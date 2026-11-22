@@ -84,9 +84,8 @@ class SharedOverlayMemoryAlertTests(unittest.TestCase):
     def fake_run(self, alerts, calls):
         def run(args, **kwargs):
             calls.append(args)
-            class Completed:
-                stdout = json.dumps(alerts) if args[:3] == ["gh", "issue", "list"] else ""
-            return Completed()
+            stdout = json.dumps(alerts) if args[:3] == ["gh", "issue", "list"] else ""
+            return type("Completed", (), {"stdout": stdout})()
         return run
 
     def test_warn_creates_one_sanitized_alert(self):
