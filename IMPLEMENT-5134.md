@@ -1,6 +1,6 @@
 # IMPLEMENT-5134 — [半熟英雄] キャンプ帰還失敗: ch6 将軍不明
 
-ブランチ: `fix/5134-camp-recall-map-stall`（main `34be26425`＝v1392 から作成、push・PR なし）
+ブランチ: `fix/5134-camp-recall-map-stall`（PR #5148。main `02844c7fc`＝#5149/v1398 のマージを取り込み済み）
 BOT_VERSION: `hanjuku-chart-v1399-recall-map-hold`
 （v1393 は #5141、v1394 は #5128、v1395 は #5137、v1396 は #5020 の作業用に予約、v1397 は本PRの旧HEAD、v1398 は #5149 として main に統合済みのため、rebase後の本PRは v1399 を採用）
 
