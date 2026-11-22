@@ -136,25 +136,24 @@ def build_theoretical_benchmark(
     capital_reference: object,
     actual_today_realized: object,
     now: float,
+    interval_start: float | None = None,
     taker_fee_rate: object = DEFAULT_TAKER_FEE_RATE,
     slippage_bps: object = DEFAULT_SLIPPAGE_BPS,
 ) -> dict[str, object]:
-    """Compare today's realized PAPER P/L with a bounded hindsight benchmark.
+    """Compare realized PAPER P/L with a bounded hindsight benchmark.
 
     The benchmark is deliberately narrow: it picks the best single symbol and
-    one buy-then-sell round trip from timestamped 5-minute closes observed
-    during the current JST day.  It is not a backtest, does not combine
-    symbols, and never claims that intrabar prices were available.
+    one buy-then-sell round trip from timestamped 5-minute closes observed in
+    the interval [interval_start, now].  When interval_start is None the
+    previous current-JST-day window is used.
     """
     moment = float(now)
     date = dt.datetime.fromtimestamp(moment, tz=dt.timezone.utc).astimezone(JST).date().isoformat()
     actual = _dec(actual_today_realized)
     capital = _dec(capital_reference)
-    if cache_path is None:
-        return _benchmark_unavailable(date=date, actual=actual, reason="history_not_configured")
-    if capital is None or capital <= 0:
-        return _benchmark_unavailable(date=date, actual=actual, reason="capital_unavailable")
-
+    window_start = interval_start if interval_start is not None else _day_start_epoch(moment)
+    day_end = window_start + 24 * 60 * 60
+    target_end = min(moment, day_end)
     fee = _dec(taker_fee_rate)
     slippage = _dec(slippage_bps)
     if (
@@ -162,17 +161,6 @@ def build_theoretical_benchmark(
         or slippage < 0 or slippage >= BPS
     ):
         return _benchmark_unavailable(date=date, actual=actual, reason="execution_cost_unavailable")
-
-    try:
-        cache = load_cache(Path(cache_path))
-    except (OSError, ValueError):
-        cache = {}
-    if not cache:
-        return _benchmark_unavailable(date=date, actual=actual, reason="intraday_history_unavailable")
-
-    day_start = _day_start_epoch(moment)
-    day_end = day_start + 24 * 60 * 60
-    target_end = min(moment, day_end)
     buy_factor = (D("1") + slippage / BPS) * (D("1") + fee)
     sell_factor = (D("1") - slippage / BPS) * (D("1") - fee)
     best: dict[str, object] | None = None
@@ -180,6 +168,14 @@ def build_theoretical_benchmark(
     observed_bars = 0
     observed_symbols = 0
     history_symbols = 0
+
+    try:
+        cache_path = Path(cache_path) if cache_path is not None else None
+        cache = load_cache(cache_path) if cache_path is not None else {}
+    except (OSError, ValueError):
+        cache = {}
+    if not cache:
+        return _benchmark_unavailable(date=date, actual=actual, reason="intraday_history_unavailable")
 
     for symbol, entry in sorted(cache.items()):
         if not isinstance(entry, Mapping):
@@ -193,7 +189,7 @@ def build_theoretical_benchmark(
         points = [
             (timestamp, close)
             for timestamp, close in _history_points(entry)
-            if day_start <= timestamp <= target_end + 1
+            if window_start <= timestamp <= target_end + 1
         ]
         if points:
             history_symbols += 1
@@ -203,15 +199,15 @@ def build_theoretical_benchmark(
         observed_bars += len(points)
         first_timestamp = points[0][0]
         last_timestamp = points[-1][0]
-        elapsed = max(float(timeframe_s), target_end - day_start)
-        covered = max(0.0, min(target_end, last_timestamp) - max(day_start, first_timestamp))
+        elapsed = max(float(timeframe_s), target_end - window_start)
+        covered = max(0.0, min(target_end, last_timestamp) - max(window_start, first_timestamp))
         coverage_ratio = min(1.0, covered / elapsed)
         max_internal_gap = max(
             next_timestamp - timestamp
             for (timestamp, _), (next_timestamp, _) in zip(points, points[1:])
         )
         coverage_complete = (
-            first_timestamp <= day_start + timeframe_s * BENCHMARK_TOLERANCE_BARS
+            first_timestamp <= window_start + timeframe_s * BENCHMARK_TOLERANCE_BARS
             and last_timestamp >= target_end - timeframe_s * BENCHMARK_TOLERANCE_BARS
             and max_internal_gap <= timeframe_s * MAX_INTERNAL_GAP_BARS
         )
@@ -300,20 +296,22 @@ def build_performance(
     prices: Mapping[str, object],
     now: float,
     market_cache_path: Path | None = None,
+    interval_start: float | None = None,
 ) -> dict[str, object]:
     """Return bounded JPY P/L facts using average-cost accounting.
 
     ``cumulative_pnl_jpy`` includes realized + current unrealized P/L only
     when every open position has both a usable public price and ledger cost
-    basis. ``today_realized`` is exact for fills since JST midnight and is
-    intentionally labelled as realized-only; we do not invent a midnight
-    mark-to-market baseline.
+    basis. ``interval_realized`` is the realized P/L for fills since
+    ``interval_start`` (epoch seconds). When ``interval_start`` is None the
+    previous JST-midnight ``today_realized`` semantics apply.
     """
     capital = _dec(capital_reference)
-    day_start = _day_start_epoch(now)
+    interval_start = float(interval_start) if interval_start is not None else None
+    day_start = interval_start if interval_start is not None else _day_start_epoch(now)
     lots: dict[str, list[Decimal]] = {}
     realized_total = ZERO
-    realized_today = ZERO
+    realized_interval = ZERO
 
     for _fill_id, symbol, side, amount, price, filled_at in _rows(db_path):
         held, cost = lots.setdefault(symbol, [ZERO, ZERO])
@@ -328,7 +326,7 @@ def build_performance(
         pnl = sold * (price - average)
         realized_total += pnl
         if filled_at >= day_start:
-            realized_today += pnl
+            realized_interval += pnl
         lots[symbol][0] = held - sold
         lots[symbol][1] = max(ZERO, cost - average * sold)
 
@@ -378,8 +376,9 @@ def build_performance(
     benchmark = build_theoretical_benchmark(
         market_cache_path,
         capital_reference=capital,
-        actual_today_realized=realized_today,
+        actual_today_realized=realized_interval,
         now=now,
+        interval_start=day_start,
     )
     return {
         "as_of": float(now),
@@ -388,7 +387,8 @@ def build_performance(
         "priced_positions": priced,
         "valued_positions": valued,
         "realized_total_jpy": str(realized_total),
-        "today_realized_pnl_jpy": str(realized_today),
+        "interval_realized_pnl_jpy": str(realized_interval),
+        "today_realized_pnl_jpy": str(realized_interval),
         "unrealized_pnl_jpy": str(unrealized) if complete else None,
         "cumulative_pnl_jpy": None if cumulative is None else str(cumulative),
         "equity_jpy": None if equity is None else str(equity),

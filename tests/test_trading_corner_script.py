@@ -101,7 +101,7 @@ def test_prompt_requires_interpretation_and_pnl_commentary(tmp_path):
     prompt = build_prompt(build_facts(tmp_path, now=1010.0))
     assert "数字の読み上げ係ではありません" in prompt
     assert "累積損益" in prompt
-    assert "本日の確定損益" in prompt
+    assert "区間の確定損益（前回説明から今回説明まで）" in prompt
     assert "軽いツッコミ" in prompt
     assert "損失なら言い訳せず" in prompt
 
@@ -179,7 +179,7 @@ def test_render_fallback_is_deterministic_and_grounded(tmp_path):
     assert "10,000" in first["result"]
     assert "btc_jpy" in first["result"]
     assert "xrp_jpy" not in first["result"]
-    assert "本日の確定損益" in first["result"]
+    assert "区間の確定損益（前回説明から今回説明まで）" in first["result"]
     assert "戦略" in first["strategy"]
     assert all(isinstance(value, str) and value for value in first.values())
     assert sum(len(value) for value in first.values()) >= 500

@@ -394,18 +394,16 @@ def build_prompt(facts: Mapping[str, object]) -> str:
         "- 同じ文型・同じオチを各段落で繰り返さない。箇条書き、見出し、マークダウンは禁止。\n"
         "【損益の扱い】\n"
         "- performance.cumulative_pnl_jpy がある場合、resultで累積損益（評価込み）を具体的に言う。\n"
-        "- performance.today_realized_pnl_jpy は本日の確定損益として触れる。\n"
+        "- performance.interval_realized_pnl_jpy は区間の確定損益（前回説明から今回説明まで）として触れる。\n"
         "- performance.unrealized_pnl_jpy がある場合、含み損益も使う。complete=falseなら累積評価を断定しない。\n"
-        "- performance.theoretical_benchmark が status=ready または partial の場合、実績の本日確定損益と理論値を比較する。\n"
-        "  これは当日5分足の終値だけを使い、1銘柄を1回だけ売買できた場合の後知恵による比較値であり、実績の目標値やバックテスト結果ではない。\n"
-        "  partial は『本日ここまでの暫定値』と明示し、status=unavailable は数字を作らず比較待ちと伝える。\n"
+        "- performance.theoretical_benchmark が status=ready または partial の場合、区間損益と理論値を比較する。\n"
         "次の11キーを持つJSONオブジェクト1つを出力してください。\n"
         "- corner: 今日の相場の見取り図と、今日いちばん見るべき点を語るオープニング。\n"
         "- news: research.news_items から5〜6件を個別に、事実→含意→観測点の順で詳しく解説する。\n"
         "- chart: facts.timeframes の4つの時間足を1つずつ解説する。timeframesが空なら正直に言い、数値を作らない。\n"
         "- strategy: facts.slot_strategies があれば【銘柄別の戦略】に従い、銘柄ごとの戦略の狙いを損益・見送り傾向・ニュースから観測すべき点と結び付ける。"
         "無ければ、現在の戦略パラメータの狙いを同じように結び付ける。\n"
-        "- result: 累積損益・本日実績と理論値の差・直近約定・保有を分析し、research.assetがあれば保有銘柄の面白い解説を自然に織り込む。\n"
+        "- result: 累積損益・区間実績と理論値の差・直近約定・保有を分析し、research.assetがあれば保有銘柄の面白い解説を自然に織り込む。\n"
         "- fills: 直近約定を1件ずつ、signalの観測値と閾値で『なぜ発注したか』を数値つきで説明する。\n"
         "- review: facts.round_trips の往復を1件ずつ、判断の良し悪しを根拠つきで評価し、次に活かす点を述べる。\n"
         "- improve: 取引結果・往復レビュー・ニュース分析を分離して評価し、次回改善で何を検証するかを述べる。\n"
@@ -567,7 +565,7 @@ def _pnl_text(facts: Mapping[str, object]) -> str:
     else:
         parts.append("累積損益は一部の保有価格が不足していて評価待ち")
     if today is not None:
-        parts.append(f"本日の確定損益は{_fmt_num(today) or today}円")
+        parts.append(f"区間の確定損益（前回説明から今回説明まで）は{_fmt_num(today) or today}円")
     if unrealized is not None:
         parts.append(f"現在の含み損益は{_fmt_num(unrealized) or unrealized}円")
     return "、".join(parts) + "です。" + _pnl_interpretation(facts)
@@ -577,19 +575,19 @@ def _benchmark_text(facts: Mapping[str, object]) -> str:
     performance = facts.get("performance") if isinstance(facts.get("performance"), Mapping) else {}
     benchmark = performance.get("theoretical_benchmark")
     if not isinstance(benchmark, Mapping):
-        return "本日実績と理論値の比較は、まだ表示できません。"
+        return "区間実績と理論値の比較は、まだ表示できません。"
     status = str(benchmark.get("status") or "unavailable")
     theoretical = benchmark.get("theoretical_pnl_jpy")
     actual = benchmark.get("actual_today_realized_pnl_jpy")
     if status not in {"ready", "partial"} or theoretical is None:
-        return "本日実績と理論値の比較は、日中5分足の履歴がそろうまで待ちです。"
+        return "区間実績と理論値の比較は、日中5分足の履歴がそろうまで待ちです。"
     theoretical_text = _fmt_num(theoretical) or str(theoretical)
     actual_text = _fmt_num(actual) if actual is not None else None
     if actual_text is None:
         actual_text = str(actual) if actual is not None else "確認待ち"
     capture = _fmt_num(benchmark.get("capture_rate_pct"))
     symbol = str(benchmark.get("best_symbol") or "対象銘柄")
-    scope = "本日ここまでの暫定値" if status == "partial" else "本日の観測値"
+    scope = "区間ここまでの暫定値" if status == "partial" else "区間の観測値"
     rate_text = f"捕捉率は{capture}%です" if capture is not None else "捕捉率は算出待ちです"
     return (
         f"{scope}で比べると、確定損益は{actual_text}円、理論値は{theoretical_text}円でした。"
@@ -927,7 +925,7 @@ def render_fallback(facts: Mapping[str, object]) -> dict:
 
     improve = (
         "最後に改善です。利益が出ていても一回の利確だけで作戦成功とは決めませんし、"
-        "損失なら相場のせいにして逃げません。累積損益、本日の確定損益、含み損益と見送りの偏りを"
+        "損失なら相場のせいにして逃げません。累積損益、区間の確定損益、含み損益と見送りの偏りを"
         "並べて、エントリー条件と投入額がちゃんと仕事をしているかを次の改善で検証します。"
     )
     if improvement:
