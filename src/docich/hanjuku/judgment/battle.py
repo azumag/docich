@@ -1510,11 +1510,8 @@ def _early_resource_rescue_needed(mem, cur):
                 if gate.get('allowed') is True or gate.get('needs_live_list') is True:
                     cards_ready = True
                     break
-        if not cards_ready:
-            try:
-                cards_ready = _retreat_cards_to_spend(cur)
-            except (TypeError, ValueError):
-                cards_ready = False
+        # Already-selected cards stay on the established battle_cards_before_retreat
+        # path; this early gate is only for a still-unselected confirmed carried card.
     return egg_ready or cards_ready
 
 
