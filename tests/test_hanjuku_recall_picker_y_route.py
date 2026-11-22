@@ -115,3 +115,21 @@ def test_an_origin_without_camp_world_keeps_the_native_picker_walk(monkeypatch):
     at(monkeypatch, 'アルマムーン')
     assert only_press(p.world_map_step(VIEW, mem, picker())) == 'left'
     assert 'y_jump' not in mem
+
+
+def test_the_menu_selection_itself_is_idou_then_the_field_cursor_jumps():
+    """docich#5105 (owner 2026-11-19: きかん禁止・いどう→Y): the camp menu
+    never reaches for きかん — the ordinary recall confirms いどう and the
+    'map' cursor it opens jumps home through the whole map."""
+    from test_hanjuku_chart_bot import camp_menu
+    mem = {'chapter': 1, 'tick': 100, '_records': [],
+           'captured': ['アルマムーン'],
+           'recall': {'stage': 'menu', 'steps': 0, 'target': [80, 90]}}
+    assert p.camp_recall_step(camp_menu(0), mem, None) == [p.pad('a')]
+    record = next(r for r in mem['_records']
+                  if r['decision'] == 'camp_recall_cursor')
+    assert record['observed_metric']['choice'] == 'いどう'
+    assert _flow(mem)['recall']['stage'] == 'dest'
+    field = Screen([], None, '', kind='map', cursor=(80, 90))
+    assert p.camp_recall_step(field, mem, picker()) == [p.pad('y')]
+    assert mem['y_jump']['goal'] == 'アルマムーン' and mem['y_jump']['step'] == 'RECALL'
