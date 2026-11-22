@@ -62,7 +62,12 @@ HTML（960×540 ビュー）を改修:
 
 ## テスト
 
-- **本環境では pytest / python3 の実行が拒否されたため、テストは未実行**（git コマンドのみ許可）。以下はコード読みによる検証。
+実行主体・実行環境・結果の整理（「誰が・どこで・何を実行し、結果が何だったか」の区別。PR #5073 レビュー指摘への対応で追記）:
+
+- **Devin セッション内（この作業環境）**: pytest / python3 の実行が拒否されたため**未実行**（git コマンドのみ許可）。以下の「既存テストとの整合」はコード読みによる検証。
+- **検品ゲート（Muse の VM 環境）**: 関連3ファイルを実際に実行し **68 passed**（PR 本文「関連3ファイル: 68 passed」の根拠）:
+  `PYTHONPATH=src python3 -m pytest -q tests/test_lawsim_corner.py tests/test_communist_law_simulator_contract.py tests/test_broadcast_view_standard.py`
+- **PR CI**: PR #5073（HEAD `6bf981f4`）の CI run [44996156766](https://github.com/azumag/docich/actions/runs/44996156766) で `test-scope`・`python-syntax`・`full-suite (1/3)`・`full-suite (2/3)`・`full-suite (3/3)`・`ci-required` がすべて green（full-suite は hermetic 契約により `tests/test_*.py` 全件を含む）。
 - 追加テストは既存ヘルパ（`_stored_body`, `load_payload`, `HTML`）の上に立てており、import 追加は不要（`HTML`/`load_payload` は既存 import 済み）。
 - 既存テストとの整合を確認済み:
   - `test_view_payload_rederives_the_trace_from_the_session` — payload の既存キー（ok/corner/sessionIndex/finalStatus/frames/turns/statusEntry/caveatFooter/pageSeconds）は全て維持。
@@ -73,11 +78,11 @@ HTML（960×540 ビュー）を改修:
   - `test_lawsim_narration_frame_timing_contract` — `announcement` のシグネチャ・戻り値構造は不変。
   - `test_broadcast_view_disables_browser_translation` — adapter/viewer command 無変更。
   - エンジン契約テスト `test_communist_law_simulator_contract.py` — エンジン無変更のため影響なし。
-- 期待される実行コマンド（レビュー側/CI で実施）:
+- 関連テストの実行コマンド（検品ゲートで実施済み・上記）:
   `PYTHONPATH=src python3 -m pytest -q tests/test_lawsim_corner.py tests/test_communist_law_simulator_contract.py tests/test_broadcast_view_standard.py`
 
 ## 残件・確認事項
 
-- 実機での見た目（960×540 内での要素の収まり、カード行の高さ）はローカルでブラウザ確認できていない。実機受入時の目視で、法案カード + バー6行 + 警告 + agenda が board 内に収まることを確認されたい（board 高は `calc(100% - 122px)` に拡大済みだが、overflow:hidden で切れる可能性は残る）。
+- 実機での見た目は引き続き owner 側の受入で目視確認とする。コード上の収まりは PR #5073 レビュー指摘への対応で CSS 数値から検証済み（`FIX-5065-REVIEW.md`）: board 実効高 376px に対し turn frame の最悪ケース合計 ≈336px。レビュー対応で line-height を全要素へ明示指定し（CJK フォントの `normal` ≈1.4–1.5 の不確定性を除去）、警告・バー行の余白を縮小した。
 - 採決率・議場リアクションは合成の演出値であり、実投票ではない。合成表示の境界（合成マーク常時表示）を維持している。
 - 次の議題は事前に見せる設計（実況の予感を作る狙い）。ネタバレと見なす判断なら `agenda` 行を外せる。

@@ -56,7 +56,7 @@ h1{font-size:25px;line-height:1.05;letter-spacing:.04em;margin:0;font-weight:800
 .tag{border:1px solid #6b4a3a;background:#241823;color:#e8b7a0;padding:4px 8px;border-radius:99px;font-size:10px;letter-spacing:.05em;white-space:nowrap}
 .tag.goal{color:#f4d9a0;border-color:#8a6b3a}
 #status-line{height:22px;display:flex;align-items:center;justify-content:space-between;color:#b7a99b;font-size:11px;white-space:nowrap;overflow:hidden}.dot{display:inline-block;width:6px;height:6px;border-radius:50%;background:#e8b7a0;margin-right:6px}
-#lawline{display:flex;align-items:center;gap:8px;font-weight:700;color:#f4d9a0;font-size:14px;white-space:nowrap;overflow:hidden;margin-top:2px}
+#lawline{display:flex;align-items:center;gap:8px;font-weight:700;color:#f4d9a0;font-size:14px;line-height:1.3;white-space:nowrap;overflow:hidden;margin-top:2px}
 #cat{border:1px solid #5a4a3a;background:#1d1420;color:#e8c96a;padding:1px 8px;border-radius:99px;font-size:10px;font-weight:600;white-space:nowrap}
 #board{height:calc(100% - 122px);border:1px solid #3d2c38;border-radius:10px;background:linear-gradient(150deg,#1d141d99,#120d16cc);padding:8px 14px 6px;overflow:hidden}
 #lawinfo{display:flex;gap:10px;align-items:stretch;margin-bottom:6px;min-height:0}
@@ -66,35 +66,35 @@ h1{font-size:25px;line-height:1.05;letter-spacing:.04em;margin:0;font-weight:800
 #law-risks{font-size:11px;line-height:1.4;color:#c98f8f}
 .vote{width:130px;flex:none;border:1px solid #4a3040;border-radius:8px;padding:5px 8px;text-align:center;background:#170f1a}
 .vote-num{font-size:22px;font-weight:800;color:#f4d9a0;line-height:1.1}
-.vote-label{font-size:9.5px;color:#b7a99b;letter-spacing:.08em}
+.vote-label{font-size:9.5px;line-height:1.3;color:#b7a99b;letter-spacing:.08em}
 .vote-track{height:5px;border-radius:3px;background:#1a1420;margin-top:4px;overflow:hidden}
 .vote-fill{height:100%;border-radius:3px;background:#f4d9a0}
-#reaction{font-size:11.5px;color:#d8b8a8;margin-top:3px;font-style:italic}
+#reaction{font-size:11.5px;line-height:1.3;color:#d8b8a8;margin-top:3px;font-style:italic}
 #rules{border:1px solid #4a3040;border-radius:8px;background:#170f1a;padding:7px 10px;margin-bottom:6px}
 #rules[hidden]{display:none}
-.rules-title{font-size:11px;color:#f4d9a0;font-weight:700;letter-spacing:.1em;margin-bottom:3px}
+.rules-title{font-size:11px;line-height:1.3;color:#f4d9a0;font-weight:700;letter-spacing:.1em;margin-bottom:3px}
 .rules-line{font-size:12px;line-height:1.5;color:#e6d8c8}
 #verdict{border-radius:8px;padding:8px 12px;margin-bottom:6px;border:1px solid #4a3040;background:#170f1a}
 #verdict[hidden]{display:none}
 #verdict.win{border-color:#8a6b3a;background:#241c10}
 #verdict.lose{border-color:#8a3a3a;background:#241010}
 .verdict-main{font-size:17px;font-weight:800;line-height:1.3}
-.verdict-sub{font-size:11.5px;color:#c9b8a5;margin-top:2px}
-#deltas{font-size:13.5px;line-height:1.5;color:#e6d8c8;white-space:pre-line;margin:2px 0 6px}
-.bar-row{display:flex;align-items:center;gap:8px;margin:5px 0}
-.bar-label{width:64px;font-size:12px;color:#b7a99b;text-align:right;white-space:nowrap}
+.verdict-sub{font-size:11.5px;line-height:1.3;color:#c9b8a5;margin-top:2px}
+#deltas{font-size:13.5px;line-height:1.5;color:#e6d8c8;white-space:pre-line;margin:2px 0 4px}
+.bar-row{display:flex;align-items:center;gap:8px;margin:4px 0}
+.bar-label{width:64px;font-size:12px;line-height:1.3;color:#b7a99b;text-align:right;white-space:nowrap}
 .bar-track{flex:1;height:15px;border-radius:8px;background:#1a1420;border:1px solid #322533;overflow:hidden}
 .bar-fill{height:100%;border-radius:7px;transition:width .5s}
-.bar-value{width:32px;font-size:13.5px;font-weight:750;text-align:right}
-.bar-delta{width:38px;font-size:11px;font-weight:700;text-align:left;white-space:nowrap}
+.bar-value{width:32px;font-size:13.5px;line-height:1.2;font-weight:750;text-align:right}
+.bar-delta{width:38px;font-size:11px;line-height:1.3;font-weight:700;text-align:left;white-space:nowrap}
 .bar-delta.up{color:#7fd48a}
 .bar-delta.down{color:#e87f7f}
 .bar-row.danger .bar-value{color:#e87f7f}
 .bar-row.danger .bar-track{border-color:#8a3a3a}
-#events{margin-top:4px;font-size:12.5px;line-height:1.55;color:#f0c7a8;white-space:pre-line}
-#events .warn{display:block;border-left:3px solid #e87f7f;padding-left:8px;margin:2px 0}
-#agenda{margin-top:4px;font-size:11.5px;color:#9fbfaf}
-#statusline2{margin-top:4px;font-size:12px;color:#c9b8a5}
+#events{margin-top:4px;font-size:12.5px;line-height:1.45;color:#f0c7a8;white-space:pre-line}
+#events .warn{display:block;border-left:3px solid #e87f7f;padding-left:8px;margin:1px 0}
+#agenda{margin-top:3px;font-size:11.5px;line-height:1.3;color:#9fbfaf}
+#statusline2{margin-top:3px;font-size:12px;line-height:1.3;color:#c9b8a5}
 #footer{position:absolute;left:22px;right:22px;bottom:5px;display:flex;justify-content:space-between;color:#8a7468;font-size:9px;line-height:12px;white-space:nowrap;overflow:hidden}
 #page-dots{display:flex;gap:6px;align-items:center}.page-dot{width:7px;height:7px;border-radius:50%;background:#3d2c38}.page-dot.on{background:#c98f8f}
 #unavailable{position:absolute;inset:0;z-index:5;display:flex;align-items:center;justify-content:center;background:#0a0d12ee;color:#f0d9ad;text-align:center;font-size:20px;line-height:1.7;padding:40px}
@@ -112,7 +112,7 @@ canvas#scene{position:absolute;inset:0;width:100%;height:100%;z-index:-1;pointer
 <section id="board">
 <div id="verdict" hidden><div class="verdict-main" id="verdict-main"></div><div class="verdict-sub" id="verdict-sub"></div></div>
 <div id="rules" hidden><div class="rules-title">この会期のルール</div><div class="rules-line" id="rules-goal"></div><div class="rules-line" id="rules-collapse"></div><div class="rules-line" id="rules-premise"></div></div>
-<div id="lawinfo" hidden><div class="law-main"><div id="law-summary"></div><div id="law-risks"></div><div id="reaction"></div></div><div class="vote"><div class="vote-num" id="vote-num"></div><div class="vote-label">場内採決 賛成</div><div class="vote-track"><div class="vote-fill" id="vote-fill"></div></div></div></div>
+<div id="lawinfo" hidden><div class="law-main"><div id="law-summary"></div><div id="law-risks"></div><div id="reaction"></div></div><div class="vote"><div class="vote-num" id="vote-num"></div><div class="vote-label">場内採決 賛成（合成）</div><div class="vote-track"><div class="vote-fill" id="vote-fill"></div></div></div></div>
 <div id="deltas"></div>
 <div id="bars"></div>
 <div id="events"></div>
