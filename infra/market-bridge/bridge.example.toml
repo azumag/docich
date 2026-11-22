@@ -1,0 +1,32 @@
+# Non-secret structure only. Real URLs/FQDNs, key ids and epochs come from the
+# owner-private config. No broker password/token or bridge key value goes here.
+# Placeholders must be replaced before a real (future, separately approved) run.
+
+[bridge]
+market = "stocks"              # stocks | fx
+source = "kabu-station"        # kabu-station | oanda-mt5-demo
+source_epoch = "<replace-with-windows-session-epoch>"
+generation = 1
+bind = "127.0.0.1"             # loopback only; Tailscale Serve terminates TLS
+port = 18781                   # stocks 18781 / fx 18782 (reserved plan)
+request_deadline_s = 3.0
+max_registrations = 50
+
+[kabu]
+held_symbols = []
+preopen_end_hour = 9
+
+[mt5]
+symbols = ["EURUSD"]
+expected_server = "<replace-with-demo-server>"
+expected_login = 0             # demo account id, non-secret identifier only
+initialize_deadline_s = 3.0
+
+[provider]
+url = "https://<stocks-windows-fqdn>:8443"
+credential_file = "<owner-private-config>/market-bridge-stocks.key"
+lease_ttl_s = 5.0
+max_source_age_s = 15.0
+state_dir = "<state-dir>/market-data"
+snapshot_name = "market-snapshot.json"
+fetch_scanner = true
