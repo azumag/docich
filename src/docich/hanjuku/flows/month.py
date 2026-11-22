@@ -306,9 +306,11 @@ def _month_menu_move(screen: Screen, mem, label: str):
                 current_row = (current[1] - 47) // 16
                 if 0 <= current_row <= 3:
                     current_row_col = (current_row, 1 if current[0] >= 128 else 0)
-            norm = lambda value: (value or '').replace('!', '').replace('！', '').replace('〜', '～')
+            current_label = ((current[2] or '').replace('!', '').replace('！', '').replace('〜', '～')
+                             if current is not None else '')
+            target_label = (label or '').replace('!', '').replace('！', '').replace('〜', '～')
             if (screen.kind == 'month_menu' and current is not None
-                    and norm(current[2]) == norm(label) and current_row_col == row_col):
+                    and current_label == target_label and current_row_col == row_col):
                 mem.pop('month_blind_nav', None)
                 mem['month_blind_opened'] = label
                 _record(mem, 'month_blind_nav_confirmed', screen=screen.kind, choice=label,
