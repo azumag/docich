@@ -1295,7 +1295,7 @@ def _chikujou_step(screen, mem, sub):
             move = menu_to(screen, 'いかんッ!')
             if not sub.get('decline_recorded'):
                 sub['decline_recorded'] = True
-                _record(mem, 'chikujou_declined',
+                _record(mem, 'chikujou_declined', month=key,
                         observed_metric={'cost': cost, 'gold': gold, 'reserve': reserve},
                         reason='築城の実費が不明か必要資金を割るため、支払わず見送る')
             if move == 'here':
@@ -1310,7 +1310,7 @@ def _chikujou_step(screen, mem, sub):
             sub['confirm_gold'] = gold
             sub['confirm_sent'] = True
             sub['build_wait'] = 0
-            _record(mem, 'chikujou_confirm',
+            _record(mem, 'chikujou_confirm', month=key,
                     observed_metric={'castle': chosen, 'cost': cost, 'gold': gold, 'reserve': reserve},
                     reason=f'{chosen}を{cost}Gで増築し、実際の支払いを照合して次の城へ進む')
             return [pad('a')]
