@@ -139,9 +139,26 @@ receipt identity 検査・write-ahead state・復帰契約を同一に保つ。
 | `src/docich/webui.py` | `CORNER_MANUAL_STATE_FILES` へ `lawsim_corner` を追加（WebUI 手動予約・停止経路） |
 | `config/docich.soren-live.toml` | `[corner_rotation].corners` へ `enabled = true, manual_only = true` で登録（初回実走 slot 290 は 2026-10-18 実測。overlay の目視受入完了まで手動予約のみ。オーナー判断で自動抽選へ復帰可能） |
 
-- 表示: 960×540 標準ゲーム領域（全画面例外の weather/yosou 型には**しない**）。1 frame 12秒で start → 法案 → end を回転。合成シミュレーションマークと model caveat を常時表示。
-- 読み上げ（narration/TTS）は未配線。`audio_enabled=true` は catalog・adapter の両方で拒否する（follow-up）。
-- 本番配備は canonical 経路（protected main → VM operations）のみ。実機受入（起動・表示・枠整合・バナー/音声）は owner 側の実行レーンで実施する。
+- 表示: 960×540 基準の縦横比維持ビュー（全画面例外の5コーナーに含まれる。AGENTS.md 参照）。1 frame 12秒で start → 法案 → end を回転。合成シミュレーションマークと model caveat を常時表示。
+- 読み上げ（narration/TTS）は `audio_enabled=true` で有効化済み（#2812）。本番 config は true。
+
+## 2026-11-22 表示・実況改善（#5065）
+
+オーナー指摘「何をしているかわからない / エンターテイメント性がない」への対応として、
+エンジンを変更せず表示層（`lawsim_view`）と実況層（`lawsim_narration`）を拡張した。
+
+- 各 turn に**法案カード**（カテゴリバッジ・法律内容 summary・懸念 risks）を表示。
+- start frame に**ルールパネル**（計画100で達成 / 支持・党規律・外貨0または闇市場100で崩壊 / 固定近似則である旨）を表示し、header に目標タグを常時表示。
+- **最終結果の先出しを廃止**: `finalStatusText` は閉会 frame でのみ表示。進行中は「審議中・残りN法案」。
+- 指標バーに**差分バッジ**（+N/-N、計画前倒し込み）と危険帯（警告閾値内側）の強調。
+- 警告イベントに**閾値情報**（「外貨が下限10を突破」等）を添えて因果を表示。
+- **場内採決率・議場リアクション**を決定論的に派生して表示（いずれも合成の演出。エンジン出力から計算）。採決ボックスは「場内採決 賛成（合成）」と明示し、header の「合成シミュレーション・非本番」タグは全 frame で常時表示。
+- **次の議題プレビュー**と「第N回 / 全M回」の明示。
+- end frame は**勝敗ビジュアル**（達成=金 / 崩壊=赤 / 未達=琥珀）＋会期全体の指標変化サマリ。
+- narration: 指標を日本語ラベル化（`production+6` → `生産+6`）、法案 summary と計画前倒し・現在値を読み上げ。
+- **board の収まり契約**（PR #5073 レビュー対応、2026-11-22）: `#board` 実効コンテンツ高 376px（`calc(100% - 122px)` − border/padding）に対し、turn frame の全要素（法案カード＋採決＋リアクション／差分行／指標バー6行／警告最大3行／次議題／状態行）の最悪ケース合計は約 336px で収まる。高さの不確定性を除くため、表示要素の line-height はすべて明示値で固定し、行間余白はこの収まりを前提にした値にしてある（計算の詳細は `FIX-5065-REVIEW.md`）。
+
+本番配備は canonical 経路（protected main → VM operations）のみ。実機受入（起動・表示・枠整合・バナー/音声）は owner 側の実行レーンで実施する。
 
 ## 後続カード（このPRでは実施しない）
 
