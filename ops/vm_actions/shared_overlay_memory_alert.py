@@ -34,18 +34,23 @@ def assess(wrapper):
     if not isinstance(shared, dict):
         return {"available": 0, "severity": "unknown", "renderer_rss_mb": None}
     value = shared.get("renderer_rss_mb")
-    if (isinstance(value, bool) or not isinstance(value, (int, float))
-            or not math.isfinite(value) or value < 0):
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or value < 0:
+        return {"available": 0, "severity": "unknown", "renderer_rss_mb": None}
+    try:
+        numeric_value = float(value)
+    except (OverflowError, ValueError):
+        return {"available": 0, "severity": "unknown", "renderer_rss_mb": None}
+    if not math.isfinite(numeric_value) or numeric_value > 1_000_000:
         return {"available": 0, "severity": "unknown", "renderer_rss_mb": None}
     severity = (
-        "critical" if value >= CRITICAL_RENDERER_RSS_MB
-        else "warn" if value >= WARN_RENDERER_RSS_MB
+        "critical" if numeric_value >= CRITICAL_RENDERER_RSS_MB
+        else "warn" if numeric_value >= WARN_RENDERER_RSS_MB
         else "ok"
     )
     return {
         "available": 1,
         "severity": severity,
-        "renderer_rss_mb": round(float(value), 1),
+        "renderer_rss_mb": round(numeric_value, 1),
     }
 
 
@@ -97,12 +102,12 @@ def update_alert(result, *, repo, workflow_url, run=subprocess.run):
     title = f"[VM shared overlay] {upper} renderer RSS alert"
     rss = result["renderer_rss_mb"]
     body = (
-        "Shared overlay Chromium renderer memory crossed the fixed read-only monitoring threshold.\\n\\n"
-        f"- Severity: {upper}\\n"
-        f"- Renderer RSS: {rss:.1f} MiB\\n"
-        f"- Warning threshold: {WARN_RENDERER_RSS_MB} MiB\\n"
-        f"- Critical threshold: {CRITICAL_RENDERER_RSS_MB} MiB\\n"
-        f"- Workflow: {workflow_url}\\n\\n"
+        "Shared overlay Chromium renderer memory crossed the fixed read-only monitoring threshold.\n\n"
+        f"- Severity: {upper}\n"
+        f"- Renderer RSS: {rss:.1f} MiB\n"
+        f"- Warning threshold: {WARN_RENDERER_RSS_MB} MiB\n"
+        f"- Critical threshold: {CRITICAL_RENDERER_RSS_MB} MiB\n"
+        f"- Workflow: {workflow_url}\n\n"
         "The measurement is a complete /proc scan aggregated under the fixed owner label "
         "soren-shared-overlay. Only the renderer RSS total is published; PIDs, command lines, "
         "URLs, paths, process details, raw diagnostics and command output are never published. "
