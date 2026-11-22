@@ -1783,7 +1783,11 @@ def _camp_recall_step(screen: Screen, mem, frame, *, observed_camps=None):
             # confirm it once. The dispatch step bounds what follows.
             state['picker_forced'] = True
             _record(mem, 'camp_recall_picker_fallback',
-                    observed_metric={'marker': list(marker), 'roofs': 0, 'goal': state.get('goal')},
+                    observed_metric={'marker': list(marker), 'roofs': 0,
+                                     'goal': state.get('goal'),
+                                     'origin': state.get('origin'),
+                                     'camp_world': state.get('camp_world'),
+                                     'camp_last_world': _flow(mem).get('camp_last_world')},
                     reason='可視範囲に自軍城の屋根がないため取り消さず、マーカーの位置で確定する')
             return _request_recall(mem, state, state.get('goal'), [pad('a')],
                                    target_cell=list(marker))

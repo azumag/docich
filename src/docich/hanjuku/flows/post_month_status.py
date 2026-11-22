@@ -15,6 +15,7 @@ from ..os_layer.screen import camp_body_target, castle_roofs, own_camps
 from ..os_layer.world import NAME
 from ..state.regions import flow as _flow, world as _world, plan as _plan_region
 from . import house, recall as recall_flow, map_registration
+from ..strategy.goals import EGG_REPAIR_DISABLED
 from copy import deepcopy
 
 MAX_STEPS = 900
@@ -188,7 +189,8 @@ def _tasks(statuses, names, boss_camp_months=None, camp_stays=False, road=False,
     for name in names:
         info = statuses[name]
         if road:
-            if info.get('location') == 'castle' and info.get('broken'):
+            if (info.get('location') == 'castle' and info.get('broken')
+                    and not EGG_REPAIR_DISABLED):
                 queue.append({'kind': 'repair', 'name': name})
             continue
         if info.get('location') == 'camp' and camp_stays:
@@ -221,7 +223,7 @@ def _tasks(statuses, names, boss_camp_months=None, camp_stays=False, road=False,
             # repeat the same failure every month (2026-11-07 g1139 ポワソン).
             if not info.get('castle') and not info.get('castle_pending'):
                 queue.append({'kind': 'locate', 'name': name})
-            if info.get('broken'):
+            if info.get('broken') and not EGG_REPAIR_DISABLED:
                 queue.append({'kind': 'repair', 'name': name})
     # Owner 2026-11-11 (間違った座標にむかったしょうぐんがずっと崖でキャンプしてる):
     # a camped general is an army out of play, and a camp recall is short. In
@@ -2032,6 +2034,9 @@ def step(screen, mem, frame):
             recall = recall_flow.camp_recall_step(screen, mem, frame)
             return recall if recall is not None else []
         if job['kind'] == 'repair':
+            if EGG_REPAIR_DISABLED:
+                _task_complete(mem, state, result='repair_disabled')
+                return []
             if mem.get('house'):
                 return []
             source = state['statuses'][name].get('castle')

@@ -92,8 +92,8 @@ def test_paid_individual_keeps_other_counts_and_reserved_unpaid_eggs():
     assert mem['shop']['egg_paid_actors'] == ['ココット']
     assert mem['shop']['egg'] == 'check' and mem['shop']['reserve'] == 100
     assert mem['shop']['soldiers'] == 0
-    assert p._own_egg_empty(mem, {'ally': 'ココット'})
-    mem['egg_uses']['ココット'] = 4  # only the later actual named reading releases zero
+    assert not p._own_egg_empty(mem, {'ally': 'ココット'})  # the paid recovery releases the zero
+    mem['egg_uses']['ココット'] = 4
     assert not p._own_egg_empty(mem, {'ally': 'ココット'})
 
 
@@ -212,7 +212,7 @@ def test_actual_zero_list_overrules_stale_positive_and_survives_payment():
     assert mem['egg_uses']['ココット'] == 0 and p._own_egg_empty(mem, {'ally': 'ココット'})
     p._egg_recovery_step(quote(), mem, mem['month_sub'])
     p._finish_month_sub(ready_menu(), mem, mem['shop'])
-    assert p._own_egg_empty(mem, {'ally': 'ココット'})
+    assert not p._own_egg_empty(mem, {'ally': 'ココット'})
 
 
 def test_paid_individual_keeps_the_newer_presence_over_an_old_no_egg_row():
@@ -268,7 +268,7 @@ def test_hero_payment_keeps_other_zero_and_leaves_budget_for_next_actor():
     assert mem['shop']['egg_paid_actors'] == ['どうし']
     assert mem['egg_uses'] == {'ゼウス': 1, 'ヴィーナス': 4, 'ココット': 0}
     assert mem['shop']['egg'] == 'check' and mem['shop']['reserve'] == 100
-    assert mem['shop']['soldiers'] == 0 and p._own_egg_empty(mem, {'ally': 'どうし'})
+    assert mem['shop']['soldiers'] == 0 and not p._own_egg_empty(mem, {'ally': 'どうし'})
     mem['month_sub'] = {'kind': 'egg', 'gold_before': 80, 'presses': 0, 'key': '1-6', 'left_menu': True}
     assert p._egg_recovery_step(recovery_list(), mem, mem['month_sub']) == [p.pad('a')]
     assert mem['month_sub']['individual_actor'] == 'ココット'
@@ -360,3 +360,17 @@ def test_hotloaded_old_soldier_plan_is_recapped_to_the_shortfall_floor():
     # the documented shortfall floor is, and the receipt is still required.
     assert mem['shop']['soldiers'] == 50
     assert not mem['shop'].get('soldier_receipt')
+
+def test_a_white_egg_row_overrides_a_stale_zero():
+    # Owner 2026-11-22: after a paid recovery the state kept 卵0; the white
+    # 「たまごをつかう」 command row is live availability evidence.
+    from docich.hanjuku.flows import battle_menus as B
+    from docich.hanjuku_screen import Screen
+    mem = {'battle': {'ally': 'アルファルファ'},
+           'egg_zero_owners': ['アルファルファ'],
+           'egg_uses': {},
+           '_records': []}
+    screen = Screen([], None, 'たまごをつかう', kind='battle_menu')
+    B.battle_menu_step(screen, mem)
+    assert mem['egg_zero_owners'] == []
+    assert not p._own_egg_empty(mem, mem['battle'])

@@ -19,7 +19,10 @@ def _mem(chapter, owned):
     return {'chapter': chapter, 'captured': list(owned), '_records': []}
 
 
-def test_the_road_keeps_only_repairs():
+def test_the_road_keeps_only_repairs(monkeypatch):
+    # Egg repair is disabled in the live local run; this test keeps the road
+    # ordering contract by enabling the repair task explicitly.
+    monkeypatch.setattr(post, 'EGG_REPAIR_DISABLED', False)
     assert post._tasks(STATUSES, list(STATUSES), road=True) == [
         {'kind': 'repair', 'name': 'ジェラート'}]
 

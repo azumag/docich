@@ -1582,10 +1582,11 @@ def _finish_month_sub(screen, mem, shop) -> bool:
         actor = (NAME if sub.get('hero_selected') is True and sub.get('full_selected') is not True
                  else sub.get('individual_actor') if _individual_egg_selected(mem, sub) else None)
         if actor:
-            # Only this actor's real payment was observed. Other generals'
-            # counts/rechecks and every known zero retain their evidence.
-            if _own_egg_empty(mem, {'ally': actor}):
-                mem['egg_zero_owners'] = sorted(set(mem.get('egg_zero_owners') or []) | {actor})[:32]
+            # A paid recovery restores this actor's egg; keeping the
+            # pre-payment zero here made the next battle refuse the visible
+            # たまごをつかう row (owner 2026-11-22).  Other generals' zero
+            # evidence is untouched.
+            mem['egg_zero_owners'] = [n for n in (mem.get('egg_zero_owners') or []) if n != actor]
             (mem.get('egg_uses') or {}).pop(actor, None)
             # #4439: the paid actor's count goes unknown, but the newer
             # recovery-list presence must survive: dropping the record

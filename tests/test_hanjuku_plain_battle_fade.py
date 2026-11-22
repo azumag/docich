@@ -42,3 +42,15 @@ def test_the_plain_attacks_fade_advances_boundedly():
 def test_a_gray_orphan_fade_still_holds():
     mem = flow(plain=False)
     assert orphan_battle_menu_step(fade(), mem) == []
+
+STATUS = Screen([], None,
+                'バジル しょうぐん HP 40/40 P せんとう 3 P ちんぎん 7 G '
+                'たまご なし しろのなかにいます Aボタンですすむ Bボタンでもどる',
+                kind='text')
+
+
+def test_a_general_status_screen_returns_with_b():
+    mem = flow()
+    assert orphan_battle_menu_step(STATUS, mem) == [pad('b')]
+    assert 'orphan_battle_menu' not in mem
+    assert mem['_records'][-1]['decision'] == 'battle_status_screen_return'

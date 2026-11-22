@@ -12,6 +12,12 @@ from docich.hanjuku.state.regions import world as _world, flow as _flow, journal
 VIEW = Screen([], None, '', kind='world_map')
 
 
+@pytest.fixture(autouse=True)
+def _disable_picker_y_route(monkeypatch):
+    """These cases exercise the picker ring; the Y delegation has its own file."""
+    monkeypatch.setattr(p, '_y_route_step', lambda *a, **k: None)
+
+
 
 def only_press(actions):
     """The single pad button a picker step pressed (the hold varies by distance)."""
@@ -32,6 +38,9 @@ def at(monkeypatch, castle, flags=None):
     # Only the picker-marker tests bind an origin from ▲; the fixture's own
     # marker would otherwise rewrite these legacy home-fallback cases.
     monkeypatch.setattr(p, 'world_markers', lambda _: [])
+    # These cases exercise the picker ring itself; the Y delegation is covered
+    # by test_hanjuku_recall_picker_y_route.py.
+    monkeypatch.setattr(p, '_y_route_step', lambda *a, **k: None)
 
 
 def test_home_cursor_does_not_confirm_when_unit_is_near_kikandon(monkeypatch):
@@ -502,3 +511,11 @@ def test_a_gather_castle_is_not_replaced_by_the_nearest_rule(monkeypatch):
     monkeypatch.setattr(p, 'world_markers', lambda _: [])
     p.world_map_step(VIEW, mem, picker())
     assert _flow(mem)['recall']['goal'] == 'イデ！'
+
+def test_last_measured_camp_world_selects_the_nearest_owned_castle():
+    """Owner 2026-11-22: a recall with no origin/camp_world this cycle must
+    not fall back to the hero's capital when the last camp world is known."""
+    mem = memory()
+    _world(mem)['garrison'] = {'アルマムーン': [p.NAME]}
+    _flow(mem)['camp_last_world'] = list(p.chart.castles(1)['ゴーメン'])
+    assert p._recall_goal(mem) == 'ゴーメン'

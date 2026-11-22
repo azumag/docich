@@ -82,6 +82,19 @@ def orphan_battle_menu_step(screen, mem):
         mem.pop('orphan_battle_menu', None)
         mem.pop('resume_battle_menu', None)
         return None
+    # A general's status page (opened by the monthly/roster walk) says
+    # 「しろのなかにいます」 and 「Bボタンでもどる」.  The plain-command fade
+    # path was advancing it with A forever (g1190 2026-11-22 09:00, n=30341).
+    text = screen.text or ''
+    if ('Bボタンでもどる' in text
+            and ('しろのなかにいます' in text
+                 or ('HP' in text and 'ちんぎん' in text))):
+        mem.pop('orphan_battle_menu', None)
+        mem.pop('resume_battle_menu', None)
+        _record(mem, 'battle_status_screen_return',
+                observed_metric={'screen': screen.kind, 'text': text[:60]},
+                reason='将軍ステータス画面はAで進まずBで戻る')
+        return [pad('b')]
     parent = screen.kind == 'battle_menu'
     if not parent and flow is None and not restored:
         return None
@@ -110,6 +123,12 @@ def orphan_battle_menu_step(screen, mem):
             stage = flow.get('advance') or {}
             stage['n'] = int(stage.get('n') or 0) + 1
             flow['advance'] = stage
+            if stage['n'] > 60:
+                mem.pop('orphan_battle_menu', None)
+                _record(mem, 'battle_menu_plain_advance_limit',
+                        observed_metric={'screen': screen.kind, 'n': stage['n']},
+                        reason='通常コマンド後のA進行が上限に達したためBで戻る')
+                return [pad('b')]
             if stage['n'] % 2 == 1:
                 _record(mem, 'battle_menu_plain_advance',
                         observed_metric={'screen': screen.kind, 'n': stage['n']},
@@ -957,6 +976,22 @@ def battle_menu_step(screen: Screen, mem):
     cur['resource_menu_observed'] = True  # a B attempt alone never proves this
     cur.pop('command_open_pending', None)  # foreground receipt, not a planned B
     _card_battle_reading(screen, cur, mem)
+    if _white_egg_available(screen):
+        # Owner 2026-11-22: the white row is the live evidence; it overrides
+        # a stale zero left by a paid recovery and any exhausted survival wait.
+        ally = cur.get('ally') if isinstance(cur, dict) else None
+        if isinstance(ally, str) and ally in (mem.get('egg_zero_owners') or []):
+            mem['egg_zero_owners'] = [n for n in mem['egg_zero_owners'] if n != ally]
+            _record(mem, 'battle_egg_white_available', **_battle_labels(cur),
+                    observed_metric={'ally': ally, 'screen': screen.kind},
+                    reason='白文字のたまごをつかうを実測したため、保存された卵0より画面を優先する')
+        # Only override an already-bound attack decision; do not create a new
+        # independent-menu decision here (that suppresses the normal record).
+        if mem.get('indep_menu') and mem.get('indep_menu_action') == 'attack':
+            mem['indep_menu_action'] = 'use_egg'
+            mem['egg_action'] = 'use_egg'
+            if isinstance(cur, dict) and isinstance(cur.get('independent'), dict):
+                cur['independent']['action'] = 'use_egg'
     _labels = {word for _, _, word in _options(screen)}
     _sha = getattr(screen, 'frame_sha256', None)
     _recent = [d for d in (cur.get('menu_recent') or []) if isinstance(d, str)][:2]
@@ -1848,8 +1883,22 @@ def card_list_step(screen: Screen, mem):
     return []
 
 
+def _white_egg_available(screen):
+    """A white 「たまごをつかう」 row is positive availability evidence.
+
+    The battle state can retain a stale zero (e.g. after a paid recovery);
+    the measured white command row outranks that bookkeeping.  Grey/disabled
+    rows are excluded by the parser's disabled_item_box flag.
+    """
+    return (getattr(screen, 'kind', None) == 'battle_menu'
+            and not getattr(screen, 'disabled_item_box', False)
+            and 'たまごをつかう' in (getattr(screen, 'text', '') or ''))
+
+
 def _screen_egg_empty(screen, mem, battle):
     """The actual named foreground actor outranks missing battle bookkeeping."""
+    if _white_egg_available(screen):
+        return False
     names = []
     if screen.battle and general_max_hp(screen.battle.ally) is not None:
         names = [screen.battle.ally]
@@ -2458,6 +2507,44 @@ def egg_battle_step(screen: Screen, mem):
         attempted = {*(battle.get('cards_selected') or []), *(battle.get('cards_used') or []),
                      *(battle.get('cards_unclassified') or [])}
         cards_left = [c for c in (battle.get('planned_cards') or []) if c not in attempted]
+        if not cards_left:
+            # The summon battle's battle context often has no planned_cards,
+            # even though the sortie confirmation carried a card.  Use the
+            # measured carried kit (departure binding minus spent) so a held
+            # card is not silently treated as absent.
+            carried = _confirmed_carried_kit(mem, battle) or []
+            cards_left = [c for c in carried if c not in attempted]
+        # Owner 2026-11-22: enemy summon + our general was going straight to
+        # こうげき while a carried card was still in planned_cards.  In a
+        # summon fight the きりふだ row sits BELOW たまごをつかう and is not in
+        # the visible command text until the box scrolls down; open it first.
+        if (cards_left and 'きりふだ' not in (screen.text or '')
+                and 'たまごをつかう' in (screen.text or '')
+                and not battle.get('card_flow')):
+            scrolls = int(battle.get('summon_card_scroll') or 0)
+            if scrolls < SUMMON_CARD_SCROLL_LIMIT:
+                battle['summon_card_scroll'] = scrolls + 1
+                _record(mem, 'battle_summon_card_scroll', **_battle_labels(battle),
+                        observed_metric={'scrolls': scrolls + 1, 'cards_left': list(cards_left),
+                                         'text': (screen.text or '')[:60]},
+                        reason='召喚獣戦の切り札行はたまごをつかうの下にあるため、下へスクロールして表示する')
+                return [pad('down')]
+        if (cards_left and 'きりふだ' in (screen.text or '')
+                and not battle.get('card_flow')):
+            target = _battle_menu_to(screen, 'きりふだ')
+            move = _menu_move_batch(screen, 'きりふだ', target) if target is not None else None
+            if move == 'here':
+                battle['card_flow'] = {'card': cards_left[0], 'stage': 'list',
+                                       'note': '敵召喚獣戦の携行切り札を開幕使用',
+                                       'enemy_hp_at_open': battle.get('enemy_hp')}
+                _record(mem, 'battle_summon_card_open', **_battle_labels(battle),
+                        card=cards_left[0],
+                        observed_metric={'enemy': battle.get('enemy'),
+                                         'cards_left': list(cards_left)},
+                        reason='敵が召喚獣でこちらが将軍のため、通常攻撃より先に切り札を開く')
+                return [pad('a')]
+            if move is not None:
+                return _emit_moves(move)
         # g498: B did not leave the turn menu, yet the next observation
         # immediately chose A and Venus lost. Require a bounded return flow,
         # and actually request retreat if the normal command menu is reached.
@@ -2616,6 +2703,15 @@ MONSTER_STALL_SAME_TURN_TICKS = 3
 # keeping the choice forever only delays the general's exposure that a lost
 # summon forces anyway, so the stall returns once ``return_risk`` allows it.
 MONSTER_STALL_RETURN_TURNS = 6
+# A summon fight's command box hides きりふだ below たまごをつかう; one or two
+# downs reveal it.  Bound the scroll so an unreadable box cannot loop.
+SUMMON_CARD_SCROLL_LIMIT = 3
+# Owner 2026-11-22: do not return a summon that is finishing a nearly-dead
+# enemy (or is far ahead in HP).  The bounded stall was returning at 6 turns
+# even at enemy HP 27 with the summon at 515, which looked like throwing a
+# winning fight away.  Keep pressing while either condition holds.
+MONSTER_FINISH_ENEMY_HP = 30
+MONSTER_FINISH_HP_RATIO = 3
 
 
 def _monster_stall_switch(mem, owner, ally, enemy, action, skill_count, *, attackless=False,
@@ -2643,6 +2739,9 @@ def _monster_stall_switch(mem, owner, ally, enemy, action, skill_count, *, attac
     if not isinstance(stall, dict) or stall.get('scope') != scope or stall.get('enemy_hp') != enemy.hp:
         stall = mem['monster_stall'] = {'scope': scope, 'enemy_hp': enemy.hp, 'turns': {}}
     turns = stall['turns']
+    finishing = (type(ally.hp) is int and type(enemy.hp) is int and enemy.hp > 0
+                 and (enemy.hp <= MONSTER_FINISH_ENEMY_HP
+                      or ally.hp >= enemy.hp * MONSTER_FINISH_HP_RATIO))
     tick = mem.get('tick')
     if (type(tick) is int and type(stall.get('tick')) is int and stall.get('last') in ('skill1', 'skill2')
             and 0 <= tick - stall['tick'] <= MONSTER_STALL_SAME_TURN_TICKS):
@@ -2668,6 +2767,15 @@ def _monster_stall_switch(mem, owner, ally, enemy, action, skill_count, *, attac
             # Latch 'retreat' so a same-turn redraw cannot resurrect the skill.
             stall['last'], stall['tick'] = 'retreat', tick
             return 'retreat'
+        elif finishing:
+            if not stall.get('finishing_keep'):
+                stall['finishing_keep'] = True
+                _record(mem, 'monster_skill_stall',
+                        strategy_variant='monster_stall_finishing_keep',
+                        observed_metric={'ally': ally.name, 'enemy': enemy.name,
+                                         'ally_hp': ally.hp, 'enemy_hp': enemy.hp,
+                                         'turns': dict(turns)},
+                        reason='敵HPが残りわずか／味方が優勢のため、召喚獣を戻さず押し切る')
         elif (not return_risk
                 and turns.get('skill1', 0) + turns.get('skill2', 0) >= MONSTER_STALL_RETURN_TURNS):
             if not stall.get('returned'):
