@@ -381,7 +381,7 @@ cmdlineの生バイト・URL・パス・PIDは出さず、argv/生バイトは�
 - `by_type`: `browser` / `gpu` / `renderer` / `utility` / `other` の件数
 - `by_owner`: `soren-shared-overlay` / `soren-game` / `twica` /
   `nethack-tiles` / `obs` / `webui` / `other` ごとの `count` / `cpu_pct` /
-  `rss_mb` / `renderer_rss_mb`。RSS は各プロセスの VmRSS を固定owner/type別に合算する。
+  `rss_mb` / `renderer_rss_mb`。RSS は各プロセスの VmRSS をowner別に合算し、renderer_rss_mb はrendererだけの内訳を示す。
   `gpu_cpu_pct` / `renderer_cpu_pct` は0でない場合だけ出す。
 - `type_sources`: `type_arg` / `no_type_arg` の件数。`cmdline_bytes_max` と
   `max_type_arg_offset` は型判定の切り分け用（見つからない場合は後者を出さない）。
