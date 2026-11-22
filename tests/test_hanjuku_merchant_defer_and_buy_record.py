@@ -46,6 +46,10 @@ def month_memory(*, egg='pending', recruit=False, gold=9999, stock_count=0):
         'soldiers_seen': 60, 'soldiers_seen_key': '1-7',
         'soldiers_seen_scope': [dict(IDENTITY), 1, '1-7'],
         'hanjuku_level_seen': {'scope': [1, '1-7']},
+        # The free monthly country scan already spent its budget: otherwise
+        # hanjuku_house.step owns the menu before month_step (it records
+        # scan_started and presses メインメニュー), and no purchase plan runs.
+        'recruit_month_scan_attempts': {'scope': [1, '1-7'], 'count': 2},
         'egg_uses': {'ココット': 0},
         'card_stock': {name: stock_count for name in bargains.KNOWN_PRICES},
         'shop': {'key': '1-7', 'items': [], 'want': None, 'soldiers': 0,
@@ -63,6 +67,15 @@ def month_memory(*, egg='pending', recruit=False, gold=9999, stock_count=0):
             'identity': dict(IDENTITY), 'chapter': 1, 'month': '1-7',
             'tick': 90, 'complete': True, 'names': ['ココット'],
             'wages': {'ココット': 1}}
+        # The monthly country totals are already measured, so the recruit
+        # count is not 'unverified' and the house scan is released to the
+        # month flow. One general is a real shortage against the 32 target.
+        mem['country_general_count'] = {
+            'identity': dict(IDENTITY), 'count': 1, 'scope': [1, '1-7'],
+            'tick': 100}
+        mem['country_soldier_count'] = {
+            'identity': dict(IDENTITY), 'count': 60, 'scope': [1, '1-7'],
+            'tick': 100}
         mem['shop'].update(recruit='check', recruit_priority=True,
                            recruit_reserve=100)
     return mem
