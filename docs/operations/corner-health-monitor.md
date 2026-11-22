@@ -15,7 +15,7 @@ read-only diagnostics から検知し、固定タイトルの Issue を自動で
 | 種別 | 条件 | 主な根拠 |
 | --- | --- | --- |
 | コーナー不正終了 | コーナーstateが `failed` のまま（5分の猶予後）。`recovery_required=true` は期間を問わない | `corners.<corner>.status` / `recovery_required` |
-| 失敗の記録 | ローテーションの `failed_corners` に直近の失敗がある。`released-unverified` は24時間、`recovery-required` は7日 | `corners.corner_rotation.failed_corners` |
+| 失敗の記録 | ローテーションの `failed_corners` に直近の失敗がある。`released-unverified` は24時間、`recovery-required` は現在の latch 中だけ（最大7日） | `corners.corner_rotation.failed_corners` |
 | 要復旧ラッチ | `corner_rotation.status == recovery_required` | `corner_rotation.status` / `error_kind` |
 | 待機の詰まり | `waiting_overdue=true`（同じ reason のまま `next_due_at` を10分以上超過） | #4333 で diagnostics に投影済みの signal |
 | 解放済みownerの未退役 | `excluded.<corner> == released-owner-unretired` | #2352 / #2354 / #3682 |
@@ -36,10 +36,14 @@ read-only diagnostics から検知し、固定タイトルの Issue を自動で
   一覧から外す。監視導入前から残っている失敗で永久に Issue を開き続けないため。
   失敗時刻が欠落した state は経過を判定できないため対象に残す。
 - ローテーション監査の `released-unverified` は「失敗を記録して継続した」記録なので
-  24時間だけ一覧に残す。`recovery-required` は7日。
-- 同じコーナーについて state の `failed` と監査行の両方がある場合、両方を
-  別の根拠として本文に併記する。監査行の corner は catalog id、state は state 名
-  なので、`nethack` と `nethack_corner` のように名前が異なることがある。
+  24時間だけ一覧に残す。
+- `recovery-required` の監査行は latch が解消した後も ledger に残るため、現在の
+  `corner_rotation.status == recovery_required` の間だけ現在の異常として扱う
+  （最大7日）。latch が解消していれば履歴として扱い、state の `failed` だけで判断する。
+- 同じコーナーについて state の `failed` と監査行がある場合、state の `game` が
+  監査行の corner id と一致すれば1行に統合する（`nethack_corner` と `nethack` など）。
+  一致しない場合は別の根拠として本文に併記する。監査行が state の失敗より古い場合は、
+  その理由コードで現在の失敗を上書きしない。
 
 ## Issue のライフサイクル
 
