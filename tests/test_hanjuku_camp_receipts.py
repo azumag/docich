@@ -193,3 +193,41 @@ def test_recall_target_screen_never_confirms_a_different_chart_sortie(stage):
     p.observe_sortie_transition(Screen([],None,'',kind='world_map'),mem,'map_target')
     assert _plan_region(mem)['orders']['1-A2']=='pending' and not _world(mem).get('sorties')
     assert not mem['_records']
+
+
+def _verified_memory(tick=1600, dispatched=900, location='camp', reread=1500):
+    mem = {'tick': tick, '_records': [],
+           'general_statuses': {'statuses': {
+               'ナストリーニ': {'location': location, 'hp': 66, 'tick': reread}}}}
+    _flow(mem)['camp_verify'] = {'tick': dispatched, 'castle': 'アルマムーン',
+                                 'camp': [132, 120], 'generals': ['ナストリーニ']}
+    return mem
+
+
+def test_a_camped_general_still_camped_after_the_wait_is_named():
+    from docich.hanjuku.flows import recall as recall_flow
+    mem = _verified_memory()
+    assert recall_flow.camp_arrival_check(mem) is True
+    decisions = [r['decision'] for r in mem['_records']]
+    assert 'camp_recall_arrival_timeout' in decisions
+    metric = [r for r in mem['_records'] if r['decision'] == 'camp_recall_arrival_timeout'][0]['observed_metric']
+    assert metric['still_camped'] == ['ナストリーニ']
+    assert _flow(mem).get('recall_goal_failures')['132,120']['アルマムーン'] == 1
+    assert 'camp_verify' not in _flow(mem)
+
+
+def test_an_unread_status_keeps_the_arrival_check_pending():
+    from docich.hanjuku.flows import recall as recall_flow
+    mem = _verified_memory()
+    mem['general_statuses']['statuses']['ナストリーニ']['tick'] = 850   # older than dispatch
+    assert recall_flow.camp_arrival_check(mem) is None
+    assert 'camp_verify' in _flow(mem)
+    assert not any(r['decision'] == 'camp_recall_arrival_timeout' for r in mem['_records'])
+
+
+def test_a_general_that_left_the_camp_confirms_the_arrival():
+    from docich.hanjuku.flows import recall as recall_flow
+    mem = _verified_memory(location='castle')
+    assert recall_flow.camp_arrival_check(mem) is True
+    assert any(r['decision'] == 'camp_recall_arrival_confirmed' for r in mem['_records'])
+    assert 'camp_verify' not in _flow(mem)

@@ -998,6 +998,93 @@ def _y_route_step(screen, mem, state):
     return []
 
 
+# docich#5032: an accepted dispach is anonymous (the camp menu names no
+# occupant we read), so arrival was never checked against a general and the
+# camp stayed in the last status reading for months. After this many ticks the
+# generals who were camped at dispatch must have been re-read; one still shown
+# at 'camp' names the failure and sends the next attempt to another castle.
+CAMP_ARRIVAL_TIMEOUT_TICKS = 600
+
+
+def _camped_generals(mem, limit=8):
+    rows = ((mem.get('general_statuses') or {}).get('statuses') or {})
+    if not isinstance(rows, dict):
+        return []
+    return [name for name, row in rows.items()
+            if isinstance(name, str) and isinstance(row, dict)
+            and row.get('location') == 'camp'][:limit]
+
+
+def _remember_camp_verify(mem, state):
+    """Keep who was camped when this return was accepted (bounded, no guesses)."""
+    names = _camped_generals(mem)
+    if not names:
+        _flow(mem).pop('camp_verify', None)
+        return
+    _flow(mem)['camp_verify'] = {
+        'tick': int(mem.get('tick') or 0),
+        'castle': state.get('goal'),
+        'camp': list(state.get('target') or []),
+        'generals': names,
+    }
+
+
+def camp_arrival_check(mem):
+    """Name the generals an accepted return never brought home.
+
+    Runs whenever the camp flow is consulted; it never inputs anything. A
+    general whose status was not re-read since the dispatch keeps the check
+    pending (an unread row is not evidence either way).
+    """
+    verify = _flow(mem).get('camp_verify')
+    if not isinstance(verify, dict):
+        return None
+    dispatched = verify.get('tick')
+    now = int(mem.get('tick') or 0)
+    if type(dispatched) is not int or now - dispatched < CAMP_ARRIVAL_TIMEOUT_TICKS:
+        return None
+    rows = ((mem.get('general_statuses') or {}).get('statuses') or {})
+    still, moved, unread = [], [], []
+    for name in verify.get('generals') or ():
+        row = rows.get(name) if isinstance(rows, dict) else None
+        tick = row.get('tick') if isinstance(row, dict) else None
+        if type(tick) is not int or tick <= dispatched:
+            unread.append(name)
+        elif row.get('location') == 'camp':
+            still.append(name)
+        else:
+            moved.append(name)
+    if still:
+        goal = verify.get('castle')
+        _record(mem, 'camp_recall_arrival_timeout',
+                observed_metric={'castle': goal, 'camp': verify.get('camp'),
+                                 'still_camped': still, 'arrived': moved,
+                                 'unread': unread,
+                                 'waited_ticks': now - dispatched},
+                resulting_event='dispatched_general_still_camped',
+                reason='受理した帰還の後も名簿の再読みで野営のままの将軍がいるため、到着しなかった帰還として名前を残す')
+        camp = verify.get('camp')
+        if (isinstance(camp, (list, tuple)) and len(camp) == 2
+                and isinstance(goal, str) and goal):
+            failures = _flow(mem).setdefault('recall_goal_failures', {})
+            key = f'{int(camp[0])},{int(camp[1])}'
+            pair = failures.get(key) if isinstance(failures.get(key), dict) else {}
+            pair[goal] = int(pair.get(goal) or 0) + 1
+            failures[key] = pair
+        mem['uncertain'] = True
+        _flow(mem).pop('camp_verify', None)
+        return True
+    if moved and not unread:
+        _record(mem, 'camp_recall_arrival_confirmed',
+                observed_metric={'castle': verify.get('castle'), 'arrived': moved,
+                                 'waited_ticks': now - dispatched},
+                resulting_event='dispatched_general_left_camp',
+                reason='受理した帰還の後、野営だった将軍が名簿の再読みで城内・行軍に変わったため到着として記録する')
+        _flow(mem).pop('camp_verify', None)
+        return True
+    return None
+
+
 def _camp_recall_step(screen: Screen, mem, frame, *, observed_camps=None):
     """Owner rule (2026-09-28): a camp (野営) seen on screen is recalled.
 
@@ -1008,6 +1095,8 @@ def _camp_recall_step(screen: Screen, mem, frame, *, observed_camps=None):
     own castle (補給できる城). ``None`` means "no recall in flight": the
     caller keeps its ordinary map steering.
     """
+    if not _flow(mem).get('recall'):
+        camp_arrival_check(mem)
     if screen.kind in {'battle', 'battle_menu', 'egg_battle_menu', 'monster_menu',
                        'egg_choice_menu', 'attack_started', 'defense_started', 'boss_attack_started'}:
         _mark_recall_interrupted(mem)
@@ -2040,6 +2129,7 @@ def _recall_dispatch_step(screen, mem, state):
                                      'general': state.get('general') if state.get('fort') else None},
                     resulting_event='accepted_awaiting_arrival',
                     reason='帰還ピッカーが閉じて受理されたため、到着は名簿の実読みで確認する')
+            _remember_camp_verify(mem, state)
         else:
             mem['uncertain'] = True
             _record(mem, 'camp_recall_unconfirmed', chart_step=None, observed_metric={'castle': state.get('goal'),
