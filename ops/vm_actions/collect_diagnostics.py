@@ -8102,6 +8102,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v1397-recall-map-hold",
             "hanjuku-chart-v1398-egg-retry-on-hp-loss",
             "hanjuku-chart-v1399-recall-map-hold",
+            "hanjuku-chart-v1400-early-resource-rescue",
             "hanjuku-chart-v1402-sortie-audit-confidence",
             "hanjuku-chart-v1403-boss-phase-scan-defer",
             "hanjuku-chart-v1404-defense-egg-rescue",
