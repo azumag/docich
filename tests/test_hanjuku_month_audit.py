@@ -1206,6 +1206,79 @@ def test_retro_corner_records_screen_stall_before_teardown():
     assert "screen_stalled', 'input_stalled'" in text
 
 
+def _menu_state(menu=True):
+    value = state(10, '1-1', 0)
+    value['screen_kind'] = 'battle_menu' if menu else 'battle'
+    value['policy']['battle'] = {
+        'general': 'カシュー', 'step': 'A:1:M1',
+        'ally_hp': 30, 'enemy_hp': 40, 'side': 'attack',
+    }
+    return value
+
+
+def test_battle_menu_closed_without_action_is_recorded(runtime_dir):
+    before = _menu_state(False)
+    opened = _menu_state(True)
+    audit.observe(runtime_dir, audit.capture(before), opened, [], now=1000)
+    closed = _menu_state(False)
+    seen = []
+    audit.observe(runtime_dir, audit.capture(opened), closed,
+                  [{'decision': 'battle_egg_conserve', 'at': 1001,
+                    'reason': '卵を温存して戻る'}], now=1001,
+                  on_sealed=seen.append)
+    records = audit.load_incidents(runtime_dir)
+    assert len(records) == 1
+    record = records[0]
+    assert record['kind'] == 'battle_menu_wasted'
+    assert record['battle_menu']['close_decision'] == 'battle_egg_conserve'
+    assert record['auto_file'] is True
+    assert '戦闘Bメニューを無駄に開閉' in audit._issue_title(record)
+    assert '### 戦闘Bメニュー' in audit.render(record)
+    assert len(seen) == 1
+
+
+def test_battle_menu_with_action_is_not_recorded(runtime_dir):
+    before = _menu_state(False)
+    opened = _menu_state(True)
+    audit.observe(runtime_dir, audit.capture(before), opened, [], now=1000)
+    closed = _menu_state(False)
+    audit.observe(runtime_dir, audit.capture(opened), closed,
+                  [{'decision': 'battle_card_selected', 'at': 1001},
+                   {'decision': 'battle_egg_conserve', 'at': 1001}], now=1001)
+    assert audit.load_incidents(runtime_dir) == []
+
+
+def test_battle_one_hit_close_is_not_recorded(runtime_dir):
+    before = _menu_state(False)
+    opened = _menu_state(True)
+    audit.observe(runtime_dir, audit.capture(before), opened, [], now=1000)
+    closed = _menu_state(False)
+    audit.observe(runtime_dir, audit.capture(opened), closed,
+                  [{'decision': 'battle_one_hit_menu_close', 'at': 1001}], now=1001)
+    assert audit.load_incidents(runtime_dir) == []
+
+
+def test_battle_menu_close_without_close_decision_is_not_recorded(runtime_dir):
+    before = _menu_state(False)
+    opened = _menu_state(True)
+    audit.observe(runtime_dir, audit.capture(before), opened, [], now=1000)
+    closed = _menu_state(False)
+    audit.observe(runtime_dir, audit.capture(opened), closed, [], now=1001)
+    assert audit.load_incidents(runtime_dir) == []
+
+
+def test_battle_menu_waste_is_cooled_down(runtime_dir):
+    for start in (1000, 1100):
+        before = _menu_state(False)
+        opened = _menu_state(True)
+        audit.observe(runtime_dir, audit.capture(before), opened, [], now=start)
+        closed = _menu_state(False)
+        audit.observe(runtime_dir, audit.capture(opened), closed,
+                      [{'decision': 'battle_egg_conserve', 'at': start + 1}],
+                      now=start + 1)
+    assert len(audit.load_incidents(runtime_dir)) == 1
+
+
 def test_capture_reads_unmigrated_world_fields():
     state_value = state(1, '1-1', 10)
     state_value['policy']['world']['gold'] = None
