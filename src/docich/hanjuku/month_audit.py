@@ -1698,8 +1698,17 @@ def _build_chikujou_incident(runtime, state, after, event, now):
 def _track_chikujou(runtime, state, before, after, records, now, on_sealed=None):
     mem = after.get('policy') or {}
     chapter, month = mem.get('chapter'), mem.get('month')
+    # A decline or terminal unreadable row is emitted in an earlier observe()
+    # call than month_done.  Keep the current observation as the only source
+    # of terminal events, but classify it using recent same-month evidence.
+    history = _read_decisions(runtime, max(0.0, float(now) - 120), now,
+                              state.get('identity'))
+    evidence = [row for row in history
+                if row.get('month') == month
+                and row.get('chapter') in (None, chapter)]
+    evidence.extend(records or ())
     events = [event for event in
-              (_chikujou_event(record, after, before, records) for record in records or ())
+              (_chikujou_event(record, after, before, evidence) for record in records or ())
               if event]
     if not events:
         return
