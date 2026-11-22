@@ -397,7 +397,7 @@ jobs:
         run: |
           set -euo pipefail
           prefix='[VM shared overlay]'
-          mapfile -t alerts < <(gh issue list --repo "$GITHUB_REPOSITORY" --state open --limit 100 --json number,title --jq '.[] | select(.title == "[VM shared overlay] WARN renderer RSS alert" or .title == "[VM shared overlay] CRITICAL renderer RSS alert") | "\(.number)\\t\(.title)"')
+          mapfile -t alerts < <(gh issue list --repo "$GITHUB_REPOSITORY" --state open --limit 100 --json number,title --jq '.[] | select(.title == "[VM shared overlay] WARN renderer RSS alert" or .title == "[VM shared overlay] CRITICAL renderer RSS alert") | "\(.number)\t\(.title)"')
           if [[ "$AVAILABLE" != '1' ]]; then
             echo "Shared overlay renderer memory is unknown; existing alerts are left unchanged."
             exit 0
@@ -548,7 +548,7 @@ jobs:
           done
           gh issue create --repo "$GITHUB_REPOSITORY" --title "$title" --body "$body"
           echo "::warning::Kick OAuth requires reauth (status=${KICK_OAUTH_STATUS})."
-\\t'*}"
+\t'*}"
               gh issue close "$number" --repo "$GITHUB_REPOSITORY" --comment "Shared overlay renderer RSS recovered below ${WARN_THRESHOLD_MB} MiB."
             done
             echo "Shared overlay renderer RSS ${RENDERER_RSS_MB} MiB: no alert."
@@ -569,7 +569,7 @@ jobs:
           - Critical threshold: ${CRITICAL_THRESHOLD_MB} MiB
           - Workflow: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}
 
-          The measurement is a complete /proc scan aggregated under the fixed owner label `soren-shared-overlay`. Only the renderer RSS total is published; PIDs, command lines, URLs, paths, process details, raw diagnostics and command output are never published. This monitor is read-only and does not restart services.
+          The measurement is a complete /proc scan aggregated under the fixed owner label \`soren-shared-overlay\`. Only the renderer RSS total is published; PIDs, command lines, URLs, paths, process details, raw diagnostics and command output are never published. This monitor is read-only and does not restart services.
           EOF
           )"
           for entry in "${alerts[@]}"; do
@@ -717,7 +717,7 @@ jobs:
           done
           gh issue create --repo "$GITHUB_REPOSITORY" --title "$title" --body "$body"
           echo "::warning::Kick OAuth requires reauth (status=${KICK_OAUTH_STATUS})."
-\\t'*}"; existing="${entry#*        id: twitch_oauth
+\t'*}"; existing="${entry#*        id: twitch_oauth
         run: |
           set -euo pipefail
           file="$RUNNER_TEMP/runtime-diagnostics.json"
@@ -861,7 +861,7 @@ jobs:
           done
           gh issue create --repo "$GITHUB_REPOSITORY" --title "$title" --body "$body"
           echo "::warning::Kick OAuth requires reauth (status=${KICK_OAUTH_STATUS})."
-\\t'}"
+\t'}"
             if [[ "$existing" == "$title" ]]; then
               gh issue edit "$number" --repo "$GITHUB_REPOSITORY" --body "$body"
               echo "Existing shared overlay memory alert #${number} refreshed."
@@ -1013,7 +1013,7 @@ jobs:
           done
           gh issue create --repo "$GITHUB_REPOSITORY" --title "$title" --body "$body"
           echo "::warning::Kick OAuth requires reauth (status=${KICK_OAUTH_STATUS})."
-\\t'*}"
+\t'*}"
             gh issue close "$number" --repo "$GITHUB_REPOSITORY" --comment "Shared overlay renderer RSS severity changed to ${upper}."
           done
           gh issue create --repo "$GITHUB_REPOSITORY" --title "$title" --body "$body"
