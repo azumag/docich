@@ -1654,6 +1654,12 @@ def _chikujou_snapshot(after, before, record, records):
         'unavailable': sorted(unavailable)[:8],
         'affordable': affordable,
         'refusal_covered': refusal_covered,
+        # docich#5151: name the refusal state the flow used to skip, so a month
+        # that ended with candidates can be told apart from one that skipped
+        # inside the two-month refusal window without re-reading the run.
+        'refused_skips': int(refused.get('skips') or 0) if isinstance(refused, dict) else 0,
+        'refused_castles': (sorted(name for name in refused_castles if isinstance(name, str))[:8]
+                            if isinstance(refused_castles, list) else []),
         'cost_declined': cost_declined,
         'menu_unreadable': _chikujou_menu_unreadable(records, month),
         'held_for': _chikujou_hold(shop, records, month),
@@ -1741,6 +1747,8 @@ def _build_chikujou_incident(runtime, state, after, event, now):
         'confidence_reasons': confidence_reasons,
         'chikujou_held_for': held_for,
         'chikujou_menu_unreadable': menu_unreadable,
+        'chikujou_refused_skips': event.get('refused_skips'),
+        'chikujou_refused_castles': list(event.get('refused_castles') or []),
         'chapter': mem.get('chapter'),
         'month': mem.get('month'),
         'month_summary': month,

@@ -806,6 +806,21 @@ def test_chikujou_month_end_with_resources_is_recorded(runtime_dir):
     assert len(seen) == 1
 
 
+def test_chikujou_incident_names_the_refusal_window_it_skipped_in(runtime_dir):
+    # docich#5151: 月を閉じた理由が「拒否スキップ枠」なのか別経路なのかを
+    # issue 本文だけで判別できるよう、拒否の skips と対象城を記録に残す。
+    value = _chikujou_state()
+    home = chart.home_castle(10)
+    value['policy']['chikujou_refused'] = {'castles': [home], 'skips': 1}
+    audit.observe(runtime_dir, audit.capture(value), value,
+                  [{'decision': 'month_done', 'month': '1-1',
+                    'reason': '月一の購入を終了', 'at': 1000}], now=1000)
+    record = audit.load_incidents(runtime_dir)[0]
+    assert record['kind'] == 'chikujou_available_at_end'
+    assert record['chikujou_refused_skips'] == 1
+    assert record['chikujou_refused_castles'] == [home]
+
+
 def test_chikujou_month_end_held_for_unresolved_egg_is_not_high_confidence(runtime_dir):
     """docich#5094 / #5045: a fail-closed hold is not a silent loss.
 
