@@ -40,12 +40,18 @@ def test_a_non_operable_text_screen_holds_the_recall_without_steps():
 
 
 def test_a_battle_foreground_holds_the_recall_without_steps():
-    mem = memory()
+    # docich#5134: ch6's to_camp recall was aborted after 91 battle-heavy
+    # observations with input_sent=False. Combat belongs to the battle flow,
+    # so it must not consume the camp-return operation budget.
+    mem = memory(stage='to_camp')
+    mem['chapter'] = 6
     battle = Screen([], None, '', kind='battle')
     for _ in range(91):
         assert recall_flow.camp_recall_step(battle, mem, FRAME) is None
     state = _flow(mem)['recall']
-    assert state is not None and state['steps'] == 5 and state['hold_since'] == 100
+    assert state is not None and state['stage'] == 'to_camp'
+    assert state['steps'] == 5 and state['hold_since'] == 100
+    assert not any(r['decision'] == 'camp_recall_aborted' for r in mem['_records'])
 
 
 def test_the_hold_aborts_only_after_the_tick_limit():
