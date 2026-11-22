@@ -1439,11 +1439,20 @@ def _chikujou_snapshot(after, before, record, records):
             if isinstance(name, str):
                 unavailable.add(name)
     staffed = _chikujou_staffed(mem)
-    candidates = economy._chikujou_candidates(mem)
-    candidates = [name for name in candidates
+    raw_candidates = economy._chikujou_candidates(mem)
+    candidates = [name for name in raw_candidates
                   if name not in tried and name not in upgrades
                   and name not in maxed and name not in unavailable]
     staffed_candidates = [name for name in candidates if name in staffed]
+    # month.py skips 築城 for up to two months after it read a refusal from the
+    # native list with this exact castle set (mem['chikujou_refused']). The
+    # refusal is the observation that these candidates cannot be built right
+    # now, so a month that skipped for it is not a missed build. A changed
+    # castle set no longer matches, so the alert still fires then (docich#5061).
+    refused = mem.get('chikujou_refused')
+    refused_castles = refused.get('castles') if isinstance(refused, dict) else None
+    refusal_covered = (isinstance(refused_castles, list) and bool(refused_castles)
+                       and sorted(refused_castles) == sorted(raw_candidates))
     affordable = economy._chikujou_affordable(gold, reserve)
     return {
         'month': month or shop.get('key'),
@@ -1457,7 +1466,8 @@ def _chikujou_snapshot(after, before, record, records):
         'maxed': sorted(maxed)[:8],
         'unavailable': sorted(unavailable)[:8],
         'affordable': affordable,
-        'buildable': bool(affordable and staffed_candidates),
+        'refusal_covered': refusal_covered,
+        'buildable': bool(affordable and staffed_candidates and not refusal_covered),
     }
 
 

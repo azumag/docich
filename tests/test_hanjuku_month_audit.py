@@ -826,6 +826,45 @@ def test_chikujou_terminal_decline_ignores_other_month_sub(runtime_dir):
     assert records[0]['kind'] == 'chikujou_cancelled_with_resources'
 
 
+def _chikujou_candidates(mem):
+    from docich.hanjuku.strategy import economy
+    return sorted(economy._chikujou_candidates(mem))
+
+
+def test_chikujou_skip_after_matching_refusal_is_not_recorded(runtime_dir):
+    """month.py defers 築城 for up to two months after it read a refusal from
+    the native list with the same castle set, so that skipped month is not a
+    missed build (docich#5061)."""
+    value = _chikujou_state()
+    mem = value['policy']
+    mem['chikujou_refused'] = {'castles': _chikujou_candidates(mem), 'skips': 1}
+    audit.observe(runtime_dir, audit.capture(value), value,
+                  [{'decision': 'month_done', 'month': '1-1',
+                    'reason': '月一の購入を終了', 'at': 1000}], now=1000)
+    assert audit.load_incidents(runtime_dir) == []
+
+
+def test_chikujou_skip_after_refusal_rearms_when_a_castle_is_added(runtime_dir):
+    """A changed castle set no longer matches the refused set, so the month end
+    is a real missed build again."""
+    value = _chikujou_state()
+    mem = value['policy']
+    mem['chikujou_refused'] = {'castles': _chikujou_candidates(mem), 'skips': 1}
+    home = chart.home_castle(10)
+    extra = next(c for c in chart.CASTLE_NAMES[10]
+                 if c != home and c not in mem['captured'])
+    mem['captured'] = [*mem['captured'], extra]
+    mem['world']['garrison'][extra] = ['C']
+    mem['general_statuses']['statuses'][extra] = {'location': 'castle', 'castle': extra}
+    assert _chikujou_candidates(mem) != mem['chikujou_refused']['castles']
+    audit.observe(runtime_dir, audit.capture(value), value,
+                  [{'decision': 'month_done', 'month': '1-1',
+                    'reason': '月一の購入を終了', 'at': 1000}], now=1000)
+    records = audit.load_incidents(runtime_dir)
+    assert len(records) == 1
+    assert records[0]['kind'] == 'chikujou_available_at_end'
+
+
 def test_chikujou_month_end_is_reported_once(runtime_dir):
     value = _chikujou_state()
     record = {'decision': 'month_done', 'month': '1-1', 'at': 1000}
