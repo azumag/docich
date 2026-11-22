@@ -72,9 +72,13 @@ def test_combat_foreground_keeps_the_pending_recall_but_does_not_advance_it(monk
     before = deepcopy(_flow(mem)['recall'])
     assert p.camp_recall_step(Screen([], None, '', kind=kind), mem, object()) is None
     after = _flow(mem)['recall']
-    # docich#5108: the hold marker is the only intentional state addition;
-    # the original stage, target and step budget must remain unchanged.
-    assert {k: v for k, v in after.items() if k != 'hold_since'} == before
+    # docich#5108/#5134: hold_since preserves the pending recall. A
+    # field-navigation/menu recall also records that combat moved the cursor,
+    # so the first operable map frame can restart its bounded step budget.
+    expected = dict(before)
+    if stage == 'to_camp':
+        expected['battle_return'] = True
+    assert {k: v for k, v in after.items() if k != 'hold_since'} == expected
     assert after['hold_since'] == mem['tick']
 
 
@@ -93,8 +97,11 @@ def test_a_battle_result_frame_does_not_discard_an_already_pending_camp(monkeypa
     assert p.camp_recall_step(MAP, mem, object()) == []
     after = _flow(mem)['recall']
     # A battle-result map still belongs to the battle until its context is
-    # settled; keep the pending recall and mark the bounded hold.
-    assert {k: v for k, v in after.items() if k != 'hold_since'} == before
+    # settled; keep the pending recall, mark the bounded hold, and remember
+    # that combat repositioned the field cursor.
+    expected = dict(before)
+    expected['battle_return'] = True
+    assert {k: v for k, v in after.items() if k != 'hold_since'} == expected
     assert after['hold_since'] == mem['tick']
 
 
