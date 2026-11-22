@@ -36,7 +36,8 @@ KNOWN_PRICES.update({name: data['price'] for name, data in REFERENCE_CARDS.items
 # These two requested cards have *no* reference gold price (event/treasure
 # only). The large value is an acceptance ceiling, NOT an asserted shop price:
 # they may be bought only after a readable real listing and verified quote.
-KNOWN_PRICES.update({'フットバース': 999, 'ピッグローラー': 999})
+UNPRICED_CARDS = ('フットバース', 'ピッグローラー')
+KNOWN_PRICES.update({name: 999 for name in UNPRICED_CARDS})
 
 # 兵士は1G=1人で2桁入力が上限。チャート計画の無い月の残金はここまでの補充に使う。
 SOLDIER_CAP = 99

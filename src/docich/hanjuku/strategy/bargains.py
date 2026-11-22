@@ -9,7 +9,7 @@ from __future__ import annotations
 import random
 
 from ..decision_log import _record
-from .economy import (KNOWN_PRICES, _charted_purchase_ahead,
+from .economy import (KNOWN_PRICES, UNPRICED_CARDS, _charted_purchase_ahead,
                       _egg_recovery_targets, _merchant_spendable, low_army_first)
 
 
@@ -337,11 +337,32 @@ def plan_bargains(mem, shop, header, *, listed=None):
     # kinds get a chance. Stop at 99 held copies of each, or the real budget.
     # Owner 2026-11-22: a rich merchant (1000G+) buys every strong card it
     # knows, BARGAIN_TARGETS included, up to 99; the monthly 200G/8-copy caps
-    # belong to the ordinary merchant only. Without a readable listing there is
-    # no real price, so the provisional pass plans nothing here and the
-    # listing pass owns the rich visit.
+    # belong to the ordinary merchant only.
     rich_targets = [*RICH_MERCHANT_CARDS,
                     *(name for name in BARGAIN_TARGETS if name not in RICH_MERCHANT_CARDS)]
+    if rich and listed is None:
+        # #4988 moved the BARGAIN_TARGETS pass behind ``not rich``. Without a
+        # listing there is no real price, but an empty ``items`` list means the
+        # month never opens the merchant (flows/month.py: month_merchant_skipped)
+        # and the listing pass below never runs: a rich month then buys nothing
+        # (prod g1190 9883G, local run16 9999G).
+        # A kind the ledger knows and can still take gets one tentative copy
+        # only to reach the listing; the listing pass owns the real prices and
+        # quantities and replaces these rows (``items[:] = [row for row in items
+        # if row[0] not in previous]`` with ``previous =
+        # shop['bargain_cards']``). All known kinds at 99, or all unknown, add
+        # nothing: a missing count is filled by the full-inventory read and is
+        # never guessed as 0 (owner 2026-11-22).
+        for name in rich_targets:
+            price = KNOWN_PRICES[name]
+            room = hold_room(mem, name)
+            if (name in queued or name in bought or name in UNPRICED_CARDS
+                    or room is None or room <= 0 or price > rich_budget):
+                continue
+            added.append([name, 1])
+            queued.add(name)
+            seen_basis[name] = held(mem, name)
+            rich_budget -= price
     if rich and listed is not None:
         choices = []
         for name in rich_targets:
