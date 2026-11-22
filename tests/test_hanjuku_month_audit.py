@@ -518,6 +518,24 @@ def test_sortie_failure_is_recorded_and_titled(runtime_dir):
     assert len(seen) == 1
 
 
+def test_cancel_after_a_launch_in_the_month_is_not_filed(runtime_dir):
+    # docich#5136 (owner 2026-11-23): 同じ月に発射が成立しているキャンセルは
+    # 再試行が効いた一過性の事象であり、停滞として起票しない。
+    value = state(9, '1-1', 0, launches=2)
+    audit.observe(runtime_dir, audit.capture(value), value,
+                  [_sortie_record('sortie_cancelled_observed', general='ヘスティア')],
+                  now=1000)
+    assert audit.load_incidents(runtime_dir) == []
+
+
+def test_cancel_without_any_launch_is_still_filed(runtime_dir):
+    value = state(9, '1-1', 0, launches=0)
+    audit.observe(runtime_dir, audit.capture(value), value,
+                  [_sortie_record('sortie_cancelled_observed', general='ヘスティア')],
+                  now=1000)
+    assert audit.load_incidents(runtime_dir)[0]['kind'] == 'sortie_cancelled'
+
+
 def test_sortie_cancel_is_recorded(runtime_dir):
     value = state(9, '1-1', 0)
     audit.observe(runtime_dir, audit.capture(value), value,

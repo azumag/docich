@@ -1287,6 +1287,18 @@ def _track_sortie(runtime, state, after, records, now, on_sealed=None):
             if not event.get(key) and order.get(key):
                 event[key] = _bounded_text(order.get(key), 48)
     chapter = (after.get('policy') or {}).get('chapter')
+    if event['kind'] == 'sortie_cancelled':
+        # docich#5136 (owner 2026-11-23): a cancellation the bot retries is not a
+        # stalled month. Once the month has confirmed launches, the cancelled
+        # attempt was transient; filing it as a high-confidence bug buries the
+        # real stalls. #5107 already bounds the retry gate, so the month itself
+        # proves whether the retry worked.
+        observed = state.get('observed') or {}
+        launches = observed.get('ledger_launches')
+        month = (after.get('policy') or {}).get('month')
+        if (type(launches) is int and launches > 0
+                and observed.get('ledger_scope') == [chapter, month]):
+            return
     key = '|'.join(str(part or '') for part in (
         chapter, event['kind'], event['reason_code'], event.get('step_local'),
         event.get('general'), event.get('target')))
