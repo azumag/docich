@@ -1740,7 +1740,8 @@ def test_dispatch_terminal_preserves_interrupt_for_monthly_retry_budget():
     state['recall_task_retries'] = {'ヴィーナス': post.RECALL_TASK_RETRIES}
     mem['tick'] = 160
     dispatch = {'stage': 'await_dispatch', 'steps': 6, 'goal': 'オケアナ',
-                'requested_tick': 120, 'target': [139, 113], 'input_sent': False}
+                'requested_tick': 120, 'target': [139, 113], 'general': 'ヴィーナス',
+                'input_sent': False}
     _flow(mem)['recall'] = dispatch
     _flow(mem)['recall_interrupted'] = 150
 
@@ -1759,6 +1760,23 @@ def test_dispatch_terminal_preserves_interrupt_for_monthly_retry_budget():
     record = [r for r in mem['_records']
               if r['decision'] == 'post_month_recall_requeued'][-1]
     assert record['observed_metric']['battle_interrupt'] is True
+
+
+def test_consumed_interruption_proof_for_another_general_does_not_requeue():
+    from docich.hanjuku.state.regions import flow as _flow
+    mem = memory(month='2-12')
+    state = _wait_recall_state(mem)
+    state['started_tick'] = 100
+    state['recall_task_retries'] = {'ヴィーナス': post.RECALL_TASK_RETRIES}
+    mem['tick'] = 160
+    _flow(mem)['recall_verification'] = {
+        'status': 'dispatch_unconfirmed', 'input_sent': False,
+        'interrupted': True, 'general': 'エピィ',
+        'requested_tick': 120, 'interrupted_tick': 150,
+    }
+    assert post.step(Screen([], None, '', kind='map'), mem, None) == []
+    assert state['tasks'] == []
+    assert state['stage'] == 'process'
 
 
 def test_a_static_unresolvable_marker_is_not_re_read_for_every_general():
