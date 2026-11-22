@@ -2105,6 +2105,35 @@ def _egg_retreat_return(screen, mem, battle):
     return None
 
 
+# A failed おくのて label read used to latch the rescue route for the whole
+# fight. The row is only *unreadable*, not proven absent, and the box re-renders
+# every time it is re-opened: g1288 ch10 2026-11-22 08:2x kept
+# okunote_summon_preempt.exhausted with a 187 HP summon alive and the ally at
+# 22 HP, so the battle went on without 奥の手. Re-arm boundedly instead.
+SUMMON_SCROLL_REARM_TICKS = 40      # observations (~60 s) before one more look
+SUMMON_SCROLL_REARM_LIMIT = 2       # extra looks per battle
+
+
+def _summon_scroll_rearm(mem, battle, guard):
+    """Re-open the bounded scroll after a failed label read, at most twice."""
+    if guard.get('exhausted_reason') != 'scroll_unread':
+        return False
+    rearms = int(guard.get('rearms') or 0)
+    if rearms >= SUMMON_SCROLL_REARM_LIMIT:
+        return False
+    since = guard.get('exhausted_tick')
+    now = int(mem.get('tick') or 0)
+    if type(since) is not int or now - since < SUMMON_SCROLL_REARM_TICKS:
+        return False
+    guard.update(exhausted=False, downs=0, stage='scroll_rearm',
+                 rearms=rearms + 1, exhausted_tick=0, exhausted_reason=None)
+    _record(mem, 'battle_okunote_summon_rearm', **_battle_labels(battle),
+            observed_metric={'rearms': rearms + 1, 'limit': SUMMON_SCROLL_REARM_LIMIT,
+                             'waited_ticks': now - since},
+            reason='おくのて行が読めないまま同一戦闘で打ち切っていたが、召喚獣が残っているため有界で読み直す')
+    return True
+
+
 def _defender_summon_egg_menu(screen, mem, battle):
     """おくのて in the egg-battle command box: a 4th row reached by scrolling.
 
@@ -2127,6 +2156,9 @@ def _defender_summon_egg_menu(screen, mem, battle):
                 return [{'type': 'wait', 'ms': 50}]
         guard['exhausted'] = True
         return None
+    if (isinstance(guard, dict) and guard.get('exhausted')
+            and _summon_scroll_rearm(mem, battle, guard)):
+        guard = battle['okunote_summon_preempt']
     window = _defender_summon_preempt(mem, battle)
     if not window:
         return None
@@ -2171,7 +2203,8 @@ def _defender_summon_egg_menu(screen, mem, battle):
                                  'down_attempt': downs + batch, 'batch': batch},
                 reason='たまごをつかう（灰色）の下のおくのて行へカーソルを下げる')
         return [pad('down') for _ in range(batch)]
-    guard['exhausted'] = True
+    guard.update(exhausted=True, exhausted_reason='scroll_unread',
+                 exhausted_tick=int(mem.get('tick') or 0))
     _record(mem, 'battle_okunote_summon_open_failed', **_battle_labels(battle),
             observed_metric={**window, 'down_attempts': downs},
             reason='有界な下方スクロールでもおくのて行が表示されないため、未知の行を確定せず既存の応戦へ戻る')

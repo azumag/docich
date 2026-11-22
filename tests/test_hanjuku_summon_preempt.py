@@ -223,6 +223,38 @@ def test_the_scroll_is_bounded_and_then_the_old_attack_resumes():
     assert no_b(seen + actions)
 
 
+def test_an_unread_scroll_rearms_after_the_wait_and_stays_bounded():
+    """docich#5032 follow-up: an unread row is not a proven absent one.
+
+    g1288 ch10 2026-11-22 08:2x: okunote_summon_preempt stayed exhausted for the
+    rest of a fight with a 187 HP summon alive and the ally at 22 HP, so 奥の手
+    was never offered again.
+    """
+    mem = egg_fight_memory(ally_hp=50)
+    mem['tick'] = 1000
+    for _ in range(8):
+        p.egg_battle_step(egg_menu_screen(mem, ally_hp=50), mem)
+        guard = mem['battle']['okunote_summon_preempt']
+        if guard.get('exhausted'):
+            break
+    guard = mem['battle']['okunote_summon_preempt']
+    assert guard['exhausted'] and guard['exhausted_reason'] == 'scroll_unread'
+    # Before the wait elapses the old attack path still runs.
+    assert p.egg_battle_step(egg_menu_screen(mem, ally_hp=50), mem) == [p.pad('a')]
+    mem['tick'] = int(mem.get('tick') or 0) + p.SUMMON_SCROLL_REARM_TICKS
+    actions = p.egg_battle_step(egg_menu_screen(mem, ally_hp=50), mem)
+    assert actions == [p.pad('down')] * p.SUMMON_SCROLL_BATCH
+    assert any(r['decision'] == 'battle_okunote_summon_rearm' for r in mem['_records'])
+    assert not guard.get('exhausted')
+    # Re-arm budget is finite: after the second look the latch is final.
+    for _ in range(2 * p.SUMMON_SCROLL_REARM_LIMIT + 6):
+        p.egg_battle_step(egg_menu_screen(mem, ally_hp=50), mem)
+        if guard.get('exhausted'):
+            mem['tick'] = int(mem.get('tick') or 0) + p.SUMMON_SCROLL_REARM_TICKS
+    assert guard['exhausted']
+    assert int(guard.get('rearms') or 0) == p.SUMMON_SCROLL_REARM_LIMIT
+
+
 def test_a_repeated_frame_after_selection_never_resends_a():
     mem = egg_fight_memory()
     s = egg_menu_screen(mem, labels=('もうこうげき', 'おくのて'), ys=(176, 208), cursor=208)
