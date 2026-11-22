@@ -11,8 +11,10 @@ from pathlib import Path
 
 import pytest
 
+from docich.hanjuku import orchestrator as O
 from docich.hanjuku.flows import card_census as census_flow
 from docich.hanjuku.flows.shop import _holding_limit_step
+from docich.hanjuku.os_layer import screen as screen_module
 from docich.hanjuku.os_layer.commands import pad
 from docich.hanjuku.os_layer.font import TextLine
 from docich.hanjuku.os_layer.pixels import Frame, read_png
@@ -70,13 +72,13 @@ def list_screen(rows, above, below):
     return Screen(lines=lines, hand=None, text=text, kind='field_card_list')
 
 
-def menu_screen(selected='きりふだ'):
+def menu_screen(selected='きりふだ', extra=''):
     lines = [TextLine(y, tuple((168 + 8 * i, ch) for i, ch in enumerate(word)))
              for word, y in MENU]
     y = dict(MENU)[selected]
     hand = (160, y - 2, 176, y + 6)
-    return Screen(lines=lines, hand=hand,
-                  text=' '.join(word for word, _ in MENU), kind='main_menu')
+    text = ' '.join(word for word, _ in MENU) + (f' {extra}' if extra else '')
+    return Screen(lines=lines, hand=hand, text=text, kind='main_menu')
 
 
 def map_screen():
@@ -505,3 +507,226 @@ def test_a_missing_or_overdue_reservation_does_not_start_an_old_month():
     census_flow.wait_step(map_screen(), mem)
     overdue = [r for r in mem['_records'] if r['decision'] == 'card_census_overdue']
     assert overdue and overdue[0]['observed_metric']['booked_month'] == '9-1'
+
+
+# ------------------------------------------------ production entry (decide)
+# #4988: these regressions are in orchestrator._decide_impl's early returns,
+# so every case below goes through the real entry (``decide``) instead of the
+# flow functions. A synthetic Screen + classify keeps the frame cheap while
+# the branch order stays production's.
+GENERALS_HELP = 'わがくにのすべてのしょうぐんをみることができますぞ!'
+
+
+def fields(**extra):
+    """A policy in the production shape: chapter, month, closed shop, stock."""
+    mem = {'chapter': 9, 'month': '9-2', 'tick': 100,
+           'shop': {'key': '9-1', 'closed': True},
+           'survey_run_identity': IDENTITY,
+           'card_ledger_v': booking.CARD_LEDGER_VERSION,
+           'card_stock': {'イッテツーン': 42}, **extra}
+    booking.book(mem, 'chapter_start', month='9-1')
+    return mem
+
+
+def decided(monkeypatch, screen, mem, *, phase='field', previous='field', step=1):
+    """Call decide (the production entry) on one parsed screen and phase."""
+    monkeypatch.setattr(O, 'classify', lambda frame: phase)
+    monkeypatch.setattr(screen_module, 'parse', lambda frame, phase=None: screen)
+    frame = Frame(256, 224, bytes(256 * 224 * 3))
+    state = {'step': step, 'phase': previous, 'policy': mem, 'hanjuku': IDENTITY}
+    return decide(frame, state, run_identity=IDENTITY)
+
+
+def outside_screen():
+    """A non-foreground frame: the census yields but never holds input."""
+    return Screen(lines=[], hand=None, text='', kind='unknown')
+
+
+def census_started(monkeypatch, mem=None):
+    mem = fields() if mem is None else mem
+    actions, out = decided(monkeypatch, map_screen(), mem)
+    assert actions == [pad('x')]
+    assert out['policy']['card_census']['stage'] == 'menu'
+    return out['policy']
+
+
+def interrupted(monkeypatch, policy, *, step=10):
+    """Four non-foreground observations reach YIELD_LIMIT and abort."""
+    out = None
+    for i in range(4):
+        _, out = decided(monkeypatch, outside_screen(), policy,
+                         phase='event', previous='event', step=step + i)
+    return out
+
+
+def test_the_census_menu_owns_the_generals_help_line(monkeypatch):
+    """The しょうぐん help line is the census's きりふだ step, not a stray B."""
+    policy = census_started(monkeypatch)
+    screen = menu_screen(selected='しょうぐん', extra=GENERALS_HELP)
+    actions, out = decided(monkeypatch, screen, policy)
+    assert actions == [pad('down')]
+    assert not any(r.get('decision') == 'close_panel' for r in out['_records'])
+    assert out['policy']['card_census']['menu'] == 1
+
+
+def test_the_generals_help_line_without_a_census_is_still_closed_with_b(monkeypatch):
+    policy = fields()
+    screen = menu_screen(selected='しょうぐん', extra=GENERALS_HELP)
+    actions, out = decided(monkeypatch, screen, policy)
+    assert actions == [pad('b')]
+    assert any(r.get('decision') == 'close_panel' for r in out['_records'])
+
+
+def test_a_parked_boss_escape_does_not_close_the_census_menu(monkeypatch):
+    """The other pre-census B on main_menu: boss_stall_escape_step (#4988)."""
+    import copy
+    from docich.hanjuku.state.regions import plan as plan_region, world as world_region
+
+    policy = census_started(monkeypatch)
+    policy['tick'] = 10000
+    world_region(policy)['sorties'] = {
+        '4-B1': {'general': 'アルテミス', 'source': 'ミヒラギアン',
+                 'status': 'overdue', 'target': '四季王城(南西)', 'tick': 0}}
+    plan_region(policy)['orders'] = {'4-B1': 'launched'}
+    plan_region(policy)['active'] = None
+    policy['boss_relaunch'] = {'4-B1': 2}
+    policy['captured'] = ['アルカ']
+    policy['lost'] = []
+    assert O.map_flow.parked_boss_steps(policy) == ['4-B1']
+
+    # しろ has no all-generals help line, so this frame isolates the escape.
+    screen = menu_screen(selected='しろ')
+    control = copy.deepcopy(policy)
+    control.pop('card_census', None)
+    control_actions, control_out = decided(monkeypatch, screen, control)
+    assert control_actions == [pad('b')]
+    assert control_out['policy']['world_map_due'] is True
+
+    actions, out = decided(monkeypatch, screen, policy)
+    assert actions == [pad('down')]
+    assert 'boss_stall_escape_tick' not in out['policy']
+
+
+def test_two_pre_list_interrupted_aborts_do_not_disable_the_chapter(monkeypatch):
+    policy = census_started(monkeypatch)
+    out = interrupted(monkeypatch, policy)
+    policy = out['policy']
+    assert policy['card_census_abort']['reason'] == 'interrupted'
+    assert 'card_census' not in policy
+    assert 'card_census_abort_prev' not in policy
+    assert 'card_census_disabled' not in policy
+
+    # The same-month no-retry stands; the next month tries again once.
+    policy['month'] = '9-3'
+    policy['tick'] += 50
+    actions, out = decided(monkeypatch, map_screen(), policy, step=20)
+    assert actions == [pad('x')]
+    out = interrupted(monkeypatch, out['policy'], step=30)
+    assert 'card_census_abort_prev' not in out['policy']
+    assert 'card_census_disabled' not in out['policy']
+
+
+def test_two_aborts_after_entering_the_list_still_disable_the_chapter(monkeypatch):
+    policy = census_started(monkeypatch)
+    actions, out = decided(monkeypatch, menu_screen(), policy, step=2)
+    assert actions == [pad('a')]
+    assert out['policy']['card_census']['stage'] == 'open_list'
+    out = interrupted(monkeypatch, out['policy'], step=10)
+    assert out['policy']['card_census_abort_prev']['streak'] == 1
+
+    policy = out['policy']
+    policy['month'] = '9-3'
+    policy['tick'] += 50
+    actions, out = decided(monkeypatch, map_screen(), policy, step=20)
+    assert actions == [pad('x')]
+    actions, out = decided(monkeypatch, menu_screen(), out['policy'], step=21)
+    assert actions == [pad('a')]
+    out = interrupted(monkeypatch, out['policy'], step=30)
+    assert out['policy']['card_census_disabled']['chapter'] == 9
+
+
+def test_a_version_2_policy_clears_the_broken_disable_once():
+    """v3: the chapter disabled by the pre-list strike gets one retry."""
+    frame = read_png(FIXTURES / 'g1075-ch4-snow-field.png')
+    mem = {'chapter': 9, 'month': '9-2', 'tick': 100,
+           'survey_run_identity': IDENTITY,
+           'card_stock': {'イッテツーン': 42},
+           'card_ledger_v': 2,
+           'card_census_abort': {'month': '9-2', 'chapter': 9, 'reason': 'interrupted'},
+           'card_census_abort_prev': {'chapter': 9, 'streak': 2, 'reason': 'interrupted'},
+           'card_census_disabled': {'chapter': 9, 'reason': 'interrupted', 'streak': 2}}
+    state = {'step': 0, 'phase': 'field', 'policy': mem, 'hanjuku': IDENTITY}
+    _, out = decide(frame, state, run_identity=IDENTITY)
+    policy = out['policy']
+    assert policy['card_ledger_v'] == booking.CARD_LEDGER_VERSION == 3
+    assert 'card_census_disabled' not in policy
+    assert 'card_census_abort_prev' not in policy
+    assert policy['card_stock'] == {'イッテツーン': 42}
+    # Only the broken counters migrate: the same-month no-retry stays.
+    assert policy['card_census_abort']['month'] == '9-2'
+    due = policy['card_census_due']
+    assert due['reason'] == 'ledger_migration'
+    assert due['reasons'] == ['ledger_migration']
+
+    state2 = {'step': 1, 'phase': 'field', 'policy': policy, 'hanjuku': IDENTITY}
+    _, out2 = decide(frame, state2, run_identity=IDENTITY)
+    assert out2['policy']['card_census_due']['tick'] == due['tick']
+    assert 'card_census_disabled' not in out2['policy']
+
+
+def test_a_disabled_policy_without_a_ledger_also_gets_the_one_retry():
+    """The bug's title_or_intro clears left disabled without a card_stock."""
+    frame = read_png(FIXTURES / 'g1075-ch4-snow-field.png')
+    mem = {'chapter': 9, 'month': '9-2', 'tick': 100,
+           'survey_run_identity': IDENTITY,
+           'card_ledger_v': 2,
+           'card_census_disabled': {'chapter': 9, 'reason': 'interrupted', 'streak': 2}}
+    state = {'step': 0, 'phase': 'field', 'policy': mem, 'hanjuku': IDENTITY}
+    _, out = decide(frame, state, run_identity=IDENTITY)
+    policy = out['policy']
+    assert 'card_census_disabled' not in policy
+    assert 'card_stock' not in policy
+    assert policy['card_census_due']['reason'] == 'ledger_migration'
+
+
+def test_title_or_intro_darkness_leaves_the_ledger_alone(monkeypatch):
+    """title_or_intro is dark > .55 (battle fades, Y jumps); not a game over."""
+    mem = fields()
+    clear = Screen(lines=[], hand=None, text='', kind='unknown')
+    _, out = decided(monkeypatch, clear, mem, phase='title_or_intro', previous='field')
+    assert out['policy']['card_stock'] == {'イッテツーン': 42}
+    assert out['policy']['card_census_due']['reason'] == 'chapter_start'
+    assert out['policy']['title_episode'] is True
+
+
+def test_a_strict_title_after_a_dark_fade_clears_and_books_game_over(monkeypatch):
+    mem = fields()
+    clear = Screen(lines=[], hand=None, text='', kind='unknown')
+    _, out = decided(monkeypatch, clear, mem, phase='title_or_intro', previous='field')
+    assert out['policy']['card_stock'] == {'イッテツーン': 42}
+    _, out2 = decided(monkeypatch, clear, out['policy'],
+                      phase='title', previous='title_or_intro')
+    assert 'card_stock' not in out2['policy']
+    assert out2['policy']['card_census_due']['reason'] == 'game_over'
+    assert out2['policy']['title_episode'] is True
+
+
+def test_a_save_load_is_the_second_game_over_signal():
+    """resume_from_save: clear the ledger where that decision is recorded."""
+    frame = read_png(FIXTURES / 'g1190-load-screen.png')
+    mem = {'chapter': 9, 'month': '9-1', 'tick': 100,
+           'survey_run_identity': IDENTITY,
+           'card_stock': {'イッテツーン': 42},
+           'card_ledger_v': booking.CARD_LEDGER_VERSION,
+           'title_episode': True,
+           'card_census': {'stage': 'menu', 'observations': 1, 'pages': [], 'rows': [],
+                           'yields': 0}}
+    state = {'step': 1, 'phase': 'field', 'policy': mem, 'hanjuku': IDENTITY}
+    actions, out = decide(frame, state, run_identity=IDENTITY)
+    assert actions == [pad('a')]
+    decisions = [r.get('decision') for r in out['_records']]
+    assert 'load_screen_confirm' in decisions
+    assert 'resume_from_save' in decisions
+    assert 'card_stock' not in out['policy']
+    assert 'card_census' not in out['policy']
+    assert out['policy']['card_census_due']['reason'] == 'game_over'

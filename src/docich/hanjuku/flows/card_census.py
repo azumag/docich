@@ -18,7 +18,9 @@ owner 2026-11-22 (S3)。``card_stock`` はフィールド在庫の台帳で、�
 - 観測 40 回
 - メニュー/一覧の遷移が上限に達する
 中止したら同じ月にはもう試さず、章で 2 回続けて中止したらその章では
-試さない (``card_census_abort`` / ``card_census_disabled``)。
+試さない (``card_census_abort`` / ``card_census_disabled``)。ただし
+「一覧に入る前」= X メニューを歩いている段階 (``stage == 'menu'``) の
+``interrupted`` は、一覧に一度も入れていないので連続中止に数えない (#4988)。
 
 この一覧の画面はほかの手順が知らない。読んでいないときに現れたら B で
 閉じる (``field_card_list_step``)。どの手順も無入力を残さない。
@@ -376,18 +378,25 @@ def _abort(mem, state, reason, *, close=True):
         reason='全所持の読みを完了できないため中止し、台帳は変えずにmapへ戻る')
     mem['card_census_abort'] = {'month': mem.get('month'), 'chapter': mem.get('chapter'),
                                 'reason': reason}
-    previous = mem.get('card_census_abort_prev')
-    streak = (int(previous.get('streak') or 1) + 1
-              if isinstance(previous, dict)
-              and previous.get('chapter') == mem.get('chapter') else 1)
-    mem['card_census_abort_prev'] = {'chapter': mem.get('chapter'), 'streak': streak,
-                                     'reason': reason}
-    if streak >= 2 and not _disabled(mem):
-        mem['card_census_disabled'] = {'chapter': mem.get('chapter'), 'reason': reason,
-                                       'streak': streak}
-        _record(mem, 'card_census_disabled', observed_metric={
-            'chapter': mem.get('chapter'), 'streak': streak, 'reason': reason},
-            reason='全所持の読みが同じ章で2回続けて中止したため、その章では試さない')
+    # #4988: a read that never left the X menu (the hand was still walking to
+    # きりふだ when a battle took the foreground) had no chance to enter the
+    # list. It must not count toward the chapter's two-strike disable: in
+    # production the first strike was exactly this, caused by the generic
+    # all-generals B closing the menu. The same-month no-retry marker still
+    # stands, and a read that did reach ``open_list`` counts as before.
+    if not (reason == 'interrupted' and state.get('stage') == 'menu'):
+        previous = mem.get('card_census_abort_prev')
+        streak = (int(previous.get('streak') or 1) + 1
+                  if isinstance(previous, dict)
+                  and previous.get('chapter') == mem.get('chapter') else 1)
+        mem['card_census_abort_prev'] = {'chapter': mem.get('chapter'), 'streak': streak,
+                                         'reason': reason}
+        if streak >= 2 and not _disabled(mem):
+            mem['card_census_disabled'] = {'chapter': mem.get('chapter'), 'reason': reason,
+                                           'streak': streak}
+            _record(mem, 'card_census_disabled', observed_metric={
+                'chapter': mem.get('chapter'), 'streak': streak, 'reason': reason},
+                reason='全所持の読みが同じ章で2回続けて中止したため、その章では試さない')
     if close:
         state['stage'] = 'abort_close'
         state['close'] = 0

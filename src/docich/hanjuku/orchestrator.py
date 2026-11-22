@@ -665,6 +665,24 @@ def _xmenu_owner_active(mem):
             and str(recall.get('stage') or '').startswith('recheck_'))
 
 
+# Census stages that sit on the X command menu or on the list it opens. The
+# list's reading stage stays ``open_list`` for every page; ``close`` and
+# ``abort_close`` already have their own B step.
+CARD_CENSUS_MENU_STAGES = frozenset({'menu', 'open_list'})
+
+
+def _card_census_owns_menu(mem):
+    """Is the full-inventory census walking the X menu right now? (#4988)
+
+    The census opens X and moves the hand to きりふだ exactly like the roster
+    flows. While it sits on しょうぐん the same help line as the all-generals
+    panel is on screen, so the stray-panel close-with-B rule and the parked
+    boss escape both have to stand down until the census has left the menu.
+    """
+    state = mem.get('card_census')
+    return isinstance(state, dict) and state.get('stage') in CARD_CENSUS_MENU_STAGES
+
+
 def _post_month_menu_owns(mem):
     '''docich#4658: does the monthly roster scan own this frame's menu?'''
     state = mem.get('post_month_status')
@@ -1516,11 +1534,18 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
         # docich#4535: a title return that comes back through a battery save
         # rewinds the run's progress. Keep the episode open through its fades
         # (title_or_intro) so the load confirm can record resume_from_save.
-        if state.get('phase') not in ('title', 'title_or_intro') and mem.get('chapter'):
-            # S3: a title return after gameplay is the game-over signature
-            # (hanjuku_run latches terminal_reason='game_over' on the same
-            # evidence). The field inventory belongs to the run that ended, so
-            # it is unknown until the next full read.
+        if (phase == 'title' and state.get('phase') != 'title'
+                and mem.get('chapter')):
+            # S3: the game-over signature, and only the strict title is one.
+            # hanjuku_run latches terminal_reason='game_over' on phase
+            # == 'title' with three consecutive candidates; title_or_intro is
+            # just ``dark > .55`` and also matches battle fades, Y jumps and
+            # world-map waits (live g1288 2026-11-22: 42 clears in an hour,
+            # none of them a game over). The field inventory belongs to the
+            # run that ended, so it is unknown until the next full read. A
+            # title reached through a battery save is caught by the
+            # resume_from_save path below even when no strict title frame is
+            # observed.
             card_census_booking.forget_ledger(mem)
             card_census_booking.book(mem, 'game_over')
         mem['title_episode'] = True
@@ -1585,7 +1610,8 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
     # mid-frame (house.step -> _finish/_exit), and the generic close rules
     # below must still know this frame's menu belonged to a live owner.
     menu_owner_active = (kind == 'main_menu'
-                         and (_roster_owner_active(mem) or _xmenu_owner_active(mem)))
+                         and (_roster_owner_active(mem) or _xmenu_owner_active(mem)
+                              or _card_census_owns_menu(mem)))
     if (kind == 'main_menu'
             and 'わがくにのすべてのしょうぐんをみることができますぞ' in (screen.text or '')
             and not menu_owner_active):
@@ -1704,6 +1730,16 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
                                  'lost': lost_before_load,
                                  'home_lost': home_lost_before_load},
                 reason='タイトル復帰でセーブをロードしたため、読めたセーブ内容とロールバック前の所有城を記録する')
+            # S3 (#4988): the second game-over signature. A run resumed from a
+            # battery save holds the state the save recorded, not the ledger
+            # this policy kept, and production never logged a strict title
+            # before the load (0 terminal_reason='game_over' in every retained
+            # hanjuku_events log; 0 resume_from_save decisions). Clear the
+            # ledger and book the read exactly here, where resume_from_save is
+            # recorded, so a title reached without a strict-title frame still
+            # repairs the inventory after the hotload.
+            card_census_booking.forget_ledger(mem)
+            card_census_booking.book(mem, 'game_over')
         updated.update(screen_kind=kind, no_input_streak=0, no_input_frames=[])
         for key in ('_adjusted', '_interim', '_card_scroll_input'):
             mem.pop(key, None)
@@ -1783,7 +1819,11 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
     from .flows import camp_recheck as hanjuku_camp_recheck
     hanjuku_camp_recheck.interrupt(screen, mem)
     hanjuku_camp_recheck.observe_camp_status(screen, mem)
-    stall_actions = map_flow.boss_stall_escape_step(mem, kind, phase)
+    # #4988: the escape also B-closes a ``main_menu`` (and shop/month text).
+    # While the census is walking that menu, its きりふだ step must run first;
+    # a parked march can wait the census's bounded few observations.
+    stall_actions = (None if _card_census_owns_menu(mem)
+                     else map_flow.boss_stall_escape_step(mem, kind, phase))
     if stall_actions is not None:
         # A parked boss march must not stay behind month/shop/house text for
         # hours. One bounded B returns to the field map, where next_order can
