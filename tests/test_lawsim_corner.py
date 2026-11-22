@@ -606,7 +606,7 @@ def test_view_payload_carries_law_cards_rules_and_warning_meta(tmp_path):
     assert first["summary"].strip() and first["risks"]
     assert first["categoryLabel"] == "経済"
     assert first["reaction"].strip()
-    assert 25 <= first["votesFor"] <= 99
+    assert 51 <= first["votesFor"] <= 99
 
 
 def test_view_payload_votes_are_deterministic_and_bounded(tmp_path):
@@ -616,7 +616,7 @@ def test_view_payload_votes_are_deterministic_and_bounded(tmp_path):
     second = load_payload(path)
     votes = [turn["votesFor"] for turn in first["turns"]]
     assert votes == [turn["votesFor"] for turn in second["turns"]]
-    assert all(type(value) is int and 25 <= value <= 99 for value in votes)
+    assert all(type(value) is int and 51 <= value <= 99 for value in votes)
 
 
 def test_view_html_hides_final_status_until_the_end_frame():
@@ -625,6 +625,16 @@ def test_view_html_hides_final_status_until_the_end_frame():
     assert "審議中・残り" in HTML
     # republic 行は会期名のみ。終了ステータスコードを常時表示しない。
     assert "data.republic ／" not in HTML
+
+
+def test_view_turn_status_and_metric_badges_follow_actual_state():
+    # Turn frames show post-law metrics; badge deltas must use actual clamped
+    # before/after values rather than the unapplied nominal law effects.
+    assert "turn.metricsAfter[key]-before[key]" in HTML
+    assert "frame.index===1?data.initialMetrics:data.turns[frame.index-2]?.metricsAfter" in HTML
+    assert "frame.index<totalTurns?'状態: 審議続行中':''" in HTML
+    assert "frame.index<totalTurns?`審議中・残り" in HTML
+    assert "totalTurns-frame.index+1" not in HTML
 
 
 def test_view_html_shows_rules_goal_law_card_and_next_agenda():
