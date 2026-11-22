@@ -579,6 +579,9 @@ def _survival_menu(screen, mem, cur):
         # never became readable, and the general fell with the egg unused).
         # A bounded second selection gives that attempt a retry.
         rescue['egg_attempts'] = int(rescue.get('egg_attempts') or 0) + 1
+        # Remember the HP at this attempt: a later HP loss is what licenses the
+        # bounded extra retry (#5143/#5144 owner decision 2026-11-23).
+        rescue['egg_attempt_hp'] = cur.get('ally_hp')
         rescue['egg_pending'] = True
     _record(mem, 'battle_survival_select', **_battle_labels(cur),
             observed_metric={'label': label, 'melee_balance': _melee_balance(cur)},
