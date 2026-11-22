@@ -1,8 +1,8 @@
 # IMPLEMENT-5134 — [半熟英雄] キャンプ帰還失敗: ch6 将軍不明
 
 ブランチ: `fix/5134-camp-recall-map-stall`（main `34be26425`＝v1392 から作成、push・PR なし）
-BOT_VERSION: `hanjuku-chart-v1394-recall-map-hold`
-（v1393 は未マージの #5127 系ブランチ `c9770d9b4` が使用中のため v1394 を採用）
+BOT_VERSION: `hanjuku-chart-v1397-recall-map-hold`
+（v1393 は #5141/#5149、v1394 は #5128、v1395 は #5137、v1396 は #5020 の作業用に予約されているため、本 PR は v1397 を採用）
 
 検証結論: `verify/5134-camp-recall-failed` ブランチの `VERIFY-5134.md` —
 (b) 別経路の実欠陥。#5134 の 91 steps は `to_camp` で 'map' kind の
@@ -93,7 +93,7 @@ BOT_VERSION: `hanjuku-chart-v1394-recall-map-hold`
 
 ### 4. バージョン
 
-`src/docich/hanjuku/version.py`: `hanjuku-chart-v1394-recall-map-hold`。
+`src/docich/hanjuku/version.py`: `hanjuku-chart-v1397-recall-map-hold`。
 
 ## #5133 / #5129 系との競合確認（要件事項5）
 
