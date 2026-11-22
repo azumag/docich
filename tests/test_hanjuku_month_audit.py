@@ -993,7 +993,7 @@ def test_chikujou_month_end_with_unreadable_menu_row_is_medium_confidence(runtim
 def test_chikujou_cost_decline_in_prior_observation_suppresses_alarm(runtime_dir):
     value = _chikujou_state()
     note(runtime_dir, 999, 'chikujou_declined', month='1-1',
-         chapter=1, reason=audit._CHIKUJOU_COST_DECLINE)
+         chapter=10, reason=audit._CHIKUJOU_COST_DECLINE)
     audit.observe(runtime_dir, audit.capture(value), value,
                   [{'decision': 'month_done', 'month': '1-1', 'at': 1000}],
                   now=1000)
@@ -1003,8 +1003,8 @@ def test_chikujou_cost_decline_in_prior_observation_suppresses_alarm(runtime_dir
 def test_chikujou_prior_decline_followed_by_reopen_still_reports(runtime_dir):
     value = _chikujou_state()
     note(runtime_dir, 998, 'chikujou_declined', month='1-1',
-         chapter=1, reason=audit._CHIKUJOU_COST_DECLINE)
-    note(runtime_dir, 999, 'chikujou_confirm', month='1-1', chapter=1)
+         chapter=10, reason=audit._CHIKUJOU_COST_DECLINE)
+    note(runtime_dir, 999, 'chikujou_confirm', month='1-1', chapter=10)
     audit.observe(runtime_dir, audit.capture(value), value,
                   [{'decision': 'month_done', 'month': '1-1', 'at': 1000}],
                   now=1000)
@@ -1014,7 +1014,7 @@ def test_chikujou_prior_decline_followed_by_reopen_still_reports(runtime_dir):
 def test_chikujou_unreadable_in_prior_observation_downgrades(runtime_dir):
     value = _chikujou_state()
     note(runtime_dir, 999, 'chikujou_menu_unreadable', month='1-1',
-         chapter=1, observed_metric={'skipped': True})
+         chapter=10, observed_metric={'skipped': True})
     audit.observe(runtime_dir, audit.capture(value), value,
                   [{'decision': 'month_done', 'month': '1-1', 'at': 1000}],
                   now=1000)
@@ -1024,7 +1024,7 @@ def test_chikujou_unreadable_in_prior_observation_downgrades(runtime_dir):
 def test_chikujou_prior_other_month_does_not_suppress(runtime_dir):
     value = _chikujou_state()
     note(runtime_dir, 999, 'chikujou_declined', month='1-0',
-         chapter=1, reason=audit._CHIKUJOU_COST_DECLINE)
+         chapter=10, reason=audit._CHIKUJOU_COST_DECLINE)
     audit.observe(runtime_dir, audit.capture(value), value,
                   [{'decision': 'month_done', 'month': '1-1', 'at': 1000}],
                   now=1000)
