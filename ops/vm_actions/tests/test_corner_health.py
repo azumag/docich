@@ -237,6 +237,13 @@ class AssessTests(unittest.TestCase):
             [row["code"] for row in running_without_owner["rotation"]], ["invalid_state"]
         )
 
+        malformed_status = health.assess(base_document(rotation={
+            "status": ["not-a-string"],
+        }))
+        self.assertIn(
+            "invalid_state", [row["code"] for row in malformed_status["rotation"]]
+        )
+
         both_reservations = health.assess(base_document(rotation={
             "status": "waiting",
             "pending": True,

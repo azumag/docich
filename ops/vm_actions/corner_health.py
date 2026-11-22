@@ -316,14 +316,15 @@ def _rotation_rows(corners, rotation, now):
         return [{"code": "ledger_unreadable"}]
 
     raw_status = rotation.get("status")
-    status = raw_status if raw_status in ROTATION_STATUSES else "unknown"
+    valid_status = isinstance(raw_status, str) and raw_status in ROTATION_STATUSES
+    status = raw_status if valid_status else "unknown"
     pending = rotation.get("pending") is True
     manual_pending = rotation.get("manual_pending") is True
     last_seen = _epoch(rotation.get("last_seen_at"))
     last_seen_age = _age(now - last_seen) if last_seen is not None and last_seen <= now else None
 
     invalid_state = (
-        raw_status not in ROTATION_STATUSES
+        not valid_status
         or (status == "running" and not pending and not manual_pending)
         or (pending and manual_pending)
     )
