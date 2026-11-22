@@ -669,11 +669,17 @@ def test_parked_plane_never_burns_the_restore_replay_budget(tmp_path):
     assert calls == []
     assert "auto_restore" not in state
 
-    # Once the plane settles again the same bounded replay resumes.
+    # Once the plane settles again the same bounded replay resumes. The tick
+    # still raises: after the latch releases the failed corner it dispatches
+    # the next one, the fake executor fails it again, and the slot cannot be
+    # proven reusable while the finished game is still the canonical active
+    # (the same designed raise as the first tick) -- the replay running
+    # before that raise is the resumed budget.
     game = "gamea" if blocked == "a" else "gameb"
     adapters[blocked].manager.store.canonical = _Canonical(owned_canonical(game))
     clock[0] += 301
-    assert manager.tick()["status"] != "recovery_required" or calls
+    with pytest.raises(RotationError):
+        manager.tick()
     assert calls == [1]
     record = ledger(manager).get("auto_restore")
     if record is not None:

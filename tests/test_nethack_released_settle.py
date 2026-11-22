@@ -404,6 +404,21 @@ class TestNethackReleasedFinishSettle(NethackReleasedSettleTestBase):
                     "error_code": state_error_code,
                 }
                 mgr.store.finish_request(restore_request, restore_receipt, result)
+                # A terminal restore receipt means the coordinator already
+                # settled the plane: accept_request left the canonical
+                # mid-switch, so restore the clean shape the settle engine
+                # requires (a live receipt keeps the mid-switch plane, and the
+                # engine defers on the non-terminal receipt first anyway).
+                canonical, _missing = mgr.store.canonical.load()
+                canonical.update(phase=canonical_phase, next_generation=2,
+                                 operation=None, request_id=None,
+                                 deadline_at=None,
+                                 active=self._runtime(active_game, 1),
+                                 candidate=None, previous=None, retiring=[],
+                                 last_result=None)
+                if canonical_extra:
+                    canonical.update(canonical_extra)
+                mgr.store.canonical.save(canonical)
         return mgr, coordinator, rotation_request, restore_request
 
     def test_settle_terminalizes_the_released_finished_owner(self):
@@ -465,9 +480,14 @@ class TestNethackReleasedFinishSettle(NethackReleasedSettleTestBase):
         self.assertEqual(pin["corner_id"], "nethack")
 
     def test_settle_defers_while_canonical_is_in_flight(self):
+        # A deadline on an otherwise settled plane is the in-flight element
+        # the canonical validation still permits on a ready phase
+        # (operation/request_id/candidate may only live on a mid-switch
+        # phase, which the engine already defers on before this check).
+        from datetime import timedelta
+
         mgr, _coordinator, request_id, _restore = self._setup_released_finished_corner(
-            canonical_extra={"request_id": str(uuid.uuid4()), "operation": "switch",
-                             "candidate": self._runtime("sorengame", 3)})
+            canonical_extra={"deadline_at": (self.now_value + timedelta(hours=1)).isoformat()})
         self._released_ledger(mgr, request_id)
 
         self.assertIs(mgr.settle_released_failure(request_id, corner_id="nethack"), None)
