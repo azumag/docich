@@ -1637,6 +1637,15 @@ def test_hanjuku_chart_progress_is_allowlisted_counters_only():
     assert module._project_corner_state({'bot_chart':'SECRET'})['bot_chart'] is None
 
 
+def test_hanjuku_camp_tail_projects_the_battle_reset_decision():
+    module=load_collector()
+    rows=[{'decision':'camp_recall_battle_reset'},{'decision':'camp_recall_battle_reset'},
+          {'decision':'camp_recall_requested'},{'decision':'not_a_camp_decision'},
+          {'decision':None},{'other':'camp_recall_battle_reset'}]
+    tail=module._hanjuku_camp_tail(rows)
+    assert tail=={'counts':{'camp_recall_battle_reset':2,'camp_recall_requested':1}}
+
+
 def test_hanjuku_hotload_projection_is_bounded_state_and_digests():
     module=load_collector()
     digest='a'*64
@@ -1841,7 +1850,9 @@ def test_hanjuku_hotload_versions_are_fixed_values_not_an_arbitrary_prefix():
                  "hanjuku-chart-v1373-egg-receipt-settle",
                  "hanjuku-chart-v1375-boss-dispatch-guarantee",
                  "hanjuku-chart-v1392-dispatch-starve-measure",
+                 "hanjuku-chart-v1397-recall-map-hold",
                  "hanjuku-chart-v1398-egg-retry-on-hp-loss",
+                 "hanjuku-chart-v1399-recall-map-hold",
 )
     for version in versions:
         assert module._project_corner_state({'bot_version': version})['bot_version'] == version

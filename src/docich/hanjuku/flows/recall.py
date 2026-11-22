@@ -41,6 +41,14 @@ RELAY_MENU_WAIT = 4             # observations for the picker B to settle back o
 # instead; only this many ticks without a resumable screen take the ordinary
 # abort path.
 RECALL_HOLD_TICK_LIMIT = 600   # ticks a non-operable screen may hold one recall
+# docich#5134: combat that takes the foreground mid-recall returns the field
+# cursor to the battle site, so the observations the recall burned before it
+# are debt under a cursor position that no longer exists — the walk to the
+# tent restarts from scratch. The first 'map' frame afterwards restarts the
+# budget, bounded by count and total ticks so a battle-heavy month cannot
+# stretch one recall indefinitely.
+RECALL_BATTLE_RESET_LIMIT = 3    # budget restarts battle returns may grant one recall
+RECALL_BATTLE_RESET_TICKS = 1800 # ticks those restarts may stretch one recall
 
 # #4468: a field general's blue G badge is the very same square as the real
 # いどう destination marker. On g1190 2026-11-17 the recall read a bare field
@@ -383,6 +391,35 @@ def _recall_hold_or_abort(mem, state, screen):
     return []
 
 
+def _battle_return_reset(mem, state):
+    """Restart the step budget after combat repositioned the field cursor.
+
+    docich#5134: the walk to the tent (and the bounded menu reopen after
+    it) was measured from the pre-battle cursor, so the first operable
+    'map' frame back gets a fresh budget. ``battle_reset_since`` marks the
+    first restart — later ones are allowed up to RECALL_BATTLE_RESET_LIMIT
+    while they stay inside RECALL_BATTLE_RESET_TICKS of it, so an
+    eight-battle month stretches the recall by a bounded amount only.
+    """
+    resets = int(state.get('battle_resets') or 0)
+    if resets >= RECALL_BATTLE_RESET_LIMIT:
+        return
+    now = mem.get('tick')
+    since = state.get('battle_reset_since')
+    if (type(now) is int and type(since) is int
+            and now - since >= RECALL_BATTLE_RESET_TICKS):
+        return
+    if type(now) is int and type(since) is not int:
+        state['battle_reset_since'] = now
+    spent = int(state.get('steps') or 0)
+    state['battle_resets'] = resets + 1
+    state['steps'] = 0
+    _record(mem, 'camp_recall_battle_reset',
+            observed_metric={'stage': state.get('stage'), 'steps_spent': spent,
+                             'resets': state['battle_resets']},
+            reason='戦闘が終わりカーソル位置が戦闘地点へ戻ったため、帰還操作の観測予算を新しい基準でやり直す')
+
+
 def camp_recall_step(screen: Screen, mem, frame):
     """Observe named retreaters before reusing the existing camp recall route."""
     from . import camp_recheck as hanjuku_camp_recheck
@@ -406,6 +443,21 @@ def _mark_recall_interrupted(mem):
     if state.get('stage') != 'await_dispatch' or state.get('input_sent'):
         return
     _flow(mem)['recall_interrupted'] = int(mem.get('tick') or 0)
+
+
+def _mark_recall_battle(mem):
+    """A combat foreground interrupted field nav or menu work (docich#5134).
+
+    Combat returns the field cursor to the battle site; the first 'map'
+    frame afterwards restarts that work's observation budget on the new
+    baseline (see ``_battle_return_reset``). Only the stages that steer the
+    field cursor — or wait on the camp menu it opened — take the flag; a
+    pending dispatch already has ``recall_interrupted`` and a text-hold is
+    not a cursor repositioning.
+    """
+    state = _flow(mem).get('recall')
+    if isinstance(state, dict) and state.get('stage') in ('to_camp', 'menu'):
+        state['battle_return'] = True
 
 
 MONTH_END_MARGIN = 200         # ticks before the estimated month end: no new recall
@@ -1166,6 +1218,7 @@ def _camp_recall_step(screen: Screen, mem, frame, *, observed_camps=None):
     if screen.kind in {'battle', 'battle_menu', 'egg_battle_menu', 'monster_menu',
                        'egg_choice_menu', 'attack_started', 'defense_started', 'boss_attack_started'}:
         _mark_recall_interrupted(mem)
+        _mark_recall_battle(mem)
         held = _recall_hold_or_abort(mem, state, screen)
         if held is not None:
             return held
@@ -1181,6 +1234,7 @@ def _camp_recall_step(screen: Screen, mem, frame, *, observed_camps=None):
         return None  # combat owns this screen; keep the recall intention pending
     if mem.get('battle'):
         _mark_recall_interrupted(mem)
+        _mark_recall_battle(mem)
         held = _recall_hold_or_abort(mem, state, screen)
         if held is not None:
             return held
@@ -1418,7 +1472,31 @@ def _camp_recall_step(screen: Screen, mem, frame, *, observed_camps=None):
         if held is not None:
             return held
         return None
+    # docich#5134: a 'map' frame without the field cursor cannot be steered —
+    # the post-battle return animation and fades look exactly like that, and
+    # g1190 ch6's to_camp recall spent all 91 'map' observations on them
+    # before camp_recall_limit. Hold it like a battle foreground: the budget
+    # is not spent and RECALL_HOLD_TICK_LIMIT bounds the wait. A HUD-less
+    # cinematic map (map_step's blind chapter intermission) keeps the old
+    # counted path so the recall still releases to the scene's advance
+    # instead of holding the field for the whole limit.
+    if (screen.kind == 'map' and state.get('stage') == 'to_camp'
+            and not _cursor(screen) and (screen.header or screen.text)):
+        held = _recall_hold_or_abort(mem, state, screen)
+        if held is not None:
+            return held
+        return []
     state.pop('hold_since', None)
+    if state.get('battle_return'):
+        if state.get('stage') in ('to_camp', 'menu') and screen.kind == 'map':
+            # Keep the marker through resumable non-map frames; only the first
+            # map after combat establishes the new cursor baseline.
+            state.pop('battle_return', None)
+            _battle_return_reset(mem, state)
+        elif state.get('stage') not in ('to_camp', 'menu'):
+            # The recall left the field-navigation/menu stages before a map
+            # returned, so this reset no longer applies to the active route.
+            state.pop('battle_return', None)
     if state.get('stage') == 'await_dispatch':
         return _recall_dispatch_step(screen, mem, state)
     state['steps'] = int(state.get('steps') or 0) + 1
