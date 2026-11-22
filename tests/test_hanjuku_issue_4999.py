@@ -54,9 +54,15 @@ def test_retreat_remaining_cards_is_the_audit_multiset_rule():
 def test_retreat_cards_to_spend_bounds():
     cur = {'cards_selected': ['フットバース'], 'cards_used': []}
     assert rules._retreat_cards_to_spend(cur) is True
-    # 使用試行を消化済みの同名札はもう回さない。
+    # owner 決定 2026-11-23 (#5101): 使用未確認の札を残したまま退却しない。
+    # 1 回試しただけでは退却に進まず、上限まで再選択を続ける。
     assert rules._retreat_cards_to_spend(
-        {**cur, 'cards_spend_retry': ['フットバース']}) is False
+        {**cur, 'cards_spend_retry': ['フットバース']}) is True
+    assert rules._retreat_cards_to_spend(
+        {**cur, 'cards_spend_attempts': {'フットバース': 2}}) is True
+    # 上限まで試して使えなかった場合だけ退却行へ進む。
+    assert rules._retreat_cards_to_spend(
+        {**cur, 'cards_spend_attempts': {'フットバース': 3}}) is False
     # 救済メニューの既存 bound (枯渇・一覧読み上限) で遠回りは止まる。
     for rescue in ({'exhausted': True}, {'cards_exhausted': True},
                    {'cards_checked': 3}):
@@ -94,8 +100,8 @@ def test_retreat_menu_detours_to_survival_and_spends_the_card():
     assert cur['survival']['cards_attempted'] == ['フットバース']
 
 
-def test_unconfirmed_listed_card_gets_one_spend_retry():
-    """使用未確認の同名札は、退却待ちの間だけ1回の再選択 (cards_spend_retry) を得る。"""
+def test_unconfirmed_listed_card_gets_bounded_spend_attempts():
+    """使用未確認の同名札は、上限まで再選択される (owner 決定 2026-11-23)。"""
     mem = _mem(cards_selected=['フットバース'],
                survival={'opens': 1, 'menu_ticks': 1, 'cards_checked': 1,
                          'cards_attempted': ['フットバース'],
@@ -105,17 +111,33 @@ def test_unconfirmed_listed_card_gets_one_spend_retry():
                           'list_ticks': 0, 'counts': {'フットバース': 1},
                           'count_readings': 1})
     cur = mem['battle']
-    # 2回一致した実一覧の後で、使用未確認の同名札を1回だけ再選択する。
+    # 2回一致した実一覧の後で、使用未確認の同名札を再選択する。
     assert p.card_list_step(_card_list(['フットバース']), mem) == [p.pad('a')]
     assert cur['cards_spend_retry'] == ['フットバース']
+    assert cur['cards_spend_attempts'] == {'フットバース': 1}
     assert cur['cards_selected'] == ['フットバース', 'フットバース']
     assert cur['card_flow']['stage'] == 'announce'
 
 
+def test_retreat_row_waits_while_a_retried_card_is_under_the_limit():
+    """1回試しただけの札を残して退却しない (owner 決定 2026-11-23, #5101)。"""
+    mem = _mem(cards_selected=['フットバース'],
+               cards_spend_retry=['フットバース'],
+               cards_spend_attempts={'フットバース': 1},
+               hero_retreat={'opens': 1})
+    cur = mem['battle']
+    # 退却行へカーソルを合わせても選択せず、救済メニューへ戻す。
+    assert p.battle_menu_step(menu(selected=2), mem) != [p.pad('a')]
+    assert not cur['hero_retreat'].get('selected')
+
+
 def test_spent_retries_fall_through_to_the_retreat_row():
     """使い切った後は通常どおり たいきゃく を選ぶ。"""
+    # 上限まで試して使えなかった札だけが退却を許す (owner 決定 2026-11-23)。
     mem = _mem(cards_selected=['フットバース'],
-               cards_spend_retry=['フットバース'], hero_retreat={'opens': 1})
+               cards_spend_retry=['フットバース'],
+               cards_spend_attempts={'フットバース': 3},
+               hero_retreat={'opens': 1})
     cur = mem['battle']
     assert p.battle_menu_step(menu(), mem) == [p.pad('down')]
     assert p.battle_menu_step(menu(selected=1), mem) == [p.pad('down')]
