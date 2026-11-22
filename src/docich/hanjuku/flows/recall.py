@@ -2218,7 +2218,8 @@ def _recall_dispatch_step(screen, mem, state):
     if state.get('input_sent') and screen.kind == 'map':
         state['picker_closed'] = True
     if state.get('picker_closed') or state['steps'] >= 6:
-        interrupted = _flow(mem).pop('recall_interrupted', None) is not None
+        interrupted_at = _flow(mem).pop('recall_interrupted', None)
+        interrupted = interrupted_at is not None
         # docich#4978: the destination picker dropping back to the field map is
         # the game accepting the return (the code below already says so). When
         # that acceptance is the *same* observation that saw our A, the old
@@ -2242,7 +2243,10 @@ def _recall_dispatch_step(screen, mem, state):
             blocked = _flow(mem).setdefault('camp_recall_blocked', {})
             if isinstance(blocked, dict):
                 blocked[goal] = min(3, int(blocked.get(goal) or 0) + 1)
-        _flow(mem)['recall_verification'] = {**state, 'status': status}
+        _flow(mem)['recall_verification'] = {
+            **state, 'status': status, 'interrupted': interrupted,
+            **({'interrupted_tick': interrupted_at} if type(interrupted_at) is int else {}),
+        }
         _flow(mem).pop('recall', None)
         _arm_recall_skip(mem, state,
                          BOSS_RETRY_TICKS if state.get('boss')
