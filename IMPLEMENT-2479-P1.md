@@ -154,6 +154,7 @@ end_reason / `soren_corner_stats.reasons`（settle 対象 adapter
   エラーコード）でも受理 — rollback 分岐の dispatch 修正をカバー
 - defer: canonical phase `recovery_required` 駐機 / in-flight 要素あり /
   **non-terminal restore receipt** → `None` + `released_settle_pending` pin
+- defer: restore receipt が `StateCorruptError`（不正JSON・不正schema等）で読めない場合も `queued`。破損を「receipt 不在」とみなして退役を許可しない（回帰テスト `test_settle_defers_on_a_corrupt_restore_receipt`）
 - refuse: start 失敗形状（`switch_request_id == request_id`）、
   `completed_at` なし、別 request、release record なし → `False`・state 不変
 - 退役後に `run_rotation` が owner gate を通る回帰
