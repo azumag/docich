@@ -1,8 +1,8 @@
 # IMPLEMENT-5134 — [半熟英雄] キャンプ帰還失敗: ch6 将軍不明
 
 ブランチ: `fix/5134-camp-recall-map-stall`（main `34be26425`＝v1392 から作成、push・PR なし）
-BOT_VERSION: `hanjuku-chart-v1397-recall-map-hold`
-（v1393 は #5141/#5149、v1394 は #5128、v1395 は #5137、v1396 は #5020 の作業用に予約されているため、本 PR は v1397 を採用）
+BOT_VERSION: `hanjuku-chart-v1399-recall-map-hold`
+（v1393 は #5141、v1394 は #5128、v1395 は #5137、v1396 は #5020 の作業用に予約、v1397 は本PRの旧HEAD、v1398 は #5149 として main に統合済みのため、rebase後の本PRは v1399 を採用）
 
 検証結論: `verify/5134-camp-recall-failed` ブランチの `VERIFY-5134.md` —
 (b) 別経路の実欠陥。#5134 の 91 steps は `to_camp` で 'map' kind の
@@ -93,7 +93,7 @@ BOT_VERSION: `hanjuku-chart-v1397-recall-map-hold`
 
 ### 4. バージョン
 
-`src/docich/hanjuku/version.py`: `hanjuku-chart-v1397-recall-map-hold`。
+`src/docich/hanjuku/version.py`: `hanjuku-chart-v1399-recall-map-hold`。
 
 ## #5133 / #5129 系との競合確認（要件事項5）
 
@@ -139,7 +139,7 @@ BOT_VERSION: `hanjuku-chart-v1397-recall-map-hold`
 
 BOT_VERSION の bump には次の随伴変更が必須であり、本 PR に含まれる（ride-along ではない）:
 
-1. バージョン登録: `ops/vm_actions/collect_diagnostics.py` の歴代 BOT_VERSION 一覧と `ops/vm_actions/tests/test_collect_diagnostics.py` の固定値一覧へ `hanjuku-chart-v1397-recall-map-hold` を登録。`test_hanjuku_chart_progress_is_allowlisted_counters_only` は実 BOT_VERSION を動的に読み込んで一覧整合を検査するため、version.py だけを上げると壊れる。
+1. バージョン登録: `ops/vm_actions/collect_diagnostics.py` の歴代 BOT_VERSION 一覧と `ops/vm_actions/tests/test_collect_diagnostics.py` の固定値一覧へ `hanjuku-chart-v1399-recall-map-hold` を登録。`test_hanjuku_chart_progress_is_allowlisted_counters_only` は実 BOT_VERSION を動的に読み込んで一覧整合を検査するため、version.py だけを上げると壊れる。
 2. decision 許可リスト登録: 案2 が新設した決定 `camp_recall_battle_reset` を `collect_diagnostics.py` の `HANJUKU_CAMP_DECISIONS` へ登録。未登録だと `_hanjuku_camp_tail` の投影で無音に落ちる。許可リスト側のテスト `test_hanjuku_camp_tail_projects_the_battle_reset_decision` は、名前がリストにあることではなく、行を投影した結果に同決定が実際に現れる（かつ非許可の決定が落ちる）ことを assert する。
 
 ## CI 失敗8件の扱い

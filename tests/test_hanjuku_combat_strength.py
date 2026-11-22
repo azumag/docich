@@ -284,3 +284,19 @@ def test_the_egg_menu_gets_one_bounded_retry():
     assert p._egg_before_retreat(mem, cur) is True, 'one failed selection may retry'
     cur['survival']['egg_attempts'] = 2
     assert p._egg_before_retreat(mem, cur) is False, 'the retry is bounded'
+
+
+def test_a_failed_egg_selection_retries_after_the_general_loses_more_hp():
+    # owner 2026-11-23 (#5143/#5144): 選択が使用に至らなかったことは卵が
+    # 使えない証拠ではない。HP がさらに減ったら上限まで再試行し、卵を残して
+    # 敗北する経路を減らす（上限は小さく、入力が効かないメニューで輪にならない）。
+    from docich.hanjuku.judgment import battle as rules
+    cur = duel()
+    mem = {'chapter': 1, 'battle': cur, 'egg_uses': {'カシュー': 4}}
+    cur['survival'] = {'egg_attempted': True, 'egg_attempts': 2,
+                       'egg_attempt_hp': 28, 'opens': 0, 'pending_opens': 0}
+    assert p._egg_before_retreat(mem, cur) is False, 'HP が変わらなければ再試行しない'
+    cur['ally_hp'] = 20
+    assert p._egg_before_retreat(mem, cur) is True, 'HP 減少後は再試行する'
+    cur['survival']['egg_attempts'] = rules.EGG_ATTEMPT_HARD_LIMIT
+    assert p._egg_before_retreat(mem, cur) is False, '上限で止まる'

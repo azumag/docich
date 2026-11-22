@@ -2133,6 +2133,11 @@ def _bind_substitute_defender(mem, cur, b):
 
 
 EGG_ATTEMPT_LIMIT = 2      # summon-menu selections per battle before melee resumes
+# owner 2026-11-23 (#5143/#5144): a selection whose use was never confirmed is
+# not proof the egg is unusable. When the general keeps losing HP after the
+# failed selection, reopen the retry up to this hard cap (both bounds are small
+# so a menu that ignores every input cannot loop).
+EGG_ATTEMPT_HARD_LIMIT = 4
 
 
 def _egg_before_retreat(mem, cur, *, menu=False):
@@ -2148,9 +2153,17 @@ def _egg_before_retreat(mem, cur, *, menu=False):
             and _hold_melee_egg(mem, cur, set(rescue.get('conserved_labels') or ()))):
         return False
     attempts = int(rescue.get('egg_attempts') or 0)
+    limit = EGG_ATTEMPT_LIMIT
+    last_hp = rescue.get('egg_attempt_hp')
+    hp = cur.get('ally_hp')
+    if (type(last_hp) is int and type(hp) is int and hp < last_hp
+            and attempts < EGG_ATTEMPT_HARD_LIMIT):
+        # The general lost more HP after the failed selection: the egg is still
+        # carried and the earlier attempt proved nothing. One more bounded try.
+        limit = EGG_ATTEMPT_HARD_LIMIT
     # A legacy flag without the counter means the menu was already used: only
     # the counted attempts (v726) may retry once.
-    spent = attempts >= EGG_ATTEMPT_LIMIT or (rescue.get('egg_attempted') and not attempts)
+    spent = attempts >= limit or (rescue.get('egg_attempted') and not attempts)
     return (not cur.get('egg_battle') and not cur.get('event_duel')
             and _survival_needed(cur)
             # #4606: against an observed summon/large enemy the retreat must not
