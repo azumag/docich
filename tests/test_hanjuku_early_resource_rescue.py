@@ -87,3 +87,27 @@ def test_battle_step_opens_the_bounded_early_rescue_before_melee(monkeypatch):
     assert mem['battle']['survival']['early_resource_triggered'] is True
     assert mem['battle']['survival']['opens'] == 1
     assert mem['_records'][-1]['decision'] == 'battle_survival_early_resource'
+
+
+def test_early_egg_retry_shares_the_existing_hard_limit_and_requires_new_hp_loss(monkeypatch):
+    _set_balance(monkeypatch)
+    cur = _battle(hp=70)
+    cur['survival'] = {'egg_attempted': True, 'egg_attempts': 2, 'egg_attempt_hp': 80}
+    assert judgment._early_resource_rescue_needed(_memory(cur), cur)
+
+    cur['survival']['egg_attempts'] = judgment.EGG_ATTEMPT_HARD_LIMIT
+    assert not judgment._early_resource_rescue_needed(_memory(cur), cur)
+
+    cur['survival']['egg_attempts'] = judgment.EGG_ATTEMPT_LIMIT
+    cur['survival']['egg_attempt_hp'] = 60
+    assert not judgment._early_resource_rescue_needed(_memory(cur), cur)
+
+
+def test_early_card_probe_obeys_the_shared_spend_attempt_limit(monkeypatch):
+    _set_balance(monkeypatch)
+    cur = _battle(hp=70)
+    cur['cards_spend_attempts'] = {'エンジェリン': judgment.CARD_SPEND_ATTEMPT_LIMIT}
+    monkeypatch.setattr(judgment, '_confirmed_carried_kit', lambda mem, battle: ['エンジェリン'])
+    monkeypatch.setattr(judgment, '_card_damage_gate',
+                        lambda mem, battle, card: {'allowed': False, 'needs_live_list': True})
+    assert not judgment._early_resource_rescue_needed(_memory(cur, egg_uses=None), cur)
