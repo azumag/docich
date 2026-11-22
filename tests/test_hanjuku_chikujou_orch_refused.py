@@ -83,3 +83,25 @@ def test_a_non_chikujou_month_sub_still_closes_the_prompt_with_b(monkeypatch):
     actions, state = decide(month_canvas(9999), {'policy': mem})
     assert actions == [policy.pad('b')]
     assert state['_records'][0]['decision'] == 'chikujou_leftover'
+
+
+def test_a_bare_castle_list_is_closed_without_marking_refused(monkeypatch):
+    """docich#5026: only an observed refusal line may suppress the next months.
+
+    A leftover 「どのしろをぞうちくなさいますか?」 list without a refusal line is
+    still selectable, so closing it with B must not mark the candidates
+    refused for two months.
+    """
+    sc = Screen(
+        lines=[],
+        hand=None,
+        kind='text',
+        header=None,
+        text='アルマムーンどのしろをぞうちくなさいますか?',
+    )
+    monkeypatch.setattr(hanjuku_screen, 'parse', lambda *a, **k: sc)
+    mem = {'chapter': 9, 'captured': ['イソ'], '_records': []}
+    actions, state = decide(month_canvas(9999), {'policy': mem})
+    assert actions == [policy.pad('b')]
+    assert state['_records'][0]['decision'] == 'chikujou_leftover'
+    assert 'chikujou_refused' not in state['policy']
