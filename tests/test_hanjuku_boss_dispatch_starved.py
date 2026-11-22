@@ -6,6 +6,11 @@ survey, SELECT refocus, camp hunts) owned the frames before the dispatch
 block could run ``next_order``. While the boss phase holds a pending order's
 wait is now bounded — past the bound ``order_dispatch_starved`` is recorded
 once per episode and the repeated work yields, so the block can start it.
+
+docich#5125: the same wait is measured in every phase. A contested month
+(g1314 ch10 94-9, ~16 pending orders, zero ``order_start``) records the
+starvation once per episode — flagged ``boss_phase`` = False — but nothing
+yields: the yield stays a boss-phase-only guarantee.
 """
 from docich import hanjuku_chart as chart
 from docich.hanjuku.flows import map as M
@@ -74,10 +79,45 @@ def test_no_pending_order_ends_the_wait():
     assert 'order_dispatch_since' not in mem
 
 
-def test_outside_the_boss_phase_nothing_yields():
+def test_outside_the_boss_phase_the_starvation_is_recorded_not_yielded():
+    # docich#5125: a contested month measures the same wait — the record
+    # fires once per episode (flagged boss_phase=False) but the return
+    # stays False, so no foreground work ever yields.
     mem = boss_phase_mem(lost=[NON_BOSS[-1]])
     assert orders.order_dispatch_starved(mem) is False
-    assert not [r for r in mem['_records'] if r['decision'] == 'order_dispatch_starved']
+    assert orders.order_dispatch_starved(mem) is False
+    starved = [r for r in mem['_records'] if r['decision'] == 'order_dispatch_starved']
+    assert len(starved) == 1
+    assert starved[0]['observed_metric']['boss_phase'] is False
+
+
+def test_an_episode_spanning_the_phase_boundary_records_each_side_once():
+    # Losing the last normal castle mid-wait turns the same ``since``
+    # episode into the boss phase: both records fire, the yield arms.
+    mem = boss_phase_mem(lost=[NON_BOSS[-1]])
+    assert orders.order_dispatch_starved(mem) is False
+    mem['lost'] = []
+    assert orders.order_dispatch_starved(mem) is True
+    starved = [r for r in mem['_records'] if r['decision'] == 'order_dispatch_starved']
+    assert len(starved) == 2
+    assert starved[0]['observed_metric']['boss_phase'] is False
+    assert 'boss_phase' not in starved[1]['observed_metric']
+
+
+def test_the_world_map_survey_does_not_yield_outside_the_boss_phase():
+    mem = boss_phase_mem(world_map_due=True, lost=[NON_BOSS[-1]])
+    assert M.map_step(map_screen(80, 90), mem, FRAME) == [pad('y')]
+    assert 'world_map_open' in [r['decision'] for r in mem['_records']]
+    starved = [r for r in mem['_records'] if r['decision'] == 'order_dispatch_starved']
+    assert len(starved) == 1 and starved[0]['observed_metric']['boss_phase'] is False
+
+
+def test_the_periodic_select_refocus_does_not_yield_outside_the_boss_phase():
+    mem = boss_phase_mem(lost=[NON_BOSS[-1]],
+                         select_focus_tick=10_000 - M.SELECT_FOCUS_INTERVAL - 1,
+                         select_used=False)
+    M.map_step(map_screen(80, 90), mem, FRAME)
+    assert 'select_focus' in [r['decision'] for r in mem['_records']]
 
 
 def test_the_world_map_survey_yields_to_a_starved_dispatch():
@@ -123,3 +163,13 @@ def test_a_new_camp_recall_yields_while_starved(monkeypatch):
     # Inside the bound a visible camp starts the ordinary recall instead.
     mem = boss_phase_mem(order_dispatch_since=10_000 - 5)
     assert recall.camp_recall_step(map_screen(80, 90), mem, FRAME) is not None
+
+
+def test_a_new_camp_recall_does_not_yield_outside_the_boss_phase(monkeypatch):
+    # docich#5125: starved in a contested month still hunts camps — only
+    # the record is emitted.
+    monkeypatch.setattr(recall, 'own_camps', lambda frame: [{'target': (10, 10)}])
+    mem = boss_phase_mem(lost=[NON_BOSS[-1]])
+    assert recall.camp_recall_step(map_screen(80, 90), mem, FRAME) is not None
+    starved = [r for r in mem['_records'] if r['decision'] == 'order_dispatch_starved']
+    assert len(starved) == 1 and starved[0]['observed_metric']['boss_phase'] is False
