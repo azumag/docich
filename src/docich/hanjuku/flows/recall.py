@@ -1392,8 +1392,15 @@ def _camp_recall_step(screen: Screen, mem, frame, *, observed_camps=None):
     # panel cannot be operated by this flow. It is held exactly like a battle
     # foreground — the step budget is not spent and the intention survives —
     # and the frame returns to its real owner so the message can advance.
-    if (screen.kind == 'text' and not (
+    # A partial camp menu (only one menu word visible, e.g. 'いどう' while the
+    # window is still fading in) is operable: the menu stage reads it. The
+    # 'await_dispatch' stage is exempt — the dispatch wait settles on the
+    # next screen, which can be a text/month screen. The hold is for stages
+    # that need a field/map view to operate (e.g. 'dest').
+    if (screen.kind == 'text' and state.get('stage') != 'await_dispatch' and not (
             is_camp_menu(screen) or is_fort_menu(screen)
+            or any(word in (screen.text or '')
+                   for word in ('いどう', 'ステータス', 'キャンプ', 'きかん'))
             or 'Aボタンでステータスひょうじ' in (screen.text or ''))):
         _mark_recall_interrupted(mem)
         held = _recall_hold_or_abort(mem, state, screen)

@@ -4,6 +4,14 @@
 - Base: origin/main dbb5d9dcc (v1386)
 - バージョン: `hanjuku-chart-v1389-idou-y-route-recall-hold`
   - 採番根拠（2026-11-22 コミット前確認）: main は v1386。worktree 調査で
+
+## 検品ゲートでの修正（Muse、2026-11-23 04:0x JST）
+
+- text 画面の hold が広すぎて既存テスト 3件を壊していたため、hold 条件を絞った：
+  - `await_dispatch` 段階は hold 対象外（dispatch の待機は次の画面で決着し、text/月画面でもよい）。
+  - 部分メニュー（メニュー語 1語だけ見える画面）も操作可能とした（`is_camp_menu` は 4語全てを要求するため、部分メニューを誤って hold していた）。
+  - `menu` 段階の非メニュー text（メッセージ）は引き続き hold する（hold テストの期待どおり）。
+- 修正後の関連テスト 58件が全て合格（camp_receipts / recall_month_scene / recall_hold / camp_recall_ch2 / recall_picker_y_route）。
     v1387 は docich-5118 (`sortie-measured-kit`、PR #5128) と
     docich-5086-5089 (`recall-preempt-sortie-gate`) が、v1388 は
     docich-5120 (`boss-month-phase-guard`、#5120 ガード別worktree) が使用中。
