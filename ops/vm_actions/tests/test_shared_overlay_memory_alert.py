@@ -1,5 +1,5 @@
 import importlib.util
-import math
+import json
 import unittest
 from pathlib import Path
 
@@ -79,6 +79,71 @@ class SharedOverlayMemoryAlertTests(unittest.TestCase):
         self.assertEqual(result["severity"], "warn")
         self.assertNotIn("pid", str(result))
         self.assertNotIn("private", str(result))
+
+
+    def fake_run(self, alerts, calls):
+        def run(args, **kwargs):
+            calls.append(args)
+            class Completed:
+                stdout = json.dumps(alerts) if args[:3] == ["gh", "issue", "list"] else ""
+            return Completed()
+        return run
+
+    def test_warn_creates_one_sanitized_alert(self):
+        calls = []
+        result = self.mod.assess(self.wrapper(5000))
+        action = self.mod.update_alert(
+            result, repo="azumag/docich", workflow_url="https://github.com/azumag/docich/actions/runs/1",
+            run=self.fake_run([], calls),
+        )
+        self.assertEqual(action, "created")
+        create = next(call for call in calls if call[:3] == ["gh", "issue", "create"])
+        self.assertIn("[VM shared overlay] WARN renderer RSS alert", create)
+        body = create[create.index("--body") + 1]
+        self.assertIn("5000.0 MiB", body)
+        self.assertNotIn("PID", body.split("Only the renderer RSS total")[0])
+
+    def test_existing_same_severity_alert_is_refreshed(self):
+        calls = []
+        alerts = [{"number": 42, "title": "[VM shared overlay] WARN renderer RSS alert"}]
+        result = self.mod.assess(self.wrapper(5001))
+        action = self.mod.update_alert(
+            result, repo="azumag/docich", workflow_url="https://example.invalid/run",
+            run=self.fake_run(alerts, calls),
+        )
+        self.assertEqual(action, "updated")
+        self.assertTrue(any(call[:3] == ["gh", "issue", "edit"] for call in calls))
+        self.assertFalse(any(call[:3] == ["gh", "issue", "create"] for call in calls))
+
+    def test_severity_change_closes_old_and_creates_new(self):
+        calls = []
+        alerts = [{"number": 42, "title": "[VM shared overlay] WARN renderer RSS alert"}]
+        result = self.mod.assess(self.wrapper(9000))
+        action = self.mod.update_alert(
+            result, repo="azumag/docich", workflow_url="https://example.invalid/run",
+            run=self.fake_run(alerts, calls),
+        )
+        self.assertEqual(action, "created")
+        self.assertTrue(any(call[:3] == ["gh", "issue", "close"] for call in calls))
+        self.assertTrue(any(call[:3] == ["gh", "issue", "create"] for call in calls))
+
+    def test_recovery_closes_alert_but_unknown_does_not_mutate(self):
+        alerts = [{"number": 42, "title": "[VM shared overlay] WARN renderer RSS alert"}]
+        calls = []
+        result = self.mod.assess(self.wrapper(100))
+        self.assertEqual(
+            self.mod.update_alert(result, repo="azumag/docich", workflow_url="", run=self.fake_run(alerts, calls)),
+            "closed",
+        )
+        self.assertTrue(any(call[:3] == ["gh", "issue", "close"] for call in calls))
+
+        calls.clear()
+        unknown = self.mod.assess(None)
+        self.assertEqual(
+            self.mod.update_alert(unknown, repo="azumag/docich", workflow_url="", run=self.fake_run(alerts, calls)),
+            "unknown",
+        )
+        self.assertEqual(calls, [])
 
 
 if __name__ == "__main__":
