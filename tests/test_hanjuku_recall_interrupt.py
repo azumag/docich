@@ -63,6 +63,11 @@ def test_targetless_interrupted_dispatch_uses_a_short_global_retry_hold():
     assert mem['flow']['recall_skip_ticks'] == recall.FORT_RETRY_TICKS
     assert 'recall_skip_target' not in mem['flow']
     assert 'recall' not in mem['flow']
+    camp = [{'target': (139, 113), 'clipped': False}]
+    mem['tick'] = 119
+    assert recall._filter_recall_skip(mem, camp) == []
+    mem['tick'] = 120
+    assert recall._filter_recall_skip(mem, camp) == camp
 
 
 def test_a_stale_interruption_marker_does_not_shorten_the_next_recalls_hold():
