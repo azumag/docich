@@ -85,7 +85,7 @@ BOT_VERSION: `hanjuku-chart-v1397-recall-map-hold`
 - `test_a_battle_return_restarts_the_to_camp_budget`:
   戦闘 → カーソルつき map 復帰で `steps` が 0 リセット→1 として
   カウントされ、ナビ入力が出る。
-- `test_a_battle_return_restarts_the_menu_budget`: `menu` でも同様に
+- `test_a_battle_return_marker_survives_resumable_text_until_map`: `menu` でも同様に
   リセット。
 - `test_battle_resets_do_not_stretch_a_recall_forever` /
   `test_battle_resets_expire_outside_the_tick_window`:
