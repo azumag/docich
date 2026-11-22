@@ -8043,6 +8043,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v1362-camp-recall-ch2",
             "hanjuku-chart-v1363-chikujou-at-month-end",
             "hanjuku-chart-v1367-camp-arrival-timeout",
+            "hanjuku-chart-v1370-chikujou-tried-ledger",
             "hanjuku-chart-v985-roster-lost",
             "hanjuku-chart-v982-gbox",
             "hanjuku-chart-v984-roster-map-anchor",

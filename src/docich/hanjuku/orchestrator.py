@@ -1629,8 +1629,14 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
             decision_log._record(mem, 'chikujou_leftover', screen=kind,
                                  observed_metric={'text': (screen.text or '')[:60]},
                                  reason='築城の城一覧が上限に達して選択できないため、Bで閉じる')
-        from .strategy.economy import _chikujou_candidates
-        mem['chikujou_refused'] = {'castles': sorted(_chikujou_candidates(mem)), 'skips': 0}
+        if ('これいじょう' in (screen.text or '')
+                or 'しょうぐんがおりませなんだ' in (screen.text or '')):
+            # Only an observed refusal line may suppress the next months: a
+            # bare castle list left behind by a dropped sub is still
+            # selectable (docich#5026), so closing it must not mark the
+            # candidates refused.
+            from .strategy.economy import _chikujou_candidates
+            mem['chikujou_refused'] = {'castles': sorted(_chikujou_candidates(mem)), 'skips': 0}
         actions = [pad('b')]
         updated.update(screen_kind=kind, no_input_streak=0, no_input_frames=[])
         for key in ('_adjusted', '_interim', '_card_scroll_input'):

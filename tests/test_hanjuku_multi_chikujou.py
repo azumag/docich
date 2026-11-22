@@ -456,3 +456,48 @@ def test_walk_to_chikujou_is_bounded_when_the_hand_does_not_move():
     assert out[:policy.MENU_NAV_PRESS_LIMIT] == [[policy.pad('down')]] * policy.MENU_NAV_PRESS_LIMIT
     assert out[-1] == [policy.pad('b')]
     assert mem['_records'][-1]['decision'] == 'menu_nav_stuck'
+
+
+def test_an_abandoned_sub_keeps_the_months_tried_ledger():
+    # docich#5026: a dropped sub must not forget which castles were already
+    # refused this month - the audit reads shop['chikujou_tried'].
+    mem = memory()
+    open_build(mem, 150)
+    sub = mem['month_sub']
+    sub['rows_tried'] = [HOME]
+    sub['chosen'] = OTHER
+    sub['aborted'] = True
+    sub['abort_backs'] = policy.MONTH_SUB_ABANDON_BACKS - 1
+    assert policy.month_sub_step(castles(), mem) == [policy.pad('b')]
+    assert 'month_sub' not in mem
+    assert mem['shop']['chikujou'] == 'skipped'
+    assert mem['shop']['chikujou_tried'] == [HOME, OTHER]
+    assert any(r['decision'] == 'month_sub_abandoned' for r in mem['_records'])
+
+
+def test_a_lost_sub_keeps_the_months_tried_ledger():
+    # docich#5026: same ledger preservation when an exit-kind screen drops
+    # the sub without a measured menu return.
+    mem = memory()
+    open_build(mem, 150)
+    mem['month_sub']['rows_tried'] = [HOME]
+    field = Screen([], None, 'フィールド', kind='map')
+    assert policy.month_sub_step(field, mem) is None
+    assert 'month_sub' not in mem
+    assert mem['shop']['chikujou_tried'] == [HOME]
+    assert any(r['decision'] == 'month_sub_lost' for r in mem['_records'])
+
+
+def test_a_stale_month_sub_does_not_write_this_months_ledger():
+    mem = memory()
+    open_build(mem, 150)
+    sub = mem['month_sub']
+    sub['key'] = '1-6'                       # last month's sub
+    sub['rows_tried'] = [HOME]
+    sub['aborted'] = True
+    sub['abort_backs'] = policy.MONTH_SUB_ABANDON_BACKS - 1
+    assert policy.month_sub_step(castles(), mem) == [policy.pad('b')]
+    assert 'month_sub' not in mem
+    # open_build already creates the (empty) ledger via _month_chikujou, so
+    # the stale sub must leave it empty rather than absent.
+    assert mem['shop'].get('chikujou_tried') == []

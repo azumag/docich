@@ -778,6 +778,54 @@ def test_chikujou_terminal_decline_with_resources_is_recorded(runtime_dir):
     assert '築城可能なのにキャンセル' in audit._issue_title(records[0])
 
 
+def test_chikujou_terminal_decline_reads_live_sub_rows_tried(runtime_dir):
+    """The shop ledger only merges a chikujou sub's tried rows when the sub
+    finishes, so a live sub's refusals used to be counted as still-available
+    candidates (docich#5026)."""
+    value = _chikujou_state()
+    mem = value['policy']
+    home = chart.home_castle(10)
+    other = next(c for c in chart.CASTLE_NAMES[10] if c != home)
+    mem['shop']['chikujou'] = 'check'
+    mem['month_sub'] = {'kind': 'chikujou', 'key': '1-1',
+                        'rows_tried': [home, other], 'presses': 4}
+    audit.observe(runtime_dir, audit.capture(value), value,
+                  [{'decision': 'chikujou_declined',
+                    'reason': '当月未試行で増築候補となる所有城がなくなったため、築城を終える',
+                    'at': 1000}], now=1000)
+    assert audit.load_incidents(runtime_dir) == []
+
+
+def test_chikujou_terminal_decline_still_reports_untried_candidate(runtime_dir):
+    value = _chikujou_state()
+    mem = value['policy']
+    home = chart.home_castle(10)
+    mem['shop']['chikujou'] = 'check'
+    mem['month_sub'] = {'kind': 'chikujou', 'key': '1-1',
+                        'rows_tried': [home], 'presses': 2}
+    audit.observe(runtime_dir, audit.capture(value), value,
+                  [{'decision': 'chikujou_declined',
+                    'reason': '当月未試行で増築候補となる所有城がなくなったため、築城を終える',
+                    'at': 1000}], now=1000)
+    records = audit.load_incidents(runtime_dir)
+    assert len(records) == 1
+    assert records[0]['kind'] == 'chikujou_cancelled_with_resources'
+
+
+def test_chikujou_terminal_decline_ignores_other_month_sub(runtime_dir):
+    value = _chikujou_state()
+    mem = value['policy']
+    mem['month_sub'] = {'kind': 'chikujou', 'key': '1-0',
+                        'rows_tried': [chart.home_castle(10)]}
+    audit.observe(runtime_dir, audit.capture(value), value,
+                  [{'decision': 'chikujou_declined',
+                    'reason': '当月未試行で増築候補となる所有城がなくなったため、築城を終える',
+                    'at': 1000}], now=1000)
+    records = audit.load_incidents(runtime_dir)
+    assert len(records) == 1
+    assert records[0]['kind'] == 'chikujou_cancelled_with_resources'
+
+
 def test_chikujou_month_end_is_reported_once(runtime_dir):
     value = _chikujou_state()
     record = {'decision': 'month_done', 'month': '1-1', 'at': 1000}

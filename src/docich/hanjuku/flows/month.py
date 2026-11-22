@@ -1283,6 +1283,23 @@ def _chikujou_step(screen, mem, sub):
     return _chikujou_wait(screen, mem, sub, 'build_screen_unclassified')
 
 
+def _note_chikujou_tried(shop, sub):
+    """Keep the month's tried ledger when a chikujou sub is dropped unfinished.
+
+    ``_finish_month_sub`` merges ``rows_tried`` + ``chosen`` on a measured
+    return; a lost or abandoned sub must not silently forget which castles
+    were already refused or upgraded this month (docich#5026).
+    """
+    if (not isinstance(shop, dict) or not isinstance(sub, dict)
+            or sub.get('kind') != 'chikujou'
+            or sub.get('key') is None or shop.get('key') != sub.get('key')):
+        return
+    tried = shop.setdefault('chikujou_tried', [])
+    for castle in [*(sub.get('rows_tried') or []), *([sub['chosen']] if sub.get('chosen') else [])]:
+        if castle not in tried:
+            tried.append(castle)
+
+
 def interrupt_month_payment(mem):
     """An unrelated event cannot supply the old monthly action's fee receipt."""
     sub = mem.get('month_sub')
@@ -1583,7 +1600,11 @@ def chikujou_leftover(screen, mem) -> bool:
                 observed_metric={'text': screen.text[-60:]},
                 deviation_reason='chikujou_state_lost',
                 reason='ちくじょうの画面を方策状態なしで確認したためBで閉じる')
-    mem['chikujou_refused'] = {'castles': sorted(_chikujou_candidates(mem)), 'skips': 0}
+    if 'これいじょう' in screen.text or 'しょうぐんがおりませなんだ' in screen.text:
+        # Only an observed refusal line may suppress the next months: a bare
+        # castle list left behind by a dropped sub is still selectable
+        # (docich#5026), so closing it must not mark the candidates refused.
+        mem['chikujou_refused'] = {'castles': sorted(_chikujou_candidates(mem)), 'skips': 0}
     return True
 
 
@@ -1693,6 +1714,7 @@ def month_sub_step(screen: Screen, mem):
         goal_kind = {'egg': 'egg_recover', 'recruit': 'recruit'}.get(sub.get('kind'))
         if goal_kind:
             goals.note_attempt(mem, goal_kind, 'interrupted')
+        _note_chikujou_tried(shop, sub)
         mem.pop('month_sub')
         _record(mem, 'month_sub_lost', screen=kind, observed_metric=sub,
                 reason='月一の実行中に月一メニューへ戻らず別画面になったため追跡をやめる')
@@ -1822,6 +1844,7 @@ def month_sub_step(screen: Screen, mem):
                       and sub.get('stage') == 'recovering' else 'skipped')
             if isinstance(shop, dict) and sub.get('kind') in shop:
                 shop[sub['kind']] = status
+            _note_chikujou_tried(shop, sub)
             mem.pop('month_sub', None)
             _record(mem, 'month_sub_abandoned', screen=kind,
                     observed_metric={'backs': backs, 'kind': sub.get('kind'),

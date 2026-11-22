@@ -1413,6 +1413,17 @@ def _chikujou_snapshot(after, before, record, records):
     if type(gold) is not int or reserve is None:
         return None
     tried = {name for name in (shop.get('chikujou_tried') or []) if isinstance(name, str)}
+    # docich#5026: the shop ledger merges a chikujou sub's rows only when the
+    # sub finishes, so a live sub's refusals and level-5 sightings (each
+    # recorded in an earlier observation, not in this batch) were counted as
+    # still-available candidates. Read the same exclusions the flow uses.
+    sub = mem.get('month_sub')
+    if (isinstance(sub, dict) and sub.get('kind') == 'chikujou'
+            and sub.get('key') in (None, shop.get('key'))):
+        tried.update(name for name in (sub.get('rows_tried') or [])
+                     if isinstance(name, str))
+        if isinstance(sub.get('chosen'), str):
+            tried.add(sub['chosen'])
     upgrades = {entry.get('castle') for entry in (shop.get('chikujou_upgrades') or [])
                 if isinstance(entry, dict)}
     maxed, unavailable = set(), set()
