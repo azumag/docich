@@ -1555,7 +1555,15 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
     # frame and the read starts only when the map is actually free.
     card_census_flow.wait_step(screen, mem)
     kind=screen.kind
-    if _is_quantity_confirm(kind, screen.text):
+    month_sub = mem.get('month_sub')
+    # docich#5046: a live egg recovery owns its own quote screen. The priest's
+    # 「NこでNGになりまんな! よろしでっか?」 classifies as shop_quantity too, but
+    # only _egg_recovery_step validates the amount and binds the fee
+    # (stage='recovering') before A; the shortcut paid unbound, the ritual kept
+    # the MONTH_SUB_LIMIT budget, and the sub died as month_sub_abandoned with
+    # the payment unconfirmed. Other month subs never show this wording.
+    if (_is_quantity_confirm(kind, screen.text)
+            and not (isinstance(month_sub, dict) and month_sub.get('kind') == 'egg')):
         # The purchase confirmation (「1こで50Gになりまんな! よろしでっか?」)
         # overlays the quantity menu; the quantity step waits on its own
         # overlay and never answers it (g1190 2026-11-18 63-5: the frame was
@@ -1605,7 +1613,6 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
         updated['_experience'] = mem.pop('_experience', None)
         updated['policy'] = mem
         return actions, updated
-    month_sub = mem.get('month_sub')
     if _is_chikujou_prompt(screen.text) and not (
             isinstance(month_sub, dict) and month_sub.get('kind') == 'chikujou'):
         # The 築城 castle list runs out of room and asks which castle to
