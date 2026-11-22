@@ -225,10 +225,10 @@ def _month_nav_stuck(mem):
 def _month_opened(move, mem, label: str):
     """'here' from the guarded walk, or a blind-nav plan ending on ``label``.
 
-    The blind plan's trailing 'a' opens the target exactly like the 'here'
-    branch's A, so callers apply the same opened-state (month_sub, refill
-    stage, exit/merchant flags). The marker is one tick old: reaching the
-    guarded walk below clears it, and a stale label cannot match a walk move.
+    The blind plan only positions the cursor. Its later A is sent on a fresh
+    frame after the exact target row is observed, then this marker lets callers
+    apply the same opened-state (month_sub, refill stage, exit/merchant flags).
+    A stale label cannot match a walk move.
     """
     if move == 'here':
         return True
@@ -286,8 +286,8 @@ def _month_menu_move(screen: Screen, mem, label: str):
         # g1190 2026-11-16: hand (202,197) on the 「じゅうじキー」 hint while
         # the menu rows sit at y47-95), so the hand-driven navigation cannot
         # reach も〜おしまい! and the month menu held forever. Walk the
-        # measured two-column layout blind instead: top-left, down three,
-        # right, confirm, bounded.
+        # measured two-column layout: position, observe the cursor on the target
+        # row, then confirm on a separate tick, all bounded.
         row_col = _month_menu_row_col(screen, label)
         state = mem.get('month_blind_nav')
         if not isinstance(state, dict) or state.get('label') != label:
