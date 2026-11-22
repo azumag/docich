@@ -604,6 +604,19 @@ def test_battle_resource_events_are_classified():
         metric={'ally_hp': 55, 'enemy_hp': 63,
                 'cards_selected': ['イッテツーン'], 'cards_used': []},
         general='アニス'))['resources'] == ['card']
+    # docich#5117: 実一覧で不在が確認できた札は、残り札として起票しない。
+    assert audit._battle_resource_event(_battle_record(
+        'battle_hero_retreat_select', choice='たいきゃく',
+        metric={'ally_hp': 16, 'enemy_hp': 4,
+                'cards_selected': ['クースカン'], 'cards_used': [],
+                'cards_missing': ['クースカン']}, general='ライム')) is None
+    mixed = audit._battle_resources(_battle_record(
+        'battle_hero_retreat_select', choice='たいきゃく',
+        metric={'ally_hp': 16, 'enemy_hp': 4,
+                'cards_selected': ['クースカン', 'イッテツーン'],
+                'cards_used': [], 'cards_missing': ['クースカン']}))
+    assert mixed['cards_remaining'] == ['イッテツーン']
+    assert mixed['cards_missing'] == ['クースカン']
     assert audit._battle_resource_event(_battle_record(
         'battle_egg_before_retreat', metric={'egg_uses': 2})) is None
 

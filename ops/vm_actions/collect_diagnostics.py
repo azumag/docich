@@ -8058,6 +8058,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v1383-ch4-boss-stale-roster",
             "hanjuku-chart-v1384-empty-card-list-nanimomottenai",
             "hanjuku-chart-v1385-spend-card-before-retreat",
+            "hanjuku-chart-v1386-missing-card-not-remaining",
             "hanjuku-chart-v985-roster-lost",
             "hanjuku-chart-v982-gbox",
             "hanjuku-chart-v984-roster-map-anchor",
