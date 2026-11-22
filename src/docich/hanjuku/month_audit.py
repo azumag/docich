@@ -1072,16 +1072,14 @@ def _battle_resources(record):
     remaining = _remaining_cards(selected, used)
     if pending and pending not in remaining and pending not in used:
         remaining.append(pending)
-    # docich#5101: a card the bot already selected from the live list, or spent
-    # its one bounded spend retry on (#4999), was not "left unused" — the retreat
-    # after a failed attempt is the designed path. Only cards with no recorded
-    # attempt remain evidence of a resource left behind.
+    # docich#5101: keep the remaining-card signature unchanged (the retreat with
+    # a card left is the alert either way), but expose whether that card had
+    # already been tried, so triage can tell "the spend attempt failed" from
+    # "the card was never given a chance".
     attempted = {card for card in (metric.get('cards_attempted') or ())
                  if isinstance(card, str)}
     retried = {card for card in (metric.get('cards_spend_retry') or ())
                if isinstance(card, str)}
-    tried = attempted | retried
-    remaining = [card for card in remaining if card not in tried]
     resources = []
     if egg:
         resources.append('egg')
@@ -1094,6 +1092,8 @@ def _battle_resources(record):
         'cards_used': used,
         'cards_remaining': remaining[:12],
         'card_pending': pending,
+        'cards_attempted': sorted(attempted)[:12],
+        'cards_spend_retry': sorted(retried)[:12],
     }
 
 
