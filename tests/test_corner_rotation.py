@@ -432,7 +432,13 @@ def test_manual_meriken_start_scopes_runtime_environment(tmp_path, monkeypatch):
     executor.results.append("completed")
     outcome = holder["manager"].tick()
     assert outcome.get("reason") != "manual-capture-profile-expired"
-    assert len(executor.requests) == 3
+    # The stale manual reservation is released, then the exhausted rotation
+    # continues with its least-cooled corner (the same one, since it is the
+    # only eligible corner).
+    assert len(executor.requests) == 4
+    assert executor.requests[-1]["corner"] == "meriken"
+    assert executor.requests[-1].get("capture_profile") is None
+    assert executor.requests[-1]["cooldown_exempt"] is True
     assert json.loads((tmp_path / "corner_rotation.json").read_text())["manual_pending"] is None
 
     manager.capture_profile = "rejected_png_v1"
@@ -1111,7 +1117,7 @@ def test_disabled_paused_unavailable_do_not_inflate_denominator(setup):
     assert len(executor.calls) == 1
 
 
-def test_unavailable_and_empty_candidates_wait_without_duplicate(setup):
+def test_unavailable_and_empty_candidates_restart_with_least_cooled(setup):
     _, clock, _, executor, make = setup
     manager = make()
     for adapter in manager.adapters.values():
@@ -1121,10 +1127,19 @@ def test_unavailable_and_empty_candidates_wait_without_duplicate(setup):
     saved = state(manager)
     saved["history"] = [dict(corner=c, at=clock[0], source="manual") for c in manager.adapters]
     manager.save(saved)
-    assert make().tick()["reason"] == "all-corners-cooling-down"
+    # Every eligible corner is cooling, but the rotation no longer idles: the
+    # least-cooled corner takes the next slot. All uses tie here, so the
+    # stable corner-id tie-break applies.
+    restarted = make().tick()
+    assert restarted["status"] == "ready"
+    assert restarted["corner"] == "meriken"
+    assert len(executor.calls) == 1
+    # The interval anchor still prevents a duplicate in the same slot.
+    assert make().tick()["reason"] == "not-due"
+    assert len(executor.calls) == 1
 
 
-def test_all_cooling_corners_reanchor_next_due_to_earliest_expiry(setup):
+def test_all_cooling_corners_restart_with_the_least_cooled_corner(setup):
     g, clock, catalog, executor, make = setup
     manager = make()
     now = clock[0]
@@ -1147,9 +1162,11 @@ def test_all_cooling_corners_reanchor_next_due_to_earliest_expiry(setup):
 
     result = manager.tick()
 
-    assert result["reason"] == "all-corners-cooling-down"
-    assert state(manager)["next_due_at"] == now - 3600 + DAY
-    assert not executor.calls
+    assert result["status"] == "ready"
+    assert result["corner"] == "meriken"
+    assert state(manager)["next_due_at"] == now + DAY / len(catalog)
+    assert len(executor.calls) == 1
+    assert executor.calls[0]["cooldown_exempt"] is True
 
 
 def test_queue_replay_preserves_identity_across_restart_and_catalog_change(setup):
@@ -1953,6 +1970,95 @@ def test_queue_mode_dispatches_back_to_back_without_interval(tmp_path):
     assert state(manager)["next_due_at"] == clock[0]
 
 
+def test_interval_mode_restarts_least_cooled_before_24h_cooldown(tmp_path):
+    """Once every eligible corner has run, the 24h cooldown yields to the
+    exhausted rotation: the least-cooled corner takes the next interval slot
+    (owner decision 2026-11-22)."""
+
+    g = _policy_config(tmp_path, mode="interval", interval_minutes=60)
+    clock = [1000000.0]
+    executor = Executor()
+    manager = _policy_manager(g, clock, executor)
+
+    picks = []
+    for _ in range(3):
+        picks.append(manager.tick()["corner"])
+        clock[0] += 3600
+
+    # t+3h: the interval is due and all three are inside the default 24h
+    # cooldown. The first pick has the shortest remaining cooldown.
+    restarted = manager.tick()
+
+    assert restarted["status"] == "ready"
+    assert restarted["corner"] == picks[0]
+    assert executor.calls[-1]["cooldown_exempt"] is True
+    assert state(manager)["next_due_at"] == clock[0] + 3600
+    rows = {row["corner"]: row for row in state(manager)["history"]}
+    # The relaxed start is still a normal history row, so the next cooldown
+    # restarts from this run.
+    assert rows[picks[0]]["at"] == clock[0]
+    assert rows[picks[0]]["source"] == "completion"
+
+
+def test_exhausted_rotation_notice_names_the_least_cooled_corner(tmp_path):
+    g = _policy_config(tmp_path, mode="interval", interval_minutes=60)
+    clock = [1000000.0]
+    executor = Executor()
+    manager = _policy_manager(g, clock, executor)
+
+    picks = []
+    for _ in range(3):
+        picks.append(manager.tick()["corner"])
+        clock[0] += 3600
+
+    # Half an hour before the next slot, the sidebar is promised the exhausted
+    # rotation's least-cooled corner, not an unknown/blank entry.
+    clock[0] -= 1800
+    waited = manager.tick()
+
+    assert waited["reason"] == "not-due"
+    notice = json.loads((Path(g.state_dir) / "next_corner.json").read_text())
+    assert notice["source"] == "auto"
+    assert notice["corner"] == picks[0]
+    assert notice["due_at"] == 1000000.0 + 3 * 3600
+
+
+def test_exhausted_rotation_does_not_pre_run_a_reserved_manual_corner(tmp_path):
+    g = _policy_config(tmp_path, mode="interval", interval_minutes=60)
+    clock = [1000000.0]
+    executor = Executor()
+    manager = _policy_manager(g, clock, executor)
+    now = clock[0]
+
+    # meriken is the least recently used corner, but its future manual slot
+    # owns it: the automatic fallback must use the next candidate instead.
+    manager.queue_manual("soren91", trigger_at=now + 1800)
+    manager.save({
+        "schema_version": 1,
+        "seed": "queue-seed",
+        "slot": 3,
+        "last_seen_at": now - 1,
+        "last_slot_at": None,
+        "next_due_at": now,
+        "interval_seconds": 3600,
+        "history": [
+            {"corner": "meriken", "at": now - 3 * 3600, "source": "test"},
+            {"corner": "paper", "at": now - 2 * 3600, "source": "test"},
+            {"corner": "retro", "at": now - 3600, "source": "test"},
+        ],
+        "pending": None,
+        "status": "waiting",
+        "known_corners": {},
+    })
+
+    result = manager.tick()
+
+    assert result["status"] == "ready"
+    assert result["corner"] == "paper"
+    inbox = json.loads((Path(g.state_dir) / "corner_manual_queue.json").read_text())
+    assert inbox["corner"] == "meriken"
+
+
 def test_interval_mode_uses_the_configured_fixed_interval(tmp_path):
     """`interval_minutes` replaces the 24h/N target (#2187 follow-up)."""
 
@@ -2000,22 +2106,27 @@ def test_interval_minutes_is_bounded_and_numeric(tmp_path):
                     [1000000.0], Executor())
 
 
-def test_queue_mode_uses_configured_cooldown_and_reanchors_when_empty(tmp_path):
+def test_queue_mode_restarts_with_the_least_cooled_corner_when_empty(tmp_path):
     g = _policy_config(tmp_path, mode="queue", cooldown_hours=1)
     clock = [1000000.0]
     executor = Executor()
     manager = _policy_manager(g, clock, executor)
 
-    picks = [manager.tick()["corner"] for _ in range(3)]
-    blocked = manager.tick()
+    picks = []
+    for _ in range(3):
+        picks.append(manager.tick()["corner"])
+        clock[0] += 60
 
-    assert blocked["reason"] == "all-corners-cooling-down"
-    assert state(manager)["next_due_at"] == clock[0] + 3600
-
-    clock[0] += 3601
+    # All three corners are still inside the 1h rolling cooldown. The exhausted
+    # queue continues with the corner whose cooldown ends first (the first
+    # pick), instead of waiting an hour.
     again = manager.tick()
-    assert again["corner"] in picks
+
+    assert again["status"] == "ready"
+    assert again["corner"] == picks[0]
+    assert state(manager)["next_due_at"] == clock[0]
     assert len(executor.calls) == 4
+    assert executor.calls[-1]["cooldown_exempt"] is True
 
 
 @pytest.mark.parametrize("body", [

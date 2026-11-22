@@ -51,21 +51,26 @@ JEVは自動有効化されていない手動のplayer-policy試験であり、�
 - `interval`: 目標間隔は `interval_minutes`（分）秒。未設定なら 86400/N秒で、毎tickに実効Nを
   再評価する（N=0なら待機）。次の発火は「直近の発火 + 目標間隔」。遅延やcornerの長さによって
   本数/日を保証しない。取りこぼしは1回にまとめ、過去slotを連発しない。
-  例: N=11・`interval_minutes=60` なら1時間ごとに1本。24h cooldownを併用すると、N件を
-  消化した後は最も早いcooldown明け（初回発火の24時間後）まで待機する。
+  例: N=11・`interval_minutes=60` なら1時間ごとに1本。N件を消化して全eligible cornerが
+  24h cooldown中でも次のinterval枠は空けず、残りクールダウンが最短のcornerを開始する
+  （2026-11-22 オーナー決定）。
 - `queue`: 間隔アンカーを使わず、共有スロットが空き次第、rolling cooldown外の候補から
   **一様ランダム**に1本選んで連続発火する。乱数は `seed`・`slot`・corner IDのSHA-256で
   与えるため、同じledger seedと同じslotでは再現でき、再起動で再抽選しない（`slot`は発火ごとに
-  進むので順序は毎回引き直される）。`next_due_at`は「次に発火可能な時刻」の意味になり、
-  候補が空のときだけ最も早いcooldown明けへ再アンカーする。
+  進むので順序は毎回引き直される）。全eligible cornerがcooldown中（候補が空）のときは、
+  残りクールダウンが最短のcornerを次に開始する。`next_due_at`は「次に発火可能な時刻」の
+  意味になり、このfallbackでは現在時刻になる。
   発火は常に1本ずつで、重複・並行起動はしない（pending・共通program slotは両modeで同じ）。
 - `prediction_hold_wait_minutes`（既定90、0〜180）は予想in-flight中にdueコーナーを
   待たせる上限。`prediction_handoff_seconds`（既定180、0〜900）はコーナー直後に
   予想を先に開始する猶予。
 - `cooldown_hours`（既定24）は同一cornerを再選択できるまでのrolling窓。小さいほど連続性が上がる。
-  どのmodeでも予約・実開始・終了・手動使用をcooldownへ数える。
-- queue modeの実効間隔は `max(cooldownが許す範囲, 直前cornerの所要時間 + 改善レーンの待ち)`。
-  24h cooldownを維持する場合、eligible N件を消化した後は最も早いcooldown明けまで待機する。
+  どのmodeでも予約・実開始・終了・手動使用をcooldownへ数える。ただし全eligible cornerが
+  cooldown中で自動選択の候補が尽きた場合だけ、残りが最短のcornerを次の枠へ繰り上げる
+  （24h cooldownの唯一の例外。選択されたcornerのcooldownはその開始時刻から再スタートする）。
+  予約済みmanualのcorner、paused/disabled/manual_onlyのcornerは繰り上げの対象にしない。
+- queue modeの実効間隔は、候補がある間は `max(cooldownが許す範囲, 直前cornerの所要時間 + 改善レーンの待ち)`。
+  全eligible cornerを消化した後はcooldown明けを待たず、残り最短のcornerで連続発火する。
 - queue modeでは次のcornerは前の改善ジョブの終端を待たない（`resources_released`の
   改善待ちを外す）。改善ジョブは `locks/corner-improve-lane.lock` の共有レーンで直列化し、
   同時実行を1本に制限する。レーン待ちは1800秒で打ち切り、取得できない回は
@@ -81,14 +86,15 @@ JEVは自動有効化されていない手動のplayer-policy試験であり、�
 - 選択候補は有効cornerのうち、予約・実開始・終了・手動使用が直近24時間にないもの。
   終了時刻も使用に数える保守的な契約とし、長時間枠・遅延開始でcooldownが短くならない。
   24時間ちょうどで再び候補になる。したがって24/Nは目標であり、遅延やcornerの長さによって
-  N回/日を保証しない。候補空は明示待機し、重複で穴埋めしない。
+  N回/日を保証しない。候補空は待機せず、最後の使用が最も古いcorner（残りクールダウン最短）を
+  次の枠で開始する。次の枠はinterval modeではinterval anchor、queue modeでは共有slotが
+  空いた時点。予約済みmanualのcornerと休止・無効のcornerはこのfallbackから除外する。
 - 初回はdue。既存retro履歴があれば引き継ぐ。取りこぼしは1回にまとめ、過去slotを連発しない。
   次回は実際に受理/開始したslotから24/N。queuedの遅延開始が分かればanchorを更新する。
-- cadence上はdueでも全eligible cornerがrolling cooldown中なら、最も早くcooldownが解ける時刻へ
-  `next_due_at`を再アンカーする。過去のnominal時刻を保存し続けず、毎分tickはその時刻に到達した
-  次の候補を一度だけ選ぶ。これはcooldownを短縮したり、同じcornerを重複起動したりするものではない。
 - 永続seed、slot番号、corner IDのSHA-256順位で候補を選ぶ。登録順に依存せず、同じseedと
-  clockで再現可能。seedは初回だけ生成し、再起動による再抽選をしない。
+  clockで再現可能。seedは初回だけ生成し、再起動による再抽選をしない。全cornerがcooldown中の
+  fallbackだけは、最後の使用が最も古いcornerを選ぶ（同時刻ならcorner ID順で安定）。
+  これは24h cooldownを通常より早く再開する唯一の例外で、同一tickで同じcornerを二重起動しない。
 - 時刻逆行は以前の観測時刻へ戻るまで待つ。観測間隔が24時間を超えた場合は、長期停止と
   大幅時計変更を区別できないため24時間隔離する。判定は `last_seen_at` だけでなく
   ledger が最後に書いた活動時刻（`last_result.at`・history・`last_slot_at`・
@@ -103,9 +109,9 @@ JEVは自動有効化されていない手動のplayer-policy試験であり、�
 **dueより前に確定させた次の1枠**である。
 
 - `CornerRotationManager._next_corner_notice` が、dispatchと同じ規則
-  （interval anchor → 24h cooldownの再アンカー → 予約済みmanualが先ならそれ）で
-  次のcornerと開始可能時刻を決める。順位はdispatchと同じ
-  `seed`・`slot`・corner IDのSHA-256。
+  （interval anchor → 全eligible cornerがcooldown中なら残り最短のcorner → 予約済みmanualが
+  先ならそれ）で次のcornerと開始可能時刻を決める。順位はdispatchと同じ
+  `seed`・`slot`・corner IDのSHA-256（cooldown fallbackだけは最終使用が最も古いcorner）。
 - 決定は `state_dir/next_corner.json` へboundedに投影する。seed・slot・request UUIDは
   含めない。`corner` / `label`（視聴者向け表示名）/ `when`（表示用時刻）/
   `due_at` / `source`（auto|manual）/ `hold` / `remaining_games` / `decided_at` /
@@ -113,7 +119,8 @@ JEVは自動有効化されていない手動のplayer-policy試験であり、�
   `hold="prediction"` のときだけ意味を持つ。
 - dispatchは、予告したcornerがまだ候補ならそれを優先する。一度出した予告を
   別のcornerへ差し替えないためで、候補から外れた（pause・cooldown・manual予約との
-  競合）ときだけ引き直して投影も更新する。
+  競合）ときだけ引き直して投影も更新する。cooldown fallbackの予告も、そのcornerが
+  引き続き残り最短である間は維持する。
 - 枠の開始（pending確定）時に投影を消す。sorengameへ戻った次のtickで次の予告を出す。
   `game_switch.json` の `active.game` が `sorengame` でない間（他コーナー・special view・
   復帰失敗）は出さない。queue modeは間隔が無いので、予約済みmanualがあるときだけ出す。
@@ -444,7 +451,8 @@ request identity・例外本文は出さない。
 [`corner-health-monitor.md`](operations/corner-health-monitor.md) を正本とする。
 復旧操作はこの監視に含めない。
 復旧後の `tick()` のcooldown再検証は `phase=="selected"` の予約だけで、
-`dispatched` の復元はdispatch時の履歴行がcooldownを担保する。
+`dispatched` の復元はdispatch時の履歴行がcooldownを担保する。cooldown fallbackとして
+選んだ予約は `cooldown_exempt` を持ち、再起動後の再検証でもその意図を保つ。
 
 起動済みcornerは無効化後も安全な終了・復帰を継続する。まだ起動していない予約が無効化
 された場合は予約を保持して待機する。pending対象のcatalog削除は要復旧。

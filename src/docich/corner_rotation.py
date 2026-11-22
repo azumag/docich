@@ -1377,24 +1377,31 @@ class CornerRotationManager:
                 excluded[corner.id] = "adapter-unavailable"
         return result, excluded
 
-    def _cooldown_due_at(self, history, eligible, now):
-        """Return the earliest timestamp at which a cooling corner can recur.
+    def _least_cooled_corner(self, history, eligible, reserved_corner=None):
+        """The eligible corner with the shortest remaining cooldown.
 
-        ``next_due_at`` is the nominal 24/N cadence.  When the cadence gets
-        ahead of the rolling cooldown (for example after downtime or a late
-        completion), every eligible corner can still be excluded even though
-        the nominal slot is overdue.  Keeping the old nominal timestamp makes
-        diagnostics report a permanent overdue slot and causes each tick to
-        reconsider the same impossible selection.  Re-anchor to the first
-        actual cooldown expiry instead.
+        The rolling cooldown is the basic rule, but it must not leave the
+        rotation idle after every eligible corner has been used.  When no
+        corner is past cooldown, the slot goes to the corner whose cooldown
+        ends first, i.e. the least recently used one.  Its last use is the
+        newest history row for that corner (reservation, completion, manual
+        use or failure all count).  ``None`` means no eligible corner has a
+        recorded use.  Ties are broken by corner id so the choice is stable
+        across restarts and does not depend on catalog order.
         """
+
         eligible = set(eligible)
-        deadlines = [
-            row["at"] + self.cooldown_seconds
-            for row in history
-            if row.get("corner") in eligible and row["at"] > now - self.cooldown_seconds
-        ]
-        return min(deadlines) if deadlines else None
+        latest = {}
+        for row in history:
+            corner = row.get("corner")
+            if corner not in eligible or corner == reserved_corner:
+                continue
+            at = row["at"]
+            if corner not in latest or at > latest[corner]:
+                latest[corner] = at
+        if not latest:
+            return None
+        return min(latest, key=lambda corner: (latest[corner], corner))
 
     # --- advance notice for the next corner ---------------------------------
     # The next corner is decided before it is due (the same seeded ranking the
@@ -1419,7 +1426,7 @@ class CornerRotationManager:
     def _pick(self, state, candidates):
         return min(candidates, key=lambda corner: self._rank(state, corner))
 
-    def _planned_notice(self, state, now, eligible):
+    def _planned_notice(self, state, now, eligible, reserved_corner=None):
         """The already-published corner while it is still a valid candidate.
 
         An announcement that viewers have seen does not flip because a corner
@@ -1435,44 +1442,50 @@ class CornerRotationManager:
             return None
         due_at = timestamp(current["due_at"])
         at = max(due_at, now)
-        if current["corner"] in self._auto_candidates(state, eligible, at, None):
+        candidates = self._auto_candidates(state, eligible, at, reserved_corner)
+        if current["corner"] in candidates:
+            return current["corner"], due_at, "auto"
+        if not candidates and self._least_cooled_corner(
+                state["history"], eligible, reserved_corner) == current["corner"]:
+            # The exhausted rotation promised the least-cooled corner; keep
+            # that promise until another corner becomes the least cooled.
             return current["corner"], due_at, "auto"
         return None
 
     def _next_corner_notice(self, state, now, eligible, future_manual=None):
         """The corner that will start next, decided ahead of its due time.
 
-        The same rules as dispatch: an interval cadence anchors the time, a
-        rolling cooldown pushes the decision to the first expiry (where the
-        dispatcher re-anchors too), and a scheduled manual reservation is
-        announced when it comes before the next automatic slot. ``None`` means
-        there is nothing to promise (queue mode fires as soon as the slot is
-        free, or no corner is eligible).
+        The same rules as dispatch: an interval cadence anchors the time, and
+        when every eligible corner is still cooling the least-cooled one is
+        scheduled (instead of idling until its cooldown ends). A scheduled
+        manual reservation is announced when it comes before the next automatic
+        slot. ``None`` means there is nothing to promise (queue mode fires as
+        soon as the slot is free, or no corner is eligible).
         """
         manual = None
         queued = future_manual if isinstance(future_manual, dict) else state.get("queued_manual")
         if isinstance(queued, dict) and queued.get("trigger_at") is not None:
             manual = (queued["corner"], timestamp(queued["trigger_at"]), "manual")
+        reserved_corner = manual[0] if manual is not None else None
         auto = None
         if self.schedule_mode == "interval" and eligible:
-            auto = self._planned_notice(state, now, eligible)
+            auto = self._planned_notice(state, now, eligible, reserved_corner)
             if auto is None:
                 # Mirror the dispatcher's own anchor: the fixed interval is
-                # measured from the last actual start, while a stored
-                # cooldown re-anchor is re-derived below when nothing can run.
+                # measured from the last actual start.
                 due_at = timestamp(state["next_due_at"])
                 if state.get("last_slot_at") is not None:
                     due_at = (timestamp(state["last_slot_at"])
                               + self._target_interval(eligible))
                 candidates = self._auto_candidates(
-                    state, eligible, max(due_at, now), None
+                    state, eligible, max(due_at, now), reserved_corner
                 )
                 if not candidates:
-                    due_at = self._cooldown_due_at(state["history"], eligible, now)
-                    if due_at is not None:
-                        candidates = self._auto_candidates(
-                            state, eligible, due_at, None
-                        )
+                    least_cooled = self._least_cooled_corner(
+                        state["history"], eligible, reserved_corner
+                    )
+                    if least_cooled is not None:
+                        candidates = [least_cooled]
                 if due_at is not None and candidates:
                     auto = (self._pick(state, candidates), due_at, "auto")
         if manual is not None and (auto is None or manual[1] <= auto[1]):
@@ -2538,7 +2551,8 @@ class CornerRotationManager:
                     else:
                         # Queue dispatch: the next eligible corner fires as soon
                         # as the shared slot is free; next_due_at is informational
-                        # (the earliest cooldown expiry once nothing is eligible).
+                        # (now, because the exhausted rotation continues with the
+                        # least-cooled corner instead of waiting for a cooldown).
                         state["next_due_at"] = now
                     # An announced/predicted slot is not dispatched into the
                     # prediction boundary: the notice already says it starts
@@ -2559,20 +2573,29 @@ class CornerRotationManager:
                     candidates = self._auto_candidates(
                         state, eligible, now, reserved_corner
                     )
+                    cooldown_exempt = False
                     if not candidates:
-                        cooldown_due = self._cooldown_due_at(
+                        # Every eligible corner is still cooling. Do not idle
+                        # until the first cooldown expires: the exhausted
+                        # rotation continues with the least-cooled corner in
+                        # the next slot (owner decision 2026-11-22). This is
+                        # the only case that may start a corner before its
+                        # rolling cooldown has elapsed.
+                        least_cooled = self._least_cooled_corner(
                             state["history"],
                             [c for c in eligible if c != reserved_corner],
-                            now,
                         )
+                        if least_cooled is not None:
+                            candidates = [least_cooled]
+                            cooldown_exempt = True
+                    if not candidates:
+                        # Only the reserved manual corner is eligible (its
+                        # schedule starts it), or no use history exists yet.
                         trigger_due = None
                         if isinstance(future_manual, dict):
                             trigger_due = timestamp(future_manual["trigger_at"])
-                        deadlines = [d for d in (cooldown_due, trigger_due) if d is not None]
-                        if deadlines:
-                            state["next_due_at"] = min(deadlines)
-                        if trigger_due is not None and (
-                                cooldown_due is None or trigger_due <= cooldown_due):
+                        if trigger_due is not None:
+                            state["next_due_at"] = trigger_due
                             return self._wait(state, "scheduled-manual-not-due")
                         return self._wait(state, "all-corners-cooling-down")
                     # The advance notice decided this corner before it was due
@@ -2584,6 +2607,7 @@ class CornerRotationManager:
                                if announced and announced.get("source") == "auto" else None)
                     chosen = planned if planned in candidates else self._pick(state, candidates)
                     pending = dict(corner=chosen, phase="selected", selected_at=now,
+                                   cooldown_exempt=cooldown_exempt,
                                    request_id=str(uuid.uuid5(uuid.NAMESPACE_URL,
                                        f'corner:{state["seed"]}:{state["slot"]}:{chosen}')))
                     state["pending"] = pending
@@ -2604,10 +2628,14 @@ class CornerRotationManager:
                 if pending["phase"] == "selected":
                     if pending["corner"] not in pending_eligible:
                         return self._wait(state, "selected-corner-disabled-or-paused")
-                    # Re-check cooldown after importing concurrent/manual activity.
-                    if pending.get("source") != "manual" and any(
-                            r["corner"] == pending["corner"] and r["at"] > now - self.cooldown_seconds
-                            for r in state["history"]):
+                    # Re-check cooldown after importing concurrent/manual
+                    # activity. The exhausted-rotation choice is the deliberate
+                    # exception: it is already the least-cooled candidate.
+                    if (pending.get("source") != "manual"
+                            and not pending.get("cooldown_exempt")
+                            and any(
+                                r["corner"] == pending["corner"] and r["at"] > now - self.cooldown_seconds
+                                for r in state["history"])):
                         return self._wait(state, "selected-corner-cooling-down")
                     pending["phase"] = "dispatched"
                     state["last_slot_at"] = now

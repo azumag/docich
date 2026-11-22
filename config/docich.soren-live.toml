@@ -54,6 +54,8 @@ schedule_mode = "interval"
 # 目標間隔（分）。60 = 1時間ごとに1本。未設定なら 24h/N（N=13 なら約1時間51分）。
 interval_minutes = 60
 # 同一cornerの再選択を許すまでのrolling窓。予約・実開始・終了・手動使用を数える。
+# 全eligible cornerがcooldown中になった場合だけ、残りが最短のcornerを次の枠で開始する
+# （24h cooldownの唯一の例外、2026-11-22 オーナー決定）。
 cooldown_hours = 24.0
 # 予想がin-flightの間、dueになったコーナーを通常の10分boundaryでexpireさせず、
 # 予想終了まで待つ上限。予想が固まった場合の安全弁（0-180分）。
