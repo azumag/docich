@@ -64,6 +64,35 @@ def test_picker_closed_without_a_send_is_an_unconfirmed_departure():
     assert _world(mem)['garrison']['カストーラ'] == ['ゼウス', 'ヴィーナス']
 
 
+def test_orchestrator_entry_forgets_the_carried_kinds_when_the_picker_closes_unsent():
+    """The production entry (orchestrator.decide), not just the flow hook.
+
+    The picker closed on a plain field frame with no sender-journal receipt;
+    the three carried イッテツーン may have returned, so their ledger kind is
+    unknown for the next merchant instead of keeping 99 - 3.
+    """
+    from docich.hanjuku import orchestrator
+    from docich.hanjuku.os_layer.pixels import Frame
+    mem = memory(); confirm(mem); request(mem)
+    mem['card_stock'] = {'イッテツーン': 96, 'ノリウツール': 5}
+    mem['picked'] = ['イッテツーン', 'イッテツーン', 'イッテツーン']
+    state = {'policy': mem, 'phase': 'field', 'screen_kind': 'map_target'}
+    frame = Frame(256, 224, bytes(256 * 224 * 3))
+    # The departure binding is tied to this run identity: without it the
+    # orchestrator would invalidate the frozen confirmation and the hook
+    # would leave the order pending instead of closing it unconfirmed.
+    identity = mem['_run_identity']
+    with patch.object(orchestrator, 'classify', return_value='field'), \
+         patch('docich.hanjuku.os_layer.screen.parse', return_value=FIELD):
+        _, state = orchestrator.decide(frame, state, run_identity=identity)
+    assert _plan_region(state['policy'])['orders']['1-A3'] == 'launched_unconfirmed'
+    records = [r['decision'] for r in state['_records']]
+    assert records.count('order_launched_unconfirmed') == 1
+    assert 'イッテツーン' not in state['policy']['card_stock']
+    assert state['policy']['card_stock'] == {'ノリウツール': 5}
+    assert state['policy']['picked'] == []
+
+
 def test_journaled_send_and_closed_picker_commit_the_fixed_departure():
     mem = memory(); confirm(mem); req = request(mem)
     req['request_trace'] = dict(TRACE)

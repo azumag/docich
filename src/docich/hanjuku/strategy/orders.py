@@ -2326,11 +2326,14 @@ def _finish_order(mem, state, **fields):
             if goal_kind:
                 goals.note_attempt(mem, goal_kind, 'failed', target=order.get('target'))
     _plan_region(mem)['active'] = None
-    if state in ('failed', 'pending'):
-        # The order is abandoned before its departure confirmation, so the
-        # cards this attempt had taken may be back in the field: make them
-        # unknown instead of keeping a count the cancel just invalidated.
-        # 'done'/'launched' keep the ledger (the carried copies left the field).
+    if state in ('failed', 'pending', 'launched_unconfirmed'):
+        # The order ended before a confirmed departure -- failed, abandoned,
+        # or the destination picker closed without a recorded send -- so the
+        # cards this attempt had taken may be back in the field: make their
+        # kinds unknown instead of keeping a count the cancel just invalidated.
+        # The next card-panel read or the full-inventory read fills it in
+        # again. 'done'/'launched' keep the ledger (the carried copies left
+        # the field).
         from .bargains import forget_picked
         forget_picked(mem)
     else:
