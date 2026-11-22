@@ -223,32 +223,33 @@ def test_scheduled_manual_corner_is_announced_when_it_comes_first(tmp_path):
     assert record["due_at"] == int(clock[0] + 1800)
 
 
-def test_notice_follows_the_first_cooldown_expiry(tmp_path):
+def test_notice_names_the_least_cooled_corner_after_every_corner_ran(tmp_path):
     g, clock, executor, spoken, make = _manager(tmp_path, cooldown=3)
     manager = make()
     manager.tick()
     now = clock[0]
     state = json.loads(manager.path.read_text())
-    # Every corner is still inside the 3h rolling cooldown, so the nominal
-    # interval slot has no candidate and the dispatcher re-anchors to the
-    # first expiry (retro, two hours after its use).
+    # Every corner is still inside the 3h rolling cooldown. The exhausted
+    # rotation uses the least-cooled corner (retro) at the next interval slot
+    # instead of waiting for retro's cooldown to expire.
     state["history"] = [
         {"corner": "retro", "at": now - 7200, "source": "completion"},
         {"corner": "meriken", "at": now - 3600, "source": "completion"},
         {"corner": "paper", "at": now - 600, "source": "completion"},
     ]
-    state["last_slot_at"] = now - 3600
-    state["next_due_at"] = now
+    state["last_slot_at"] = now - 1800
+    state["next_due_at"] = now + 1800
     manager.path.write_text(json.dumps(state), encoding="utf-8")
 
     manager.tick()
     record = corner_notice.read(g)
     assert record is not None
-    assert (record["corner"], record["due_at"]) == ("retro", int(now + 3600))
+    assert (record["corner"], record["due_at"]) == ("retro", int(now + 1800))
 
-    clock[0] = now + 3600
+    clock[0] = now + 1800
     manager.tick()
     assert executor.calls[-1]["corner"] == "retro"
+    assert executor.calls[-1]["cooldown_exempt"] is True
 
 
 def test_notice_is_withdrawn_while_another_game_is_on_air(tmp_path):
