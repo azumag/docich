@@ -37,6 +37,7 @@ from .game_switch import (
     GameSwitchStore,
     RuntimeSpec,
     StateCorruptError,
+    TERMINAL_RECEIPT_STATUSES,
     SWITCH_MIN_START_BUDGET_S,
     _request_payload_hash,
     atomic_write_json,
@@ -1141,8 +1142,147 @@ class RetroCornerManager:
             detail="起動前に失敗した手動起動をinterruptedとして確定",
         )
 
+    def _terminalize_released_finish_failure(
+        self,
+        state: dict[str, object],
+        *,
+        expected_request_id: str | None = None,
+        precommit=None,
+    ) -> CornerResult | None:
+        """Settle a released owner that ran to completion, else ``None``.
+
+        ``_terminalize_prelaunch_quiesce_failure`` covers the corner that
+        never became active: its failed start switch kept the rotation
+        request id in ``switch_request_id``. A corner that finished its run
+        and then failed the restore switch is a different durable shape
+        (#2479): ``_finish_locked`` recorded the restore request id there
+        before the refusal, so the prelaunch proof can never apply and the
+        released owner used to stay ``failed`` forever, keeping this shared
+        state file out of rotation selection.
+
+        The proofs are re-checked under the shared game-switch store lock in
+        the same interval as the corner write, exactly like the prelaunch
+        engine. The caller already bound the durable release record to this
+        exact request. The owner must be post-start: ``rotation_request_id``
+        names the released request, ``completed_at`` records the real end of
+        the slot, and ``switch_request_id`` is either a different request id
+        (the recorded restore) or already consumed (it is popped only once
+        the restore committed). A start failure keeps
+        ``switch_request_id == rotation_request_id`` and must stay with the
+        prelaunch engine, which deliberately fails closed without its own
+        terminal receipt. The canonical plane must be terminal-stable with
+        nothing in flight; ``active.game`` is intentionally *not* compared to
+        the corner's game, because a leftover corner runtime is the normal
+        case the release already proved reclaimable and the next switch
+        quiesces it. A parked or mid-flight plane and a non-terminal restore
+        receipt defer (``queued``) rather than refusing, so the rotation
+        pins the release evidence and retries the same settle.
+
+        On success the corner is recorded ``interrupted`` with the real
+        ``completed_at`` and ``finish_reason`` preserved, the error fields
+        cleared, and the pinned release record removed.
+        """
+
+        if state.get("status") != "failed":
+            return None
+        owner = state.get("rotation_request_id")
+        if (not isinstance(owner, str) or not owner
+                or (expected_request_id is not None
+                    and owner != expected_request_id)):
+            return None
+        switch_id = state.get("switch_request_id")
+        if switch_id is not None and (
+                not isinstance(switch_id, str) or switch_id == owner):
+            return None
+        target = state.get("game")
+        previous = state.get("previous_game")
+        if (not isinstance(target, str) or not target
+                or (previous is not None
+                    and (not isinstance(previous, str) or previous == target))):
+            return None
+        try:
+            completed_at = dt.datetime.fromisoformat(state["completed_at"])
+        except (KeyError, OverflowError, TypeError, ValueError):
+            return None
+        if completed_at.tzinfo is None or completed_at.timestamp() < 0:
+            return None
+
+        try:
+            with self.store.lock(exclusive=False):
+                # A non-terminal restore receipt means the recorded restore
+                # is still in flight somewhere; nothing may retire the owner
+                # while a request it started can still land.
+                if isinstance(switch_id, str):
+                    try:
+                        restore_receipt = self.store.receipts.load(switch_id)
+                    except StateCorruptError:
+                        restore_receipt = None
+                    if (isinstance(restore_receipt, dict)
+                            and restore_receipt.get("status")
+                            not in TERMINAL_RECEIPT_STATUSES):
+                        return CornerResult(
+                            "queued", game=target, previous_game=previous,
+                            detail="recorded restore requestの終端を待っています",
+                        )
+                try:
+                    canonical, missing = self.store.canonical.load()
+                except StateCorruptError:
+                    return None
+                if missing:
+                    return None
+                phase = canonical.get("phase")
+                # A parked or mid-flight plane is a transient the caller
+                # retries, not a refusal: the release was already proved and
+                # only its pinned record keeps the retry possible.
+                if phase not in {"idle", "ready"}:
+                    return CornerResult(
+                        "queued", game=target, previous_game=previous,
+                        detail=f"canonical phase={phase!r} の完了を待っています",
+                    )
+                if (canonical.get("operation") is not None
+                        or canonical.get("request_id") is not None
+                        or canonical.get("deadline_at") is not None
+                        or canonical.get("candidate") is not None
+                        or canonical.get("previous") is not None
+                        or canonical.get("retiring")):
+                    return CornerResult(
+                        "queued", game=target, previous_game=previous,
+                        detail="canonical の切替要素の完了を待っています",
+                    )
+                if precommit is not None and not precommit():
+                    return CornerResult(
+                        "queued", game=target, previous_game=previous,
+                        detail="released stop request removal failed",
+                    )
+                state.update(
+                    status="interrupted",
+                    end_reason="released-failure-after-corner-finished",
+                    last_error=None,
+                    last_error_code=None,
+                )
+                state.pop("switch_status", None)
+                # The owner is retired: the pinned release record has done
+                # its job and must not outlive the slot it described.
+                state.pop("released_settle_pending", None)
+                self._write_state(state)
+        except GameSwitchBusyError:
+            return CornerResult(
+                "queued", game=target, previous_game=previous,
+                detail="game-switch lockを別writerが保持中のため確定を待っています",
+            )
+        return CornerResult(
+            "succeeded",
+            game=target,
+            previous_game=previous,
+            detail="終了後に失敗したreleased ownerをinterruptedとして確定",
+        )
+
     def settle_released_failure(self, request_id: str, *, corner_id: str) -> bool | None:
-        """Retire this corner's exact released pre-start failure (#2352).
+        """Retire this corner's exact released failure (#2352, #2479).
+
+        Two durable shapes are covered: a pre-start failure whose switch
+        never made the corner active (#2352), and a released owner that ran
+        to completion and then failed its restore switch (#2479).
 
         The common rotation releases an unproven automatic failure only after
         it proves the shared program slot holds nothing from that request, and
@@ -1186,7 +1326,7 @@ class RetroCornerManager:
             return False
         if not isinstance(corner_id, str) or not corner_id:
             return False
-        rollback_failed = False
+        reconcile_rollback = False
         try:
             with self._locked():
                 state = self._read_state()
@@ -1200,19 +1340,40 @@ class RetroCornerManager:
                 if not self._released_record_proved(state, corner_id, request_id):
                     return False
                 rollback_failed = state.get("last_error_code") == ERROR_ROLLBACK_FAILED
-                if rollback_failed:
+                # A released owner that ran to completion and then failed its
+                # restore switch is a different durable shape (#2479): the
+                # recorded restore request id replaced the rotation request
+                # in ``switch_request_id``, so neither the prelaunch proof
+                # nor the start rollback reconciliation can apply. The
+                # reviewed post-finish engine retires it instead.
+                finish_shape = (
+                    isinstance(state.get("switch_request_id"), str)
+                    and state.get("switch_request_id") != request_id
+                )
+                if rollback_failed and not finish_shape:
                     # The prelaunch settle never accepts a failed rollback;
                     # the rolled-back reconciliation below re-proves the
                     # receipt and the stable previous owner under its own
                     # locks, which this tick lock would otherwise block.
                     if not self._clear_released_stop_request():
                         return None
+                    reconcile_rollback = True
                     result = None
+                elif finish_shape:
+                    result = self._terminalize_released_finish_failure(
+                        state, expected_request_id=request_id,
+                        precommit=self._clear_released_stop_request,
+                    )
                 else:
                     result = self._terminalize_prelaunch_quiesce_failure(
                         state, expected_request_id=request_id,
                         precommit=self._clear_released_stop_request,
                     )
+                    if result is None:
+                        result = self._terminalize_released_finish_failure(
+                            state, expected_request_id=request_id,
+                            precommit=self._clear_released_stop_request,
+                        )
                 status = getattr(result, "status", None)
                 if status == "queued":
                     # Pin the verified release record before answering "retry".
@@ -1223,7 +1384,7 @@ class RetroCornerManager:
                     self._record_released_settle_pending(state, corner_id, request_id)
         except (RetroCornerError, GameSwitchBusyError):
             return False
-        if rollback_failed:
+        if reconcile_rollback:
             return True if self.reconcile_failed_rotation_start(request_id) else False
         status = getattr(result, "status", None)
         if status == "succeeded":

@@ -5878,6 +5878,37 @@ ROTATION_FAILED_CORNER_REASONS = frozenset({
 ROTATION_AUTO_RESTORE_STATUSES = frozenset({
     "succeeded", "queued", "failed", "noop", "interrupted", "completed", "unknown", "none",
 })
+# Fixed detail codes the bounded restore replay can leave in its durable
+# record (#2479). Keep in sync with docich.corner_rotation.AUTO_RESTORE_DETAILS.
+ROTATION_AUTO_RESTORE_DETAILS = frozenset({
+    "not-a-restore-failure",
+    "restore-failure-unproven",
+    "restore-recovery-record-unproven",
+    "restore-prepared-source-unproven",
+    "restore-recovery-landing-unproven",
+    "restore-replay-source-unproven",
+    "restore-recovery-unproven",
+    "already released by rotation",
+    "bounded restore replay already terminal failed",
+    "terminal restore already failed; not replayed",
+    "terminal restore landing is not confirmed",
+    "terminal restore proof refused",
+    "terminal Hanjuku release was not confirmed",
+    "canonical stateの照合待ちです",
+    "canonicalと切替cleanupの完了を待っています",
+    "restoreのlockまたは証跡照合待ちです",
+    "同じrestore requestの受付待ちです",
+    "同じrestore requestの完了を待っています",
+    "restore再実行のreceiptとcleanupの照合待ちです",
+    "restore再実行のlockまたは証跡照合待ちです",
+    "restore終端とcleanupを確認してinterruptedとして確定しました",
+    "期限切れ後もgame switchが処理中のため終端を待ちます",
+})
+# Fixed per-corner outcomes of the released-owner settle (#2479). Keep in
+# sync with docich.corner_rotation.RELEASED_SETTLE_OUTCOMES.
+ROTATION_RELEASED_SETTLE_OUTCOMES = frozenset({
+    "retired", "deferred", "unretirable",
+})
 ROTATION_AUTO_RESTORE_ATTEMPT_LIMIT = 3
 # Bounded terminal-phase plane recovery replayed by the rotation timer
 # (#4349).  Keep in sync with docich.corner_rotation.
@@ -6977,7 +7008,12 @@ def _project_corner_state(data):
                            # this reason when the slot deadline itself has
                            # elapsed; it predates the admission gate but was
                            # never allowlisted and would project as null.
-                           "start-deadline-expired"} else None),
+                           "start-deadline-expired",
+                           # #2479: a released owner that finished its run
+                           # before the restore switch failed is retired
+                           # with this reason; without it the settled state
+                           # would project as null like an unknown reason.
+                           "released-failure-after-corner-finished"} else None),
         "game_result": _project_game_result(data.get("beta_result")),
         "bot_phase": (data.get("bot_phase") if data.get("bot_phase") in {
             "transition", "name", "dialogue", "shop", "field", "field_menu",
@@ -8903,7 +8939,8 @@ def _rotation_auto_restore_projection(data):
     record = data.get("auto_restore")
     out = {"auto_restore_corner": None, "auto_restore_attempts": None,
            "auto_restore_attempt_limit": ROTATION_AUTO_RESTORE_ATTEMPT_LIMIT,
-           "auto_restore_next_at": None, "auto_restore_status": None}
+           "auto_restore_next_at": None, "auto_restore_status": None,
+           "auto_restore_detail": None}
     if not isinstance(record, dict):
         return out
     out["auto_restore_corner"] = _bounded_str(record.get("corner"), 64)
@@ -8913,7 +8950,33 @@ def _rotation_auto_restore_projection(data):
     status = record.get("last_status")
     out["auto_restore_status"] = (status if status in ROTATION_AUTO_RESTORE_STATUSES
                                   else ("unknown" if status is not None else None))
+    detail = record.get("last_detail")
+    out["auto_restore_detail"] = (detail if detail in ROTATION_AUTO_RESTORE_DETAILS
+                                  else ("unknown" if detail is not None else None))
     return out
+
+
+def _rotation_released_settles_projection(data):
+    """Last released-owner settle answer per corner (#2479).
+
+    ``released-owner-unretired`` alone cannot tell a deferred retirement
+    (retried every tick) from an owner no hook can ever retire. Only the
+    fixed outcome vocabulary is published; request ids stay in the ledger.
+    """
+
+    rows = data.get("released_settle_outcomes")
+    if not isinstance(rows, dict):
+        return {"released_settles": None}
+    out = {}
+    for corner, row in rows.items():
+        if len(out) >= ROTATION_EXCLUDED_LIMIT:
+            break
+        if not isinstance(corner, str) or not corner or len(corner) > 64:
+            continue
+        outcome = row.get("outcome") if isinstance(row, dict) else None
+        out[corner] = (outcome if outcome in ROTATION_RELEASED_SETTLE_OUTCOMES
+                       else "unknown")
+    return {"released_settles": out or None}
 
 
 def _rotation_auto_plane_recovery_projection(data):
@@ -9275,6 +9338,7 @@ def _collect_corner_files(state_dir, payload, now):
         rotation.update(_rotation_manual_pending_projection(state_dir, data, now))
         rotation.update(_rotation_failed_corners_projection(data))
         rotation.update(_rotation_auto_restore_projection(data))
+        rotation.update(_rotation_released_settles_projection(data))
         rotation.update(_rotation_auto_plane_recovery_projection(data))
     mode, cooldown = _rotation_policy()
     rotation.update(schedule_mode=mode, cooldown_seconds=cooldown)
