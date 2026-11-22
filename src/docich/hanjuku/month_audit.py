@@ -1103,6 +1103,14 @@ def _battle_resources(record):
     }
 
 
+# Must match judgment.battle.RETREAT_RESOURCE_FLOOR_HP (a test guards the
+# equality). At or below this HP the battle flow deliberately stops every
+# card/egg detour and retreats: g460 lost the general 24 -> 12 -> 0 while
+# waiting in card menus. A retreat there is the designed safety valve, not a
+# resource left behind (owner 2026-11-23, docich#5130).
+SAFETY_FLOOR_HP = 4
+
+
 def _battle_resource_event(record):
     """Loss/retreat while eggs or cards remain, or None."""
     if not isinstance(record, dict):
@@ -1122,6 +1130,10 @@ def _battle_resource_event(record):
         outcome = 'loss'
     else:
         return None
+    if outcome == 'retreat':
+        hp = _bounded_int(metric.get('ally_hp'), -1, 10 ** 6)
+        if hp is not None and 0 < hp <= SAFETY_FLOOR_HP:
+            return None
     resources = _battle_resources(record)
     if not resources['resources']:
         return None
