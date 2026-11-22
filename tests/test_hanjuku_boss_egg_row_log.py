@@ -43,3 +43,25 @@ def test_a_normal_castle_battle_never_logs_it():
     mem = memory(castle='セレーネ')
     B.egg_battle_step(screen(text='こうげき'), mem)
     assert not any(r['decision'] == 'egg_row_unavailable' for r in mem['_records'])
+
+def test_a_carried_card_is_opened_before_attacking_a_summon(monkeypatch):
+    # Owner 2026-11-22: enemy summon + our general used こうげき while a
+    # carried card was still in planned_cards; the card menu was usable.
+    mem = memory()
+    mem['battle']['planned_cards'] = ['エンジェリン']
+    monkeypatch.setattr(B, '_battle_menu_to', lambda *a, **k: (160, 176))
+    monkeypatch.setattr(B, '_menu_move_batch', lambda *a, **k: 'here')
+    acts = B.egg_battle_step(screen(text='こうげききりふだたいきゃく'), mem)
+    assert acts == [B.pad('a')]
+    assert mem['battle']['card_flow']['card'] == 'エンジェリン'
+    assert any(r['decision'] == 'battle_summon_card_open' for r in mem['_records'])
+
+def test_the_summon_card_row_is_revealed_by_scrolling_down():
+    # Owner 2026-11-22: in a summon fight きりふだ sits below たまごをつかう;
+    # the command box must scroll down before the card can be opened.
+    mem = memory(uses=0)
+    mem['battle']['planned_cards'] = ['エンジェリン']
+    acts = B.egg_battle_step(screen(text='たまごをつかうおくのて'), mem)
+    assert acts == [B.pad('down')]
+    assert mem['battle']['summon_card_scroll'] == 1
+    assert any(r['decision'] == 'battle_summon_card_scroll' for r in mem['_records'])

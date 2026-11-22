@@ -11,8 +11,8 @@ from docich.hanjuku.flows import battle_menus as menus
 from docich.hanjuku.flows.battle_menus import MONSTER_STALL_RETURN_TURNS, MONSTER_STALL_TURNS
 
 
-def view(*, cursor=160, enemy_hp=45):
-    ally = SimpleNamespace(name='なると', hp=300, side='ally')
+def view(*, cursor=160, enemy_hp=45, ally_hp=300):
+    ally = SimpleNamespace(name='なると', hp=ally_hp, side='ally')
     other = SimpleNamespace(name='ラズベリー', hp=enemy_hp, side='enemy')
     skills = ['ぎざぎざ', 'うずまき']
     return SimpleNamespace(
@@ -55,10 +55,11 @@ def test_a_redraw_of_the_same_turn_keeps_its_choice_and_is_not_counted():
 
 
 def test_a_stall_returns_the_summon_after_the_bounded_total_turns():
-    # docich#4738: g1190-ch1v4 kept ホットないちげき vs リーキ 7+ own turns at
-    # enemy HP 30 while サマカンテ fell 614 -> 534 -> dead; a summon that never
-    # moves the enemy panel returns instead of grinding to death.
-    sc, mem = view(), {'chapter': 3, 'tick': 1}
+    # docich#4738: a summon that never moves the enemy panel returns instead
+    # of grinding to death.  The 2026-11-22 finishing guard keeps it instead
+    # when the enemy is nearly dead / the summon is far ahead, so this case
+    # uses an even HP trade.
+    sc, mem = view(ally_hp=60, enemy_hp=60), {'chapter': 3, 'tick': 1}
     actions = [turn(sc, mem)[0] for _ in range(MONSTER_STALL_RETURN_TURNS + 1)]
     assert actions[-1] == 'retreat'
     assert all(a in ('skill1', 'skill2') for a in actions[:-1])
@@ -75,3 +76,11 @@ def test_a_stall_keeps_tanking_when_the_bound_general_is_wounded(monkeypatch):
     sc, mem = view(), {'chapter': 3, 'tick': 1}
     actions = [turn(sc, mem)[0] for _ in range(MONSTER_STALL_RETURN_TURNS + 2)]
     assert 'retreat' not in actions
+
+def test_a_stall_keeps_the_summon_when_the_enemy_is_finishable():
+    # Owner 2026-11-22: the live run returned at enemy HP 27 / ally HP 515
+    # after the 6-turn bound, throwing away a winning summon.  Keep pressing.
+    sc, mem = view(ally_hp=515, enemy_hp=27), {'chapter': 3, 'tick': 1}
+    actions = [turn(sc, mem)[0] for _ in range(MONSTER_STALL_RETURN_TURNS + 2)]
+    assert 'retreat' not in actions
+    assert mem['monster_stall'].get('finishing_keep') is True

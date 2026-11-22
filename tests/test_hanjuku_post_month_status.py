@@ -2,6 +2,8 @@
 import json
 from unittest.mock import patch
 
+import pytest
+
 from docich.hanjuku.flows import post_month_status as post
 from docich.hanjuku.os_layer import roster as receipts
 from docich.hanjuku.os_layer.commands import pad
@@ -9,6 +11,13 @@ from docich.hanjuku.os_layer.screen import Screen, parse
 
 from test_hanjuku_house import Canvas, roster, status
 from docich.hanjuku.state.regions import flow as _flow, world as _world, plan as _plan_region
+
+
+@pytest.fixture(autouse=True)
+def _enable_repair_for_existing_tests(monkeypatch):
+    # The production flag is temporarily True; these legacy cases test the
+    # repair ordering itself, so keep them on the enabled path.
+    monkeypatch.setattr(post, 'EGG_REPAIR_DISABLED', False)
 
 
 def memory(**fields):
@@ -2005,3 +2014,9 @@ def test_three_open_failures_skip_the_next_arm():
     mem['month'] = '1-9'
     post.arm(mem)
     assert 'post_month_status' in mem
+
+def test_repair_tasks_are_skipped_while_temporarily_disabled(monkeypatch):
+    monkeypatch.setattr(post, 'EGG_REPAIR_DISABLED', True)
+    statuses = {'ゼウス': {'location': 'castle', 'broken': True, 'castle': 'アルマムーン'}}
+    assert post._tasks(statuses, ['ゼウス']) == []
+    assert post._tasks(statuses, ['ゼウス'], road=True) == []

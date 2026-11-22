@@ -106,3 +106,12 @@ def test_a_delegation_that_cannot_act_falls_back_to_the_walk(monkeypatch):
     monkeypatch.setattr(p, '_y_route_step', lambda *_a, **_k: [])
     assert only_press(p.world_map_step(VIEW, mem, picker())) == 'left'
     assert 'y_jump' not in mem
+
+def test_an_origin_without_camp_world_keeps_the_native_picker_walk(monkeypatch):
+    """The actual world_map picker has only origin in the native/receipt
+    fixtures; the picker receipts and native ring must keep their walk.  The
+    bare map_target marker still uses origin (see the nameless picker test)."""
+    mem = memory(origin=list(p.chart.castles(1)['キカンドン']), **bound_goal())
+    at(monkeypatch, 'アルマムーン')
+    assert only_press(p.world_map_step(VIEW, mem, picker())) == 'left'
+    assert 'y_jump' not in mem

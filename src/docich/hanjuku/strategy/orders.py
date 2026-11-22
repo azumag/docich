@@ -2476,7 +2476,12 @@ def _recall_goal(mem, flags=None):
     # camp_world is the camp's own world cell measured through the field
     # cursor; it resolves even when the roof-anchored origin never bound, so
     # the Y-jump goal stops falling back to the きかん picker (docich#4755).
-    origin = state.get('origin') or state.get('camp_world')
+    # A recall queued by the monthly walk may have no origin/camp_world this
+    # cycle; the last measured camp world is still the unit's position and
+    # keeps the goal on the nearest own castle instead of falling back to the
+    # hero's capital (owner 2026-11-22: Y-jump always picked アルマムーン).
+    last_camp = _flow(mem).get('camp_last_world')
+    origin = state.get('origin') or state.get('camp_world') or last_camp
     if (isinstance(origin, (list, tuple)) and len(origin) == 2
             and all(type(value) in (int, float) for value in origin)):
         # camp_world arrives as cursor arithmetic, so it is often float;

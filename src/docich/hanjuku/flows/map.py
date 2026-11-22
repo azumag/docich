@@ -418,7 +418,16 @@ def _picker_y_route(screen, mem, recall, goal):
     never starts while another jump is in flight, and returns ``None`` so the
     ordinary picker walk keeps the screen whenever it cannot act.
     """
-    camp_world = recall.get('camp_world')
+    # The bare map_target marker may use the measured origin; the actual
+    # recall picker (world_map) delegates only with a measured camp_world.
+    # The native picker/receipt tests have origin but no camp_world and must
+    # keep their ring walk.
+    if screen.kind == 'map_target':
+        camp_world = recall.get('camp_world') or recall.get('origin')
+    else:
+        camp_world = recall.get('camp_world')
+        if not camp_world:
+            return None
     if not (isinstance(goal, str) and goal
             and isinstance(camp_world, (list, tuple)) and len(camp_world) == 2
             and all(type(axis) in (int, float) for axis in camp_world)):
@@ -1542,6 +1551,37 @@ def _end_castle_jump(screen, mem, why):
                     target=jump.get('source'), screen=screen.kind,
                     observed_metric={'failures': n, 'why': why},
                     reason='Xメニューが開かないまま上限に達したため、この出撃元の注文を諦めて別の城から組み直す')
+        # The same bound must cover a list/scroll failure: the interim active
+        # order (chart_adjust) can otherwise retry the same castle jump for
+        # tens of observations while every planning order stays pending
+        # (owner 2026-11-22: 208 castle_jump_scroll / 71 menu failures, no
+        # sortie). Give the interim order up and let the plan's pending
+        # orders run.
+        if (_plan_region(mem).get('active') == step_key
+                and n >= CASTLE_JUMP_ABANDON):
+            _plan_region(mem).setdefault('orders', {})[step_key] = 'failed'
+            _plan_region(mem)['active'] = None
+            fails.pop(step_key, None)
+            mem['castle_jump_menu_failures'] = fails
+            mem.pop('castle_jump_y', None)
+            mem['castle_jump_skip'] = {'step': step_key, 'tick': int(mem.get('tick') or 0)}
+            adjust = mem.get('chart_adjust')
+            if isinstance(adjust, dict):
+                interim = adjust.get('interim_order') or {}
+                if isinstance(interim, dict) and interim.get('step') == step_key:
+                    adjust.pop('interim_order', None)
+                    steps = adjust.get('interim_steps')
+                    if isinstance(steps, dict):
+                        for key, value in list(steps.items()):
+                            if value == step_key:
+                                steps.pop(key)
+                    _record(mem, 'chart_interim_abandoned', chart_step=step_key,
+                            observed_metric={'failures': n, 'why': why},
+                            reason='暫定注文の城ジャンプが上限まで失敗したため、この暫定注文を破棄して基本計画へ戻す')
+            _record(mem, 'castle_jump_abandoned', chart_step=step_key,
+                    target=jump.get('source'), screen=screen.kind,
+                    observed_metric={'failures': n, 'why': why},
+                    reason='城ジャンプが上限まで失敗したため、この出撃元の注文を諦めて別の城から組み直す')
     if screen.kind == 'main_menu' or _castle_list_rows(screen):
         return [pad('b')]
     return []

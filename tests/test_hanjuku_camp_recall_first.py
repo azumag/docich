@@ -12,7 +12,10 @@ from docich import hanjuku_policy as policy
 from docich.hanjuku_screen import Screen
 
 
-def test_a_camp_recall_runs_before_an_earlier_named_repair_and_locates():
+def test_a_camp_recall_runs_before_an_earlier_named_repair_and_locates(monkeypatch):
+    # Egg repair is disabled in the live local run; re-enable it for this
+    # ordering contract.
+    monkeypatch.setattr(post, 'EGG_REPAIR_DISABLED', False)
     statuses = {
         'ジェラート': {'location': 'castle', 'castle': 'オシロガ', 'broken': True},
         'ライム': {'location': 'castle'},
