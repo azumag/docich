@@ -7,13 +7,22 @@ The recall intent is now held instead: ``steps`` never advances while the
 screen cannot be operated, ``hold_since`` bounds the wait at
 ``RECALL_HOLD_TICK_LIMIT`` ticks, and a resumable screen clears it. The
 step-limit abort itself is unchanged — including ``RECALL_LIMIT == 90``.
+
+docich#5134 extends the same contract to the 'map' burn path the original
+fix missed: a cursorless 'map' frame in ``to_camp`` is held like any other
+unoperable screen (bounded by the same tick limit), and a battle that took
+the foreground mid-nav restarts the step budget on return — bounded by
+``RECALL_BATTLE_RESET_LIMIT`` and ``RECALL_BATTLE_RESET_TICKS``.
 """
 from docich.hanjuku.flows import recall as recall_flow
 from docich.hanjuku.os_layer.screen import Frame, Screen
 from docich.hanjuku.state.regions import flow as _flow
-from test_hanjuku_chart_bot import camp_menu
+from test_hanjuku_chart_bot import _camp_frame, camp_menu
 
 FRAME = Frame(256, 224, b'\x00' * (256 * 224 * 3))
+# A HUD row keeps a cursorless 'map' frame out of map_step's blind
+# (chapter-intermission) classification — post-battle fades look like this.
+HUD = {'chapter': 6, 'year': 1, 'month': 1, 'gold': 0}
 
 
 def memory(stage='dest', tick=100):
@@ -89,3 +98,110 @@ def test_a_camp_menu_is_never_treated_as_a_hold():
     _flow(mem)['recall']['hold_since'] = 50
     assert recall_flow.camp_recall_step(camp_menu(0), mem, FRAME) == [recall_flow.pad('a')]
     assert 'hold_since' not in _flow(mem)['recall']
+
+
+def test_a_cursorless_map_frame_in_to_camp_holds_without_steps():
+    """docich#5134: the frames that actually burned the ch6 recall were 'map'
+    observations with no cursor sprite (the post-battle return animation).
+    91 of them must not spend the step budget — the 'battle'-kind version
+    above could not have reproduced the failure."""
+    mem = memory(stage='to_camp')
+    mem['chapter'] = 6
+    fade = Screen([], None, '', kind='map', header=dict(HUD))
+    for _ in range(91):
+        assert recall_flow.camp_recall_step(fade, mem, FRAME) == []
+    state = _flow(mem)['recall']
+    assert state is not None and state['stage'] == 'to_camp' and state['steps'] == 5
+    assert state['hold_since'] == 100
+    assert not any(r['decision'] == 'camp_recall_aborted' for r in mem['_records'])
+
+
+def test_the_cursorless_map_hold_aborts_only_after_the_tick_limit():
+    mem = memory(stage='to_camp')
+    fade = Screen([], None, '', kind='map', header=dict(HUD))
+    assert recall_flow.camp_recall_step(fade, mem, FRAME) == []
+    assert _flow(mem)['recall']['hold_since'] == 100
+    mem['tick'] = 100 + recall_flow.RECALL_HOLD_TICK_LIMIT - 1
+    assert recall_flow.camp_recall_step(fade, mem, FRAME) == []
+    assert _flow(mem).get('recall') is not None            # still held, no early abort
+    mem['tick'] = 100 + recall_flow.RECALL_HOLD_TICK_LIMIT
+    assert recall_flow.camp_recall_step(fade, mem, FRAME) == []
+    assert not _flow(mem).get('recall')
+    aborted = [r for r in mem['_records'] if r['decision'] == 'camp_recall_aborted']
+    assert aborted and aborted[0]['observed_metric']['held_ticks'] \
+        == recall_flow.RECALL_HOLD_TICK_LIMIT
+
+
+def test_a_hudless_map_is_not_held_as_a_fade():
+    """A chapter intermission parks on a map with no cursor/HUD/text — the
+    blind map map_step advances with A. It keeps the old counted path so the
+    recall still releases instead of holding the field for the tick limit."""
+    mem = memory(stage='to_camp')
+    blind = Screen([], None, '', kind='map')
+    assert recall_flow.camp_recall_step(blind, mem, FRAME) == []
+    state = _flow(mem)['recall']
+    assert 'hold_since' not in state and state['steps'] == 6
+
+
+def test_a_battle_return_restarts_the_to_camp_budget():
+    """Combat pulls the field cursor back to the battle site, so the steps
+    burned before it are debt on a position that no longer exists. The first
+    operable map frame restarts the budget instead of aborting on it."""
+    mem = memory(stage='to_camp')
+    mem['chapter'] = 6
+    state = _flow(mem)['recall']
+    state['steps'] = 90                              # the next counted frame used to abort
+    battle = Screen([], None, '', kind='battle')
+    assert recall_flow.camp_recall_step(battle, mem, FRAME) is None
+    assert state['battle_return'] is True
+    field = _camp_frame()                            # the tent is back in view
+    actions = recall_flow.camp_recall_step(
+        Screen([], None, '', kind='map', cursor=(80, 90)), mem, field)
+    assert actions == [recall_flow.pad('left', recall_flow.CAMP_STEP_FRAMES)]
+    assert state['steps'] == 1 and state['battle_resets'] == 1
+    assert 'battle_return' not in state
+    assert any(r['decision'] == 'camp_recall_battle_reset' for r in mem['_records'])
+
+
+def test_a_battle_return_restarts_the_menu_budget():
+    mem = memory(stage='menu')
+    state = _flow(mem)['recall']
+    state['steps'] = 80
+    battle = Screen([], None, '', kind='battle')
+    assert recall_flow.camp_recall_step(battle, mem, FRAME) is None
+    field = _camp_frame()
+    assert recall_flow.camp_recall_step(
+        Screen([], None, '', kind='map', cursor=(80, 90)), mem, field) == []
+    assert state['steps'] == 1 and state['battle_resets'] == 1
+
+
+def test_battle_resets_do_not_stretch_a_recall_forever():
+    """After RECALL_BATTLE_RESET_LIMIT restarts an eighth battle's return no
+    longer refunds the budget: the counted observations run out and the
+    recall aborts as before."""
+    mem = memory(stage='to_camp')
+    state = _flow(mem)['recall']
+    state['battle_resets'] = recall_flow.RECALL_BATTLE_RESET_LIMIT
+    state['steps'] = 90
+    battle = Screen([], None, '', kind='battle')
+    assert recall_flow.camp_recall_step(battle, mem, FRAME) is None
+    field = _camp_frame()
+    assert recall_flow.camp_recall_step(
+        Screen([], None, '', kind='map', cursor=(80, 90)), mem, field) == []
+    assert not _flow(mem).get('recall')              # 91 > RECALL_LIMIT: aborted
+    assert any(r['decision'] == 'camp_recall_aborted' for r in mem['_records'])
+
+
+def test_battle_resets_expire_outside_the_tick_window():
+    mem = memory(stage='to_camp', tick=2000)
+    state = _flow(mem)['recall']
+    state['battle_resets'] = 1
+    state['battle_reset_since'] = 2000 - recall_flow.RECALL_BATTLE_RESET_TICKS
+    state['steps'] = 90
+    battle = Screen([], None, '', kind='battle')
+    assert recall_flow.camp_recall_step(battle, mem, FRAME) is None
+    field = _camp_frame()
+    assert recall_flow.camp_recall_step(
+        Screen([], None, '', kind='map', cursor=(80, 90)), mem, field) == []
+    assert not _flow(mem).get('recall')              # window expired: no restart
+    assert any(r['decision'] == 'camp_recall_aborted' for r in mem['_records'])
