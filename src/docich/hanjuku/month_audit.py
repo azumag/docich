@@ -54,6 +54,29 @@ SORTIE_ISSUE_COOLDOWN_SECONDS = 900
 BATTLE_RESOURCE_ISSUE_COOLDOWN_SECONDS = 900
 CAMP_ABANDON_MONTHS = 3
 RECALL_KIKAN_COOLDOWN_SECONDS = 900
+BATTLE_MENU_ACTIONS = frozenset({
+    'battle_egg_general_attack', 'battle_egg_break_bait',
+    'battle_egg_retreat_attempt', 'battle_egg_opening_preempt',
+    'battle_card_selected', 'battle_card', 'battle_card_effect_confirmed',
+    'battle_hero_retreat_select', 'battle_retreat_preempted_card',
+    'battle_okunote_last_resort', 'battle_okunote_egg_preempt',
+    'battle_okunote_summon_preempt', 'battle_okunote_select',
+    'battle_survival_select',
+})
+BATTLE_MENU_CLOSES = frozenset({
+    'battle_menu_close', 'battle_one_hit_menu_close', 'battle_egg_conserve',
+    'battle_survival_unavailable', 'battle_menu_rescue_exhausted',
+    'battle_menu_rescue_reclose', 'battle_card_remaining_unconfirmed',
+    'battle_egg_actor_unconfirmed', 'battle_menu_context_recheck',
+    'battle_menu_recheck_unconfirmed', 'battle_command_incomplete',
+    'battle_card_menu_skipped_confirmed_kit', 'battle_okunote_egg_wait',
+    'battle_disabled_defense_probe',
+})
+BATTLE_MENU_IGNORED_CLOSES = frozenset({
+    'battle_menu_close', 'battle_one_hit_menu_close',
+})
+
+BATTLE_MENU_ISSUE_COOLDOWN_SECONDS = 900
 CHIKUJOU_ISSUE_COOLDOWN_SECONDS = 900
 MIN_MONTH_SECONDS = 120
 MAX_GAP_SECONDS = 60
@@ -139,6 +162,8 @@ SIGNAL_LABELS = {
     'corner_stalled': '画面停滞でコーナー停止',
     'screen_stalled': '画面が停止した',
     'input_stalled': '入力が停滞した',
+    'battle_menu_wasted': '戦闘Bメニューの無駄な開閉',
+    'battle_menu_no_resource': '卵・切り札・退却・奥の手を実行せず閉じた',
     'unknown': '原因未分類',
 }
 SIGNAL_ORDER = tuple(SIGNAL_LABELS)
@@ -202,9 +227,12 @@ PRIMARY_LABELS = {
     'corner_stalled': '画面停滞でコーナー停止',
     'screen_stalled': '画面が停止した',
     'input_stalled': '入力が停滞した',
+    'battle_menu_wasted': '戦闘Bメニューの無駄な開閉',
+    'battle_menu_no_resource': '卵・切り札・退却・奥の手を実行せず閉じた',
     'unknown': '原因未分類',
 }
 PRIMARY_SIGNALS = (
+    ('battle_menu_wasted', ('battle_menu_wasted',)),
     ('corner_stalled', ('corner_stalled',)),
     ('recall_kikan_selected', ('recall_kikan_selected',)),
     ('boss_month_zero_sortie', ('boss_month_zero_sortie',)),
@@ -1887,6 +1915,169 @@ def _track_recall_kikan(runtime, state, after, records, now, on_sealed=None):
             table.pop(stale, None)
 
 
+
+def _battle_menu_key(after):
+    mem = after.get('policy') if isinstance(after, dict) else None
+    mem = mem if isinstance(mem, dict) else {}
+    cur = mem.get('battle') if isinstance(mem.get('battle'), dict) else {}
+    return (cur.get('general') or cur.get('ally'), cur.get('step'))
+
+
+def _battle_menu_actions(records):
+    return [row for row in records or ()
+            if isinstance(row, dict) and row.get('decision') in BATTLE_MENU_ACTIONS]
+
+
+def _battle_menu_close(records):
+    rows = [row for row in records or ()
+            if isinstance(row, dict) and row.get('decision') in BATTLE_MENU_CLOSES]
+    if not rows:
+        return None
+    for row in rows:
+        if row.get('decision') not in BATTLE_MENU_IGNORED_CLOSES:
+            return row
+    return rows[0]
+
+
+def _build_battle_menu_incident(runtime, state, after, watch, close, now):
+    mem = after.get('policy') or {}
+    cur = mem.get('battle') if isinstance(mem.get('battle'), dict) else {}
+    context = _context(after)
+    rows = _read_decisions(runtime, max(0.0, float(now) - 120), now,
+                           state.get('identity'))
+    counts = _decision_counts(rows)
+    departures, launch_events = _departures(rows)
+    month_sorties = (context or {}).get('month_sorties') or {}
+    confirmed = month_sorties.get('launches') if isinstance(month_sorties, dict) else None
+    battle_count = sum(counts.get(name, 0) for name in counts
+                       if name.startswith('battle_') or name == 'monster_menu_choice')
+    signals = ['battle_menu_wasted', 'battle_menu_no_resource']
+    for name in _signals(context, counts, confirmed, departures, battle_count):
+        if name not in signals:
+            signals.append(name)
+    signals = signals[:8]
+    identity = state.get('identity') or {}
+    observed = state.get('observed') if isinstance(state.get('observed'), dict) else None
+    if observed is not None:
+        month = _month_summary(observed, now)
+    else:
+        month = None
+    record = {
+        'schema': SCHEMA,
+        'event': 'battle_menu_wasted',
+        'kind': 'battle_menu_wasted',
+        'confidence': 'high',
+        'confidence_reasons': [],
+        'chapter': mem.get('chapter'),
+        'month': mem.get('month'),
+        'month_summary': month,
+        'battle_menu': {
+            'general': _bounded_text(watch.get('general'), 48),
+            'step': _bounded_text(watch.get('step'), 64),
+            'opened_at': watch.get('opened_at'),
+            'closed_at': float(now),
+            'duration_s': round(max(0.0, float(now) - float(watch.get('opened_at') or now)), 1),
+            'ally_hp': watch.get('ally_hp'),
+            'enemy_hp': watch.get('enemy_hp'),
+            'side': _bounded_text(cur.get('side'), 16),
+            'close_decision': _bounded_text(close.get('decision'), 64),
+            'close_reason': _bounded_text(close.get('reason'), 200),
+            'close_metric': copy.deepcopy(close.get('observed_metric') or {}),
+            'executed_actions': [],
+        },
+        'sorties': {
+            'confirmed': confirmed,
+            'departures': departures,
+            'launch_events': launch_events,
+            'order_start': counts.get('order_start', 0),
+            'order_launched': counts.get('order_launched', 0),
+        },
+        'plan': copy.deepcopy((context or {}).get('plan') or {}),
+        'world': copy.deepcopy((context or {}).get('world') or {}),
+        'flow': copy.deepcopy((context or {}).get('flow') or {}),
+        'stats': copy.deepcopy((context or {}).get('stats') or {}),
+        'battles': {'decisions': battle_count},
+        'signals': signals,
+        'decisions': {
+            'total': len(rows),
+            'counts': counts,
+            'coverage': None,
+            'before': _decision_rows(rows, 30),
+            'after': None,
+        },
+        'evidence': {
+            'runtime_dir': str(Path(runtime).name),
+            'decisions': 'hanjuku_decisions.jsonl',
+            'events': 'hanjuku_events.jsonl',
+            'frames': 'hanjuku_frames/',
+            'bot_version': after.get('bot_version'),
+            'identity': identity,
+        },
+        'context_missing': context is None,
+        'created_at': float(now),
+    }
+    raw = (f"{identity.get('runtime_id')}|{identity.get('generation')}|"
+           f"battle_menu_wasted|{watch.get('general')}|{watch.get('step')}|"
+           f"{int(float(watch.get('opened_at') or now))}")
+    record['incident_id'] = hashlib.sha256(raw.encode('utf-8')).hexdigest()[:20]
+    record['signature'] = 'battle_menu_wasted'
+    record['fingerprint'] = _fingerprint(mem.get('chapter'), 'battle_menu_wasted',
+                                         ['battle_menu_wasted'])
+    record['auto_file'] = True
+    return _shrink(record)
+
+
+def _track_battle_menu(runtime, state, before, after, records, now, on_sealed=None):
+    is_menu = after.get('screen_kind') == 'battle_menu'
+    watch = state.get('battle_menu_watch')
+    if not is_menu:
+        if not isinstance(watch, dict):
+            return
+        actions = list(watch.get('actions') or []) + _battle_menu_actions(records)
+        close = _battle_menu_close(records)
+        state['battle_menu_watch'] = None
+        if not close or actions or close.get('decision') in BATTLE_MENU_IGNORED_CLOSES:
+            return
+        chapter = (after.get('policy') or {}).get('chapter')
+        key = '|'.join(str(part or '') for part in (
+            chapter, watch.get('general'), watch.get('step')))
+        table = state.setdefault('battle_menu_events', {})
+        if not isinstance(table, dict):
+            table = state['battle_menu_events'] = {}
+        last = table.get(key)
+        if (isinstance(last, dict)
+                and float(now) - float(last.get('at') or 0) < BATTLE_MENU_ISSUE_COOLDOWN_SECONDS):
+            last['count'] = int(last.get('count') or 1) + 1
+            return
+        incident = _build_battle_menu_incident(runtime, state, after, watch, close, now)
+        _append_incident(runtime, incident, on_sealed)
+        table[key] = {'at': float(now), 'kind': 'battle_menu_wasted', 'count': 1}
+        if len(table) > 30:
+            for stale in sorted(table, key=lambda name: table[name].get('at') or 0)[:-30]:
+                table.pop(stale, None)
+        return
+    if not isinstance(watch, dict):
+        key = _battle_menu_key(after)
+        mem = after.get('policy') or {}
+        cur = mem.get('battle') if isinstance(mem.get('battle'), dict) else {}
+        watch = {
+            'opened_at': float(now),
+            'general': key[0],
+            'step': key[1],
+            'ally_hp': cur.get('ally_hp'),
+            'enemy_hp': cur.get('enemy_hp'),
+            'actions': [],
+        }
+        state['battle_menu_watch'] = watch
+    elif _battle_menu_key(after) != (watch.get('general'), watch.get('step')):
+        state['battle_menu_watch'] = None
+        return
+    for row in _battle_menu_actions(records):
+        action = row.get('decision')
+        if isinstance(action, str) and action not in watch.setdefault('actions', []):
+            watch['actions'].append(action)
+
+
 def _track_camp_abandon(runtime, state, after, now, on_sealed=None):
     mem = after.get('policy') or {}
     chapter, month = mem.get('chapter'), mem.get('month')
@@ -2799,6 +2990,7 @@ def observe(runtime, before, after, records=None, *, now=None, on_sealed=None):
     _track_camp_abandon(runtime, state, after, now, on_sealed)
     _track_chikujou(runtime, state, before, after, records, now, on_sealed)
     _track_recall_kikan(runtime, state, after, records, now, on_sealed)
+    _track_battle_menu(runtime, state, before, after, records, now, on_sealed)
     state['write_tick'] = int(state.get('write_tick') or 0) + 1
     # The open-month counters only advance if every observation persists them:
     # a write every tenth observation restarted from the last file and could
@@ -2973,6 +3165,7 @@ def render(record):
     boss = record.get('boss_phase') or {}
     recall = record.get('recall_event') or {}
     stall = record.get('corner_stall') or {}
+    battle_menu = record.get('battle_menu') or {}
     body = [
         f"<!-- hanjuku-month-audit fingerprint={record.get('fingerprint')} -->",
         f"<!-- hanjuku-month-audit occurrence={record.get('incident_id')} -->",
@@ -3054,6 +3247,19 @@ def render(record):
             f" / 最終観測tick: {stay.get('last_tick')}",
             '',
         ]
+    if battle_menu:
+        body += [
+            '### 戦闘Bメニュー',
+            '',
+            f"- 将軍: {battle_menu.get('general') or '不明'} / step: {battle_menu.get('step') or '不明'}"
+            f" / side: {battle_menu.get('side') or '不明'}",
+            f"- 開閉: {battle_menu.get('opened_at')} → {battle_menu.get('closed_at')}"
+            f"（{battle_menu.get('duration_s')}秒） / 実行: なし",
+            f"- HP: ally {battle_menu.get('ally_hp')} / enemy {battle_menu.get('enemy_hp')}",
+            f"- 閉じた決定: {battle_menu.get('close_decision')}"
+            f" / 理由: {battle_menu.get('close_reason') or '不明'}",
+            '',
+        ]
     if battle:
         body += [
             '### 戦闘結果',
@@ -3103,7 +3309,8 @@ def render(record):
             f" / 残りボス城: {', '.join(boss.get('bosses') or [])}",
             '',
         ]
-    body.append('### 直前の決定' if (camp or sortie or battle or stay or chikujou or recall or stall) else
+    body.append('### 直前の決定' if (camp or sortie or battle or stay or chikujou or recall
+                                     or stall or battle_menu) else
                 ('### ボスフェーズの決定' if kind in ('boss_month_zero_sortie',
                                                      'boss_month_zero_unverified')
                  else '### フェーズ中の決定' if kind == 'boss_phase_no_battle'
@@ -3120,7 +3327,8 @@ def render(record):
     for row in rows:
         body.append(f"| {_clock(row.get('at'))} | {_cell(row.get('decision'))} | {_cell(row.get('chart_step'))} | {_md(row.get('general'))} | {_md(row.get('target'))} | {_md(row.get('reason'))} |")
     body += ['', '### 現在の計画' if (camp or sortie or battle or stay or chikujou or recall
-                                     or stall or boss_month or kind == 'boss_phase_no_battle')
+                                     or stall or battle_menu or boss_month
+                                     or kind == 'boss_phase_no_battle')
              else '### 前月の計画', '',
              '| step | 状態 | 目的 | 出撃元 | 対象 | 将軍 |',
              '| --- | --- | --- | --- | --- | --- |']
@@ -3190,8 +3398,13 @@ def render_comment(record):
     chikujou = record.get('chikujou_event') or {}
     recall = record.get('recall_event') or {}
     stall = record.get('corner_stall') or {}
+    battle_menu = record.get('battle_menu') or {}
     boss_month = record.get('boss_month') or {}
-    if record.get('kind') == 'corner_stalled':
+    if record.get('kind') == 'battle_menu_wasted':
+        lines.insert(5, f"- 戦闘Bメニュー: {battle_menu.get('duration_s')}秒"
+                        f" / 実行なし / {battle_menu.get('general') or '不明'}"
+                        f" / close {battle_menu.get('close_decision')}")
+    elif record.get('kind') == 'corner_stalled':
         lines.insert(5, f"- 停止: {stall.get('reason')}"
                         f" / 無変化 {stall.get('unchanged_seconds')}秒"
                         f" / g{stall.get('generation')}")
@@ -3230,6 +3443,10 @@ def render_comment(record):
 
 def _issue_title(record):
     kind = record.get('kind')
+    if kind == 'battle_menu_wasted':
+        menu = record.get('battle_menu') or {}
+        who = menu.get('general') or menu.get('step') or '将軍不明'
+        return (f"[半熟英雄] 戦闘Bメニューを無駄に開閉: ch{record.get('chapter')} {who}")[:100]
     if kind == 'corner_stalled':
         stall = record.get('corner_stall') or {}
         label = ('画面停滞' if stall.get('reason') == 'screen_stalled' else '入力停滞')

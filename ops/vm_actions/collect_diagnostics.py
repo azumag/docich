@@ -8051,6 +8051,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v1376-unconfirmed-sortie-forget",
             "hanjuku-chart-v1377-recall-kikan-issue",
             "hanjuku-chart-v1378-corner-stall-issue",
+            "hanjuku-chart-v1379-battle-menu-issue",
             "hanjuku-chart-v985-roster-lost",
             "hanjuku-chart-v982-gbox",
             "hanjuku-chart-v984-roster-map-anchor",
