@@ -1841,6 +1841,7 @@ def test_hanjuku_hotload_versions_are_fixed_values_not_an_arbitrary_prefix():
                  "hanjuku-chart-v1373-egg-receipt-settle",
                  "hanjuku-chart-v1375-boss-dispatch-guarantee",
                  "hanjuku-chart-v1392-dispatch-starve-measure",
+                 "hanjuku-chart-v1393-roster-due-consume",
 )
     for version in versions:
         assert module._project_corner_state({'bot_version': version})['bot_version'] == version
