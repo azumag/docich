@@ -233,6 +233,22 @@ def assess(document, *, now=None):
     }
 
 
+def _matching_row(rows, corner):
+    """Find a state row by state name or by the game it recorded.
+
+    Rotation audit rows use catalog ids (``nethack``) while the state files
+    use their own names (``nethack_corner``). Matching the projected game id
+    merges both pieces of evidence for the same current run.
+    """
+    current = rows.get(corner)
+    if current is not None:
+        return current
+    for row in rows.values():
+        if row.get("game") == corner:
+            return row
+    return None
+
+
 def _abnormal_rows(corners, rotation, now):
     rows = {}
     for name in CORNER_STATE_NAMES:
@@ -284,8 +300,15 @@ def _abnormal_rows(corners, rotation, now):
             )
             if age > max_age:
                 continue
-            current = rows.get(corner)
+            current = _matching_row(rows, corner)
             if current is None:
+                # A recovery-required audit row outlives the latch it was
+                # written for. Once the rotation is no longer latched, the
+                # row is history, not a current abnormal exit; the corner
+                # state still reports any unresolved failure on its own.
+                if (resolution == "recovery-required"
+                        and rotation.get("status") != "recovery_required"):
+                    continue
                 current = {
                     "corner": corner,
                     "game": None,
@@ -297,10 +320,21 @@ def _abnormal_rows(corners, rotation, now):
                     "error_kind": None,
                 }
                 rows[corner] = current
+            # A state row can be newer than the audit row for the same game.
+            # In that case keep the current state failure authoritative and do
+            # not attach an older reason code to it.
+            state_row = current.get("source") == "state"
+            newer = (not state_row
+                     or current.get("age_sec") is None
+                     or age <= current["age_sec"])
             if current.get("age_sec") is None or age < current["age_sec"]:
                 current["age_sec"] = age
+            if not newer:
+                continue
             if current.get("resolution") is None:
                 current["resolution"] = resolution
+            if resolution == "recovery-required" and current.get("recovery_required") is None:
+                current["recovery_required"] = True
             current["reason_code"] = _fixed(row.get("reason_code"), FAILED_CORNER_REASONS)
             current["error_kind"] = _fixed(row.get("error_kind"), ERROR_KINDS)
 
