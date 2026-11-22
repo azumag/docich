@@ -66,6 +66,28 @@ def test_a_paid_recovery_abandoned_mid_ritual_stays_unverified():
     assert mem['shop']['egg'] == 'unverified'
     rec = next(r for r in mem['_records'] if r['decision'] == 'month_sub_abandoned')
     assert rec['observed_metric']['shop_status'] == 'unverified'
+    # docich#5045: the mark keeps its payment expectation so a later readable
+    # balance can still settle it (unpaid -> skipped, matching debit -> done).
+    assert mem['shop']['egg_receipt'] == {'before': 200, 'cost': 150, 'bought': 0,
+                                        'refill_status': None, 'upgrades': 0,
+                                        'recruit': None}
+
+
+def test_a_never_left_menu_recovery_keeps_no_receipt():
+    """docich#5045: a sub that never left the month menu cannot have paid.
+    Its balance delta is a stale background, not a receipt, so no receipt
+    is kept (the full flow is covered by
+    test_payment_delta_on_a_stale_background_is_not_a_recovery_completion_receipt)."""
+    from docich.hanjuku.flows.month import _keep_egg_receipt
+    shop = {'key': '22-8', 'egg': 'unverified'}
+    sub = {'kind': 'egg', 'gold_before': 200, 'quoted_cost': 150, 'key': '22-8',
+           'left_menu': False, 'stage': 'recovering'}
+    _keep_egg_receipt(shop, sub)
+    assert 'egg_receipt' not in shop
+    sub['left_menu'] = True
+    _keep_egg_receipt(shop, sub)
+    assert shop['egg_receipt']['before'] == 200
+    assert shop['egg_receipt']['cost'] == 150
 
 
 def test_an_unconfirmed_recovery_still_abandons_as_skipped():

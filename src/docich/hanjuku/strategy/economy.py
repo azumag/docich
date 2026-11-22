@@ -532,7 +532,8 @@ def _refresh_egg_priority(mem, shop, header):
                 and (shop.get('reserve', 0) or shop.get('egg_priority'))):
             previous = shop.get('reserve', 0)
             shop.update(reserve=0, egg_cost=0, egg_priority=False)
-            if shop.get('egg_before_recruit') and shop.get('egg') == 'skipped':
+            if (shop.get('egg_before_recruit') and shop.get('egg') == 'skipped'
+                    and not shop.get('egg_recheck_settled')):
                 shop['egg'] = 'check'  # a probe, never an inferred full egg
             _record(mem, 'egg_reserve_roster_reconciled', month=key,
                     observed_metric={'previous_reserve': previous,
@@ -541,7 +542,8 @@ def _refresh_egg_priority(mem, shop, header):
         return
     if not shop.get('egg_priority'):
         shop['egg_priority'] = True
-        if shop.get('egg') not in ('opened', 'unverified'):
+        if (shop.get('egg') not in ('opened', 'unverified')
+                and not shop.get('egg_recheck_settled')):
             shop['egg'] = 'pending'
         _record(mem, 'egg_priority_replan', month=key,
                 observed_metric={'soldiers': mem.get('soldiers_seen'), 'gold': (header or {}).get('gold'),
@@ -570,7 +572,7 @@ def _prepare_recruit_egg_check(mem, shop, gold):
             or shop.get('egg_before_recruit') or egg_deferred_for_soldiers(shop)):
         return
     shop['egg_before_recruit'] = True
-    if shop.get('egg') in (None, 'check', 'skipped'):
+    if shop.get('egg') in (None, 'check', 'skipped') and not shop.get('egg_recheck_settled'):
         shop['egg'] = 'pending'
     elif shop.get('egg') == 'opened' and not mem.get('month_sub'):
         shop['egg'] = 'unverified'
