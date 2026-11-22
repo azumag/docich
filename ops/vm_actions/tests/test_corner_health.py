@@ -196,7 +196,7 @@ class AssessTests(unittest.TestCase):
         }]}))
         self.assertEqual(old["abnormal"], [])
 
-    def test_recovery_required_audit_row_keeps_a_longer_window(self):
+    def test_recovery_required_audit_row_is_current_only_while_latched(self):
         row = {
             "corner": "weather",
             "at": NOW - 3 * 86400,
@@ -204,9 +204,75 @@ class AssessTests(unittest.TestCase):
             "reason_code": "terminal-owner-absent",
             "error_kind": "execution-unverified",
         }
-        assessment = health.assess(base_document(rotation={"failed_corners": [row]}))
+        latched = health.assess(base_document(rotation={
+            "status": "recovery_required",
+            "failed_corners": [row],
+        }))
+        self.assertEqual(len(latched["abnormal"]), 1)
+        self.assertIs(latched["abnormal"][0]["recovery_required"], True)
+
+        resolved = health.assess(base_document(rotation={
+            "status": "waiting",
+            "failed_corners": [row],
+        }))
+        self.assertEqual(resolved["abnormal"], [])
+
+    def test_audit_row_merges_into_the_matching_state_failure(self):
+        assessment = health.assess(base_document(
+            rotation={
+                "status": "waiting",
+                "failed_corners": [{
+                    "corner": "nethack",
+                    "at": NOW - 3 * 86400,
+                    "resolution": "recovery-required",
+                    "reason_code": "restore-recovery-exhausted",
+                    "error_kind": "execution-error",
+                }],
+            },
+            states={
+                "nethack_corner": {
+                    "readable": True,
+                    "status": "failed",
+                    "game": "nethack",
+                    "completed_at": NOW - 3 * 86400,
+                },
+            },
+        ))
         self.assertEqual(len(assessment["abnormal"]), 1)
-        self.assertIs(assessment["abnormal"][0]["recovery_required"], True)
+        row = assessment["abnormal"][0]
+        self.assertEqual(row["corner"], "nethack_corner")
+        self.assertEqual(row["game"], "nethack")
+        self.assertEqual(row["reason_code"], "restore-recovery-exhausted")
+        self.assertEqual(row["error_kind"], "execution-error")
+        self.assertIs(row["recovery_required"], True)
+
+    def test_older_audit_row_does_not_relabel_a_newer_state_failure(self):
+        assessment = health.assess(base_document(
+            rotation={
+                "status": "waiting",
+                "failed_corners": [{
+                    "corner": "nethack",
+                    "at": NOW - 3 * 86400,
+                    "resolution": "released-unverified",
+                    "reason_code": "failed-corner-slot-released",
+                    "error_kind": "execution-error",
+                }],
+            },
+            states={
+                "nethack_corner": {
+                    "readable": True,
+                    "status": "failed",
+                    "game": "nethack",
+                    "completed_at": NOW - 3600,
+                },
+            },
+        ))
+        self.assertEqual(len(assessment["abnormal"]), 1)
+        row = assessment["abnormal"][0]
+        self.assertEqual(row["corner"], "nethack_corner")
+        self.assertEqual(row["age_sec"], 3600)
+        self.assertIsNone(row["reason_code"])
+        self.assertIsNone(row["error_kind"])
 
     def test_latched_rotation_reports_pending_identity(self):
         assessment = health.assess(base_document(rotation={
