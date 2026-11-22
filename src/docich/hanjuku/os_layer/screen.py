@@ -35,7 +35,8 @@ def resume_bijin_gift_panel(screen) -> bool:
 # row, and the stacked HP panel carries an ally (red) / enemy (blue) drop mark.
 # Both measurements come from live frames (decision-003/024/029).
 KNIGHT_COLORS = ((230, 105, 74), (230, 149, 74), (148, 80, 230), (123, 56, 222),
-                 (255, 165, 139), (255, 189, 180), (172, 113, 230), (230, 198, 74))
+                 (255, 165, 139), (255, 189, 180), (172, 113, 230), (230, 198, 74),
+                 (160, 132, 88), (160, 80, 64), (176, 104, 112))
 ALLY_MARK = (222, 72, 65)
 ENEMY_MARK = (57, 121, 189)
 MENU_ROW_Y = 148          # option rows live in the bottom command box band
@@ -1501,6 +1502,12 @@ def classify_text(s: Screen) -> str:
         # 卵戦コマンド箱を1行下へスクロールした表示: 灰色のたまごをつかうの下に
         # おくのてが見える。おくのてだけの救済メニューや敵将軍の左箱 (x40) と
         # 誤認しないよう、両行が自軍の箱位置 x176 のときだけ認める (v362)。
+        return 'egg_battle_menu'
+    if (s.egg_rows and any(r.spans() == [(176, 'こうげき')] for r in s.menu_rows)
+            and any(r.spans() == [(176, 'たいきゃく')] for r in s.menu_rows)):
+        # 召喚獣戦で「ないている!!」等の赤字状態表示が1行目に出ると、
+        # 2・3行目が こうげき / たいきゃく になり、_human_commands の たいきゃく
+        # 判定が battle_menu へ吸って B 連打で停止する (g1190 ch6 60-4 ペコリーノ vs キャンドロー)。
         return 'egg_battle_menu'
     if s.mixed_item_box and s.egg_rows:
         # g1190 2026-11-18 04:55-07:25: a castle-defence summon battle shows the

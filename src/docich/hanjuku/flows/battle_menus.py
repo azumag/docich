@@ -2602,9 +2602,11 @@ def egg_battle_step(screen: Screen, mem):
         # 命中・先手を損なうもうこうげきは選ばない。
         enemy_low_hp = any(r.side == 'enemy' and type(r.hp) is int and 0 < r.hp < 10
                            for r in screen.egg_rows)
+        visible_opts = {w for _, _, w in _options(screen)}
         fierce = (general_reading is not None and 0 < general_reading[0] * 2 <= general_reading[1]
                   and len(enemy_rows) == 1 and not enemy_low_hp
                   and not cards_left
+                  and ('もうこうげき' in visible_opts or 'もうこうげき' in (screen.text or ''))
                   and (empty_egg or 'たまごをつかう' not in screen.text))
         # Owner 2026-11-02 (城防衛で対召喚獣戦、卵もない時はおくのて): a castle
         # defender facing an enemy summon with the egg row dead and no card left
