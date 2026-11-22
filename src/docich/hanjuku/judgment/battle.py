@@ -1467,7 +1467,7 @@ def _early_resource_rescue_needed(mem, cur):
     if (cur.get('enemy') in chart.BOSSES.values()
             or cur.get('enemy') in reference.BOSS_GENERALS):
         return False
-    if not _behind(cur):
+    if _boss_tactics_allowed(mem, cur) or not _behind(cur):
         return False
 
     rescue = cur.get('survival')
