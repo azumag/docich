@@ -39,7 +39,9 @@ from ..strategy.orders import (SOURCE_LOCATION_RECHECK_LIMIT, SORTIE_CANCELLED_O
                                _site_king_down, drop_retired_step_context,
                                _order_hero_alternatives, _record_source_defender_cancel,
                                _record_sortie_cancelled_observed, _reserve_source_guard, _retake_reserved,
-                               _sortie_general, _source, _source_location_recheck, _source_spare_missing,
+                               _sortie_general, _sortie_resume_due, _sortie_resume_owe,
+                               _sortie_resume_outcome,
+                               _source, _source_location_recheck, _source_spare_missing,
                                _staffed_elsewhere, _unplaced_castle_generals)
 
 
@@ -170,6 +172,7 @@ def _verify_sortie_source(screen, mem, order):
     cancelled = sortie['general'] in present
     sortie['status'] = 'cancelled' if cancelled else 'en_route'
     (mem.get('sortie_verify_open') or {}).pop(step, None)
+    resume_owed = False
     if cancelled:
         from .house import _sortie_state_sig, _tally_sortie_attempt
         # Issue #3326 (34): roster presence proves the unit stayed behind.
@@ -180,8 +183,16 @@ def _verify_sortie_source(screen, mem, order):
         status = (_plan_region(mem).get('orders') or {}).get(step)
         if status not in ('failed',):
             _plan_region(mem).setdefault('orders', {})[step] = 'pending'
+        # docich#5020: the battle that cancelled this sortie still owes its
+        # same-month picker re-open; the re-drive keeps the step active so the
+        # same general/cards dispatch immediately after this verify closes.
+        resume_owed = _sortie_resume_due(mem, step)
+        if resume_owed:
+            _sortie_resume_owe(mem, step)
     else:
         _plan_region(mem).setdefault('orders', {})[step] = 'launched'
+        _sortie_resume_outcome(mem, step, 'established',
+                reason='出撃元の一覧に出撃将軍がいないため、割り込まれた出撃は成立していたと確定')
     if not cancelled:
         _garrison_move(mem, sortie['general'], source=sortie['source'])
         from .camp_recheck import observe_departure
@@ -205,7 +216,9 @@ def _verify_sortie_source(screen, mem, order):
             reason='将軍一覧で本人の在城を確認したため再試行可能' if cancelled
             else '出撃元が無人と確認できたため出撃を確定、行先は未確認')
     _flow(mem).pop('sortie_attempt', None)
-    _plan_region(mem)['active'] = None
+    # docich#5020: keep the resumed order driving — ordinary settlements
+    # release to None so next_order picks the best order fresh.
+    _plan_region(mem)['active'] = step if resume_owed else None
     if cancelled:
         # The general is still home, so the carried cards may never have left
         # the field: forget them rather than keep a count that may be ahead.

@@ -39,7 +39,10 @@ from ..strategy.orders import (BOSS_COMPANION_WAIT_TICKS, BOSS_TARGET_CANCEL_LIM
                                _boss_companion_wait_expired, _broken_hero_order,
                                drop_retired_step_context, _finish_order,
                                _garrison_move, _give_up_source, _near_goal, _order, _order_for_step, _ready,
-                               _recall_goal, _retire_unentered_sortie, _sortie_general, _source,
+                               _recall_goal, _retire_unentered_sortie,
+                               _sortie_general, _sortie_resume_arm, _sortie_resume_due,
+                               _sortie_resume_reconcile, _sortie_resume_resumed, _source,
+                               SORTIE_PICKER_RESUME_LIMIT,
                                next_order, order_dispatch_starved, parked_boss_steps,
                                arm_sortie_launch_priority)
 from ..strategy.replan import _off_chart
@@ -63,6 +66,7 @@ def observe_sortie_transition(screen, mem, previous_kind=None):
     """
     from .camp_recheck import observe_departure_return
     observe_departure_return(screen, mem)
+    _sortie_resume_reconcile(mem)
     # A recall destination picker belongs to the recall, not to an active
     # chart sortie's interrupted target selection.
     if (_flow(mem).get('recall') or {}).get('stage') in ('dest', 'await_dispatch',
@@ -125,6 +129,13 @@ def observe_sortie_transition(screen, mem, previous_kind=None):
                 forget_target_placement(mem, step)
                 _record(mem, 'sortie_target_resumed', chart_step=step,
                         reason='割り込み後に同じ出撃先マーカーが戻ったため目標選択を再開')
+                # docich#5020: the game's own marker return resolves the
+                # interruption's resume without spending the driven budget.
+                _sortie_resume_resumed(mem, step, driven=False)
+            else:
+                # docich#5020: the re-driven dispatch re-opened the destination
+                # picker -- spend one of this month's two resume re-opens.
+                _sortie_resume_resumed(mem, step, driven=True)
         attempt['target_seen'] = True
         attempt.pop('interrupted', None)
         return
@@ -193,12 +204,19 @@ def observe_sortie_transition(screen, mem, previous_kind=None):
         # The picker closed into a battle, not into a plain field frame: the
         # generic unconfirmed record below cannot tell the two apart, so the
         # monthly decision breakdown counts this cause on its own (docich#5020).
+        # docich#5020 改善案1・2: arm the same-month picker re-open budget here;
+        # resumed / established / exhausted closes the incident later (#5138).
+        armed, used = _sortie_resume_arm(mem, step)
+        outcome = 'exhausted' if not armed and used >= SORTIE_PICKER_RESUME_LIMIT else None
         _record(mem, 'launch_interrupted_by_battle', chart_step=step,
                 general=general, target=order['target'], screen=screen.kind,
+                resulting_event=outcome,
                 observed_metric={'planned_target': order['target'],
                                  'target': order['target'],
                                  'source': snapshot['source'],
-                                 'screen': screen.kind},
+                                 'screen': screen.kind,
+                                 'resume': {'armed': armed, 'used': used,
+                                            'limit': SORTIE_PICKER_RESUME_LIMIT}},
                 reason='出撃先ピッカーの最中に戦闘が割り込み目標決定前に閉じたため、割り込みからの再開率を測る')
     _finish_order(mem, 'launched_unconfirmed', general=general, target=None,
                   planned_target=order['target'], screen=screen.kind,
@@ -2606,11 +2624,18 @@ def map_step(screen: Screen, mem, frame):
         # Chapter 9's march does not reopen a source list to settle an
         # unconfirmed launch (owner 2026-11-11: それ以外の操作はdisable); the
         # march deadline settles it.
-        order = None if corridor.mechanical(mem) else next(
-                     (_order_for_step(mem, step) for step, sortie in _sorties(mem).items()
-                      if sortie.get('status') == 'launched_unconfirmed'
-                      and not sortie.get('verification_unavailable')
-                      and sortie.get('source') in _owned(mem)), None)
+        if corridor.mechanical(mem):
+            order = None
+        else:
+            candidates = [step for step, sortie in _sorties(mem).items()
+                          if sortie.get('status') == 'launched_unconfirmed'
+                          and not sortie.get('verification_unavailable')
+                          and sortie.get('source') in _owned(mem)]
+            # docich#5020: a battle-interrupted sortie whose same-month picker
+            # re-open is still armed verifies before an ordinary unconfirmed
+            # one, so the re-drive is not starved by other settlements.
+            candidates.sort(key=lambda step: not _sortie_resume_due(mem, step))
+            order = next((_order_for_step(mem, step) for step in candidates), None)
         order = order or next_order(mem)
         if (order is None or (isinstance(order, dict)
                               and (str(order.get('step', '')).startswith(chart_adjust.INTERIM_PREFIX)

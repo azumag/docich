@@ -2854,6 +2854,135 @@ def drop_retired_step_context(mem):
             plan.pop(key, None)
 
 
+# docich#5020: a defense/boss battle that closes the destination picker before
+# the target commits ends the order as launched_unconfirmed. Within the same
+# month the picker may be re-opened by driving the same order again -- the
+# general and the carried cards stay as planned and the picker screen is read
+# for real -- at most SORTIE_PICKER_RESUME_LIMIT times per step. Once the
+# budget is spent the incident returns to the launched_unconfirmed terminal.
+SORTIE_PICKER_RESUME_LIMIT = 2    # same-month driven picker re-opens per step
+
+
+def _sortie_resume_row(mem, step):
+    row = (_flow(mem).get('sortie_resume') or {}).get(step)
+    return row if isinstance(row, dict) else None
+
+
+def _sortie_resume_arm(mem, step):
+    """Arm this interruption's same-month picker re-open budget.
+
+    Returns ``(armed, used)``: whether a resume drive may run and how many
+    driven re-opens this step already spent in the observed month. A month the
+    policy never read cannot prove the same-month bound, so it does not arm.
+    """
+    month = mem.get('month')
+    ledger = _flow(mem).setdefault('sortie_resume', {})
+    row = ledger.get(step)
+    if not isinstance(row, dict) or row.get('month') != month:
+        row = {'month': month, 'used': 0}
+        ledger[step] = row
+    row.pop('owed', None)
+    used = int(row.get('used') or 0)
+    row['armed'] = month is not None and used < SORTIE_PICKER_RESUME_LIMIT
+    return row['armed'], used
+
+
+def _sortie_resume_due(mem, step):
+    """A driven re-open is still owed and the month has not moved."""
+    row = _sortie_resume_row(mem, step)
+    return bool(row and row.get('armed') is True
+                and mem.get('month') is not None
+                and row.get('month') == mem.get('month')
+                and int(row.get('used') or 0) < SORTIE_PICKER_RESUME_LIMIT)
+
+
+def _sortie_resume_owe(mem, step):
+    """The cancelled sortie's re-dispatch owes one picker re-open."""
+    row = _sortie_resume_row(mem, step)
+    if isinstance(row, dict):
+        row.pop('armed', None)
+        row['owed'] = True
+
+
+def _sortie_resume_resumed(mem, step, *, driven):
+    """The picker re-opened for this interruption: record ``resumed``.
+
+    A driven re-open spends the same-month budget; the game's own marker
+    return (``sortie_target_resumed``) does not. Repeated frames of an already
+    open picker spend nothing.
+    """
+    row = _sortie_resume_row(mem, step)
+    if not isinstance(row, dict):
+        return
+    if driven and not row.get('owed'):
+        return
+    if not driven and not row.get('armed'):
+        return
+    row.pop('armed', None)
+    row.pop('owed', None)
+    if driven:
+        row['used'] = int(row.get('used') or 0) + 1
+    # docich#5020: a resumed interruption made progress, so the cancellation
+    # that opened it must not count toward the retry guard's failure budget
+    # (``SORTIE_CANCELLED_OBSERVED_LIMIT``). Otherwise the guard would kill
+    # the order on the third cancellation even though the resume mechanism
+    # already handled the first two, and the exhausted order could never
+    # return to the ordinary unconfirmed path.
+    counts = mem.get('sortie_cancelled_observed_counts') or {}
+    counts.pop(step, None)
+    _record(mem, 'launch_interrupted_by_battle', chart_step=step,
+            resulting_event='resumed',
+            observed_metric={'resume': {'outcome': 'resumed',
+                                        'driven': bool(driven),
+                                        'used': int(row.get('used') or 0),
+                                        'limit': SORTIE_PICKER_RESUME_LIMIT}},
+            reason=('再駆動で行き先ピッカーが再オープンしたため再開を記録' if driven
+                    else 'ゲーム側が出撃先マーカーを戻したため再開を記録'))
+
+
+def _sortie_resume_outcome(mem, step, outcome, *, reason):
+    """Close the interruption incident with ``established``/``exhausted``."""
+    row = _sortie_resume_row(mem, step)
+    if row is None:
+        return
+    used = int(row.get('used') or 0)
+    (_flow(mem).get('sortie_resume') or {}).pop(step, None)
+    _record(mem, 'launch_interrupted_by_battle', chart_step=step,
+            resulting_event=outcome,
+            observed_metric={'resume': {'outcome': outcome,
+                                        'used': used,
+                                        'limit': SORTIE_PICKER_RESUME_LIMIT}},
+            reason=reason)
+
+
+def _sortie_resume_reconcile(mem):
+    """Settle open resume ledgers from the facts this observation holds.
+
+    A ledger whose month passed can never resume again (the bound is
+    same-month only) and a step that reached a terminal state no longer owes a
+    picker, so both drop their drive flags. A ``launched`` step is the
+    interruption incident's ``established`` outcome.
+    """
+    ledger = _flow(mem).get('sortie_resume') or {}
+    if not ledger:
+        return
+    status = _plan_region(mem).get('orders') or {}
+    month = mem.get('month')
+    for step, row in list(ledger.items()):
+        if not isinstance(row, dict):
+            ledger.pop(step, None)
+            continue
+        if month is not None and row.get('month') != month:
+            ledger.pop(step, None)
+            continue
+        if status.get(step) == 'launched':
+            _sortie_resume_outcome(mem, step, 'established',
+                reason='割り込まれた出撃の発射が別経路で確定したため再開の帰結を成立として記録')
+        elif status.get(step) in ('failed', 'done'):
+            row.pop('armed', None)
+            row.pop('owed', None)
+
+
 def _finish_order(mem, state, **fields):
     step = _plan_region(mem).get('active')
     if step and state in ('failed', 'done', 'launched', 'launched_unconfirmed'):
@@ -2877,6 +3006,8 @@ def _finish_order(mem, state, **fields):
                 fields[key] = value[:32 if key == 'purpose' else 48]
         _plan_region(mem).setdefault('orders', {})[step] = state
         if state == 'launched':
+            _sortie_resume_outcome(mem, step, 'established',
+                reason='出撃の発射が確定したため、割り込み再開の帰結を成立として記録')
             # A new sortie carries a fresh kit: attempted uses from the
             # previous one must not shrink it (``kit_spent`` is per sortie).
             (mem.get('kit_spent') or {}).pop(step, None)

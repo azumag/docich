@@ -271,3 +271,110 @@ def test_unknown_name_does_not_reestablish_defeated_general_location():
     mem=memory();_world(mem)['general_location_unknown']=['ゼウス']
     p._observe_garrison(screen('general_list',['ゼウス'+UNKNOWN]),mem,p._order(mem))
     assert _world(mem)['general_location_unknown']==['ゼウス']
+
+
+def _verify_cancel(mem, words=('ゼウス', 'どうし')):
+    """Drive the source-roster reconciliation of the unconfirmed launch."""
+    _plan_region(mem)['active'] = '1-A2'
+    return p.deploy_step(screen('general_list', list(words)), mem)
+
+
+def _reopen_picker(mem):
+    """The re-driven dispatch confirms the sortie and the picker re-opens."""
+    _flow(mem)['sortie_attempt'] = {'step': '1-A2', 'target_seen': False}
+    p.observe_sortie_transition(screen('map_target'), mem, 'map')
+
+
+def _outcomes(mem):
+    return [r['resulting_event'] for r in mem['_records']
+            if r['decision'] == 'launch_interrupted_by_battle']
+
+
+def test_battle_interrupted_picker_resumes_same_month_then_establishes():
+    """docich#5020 改善案1・2: a battle that closes the destination picker owes
+    one same-month re-open. The roster verify sees the cancelled general, the
+    same order keeps driving (将軍・切り札据え置き), the picker re-opens for
+    real (resumed) and a real send closes the incident (established)."""
+    mem = memory(); mem['month'] = 4
+    p.observe_sortie_transition(screen('defense_started'), mem, 'map_target')
+    assert _plan_region(mem)['orders']['1-A2'] == 'launched_unconfirmed'
+    first = [r for r in mem['_records'] if r['decision'] == 'launch_interrupted_by_battle']
+    assert len(first) == 1
+    assert first[0]['resulting_event'] is None    # incident opened, not yet resolved
+    assert first[0]['observed_metric']['resume'] == {'armed': True, 'used': 0, 'limit': 2}
+    # The roster still lists the general: the launch cancelled and the
+    # same-month picker re-open is owed -- the step keeps driving.
+    assert _verify_cancel(mem) == [p.pad('b'), p.pad('b')]
+    assert _plan_region(mem)['orders']['1-A2'] == 'pending'
+    assert _plan_region(mem)['active'] == '1-A2'
+    # The re-driven dispatch re-opens the destination picker: one spent re-open.
+    _reopen_picker(mem)
+    # Repeated frames of the same open picker spend nothing more.
+    p.observe_sortie_transition(screen('map_target'), mem, 'map_target')
+    resumed = [r for r in mem['_records'] if r['decision'] == 'launch_interrupted_by_battle'
+               and r['resulting_event'] == 'resumed']
+    assert len(resumed) == 1
+    assert resumed[0]['observed_metric']['resume'] == {'outcome': 'resumed', 'driven': True,
+                                                      'used': 1, 'limit': 2}
+    # The resumed sortie's observed send closes the incident as established.
+    p._finish_order(mem, 'launched')
+    assert _outcomes(mem) == [None, 'resumed', 'established']
+    assert not (_flow(mem).get('sortie_resume') or {})
+
+
+def test_two_failed_picker_reopens_cut_off_to_launched_unconfirmed():
+    """docich#5020: at most two same-month re-opens per step. The interruption
+    that finds the budget spent closes as exhausted and the order returns to
+    the existing launched_unconfirmed terminal path."""
+    mem = memory(); mem['month'] = 4
+    for _ in range(2):
+        p.observe_sortie_transition(screen('defense_started'), mem, 'map_target')
+        assert _verify_cancel(mem) == [p.pad('b'), p.pad('b')]
+        _reopen_picker(mem)
+    # The picker is open again (third dispatch) when another battle interrupts.
+    _flow(mem)['sortie_attempt'] = {'step': '1-A2', 'target_seen': True}
+    _plan_region(mem)['active'] = '1-A2'
+    p.observe_sortie_transition(screen('defense_started'), mem, 'map_target')
+    assert _plan_region(mem)['orders']['1-A2'] == 'launched_unconfirmed'
+    assert _plan_region(mem)['active'] is None
+    assert _outcomes(mem) == [None, 'resumed', None, 'resumed', 'exhausted']
+    # Exhausted: the cancelled sortie verifies but no re-open is owed, so the
+    # order releases to the ordinary unconfirmed path like any other cancel.
+    assert _verify_cancel(mem) == [p.pad('b'), p.pad('b')]
+    assert _plan_region(mem)['orders']['1-A2'] == 'pending'
+    assert _plan_region(mem)['active'] is None
+
+
+def test_picker_resume_never_crosses_the_month():
+    """docich#5020: the re-open budget belongs to the interruption's month. A
+    sortie verified cancelled in a later month follows the ordinary
+    unconfirmed path (pending, released) and no resume is recorded."""
+    mem = memory(); mem['month'] = 4
+    p.observe_sortie_transition(screen('defense_started'), mem, 'map_target')
+    assert (_flow(mem).get('sortie_resume') or {})['1-A2']['armed'] is True
+    # The month turns before the source roster is read.
+    mem['month'] = 5
+    p.observe_sortie_transition(screen('map'), mem, 'map')
+    assert '1-A2' not in (_flow(mem).get('sortie_resume') or {})
+    assert _verify_cancel(mem) == [p.pad('b'), p.pad('b')]
+    assert _plan_region(mem)['orders']['1-A2'] == 'pending'
+    assert _plan_region(mem)['active'] is None
+    # The new month's own dispatch may still send this order, but it is a fresh
+    # sortie, not a resume of the interruption.
+    _reopen_picker(mem)
+    assert 'resumed' not in _outcomes(mem)
+
+
+def test_marker_return_records_resumed_without_spending_the_budget():
+    """docich#5020: the existing sortie_target_resumed path is preserved -- the
+    game's own marker return resolves a battle interruption's resume without
+    consuming one of the two driven re-opens."""
+    mem = memory(); mem['month'] = 4
+    p.observe_sortie_transition(screen('defense_started'), mem, 'map_target')
+    p.observe_sortie_transition(screen('map_target'), mem, 'defense_started')
+    assert any(r['decision'] == 'sortie_target_resumed' for r in mem['_records'])
+    resumed = [r for r in mem['_records'] if r['decision'] == 'launch_interrupted_by_battle'
+               and r['resulting_event'] == 'resumed']
+    assert len(resumed) == 1
+    assert resumed[0]['observed_metric']['resume']['driven'] is False
+    assert resumed[0]['observed_metric']['resume']['used'] == 0
