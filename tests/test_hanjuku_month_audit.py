@@ -1200,6 +1200,28 @@ def test_recall_with_idou_is_not_recorded(runtime_dir):
     assert audit.load_incidents(runtime_dir) == []
 
 
+def test_the_idou_y_route_emits_no_kikan_incident(runtime_dir):
+    """docich#5105: the real menu flow now confirms いどう for every recall
+    (owner 2026-11-19: きかん禁止・いどう→Y), so its camp_recall_cursor
+    records can never produce recall_kikan_selected."""
+    from docich.hanjuku.flows import recall as recall_flow
+    from test_hanjuku_chart_bot import camp_menu
+    mem = {'chapter': 10, 'tick': 100, '_records': [],
+           'recall': {'stage': 'menu', 'steps': 0, 'target': [135, 125],
+                      'general': 'カシュー'}}
+    for selected in (3, 2, 1, 0):
+        assert recall_flow.camp_recall_step(camp_menu(selected), mem, None)
+    assert not any((r.get('observed_metric') or {}).get('choice') == 'きかん'
+                   for r in mem['_records'])
+    value = state(10, '1-1', 0,
+                  flow={'recall': {'stage': 'dest', 'target': [135, 125],
+                                   'general': 'カシュー'}})
+    audit.observe(runtime_dir, audit.capture(value), value,
+                  [r for r in mem['_records']
+                   if r['decision'] == 'camp_recall_cursor'], now=1000)
+    assert audit.load_incidents(runtime_dir) == []
+
+
 def test_corner_stall_is_recorded_and_titled(runtime_dir):
     value = state(10, '1-1', 0)
     value['terminal_reason'] = 'screen_stalled'

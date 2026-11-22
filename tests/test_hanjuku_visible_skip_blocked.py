@@ -41,7 +41,7 @@ def test_every_visible_castle_blocked_falls_back_to_the_picker():
     actions = recall_flow.camp_recall_step(camp_menu(0), mem, frame)
     assert not any(r.get('decision') == 'camp_recall_visible_move' for r in mem['_records'])
     assert any(r.get('decision') == 'camp_recall_visible_blocked' for r in mem['_records'])
-    assert actions  # the hand moves to きかん instead of confirming いどう
+    assert actions  # the hand still confirms いどう — the blocked castles lose the Y-route goal instead
 
 
 def test_the_camp_origin_binds_from_one_visible_roof():

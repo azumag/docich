@@ -8097,6 +8097,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v1386-missing-card-not-remaining",
             "hanjuku-chart-v1387-recall-arrival-confirm",
             "hanjuku-chart-v1388-crying-egg-battle-menu",
+            "hanjuku-chart-v1389-idou-y-route-recall-hold",
             "hanjuku-chart-v985-roster-lost",
             "hanjuku-chart-v982-gbox",
             "hanjuku-chart-v984-roster-map-anchor",

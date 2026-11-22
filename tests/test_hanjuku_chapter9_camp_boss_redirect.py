@@ -100,13 +100,13 @@ def test_the_tent_menu_cursor_goes_to_idou_not_kikan():
     assert _flow(mem)['recall']['stage'] == 'dest'
 
 
-def test_the_ordinary_recall_uses_kikan_without_a_visible_target():
-    # docich#5010: an ordinary ch2 recall with no move_visible must not use
-    # いどう — 'dest' abandons the recall on the 'map' screen it opens.
-    # きかん's whole-island picker (map_target) is handled for every chapter.
+def test_the_ordinary_recall_uses_idou_without_a_visible_target():
+    # docich#5105 (owner 2026-11-19: きかん禁止・いどう→Y): an ordinary recall
+    # with no move_visible confirms いどう like every other route — the dest
+    # stage hands the field cursor to the whole-map Y route instead of the
+    # retired きかん picker.
     mem = {'chapter': 2, 'tick': 100, '_records': [], 'recall': {'stage': 'menu', 'steps': 0}}
-    assert recall._camp_recall_step(camp_menu(0), mem, None) == [pad('down')]
-    assert recall._camp_recall_step(camp_menu(3), mem, None) == [pad('a')]
+    assert recall._camp_recall_step(camp_menu(0), mem, None) == [pad('a')]
     assert _flow(mem)['recall']['stage'] == 'dest'
 
 
@@ -190,12 +190,12 @@ def test_an_aborted_redirect_also_forgets_its_receipt():
 
 def test_an_existing_home_recall_keeps_its_home_destination():
     # A monthly-task recall that was already at the camp menu keeps the normal
-    # home flow (the visible castle or the きかん picker); it is no longer
+    # home flow (the visible castle or the いどう→Y route); it is no longer
     # converted to a direct イデ！ いどう (which never moved the unit).
-    # docich#5010: with no visible castle the menu target is きかん, so the
-    # cursor walks down from row 0 instead of confirming いどう at once.
+    # docich#5105: with no visible castle the menu target is still いどう —
+    # the cursor confirms row 0 and 'dest' picks the Y route.
     mem = mem9(recall={'stage': 'menu', 'steps': 0, 'target': [80, 90]})
-    assert recall._camp_recall_step(camp_menu(0), mem, FRAME) == [pad('down')]
+    assert recall._camp_recall_step(camp_menu(0), mem, FRAME) == [pad('a')]
     state = _flow(mem)['recall']
     assert 'gather' not in state and not state.get('boss')
     assert 'camp_gather_adopted' not in events(mem)
@@ -204,7 +204,7 @@ def test_an_existing_home_recall_keeps_its_home_destination():
 def test_an_existing_home_recall_without_a_boss_cell_keeps_home():
     chart.set_boss_cell(9, None)
     mem = mem9(recall={'stage': 'menu', 'steps': 0, 'target': [80, 90]})
-    assert recall._camp_recall_step(camp_menu(0), mem, FRAME) == [pad('down')]
+    assert recall._camp_recall_step(camp_menu(0), mem, FRAME) == [pad('a')]
     state = _flow(mem)['recall']
     assert 'gather' not in state
 

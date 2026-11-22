@@ -35,6 +35,12 @@ BOSS_RETRY_TICKS = 120         # first wait before a camp is sent at the moving 
 BOSS_JUMP_LIMIT = 2            # Y jumps to the boss per redirect
 RELAY_ARRIVE_PX = 32           # a camp this close to the back-half relay cell has finished leg one
 RELAY_MENU_WAIT = 4             # observations for the picker B to settle back on the camp menu
+# docich#5108: a screen the recall cannot operate (battle kinds, an unrelated
+# text panel) must not spend the 90-observation operation budget — it used to
+# burn every step until the whole return aborted. The recall intent is held
+# instead; only this many ticks without a resumable screen take the ordinary
+# abort path.
+RECALL_HOLD_TICK_LIMIT = 600   # ticks a non-operable screen may hold one recall
 
 # #4468: a field general's blue G badge is the very same square as the real
 # いどう destination marker. On g1190 2026-11-17 the recall read a bare field
@@ -331,6 +337,42 @@ def _filter_recall_skip(mem, camps):
     else:
         flow.pop('recall_skip_history', None)
     return [camp for camp in camps if not any(_same_skipped_camp(camp, h) for h in alive)]
+
+def _recall_hold_or_abort(mem, state, screen):
+    """Bound the hold a non-operable screen puts on a camp recall (docich#5108).
+
+    The first held frame stamps ``hold_since``; a resumable screen clears it
+    (in ``_camp_recall_step`` / ``map.world_map_step``). Past
+    ``RECALL_HOLD_TICK_LIMIT`` ticks the recall takes the same abort as the
+    step-limit path: the intention does not bounce between early aborts and
+    re-detection. ``None`` means "keep holding"; the caller keeps returning
+    the frame to its real owner.
+    """
+    if not isinstance(state, dict):
+        return None
+    now = mem.get('tick')
+    if type(now) is not int:
+        return None                      # no clock: hold without a bound
+    since = state.get('hold_since')
+    if type(since) is not int:
+        state['hold_since'] = now
+        return None
+    if now - since < RECALL_HOLD_TICK_LIMIT:
+        return None
+    _record(mem, 'camp_recall_aborted',
+            observed_metric={'stage': state.get('stage'), 'steps': state.get('steps'),
+                             'held_ticks': now - since, 'screen': screen.kind},
+            reason='操作できない画面が上限を超えて続くため帰還を断念し位置を再測定する')
+    _flow(mem).pop('recall', None)
+    mem['uncertain'] = True
+    _arm_recall_skip(mem, state)
+    # Mirrors the step-limit abort: only menus and pickers get a closing B; a
+    # text or battle frame is left to its real owner.
+    if (is_camp_menu(screen) or is_fort_menu(screen) or screen.kind in ('map_target', 'world_map')
+            or str(state.get('stage')).startswith('fort_')):
+        return [pad('b')]
+    return []
+
 
 def camp_recall_step(screen: Screen, mem, frame):
     """Observe named retreaters before reusing the existing camp recall route."""
@@ -991,7 +1033,19 @@ def _y_route_step(screen, mem, state):
     state['steps'] = int(state.get('steps') or 0) + 1
     if not mem.get('y_jump') and state['steps'] > Y_ROUTE_RETRIES:
         # The view never produced a receipt: fall back to the menu route
-        # rather than holding the recall forever.
+        # rather than holding the recall forever. SELECT centres the cursor
+        # on the hero, so the hero_open bootstrap only fits his own recall —
+        # for a camped general it would open the wrong unit's menu. An
+        # ordinary recall withdraws instead of looping (docich#5105).
+        if not state.get('hero'):
+            _flow(mem).pop('recall', None)
+            mem['uncertain'] = True
+            _arm_recall_skip(mem, state)
+            _record(mem, 'camp_recall_aborted',
+                    observed_metric={'stage': 'y_route', 'steps': state['steps'],
+                                     'goal': goal},
+                    reason='全体マップジャンプが受領されないため帰還を断念する')
+            return [pad('b')] if screen.kind in ('world_map', 'map_target') else []
         state['stage'], state['steps'] = 'hero_open', 0
         return [pad('select')]
     if screen.kind in ('map', 'world_map'):
@@ -1090,32 +1144,38 @@ def _camp_recall_step(screen: Screen, mem, frame, *, observed_camps=None):
     """Owner rule (2026-09-28): a camp (野営) seen on screen is recalled.
 
     Measured in the isolated probe: A on our tent opens
-    いどう/ステータス/キャンプ/きかん; its observed cursor must reach きかん before A
-    opens the destination marker (kind map_target), and A over an own castle's
-    roof cell sends the general home. The destination is the nearest visible
-    own castle (補給できる城). ``None`` means "no recall in flight": the
-    caller keeps its ordinary map steering.
+    いどう/ステータス/キャンプ/きかん. Since docich#5105 (owner 2026-11-19:
+    きかん禁止・いどう→Y) every recall confirms いどう; the field cursor it
+    opens then jumps home through the whole map (Y) instead of the retired
+    きかん picker. The destination is the nearest own castle (補給できる城).
+    ``None`` means "no recall in flight": the caller keeps its ordinary map
+    steering.
     """
-    if not _flow(mem).get('recall'):
+    state = _flow(mem).get('recall')
+    if not state:
         camp_arrival_check(mem)
     if screen.kind in {'battle', 'battle_menu', 'egg_battle_menu', 'monster_menu',
                        'egg_choice_menu', 'attack_started', 'defense_started', 'boss_attack_started'}:
         _mark_recall_interrupted(mem)
+        held = _recall_hold_or_abort(mem, state, screen)
+        if held is not None:
+            return held
         # A combat foreground explains a long dest pause (g1163 2026-11-14
         # 05:57-06:01: the dest sat at steps 1 for four minutes and the
         # month scene closed it). Throttled so a long battle logs once.
         now = int(mem.get('tick') or 0)
         if now - int(mem.get('camp_battle_tick') or 0) >= 60:
             mem['camp_battle_tick'] = now
-            state = _flow(mem).get('recall') or {}
             _record(mem, 'camp_recall_battle',
-                    observed_metric={'stage': state.get('stage'), 'kind': screen.kind},
+                    observed_metric={'stage': (state or {}).get('stage'), 'kind': screen.kind},
                     reason='戦闘が前面に出て帰還の操作が止まったことを記録する')
         return None  # combat owns this screen; keep the recall intention pending
     if mem.get('battle'):
         _mark_recall_interrupted(mem)
+        held = _recall_hold_or_abort(mem, state, screen)
+        if held is not None:
+            return held
         return [] if screen.kind == 'map' else None  # first result frame is not a finished battle
-    state = _flow(mem).get('recall')
     if state is None:
         if screen.kind != 'map' or frame is None:
             return None
@@ -1328,6 +1388,19 @@ def _camp_recall_step(screen: Screen, mem, frame, *, observed_camps=None):
                      or state.get('gather') or state.get('hero') or state.get('move_visible'))
             and _whitehouse_camp(mem, screen, state, frame)):
         state['boss_move'], state['goal'] = True, chart.boss_castle(mem.get('chapter') or 0)
+    # docich#5108: a text frame that is not the camp/fort menu or a status
+    # panel cannot be operated by this flow. It is held exactly like a battle
+    # foreground — the step budget is not spent and the intention survives —
+    # and the frame returns to its real owner so the message can advance.
+    if (screen.kind == 'text' and not (
+            is_camp_menu(screen) or is_fort_menu(screen)
+            or 'Aボタンでステータスひょうじ' in (screen.text or ''))):
+        _mark_recall_interrupted(mem)
+        held = _recall_hold_or_abort(mem, state, screen)
+        if held is not None:
+            return held
+        return None
+    state.pop('hold_since', None)
     if state.get('stage') == 'await_dispatch':
         return _recall_dispatch_step(screen, mem, state)
     state['steps'] = int(state.get('steps') or 0) + 1
@@ -1656,16 +1729,14 @@ def _camp_recall_step(screen: Screen, mem, frame, *, observed_camps=None):
                                          'camp': list(state.get('target') or ())},
                         reason='後半の自軍城が無くハブへ直行すると崖に詰まるため、まず後半中央へいどうで移動する')
         # Owner 2026-11-19 (#4736): いどう opens the field cursor (screen.kind=='map').
-        # The 'dest' stage only handles 'map' when move_visible is set (corridor ch9,
-        # gateway ch11, relay) or when the recall is a boss redirect / boss_move
-        # (the Y-jump to the boss needs the field cursor; owner-measured).
-        # For an ordinary recall without move_visible, いどう abandons the
-        # recall immediately, so use きかん's whole-island picker (map_target)
-        # instead, which 'dest' handles for every chapter (#5010).
-        if state.get('boss') or state.get('boss_move') or state.get('move_visible'):
-            choice = 'いどう'
-        else:
-            choice = 'きかん'
+        # docich#5105 retires the v1362 きかん fallback entirely (owner policy
+        # 2026-11-19: 「きかん禁止・いどう→Y」): every recall takes いどう and
+        # the 'dest' stage hands the field cursor to the whole-map Y route — a
+        # resolved goal jumps straight home, an unresolved one opens the view
+        # so its flag survey can name the own castle (world_map_step). The
+        # きかん ring picker is never selected again; boss / boss_move /
+        # gather / move_visible / relay / fort keep their own dedicated routes.
+        choice = 'いどう'
         move = menu_to(screen, choice)
         if move is None:
             misses = state['cursor_misses'] = int(state.get('cursor_misses', 0)) + 1
@@ -1714,9 +1785,44 @@ def _camp_recall_step(screen: Screen, mem, frame, *, observed_camps=None):
             if state.get('move_visible'):
                 state.pop('move_visible', None)   # the game opened the island picker
             if screen.kind == 'map':
-                _flow(mem).pop('recall', None)
-                mem['uncertain'] = True
-                _hold_after_picker(mem, state)
+                if (state.get('boss') or state.get('boss_move') or state.get('fort')
+                        or state.get('relay')):
+                    _flow(mem).pop('recall', None)
+                    mem['uncertain'] = True
+                    _hold_after_picker(mem, state)
+                    return []
+                # docich#5105 (owner 2026-11-19: きかん禁止・いどう→Y): いどう
+                # opened the field cursor. A goal that resolves here takes the
+                # measured whole-map Y jump straight home (hero_focus uses the
+                # same _y_route_step); one that does not opens the view blind
+                # so its own-castle flags can name the destination — the
+                # world_map dest stage binds it through _picker_goal.
+                goal = (state.get('goal') or state.get('gather')
+                        or _recall_goal(mem))
+                if goal:
+                    state['goal'] = goal
+                    state['stage'], state['steps'] = 'y_route', 0
+                    _record(mem, 'camp_recall_y_route',
+                            observed_metric={'goal': goal},
+                            reason='いどうのフィールドカーソルから全体マップ（Y）で自軍城へ直接戻る（オーナー指示）')
+                    return _y_route_step(screen, mem, state)
+                if not state.get('map_y_route'):
+                    state['map_y_route'] = True
+                    state['map_y_waits'] = 0
+                    _record(mem, 'camp_recall_map_y_route',
+                            observed_metric={'origin': state.get('origin'),
+                                             'camp_world': state.get('camp_world'),
+                                             'camp': list(state.get('target') or ())},
+                            reason='現在地から帰還先を決められないため、全体マップの自軍城旗で確定する')
+                    return [pad('y')]
+                # The view takes a frame or two to open; a second Y while it
+                # is still on 'map' would land inside the view and close it.
+                waits = int(state.get('map_y_waits') or 0) + 1
+                state['map_y_waits'] = waits
+                if waits < 5:
+                    return []
+                state['map_y_waits'] = 0
+                return [pad('y')]        # the first Y was swallowed; press again
             return [pad('b')] if screen.kind == 'world_map' else []
         # #4885: 一度本物の行き先ピッカーを確認した後は、camp_cliff_detour 等で
         # 赤いテント・砦・自軍城の真下へマーカーを動かしても赤い屋根を将軍旗と

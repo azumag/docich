@@ -105,13 +105,14 @@ def test_normal_recall_menu_still_picks_the_return_row():
     mem = memory()
     mem['flow'] = {'recall': {'stage': 'menu', 'steps': 0,
                               'target': [26, 66]}}
-    # docich#5010: without a boss_move or a visible target, the return row is
-    # きかん (row 3) — いどう would abandon the recall on the 'map' screen.
-    # Walk down from row 0, then A on row 3.
+    # docich#5105 (owner 2026-11-19: きかん禁止・いどう→Y): without a boss_move
+    # or a visible target the return row is still いどう (row 0) — the dest
+    # stage hands the field cursor to the whole-map Y route. Walk up from
+    # row 3, then A on row 0.
     assert recall_flow.camp_recall_step(
-        _camp_menu_screen(0), mem, object()) == [pad('down')]
+        _camp_menu_screen(3), mem, object()) == [pad('up')]
     assert recall_flow.camp_recall_step(
-        _camp_menu_screen(3), mem, object()) == [pad('a')]
+        _camp_menu_screen(0), mem, object()) == [pad('a')]
     assert _flow(mem)['recall']['stage'] == 'dest'
 
 

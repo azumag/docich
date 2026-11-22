@@ -348,7 +348,7 @@ def test_changed_view_cannot_send_an_exhausted_actor_through_anonymous_recall(mo
     changed_map = Screen([], None, '', kind='map', cursor=(90, 90))
     assert p.camp_recall_step(changed_map, mem, FRAME) == [p.pad('a')]
     assert not _flow(mem)['recall'].get('retreat_recheck')
-    # It must read the real occupant before choosing きかん.
+    # It must read the real occupant before choosing いどう.
     assert p.camp_recall_step(camp_menu(1), mem, FRAME) == [p.pad('a')]
     assert p.camp_recall_step(parse(status('ゼウス', main=False, hp=6)), mem, FRAME) == [p.pad('b')]
     assert not _flow(mem).get('recall')

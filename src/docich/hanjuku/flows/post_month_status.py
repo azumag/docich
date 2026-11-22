@@ -2030,6 +2030,17 @@ def step(screen, mem, frame):
                 **({'camp_body': body}
                    if (body := camp_body_target(frame, camp['target'])) else {}),
                 **({'boss_move': True} if job['kind'] == 'boss_move' else {})}
+            # docich#5105: the visible-camp path binds origin/camp_world at
+            # creation; a task recall never did, so _recall_goal could not
+            # locate this camp for the いどう→Y route. The SELECT-centred
+            # cursor still stands on the tent — measure both anchors now.
+            recall_state = _flow(mem)['recall']
+            recall_flow._observe_recall_origin(screen, mem, frame, recall_state)
+            camp_world = recall_flow._camp_world_cell(
+                screen.marker or cursor, recall_state.get('origin'), camp['target'])
+            if camp_world:
+                recall_state['camp_world'] = camp_world
+            recall_flow._reset_boss_jump(mem)
             _stage(state, 'wait_recall', recall_started=True)
             recall = recall_flow.camp_recall_step(screen, mem, frame)
             return recall if recall is not None else []

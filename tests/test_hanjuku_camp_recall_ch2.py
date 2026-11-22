@@ -1,21 +1,23 @@
-"""#5010 — キャンプ帰還失敗: ch2 将軍不明
+"""#5105 — [半熟英雄] 帰還で「きかん」を選択: ch10 将軍不明
 
-After PR #4736 (2026-11-19), camp return unconditionally chose いどう, which
-opens the field cursor (screen.kind=='map'). The 'dest' stage abandons the
-recall on 'map' without move_visible, so chapter 2 (and every non-corridor,
-non-gateway chapter) could not return from camp.
-
-Fix: when move_visible is not set, fall back to きかん's whole-island picker
-(map_target), which 'dest' handles for every chapter. A boss redirect or
-boss_move keeps いどう (owner-measured #4736 path to the boss).
+v1362 made an ordinary camp return choose きかん so its whole-island picker
+could name the destination. The owner's 2026-11-19 policy is
+「きかん禁止・いどう→Y」: every recall now confirms いどう, and the 'dest'
+stage hands the field cursor it opens to the whole-map Y route — a resolved
+goal takes the measured Y jump, an unresolved one opens the view blind so
+its own-castle flags can bind the destination (world_map_step's map_y_route
+branch). A boss redirect / boss_move keeps its own dedicated route.
 """
 from docich import hanjuku_chart as chart
+from docich.hanjuku.flows import map as map_flow
 from docich.hanjuku.flows import recall as recall_flow
 from docich.hanjuku.state.regions import flow as _flow
 from docich.hanjuku_screen import Screen
 
 
-from docich.hanjuku.os_layer.screen import Screen as _Screen
+from docich.hanjuku.os_layer.screen import Frame, Screen as _Screen
+
+FRAME = Frame(256, 224, b'\x00' * (256 * 224 * 3))
 
 
 def memory(chapter=2, move_visible=None):
@@ -39,43 +41,56 @@ def _camp_menu_screen(selected=0):
         text='いどうステータスキャンプきかん', kind='text')
 
 
-def test_chapter2_menu_chooses_kikan_without_move_visible():
-    """ch2 has no corridor/gateway, so move_visible is never set:
-    いどう would abandon the recall; きかん opens map_target instead."""
+def _cursor_choice(mem):
+    record = next(r for r in mem['_records']
+                  if r['decision'] == 'camp_recall_cursor')
+    return record['observed_metric']['choice']
+
+
+def test_chapter2_menu_chooses_idou_without_move_visible():
+    """きかん禁止・いどう→Y: an ordinary ch2 return confirms いどう at once."""
     mem = memory(chapter=2)
-    screen = _camp_menu_screen(0)
-    actions = recall_flow.camp_recall_step(screen, mem, None)
-    # Cursor is on row 0 (いどう); きかん is row 3 → walk down.
-    assert actions == [recall_flow.pad('down')]
-    assert _flow(mem)['recall']['stage'] == 'menu'
+    actions = recall_flow.camp_recall_step(_camp_menu_screen(0), mem, None)
+    # Cursor is already on row 0 (いどう) → A confirms, never walks to きかん.
+    assert actions == [recall_flow.pad('a')]
+    assert _flow(mem)['recall']['stage'] == 'dest'
+    assert _cursor_choice(mem) == 'いどう'
+    assert not any(r['observed_metric'].get('choice') == 'きかん'
+                   for r in mem['_records']
+                   if r['decision'] == 'camp_recall_cursor' and r.get('observed_metric'))
 
 
 def test_chapter2_menu_chooses_idou_with_move_visible():
     """Relay/corridor chapters still use いどう for field-cursor moves."""
     mem = memory(chapter=2, move_visible={'castle': 'アルマムーン'})
-    screen = _camp_menu_screen(0)
-    actions = recall_flow.camp_recall_step(screen, mem, None)
+    actions = recall_flow.camp_recall_step(_camp_menu_screen(0), mem, None)
     # いどう is row 0 → A confirms at once.
     assert actions == [recall_flow.pad('a')]
     assert _flow(mem)['recall']['stage'] == 'dest'
 
 
-def test_chapter9_menu_chooses_kikan_without_move_visible():
-    """ch9 is corridor but without visible castles move_visible is not set,
-    so it also falls back to きかん (consistent with ch1/ch2)."""
+def test_chapter9_menu_chooses_idou_without_move_visible():
+    """ch9 is corridor but with no visible castle the menu still confirms
+    いどう — the きかん fallback is retired for every chapter."""
     mem = memory(chapter=9)
-    screen = _camp_menu_screen(0)
-    actions = recall_flow.camp_recall_step(screen, mem, None)
-    assert actions == [recall_flow.pad('down')]
-    assert _flow(mem)['recall']['stage'] == 'menu'
+    actions = recall_flow.camp_recall_step(_camp_menu_screen(0), mem, None)
+    assert actions == [recall_flow.pad('a')]
+    assert _flow(mem)['recall']['stage'] == 'dest'
 
 
-def test_chapter1_menu_chooses_kikan_without_move_visible():
-    """ch1 is not corridor/gateway: same fallback to きかん as ch2."""
+def test_chapter1_menu_chooses_idou_without_move_visible():
+    """ch1 is not corridor/gateway: same いどう confirmation as ch2."""
     mem = memory(chapter=1)
-    screen = _camp_menu_screen(0)
-    actions = recall_flow.camp_recall_step(screen, mem, None)
-    assert actions == [recall_flow.pad('down')]
+    actions = recall_flow.camp_recall_step(_camp_menu_screen(0), mem, None)
+    assert actions == [recall_flow.pad('a')]
+    assert _flow(mem)['recall']['stage'] == 'dest'
+
+
+def test_menu_cursor_walks_up_toward_idou_never_down_to_kikan():
+    """A hand parked on きかん moves toward いどう — the retired row is never
+    confirmed for an ordinary return."""
+    mem = memory(chapter=2)
+    assert recall_flow.camp_recall_step(_camp_menu_screen(3), mem, None) == [recall_flow.pad('up')]
     assert _flow(mem)['recall']['stage'] == 'menu'
 
 
@@ -88,3 +103,82 @@ def test_boss_redirect_keeps_idou_without_move_visible():
         assert recall_flow.camp_recall_step(_camp_menu_screen(3), mem, None) == [recall_flow.pad('up')]
         assert recall_flow.camp_recall_step(_camp_menu_screen(0), mem, None) == [recall_flow.pad('a')]
         assert _flow(mem)['recall']['stage'] == 'dest'
+
+
+def test_dest_map_opens_the_y_jump_for_a_resolved_goal():
+    """The field cursor いどう opened jumps home through the whole map."""
+    mem = memory(chapter=2)
+    mem['captured'] = ['アルマムーン']            # a sole own castle resolves the goal
+    _flow(mem)['recall']['stage'] = 'dest'
+    screen = _Screen([], None, '', kind='map', cursor=(80, 90))
+    assert recall_flow.camp_recall_step(screen, mem, FRAME) == [recall_flow.pad('y')]
+    state = _flow(mem)['recall']
+    assert state['stage'] == 'y_route' and state['goal'] == 'アルマムーン'
+    assert mem['y_jump']['step'] == 'RECALL' and mem['y_jump']['goal'] == 'アルマムーン'
+    assert any(r['decision'] == 'camp_recall_y_route' for r in mem['_records'])
+
+
+def test_dest_map_opens_the_view_blind_when_the_goal_is_unresolved():
+    """No resolvable goal: Y opens the whole-map view so its own-castle flags
+    can name the destination — never a きかん picker."""
+    mem = memory(chapter=2)
+    # Two owned castles and no measured position (no origin/camp_world,
+    # sorties or hero location): _recall_goal cannot bind a destination
+    # without the island survey.
+    mem['captured'] = ['ドミノーラ', 'アルマムーン']
+    _flow(mem)['recall']['stage'] = 'dest'
+    screen = _Screen([], None, '', kind='map', cursor=(80, 90))
+    assert recall_flow.camp_recall_step(screen, mem, FRAME) == [recall_flow.pad('y')]
+    state = _flow(mem)['recall']
+    assert state['map_y_route'] is True and state['stage'] == 'dest'
+    assert 'y_jump' not in mem                  # the view opened blind, not a jump
+
+
+def test_world_map_flags_bind_the_goal_and_delegate_to_the_y_route(monkeypatch):
+    """Inside the blind-opened view the flag survey names the castle, then
+    _y_route_step's measured jump aims the field cursor at it."""
+    mem = memory(chapter=2)
+    _flow(mem)['recall'].update(stage='dest', steps=0,
+                                map_y_route=True, camp_world=[400, 500])
+    monkeypatch.setattr(map_flow, 'world_cursor', lambda _: None)
+    monkeypatch.setattr(map_flow, 'world_flags', lambda *_:
+                        {'アルマムーン': 'own', 'ドミノーラ': 'own'})
+    monkeypatch.setattr(map_flow, 'world_markers', lambda _: [])
+    view = _Screen([], None, '', kind='world_map')
+    assert map_flow.world_map_step(view, mem, FRAME) == [recall_flow.pad('y')]
+    state = _flow(mem)['recall']
+    assert state['stage'] == 'y_route' and 'map_y_route' not in state
+    # ドミノーラ (486,495) is nearer to camp_world [400,500] than アルマムーン.
+    assert state['goal'] == 'ドミノーラ'
+    assert mem['y_jump']['goal'] == 'ドミノーラ' and mem['y_jump']['step'] == 'RECALL'
+
+
+def test_world_map_without_a_goal_backs_out_and_never_uses_kikan(monkeypatch):
+    """Even the island survey names no reachable own castle: reserve a roster
+    read, withdraw with B and hold the camp — the recall never returns to
+    きかん."""
+    mem = memory(chapter=2)
+    _flow(mem)['recall'].update(stage='dest', steps=0, map_y_route=True)
+    monkeypatch.setattr(map_flow, 'world_cursor', lambda _: None)
+    monkeypatch.setattr(map_flow, 'world_flags', lambda *_:
+                        {'アルマムーン': 'enemy', 'ドミノーラ': 'enemy'})
+    monkeypatch.setattr(map_flow, 'world_markers', lambda _: [])
+    view = _Screen([], None, '', kind='world_map')
+    assert map_flow.world_map_step(view, mem, FRAME) == [recall_flow.pad('b')]
+    assert _flow(mem).get('recall') is None
+    assert mem.get('recall_skip') is not None or _flow(mem).get('recall_skip')
+    home = chart.home_castle(2)
+    assert home in (mem.get('roster_read_due') or {})
+    assert any(r['decision'] == 'camp_recall_goal_unresolved' for r in mem['_records'])
+
+
+def test_world_map_still_fading_waits_a_frame(monkeypatch):
+    """An unreadable flag survey must not abort the recall."""
+    mem = memory(chapter=2)
+    _flow(mem)['recall'].update(stage='dest', steps=0, map_y_route=True)
+    monkeypatch.setattr(map_flow, 'world_cursor', lambda _: None)
+    monkeypatch.setattr(map_flow, 'world_flags', lambda *_: {})
+    monkeypatch.setattr(map_flow, 'world_markers', lambda _: [])
+    view = _Screen([], None, '', kind='world_map')
+    assert map_flow.world_map_step(view, mem, FRAME) == []
+    assert _flow(mem)['recall']['map_y_route'] is True
