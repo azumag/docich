@@ -411,6 +411,16 @@ class AssessTests(unittest.TestCase):
 
 
 class SyncTests(unittest.TestCase):
+    def test_issue_lookup_uses_an_exact_title_search(self):
+        gh = FakeGh(issues=[{"number": 12, "title": health.ABNORMAL_TITLE}])
+        issues = health._open_issues(gh, "azumag/docich", health.ABNORMAL_TITLE)
+        self.assertEqual([item["number"] for item in issues], [12])
+        call = gh.calls[0]
+        self.assertEqual(call[call.index("--repo") + 1], "azumag/docich")
+        self.assertIn("--search", call)
+        self.assertIn(f'"{health.ABNORMAL_TITLE}" in:title', call)
+        self.assertLess(call.index("--search"), call.index("--limit"))
+
     def test_creates_one_fixed_title_without_duplicating(self):
         assessment = health.assess(base_document(states={
             "weather_corner": {

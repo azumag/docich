@@ -551,24 +551,12 @@ def _publish(runner, args):
         raise PublishError("gh publish failed") from exc
 
 
-def _open_issues(runner, repo, title):
-    out = _query(
-        runner,
-        [
-            "issue",
-            "list",
-            "--repo",
-            repo,
-            "--state",
-            "open",
-            "--search",
-            f'"{title}" in:title',
-            "--limit",
-            "10",
-            "--json",
-            "number,title,body",
-        ],
-    )
+def _list_issues(runner, repo, title, *, search):
+    args = ["issue", "list", "--repo", repo, "--state", "open"]
+    if search:
+        args += ["--search", f'"{title}" in:title']
+    args += ["--limit", "10" if search else "100", "--json", "number,title,body"]
+    out = _query(runner, args)
     try:
         data = json.loads(out or "[]")
     except ValueError as exc:
@@ -585,6 +573,19 @@ def _open_issues(runner, repo, title):
         body = item.get("body")
         issues.append({"number": number, "body": body if isinstance(body, str) else ""})
     return issues
+
+
+def _open_issues(runner, repo, title):
+    """Find exact-title open Issues, with a bounded non-search fallback.
+
+    GitHub's search index can lag behind a just-created Issue. The fallback
+    lists the newest 100 open Issues (the alert is new, so it is in that
+    window) before the caller creates a duplicate.
+    """
+    issues = _list_issues(runner, repo, title, search=True)
+    if issues:
+        return issues
+    return _list_issues(runner, repo, title, search=False)
 
 
 def sync_issues(
