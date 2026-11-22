@@ -64,6 +64,12 @@ def test_early_rescue_requires_a_confirmed_egg_or_damage_gated_carried_card(monk
                         lambda mem, battle, card: {'allowed': False, 'needs_live_list': False})
     assert not judgment._early_resource_rescue_needed(_memory(cur, egg_uses=None), cur)
 
+    # Already-selected cards remain on the established before-retreat retry path.
+    monkeypatch.setattr(judgment, '_card_damage_gate',
+                        lambda mem, battle, card: {'allowed': False, 'needs_live_list': True})
+    cur['cards_selected'] = ['エンジェリン']
+    assert not judgment._early_resource_rescue_needed(_memory(cur, egg_uses=None), cur)
+
 
 def test_early_rescue_preserves_chart_boss_event_and_critical_policies(monkeypatch):
     _set_balance(monkeypatch)
