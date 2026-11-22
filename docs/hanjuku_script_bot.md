@@ -919,7 +919,7 @@ g749の募集終了付近では、ヘッダーだけの画像1883と暗転1885/1
 
 味方HP欄が消えたメニュー切替中でも、実青色の敵将軍HP欄が一つだけ読め、左x32/40のコマンドが連続した正規項目なら入力を保留する。両HP欄が完全な場合も、実既知の味方monsterと敵generalが読めて左列が移動中のx32なら保留する（元g749/6027）。x40へ到着した完全画面は既存の所有者判定に委ねる。味方の召喚獣名やHPは補完せず、旧卵選択の入力段階を破棄する。再観測は31で飽和して既存停滞検出へ委ね、画面が変われば実表示から再評価する。右側の味方コマンド、未知・重複・色不明のHP欄を敵の操作と認定しない。元g749/5561のAが新waitになる比較は反実仮想で、戦果や消費を証明しない。
 
-### 月内出撃ゼロ・ボスフェーズ無戦闘の監査（v1379）
+### 月内出撃ゼロ・ボスフェーズ無戦闘の監査（v1381）
 
 - 月境界で、敵城向けの確定出撃（`month_sorties.launches`）と発射記録
   （`order_launched` / `sortie_departed_observed` / `sortie_launch_confirmed`）が
@@ -929,6 +929,10 @@ g749の募集終了付近では、ヘッダーだけの画像1883と暗転1885/1
 - 通常城をすべて確保してボス城だけが残るボスフェーズが600秒続き、
   `battle_start`（章ボス）/ `boss_hp_seen` / `boss_victories` の証拠が
   一度も出ない場合、`boss_phase_no_battle` を1回記録する。
+- フィールド在庫 `card_stock` に正数の切り札があるのに、attack/retake/bossの
+  出撃が `rare_card_kit` / `strong_card_kit` / `dropper_card_kit` 等を
+  1枚も携行せず成立したら `sortie_without_cards` を記録する。
+  move/house/repair/defend/recallは対象外。同じ章・step・将軍は900秒cooldown。
 - 戦闘のBメニューを開いた後、卵・切り札・退却・奥の手を一度も実行せず
   閉じた場合 `battle_menu_wasted` を記録する。攻撃コマンドなしのcloseと
   敵一撃の `battle_one_hit_menu_close` は正当なので除外。
