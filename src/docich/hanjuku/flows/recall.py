@@ -1487,9 +1487,16 @@ def _camp_recall_step(screen: Screen, mem, frame, *, observed_camps=None):
             return held
         return []
     state.pop('hold_since', None)
-    if (state.pop('battle_return', None) and screen.kind == 'map'
-            and state.get('stage') in ('to_camp', 'menu')):
-        _battle_return_reset(mem, state)
+    if state.get('battle_return'):
+        if state.get('stage') in ('to_camp', 'menu') and screen.kind == 'map':
+            # Keep the marker through resumable non-map frames; only the first
+            # map after combat establishes the new cursor baseline.
+            state.pop('battle_return', None)
+            _battle_return_reset(mem, state)
+        elif state.get('stage') not in ('to_camp', 'menu'):
+            # The recall left the field-navigation/menu stages before a map
+            # returned, so this reset no longer applies to the active route.
+            state.pop('battle_return', None)
     if state.get('stage') == 'await_dispatch':
         return _recall_dispatch_step(screen, mem, state)
     state['steps'] = int(state.get('steps') or 0) + 1
