@@ -503,6 +503,20 @@ class TestNethackReleasedFinishSettle(NethackReleasedSettleTestBase):
         self.assertIs(mgr.settle_released_failure(request_id, corner_id="nethack"), None)
         self.assertEqual(mgr._read_state()["status"], "failed")
 
+    def test_settle_defers_on_a_corrupt_restore_receipt(self):
+        # A corrupt receipt is not proof that the restore is absent or terminal.
+        # Keep the released owner pinned until the receipt can be read safely.
+        mgr, _coordinator, request_id, restore_request = self._setup_released_finished_corner()
+        self._released_ledger(mgr, request_id)
+        receipt_path = mgr.store.receipts._path(restore_request)
+        receipt_path.parent.mkdir(parents=True, exist_ok=True)
+        receipt_path.write_text("{not-json", encoding="utf-8")
+
+        self.assertIs(mgr.settle_released_failure(request_id, corner_id="nethack"), None)
+        state = mgr._read_state()
+        self.assertEqual(state["status"], "failed")
+        self.assertEqual(state["released_settle_pending"]["request_id"], request_id)
+
     def test_settle_refuses_the_start_failure_shape(self):
         # switch_request_id == rotation_request_id is a start failure: it
         # must stay with the prelaunch engine, which fails closed without
