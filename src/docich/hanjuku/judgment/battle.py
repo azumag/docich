@@ -1482,20 +1482,27 @@ def _early_resource_rescue_needed(mem, cur):
 
     attempts = rescue.get('egg_attempts', 0)
     if type(attempts) is not int or attempts < 0:
-        attempts = EGG_ATTEMPT_LIMIT
-    egg_ready = (not rescue.get('egg_attempted') and not rescue.get('egg_pending')
-                 and attempts < EGG_ATTEMPT_LIMIT
+        attempts = EGG_ATTEMPT_HARD_LIMIT
+    egg_limit = EGG_ATTEMPT_LIMIT
+    last_hp = rescue.get('egg_attempt_hp')
+    if (type(last_hp) is int and hp < last_hp and attempts < EGG_ATTEMPT_HARD_LIMIT):
+        egg_limit = EGG_ATTEMPT_HARD_LIMIT
+    egg_spent = attempts >= egg_limit or (rescue.get('egg_attempted') and not attempts)
+    egg_ready = (not rescue.get('egg_pending') and not egg_spent
                  and _own_egg_positive(mem, cur) and not _own_egg_empty(mem, cur))
 
     cards_ready = False
     checked = rescue.get('cards_checked', 0)
-    if not rescue.get('cards_exhausted') and type(checked) is int and 0 <= checked < 3:
+    if (not rescue.get('cards_exhausted') and type(checked) is int
+            and 0 <= checked < CARD_SPEND_ATTEMPT_LIMIT):
         kit = _confirmed_carried_kit(mem, cur)
         attempted = {c for c in (rescue.get('cards_attempted') or ()) if isinstance(c, str)}
         selected = {c for c in (cur.get('cards_selected') or ()) if isinstance(c, str)}
+        spend_attempts = _card_spend_attempts(cur)
         if isinstance(kit, (list, tuple)):
             for card in kit:
-                if card not in SURVIVAL_CARDS or card in attempted or card in selected:
+                if (card not in SURVIVAL_CARDS or card in attempted or card in selected
+                        or spend_attempts.get(card, 0) >= CARD_SPEND_ATTEMPT_LIMIT):
                     continue
                 try:
                     gate = _card_damage_gate(mem, cur, card)
