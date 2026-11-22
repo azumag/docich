@@ -1978,20 +1978,52 @@ def _retreat_remaining_cards(cur):
     return remaining
 
 
-def _retreat_cards_to_spend(cur):
-    """#4999: audit-visible remaining cards that still have a spend path.
+# Owner decision 2026-11-23 (#5101): a retreat that leaves a usable card
+# behind is not the desired outcome even when it is the designed bound. A card
+# is re-selected until this many spend attempts have failed; only then may the
+# retreat row be taken (the immediate-loss floor still wins at any count).
+CARD_SPEND_ATTEMPT_LIMIT = 3
 
-    Each name consumes at most one spend retry (cards_spend_retry); a card
-    picked from the live list again lands in cards_attempted and then needs
-    the same retry flag, so the detour cannot loop. The survival menu's own
-    bounds (cards_checked, cards_exhausted, exhausted) cap the detour too.
+
+def _card_spend_attempts(cur):
+    """Spend attempts made per card (legacy list counts as one attempt)."""
+    attempts = {}
+    for card in cur.get('cards_spend_retry') or ():
+        if isinstance(card, str):
+            attempts[card] = max(attempts.get(card, 0), 1)
+    stored = cur.get('cards_spend_attempts')
+    if isinstance(stored, dict):
+        for card, count in stored.items():
+            if isinstance(card, str) and type(count) is int:
+                attempts[card] = max(attempts.get(card, 0), count)
+    return attempts
+
+
+def _note_card_spend_attempt(cur, card):
+    attempts = dict(cur.get('cards_spend_attempts') or {})
+    attempts[card] = int(attempts.get(card, 0)) + 1
+    cur['cards_spend_attempts'] = attempts
+    # cards_spend_retry stays as the "was re-selected" receipt the audit reads.
+    legacy = cur.setdefault('cards_spend_retry', [])
+    if card not in legacy:
+        legacy.append(card)
+
+
+def _retreat_cards_to_spend(cur):
+    """Remaining cards that still have a spend path before the retreat row.
+
+    A name is re-selected until CARD_SPEND_ATTEMPT_LIMIT attempts have been
+    made, then the retreat may proceed; _retreat_immediate_loss still stops the
+    detour at any attempt count, and the survival menu's own bounds
+    (cards_checked, cards_exhausted, exhausted) cap it too.
     """
     rescue = cur.get('survival') or {}
     if (rescue.get('exhausted') or rescue.get('cards_exhausted')
-            or int(rescue.get('cards_checked') or 0) >= 3):
+            or int(rescue.get('cards_checked') or 0) >= CARD_SPEND_ATTEMPT_LIMIT):
         return False
-    retried = cur.get('cards_spend_retry') or ()
-    return any(card not in retried for card in _retreat_remaining_cards(cur))
+    attempts = _card_spend_attempts(cur)
+    return any(attempts.get(card, 0) < CARD_SPEND_ATTEMPT_LIMIT
+               for card in _retreat_remaining_cards(cur))
 
 
 def _critical_safe_card(mem, cur, rescue, *, for_retreat=False):
