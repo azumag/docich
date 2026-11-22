@@ -380,12 +380,28 @@ cmdlineの生バイト・URL・パス・PIDは出さず、argv/生バイトは�
 - `total` / `cpu_pct_total` / `rss_mb_total` / `oldest_age_sec`
 - `by_type`: `browser` / `gpu` / `renderer` / `utility` / `other` の件数
 - `by_owner`: `soren-shared-overlay` / `soren-game` / `twica` /
-  `nethack-tiles` / `obs` / `webui` / `other` ごとの `count` / `cpu_pct`。
+  `nethack-tiles` / `obs` / `webui` / `other` ごとの `count` / `cpu_pct` /
+  `rss_mb` / `renderer_rss_mb`。RSS は各プロセスの VmRSS を固定owner/type別に合算する。
   `gpu_cpu_pct` / `renderer_cpu_pct` は0でない場合だけ出す。
 - `type_sources`: `type_arg` / `no_type_arg` の件数。`cmdline_bytes_max` と
   `max_type_arg_offset` は型判定の切り分け用（見つからない場合は後者を出さない）。
 - CPUは0.5秒の2サンプル差分（100 = 1コア）。`/proc` を列挙できない場合は
   `status=unknown` / `scan_complete=0`。
+
+### shared overlay renderer memory alert（#5112 follow-up）
+
+`browser_processes.by_owner.soren-shared-overlay.renderer_rss_mb` は、固定ownerに分類された
+Chromium rendererだけの VmRSS 合計（MiB）。`.github/workflows/vm-storage-monitor.yml` は
+既存の owner-only read-only diagnostics を使い、毎時2回この値を評価する。
+
+- 4096 MiB 以上: WARN
+- 8192 MiB 以上: CRITICAL
+- 完全な `/proc` scan と固定owner値が得られない場合: unknown。既存alertを閉じない。
+- しきい値未満へ戻った場合だけ既存alertを閉じる。severity変更時は旧alertを閉じて新しいseverityを作る。
+- 公開Issueにはrenderer RSS・固定しきい値・workflow URLだけを載せる。PID・argv・URL・path・生diagnosticsは載せない。
+
+これは検知・通知のみで、service restart は実行しない。restart は #5113 の
+cooldown付き guard と、ownerが管理する systemd timer の導入・実機検証に分離する。
 
 ## 収集元（すべて read-only）
 
