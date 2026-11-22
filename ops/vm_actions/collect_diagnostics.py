@@ -8046,6 +8046,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v1370-chikujou-tried-ledger",
             "hanjuku-chart-v1372-card-census-owner-title",
             "hanjuku-chart-v1373-egg-receipt-settle",
+            "hanjuku-chart-v1374-rich-merchant-entry",
             "hanjuku-chart-v985-roster-lost",
             "hanjuku-chart-v982-gbox",
             "hanjuku-chart-v984-roster-map-anchor",
