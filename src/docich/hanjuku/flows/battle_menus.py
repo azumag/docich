@@ -396,6 +396,14 @@ def _hero_retreat_menu(screen, mem, cur):
                              'egg_uses': (mem.get('egg_uses') or {}).get(cur.get('ally')),
                              'cards_selected': cur.get('cards_selected', []),
                              'cards_used': cur.get('cards_used', []),
+                             # docich#5101: a card the bot already tried (or
+                             # spent its one bounded retry on) is not "left
+                             # unused" — the audit needs the attempt receipts
+                             # to tell a designed post-attempt retreat from a
+                             # card that was never given a chance.
+                             'cards_attempted': list((cur.get('survival') or {})
+                                                     .get('cards_attempted') or []),
+                             'cards_spend_retry': list(cur.get('cards_spend_retry') or ()),
                              'card_pending': (cur.get('card_flow') or {}).get('card')
                              if isinstance(cur.get('card_flow'), dict) else None,
                              'retreat_assessment': dict(cur.get('retreat_assessment') or {})},

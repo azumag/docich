@@ -586,6 +586,29 @@ def test_battle_resource_events_are_classified():
         'battle_retreat_preempted_card', card='クースカン',
         metric={'ally_hp': 12, 'enemy_hp': 41}, general='マフィン'))
     assert preempted['resources'] == ['card']
+    # docich#5101: a card the bot already tried, or spent its one bounded
+    # spend retry on, is not a resource "left behind" — the retreat after the
+    # attempt is the designed bounded path.
+    assert audit._battle_resource_event(_battle_record(
+        'battle_hero_retreat_select', choice='たいきゃく',
+        metric={'ally_hp': 55, 'enemy_hp': 63,
+                'cards_selected': ['イッテツーン'],
+                'cards_used': [],
+                'cards_attempted': ['イッテツーン']}, general='アニス')) is None
+    assert audit._battle_resource_event(_battle_record(
+        'battle_hero_retreat_select', choice='たいきゃく',
+        metric={'ally_hp': 55, 'enemy_hp': 63,
+                'cards_selected': ['イッテツーン'],
+                'cards_used': [],
+                'cards_spend_retry': ['イッテツーン']}, general='アニス')) is None
+    untried = audit._battle_resource_event(_battle_record(
+        'battle_hero_retreat_select', choice='たいきゃく',
+        metric={'ally_hp': 55, 'enemy_hp': 63,
+                'cards_selected': ['イッテツーン', 'クースカン'],
+                'cards_used': [],
+                'cards_attempted': ['クースカン']}, general='アニス'))
+    assert untried['resources'] == ['card']
+    assert untried['cards_remaining'] == ['イッテツーン']
     assert audit._battle_resource_event(_battle_record(
         'battle_egg_before_retreat', metric={'egg_uses': 2})) is None
 
