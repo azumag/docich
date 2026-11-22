@@ -35,7 +35,8 @@ def resume_bijin_gift_panel(screen) -> bool:
 # row, and the stacked HP panel carries an ally (red) / enemy (blue) drop mark.
 # Both measurements come from live frames (decision-003/024/029).
 KNIGHT_COLORS = ((230, 105, 74), (230, 149, 74), (148, 80, 230), (123, 56, 222),
-                 (255, 165, 139), (255, 189, 180), (172, 113, 230), (230, 198, 74))
+                 (255, 165, 139), (255, 189, 180), (172, 113, 230), (230, 198, 74),
+                 (160, 132, 88), (160, 80, 64), (176, 104, 112))
 ALLY_MARK = (222, 72, 65)
 ENEMY_MARK = (57, 121, 189)
 MENU_ROW_Y = 148          # option rows live in the bottom command box band
