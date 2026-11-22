@@ -160,6 +160,62 @@ def test_settled_egg_deferral_releases_the_held_castle():
                for r in mem['_records'])
 
 
+def test_unverified_egg_still_opens_the_held_castle_at_month_close():
+    """docich#5088: an unverified recovery keeps _recruit_precedes_cards() true,
+    so the hold set earlier in the month never lifts by itself. At the closing
+    observation (soldiers done, no sub-screen) the held 築城 must still run;
+    otherwise the month ends with a buildable castle and 試行済み [] (g1190
+    ch4 17-8: gold 1140, four candidates, month_done without an attempt)."""
+    from test_hanjuku_chart_bot import _short_recruit_memory
+    mem = _short_recruit_memory()
+    for key, count in (('country_general_count', 2), ('country_soldier_count', 70)):
+        mem[key] = {'scope': [1, '1-7'], 'identity': None,
+                    'tick': mem['tick'], 'count': count}
+    mem['captured'] = ['ジョンリギ']
+    mem['garrison'] = {'アルマムーン': ['どうし', 'ゼウス'], 'ジョンリギ': ['ココット']}
+    mem['shop'] = {'key': '1-7', 'items': [], 'merchant_done': True,
+                   'soldiers': 0, 'soldiers_done': True, 'gold_start': 1140,
+                   'egg': 'unverified', 'egg_before_recruit': True,
+                   'recruit': 'check', 'recruit_reserve': 0,
+                   'chikujou': 'check', 'reserve': 0, 'hero_repair_reserve': 0}
+    screen = parse(month_canvas(1140, on='ちくじょう'))
+    actions = month_flow.month_step(screen, mem)
+    shop = mem['shop']
+    assert shop['recruit'] == 'deferred_egg'
+    assert shop.get('egg') == 'unverified'
+    assert 'cards_held' not in shop
+    assert 'chikujou_held' not in shop
+    assert shop['chikujou'] == 'opened'
+    assert mem['month_sub']['kind'] == 'chikujou'
+    assert actions == [p.pad('a')]
+    decisions = [r.get('decision') for r in mem['_records']]
+    assert 'month_cards_held_for_recruit' in decisions
+    assert 'month_cards_released' in decisions
+    assert 'month_done' not in decisions
+    assert any(r.get('decision') == 'month_sub_open' and r.get('choice') == 'ちくじょう'
+               for r in mem['_records'])
+
+
+def test_unverified_hold_release_is_bounded_and_only_for_the_unverified_egg():
+    mem = {'_records': [], 'tick': 1, 'chapter': 1, 'captured': ['ジョンリギ'],
+           'garrison': {'アルマムーン': ['どうし'], 'ジョンリギ': ['ココット']}}
+    shop = {'key': '1-7', 'recruit': 'deferred_egg', 'egg': 'unverified',
+            'chikujou': 'skipped', 'cards_held': 'recruit_pending',
+            'chikujou_held': True}
+    assert month_flow._release_unverified_chikujou_hold(mem, shop)
+    assert shop['chikujou'] == 'check'
+    # Released once: a second closing observation must not record again.
+    assert not month_flow._release_unverified_chikujou_hold(mem, shop)
+    # A live recovery question keeps the hold: fail-closed stays for pending/check.
+    live = {'key': '1-8', 'recruit': 'deferred_egg', 'egg': 'pending',
+            'chikujou': 'skipped', 'cards_held': 'recruit_pending',
+            'chikujou_held': True}
+    assert not month_flow._release_unverified_chikujou_hold(mem, live)
+    assert live['chikujou'] == 'skipped'
+    logs = [r for r in mem['_records'] if r.get('decision') == 'month_cards_released']
+    assert len(logs) == 1
+
+
 def test_hold_month_cards_is_once_and_keeps_the_plan_for_diagnostics():
     mem = {'_records': [], 'tick': 10}
     shop = {'key': '1-7', 'recruit': 'deferred_egg', 'chikujou': 'check',

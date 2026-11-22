@@ -658,6 +658,8 @@ def month_step(screen: Screen, mem):
         # the A press that opened the sub. Pressing anything here (も〜おしまい!
         # navigation) races the flow that is starting, so hold instead.
         return []
+    if shop:
+        _release_unverified_chikujou_hold(mem, shop)
     extra = _month_extra(screen, mem, shop)
     if extra is not None:
         return extra
@@ -847,6 +849,34 @@ def _hold_month_cards(mem, shop):
     _record(mem, 'month_cards_held_for_recruit', month=shop.get('key'),
             observed_metric={'recruit': shop.get('recruit'), 'planned': held},
             reason='将軍募集が未決のため、切り札・築城の購入より募集を先に確定させる')
+
+
+def _release_unverified_chikujou_hold(mem, shop):
+    """docich#5088: release the demoted 築城 hold once the month can only close.
+
+    An unverified egg recovery keeps _recruit_precedes_cards() true, so the
+    hold set by _hold_month_cards() never lifts and the month closes with a
+    buildable castle and no attempt at all (g1190 ch4 17-8: gold 1140, four
+    candidates, 試行済み []). No further evidence can settle that payment
+    after the month ends, and the reserve gate still decides affordability
+    from the gold on this screen, so let the held 築城 run once in the
+    closing observation and leave the recruit itself deferred.
+    """
+    if (shop.get('cards_held') != 'recruit_pending'
+            or shop.get('recruit') != 'deferred_egg'
+            or shop.get('egg') != 'unverified'
+            or not shop.get('chikujou_held')
+            or shop.get('chikujou') != 'skipped'):
+        return False
+    shop.pop('cards_held')
+    shop.pop('chikujou_held', None)
+    shop['chikujou'] = 'check'
+    _record(mem, 'month_cards_released', month=shop.get('key'),
+            observed_metric={'recruit': shop.get('recruit'), 'egg': shop.get('egg'),
+                             'chikujou': shop.get('chikujou'),
+                             'candidates': list(_chikujou_candidates(mem))[:8]},
+            reason='卵回復の支払いを確認できないまま月を閉じるため、保留した築城を当月最後の観測で解放する')
+    return True
 
 
 def _month_extra(screen, mem, shop, *, recruit_only=False, egg_only=False):
