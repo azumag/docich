@@ -1,7 +1,7 @@
 # IMPLEMENT-5118 — [半熟英雄] 切り札在庫があるのに非携行で出撃: ch10 ヘーゼル
 
 ブランチ: `fix/5118-sortie-carried-cards`（`origin/main` `dbb5d9dcc` = v1386 から作成、commit/push なし）
-BOT_VERSION: `hanjuku-chart-v1390-sortie-measured-kit`（main は v1386 まで進行済み。
+BOT_VERSION: `hanjuku-chart-v1394-sortie-measured-kit`（main は v1386 まで進行済み。
 PR 作成時点で main の最新バージョンを再確認し、重なっていたら付け替えること）
 検証結論: `~/work/docich-5118-5119/VERIFY-5118-5119.md` #5118 節 —
 **誤検知（監査の証拠収集欠陥）**。`_sortie_carried_cards` が参照するのは
@@ -50,7 +50,7 @@ rare/strong/dropper 補助キットと発射レコードの `cards` だけだが
   - 補助キット＋発射 record に加え、`order_context[step].observed_metric.cards`、
     `world.launched_orders[step]` の `departure_binding.cards`（binding付き
     snapshot の `cards` も同じ実測値）、同一 step の `sortie_confirm` decision の
-    `cards` を実携行の証拠と明記（v1387/#5118）。
+    `cards` を実携行の証拠と明記（v1394/#5118）。
   - `departure_binding` を持たない snapshot の `cards` は計画値であり証拠にしない。
     実測kit が空または未読（blind approve 等）の出撃だけを issue にする旨を明記。
 
@@ -72,7 +72,7 @@ rare/strong/dropper 補助キットと発射レコードの `cards` だけだが
 
 ### 4. バージョン・allowlist
 
-- `src/docich/hanjuku/version.py`: `hanjuku-chart-v1390-sortie-measured-kit`
+- `src/docich/hanjuku/version.py`: `hanjuku-chart-v1394-sortie-measured-kit`
 - `ops/vm_actions/collect_diagnostics.py`: allowlist に同文字列を追加（末尾カンマあり）
 - `ops/vm_actions/tests/test_collect_diagnostics.py`: fixed-values リストに同文字列を追加
   （IMPLEMENT-5077 と同じ先例。`versions[0]` が `BOT_VERSION` のため動的には既に
