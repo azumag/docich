@@ -1495,13 +1495,16 @@ def _early_resource_rescue_needed(mem, cur):
     if (not rescue.get('cards_exhausted') and type(checked) is int
             and 0 <= checked < CARD_SPEND_ATTEMPT_LIMIT):
         kit = _confirmed_carried_kit(mem, cur)
-        attempted = {c for c in (rescue.get('cards_attempted') or ()) if isinstance(c, str)}
-        selected = {c for c in (cur.get('cards_selected') or ()) if isinstance(c, str)}
         spend_attempts = _card_spend_attempts(cur)
         if isinstance(kit, (list, tuple)):
-            for card in kit:
-                if (card not in SURVIVAL_CARDS or card in attempted or card in selected
-                        or spend_attempts.get(card, 0) >= CARD_SPEND_ATTEMPT_LIMIT):
+            # Reuse the inventory multiset rule so one selected copy does not
+            # hide a second, still-unselected copy of the same carried card.
+            for row in _egg_inventory(mem, cur, kit):
+                card, available = row.get('name'), row.get('available')
+                attempts_for_card = spend_attempts.get(card, 0)
+                if (card not in SURVIVAL_CARDS or type(available) is not int or available <= 0
+                        or type(attempts_for_card) is not int or attempts_for_card < 0
+                        or attempts_for_card >= CARD_SPEND_ATTEMPT_LIMIT):
                     continue
                 try:
                     gate = _card_damage_gate(mem, cur, card)
@@ -1510,8 +1513,6 @@ def _early_resource_rescue_needed(mem, cur):
                 if gate.get('allowed') is True or gate.get('needs_live_list') is True:
                     cards_ready = True
                     break
-        # Already-selected cards stay on the established battle_cards_before_retreat
-        # path; this early gate is only for a still-unselected confirmed carried card.
     return egg_ready or cards_ready
 
 
