@@ -44,6 +44,15 @@ from ..strategy.replan import _off_chart
 from .result import FlowResult
 
 
+# docich#5020: a defense/boss battle that interrupts the destination picker
+# closes it before the target is committed. Record that cause apart from every
+# other picker close so the monthly audit can count interruptions and their
+# same-month relaunch rate (4h live g1288 ch10: 6 of 9 sorties unconfirmed).
+SORTIE_INTERRUPTING_BATTLE_KINDS = frozenset({
+    'attack_started', 'defense_started', 'field_encounter_started',
+    'boss_attack_started', 'battle', 'battle_intro'})
+
+
 def observe_sortie_transition(screen, mem, previous_kind=None):
     """An interrupted target cursor is a possible departure, never a retry.
 
@@ -155,6 +164,17 @@ def observe_sortie_transition(screen, mem, previous_kind=None):
     _tally_sortie_attempt(mem, order['target'], order.get('purpose'),
                           'cancelled_unsent',
                           _sortie_state_sig(mem, snapshot['source'], general))
+    if screen.kind in SORTIE_INTERRUPTING_BATTLE_KINDS:
+        # The picker closed into a battle, not into a plain field frame: the
+        # generic unconfirmed record below cannot tell the two apart, so the
+        # monthly decision breakdown counts this cause on its own (docich#5020).
+        _record(mem, 'launch_interrupted_by_battle', chart_step=step,
+                general=general, target=order['target'], screen=screen.kind,
+                observed_metric={'planned_target': order['target'],
+                                 'target': order['target'],
+                                 'source': snapshot['source'],
+                                 'screen': screen.kind},
+                reason='出撃先ピッカーの最中に戦闘が割り込み目標決定前に閉じたため、割り込みからの再開率を測る')
     _finish_order(mem, 'launched_unconfirmed', general=general, target=None,
                   planned_target=order['target'], screen=screen.kind,
                   reason='目標決定前に出撃先選択を離れたため出撃の成否と行先を未確定として記録')

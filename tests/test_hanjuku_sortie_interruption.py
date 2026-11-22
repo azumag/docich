@@ -243,6 +243,30 @@ def test_real_general_row_geometry_ignores_hand_and_distant_border():
     assert p._general_visible(sc,'ゼウス')
 
 
+@pytest.mark.parametrize('kind', ['defense_started', 'boss_attack_started', 'battle_intro'])
+def test_battle_interruption_is_recorded_apart_from_other_picker_closes(kind):
+    """docich#5020: 6 of 9 sorties in a battle-heavy month closed the picker as
+    unconfirmed. The cause (a battle taking the frame) must be countable, or the
+    monthly audit cannot tell it from an input the game ignored."""
+    mem = memory()
+    p.observe_sortie_transition(screen(kind), mem, 'map_target')
+    counted = [r for r in mem['_records'] if r['decision'] == 'launch_interrupted_by_battle']
+    assert len(counted) == 1
+    assert counted[0]['general'] == 'ゼウス'
+    assert counted[0]['observed_metric']['screen'] == kind
+    assert counted[0]['chart_step'] == '1-A2'
+    # The unconfirmed departure itself still closes the attempt as before.
+    assert _plan_region(mem)['orders']['1-A2'] == 'launched_unconfirmed'
+
+
+@pytest.mark.parametrize('kind', ['unknown', 'map', 'general_list'])
+def test_other_picker_closes_are_not_counted_as_battle_interruptions(kind):
+    mem = memory()
+    p.observe_sortie_transition(screen(kind), mem, 'map_target')
+    assert _plan_region(mem)['orders']['1-A2'] == 'launched_unconfirmed'
+    assert not [r for r in mem['_records'] if r['decision'] == 'launch_interrupted_by_battle']
+
+
 def test_unknown_name_does_not_reestablish_defeated_general_location():
     mem=memory();_world(mem)['general_location_unknown']=['ゼウス']
     p._observe_garrison(screen('general_list',['ゼウス'+UNKNOWN]),mem,p._order(mem))
