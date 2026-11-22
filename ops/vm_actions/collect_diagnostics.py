@@ -13705,6 +13705,7 @@ HANJUKU_CAMP_DECISIONS = frozenset({
     'camp_position_unconfirmed', 'camp_recall_aborted', 'camp_recall_skipped',
     'camp_recall_unconfirmed', 'camp_recall_requested', 'camp_recall_input_sent',
     'camp_recall_picker_not_open', 'camp_recall_scene_abandoned',
+    'camp_recall_battle_reset',
     'hero_recall_skipped', 'retreat_recheck_pending', 'retreat_recheck_unconfirmed',
     'retreat_recheck_invalidated', 'camp_fort_sortie', 'camp_hp_observation',
 })

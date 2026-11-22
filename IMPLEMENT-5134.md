@@ -134,3 +134,14 @@ BOT_VERSION: `hanjuku-chart-v1397-recall-map-hold`
   現行シグネチャ（91 steps・'map'）は cursorless hold で解消する想定。
 - 案3（nudge 許可）未実施のため、カーソル未検出が長期化する場合は
   600 tick の hold abort で帰還を諦める挙動は維持。
+
+## 検品ゲート追記（collect_diagnostics 随伴変更）
+
+BOT_VERSION の bump には次の随伴変更が必須であり、本 PR に含まれる（ride-along ではない）:
+
+1. バージョン登録: `ops/vm_actions/collect_diagnostics.py` の歴代 BOT_VERSION 一覧と `ops/vm_actions/tests/test_collect_diagnostics.py` の固定値一覧へ `hanjuku-chart-v1397-recall-map-hold` を登録。`test_hanjuku_chart_progress_is_allowlisted_counters_only` は実 BOT_VERSION を動的に読み込んで一覧整合を検査するため、version.py だけを上げると壊れる。
+2. decision 許可リスト登録: 案2 が新設した決定 `camp_recall_battle_reset` を `collect_diagnostics.py` の `HANJUKU_CAMP_DECISIONS` へ登録。未登録だと `_hanjuku_camp_tail` の投影で無音に落ちる。許可リスト側のテスト `test_hanjuku_camp_tail_projects_the_battle_reset_decision` は、名前がリストにあることではなく、行を投影した結果に同決定が実際に現れる（かつ非許可の決定が落ちる）ことを assert する。
+
+## CI 失敗8件の扱い
+
+`tests/test_hanjuku_camp_observation.py` の8件は実装バグではなく、#5108/#5133 系テスト契約の更新漏れだった（DSH 切り分け）。戦闘前景で `to_camp` の帰還に `battle_return` が立つのは案2の意図どおりの挙動変化であり、テスト側の比較を `hold_since` と `battle_return` の両方を許す形へ更新し、`to_camp` で立つこと／`await_dispatch` で立たないことを明示 assert にした。
