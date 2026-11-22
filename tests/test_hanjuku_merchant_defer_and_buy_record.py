@@ -55,6 +55,14 @@ def month_memory(*, egg='pending', recruit=False, gold=9999, stock_count=0):
                  'reserve': 50 if egg == 'pending' else 0},
     }
     if recruit:
+        # A measured roster keeps the recruit step executable in this
+        # synthetic month: without it the flow can only defer the fee and the
+        # month would close before the assertion. One general in the home
+        # castle is a real shortage against the 32-general target.
+        mem['recruit_roster'] = {
+            'identity': dict(IDENTITY), 'chapter': 1, 'month': '1-7',
+            'tick': 90, 'complete': True, 'names': ['ココット'],
+            'wages': {'ココット': 1}}
         mem['shop'].update(recruit='check', recruit_priority=True,
                            recruit_reserve=100)
     return mem
